@@ -2796,6 +2796,7 @@ static int t_native_agent_api_contract(void)
     char *agent_bg_quality_buf = NULL;
     char *agent_first_call_buf = NULL;
     char *agent_lanes_buf = NULL;
+    char *agent_lane_runtime_buf = NULL;
     char *agent_liveness_buf = NULL;
     char *agent_iface_buf = NULL;
     char *agent_ops_buf = NULL;
@@ -2819,6 +2820,7 @@ static int t_native_agent_api_contract(void)
         char agent_bg_quality_path[PATH_MAX];
         char agent_first_call_path[PATH_MAX];
         char agent_lanes_path[PATH_MAX];
+        char agent_lane_runtime_path[PATH_MAX];
         char agent_liveness_path[PATH_MAX];
         char agent_iface_path[PATH_MAX];
         char agent_ops_path[PATH_MAX];
@@ -2860,6 +2862,9 @@ static int t_native_agent_api_contract(void)
                == 0);
         ASSERT(repo_path(agent_lanes_path, sizeof(agent_lanes_path),
                          "app/controllers/src/agent_lanes_controller.c") == 0);
+        ASSERT(repo_path(agent_lane_runtime_path,
+                         sizeof(agent_lane_runtime_path),
+                         "app/controllers/src/agent_lane_runtime.c") == 0);
         ASSERT(repo_path(agent_liveness_path, sizeof(agent_liveness_path),
                          "app/controllers/src/agent_liveness_controller.c")
                == 0);
@@ -2902,6 +2907,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(read_entire_file(agent_first_call_path,
                                 &agent_first_call_buf) == 0);
         ASSERT(read_entire_file(agent_lanes_path, &agent_lanes_buf) == 0);
+        ASSERT(read_entire_file(agent_lane_runtime_path,
+                                &agent_lane_runtime_buf) == 0);
         ASSERT(read_entire_file(agent_liveness_path,
                                 &agent_liveness_buf) == 0);
         ASSERT(read_entire_file(agent_iface_path, &agent_iface_buf) == 0);
@@ -3249,14 +3256,15 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_contracts_buf, "zcl.node_resources.v1") != NULL);
         ASSERT(strstr(agent_contracts_buf,
                       "Automation must read deployment_safety") != NULL);
-        ASSERT(strstr(agent_runtime_buf, "zcl.operator_lane.v1") != NULL);
-        ASSERT(strstr(agent_runtime_buf,
+        ASSERT(strstr(agent_lane_runtime_buf, "zcl.operator_lane.v1")
+               != NULL);
+        ASSERT(strstr(agent_lane_runtime_buf,
                       "zcl.operator_deployment_safety.v1") != NULL);
-        ASSERT(strstr(agent_runtime_buf,
+        ASSERT(strstr(agent_lane_runtime_buf,
                       "agent_fill_operator_lane_contract_json") != NULL);
-        ASSERT(strstr(agent_runtime_buf,
+        ASSERT(strstr(agent_lane_runtime_buf,
                       "agent_operator_lane_topology_lookup") != NULL);
-        ASSERT(strstr(agent_runtime_buf, "zcl23-dev") != NULL);
+        ASSERT(strstr(agent_lane_runtime_buf, "zcl23-dev") != NULL);
         ASSERT(strstr(agent_iface_buf, "~/.zclassic-c23-dev") == NULL);
         ASSERT(strstr(agent_iface_buf, "agent_deploy_action_target_lane")
                != NULL);
@@ -3267,13 +3275,15 @@ static int t_native_agent_api_contract(void)
                       "agent_push_operator_lane_fields_json") != NULL);
         ASSERT(strstr(agent_summary_buf,
                       "agent_push_operator_lane_fields_json") != NULL);
-        ASSERT(strstr(agent_runtime_buf, "restart_policy") != NULL);
-        ASSERT(strstr(agent_runtime_buf, "safety_contract") != NULL);
-        ASSERT(strstr(agent_runtime_buf, "automation_restart_ok") != NULL);
-        ASSERT(strstr(agent_runtime_buf, "automation_deploy_ok") != NULL);
-        ASSERT(strstr(agent_runtime_buf,
+        ASSERT(strstr(agent_lane_runtime_buf, "restart_policy") != NULL);
+        ASSERT(strstr(agent_lane_runtime_buf, "safety_contract") != NULL);
+        ASSERT(strstr(agent_lane_runtime_buf, "automation_restart_ok")
+               != NULL);
+        ASSERT(strstr(agent_lane_runtime_buf, "automation_deploy_ok")
+               != NULL);
+        ASSERT(strstr(agent_lane_runtime_buf,
                       "requires_operator_confirmation") != NULL);
-        ASSERT(strstr(agent_runtime_buf,
+        ASSERT(strstr(agent_lane_runtime_buf,
                       "safe_default_action") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "make ci-reproducible") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "ZCL_FAST_CACHE") != NULL);
@@ -3496,6 +3506,7 @@ static int t_native_agent_api_contract(void)
     free(agent_bg_quality_buf);
     free(agent_first_call_buf);
     free(agent_lanes_buf);
+    free(agent_lane_runtime_buf);
     free(agent_liveness_buf);
     free(agent_iface_buf);
     free(agent_ops_buf);

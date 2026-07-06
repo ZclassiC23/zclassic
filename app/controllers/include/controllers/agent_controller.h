@@ -51,6 +51,11 @@ const struct agent_operator_lane_topology *
 agent_operator_lane_topology_at(size_t index);
 const struct agent_operator_lane_topology *
 agent_operator_lane_topology_lookup(const char *operator_lane);
+const struct agent_operator_lane_topology *
+agent_operator_lane_topology_match_runtime(const char *datadir, int rpc_port,
+                                           int p2p_port);
+void agent_push_operator_lane_safety_fields_json(struct json_value *out,
+                                                 const char *operator_lane);
 bool agent_fill_known_operator_lane_contract_json(struct json_value *lane_obj,
                                                   const char *operator_lane);
 void agent_fill_operator_lane_topology_json(

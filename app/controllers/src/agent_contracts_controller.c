@@ -127,7 +127,7 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
                           "long MCP operator summary with raw drill-down");
     contracts_push_schema(&schemas, "zcl.operator_lane.v1",
                           "zclassic23 agent / GET /api/v1/agent",
-                          "declared canonical/soak/dev lane and restart policy");
+                          "declared or exact-topology-inferred canonical/soak/dev lane and restart policy");
     contracts_push_schema(&schemas, "zcl.operator_deployment_safety.v1",
                           "nested in zcl.operator_lane.v1",
                           "machine-readable deploy/restart safety contract");

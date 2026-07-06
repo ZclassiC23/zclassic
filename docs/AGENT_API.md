@@ -255,10 +255,15 @@ host or peer worth drilling into.
 
 `zclassic23 agent`, REST `GET /api/v1/agent`, and MCP
 `zcl_operator_summary` include `operator_lane`
-(`zcl.operator_lane.v1`). The lane is declared by the node's own boot context
-(`-operator-lane=canonical|soak|dev|test|copy`, or `ZCL_OPERATOR_LANE`) and
-reports the lane name, runtime profile, datadir, ports, and machine-readable
-restart policy.
+(`zcl.operator_lane.v1`). The lane is normally declared by the node's own boot
+context (`-operator-lane=canonical|soak|dev|test|copy`, or
+`ZCL_OPERATOR_LANE`) and reports the lane name, runtime profile, datadir, ports,
+and machine-readable restart policy. If a systemd override drops the explicit
+lane flag, the agent API can still classify a first-class lane by an exact match
+against the C-owned topology registry (`datadir + rpcport + p2p_port`). That
+fallback reports `lane_source="inferred_exact_topology"`,
+`lane_declared=false`, and `lane_inferred=true`; explicit declarations report
+`lane_source="declared_boot_context"`.
 
 Use it to distinguish the long-running canonical node from the pinned soak lane
 and the restartable development lane. Tooling should branch on the booleans
@@ -285,7 +290,9 @@ For fast deploy loops and MCP summaries, the most important lane-safety values
 are also duplicated as compact top-level fields on the public agent packet:
 `operator_lane_name`, `automation_restart_ok`, `automation_deploy_ok`,
 `requires_operator_confirmation`, `preferred_deploy_target`, and
-`safe_default_action`. They are emitted by the same C helper as the nested
+`safe_default_action`. The lane source fields are duplicated there too:
+`operator_lane_source`, `operator_lane_declared`, and
+`operator_lane_inferred`. They are emitted by the same C helper as the nested
 lane object. A canonical packet should therefore say
 `operator_lane_name="canonical"`, `automation_restart_ok=false`,
 `automation_deploy_ok=false`, and

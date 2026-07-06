@@ -3455,6 +3455,60 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get_int(json_get(canonical_target,
                                          "https_port")) == 8443;
 
+        const char *old_home_env = getenv("HOME");
+        char old_home_buf[4096];
+        bool old_home_set = old_home_env != NULL;
+        if (old_home_set)
+            snprintf(old_home_buf, sizeof(old_home_buf), "%s",
+                     old_home_env);
+        ok = ok && setenv("HOME", "/tmp/zcl-agent-home", 1) == 0;
+        rpc_agent_set_boot_context("unknown", "full",
+                                   "/tmp/zcl-agent-home/.zclassic-c23",
+                                   18232, 8033, 8443, 18034);
+        struct json_value inferred_guard_params;
+        json_init(&inferred_guard_params);
+        json_set_array(&inferred_guard_params);
+        json_init(&action);
+        json_set_str(&action, "deploy");
+        json_push_back(&inferred_guard_params, &action);
+        json_free(&action);
+        struct json_value inferred_guard;
+        json_init(&inferred_guard);
+        ok = ok && rpc_table_execute(&tbl, "agentdeployguard",
+                                     &inferred_guard_params,
+                                     &inferred_guard);
+        const struct json_value *inferred_lane =
+            json_get(&inferred_guard, "operator_lane");
+        ok = ok && inferred_lane && inferred_lane->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(inferred_lane, "lane")),
+                          "canonical") == 0;
+        ok = ok && strcmp(json_get_str(json_get(inferred_lane,
+                                                "lane_source")),
+                          "inferred_exact_topology") == 0;
+        ok = ok && !json_get_bool(json_get(inferred_lane,
+                                           "lane_declared"));
+        ok = ok && json_get_bool(json_get(inferred_lane,
+                                          "lane_inferred"));
+        ok = ok && strcmp(json_get_str(json_get(&inferred_guard,
+                                                "current_lane_name")),
+                          "canonical") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&inferred_guard,
+                                                "operator_lane_name")),
+                          "canonical") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&inferred_guard,
+                                                "guard_env")),
+                          "ZCL_DEPLOY_ALLOW_CANONICAL") == 0;
+        ok = ok && !json_get_bool(json_get(&inferred_guard, "allowed"));
+        ok = ok && strcmp(json_get_str(json_get(&inferred_guard,
+                                                "reason")),
+                          "operator_confirmation_required") == 0;
+        json_free(&inferred_guard_params);
+        json_free(&inferred_guard);
+        if (old_home_set)
+            setenv("HOME", old_home_buf, 1);
+        else
+            unsetenv("HOME");
+
         struct json_value guard_object_params;
         json_init(&guard_object_params);
         json_set_object(&guard_object_params);

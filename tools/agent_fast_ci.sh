@@ -270,6 +270,7 @@ cache_manifest() {
         deploy/zclassic23-test-suite.service deploy/zclassic23-test-suite.timer \
         lib/test/src/test_make_lint_gates.c docs/work/fast-path.md \
         docs/AGENT_API.md app/controllers/src/agent_controller.c \
+        app/controllers/src/agent_lane_runtime.c \
         app/controllers/src/agent_runtime_controller.c; do
         cache_manifest_file "$file" "$file"
     done
