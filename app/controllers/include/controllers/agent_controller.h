@@ -18,6 +18,10 @@ struct agent_contract {
     const char *rest_route;
     const char *api_cli_field;
     const char *api_mcp_field;
+    const char *ops_surface;
+    int ops_rank;
+    const char *ops_name;
+    const char *ops_purpose;
     const char *purpose;
 };
 
@@ -71,6 +75,8 @@ bool agent_push_contract_json(struct json_value *arr,
                               const struct agent_contract *contract);
 void agent_push_contracts_json(struct json_value *arr);
 void agent_push_contract_transport_summary_json(struct json_value *arr);
+void agent_push_contract_ops_surface_json(struct json_value *arr,
+                                          const char *surface);
 bool agent_push_contract_command_json(struct json_value *arr,
                                       const char *name,
                                       const char *method,

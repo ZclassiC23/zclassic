@@ -3277,6 +3277,19 @@ int test_syncdiag_rpc(void)
             strcmp(json_get_str(json_get(contract_agentops,
                                          "api_mcp_field")),
                    "ops_tool") == 0;
+        ok = ok && contract_agentops &&
+            strcmp(json_get_str(json_get(contract_agentops,
+                                         "ops_surface")),
+                   "direct") == 0;
+        ok = ok && contract_agentops &&
+            json_get_int(json_get(contract_agentops, "ops_rank")) == 1;
+        ok = ok && contract_agentops &&
+            strcmp(json_get_str(json_get(contract_agentops, "ops_name")),
+                   "no_jq_contract") == 0;
+        ok = ok && contract_agentops &&
+            strcmp(json_get_str(json_get(contract_agentops,
+                                         "ops_purpose")),
+                   "compact top-level fields for common agent decisions") == 0;
         ok = ok && contract_diagnose &&
             strcmp(json_get_str(json_get(contract_diagnose, "schema")),
                    "zcl.agent_diagnose.v1") == 0;

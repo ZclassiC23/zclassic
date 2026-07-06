@@ -80,18 +80,6 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
         "\"top_next_work\":[...] }\n");
 
     struct json_value commands, api_rules, review, gaps, work;
-    const struct agent_contract *ops_contract = agent_contract_lookup("agentops");
-    const struct agent_contract *agent_contract = agent_contract_lookup("agent");
-    const struct agent_contract *liveness_contract =
-        agent_contract_lookup("agentliveness");
-    const struct agent_contract *diagnose_contract =
-        agent_contract_lookup("agentdiagnose");
-    const struct agent_contract *catalog_contract =
-        agent_contract_lookup("statecatalog");
-    const struct agent_contract *timeline_contract =
-        agent_contract_lookup("timeline");
-    const struct agent_contract *anchor_contract =
-        agent_contract_lookup("anchorstatus");
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.agent_ops.v1");
     json_push_kv_str(result, "api_version", "v1");
@@ -101,35 +89,33 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
     json_push_kv_str(result, "purpose",
                      "one compact agent-ready view of API shape, service architecture, and next work");
     json_push_kv_str(result, "preferred_transport", "mcp");
-    json_push_kv_str(result, "native_command",
-                     ops_contract ? ops_contract->native_command : "");
-    json_push_kv_str(result, "mcp_tool",
-                     ops_contract ? ops_contract->mcp_tool : "");
-    json_push_kv_str(result, "live_status_command",
-                     agent_contract ? agent_contract->native_command : "");
-    json_push_kv_str(result, "live_status_tool",
-                     agent_contract ? agent_contract->mcp_tool : "");
-    json_push_kv_str(result, "liveness_command",
-                     liveness_contract ? liveness_contract->native_command : "");
-    json_push_kv_str(result, "liveness_tool",
-                     liveness_contract ? liveness_contract->mcp_tool : "");
-    json_push_kv_str(result, "diagnose_command",
-                     diagnose_contract ? diagnose_contract->native_command : "");
-    json_push_kv_str(result, "diagnose_tool",
-                     diagnose_contract ? diagnose_contract->mcp_tool : "");
-    json_push_kv_str(result, "diagnostics_catalog_command",
-                     catalog_contract ? catalog_contract->native_command : "");
-    json_push_kv_str(result, "diagnostics_catalog_tool",
-                     catalog_contract ? catalog_contract->mcp_tool : "");
+    agent_push_contract_native_field_json(result, "native_command",
+                                          "agentops");
+    agent_push_contract_mcp_field_json(result, "mcp_tool", "agentops");
+    agent_push_contract_native_field_json(result, "live_status_command",
+                                          "agent");
+    agent_push_contract_mcp_field_json(result, "live_status_tool", "agent");
+    agent_push_contract_native_field_json(result, "liveness_command",
+                                          "agentliveness");
+    agent_push_contract_mcp_field_json(result, "liveness_tool",
+                                       "agentliveness");
+    agent_push_contract_native_field_json(result, "diagnose_command",
+                                          "agentdiagnose");
+    agent_push_contract_mcp_field_json(result, "diagnose_tool",
+                                       "agentdiagnose");
+    agent_push_contract_native_field_json(result,
+                                          "diagnostics_catalog_command",
+                                          "statecatalog");
+    agent_push_contract_mcp_field_json(result, "diagnostics_catalog_tool",
+                                       "statecatalog");
     json_push_kv_str(result, "diagnostics_drilldown_command",
                      "zclassic23 dumpstate <subsystem> [key]");
     json_push_kv_str(result, "diagnostics_drilldown_tool", "zcl_state");
-    json_push_kv_str(result, "timeline_command",
-                     timeline_contract ? timeline_contract->native_command : "");
-    json_push_kv_str(result, "timeline_tool",
-                     timeline_contract ? timeline_contract->mcp_tool : "");
-    json_push_kv_str(result, "anchor_status_command",
-                     anchor_contract ? anchor_contract->native_command : "");
+    agent_push_contract_native_field_json(result, "timeline_command",
+                                          "timeline");
+    agent_push_contract_mcp_field_json(result, "timeline_tool", "timeline");
+    agent_push_contract_native_field_json(result, "anchor_status_command",
+                                          "anchorstatus");
     json_push_kv_str(result, "refold_plain_english",
                      "Rebuild the UTXO/trust anchor from zclassic23's own verified block history, then cut over so the node no longer depends on a borrowed snapshot seed.");
 
@@ -140,56 +126,19 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
 
     json_init(&api_rules);
     json_set_array(&api_rules);
-    agent_push_contract_command_json(&api_rules, "no_jq_contract",
-                                     "agentops",
-                                     "compact top-level fields for common agent decisions");
-    agent_push_contract_command_json(&api_rules, "live_status", "agent",
-                                     "serving state, heights, peers, blockers, lane, readiness");
-    agent_push_contract_command_json(&api_rules, "diagnose",
-                                     "agentdiagnose",
-                                     "bounded status, peer incidents, mirror, timeline, and next action");
-    agent_push_contract_command_json(&api_rules, "unified_liveness",
-                                     "agentliveness",
-                                     "lane, listener, supervisor, and background quality liveness");
+    agent_push_contract_ops_surface_json(&api_rules, "direct");
     agent_ops_push_command(&api_rules, "state_drilldown",
                            "zclassic23 dumpstate <subsystem>", "zcl_state",
                            "one subsystem state object with description");
-    agent_push_contract_command_json(&api_rules, "state_catalog",
-                                     "statecatalog",
-                                     "catalog of zcl_state subsystems, key hints, cost, and owners");
     agent_ops_push_command(&api_rules, "log_search",
                            "zclassic23 getnodelog <pattern>", "zcl_node_log",
                            "bounded server-side log search");
-    agent_push_contract_command_json(&api_rules, "semantic_timeline",
-                                     "timeline",
-                                     "versioned event timeline with bounded filters and seq cursors");
-    agent_push_contract_command_json(&api_rules, "anchor_mint_status",
-                                     "anchorstatus",
-                                     "offline anchor producer progress, stale rows, validated backlog, and next action");
-    agent_push_contract_command_json(&api_rules, "test_routing",
-                                     "agentimpact",
-                                     "changed files mapped to focused tests and risk");
     json_push_kv(result, "direct_commands", &api_rules);
     json_free(&api_rules);
 
     json_init(&commands);
     json_set_array(&commands);
-    agent_push_contract_command_json(&commands, "deploy_guard",
-                                     "agentdeployguard",
-                                     "allow/refuse before any restart or deploy");
-    agent_push_contract_command_json(&commands, "lanes", "agentlanes",
-                                     "canonical/soak/dev safety contracts");
-    agent_push_contract_command_json(&commands, "liveness",
-                                     "agentliveness",
-                                     "current lane/service/supervisor/quality rollup");
-    agent_push_contract_command_json(&commands, "build_loop", "agentbuild",
-                                     "fast-ci, background quality lanes, reproducibility");
-    agent_push_contract_command_json(&commands, "anchor_mint",
-                                     "anchorstatus",
-                                     "read-only progress.kv status for the sovereign anchor producer");
-    agent_push_contract_command_json(&commands, "mirror",
-                                     "getmirrorstatus",
-                                     "advisory mirror lag/blocker contract");
+    agent_push_contract_ops_surface_json(&commands, "drilldown");
     json_push_kv(result, "drilldowns", &commands);
     json_free(&commands);
 

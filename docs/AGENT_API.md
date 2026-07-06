@@ -33,9 +33,9 @@ owns the bounded diagnosis packet. MCP routes in
 currently exposes the public status contract at `GET /api/v1/agent`.
 First-call method/schema/tool metadata lives in the C-owned registry
 `app/controllers/include/controllers/agent_contracts.def`; runtime availability,
-the contract registry, the interface capability matrix, and the REST API
-index's native/MCP command fields consume that table instead of maintaining
-separate lists.
+the contract registry, the interface capability matrix, the `agentops`
+direct/drilldown command lists, and the REST API index's native/MCP command
+fields consume that table instead of maintaining separate lists.
 
 ## Preferred Interface
 

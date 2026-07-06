@@ -3238,6 +3238,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_contracts_buf, "zcl.height_contract.v1") != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "zcl.mirror_status.v1")
                != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "ops_surface") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "ops_rank") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "ops_name") != NULL);
         ASSERT(strstr(agent_contracts_buf, "zcl.operator_latch.v1") != NULL);
         ASSERT(strstr(agent_contracts_buf,
                       "zcl.condition_engine_summary.v1") != NULL);
@@ -3250,22 +3253,22 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_contracts_buf,
                       "zcl.agent_runtime_availability.v1") != NULL);
         ASSERT(strstr(agent_ops_buf, "zcl.agent_ops.v1") != NULL);
-        ASSERT(strstr(agent_ops_buf, "agent_contract_lookup(\"agentops\")")
+        ASSERT(strstr(agent_ops_buf,
+                      "agent_push_contract_native_field_json(result, \"native_command\"")
                != NULL);
         ASSERT(strstr(agent_ops_buf,
-                      "agent_contract_lookup(\"agentdiagnose\")") != NULL);
+                      "agent_push_contract_mcp_field_json(result, \"diagnose_tool\"")
+               != NULL);
         ASSERT(strstr(agent_ops_buf,
-                      "agent_contract_lookup(\"statecatalog\")") != NULL);
+                      "agent_push_contract_ops_surface_json(&api_rules, \"direct\")")
+               != NULL);
         ASSERT(strstr(agent_ops_buf,
-                      "agent_contract_lookup(\"agentliveness\")") != NULL);
+                      "agent_push_contract_ops_surface_json(&commands, \"drilldown\")")
+               != NULL);
         ASSERT(strstr(agent_ops_buf,
-                      "agent_contract_lookup(\"timeline\")") != NULL);
-        ASSERT(strstr(agent_ops_buf,
-                      "agent_contract_lookup(\"anchorstatus\")") != NULL);
+                      "agent_contract_lookup(") == NULL);
         ASSERT(strstr(agent_ops_buf, "anchor_status_command") != NULL);
-        ASSERT(strstr(agent_ops_buf, "anchor_mint_status") != NULL);
-        ASSERT(strstr(agent_ops_buf, "agent_push_contract_command_json")
-               != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "anchor_mint_status") != NULL);
         ASSERT(strstr(agent_ops_buf, "refold_plain_english") != NULL);
         ASSERT(strstr(agent_ops_buf, "diagnostics_drilldown_command")
                != NULL);

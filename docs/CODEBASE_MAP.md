@@ -155,7 +155,9 @@ controller `k_routes[]` arrays.
   operator surface: where code lives, which docs apply, and which tests cover
   each subsystem. The full contract guide is `docs/AGENT_API.md`.
   First-call method/schema/tool metadata is centralized in
-  `app/controllers/include/controllers/agent_contracts.def`.
+  `app/controllers/include/controllers/agent_contracts.def`; add `agentops`
+  direct/drilldown command-center entries there, not as local string tables in
+  `agent_ops_controller.c`.
 - `zclassic23 agentlanes` / `zcl_agent_lanes` — native canonical/soak/dev lane
   topology and `zcl.operator_deployment_safety.v1` policy. Use this before
   deciding where a fresh binary may be deployed or restarted.

@@ -9,9 +9,11 @@
 
 static const struct agent_contract g_agent_contracts[] = {
 #define AGENT_CONTRACT(method, capability, schema, native, mcp, rest,          \
-                       api_cli_field, api_mcp_field, purpose)                 \
+                       api_cli_field, api_mcp_field, ops_surface, ops_rank,   \
+                       ops_name, ops_purpose, purpose)                        \
     { method, capability, schema, native, mcp, rest,                           \
-      api_cli_field, api_mcp_field, purpose },
+      api_cli_field, api_mcp_field, ops_surface, ops_rank, ops_name,          \
+      ops_purpose, purpose },
 #include "controllers/agent_contracts.def"
 #undef AGENT_CONTRACT
 };
@@ -46,6 +48,30 @@ static void agent_append_summary(char *buf, size_t buf_sz, size_t *pos,
         *pos = buf_sz - 1;
     else
         *pos += wrote;
+}
+
+static bool agent_contract_surface_has(const char *surfaces,
+                                       const char *surface)
+{
+    if (!surfaces || !surfaces[0] || !surface || !surface[0])
+        return false;
+
+    size_t want_len = strlen(surface);
+    const char *p = surfaces;
+    while (*p) {
+        while (*p == ',' || *p == ' ')
+            p++;
+        const char *end = strchr(p, ',');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        while (len > 0 && p[len - 1] == ' ')
+            len--;
+        if (len == want_len && strncmp(p, surface, want_len) == 0)
+            return true;
+        if (!end)
+            break;
+        p = end + 1;
+    }
+    return false;
 }
 
 size_t agent_contract_count(void)
@@ -88,6 +114,10 @@ bool agent_push_contract_json(struct json_value *arr,
     json_push_kv_str(&obj, "rest", contract->rest_route);
     json_push_kv_str(&obj, "api_cli_field", contract->api_cli_field);
     json_push_kv_str(&obj, "api_mcp_field", contract->api_mcp_field);
+    json_push_kv_str(&obj, "ops_surface", contract->ops_surface);
+    json_push_kv_int(&obj, "ops_rank", contract->ops_rank);
+    json_push_kv_str(&obj, "ops_name", contract->ops_name);
+    json_push_kv_str(&obj, "ops_purpose", contract->ops_purpose);
     json_push_kv_str(&obj, "purpose", contract->purpose);
     json_push_back(arr, &obj);
     json_free(&obj);
@@ -146,6 +176,32 @@ void agent_push_contract_transport_summary_json(struct json_value *arr)
     agent_push_str(arr, "deprecated: tools/z compatibility shim only");
 }
 
+void agent_push_contract_ops_surface_json(struct json_value *arr,
+                                          const char *surface)
+{
+    if (!arr || !surface || !surface[0])
+        return;
+
+    int max_rank = 0;
+    for (size_t i = 0; i < g_agent_contract_count; i++) {
+        const struct agent_contract *c = &g_agent_contracts[i];
+        if (agent_contract_surface_has(c->ops_surface, surface) &&
+            c->ops_rank > max_rank)
+            max_rank = c->ops_rank;
+    }
+
+    for (int rank = 1; rank <= max_rank; rank++) {
+        for (size_t i = 0; i < g_agent_contract_count; i++) {
+            const struct agent_contract *c = &g_agent_contracts[i];
+            if (c->ops_rank != rank ||
+                !agent_contract_surface_has(c->ops_surface, surface))
+                continue;
+            agent_push_contract_command_json(arr, c->ops_name, c->method,
+                                             c->ops_purpose);
+        }
+    }
+}
+
 bool agent_push_contract_command_json(struct json_value *arr,
                                       const char *name,
                                       const char *method,
@@ -158,14 +214,20 @@ bool agent_push_contract_command_json(struct json_value *arr,
     struct json_value obj;
     json_init(&obj);
     json_set_object(&obj);
-    json_push_kv_str(&obj, "name", name && name[0] ? name : c->capability);
+    const char *command_name = name && name[0] ? name : c->ops_name;
+    json_push_kv_str(&obj, "name",
+                     command_name && command_name[0]
+                         ? command_name : c->capability);
     json_push_kv_str(&obj, "method", c->method);
     json_push_kv_str(&obj, "schema", c->schema);
     json_push_kv_str(&obj, "native", c->native_command);
     json_push_kv_str(&obj, "mcp", c->mcp_tool);
+    const char *command_purpose =
+        purpose_override && purpose_override[0]
+            ? purpose_override : c->ops_purpose;
     json_push_kv_str(&obj, "purpose",
-                     purpose_override && purpose_override[0]
-                         ? purpose_override : c->purpose);
+                     command_purpose && command_purpose[0]
+                         ? command_purpose : c->purpose);
     json_push_back(arr, &obj);
     json_free(&obj);
     return true;
