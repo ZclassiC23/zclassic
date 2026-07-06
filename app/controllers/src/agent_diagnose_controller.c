@@ -672,12 +672,11 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     json_free(&findings);
 
     json_set_array(&commands);
-    diagnose_push_str(&commands, "zclassic23 agent");
-    diagnose_push_str(&commands, "zclassic23 agentliveness");
+    agent_push_contract_native_command_json(&commands, "agent");
+    agent_push_contract_native_command_json(&commands, "agentliveness");
     diagnose_push_str(&commands,
                       "zclassic23 dumpstate peer_lifecycle incidents");
-    diagnose_push_str(&commands,
-                      "zclassic23 timeline '{\"category\":\"sync\",\"count\":50,\"since_secs\":3600}'");
+    agent_push_contract_native_command_json(&commands, "timeline");
     diagnose_push_str(&commands, "zclassic23 healthcheck full");
     json_push_kv(result, "recommended_commands", &commands);
     json_free(&commands);

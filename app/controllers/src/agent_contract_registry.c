@@ -542,6 +542,26 @@ bool agent_push_contract_mcp_field_json(struct json_value *obj,
     return json_push_kv_str(obj, key, c->mcp_tool);
 }
 
+bool agent_push_contract_native_command_json(struct json_value *arr,
+                                             const char *method)
+{
+    const struct agent_contract *c = agent_contract_lookup(method);
+    if (!arr || !c || !c->native_command || !c->native_command[0])
+        return false;
+    agent_push_str(arr, c->native_command);
+    return true;
+}
+
+bool agent_push_contract_mcp_tool_json(struct json_value *arr,
+                                       const char *method)
+{
+    const struct agent_contract *c = agent_contract_lookup(method);
+    if (!arr || !c || !c->mcp_tool || !c->mcp_tool[0])
+        return false;
+    agent_push_str(arr, c->mcp_tool);
+    return true;
+}
+
 void agent_push_contract_api_cli_fields_json(struct json_value *obj)
 {
     if (!obj)

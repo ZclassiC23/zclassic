@@ -3,6 +3,7 @@
  * Semantic event timeline RPC for AI/operator diagnostics. */
 
 #include "controllers/event_timeline_controller.h"
+#include "controllers/agent_controller.h"
 #include "controllers/event_timeline_filter_controller.h"
 #include "controllers/strong_params.h"
 
@@ -334,10 +335,10 @@ static void timeline_push_drilldowns(struct json_value *out,
     } else if (strcmp(name, "disk") == 0) {
         timeline_push_str(&arr, "zcl_state {\"subsystem\":\"disk_monitor\"}");
     } else if (strcmp(name, "mcp") == 0) {
-        timeline_push_str(&arr, "zcl_agent_interface");
-        timeline_push_str(&arr, "zcl_agent_ops");
+        agent_push_contract_mcp_tool_json(&arr, "agentinterface");
+        agent_push_contract_mcp_tool_json(&arr, "agentops");
     } else {
-        timeline_push_str(&arr, "zcl_state_catalog");
+        agent_push_contract_mcp_tool_json(&arr, "statecatalog");
         timeline_push_str(&arr, "zcl_timeline category=\"sync\" count=50");
         timeline_push_str(&arr, "zcl_timeline category=\"peer\" count=50");
     }

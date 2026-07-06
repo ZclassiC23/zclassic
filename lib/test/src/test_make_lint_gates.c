@@ -2822,6 +2822,7 @@ static int t_native_agent_api_contract(void)
     char *agent_lane_runtime_buf = NULL;
     char *agent_liveness_buf = NULL;
     char *agent_diagnose_buf = NULL;
+    char *event_timeline_buf = NULL;
     char *agent_anchor_status_buf = NULL;
     char *agent_iface_buf = NULL;
     char *agent_ops_buf = NULL;
@@ -2849,6 +2850,7 @@ static int t_native_agent_api_contract(void)
         char agent_lane_runtime_path[PATH_MAX];
         char agent_liveness_path[PATH_MAX];
         char agent_diagnose_path[PATH_MAX];
+        char event_timeline_path[PATH_MAX];
         char agent_anchor_status_path[PATH_MAX];
         char agent_iface_path[PATH_MAX];
         char agent_ops_path[PATH_MAX];
@@ -2903,6 +2905,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(repo_path(agent_diagnose_path, sizeof(agent_diagnose_path),
                          "app/controllers/src/agent_diagnose_controller.c")
                == 0);
+        ASSERT(repo_path(event_timeline_path, sizeof(event_timeline_path),
+                         "app/controllers/src/event_timeline_controller.c")
+               == 0);
         ASSERT(repo_path(agent_anchor_status_path,
                          sizeof(agent_anchor_status_path),
                          "app/controllers/src/agent_anchor_status_controller.c")
@@ -2954,6 +2959,8 @@ static int t_native_agent_api_contract(void)
                                 &agent_liveness_buf) == 0);
         ASSERT(read_entire_file(agent_diagnose_path,
                                 &agent_diagnose_buf) == 0);
+        ASSERT(read_entire_file(event_timeline_path,
+                                &event_timeline_buf) == 0);
         ASSERT(read_entire_file(agent_anchor_status_path,
                                 &agent_anchor_status_buf) == 0);
         ASSERT(read_entire_file(agent_iface_path, &agent_iface_buf) == 0);
@@ -3203,6 +3210,40 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_diagnose_buf, "rpc_timeline") != NULL);
         ASSERT(strstr(agent_diagnose_buf, "diag_rpc_getmirrorstatus")
                != NULL);
+        ASSERT(strstr(agent_liveness_buf,
+                      "agent_push_contract_mcp_tool_json(&arr, \"agent\")")
+               != NULL);
+        ASSERT(strstr(agent_liveness_buf,
+                      "agent_push_contract_mcp_tool_json(&arr, \"agentlanes\")")
+               != NULL);
+        ASSERT(strstr(agent_liveness_buf,
+                      "agent_push_contract_mcp_tool_json(&arr, \"agentbuild\")")
+               != NULL);
+        ASSERT(strstr(event_timeline_buf,
+                      "#include \"controllers/agent_controller.h\"") != NULL);
+        ASSERT(strstr(event_timeline_buf,
+                      "agent_push_contract_mcp_tool_json(&arr, "
+                      "\"agentinterface\")")
+               != NULL);
+        ASSERT(strstr(event_timeline_buf,
+                      "agent_push_contract_mcp_tool_json(&arr, \"agentops\")")
+               != NULL);
+        ASSERT(strstr(event_timeline_buf,
+                      "agent_push_contract_mcp_tool_json(&arr, "
+                      "\"statecatalog\")")
+               != NULL);
+        ASSERT(strstr(agent_diagnose_buf,
+                      "agent_push_contract_native_command_json(&commands, "
+                      "\"agent\")")
+               != NULL);
+        ASSERT(strstr(agent_diagnose_buf,
+                      "agent_push_contract_native_command_json(&commands, "
+                      "\"agentliveness\")")
+               != NULL);
+        ASSERT(strstr(agent_diagnose_buf,
+                      "agent_push_contract_native_command_json(&commands, "
+                      "\"timeline\")")
+               != NULL);
         ASSERT(strstr(agent_anchor_status_buf,
                       "zcl.anchor_mint_status.v1") != NULL);
         ASSERT(strstr(agent_anchor_status_buf, "progress.kv") != NULL);
@@ -3394,6 +3435,10 @@ static int t_native_agent_api_contract(void)
                       "agent_push_contract_native_field_json") != NULL);
         ASSERT(strstr(agent_registry_buf,
                       "agent_push_contract_mcp_field_json") != NULL);
+        ASSERT(strstr(agent_registry_buf,
+                      "agent_push_contract_native_command_json") != NULL);
+        ASSERT(strstr(agent_registry_buf,
+                      "agent_push_contract_mcp_tool_json") != NULL);
         ASSERT(strstr(agent_runtime_buf,
                       "unsupported_method_not_found") != NULL);
         ASSERT(strstr(agent_runtime_buf,
@@ -3662,6 +3707,7 @@ static int t_native_agent_api_contract(void)
     free(agent_lane_runtime_buf);
     free(agent_liveness_buf);
     free(agent_diagnose_buf);
+    free(event_timeline_buf);
     free(agent_anchor_status_buf);
     free(agent_iface_buf);
     free(agent_ops_buf);

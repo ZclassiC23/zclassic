@@ -81,10 +81,10 @@ static void agent_liveness_push_drilldowns(struct json_value *out,
     struct json_value arr;
     json_init(&arr);
     json_set_array(&arr);
-    agent_liveness_push_str(&arr, "zcl_agent");
-    agent_liveness_push_str(&arr, "zcl_agent_lanes");
+    agent_push_contract_mcp_tool_json(&arr, "agent");
+    agent_push_contract_mcp_tool_json(&arr, "agentlanes");
     agent_liveness_push_str(&arr, "zcl_state {\"subsystem\":\"supervisor\"}");
-    agent_liveness_push_str(&arr, "zcl_agent_build");
+    agent_push_contract_mcp_tool_json(&arr, "agentbuild");
     agent_liveness_push_str(&arr, "make quality-linger-status");
     if (attention_needed) {
         agent_liveness_push_str(&arr,
