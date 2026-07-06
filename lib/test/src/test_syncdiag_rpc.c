@@ -27,17 +27,20 @@
 #include "controllers/network_controller.h"
 #include "framework/condition.h"
 #include "jobs/reducer_frontier.h"
+#include "jobs/tip_finalize_stage.h"
 #include "models/block.h"
 #include "models/database.h"
 #include "services/block_source_policy.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/node_health_service.h"
 #include "services/sync_monitor.h"
+#include "storage/progress_store.h"
 #include "validation/mirror_consensus.h"
 #include "event/event.h"
 #include "net/connman.h"
 #include "net/download.h"
 #include "net/fast_sync.h"
+#include "net/peer_lifecycle.h"
 #include "net/version.h"
 #include "platform/time_compat.h"
 #include "rpc/httpserver.h"
@@ -165,6 +168,130 @@ static void syncdiag_set_hash(struct uint256 *hash, uint8_t tag)
     memset(hash, 0, sizeof(*hash));
     hash->data[0] = tag;
     hash->data[31] = (uint8_t)(0xffu ^ tag);
+}
+
+static bool syncdiag_exec_sql(sqlite3 *db, const char *sql)
+{
+    if (!db || !sql)
+        return false;
+    char *err = NULL;
+    if (sqlite3_exec(db, sql, NULL, NULL, &err) == SQLITE_OK)
+        return true;
+    if (err)
+        sqlite3_free(err);
+    return false;
+}
+
+static bool syncdiag_seed_cursor(sqlite3 *db, const char *name, int cursor)
+{
+    sqlite3_stmt *st = NULL;
+    if (!db || !name)
+        return false;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO stage_cursor(name, cursor, updated_at) "
+            "VALUES(?, ?, 1)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    sqlite3_bind_int(st, 2, cursor);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool syncdiag_seed_log_rows(sqlite3 *db, const char *insert_sql,
+                                   int max_height)
+{
+    sqlite3_stmt *st = NULL;
+    if (!db || !insert_sql || max_height < 0)
+        return false;
+    if (sqlite3_prepare_v2(db, insert_sql, -1, &st, NULL) != SQLITE_OK)
+        return false;
+    for (int h = 0; h <= max_height; h++) {
+        sqlite3_bind_int(st, 1, h);
+        if (sqlite3_step(st) != SQLITE_DONE) {
+            sqlite3_finalize(st);
+            return false;
+        }
+        sqlite3_reset(st);
+        sqlite3_clear_bindings(st);
+    }
+    sqlite3_finalize(st);
+    return true;
+}
+
+static bool syncdiag_seed_lookahead_reducer_progress(int served_height)
+{
+    sqlite3 *db = progress_store_db();
+    if (!db || served_height < 0)
+        return false;
+
+    int next_height = served_height + 1;
+    bool ok = true;
+    progress_store_tx_lock();
+    ok = ok && syncdiag_exec_sql(db,
+        "CREATE TABLE IF NOT EXISTS validate_headers_log ("
+        "height INTEGER PRIMARY KEY, hash BLOB, ok INTEGER NOT NULL)");
+    ok = ok && syncdiag_exec_sql(db,
+        "CREATE TABLE IF NOT EXISTS script_validate_log ("
+        "height INTEGER PRIMARY KEY, status TEXT NOT NULL, "
+        "ok INTEGER NOT NULL, tx_count INTEGER NOT NULL, "
+        "input_count INTEGER NOT NULL, validated_at INTEGER NOT NULL, "
+        "block_hash BLOB)");
+    ok = ok && syncdiag_exec_sql(db,
+        "CREATE TABLE IF NOT EXISTS body_persist_log ("
+        "height INTEGER PRIMARY KEY, source TEXT, ok INTEGER NOT NULL)");
+    ok = ok && syncdiag_exec_sql(db,
+        "CREATE TABLE IF NOT EXISTS proof_validate_log ("
+        "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL)");
+    ok = ok && syncdiag_exec_sql(db,
+        "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
+        "height INTEGER PRIMARY KEY, ok INTEGER NOT NULL, "
+        "spent_count INTEGER, added_count INTEGER)");
+    ok = ok && syncdiag_exec_sql(db,
+        "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
+        "height INTEGER PRIMARY KEY, status TEXT NOT NULL, "
+        "ok INTEGER NOT NULL, work_delta_high INTEGER NOT NULL, "
+        "work_delta_low INTEGER NOT NULL, utxo_size_after INTEGER NOT NULL, "
+        "reorg_depth INTEGER NOT NULL, finalized_at INTEGER NOT NULL, "
+        "tip_hash BLOB)");
+
+    ok = ok && syncdiag_seed_log_rows(db,
+        "INSERT OR REPLACE INTO validate_headers_log(height, hash, ok) "
+        "VALUES(?, zeroblob(32), 1)",
+        served_height);
+    ok = ok && syncdiag_seed_log_rows(db,
+        "INSERT OR REPLACE INTO script_validate_log"
+        "(height, status, ok, tx_count, input_count, validated_at, "
+        "block_hash) VALUES(?, 'verified', 1, 1, 0, 1, zeroblob(32))",
+        served_height);
+    ok = ok && syncdiag_seed_log_rows(db,
+        "INSERT OR REPLACE INTO body_persist_log(height, source, ok) "
+        "VALUES(?, 'fixture', 1)",
+        served_height);
+    ok = ok && syncdiag_seed_log_rows(db,
+        "INSERT OR REPLACE INTO proof_validate_log(height, status, ok) "
+        "VALUES(?, 'verified', 1)",
+        served_height);
+    ok = ok && syncdiag_seed_log_rows(db,
+        "INSERT OR REPLACE INTO utxo_apply_log"
+        "(height, ok, spent_count, added_count) VALUES(?, 1, 0, 0)",
+        served_height);
+    ok = ok && syncdiag_seed_log_rows(db,
+        "INSERT OR REPLACE INTO tip_finalize_log"
+        "(height, status, ok, work_delta_high, work_delta_low, "
+        "utxo_size_after, reorg_depth, finalized_at, tip_hash) "
+        "VALUES(?, 'finalized', 1, 0, 0, 0, 0, 1, zeroblob(32))",
+        served_height);
+
+    ok = ok && syncdiag_seed_cursor(db, "validate_headers", next_height);
+    ok = ok && syncdiag_seed_cursor(db, "script_validate", next_height);
+    ok = ok && syncdiag_seed_cursor(db, "body_persist", next_height);
+    ok = ok && syncdiag_seed_cursor(db, "proof_validate", next_height);
+    ok = ok && syncdiag_seed_cursor(db, "utxo_apply", next_height);
+    ok = ok && syncdiag_seed_cursor(db, "tip_finalize", served_height);
+    progress_store_tx_unlock();
+    return ok;
 }
 
 static struct p2p_node *syncdiag_add_peer(struct connman *cm,
@@ -2205,6 +2332,125 @@ int test_syncdiag_rpc(void)
         main_state_free(&ms);
         connman_free(&cm);
         node_db_close(&ndb);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: agentdiagnose treats one-block lookahead as chain-ok... ");
+    {
+        char dir[256];
+        struct connman cm;
+        struct node_signals sigs;
+        struct main_state ms;
+        struct block_index tip;
+        struct uint256 h_tip;
+        struct rpc_table tbl;
+        struct json_value params;
+        struct json_value result;
+        const int served_height = 100;
+        const int target_height = 101;
+
+        chain_params_select(CHAIN_MAIN);
+        test_fmt_tmpdir(dir, sizeof(dir), "syncdiag", "diagnose_lookahead");
+        test_cleanup_tmpdir(dir);
+        mkdir("./test-tmp", 0777);
+        mkdir(dir, 0777);
+
+        memset(&cm, 0, sizeof(cm));
+        memset(&sigs, 0, sizeof(sigs));
+        memset(&ms, 0, sizeof(ms));
+        memset(&tip, 0, sizeof(tip));
+        memset(&h_tip, 0, sizeof(h_tip));
+
+        peer_lifecycle_reset_for_test();
+        legacy_mirror_sync_reset_for_test();
+        bool ok = progress_store_open(dir);
+        ok = ok && syncdiag_seed_lookahead_reducer_progress(served_height);
+        ok = ok && connman_init(&cm, chain_params_get(), &sigs);
+        main_state_init(&ms);
+        block_index_init(&tip);
+        syncdiag_set_hash(&h_tip, 0x81);
+        tip.phashBlock = &h_tip;
+        tip.nHeight = target_height;
+        tip.nTime = (uint32_t)platform_time_wall_time_t();
+        tip.nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_TREE;
+        ok = ok && block_map_insert(&ms.map_block_index, tip.phashBlock,
+                                    &tip);
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
+        ms.pindex_best_header = &tip;
+        ok = ok && tip_finalize_stage_init(&ms);
+
+        struct p2p_node *peer =
+            syncdiag_add_peer(&cm, 47, false, PEER_HANDSHAKE_COMPLETE);
+        ok = ok && peer != NULL;
+        if (peer)
+            peer->starting_height = target_height;
+
+        struct download_manager *dm = msg_get_download_mgr();
+        dl_drain_for_backpressure(dm);
+        rpc_table_init(&tbl);
+        register_event_rpc_commands(&tbl);
+        if (rpc_is_in_warmup(NULL, 0))
+            set_rpc_warmup_finished();
+        rpc_net_set_connman(&cm);
+        sync_monitor_set_context(&cm, dm, &ms);
+        reducer_frontier_provable_tip_set(served_height);
+        sync_set_state(SYNC_IDLE, "diagnose lookahead");
+        struct legacy_mirror_sync_stats mirror_stats = {0};
+        mirror_stats.enabled = true;
+        mirror_stats.running = true;
+        mirror_stats.reachable = true;
+        mirror_stats.legacy_height = target_height;
+        mirror_stats.legacy_headers = target_height;
+        mirror_stats.local_height = target_height;
+        mirror_stats.best_header_height = target_height;
+        mirror_stats.target_height = target_height;
+        legacy_mirror_sync_test_set_stats(&mirror_stats, &ms);
+
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "agentdiagnose", &params,
+                                     &result);
+
+        const struct json_value *findings = json_get(&result, "findings");
+        const struct json_value *chain_finding =
+            find_object_with_str(findings, "name", "chain_serving");
+        const struct json_value *agent = json_get(&result, "agent");
+        const struct json_value *height_contract =
+            agent ? json_get(agent, "height_contract") : NULL;
+        ok = ok && result.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
+                          "zcl.agent_diagnose.v1") == 0;
+        ok = ok && json_get_int(json_get(&result, "gap")) == 1;
+        ok = ok && json_get_bool(json_get(&result,
+                                          "chain_serving_ready"));
+        ok = ok && json_get_bool(json_get(&result, "normal_lookahead"));
+        ok = ok && strcmp(json_get_str(json_get(&result, "verdict")),
+                          "healthy") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "safe_next_action")),
+                          "monitor_agent_and_liveness") == 0;
+        ok = ok && chain_finding && strcmp(json_get_str(json_get(
+            chain_finding, "severity")), "ok") == 0;
+        ok = ok && height_contract && json_get_bool(json_get(
+            height_contract, "normal_lookahead"));
+
+        json_free(&params);
+        json_free(&result);
+        dl_drain_for_backpressure(dm);
+        sync_monitor_set_context(NULL, NULL, NULL);
+        rpc_net_set_connman(NULL);
+        reducer_frontier_provable_tip_reset();
+        tip_finalize_stage_shutdown();
+        progress_store_close();
+        block_source_policy_reset_for_test();
+        peer_lifecycle_reset_for_test();
+        legacy_mirror_sync_reset_for_test();
+        main_state_free(&ms);
+        connman_free(&cm);
+        test_cleanup_tmpdir(dir);
 
         if (ok) printf("OK\n");
         else    { printf("FAIL\n"); failures++; }

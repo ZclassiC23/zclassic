@@ -71,16 +71,33 @@ static void diagnose_timeline_params(struct json_value *params)
     json_free(&count);
 }
 
+static bool diagnose_agent_chain_ready(const struct json_value *agent)
+{
+    const struct json_value *readiness = agent ? json_get(agent, "readiness")
+                                               : NULL;
+    if (readiness)
+        return json_get_bool(json_get(readiness, "chain_serving_ready"));
+    return agent && json_get_bool(json_get(agent, "chain_serving_ready"));
+}
+
+static bool diagnose_agent_normal_lookahead(const struct json_value *agent)
+{
+    const struct json_value *height_contract =
+        agent ? json_get(agent, "height_contract") : NULL;
+    return height_contract &&
+           json_get_bool(json_get(height_contract, "normal_lookahead"));
+}
+
 static const char *diagnose_next_action(bool operator_needed,
                                         bool agent_healthy,
-                                        int64_t gap,
+                                        bool chain_attention,
                                         int64_t peer_count,
                                         int64_t peer_incidents,
                                         bool mirror_unhealthy)
 {
     if (operator_needed)
         return "inspect_condition_engine_and_operator_latch";
-    if (!agent_healthy || gap > 0)
+    if (!agent_healthy || chain_attention)
         return "inspect_agent_healthcheck_and_chain_timeline";
     if (peer_count <= 0)
         return "inspect_peer_lifecycle_incidents_and_bootstrapstatus";
@@ -169,6 +186,8 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     bool serving = agent_ok && json_get_bool(json_get(&agent, "serving"));
     bool operator_needed =
         agent_ok && json_get_bool(json_get(&agent, "operator_needed"));
+    bool chain_serving_ready = agent_ok && diagnose_agent_chain_ready(&agent);
+    bool normal_lookahead = agent_ok && diagnose_agent_normal_lookahead(&agent);
     int64_t gap = agent_ok ? json_get_int(json_get(&agent, "gap")) : -1;
     const struct json_value *agent_peers =
         agent_ok ? json_get(&agent, "peers") : NULL;
@@ -190,16 +209,20 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     json_push_kv_bool(result, "healthy", agent_healthy);
     json_push_kv_bool(result, "serving", serving);
     json_push_kv_bool(result, "operator_needed", operator_needed);
+    json_push_kv_bool(result, "chain_serving_ready", chain_serving_ready);
+    json_push_kv_bool(result, "normal_lookahead", normal_lookahead);
     json_push_kv_int(result, "gap", gap);
     json_push_kv_int(result, "peer_count", peer_count);
     json_push_kv_int(result, "peer_incident_count", peer_incidents);
     json_push_kv_int(result, "duplicate_host_group_count", duplicate_groups);
     json_push_kv_bool(result, "partial_result", partial);
 
+    bool chain_attention =
+        !chain_serving_ready || (!normal_lookahead && gap > 0);
     const char *next_action =
-        diagnose_next_action(operator_needed, agent_healthy, gap, peer_count,
-                             peer_incidents, mirror_unhealthy);
-    bool attention = operator_needed || !agent_healthy || gap > 0 ||
+        diagnose_next_action(operator_needed, agent_healthy, chain_attention,
+                             peer_count, peer_incidents, mirror_unhealthy);
+    bool attention = operator_needed || !agent_healthy || chain_attention ||
                      peer_count <= 0 || peer_incidents > 0 ||
                      mirror_unhealthy;
     json_push_kv_str(result, "verdict",
@@ -208,12 +231,13 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
 
     json_set_array(&findings);
     diagnose_push_finding(&findings, "chain_serving",
-                          agent_healthy && serving && gap == 0
+                          agent_healthy && serving && !chain_attention
                               ? "ok" : "attention",
                           agent_ok ? json_get_str(json_get(&agent, "summary"))
                                    : "agent status unavailable",
-                          gap > 0 ? "inspect sync timeline and reducer frontier"
-                                  : "continue monitoring H* and peer target");
+                          chain_attention
+                              ? "inspect sync timeline and reducer frontier"
+                              : "continue monitoring H* and peer target");
     diagnose_push_finding(&findings, "peer_lifecycle",
                           peer_incidents > 0 || peer_count <= 0
                               ? "attention" : "ok",
