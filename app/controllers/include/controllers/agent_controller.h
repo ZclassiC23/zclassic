@@ -74,6 +74,8 @@ const struct agent_contract *agent_contract_lookup(const char *method);
 bool agent_push_contract_json(struct json_value *arr,
                               const struct agent_contract *contract);
 void agent_push_contracts_json(struct json_value *arr);
+void agent_push_contract_summary_json(struct json_value *out,
+                                      const char *key);
 void agent_push_contract_transport_summary_json(struct json_value *arr);
 void agent_push_contract_ops_surface_json(struct json_value *arr,
                                           const char *surface);

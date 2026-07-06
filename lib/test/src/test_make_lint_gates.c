@@ -3270,6 +3270,8 @@ static int t_native_agent_api_contract(void)
                       "zcl.condition_engine_summary.v1") != NULL);
         ASSERT(strstr(agent_contracts_buf,
                       "contracts_push_agent_registry_schemas") != NULL);
+        ASSERT(strstr(agent_contracts_buf,
+                      "agent_push_contract_summary_json") != NULL);
         ASSERT(strstr(agent_contracts_buf, "agent_contract_count()")
                != NULL);
         ASSERT(strstr(agent_contracts_buf, "agent_contract_at(i)")
@@ -3365,6 +3367,12 @@ static int t_native_agent_api_contract(void)
                       "agent_contract_work_surface_count") != NULL);
         ASSERT(strstr(agent_registry_buf,
                       "agent_push_contract_work_surface_json") != NULL);
+        ASSERT(strstr(agent_registry_buf,
+                      "mcp_binding_contract") != NULL);
+        ASSERT(strstr(agent_registry_buf,
+                      "native_declared_count") != NULL);
+        ASSERT(strstr(agent_registry_buf, "mcp_declared_count") != NULL);
+        ASSERT(strstr(agent_registry_buf, "rest_declared_count") != NULL);
         ASSERT(strstr(agent_registry_buf,
                       "agentmap.commands.core") != NULL);
         ASSERT(strstr(agent_registry_buf,

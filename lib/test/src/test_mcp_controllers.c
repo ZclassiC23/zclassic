@@ -642,6 +642,33 @@ static int test_zcl_agent_dev_tools_shape(void)
     return failures;
 }
 
+static int test_agent_contract_mcp_registry_coverage(void)
+{
+    int failures = 0;
+    TEST("controllers: every agent contract MCP tool is registered") {
+        register_all();
+        size_t declared_mcp = 0;
+        for (size_t i = 0; i < agent_contract_count(); i++) {
+            const struct agent_contract *c = agent_contract_at(i);
+            ASSERT(c != NULL);
+            if (!c->mcp_tool || !c->mcp_tool[0])
+                continue;
+            declared_mcp++;
+            const struct mcp_tool_route *route =
+                mcp_router_find(c->mcp_tool);
+            if (!route) {
+                printf("FAIL (missing MCP route for %s -> %s)\n",
+                       c->method ? c->method : "(null)", c->mcp_tool);
+                failures++; goto _test_next;
+            }
+            ASSERT(route->description != NULL);
+        }
+        ASSERT(declared_mcp >= 20);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_postmortem_tools_list_and_replay(void)
 {
     int failures = 0;
@@ -1140,6 +1167,8 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
     }
     if (strcmp(method, "agentcontracts") == 0)
         return strdup("{\"schema\":\"zcl.agent_contracts.v1\","
+                      "\"contract_summary\":{\"contract_count\":22,"
+                      "\"mcp_declared_count\":21},"
                       "\"schemas\":[{\"schema\":\"zcl.agent_build.v1\"},"
                       "{\"schema\":\"zcl.agent_readiness.v1\"}],"
                       "\"transports\":[\"mcp: zcl_agent_build\"]}");
@@ -1545,6 +1574,11 @@ static int test_zcl_agent_dev_tools_dispatch(void)
         ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
                       "zcl.agent_contracts.v1");
         ASSERT(json_get(&root, "schemas") != NULL);
+        const struct json_value *summary =
+            json_get(&root, "contract_summary");
+        ASSERT(summary != NULL);
+        ASSERT(json_get_int(json_get(summary, "contract_count")) >= 20);
+        ASSERT(json_get_int(json_get(summary, "mcp_declared_count")) >= 20);
         json_free(&root);
         free(body);
 
@@ -3230,6 +3264,7 @@ int test_mcp_controllers(void)
     failures += test_zcl_status_no_params();
     failures += test_zcl_state_catalog_shape();
     failures += test_zcl_agent_dev_tools_shape();
+    failures += test_agent_contract_mcp_registry_coverage();
     failures += test_postmortem_tools_list_and_replay();
     failures += test_zcl_getblockcount_uses_node_hstar_rpc();
     failures += test_zcl_operator_summary_degraded_shape();

@@ -206,7 +206,10 @@ telemetry live in `app/controllers/src/agent_contract_registry.c`
 controller that assembles the response. Ranked `agentops` planning lists
 (`api_gaps` and `top_next_work`) live beside them in `g_agent_work_surfaces`
 so the compact command center is data-owned by the registry, not by response
-assembly code.
+assembly code. `agentcontracts` also exposes `contract_summary`, generated
+from the same registry, so agents can read native/MCP/REST declaration counts
+without scanning the full contract array; MCP tests verify every non-empty
+registry `mcp` tool resolves in the live router.
 
 ## Command Center
 

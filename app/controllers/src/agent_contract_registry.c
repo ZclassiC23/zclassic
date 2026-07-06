@@ -5,6 +5,7 @@
 #include "json/json.h"
 
 #include <stdio.h>
+#include <stdint.h>
 #include <string.h>
 
 static const struct agent_contract g_agent_contracts[] = {
@@ -235,6 +236,47 @@ void agent_push_contracts_json(struct json_value *arr)
         return;
     for (size_t i = 0; i < g_agent_contract_count; i++)
         agent_push_contract_json(arr, &g_agent_contracts[i]);
+}
+
+void agent_push_contract_summary_json(struct json_value *out,
+                                      const char *key)
+{
+    if (!out || !key || !key[0])
+        return;
+
+    size_t native_count = 0;
+    size_t mcp_count = 0;
+    size_t rest_count = 0;
+    for (size_t i = 0; i < g_agent_contract_count; i++) {
+        const struct agent_contract *c = &g_agent_contracts[i];
+        if (c->native_command && c->native_command[0])
+            native_count++;
+        if (c->mcp_tool && c->mcp_tool[0])
+            mcp_count++;
+        if (c->rest_route && c->rest_route[0])
+            rest_count++;
+    }
+
+    struct json_value obj;
+    json_init(&obj);
+    json_set_object(&obj);
+    json_push_kv_int(&obj, "contract_count",
+                     (int64_t)g_agent_contract_count);
+    json_push_kv_int(&obj, "native_declared_count",
+                     (int64_t)native_count);
+    json_push_kv_int(&obj, "mcp_declared_count", (int64_t)mcp_count);
+    json_push_kv_int(&obj, "rest_declared_count", (int64_t)rest_count);
+    json_push_kv_int(&obj, "command_surface_count",
+                     (int64_t)g_agent_command_surface_count);
+    json_push_kv_int(&obj, "work_surface_count",
+                     (int64_t)g_agent_work_surface_count);
+    json_push_kv_str(&obj, "registry_source",
+                     "agent_contracts.def + agent_contract_registry.c");
+    json_push_kv_str(
+        &obj, "mcp_binding_contract",
+        "every non-empty mcp contract must resolve in zcl_tools_list");
+    json_push_kv(out, key, &obj);
+    json_free(&obj);
 }
 
 void agent_push_contract_transport_summary_json(struct json_value *arr)

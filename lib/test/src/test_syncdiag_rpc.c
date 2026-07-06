@@ -3496,6 +3496,8 @@ int test_syncdiag_rpc(void)
         const struct json_value *schemas = json_get(&contracts, "schemas");
         const struct json_value *contract_list =
             json_get(&contracts, "contracts");
+        const struct json_value *contract_summary =
+            json_get(&contracts, "contract_summary");
         const struct json_value *transports =
             json_get(&contracts, "transports");
         const struct json_value *contract_agentops =
@@ -3520,6 +3522,15 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(&contracts, "schema")),
                           "zcl.agent_contracts.v1") == 0;
         ok = ok && contract_list && contract_list->type == JSON_ARR;
+        ok = ok && contract_summary &&
+            json_get_int(json_get(contract_summary, "contract_count")) >= 20;
+        ok = ok && contract_summary &&
+            json_get_int(json_get(contract_summary, "mcp_declared_count"))
+                >= 20;
+        ok = ok && contract_summary &&
+            strcmp(json_get_str(json_get(contract_summary,
+                                         "registry_source")),
+                   "agent_contracts.def + agent_contract_registry.c") == 0;
         ok = ok && contract_agentops &&
             strcmp(json_get_str(json_get(contract_agentops, "schema")),
                    "zcl.agent_ops.v1") == 0;

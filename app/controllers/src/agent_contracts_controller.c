@@ -80,6 +80,7 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     json_push_kv_str(result, "status", "ok");
     json_push_kv_str(result, "canonical_interface",
                      "native zclassic23 agent* RPCs and MCP zcl_agent_* tools");
+    agent_push_contract_summary_json(result, "contract_summary");
 
     json_init(&contract_list);
     json_set_array(&contract_list);

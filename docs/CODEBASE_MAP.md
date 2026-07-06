@@ -168,7 +168,8 @@ controller `k_routes[]` arrays.
   are registry-fed from `agent_contract_registry.c`
   (`g_agent_contracts`, `g_agent_command_surfaces`, `g_agent_work_surfaces`);
   keep controller code focused on assembling live state, not owning ranked
-  planning tables.
+  planning tables. `agentcontracts.contract_summary` reports registry-derived
+  native/MCP/REST counts, and MCP tests verify declared tools are registered.
 - `zclassic23 agentlanes` / `zcl_agent_lanes` — native canonical/soak/dev lane
   topology and `zcl.operator_deployment_safety.v1` policy. Use this before
   deciding where a fresh binary may be deployed or restarted.
