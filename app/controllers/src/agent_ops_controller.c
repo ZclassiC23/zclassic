@@ -90,6 +90,8 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
         agent_contract_lookup("statecatalog");
     const struct agent_contract *timeline_contract =
         agent_contract_lookup("timeline");
+    const struct agent_contract *anchor_contract =
+        agent_contract_lookup("anchorstatus");
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.agent_ops.v1");
     json_push_kv_str(result, "api_version", "v1");
@@ -126,6 +128,8 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
                      timeline_contract ? timeline_contract->native_command : "");
     json_push_kv_str(result, "timeline_tool",
                      timeline_contract ? timeline_contract->mcp_tool : "");
+    json_push_kv_str(result, "anchor_status_command",
+                     anchor_contract ? anchor_contract->native_command : "");
     json_push_kv_str(result, "refold_plain_english",
                      "Rebuild the UTXO/trust anchor from zclassic23's own verified block history, then cut over so the node no longer depends on a borrowed snapshot seed.");
 
@@ -159,6 +163,9 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
     agent_push_contract_command_json(&api_rules, "semantic_timeline",
                                      "timeline",
                                      "versioned event timeline with bounded filters and seq cursors");
+    agent_push_contract_command_json(&api_rules, "anchor_mint_status",
+                                     "anchorstatus",
+                                     "offline anchor producer progress, stale rows, validated backlog, and next action");
     agent_push_contract_command_json(&api_rules, "test_routing",
                                      "agentimpact",
                                      "changed files mapped to focused tests and risk");
@@ -177,6 +184,9 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
                                      "current lane/service/supervisor/quality rollup");
     agent_push_contract_command_json(&commands, "build_loop", "agentbuild",
                                      "fast-ci, background quality lanes, reproducibility");
+    agent_push_contract_command_json(&commands, "anchor_mint",
+                                     "anchorstatus",
+                                     "read-only progress.kv status for the sovereign anchor producer");
     agent_push_contract_command_json(&commands, "mirror",
                                      "getmirrorstatus",
                                      "advisory mirror lag/blocker contract");
@@ -219,7 +229,7 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
     json_set_array(&work);
     agent_ops_push_work(&work, 1, "finish_self_verified_utxo_anchor_rebuild",
         "It replaces the borrowed snapshot seed with a UTXO anchor rebuilt from zclassic23's own verified block history.",
-        "copy-prove -refold-from-anchor artifact and cutover gates",
+        "run anchorstatus on the producer, fix any named blocker, then copy-prove -refold-from-anchor artifact and cutover gates",
         "copy fixture, refold tests, parity checks, live H* climb");
     agent_ops_push_work(&work, 2, "harden_peer_bootstrap_lifecycle",
         "Tip-following depends on failing over slow peers, avoiding duplicate peer rows, and proving zclassic23 peers can bootstrap other nodes.",

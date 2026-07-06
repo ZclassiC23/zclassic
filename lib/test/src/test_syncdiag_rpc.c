@@ -18,6 +18,7 @@
  * containing non-empty `watchdog` and `headers` sub-objects. */
 
 #include "test/test_helpers.h"
+#include "chain/checkpoints.h"
 #include "controllers/agent_controller.h"
 #include "controllers/agent_resources.h"
 #include "controllers/agent_restart_watchdog.h"
@@ -196,6 +197,133 @@ static bool syncdiag_seed_cursor(sqlite3 *db, const char *name, int cursor)
     sqlite3_bind_int(st, 2, cursor);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
+    return ok;
+}
+
+static void syncdiag_write_le32(uint8_t *p, uint32_t v)
+{
+    p[0] = (uint8_t)(v & 0xffu);
+    p[1] = (uint8_t)((v >> 8) & 0xffu);
+    p[2] = (uint8_t)((v >> 16) & 0xffu);
+    p[3] = (uint8_t)((v >> 24) & 0xffu);
+}
+
+static void syncdiag_write_le64(uint8_t *p, uint64_t v)
+{
+    for (int i = 0; i < 8; i++)
+        p[i] = (uint8_t)((v >> (8 * i)) & 0xffu);
+}
+
+static bool syncdiag_seed_meta_blob(sqlite3 *db, const char *key,
+                                    const void *blob, int len)
+{
+    sqlite3_stmt *st = NULL;
+    if (!db || !key || (!blob && len > 0) || len < 0)
+        return false;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO progress_meta(key,value) VALUES(?1,?2)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, key, -1, SQLITE_STATIC);
+    sqlite3_bind_blob(st, 2, blob, len, SQLITE_TRANSIENT);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool syncdiag_create_height_log(sqlite3 *db, const char *table)
+{
+    char sql[160];
+    if (!db || !table)
+        return false;
+    snprintf(sql, sizeof(sql),
+             "CREATE TABLE IF NOT EXISTS %s(height INTEGER PRIMARY KEY)",
+             table);
+    return syncdiag_exec_sql(db, sql);
+}
+
+static bool syncdiag_seed_log_point(sqlite3 *db, const char *table,
+                                    int64_t height)
+{
+    char sql[160];
+    sqlite3_stmt *st = NULL;
+    if (!db || !table)
+        return false;
+    snprintf(sql, sizeof(sql),
+             "INSERT OR REPLACE INTO %s(height) VALUES(?1)", table);
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)height);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool syncdiag_seed_anchorstatus_progress(const char *dir)
+{
+    char path[512];
+    sqlite3 *db = NULL;
+    if (!dir ||
+        snprintf(path, sizeof(path), "%s/progress.kv", dir) >=
+            (int)sizeof(path))
+        return false;
+    if (sqlite3_open(path, &db) != SQLITE_OK) {
+        sqlite3_close(db);
+        return false;
+    }
+
+    bool ok = true;
+    ok = ok && syncdiag_exec_sql(db,
+        "CREATE TABLE IF NOT EXISTS stage_cursor("
+        "name TEXT PRIMARY KEY, cursor INTEGER, updated_at INTEGER)");
+    ok = ok && syncdiag_exec_sql(db,
+        "CREATE TABLE IF NOT EXISTS progress_meta("
+        "key TEXT PRIMARY KEY, value BLOB)");
+
+    const char *logs[] = {
+        "header_admit_log", "validate_headers_log", "body_fetch_log",
+        "body_persist_log", "script_validate_log", "proof_validate_log",
+        "utxo_apply_log", "tip_finalize_log",
+    };
+    for (size_t i = 0; ok && i < sizeof(logs) / sizeof(logs[0]); i++)
+        ok = syncdiag_create_height_log(db, logs[i]);
+
+    ok = ok && syncdiag_seed_cursor(db, "header_admit", 2791000);
+    ok = ok && syncdiag_seed_cursor(db, "validate_headers", 2791000);
+    ok = ok && syncdiag_seed_cursor(db, "body_fetch", 2791000);
+    ok = ok && syncdiag_seed_cursor(db, "body_persist", 2791000);
+    ok = ok && syncdiag_seed_cursor(db, "script_validate", 2791000);
+    ok = ok && syncdiag_seed_cursor(db, "proof_validate", 2791000);
+    ok = ok && syncdiag_seed_cursor(db, "utxo_apply", 164000);
+    ok = ok && syncdiag_seed_cursor(db, "tip_finalize", 164000);
+
+    ok = ok && syncdiag_seed_log_point(db, "header_admit_log", 0);
+    ok = ok && syncdiag_seed_log_point(db, "header_admit_log", 3166384);
+    ok = ok && syncdiag_seed_log_point(db, "proof_validate_log", 0);
+    ok = ok && syncdiag_seed_log_point(db, "proof_validate_log", 2790999);
+    ok = ok && syncdiag_seed_log_point(db, "utxo_apply_log", 0);
+    ok = ok && syncdiag_seed_log_point(db, "utxo_apply_log", 163999);
+
+    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+    uint8_t marker[48] = {0};
+    memcpy(marker, "ZAM1", 4);
+    if (cp) {
+        syncdiag_write_le32(marker + 4, (uint32_t)cp->height);
+        syncdiag_write_le64(marker + 8, cp->utxo_count);
+        memcpy(marker + 16, cp->sha3_hash, 32);
+    }
+    ok = ok && cp &&
+        syncdiag_seed_meta_blob(db, "mint_anchor_in_progress_v1",
+                                marker, sizeof(marker));
+
+    uint8_t height_blob[8] = {0};
+    syncdiag_write_le64(height_blob, 164000);
+    ok = ok && syncdiag_seed_meta_blob(db, "coins_applied_height",
+                                       height_blob, sizeof(height_blob));
+    const uint8_t one = 1;
+    ok = ok && syncdiag_seed_meta_blob(db, "refold_in_progress", &one, 1);
+
+    sqlite3_close(db);
     return ok;
 }
 
@@ -399,6 +527,77 @@ int test_syncdiag_rpc(void)
 
         json_free(&params);
         json_free(&result);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("anchorstatus: names anchor mint UTXO backlog blocker "
+           "(RED)... ");
+    {
+        checkpoints_reset_sha3_override_for_test();
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "syncdiag_anchorstatus",
+                         "backlog");
+        bool ok = syncdiag_seed_anchorstatus_progress(dir);
+
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+        struct json_value arg;
+        json_init(&arg);
+        json_set_str(&arg, dir);
+        json_push_back(&params, &arg);
+        json_free(&arg);
+
+        struct json_value result;
+        json_init(&result);
+        ok = ok && rpc_agent_anchor_status(&params, false, &result);
+        ok = ok && result.type == JSON_OBJ;
+        ok = ok && json_get(&result, "schema") != NULL &&
+            strcmp(json_get_str(json_get(&result, "schema")),
+                   "zcl.anchor_mint_status.v1") == 0;
+        ok = ok && json_get(&result, "status") != NULL &&
+            strcmp(json_get_str(json_get(&result, "status")), "ok") == 0;
+        ok = ok && json_get(&result, "summary") != NULL &&
+            strcmp(json_get_str(json_get(&result, "summary")),
+                   "mint_utxo_apply_far_behind_validated_backlog") == 0;
+        ok = ok && json_get(&result, "agent_next_action") != NULL &&
+            strcmp(json_get_str(json_get(&result, "agent_next_action")),
+                   "inspect_utxo_apply_idle_reason_before_waiting_more") == 0;
+        ok = ok && json_get(&result, "mint_marker_present") != NULL &&
+            json_get_bool(json_get(&result, "mint_marker_present"));
+        ok = ok && json_get(&result, "mint_marker_matches_checkpoint") != NULL &&
+            json_get_bool(json_get(&result,
+                                   "mint_marker_matches_checkpoint"));
+        ok = ok && json_get(&result, "refold_in_progress_present") != NULL &&
+            json_get_bool(json_get(&result, "refold_in_progress_present"));
+        ok = ok && json_get(&result, "coins_applied_height") != NULL &&
+            json_get_int(json_get(&result, "coins_applied_height")) == 164000;
+        ok = ok && json_get(&result, "durable_applied_through_height") != NULL &&
+            json_get_int(json_get(&result,
+                                  "durable_applied_through_height")) == 163999;
+        ok = ok && json_get(&result, "validated_backlog_blocks") != NULL &&
+            json_get_int(json_get(&result,
+                                  "validated_backlog_blocks")) == 2627000;
+        ok = ok && json_get(&result, "stale_header_rows_above_anchor") != NULL &&
+            json_get_int(json_get(&result,
+                                  "stale_header_rows_above_anchor")) == 1;
+        ok = ok && json_get(&result, "stale_rows_above_anchor") != NULL &&
+            json_get_bool(json_get(&result, "stale_rows_above_anchor"));
+
+        const struct json_value *utxo =
+            find_object_with_str(json_get(&result, "stages"),
+                                 "name", "utxo_apply");
+        ok = ok && utxo != NULL;
+        ok = ok && json_get(utxo, "cursor") != NULL &&
+            json_get_int(json_get(utxo, "cursor")) == 164000;
+        ok = ok && json_get(utxo, "log_max_height") != NULL &&
+            json_get_int(json_get(utxo, "log_max_height")) == 163999;
+
+        json_free(&params);
+        json_free(&result);
+        test_cleanup_tmpdir(dir);
 
         if (ok) printf("OK\n");
         else    { printf("FAIL\n"); failures++; }

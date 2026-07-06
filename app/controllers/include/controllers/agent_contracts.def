@@ -35,6 +35,12 @@ AGENT_CONTRACT("agentbuild", "build_loop", "zcl.agent_build.v1",
                "zclassic23 agentbuild", "zcl_agent_build", "",
                "build_command", "build_tool",
                "cache-aware compile, test, background quality, and reproducibility contract")
+AGENT_CONTRACT("anchorstatus", "sovereign_anchor_status",
+               "zcl.anchor_mint_status.v1",
+               "zclassic23 anchorstatus [-datadir=<anchor-datadir>]",
+               "", "",
+               "anchor_status_command", "",
+               "read-only offline/transient anchor mint progress, stage cursors, stale rows, and next action")
 AGENT_CONTRACT("agentmap", "code_map", "zcl.agent_map.v1",
                "zclassic23 agentmap", "zcl_agent_map", "",
                "map_command", "map_tool",

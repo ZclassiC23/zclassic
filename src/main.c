@@ -882,6 +882,7 @@ static bool cli_static_agent_method(const char *method)
            strcmp(method, "agentimpact") == 0 ||
            strcmp(method, "agentcontracts") == 0 ||
            strcmp(method, "agentbuild") == 0 ||
+           strcmp(method, "anchorstatus") == 0 ||
            strcmp(method, "agentinterface") == 0 ||
            strcmp(method, "agentops") == 0 ||
            strcmp(method, "statecatalog") == 0 ||
@@ -913,6 +914,8 @@ static bool cli_run_static_agent_method(const char *method,
         ok = rpc_agent_contracts(&params, false, &result);
     } else if (strcmp(method, "agentbuild") == 0) {
         ok = rpc_agent_build(&params, false, &result);
+    } else if (strcmp(method, "anchorstatus") == 0) {
+        ok = rpc_agent_anchor_status(&params, false, &result);
     } else if (strcmp(method, "agentinterface") == 0) {
         ok = rpc_agent_interface(&params, false, &result);
     } else if (strcmp(method, "agentops") == 0) {
@@ -1191,6 +1194,7 @@ static void print_usage(const char *prog)
     printf("  %s agentimpact <files...>  Changed files to tests/risk\n", prog);
     printf("  %s agentcontracts          Versioned AI/operator contracts\n", prog);
     printf("  %s agentbuild              Fast cached/repro build contract\n", prog);
+    printf("  %s anchorstatus            Offline anchor-mint progress JSON\n", prog);
     printf("  %s agentinterface          Preferred AI/operator interface\n", prog);
     printf("  %s agentops                Compact no-jq AI/operator command center\n", prog);
     printf("  %s agentdiagnose           Bounded no-jq live diagnosis\n", prog);

@@ -16,6 +16,7 @@ same native RPC methods. Shell wrappers are compatibility shims only.
 | Changed files to tests/risk | `zclassic23 agentimpact <files...>` | `zcl_agent_impact` |
 | Versioned contracts | `zclassic23 agentcontracts` | `zcl_agent_contracts` |
 | Fast build contract | `zclassic23 agentbuild` | `zcl_agent_build` |
+| Anchor producer status | `zclassic23 anchorstatus` | `zcl_rpc(method="anchorstatus")` |
 | Preferred interface contract | `zclassic23 agentinterface` | `zcl_agent_interface` |
 | State subsystem catalog | `zclassic23 statecatalog` | `zcl_state_catalog` |
 | Semantic event timeline | `zclassic23 timeline '{"category":"sync","count":50,"since_secs":3600}'` | `zcl_timeline` |
@@ -109,6 +110,14 @@ watching but is not a local-node stability blocker; only
 `tools/z mirror --json` mirrors that interpretation only as a compatibility
 shim for long-running older binaries: it clears a `hash-disagreement` active
 blocker only when the payload itself proves equal height and equal hash.
+
+`anchorstatus` (`zcl.anchor_mint_status.v1`) is the offline/static status
+packet for the sovereign UTXO anchor producer. Run
+`zclassic23 -datadir=/path/to/anchor-datadir anchorstatus` against an
+anchor-mint datadir to read `progress.kv` directly without cookies, jq, Python,
+or a running service RPC. It reports the anchor checkpoint, stage cursors,
+durable coins frontier, validated backlog, stale header rows above the anchor,
+snapshot presence, a compact `summary`, and `agent_next_action`.
 
 `zclassic23 agentinterface` / `zcl_agent_interface` is the machine-readable
 entry point for that rule. In addition to the human summary, it emits a

@@ -2800,6 +2800,7 @@ static int t_native_agent_api_contract(void)
     char *agent_lane_runtime_buf = NULL;
     char *agent_liveness_buf = NULL;
     char *agent_diagnose_buf = NULL;
+    char *agent_anchor_status_buf = NULL;
     char *agent_iface_buf = NULL;
     char *agent_ops_buf = NULL;
     char *agent_runtime_buf = NULL;
@@ -2826,6 +2827,7 @@ static int t_native_agent_api_contract(void)
         char agent_lane_runtime_path[PATH_MAX];
         char agent_liveness_path[PATH_MAX];
         char agent_diagnose_path[PATH_MAX];
+        char agent_anchor_status_path[PATH_MAX];
         char agent_iface_path[PATH_MAX];
         char agent_ops_path[PATH_MAX];
         char agent_runtime_path[PATH_MAX];
@@ -2879,6 +2881,10 @@ static int t_native_agent_api_contract(void)
         ASSERT(repo_path(agent_diagnose_path, sizeof(agent_diagnose_path),
                          "app/controllers/src/agent_diagnose_controller.c")
                == 0);
+        ASSERT(repo_path(agent_anchor_status_path,
+                         sizeof(agent_anchor_status_path),
+                         "app/controllers/src/agent_anchor_status_controller.c")
+               == 0);
         ASSERT(repo_path(agent_iface_path, sizeof(agent_iface_path),
                          "app/controllers/src/agent_interface_controller.c")
                == 0);
@@ -2926,6 +2932,8 @@ static int t_native_agent_api_contract(void)
                                 &agent_liveness_buf) == 0);
         ASSERT(read_entire_file(agent_diagnose_path,
                                 &agent_diagnose_buf) == 0);
+        ASSERT(read_entire_file(agent_anchor_status_path,
+                                &agent_anchor_status_buf) == 0);
         ASSERT(read_entire_file(agent_iface_path, &agent_iface_buf) == 0);
         ASSERT(read_entire_file(agent_ops_path, &agent_ops_buf) == 0);
         ASSERT(read_entire_file(agent_runtime_path, &agent_runtime_buf) == 0);
@@ -2945,6 +2953,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(main_buf, "%s agentimpact") != NULL);
         ASSERT(strstr(main_buf, "%s agentcontracts") != NULL);
         ASSERT(strstr(main_buf, "%s agentbuild") != NULL);
+        ASSERT(strstr(main_buf, "%s anchorstatus") != NULL);
         ASSERT(strstr(main_buf, "%s agentinterface") != NULL);
         ASSERT(strstr(main_buf, "%s agentops") != NULL);
         ASSERT(strstr(main_buf, "%s agentdiagnose") != NULL);
@@ -2991,6 +3000,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(main_buf, "strcmp(method, \"agentops\")") != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"agentliveness\")")
                != NULL);
+        ASSERT(strstr(main_buf, "strcmp(method, \"anchorstatus\")")
+               != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"statecatalog\")") != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"agentlanes\")") != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"agentdeployguard\")")
@@ -3012,6 +3023,9 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(main_buf,
                       "rpc_agent_deploy_guard(&params, false, &result)")
+               != NULL);
+        ASSERT(strstr(main_buf,
+                      "rpc_agent_anchor_status(&params, false, &result)")
                != NULL);
         char *static_agent_dispatch =
             strstr(main_buf, "if (cli_static_agent_method(method))");
@@ -3035,6 +3049,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(event_buf, "{ \"control\", \"agentimpact\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agentcontracts\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agentbuild\"") != NULL);
+        ASSERT(strstr(event_buf, "{ \"control\", \"anchorstatus\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agentinterface\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agentdeployguard\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"summary\"") != NULL);
@@ -3172,7 +3187,23 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_diagnose_buf, "rpc_timeline") != NULL);
         ASSERT(strstr(agent_diagnose_buf, "diag_rpc_getmirrorstatus")
                != NULL);
+        ASSERT(strstr(agent_anchor_status_buf,
+                      "zcl.anchor_mint_status.v1") != NULL);
+        ASSERT(strstr(agent_anchor_status_buf, "progress.kv") != NULL);
+        ASSERT(strstr(agent_anchor_status_buf,
+                      "validated_backlog_blocks") != NULL);
+        ASSERT(strstr(agent_anchor_status_buf,
+                      "stale_header_rows_above_anchor") != NULL);
+        ASSERT(strstr(agent_anchor_status_buf,
+                      "agent_next_action") != NULL);
+        ASSERT(strstr(agent_anchor_status_buf,
+                      "inspect_utxo_apply_idle_reason_before_waiting_more")
+               != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_impact.v1") != NULL);
+        ASSERT(strstr(agent_ctrl_buf,
+                      "app/controllers/src/agent_anchor_status_controller.c")
+               != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "anchorstatus") != NULL);
         ASSERT(strstr(agent_contracts_buf, "zcl.agent_contracts.v1") != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "AGENT_CONTRACT") != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "zcl.public_status.v1")
@@ -3196,6 +3227,8 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "zcl.agent_deploy_guard.v1")
                != NULL);
+        ASSERT(strstr(agent_contracts_def_buf,
+                      "zcl.anchor_mint_status.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_build.v1") != NULL);
         ASSERT(strstr(agent_contracts_buf,
                       "zcl.background_quality_runtime.v1") != NULL);
@@ -3227,6 +3260,10 @@ static int t_native_agent_api_contract(void)
                       "agent_contract_lookup(\"agentliveness\")") != NULL);
         ASSERT(strstr(agent_ops_buf,
                       "agent_contract_lookup(\"timeline\")") != NULL);
+        ASSERT(strstr(agent_ops_buf,
+                      "agent_contract_lookup(\"anchorstatus\")") != NULL);
+        ASSERT(strstr(agent_ops_buf, "anchor_status_command") != NULL);
+        ASSERT(strstr(agent_ops_buf, "anchor_mint_status") != NULL);
         ASSERT(strstr(agent_ops_buf, "agent_push_contract_command_json")
                != NULL);
         ASSERT(strstr(agent_ops_buf, "refold_plain_english") != NULL);
@@ -3410,6 +3447,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(api_buf, "\"compat_command\"") == NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentbuild") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_build") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zclassic23 anchorstatus") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.anchor_mint_status.v1") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentlanes") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_lanes") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.agent_lanes.v1") != NULL);
@@ -3521,6 +3560,7 @@ static int t_native_agent_api_contract(void)
     free(agent_lane_runtime_buf);
     free(agent_liveness_buf);
     free(agent_diagnose_buf);
+    free(agent_anchor_status_buf);
     free(agent_iface_buf);
     free(agent_ops_buf);
     free(agent_runtime_buf);

@@ -123,6 +123,11 @@ void rpc_agent_set_boot_context(const char *operator_lane,
     g_agent_runtime.fs_port = fs_port;
 }
 
+const char *agent_runtime_context_datadir(void)
+{
+    return g_agent_runtime.datadir;
+}
+
 static size_t agent_runtime_contract_count(void)
 {
     size_t n = agent_contract_count();

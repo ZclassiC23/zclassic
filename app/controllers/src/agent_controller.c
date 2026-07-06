@@ -93,7 +93,7 @@ static bool agent_str_starts(const char *s, const char *prefix)
 static bool agent_path_is_native_agent_api(const char *path)
 {
     static const char *const paths[] = {
-        "app/controllers/src/agent_controller.c", "app/controllers/src/agent_background_quality.c", "app/controllers/src/agent_diagnose_controller.c", "app/controllers/src/agent_impact_rules.c", "app/controllers/src/agent_interface_controller.c",
+        "app/controllers/src/agent_controller.c", "app/controllers/src/agent_background_quality.c", "app/controllers/src/agent_anchor_status_controller.c", "app/controllers/src/agent_diagnose_controller.c", "app/controllers/src/agent_impact_rules.c", "app/controllers/src/agent_interface_controller.c",
         "app/controllers/src/agent_contracts_controller.c", "app/controllers/src/agent_lane_runtime.c", "app/controllers/src/agent_lanes_controller.c", "app/controllers/src/agent_liveness_controller.c", "app/controllers/src/agent_operator_contracts.c", "app/controllers/src/agent_ops_controller.c", "app/controllers/src/agent_resources.c", "app/controllers/src/agent_restart_watchdog.c",
         "app/controllers/src/agent_runtime_controller.c", "app/controllers/src/agent_first_call.c", "app/controllers/src/event_agent_peers.c", "app/controllers/src/event_agent_peers.h", "app/controllers/src/event_agent_summary.c",
         "app/controllers/src/event_agent_summary.h", "app/controllers/src/event_timeline_controller.c", "app/controllers/src/event_timeline_filter_controller.c", "app/controllers/include/controllers/event_timeline_controller.h", "app/controllers/include/controllers/event_timeline_filter_controller.h", "app/controllers/include/controllers/agent_controller.h", "app/controllers/include/controllers/agent_background_quality.h", "app/controllers/include/controllers/agent_contracts.def", "app/controllers/include/controllers/agent_impact_rules.def",
@@ -270,6 +270,9 @@ bool rpc_agent_map(const struct json_value *params, bool help,
                                      "versioned schemas and transport contract list");
     agent_push_contract_command_json(&commands, "build", "agentbuild",
                                      "incremental/cache/reproducible build contract");
+    agent_push_contract_command_json(&commands, "anchor_status",
+                                     "anchorstatus",
+                                     "offline anchor-mint progress and next action");
     agent_push_contract_command_json(&commands, "interface",
                                      "agentinterface",
                                      "preferred AI/operator transport and JSON rules");
@@ -336,6 +339,9 @@ bool rpc_agent_map(const struct json_value *params, bool help,
                        "make quality-linger-status",
                        "zcl_agent_build",
                        "background tests/fuzz/coverage verdicts");
+    agent_push_contract_command_json(&telemetry, "anchor_status",
+                                     "anchorstatus",
+                                     "read-only progress.kv status for the sovereign anchor producer");
     json_push_kv(result, "telemetry_drilldowns", &telemetry);
     json_free(&telemetry);
 
@@ -343,7 +349,7 @@ bool rpc_agent_map(const struct json_value *params, bool help,
     json_set_array(&subsystems);
     agent_push_subsystem(&subsystems, "native_agent_api",
                          "first-call binary JSON contracts",
-                         "app/controllers/src/agent_controller.c, app/controllers/src/agent_contracts_controller.c, app/controllers/src/agent_background_quality.c, app/controllers/src/agent_lane_runtime.c, app/controllers/src/agent_lanes_controller.c, app/controllers/src/agent_liveness_controller.c, app/controllers/src/agent_runtime_controller.c, app/controllers/include/controllers/agent_contracts.def, src/main.c",
+                         "app/controllers/src/agent_controller.c, app/controllers/src/agent_contracts_controller.c, app/controllers/src/agent_anchor_status_controller.c, app/controllers/src/agent_background_quality.c, app/controllers/src/agent_lane_runtime.c, app/controllers/src/agent_lanes_controller.c, app/controllers/src/agent_liveness_controller.c, app/controllers/src/agent_runtime_controller.c, app/controllers/include/controllers/agent_contracts.def, src/main.c",
                          "docs/AGENT_API.md",
                          "syncdiag_rpc, mcp_controllers, make_lint_gates",
                          "zcl_agent, zcl_agent_interface, zcl_agent_lanes, zcl_agent_liveness, zcl_agent_map");
