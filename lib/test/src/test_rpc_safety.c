@@ -9,6 +9,7 @@
 #include "controllers/health_controller.h"
 #include "controllers/mining_controller.h"
 #include "controllers/misc_controller.h"
+#include "controllers/network_controller.h"
 #include "controllers/repair_controller.h"
 #include "controllers/transaction_controller.h"
 #include "controllers/wallet_diagnostic_controller.h"
@@ -18,6 +19,7 @@
 #include "json/json.h"
 #include "models/block.h"
 #include "models/database.h"
+#include "net/connman.h"
 #include "rpc/server.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
@@ -558,6 +560,11 @@ int test_rpc_safety(void)
             ms.chain_active.chain[1] = NULL;
         reducer_frontier_provable_tip_set(1);
 
+        struct connman cm;
+        memset(&cm, 0, sizeof(cm));
+        net_manager_init(&cm.manager);
+        cm.manager.num_nodes = 3;
+
         struct rpc_table chain_tbl;
         rpc_table_init(&chain_tbl);
         rpc_blockchain_set_state(&ms, NULL, "/tmp");
@@ -566,6 +573,7 @@ int test_rpc_safety(void)
         struct rpc_table misc_tbl;
         rpc_table_init(&misc_tbl);
         rpc_misc_set_state(&ms);
+        rpc_net_set_connman(&cm);
         register_misc_rpc_commands(&misc_tbl);
 
         struct rpc_table mining_tbl;
@@ -599,7 +607,11 @@ int test_rpc_safety(void)
         ok = ok && rpc_table_execute(&misc_tbl, "getinfo", &params,
                                      &result);
         const struct json_value *info_blocks = json_get(&result, "blocks");
+        const struct json_value *info_connections =
+            json_get(&result, "connections");
         ok = ok && info_blocks && json_get_int(info_blocks) == 1;
+        ok = ok && info_connections &&
+             json_get_int(info_connections) == 3;
         json_free(&result);
 
         json_init(&result);
@@ -612,7 +624,10 @@ int test_rpc_safety(void)
         json_free(&result);
         rpc_blockchain_set_state(NULL, NULL, NULL);
         rpc_misc_set_state(NULL);
+        rpc_net_set_connman(NULL);
         rpc_mining_set_state(NULL, NULL, NULL);
+        cm.manager.num_nodes = 0;
+        net_manager_free(&cm.manager);
         reducer_frontier_provable_tip_reset();
         main_state_free(&ms);
         test_reset_shared_globals();

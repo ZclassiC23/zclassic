@@ -76,7 +76,9 @@ static bool rpc_getinfo(const struct json_value *params, bool help,
                                     : 0;
     json_push_kv_int(result, "blocks", hstar);
     json_push_kv_int(result, "timeoffset", 0);
-    json_push_kv_int(result, "connections", 0);
+    struct connman *cm = rpc_net_get_connman();
+    size_t connections = cm ? connman_get_node_count(cm) : 0;
+    json_push_kv_int(result, "connections", (int64_t)connections);
     json_push_kv_real(result, "difficulty", 0.0);
     json_push_kv_bool(result, "testnet",
                        strcmp(chain_params_get()->strNetworkID, "test") == 0);
