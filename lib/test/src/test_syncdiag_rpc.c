@@ -3699,6 +3699,7 @@ int test_syncdiag_rpc(void)
         agent_runtime_availability_reset();
         ok = ok && rpc_table_execute(&tbl, "agentops", &params, &ops);
         const struct json_value *ops_work = json_get(&ops, "top_next_work");
+        const struct json_value *ops_gaps = json_get(&ops, "api_gaps");
         const struct json_value *ops_availability =
             json_get(&ops, "runtime_availability");
         const struct json_value *ops_availability_methods =
@@ -3778,6 +3779,17 @@ int test_syncdiag_rpc(void)
         ok = ok && strstr(json_get_str(json_get(&ops,
                                                 "refold_plain_english")),
                           "borrowed snapshot seed") != NULL;
+        ok = ok &&
+            agent_contract_work_surface_count("agentops.api_gaps") == 3;
+        ok = ok &&
+            agent_contract_work_surface_count("agentops.top_next_work") == 5;
+        ok = ok &&
+            agent_contract_work_surface_count("missing.surface") == 0;
+        ok = ok && ops_gaps && json_size(ops_gaps) == 3;
+        ok = ok && find_object_with_str(ops_gaps, "name",
+                                        "runtime_identity_everywhere") != NULL;
+        ok = ok && find_object_with_str(ops_gaps, "name",
+                                        "timeline_query") != NULL;
         ok = ok && ops_work && json_size(ops_work) == 5;
         ok = ok && find_object_with_str(ops_work, "name",
                                         "finish_self_verified_utxo_anchor_rebuild")

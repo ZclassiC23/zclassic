@@ -29,6 +29,15 @@ struct agent_contract_command_surface {
     const char *purpose_override;
 };
 
+struct agent_contract_work_surface {
+    const char *surface;
+    int rank;
+    const char *name;
+    const char *why;
+    const char *first_slice;
+    const char *proof;
+};
+
 static const struct agent_contract_command_surface g_agent_command_surfaces[] = {
     { "agentmap.commands.core", 1, "status", "agent",
       "compact live health/status contract" },
@@ -76,6 +85,46 @@ static const struct agent_contract_command_surface g_agent_command_surfaces[] = 
 
 static const size_t g_agent_command_surface_count =
     sizeof(g_agent_command_surfaces) / sizeof(g_agent_command_surfaces[0]);
+
+static const struct agent_contract_work_surface g_agent_work_surfaces[] = {
+    { "agentops.api_gaps", 1, "runtime_identity_everywhere",
+      "Agents must know whether a payload came from source HEAD, dev, soak, or canonical.",
+      "add build/lane identity to every first-call compact response",
+      "syncdiag_rpc + mcp_controllers + api" },
+    { "agentops.api_gaps", 2, "state_catalog_schema",
+      "The first catalog now exists; next it should be kept rich enough for automated routing.",
+      "extend catalog metadata as new dumpers need cost, freshness, key, and owner hints",
+      "statecatalog RPC + MCP catalog tests" },
+    { "agentops.api_gaps", 3, "timeline_query",
+      "Agents still stitch together logs, SQL, events, and condition detail to answer what happened.",
+      "ship and extend zcl.timeline.v1 before adding more bespoke log readers",
+      "event + mcp_controllers + syncdiag_rpc" },
+
+    { "agentops.top_next_work", 1,
+      "finish_self_verified_utxo_anchor_rebuild",
+      "It replaces the borrowed snapshot seed with a UTXO anchor rebuilt from zclassic23's own verified block history.",
+      "run anchorstatus on the producer, fix any named blocker, then copy-prove -refold-from-anchor artifact and cutover gates",
+      "copy fixture, refold tests, parity checks, live H* climb" },
+    { "agentops.top_next_work", 2, "harden_peer_bootstrap_lifecycle",
+      "Tip-following depends on failing over slow peers, avoiding duplicate peer rows, and proving zclassic23 peers can bootstrap other nodes.",
+      "promote peer lifecycle incidents, downloader failover, and bootstrapstatus into one operator proof",
+      "download + peer_lifecycle + syncdiag_rpc + bootstrap harness" },
+    { "agentops.top_next_work", 3, "promote_mvp_operator_proofs",
+      "MRS is 4/8; cold-start sync, live store flow, 168h soak, and exact parity still need full run-pass evidence.",
+      "wire the remaining full proofs into milestone and background quality verdicts",
+      "mvp-verify + soak-evidence + parity service" },
+    { "agentops.top_next_work", 4, "extend_semantic_timeline_durability",
+      "The event-ring timeline is semantic now; longer root-cause windows need durable event_log/node.log references.",
+      "extend zcl.timeline.v1 toward durable event_log/node.log references",
+      "event + mcp_controllers + syncdiag_rpc" },
+    { "agentops.top_next_work", 5, "shrink_boot_refold_supervised_units",
+      "The largest code-health risk is still oversized boot/refold orchestration that future agents must understand before changing liveness.",
+      "split one behavior-preserving boot/refold responsibility behind existing supervisor contracts",
+      "make lint + boot smoke + refold tests + live H* climb" },
+};
+
+static const size_t g_agent_work_surface_count =
+    sizeof(g_agent_work_surfaces) / sizeof(g_agent_work_surfaces[0]);
 
 static void agent_push_str(struct json_value *arr, const char *s)
 {
@@ -297,6 +346,69 @@ size_t agent_push_contract_command_surface_json(struct json_value *arr,
                 continue;
             if (agent_push_contract_command_json(arr, e->name, e->method,
                                                  e->purpose_override))
+                pushed++;
+        }
+    }
+    return pushed;
+}
+
+size_t agent_contract_work_surface_count(const char *surface)
+{
+    if (!surface || !surface[0])
+        return 0;
+    size_t n = 0;
+    for (size_t i = 0; i < g_agent_work_surface_count; i++) {
+        const struct agent_contract_work_surface *e =
+            &g_agent_work_surfaces[i];
+        if (e->surface && strcmp(e->surface, surface) == 0)
+            n++;
+    }
+    return n;
+}
+
+static bool agent_push_work_item_json(
+    struct json_value *arr, const struct agent_contract_work_surface *item)
+{
+    if (!arr || !item)
+        return false;
+
+    struct json_value obj;
+    json_init(&obj);
+    json_set_object(&obj);
+    json_push_kv_int(&obj, "rank", item->rank);
+    json_push_kv_str(&obj, "name", item->name);
+    json_push_kv_str(&obj, "why", item->why);
+    json_push_kv_str(&obj, "first_slice", item->first_slice);
+    json_push_kv_str(&obj, "proof", item->proof);
+    json_push_back(arr, &obj);
+    json_free(&obj);
+    return true;
+}
+
+size_t agent_push_contract_work_surface_json(struct json_value *arr,
+                                             const char *surface)
+{
+    if (!arr || !surface || !surface[0])
+        return 0;
+
+    int max_rank = 0;
+    for (size_t i = 0; i < g_agent_work_surface_count; i++) {
+        const struct agent_contract_work_surface *e =
+            &g_agent_work_surfaces[i];
+        if (e->surface && strcmp(e->surface, surface) == 0 &&
+            e->rank > max_rank)
+            max_rank = e->rank;
+    }
+
+    size_t pushed = 0;
+    for (int rank = 1; rank <= max_rank; rank++) {
+        for (size_t i = 0; i < g_agent_work_surface_count; i++) {
+            const struct agent_contract_work_surface *e =
+                &g_agent_work_surfaces[i];
+            if (e->rank != rank || !e->surface ||
+                strcmp(e->surface, surface) != 0)
+                continue;
+            if (agent_push_work_item_json(arr, e))
                 pushed++;
         }
     }

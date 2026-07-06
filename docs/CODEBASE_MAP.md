@@ -163,6 +163,12 @@ controller `k_routes[]` arrays.
   tables in the controllers. REST-index operator drilldowns such as
   `healthcheck`/`zcl_health`, `milestone`/`zcl_milestone`, and
   `refold`/`zcl_refold_status` also belong in that registry.
+- `zclassic23 agentops` / `zcl_agent_ops` — compact no-`jq` operator command
+  center. Its direct/drilldown commands, API-gap list, and top-next-work list
+  are registry-fed from `agent_contract_registry.c`
+  (`g_agent_contracts`, `g_agent_command_surfaces`, `g_agent_work_surfaces`);
+  keep controller code focused on assembling live state, not owning ranked
+  planning tables.
 - `zclassic23 agentlanes` / `zcl_agent_lanes` — native canonical/soak/dev lane
   topology and `zcl.operator_deployment_safety.v1` policy. Use this before
   deciding where a fresh binary may be deployed or restarted.

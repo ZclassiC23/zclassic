@@ -203,7 +203,10 @@ operator/architecture answers that should not require `jq` belong in
 MCP/native/REST. Registry-backed command groupings for `agentmap` and
 telemetry live in `app/controllers/src/agent_contract_registry.c`
 (`g_agent_command_surfaces`); keep only composite/local commands in the
-controller that assembles the response.
+controller that assembles the response. Ranked `agentops` planning lists
+(`api_gaps` and `top_next_work`) live beside them in `g_agent_work_surfaces`
+so the compact command center is data-owned by the registry, not by response
+assembly code.
 
 ## Command Center
 

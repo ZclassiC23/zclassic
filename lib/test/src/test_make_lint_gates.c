@@ -3300,14 +3300,17 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ops_buf, "diagnose_command") != NULL);
         ASSERT(strstr(agent_ops_buf, "agentdiagnose") != NULL);
         ASSERT(strstr(agent_ops_buf, "top_next_work") != NULL);
-        ASSERT(strstr(agent_ops_buf, "finish_self_verified_utxo_anchor_rebuild")
+        ASSERT(strstr(agent_ops_buf, "api_gaps") != NULL);
+        ASSERT(strstr(agent_ops_buf,
+                      "agent_push_contract_work_surface_json(&gaps")
                != NULL);
-        ASSERT(strstr(agent_ops_buf, "harden_peer_bootstrap_lifecycle")
+        ASSERT(strstr(agent_ops_buf,
+                      "agent_push_contract_work_surface_json(&work")
                != NULL);
-        ASSERT(strstr(agent_ops_buf, "promote_mvp_operator_proofs") != NULL);
-        ASSERT(strstr(agent_ops_buf, "shrink_boot_refold_supervised_units")
-               != NULL);
-        ASSERT(strstr(agent_ops_buf, "dry_agent_contract_registry") == NULL);
+        ASSERT(strstr(agent_ops_buf, "agentops.api_gaps") != NULL);
+        ASSERT(strstr(agent_ops_buf, "agentops.top_next_work") != NULL);
+        ASSERT(strstr(agent_ops_buf,
+                      "finish_self_verified_utxo_anchor_rebuild") == NULL);
         ASSERT(strstr(agent_contracts_buf, "zcl.agent_runtime_identity.v1")
                != NULL);
         ASSERT(strstr(agent_contracts_buf, "No Python is required") != NULL);
@@ -3357,11 +3360,28 @@ static int t_native_agent_api_contract(void)
                       "agent_contract_command_surface_count") != NULL);
         ASSERT(strstr(agent_registry_buf,
                       "agent_push_contract_command_surface_json") != NULL);
+        ASSERT(strstr(agent_registry_buf, "g_agent_work_surfaces") != NULL);
+        ASSERT(strstr(agent_registry_buf,
+                      "agent_contract_work_surface_count") != NULL);
+        ASSERT(strstr(agent_registry_buf,
+                      "agent_push_contract_work_surface_json") != NULL);
         ASSERT(strstr(agent_registry_buf,
                       "agentmap.commands.core") != NULL);
         ASSERT(strstr(agent_registry_buf,
                       "agentmap.commands.drilldown") != NULL);
         ASSERT(strstr(agent_registry_buf, "agentmap.telemetry") != NULL);
+        ASSERT(strstr(agent_registry_buf, "agentops.api_gaps") != NULL);
+        ASSERT(strstr(agent_registry_buf, "agentops.top_next_work") != NULL);
+        ASSERT(strstr(agent_registry_buf,
+                      "finish_self_verified_utxo_anchor_rebuild") != NULL);
+        ASSERT(strstr(agent_registry_buf,
+                      "harden_peer_bootstrap_lifecycle") != NULL);
+        ASSERT(strstr(agent_registry_buf, "promote_mvp_operator_proofs")
+               != NULL);
+        ASSERT(strstr(agent_registry_buf,
+                      "shrink_boot_refold_supervised_units") != NULL);
+        ASSERT(strstr(agent_registry_buf, "dry_agent_contract_registry")
+               == NULL);
         ASSERT(strstr(agent_registry_buf, "agent_contract_lookup") != NULL);
         ASSERT(strstr(agent_registry_buf,
                       "agent_push_contract_command_json") != NULL);

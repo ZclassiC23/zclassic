@@ -12,25 +12,6 @@
 #include "rpc/server.h"
 #include "util/clientversion.h"
 
-#include <stdint.h>
-
-static void agent_ops_push_work(struct json_value *arr, int64_t rank,
-                                const char *name, const char *why,
-                                const char *first_slice,
-                                const char *proof)
-{
-    struct json_value obj;
-    json_init(&obj);
-    json_set_object(&obj);
-    json_push_kv_int(&obj, "rank", rank);
-    json_push_kv_str(&obj, "name", name);
-    json_push_kv_str(&obj, "why", why);
-    json_push_kv_str(&obj, "first_slice", first_slice);
-    json_push_kv_str(&obj, "proof", proof);
-    json_push_back(arr, &obj);
-    json_free(&obj);
-}
-
 static void agent_ops_push_quality_summary(struct json_value *out)
 {
     struct json_value q;
@@ -140,43 +121,13 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
 
     json_init(&gaps);
     json_set_array(&gaps);
-    agent_ops_push_work(&gaps, 1, "runtime_identity_everywhere",
-        "Agents must know whether a payload came from source HEAD, dev, soak, or canonical.",
-        "add build/lane identity to every first-call compact response",
-        "syncdiag_rpc + mcp_controllers + api");
-    agent_ops_push_work(&gaps, 2, "state_catalog_schema",
-        "The first catalog now exists; next it should be kept rich enough for automated routing.",
-        "extend catalog metadata as new dumpers need cost, freshness, key, and owner hints",
-        "statecatalog RPC + MCP catalog tests");
-    agent_ops_push_work(&gaps, 3, "timeline_query",
-        "Agents still stitch together logs, SQL, events, and condition detail to answer what happened.",
-        "ship and extend zcl.timeline.v1 before adding more bespoke log readers",
-        "event + mcp_controllers + syncdiag_rpc");
+    agent_push_contract_work_surface_json(&gaps, "agentops.api_gaps");
     json_push_kv(result, "api_gaps", &gaps);
     json_free(&gaps);
 
     json_init(&work);
     json_set_array(&work);
-    agent_ops_push_work(&work, 1, "finish_self_verified_utxo_anchor_rebuild",
-        "It replaces the borrowed snapshot seed with a UTXO anchor rebuilt from zclassic23's own verified block history.",
-        "run anchorstatus on the producer, fix any named blocker, then copy-prove -refold-from-anchor artifact and cutover gates",
-        "copy fixture, refold tests, parity checks, live H* climb");
-    agent_ops_push_work(&work, 2, "harden_peer_bootstrap_lifecycle",
-        "Tip-following depends on failing over slow peers, avoiding duplicate peer rows, and proving zclassic23 peers can bootstrap other nodes.",
-        "promote peer lifecycle incidents, downloader failover, and bootstrapstatus into one operator proof",
-        "download + peer_lifecycle + syncdiag_rpc + bootstrap harness");
-    agent_ops_push_work(&work, 3, "promote_mvp_operator_proofs",
-        "MRS is 4/8; cold-start sync, live store flow, 168h soak, and exact parity still need full run-pass evidence.",
-        "wire the remaining full proofs into milestone and background quality verdicts",
-        "mvp-verify + soak-evidence + parity service");
-    agent_ops_push_work(&work, 4, "extend_semantic_timeline_durability",
-        "The event-ring timeline is semantic now; longer root-cause windows need durable event_log/node.log references.",
-        "extend zcl.timeline.v1 toward durable event_log/node.log references",
-        "event + mcp_controllers + syncdiag_rpc");
-    agent_ops_push_work(&work, 5, "shrink_boot_refold_supervised_units",
-        "The largest code-health risk is still oversized boot/refold orchestration that future agents must understand before changing liveness.",
-        "split one behavior-preserving boot/refold responsibility behind existing supervisor contracts",
-        "make lint + boot smoke + refold tests + live H* climb");
+    agent_push_contract_work_surface_json(&work, "agentops.top_next_work");
     json_push_kv(result, "top_next_work", &work);
     json_free(&work);
     return true;
