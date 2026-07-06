@@ -2267,6 +2267,8 @@ int test_syncdiag_rpc(void)
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_interface.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.agent_ops.v1") != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_lanes.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_runtime_services.v1") != NULL;
@@ -2283,6 +2285,22 @@ int test_syncdiag_rpc(void)
             find_object_with_str(schemas, "schema",
                                  "zcl.operator_deployment_safety.v1") != NULL;
         ok = ok && json_array_has_substr(transports, "zcl_agent_build");
+        ok = ok && json_array_has_substr(transports, "zcl_agent_ops");
+
+        struct json_value ops;
+        json_init(&ops);
+        ok = ok && rpc_table_execute(&tbl, "agentops", &params, &ops);
+        const struct json_value *ops_work = json_get(&ops, "top_next_work");
+        ok = ok && ops.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&ops, "schema")),
+                          "zcl.agent_ops.v1") == 0;
+        ok = ok && json_get_bool(json_get(&ops, "no_jq_required"));
+        ok = ok && strcmp(json_get_str(json_get(&ops, "native_command")),
+                          "zclassic23 agentops") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&ops, "mcp_tool")),
+                          "zcl_agent_ops") == 0;
+        ok = ok && ops_work && json_size(ops_work) == 5;
+        ok = ok && json_get(&ops, "architecture_review") != NULL;
 
         struct json_value lanes;
         json_init(&lanes);
@@ -2849,6 +2867,7 @@ int test_syncdiag_rpc(void)
 
         json_free(&params);
         json_free(&contracts);
+        json_free(&ops);
         json_free(&lanes);
         json_free(&build);
         json_free(&interface);

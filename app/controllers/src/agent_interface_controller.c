@@ -178,6 +178,10 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
         "zcl.agent_build.v1", "zclassic23 agentbuild",
         "zcl_agent_build", "",
         "cache-aware compile/test/reproducibility contract");
+    agent_interface_push_capability(&capabilities, "operator_command_center",
+        "zcl.agent_ops.v1", "zclassic23 agentops",
+        "zcl_agent_ops", "",
+        "compact no-jq agent command center and next-work list");
     agent_interface_push_capability(&capabilities, "deploy_guard",
         "zcl.agent_deploy_guard.v1",
         "zclassic23 agentdeployguard <action>",
@@ -225,6 +229,7 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
     json_push_kv_str(&loop, "code_map", "zcl_agent_map");
     json_push_kv_str(&loop, "changed_files_to_tests", "zcl_agent_impact");
     json_push_kv_str(&loop, "build_contract", "zcl_agent_build");
+    json_push_kv_str(&loop, "ops_command_center", "zcl_agent_ops");
     json_push_kv_str(&loop, "contract_registry", "zcl_agent_contracts");
     json_push_kv_str(&loop, "deploy_guard", "zcl_agent_deploy_guard");
     json_push_kv_str(&loop, "subsystem_state", "zcl_state");

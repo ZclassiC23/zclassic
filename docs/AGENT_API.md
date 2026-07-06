@@ -7,6 +7,7 @@ same native RPC methods. Shell wrappers are compatibility shims only.
 
 | need | native command | MCP tool |
 |---|---|---|
+| No-jq command center | `zclassic23 agentops` | `zcl_agent_ops` |
 | Live node status | `zclassic23 agent` | `zcl_agent` |
 | Code/docs/test map | `zclassic23 agentmap` | `zcl_agent_map` |
 | Lane topology | `zclassic23 agentlanes` | `zcl_agent_lanes` |
@@ -18,16 +19,18 @@ same native RPC methods. Shell wrappers are compatibility shims only.
 | Mirror lag/blocker contract | `zclassic23 getmirrorstatus` | `zcl_mirror_status` |
 
 The native RPC contracts are implemented in
-`app/controllers/src/agent_controller.c`. MCP routes in
+`app/controllers/src/agent_controller.c` and the focused no-jq command center
+in `app/controllers/src/agent_ops_controller.c`. MCP routes in
 `tools/mcp/controllers/ops_controller.c` proxy those same native methods. REST
 currently exposes the public status contract at `GET /api/v1/agent`.
 
 ## Preferred Interface
 
 The best interface for an AI coding operator is MCP with typed JSON tools:
-start with `zcl_agent_interface`, then use `zcl_agent`, `zcl_agent_lanes`,
-`zcl_mirror_status`, `zcl_agent_impact`, `zcl_agent_build`, `zcl_state`,
-`zcl_node_log`, and `zcl_sql` as needed. The
+start with `zcl_agent_ops` for the compact no-jq command center, use
+`zcl_agent_interface` when checking the full transport contract, then use
+`zcl_agent`, `zcl_agent_lanes`, `zcl_mirror_status`, `zcl_agent_impact`,
+`zcl_agent_build`, `zcl_state`, `zcl_node_log`, and `zcl_sql` as needed. The
 native binary commands (`zclassic23 agentinterface`, `zclassic23 agent`, etc.)
 are the second-best interface for terminal work and scripts. REST is the
 public read-only mirror.
@@ -66,10 +69,20 @@ before adding new wrapper behavior.
 No Python is required to consume the preferred agent API. Contract assembly,
 status interpretation, changed-file test mapping, and deploy safety decisions
 belong in C under `app/controllers/src/agent_controller.c` and
-`app/controllers/src/agent_interface_controller.c`, then get exposed through
+`app/controllers/src/agent_interface_controller.c`; compact operator/architecture
+answers that should not require `jq` belong in
+`app/controllers/src/agent_ops_controller.c`, then get exposed through
 MCP/native/REST.
 
 ## Command Center
+
+For architecture and operator planning, the first call is `zcl_agent_ops`
+through MCP, or `zclassic23 agentops` from the native binary. It returns
+`zcl.agent_ops.v1`: direct decision fields, `no_jq_required=true`, current lane
+and runtime build contracts, background quality summary fields, named
+drill-down commands, API gaps, and the top next architecture work list. Do not
+pipe larger discovery payloads through `jq` to build this answer by hand; add a
+field to `agentops` when an agent repeatedly needs the same decision.
 
 The first-call operator view is `zcl_operator_summary` through MCP, or
 `zclassic23 agent` through the native binary. It returns the stable status,

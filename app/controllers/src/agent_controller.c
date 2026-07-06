@@ -94,7 +94,7 @@ static bool agent_path_is_native_agent_api(const char *path)
 {
     static const char *const paths[] = {
         "app/controllers/src/agent_controller.c", "app/controllers/src/agent_background_quality.c", "app/controllers/src/agent_impact_rules.c", "app/controllers/src/agent_interface_controller.c",
-        "app/controllers/src/agent_lanes_controller.c", "app/controllers/src/agent_operator_contracts.c", "app/controllers/src/agent_resources.c", "app/controllers/src/agent_restart_watchdog.c",
+        "app/controllers/src/agent_lanes_controller.c", "app/controllers/src/agent_operator_contracts.c", "app/controllers/src/agent_ops_controller.c", "app/controllers/src/agent_resources.c", "app/controllers/src/agent_restart_watchdog.c",
         "app/controllers/src/agent_runtime_controller.c", "app/controllers/src/event_agent_peers.c", "app/controllers/src/event_agent_peers.h", "app/controllers/src/event_agent_summary.c",
         "app/controllers/src/event_agent_summary.h", "app/controllers/include/controllers/agent_controller.h", "app/controllers/include/controllers/agent_background_quality.h", "app/controllers/include/controllers/agent_impact_rules.def",
         "app/controllers/include/controllers/agent_impact_rules.h", "app/controllers/include/controllers/agent_operator_contracts.h", "app/controllers/include/controllers/agent_resources.h", "app/controllers/include/controllers/agent_restart_watchdog.h",
@@ -571,12 +571,11 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     agent_push_schema(&schemas, "zcl.agent_build.v1",
                       "zclassic23 agentbuild / zcl_agent_build",
                       "cached incremental and reproducible build contract");
-    agent_push_schema(&schemas, "zcl.background_quality_runtime.v1",
-                      "nested in zcl.agent_build.v1 background_quality_status",
-                      "native status-file reader for background tests/fuzz/coverage verdicts");
+    agent_push_schema(&schemas, "zcl.background_quality_runtime.v1", "nested in zcl.agent_build.v1 background_quality_status", "native status-file reader for background tests/fuzz/coverage verdicts");
     agent_push_schema(&schemas, "zcl.agent_interface.v1",
                       "zclassic23 agentinterface / zcl_agent_interface",
                       "preferred AI development interface and transport ranking");
+    agent_push_schema(&schemas, "zcl.agent_ops.v1", "zclassic23 agentops / zcl_agent_ops", "compact no-jq operator command center and top next work");
     agent_push_schema(&schemas, "zcl.agent_lanes.v1",
                       "zclassic23 agentlanes / zcl_agent_lanes",
                       "canonical/soak/dev lane topology and safety rules");
@@ -616,9 +615,9 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     json_init(&transports);
     json_set_array(&transports);
     agent_push_str(&transports,
-                   "native: zclassic23 agent|agentinterface|agentlanes|agentmap|agentimpact|agentcontracts|agentbuild|agentdeployguard|getmirrorstatus");
+                   "native: zclassic23 agent|agentops|agentinterface|agentlanes|agentmap|agentimpact|agentcontracts|agentbuild|agentdeployguard|getmirrorstatus");
     agent_push_str(&transports,
-                   "mcp: zcl_agent, zcl_agent_interface, zcl_agent_lanes, zcl_agent_map, zcl_agent_impact, zcl_agent_contracts, zcl_agent_build, zcl_agent_deploy_guard, zcl_mirror_status");
+                   "mcp: zcl_agent, zcl_agent_ops, zcl_agent_interface, zcl_agent_lanes, zcl_agent_map, zcl_agent_impact, zcl_agent_contracts, zcl_agent_build, zcl_agent_deploy_guard, zcl_mirror_status");
     agent_push_str(&transports,
                    "rest: GET /api/v1/agent for public status; API index at zclassic23 api");
     agent_push_str(&transports,

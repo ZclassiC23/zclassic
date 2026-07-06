@@ -46,6 +46,7 @@ DEFINE_PT(h_zcl_agent_lanes,    "agentlanes",     "mcp.ops")
 DEFINE_PT(h_zcl_agent_contracts,"agentcontracts", "mcp.ops")
 DEFINE_PT(h_zcl_agent_build,    "agentbuild",     "mcp.ops")
 DEFINE_PT(h_zcl_agent_interface,"agentinterface", "mcp.ops")
+DEFINE_PT(h_zcl_agent_ops,      "agentops",       "mcp.ops")
 
 static char *json_value_to_body(struct json_value *v, const char *label);
 
@@ -1477,6 +1478,10 @@ static const struct mcp_tool_route k_routes[] = {
       "Preferred AI development interface: MCP vs native CLI vs REST, "
       "versioned JSON rules, C ownership, and anti-patterns to avoid.",
       NULL, 0, h_zcl_agent_interface, 0, NULL },
+    { "zcl_agent_ops", "ops",
+      "Compact no-jq AI/operator command center: direct decision fields, "
+      "drill-down commands, API gaps, and top next architecture work.",
+      NULL, 0, h_zcl_agent_ops, 0, NULL },
     { "zcl_agent_deploy_guard", "ops",
       "C-native deploy/restart guard decision based on "
       "zcl.operator_deployment_safety.v1.",

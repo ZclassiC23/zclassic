@@ -622,6 +622,7 @@ void register_event_rpc_commands(struct rpc_table *t)
         { "control", "agentcontracts",    rpc_agent_contracts,   true },
         { "control", "agentbuild",        rpc_agent_build,       true },
         { "control", "agentinterface",    rpc_agent_interface,   true },
+        { "control", "agentops",          rpc_agent_ops,         true },
         { "control", "agentdeployguard",  rpc_agent_deploy_guard, true },
         { "control", "milestone",         rpc_milestone_status,  true },
         { "control", "mvpstatus",         rpc_milestone_status,  true },
