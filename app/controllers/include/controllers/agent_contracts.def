@@ -131,6 +131,11 @@ AGENT_CONTRACT("dbquery", "sql_inspection", "zcl.sql_result.v1",
                "sql_command", "sql_tool",
                "", 0, "", "",
                "bounded SELECT-only node.db inspection with validation, timeout, and row caps")
+AGENT_CONTRACT("eventlog", "raw_event_ring", "zcl.event_log.v1",
+               "zclassic23 eventlog <count>", "zcl_events", "",
+               "eventlog_command", "eventlog_tool",
+               "", 0, "", "",
+               "bounded raw recent event ring snapshot; prefer timeline for semantic filters")
 AGENT_CONTRACT("timeline", "semantic_timeline", "zcl.timeline.v1",
                "zclassic23 timeline '{\"category\":\"sync\",\"count\":50,\"since_secs\":3600}'",
                "zcl_timeline", "",

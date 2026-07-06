@@ -84,6 +84,8 @@ static const struct agent_contract_command_surface g_agent_command_surfaces[] = 
       "read-only progress.kv status for the sovereign anchor producer" },
     { "agentmap.telemetry", 6, "node_db", "dbquery",
       "SELECT-only node.db inspection with limits" },
+    { "agentmap.telemetry", 7, "events", "eventlog",
+      "recent structured node events" },
 };
 
 static const size_t g_agent_command_surface_count =
@@ -245,6 +247,8 @@ const char *agent_contract_probe_params_json(const char *method)
         return "[]";
     if (strcmp(method, "dbquery") == 0)
         return "[\"SELECT name FROM sqlite_master WHERE type = 'table'\",1]";
+    if (strcmp(method, "eventlog") == 0)
+        return "[1]";
     return "[]";
 }
 

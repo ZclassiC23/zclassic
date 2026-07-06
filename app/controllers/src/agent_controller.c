@@ -284,10 +284,6 @@ bool rpc_agent_map(const struct json_value *params, bool help,
                        "wide health packet with peers, sync, chain, validation, and memory");
     agent_push_contract_command_surface_json(&telemetry,
                                              "agentmap.telemetry");
-    agent_push_command(&telemetry, "events",
-                       "zclassic23 eventlog <count>",
-                       "zcl_events",
-                       "recent structured node events");
     agent_push_command(&telemetry, "quality_lanes",
                        "make quality-linger-status",
                        "zcl_agent_build",

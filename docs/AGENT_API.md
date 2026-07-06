@@ -38,10 +38,11 @@ the contract registry, the interface capability matrix, the `agentops`
 direct/drilldown command lists, and the REST API index's native/MCP command
 fields consume that table instead of maintaining separate lists. Generic
 diagnostic primitives such as `dumpstate` / `zcl_state`, `getnodelog` /
-`zcl_node_log`, and the bounded SQL primitive `dbquery` / `zcl_sql` are
-registry rows too, so agent command catalogs do not hand-copy their native/MCP
-names. Registry rows also own `probe_params_json`; parameterized first-call
-probes such as `dbquery` must declare a bounded sample there instead of adding
+`zcl_node_log`, the bounded SQL primitive `dbquery` / `zcl_sql`, and the raw
+event-ring primitive `eventlog` / `zcl_events` are registry rows too, so agent
+command catalogs do not hand-copy their native/MCP names. Registry rows also
+own `probe_params_json`; parameterized first-call probes such as `dbquery` and
+`eventlog` must declare a bounded sample there instead of adding
 method-specific CLI branches. Operator drilldowns exposed by the REST index
 (`healthcheck` / `zcl_health`, `milestone` / `zcl_milestone`, and `refold` /
 `zcl_refold_status`) also live there, so native, MCP, and REST discovery share

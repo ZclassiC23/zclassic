@@ -3476,7 +3476,7 @@ int test_syncdiag_rpc(void)
             agent_contract_command_surface_count(
                 "agentmap.commands.drilldown") == 5;
         ok = ok &&
-            agent_contract_command_surface_count("agentmap.telemetry") == 6;
+            agent_contract_command_surface_count("agentmap.telemetry") == 7;
         ok = ok &&
             agent_contract_command_surface_count("missing.surface") == 0;
         ok = ok && commands && commands->type == JSON_ARR;
@@ -3515,6 +3515,17 @@ int test_syncdiag_rpc(void)
         ok = ok && map_db &&
             strcmp(json_get_str(json_get(map_db, "mcp")),
                    "zcl_sql") == 0;
+        const struct json_value *map_events =
+            find_object_with_str(telemetry, "method", "eventlog");
+        ok = ok && map_events &&
+            strcmp(json_get_str(json_get(map_events, "schema")),
+                   "zcl.event_log.v1") == 0;
+        ok = ok && map_events &&
+            strcmp(json_get_str(json_get(map_events, "native")),
+                   "zclassic23 eventlog <count>") == 0;
+        ok = ok && map_events &&
+            strcmp(json_get_str(json_get(map_events, "mcp")),
+                   "zcl_events") == 0;
         ok = ok && subsystems && subsystems->type == JSON_ARR;
         ok = ok && find_object_with_str(subsystems, "name", "fast_ci") != NULL;
         ok = ok && shim && shim->type == JSON_OBJ;
@@ -3638,6 +3649,8 @@ int test_syncdiag_rpc(void)
             find_object_with_str(contract_list, "method", "getnodelog");
         const struct json_value *contract_dbquery =
             find_object_with_str(contract_list, "method", "dbquery");
+        const struct json_value *contract_eventlog =
+            find_object_with_str(contract_list, "method", "eventlog");
         const struct json_value *contract_healthcheck =
             find_object_with_str(contract_list, "method", "healthcheck");
         const struct json_value *contract_milestone =
@@ -3752,6 +3765,21 @@ int test_syncdiag_rpc(void)
                          == 0;
         ok = ok && strstr(agent_contract_probe_params_json("dbquery"),
                           "sqlite_master") != NULL;
+        ok = ok && contract_eventlog &&
+            strcmp(json_get_str(json_get(contract_eventlog, "schema")),
+                   "zcl.event_log.v1") == 0;
+        ok = ok && contract_eventlog &&
+            strcmp(json_get_str(json_get(contract_eventlog, "native")),
+                   "zclassic23 eventlog <count>") == 0;
+        ok = ok && contract_eventlog &&
+            strcmp(json_get_str(json_get(contract_eventlog, "mcp")),
+                   "zcl_events") == 0;
+        ok = ok && contract_eventlog &&
+            strcmp(json_get_str(json_get(contract_eventlog,
+                                         "probe_params_json")),
+                   "[1]") == 0;
+        ok = ok && strcmp(agent_contract_probe_params_json("eventlog"), "[1]")
+                         == 0;
         ok = ok && contract_healthcheck &&
             strcmp(json_get_str(json_get(contract_healthcheck, "schema")),
                    "zcl.healthcheck.v1") == 0;
@@ -3813,6 +3841,8 @@ int test_syncdiag_rpc(void)
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.sql_result.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.event_log.v1") != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.healthcheck.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.milestone_status.v1") != NULL;
@@ -3846,6 +3876,7 @@ int test_syncdiag_rpc(void)
         ok = ok && json_array_has_substr(transports, "zcl_state");
         ok = ok && json_array_has_substr(transports, "zcl_node_log");
         ok = ok && json_array_has_substr(transports, "zcl_sql");
+        ok = ok && json_array_has_substr(transports, "zcl_events");
         ok = ok && json_array_has_substr(transports, "zcl_timeline");
         ok = ok && json_array_has_substr(transports, "zcl_health");
         ok = ok && json_array_has_substr(transports, "zcl_milestone");
