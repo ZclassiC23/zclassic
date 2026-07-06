@@ -46,8 +46,9 @@ AGENT_CONTRACT("statecatalog", "state_catalog", "zcl.state_catalog.v1",
                "zclassic23 statecatalog", "zcl_state_catalog", "",
                "machine-readable zcl_state subsystem catalog with keys, cost, and owner hints")
 AGENT_CONTRACT("timeline", "semantic_timeline", "zcl.timeline.v1",
-               "zclassic23 timeline <category> <count>", "zcl_timeline", "",
-               "category-filtered structured event timeline with semantic summaries and seq cursors")
+               "zclassic23 timeline '{\"category\":\"sync\",\"count\":50,\"since_secs\":3600}'",
+               "zcl_timeline", "",
+               "category-filtered structured event timeline with bounded semantic filters, log refs, summaries, and seq cursors")
 AGENT_CONTRACT("getmirrorstatus", "mirror_status", "zcl.mirror_status.v1",
                "zclassic23 getmirrorstatus", "zcl_mirror_status", "",
                "mirror reachability, lag, hash agreement, and active blocker contract")

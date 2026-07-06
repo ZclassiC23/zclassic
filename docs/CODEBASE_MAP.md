@@ -174,12 +174,14 @@ controller `k_routes[]` arrays.
   for every `zcl_state` subsystem: name, description, accepted key forms,
   expected cost, freshness, owner shape/file, read-only safety level, focused
   tests, and native/MCP drill-down commands.
-- `zclassic23 timeline <category> <count>` / `zcl_timeline` — versioned
-  semantic event timeline over the structured event ring. Categories include
+- `zclassic23 timeline '{"category":"sync","count":50,"since_secs":3600}'` /
+  `zcl_timeline` — versioned semantic event timeline over the structured event
+  ring with bounded server-side filters for `since`, `height`, `peer`,
+  `reducer_stage`, `condition`, `deploy`, and `lane`. Categories include
   `sync`, `peer`, `message`, `chain`, `validation`, `condition`, `oracle`,
   `mirror`, `boot`, `db`, `wallet`, `disk`, `mcp`, and `net`; responses include
   `head_seq`, `semantic_summary`, `type_counts`, `peer_counts`,
-  `recommended_drilldowns`, and `events[].seq` cursor fields.
+  `log_references`, `recommended_drilldowns`, and `events[].seq` cursor fields.
 - `zclassic23 api` — native API discovery from the running node. It returns the
   same `zcl.rest_index.v1` body as REST `GET /api` and `GET /api/v1`, with
   `api_version`, `base_path`, resource routes, CRUD conventions, and the
@@ -213,10 +215,11 @@ and expose them through MCP/REST instead.
   header_probe, verify_engine, ...).
 - `zcl_node_log(pattern, since_secs, max_lines, level)` — server-side reverse
   scan of node.log in 64 KB chunks.
-- `zcl_timeline(category, count)` — category-filtered structured events with
-  `zcl.timeline.v1` metadata, semantic summaries, type/peer counts, suggested
-  drill-downs, and seq cursors; prefer this before raw `zcl_events` when
-  answering root-cause questions.
+- `zcl_timeline(category, count, since_secs, peer, height, reducer_stage,
+  condition, deploy, lane)` — category-filtered structured events with
+  `zcl.timeline.v1` metadata, bounded server-side filters, semantic summaries,
+  type/peer counts, log references, suggested drill-downs, and seq cursors;
+  prefer this before raw `zcl_events` when answering root-cause questions.
 - `zcl_sql("SELECT ...")` — SELECT-only, semicolon-rejected, auto-LIMIT, 2 s
   budget, 100-row cap, rate-gated 1 RPS.
 

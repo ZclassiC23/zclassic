@@ -984,13 +984,41 @@ static int h_zcl_timeline(const struct mcp_request *req,
     const char *category = json_get_str_or(req->args, "category", "all");
     int64_t count = json_get_int_or(req->args, "count", 50);
 
-    struct mcp_params p;
-    mcp_params_init(&p);
-    mcp_params_push_str(&p, (category && category[0]) ? category : "all");
-    mcp_params_push_int(&p, count);
-    char *params = mcp_params_to_json(&p);
+    struct json_value arr, obj;
+    json_init(&arr);
+    json_set_array(&arr);
+    json_init(&obj);
+    json_set_object(&obj);
+    json_push_kv_str(&obj, "category",
+                     (category && category[0]) ? category : "all");
+    json_push_kv_int(&obj, "count", count);
+
+    const char *str_filters[] = {
+        "reducer_stage", "stage", "condition", "deploy", "lane",
+    };
+    const char *int_filters[] = {
+        "scan_count", "scan", "since_us", "since_secs", "peer", "height",
+    };
+    for (size_t i = 0; i < sizeof(str_filters) / sizeof(str_filters[0]); i++) {
+        const char *v = json_get_str(json_get(req->args, str_filters[i]));
+        if (v && v[0])
+            json_push_kv_str(&obj, str_filters[i], v);
+    }
+    for (size_t i = 0; i < sizeof(int_filters) / sizeof(int_filters[0]); i++) {
+        const struct json_value *v = json_get(req->args, int_filters[i]);
+        if (v && (v->type == JSON_INT || v->type == JSON_REAL))
+            json_push_kv_int(&obj, int_filters[i], json_get_int(v));
+    }
+    json_push_back(&arr, &obj);
+
+    size_t need = json_write(&arr, NULL, 0);
+    char *params = zcl_malloc(need + 1u, "mcp timeline params");
+    if (params)
+        json_write(&arr, params, need + 1u);
     char *body = params ? mcp_node_rpc("timeline", params) : NULL;
     free(params);
+    json_free(&obj);
+    json_free(&arr);
     return mcp_return_rpc_body(res, body, "timeline", "mcp.ops");
 }
 
@@ -1428,6 +1456,32 @@ static const struct mcp_param_spec p_timeline[] = {
       "\"all\"" },
     { "count", MCP_PARAM_INT, false, "Number of events",
       1, 1000, 0, 0, NULL, "50" },
+    { "scan_count", MCP_PARAM_INT, false,
+      "Bounded number of retained category events to scan before filters",
+      1, 65536, 0, 0, NULL, "1000" },
+    { "since_secs", MCP_PARAM_INT, false,
+      "Only include events from the last N seconds",
+      1, 604800, 0, 0, NULL, NULL },
+    { "since_us", MCP_PARAM_INT, false,
+      "Only include events with timestamp_us >= this absolute value",
+      0, 0, 0, 0, NULL, NULL },
+    { "peer", MCP_PARAM_INT, false, "Exact peer id filter",
+      0, 1000000, 0, 0, NULL, NULL },
+    { "height", MCP_PARAM_INT, false,
+      "Height token filter over typed event payloads",
+      0, 0, 0, 0, NULL, NULL },
+    { "reducer_stage", MCP_PARAM_STR, false,
+      "Reducer stage/payload substring filter",
+      0, 0, 0, 64, NULL, NULL },
+    { "condition", MCP_PARAM_STR, false,
+      "Condition name/payload substring filter",
+      0, 0, 0, 96, NULL, NULL },
+    { "deploy", MCP_PARAM_STR, false,
+      "Deploy/build payload substring filter",
+      0, 0, 0, 96, NULL, NULL },
+    { "lane", MCP_PARAM_STR, false,
+      "Operator lane payload substring filter",
+      0, 0, 0, 64, NULL, NULL },
 };
 static const struct mcp_param_spec p_rpc[] = {
     { "method", MCP_PARAM_STR, true,  "RPC method name",
@@ -1590,9 +1644,10 @@ static const struct mcp_tool_route k_routes[] = {
       p_events, PARAM_COUNT(p_events), h_zcl_events, 0, NULL },
     { "zcl_timeline", "ops",
       "Versioned semantic event timeline by category with seq cursors; "
-      "prefer this over client-side jq/string filtering of zcl_events.",
+      "supports bounded server-side filters; prefer this over client-side "
+      "jq/string filtering of zcl_events.",
       p_timeline, PARAM_COUNT(p_timeline), h_zcl_timeline, 0,
-      "{\"category\":\"sync\",\"count\":50}" },
+      "{\"category\":\"sync\",\"count\":50,\"since_secs\":3600}" },
     { "zcl_rpc", "ops",
       "Call any RPC method directly. 85+ commands available.",
       p_rpc, PARAM_COUNT(p_rpc), h_zcl_rpc,

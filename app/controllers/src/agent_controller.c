@@ -299,9 +299,9 @@ bool rpc_agent_map(const struct json_value *params, bool help,
     agent_push_command(&commands, "logs", "zclassic23 getnodelog <regex>",
                        "zcl_node_log", "bounded server-side log search");
     agent_push_command(&commands, "timeline",
-                       "zclassic23 timeline <category> <count>",
+                       "zclassic23 timeline '{\"category\":\"sync\",\"count\":50,\"since_secs\":3600}'",
                        "zcl_timeline",
-                       "category-filtered event timeline with seq cursors");
+                       "category-filtered event timeline with bounded filters");
     agent_push_command(&commands, "state", "zclassic23 dumpstate <subsystem>",
                        "zcl_state", "generic subsystem diagnostics");
     agent_push_command(&commands, "state_catalog", "zclassic23 statecatalog",
@@ -338,9 +338,9 @@ bool rpc_agent_map(const struct json_value *params, bool help,
                        "zcl_events",
                        "recent structured node events");
     agent_push_command(&telemetry, "timeline",
-                       "zclassic23 timeline <category> <count>",
+                       "zclassic23 timeline '{\"category\":\"sync\",\"count\":50,\"since_secs\":3600}'",
                        "zcl_timeline",
-                       "versioned category-filtered event timeline with seq cursors");
+                       "versioned category-filtered event timeline with bounded filters");
     agent_push_command(&telemetry, "quality_lanes",
                        "make quality-linger-status",
                        "zcl_agent_build",

@@ -2405,6 +2405,98 @@ int test_syncdiag_rpc(void)
         ok = ok && timeline_drilldowns &&
             json_array_has_substr(timeline_drilldowns, "fail|reject|stale");
 
+        event_emitf(EV_CONDITION_DETECTED, 9,
+                    "name=download_queue_starved stage=body_fetch "
+                    "lane=dev deploy=make-deploy height=42");
+        event_emitf(EV_MCP_REQUEST, 0,
+                    "tool=deploy lane=dev deploy=make-deploy build=abc "
+                    "height=42");
+        event_emitf(EV_SYNC_HEARTBEAT, 9,
+                    "state=headers h=420 stage=body_fetch lane=dev");
+        event_emitf(EV_SYNC_HEARTBEAT, 9,
+                    "state=headers h=42 stage=body_fetch lane=dev");
+
+        struct json_value timeline_filter_params;
+        json_init(&timeline_filter_params);
+        json_set_object(&timeline_filter_params);
+        json_push_kv_str(&timeline_filter_params, "category", "all");
+        json_push_kv_int(&timeline_filter_params, "count", 5);
+        json_push_kv_int(&timeline_filter_params, "scan_count", 16);
+        json_push_kv_int(&timeline_filter_params, "since_secs", 3600);
+        json_push_kv_int(&timeline_filter_params, "peer", 9);
+        json_push_kv_int(&timeline_filter_params, "height", 42);
+        json_push_kv_str(&timeline_filter_params, "reducer_stage",
+                         "body_fetch");
+        json_push_kv_str(&timeline_filter_params, "condition",
+                         "download_queue_starved");
+        json_push_kv_str(&timeline_filter_params, "deploy", "make-deploy");
+        json_push_kv_str(&timeline_filter_params, "lane", "dev");
+        struct json_value timeline_filtered;
+        json_init(&timeline_filtered);
+        ok = ok && rpc_table_execute(&tbl, "timeline",
+                                     &timeline_filter_params,
+                                     &timeline_filtered);
+        const struct json_value *timeline_filtered_events =
+            json_get(&timeline_filtered, "events");
+        const struct json_value *timeline_filtered_filters =
+            json_get(&timeline_filtered, "filters");
+        const struct json_value *timeline_filtered_refs =
+            json_get(&timeline_filtered, "log_references");
+        const struct json_value *timeline_filtered_first =
+            timeline_filtered_events && timeline_filtered_events->type == JSON_ARR
+                && json_size(timeline_filtered_events) > 0
+                    ? json_at(timeline_filtered_events, 0) : NULL;
+        ok = ok && timeline_filtered.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&timeline_filtered,
+                                                "schema")),
+                          "zcl.timeline.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&timeline_filtered,
+                                                "status")),
+                          "ok") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&timeline_filtered,
+                                                "filter_model")),
+                          "bounded_server_side_scan_then_filter") == 0;
+        ok = ok &&
+            json_get_int(json_get(&timeline_filtered, "scan_count")) == 16;
+        ok = ok &&
+            json_get_int(json_get(&timeline_filtered,
+                                  "matched_before_limit")) == 1;
+        ok = ok &&
+            json_get_int(json_get(&timeline_filtered,
+                                  "count_returned")) == 1;
+        ok = ok && timeline_filtered_filters &&
+            json_get_bool(json_get(timeline_filtered_filters, "active"));
+        ok = ok && timeline_filtered_filters &&
+            json_get_int(json_get(timeline_filtered_filters, "peer")) == 9;
+        ok = ok && timeline_filtered_filters &&
+            json_get_int(json_get(timeline_filtered_filters, "height")) == 42;
+        ok = ok && timeline_filtered_filters &&
+            strcmp(json_get_str(json_get(timeline_filtered_filters,
+                                         "reducer_stage")),
+                   "body_fetch") == 0;
+        ok = ok && timeline_filtered_filters &&
+            strcmp(json_get_str(json_get(timeline_filtered_filters,
+                                         "condition")),
+                   "download_queue_starved") == 0;
+        ok = ok && timeline_filtered_filters &&
+            strcmp(json_get_str(json_get(timeline_filtered_filters,
+                                         "deploy")),
+                   "make-deploy") == 0;
+        ok = ok && timeline_filtered_filters &&
+            strcmp(json_get_str(json_get(timeline_filtered_filters,
+                                         "lane")),
+                   "dev") == 0;
+        ok = ok && timeline_filtered_first &&
+            json_get_int(json_get(timeline_filtered_first, "peer")) == 9;
+        ok = ok && timeline_filtered_first &&
+            strstr(json_get_str(json_get(timeline_filtered_first, "data")),
+                   "download_queue_starved") != NULL;
+        ok = ok && timeline_filtered_refs &&
+            json_array_has_substr(timeline_filtered_refs,
+                                  "download_queue_starved");
+        ok = ok && json_get(&timeline_filtered,
+                            "safe_next_action") != NULL;
+
         struct json_value catalog;
         json_init(&catalog);
         ok = ok && rpc_table_execute(&tbl, "statecatalog", &params,
@@ -2934,6 +3026,8 @@ int test_syncdiag_rpc(void)
                                                 "pressure_basis")),
                           "rss") == 0;
         json_free(&resources_body);
+        json_free(&timeline_filtered);
+        json_free(&timeline_filter_params);
 
         struct agent_resource_snapshot cgroup_resources = {
             .rss_mb = 9000,

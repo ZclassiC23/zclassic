@@ -17,7 +17,7 @@ same native RPC methods. Shell wrappers are compatibility shims only.
 | Fast build contract | `zclassic23 agentbuild` | `zcl_agent_build` |
 | Preferred interface contract | `zclassic23 agentinterface` | `zcl_agent_interface` |
 | State subsystem catalog | `zclassic23 statecatalog` | `zcl_state_catalog` |
-| Semantic event timeline | `zclassic23 timeline <category> <count>` | `zcl_timeline` |
+| Semantic event timeline | `zclassic23 timeline '{"category":"sync","count":50,"since_secs":3600}'` | `zcl_timeline` |
 | Deploy/restart guard | `zclassic23 agentdeployguard [action]` | `zcl_agent_deploy_guard` |
 | Mirror lag/blocker contract | `zclassic23 getmirrorstatus` | `zcl_mirror_status` |
 
@@ -183,8 +183,9 @@ or slow local reducer work. Use `zcl_status`
 for the larger health packet, `zcl_state_catalog` to discover every state
 subsystem and its accepted keys, cost, freshness, owner file, safety level,
 tests, and drill-down commands, `zcl_state` for subsystem internals,
-`zcl_timeline` for category-filtered structured event history with semantic
-summaries, type/peer counts, recommended drill-downs, and seq cursors,
+`zcl_timeline` for category-filtered structured event history with bounded
+server-side filters, semantic summaries, log-reference hints, type/peer counts,
+recommended drill-downs, and seq cursors,
 `zcl_node_log` for bounded log search, `zcl_sql` for SELECT-only database
 inspection, and `zcl_events` for the raw recent event ring.
 
@@ -198,14 +199,17 @@ development proof state belongs in a named background quality lane with a JSON
 verdict, not in an untracked terminal scrollback.
 
 For "what happened?" questions, start with `zclassic23 timeline sync 50` or
-`zcl_timeline(category="sync", count=50)` and switch category as needed
-(`peer`, `message`, `chain`, `validation`, `condition`, `oracle`, `mirror`,
-`boot`, `db`, `wallet`, `disk`, `mcp`, `net`). The response is
+`zcl_timeline(category="sync", count=50, since_secs=3600)` and switch category
+as needed (`peer`, `message`, `chain`, `validation`, `condition`, `oracle`,
+`mirror`, `boot`, `db`, `wallet`, `disk`, `mcp`, `net`). Use object/MCP filters
+for `since_secs`, `since_us`, `peer`, `height`, `reducer_stage`, `condition`,
+`deploy`, and `lane`; the node scans a bounded retained window server-side
+instead of making agents pipe raw events through `jq`. The response is
 `zcl.timeline.v1`, includes `head_seq`, and returns `events[].seq` so agents can
-tie a timeline slice to later drill-downs without piping raw events through
-`jq`. The same payload includes `semantic_summary`, `type_counts`,
-`peer_counts`, `safe_next_action`, and `recommended_drilldowns` so common
-root-cause triage stays server-side.
+tie a timeline slice to later drill-downs. The same payload includes
+`semantic_summary`, `type_counts`, `peer_counts`, `log_references`,
+`safe_next_action`, and `recommended_drilldowns` so common root-cause triage
+stays server-side.
 
 ## Operator Lane
 

@@ -44,7 +44,7 @@ void api_rest_index_cli_json(struct json_value *cli)
     json_push_kv_str(cli, "ops_command", "zclassic23 agentops");
     json_push_kv_str(cli, "state_catalog_command", "zclassic23 statecatalog");
     json_push_kv_str(cli, "timeline_command",
-                     "zclassic23 timeline <category> <count>");
+                     "zclassic23 timeline '{\"category\":\"sync\",\"count\":50,\"since_secs\":3600}'");
     json_push_kv_str(cli, "deploy_guard_command",
                      "zclassic23 agentdeployguard [action]");
     json_push_kv_str(cli, "mirror_command", "zclassic23 getmirrorstatus");

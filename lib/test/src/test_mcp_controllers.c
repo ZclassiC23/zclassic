@@ -1073,6 +1073,7 @@ static char *mock_operator_needed_rpc(const char *method,
 
 static bool g_agent_impact_params_seen;
 static bool g_agent_deploy_guard_params_seen;
+static bool g_agent_timeline_params_seen;
 
 static char *mock_agent_dev_rpc(const char *method, const char *params_json)
 {
@@ -1157,7 +1158,19 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
                       "\"agent_next_action\":\"inspect_recommended_drilldowns\","
                       "\"liveness_summary\":{\"quality_failed_count\":0},"
                       "\"recommended_drilldowns\":[\"zcl_state subsystem=supervisor\"]}");
-    if (strcmp(method, "timeline") == 0)
+    if (strcmp(method, "timeline") == 0) {
+        g_agent_timeline_params_seen =
+            params_json &&
+            contains(params_json, "\"category\":\"sync\"") &&
+            contains(params_json, "\"scan_count\":16") &&
+            contains(params_json, "\"since_secs\":3600") &&
+            contains(params_json, "\"peer\":7") &&
+            contains(params_json, "\"height\":42") &&
+            contains(params_json, "\"reducer_stage\":\"body_fetch\"") &&
+            contains(params_json,
+                     "\"condition\":\"download_queue_starved\"") &&
+            contains(params_json, "\"deploy\":\"make-deploy\"") &&
+            contains(params_json, "\"lane\":\"dev\"");
         return strdup("{\"schema\":\"zcl.timeline.v1\","
                       "\"api_version\":\"v1\","
                       "\"status\":\"ok\","
@@ -1166,9 +1179,16 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
                       "\"type_prefix\":\"sync.\","
                       "\"mcp_tool\":\"zcl_timeline\","
                       "\"head_seq\":12,"
+                      "\"filters\":{\"active\":true,"
+                      "\"peer\":7,\"height\":42,"
+                      "\"reducer_stage\":\"body_fetch\","
+                      "\"condition\":\"download_queue_starved\","
+                      "\"deploy\":\"make-deploy\","
+                      "\"lane\":\"dev\"},"
                       "\"events\":[{\"seq\":11,"
                       "\"type\":\"sync.heartbeat\","
                       "\"data\":\"state=headers\"}]}");
+    }
     if (strcmp(method, "agentdeployguard") == 0) {
         g_agent_deploy_guard_params_seen =
             params_json && contains(params_json, "canonical-deploy");
@@ -1533,8 +1553,14 @@ static int test_zcl_agent_dev_tools_dispatch(void)
         free(body);
 
         json_free(&args);
-        ASSERT(json_read(&args, "{\"category\":\"sync\",\"count\":5}",
-                         strlen("{\"category\":\"sync\",\"count\":5}")));
+        const char *timeline_args =
+            "{\"category\":\"sync\",\"count\":5,\"scan_count\":16,"
+            "\"since_secs\":3600,\"peer\":7,\"height\":42,"
+            "\"reducer_stage\":\"body_fetch\","
+            "\"condition\":\"download_queue_starved\","
+            "\"deploy\":\"make-deploy\",\"lane\":\"dev\"}";
+        ASSERT(json_read(&args, timeline_args, strlen(timeline_args)));
+        g_agent_timeline_params_seen = false;
         body = mcp_router_dispatch("zcl_timeline", &args);
         ASSERT(body != NULL);
         ASSERT(json_read(&root, body, strlen(body)));
@@ -1545,6 +1571,8 @@ static int test_zcl_agent_dev_tools_dispatch(void)
         ASSERT_STR_EQ(json_get_str(json_get(&root, "category")),
                       "sync");
         ASSERT(json_get(&root, "events") != NULL);
+        ASSERT(json_get(&root, "filters") != NULL);
+        ASSERT(g_agent_timeline_params_seen);
         json_free(&root);
         free(body);
 

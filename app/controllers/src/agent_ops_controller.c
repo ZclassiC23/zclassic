@@ -104,7 +104,7 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
                      "zclassic23 dumpstate <subsystem> [key]");
     json_push_kv_str(result, "diagnostics_drilldown_tool", "zcl_state");
     json_push_kv_str(result, "timeline_command",
-                     "zclassic23 timeline <category> <count>");
+                     "zclassic23 timeline '{\"category\":\"sync\",\"count\":50,\"since_secs\":3600}'");
     json_push_kv_str(result, "timeline_tool", "zcl_timeline");
     json_push_kv_str(result, "refold_plain_english",
                      "Rebuild the UTXO/trust anchor from zclassic23's own verified block history, then cut over so the node no longer depends on a borrowed snapshot seed.");
@@ -136,9 +136,9 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
                            "zclassic23 getnodelog <pattern>", "zcl_node_log",
                            "bounded server-side log search");
     agent_ops_push_command(&api_rules, "semantic_timeline",
-                           "zclassic23 timeline <category> <count>",
+                           "zclassic23 timeline '{\"category\":\"sync\",\"count\":50,\"since_secs\":3600}'",
                            "zcl_timeline",
-                           "versioned event timeline by category with seq cursors");
+                           "versioned event timeline with bounded filters and seq cursors");
     agent_ops_push_command(&api_rules, "test_routing",
                            "zclassic23 agentimpact <files...>",
                            "zcl_agent_impact",
