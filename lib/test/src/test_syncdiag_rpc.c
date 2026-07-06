@@ -35,6 +35,7 @@
 #include "services/legacy_mirror_sync_service.h"
 #include "services/node_health_service.h"
 #include "services/sync_monitor.h"
+#include "storage/boot_auto_reindex.h"
 #include "storage/progress_store.h"
 #include "validation/mirror_consensus.h"
 #include "event/event.h"
@@ -5195,6 +5196,24 @@ int test_syncdiag_rpc(void)
                           "canonical-restart") == 0;
         ok = ok && !json_get_bool(json_get(&guard_object, "allowed"));
 
+        const char *guard_old_home_env = getenv("HOME");
+        char guard_old_home_buf[4096];
+        bool guard_old_home_set = guard_old_home_env != NULL;
+        if (guard_old_home_set)
+            snprintf(guard_old_home_buf, sizeof(guard_old_home_buf), "%s",
+                     guard_old_home_env);
+        char guard_home[512];
+        test_make_tmpdir(guard_home, sizeof(guard_home), "syncdiag",
+                         "deploy_guard_home");
+        char guard_devdir[768];
+        int guard_devdir_len = snprintf(guard_devdir, sizeof(guard_devdir),
+                                        "%s/.zclassic-c23-dev",
+                                        guard_home);
+        ok = ok && guard_devdir_len > 0 &&
+            (size_t)guard_devdir_len < sizeof(guard_devdir);
+        ok = ok && mkdir(guard_devdir, 0755) == 0;
+        ok = ok && setenv("HOME", guard_home, 1) == 0;
+
         struct json_value dev_guard_params;
         json_init(&dev_guard_params);
         json_set_array(&dev_guard_params);
@@ -5234,9 +5253,117 @@ int test_syncdiag_rpc(void)
                                           "automation_deploy_ok"));
         ok = ok && !json_get_bool(json_get(dev_target,
                                            "requires_operator_confirmation"));
+        ok = ok && !json_get_bool(json_get(&dev_guard,
+                                           "recovery_deploy_blocker"));
+        ok = ok && strcmp(json_get_str(json_get(&dev_guard,
+                                                "recovery_status")),
+                          "clean") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&dev_guard,
+                                                "explicit_recovery_env")),
+                          "ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY") == 0;
+        const struct json_value *dev_recovery =
+            json_get(dev_target, "recovery_state");
+        ok = ok && dev_recovery && dev_recovery->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(dev_recovery, "schema")),
+                          "zcl.operator_lane_recovery.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(dev_recovery, "status")),
+                          "clean") == 0;
+        ok = ok && !json_get_bool(json_get(dev_recovery,
+                                           "deploy_blocker"));
+        ok = ok && strcmp(json_get_str(json_get(dev_recovery,
+                                                "explicit_recovery_env")),
+                          "ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY") == 0;
         ok = ok && strcmp(json_get_str(json_get(&dev_guard,
                                                 "safe_default_action")),
                           "deploy_dev_lane") == 0;
+
+        ok = ok && boot_auto_reindex_request(guard_devdir, 3172354) == 1;
+        struct json_value pending_guard;
+        json_init(&pending_guard);
+        ok = ok && rpc_table_execute(&tbl, "agentdeployguard",
+                                     &dev_guard_params, &pending_guard);
+        ok = ok && strcmp(json_get_str(json_get(&pending_guard, "action")),
+                          "deploy-dev") == 0;
+        ok = ok && !json_get_bool(json_get(&pending_guard, "allowed"));
+        ok = ok && strcmp(json_get_str(json_get(&pending_guard,
+                                                "decision")),
+                          "refuse") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&pending_guard,
+                                                "reason")),
+                          "pending_auto_reindex_requires_explicit_recovery_boot")
+            == 0;
+        ok = ok && json_get_bool(json_get(&pending_guard,
+                                          "recovery_deploy_blocker"));
+        ok = ok && strcmp(json_get_str(json_get(&pending_guard,
+                                                "recovery_status")),
+                          "pending_auto_reindex") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&pending_guard,
+                                                "explicit_recovery_env")),
+                          "ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY") == 0;
+        ok = ok && json_get_int(json_get(&pending_guard, "exit_code")) == 1;
+        const struct json_value *pending_target =
+            json_get(&pending_guard, "target_lane");
+        const struct json_value *pending_recovery =
+            pending_target ? json_get(pending_target, "recovery_state") : NULL;
+        ok = ok && pending_recovery && pending_recovery->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(pending_recovery, "status")),
+                          "pending_auto_reindex") == 0;
+        ok = ok && json_get_bool(json_get(pending_recovery,
+                                          "auto_reindex_marker_present"));
+        ok = ok && json_get_bool(json_get(pending_recovery,
+                                          "auto_reindex_status_well_formed"));
+        ok = ok && json_get_bool(json_get(pending_recovery,
+                                          "auto_reindex_pending"));
+        ok = ok && !json_get_bool(json_get(pending_recovery,
+                                           "auto_reindex_terminal"));
+        ok = ok && json_get_bool(json_get(pending_recovery,
+                                          "deploy_blocker"));
+        ok = ok && json_get_int(json_get(pending_recovery,
+                                         "auto_reindex_anchor")) == 3172354;
+        ok = ok && json_get_int(json_get(pending_recovery,
+                                         "auto_reindex_count")) == 1;
+        ok = ok && strcmp(json_get_str(json_get(pending_recovery,
+                                                "deploy_blocker_reason")),
+                          "pending_auto_reindex_requires_explicit_recovery_boot")
+            == 0;
+
+        ok = ok && boot_auto_reindex_mark_terminal(guard_devdir, 3172354);
+        struct json_value terminal_guard;
+        json_init(&terminal_guard);
+        ok = ok && rpc_table_execute(&tbl, "agentdeployguard",
+                                     &dev_guard_params, &terminal_guard);
+        ok = ok && json_get_bool(json_get(&terminal_guard, "allowed"));
+        ok = ok && strcmp(json_get_str(json_get(&terminal_guard,
+                                                "decision")),
+                          "allow") == 0;
+        ok = ok && !json_get_bool(json_get(&terminal_guard,
+                                           "recovery_deploy_blocker"));
+        ok = ok && strcmp(json_get_str(json_get(&terminal_guard,
+                                                "recovery_status")),
+                          "terminal_auto_reindex") == 0;
+        const struct json_value *terminal_target =
+            json_get(&terminal_guard, "target_lane");
+        const struct json_value *terminal_recovery =
+            terminal_target ? json_get(terminal_target,
+                                       "recovery_state") : NULL;
+        ok = ok && terminal_recovery && terminal_recovery->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(terminal_recovery, "status")),
+                          "terminal_auto_reindex") == 0;
+        ok = ok && !json_get_bool(json_get(terminal_recovery,
+                                           "auto_reindex_pending"));
+        ok = ok && json_get_bool(json_get(terminal_recovery,
+                                          "auto_reindex_terminal"));
+        ok = ok && !json_get_bool(json_get(terminal_recovery,
+                                           "deploy_blocker"));
+        ok = ok && json_get_int(json_get(terminal_recovery,
+                                         "auto_reindex_count")) ==
+            BOOT_AUTO_REINDEX_TERMINAL;
+
+        if (guard_old_home_set)
+            setenv("HOME", guard_old_home_buf, 1);
+        else
+            unsetenv("HOME");
+        test_cleanup_tmpdir(guard_home);
 
         rpc_agent_set_boot_context("dev", "full",
                                    "/tmp/zcl-agent-dev",
@@ -5297,6 +5424,8 @@ int test_syncdiag_rpc(void)
         json_free(&guard_object);
         json_free(&dev_guard_params);
         json_free(&dev_guard);
+        json_free(&pending_guard);
+        json_free(&terminal_guard);
         json_free(&canonical_from_dev_params);
         json_free(&canonical_from_dev);
         rpc_agent_set_boot_context(NULL, NULL, NULL, 0, 0, 0, 0);

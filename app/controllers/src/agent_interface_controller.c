@@ -355,6 +355,13 @@ bool rpc_agent_deploy_guard(const struct json_value *params, bool help,
         json_get_bool(json_get(safety, "automation_restart_ok"));
     const bool requires = safety &&
         json_get_bool(json_get(safety, "requires_operator_confirmation"));
+    const struct json_value *recovery =
+        target_lane ? json_get(target_lane, "recovery_state") : NULL;
+    const bool recovery_deploy_blocker = recovery &&
+        json_get_bool(json_get(recovery, "deploy_blocker"));
+    const char *recovery_status = recovery &&
+        json_get(recovery, "status")
+            ? json_get_str(json_get(recovery, "status")) : "";
     const char *lane_name = lane && json_get(lane, "lane")
         ? json_get_str(json_get(lane, "lane")) : "unknown";
     const char *target_lane_name = target_lane && json_get(target_lane, "lane")
@@ -362,6 +369,7 @@ bool rpc_agent_deploy_guard(const struct json_value *params, bool help,
     const bool known = agent_deploy_action_known(action);
     const bool wants_restart = agent_deploy_action_is_restart(action);
     const bool allowed = known && !requires &&
+        !recovery_deploy_blocker &&
         (wants_restart ? restart_ok : deploy_ok);
 
     json_push_kv_str(result, "current_lane_name", lane_name);
@@ -369,6 +377,17 @@ bool rpc_agent_deploy_guard(const struct json_value *params, bool help,
     json_push_kv_bool(result, "automation_restart_ok", restart_ok);
     json_push_kv_bool(result, "automation_deploy_ok", deploy_ok);
     json_push_kv_bool(result, "requires_operator_confirmation", requires);
+    json_push_kv_bool(result, "recovery_deploy_blocker",
+                      recovery_deploy_blocker);
+    json_push_kv_str(result, "recovery_status", recovery_status);
+    json_push_kv_str(result, "recovery_safe_next_action",
+                     recovery && json_get(recovery, "safe_next_action")
+                         ? json_get_str(json_get(recovery,
+                                                "safe_next_action")) : "");
+    json_push_kv_str(result, "explicit_recovery_env",
+                     recovery && json_get(recovery, "explicit_recovery_env")
+                         ? json_get_str(json_get(recovery,
+                                                "explicit_recovery_env")) : "");
     json_push_kv_str(result, "preferred_deploy_target",
                      safety && json_get(safety, "preferred_deploy_target")
                          ? json_get_str(json_get(safety,
@@ -393,6 +412,9 @@ bool rpc_agent_deploy_guard(const struct json_value *params, bool help,
     } else if (requires) {
         json_push_kv_str(result, "reason",
                          "operator_confirmation_required");
+    } else if (recovery_deploy_blocker) {
+        json_push_kv_str(result, "reason",
+                         "pending_auto_reindex_requires_explicit_recovery_boot");
     } else if (wants_restart && !restart_ok) {
         json_push_kv_str(result, "reason", "automation_restart_not_allowed");
     } else if (!wants_restart && !deploy_ok) {

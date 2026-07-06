@@ -5,10 +5,12 @@
 #include "controllers/agent_controller.h"
 
 #include "json/json.h"
+#include "storage/boot_auto_reindex.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static const struct agent_operator_lane_topology g_operator_lane_topologies[] = {
     {
@@ -152,6 +154,13 @@ static const char *agent_lane_safe_default_action(const char *lane)
     return "refuse_automation_until_lane_declared";
 }
 
+static const char *agent_lane_recovery_override_env(const char *lane)
+{
+    if (agent_lane_is(lane, "dev"))
+        return "ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY";
+    return "";
+}
+
 size_t agent_operator_lane_topology_count(void)
 {
     return sizeof(g_operator_lane_topologies) /
@@ -182,11 +191,11 @@ static bool agent_lane_expand_topology_datadir(const char *path,
                                                char *out, size_t out_len)
 {
     if (!path || !out || out_len == 0)
-        return false;
+        return false; // raw-return-ok:optional-lane-datadir-expansion
     if (strncmp(path, "~/", 2) == 0) {
         const char *home = getenv("HOME");
         if (!home || !home[0])
-            return false;
+            return false; // raw-return-ok:optional-lane-datadir-expansion
         int n = snprintf(out, out_len, "%s/%s", home, path + 2);
         return n > 0 && (size_t)n < out_len;
     }
@@ -206,6 +215,92 @@ static bool agent_lane_datadir_matches_topology(const char *datadir,
                                             sizeof(expanded)))
         return false;
     return strcmp(datadir, expanded) == 0;
+}
+
+static bool agent_lane_auto_reindex_path(const char *datadir,
+                                         char *expanded, size_t expanded_len,
+                                         char *marker, size_t marker_len)
+{
+    if (expanded && expanded_len > 0)
+        expanded[0] = '\0';
+    if (marker && marker_len > 0)
+        marker[0] = '\0';
+    if (!datadir || !datadir[0] || !expanded || expanded_len == 0 ||
+        !marker || marker_len == 0)
+        return false; // raw-return-ok:optional-lane-recovery-path
+    if (!agent_lane_expand_topology_datadir(datadir, expanded, expanded_len))
+        return false; // raw-return-ok:optional-lane-recovery-path
+    int n = snprintf(marker, marker_len, "%s/auto_reindex_request",
+                     expanded);
+    return n > 0 && (size_t)n < marker_len;
+}
+
+static void agent_lane_push_recovery_state_json(struct json_value *lane_obj,
+                                                const char *lane,
+                                                const char *datadir)
+{
+    struct json_value recovery;
+    char expanded[1024];
+    char marker[1152];
+    int32_t anchor = 0;
+    int count = 0;
+    bool path_ok = agent_lane_auto_reindex_path(datadir, expanded,
+                                                sizeof(expanded), marker,
+                                                sizeof(marker));
+    bool marker_exists = path_ok && access(marker, F_OK) == 0;
+    bool well_formed = path_ok &&
+        boot_auto_reindex_status(expanded, &anchor, &count);
+    bool pending = well_formed && count > 0;
+    bool terminal = well_formed && count == BOOT_AUTO_REINDEX_TERMINAL;
+    bool malformed = marker_exists && !well_formed;
+    bool deploy_blocker = pending;
+    const char *status = "clean";
+    const char *next_action = "normal deploy guard rules apply";
+
+    if (!path_ok) {
+        status = "unknown_datadir";
+        next_action = "declare lane datadir before deploy";
+    } else if (pending) {
+        status = "pending_auto_reindex";
+        next_action = agent_lane_is(lane, "dev")
+            ? "run deliberate dev recovery boot with ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY=1, or prove marker stale before clearing"
+            : "inspect pending auto-reindex marker before deploy";
+    } else if (terminal) {
+        status = "terminal_auto_reindex";
+        next_action = "operator already paged; inspect blocks and clear only after repair";
+    } else if (malformed) {
+        status = "malformed_auto_reindex_marker";
+        next_action = "inspect auto_reindex_request before deploy";
+    }
+
+    json_init(&recovery);
+    json_set_object(&recovery);
+    json_push_kv_str(&recovery, "schema", "zcl.operator_lane_recovery.v1");
+    json_push_kv_int(&recovery, "schema_version", 1);
+    json_push_kv_str(&recovery, "status", status);
+    json_push_kv_bool(&recovery, "state_available", path_ok);
+    json_push_kv_str(&recovery, "datadir", path_ok ? expanded : datadir);
+    json_push_kv_str(&recovery, "auto_reindex_marker_path",
+                     path_ok ? marker : "");
+    json_push_kv_bool(&recovery, "auto_reindex_marker_present",
+                      marker_exists);
+    json_push_kv_bool(&recovery, "auto_reindex_status_well_formed",
+                      well_formed);
+    json_push_kv_bool(&recovery, "auto_reindex_pending", pending);
+    json_push_kv_bool(&recovery, "auto_reindex_terminal", terminal);
+    json_push_kv_bool(&recovery, "auto_reindex_malformed", malformed);
+    json_push_kv_int(&recovery, "auto_reindex_anchor", anchor);
+    json_push_kv_int(&recovery, "auto_reindex_count", count);
+    json_push_kv_bool(&recovery, "deploy_blocker", deploy_blocker);
+    json_push_kv_str(&recovery, "deploy_blocker_reason",
+                     deploy_blocker
+                         ? "pending_auto_reindex_requires_explicit_recovery_boot"
+                         : "");
+    json_push_kv_str(&recovery, "explicit_recovery_env",
+                     agent_lane_recovery_override_env(lane));
+    json_push_kv_str(&recovery, "safe_next_action", next_action);
+    json_push_kv(lane_obj, "recovery_state", &recovery);
+    json_free(&recovery);
 }
 
 const struct agent_operator_lane_topology *
@@ -321,6 +416,8 @@ void agent_fill_operator_lane_contract_json(struct json_value *lane_obj,
                      agent_lane_safe_default_action(lane));
     json_push_kv(lane_obj, "deployment_safety", &safety);
     json_free(&safety);
+
+    agent_lane_push_recovery_state_json(lane_obj, lane, datadir);
 }
 
 bool agent_fill_known_operator_lane_contract_json(struct json_value *lane_obj,

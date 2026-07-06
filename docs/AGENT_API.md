@@ -461,6 +461,19 @@ before deciding where to deploy or restart; use `make lane-health` /
 `tools/scripts/lane_health.sh --json` only as the external systemd/RPC
 readiness probe that verifies the declared lanes are actually running.
 
+Each lane also embeds `recovery_state`
+(`zcl.operator_lane_recovery.v1`), a cheap C-native view over boot-owned
+recovery sentinels that affect deploy safety. Today it reports the lane
+datadir, `auto_reindex_request` marker path, marker presence, well-formed
+status, anchor/count, `auto_reindex_pending`, `auto_reindex_terminal`,
+`auto_reindex_malformed`, `deploy_blocker`, `deploy_blocker_reason`,
+`explicit_recovery_env`, and `safe_next_action`. A pending marker is a deploy
+blocker because a routine restart would consume it and enter a long pre-RPC
+`-reindex-chainstate` rebuild. A terminal marker is reported as
+`status="terminal_auto_reindex"` but is not pending; it means the bounded
+budget already paged the operator and the marker should only be cleared after
+repair is proven.
+
 The same public status contract includes `resources`
 (`zcl.node_resources.v1`) with cheap process-level RSS, RSS warning threshold,
 Linux cgroup memory usage/limits when available, memory pressure (`ok`,
@@ -545,9 +558,15 @@ always evaluate `target_lane_name="canonical"` and refuse without an operator
 window, while `deploy-dev` / `restart-dev` evaluate `target_lane_name="dev"`
 even when the inspected service is canonical. Use
 `zclassic23 agentdeployguard deploy-dev` when checking the documented dev-lane
-deploy path from automation. `ZCL_OPERATOR_LANE=dev zclassic23 agentdeployguard deploy`
-and `zclassic23 agentdeployguard -operator-lane=dev deploy` remain supported
-for checking a process already declared as dev.
+deploy path from automation. If the dev lane has a pending
+`auto_reindex_request`, the guard refuses with
+`reason="pending_auto_reindex_requires_explicit_recovery_boot"`,
+`recovery_deploy_blocker=true`, `recovery_status="pending_auto_reindex"`, and
+`explicit_recovery_env="ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY"`. Set that
+environment variable only for a deliberate recovery boot, or prove the marker
+stale before clearing it. `ZCL_OPERATOR_LANE=dev zclassic23 agentdeployguard
+deploy` and `zclassic23 agentdeployguard -operator-lane=dev deploy` remain
+supported for checking a process already declared as dev.
 
 `make lane-health` is the read-only redundancy check for the canonical, soak,
 and dev lanes. `make lane-recover LANE=dev` or `LANE=soak` plans a bounded
