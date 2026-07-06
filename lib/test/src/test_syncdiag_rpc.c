@@ -3738,6 +3738,15 @@ int test_syncdiag_rpc(void)
             strcmp(json_get_str(json_get(contract_summary,
                                          "registry_source")),
                    "agent_contracts.def + agent_contract_registry.c") == 0;
+        ok = ok && contract_summary &&
+            strcmp(json_get_str(json_get(contract_summary,
+                                         "schema_registry_source")),
+                   "agent_contract_schema_registry.c") == 0;
+        ok = ok && contract_summary &&
+            json_get_int(json_get(contract_summary,
+                                  "schema_surface_count")) ==
+                (int64_t)agent_contract_schema_surface_count();
+        ok = ok && agent_contract_schema_surface_count() >= 17;
         ok = ok && contract_agentops &&
             strcmp(json_get_str(json_get(contract_agentops, "schema")),
                    "zcl.agent_ops.v1") == 0;

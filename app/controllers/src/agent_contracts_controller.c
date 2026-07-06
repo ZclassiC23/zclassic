@@ -91,57 +91,7 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     json_init(&schemas);
     json_set_array(&schemas);
     contracts_push_agent_registry_schemas(&schemas);
-    contracts_push_schema(&schemas, "zcl.first_call_contract.v1",
-                          "nested in zcl.public_status.v1, zcl.healthcheck.v1, zcl.agent_liveness.v1, and zcl.agent_diagnose.v1",
-                          "first-call boundedness, elapsed time, partial-result, and budget semantics");
-    contracts_push_schema(&schemas, "zcl.agent_readiness.v1",
-                          "nested in zcl.public_status.v1 readiness",
-                          "separates chain-serving readiness from index projection freshness");
-    contracts_push_schema(&schemas, "zcl.height_contract.v1",
-                          "nested in zcl.public_status.v1 height_contract",
-                          "names served H*, active lookahead, header, peer, and target heights");
-    contracts_push_schema(&schemas, "zcl.operator_latch.v1",
-                          "nested in zcl.public_status.v1 operator_latch",
-                          "names EV_OPERATOR_NEEDED latch detail, age, and whether operator action is still required");
-    contracts_push_schema(&schemas, "zcl.condition_engine_summary.v1",
-                          "nested in zcl.public_status.v1 conditions",
-                          "cheap active/unresolved condition counts with drill-down routes");
-    contracts_push_schema(&schemas, "zcl.runtime_build.v1",
-                          "nested in zcl.public_status.v1 runtime_build",
-                          "running-vs-deploy-expected build freshness for stale-runtime detection");
-    contracts_push_schema(&schemas, "zcl.agent_runtime_availability.v1",
-                          "nested in zcl.agent_interface.v1 and zcl.agent_ops.v1",
-                          "producer-vs-target first-call method availability and method-not-found guardrail");
-    contracts_push_schema(&schemas, "zcl.background_quality_runtime.v1",
-                          "nested in zcl.agent_build.v1 background_quality_status",
-                          "native status-file reader for background tests/fuzz/coverage verdicts");
-    contracts_push_schema(&schemas, "zcl.agent_runtime_services.v1",
-                          "nested in zcl.agent_lanes.v1",
-                          "configured boot ports plus observed in-process listener state");
-    contracts_push_schema(&schemas, "zcl.agent_capability.v1",
-                          "nested in zcl.agent_interface.v1 capabilities[]",
-                          "one machine-readable agent operation and its transports");
-    contracts_push_schema(&schemas, "zcl.agent_machine_contract.v1",
-                          "nested in zcl.agent_interface.v1 machine_contract",
-                          "JSON/schema/version compatibility requirements for agents");
-    contracts_push_schema(&schemas, "zcl.agent_runtime_identity.v1",
-                          "nested in zcl.agent_interface.v1 runtime_identity",
-                          "running binary identity for the interface contract producer");
-    contracts_push_schema(&schemas, "zcl.operator_summary.v1",
-                          "zcl_operator_summary",
-                          "long MCP operator summary with raw drill-down");
-    contracts_push_schema(&schemas, "zcl.operator_lane.v1",
-                          "zclassic23 agent / GET /api/v1/agent",
-                          "declared or exact-topology-inferred canonical/soak/dev lane and restart policy");
-    contracts_push_schema(&schemas, "zcl.operator_deployment_safety.v1",
-                          "nested in zcl.operator_lane.v1",
-                          "machine-readable deploy/restart safety contract");
-    contracts_push_schema(&schemas, "zcl.node_resources.v1",
-                          "nested in zcl.public_status.v1 resources",
-                          "cheap process RSS, uptime, and memory-pressure telemetry");
-    contracts_push_schema(&schemas, "zcl.restart_watchdog.v1",
-                          "nested in zcl.public_status.v1 restart_watchdog",
-                          "chain tip watchdog restart budget and last autonomous recycle reason");
+    agent_push_contract_schema_surface_json(&schemas);
     json_push_kv(result, "schemas", &schemas);
     json_free(&schemas);
 

@@ -166,7 +166,9 @@ controller `k_routes[]` arrays.
   direct native/MCP command-surface rows. `agentops` first-call scalar fields
   such as `native_command`, `diagnose_tool`, and `anchor_status_command` live
   there too as `g_agent_field_surfaces`. The same registry owns
-  `probe_params_json` for parameterized availability probes. REST-index
+  `probe_params_json` for parameterized availability probes; nested schema
+  rows live in `app/controllers/src/agent_contract_schema_registry.c`
+  (`g_agent_schema_surfaces`). REST-index
   operator drilldowns such as
   `healthcheck`/`zcl_health`, `milestone`/`zcl_milestone`, and
   `refold`/`zcl_refold_status` also belong in that registry.
@@ -175,10 +177,12 @@ controller `k_routes[]` arrays.
   API-gap list, and top-next-work list are registry-fed from
   `agent_contract_registry.c` (`g_agent_contracts`,
   `g_agent_field_surfaces`, `g_agent_command_surfaces`,
-  `g_agent_work_surfaces`);
+  `g_agent_work_surfaces`) and
+  `agent_contract_schema_registry.c` (`g_agent_schema_surfaces`);
   keep controller code focused on assembling live state, not owning ranked
   planning tables. `agentcontracts.contract_summary` reports registry-derived
-  native/MCP/REST counts, and MCP tests verify declared tools are registered.
+  native/MCP/REST and schema-surface counts plus separate contract/schema
+  registry source fields, and MCP tests verify declared tools are registered.
 - `zclassic23 agentlanes` / `zcl_agent_lanes` — native canonical/soak/dev lane
   topology, `zcl.operator_deployment_safety.v1` policy, and
   `zcl.operator_lane_recovery.v1` boot-recovery sentinel state. Use this before
