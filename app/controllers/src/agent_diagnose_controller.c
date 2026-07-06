@@ -222,6 +222,86 @@ static int64_t diagnose_peer_material_groups(const struct json_value *peers)
     return material;
 }
 
+static const struct json_value *diagnose_peer_primary_host(
+    const struct json_value *peers)
+{
+    const struct json_value *primary =
+        peers ? json_get(peers, "primary_host_issue") : NULL;
+    return primary && primary->type == JSON_OBJ ? primary : NULL;
+}
+
+static const char *diagnose_peer_host_str(const struct json_value *primary,
+                                          const char *key)
+{
+    return primary ? json_get_str(json_get(primary, key)) : "";
+}
+
+static int64_t diagnose_peer_host_int(const struct json_value *primary,
+                                      const char *key)
+{
+    return primary ? json_get_int(json_get(primary, key)) : 0;
+}
+
+static bool diagnose_peer_host_bool(const struct json_value *primary,
+                                    const char *key)
+{
+    return primary && json_get_bool(json_get(primary, key));
+}
+
+static bool diagnose_peer_host_action_is_specific(const char *action)
+{
+    return action && action[0] &&
+           strcmp(action, "monitor_peer_lifecycle") != 0;
+}
+
+static void diagnose_push_primary_host_issue(struct json_value *out,
+                                             const struct json_value *primary)
+{
+    struct json_value obj = {0};
+    json_set_object(&obj);
+    json_push_kv_str(&obj, "schema", "zcl.peer_primary_host_issue.v1");
+    json_push_kv_str(&obj, "status",
+                     diagnose_peer_host_str(primary, "status"));
+    json_push_kv_str(&obj, "host",
+                     diagnose_peer_host_str(primary, "host"));
+    json_push_kv_str(&obj, "issue_class",
+                     diagnose_peer_host_str(primary, "issue_class"));
+    json_push_kv_str(&obj, "next_action",
+                     diagnose_peer_host_str(primary, "next_action"));
+    json_push_kv_int(&obj, "incident_score",
+                     diagnose_peer_host_int(primary, "incident_score"));
+    json_push_kv_int(&obj, "entries",
+                     diagnose_peer_host_int(primary, "entries"));
+    json_push_kv_int(&obj, "open_connections",
+                     diagnose_peer_host_int(primary, "open_connections"));
+    json_push_kv_int(&obj, "handshaked_open_connections",
+                     diagnose_peer_host_int(primary,
+                                           "handshaked_open_connections"));
+    json_push_kv_int(&obj, "bootstrap_useful_connections",
+                     diagnose_peer_host_int(primary,
+                                           "bootstrap_useful_connections"));
+    json_push_kv_int(&obj, "fast_sync_useful_connections",
+                     diagnose_peer_host_int(primary,
+                                           "fast_sync_useful_connections"));
+    json_push_kv_bool(&obj, "duplicate_current_connections",
+                      diagnose_peer_host_bool(primary,
+                                             "duplicate_current_connections"));
+    json_push_kv_bool(&obj, "duplicate_handshaked_connections",
+                      diagnose_peer_host_bool(
+                          primary, "duplicate_handshaked_connections"));
+    json_push_kv_int(&obj, "timeout",
+                     diagnose_peer_host_int(primary, "timeout"));
+    json_push_kv_int(&obj, "reconnects",
+                     diagnose_peer_host_int(primary, "reconnects"));
+    json_push_kv_int(&obj, "rejected",
+                     diagnose_peer_host_int(primary, "rejected"));
+    json_push_kv_int(&obj, "pre_handshake_disconnects",
+                     diagnose_peer_host_int(primary,
+                                           "pre_handshake_disconnects"));
+    json_push_kv(out, "peer_primary_host_issue", &obj);
+    json_free(&obj);
+}
+
 static const char *diagnose_peer_detail(int64_t peer_count,
                                         int64_t peer_incidents,
                                         int64_t material_signals)
@@ -272,7 +352,8 @@ static const char *diagnose_next_action(bool operator_needed,
                                         bool chain_attention,
                                         int64_t peer_count,
                                         bool peer_attention,
-                                        bool mirror_attention)
+                                        bool mirror_attention,
+                                        const char *peer_host_action)
 {
     if (operator_needed)
         return "inspect_condition_engine_and_operator_latch";
@@ -280,6 +361,9 @@ static const char *diagnose_next_action(bool operator_needed,
         return "inspect_agent_healthcheck_and_chain_timeline";
     if (peer_count <= 0)
         return "inspect_peer_lifecycle_incidents_and_bootstrapstatus";
+    if (peer_attention && diagnose_peer_host_action_is_specific(
+                              peer_host_action))
+        return peer_host_action;
     if (peer_attention)
         return "inspect_peer_lifecycle_incidents";
     if (mirror_attention)
@@ -395,6 +479,18 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
         json_get_int(json_get(&peers, "incident_count"));
     int64_t duplicate_groups =
         json_get_int(json_get(&peers, "duplicate_host_group_count"));
+    int64_t host_incident_count =
+        json_get_int(json_get(&peers, "host_incident_count"));
+    int64_t host_count_returned =
+        json_get_int(json_get(&peers, "host_count_returned"));
+    const struct json_value *primary_host =
+        diagnose_peer_primary_host(&peers);
+    const char *primary_host_name =
+        diagnose_peer_host_str(primary_host, "host");
+    const char *primary_host_issue_class =
+        diagnose_peer_host_str(primary_host, "issue_class");
+    const char *primary_host_next_action =
+        diagnose_peer_host_str(primary_host, "next_action");
     int64_t material_peer_incidents =
         diagnose_peer_material_incidents(&peers);
     int64_t material_peer_groups =
@@ -445,6 +541,17 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     json_push_kv_int(result, "peer_count", peer_count);
     json_push_kv_int(result, "peer_incident_count", peer_incidents);
     json_push_kv_int(result, "duplicate_host_group_count", duplicate_groups);
+    json_push_kv_int(result, "peer_host_incident_count",
+                     host_incident_count);
+    json_push_kv_int(result, "peer_host_count_returned",
+                     host_count_returned);
+    json_push_kv_str(result, "peer_primary_host", primary_host_name);
+    json_push_kv_str(result, "peer_primary_host_issue_class",
+                     primary_host_issue_class);
+    json_push_kv_str(result, "peer_primary_host_next_action",
+                     primary_host_next_action);
+    json_push_kv_int(result, "peer_primary_host_incident_score",
+                     diagnose_peer_host_int(primary_host, "incident_score"));
     json_push_kv_str(result, "peer_incident_severity", peer_severity);
     json_push_kv_bool(result, "peer_stability_blocker", peer_attention);
     json_push_kv_int(result, "peer_material_incident_count",
@@ -466,7 +573,8 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     bool chain_attention = !chain_serving_ready;
     const char *next_action =
         diagnose_next_action(operator_needed, agent_healthy, chain_attention,
-                             peer_count, peer_attention, mirror_attention);
+                             peer_count, peer_attention, mirror_attention,
+                             primary_host_next_action);
     bool attention = operator_needed || !agent_healthy || chain_attention ||
                      peer_attention || mirror_attention;
     json_push_kv_str(result, "verdict",
@@ -486,9 +594,13 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
                           peer_severity,
                           diagnose_peer_detail(peer_count, peer_incidents,
                                                material_peer_signals),
-                          diagnose_peer_next_action(peer_count,
-                                                    peer_incidents,
-                                                    material_peer_signals));
+                          peer_attention &&
+                                  diagnose_peer_host_action_is_specific(
+                                      primary_host_next_action)
+                              ? primary_host_next_action
+                              : diagnose_peer_next_action(
+                                    peer_count, peer_incidents,
+                                    material_peer_signals));
     diagnose_push_finding(&findings, "mirror",
                           mirror_severity,
                           mirror_present ? mirror_status
@@ -509,6 +621,8 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     diagnose_push_str(&commands, "zclassic23 healthcheck full");
     json_push_kv(result, "recommended_commands", &commands);
     json_free(&commands);
+
+    diagnose_push_primary_host_issue(result, primary_host);
 
     if (brief_mode) {
         diagnose_push_brief_omissions(result);

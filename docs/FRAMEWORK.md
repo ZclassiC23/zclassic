@@ -26,6 +26,15 @@ best *valid* chain — or name, precisely, the one input it is missing.**
 Everything else — wallet, explorer, market, ZNAM, messaging, swaps — is a
 *read-model* over that one fact.
 
+That boundary is intentional: Zclassic consensus is the base layer. zclassic23
+can act like an L2-style application/service layer over that base — ZSLP,
+ZNAM, file market, messaging, script-contract workflows, wallet flows, and
+CRUD REST resources may interpret, index, and construct transactions anchored
+to ZCL — but they must not drift from the L1 rules. Product innovation lives in
+versioned controllers, services, projections, OP_RETURN/memo/script protocols,
+and operator APIs; Equihash parameters, activation heights, block/transaction
+validity, and coin accounting remain consensus-parity territory.
+
 Every failure this node has ever had is the same failure: `(tip, utxo)` fell
 behind and the reason was *emergent* — smeared across a legacy mutate-in-place
 path, proxy health checks, and a bolt-on self-healer that could lie. So the

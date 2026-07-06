@@ -86,6 +86,9 @@ at next?" packet. It composes `agent`, default bounded `healthcheck`,
 timeline slice while staying inside `zcl.first_call_contract.v1`. The response
 duplicates the decision fields agents need most (`verdict`, `safe_next_action`,
 `gap`, `peer_count`, `peer_incident_count`, `duplicate_host_group_count`,
+`peer_host_incident_count`, `peer_host_count_returned`, `peer_primary_host`,
+`peer_primary_host_issue_class`, `peer_primary_host_next_action`,
+`peer_primary_host_incident_score`, `peer_primary_host_issue`,
 `peer_incident_severity`, `peer_stability_blocker`,
 `peer_material_incident_count`, `peer_material_group_count`,
 `peer_informational_incident_count`, `peer_incident_summary`,
@@ -96,9 +99,10 @@ hanging. Use it before raw logs when the node is behaving oddly but still
 answers RPC.
 Use `zclassic23 agentdiagnose brief` or `zcl_agent_diagnose(mode="brief")`
 when the first packet should stay compact: it preserves the top-level verdict,
-safe next action, peer/mirror counts, findings, and recommended commands while
-omitting the embedded `agent`, `healthcheck`, `peer_incidents`, `mirror`, and
-`timeline` drill-down objects. The response includes `detail_mode`,
+safe next action, peer/mirror counts, compact `peer_primary_host_issue`,
+findings, and recommended commands while omitting the embedded `agent`,
+`healthcheck`, `peer_incidents`, `mirror`, and `timeline` drill-down objects.
+The response includes `detail_mode`,
 `embedded_drilldowns=false`, `omitted_sections`, and a `full_diagnose_command`
 that expands back to the default payload.
 For chain status, `agentdiagnose` follows the same `zcl.agent_readiness.v1`
@@ -110,7 +114,9 @@ real serving blocker without re-parsing the embedded `agent` object.
 forensic detail, but there is no duplicate/reconnect storm and the overall
 verdict can remain healthy. `peer_incident_severity=attention` means the
 incident view found material duplicate, reconnect, timeout, reject, or no-peer
-signals and `safe_next_action` will point at peer-lifecycle drill-downs.
+signals and `safe_next_action` will point at a host-specific
+`peer_primary_host_next_action` when the compact host scorer can name one;
+otherwise it falls back to the generic peer-lifecycle drill-down.
 Likewise, `mirror_severity=info` means the advisory zclassicd mirror is worth
 watching but is not a local-node stability blocker; only
 `mirror_operator_action_required=true` escalates the overall diagnosis.

@@ -2797,6 +2797,16 @@ int test_syncdiag_rpc(void)
                           "normal_lookahead") == 0;
         ok = ok && json_get_int(json_get(&result,
                                          "peer_incident_count")) == 1;
+        ok = ok && json_get_int(json_get(&result,
+                                         "peer_host_incident_count")) >= 1;
+        ok = ok && json_get_int(json_get(&result,
+                                         "peer_host_count_returned")) >= 1;
+        ok = ok && json_get(&result, "peer_primary_host_issue") != NULL;
+        ok = ok && json_get(&result, "peer_primary_host") != NULL;
+        ok = ok && json_get(&result,
+                            "peer_primary_host_issue_class") != NULL;
+        ok = ok && json_get(&result,
+                            "peer_primary_host_next_action") != NULL;
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "peer_incident_severity")),
                           "info") == 0;
@@ -3004,7 +3014,7 @@ int test_syncdiag_rpc(void)
                           "attention_needed") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "safe_next_action")),
-                          "inspect_peer_lifecycle_incidents") == 0;
+                          "inspect_peer_timeline_for_reconnect_timeouts") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "peer_incident_severity")),
                           "attention") == 0;
@@ -3013,11 +3023,41 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get_int(json_get(&result,
                                          "duplicate_host_group_count")) == 1;
         ok = ok && json_get_int(json_get(&result,
+                                         "peer_host_incident_count")) == 1;
+        ok = ok && json_get_int(json_get(&result,
+                                         "peer_host_count_returned")) == 1;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "peer_primary_host")),
+                          "40.160.53.56") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "peer_primary_host_issue_class")),
+                          "reconnect_timeout_pressure") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "peer_primary_host_next_action")),
+                          "inspect_peer_timeline_for_reconnect_timeouts") == 0;
+        ok = ok && json_get_int(json_get(&result,
+                                         "peer_primary_host_incident_score"))
+            > 0;
+        const struct json_value *primary_host_issue =
+            json_get(&result, "peer_primary_host_issue");
+        ok = ok && primary_host_issue &&
+            strcmp(json_get_str(json_get(primary_host_issue, "schema")),
+                   "zcl.peer_primary_host_issue.v1") == 0;
+        ok = ok && primary_host_issue &&
+            strcmp(json_get_str(json_get(primary_host_issue, "host")),
+                   "40.160.53.56") == 0;
+        ok = ok && primary_host_issue &&
+            strcmp(json_get_str(json_get(primary_host_issue, "next_action")),
+                   "inspect_peer_timeline_for_reconnect_timeouts") == 0;
+        ok = ok && json_get_int(json_get(&result,
                                          "peer_material_incident_count")) >= 1;
         ok = ok && json_get_int(json_get(&result,
                                          "peer_material_group_count")) >= 1;
         ok = ok && peer_finding && strcmp(json_get_str(json_get(
             peer_finding, "severity")), "attention") == 0;
+        ok = ok && peer_finding && strcmp(json_get_str(json_get(
+            peer_finding, "next_action")),
+            "inspect_peer_timeline_for_reconnect_timeouts") == 0;
 
         json_free(&result);
 

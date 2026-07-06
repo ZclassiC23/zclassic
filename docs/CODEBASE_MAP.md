@@ -252,6 +252,13 @@ by `api_route_contracts_json()` carries `crud_operation` (`read`, `create`,
 contract source and pin representative collection/item/singleton routes in
 `test_api` whenever adding a new route shape.
 
+Application protocols such as ZSLP, ZNAM, market, messaging, and future
+script-contract workflows should expose noun-shaped REST resources over
+chain-derived projections. Reads come from indexed projections at the served
+frontier; mutations construct/broadcast explicit transactions or operator-gated
+actions and never bypass the base-layer reducer/consensus path with direct
+state writes.
+
 Public status/freshness endpoints must get their served height through
 `api_served_tip_height()`, not by reading one endpoint-specific cursor. That
 helper prefers the published in-memory H* frontier and falls back to the durable
