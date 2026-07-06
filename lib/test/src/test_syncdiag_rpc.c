@@ -3957,6 +3957,16 @@ int test_syncdiag_rpc(void)
                           "zclassic23 agentdiagnose") == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops, "diagnose_tool")),
                           "zcl_agent_diagnose") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&ops,
+                                                "liveness_tool")),
+                          "zcl_agent_liveness") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&ops,
+                                                "diagnostics_drilldown_tool")),
+                          "zcl_state") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&ops,
+                                                "anchor_status_command")),
+                          "zclassic23 anchorstatus [-datadir=<anchor-datadir>]")
+            == 0;
         ok = ok && ops_direct_agentops &&
             strcmp(json_get_str(json_get(ops_direct_agentops, "schema")),
                    "zcl.agent_ops.v1") == 0;
@@ -4010,6 +4020,10 @@ int test_syncdiag_rpc(void)
             agent_contract_work_surface_count("agentops.top_next_work") == 5;
         ok = ok &&
             agent_contract_work_surface_count("missing.surface") == 0;
+        ok = ok &&
+            agent_contract_field_surface_count("agentops.first_call") == 8;
+        ok = ok &&
+            agent_contract_field_surface_count("missing.surface") == 0;
         ok = ok && ops_gaps && json_size(ops_gaps) == 3;
         ok = ok && find_object_with_str(ops_gaps, "name",
                                         "runtime_identity_everywhere") != NULL;

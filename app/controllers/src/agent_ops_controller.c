@@ -55,35 +55,7 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
     json_push_kv_str(result, "purpose",
                      "one compact agent-ready view of API shape, service architecture, and next work");
     json_push_kv_str(result, "preferred_transport", "mcp");
-    agent_push_contract_native_field_json(result, "native_command",
-                                          "agentops");
-    agent_push_contract_mcp_field_json(result, "mcp_tool", "agentops");
-    agent_push_contract_native_field_json(result, "live_status_command",
-                                          "agent");
-    agent_push_contract_mcp_field_json(result, "live_status_tool", "agent");
-    agent_push_contract_native_field_json(result, "liveness_command",
-                                          "agentliveness");
-    agent_push_contract_mcp_field_json(result, "liveness_tool",
-                                       "agentliveness");
-    agent_push_contract_native_field_json(result, "diagnose_command",
-                                          "agentdiagnose");
-    agent_push_contract_mcp_field_json(result, "diagnose_tool",
-                                       "agentdiagnose");
-    agent_push_contract_native_field_json(result,
-                                          "diagnostics_catalog_command",
-                                          "statecatalog");
-    agent_push_contract_mcp_field_json(result, "diagnostics_catalog_tool",
-                                       "statecatalog");
-    agent_push_contract_native_field_json(result,
-                                          "diagnostics_drilldown_command",
-                                          "dumpstate");
-    agent_push_contract_mcp_field_json(result, "diagnostics_drilldown_tool",
-                                       "dumpstate");
-    agent_push_contract_native_field_json(result, "timeline_command",
-                                          "timeline");
-    agent_push_contract_mcp_field_json(result, "timeline_tool", "timeline");
-    agent_push_contract_native_field_json(result, "anchor_status_command",
-                                          "anchorstatus");
+    agent_push_contract_field_surface_json(result, "agentops.first_call");
     json_push_kv_str(result, "refold_plain_english",
                      "Rebuild the UTXO/trust anchor from zclassic23's own verified block history, then cut over so the node no longer depends on a borrowed snapshot seed.");
 

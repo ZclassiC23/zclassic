@@ -84,6 +84,9 @@ void agent_push_contract_ops_surface_json(struct json_value *arr,
 size_t agent_contract_command_surface_count(const char *surface);
 size_t agent_push_contract_command_surface_json(struct json_value *arr,
                                                 const char *surface);
+size_t agent_contract_field_surface_count(const char *surface);
+size_t agent_push_contract_field_surface_json(struct json_value *obj,
+                                              const char *surface);
 size_t agent_contract_work_surface_count(const char *surface);
 size_t agent_push_contract_work_surface_json(struct json_value *arr,
                                              const char *surface);

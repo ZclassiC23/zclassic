@@ -163,15 +163,19 @@ controller `k_routes[]` arrays.
   `dbquery`/`zcl_sql`, plus the raw event ring `eventlog`/`zcl_events`, not as
   local string tables in the controllers. Non-method aliases such as
   `command_center`, `full_status`, and `quality_lanes` also live there as
-  direct native/MCP command-surface rows. The same registry owns
+  direct native/MCP command-surface rows. `agentops` first-call scalar fields
+  such as `native_command`, `diagnose_tool`, and `anchor_status_command` live
+  there too as `g_agent_field_surfaces`. The same registry owns
   `probe_params_json` for parameterized availability probes. REST-index
   operator drilldowns such as
   `healthcheck`/`zcl_health`, `milestone`/`zcl_milestone`, and
   `refold`/`zcl_refold_status` also belong in that registry.
 - `zclassic23 agentops` / `zcl_agent_ops` — compact no-`jq` operator command
-  center. Its direct/drilldown commands, API-gap list, and top-next-work list
-  are registry-fed from `agent_contract_registry.c`
-  (`g_agent_contracts`, `g_agent_command_surfaces`, `g_agent_work_surfaces`);
+  center. Its first-call scalar command fields, direct/drilldown commands,
+  API-gap list, and top-next-work list are registry-fed from
+  `agent_contract_registry.c` (`g_agent_contracts`,
+  `g_agent_field_surfaces`, `g_agent_command_surfaces`,
+  `g_agent_work_surfaces`);
   keep controller code focused on assembling live state, not owning ranked
   planning tables. `agentcontracts.contract_summary` reports registry-derived
   native/MCP/REST counts, and MCP tests verify declared tools are registered.

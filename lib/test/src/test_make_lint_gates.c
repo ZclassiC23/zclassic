@@ -3313,10 +3313,7 @@ static int t_native_agent_api_contract(void)
                       "zcl.agent_runtime_availability.v1") != NULL);
         ASSERT(strstr(agent_ops_buf, "zcl.agent_ops.v1") != NULL);
         ASSERT(strstr(agent_ops_buf,
-                      "agent_push_contract_native_field_json(result, \"native_command\"")
-               != NULL);
-        ASSERT(strstr(agent_ops_buf,
-                      "agent_push_contract_mcp_field_json(result, \"diagnose_tool\"")
+                      "agent_push_contract_field_surface_json(result, \"agentops.first_call\")")
                != NULL);
         ASSERT(strstr(agent_ops_buf,
                       "agent_push_contract_ops_surface_json(&api_rules, \"direct\")")
@@ -3326,14 +3323,14 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(agent_ops_buf,
                       "agent_contract_lookup(") == NULL);
-        ASSERT(strstr(agent_ops_buf, "anchor_status_command") != NULL);
+        ASSERT(strstr(agent_ops_buf, "anchor_status_command") == NULL);
         ASSERT(strstr(agent_contracts_def_buf, "anchor_mint_status") != NULL);
         ASSERT(strstr(agent_ops_buf, "refold_plain_english") != NULL);
         ASSERT(strstr(agent_ops_buf, "diagnostics_drilldown_command")
-               != NULL);
+               == NULL);
         ASSERT(strstr(agent_ops_buf, "no_jq_required") != NULL);
-        ASSERT(strstr(agent_ops_buf, "diagnose_command") != NULL);
-        ASSERT(strstr(agent_ops_buf, "agentdiagnose") != NULL);
+        ASSERT(strstr(agent_ops_buf, "diagnose_command") == NULL);
+        ASSERT(strstr(agent_ops_buf, "agentdiagnose") == NULL);
         ASSERT(strstr(agent_ops_buf, "top_next_work") != NULL);
         ASSERT(strstr(agent_ops_buf, "api_gaps") != NULL);
         ASSERT(strstr(agent_ops_buf,
@@ -3391,6 +3388,18 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(agent_registry_buf,
                       "g_agent_command_surfaces") != NULL);
+        ASSERT(strstr(agent_registry_buf, "g_agent_field_surfaces")
+               != NULL);
+        ASSERT(strstr(agent_registry_buf,
+                      "agent_contract_field_surface_count") != NULL);
+        ASSERT(strstr(agent_registry_buf,
+                      "agent_push_contract_field_surface_json") != NULL);
+        ASSERT(strstr(agent_registry_buf, "agentops.first_call") != NULL);
+        ASSERT(strstr(agent_registry_buf, "anchor_status_command") != NULL);
+        ASSERT(strstr(agent_registry_buf,
+                      "diagnostics_drilldown_command") != NULL);
+        ASSERT(strstr(agent_registry_buf, "diagnose_command") != NULL);
+        ASSERT(strstr(agent_registry_buf, "agentdiagnose") != NULL);
         ASSERT(strstr(agent_registry_buf, "DIRECT_COMMAND") != NULL);
         ASSERT(strstr(agent_registry_buf, "native_override") != NULL);
         ASSERT(strstr(agent_registry_buf, "mcp_override") != NULL);
@@ -3409,6 +3418,7 @@ static int t_native_agent_api_contract(void)
                       "native_declared_count") != NULL);
         ASSERT(strstr(agent_registry_buf, "mcp_declared_count") != NULL);
         ASSERT(strstr(agent_registry_buf, "rest_declared_count") != NULL);
+        ASSERT(strstr(agent_registry_buf, "field_surface_count") != NULL);
         ASSERT(strstr(agent_registry_buf,
                       "agentmap.commands.core") != NULL);
         ASSERT(strstr(agent_registry_buf,

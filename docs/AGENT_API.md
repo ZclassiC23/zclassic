@@ -44,10 +44,14 @@ command catalogs do not hand-copy their native/MCP names. `agentmap` alias rows
 that are not one-to-one method contracts, such as `command_center`,
 `full_status`, and `quality_lanes`, live in
 `app/controllers/src/agent_contract_registry.c` with direct native/MCP fields
-instead of local controller tuples. Registry rows also own `probe_params_json`;
-parameterized first-call probes such as `dbquery` and `eventlog` must declare a
-bounded sample there instead of adding method-specific CLI branches. Operator
-drilldowns exposed by the REST index
+instead of local controller tuples. `agentops` first-call scalar fields such as
+`native_command`, `diagnose_tool`, `timeline_tool`, and
+`anchor_status_command` are grouped in the same file as
+`g_agent_field_surfaces`, so the compact no-jq command center also reads
+method names from registry data instead of hand-copying them. Registry rows
+also own `probe_params_json`; parameterized first-call probes such as `dbquery`
+and `eventlog` must declare a bounded sample there instead of adding
+method-specific CLI branches. Operator drilldowns exposed by the REST index
 (`healthcheck` / `zcl_health`, `milestone` / `zcl_milestone`, and `refold` /
 `zcl_refold_status`) also live there, so native, MCP, and REST discovery share
 the same command/tool/schema metadata.

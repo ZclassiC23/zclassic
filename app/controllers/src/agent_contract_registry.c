@@ -41,6 +41,14 @@ struct agent_contract_work_surface {
     const char *proof;
 };
 
+struct agent_contract_field_surface {
+    const char *surface;
+    int rank;
+    const char *native_key;
+    const char *mcp_key;
+    const char *method;
+};
+
 #define CONTRACT_COMMAND(surface, rank, name, method, purpose)               \
     { surface, rank, name, method, "", "", purpose }
 #define DIRECT_COMMAND(surface, rank, name, native, mcp, purpose)            \
@@ -114,6 +122,33 @@ static const struct agent_contract_command_surface g_agent_command_surfaces[] = 
 
 static const size_t g_agent_command_surface_count =
     sizeof(g_agent_command_surfaces) / sizeof(g_agent_command_surfaces[0]);
+
+#define FIELD_BINDING(surface, rank, native_key, mcp_key, method)            \
+    { surface, rank, native_key, mcp_key, method }
+
+static const struct agent_contract_field_surface g_agent_field_surfaces[] = {
+    FIELD_BINDING("agentops.first_call", 1, "native_command", "mcp_tool",
+                  "agentops"),
+    FIELD_BINDING("agentops.first_call", 2, "live_status_command",
+                  "live_status_tool", "agent"),
+    FIELD_BINDING("agentops.first_call", 3, "liveness_command",
+                  "liveness_tool", "agentliveness"),
+    FIELD_BINDING("agentops.first_call", 4, "diagnose_command",
+                  "diagnose_tool", "agentdiagnose"),
+    FIELD_BINDING("agentops.first_call", 5, "diagnostics_catalog_command",
+                  "diagnostics_catalog_tool", "statecatalog"),
+    FIELD_BINDING("agentops.first_call", 6, "diagnostics_drilldown_command",
+                  "diagnostics_drilldown_tool", "dumpstate"),
+    FIELD_BINDING("agentops.first_call", 7, "timeline_command",
+                  "timeline_tool", "timeline"),
+    FIELD_BINDING("agentops.first_call", 8, "anchor_status_command", "",
+                  "anchorstatus"),
+};
+
+#undef FIELD_BINDING
+
+static const size_t g_agent_field_surface_count =
+    sizeof(g_agent_field_surfaces) / sizeof(g_agent_field_surfaces[0]);
 
 static const struct agent_contract_work_surface g_agent_work_surfaces[] = {
     { "agentops.api_gaps", 1, "runtime_identity_everywhere",
@@ -343,6 +378,8 @@ void agent_push_contract_summary_json(struct json_value *out,
     json_push_kv_int(&obj, "rest_declared_count", (int64_t)rest_count);
     json_push_kv_int(&obj, "command_surface_count",
                      (int64_t)g_agent_command_surface_count);
+    json_push_kv_int(&obj, "field_surface_count",
+                     (int64_t)g_agent_field_surface_count);
     json_push_kv_int(&obj, "work_surface_count",
                      (int64_t)g_agent_work_surface_count);
     json_push_kv_str(&obj, "registry_source",
@@ -488,6 +525,72 @@ size_t agent_push_contract_command_surface_json(struct json_value *arr,
                 continue;
             if (agent_push_command_surface_entry_json(arr, e))
                 pushed++;
+        }
+    }
+    return pushed;
+}
+
+size_t agent_contract_field_surface_count(const char *surface)
+{
+    if (!surface || !surface[0])
+        return 0;
+    size_t n = 0;
+    for (size_t i = 0; i < g_agent_field_surface_count; i++) {
+        const struct agent_contract_field_surface *e =
+            &g_agent_field_surfaces[i];
+        if (e->surface && strcmp(e->surface, surface) == 0)
+            n++;
+    }
+    return n;
+}
+
+static size_t agent_push_field_surface_entry_json(
+    struct json_value *obj, const struct agent_contract_field_surface *e)
+{
+    if (!obj || !e || !e->method || !e->method[0])
+        return 0;
+
+    const struct agent_contract *c = agent_contract_lookup(e->method);
+    if (!c)
+        return 0;
+
+    size_t pushed = 0;
+    if (e->native_key && e->native_key[0] &&
+        c->native_command && c->native_command[0]) {
+        json_push_kv_str(obj, e->native_key, c->native_command);
+        pushed++;
+    }
+    if (e->mcp_key && e->mcp_key[0] && c->mcp_tool && c->mcp_tool[0]) {
+        json_push_kv_str(obj, e->mcp_key, c->mcp_tool);
+        pushed++;
+    }
+    return pushed;
+}
+
+size_t agent_push_contract_field_surface_json(struct json_value *obj,
+                                              const char *surface)
+{
+    if (!obj || !surface || !surface[0])
+        return 0;
+
+    int max_rank = 0;
+    for (size_t i = 0; i < g_agent_field_surface_count; i++) {
+        const struct agent_contract_field_surface *e =
+            &g_agent_field_surfaces[i];
+        if (e->surface && strcmp(e->surface, surface) == 0 &&
+            e->rank > max_rank)
+            max_rank = e->rank;
+    }
+
+    size_t pushed = 0;
+    for (int rank = 1; rank <= max_rank; rank++) {
+        for (size_t i = 0; i < g_agent_field_surface_count; i++) {
+            const struct agent_contract_field_surface *e =
+                &g_agent_field_surfaces[i];
+            if (e->rank != rank || !e->surface ||
+                strcmp(e->surface, surface) != 0)
+                continue;
+            pushed += agent_push_field_surface_entry_json(obj, e);
         }
     }
     return pushed;
