@@ -6,6 +6,7 @@
  *   zclassic23 -mcp                   — MCP stdio server for agents
  *   zclassic23 api                    — API discovery from running node
  *   zclassic23 agent                  — compact status from running node
+ *   zclassic23 statecatalog           — zcl_state subsystem catalog
  *   zclassic23 agentlanes             — canonical/soak/dev lane topology
  *   zclassic23 agentinterface         — preferred AI/operator interface
  *   zclassic23 milestone              — ASCII milestone status from node
@@ -22,6 +23,7 @@
 #include "views/wallet_gui.h"
 #include "models/database.h"
 #include "controllers/agent_controller.h"
+#include "controllers/diagnostics_controller.h"
 #include "controllers/sync_controller.h"
 #include "controllers/snapshot_controller.h"
 #include "storage/coins_db.h"
@@ -657,6 +659,8 @@ static bool cli_static_agent_method(const char *method)
            strcmp(method, "agentcontracts") == 0 ||
            strcmp(method, "agentbuild") == 0 ||
            strcmp(method, "agentinterface") == 0 ||
+           strcmp(method, "agentops") == 0 ||
+           strcmp(method, "statecatalog") == 0 ||
            strcmp(method, "agentdeployguard") == 0;
 }
 
@@ -685,6 +689,10 @@ static bool cli_run_static_agent_method(const char *method,
         ok = rpc_agent_build(&params, false, &result);
     } else if (strcmp(method, "agentinterface") == 0) {
         ok = rpc_agent_interface(&params, false, &result);
+    } else if (strcmp(method, "agentops") == 0) {
+        ok = rpc_agent_ops(&params, false, &result);
+    } else if (strcmp(method, "statecatalog") == 0) {
+        ok = diag_rpc_statecatalog(&params, false, &result);
     } else if (strcmp(method, "agentdeployguard") == 0) {
         ok = rpc_agent_deploy_guard(&params, false, &result);
     }
@@ -906,6 +914,7 @@ static void print_usage(const char *prog)
     printf("  %s agentbuild              Fast cached/repro build contract\n", prog);
     printf("  %s agentinterface          Preferred AI/operator interface\n", prog);
     printf("  %s agentops                Compact no-jq AI/operator command center\n", prog);
+    printf("  %s statecatalog            zcl_state subsystem catalog JSON\n", prog);
     printf("  %s agentdeployguard [act]  C-native deploy/restart guard JSON\n", prog);
     printf("  %s getmirrorstatus         Mirror lag/blocker contract JSON\n", prog);
     printf("  %s milestone               ASCII milestone status from running node\n", prog);

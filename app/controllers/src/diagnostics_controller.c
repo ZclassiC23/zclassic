@@ -6,7 +6,8 @@
  * Focused diagnostics controller files own each read-only concern; this file
  * is the dispatch table that wires their RPC handlers into the rpc_table:
  *
- *   diagnostics_registry.c          dumpstate / zcl_state + g_dumpers[]
+ *   diagnostics_registry.c          dumpstate / statecatalog / zcl_state
+ *                                   + zcl_state_catalog + g_dumpers[]
  *                                   + controller-level state ownership
  *   nodelog_controller.c            getnodelog
  *   dbquery_controller.c            dbquery
@@ -27,6 +28,7 @@ void register_diagnostics_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
         { "control", "dumpstate",     diag_rpc_dumpstate,     true },
+        { "control", "statecatalog",  diag_rpc_statecatalog,  true },
         { "control", "getnodelog",    diag_rpc_getnodelog,    true },
         { "control", "dbquery",       diag_rpc_dbquery,       true },
         { "control", "probezclassicd", diag_rpc_probezclassicd, true },

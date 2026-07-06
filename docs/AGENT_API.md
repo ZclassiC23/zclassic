@@ -15,6 +15,7 @@ same native RPC methods. Shell wrappers are compatibility shims only.
 | Versioned contracts | `zclassic23 agentcontracts` | `zcl_agent_contracts` |
 | Fast build contract | `zclassic23 agentbuild` | `zcl_agent_build` |
 | Preferred interface contract | `zclassic23 agentinterface` | `zcl_agent_interface` |
+| State subsystem catalog | `zclassic23 statecatalog` | `zcl_state_catalog` |
 | Deploy/restart guard | `zclassic23 agentdeployguard [action]` | `zcl_agent_deploy_guard` |
 | Mirror lag/blocker contract | `zclassic23 getmirrorstatus` | `zcl_mirror_status` |
 
@@ -30,10 +31,10 @@ The best interface for an AI coding operator is MCP with typed JSON tools:
 start with `zcl_agent_ops` for the compact no-jq command center, use
 `zcl_agent_interface` when checking the full transport contract, then use
 `zcl_agent`, `zcl_agent_lanes`, `zcl_mirror_status`, `zcl_agent_impact`,
-`zcl_agent_build`, `zcl_state`, `zcl_node_log`, and `zcl_sql` as needed. The
-native binary commands (`zclassic23 agentinterface`, `zclassic23 agent`, etc.)
-are the second-best interface for terminal work and scripts. REST is the
-public read-only mirror.
+`zcl_agent_build`, `zcl_state_catalog`, `zcl_state`, `zcl_node_log`, and
+`zcl_sql` as needed. The native binary commands (`zclassic23 agentinterface`,
+`zclassic23 agent`, etc.) are the second-best interface for terminal work and
+scripts. REST is the public read-only mirror.
 
 The transport can vary, but the payload should not: AI-facing status surfaces
 return stable JSON objects with a `schema` or an explicit command contract, and
@@ -150,14 +151,18 @@ sends outbound work before inbound processing, then yields from inbound
 processing after a bounded batch (`ZCL_MSG_PROCESS_MAX_PER_CYCLE`) so the
 outbound send/assignment phase keeps running even under a large receive backlog
 or slow local reducer work. Use `zcl_status`
-for the larger health packet, `zcl_state` for subsystem internals,
+for the larger health packet, `zcl_state_catalog` to discover every state
+subsystem and its key/cost/freshness hints, `zcl_state` for subsystem internals,
 `zcl_node_log` for bounded log search, `zcl_sql` for SELECT-only database
 inspection, and `zcl_events` for recent structured events.
 
 Every new subsystem that has runtime state should expose it through the
-diagnostics registry and become reachable through `zcl_state`. Expensive
-development proof state belongs in a named background quality lane with a JSON
-verdict, not in an untracked terminal scrollback.
+diagnostics registry and become reachable through `zcl_state`. The same
+registry feeds `zclassic23 statecatalog` / `zcl_state_catalog`
+(`zcl.state_catalog.v1`), so agents can discover the subsystem name,
+description, owner shape, expected cost, freshness, and key hint without source
+search. Expensive development proof state belongs in a named background quality
+lane with a JSON verdict, not in an untracked terminal scrollback.
 
 ## Operator Lane
 

@@ -11,6 +11,7 @@ AGENT_IMPACT_RULE("app/controllers/include/controllers/agent_impact_rules.def", 
 
 AGENT_IMPACT_RULE("tools/mcp/*|tools/mcp_server.c|app/controllers/src/*mcp*|lib/test/src/test_mcp_controllers.c", "mcp_controllers")
 AGENT_IMPACT_RULE("lib/mcp/*|lib/util/src/mcp_*|lib/test/src/test_mcp_*|app/controllers/src/diagnostics_registry.c", "mcp_controllers rpc")
+AGENT_IMPACT_RULE("app/controllers/src/diagnostics_*.c|app/controllers/include/controllers/diagnostics_*.h", "syncdiag_rpc mcp_controllers make_lint_gates rpc")
 
 AGENT_IMPACT_RULE("lib/net/src/peer_lifecycle.c|lib/net/src/msg_version.c|lib/net/src/protocol.c|app/controllers/src/network_controller.c|lib/test/src/test_peer_lifecycle.c", "peer_lifecycle")
 AGENT_IMPACT_RULE("lib/net/src/connman.c|lib/net/include/net/connman.h", "connman_addnode_fallback net make_lint_gates")

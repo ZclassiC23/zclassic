@@ -62,6 +62,8 @@ enum bundle_freshness bundle_classify(long long seed_h, long long header_tip,
 /* diagnostics_registry.c */
 bool diag_rpc_dumpstate(const struct json_value *params, bool help,
                         struct json_value *result);
+bool diag_rpc_statecatalog(const struct json_value *params, bool help,
+                           struct json_value *result);
 
 /* The native chain-evidence dump, registered in g_dumpers. `out` must be
  * a fresh json_value; the function sets it to an object. */

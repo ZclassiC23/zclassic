@@ -94,8 +94,12 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
     json_push_kv_str(result, "live_status_command", "zclassic23 agent");
     json_push_kv_str(result, "live_status_tool", "zcl_agent");
     json_push_kv_str(result, "diagnostics_catalog_command",
-                     "zclassic23 dumpstate <subsystem>");
-    json_push_kv_str(result, "diagnostics_catalog_tool", "zcl_state");
+                     "zclassic23 statecatalog");
+    json_push_kv_str(result, "diagnostics_catalog_tool",
+                     "zcl_state_catalog");
+    json_push_kv_str(result, "diagnostics_drilldown_command",
+                     "zclassic23 dumpstate <subsystem> [key]");
+    json_push_kv_str(result, "diagnostics_drilldown_tool", "zcl_state");
 
     agent_push_operator_lane_json(result, "current_runtime_lane");
     agent_push_runtime_build_json(result, "runtime_build");
@@ -112,6 +116,9 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
     agent_ops_push_command(&api_rules, "state_drilldown",
                            "zclassic23 dumpstate <subsystem>", "zcl_state",
                            "one subsystem state object with description");
+    agent_ops_push_command(&api_rules, "state_catalog",
+                           "zclassic23 statecatalog", "zcl_state_catalog",
+                           "catalog of zcl_state subsystems, key hints, cost, and owners");
     agent_ops_push_command(&api_rules, "log_search",
                            "zclassic23 getnodelog <pattern>", "zcl_node_log",
                            "bounded server-side log search");
@@ -162,9 +169,9 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
         "add build/lane identity to every first-call compact response",
         "syncdiag_rpc + mcp_controllers + api");
     agent_ops_push_work(&gaps, 2, "state_catalog_schema",
-        "zcl_state has many dumpers, but no machine catalog for cost, freshness, keys, and owner.",
-        "extend diagnostics registry entries into a zcl.state_catalog.v1 payload",
-        "rpc + mcp_controllers");
+        "The first catalog now exists; next it should be kept rich enough for automated routing.",
+        "extend catalog metadata as new dumpers need cost, freshness, key, and owner hints",
+        "statecatalog RPC + MCP catalog tests");
     agent_ops_push_work(&gaps, 3, "timeline_query",
         "Agents still stitch together logs, SQL, events, and condition detail to answer what happened.",
         "add bounded C-native event/log timeline query with categories and cursors",
@@ -184,8 +191,8 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
         "syncdiag_rpc + mcp_controllers + make_lint_gates");
     agent_ops_push_work(&work, 3, "promote_diagnostics_catalog",
         "Every subsystem should be semantically discoverable without source search.",
-        "turn diagnostics_registry metadata into a versioned state catalog",
-        "rpc dumpstate tests + MCP openapi/tool tests");
+        "keep zcl.state_catalog.v1 complete as dumpers grow and route agents through it first",
+        "statecatalog RPC + MCP route + docs tests");
     agent_ops_push_work(&work, 4, "add_semantic_timeline",
         "Root-cause work should query peer/sync/reducer/deploy history directly.",
         "C-native bounded timeline over event_log plus node.log references",

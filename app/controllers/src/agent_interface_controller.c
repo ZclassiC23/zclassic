@@ -162,6 +162,10 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
         "subsystem-specific zcl_state JSON", "zclassic23 dumpstate <subsystem>",
         "zcl_state", "",
         "generic subsystem state without adding bespoke tools");
+    agent_interface_push_capability(&capabilities, "state_catalog",
+        "zcl.state_catalog.v1", "zclassic23 statecatalog",
+        "zcl_state_catalog", "",
+        "machine-readable zcl_state subsystem catalog with keys, cost, and owner hints");
     agent_interface_push_capability(&capabilities, "bounded_logs",
         "zcl.node_log.v1", "zclassic23 getnodelog <pattern>",
         "zcl_node_log", "",

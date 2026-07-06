@@ -6,6 +6,7 @@
  *   zcl_sql                — SELECT-only passthrough to node.db
  *   zcl_node_log           — reverse-scan node.log on the server side
  *   zcl_state              — generic *_dump_state_json dispatcher
+ *   zcl_state_catalog      — machine-readable zcl_state subsystem catalog
  *   zcl_probe_zclassicd    — drift check against local zclassicd
  *   zcl_profile            — per-thread /proc CPU sampler
  *   zcl_replay_dump        — MCP request/response replay buffer
@@ -101,6 +102,14 @@ static int h_zcl_state(const struct mcp_request *req, struct mcp_response *res)
     free(pjson);
     return mcp_return_rpc_body_ctx(res, out, "dumpstate", "mcp.diag",
                                     "subsystem=%s", sub ? sub : "(null)");
+}
+
+static int h_zcl_state_catalog(const struct mcp_request *req,
+                               struct mcp_response *res)
+{
+    (void)req;
+    return mcp_return_rpc_body(res, mcp_node_rpc("statecatalog", NULL),
+                               "statecatalog", "mcp.diag");
 }
 
 /* ── zcl_conditions ──────────────────────────────────────────── */
@@ -536,6 +545,11 @@ static const struct mcp_tool_route k_routes[] = {
       "For block_index, pass `key`=height or hex hash. New subsystems "
       "plug in via *_dump_state_json (see CLAUDE.md).",
       p_state, PARAM_COUNT(p_state), h_zcl_state, 0, NULL },
+    { "zcl_state_catalog", "ops",
+      "Machine-readable zcl_state catalog generated from the native "
+      "diagnostics registry: subsystem names, descriptions, key hints, "
+      "cost, freshness, owner shape, and native/MCP drill-down commands.",
+      NULL, 0, h_zcl_state_catalog, 0, NULL },
     { "zcl_conditions", "ops",
       "Self-heal condition engine state: registered conditions, active "
       "flags, remedy attempts, outcomes, clear counts, and thresholds.",

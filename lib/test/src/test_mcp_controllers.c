@@ -47,7 +47,7 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL     114  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
+#define EXPECTED_TOTAL     115  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
                                  * +3 power-user tools: chain_tip,
                                  * reorg_history, mempool_inspect;
                                  * +1 Round 6 C5: zcl_blockers;
@@ -60,8 +60,9 @@
                                  * +1 native refold readiness: zcl_refold_status
                                  * +8 agent API tools: map, lanes, impact,
                                  *   contracts, build, interface, ops, deploy_guard
-                                 * +1 net bootstrapstatus */
-#define EXPECTED_OPS        49  /* + zcl_rebuild_recent (bounded recovery);
+                                 * +1 net bootstrapstatus
+                                 * +1 state catalog: zcl_state_catalog */
+#define EXPECTED_OPS        50  /* + zcl_rebuild_recent (bounded recovery);
                                  * status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, state + node_log + sql (round 6.5 MCP primitives),
@@ -415,7 +416,8 @@ static int test_specific_flagship_tools_registered(void)
             "zcl_name_resolve", "zcl_msg_send",
             "zcl_swap_chains", "zcl_market_list",
             "zcl_tools_list", "zcl_self_test", "zcl_logtail",
-            "zcl_rpc", "zcl_postmortem_list", "zcl_postmortem_replay",
+            "zcl_rpc", "zcl_state_catalog",
+            "zcl_postmortem_list", "zcl_postmortem_replay",
         };
         for (size_t i = 0; i < sizeof(k)/sizeof(k[0]); i++) {
             if (mcp_router_find(k[i]) == NULL) {
@@ -519,6 +521,28 @@ static int test_zcl_status_no_params(void)
         ASSERT(r->num_params == 0);
         ASSERT(strcmp(r->domain, "ops") == 0);
         ASSERT(contains(r->description, "chain advance source scoring"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_zcl_state_catalog_shape(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_state_catalog is discoverable no-param catalog") {
+        register_all();
+        const struct mcp_tool_route *catalog =
+            mcp_router_find("zcl_state_catalog");
+        const struct mcp_tool_route *state = mcp_router_find("zcl_state");
+        ASSERT(catalog != NULL);
+        ASSERT(state != NULL);
+        ASSERT(strcmp(catalog->domain, "ops") == 0);
+        ASSERT(catalog->num_params == 0);
+        ASSERT(contains(catalog->description, "diagnostics registry"));
+        ASSERT(state->num_params >= 1);
+        ASSERT(state->params[0].enum_csv != NULL);
+        ASSERT(contains(state->params[0].enum_csv, "reducer_frontier"));
+        ASSERT(contains(state->params[0].enum_csv, "block_index"));
         PASS();
     } _test_next:;
     return failures;
@@ -2962,6 +2986,7 @@ int test_mcp_controllers(void)
     failures += test_specific_flagship_tools_registered();
     failures += test_zcl_getblock_param_shape();
     failures += test_zcl_status_no_params();
+    failures += test_zcl_state_catalog_shape();
     failures += test_zcl_agent_dev_tools_shape();
     failures += test_postmortem_tools_list_and_replay();
     failures += test_zcl_getblockcount_uses_node_hstar_rpc();

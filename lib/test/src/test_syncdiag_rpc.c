@@ -21,6 +21,7 @@
 #include "controllers/agent_controller.h"
 #include "controllers/agent_resources.h"
 #include "controllers/agent_restart_watchdog.h"
+#include "controllers/diagnostics_controller.h"
 #include "controllers/event_controller.h"
 #include "controllers/health_controller.h"
 #include "controllers/network_controller.h"
@@ -2233,6 +2234,7 @@ int test_syncdiag_rpc(void)
         struct rpc_table tbl;
         rpc_table_init(&tbl);
         register_event_rpc_commands(&tbl);
+        register_diagnostics_rpc_commands(&tbl);
         if (rpc_is_in_warmup(NULL, 0))
             set_rpc_warmup_finished();
 
@@ -2269,6 +2271,8 @@ int test_syncdiag_rpc(void)
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_ops.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.state_catalog.v1") != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_lanes.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_runtime_services.v1") != NULL;
@@ -2286,6 +2290,7 @@ int test_syncdiag_rpc(void)
                                  "zcl.operator_deployment_safety.v1") != NULL;
         ok = ok && json_array_has_substr(transports, "zcl_agent_build");
         ok = ok && json_array_has_substr(transports, "zcl_agent_ops");
+        ok = ok && json_array_has_substr(transports, "zcl_state_catalog");
 
         struct json_value ops;
         json_init(&ops);
@@ -2299,8 +2304,48 @@ int test_syncdiag_rpc(void)
                           "zclassic23 agentops") == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops, "mcp_tool")),
                           "zcl_agent_ops") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&ops,
+                                                "diagnostics_catalog_command")),
+                          "zclassic23 statecatalog") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&ops,
+                                                "diagnostics_catalog_tool")),
+                          "zcl_state_catalog") == 0;
         ok = ok && ops_work && json_size(ops_work) == 5;
         ok = ok && json_get(&ops, "architecture_review") != NULL;
+
+        struct json_value catalog;
+        json_init(&catalog);
+        ok = ok && rpc_table_execute(&tbl, "statecatalog", &params,
+                                     &catalog);
+        const struct json_value *catalog_subsystems =
+            json_get(&catalog, "subsystems");
+        const struct json_value *block_index_cat =
+            find_object_with_str(catalog_subsystems, "name", "block_index");
+        const struct json_value *frontier_cat =
+            find_object_with_str(catalog_subsystems, "name",
+                                 "reducer_frontier");
+        ok = ok && catalog.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&catalog, "schema")),
+                          "zcl.state_catalog.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&catalog, "build_commit")),
+                          zcl_build_commit()) == 0;
+        ok = ok && strcmp(json_get_str(json_get(&catalog,
+                                                "catalog_mcp_tool")),
+                          "zcl_state_catalog") == 0;
+        ok = ok && catalog_subsystems &&
+            catalog_subsystems->type == JSON_ARR &&
+            json_size(catalog_subsystems) >= 50;
+        ok = ok && block_index_cat &&
+            json_get_bool(json_get(block_index_cat, "accepts_key"));
+        ok = ok && block_index_cat &&
+            strcmp(json_get_str(json_get(block_index_cat, "key_hint")),
+                   "height or 64-char block hash") == 0;
+        ok = ok && block_index_cat &&
+            strcmp(json_get_str(json_get(block_index_cat, "mcp_tool")),
+                   "zcl_state") == 0;
+        ok = ok && frontier_cat &&
+            strcmp(json_get_str(json_get(frontier_cat, "state_class")),
+                   "reducer_stage") == 0;
 
         struct json_value lanes;
         json_init(&lanes);
@@ -2504,6 +2549,8 @@ int test_syncdiag_rpc(void)
             find_object_with_str(capabilities, "name", "lane_topology");
         const struct json_value *deploy_cap =
             find_object_with_str(capabilities, "name", "deploy_guard");
+        const struct json_value *state_catalog_cap =
+            find_object_with_str(capabilities, "name", "state_catalog");
         const struct json_value *machine =
             json_get(&interface, "machine_contract");
         const struct json_value *runtime =
@@ -2550,6 +2597,12 @@ int test_syncdiag_rpc(void)
         ok = ok && deploy_cap &&
             strcmp(json_get_str(json_get(deploy_cap, "schema")),
                    "zcl.agent_deploy_guard.v1") == 0;
+        ok = ok && state_catalog_cap &&
+            strcmp(json_get_str(json_get(state_catalog_cap, "schema")),
+                   "zcl.state_catalog.v1") == 0;
+        ok = ok && state_catalog_cap &&
+            strcmp(json_get_str(json_get(state_catalog_cap, "mcp")),
+                   "zcl_state_catalog") == 0;
         ok = ok && machine &&
             strcmp(json_get_str(json_get(machine, "schema")),
                    "zcl.agent_machine_contract.v1") == 0;
@@ -2868,6 +2921,7 @@ int test_syncdiag_rpc(void)
         json_free(&params);
         json_free(&contracts);
         json_free(&ops);
+        json_free(&catalog);
         json_free(&lanes);
         json_free(&build);
         json_free(&interface);

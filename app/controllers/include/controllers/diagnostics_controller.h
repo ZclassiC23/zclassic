@@ -5,6 +5,7 @@
  *
  *   dumpstate <subsystem> [key]   — generic in-process state dump,
  *                                   dispatches to <subsystem>_dump_state_json
+ *   statecatalog                  — machine-readable dumpstate catalog
  *   getnodelog <pattern> ...      — reverse-scan node.log with regex/level
  *   dbquery <sql> [limit]         — SELECT-only SQLite passthrough
  *
@@ -15,9 +16,11 @@
 #define ZCL_DIAGNOSTICS_CONTROLLER_H
 
 #include <stddef.h>
+#include <stdbool.h>
 
 struct rpc_table;
 struct main_state;
+struct json_value;
 
 /* Wire main_state for subsystems that look up chain state (block_index
  * dumps, lastboot, etc). Call once after main_state is initialized. */
@@ -25,6 +28,12 @@ void diagnostics_controller_set_state(struct main_state *ms,
                                       const char *datadir);
 
 void register_diagnostics_rpc_commands(struct rpc_table *t);
+
+/* Return the machine-readable catalog of `dumpstate` / MCP `zcl_state`
+ * subsystems. Exposed so the native CLI can serve `zclassic23 statecatalog`
+ * directly without depending on a running RPC node. */
+bool diag_rpc_statecatalog(const struct json_value *params, bool help,
+                           struct json_value *result);
 
 /* Fill `out` with a comma-separated list of every subsystem name accepted
  * by `dumpstate` (and hence by the MCP `zcl_state` tool). The list is

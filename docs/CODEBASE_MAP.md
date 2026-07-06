@@ -165,6 +165,9 @@ controller `k_routes[]` arrays.
 - `zclassic23 agentbuild` / `zcl_agent_build` — fast cached build contract:
   `make build-only`, `make t-fast`, `make fast-ci`, cache knobs, strict gates,
   and `make ci-reproducible`.
+- `zclassic23 statecatalog` / `zcl_state_catalog` — machine-readable catalog
+  for every `zcl_state` subsystem: name, description, key hint, expected cost,
+  freshness, owner shape, and native/MCP drill-down command.
 - `zclassic23 api` — native API discovery from the running node. It returns the
   same `zcl.rest_index.v1` body as REST `GET /api` and `GET /api/v1`, with
   `api_version`, `base_path`, resource routes, CRUD conventions, and the
@@ -187,7 +190,10 @@ controller `k_routes[]` arrays.
 working, but do not add new operator logic there; add native C JSON contracts
 and expose them through MCP/REST instead.
 
-### The three primitives (prefer these over a new bespoke tool)
+### Catalog and primitives (prefer these over a new bespoke tool)
+- `zcl_state_catalog()` — discover the `zcl_state` subsystem list and metadata
+  before drilling into a subsystem. Same payload as native
+  `zclassic23 statecatalog` (`zcl.state_catalog.v1`).
 - `zcl_state(subsystem=X)` — generic state dump. Subsystem CSV is
   auto-populated at runtime from the diagnostics registry. Currently ~56
   subsystems wired (supervisor, watchdog, boot, block_index, health,
@@ -241,7 +247,8 @@ Confirm the target before acting.
 2. Implement in the subsystem `.c` (caller does `json_set_object(out)` first;
    use `atomic_load` for thread-touched fields; don't allocate).
 3. Register one line in `app/controllers/src/diagnostics_registry.c`
-   (`g_dumpers[]`). That's it — `zcl_state` auto-exposes it. ~30 lines total.
+   (`g_dumpers[]`). That's it — `zcl_state_catalog` and `zcl_state`
+   auto-expose it. ~30 lines total.
 
 ---
 

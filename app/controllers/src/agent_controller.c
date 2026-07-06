@@ -98,6 +98,7 @@ static bool agent_path_is_native_agent_api(const char *path)
         "app/controllers/src/agent_runtime_controller.c", "app/controllers/src/event_agent_peers.c", "app/controllers/src/event_agent_peers.h", "app/controllers/src/event_agent_summary.c",
         "app/controllers/src/event_agent_summary.h", "app/controllers/include/controllers/agent_controller.h", "app/controllers/include/controllers/agent_background_quality.h", "app/controllers/include/controllers/agent_impact_rules.def",
         "app/controllers/include/controllers/agent_impact_rules.h", "app/controllers/include/controllers/agent_operator_contracts.h", "app/controllers/include/controllers/agent_resources.h", "app/controllers/include/controllers/agent_restart_watchdog.h",
+        "app/controllers/src/diagnostics_registry.c", "app/controllers/src/diagnostics_controller.c", "app/controllers/include/controllers/diagnostics_controller.h", "app/controllers/include/controllers/diagnostics_internal.h",
     };
 
     if (!path || !path[0])
@@ -296,6 +297,8 @@ bool rpc_agent_map(const struct json_value *params, bool help,
                        "zcl_node_log", "bounded server-side log search");
     agent_push_command(&commands, "state", "zclassic23 dumpstate <subsystem>",
                        "zcl_state", "generic subsystem diagnostics");
+    agent_push_command(&commands, "state_catalog", "zclassic23 statecatalog",
+                       "zcl_state_catalog", "zcl_state subsystem catalog");
     json_push_kv(result, "commands", &commands);
     json_free(&commands);
 
@@ -311,6 +314,10 @@ bool rpc_agent_map(const struct json_value *params, bool help,
                        "zclassic23 dumpstate <subsystem>",
                        "zcl_state",
                        "semantic subsystem internals through diagnostics registry");
+    agent_push_command(&telemetry, "subsystem_catalog",
+                       "zclassic23 statecatalog",
+                       "zcl_state_catalog",
+                       "machine catalog of diagnostics registry subsystems");
     agent_push_command(&telemetry, "node_log",
                        "zclassic23 getnodelog <regex>",
                        "zcl_node_log",
@@ -576,6 +583,9 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
                       "zclassic23 agentinterface / zcl_agent_interface",
                       "preferred AI development interface and transport ranking");
     agent_push_schema(&schemas, "zcl.agent_ops.v1", "zclassic23 agentops / zcl_agent_ops", "compact no-jq operator command center and top next work");
+    agent_push_schema(&schemas, "zcl.state_catalog.v1",
+                      "zclassic23 statecatalog / zcl_state_catalog",
+                      "machine-readable zcl_state subsystem catalog");
     agent_push_schema(&schemas, "zcl.agent_lanes.v1",
                       "zclassic23 agentlanes / zcl_agent_lanes",
                       "canonical/soak/dev lane topology and safety rules");
@@ -615,9 +625,9 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     json_init(&transports);
     json_set_array(&transports);
     agent_push_str(&transports,
-                   "native: zclassic23 agent|agentops|agentinterface|agentlanes|agentmap|agentimpact|agentcontracts|agentbuild|agentdeployguard|getmirrorstatus");
+                   "native: zclassic23 agent|agentops|agentinterface|agentlanes|agentmap|agentimpact|agentcontracts|agentbuild|statecatalog|agentdeployguard|getmirrorstatus");
     agent_push_str(&transports,
-                   "mcp: zcl_agent, zcl_agent_ops, zcl_agent_interface, zcl_agent_lanes, zcl_agent_map, zcl_agent_impact, zcl_agent_contracts, zcl_agent_build, zcl_agent_deploy_guard, zcl_mirror_status");
+                   "mcp: zcl_agent, zcl_agent_ops, zcl_agent_interface, zcl_agent_lanes, zcl_agent_map, zcl_agent_impact, zcl_agent_contracts, zcl_agent_build, zcl_state_catalog, zcl_agent_deploy_guard, zcl_mirror_status");
     agent_push_str(&transports,
                    "rest: GET /api/v1/agent for public status; API index at zclassic23 api");
     agent_push_str(&transports,
