@@ -28,9 +28,10 @@
 > block hash is consensus-bound to the in-binary PoW header, but its UTXO-set
 > CONTENT is still minted from the zclassicd oracle, not yet re-derived from
 > genesis. Verify live state with `zcl_status` — do
-> not assume from a doc. The remaining work is the **sovereign cure** = fold real
-> block bodies forward from the verified checkpoint, cut over, then delete the
-> borrowed-seed machinery (~715 LOC): [`never-stuck-plan.md`](./never-stuck-plan.md)
+> not assume from a doc. The remaining work is the **sovereign cure**, plainly:
+> self-verified UTXO rebuild. It folds real block bodies forward from the
+> verified checkpoint, cuts over, then deletes the borrowed-seed machinery
+> (~715 LOC): [`never-stuck-plan.md`](./never-stuck-plan.md)
 > + the ordered worksheet [`sync-fix-plan-2026-06-21.md`](./sync-fix-plan-2026-06-21.md).
 > The **aesthetic-aligned canonical statement** (Prime Directive + Ten Laws, the
 > detective frame: Acts 0–4 + the `G-SOV` sovereignty gate) is
