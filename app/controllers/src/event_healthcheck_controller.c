@@ -142,6 +142,10 @@ static bool rpc_healthcheck_bounded(const struct json_value *params,
         json_push_kv_bool(result, "healthy", false);
         json_push_kv_bool(result, "serving", false);
         json_push_kv_str(result, "error", "agent_summary_unavailable");
+        json_push_kv_str(result, "consensus_authority",
+                         "local_consensus_validation");
+        json_push_kv_str(result, "candidate_source", "agent_cached_summary");
+        json_push_kv_str(result, "candidate_trust", "bounded_cached_status");
         json_push_kv_str(result, "full_mode_command",
                          "zclassic23 healthcheck full");
         agent_push_first_call_simple_json(
@@ -173,6 +177,10 @@ static bool rpc_healthcheck_bounded(const struct json_value *params,
                      "zclassic23 healthcheck full");
     json_push_kv_str(result, "full_mode_params",
                      "{\"mode\":\"full\"}");
+    json_push_kv_str(result, "consensus_authority",
+                     "local_consensus_validation");
+    json_push_kv_str(result, "candidate_source", "agent_cached_summary");
+    json_push_kv_str(result, "candidate_trust", "bounded_cached_status");
     agent_push_first_call_simple_json(
         result, "first_call", "healthcheck", "agent_cached_summary",
         ZCL_AGENT_FIRST_CALL_BUDGET_HEALTHCHECK_MS, first_call_started_us,

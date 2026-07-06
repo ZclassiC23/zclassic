@@ -166,6 +166,10 @@ full evidence tree.
 `elapsed_ms`, and `budget_exceeded`. `agentliveness` uses that budget to
 return a valid partial JSON response instead of continuing into background
 quality file scans after its first-call budget is spent.
+Default bounded `healthcheck` still preserves top-level deployment contract
+fields (`consensus_authority`, `candidate_source`, `candidate_trust`) so
+deploy verification and first-call clients do not need to parse nested
+diagnostic objects for the node authority posture.
 
 When `runtime_build.stale=true`, the node is still useful to observe but its
 behavior predates the expected deployed source; use the lane safety contract

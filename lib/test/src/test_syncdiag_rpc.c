@@ -1259,6 +1259,15 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
                           "zcl.healthcheck.v1") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result,
+                          "consensus_authority")),
+                          "local_consensus_validation") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                          "candidate_source")),
+                          "agent_cached_summary") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                          "candidate_trust")),
+                          "bounded_cached_status") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
                           "result_completeness")), "bounded") == 0;
         ok = ok && json_get_bool(json_get(&result, "partial_result"));
         const struct json_value *first_call =
