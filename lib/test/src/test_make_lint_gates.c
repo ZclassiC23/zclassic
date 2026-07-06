@@ -2960,6 +2960,10 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(main_buf, "cli_service_exec_arg") != NULL);
         ASSERT(strstr(main_buf, "systemctl --user show zclassic23") != NULL);
+        ASSERT(strstr(main_buf, "cli_p2p_port") != NULL);
+        ASSERT(strstr(main_buf, "cli_service_exec_arg(\"port\"") != NULL);
+        ASSERT(strstr(main_buf,
+                      "datadir, cli_port, cli_p2p_port") != NULL);
         ASSERT(strstr(main_buf, "cli_cookie_exists") != NULL);
         ASSERT(strstr(main_buf, "cannot accidentally query") != NULL);
         ASSERT(strstr(main_buf, "params_storage") != NULL);

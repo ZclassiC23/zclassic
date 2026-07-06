@@ -2458,6 +2458,37 @@ int test_syncdiag_rpc(void)
                                          "target_runtime_support")),
                    "supported") == 0;
 
+        struct json_value inferred_ops;
+        json_init(&inferred_ops);
+        agent_runtime_availability_reset();
+        rpc_agent_set_boot_context("unknown", "full", "~/.zclassic-c23",
+                                   18232, 8033, 8443, 18034);
+        ok = ok && rpc_table_execute(&tbl, "agentops", &params,
+                                     &inferred_ops);
+        const struct json_value *inferred_ops_lane =
+            json_get(&inferred_ops, "current_runtime_lane");
+        const struct json_value *inferred_ops_availability =
+            json_get(&inferred_ops, "runtime_availability");
+        ok = ok && inferred_ops_lane && inferred_ops_lane->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(inferred_ops_lane, "lane")),
+                          "canonical") == 0;
+        ok = ok && strcmp(json_get_str(json_get(inferred_ops_lane,
+                                                "lane_source")),
+                          "inferred_exact_topology") == 0;
+        ok = ok && json_get_bool(json_get(inferred_ops_lane,
+                                          "lane_inferred"));
+        ok = ok && inferred_ops_availability &&
+            strcmp(json_get_str(json_get(inferred_ops_availability,
+                                         "operator_lane_name")),
+                   "canonical") == 0;
+        ok = ok && inferred_ops_availability &&
+            strcmp(json_get_str(json_get(inferred_ops_availability,
+                                         "operator_lane_source")),
+                   "inferred_exact_topology") == 0;
+        json_free(&inferred_ops);
+        rpc_agent_set_boot_context("unknown", "full", "", 0, 0, 0, 0);
+        agent_runtime_availability_reset();
+
         event_log_init();
         event_emitf(EV_SYNC_STATE_CHANGE, 0, "idle->headers");
         event_emitf(EV_MSG_RECEIVED, 0, "noise");

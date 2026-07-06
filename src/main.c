@@ -503,6 +503,9 @@ static int bench_mode_main(int argc, char **argv)
 
 static char cli_cookie[256];
 static int cli_port = 18232;
+static int cli_p2p_port = 0;
+static int cli_https_port = 0;
+static int cli_fs_port = 0;
 
 static bool cli_cookie_exists(const char *datadir)
 {
@@ -828,7 +831,8 @@ static bool cli_print_contract_method_skew_diagnostic(
     agent_runtime_availability_reset();
     rpc_agent_set_boot_context(app_operator_lane_name(operator_lane),
                                app_runtime_profile_name(runtime_profile),
-                               datadir, cli_port, 0, 0, 0);
+                               datadir, cli_port, cli_p2p_port,
+                               cli_https_port, cli_fs_port);
     cli_probe_static_agent_target(datadir);
 
     struct json_value diag;
@@ -946,6 +950,9 @@ static int cli_main(int argc, char **argv)
 
     bool datadir_set = false;
     bool rpcport_set = false;
+    bool p2pport_set = false;
+    bool httpsport_set = false;
+    bool fsport_set = false;
     enum zcl_operator_lane operator_lane = ZCL_OPERATOR_LANE_UNKNOWN;
     enum zcl_runtime_profile runtime_profile = ZCL_RUNTIME_FULL;
     const char *method = NULL;
@@ -968,6 +975,15 @@ static int cli_main(int argc, char **argv)
         } else if (strncmp(argv[i], "-rpcport=", 9) == 0) {
             cli_port = atoi(argv[i] + 9);
             rpcport_set = true;
+        } else if (strncmp(argv[i], "-port=", 6) == 0) {
+            cli_p2p_port = atoi(argv[i] + 6);
+            p2pport_set = true;
+        } else if (strncmp(argv[i], "-httpsport=", 11) == 0) {
+            cli_https_port = atoi(argv[i] + 11);
+            httpsport_set = true;
+        } else if (strncmp(argv[i], "-fsport=", 8) == 0) {
+            cli_fs_port = atoi(argv[i] + 8);
+            fsport_set = true;
         } else if (strncmp(argv[i], "-operator-lane=", 15) == 0) {
             if (!app_operator_lane_parse(argv[i] + 15, &operator_lane)) {
                 fprintf(stderr, "Unknown operator lane: %s\n", argv[i] + 15);
@@ -1012,6 +1028,33 @@ static int cli_main(int argc, char **argv)
                 cli_port = port;
         }
     }
+    if (!p2pport_set) {
+        char service_p2pport[32];
+        if (cli_service_exec_arg("port", service_p2pport,
+                                 sizeof(service_p2pport))) {
+            int port = atoi(service_p2pport);
+            if (port > 0 && port < 65536)
+                cli_p2p_port = port;
+        }
+    }
+    if (!httpsport_set) {
+        char service_httpsport[32];
+        if (cli_service_exec_arg("httpsport", service_httpsport,
+                                 sizeof(service_httpsport))) {
+            int port = atoi(service_httpsport);
+            if (port > 0 && port < 65536)
+                cli_https_port = port;
+        }
+    }
+    if (!fsport_set) {
+        char service_fsport[32];
+        if (cli_service_exec_arg("fsport", service_fsport,
+                                 sizeof(service_fsport))) {
+            int port = atoi(service_fsport);
+            if (port > 0 && port < 65536)
+                cli_fs_port = port;
+        }
+    }
 
     if (strcmp(method, "--agent") == 0 || strcmp(method, "-agent") == 0)
         method = "agent";
@@ -1023,7 +1066,8 @@ static int cli_main(int argc, char **argv)
         agent_runtime_availability_reset();
         rpc_agent_set_boot_context(app_operator_lane_name(operator_lane),
                                    app_runtime_profile_name(runtime_profile),
-                                   datadir, cli_port, 0, 0, 0);
+                                   datadir, cli_port, cli_p2p_port,
+                                   cli_https_port, cli_fs_port);
         cli_probe_static_agent_target(datadir);
         return cli_run_static_agent_method(method, params_storage, nparams) ?
             0 : 1;
