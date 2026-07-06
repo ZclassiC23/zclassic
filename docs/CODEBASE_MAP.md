@@ -182,6 +182,10 @@ controller `k_routes[]` arrays.
   `mirror`, `boot`, `db`, `wallet`, `disk`, `mcp`, and `net`; responses include
   `head_seq`, `semantic_summary`, `type_counts`, `peer_counts`,
   `log_references`, `recommended_drilldowns`, and `events[].seq` cursor fields.
+  The response/category layer is
+  `app/controllers/src/event_timeline_controller.c`; object/CLI parsing and
+  bounded filter matching live in
+  `app/controllers/src/event_timeline_filter_controller.c`.
 - `zclassic23 api` — native API discovery from the running node. It returns the
   same `zcl.rest_index.v1` body as REST `GET /api` and `GET /api/v1`, with
   `api_version`, `base_path`, resource routes, CRUD conventions, and the

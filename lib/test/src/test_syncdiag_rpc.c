@@ -2497,6 +2497,51 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get(&timeline_filtered,
                             "safe_next_action") != NULL;
 
+        struct json_value timeline_cli_params;
+        json_init(&timeline_cli_params);
+        json_set_array(&timeline_cli_params);
+        struct json_value timeline_cli_arg;
+        json_init(&timeline_cli_arg);
+        json_set_str(&timeline_cli_arg,
+                     "{\"category\":\"sync\",\"count\":2,"
+                     "\"since_secs\":3600,\"peer\":9,\"height\":42,"
+                     "\"reducer_stage\":\"body_fetch\",\"lane\":\"dev\"}");
+        json_push_back(&timeline_cli_params, &timeline_cli_arg);
+        json_free(&timeline_cli_arg);
+        struct json_value timeline_cli;
+        json_init(&timeline_cli);
+        ok = ok && rpc_table_execute(&tbl, "timeline",
+                                     &timeline_cli_params, &timeline_cli);
+        const struct json_value *timeline_cli_events =
+            json_get(&timeline_cli, "events");
+        const struct json_value *timeline_cli_filters =
+            json_get(&timeline_cli, "filters");
+        const struct json_value *timeline_cli_first =
+            timeline_cli_events && timeline_cli_events->type == JSON_ARR &&
+            json_size(timeline_cli_events) > 0
+                ? json_at(timeline_cli_events, 0) : NULL;
+        ok = ok && timeline_cli.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&timeline_cli, "schema")),
+                          "zcl.timeline.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&timeline_cli, "status")),
+                          "ok") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&timeline_cli, "category")),
+                          "sync") == 0;
+        ok = ok &&
+            json_get_int(json_get(&timeline_cli, "matched_before_limit")) == 1;
+        ok = ok &&
+            json_get_int(json_get(&timeline_cli, "count_returned")) == 1;
+        ok = ok && timeline_cli_filters &&
+            json_get_bool(json_get(timeline_cli_filters, "active"));
+        ok = ok && timeline_cli_first &&
+            strstr(json_get_str(json_get(timeline_cli_first, "data")),
+                   "h=42") != NULL;
+        ok = ok && timeline_cli_first &&
+            strstr(json_get_str(json_get(timeline_cli_first, "data")),
+                   "h=420") == NULL;
+        json_free(&timeline_cli);
+        json_free(&timeline_cli_params);
+
         struct json_value catalog;
         json_init(&catalog);
         ok = ok && rpc_table_execute(&tbl, "statecatalog", &params,
