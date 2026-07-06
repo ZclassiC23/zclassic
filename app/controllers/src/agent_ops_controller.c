@@ -108,6 +108,7 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
 
     agent_push_operator_lane_json(result, "current_runtime_lane");
     agent_push_runtime_build_json(result, "runtime_build");
+    agent_push_runtime_availability_json(result, "runtime_availability");
     agent_ops_push_quality_summary(result);
 
     json_init(&api_rules);

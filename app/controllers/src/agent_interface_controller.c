@@ -227,6 +227,7 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
                      "Treat this as the runtime binary that produced the interface contract.");
     json_push_kv(result, "runtime_identity", &runtime);
     json_free(&runtime);
+    agent_push_runtime_availability_json(result, "runtime_availability");
 
     json_init(&loop);
     json_set_object(&loop);

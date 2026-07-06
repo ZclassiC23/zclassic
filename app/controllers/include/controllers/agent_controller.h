@@ -4,6 +4,8 @@
 #define ZCL_CONTROLLERS_AGENT_H
 
 #include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
 
 struct json_value;
 
@@ -27,6 +29,22 @@ void agent_push_runtime_build_json(struct json_value *out,
                                    const char *key);
 void agent_push_runtime_services_json(struct json_value *out,
                                       const char *key);
+void agent_runtime_availability_reset(void);
+void agent_runtime_availability_begin_probe(const char *source,
+                                            const char *datadir,
+                                            int rpc_port,
+                                            const char *status);
+void agent_runtime_availability_set_probe_status(const char *status);
+void agent_runtime_availability_record_method(const char *method,
+                                              const char *support,
+                                              int64_t rpc_error_code,
+                                              const char *error_message);
+void agent_runtime_availability_set_target_build_commit(
+    const char *build_commit);
+size_t agent_runtime_probe_method_count(void);
+const char *agent_runtime_probe_method_name(size_t index);
+void agent_push_runtime_availability_json(struct json_value *out,
+                                          const char *key);
 
 bool rpc_agent_map(const struct json_value *params, bool help,
                    struct json_value *result);

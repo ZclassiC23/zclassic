@@ -2262,6 +2262,9 @@ int test_syncdiag_rpc(void)
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.runtime_build.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.agent_runtime_availability.v1")
+            != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.operator_latch.v1") != NULL;
         ok = ok &&
             find_object_with_str(schemas, "schema",
@@ -2297,8 +2300,16 @@ int test_syncdiag_rpc(void)
 
         struct json_value ops;
         json_init(&ops);
+        agent_runtime_availability_reset();
         ok = ok && rpc_table_execute(&tbl, "agentops", &params, &ops);
         const struct json_value *ops_work = json_get(&ops, "top_next_work");
+        const struct json_value *ops_availability =
+            json_get(&ops, "runtime_availability");
+        const struct json_value *ops_availability_methods =
+            ops_availability ? json_get(ops_availability, "methods") : NULL;
+        const struct json_value *ops_method_agentops =
+            find_object_with_str(ops_availability_methods, "method",
+                                 "agentops");
         ok = ok && ops.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&ops, "schema")),
                           "zcl.agent_ops.v1") == 0;
@@ -2320,6 +2331,13 @@ int test_syncdiag_rpc(void)
                           "borrowed snapshot seed") != NULL;
         ok = ok && ops_work && json_size(ops_work) == 5;
         ok = ok && json_get(&ops, "architecture_review") != NULL;
+        ok = ok && ops_availability &&
+            strcmp(json_get_str(json_get(ops_availability, "schema")),
+                   "zcl.agent_runtime_availability.v1") == 0;
+        ok = ok && ops_method_agentops &&
+            strcmp(json_get_str(json_get(ops_method_agentops,
+                                         "target_runtime_support")),
+                   "supported") == 0;
 
         event_log_init();
         event_emitf(EV_SYNC_STATE_CHANGE, 0, "idle->headers");
@@ -2576,6 +2594,14 @@ int test_syncdiag_rpc(void)
 
         struct json_value interface;
         json_init(&interface);
+        agent_runtime_availability_begin_probe("test_target_rpc",
+                                               "/tmp/zcl-canonical",
+                                               18232, "ok");
+        agent_runtime_availability_set_target_build_commit("oldbuild");
+        agent_runtime_availability_record_method("agent", "supported", 0, "");
+        agent_runtime_availability_record_method(
+            "agentops", "unsupported_method_not_found",
+            RPC_METHOD_NOT_FOUND, "Method not found");
         ok = ok && rpc_table_execute(&tbl, "agentinterface",
                                      &params, &interface);
         const struct json_value *interface_transports =
@@ -2601,6 +2627,14 @@ int test_syncdiag_rpc(void)
             json_get(&interface, "machine_contract");
         const struct json_value *runtime =
             json_get(&interface, "runtime_identity");
+        const struct json_value *availability =
+            json_get(&interface, "runtime_availability");
+        const struct json_value *availability_methods =
+            availability ? json_get(availability, "methods") : NULL;
+        const struct json_value *agent_method =
+            find_object_with_str(availability_methods, "method", "agent");
+        const struct json_value *agentops_method =
+            find_object_with_str(availability_methods, "method", "agentops");
         ok = ok && interface.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&interface, "schema")),
                           "zcl.agent_interface.v1") == 0;
@@ -2675,6 +2709,68 @@ int test_syncdiag_rpc(void)
         ok = ok && runtime &&
             strcmp(json_get_str(json_get(runtime, "binary")),
                    "zclassic23") == 0;
+        ok = ok && availability &&
+            strcmp(json_get_str(json_get(availability, "schema")),
+                   "zcl.agent_runtime_availability.v1") == 0;
+        ok = ok && availability &&
+            strcmp(json_get_str(json_get(availability,
+                                         "availability_scope")),
+                   "target_rpc_probe") == 0;
+        ok = ok && availability &&
+            strcmp(json_get_str(json_get(availability, "probe_status")),
+                   "ok") == 0;
+        ok = ok && availability &&
+            strcmp(json_get_str(json_get(availability,
+                                         "target_build_commit")),
+                   "oldbuild") == 0;
+        ok = ok && availability &&
+            json_get_int(json_get(availability, "unsupported_count")) >= 1;
+        ok = ok && availability &&
+            strstr(json_get_str(json_get(availability,
+                                         "safe_next_action")),
+                   "do not call unsupported methods") != NULL;
+        ok = ok && agent_method &&
+            strcmp(json_get_str(json_get(agent_method,
+                                         "target_runtime_support")),
+                   "supported") == 0;
+        ok = ok && json_get_bool(json_get(agent_method,
+                                          "safe_to_call_target"));
+        ok = ok && agentops_method &&
+            strcmp(json_get_str(json_get(agentops_method,
+                                         "target_runtime_support")),
+                   "unsupported_method_not_found") == 0;
+        ok = ok && agentops_method &&
+            !json_get_bool(json_get(agentops_method,
+                                    "target_runtime_supports"));
+        ok = ok && agentops_method &&
+            !json_get_bool(json_get(agentops_method,
+                                    "safe_to_call_target"));
+        ok = ok && agentops_method &&
+            json_get_int(json_get(agentops_method,
+                                  "rpc_error_code")) ==
+            RPC_METHOD_NOT_FOUND;
+
+        struct json_value probed_ops;
+        json_init(&probed_ops);
+        ok = ok && rpc_table_execute(&tbl, "agentops", &params,
+                                     &probed_ops);
+        const struct json_value *probed_ops_availability =
+            json_get(&probed_ops, "runtime_availability");
+        const struct json_value *probed_ops_methods =
+            probed_ops_availability
+                ? json_get(probed_ops_availability, "methods") : NULL;
+        const struct json_value *probed_ops_method =
+            find_object_with_str(probed_ops_methods, "method", "agentops");
+        ok = ok && probed_ops_availability &&
+            strcmp(json_get_str(json_get(probed_ops_availability,
+                                         "availability_scope")),
+                   "target_rpc_probe") == 0;
+        ok = ok && probed_ops_method &&
+            strcmp(json_get_str(json_get(probed_ops_method,
+                                         "target_runtime_support")),
+                   "unsupported_method_not_found") == 0;
+        json_free(&probed_ops);
+        agent_runtime_availability_reset();
 
         struct agent_resource_snapshot fixed_resources = {
             .rss_mb = 5000,

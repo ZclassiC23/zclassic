@@ -69,6 +69,18 @@ versioned as `zcl.agent_runtime_identity.v1`, `zcl.agent_capability.v1`, and
 `zcl.agent_machine_contract.v1`. Future operator APIs should extend that matrix
 before adding new wrapper behavior.
 
+`agentinterface` and `agentops` also include `runtime_availability`
+(`zcl.agent_runtime_availability.v1`). Native static first-call commands are
+produced by the binary you just ran, but that producer may be newer than the
+target lane still serving RPC. The availability block separates those facts:
+`producer_build_commit` names the local producer, `availability_scope` says
+whether the answer is producer-only or a target RPC probe, and each
+`methods[]` entry reports `target_runtime_support`. If a target returns
+`unsupported_method_not_found`, do not call that method on that lane; deploy and
+smoke the dev lane first or use methods marked `supported`. If the probe says
+`no_cookie` or `connect_failed`, treat target support as unknown instead of
+inferring it from source files or local CLI output.
+
 No Python is required to consume the preferred agent API. Contract assembly,
 status interpretation, changed-file test mapping, and deploy safety decisions
 belong in C under `app/controllers/src/agent_controller.c`,

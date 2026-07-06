@@ -15,6 +15,7 @@
 
 #include "config/boot.h"
 #include "rpc/client.h"
+#include "rpc/protocol.h"
 #include "net/file_service.h"
 #include "util/thread_registry.h"
 #include "util/util.h"
@@ -601,7 +602,8 @@ static void b64_encode(const char *in, size_t len, char *out)
     out[j] = 0;
 }
 
-static char *cli_rpc_call(const char *body, size_t body_len)
+static char *cli_rpc_call_internal(const char *body, size_t body_len,
+                                   bool quiet)
 {
     int sock = socket(AF_INET, SOCK_STREAM, 0);
     if (sock < 0) return NULL;
@@ -613,7 +615,9 @@ static char *cli_rpc_call(const char *body, size_t body_len)
     inet_pton(AF_INET, "127.0.0.1", &addr.sin_addr);
 
     if (connect(sock, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
-        fprintf(stderr, "Cannot connect to node at 127.0.0.1:%d\n", cli_port);
+        if (!quiet)
+            fprintf(stderr, "Cannot connect to node at 127.0.0.1:%d\n",
+                    cli_port);
         close(sock);
         return NULL;
     }
@@ -636,7 +640,17 @@ static char *cli_rpc_call(const char *body, size_t body_len)
     char *buf = malloc(cap);
     if (!buf) { close(sock); return NULL; }
     for (;;) {
-        if (len + 4096 > cap) { cap *= 2; buf = realloc(buf, cap); }
+        if (len + 4096 > cap) {
+            size_t next_cap = cap * 2;
+            char *next = realloc(buf, next_cap);
+            if (!next) {
+                free(buf);
+                close(sock);
+                return NULL;
+            }
+            buf = next;
+            cap = next_cap;
+        }
         ssize_t n = recv(sock, buf + len, cap - len - 1, 0);
         if (n <= 0) break;
         len += (size_t)n;
@@ -647,6 +661,115 @@ static char *cli_rpc_call(const char *body, size_t body_len)
     char *start = strstr(buf, "\r\n\r\n");
     if (start) { start += 4; memmove(buf, start, strlen(start) + 1); }
     return buf;
+}
+
+static char *cli_rpc_call(const char *body, size_t body_len)
+{
+    return cli_rpc_call_internal(body, body_len, false);
+}
+
+static void cli_probe_capture_target_build(const struct json_value *result)
+{
+    if (!result || result->type != JSON_OBJ)
+        return;
+
+    const char *build = json_get_str(json_get(result, "build_commit"));
+    if (build[0]) {
+        agent_runtime_availability_set_target_build_commit(build);
+        return;
+    }
+
+    const struct json_value *runtime = json_get(result, "runtime_identity");
+    build = json_get_str(json_get(runtime, "build_commit"));
+    if (build[0]) {
+        agent_runtime_availability_set_target_build_commit(build);
+        return;
+    }
+
+    const struct json_value *runtime_build = json_get(result, "runtime_build");
+    build = json_get_str(json_get(runtime_build, "running_build_commit"));
+    if (build[0])
+        agent_runtime_availability_set_target_build_commit(build);
+}
+
+static void cli_probe_record_response(const char *method, const char *resp,
+                                      bool *partial_error)
+{
+    struct json_value root;
+    json_init(&root);
+    if (!resp || !json_read(&root, resp, strlen(resp)) ||
+        root.type != JSON_OBJ) {
+        agent_runtime_availability_record_method(method, "unknown",
+                                                 RPC_PARSE_ERROR,
+                                                 "invalid_json_response");
+        if (partial_error)
+            *partial_error = true;
+        json_free(&root);
+        return;
+    }
+
+    const struct json_value *err = json_get(&root, "error");
+    if (err && err->type == JSON_OBJ) {
+        int64_t code = json_get_int(json_get(err, "code"));
+        const char *msg = json_get_str(json_get(err, "message"));
+        agent_runtime_availability_record_method(
+            method,
+            code == RPC_METHOD_NOT_FOUND ? "unsupported_method_not_found"
+                                         : "present_error",
+            code, msg);
+        if (code != RPC_METHOD_NOT_FOUND && partial_error)
+            *partial_error = true;
+        json_free(&root);
+        return;
+    }
+
+    const struct json_value *result = json_get(&root, "result");
+    if (result && !json_is_null(result)) {
+        agent_runtime_availability_record_method(method, "supported", 0, "");
+        cli_probe_capture_target_build(result);
+    } else {
+        agent_runtime_availability_record_method(method, "unknown", 0,
+                                                 "missing_result");
+        if (partial_error)
+            *partial_error = true;
+    }
+    json_free(&root);
+}
+
+static void cli_probe_static_agent_target(const char *datadir)
+{
+    agent_runtime_availability_begin_probe("cli_target_rpc", datadir,
+                                           cli_port, "no_cookie");
+    if (!cli_read_cookie(datadir))
+        return;
+
+    bool partial_error = false;
+    agent_runtime_availability_set_probe_status("probing");
+    for (size_t i = 0; i < agent_runtime_probe_method_count(); i++) {
+        const char *method = agent_runtime_probe_method_name(i);
+        char body[512];
+        int blen = snprintf(body, sizeof(body),
+            "{\"jsonrpc\":\"1.0\",\"id\":\"agent-availability\","
+            "\"method\":\"%s\",\"params\":[]}",
+            method);
+        if (blen <= 0 || (size_t)blen >= sizeof(body)) {
+            agent_runtime_availability_record_method(method, "unknown",
+                                                     RPC_INTERNAL_ERROR,
+                                                     "request_too_large");
+            partial_error = true;
+            continue;
+        }
+        char *resp = cli_rpc_call_internal(body, (size_t)blen, true);
+        if (!resp) {
+            agent_runtime_availability_set_probe_status(
+                i == 0 ? "connect_failed" : "partial_error");
+            return;
+        }
+        cli_probe_record_response(method, resp, &partial_error);
+        free(resp);
+    }
+    agent_runtime_availability_set_probe_status(partial_error ?
+        "partial_error" : "ok");
 }
 
 static void print_usage(const char *prog);
@@ -798,9 +921,11 @@ static int cli_main(int argc, char **argv)
         method = "summary";
 
     if (cli_static_agent_method(method)) {
+        agent_runtime_availability_reset();
         rpc_agent_set_boot_context(app_operator_lane_name(operator_lane),
                                    app_runtime_profile_name(runtime_profile),
                                    datadir, cli_port, 0, 0, 0);
+        cli_probe_static_agent_target(datadir);
         return cli_run_static_agent_method(method, params_storage, nparams) ?
             0 : 1;
     }

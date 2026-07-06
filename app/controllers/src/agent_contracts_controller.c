@@ -72,6 +72,9 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     contracts_push_schema(&schemas, "zcl.runtime_build.v1",
                           "nested in zcl.public_status.v1 runtime_build",
                           "running-vs-deploy-expected build freshness for stale-runtime detection");
+    contracts_push_schema(&schemas, "zcl.agent_runtime_availability.v1",
+                          "nested in zcl.agent_interface.v1 and zcl.agent_ops.v1",
+                          "producer-vs-target first-call method availability and method-not-found guardrail");
     contracts_push_schema(&schemas, "zcl.agent_map.v1",
                           "zclassic23 agentmap / zcl_agent_map",
                           "AI-coder code/docs/test map");

@@ -2899,6 +2899,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(main_buf, "app_operator_lane_name(operator_lane)")
                != NULL);
         ASSERT(strstr(main_buf, "rpc_agent_set_boot_context") != NULL);
+        ASSERT(strstr(main_buf, "cli_probe_static_agent_target") != NULL);
+        ASSERT(strstr(main_buf, "agent_runtime_probe_method_name") != NULL);
+        ASSERT(strstr(main_buf, "RPC_METHOD_NOT_FOUND") != NULL);
         ASSERT(strstr(main_buf, "cli_service_exec_arg") != NULL);
         ASSERT(strstr(main_buf, "systemctl --user show zclassic23") != NULL);
         ASSERT(strstr(main_buf, "cli_cookie_exists") != NULL);
@@ -2931,8 +2934,9 @@ static int t_native_agent_api_contract(void)
                != NULL);
         char *static_agent_dispatch =
             strstr(main_buf, "if (cli_static_agent_method(method))");
-        char *cookie_read =
-            strstr(main_buf, "if (!cli_read_cookie(datadir))");
+        char *cookie_read = static_agent_dispatch
+            ? strstr(static_agent_dispatch, "if (!cli_read_cookie(datadir))")
+            : NULL;
         ASSERT(static_agent_dispatch != NULL);
         ASSERT(cookie_read != NULL);
         ASSERT(static_agent_dispatch < cookie_read);
@@ -3043,6 +3047,8 @@ static int t_native_agent_api_contract(void)
                       "zcl.condition_engine_summary.v1") != NULL);
         ASSERT(strstr(agent_contracts_buf, "zcl.agent_interface.v1") != NULL);
         ASSERT(strstr(agent_contracts_buf, "zcl.agent_ops.v1") != NULL);
+        ASSERT(strstr(agent_contracts_buf,
+                      "zcl.agent_runtime_availability.v1") != NULL);
         ASSERT(strstr(agent_contracts_buf, "zcl.timeline.v1") != NULL);
         ASSERT(strstr(agent_contracts_buf, "zcl_timeline") != NULL);
         ASSERT(strstr(agent_contracts_buf, "zcl.state_catalog.v1") != NULL);
@@ -3065,6 +3071,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_contracts_buf, "No Python is required") != NULL);
         ASSERT(strstr(agent_iface_buf, "build_commit") != NULL);
         ASSERT(strstr(agent_iface_buf, "runtime_identity") != NULL);
+        ASSERT(strstr(agent_iface_buf, "runtime_availability") != NULL);
         ASSERT(strstr(agent_iface_buf, "preferred_transport") != NULL);
         ASSERT(strstr(agent_iface_buf, "zcl.state_catalog.v1") != NULL);
         ASSERT(strstr(agent_iface_buf, "zcl_state_catalog") != NULL);
@@ -3089,6 +3096,14 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_lanes_buf, "zcl23-dev") != NULL);
         ASSERT(strstr(agent_runtime_buf,
                       "zcl.agent_runtime_services.v1") != NULL);
+        ASSERT(strstr(agent_runtime_buf,
+                      "zcl.agent_runtime_availability.v1") != NULL);
+        ASSERT(strstr(agent_runtime_buf,
+                      "unsupported_method_not_found") != NULL);
+        ASSERT(strstr(agent_runtime_buf,
+                      "target_runtime_support") != NULL);
+        ASSERT(strstr(agent_runtime_buf,
+                      "agent_runtime_probe_method_count") != NULL);
         ASSERT(strstr(agent_runtime_buf, "rpc_running") != NULL);
         ASSERT(strstr(agent_runtime_buf, "https_bound_port") != NULL);
         ASSERT(strstr(agent_runtime_buf, "fs_bound_port") != NULL);
@@ -3238,6 +3253,10 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentops") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_ops") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.agent_ops.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf,
+                      "zcl.agent_runtime_availability.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf,
+                      "unsupported_method_not_found") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 statecatalog") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_state_catalog") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.state_catalog.v1") != NULL);
