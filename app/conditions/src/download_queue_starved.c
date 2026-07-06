@@ -20,12 +20,28 @@ static _Atomic int64_t g_first_seen;
 static _Atomic uint64_t g_inflight_at_detect;
 static _Atomic uint64_t g_queued_at_detect;
 static _Atomic uint64_t g_requested_at_detect;
+static _Atomic uint64_t g_received_at_detect;
+static _Atomic uint64_t g_timed_out_at_detect;
 static _Atomic int64_t g_age_at_detect;
 static _Atomic uint64_t g_last_witness_requested;
+static _Atomic uint64_t g_last_witness_received;
+static _Atomic uint64_t g_last_witness_timed_out;
+static _Atomic uint64_t g_last_witness_inflight;
+static _Atomic uint64_t g_last_witness_queued;
 
 #ifdef ZCL_TESTING
 static _Atomic int g_test_remedy_calls;
 #endif
+
+static bool download_work_pending(uint64_t requested, uint64_t received,
+                                  uint64_t timed_out, uint64_t inflight,
+                                  uint64_t queued)
+{
+    uint64_t settled = received + timed_out;
+    if (settled < received)
+        settled = UINT64_MAX;
+    return queued > 0 || inflight > 0 || requested > settled;
+}
 
 static bool detect_download_queue_starved(void)
 {
@@ -39,8 +55,14 @@ static bool detect_download_queue_starved(void)
         return false;
     }
 
-    uint64_t requested = 0, inflight = 0, queued = 0;
-    dl_get_stats(dm, &requested, NULL, NULL, &inflight, &queued);
+    uint64_t requested = 0, received = 0, timed_out = 0;
+    uint64_t inflight = 0, queued = 0;
+    dl_get_stats(dm, &requested, &received, &timed_out, &inflight, &queued);
+    if (!download_work_pending(requested, received, timed_out, inflight,
+                               queued)) {
+        atomic_store(&g_first_seen, 0);
+        return false;
+    }
     uint64_t threshold = DL_MAX_IN_FLIGHT_TOTAL_IBD /
                          QUEUE_STARVED_RATIO_DEN;
     if (inflight >= threshold) {
@@ -59,6 +81,8 @@ static bool detect_download_queue_starved(void)
     atomic_store(&g_inflight_at_detect, inflight);
     atomic_store(&g_queued_at_detect, queued);
     atomic_store(&g_requested_at_detect, requested);
+    atomic_store(&g_received_at_detect, received);
+    atomic_store(&g_timed_out_at_detect, timed_out);
     atomic_store(&g_age_at_detect, age);
     return true;
 }
@@ -84,17 +108,23 @@ static bool witness_download_queue_starved(int64_t target_at_detect)
     if (!dm)
         return false;
     /* HONEST witness (Law 7): the remedy (kick_refill) is async and mutates
-     * nothing observable on return, so an inflight-level threshold here is
-     * orthogonal to whether the remedy did anything — a transient inflight
-     * spike could satisfy it with zero effect. The symptom is "the queue is
-     * not refilling" (no new requests going out), so we witness that it MOVED:
-     * the cumulative request counter advanced past the value captured at
-     * detect, i.e. the queue was actually refilled and new blocks were
-     * requested. A frozen download pipeline cannot manufacture that increase. */
-    uint64_t requested = 0;
-    dl_get_stats(dm, &requested, NULL, NULL, NULL, NULL);
+     * nothing observable on return. The symptom is pending download work that
+     * is not being kept in flight, so a witness is either (a) new requests went
+     * out after detection, or (b) the pending work drained/settled while the
+     * episode was active. The second arm prevents an at-tip/normal-lookahead
+     * node from keeping an operator latch after the only needed body has
+     * already been received and no queue/in-flight work remains. */
+    uint64_t requested = 0, received = 0, timed_out = 0;
+    uint64_t inflight = 0, queued = 0;
+    dl_get_stats(dm, &requested, &received, &timed_out, &inflight, &queued);
     atomic_store(&g_last_witness_requested, requested);
-    return requested > atomic_load(&g_requested_at_detect);
+    atomic_store(&g_last_witness_received, received);
+    atomic_store(&g_last_witness_timed_out, timed_out);
+    atomic_store(&g_last_witness_inflight, inflight);
+    atomic_store(&g_last_witness_queued, queued);
+    return requested > atomic_load(&g_requested_at_detect) ||
+           !download_work_pending(requested, received, timed_out, inflight,
+                                  queued);
 }
 
 static bool detail_download_queue_starved(struct json_value *out)
@@ -132,6 +162,12 @@ static bool detail_download_queue_starved(struct json_value *out)
     ok = ok && json_push_kv_int(out, "requested_at_detect",
                                 (int64_t)atomic_load(
                                     &g_requested_at_detect));
+    ok = ok && json_push_kv_int(out, "received_at_detect",
+                                (int64_t)atomic_load(
+                                    &g_received_at_detect));
+    ok = ok && json_push_kv_int(out, "timed_out_at_detect",
+                                (int64_t)atomic_load(
+                                    &g_timed_out_at_detect));
     ok = ok && json_push_kv_int(out, "inflight_at_detect",
                                 (int64_t)atomic_load(
                                     &g_inflight_at_detect));
@@ -150,10 +186,33 @@ static bool detail_download_queue_starved(struct json_value *out)
     ok = ok && json_push_kv_int(out, "last_witness_requested",
                                 (int64_t)atomic_load(
                                     &g_last_witness_requested));
+    ok = ok && json_push_kv_int(out, "last_witness_received",
+                                (int64_t)atomic_load(
+                                    &g_last_witness_received));
+    ok = ok && json_push_kv_int(out, "last_witness_timed_out",
+                                (int64_t)atomic_load(
+                                    &g_last_witness_timed_out));
+    ok = ok && json_push_kv_int(out, "last_witness_inflight",
+                                (int64_t)atomic_load(
+                                    &g_last_witness_inflight));
+    ok = ok && json_push_kv_int(out, "last_witness_queued",
+                                (int64_t)atomic_load(
+                                    &g_last_witness_queued));
     ok = ok && json_push_kv_bool(
         out, "witness_request_counter_advanced",
         atomic_load(&g_last_witness_requested) >
             atomic_load(&g_requested_at_detect));
+    bool pending = dm && download_work_pending(requested, received, timed_out,
+                                               inflight, queued);
+    bool witness_pending = download_work_pending(
+        atomic_load(&g_last_witness_requested),
+        atomic_load(&g_last_witness_received),
+        atomic_load(&g_last_witness_timed_out),
+        atomic_load(&g_last_witness_inflight),
+        atomic_load(&g_last_witness_queued));
+    ok = ok && json_push_kv_bool(out, "pending_download_work", pending);
+    ok = ok && json_push_kv_bool(out, "witness_download_work_drained",
+                                 !witness_pending);
     ok = ok && json_push_kv_int(out, "assign_attempts",
                                 (int64_t)diag.assign_attempts);
     ok = ok && json_push_kv_int(out, "assign_successes",
@@ -179,7 +238,7 @@ static bool detail_download_queue_starved(struct json_value *out)
                                 (int64_t)diag.overdue_in_flight);
     ok = ok && json_push_kv_str(
         out, "remedy_contract",
-        "kick_local_sync is witnessed only when total_requested advances past requested_at_detect");
+        "kick_local_sync is witnessed when total_requested advances past requested_at_detect or the pending queue/in-flight work drains");
     return ok;
 }
 
@@ -220,8 +279,14 @@ void download_queue_starved_test_reset(void)
     atomic_store(&g_inflight_at_detect, 0);
     atomic_store(&g_queued_at_detect, 0);
     atomic_store(&g_requested_at_detect, 0);
+    atomic_store(&g_received_at_detect, 0);
+    atomic_store(&g_timed_out_at_detect, 0);
     atomic_store(&g_age_at_detect, 0);
     atomic_store(&g_last_witness_requested, 0);
+    atomic_store(&g_last_witness_received, 0);
+    atomic_store(&g_last_witness_timed_out, 0);
+    atomic_store(&g_last_witness_inflight, 0);
+    atomic_store(&g_last_witness_queued, 0);
     atomic_store(&g_test_remedy_calls, 0);
 }
 

@@ -12,6 +12,7 @@
 #include "controllers/api_controller.h"
 #include "api_controller_internal.h"
 #include "config/runtime.h"
+#include "event_agent_summary.h"
 #include "event_agent_readiness.h"
 #include "json/json.h"
 #include "jobs/reducer_frontier.h"
@@ -110,6 +111,64 @@ static void api_push_progress_bar(struct json_value *bars,
     json_free(&obj);
 }
 
+static bool api_milestone_agent_snapshot(struct json_value *agent)
+{
+    struct json_value params = {0};
+    json_set_array(&params);
+    bool ok = agent && rpc_agent_summary(&params, false, agent) &&
+              agent->type == JSON_OBJ;
+    json_free(&params);
+    return ok;
+}
+
+static int api_json_int_field(const struct json_value *obj, const char *key,
+                              int fallback)
+{
+    const struct json_value *v = obj ? json_get(obj, key) : NULL;
+    if (!v || (v->type != JSON_INT && v->type != JSON_REAL))
+        return fallback;
+    int64_t n = json_get_int(v);
+    if (n < INT32_MIN)
+        return INT32_MIN;
+    if (n > INT32_MAX)
+        return INT32_MAX;
+    return (int)n;
+}
+
+static int api_json_nested_int_field(const struct json_value *obj,
+                                     const char *parent,
+                                     const char *key, int fallback)
+{
+    const struct json_value *p = obj ? json_get(obj, parent) : NULL;
+    return api_json_int_field(p, key, fallback);
+}
+
+static bool api_json_bool_field(const struct json_value *obj, const char *key,
+                                bool fallback)
+{
+    const struct json_value *v = obj ? json_get(obj, key) : NULL;
+    if (!v || v->type != JSON_BOOL)
+        return fallback;
+    return json_get_bool(v);
+}
+
+static bool api_json_nested_bool_field(const struct json_value *obj,
+                                       const char *parent,
+                                       const char *key, bool fallback)
+{
+    const struct json_value *p = obj ? json_get(obj, parent) : NULL;
+    return api_json_bool_field(p, key, fallback);
+}
+
+static const char *api_json_str_field(const struct json_value *obj,
+                                      const char *key, const char *fallback)
+{
+    const struct json_value *v = obj ? json_get(obj, key) : NULL;
+    if (!v || v->type != JSON_STR || !json_get_str(v)[0])
+        return fallback ? fallback : "";
+    return json_get_str(v);
+}
+
 int64_t api_served_tip_height(void)
 {
     if (reducer_frontier_provable_tip_is_published()) {
@@ -134,30 +193,89 @@ void api_milestone_status_json(struct json_value *result)
     node_health_collect(&health, g_api_ctx.node_db ?
         g_api_ctx.node_db : app_runtime_node_db(),
         g_api_ctx.main_state);
+    struct json_value agent = {0};
+    bool agent_ok = api_milestone_agent_snapshot(&agent);
 
-    int served_height = (int)api_served_tip_height();
-    int indexed_height = health.tip_height;
+    int served_height = agent_ok
+        ? api_json_int_field(&agent, "served_height",
+                             (int)api_served_tip_height())
+        : (int)api_served_tip_height();
+    int indexed_height = agent_ok
+        ? api_json_int_field(&agent, "indexed_height", health.tip_height)
+        : health.tip_height;
     int target = indexed_height > served_height ? indexed_height
                                                 : served_height;
-    if (health.header_height > target)
-        target = health.header_height;
-    if (health.peer_best_height > target)
-        target = health.peer_best_height;
-    int gap = target > served_height ? target - served_height : 0;
+    int header_height = agent_ok
+        ? api_json_int_field(&agent, "header_height", health.header_height)
+        : health.header_height;
+    int peer_best_height = agent_ok
+        ? api_json_int_field(&agent, "peer_best_height",
+                             health.peer_best_height)
+        : health.peer_best_height;
+    if (header_height > target)
+        target = header_height;
+    if (peer_best_height > target)
+        target = peer_best_height;
+    if (agent_ok)
+        target = api_json_int_field(&agent, "target_height", target);
+    int gap = agent_ok
+        ? api_json_int_field(&agent, "gap",
+                             target > served_height ? target - served_height : 0)
+        : (target > served_height ? target - served_height : 0);
+    bool live_healthy = agent_ok
+        ? api_json_bool_field(&agent, "healthy", health.healthy)
+        : health.healthy;
+    bool live_serving = agent_ok
+        ? api_json_bool_field(&agent, "serving", health.serving)
+        : health.serving;
+    bool live_has_peers = agent_ok
+        ? api_json_nested_bool_field(&agent, "peers", "has_peers",
+                                     health.has_peers)
+        : health.has_peers;
+    int live_peer_count = agent_ok
+        ? api_json_nested_int_field(&agent, "peers", "total",
+                                    (int)health.peer_count)
+        : (int)health.peer_count;
+    bool tor_enabled = agent_ok
+        ? api_json_nested_bool_field(&agent, "services", "tor_enabled",
+                                     health.tor_enabled)
+        : health.tor_enabled;
+    bool tor_ready = agent_ok
+        ? api_json_nested_bool_field(&agent, "services", "tor_ready",
+                                     health.tor_ready)
+        : health.tor_ready;
+    bool onion_service_ready = agent_ok
+        ? api_json_nested_bool_field(&agent, "services",
+                                     "onion_service_ready",
+                                     health.onion_service_ready)
+        : health.onion_service_ready;
+    const char *sync_state = agent_ok
+        ? api_json_str_field(&agent, "sync_state",
+                             sync_state_name(health.sync_state))
+        : sync_state_name(health.sync_state);
+    const char *agent_status = agent_ok
+        ? api_json_str_field(&agent, "status", "unavailable")
+        : "unavailable";
+    const char *readiness_status = agent_ok
+        ? api_json_str_field(&agent, "readiness_status", "unknown")
+        : "unknown";
+    const char *height_status = agent_ok
+        ? api_json_str_field(json_get(&agent, "height_contract"), "status",
+                             "unknown")
+        : "unknown";
 
     int systems_done = 0;
     int systems_total = 6;
-    bool onion_ok = health.tor_enabled && health.tor_ready &&
-                    health.onion_service_ready;
-    if (health.serving)
+    bool onion_ok = tor_enabled && tor_ready && onion_service_ready;
+    if (live_serving)
         systems_done++;
-    if (health.healthy)
+    if (live_healthy)
         systems_done++;
     if (served_height > 0)
         systems_done++;
     if (gap <= 1)
         systems_done++;
-    if (health.has_peers)
+    if (live_has_peers)
         systems_done++;
     if (onion_ok)
         systems_done++;
@@ -190,21 +308,30 @@ void api_milestone_status_json(struct json_value *result)
     struct json_value live;
     json_init(&live);
     json_set_object(&live);
-    json_push_kv_bool(&live, "healthy", health.healthy);
-    json_push_kv_bool(&live, "serving", health.serving);
+    json_push_kv_str(&live, "source",
+                     agent_ok ? "agent_cached_summary"
+                              : "node_health_collect_fallback");
+    json_push_kv_str(&live, "source_schema",
+                     agent_ok ? "zcl.public_status.v1"
+                              : "zcl.node_health_snapshot");
+    json_push_kv_str(&live, "agent_status", agent_status);
+    json_push_kv_str(&live, "readiness_status", readiness_status);
+    json_push_kv_str(&live, "height_contract_status", height_status);
+    json_push_kv_bool(&live, "healthy", live_healthy);
+    json_push_kv_bool(&live, "serving", live_serving);
     json_push_kv_int(&live, "served_height", served_height);
     json_push_kv_int(&live, "indexed_height", indexed_height);
-    json_push_kv_int(&live, "header_height", health.header_height);
-    json_push_kv_int(&live, "peer_best_height", health.peer_best_height);
+    json_push_kv_int(&live, "header_height", header_height);
+    json_push_kv_int(&live, "peer_best_height", peer_best_height);
     json_push_kv_int(&live, "target_height", target);
     json_push_kv_int(&live, "gap", gap);
-    json_push_kv_int(&live, "peers", (int64_t)health.peer_count);
-    json_push_kv_bool(&live, "tor_enabled", health.tor_enabled);
+    json_push_kv_int(&live, "peers", live_peer_count);
+    json_push_kv_bool(&live, "tor_enabled", tor_enabled);
     json_push_kv_bool(&live, "onion_ready", onion_ok);
-    json_push_kv_str(&live, "sync_state",
-                     sync_state_name(health.sync_state));
+    json_push_kv_str(&live, "sync_state", sync_state);
     json_push_kv(result, "live", &live);
     json_free(&live);
+    json_free(&agent);
 
     struct json_value bars;
     struct json_value ascii;

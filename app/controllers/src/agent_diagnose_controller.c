@@ -295,6 +295,13 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
         agent_ok && json_get_bool(json_get(&agent, "operator_needed"));
     bool chain_serving_ready = agent_ok && diagnose_agent_chain_ready(&agent);
     bool normal_lookahead = agent_ok && diagnose_agent_normal_lookahead(&agent);
+    const char *readiness_status =
+        agent_ok ? json_get_str(json_get(&agent, "readiness_status")) : "";
+    const struct json_value *height_contract =
+        agent_ok ? json_get(&agent, "height_contract") : NULL;
+    const char *height_contract_status =
+        height_contract ? json_get_str(json_get(height_contract, "status"))
+                        : "";
     int64_t gap = agent_ok ? json_get_int(json_get(&agent, "gap")) : -1;
     const struct json_value *agent_peers =
         agent_ok ? json_get(&agent, "peers") : NULL;
@@ -348,6 +355,8 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     json_push_kv_bool(result, "operator_needed", operator_needed);
     json_push_kv_bool(result, "chain_serving_ready", chain_serving_ready);
     json_push_kv_bool(result, "normal_lookahead", normal_lookahead);
+    json_push_kv_str(result, "chain_readiness_status", readiness_status);
+    json_push_kv_str(result, "height_contract_status", height_contract_status);
     json_push_kv_int(result, "gap", gap);
     json_push_kv_int(result, "peer_count", peer_count);
     json_push_kv_int(result, "peer_incident_count", peer_incidents);
@@ -370,8 +379,7 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
                       mirror_operator_action_required);
     json_push_kv_bool(result, "partial_result", partial);
 
-    bool chain_attention =
-        !chain_serving_ready || (!normal_lookahead && gap > 0);
+    bool chain_attention = !chain_serving_ready;
     const char *next_action =
         diagnose_next_action(operator_needed, agent_healthy, chain_attention,
                              peer_count, peer_attention, mirror_attention);

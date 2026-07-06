@@ -2590,6 +2590,12 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get_bool(json_get(&result,
                                           "chain_serving_ready"));
         ok = ok && json_get_bool(json_get(&result, "normal_lookahead"));
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "chain_readiness_status")),
+                          "ready") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "height_contract_status")),
+                          "normal_lookahead") == 0;
         ok = ok && json_get_int(json_get(&result,
                                          "peer_incident_count")) == 1;
         ok = ok && strcmp(json_get_str(json_get(&result,
@@ -2628,6 +2634,44 @@ int test_syncdiag_rpc(void)
             mirror_finding, "severity")), "ok") == 0;
         ok = ok && height_contract && json_get_bool(json_get(
             height_contract, "normal_lookahead"));
+
+        json_free(&result);
+
+        tip.nHeight = served_height + 2;
+        ms.pindex_best_header = &tip;
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
+        if (peer)
+            peer->starting_height = target_height;
+        mirror_stats.legacy_height = tip.nHeight;
+        mirror_stats.legacy_headers = tip.nHeight;
+        mirror_stats.local_height = tip.nHeight;
+        mirror_stats.best_header_height = tip.nHeight;
+        mirror_stats.target_height = tip.nHeight;
+        legacy_mirror_sync_test_set_stats(&mirror_stats, &ms);
+
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "agentdiagnose", &params,
+                                     &result);
+        findings = json_get(&result, "findings");
+        chain_finding = find_object_with_str(findings, "name",
+                                             "chain_serving");
+        ok = ok && json_get_int(json_get(&result, "gap")) == 2;
+        ok = ok && json_get_bool(json_get(&result,
+                                          "chain_serving_ready"));
+        ok = ok && !json_get_bool(json_get(&result, "normal_lookahead"));
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "chain_readiness_status")),
+                          "ready") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "height_contract_status")),
+                          "minor_lag") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "verdict")),
+                          "healthy") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "safe_next_action")),
+                          "monitor_agent_and_liveness") == 0;
+        ok = ok && chain_finding && strcmp(json_get_str(json_get(
+            chain_finding, "severity")), "ok") == 0;
 
         json_free(&result);
 
@@ -4426,6 +4470,7 @@ int test_syncdiag_rpc(void)
         const struct json_value *ascii = json_get(&result, "ascii");
         const struct json_value *bars = json_get(&result, "bars");
         const struct json_value *criteria = json_get(&result, "criteria");
+        const struct json_value *live = json_get(&result, "live");
         bool ok = executed && result.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
                           "zcl.milestone_status.v1") == 0;
@@ -4436,6 +4481,13 @@ int test_syncdiag_rpc(void)
         ok = ok && bars && strcmp(json_get_str(json_get(json_get(bars,
                           "subgoals"), "bar")), "[########--]") == 0;
         ok = ok && criteria && json_size(criteria) == 8;
+        ok = ok && live && strcmp(json_get_str(json_get(live, "source")),
+                                  "agent_cached_summary") == 0;
+        ok = ok && strcmp(json_get_str(json_get(live, "source_schema")),
+                          "zcl.public_status.v1") == 0;
+        ok = ok && json_get(live, "agent_status") != NULL;
+        ok = ok && json_get(live, "readiness_status") != NULL;
+        ok = ok && json_get(live, "height_contract_status") != NULL;
 
         struct json_value alias;
         json_init(&alias);

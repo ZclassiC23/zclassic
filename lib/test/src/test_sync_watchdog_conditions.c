@@ -253,6 +253,39 @@ int test_sync_watchdog_conditions(void)
         condition_engine_tick();
         fake_clock_set(&clock, 3121);
         condition_engine_tick();
+        ok = ok && download_queue_starved_test_remedy_calls() == 0;
+        ok = ok && condition_engine_get_active_count() == 0;
+        SYNC_WATCHDOG_CHECK(
+            "download queue starved ignores empty drained window", ok);
+        cleanup_sync_watchdog();
+    }
+
+    {
+        struct fake_clock clock;
+        fake_clock_install(&clock, 3200);
+        struct connman cm;
+        struct download_manager dm;
+        struct main_state ms;
+        reset_sync_watchdog(&cm, &dm, &ms);
+        zcl_mutex_destroy(&dm.cs);
+        dl_init(&dm);
+        sync_monitor_set_context(&cm, &dm, &ms);
+        bool ok = true;
+        register_download_queue_starved();
+
+        struct p2p_node peer = {0};
+        struct p2p_node *peers[1] = { &peer };
+        cm.manager.nodes = peers;
+        cm.manager.num_nodes = 1;
+        struct uint256 qh = {0};
+        qh.data[0] = 0xd0;
+        int32_t qheight = 77;
+        ok = ok && dl_queue_blocks(&dm, &qh, &qheight, 1) == 1;
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
+        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+        condition_engine_tick();
+        fake_clock_set(&clock, 3321);
+        condition_engine_tick();
         ok = ok && download_queue_starved_test_remedy_calls() == 1;
         struct json_value dump;
         json_init(&dump);
@@ -271,15 +304,21 @@ int test_sync_watchdog_conditions(void)
         ok = ok && json_get_int(json_get(
             detail, "requested_at_detect")) == 0;
         ok = ok && json_get_int(json_get(detail, "current_requested")) == 0;
+        ok = ok && json_get_int(json_get(detail, "current_queued")) == 1;
+        ok = ok && json_get_bool(json_get(detail, "pending_download_work"));
         ok = ok && json_get_int(json_get(
             detail, "last_witness_requested")) == 0;
         ok = ok && !json_get_bool(json_get(
             detail, "witness_request_counter_advanced"));
+        ok = ok && !json_get_bool(json_get(
+            detail, "witness_download_work_drained"));
         ok = ok && json_get(detail, "last_assign_result") != NULL;
         ok = ok && json_get(detail, "remedy_contract") != NULL;
         json_free(&dump);
         SYNC_WATCHDOG_CHECK(
             "download queue starved kicks refill with detail json", ok);
+        dl_free(&dm);
+        zcl_mutex_destroy(&dm.cs);
         cleanup_sync_watchdog();
     }
 
@@ -290,6 +329,9 @@ int test_sync_watchdog_conditions(void)
         struct download_manager dm;
         struct main_state ms;
         reset_sync_watchdog(&cm, &dm, &ms);
+        zcl_mutex_destroy(&dm.cs);
+        dl_init(&dm);
+        sync_monitor_set_context(&cm, &dm, &ms);
         bool ok = true;
         register_download_queue_starved();
 
@@ -297,6 +339,10 @@ int test_sync_watchdog_conditions(void)
         struct p2p_node *peers[1] = { &peer };
         cm.manager.nodes = peers;
         cm.manager.num_nodes = 1;
+        struct uint256 qh = {0};
+        qh.data[0] = 0xd1;
+        int32_t qheight = 88;
+        ok = ok && dl_queue_blocks(&dm, &qh, &qheight, 1) == 1;
         sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
         sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
 
@@ -313,6 +359,49 @@ int test_sync_watchdog_conditions(void)
 
         SYNC_WATCHDOG_CHECK(
             "download queue starved clears after leaving block download", ok);
+        dl_free(&dm);
+        zcl_mutex_destroy(&dm.cs);
+        cleanup_sync_watchdog();
+    }
+
+    {
+        struct fake_clock clock;
+        fake_clock_install(&clock, 3900);
+        struct connman cm;
+        struct download_manager dm;
+        struct main_state ms;
+        reset_sync_watchdog(&cm, &dm, &ms);
+        zcl_mutex_destroy(&dm.cs);
+        dl_init(&dm);
+        sync_monitor_set_context(&cm, &dm, &ms);
+        bool ok = true;
+        register_download_queue_starved();
+
+        struct p2p_node peer = {0};
+        struct p2p_node *peers[1] = { &peer };
+        cm.manager.nodes = peers;
+        cm.manager.num_nodes = 1;
+        struct uint256 h = {0};
+        h.data[0] = 0xd2;
+        ok = ok && dl_mark_requested(&dm, &h, 99, 1);
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
+        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+
+        condition_engine_tick();
+        fake_clock_set(&clock, 4021);
+        condition_engine_tick();
+        ok = ok && download_queue_starved_test_remedy_calls() == 1;
+        ok = ok && condition_engine_get_active_count() == 1;
+
+        ok = ok && dl_mark_received(&dm, &h) == 1;
+        fake_clock_set(&clock, 4022);
+        condition_engine_tick();
+        ok = ok && condition_engine_get_active_count() == 0;
+
+        SYNC_WATCHDOG_CHECK(
+            "download queue starved clears when pending work drains", ok);
+        dl_free(&dm);
+        zcl_mutex_destroy(&dm.cs);
         cleanup_sync_watchdog();
     }
 
@@ -323,6 +412,9 @@ int test_sync_watchdog_conditions(void)
         struct download_manager dm;
         struct main_state ms;
         reset_sync_watchdog(&cm, &dm, &ms);
+        zcl_mutex_destroy(&dm.cs);
+        dl_init(&dm);
+        sync_monitor_set_context(&cm, &dm, &ms);
         bool ok = true;
         register_download_queue_starved();
 
@@ -330,6 +422,10 @@ int test_sync_watchdog_conditions(void)
         struct p2p_node *peers[1] = { &peer };
         cm.manager.nodes = peers;
         cm.manager.num_nodes = 1;
+        struct uint256 qh = {0};
+        qh.data[0] = 0xd3;
+        int32_t qheight = 111;
+        ok = ok && dl_queue_blocks(&dm, &qh, &qheight, 1) == 1;
         sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
         sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
 
@@ -368,6 +464,8 @@ int test_sync_watchdog_conditions(void)
         ok = ok && snap.attempts < 5;   /* re-armed: budget reset, not latched */
         SYNC_WATCHDOG_CHECK(
             "download queue starved pages then re-arms (never latches)", ok);
+        dl_free(&dm);
+        zcl_mutex_destroy(&dm.cs);
         cleanup_sync_watchdog();
     }
 

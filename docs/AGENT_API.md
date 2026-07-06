@@ -92,6 +92,11 @@ duplicates the decision fields agents need most (`verdict`, `safe_next_action`,
 marks skipped lower-priority sections as `partial_result=true` instead of
 hanging. Use it before raw logs when the node is behaving oddly but still
 answers RPC.
+For chain status, `agentdiagnose` follows the same `zcl.agent_readiness.v1`
+contract as `agent`: a small non-material tip gap remains healthy when
+`chain_serving_ready=true`. It also echoes `chain_readiness_status` and
+`height_contract_status` so agents can tell normal lookahead/minor lag from a
+real serving blocker without re-parsing the embedded `agent` object.
 `peer_incident_severity=info` means the raw peer lifecycle view still has
 forensic detail, but there is no duplicate/reconnect storm and the overall
 verdict can remain healthy. `peer_incident_severity=attention` means the
@@ -211,6 +216,13 @@ Default bounded `healthcheck` still preserves top-level deployment contract
 fields (`consensus_authority`, `candidate_source`, `candidate_trust`) so
 deploy verification and first-call clients do not need to parse nested
 diagnostic objects for the node authority posture.
+
+`milestone` (`zcl.milestone_status.v1`) is the v1 progress view, not a second
+health authority. Its `live` block is derived from the bounded
+`zcl.public_status.v1` agent summary when available and names that with
+`live.source="agent_cached_summary"` / `live.source_schema="zcl.public_status.v1"`.
+If that first-call contract is unavailable, it falls back to the older
+node-health snapshot and says so in `live.source`.
 
 When `runtime_build.stale=true`, the node is still useful to observe but its
 behavior predates the expected deployed source; use the lane safety contract

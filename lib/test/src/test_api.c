@@ -1023,6 +1023,7 @@ int test_api(void)
         const struct json_value *ascii = json_get(&root, "ascii");
         const struct json_value *bars = json_get(&root, "bars");
         const struct json_value *criteria = json_get(&root, "criteria");
+        const struct json_value *live = json_get(&root, "live");
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
                           "zcl.milestone_status.v1") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "milestone")),
@@ -1035,6 +1036,13 @@ int test_api(void)
         ok = ok && bars && strcmp(json_get_str(json_get(json_get(bars,
                           "subgoals"), "bar")), "[########--]") == 0;
         ok = ok && criteria && json_size(criteria) == 8;
+        ok = ok && live && strcmp(json_get_str(json_get(live, "source")),
+                                  "agent_cached_summary") == 0;
+        ok = ok && strcmp(json_get_str(json_get(live, "source_schema")),
+                          "zcl.public_status.v1") == 0;
+        ok = ok && json_get(live, "agent_status") != NULL;
+        ok = ok && json_get(live, "readiness_status") != NULL;
+        ok = ok && json_get(live, "height_contract_status") != NULL;
         json_free(&root);
 
         if (ok) printf("OK\n");
