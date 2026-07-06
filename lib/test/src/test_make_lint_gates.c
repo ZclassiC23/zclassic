@@ -2788,6 +2788,7 @@ static int t_native_agent_api_contract(void)
     char *main_buf = NULL;
     char *event_buf = NULL;
     char *agent_summary_buf = NULL;
+    char *agent_summary_json_buf = NULL;
     char *agent_operator_buf = NULL;
     char *agent_ctrl_buf = NULL;
     char *agent_registry_buf = NULL;
@@ -2813,6 +2814,7 @@ static int t_native_agent_api_contract(void)
         char main_path[PATH_MAX];
         char event_path[PATH_MAX];
         char agent_summary_path[PATH_MAX];
+        char agent_summary_json_path[PATH_MAX];
         char agent_operator_path[PATH_MAX];
         char agent_ctrl_path[PATH_MAX];
         char agent_registry_path[PATH_MAX];
@@ -2839,6 +2841,10 @@ static int t_native_agent_api_contract(void)
                          "app/controllers/src/event_controller.c") == 0);
         ASSERT(repo_path(agent_summary_path, sizeof(agent_summary_path),
                          "app/controllers/src/event_agent_summary.c") == 0);
+        ASSERT(repo_path(agent_summary_json_path,
+                         sizeof(agent_summary_json_path),
+                         "app/controllers/src/event_agent_summary_json.c")
+               == 0);
         ASSERT(repo_path(agent_operator_path, sizeof(agent_operator_path),
                          "app/controllers/src/agent_operator_contracts.c")
                == 0);
@@ -2899,6 +2905,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(read_entire_file(main_path, &main_buf) == 0);
         ASSERT(read_entire_file(event_path, &event_buf) == 0);
         ASSERT(read_entire_file(agent_summary_path, &agent_summary_buf) == 0);
+        ASSERT(read_entire_file(agent_summary_json_path,
+                                &agent_summary_json_buf) == 0);
         ASSERT(read_entire_file(agent_operator_path, &agent_operator_buf)
                == 0);
         ASSERT(read_entire_file(agent_ctrl_path, &agent_ctrl_buf) == 0);
@@ -3082,6 +3090,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_summary_buf,
                       "condition_engine_get_active_count") != NULL);
         ASSERT(strstr(agent_summary_buf, "agent_fast_collect") != NULL);
+        ASSERT(strstr(agent_summary_buf, "agent_summary_push_detail_json")
+               != NULL);
         ASSERT(strstr(agent_summary_buf, "dl_get_stats") != NULL);
         ASSERT(strstr(agent_summary_buf, "dl_get_diagnostics") != NULL);
         ASSERT(strstr(agent_summary_buf, "dl_get_throughput") != NULL);
@@ -3089,7 +3099,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_summary_buf, "message_send_calls") != NULL);
         ASSERT(strstr(agent_summary_buf, "connman_get_message_cycle_stats")
                != NULL);
-        ASSERT(strstr(agent_summary_buf, "dl_assign_result_name") != NULL);
+        ASSERT(strstr(agent_summary_buf, "dl_assign_result_name") == NULL);
+        ASSERT(strstr(agent_summary_json_buf, "dl_assign_result_name")
+               != NULL);
         ASSERT(strstr(agent_summary_buf, "sync_monitor_tip_advance_age")
                != NULL);
         ASSERT(strstr(agent_summary_buf, "AGENT_CATCHUP_STALL_SECS")
@@ -3106,7 +3118,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_summary_buf, "api_served_tip_height()") == NULL);
         ASSERT(strstr(agent_summary_buf, "node_db_sync_get_job_status")
                != NULL);
-        ASSERT(strstr(agent_summary_buf, "\"indexer\"") != NULL);
+        ASSERT(strstr(agent_summary_json_buf, "\"indexer\"") != NULL);
         ASSERT(strstr(agent_summary_buf, "agent_push_readiness_contract_json")
                != NULL);
         ASSERT(strstr(api_status_buf, "agent_push_readiness_contract_json")
@@ -3542,6 +3554,7 @@ static int t_native_agent_api_contract(void)
     free(main_buf);
     free(event_buf);
     free(agent_summary_buf);
+    free(agent_summary_json_buf);
     free(agent_operator_buf);
     free(agent_ctrl_buf);
     free(agent_registry_buf);

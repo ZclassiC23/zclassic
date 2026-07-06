@@ -1922,6 +1922,90 @@ int test_syncdiag_rpc(void)
         else    { printf("FAIL\n"); failures++; }
     }
 
+    printf("api: mirror cached snapshot avoids live height refresh... ");
+    {
+        legacy_mirror_sync_reset_for_test();
+        struct legacy_mirror_sync_stats seeded = {0};
+        seeded.enabled = true;
+        seeded.running = true;
+        seeded.reachable = true;
+        seeded.legacy_height = 100;
+        seeded.legacy_headers = 100;
+        seeded.local_height = 99;
+        seeded.best_header_height = 100;
+        seeded.target_height = 100;
+        snprintf(seeded.zclassic23_hash, sizeof(seeded.zclassic23_hash),
+                 "%s", "cached-local-hash");
+        snprintf(seeded.zclassicd_hash, sizeof(seeded.zclassicd_hash),
+                 "%s", "cached-legacy-hash");
+        legacy_mirror_sync_test_set_stats(&seeded, NULL);
+
+        struct legacy_mirror_sync_stats snap = {0};
+        legacy_mirror_sync_stats_cached_snapshot(&snap);
+
+        bool ok = snap.enabled && snap.running && snap.reachable;
+        ok = ok && snap.local_height == 99;
+        ok = ok && snap.best_header_height == 100;
+        ok = ok && snap.lag_known;
+        ok = ok && snap.lag == 1;
+        ok = ok && strcmp(snap.zclassic23_hash,
+                          "cached-local-hash") == 0;
+        ok = ok && strcmp(snap.zclassicd_hash,
+                          "cached-legacy-hash") == 0;
+
+        legacy_mirror_sync_reset_for_test();
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: native RPC agent bounds optional detail when budget is spent... ");
+    {
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        register_event_rpc_commands(&tbl);
+        if (rpc_is_in_warmup(NULL, 0))
+            set_rpc_warmup_finished();
+
+        setenv("ZCL_AGENT_TEST_ELAPSED_OFFSET_MS", "200", 1);
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+
+        struct json_value result;
+        json_init(&result);
+
+        bool executed = rpc_table_execute(&tbl, "agent", &params, &result);
+        const struct json_value *first_call =
+            json_get(&result, "first_call");
+        bool ok = executed && result.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
+                          "zcl.public_status.v1") == 0;
+        ok = ok && json_get_bool(json_get(&result, "partial_result"));
+        ok = ok && strstr(json_get_str(json_get(&result, "partial_reason")),
+                          "optional_detail_budget_guard:resources") != NULL;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                          "deferred_components")),
+                          "resources,restart_watchdog") == 0;
+        ok = ok && first_call && first_call->type == JSON_OBJ;
+        ok = ok && json_get_bool(json_get(first_call, "partial_result"));
+        ok = ok && strstr(json_get_str(json_get(first_call,
+                          "partial_reason")),
+                          "optional_detail_budget_guard:resources") != NULL;
+        ok = ok && json_get(&result, "resources") == NULL;
+        ok = ok && json_get(&result, "restart_watchdog") == NULL;
+        ok = ok && json_get(&result, "readiness") != NULL;
+        ok = ok && json_get(&result, "height_contract") != NULL;
+        ok = ok && json_get(&result, "mirror_contract") != NULL;
+        ok = ok && json_get(&result, "download") != NULL;
+
+        unsetenv("ZCL_AGENT_TEST_ELAPSED_OFFSET_MS");
+        json_free(&params);
+        json_free(&result);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
     printf("api: native RPC agent suppresses stale mirror latch... ");
     {
         struct rpc_table tbl;

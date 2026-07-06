@@ -345,12 +345,15 @@ void legacy_mirror_sync_stop(void)
     legacy_mirror_supervisor_stop();
 }
 
-void legacy_mirror_sync_stats_snapshot(
-    struct legacy_mirror_sync_stats *out)
+static void legacy_mirror_sync_stats_snapshot_impl(
+    struct legacy_mirror_sync_stats *out,
+    bool refresh_local_heights,
+    bool resolve_local_hash)
 {
     if (!out) return;
     memset(out, 0, sizeof(*out));
-    lms_refresh_local_heights(NULL, NULL);
+    if (refresh_local_heights)
+        lms_refresh_local_heights(NULL, NULL);
     pthread_mutex_lock(&g_lms.lock);
     out->enabled = g_lms.enabled;
 #ifdef ZCL_TESTING
@@ -372,6 +375,8 @@ void legacy_mirror_sync_stats_snapshot(
              g_lms.csr_failure_reason);
     snprintf(out->stuck_reason, sizeof(out->stuck_reason), "%s",
              g_lms.stuck_reason);
+    snprintf(out->zclassic23_hash, sizeof(out->zclassic23_hash), "%s",
+             g_lms.zclassic23_hash);
     pthread_mutex_unlock(&g_lms.lock);
     out->reachable = atomic_load(&g_lms.reachable) != 0;
     out->in_flight = atomic_load(&g_lms.in_flight) != 0;
@@ -385,7 +390,8 @@ void legacy_mirror_sync_stats_snapshot(
     out->lag_known = out->legacy_advisory_height_known &&
                      out->local_height >= 0;
     out->lag_valid = out->lag_known;
-    if (!lms_local_hash_at(out->local_height, out->zclassic23_hash)) {
+    if (resolve_local_hash &&
+        !lms_local_hash_at(out->local_height, out->zclassic23_hash)) {
         pthread_mutex_lock(&g_lms.lock);
         snprintf(out->zclassic23_hash, sizeof(out->zclassic23_hash), "%s",
                  g_lms.zclassic23_hash);
@@ -507,6 +513,18 @@ void legacy_mirror_sync_stats_snapshot(
     snprintf(out->lag_breach_severity, sizeof(out->lag_breach_severity),
              "%s", sev);
     snprintf(out->state, sizeof(out->state), "%s", lms_state_name(out));
+}
+
+void legacy_mirror_sync_stats_snapshot(
+    struct legacy_mirror_sync_stats *out)
+{
+    legacy_mirror_sync_stats_snapshot_impl(out, true, true);
+}
+
+void legacy_mirror_sync_stats_cached_snapshot(
+    struct legacy_mirror_sync_stats *out)
+{
+    legacy_mirror_sync_stats_snapshot_impl(out, false, false);
 }
 
 bool legacy_mirror_sync_dump_state_json(struct json_value *out,

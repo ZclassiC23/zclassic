@@ -158,6 +158,12 @@ next action, and recommended drill-down tools. The compact packet also includes
 tell when the first-call fast path intentionally avoided blocking projection
 reads during startup or catch-up; use `zcl_status`, `zcl_state`, or
 `getmirrorstatus` for heavier detail instead of making `agent` wait on SQLite.
+The same fast path uses cached mirror state and an internal optional-detail
+budget. If that budget is already spent, `agent.partial_result=true` and
+`first_call.partial_result=true`; the core status/readiness/height/peer/mirror
+fields remain present, while lower-priority detail such as `resources` and
+`restart_watchdog` can be deferred. Follow `first_call.full_mode_command`
+(`zclassic23 healthcheck`) when the omitted detail matters.
 `zcl_operator_summary` remains a longer MCP compatibility aggregate with raw
 drill-down payloads, not the canonical bounded status contract.
 `runtime_build` (`zcl.runtime_build.v1`), which compares the running binary's
@@ -191,9 +197,9 @@ full evidence tree.
 `agent`, default `healthcheck`, `agentliveness`, and `agentdiagnose` also include
 `first_call` (`zcl.first_call_contract.v1`): `api`,
 `result_completeness`, `partial_result`, `source`, `budget_ms`,
-`elapsed_ms`, and `budget_exceeded`. `agentliveness` uses that budget to
-return a valid partial JSON response instead of continuing into background
-quality file scans after its first-call budget is spent.
+`elapsed_ms`, and `budget_exceeded`. `agent` and `agentliveness` use that
+budget to return valid partial JSON responses instead of continuing into
+optional detail work after their first-call budget is spent.
 Default bounded `healthcheck` still preserves top-level deployment contract
 fields (`consensus_authority`, `candidate_source`, `candidate_trust`) so
 deploy verification and first-call clients do not need to parse nested

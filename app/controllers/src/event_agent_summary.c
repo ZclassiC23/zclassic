@@ -3,6 +3,7 @@
  * Compact AI/operator first-call telemetry. This path must stay cheap even
  * while the full healthcheck path is doing repair-era evidence work. */
 #include "event_agent_summary.h"
+#include "event_agent_summary_internal.h"
 #include "controllers/agent_height_contract.h"
 #include "controllers/agent_controller.h"
 #include "controllers/agent_first_call.h"
@@ -40,124 +41,67 @@
 #include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define AGENT_CATCHUP_STALL_SECS 120
 #define AGENT_DISPATCH_IDLE_SECS 30
+#define AGENT_OPTIONAL_DETAIL_BUDGET_MS 175
 
-struct agent_fast_snapshot {
-    enum sync_state sync_state;
-    int served_height;
-    int tip_height;
-    int indexed_height;
-    int header_height;
-    int peer_best_height;
-    int target_height;
-    int gap;
-    int index_gap;
-    int log_head;
-    int log_head_gap;
-    size_t peer_count;
-    size_t magicbean_peer_count;
-    size_t zclassic_c23_peer_count;
-    int64_t peer_snapshot_age_seconds;
-    bool peer_snapshot_available;
-    bool peer_snapshot_stale;
-    bool has_peers;
-    bool healthy;
-    bool serving;
-    bool operator_needed;
-    bool operator_action_required;
-    bool operator_latch_recovered;
-    bool operator_latch_suppressed_by_mirror;
-    bool validation_pack_ok;
-    bool provable_tip_published;
-    bool tor_enabled;
-    bool tor_ready;
-    bool onion_service_ready;
-    bool block_source_status_cached;
-    bool catchup_active;
-    bool catchup_stalled;
-    bool projection_deferred;
-    bool projection_catchup_active;
-    bool download_dispatch_idle;
-    bool download_dispatch_stalled;
-    uint64_t blocks_requested;
-    uint64_t blocks_received;
-    uint64_t blocks_timed_out;
-    uint64_t in_flight;
-    uint64_t queued;
-    uint64_t overdue_in_flight;
-    uint64_t in_flight_peer_count;
-    uint64_t queue_peer_avoid_count;
-    uint64_t assign_attempts;
-    uint64_t assign_successes;
-    uint64_t assign_zero_results;
-    uint64_t dispatch_wakes;
-    uint64_t message_cycles;
-    uint64_t message_nodes_snapshotted;
-    uint64_t message_send_calls;
-    uint64_t message_process_calls;
-    uint64_t message_recv_ready;
-    uint64_t message_idle_waits;
-    uint64_t message_wakes;
-    uint64_t block_intake_enqueued;
-    uint64_t block_intake_processed;
-    uint64_t block_intake_accepted;
-    uint64_t block_intake_retryable;
-    uint64_t block_intake_rejected;
-    uint64_t block_intake_dropped;
-    uint64_t block_intake_clone_failed;
-    uint64_t block_intake_spawn_failed;
-    uint64_t block_intake_current_depth;
-    uint64_t block_intake_capacity;
-    uint64_t block_intake_max_depth;
-    bool block_intake_running;
-    bool block_intake_stopping;
-    uint32_t last_assign_peer_id;
-    uint64_t last_assign_max_requested;
-    uint64_t last_assign_available;
-    uint64_t last_assign_assigned;
-    uint64_t last_assign_queue_len;
-    uint64_t last_assign_active;
-    uint64_t last_assign_peer_in_flight;
-    uint64_t last_assign_peer_limit;
-    uint64_t last_assign_global_limit;
-    uint64_t download_bytes_received;
-    double download_mbps_avg;
-    int request_timeout_seconds;
-    int last_assign_result;
-    int projection_height;
-    int projection_catchup_height;
-    int projection_catchup_target_height;
-    int last_projection_deferred_height;
-    int32_t oldest_in_flight_height;
-    uint32_t oldest_in_flight_peer_id;
-    int64_t projection_lag;
-    int64_t projection_deferred_total;
-    int64_t last_projection_deferred_time;
-    int64_t projection_catchup_progress_age_seconds;
-    int64_t projection_catchup_uptime_seconds;
-    int64_t tip_advance_age_seconds;
-    int64_t catchup_stall_seconds;
-    int64_t download_dispatch_idle_seconds;
-    int64_t queue_peer_avoid_max_seconds;
-    int64_t oldest_in_flight_age_seconds;
-    int64_t last_error_age_seconds;
-    struct agent_resource_snapshot resources;
-    struct legacy_mirror_sync_stats mirror;
-    int active_condition_count;
-    int unresolved_condition_count;
-    int warning_count;
-    char warning_reasons[256];
-    char blocking_reason[ZCL_NODE_HEALTH_REASON_LEN];
-    char operator_needed_detail[ALERT_OPERATOR_NEEDED_DETAIL_LEN];
-    char last_error_type[64];
-    char projection_state[32];
-    char last_projection_deferred_reason[64];
-    char validation_pack_detail[64];
-    int64_t operator_needed_since_unix;
+struct agent_fast_budget {
+    int64_t started_us;
+    bool partial_result;
+    char partial_reason[96];
 };
+
+#ifdef ZCL_TESTING
+static int64_t agent_fast_test_elapsed_offset_ms(void)
+{
+    const char *env = getenv("ZCL_AGENT_TEST_ELAPSED_OFFSET_MS");
+    if (!env || !env[0])
+        return 0;
+    char *end = NULL;
+    long long value = strtoll(env, &end, 10);
+    if (end == env || value <= 0)
+        return 0;
+    if (value > 60000)
+        return 60000;
+    return (int64_t)value;
+}
+#else
+static int64_t agent_fast_test_elapsed_offset_ms(void)
+{
+    return 0;
+}
+#endif
+
+static int64_t agent_fast_effective_elapsed_ms(int64_t started_us)
+{
+    int64_t elapsed = agent_first_call_elapsed_ms(started_us);
+    int64_t test_offset = agent_fast_test_elapsed_offset_ms();
+    if (test_offset > INT64_MAX - elapsed)
+        return INT64_MAX;
+    return elapsed + test_offset;
+}
+
+static bool agent_fast_optional_detail_allowed(
+    struct agent_fast_budget *budget,
+    const char *component)
+{
+    if (!budget || budget->started_us <= 0)
+        return true;
+    if (agent_fast_effective_elapsed_ms(budget->started_us) <
+        AGENT_OPTIONAL_DETAIL_BUDGET_MS)
+        return true;
+
+    if (!budget->partial_result) {
+        budget->partial_result = true;
+        snprintf(budget->partial_reason, sizeof(budget->partial_reason),
+                 "optional_detail_budget_guard:%s",
+                 component && component[0] ? component : "unknown");
+    }
+    return false;
+}
 
 static int agent_fast_served_height(bool *published_out)
 {
@@ -277,7 +221,8 @@ static void agent_fast_collect_indexer(struct agent_fast_snapshot *s)
             now - jobs.catchup_last_progress_at;
 }
 
-static void agent_fast_collect(struct agent_fast_snapshot *s)
+static void agent_fast_collect(struct agent_fast_snapshot *s,
+                               struct agent_fast_budget *budget)
 {
     struct agent_fast_snapshot empty = {0};
     if (!s)
@@ -302,12 +247,15 @@ static void agent_fast_collect(struct agent_fast_snapshot *s)
     s->peer_snapshot_age_seconds = -1;
     s->validation_pack_ok = true;
     s->operator_needed_since_unix = 0;
-    agent_resource_snapshot_collect(&s->resources);
-    legacy_mirror_sync_stats_snapshot(&s->mirror);
+    legacy_mirror_sync_stats_cached_snapshot(&s->mirror);
     s->active_condition_count = condition_engine_get_active_count();
     s->unresolved_condition_count = condition_engine_get_unresolved_count();
-    if (s->resources.rss_warning)
-        agent_fast_add_warning(s, "high_memory_usage");
+    if (agent_fast_optional_detail_allowed(budget, "resources")) {
+        agent_resource_snapshot_collect(&s->resources);
+        s->resources_collected = true;
+        if (s->resources.rss_warning)
+            agent_fast_add_warning(s, "high_memory_usage");
+    }
 
     s->sync_state = sync_get_state();
     s->served_height =
@@ -541,8 +489,13 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
         "\"build_commit\":\"...\", \"height\":N, \"gap\":0, "
         "\"primary_blocker\":\"none\" }\n");
     int64_t first_call_started_us = agent_first_call_start_us();
+    struct agent_fast_budget first_call_budget = {
+        .started_us = first_call_started_us,
+        .partial_result = false,
+        .partial_reason = {0},
+    };
     struct agent_fast_snapshot health;
-    agent_fast_collect(&health);
+    agent_fast_collect(&health, &first_call_budget);
     bool material_gap = health.gap > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS;
     bool material_index_gap = health.index_gap > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS;
 
@@ -609,7 +562,20 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.public_status.v1");
     json_push_kv_str(result, "api_version", "v1");
-    agent_push_first_call_simple_json(result, "first_call", "agent", "cached_fast_fields", ZCL_AGENT_FIRST_CALL_BUDGET_AGENT_MS, first_call_started_us, false, "", "");
+    json_push_kv_str(result, "result_completeness", "bounded");
+    json_push_kv_bool(result, "partial_result",
+                      first_call_budget.partial_result);
+    if (first_call_budget.partial_result) {
+        json_push_kv_str(result, "partial_reason",
+                         first_call_budget.partial_reason);
+        json_push_kv_str(result, "deferred_components",
+                         "resources,restart_watchdog");
+    }
+    agent_push_first_call_simple_json(
+        result, "first_call", "agent", "cached_fast_fields",
+        ZCL_AGENT_FIRST_CALL_BUDGET_AGENT_MS, first_call_started_us,
+        first_call_budget.partial_result, first_call_budget.partial_reason,
+        first_call_budget.partial_result ? "zclassic23 healthcheck" : "");
     json_push_kv_str(result, "build_commit", zcl_build_commit());
     agent_push_runtime_build_json(result, "runtime_build");
     json_push_kv_str(result, "status", status);
@@ -655,146 +621,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
         health.served_height, health.tip_height, health.header_height,
         health.peer_best_height, health.target_height, health.gap,
         health.log_head, health.log_head_gap);
-    json_push_kv_str(result, "sync_state", sync_state_name(health.sync_state));
-    agent_push_restart_watchdog_json(result, "restart_watchdog", NULL);
-
-    struct json_value indexer = {0};
-    json_set_object(&indexer);
-    json_push_kv_bool(&indexer, "block_source_status_cached",
-                      health.block_source_status_cached);
-    json_push_kv_int(&indexer, "height", health.indexed_height);
-    json_push_kv_int(&indexer, "lag", health.projection_lag);
-    json_push_kv_int(&indexer, "projection_height", health.projection_height);
-    json_push_kv_int(&indexer, "projection_lag", health.projection_lag);
-    json_push_kv_bool(&indexer, "projection_deferred", health.projection_deferred);
-    json_push_kv_str(&indexer, "projection_state", health.projection_state);
-    json_push_kv_int(&indexer, "projection_deferred_total", health.projection_deferred_total);
-    json_push_kv_int(&indexer, "last_projection_deferred_height", health.last_projection_deferred_height);
-    json_push_kv_int(&indexer, "last_projection_deferred_time", health.last_projection_deferred_time);
-    json_push_kv_str(&indexer, "last_projection_deferred_reason", health.last_projection_deferred_reason);
-    json_push_kv_bool(&indexer, "catchup_active", health.projection_catchup_active);
-    json_push_kv_int(&indexer, "catchup_height", health.projection_catchup_height);
-    json_push_kv_int(&indexer, "catchup_target_height", health.projection_catchup_target_height);
-    json_push_kv_int(&indexer, "catchup_progress_age_seconds", health.projection_catchup_progress_age_seconds);
-    json_push_kv_int(&indexer, "catchup_uptime_seconds", health.projection_catchup_uptime_seconds);
-    json_push_kv(result, "indexer", &indexer);
-    json_free(&indexer);
-    struct json_value reducer = {0};
-    json_set_object(&reducer);
-    json_push_kv_int(&reducer, "log_head", health.log_head);
-    json_push_kv_int(&reducer, "log_head_gap", health.log_head_gap);
-    json_push_kv_bool(&reducer, "provable_tip_published", health.provable_tip_published);
-    json_push_kv_int(&reducer, "tip_advance_age_seconds", health.tip_advance_age_seconds);
-    json_push_kv_bool(&reducer, "validation_pack_ok", health.validation_pack_ok);
-    json_push_kv_str(&reducer, "validation_pack_detail", health.validation_pack_detail);
-    json_push_kv(result, "reducer", &reducer);
-    json_free(&reducer);
-    struct json_value health_obj = {0};
-    json_set_object(&health_obj);
-    json_push_kv_int(&health_obj, "warning_count", (int64_t)health.warning_count);
-    json_push_kv_str(&health_obj, "warning_reasons", health.warning_reasons);
-    json_push_kv_int(&health_obj, "last_error_age_seconds", health.last_error_age_seconds);
-    json_push_kv_str(&health_obj, "last_error_type", health.last_error_type);
-    json_push_kv_str(&health_obj, "blocking_reason", health.blocking_reason);
-    json_push_kv_bool(&health_obj, "operator_latch_recovered", health.operator_latch_recovered);
-    json_push_kv_bool(&health_obj, "operator_latch_active", health.operator_needed);
-    json_push_kv_bool(&health_obj, "operator_action_required", health.operator_action_required);
-    json_push_kv_bool(&health_obj, "operator_latch_suppressed_by_mirror", health.operator_latch_suppressed_by_mirror);
-    json_push_kv_str(&health_obj, "operator_latch_detail", health.operator_needed_detail);
-    json_push_kv_int(&health_obj, "operator_latch_since_unix", health.operator_needed_since_unix);
-    json_push_kv_int(&health_obj, "active_condition_count", health.active_condition_count);
-    json_push_kv_int(&health_obj, "unresolved_condition_count", health.unresolved_condition_count);
-    json_push_kv(result, "health", &health_obj);
-    json_free(&health_obj);
-    agent_push_resources_json(result, "resources", &health.resources);
-    struct json_value peers = {0};
-    json_set_object(&peers);
-    json_push_kv_int(&peers, "total", (int64_t)health.peer_count);
-    json_push_kv_bool(&peers, "has_peers", health.has_peers);
-    json_push_kv_bool(&peers, "snapshot_available", health.peer_snapshot_available);
-    json_push_kv_bool(&peers, "snapshot_stale", health.peer_snapshot_stale);
-    json_push_kv_int(&peers, "snapshot_age_seconds", health.peer_snapshot_age_seconds);
-    json_push_kv_int(&peers, "magicbean", (int64_t)health.magicbean_peer_count);
-    json_push_kv_int(&peers, "zclassic23", (int64_t)health.zclassic_c23_peer_count);
-    json_push_kv(result, "peers", &peers);
-    json_free(&peers);
-
-    struct json_value download = {0};
-    json_set_object(&download);
-    json_push_kv_int(&download, "requested", (int64_t)health.blocks_requested);
-    json_push_kv_int(&download, "received", (int64_t)health.blocks_received);
-    json_push_kv_int(&download, "timed_out", (int64_t)health.blocks_timed_out);
-    json_push_kv_int(&download, "in_flight", (int64_t)health.in_flight);
-    json_push_kv_int(&download, "queued", (int64_t)health.queued);
-    json_push_kv_bool(&download, "active", health.catchup_active);
-    json_push_kv_bool(&download, "catchup_stalled", health.catchup_stalled);
-    json_push_kv_int(&download, "catchup_stall_seconds", health.catchup_stall_seconds);
-    json_push_kv_bool(&download, "dispatch_idle", health.download_dispatch_idle);
-    json_push_kv_bool(&download, "dispatch_stalled", health.download_dispatch_stalled);
-    json_push_kv_int(&download, "dispatch_idle_seconds", health.download_dispatch_idle_seconds);
-    json_push_kv_int(&download, "request_timeout_seconds", (int64_t)health.request_timeout_seconds);
-    json_push_kv_int(&download, "oldest_in_flight_age_seconds", health.oldest_in_flight_age_seconds);
-    json_push_kv_int(&download, "oldest_in_flight_height", health.oldest_in_flight_height);
-    json_push_kv_int(&download, "oldest_in_flight_peer_id", (int64_t)health.oldest_in_flight_peer_id);
-    json_push_kv_int(&download, "overdue_in_flight", (int64_t)health.overdue_in_flight);
-    json_push_kv_int(&download, "in_flight_peer_count", (int64_t)health.in_flight_peer_count);
-    json_push_kv_int(&download, "queue_peer_avoid_count", (int64_t)health.queue_peer_avoid_count);
-    json_push_kv_int(&download, "queue_peer_avoid_max_seconds", health.queue_peer_avoid_max_seconds);
-    json_push_kv_int(&download, "assign_attempts", (int64_t)health.assign_attempts);
-    json_push_kv_int(&download, "assign_successes", (int64_t)health.assign_successes);
-    json_push_kv_int(&download, "assign_zero_results", (int64_t)health.assign_zero_results);
-    json_push_kv_int(&download, "dispatch_wakes", (int64_t)health.dispatch_wakes);
-    json_push_kv_int(&download, "message_cycles", (int64_t)health.message_cycles);
-    json_push_kv_int(&download, "message_nodes_snapshotted", (int64_t)health.message_nodes_snapshotted);
-    json_push_kv_int(&download, "message_send_calls", (int64_t)health.message_send_calls);
-    json_push_kv_int(&download, "message_process_calls", (int64_t)health.message_process_calls);
-    json_push_kv_int(&download, "message_recv_ready", (int64_t)health.message_recv_ready);
-    json_push_kv_int(&download, "message_idle_waits", (int64_t)health.message_idle_waits);
-    json_push_kv_int(&download, "message_wakes", (int64_t)health.message_wakes);
-    {
-        struct json_value intake = {0};
-        json_set_object(&intake);
-        json_push_kv_bool(&intake, "running", health.block_intake_running);
-        json_push_kv_bool(&intake, "stopping", health.block_intake_stopping);
-        json_push_kv_int(&intake, "current_depth", (int64_t)health.block_intake_current_depth);
-        json_push_kv_int(&intake, "capacity", (int64_t)health.block_intake_capacity);
-        json_push_kv_bool(&intake, "saturated",
-                          health.block_intake_running && !health.block_intake_stopping &&
-                          health.block_intake_capacity > 0 &&
-                          health.block_intake_current_depth >= health.block_intake_capacity);
-        json_push_kv_int(&intake, "max_depth", (int64_t)health.block_intake_max_depth);
-        json_push_kv_int(&intake, "enqueued", (int64_t)health.block_intake_enqueued);
-        json_push_kv_int(&intake, "processed", (int64_t)health.block_intake_processed);
-        json_push_kv_int(&intake, "accepted", (int64_t)health.block_intake_accepted);
-        json_push_kv_int(&intake, "retryable", (int64_t)health.block_intake_retryable);
-        json_push_kv_int(&intake, "rejected", (int64_t)health.block_intake_rejected);
-        json_push_kv_int(&intake, "dropped", (int64_t)health.block_intake_dropped);
-        json_push_kv_int(&intake, "clone_failed", (int64_t)health.block_intake_clone_failed);
-        json_push_kv_int(&intake, "spawn_failed", (int64_t)health.block_intake_spawn_failed);
-        json_push_kv(&download, "block_intake", &intake);
-        json_free(&intake);
-    }
-    json_push_kv_int(&download, "last_assign_peer_id", (int64_t)health.last_assign_peer_id);
-    json_push_kv_int(&download, "last_assign_max_requested", (int64_t)health.last_assign_max_requested);
-    json_push_kv_int(&download, "last_assign_available", (int64_t)health.last_assign_available);
-    json_push_kv_int(&download, "last_assign_assigned", (int64_t)health.last_assign_assigned);
-    json_push_kv_int(&download, "last_assign_queue_len", (int64_t)health.last_assign_queue_len);
-    json_push_kv_int(&download, "last_assign_active", (int64_t)health.last_assign_active);
-    json_push_kv_int(&download, "last_assign_peer_in_flight", (int64_t)health.last_assign_peer_in_flight);
-    json_push_kv_int(&download, "last_assign_peer_limit", (int64_t)health.last_assign_peer_limit);
-    json_push_kv_int(&download, "last_assign_global_limit", (int64_t)health.last_assign_global_limit);
-    json_push_kv_str(&download, "last_assign_result",
-                     dl_assign_result_name(health.last_assign_result));
-    json_push_kv_int(&download, "bytes_received", (int64_t)health.download_bytes_received);
-    json_push_kv_real(&download, "mbps_avg", health.download_mbps_avg);
-    json_push_kv(result, "download", &download);
-    json_free(&download);
-    struct json_value services = {0};
-    json_set_object(&services);
-    json_push_kv_bool(&services, "tor_enabled", health.tor_enabled);
-    json_push_kv_bool(&services, "tor_ready", health.tor_ready);
-    json_push_kv_bool(&services, "onion_service_ready", health.onion_service_ready);
-    json_push_kv(result, "services", &services);
-    json_free(&services);
+    agent_summary_push_detail_json(
+        result, &health, first_call_budget.partial_result);
     return true;
 }

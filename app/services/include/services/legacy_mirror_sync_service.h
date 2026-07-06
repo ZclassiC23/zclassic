@@ -132,6 +132,12 @@ struct legacy_mirror_sync_stats {
 
 void legacy_mirror_sync_stats_snapshot(
     struct legacy_mirror_sync_stats *out);
+/* Fast-lane snapshot for first-call APIs. Reads the mirror monitor's cached
+ * atomics/strings only; it does not refresh local chain heights or walk the
+ * active-chain hash index. Use the full snapshot for health/mirror drilldowns
+ * that can afford richer synchronous evidence. */
+void legacy_mirror_sync_stats_cached_snapshot(
+    struct legacy_mirror_sync_stats *out);
 /* API compatibility helper: legacy numeric lag fields report 0 when the
  * mirror height is unknown. Use the paired *_observed JSON fields to
  * distinguish "unknown" (null) from a real zero-block lag. */
