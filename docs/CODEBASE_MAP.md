@@ -155,11 +155,13 @@ controller `k_routes[]` arrays.
   operator surface: where code lives, which docs apply, and which tests cover
   each subsystem. The full contract guide is `docs/AGENT_API.md`.
   First-call method/schema/tool metadata is centralized in
-  `app/controllers/include/controllers/agent_contracts.def`; add agent-facing
-  direct/drilldown command-center entries there, including generic diagnostic
-  primitives like `dumpstate`/`zcl_state` and `getnodelog`/`zcl_node_log`, not
-  as local string tables in the controllers. REST-index operator drilldowns
-  such as `healthcheck`/`zcl_health`, `milestone`/`zcl_milestone`, and
+  `app/controllers/include/controllers/agent_contracts.def`; registry-backed
+  `agentmap` command rows and telemetry drilldowns are grouped in
+  `app/controllers/src/agent_contract_registry.c`
+  (`g_agent_command_surfaces`), including generic diagnostic primitives like
+  `dumpstate`/`zcl_state` and `getnodelog`/`zcl_node_log`, not as local string
+  tables in the controllers. REST-index operator drilldowns such as
+  `healthcheck`/`zcl_health`, `milestone`/`zcl_milestone`, and
   `refold`/`zcl_refold_status` also belong in that registry.
 - `zclassic23 agentlanes` / `zcl_agent_lanes` — native canonical/soak/dev lane
   topology and `zcl.operator_deployment_safety.v1` policy. Use this before

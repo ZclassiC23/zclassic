@@ -200,7 +200,10 @@ belong in C under `app/controllers/src/agent_controller.c`,
 `app/controllers/src/agent_interface_controller.c`; compact
 operator/architecture answers that should not require `jq` belong in
 `app/controllers/src/agent_ops_controller.c`, then get exposed through
-MCP/native/REST.
+MCP/native/REST. Registry-backed command groupings for `agentmap` and
+telemetry live in `app/controllers/src/agent_contract_registry.c`
+(`g_agent_command_surfaces`); keep only composite/local commands in the
+controller that assembles the response.
 
 ## Command Center
 

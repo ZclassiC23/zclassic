@@ -3349,14 +3349,33 @@ int test_syncdiag_rpc(void)
 
         bool ok = rpc_table_execute(&tbl, "agentmap", &params, &result);
         const struct json_value *commands = json_get(&result, "commands");
+        const struct json_value *telemetry =
+            json_get(&result, "telemetry_drilldowns");
         const struct json_value *subsystems = json_get(&result, "subsystems");
         const struct json_value *shim = json_get(&result, "deprecated_shim");
         ok = ok && result.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
                           "zcl.agent_map.v1") == 0;
+        ok = ok &&
+            agent_contract_command_surface_count("agentmap.commands.core") ==
+                10;
+        ok = ok &&
+            agent_contract_command_surface_count(
+                "agentmap.commands.drilldown") == 5;
+        ok = ok &&
+            agent_contract_command_surface_count("agentmap.telemetry") == 5;
+        ok = ok &&
+            agent_contract_command_surface_count("missing.surface") == 0;
         ok = ok && commands && commands->type == JSON_ARR;
+        ok = ok && find_object_with_str(commands, "method", "agentmap") != NULL;
+        ok = ok &&
+            find_object_with_str(commands, "method", "agentdeployguard") != NULL;
         ok = ok && find_object_with_str(commands, "name", "impact") != NULL;
         ok = ok && find_object_with_str(commands, "name", "build") != NULL;
+        ok = ok && find_object_with_str(commands, "method", "healthcheck")
+                         != NULL;
+        ok = ok && find_object_with_str(commands, "method", "statecatalog")
+                         != NULL;
         const struct json_value *map_state =
             find_object_with_str(commands, "method", "dumpstate");
         const struct json_value *map_log =
@@ -3367,6 +3386,11 @@ int test_syncdiag_rpc(void)
         ok = ok && map_log &&
             strcmp(json_get_str(json_get(map_log, "mcp")),
                    "zcl_node_log") == 0;
+        ok = ok && telemetry && telemetry->type == JSON_ARR;
+        ok = ok &&
+            find_object_with_str(telemetry, "name", "node_log") != NULL;
+        ok = ok &&
+            find_object_with_str(telemetry, "method", "anchorstatus") != NULL;
         ok = ok && subsystems && subsystems->type == JSON_ARR;
         ok = ok && find_object_with_str(subsystems, "name", "fast_ci") != NULL;
         ok = ok && shim && shim->type == JSON_OBJ;

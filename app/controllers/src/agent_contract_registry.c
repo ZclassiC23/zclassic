@@ -21,6 +21,62 @@ static const struct agent_contract g_agent_contracts[] = {
 static const size_t g_agent_contract_count =
     sizeof(g_agent_contracts) / sizeof(g_agent_contracts[0]);
 
+struct agent_contract_command_surface {
+    const char *surface;
+    int rank;
+    const char *name;
+    const char *method;
+    const char *purpose_override;
+};
+
+static const struct agent_contract_command_surface g_agent_command_surfaces[] = {
+    { "agentmap.commands.core", 1, "status", "agent",
+      "compact live health/status contract" },
+    { "agentmap.commands.core", 2, "map", "agentmap",
+      "where code, docs, and tests live" },
+    { "agentmap.commands.core", 3, "impact", "agentimpact",
+      "changed files to recommended tests and risk flags" },
+    { "agentmap.commands.core", 4, "contracts", "agentcontracts",
+      "versioned schemas and transport contract list" },
+    { "agentmap.commands.core", 5, "build", "agentbuild",
+      "incremental/cache/reproducible build contract" },
+    { "agentmap.commands.core", 6, "anchor_status", "anchorstatus",
+      "offline anchor-mint progress and next action" },
+    { "agentmap.commands.core", 7, "interface", "agentinterface",
+      "preferred AI/operator transport and JSON rules" },
+    { "agentmap.commands.core", 8, "lanes", "agentlanes",
+      "canonical/soak/dev topology and restart/deploy rules" },
+    { "agentmap.commands.core", 9, "liveness", "agentliveness",
+      "lane/service/supervisor/background-quality liveness" },
+    { "agentmap.commands.core", 10, "deploy_guard", "agentdeployguard",
+      "C-native deploy/restart allow-refuse decision" },
+
+    { "agentmap.commands.drilldown", 1, "health", "healthcheck",
+      "strict health drill-down" },
+    { "agentmap.commands.drilldown", 2, "logs", "getnodelog",
+      "bounded server-side log search" },
+    { "agentmap.commands.drilldown", 3, "timeline", "timeline",
+      "category-filtered event timeline with bounded filters" },
+    { "agentmap.commands.drilldown", 4, "state", "dumpstate",
+      "generic subsystem diagnostics" },
+    { "agentmap.commands.drilldown", 5, "state_catalog", "statecatalog",
+      "zcl_state subsystem catalog" },
+
+    { "agentmap.telemetry", 1, "subsystem_state", "dumpstate",
+      "semantic subsystem internals through diagnostics registry" },
+    { "agentmap.telemetry", 2, "subsystem_catalog", "statecatalog",
+      "machine catalog of diagnostics registry subsystems" },
+    { "agentmap.telemetry", 3, "node_log", "getnodelog",
+      "server-side regex tail over node.log history" },
+    { "agentmap.telemetry", 4, "timeline", "timeline",
+      "versioned category-filtered event timeline with bounded filters" },
+    { "agentmap.telemetry", 5, "anchor_status", "anchorstatus",
+      "read-only progress.kv status for the sovereign anchor producer" },
+};
+
+static const size_t g_agent_command_surface_count =
+    sizeof(g_agent_command_surfaces) / sizeof(g_agent_command_surfaces[0]);
+
 static void agent_push_str(struct json_value *arr, const char *s)
 {
     struct json_value v;
@@ -200,6 +256,51 @@ void agent_push_contract_ops_surface_json(struct json_value *arr,
                                              c->ops_purpose);
         }
     }
+}
+
+size_t agent_contract_command_surface_count(const char *surface)
+{
+    if (!surface || !surface[0])
+        return 0;
+    size_t n = 0;
+    for (size_t i = 0; i < g_agent_command_surface_count; i++) {
+        const struct agent_contract_command_surface *e =
+            &g_agent_command_surfaces[i];
+        if (e->surface && strcmp(e->surface, surface) == 0)
+            n++;
+    }
+    return n;
+}
+
+size_t agent_push_contract_command_surface_json(struct json_value *arr,
+                                                const char *surface)
+{
+    if (!arr || !surface || !surface[0])
+        return 0;
+
+    int max_rank = 0;
+    for (size_t i = 0; i < g_agent_command_surface_count; i++) {
+        const struct agent_contract_command_surface *e =
+            &g_agent_command_surfaces[i];
+        if (e->surface && strcmp(e->surface, surface) == 0 &&
+            e->rank > max_rank)
+            max_rank = e->rank;
+    }
+
+    size_t pushed = 0;
+    for (int rank = 1; rank <= max_rank; rank++) {
+        for (size_t i = 0; i < g_agent_command_surface_count; i++) {
+            const struct agent_contract_command_surface *e =
+                &g_agent_command_surfaces[i];
+            if (e->rank != rank || !e->surface ||
+                strcmp(e->surface, surface) != 0)
+                continue;
+            if (agent_push_contract_command_json(arr, e->name, e->method,
+                                                 e->purpose_override))
+                pushed++;
+        }
+    }
+    return pushed;
 }
 
 bool agent_push_contract_command_json(struct json_value *arr,

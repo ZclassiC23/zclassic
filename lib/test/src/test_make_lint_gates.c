@@ -3227,7 +3227,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf,
                       "app/controllers/src/agent_anchor_status_controller.c")
                != NULL);
-        ASSERT(strstr(agent_ctrl_buf, "anchorstatus") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "anchorstatus") != NULL);
         ASSERT(strstr(agent_contracts_buf, "zcl.agent_contracts.v1") != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "AGENT_CONTRACT") != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "zcl.public_status.v1")
@@ -3351,6 +3351,17 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_registry_buf,
                       "static const struct agent_contract g_agent_contracts")
                != NULL);
+        ASSERT(strstr(agent_registry_buf,
+                      "g_agent_command_surfaces") != NULL);
+        ASSERT(strstr(agent_registry_buf,
+                      "agent_contract_command_surface_count") != NULL);
+        ASSERT(strstr(agent_registry_buf,
+                      "agent_push_contract_command_surface_json") != NULL);
+        ASSERT(strstr(agent_registry_buf,
+                      "agentmap.commands.core") != NULL);
+        ASSERT(strstr(agent_registry_buf,
+                      "agentmap.commands.drilldown") != NULL);
+        ASSERT(strstr(agent_registry_buf, "agentmap.telemetry") != NULL);
         ASSERT(strstr(agent_registry_buf, "agent_contract_lookup") != NULL);
         ASSERT(strstr(agent_registry_buf,
                       "agent_push_contract_command_json") != NULL);
@@ -3405,8 +3416,11 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf, "agent_impact_rules.def") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "shared_rule_hits") != NULL);
         ASSERT(strstr(agent_ctrl_buf,
-                      "agent_push_contract_command_json(&commands")
+                      "agent_push_contract_command_surface_json(&commands")
                != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "agentmap.commands.core") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "agentmap.commands.drilldown") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "agentmap.telemetry") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "command_center") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "background_quality") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl_operator_summary") != NULL);

@@ -259,31 +259,8 @@ bool rpc_agent_map(const struct json_value *params, bool help,
 
     json_init(&commands);
     json_set_array(&commands);
-    agent_push_contract_command_json(&commands, "status", "agent",
-                                     "compact live health/status contract");
-    agent_push_contract_command_json(&commands, "map", "agentmap",
-                                     "where code, docs, and tests live");
-    agent_push_contract_command_json(&commands, "impact", "agentimpact",
-                                     "changed files to recommended tests and risk flags");
-    agent_push_contract_command_json(&commands, "contracts",
-                                     "agentcontracts",
-                                     "versioned schemas and transport contract list");
-    agent_push_contract_command_json(&commands, "build", "agentbuild",
-                                     "incremental/cache/reproducible build contract");
-    agent_push_contract_command_json(&commands, "anchor_status",
-                                     "anchorstatus",
-                                     "offline anchor-mint progress and next action");
-    agent_push_contract_command_json(&commands, "interface",
-                                     "agentinterface",
-                                     "preferred AI/operator transport and JSON rules");
-    agent_push_contract_command_json(&commands, "lanes", "agentlanes",
-                                     "canonical/soak/dev topology and restart/deploy rules");
-    agent_push_contract_command_json(&commands, "liveness",
-                                     "agentliveness",
-                                     "lane/service/supervisor/background-quality liveness");
-    agent_push_contract_command_json(&commands, "deploy_guard",
-                                     "agentdeployguard",
-                                     "C-native deploy/restart allow-refuse decision");
+    agent_push_contract_command_surface_json(&commands,
+                                             "agentmap.commands.core");
     agent_push_command(&commands, "command_center",
                        "zclassic23 agent",
                        "zcl_operator_summary",
@@ -292,17 +269,8 @@ bool rpc_agent_map(const struct json_value *params, bool help,
                        "make quality-linger-status",
                        "zcl_agent_build",
                        "latest background fuzz/coverage lane verdicts");
-    agent_push_command(&commands, "health", "zclassic23 healthcheck",
-                       "zcl_health", "strict health drill-down");
-    agent_push_contract_command_json(&commands, "logs", "getnodelog",
-                                     "bounded server-side log search");
-    agent_push_contract_command_json(&commands, "timeline", "timeline",
-                                     "category-filtered event timeline with bounded filters");
-    agent_push_contract_command_json(&commands, "state", "dumpstate",
-                                     "generic subsystem diagnostics");
-    agent_push_contract_command_json(&commands, "state_catalog",
-                                     "statecatalog",
-                                     "zcl_state subsystem catalog");
+    agent_push_contract_command_surface_json(
+        &commands, "agentmap.commands.drilldown");
     json_push_kv(result, "commands", &commands);
     json_free(&commands);
 
@@ -314,14 +282,8 @@ bool rpc_agent_map(const struct json_value *params, bool help,
     agent_push_command(&telemetry, "full_status", "zclassic23 healthcheck",
                        "zcl_status",
                        "wide health packet with peers, sync, chain, validation, and memory");
-    agent_push_contract_command_json(&telemetry, "subsystem_state",
-                                     "dumpstate",
-                                     "semantic subsystem internals through diagnostics registry");
-    agent_push_contract_command_json(&telemetry, "subsystem_catalog",
-                                     "statecatalog",
-                                     "machine catalog of diagnostics registry subsystems");
-    agent_push_contract_command_json(&telemetry, "node_log", "getnodelog",
-                                     "server-side regex tail over node.log history");
+    agent_push_contract_command_surface_json(&telemetry,
+                                             "agentmap.telemetry");
     agent_push_command(&telemetry, "node_db",
                        "zclassic23 dbquery <select>",
                        "zcl_sql",
@@ -330,15 +292,10 @@ bool rpc_agent_map(const struct json_value *params, bool help,
                        "zclassic23 eventlog <count>",
                        "zcl_events",
                        "recent structured node events");
-    agent_push_contract_command_json(&telemetry, "timeline", "timeline",
-                                     "versioned category-filtered event timeline with bounded filters");
     agent_push_command(&telemetry, "quality_lanes",
                        "make quality-linger-status",
                        "zcl_agent_build",
                        "background tests/fuzz/coverage verdicts");
-    agent_push_contract_command_json(&telemetry, "anchor_status",
-                                     "anchorstatus",
-                                     "read-only progress.kv status for the sovereign anchor producer");
     json_push_kv(result, "telemetry_drilldowns", &telemetry);
     json_free(&telemetry);
 
