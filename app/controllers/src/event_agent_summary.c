@@ -5,6 +5,7 @@
 #include "event_agent_summary.h"
 #include "controllers/agent_height_contract.h"
 #include "controllers/agent_controller.h"
+#include "controllers/agent_first_call.h"
 #include "controllers/agent_operator_contracts.h"
 #include "controllers/agent_restart_watchdog.h"
 #include "controllers/agent_resources.h"
@@ -539,7 +540,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
         "  { \"schema\":\"zcl.public_status.v1\", \"status\":\"healthy\", "
         "\"build_commit\":\"...\", \"height\":N, \"gap\":0, "
         "\"primary_blocker\":\"none\" }\n");
-
+    int64_t first_call_started_us = agent_first_call_start_us();
     struct agent_fast_snapshot health;
     agent_fast_collect(&health);
     bool material_gap = health.gap > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS;
@@ -608,6 +609,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.public_status.v1");
     json_push_kv_str(result, "api_version", "v1");
+    agent_push_first_call_simple_json(result, "first_call", "agent", "cached_fast_fields", ZCL_AGENT_FIRST_CALL_BUDGET_AGENT_MS, first_call_started_us, false, "", "");
     json_push_kv_str(result, "build_commit", zcl_build_commit());
     agent_push_runtime_build_json(result, "runtime_build");
     json_push_kv_str(result, "status", status);

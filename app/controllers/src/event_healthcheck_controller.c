@@ -10,6 +10,7 @@
 #include "controllers/event_healthcheck_controller.h"
 #include "api_controller_internal.h"
 #include "config/runtime.h"
+#include "controllers/agent_first_call.h"
 #include "controllers/strong_params.h"
 #include "event_agent_summary.h"
 #include "framework/condition.h"
@@ -129,6 +130,7 @@ static void healthcheck_copy_from_object(struct json_value *dst,
 static bool rpc_healthcheck_bounded(const struct json_value *params,
                                     struct json_value *result)
 {
+    int64_t first_call_started_us = agent_first_call_start_us();
     struct json_value agent = {0};
     if (!rpc_agent_summary(params, false, &agent) || agent.type != JSON_OBJ) {
         json_set_object(result);
@@ -142,6 +144,10 @@ static bool rpc_healthcheck_bounded(const struct json_value *params,
         json_push_kv_str(result, "error", "agent_summary_unavailable");
         json_push_kv_str(result, "full_mode_command",
                          "zclassic23 healthcheck full");
+        agent_push_first_call_simple_json(
+            result, "first_call", "healthcheck", "agent_cached_summary",
+            ZCL_AGENT_FIRST_CALL_BUDGET_HEALTHCHECK_MS, first_call_started_us,
+            true, "agent_summary_unavailable", "zclassic23 healthcheck full");
         json_free(&agent);
         return true;
     }
@@ -167,6 +173,11 @@ static bool rpc_healthcheck_bounded(const struct json_value *params,
                      "zclassic23 healthcheck full");
     json_push_kv_str(result, "full_mode_params",
                      "{\"mode\":\"full\"}");
+    agent_push_first_call_simple_json(
+        result, "first_call", "healthcheck", "agent_cached_summary",
+        ZCL_AGENT_FIRST_CALL_BUDGET_HEALTHCHECK_MS, first_call_started_us,
+        true, "bounded_first_call_uses_cached_status",
+        "zclassic23 healthcheck full");
 
     healthcheck_copy_key(result, &agent, "build_commit");
     healthcheck_copy_key(result, &agent, "runtime_build");

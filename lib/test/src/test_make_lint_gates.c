@@ -2794,6 +2794,7 @@ static int t_native_agent_api_contract(void)
     char *agent_contracts_buf = NULL;
     char *agent_contracts_def_buf = NULL;
     char *agent_bg_quality_buf = NULL;
+    char *agent_first_call_buf = NULL;
     char *agent_lanes_buf = NULL;
     char *agent_liveness_buf = NULL;
     char *agent_iface_buf = NULL;
@@ -2816,6 +2817,7 @@ static int t_native_agent_api_contract(void)
         char agent_contracts_path[PATH_MAX];
         char agent_contracts_def_path[PATH_MAX];
         char agent_bg_quality_path[PATH_MAX];
+        char agent_first_call_path[PATH_MAX];
         char agent_lanes_path[PATH_MAX];
         char agent_liveness_path[PATH_MAX];
         char agent_iface_path[PATH_MAX];
@@ -2851,6 +2853,10 @@ static int t_native_agent_api_contract(void)
         ASSERT(repo_path(agent_bg_quality_path,
                          sizeof(agent_bg_quality_path),
                          "app/controllers/src/agent_background_quality.c")
+               == 0);
+        ASSERT(repo_path(agent_first_call_path,
+                         sizeof(agent_first_call_path),
+                         "app/controllers/src/agent_first_call.c")
                == 0);
         ASSERT(repo_path(agent_lanes_path, sizeof(agent_lanes_path),
                          "app/controllers/src/agent_lanes_controller.c") == 0);
@@ -2893,6 +2899,8 @@ static int t_native_agent_api_contract(void)
                                 &agent_contracts_def_buf) == 0);
         ASSERT(read_entire_file(agent_bg_quality_path,
                                 &agent_bg_quality_buf) == 0);
+        ASSERT(read_entire_file(agent_first_call_path,
+                                &agent_first_call_buf) == 0);
         ASSERT(read_entire_file(agent_lanes_path, &agent_lanes_buf) == 0);
         ASSERT(read_entire_file(agent_liveness_path,
                                 &agent_liveness_buf) == 0);
@@ -3022,6 +3030,20 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(event_buf, "#include \"event_agent_summary.h\"") != NULL);
         ASSERT(strstr(event_buf, "rpc_agent_summary") != NULL);
         ASSERT(strstr(agent_summary_buf, "zcl.public_status.v1") != NULL);
+        ASSERT(strstr(agent_summary_buf, "agent_push_first_call_simple_json")
+               != NULL);
+        ASSERT(strstr(agent_summary_buf,
+                      "ZCL_AGENT_FIRST_CALL_BUDGET_AGENT_MS") != NULL);
+        ASSERT(strstr(agent_first_call_buf,
+                      "zcl.first_call_contract.v1") != NULL);
+        ASSERT(strstr(agent_first_call_buf, "\"result_completeness\"")
+               != NULL);
+        ASSERT(strstr(agent_first_call_buf,
+                      "platform_time_monotonic_us") != NULL);
+        ASSERT(strstr(agent_first_call_buf, "\"budget_ms\"") != NULL);
+        ASSERT(strstr(agent_first_call_buf, "\"elapsed_ms\"") != NULL);
+        ASSERT(strstr(agent_first_call_buf, "\"budget_exceeded\"")
+               != NULL);
         ASSERT(strstr(agent_summary_buf,
                       "agent_operator_latch_suppressed_by_mirror") != NULL);
         ASSERT(strstr(agent_summary_buf,
@@ -3092,6 +3114,13 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_map.v1") != NULL);
         ASSERT(strstr(agent_lanes_buf, "zcl.agent_lanes.v1") != NULL);
         ASSERT(strstr(agent_liveness_buf, "zcl.agent_liveness.v1") != NULL);
+        ASSERT(strstr(agent_liveness_buf, "agent_push_first_call_simple_json")
+               != NULL);
+        ASSERT(strstr(agent_liveness_buf,
+                      "ZCL_AGENT_FIRST_CALL_BUDGET_LIVENESS_MS") != NULL);
+        ASSERT(strstr(agent_liveness_buf,
+                      "background_quality_skipped_due_to_first_call_budget")
+               != NULL);
         ASSERT(strstr(agent_liveness_buf, "supervisor_dump_state_json")
                != NULL);
         ASSERT(strstr(agent_liveness_buf,
@@ -3465,6 +3494,7 @@ static int t_native_agent_api_contract(void)
     free(agent_contracts_buf);
     free(agent_contracts_def_buf);
     free(agent_bg_quality_buf);
+    free(agent_first_call_buf);
     free(agent_lanes_buf);
     free(agent_liveness_buf);
     free(agent_iface_buf);

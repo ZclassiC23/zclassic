@@ -5,6 +5,7 @@
 
 #include "controllers/agent_background_quality.h"
 #include "controllers/agent_controller.h"
+#include "controllers/agent_first_call.h"
 #include "controllers/strong_params.h"
 
 #include "json/json.h"
@@ -183,6 +184,8 @@ bool rpc_agent_liveness(const struct json_value *params, bool help,
         "  { \"schema\":\"zcl.agent_liveness.v1\", "
         "\"liveness_summary\":{...} }\n");
 
+    int64_t first_call_started_us = agent_first_call_start_us();
+    bool quality_skipped_for_budget = false;
     struct json_value supervisor_state, quality_status;
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.agent_liveness.v1");
@@ -206,7 +209,26 @@ bool rpc_agent_liveness(const struct json_value *params, bool help,
     json_push_kv(result, "supervisor_state", &supervisor_state);
 
     json_init(&quality_status);
-    agent_build_background_quality_status(&quality_status);
+    if (agent_first_call_budget_exceeded(
+            first_call_started_us,
+            ZCL_AGENT_FIRST_CALL_BUDGET_LIVENESS_MS)) {
+        quality_skipped_for_budget = true;
+        json_set_object(&quality_status);
+        json_push_kv_str(&quality_status, "schema",
+                         "zcl.background_quality_runtime.v1");
+        json_push_kv_str(&quality_status, "status", "skipped");
+        json_push_kv_str(&quality_status, "summary",
+                         "background_quality_skipped_due_to_first_call_budget");
+        json_push_kv_int(&quality_status, "lanes_configured", 0);
+        json_push_kv_int(&quality_status, "status_files_valid", 0);
+        json_push_kv_int(&quality_status, "running_count", 0);
+        json_push_kv_int(&quality_status, "failed_count", 0);
+        json_push_kv_bool(&quality_status, "partial_result", true);
+        json_push_kv_str(&quality_status, "partial_reason",
+                         "first_call_budget_exhausted_before_quality_scan");
+    } else {
+        agent_build_background_quality_status(&quality_status);
+    }
     json_push_kv(result, "background_quality_status", &quality_status);
 
     agent_liveness_push_summary(
@@ -215,6 +237,15 @@ bool rpc_agent_liveness(const struct json_value *params, bool help,
         json_get(result, "runtime_services"),
         &quality_status,
         &supervisor_state);
+
+    agent_push_first_call_simple_json(
+        result, "first_call", "agentliveness",
+        "runtime_supervisor_quality_status",
+        ZCL_AGENT_FIRST_CALL_BUDGET_LIVENESS_MS, first_call_started_us,
+        quality_skipped_for_budget,
+        quality_skipped_for_budget
+            ? "first_call_budget_exhausted_before_quality_scan" : "",
+        "");
 
     json_free(&quality_status);
     json_free(&supervisor_state);

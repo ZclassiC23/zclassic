@@ -160,6 +160,13 @@ condition-engine, and chain-advance dumps. Agents should rely on the explicit
 `result_completeness` field instead of assuming the default response is the
 full evidence tree.
 
+`agent`, default `healthcheck`, and `agentliveness` also include
+`first_call` (`zcl.first_call_contract.v1`): `api`,
+`result_completeness`, `partial_result`, `source`, `budget_ms`,
+`elapsed_ms`, and `budget_exceeded`. `agentliveness` uses that budget to
+return a valid partial JSON response instead of continuing into background
+quality file scans after its first-call budget is spent.
+
 When `runtime_build.stale=true`, the node is still useful to observe but its
 behavior predates the expected deployed source; use the lane safety contract
 before deciding whether to deploy dev or request an operator-gated canonical

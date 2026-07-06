@@ -1261,6 +1261,21 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(&result,
                           "result_completeness")), "bounded") == 0;
         ok = ok && json_get_bool(json_get(&result, "partial_result"));
+        const struct json_value *first_call =
+            json_get(&result, "first_call");
+        ok = ok && first_call && first_call->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(first_call, "schema")),
+                          "zcl.first_call_contract.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(first_call, "api")),
+                          "healthcheck") == 0;
+        ok = ok && strcmp(json_get_str(json_get(first_call,
+                          "result_completeness")), "bounded") == 0;
+        ok = ok && strcmp(json_get_str(json_get(first_call, "source")),
+                          "agent_cached_summary") == 0;
+        ok = ok && json_get_bool(json_get(first_call, "partial_result"));
+        ok = ok && json_get_int(json_get(first_call, "budget_ms")) == 500;
+        ok = ok && json_get(first_call, "elapsed_ms") != NULL;
+        ok = ok && json_get(first_call, "budget_exceeded") != NULL;
         ok = ok && json_get(&result, "full_mode_command") != NULL;
         ok = ok && json_get(&result, "healthy") != NULL;
         ok = ok && json_get(&result, "serving") != NULL;
@@ -1414,6 +1429,18 @@ int test_syncdiag_rpc(void)
         bool ok = executed && result.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
                           "zcl.public_status.v1") == 0;
+        const struct json_value *first_call =
+            json_get(&result, "first_call");
+        ok = ok && first_call && first_call->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(first_call, "schema")),
+                          "zcl.first_call_contract.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(first_call, "api")),
+                          "agent") == 0;
+        ok = ok && strcmp(json_get_str(json_get(first_call, "source")),
+                          "cached_fast_fields") == 0;
+        ok = ok && !json_get_bool(json_get(first_call, "partial_result"));
+        ok = ok && json_get_int(json_get(first_call, "budget_ms")) == 250;
+        ok = ok && json_get(first_call, "elapsed_ms") != NULL;
         ok = ok && strcmp(json_get_str(json_get(&result, "build_commit")),
                           zcl_build_commit()) == 0;
         const struct json_value *runtime_build =
@@ -2890,11 +2917,27 @@ int test_syncdiag_rpc(void)
             json_get(&liveness, "supervisor_state");
         const struct json_value *live_drilldowns =
             json_get(&liveness, "recommended_drilldowns");
+        const struct json_value *live_first_call =
+            json_get(&liveness, "first_call");
         ok = ok && liveness.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&liveness, "schema")),
                           "zcl.agent_liveness.v1") == 0;
         ok = ok && strcmp(json_get_str(json_get(&liveness, "mcp_tool")),
                           "zcl_agent_liveness") == 0;
+        ok = ok && live_first_call && live_first_call->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(live_first_call, "schema")),
+                          "zcl.first_call_contract.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(live_first_call, "api")),
+                          "agentliveness") == 0;
+        ok = ok && strcmp(json_get_str(json_get(live_first_call,
+                                                "result_completeness")),
+                          "bounded") == 0;
+        ok = ok && strcmp(json_get_str(json_get(live_first_call, "source")),
+                          "runtime_supervisor_quality_status") == 0;
+        ok = ok && json_get_int(json_get(live_first_call,
+                                         "budget_ms")) == 750;
+        ok = ok && json_get(live_first_call, "elapsed_ms") != NULL;
+        ok = ok && json_get(live_first_call, "budget_exceeded") != NULL;
         ok = ok && strcmp(json_get_str(json_get(&liveness,
                                                 "overall_liveness")),
                           "static_or_offline_context") == 0;
