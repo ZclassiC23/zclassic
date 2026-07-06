@@ -8,6 +8,7 @@ same native RPC methods. Shell wrappers are compatibility shims only.
 | need | native command | MCP tool |
 |---|---|---|
 | No-jq command center | `zclassic23 agentops` | `zcl_agent_ops` |
+| Bounded diagnosis | `zclassic23 agentdiagnose` | `zcl_agent_diagnose` |
 | Live node status | `zclassic23 agent` | `zcl_agent` |
 | Code/docs/test map | `zclassic23 agentmap` | `zcl_agent_map` |
 | Lane topology | `zclassic23 agentlanes` | `zcl_agent_lanes` |
@@ -25,7 +26,8 @@ same native RPC methods. Shell wrappers are compatibility shims only.
 The native RPC contracts are implemented in `app/controllers/src/agent_controller.c`
 for the agent map/build surface, `app/controllers/src/agent_contracts_controller.c`
 for the versioned contract registry, and `app/controllers/src/agent_ops_controller.c`
-for the focused no-jq command center. MCP routes in
+for the focused no-jq command center. `app/controllers/src/agent_diagnose_controller.c`
+owns the bounded diagnosis packet. MCP routes in
 `tools/mcp/controllers/ops_controller.c` proxy those same native methods. REST
 currently exposes the public status contract at `GET /api/v1/agent`.
 First-call method/schema/tool metadata lives in the C-owned registry
@@ -38,7 +40,8 @@ instead of maintaining separate lists.
 The best interface for an AI coding operator is MCP with typed JSON tools:
 start with `zcl_agent_ops` for the compact no-jq command center, use
 `zcl_agent_interface` when checking the full transport contract, then use
-`zcl_agent`, `zcl_agent_liveness`, `zcl_agent_lanes`, `zcl_mirror_status`,
+`zcl_agent_diagnose`, `zcl_agent`, `zcl_agent_liveness`,
+`zcl_agent_lanes`, `zcl_mirror_status`,
 `zcl_agent_impact`,
 `zcl_agent_build`, `zcl_state_catalog`, `zcl_state`, `zcl_timeline`,
 `zcl_node_log`, and `zcl_sql` as needed. The native binary commands (`zclassic23 agentinterface`,
@@ -68,6 +71,16 @@ such as `overall_liveness`, `agent_next_action`, `liveness_summary`, and
 `recommended_drilldowns`. Use it when deciding whether a lane is alive,
 stalled, missing quality verdicts, or merely being inspected from a static
 binary outside a running node.
+
+`agentdiagnose` (`zcl.agent_diagnose.v1`) is the bounded "what should I look
+at next?" packet. It composes `agent`, default bounded `healthcheck`,
+`peer_lifecycle incidents`, advisory `getmirrorstatus`, and a small semantic
+timeline slice while staying inside `zcl.first_call_contract.v1`. The response
+duplicates the decision fields agents need most (`verdict`, `safe_next_action`,
+`gap`, `peer_count`, `peer_incident_count`, `duplicate_host_group_count`) and
+marks skipped lower-priority sections as `partial_result=true` instead of
+hanging. Use it before raw logs when the node is behaving oddly but still
+answers RPC.
 `tools/z mirror --json` mirrors that interpretation only as a compatibility
 shim for long-running older binaries: it clears a `hash-disagreement` active
 blocker only when the payload itself proves equal height and equal hash.
@@ -160,7 +173,7 @@ condition-engine, and chain-advance dumps. Agents should rely on the explicit
 `result_completeness` field instead of assuming the default response is the
 full evidence tree.
 
-`agent`, default `healthcheck`, and `agentliveness` also include
+`agent`, default `healthcheck`, `agentliveness`, and `agentdiagnose` also include
 `first_call` (`zcl.first_call_contract.v1`): `api`,
 `result_completeness`, `partial_result`, `source`, `budget_ms`,
 `elapsed_ms`, and `budget_exceeded`. `agentliveness` uses that budget to

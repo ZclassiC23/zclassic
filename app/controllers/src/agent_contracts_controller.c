@@ -89,6 +89,9 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     json_init(&schemas);
     json_set_array(&schemas);
     contracts_push_agent_registry_schemas(&schemas);
+    contracts_push_schema(&schemas, "zcl.first_call_contract.v1",
+                          "nested in zcl.public_status.v1, zcl.healthcheck.v1, zcl.agent_liveness.v1, and zcl.agent_diagnose.v1",
+                          "first-call boundedness, elapsed time, partial-result, and budget semantics");
     contracts_push_schema(&schemas, "zcl.agent_readiness.v1",
                           "nested in zcl.public_status.v1 readiness",
                           "separates chain-serving readiness from index projection freshness");
@@ -143,9 +146,9 @@ bool rpc_agent_contracts(const struct json_value *params, bool help,
     json_init(&transports);
     json_set_array(&transports);
     contracts_push_str(&transports,
-        "native: zclassic23 agent|agentops|agentinterface|agentlanes|agentliveness|agentmap|agentimpact|agentcontracts|agentbuild|statecatalog|timeline|agentdeployguard|getmirrorstatus");
+        "native: zclassic23 agent|agentops|agentdiagnose|agentinterface|agentlanes|agentliveness|agentmap|agentimpact|agentcontracts|agentbuild|statecatalog|timeline|agentdeployguard|getmirrorstatus");
     contracts_push_str(&transports,
-        "mcp: zcl_agent, zcl_agent_ops, zcl_agent_interface, zcl_agent_lanes, zcl_agent_liveness, zcl_agent_map, zcl_agent_impact, zcl_agent_contracts, zcl_agent_build, zcl_state_catalog, zcl_timeline, zcl_agent_deploy_guard, zcl_mirror_status");
+        "mcp: zcl_agent, zcl_agent_ops, zcl_agent_diagnose, zcl_agent_interface, zcl_agent_lanes, zcl_agent_liveness, zcl_agent_map, zcl_agent_impact, zcl_agent_contracts, zcl_agent_build, zcl_state_catalog, zcl_timeline, zcl_agent_deploy_guard, zcl_mirror_status");
     contracts_push_str(&transports,
         "rest: GET /api/v1/agent for public status; API index at zclassic23 api");
     contracts_push_str(&transports, "deprecated: tools/z compatibility shim only");

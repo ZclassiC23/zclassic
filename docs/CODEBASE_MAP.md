@@ -162,6 +162,9 @@ controller `k_routes[]` arrays.
 - `zclassic23 agentliveness` / `zcl_agent_liveness` — unified current-lane
   liveness rollup: lane identity, observed listeners, supervisor children,
   background quality verdicts, direct `overall_liveness`, and next drilldowns.
+- `zclassic23 agentdiagnose` / `zcl_agent_diagnose` — bounded no-jq
+  diagnosis packet for first-call work: status, healthcheck, peer lifecycle
+  incidents, mirror status, timeline pointers, and a safe next action.
 - `zclassic23 agentimpact <files...>` / `zcl_agent_impact` — map changed paths
   to risk flags and focused test groups before choosing the verification set.
   The shared routing table lives at

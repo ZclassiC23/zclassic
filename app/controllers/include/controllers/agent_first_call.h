@@ -11,6 +11,7 @@ struct json_value;
 #define ZCL_AGENT_FIRST_CALL_BUDGET_AGENT_MS       250
 #define ZCL_AGENT_FIRST_CALL_BUDGET_HEALTHCHECK_MS 500
 #define ZCL_AGENT_FIRST_CALL_BUDGET_LIVENESS_MS    750
+#define ZCL_AGENT_FIRST_CALL_BUDGET_DIAGNOSE_MS    900
 
 struct agent_first_call_view {
     const char *api;

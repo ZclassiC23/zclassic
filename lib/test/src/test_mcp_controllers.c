@@ -47,7 +47,7 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL     117  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
+#define EXPECTED_TOTAL     118  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
                                  * +3 power-user tools: chain_tip,
                                  * reorg_history, mempool_inspect;
                                  * +1 Round 6 C5: zcl_blockers;
@@ -58,12 +58,13 @@
                                  *   zcl_waitforhalt, zcl_waitforblocker
                                  * +1 native milestone status: zcl_milestone
                                  * +1 native refold readiness: zcl_refold_status
-                                 * +9 agent API tools: map, lanes, impact,
-                                 *   contracts, build, interface, ops, liveness, deploy_guard
+                                 * +10 agent API tools: map, lanes, impact,
+                                 *   contracts, build, interface, ops,
+                                 *   diagnose, liveness, deploy_guard
                                  * +1 net bootstrapstatus
                                  * +1 state catalog: zcl_state_catalog
                                  * +1 semantic timeline: zcl_timeline */
-#define EXPECTED_OPS        52  /* + zcl_rebuild_recent (bounded recovery);
+#define EXPECTED_OPS        53  /* + zcl_rebuild_recent (bounded recovery);
                                  * status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, state + node_log + sql (round 6.5 MCP primitives),
@@ -408,7 +409,7 @@ static int test_specific_flagship_tools_registered(void)
             "zcl_agent", "zcl_status", "zcl_operator_summary",
             "zcl_agent_map", "zcl_agent_lanes", "zcl_agent_impact",
             "zcl_agent_contracts", "zcl_agent_build", "zcl_agent_interface",
-            "zcl_agent_ops", "zcl_agent_liveness",
+            "zcl_agent_ops", "zcl_agent_diagnose", "zcl_agent_liveness",
             "zcl_agent_deploy_guard",
             "zcl_milestone", "zcl_refold_status", "zcl_kpi", "zcl_health",
             "zcl_getblockcount", "zcl_getblock", "zcl_getblockchaininfo",
@@ -1151,6 +1152,15 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
                       "\"top_next_work\":[{\"rank\":1,"
                       "\"name\":\"finish_self_verified_utxo_anchor_rebuild\"}],"
                       "\"direct_commands\":[{\"name\":\"live_status\"}]}");
+    if (strcmp(method, "agentdiagnose") == 0)
+        return strdup("{\"schema\":\"zcl.agent_diagnose.v1\","
+                      "\"api_version\":\"v1\","
+                      "\"verdict\":\"healthy\","
+                      "\"safe_next_action\":\"monitor_agent_and_liveness\","
+                      "\"mcp_tool\":\"zcl_agent_diagnose\","
+                      "\"first_call\":{\"schema\":\"zcl.first_call_contract.v1\","
+                      "\"api\":\"agentdiagnose\"},"
+                      "\"peer_incidents\":{\"schema\":\"zcl.peer_incidents.v1\"}}");
     if (strcmp(method, "agentliveness") == 0)
         return strdup("{\"schema\":\"zcl.agent_liveness.v1\","
                       "\"api_version\":\"v1\","
@@ -1537,6 +1547,18 @@ static int test_zcl_agent_dev_tools_dispatch(void)
         ASSERT_STR_EQ(json_get_str(json_get(&root, "mcp_tool")),
                       "zcl_agent_ops");
         ASSERT(json_get(&root, "top_next_work") != NULL);
+        json_free(&root);
+        free(body);
+
+        body = mcp_router_dispatch("zcl_agent_diagnose", &args);
+        ASSERT(body != NULL);
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.agent_diagnose.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "mcp_tool")),
+                      "zcl_agent_diagnose");
+        ASSERT(json_get(&root, "first_call") != NULL);
+        ASSERT(json_get(&root, "peer_incidents") != NULL);
         json_free(&root);
         free(body);
 

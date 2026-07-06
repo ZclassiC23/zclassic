@@ -18,6 +18,8 @@ void api_rest_index_mcp_json(struct json_value *mcp)
     agent_push_contract_mcp_field_json(mcp, "lanes_tool", "agentlanes");
     agent_push_contract_mcp_field_json(mcp, "liveness_tool",
                                        "agentliveness");
+    agent_push_contract_mcp_field_json(mcp, "diagnose_tool",
+                                       "agentdiagnose");
     agent_push_contract_mcp_field_json(mcp, "impact_tool", "agentimpact");
     agent_push_contract_mcp_field_json(mcp, "contracts_tool",
                                        "agentcontracts");
@@ -47,6 +49,8 @@ void api_rest_index_cli_json(struct json_value *cli)
                                           "agentlanes");
     agent_push_contract_native_field_json(cli, "liveness_command",
                                           "agentliveness");
+    agent_push_contract_native_field_json(cli, "diagnose_command",
+                                          "agentdiagnose");
     agent_push_contract_native_field_json(cli, "impact_command",
                                           "agentimpact");
     agent_push_contract_native_field_json(cli, "contracts_command",

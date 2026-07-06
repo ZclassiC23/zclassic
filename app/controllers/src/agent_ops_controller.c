@@ -84,6 +84,8 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
     const struct agent_contract *agent_contract = agent_contract_lookup("agent");
     const struct agent_contract *liveness_contract =
         agent_contract_lookup("agentliveness");
+    const struct agent_contract *diagnose_contract =
+        agent_contract_lookup("agentdiagnose");
     const struct agent_contract *catalog_contract =
         agent_contract_lookup("statecatalog");
     const struct agent_contract *timeline_contract =
@@ -109,6 +111,10 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
                      liveness_contract ? liveness_contract->native_command : "");
     json_push_kv_str(result, "liveness_tool",
                      liveness_contract ? liveness_contract->mcp_tool : "");
+    json_push_kv_str(result, "diagnose_command",
+                     diagnose_contract ? diagnose_contract->native_command : "");
+    json_push_kv_str(result, "diagnose_tool",
+                     diagnose_contract ? diagnose_contract->mcp_tool : "");
     json_push_kv_str(result, "diagnostics_catalog_command",
                      catalog_contract ? catalog_contract->native_command : "");
     json_push_kv_str(result, "diagnostics_catalog_tool",
@@ -135,6 +141,9 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
                                      "compact top-level fields for common agent decisions");
     agent_push_contract_command_json(&api_rules, "live_status", "agent",
                                      "serving state, heights, peers, blockers, lane, readiness");
+    agent_push_contract_command_json(&api_rules, "diagnose",
+                                     "agentdiagnose",
+                                     "bounded status, peer incidents, mirror, timeline, and next action");
     agent_push_contract_command_json(&api_rules, "unified_liveness",
                                      "agentliveness",
                                      "lane, listener, supervisor, and background quality liveness");

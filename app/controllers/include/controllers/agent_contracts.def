@@ -13,6 +13,10 @@ AGENT_CONTRACT("agent", "runtime_status", "zcl.public_status.v1",
 AGENT_CONTRACT("agentops", "operator_command_center", "zcl.agent_ops.v1",
                "zclassic23 agentops", "zcl_agent_ops", "",
                "compact no-jq agent command center and next-work list")
+AGENT_CONTRACT("agentdiagnose", "bounded_diagnosis",
+               "zcl.agent_diagnose.v1", "zclassic23 agentdiagnose",
+               "zcl_agent_diagnose", "",
+               "bounded first-call diagnosis with status, peer incidents, mirror, and timeline pointers")
 AGENT_CONTRACT("agentinterface", "discover_interface",
                "zcl.agent_interface.v1", "zclassic23 agentinterface",
                "zcl_agent_interface", "",

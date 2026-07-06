@@ -2365,6 +2365,8 @@ int test_syncdiag_rpc(void)
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_ops.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.agent_diagnose.v1") != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.timeline.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.state_catalog.v1") != NULL;
@@ -2388,6 +2390,7 @@ int test_syncdiag_rpc(void)
                                  "zcl.operator_deployment_safety.v1") != NULL;
         ok = ok && json_array_has_substr(transports, "zcl_agent_build");
         ok = ok && json_array_has_substr(transports, "zcl_agent_ops");
+        ok = ok && json_array_has_substr(transports, "zcl_agent_diagnose");
         ok = ok && json_array_has_substr(transports, "zcl_state_catalog");
         ok = ok && json_array_has_substr(transports, "zcl_timeline");
 
@@ -2423,6 +2426,11 @@ int test_syncdiag_rpc(void)
                           "zcl_state_catalog") == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops, "timeline_tool")),
                           "zcl_timeline") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&ops,
+                                                "diagnose_command")),
+                          "zclassic23 agentdiagnose") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&ops, "diagnose_tool")),
+                          "zcl_agent_diagnose") == 0;
         ok = ok && ops_direct_agentops &&
             strcmp(json_get_str(json_get(ops_direct_agentops, "schema")),
                    "zcl.agent_ops.v1") == 0;
@@ -2432,6 +2440,15 @@ int test_syncdiag_rpc(void)
         ok = ok && ops_direct_agentops &&
             strcmp(json_get_str(json_get(ops_direct_agentops, "mcp")),
                    "zcl_agent_ops") == 0;
+        const struct json_value *ops_direct_diagnose =
+            find_object_with_str(ops_direct_commands, "method",
+                                 "agentdiagnose");
+        ok = ok && ops_direct_diagnose &&
+            strcmp(json_get_str(json_get(ops_direct_diagnose, "schema")),
+                   "zcl.agent_diagnose.v1") == 0;
+        ok = ok && ops_direct_diagnose &&
+            strcmp(json_get_str(json_get(ops_direct_diagnose, "mcp")),
+                   "zcl_agent_diagnose") == 0;
         ok = ok && strstr(json_get_str(json_get(&ops,
                                                 "refold_plain_english")),
                           "borrowed snapshot seed") != NULL;
@@ -2457,6 +2474,50 @@ int test_syncdiag_rpc(void)
             strcmp(json_get_str(json_get(ops_method_agentops,
                                          "target_runtime_support")),
                    "supported") == 0;
+
+        event_log_init();
+        event_emitf(EV_SYNC_HEARTBEAT, 0, "diagnose sync heartbeat");
+        struct json_value diagnose;
+        json_init(&diagnose);
+        ok = ok && rpc_table_execute(&tbl, "agentdiagnose", &params,
+                                     &diagnose);
+        const struct json_value *diagnose_first_call =
+            json_get(&diagnose, "first_call");
+        const struct json_value *diagnose_peers =
+            json_get(&diagnose, "peer_incidents");
+        const struct json_value *diagnose_timeline =
+            json_get(&diagnose, "timeline");
+        ok = ok && diagnose.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&diagnose, "schema")),
+                          "zcl.agent_diagnose.v1") == 0;
+        ok = ok && json_get_bool(json_get(&diagnose, "no_jq_required"));
+        ok = ok && strcmp(json_get_str(json_get(&diagnose,
+                                                "native_command")),
+                          "zclassic23 agentdiagnose") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&diagnose, "mcp_tool")),
+                          "zcl_agent_diagnose") == 0;
+        ok = ok && json_get(&diagnose, "verdict") != NULL;
+        ok = ok && json_get(&diagnose, "safe_next_action") != NULL;
+        ok = ok && json_get(&diagnose, "findings") != NULL;
+        ok = ok && json_get(&diagnose, "agent") != NULL;
+        ok = ok && json_get(&diagnose, "healthcheck") != NULL;
+        ok = ok && diagnose_peers && diagnose_peers->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(diagnose_peers, "schema")),
+                          "zcl.peer_incidents.v1") == 0;
+        ok = ok && diagnose_timeline && diagnose_timeline->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(diagnose_timeline,
+                                                "schema")),
+                          "zcl.timeline.v1") == 0;
+        ok = ok && diagnose_first_call &&
+            strcmp(json_get_str(json_get(diagnose_first_call, "schema")),
+                   "zcl.first_call_contract.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(diagnose_first_call, "api")),
+                          "agentdiagnose") == 0;
+        ok = ok && json_get_int(json_get(diagnose_first_call,
+                                         "budget_ms")) == 900;
+        ok = ok && json_get_bool(json_get(diagnose_first_call,
+                                          "partial_result"));
+        json_free(&diagnose);
 
         struct json_value inferred_ops;
         json_init(&inferred_ops);

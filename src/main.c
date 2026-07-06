@@ -1193,6 +1193,7 @@ static void print_usage(const char *prog)
     printf("  %s agentbuild              Fast cached/repro build contract\n", prog);
     printf("  %s agentinterface          Preferred AI/operator interface\n", prog);
     printf("  %s agentops                Compact no-jq AI/operator command center\n", prog);
+    printf("  %s agentdiagnose           Bounded no-jq live diagnosis\n", prog);
     printf("  %s statecatalog            zcl_state subsystem catalog JSON\n", prog);
     printf("  %s timeline [cat] [count]  Semantic event timeline from running node\n", prog);
     printf("  %s agentdeployguard [act]  C-native deploy/restart guard JSON\n", prog);
