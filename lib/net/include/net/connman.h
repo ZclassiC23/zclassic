@@ -134,6 +134,8 @@ void connman_add_seed_node(struct connman *cm, const char *host,
                             uint16_t port);
 void connman_open_connection(struct connman *cm,
                               const struct net_address *addr);
+bool connman_remove_addnode(struct connman *cm,
+                            const struct net_address *addr);
 
 /* Kick the seed-discovery loop: re-add fixed seeds + retry DNS resolve.
  * Safe to call from any thread; idempotent. In -connect mode this is a no-op:

@@ -902,6 +902,69 @@ int test_syncdiag_rpc(void)
         ok = ok && first &&
              json_get_int(json_get(first, "protocol_failures")) == 0;
 
+        json_free(&params);
+        json_init(&params);
+        json_set_array(&params);
+        struct json_value v;
+        json_init(&v);
+        json_set_str(&v, "51.178.179.75:8033");
+        ok = ok && json_push_back(&params, &v);
+        json_free(&v);
+        json_init(&v);
+        json_set_str(&v, "remove");
+        ok = ok && json_push_back(&params, &v);
+        json_free(&v);
+
+        json_free(&result);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "addnode", &params, &result);
+
+        json_free(&params);
+        json_init(&params);
+        json_set_array(&params);
+        json_free(&result);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "getnetworkinfo",
+                                     &params, &result);
+        addnodes = json_get(&result, "addnode_status");
+        ok = ok && addnodes && addnodes->type == JSON_ARR;
+        ok = ok && json_size(addnodes) == 0;
+
+        json_free(&params);
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&v);
+        json_set_str(&v, "51.178.179.75:8033");
+        ok = ok && json_push_back(&params, &v);
+        json_free(&v);
+        json_init(&v);
+        json_set_str(&v, "remove");
+        ok = ok && json_push_back(&params, &v);
+        json_free(&v);
+        json_free(&result);
+        json_init(&result);
+        ok = ok && !rpc_table_execute(&tbl, "addnode", &params, &result);
+        ok = ok && strstr(json_get_str(&result), "not found") != NULL;
+
+        json_free(&params);
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&v);
+        json_set_str(&v, "51.178.179.75:8033");
+        ok = ok && json_push_back(&params, &v);
+        json_free(&v);
+        json_init(&v);
+        json_set_str(&v, "bogus");
+        ok = ok && json_push_back(&params, &v);
+        json_free(&v);
+        json_free(&result);
+        json_init(&result);
+        ok = ok && !rpc_table_execute(&tbl, "addnode", &params, &result);
+        ok = ok && strstr(json_get_str(&result), "must be") != NULL;
+
+        json_free(&params);
+        json_init(&params);
+        json_set_array(&params);
         json_free(&result);
         json_init(&result);
         ok = ok && rpc_table_execute(&tbl, "getpeerinfo",

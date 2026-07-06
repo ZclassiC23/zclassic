@@ -2046,6 +2046,47 @@ void connman_open_connection(struct connman *cm,
     }
 }
 
+bool connman_remove_addnode(struct connman *cm,
+                            const struct net_address *addr)
+{
+    if (!cm || !addr)
+        return false;
+
+    for (int i = 0; i < cm->num_addnodes; i++) {
+        if (!net_addr_eq(&cm->addnodes[i].svc.addr, &addr->svc.addr) ||
+            cm->addnodes[i].svc.port != addr->svc.port)
+            continue;
+
+        const int last = cm->num_addnodes - 1;
+        for (int j = i; j < last; j++) {
+            cm->addnodes[j] = cm->addnodes[j + 1];
+            cm->addnode_last_attempt[j] = cm->addnode_last_attempt[j + 1];
+            cm->addnode_backoff_sec[j] = cm->addnode_backoff_sec[j + 1];
+            cm->addnode_tcp_failures[j] = cm->addnode_tcp_failures[j + 1];
+            cm->addnode_protocol_failures[j] =
+                cm->addnode_protocol_failures[j + 1];
+        }
+
+        memset(&cm->addnodes[last], 0, sizeof(cm->addnodes[last]));
+        cm->addnode_last_attempt[last] = 0;
+        cm->addnode_backoff_sec[last] = 0;
+        cm->addnode_tcp_failures[last] = 0;
+        cm->addnode_protocol_failures[last] = 0;
+        cm->num_addnodes = last;
+
+        if (cm->num_addnodes <= 0) {
+            cm->next_addnode_cursor = 0;
+        } else if (cm->next_addnode_cursor > (size_t)i) {
+            cm->next_addnode_cursor--;
+        } else if (cm->next_addnode_cursor >= (size_t)cm->num_addnodes) {
+            cm->next_addnode_cursor = 0;
+        }
+        return true;
+    }
+
+    return false;
+}
+
 size_t connman_get_node_count(const struct connman *cm)
 {
     struct net_manager *nm = (struct net_manager *)&cm->manager;

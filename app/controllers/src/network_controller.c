@@ -12,12 +12,11 @@
 #include "json/json.h"
 #include "net/connman.h"
 #include "net/fast_sync.h"
+#include "net/netbase.h"
 #include "net/peer_lifecycle.h"
 #include "net/protocol.h"
 #include "net/version.h"
 #include "util/clientversion.h"
-#include <arpa/inet.h>
-#include <netdb.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -700,65 +699,47 @@ static bool rpc_addnode(const struct json_value *params, bool help,
         return false;
     }
 
-    if (strcmp(cmd, "onetry") == 0 || strcmp(cmd, "add") == 0) {
-        /* Parse host:port — split on last colon */
-        char host[256];
-        uint16_t port = ctx->connman->manager.default_port;
-        strncpy(host, node_str, sizeof(host) - 1);
-        host[sizeof(host) - 1] = '\0';
-        char *colon = strrchr(host, ':');
-        if (colon && colon != host) {
-            *colon = '\0';
-            int p_val = atoi(colon + 1);
-            if (p_val > 0 && p_val <= 65535)
-                port = (uint16_t)p_val;
-        }
+    if (strcmp(cmd, "remove") != 0 &&
+        strcmp(cmd, "onetry") != 0 &&
+        strcmp(cmd, "add") != 0) {
+        json_set_str(result, "addnode command must be add, remove, or onetry");
+        return false;
+    }
 
-        /* addnode is a direct-connect to a known peer and must be a numeric
-         * IP[:port]. Reject DNS names up front: the resolution below runs
-         * getaddrinfo() synchronously on an RPC worker thread, and the
-         * rpc_timeout watchdog (socket shutdown) cannot interrupt a thread
-         * parked in getaddrinfo — so a few slow/dead hostnames would wedge the
-         * small RPC/MCP worker pool. A clear error beats a hung node. */
-        {
-            struct in_addr a4; struct in6_addr a6;
-            if (inet_pton(AF_INET, host, &a4) != 1 &&
-                inet_pton(AF_INET6, host, &a6) != 1) {
-                json_set_str(result,
-                    "addnode requires a numeric IP address (DNS names are not resolved)");
-                return false;
-            }
+    struct net_service svc;
+    if (!lookup_numeric(node_str, &svc, ctx->connman->manager.default_port)) {
+        json_set_str(result,
+            "addnode requires a numeric IP address (DNS names are not resolved)");
+        return false;
+    }
+    struct net_address addr;
+    net_address_init(&addr);
+    addr.svc = svc;
+
+    if (strcmp(cmd, "remove") == 0) {
+        if (!connman_remove_addnode(ctx->connman, &addr)) {
+            json_set_str(result, "addnode entry not found");
+            return false;
         }
-        connman_add_seed_node(ctx->connman, host, port);
+        json_set_null(result);
+        return true;
+    }
+
+    if (strcmp(cmd, "onetry") == 0 || strcmp(cmd, "add") == 0) {
+        char host[64];
+
+        net_addr_to_string(&addr.svc.addr, host, sizeof(host));
+        connman_add_seed_node(ctx->connman, host, addr.svc.port);
 
         /* Direct connect — don't rely on addrman random selection */
-        struct net_address addr;
-        net_address_init(&addr);
-        addr.svc.port = port;
-        struct addrinfo hints;
-        memset(&hints, 0, sizeof(hints));
-        hints.ai_family = AF_UNSPEC;
-        hints.ai_socktype = SOCK_STREAM;
-        struct addrinfo *res = NULL;
-        if (getaddrinfo(host, NULL, &hints, &res) == 0 && res) {
-            if (res->ai_family == AF_INET) {
-                struct sockaddr_in *s4 = (struct sockaddr_in *)res->ai_addr;
-                net_addr_set_ipv4(&addr.svc.addr,
-                                  (const unsigned char *)&s4->sin_addr);
-            } else if (res->ai_family == AF_INET6) {
-                struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)res->ai_addr;
-                memcpy(addr.svc.addr.ip, &s6->sin6_addr, 16);
-            }
-            freeaddrinfo(res);
-            connman_open_connection(ctx->connman, &addr);
-        }
+        connman_open_connection(ctx->connman, &addr);
 
         json_set_null(result);
         return true;
     }
 
-    json_set_null(result);
-    return true;
+    json_set_str(result, "addnode command must be add, remove, or onetry");
+    return false;
 }
 
 void register_net_rpc_commands(struct rpc_table *t)

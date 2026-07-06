@@ -114,6 +114,59 @@ int test_connman_addnode_fallback(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("connman_addnode_fallback: addnode remove compacts state... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        struct net_address a;
+        struct net_address b;
+        struct net_address c;
+        struct net_address missing;
+        memset(&sigs, 0, sizeof(sigs));
+        bool ok = connman_init(&cm, params, &sigs);
+
+        test_set_ipv4(&a, 203, 0, 113, 10, 8033);
+        test_set_ipv4(&b, 203, 0, 113, 11, 20022);
+        test_set_ipv4(&c, 203, 0, 113, 12, 8033);
+        test_set_ipv4(&missing, 203, 0, 113, 99, 8033);
+
+        cm.addnodes[cm.num_addnodes++] = a;
+        cm.addnodes[cm.num_addnodes++] = b;
+        cm.addnodes[cm.num_addnodes++] = c;
+        cm.addnode_last_attempt[0] = 10;
+        cm.addnode_last_attempt[1] = 20;
+        cm.addnode_last_attempt[2] = 30;
+        cm.addnode_backoff_sec[0] = 40;
+        cm.addnode_backoff_sec[1] = 50;
+        cm.addnode_backoff_sec[2] = 60;
+        cm.addnode_tcp_failures[0] = 1;
+        cm.addnode_tcp_failures[1] = 2;
+        cm.addnode_tcp_failures[2] = 3;
+        cm.addnode_protocol_failures[0] = 4;
+        cm.addnode_protocol_failures[1] = 5;
+        cm.addnode_protocol_failures[2] = 6;
+        cm.next_addnode_cursor = 2;
+
+        ok = ok && connman_remove_addnode(&cm, &b);
+        ok = ok && cm.num_addnodes == 2;
+        ok = ok && net_addr_eq(&cm.addnodes[0].svc.addr, &a.svc.addr);
+        ok = ok && cm.addnodes[0].svc.port == a.svc.port;
+        ok = ok && net_addr_eq(&cm.addnodes[1].svc.addr, &c.svc.addr);
+        ok = ok && cm.addnodes[1].svc.port == c.svc.port;
+        ok = ok && cm.addnode_last_attempt[1] == 30;
+        ok = ok && cm.addnode_backoff_sec[1] == 60;
+        ok = ok && cm.addnode_tcp_failures[1] == 3;
+        ok = ok && cm.addnode_protocol_failures[1] == 6;
+        ok = ok && cm.next_addnode_cursor == 1;
+        ok = ok && !connman_remove_addnode(&cm, &missing);
+
+        connman_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("connman_addnode_fallback: outbound health tracks diversity... ");
     {
         chain_params_select(CHAIN_MAIN);
