@@ -10,6 +10,7 @@
 #include "primitives/transaction.h"
 #include "jobs/utxo_apply_nullifiers.h"
 #include "jobs/utxo_apply_stage.h"
+#include "jobs/tip_finalize_stage.h"
 #include "storage/coins_kv.h"
 #include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
@@ -271,6 +272,37 @@ static bool seed_script_validate_row(sqlite3 *db, int height, int ok,
     sqlite3_bind_int(st, 1, height);
     sqlite3_bind_int(st, 2, ok);
     sqlite3_bind_blob(st, 3, hash->data, 32, SQLITE_STATIC);
+    bool done = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return done;
+}
+
+static bool seed_tip_finalize_anchor_row(sqlite3 *db, int height,
+                                         const struct uint256 *hash)
+{
+    if (!exec_sql(db,
+        "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
+        "  height           INTEGER PRIMARY KEY,"
+        "  status           TEXT    NOT NULL,"
+        "  ok               INTEGER NOT NULL,"
+        "  work_delta_high  INTEGER NOT NULL,"
+        "  work_delta_low   INTEGER NOT NULL,"
+        "  utxo_size_after  INTEGER NOT NULL,"
+        "  reorg_depth      INTEGER NOT NULL,"
+        "  finalized_at     INTEGER NOT NULL,"
+        "  tip_hash         BLOB"
+        ")"))
+        return false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO tip_finalize_log "
+        "(height, status, ok, work_delta_high, work_delta_low, "
+        " utxo_size_after, reorg_depth, finalized_at, tip_hash) "
+        "VALUES (?, 'anchor', 1, 0, 0, -1, 0, 1, ?)",
+        -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_blob(st, 2, hash->data, 32, SQLITE_STATIC);
     bool done = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return done;
@@ -604,6 +636,49 @@ int test_utxo_apply_stage(void)
         UV_CHECK("hash_fallback: fallback counter recorded",
                  uv_dump_has("\"hash_bound_fallback_total\":1"));
         UV_CHECK("hash_fallback: fallback height recorded",
+                 uv_dump_has("\"hash_bound_fallback_height\":1"));
+        uv_teardown(dir, &ms, &sc);
+    }
+
+    {
+        /* Anchor-resume fallback: after a long offline mint resumes, the
+         * visible active-chain window can lose the already-applied parent.
+         * The next block is still safe to apply when script_validate_log binds
+         * the current height and tip_finalize_log durably witnesses the
+         * parent hash. */
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        UV_CHECK("hash_fallback_durable_parent: setup",
+                 uv_setup("hash_fallback_durable_parent", 3, UV_FAIL_NONE, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        UV_CHECK("hash_fallback_durable_parent: visible h0 only",
+                 active_chain_move_window_tip(&ms.chain_active,
+                                              &sc.blocks[0]));
+        UV_CHECK("hash_fallback_durable_parent: seed h1 script hash verdict",
+                 seed_script_validate_row(progress_store_db(), 1, 1,
+                                          sc.blocks[1].phashBlock));
+        UV_CHECK("hash_fallback_durable_parent: block_map has h1 by hash",
+                 block_map_insert(&ms.map_block_index, sc.blocks[1].phashBlock,
+                                  &sc.blocks[1]));
+        UV_CHECK("hash_fallback_durable_parent: h0 applies",
+                 utxo_apply_stage_step_once() == JOB_ADVANCED);
+        UV_CHECK("hash_fallback_durable_parent: durable h0 witness",
+                 seed_tip_finalize_anchor_row(progress_store_db(), 0,
+                                              sc.blocks[0].phashBlock));
+        uint8_t durable_parent_hash[32] = {0};
+        UV_CHECK("hash_fallback_durable_parent: h0 witness resolves",
+                 tip_finalize_stage_block_hash_at(progress_store_db(), 0,
+                                                  durable_parent_hash) &&
+                 memcmp(durable_parent_hash, sc.blocks[0].phashBlock->data,
+                        sizeof(durable_parent_hash)) == 0);
+        active_chain_free(&ms.chain_active);
+        active_chain_init(&ms.chain_active);
+        UV_CHECK("hash_fallback_durable_parent: h1 applies without visible parent",
+                 utxo_apply_stage_step_once() == JOB_ADVANCED);
+        UV_CHECK("hash_fallback_durable_parent: cursor at 2",
+                 utxo_apply_stage_cursor() == 2);
+        UV_CHECK("hash_fallback_durable_parent: fallback counter recorded",
+                 uv_dump_has("\"hash_bound_fallback_total\":1"));
+        UV_CHECK("hash_fallback_durable_parent: fallback height recorded",
                  uv_dump_has("\"hash_bound_fallback_height\":1"));
         uv_teardown(dir, &ms, &sc);
     }

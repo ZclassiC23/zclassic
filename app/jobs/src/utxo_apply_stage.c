@@ -303,7 +303,7 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     }
 
     struct block_index *bi = utxo_apply_select_apply_block(
-        ms, next_h, sv_found == 1 ? &sv_row : NULL);
+        db, ms, next_h, sv_found == 1 ? &sv_row : NULL);
     if (!bi) {
         atomic_store(&g_ua_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;

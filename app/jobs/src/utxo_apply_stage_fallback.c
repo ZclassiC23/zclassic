@@ -12,12 +12,15 @@
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "script_validate_log_store.h"
+#include "jobs/tip_finalize_stage.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
 #include <stdbool.h>
+#include <sqlite3.h>
 #include <stdatomic.h>
 #include <stddef.h>
+#include <string.h>
 
 static bool candidate_extends_visible_parent(struct main_state *ms,
                                              const struct block_index *bi,
@@ -36,8 +39,26 @@ static bool candidate_extends_visible_parent(struct main_state *ms,
     return uint256_eq(bi->pprev->phashBlock, parent->phashBlock);
 }
 
+static bool candidate_extends_durable_parent(sqlite3 *db,
+                                             const struct block_index *bi,
+                                             int height)
+{
+    if (!db || !bi)
+        return false;
+    if (height == 0)
+        return bi->pprev == NULL;
+    if (!bi->pprev || !bi->pprev->phashBlock)
+        return false;
+
+    uint8_t parent_hash[32];
+    if (!tip_finalize_stage_block_hash_at(db, height - 1, parent_hash))
+        return false;  // raw-return-ok:optional-durable-parent-witness
+    return memcmp(parent_hash, bi->pprev->phashBlock->data,
+                  sizeof(parent_hash)) == 0;
+}
+
 static struct block_index *hash_bound_fallback(
-        struct main_state *ms, int height,
+        sqlite3 *db, struct main_state *ms, int height,
         const struct script_validate_verdict_row *sv_row)
 {
     if (!ms || !sv_row || sv_row->ok != 1 || !sv_row->has_block_hash)
@@ -47,13 +68,14 @@ static struct block_index *hash_bound_fallback(
                                             &sv_row->block_hash);
     if (!bi || bi->nHeight != height || !(bi->nStatus & BLOCK_HAVE_DATA))
         return NULL;
-    if (!candidate_extends_visible_parent(ms, bi, height))
+    if (!candidate_extends_visible_parent(ms, bi, height) &&
+        !candidate_extends_durable_parent(db, bi, height))
         return NULL;
     return bi;
 }
 
 struct block_index *utxo_apply_select_apply_block(
-        struct main_state *ms, int height,
+        sqlite3 *db, struct main_state *ms, int height,
         const struct script_validate_verdict_row *sv_row)
 {
     if (!ms)
@@ -66,7 +88,7 @@ struct block_index *utxo_apply_select_apply_block(
     atomic_fetch_add(&g_ua_window_miss_total, 1);
     atomic_store(&g_ua_window_miss_height, (int64_t)height);
 
-    struct block_index *fallback = hash_bound_fallback(ms, height, sv_row);
+    struct block_index *fallback = hash_bound_fallback(db, ms, height, sv_row);
     if (!fallback)
         return NULL;
 

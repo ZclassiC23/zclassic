@@ -69,7 +69,8 @@ extern _Atomic uint64_t g_ua_label_splice_total;
 /* Active-chain window misses at a height whose upstream proof row is already
  * ok. A hash-bound fallback is allowed only when script_validate_log binds the
  * same height to an ok block hash present in the block map, that block has
- * data, and it extends the visible parent. */
+ * data, and it extends either the visible parent or the durable finalized
+ * parent witnessed in tip_finalize_log. */
 extern _Atomic uint64_t g_ua_window_miss_total;
 extern _Atomic int64_t  g_ua_window_miss_height;
 extern _Atomic uint64_t g_ua_hash_bound_fallback_total;
@@ -88,9 +89,9 @@ bool utxo_apply_stage_lookup_live(const struct uint256 *txid, uint32_t vout,
 /* Select the block the apply stage may act on. Prefer active_chain[height];
  * if that slot is missing/bodiless, recover only when script_validate_log
  * already ok-bound this height to a body-present block hash and that candidate
- * extends the visible parent. */
+ * extends the visible parent or the durable finalized parent. */
 struct block_index *utxo_apply_select_apply_block(
-        struct main_state *ms, int height,
+        struct sqlite3 *db, struct main_state *ms, int height,
         const struct script_validate_verdict_row *sv_row);
 
 #endif /* ZCL_JOBS_UTXO_APPLY_STAGE_INTERNAL_H */
