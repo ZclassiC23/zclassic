@@ -80,6 +80,16 @@ binary commands (`zclassic23 agentinterface`, `zclassic23 appprotocols`,
 `zclassic23 agent`, etc.) are the second-best interface for terminal work and
 scripts. REST is the public read-only mirror.
 
+For direct RPC checks from a terminal, prefer `build/bin/zcl-rpc getblockcount`
+or an explicit `build/bin/zclassic-cli -rpcport=18232 getblockcount` when you
+mean the canonical zclassic23 lane. Do not use bare `build/bin/zclassic-cli` as
+a zclassic23 status oracle: local defaults, cookies, datadirs, or environment
+can point it at another RPC target and create a false "zclassic23 is behind"
+diagnosis. If a height/peer answer matters, the target lane must be explicit in
+the command or supplied by the C-owned agent surface (`zclassic23 agent`,
+`zclassic23 agentdiagnose`, `zclassic23 getmirrorstatus`, or the equivalent MCP
+tools).
+
 The transport can vary, but the payload should not: AI-facing status surfaces
 return stable JSON objects with a `schema` or an explicit command contract, and
 they must identify the running node binary with `build_commit` whenever deploy

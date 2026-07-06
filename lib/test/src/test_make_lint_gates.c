@@ -3628,6 +3628,17 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "effective_runtime_reachable") != NULL);
         ASSERT(strstr(agent_doc_buf, "effective_runtime_scope") != NULL);
         ASSERT(strstr(agent_doc_buf,
+                      "`build/bin/zclassic-cli` as\n"
+                      "a zclassic23 status oracle") != NULL);
+        ASSERT(strstr(agent_doc_buf, "`build/bin/zcl-rpc getblockcount`")
+               != NULL);
+        ASSERT(strstr(agent_doc_buf,
+                      "`build/bin/zclassic-cli -rpcport=18232 getblockcount`")
+               != NULL);
+        ASSERT(strstr(agent_doc_buf,
+                      "false \"zclassic23 is behind\"\n"
+                      "diagnosis") != NULL);
+        ASSERT(strstr(agent_doc_buf,
                       "unsupported_method_not_found") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 statecatalog") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_state_catalog") != NULL);

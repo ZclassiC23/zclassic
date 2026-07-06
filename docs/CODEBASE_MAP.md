@@ -327,7 +327,8 @@ Confirm the target before acting.
 | `make lane-health` | Read-only canonical/soak/dev lane status, lag, peers, listeners, memory pressure, and snapshot-loader hints. |
 | `make lane-recover LANE=dev` | Plan bounded noncanonical recovery as `zcl.lane_recovery_plan.v1`; set `ZCL_LANE_RECOVERY_APPLY=1` to restart only dev/soak. Canonical/live/main is refused. |
 | `build/bin/test_zcl` | Run all tests directly. |
-| `build/bin/zclassic-cli <method>` | RPC without MCP (default port 18232 = zclassic23). |
+| `build/bin/zcl-rpc <method>` | Preferred direct RPC client for zclassic23 terminal checks; honors the project RPC env defaults. |
+| `build/bin/zclassic-cli -rpcport=18232 <method>` | Explicit zclassic23 RPC without MCP. Avoid bare `zclassic-cli` for stability diagnosis because local defaults may target another lane. |
 
 ### Boot stages (`lib/util/include/util/boot_phase.h`)
 12 ordered stages; out-of-order advance aborts:
