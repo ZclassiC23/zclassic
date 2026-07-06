@@ -3101,6 +3101,12 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "peer_primary_host_next_action")),
                           "inspect_peer_timeline_for_reconnect_timeouts") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+            "peer_primary_host_bootstrap_readiness")),
+            "useful") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+            "peer_primary_host_fast_sync_readiness")),
+            "missing_zclassic23_fast_sync") == 0;
         ok = ok && json_get_int(json_get(&result,
                                          "peer_primary_host_incident_score"))
             > 0;
@@ -3115,6 +3121,14 @@ int test_syncdiag_rpc(void)
         ok = ok && primary_host_issue &&
             strcmp(json_get_str(json_get(primary_host_issue, "next_action")),
                    "inspect_peer_timeline_for_reconnect_timeouts") == 0;
+        ok = ok && primary_host_issue &&
+            strcmp(json_get_str(json_get(primary_host_issue,
+                                         "bootstrap_readiness")),
+                   "useful") == 0;
+        ok = ok && primary_host_issue &&
+            strcmp(json_get_str(json_get(primary_host_issue,
+                                         "fast_sync_readiness")),
+                   "missing_zclassic23_fast_sync") == 0;
         ok = ok && json_get_int(json_get(&result,
                                          "peer_material_incident_count")) >= 1;
         ok = ok && json_get_int(json_get(&result,

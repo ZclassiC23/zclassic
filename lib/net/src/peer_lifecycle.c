@@ -64,6 +64,9 @@ struct peer_lifecycle_host_group {
     int64_t unknown_entries;
     int64_t open_connections;
     int64_t handshaked_open_connections;
+    int64_t handshaked_network_connections;
+    int64_t handshaked_advertised_height_connections;
+    int64_t handshaked_zclassic23_connections;
     int64_t bootstrap_useful_connections;
     int64_t fast_sync_useful_connections;
     int64_t connected;
@@ -360,6 +363,35 @@ static bool entry_fast_sync_useful(const struct peer_lifecycle_entry *e)
 {
     return entry_bootstrap_useful(e) &&
            subver_is_zcl23(e->subver, e->services);
+}
+
+static const char *host_group_bootstrap_readiness(
+    const struct peer_lifecycle_host_group *g)
+{
+    if (!g || g->entries <= 0)
+        return "no_peer_history";
+    if (g->bootstrap_useful)
+        return "useful";
+    if (g->handshaked_open_connections <= 0)
+        return "no_current_handshaked_connection";
+    if (g->handshaked_network_connections <= 0)
+        return "missing_NODE_NETWORK";
+    if (g->handshaked_advertised_height_connections <= 0)
+        return "missing_advertised_height";
+    return "split_bootstrap_capabilities";
+}
+
+static const char *host_group_fast_sync_readiness(
+    const struct peer_lifecycle_host_group *g)
+{
+    if (!g || g->entries <= 0)
+        return "no_peer_history";
+    if (g->fast_sync_useful)
+        return "useful";
+    const char *bootstrap = host_group_bootstrap_readiness(g);
+    if (strcmp(bootstrap, "useful") != 0)
+        return bootstrap;
+    return "missing_zclassic23_fast_sync";
 }
 
 static bool entry_cache_skip_actionable(const struct peer_lifecycle_entry *e)
@@ -825,8 +857,15 @@ static void host_group_add_entry(struct peer_lifecycle_host_group *group,
         group->unknown_entries++;
     if (entry_connection_open(e))
         group->open_connections++;
-    if (entry_current_connection_handshaked(e))
+    if (entry_current_connection_handshaked(e)) {
         group->handshaked_open_connections++;
+        if ((e->services & NODE_NETWORK) != 0)
+            group->handshaked_network_connections++;
+        if (e->start_height > 0)
+            group->handshaked_advertised_height_connections++;
+        if (subver_is_zcl23(e->subver, e->services))
+            group->handshaked_zclassic23_connections++;
+    }
     if (entry_bootstrap_useful(e))
         group->bootstrap_useful_connections++;
     if (entry_fast_sync_useful(e))
@@ -1127,6 +1166,12 @@ static void host_group_to_json(const struct peer_lifecycle_host_group *g,
     json_push_kv_int(obj, "open_connections", g->open_connections);
     json_push_kv_int(obj, "handshaked_open_connections",
                      g->handshaked_open_connections);
+    json_push_kv_int(obj, "handshaked_network_connections",
+                     g->handshaked_network_connections);
+    json_push_kv_int(obj, "handshaked_advertised_height_connections",
+                     g->handshaked_advertised_height_connections);
+    json_push_kv_int(obj, "handshaked_zclassic23_connections",
+                     g->handshaked_zclassic23_connections);
     json_push_kv_int(obj, "bootstrap_useful_connections",
                      g->bootstrap_useful_connections);
     json_push_kv_int(obj, "fast_sync_useful_connections",
@@ -1157,6 +1202,10 @@ static void host_group_to_json(const struct peer_lifecycle_host_group *g,
     json_push_kv_str(obj, "services_summary", summary);
     json_push_kv_int(obj, "max_advertised_height",
                      g->max_advertised_height);
+    json_push_kv_str(obj, "bootstrap_readiness",
+                     host_group_bootstrap_readiness(g));
+    json_push_kv_str(obj, "fast_sync_readiness",
+                     host_group_fast_sync_readiness(g));
     json_push_kv_bool(obj, "bootstrap_useful", g->bootstrap_useful);
     json_push_kv_bool(obj, "fast_sync_useful", g->fast_sync_useful);
     json_push_kv_int(obj, "last_seen", g->last_seen);

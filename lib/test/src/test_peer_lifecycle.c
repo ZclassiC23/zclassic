@@ -605,6 +605,13 @@ static int test_peer_lifecycle_incident_view(void)
         ASSERT(json_get_int(json_get(group,
                                      "handshaked_open_connections")) == 1);
         ASSERT(json_get_int(json_get(group,
+                                     "handshaked_network_connections")) == 1);
+        ASSERT(json_get_int(json_get(group,
+            "handshaked_advertised_height_connections")) == 1);
+        ASSERT(json_get_int(json_get(group,
+                                     "handshaked_zclassic23_connections"))
+               == 0);
+        ASSERT(json_get_int(json_get(group,
                                      "bootstrap_useful_connections")) == 1);
         ASSERT(!json_get_bool(json_get(group,
                                        "duplicate_current_connections")));
@@ -622,6 +629,10 @@ static int test_peer_lifecycle_incident_view(void)
         ASSERT(json_get_int(json_get(group, "timeout")) == 1);
         ASSERT(json_get_int(json_get(group,
                                      "pre_handshake_disconnects")) == 1);
+        ASSERT(strcmp(json_get_str(json_get(group, "bootstrap_readiness")),
+                      "useful") == 0);
+        ASSERT(strcmp(json_get_str(json_get(group, "fast_sync_readiness")),
+                      "missing_zclassic23_fast_sync") == 0);
         ASSERT(json_get_bool(json_get(group, "bootstrap_useful")));
 
         const struct json_value *primary =
@@ -634,6 +645,10 @@ static int test_peer_lifecycle_incident_view(void)
         ASSERT(strcmp(json_get_str(json_get(primary, "issue_class")),
                       "reconnect_timeout_pressure") == 0);
         ASSERT(json_get_int(json_get(primary, "timeout")) == 1);
+        ASSERT(strcmp(json_get_str(json_get(primary, "bootstrap_readiness")),
+                      "useful") == 0);
+        ASSERT(strcmp(json_get_str(json_get(primary, "fast_sync_readiness")),
+                      "missing_zclassic23_fast_sync") == 0);
 
         const struct json_value *host_incidents =
             json_get(&incidents, "top_host_incidents");
@@ -776,6 +791,13 @@ static int test_peer_lifecycle_duplicate_current_bootstrap_view(void)
         ASSERT(json_get_int(json_get(group,
                                      "handshaked_open_connections")) == 2);
         ASSERT(json_get_int(json_get(group,
+                                     "handshaked_network_connections")) == 2);
+        ASSERT(json_get_int(json_get(group,
+            "handshaked_advertised_height_connections")) == 2);
+        ASSERT(json_get_int(json_get(group,
+                                     "handshaked_zclassic23_connections"))
+               == 1);
+        ASSERT(json_get_int(json_get(group,
                                      "bootstrap_useful_connections")) == 2);
         ASSERT(json_get_int(json_get(group,
                                      "fast_sync_useful_connections")) == 1);
@@ -789,6 +811,10 @@ static int test_peer_lifecycle_duplicate_current_bootstrap_view(void)
                       "NODE_ZCL23") != NULL);
         ASSERT(json_get_int(json_get(group, "max_advertised_height"))
                == 3172092);
+        ASSERT(strcmp(json_get_str(json_get(group, "bootstrap_readiness")),
+                      "useful") == 0);
+        ASSERT(strcmp(json_get_str(json_get(group, "fast_sync_readiness")),
+                      "useful") == 0);
 
         const struct json_value *primary =
             json_get(&incidents, "primary_host_issue");
@@ -799,6 +825,10 @@ static int test_peer_lifecycle_duplicate_current_bootstrap_view(void)
                       "duplicate_handshaked_connections") == 0);
         ASSERT(json_get_bool(json_get(primary,
                                       "duplicate_handshaked_connections")));
+        ASSERT(strcmp(json_get_str(json_get(primary, "bootstrap_readiness")),
+                      "useful") == 0);
+        ASSERT(strcmp(json_get_str(json_get(primary, "fast_sync_readiness")),
+                      "useful") == 0);
 
         const struct json_value *host_incidents =
             json_get(&incidents, "top_host_incidents");
@@ -824,6 +854,131 @@ static int test_peer_lifecycle_duplicate_current_bootstrap_view(void)
     return failures;
 }
 
+static int test_peer_lifecycle_host_readiness_reasons(void)
+{
+    int failures = 0;
+    TEST_CASE("peer_lifecycle: host readiness names current blockers")
+    {
+        struct p2p_node first;
+        struct p2p_node second;
+        struct json_value incidents;
+
+        peer_lifecycle_reset_for_test();
+        memset(&first, 0, sizeof(first));
+        test_addr_ipv4(&first.addr, 192, 0, 2, 21, 41001);
+        first.id = 401;
+        first.inbound = true;
+        first.state = PEER_HANDSHAKE_COMPLETE;
+        first.services = 0;
+        snprintf(first.addr_name, sizeof(first.addr_name),
+                 "192.0.2.21:41001");
+        snprintf(first.sub_ver, sizeof(first.sub_ver),
+                 "%s", "/MagicBean:2.1.2-beta6/");
+        peer_lifecycle_note_connected(&first,
+                                      PEER_LIFECYCLE_SOURCE_INBOUND);
+        peer_lifecycle_note_version_received(&first, first.services,
+                                             3172093, first.sub_ver);
+        peer_lifecycle_note_handshake_complete(&first);
+        peer_lifecycle_note_active(&first);
+
+        memset(&second, 0, sizeof(second));
+        test_addr_ipv4(&second.addr, 192, 0, 2, 21, 41002);
+        second.id = 402;
+        second.inbound = true;
+        second.state = PEER_HANDSHAKE_COMPLETE;
+        second.services = 0;
+        snprintf(second.addr_name, sizeof(second.addr_name),
+                 "192.0.2.21:41002");
+        snprintf(second.sub_ver, sizeof(second.sub_ver),
+                 "%s", "/MagicBean:2.1.2-beta6/");
+        peer_lifecycle_note_connected(&second,
+                                      PEER_LIFECYCLE_SOURCE_INBOUND);
+        peer_lifecycle_note_version_received(&second, second.services,
+                                             3172094, second.sub_ver);
+        peer_lifecycle_note_handshake_complete(&second);
+        peer_lifecycle_note_active(&second);
+
+        json_init(&incidents);
+        ASSERT(peer_lifecycle_incidents_json(&incidents));
+        const struct json_value *groups =
+            json_get(&incidents, "duplicate_host_groups");
+        const struct json_value *missing =
+            find_lifecycle_obj_str(groups, "host", "192.0.2.21");
+        ASSERT(missing && missing->type == JSON_OBJ);
+        ASSERT(strcmp(json_get_str(json_get(missing,
+                                            "bootstrap_readiness")),
+                      "missing_NODE_NETWORK") == 0);
+        ASSERT(strcmp(json_get_str(json_get(missing,
+                                            "fast_sync_readiness")),
+                      "missing_NODE_NETWORK") == 0);
+        ASSERT(json_get_int(json_get(missing,
+                                     "handshaked_network_connections")) == 0);
+        ASSERT(json_get_int(json_get(missing,
+            "handshaked_advertised_height_connections")) == 2);
+        ASSERT(!json_get_bool(json_get(missing, "bootstrap_useful")));
+        json_free(&incidents);
+
+        peer_lifecycle_reset_for_test();
+        memset(&first, 0, sizeof(first));
+        test_addr_ipv4(&first.addr, 192, 0, 2, 22, 41001);
+        first.id = 403;
+        first.inbound = true;
+        first.state = PEER_HANDSHAKE_COMPLETE;
+        first.services = 0;
+        snprintf(first.addr_name, sizeof(first.addr_name),
+                 "192.0.2.22:41001");
+        snprintf(first.sub_ver, sizeof(first.sub_ver),
+                 "%s", msg_version_user_agent());
+        peer_lifecycle_note_connected(&first,
+                                      PEER_LIFECYCLE_SOURCE_INBOUND);
+        peer_lifecycle_note_version_received(&first, first.services,
+                                             3172095, first.sub_ver);
+        peer_lifecycle_note_handshake_complete(&first);
+        peer_lifecycle_note_active(&first);
+
+        memset(&second, 0, sizeof(second));
+        test_addr_ipv4(&second.addr, 192, 0, 2, 22, 41002);
+        second.id = 404;
+        second.inbound = true;
+        second.state = PEER_HANDSHAKE_COMPLETE;
+        second.services = NODE_NETWORK;
+        snprintf(second.addr_name, sizeof(second.addr_name),
+                 "192.0.2.22:41002");
+        snprintf(second.sub_ver, sizeof(second.sub_ver),
+                 "%s", "/MagicBean:2.1.2-beta6/");
+        peer_lifecycle_note_connected(&second,
+                                      PEER_LIFECYCLE_SOURCE_INBOUND);
+        peer_lifecycle_note_version_received(&second, second.services,
+                                             0, second.sub_ver);
+        peer_lifecycle_note_handshake_complete(&second);
+        peer_lifecycle_note_active(&second);
+
+        json_init(&incidents);
+        ASSERT(peer_lifecycle_incidents_json(&incidents));
+        groups = json_get(&incidents, "duplicate_host_groups");
+        const struct json_value *split =
+            find_lifecycle_obj_str(groups, "host", "192.0.2.22");
+        ASSERT(split && split->type == JSON_OBJ);
+        ASSERT(strcmp(json_get_str(json_get(split,
+                                            "bootstrap_readiness")),
+                      "split_bootstrap_capabilities") == 0);
+        ASSERT(strcmp(json_get_str(json_get(split,
+                                            "fast_sync_readiness")),
+                      "split_bootstrap_capabilities") == 0);
+        ASSERT(json_get_int(json_get(split,
+                                     "handshaked_network_connections")) == 1);
+        ASSERT(json_get_int(json_get(split,
+            "handshaked_advertised_height_connections")) == 1);
+        ASSERT(json_get_int(json_get(split,
+                                     "handshaked_zclassic23_connections"))
+               == 1);
+        ASSERT(!json_get_bool(json_get(split, "bootstrap_useful")));
+        ASSERT(!json_get_bool(json_get(split, "fast_sync_useful")));
+        json_free(&incidents);
+    } TEST_END
+    return failures;
+}
+
 int test_peer_lifecycle(void)
 {
     int failures = 0;
@@ -839,6 +994,7 @@ int test_peer_lifecycle(void)
     failures += test_peer_lifecycle_inbound_classifies_remote_version();
     failures += test_peer_lifecycle_incident_view();
     failures += test_peer_lifecycle_duplicate_current_bootstrap_view();
+    failures += test_peer_lifecycle_host_readiness_reasons();
 
     return failures;
 }

@@ -101,6 +101,8 @@ duplicates the decision fields agents need most (`verdict`, `safe_next_action`,
 `gap`, `peer_count`, `peer_incident_count`, `duplicate_host_group_count`,
 `peer_host_incident_count`, `peer_host_count_returned`, `peer_primary_host`,
 `peer_primary_host_issue_class`, `peer_primary_host_next_action`,
+`peer_primary_host_bootstrap_readiness`,
+`peer_primary_host_fast_sync_readiness`,
 `peer_primary_host_incident_score`, `peer_primary_host_issue`,
 `peer_incident_severity`, `peer_stability_blocker`,
 `peer_material_incident_count`, `peer_material_group_count`,
@@ -337,13 +339,14 @@ For peer churn, reconnect, or duplicate-entry reports, start with
 `zcl.peer_incidents.v1` JSON with `primary_host_issue`, `top_host_incidents`,
 `top_incidents`, `duplicate_host_groups`, reconnect counts, last reasons,
 direction, handshake age, advertised height, service summaries, bootstrap
-readiness/usefulness, reconnect cadence (`last_reconnect_interval_secs` and
+readiness/usefulness, fast-sync readiness/usefulness, current handshaked
+service/height/ZClassic23 counts, reconnect cadence (`last_reconnect_interval_secs` and
 host min/max/latest reconnect intervals), current open/handshaked connection
 counts, and separate duplicate-host counts for historical entries versus live
 open/handshaked duplicates. `primary_host_issue` and `top_host_incidents` are
 the no-jq path for reconnect storms where many peer rows share one host; they
 collapse the storm to one host-level `issue_class`, `incident_score`,
-`next_action`, and reconnect cadence.
+`next_action`, readiness reason, and reconnect cadence.
 `host_incident_count` is the total scored host count; `host_count_returned` is
 the bounded number included in `top_host_incidents`.
 Use the full

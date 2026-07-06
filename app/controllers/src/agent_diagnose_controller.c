@@ -277,6 +277,15 @@ static void diagnose_push_primary_host_issue(struct json_value *out,
     json_push_kv_int(&obj, "handshaked_open_connections",
                      diagnose_peer_host_int(primary,
                                            "handshaked_open_connections"));
+    json_push_kv_int(&obj, "handshaked_network_connections",
+                     diagnose_peer_host_int(primary,
+                                           "handshaked_network_connections"));
+    json_push_kv_int(&obj, "handshaked_advertised_height_connections",
+                     diagnose_peer_host_int(
+                         primary, "handshaked_advertised_height_connections"));
+    json_push_kv_int(&obj, "handshaked_zclassic23_connections",
+                     diagnose_peer_host_int(
+                         primary, "handshaked_zclassic23_connections"));
     json_push_kv_int(&obj, "bootstrap_useful_connections",
                      diagnose_peer_host_int(primary,
                                            "bootstrap_useful_connections"));
@@ -289,6 +298,10 @@ static void diagnose_push_primary_host_issue(struct json_value *out,
     json_push_kv_bool(&obj, "duplicate_handshaked_connections",
                       diagnose_peer_host_bool(
                           primary, "duplicate_handshaked_connections"));
+    json_push_kv_str(&obj, "bootstrap_readiness",
+                     diagnose_peer_host_str(primary, "bootstrap_readiness"));
+    json_push_kv_str(&obj, "fast_sync_readiness",
+                     diagnose_peer_host_str(primary, "fast_sync_readiness"));
     json_push_kv_int(&obj, "timeout",
                      diagnose_peer_host_int(primary, "timeout"));
     json_push_kv_int(&obj, "reconnects",
@@ -491,6 +504,10 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
         diagnose_peer_host_str(primary_host, "issue_class");
     const char *primary_host_next_action =
         diagnose_peer_host_str(primary_host, "next_action");
+    const char *primary_host_bootstrap_readiness =
+        diagnose_peer_host_str(primary_host, "bootstrap_readiness");
+    const char *primary_host_fast_sync_readiness =
+        diagnose_peer_host_str(primary_host, "fast_sync_readiness");
     int64_t material_peer_incidents =
         diagnose_peer_material_incidents(&peers);
     int64_t material_peer_groups =
@@ -550,6 +567,10 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
                      primary_host_issue_class);
     json_push_kv_str(result, "peer_primary_host_next_action",
                      primary_host_next_action);
+    json_push_kv_str(result, "peer_primary_host_bootstrap_readiness",
+                     primary_host_bootstrap_readiness);
+    json_push_kv_str(result, "peer_primary_host_fast_sync_readiness",
+                     primary_host_fast_sync_readiness);
     json_push_kv_int(result, "peer_primary_host_incident_score",
                      diagnose_peer_host_int(primary_host, "incident_score"));
     json_push_kv_str(result, "peer_incident_severity", peer_severity);
