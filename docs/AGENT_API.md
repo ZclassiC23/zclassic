@@ -43,6 +43,10 @@ their native/MCP names. Operator drilldowns exposed by the REST index
 (`healthcheck` / `zcl_health`, `milestone` / `zcl_milestone`, and `refold` /
 `zcl_refold_status`) also live there, so native, MCP, and REST discovery share
 the same command/tool/schema metadata.
+The static no-cookie native commands in `src/main.c` use one
+`g_cli_static_agent_routes` table of method-to-handler pairs and only dispatch
+routes whose method also exists in `agent_contracts.def`. Do not add a second
+allowlist or a parallel `if/else` dispatch ladder for agent commands.
 REST application-layer protocol metadata lives in
 `app/controllers/src/api_controller_app_protocols.c`; the same rows feed
 `zclassic23 appprotocols`, `zcl_app_protocols`, `GET /api/v1/protocols`,

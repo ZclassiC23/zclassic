@@ -875,20 +875,50 @@ static bool cli_print_contract_method_skew_diagnostic(
 
 static void print_usage(const char *prog);
 
+typedef bool (*cli_static_agent_handler)(const struct json_value *params,
+                                         bool help,
+                                         struct json_value *result);
+
+struct cli_static_agent_route {
+    const char *method;
+    cli_static_agent_handler handler;
+};
+
+static const struct cli_static_agent_route g_cli_static_agent_routes[] = {
+    { "agentmap", rpc_agent_map },
+    { "agentlanes", rpc_agent_lanes },
+    { "agentliveness", rpc_agent_liveness },
+    { "agentimpact", rpc_agent_impact },
+    { "agentcontracts", rpc_agent_contracts },
+    { "agentbuild", rpc_agent_build },
+    { "anchorstatus", rpc_agent_anchor_status },
+    { "appprotocols", rpc_app_protocols },
+    { "agentinterface", rpc_agent_interface },
+    { "agentops", rpc_agent_ops },
+    { "statecatalog", diag_rpc_statecatalog },
+    { "agentdeployguard", rpc_agent_deploy_guard },
+};
+
+static const struct cli_static_agent_route *
+cli_static_agent_lookup(const char *method)
+{
+    if (!method || !method[0])
+        return NULL;
+
+    for (size_t i = 0; i < sizeof(g_cli_static_agent_routes) /
+                            sizeof(g_cli_static_agent_routes[0]); i++) {
+        const struct cli_static_agent_route *route =
+            &g_cli_static_agent_routes[i];
+        if (strcmp(route->method, method) == 0 &&
+            agent_contract_lookup(route->method))
+            return route;
+    }
+    return NULL;
+}
+
 static bool cli_static_agent_method(const char *method)
 {
-    return strcmp(method, "agentmap") == 0 ||
-           strcmp(method, "agentlanes") == 0 ||
-           strcmp(method, "agentliveness") == 0 ||
-           strcmp(method, "agentimpact") == 0 ||
-           strcmp(method, "agentcontracts") == 0 ||
-           strcmp(method, "agentbuild") == 0 ||
-           strcmp(method, "anchorstatus") == 0 ||
-           strcmp(method, "appprotocols") == 0 ||
-           strcmp(method, "agentinterface") == 0 ||
-           strcmp(method, "agentops") == 0 ||
-           strcmp(method, "statecatalog") == 0 ||
-           strcmp(method, "agentdeployguard") == 0;
+    return cli_static_agent_lookup(method) != NULL;
 }
 
 static int cli_static_agent_result_exit_code(const char *method,
@@ -909,6 +939,13 @@ static int cli_run_static_agent_method(const char *method,
                                        const char **params_storage,
                                        int nparams)
 {
+    const struct cli_static_agent_route *route =
+        cli_static_agent_lookup(method);
+    if (!route) {
+        fprintf(stderr, "unknown static agent method\n");
+        return 1;
+    }
+
     struct json_value params, result;
     if (!rpc_convert_values(method, params_storage, (size_t)nparams, &params)) {
         fprintf(stderr, "Bad parameters\n");
@@ -917,32 +954,7 @@ static int cli_run_static_agent_method(const char *method,
     }
 
     json_init(&result);
-    bool ok = false;
-    if (strcmp(method, "agentmap") == 0) {
-        ok = rpc_agent_map(&params, false, &result);
-    } else if (strcmp(method, "agentlanes") == 0) {
-        ok = rpc_agent_lanes(&params, false, &result);
-    } else if (strcmp(method, "agentliveness") == 0) {
-        ok = rpc_agent_liveness(&params, false, &result);
-    } else if (strcmp(method, "agentimpact") == 0) {
-        ok = rpc_agent_impact(&params, false, &result);
-    } else if (strcmp(method, "agentcontracts") == 0) {
-        ok = rpc_agent_contracts(&params, false, &result);
-    } else if (strcmp(method, "agentbuild") == 0) {
-        ok = rpc_agent_build(&params, false, &result);
-    } else if (strcmp(method, "anchorstatus") == 0) {
-        ok = rpc_agent_anchor_status(&params, false, &result);
-    } else if (strcmp(method, "appprotocols") == 0) {
-        ok = rpc_app_protocols(&params, false, &result);
-    } else if (strcmp(method, "agentinterface") == 0) {
-        ok = rpc_agent_interface(&params, false, &result);
-    } else if (strcmp(method, "agentops") == 0) {
-        ok = rpc_agent_ops(&params, false, &result);
-    } else if (strcmp(method, "statecatalog") == 0) {
-        ok = diag_rpc_statecatalog(&params, false, &result);
-    } else if (strcmp(method, "agentdeployguard") == 0) {
-        ok = rpc_agent_deploy_guard(&params, false, &result);
-    }
+    bool ok = route->handler(&params, false, &result);
 
     char out[131072];
     size_t need = ok ? json_write(&result, out, sizeof(out)) : 0;

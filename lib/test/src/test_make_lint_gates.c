@@ -3018,45 +3018,38 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(main_buf, "strcmp(method, \"--agent\")") != NULL);
         ASSERT(strstr(main_buf, "strcmp(argv[i], \"--agent\")") != NULL);
         ASSERT(strstr(main_buf, "cli_static_agent_method") != NULL);
+        ASSERT(strstr(main_buf, "struct cli_static_agent_route") != NULL);
+        ASSERT(strstr(main_buf, "g_cli_static_agent_routes") != NULL);
+        ASSERT(strstr(main_buf, "cli_static_agent_lookup") != NULL);
+        ASSERT(strstr(main_buf, "agent_contract_lookup(route->method)")
+               != NULL);
         ASSERT(strstr(main_buf, "cli_run_static_agent_method") != NULL);
         ASSERT(strstr(main_buf, "cli_static_agent_result_exit_code") != NULL);
         ASSERT(strstr(main_buf, "json_get(result, \"exit_code\")") != NULL);
         ASSERT(strstr(main_buf, "code < 0 || code > 125") != NULL);
-        ASSERT(strstr(main_buf, "strcmp(method, \"agentinterface\")") != NULL);
-        ASSERT(strstr(main_buf, "strcmp(method, \"agentops\")") != NULL);
-        ASSERT(strstr(main_buf, "strcmp(method, \"agentliveness\")")
+        ASSERT(strstr(main_buf, "\"agentmap\", rpc_agent_map") != NULL);
+        ASSERT(strstr(main_buf, "\"agentlanes\", rpc_agent_lanes") != NULL);
+        ASSERT(strstr(main_buf, "\"agentliveness\", rpc_agent_liveness")
                != NULL);
-        ASSERT(strstr(main_buf, "strcmp(method, \"anchorstatus\")")
+        ASSERT(strstr(main_buf, "\"agentimpact\", rpc_agent_impact") != NULL);
+        ASSERT(strstr(main_buf, "\"agentcontracts\", rpc_agent_contracts")
                != NULL);
-        ASSERT(strstr(main_buf, "strcmp(method, \"appprotocols\")")
+        ASSERT(strstr(main_buf, "\"agentbuild\", rpc_agent_build") != NULL);
+        ASSERT(strstr(main_buf, "\"anchorstatus\", rpc_agent_anchor_status")
                != NULL);
-        ASSERT(strstr(main_buf, "strcmp(method, \"statecatalog\")") != NULL);
-        ASSERT(strstr(main_buf, "strcmp(method, \"agentlanes\")") != NULL);
+        ASSERT(strstr(main_buf, "\"appprotocols\", rpc_app_protocols")
+               != NULL);
+        ASSERT(strstr(main_buf, "\"agentinterface\", rpc_agent_interface")
+               != NULL);
+        ASSERT(strstr(main_buf, "\"agentops\", rpc_agent_ops") != NULL);
+        ASSERT(strstr(main_buf, "\"statecatalog\", diag_rpc_statecatalog")
+               != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"agentdeployguard\")")
                != NULL);
         ASSERT(strstr(main_buf,
-                      "rpc_agent_interface(&params, false, &result)")
+                      "\"agentdeployguard\", rpc_agent_deploy_guard")
                != NULL);
-        ASSERT(strstr(main_buf,
-                      "rpc_agent_ops(&params, false, &result)")
-               != NULL);
-        ASSERT(strstr(main_buf,
-                      "diag_rpc_statecatalog(&params, false, &result)")
-               != NULL);
-        ASSERT(strstr(main_buf,
-                      "rpc_agent_lanes(&params, false, &result)")
-               != NULL);
-        ASSERT(strstr(main_buf,
-                      "rpc_agent_liveness(&params, false, &result)")
-               != NULL);
-        ASSERT(strstr(main_buf,
-                      "rpc_agent_deploy_guard(&params, false, &result)")
-               != NULL);
-        ASSERT(strstr(main_buf,
-                      "rpc_agent_anchor_status(&params, false, &result)")
-               != NULL);
-        ASSERT(strstr(main_buf,
-                      "rpc_app_protocols(&params, false, &result)")
+        ASSERT(strstr(main_buf, "route->handler(&params, false, &result)")
                != NULL);
         char *static_agent_dispatch =
             strstr(main_buf, "if (cli_static_agent_method(method))");
@@ -3561,6 +3554,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "zcl_agent_liveness") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.agent_liveness.v1") != NULL);
         ASSERT(strstr(agent_doc_buf, "agent_contracts.def") != NULL);
+        ASSERT(strstr(agent_doc_buf, "g_cli_static_agent_routes") != NULL);
+        ASSERT(strstr(agent_doc_buf,
+                      "Do not add a second\nallowlist") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 getmirrorstatus") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_mirror_status") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.agent_runtime_services.v1")
