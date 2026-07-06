@@ -3743,10 +3743,19 @@ int test_syncdiag_rpc(void)
                                          "schema_registry_source")),
                    "agent_contract_schema_registry.c") == 0;
         ok = ok && contract_summary &&
+            strcmp(json_get_str(json_get(contract_summary,
+                                         "review_registry_source")),
+                   "agent_contract_review_registry.c") == 0;
+        ok = ok && contract_summary &&
             json_get_int(json_get(contract_summary,
                                   "schema_surface_count")) ==
                 (int64_t)agent_contract_schema_surface_count();
+        ok = ok && contract_summary &&
+            json_get_int(json_get(contract_summary,
+                                  "review_surface_count")) ==
+                (int64_t)agent_contract_review_surface_total_count();
         ok = ok && agent_contract_schema_surface_count() >= 17;
+        ok = ok && agent_contract_review_surface_total_count() >= 5;
         ok = ok && contract_agentops &&
             strcmp(json_get_str(json_get(contract_agentops, "schema")),
                    "zcl.agent_ops.v1") == 0;
@@ -4064,6 +4073,11 @@ int test_syncdiag_rpc(void)
             agent_contract_field_surface_count("agentops.first_call") == 8;
         ok = ok &&
             agent_contract_field_surface_count("missing.surface") == 0;
+        ok = ok &&
+            agent_contract_review_surface_count(
+                "agentops.architecture_review") == 5;
+        ok = ok &&
+            agent_contract_review_surface_count("missing.surface") == 0;
         ok = ok && ops_gaps && json_size(ops_gaps) == 3;
         ok = ok && find_object_with_str(ops_gaps, "name",
                                         "runtime_identity_everywhere") != NULL;
@@ -4083,7 +4097,16 @@ int test_syncdiag_rpc(void)
             != NULL;
         ok = ok && find_object_with_str(ops_work, "name",
                                         "dry_agent_contract_registry") == NULL;
-        ok = ok && json_get(&ops, "architecture_review") != NULL;
+        const struct json_value *ops_review =
+            json_get(&ops, "architecture_review");
+        ok = ok && ops_review != NULL;
+        ok = ok && ops_review &&
+            strstr(json_get_str(json_get(ops_review, "architecture_center")),
+                   "progress.kv fact log") != NULL;
+        ok = ok && ops_review &&
+            strcmp(json_get_str(json_get(ops_review, "preferred_payload")),
+                   "versioned JSON with direct decision fields and explicit drill-down commands")
+                == 0;
         ok = ok && ops_availability &&
             strcmp(json_get_str(json_get(ops_availability, "schema")),
                    "zcl.agent_runtime_availability.v1") == 0;

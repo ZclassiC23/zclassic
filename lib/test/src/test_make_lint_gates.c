@@ -2814,6 +2814,7 @@ static int t_native_agent_api_contract(void)
     char *agent_operator_buf = NULL;
     char *agent_ctrl_buf = NULL;
     char *agent_registry_buf = NULL;
+    char *agent_review_registry_buf = NULL;
     char *agent_schema_registry_buf = NULL;
     char *agent_contracts_buf = NULL;
     char *agent_contracts_def_buf = NULL;
@@ -2843,6 +2844,7 @@ static int t_native_agent_api_contract(void)
         char agent_operator_path[PATH_MAX];
         char agent_ctrl_path[PATH_MAX];
         char agent_registry_path[PATH_MAX];
+        char agent_review_registry_path[PATH_MAX];
         char agent_schema_registry_path[PATH_MAX];
         char agent_contracts_path[PATH_MAX];
         char agent_contracts_def_path[PATH_MAX];
@@ -2880,6 +2882,10 @@ static int t_native_agent_api_contract(void)
                          "app/controllers/src/agent_controller.c") == 0);
         ASSERT(repo_path(agent_registry_path, sizeof(agent_registry_path),
                          "app/controllers/src/agent_contract_registry.c")
+               == 0);
+        ASSERT(repo_path(agent_review_registry_path,
+                         sizeof(agent_review_registry_path),
+                         "app/controllers/src/agent_contract_review_registry.c")
                == 0);
         ASSERT(repo_path(agent_schema_registry_path,
                          sizeof(agent_schema_registry_path),
@@ -2950,6 +2956,8 @@ static int t_native_agent_api_contract(void)
                == 0);
         ASSERT(read_entire_file(agent_ctrl_path, &agent_ctrl_buf) == 0);
         ASSERT(read_entire_file(agent_registry_path, &agent_registry_buf) == 0);
+        ASSERT(read_entire_file(agent_review_registry_path,
+                                &agent_review_registry_buf) == 0);
         ASSERT(read_entire_file(agent_schema_registry_path,
                                 &agent_schema_registry_buf) == 0);
         ASSERT(read_entire_file(agent_contracts_path,
@@ -3358,6 +3366,20 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ops_buf,
                       "agent_push_contract_work_surface_json(&work")
                != NULL);
+        ASSERT(strstr(agent_ops_buf,
+                      "agent_push_contract_review_surface_json(&review")
+               != NULL);
+        ASSERT(strstr(agent_ops_buf, "main_dry_problem") == NULL);
+        ASSERT(strstr(agent_review_registry_buf,
+                      "agentops.architecture_review") != NULL);
+        ASSERT(strstr(agent_review_registry_buf,
+                      "g_agent_review_surfaces") != NULL);
+        ASSERT(strstr(agent_review_registry_buf,
+                      "agent_contract_review_surface_count") != NULL);
+        ASSERT(strstr(agent_review_registry_buf,
+                      "agent_push_contract_review_surface_json") != NULL);
+        ASSERT(strstr(agent_review_registry_buf, "main_dry_problem")
+               != NULL);
         ASSERT(strstr(agent_ops_buf, "agentops.api_gaps") != NULL);
         ASSERT(strstr(agent_ops_buf, "agentops.top_next_work") != NULL);
         ASSERT(strstr(agent_ops_buf,
@@ -3440,6 +3462,10 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_registry_buf, "mcp_declared_count") != NULL);
         ASSERT(strstr(agent_registry_buf, "rest_declared_count") != NULL);
         ASSERT(strstr(agent_registry_buf, "field_surface_count") != NULL);
+        ASSERT(strstr(agent_registry_buf, "review_surface_count") != NULL);
+        ASSERT(strstr(agent_registry_buf, "review_registry_source") != NULL);
+        ASSERT(strstr(agent_registry_buf,
+                      "agent_contract_review_surface_total_count") != NULL);
         ASSERT(strstr(agent_registry_buf,
                       "agentmap.commands.core") != NULL);
         ASSERT(strstr(agent_registry_buf,
@@ -3796,6 +3822,7 @@ static int t_native_agent_api_contract(void)
     free(agent_operator_buf);
     free(agent_ctrl_buf);
     free(agent_registry_buf);
+    free(agent_review_registry_buf);
     free(agent_schema_registry_buf);
     free(agent_contracts_buf);
     free(agent_contracts_def_buf);

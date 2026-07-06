@@ -179,10 +179,13 @@ controller `k_routes[]` arrays.
   `g_agent_field_surfaces`, `g_agent_command_surfaces`,
   `g_agent_work_surfaces`) and
   `agent_contract_schema_registry.c` (`g_agent_schema_surfaces`);
+  architecture-review objects live in
+  `agent_contract_review_registry.c` (`g_agent_review_surfaces`);
   keep controller code focused on assembling live state, not owning ranked
   planning tables. `agentcontracts.contract_summary` reports registry-derived
-  native/MCP/REST and schema-surface counts plus separate contract/schema
-  registry source fields, and MCP tests verify declared tools are registered.
+  native/MCP/REST, review-surface, and schema-surface counts plus separate
+  contract/review/schema registry source fields, and MCP tests verify declared
+  tools are registered.
 - `zclassic23 agentlanes` / `zcl_agent_lanes` — native canonical/soak/dev lane
   topology, `zcl.operator_deployment_safety.v1` policy, and
   `zcl.operator_lane_recovery.v1` boot-recovery sentinel state. Use this before

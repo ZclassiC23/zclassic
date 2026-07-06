@@ -268,17 +268,20 @@ MCP/native/REST. Registry-backed command groupings for `agentmap` and
 telemetry live in `app/controllers/src/agent_contract_registry.c`
 (`g_agent_command_surfaces`), while registry-backed nested schema rows live in
 `app/controllers/src/agent_contract_schema_registry.c`
-(`g_agent_schema_surfaces`); keep only composite/local commands in the
+(`g_agent_schema_surfaces`). Registry-backed review objects such as
+`agentops.architecture_review` live in
+`app/controllers/src/agent_contract_review_registry.c`
+(`g_agent_review_surfaces`); keep only composite/local commands in the
 controller that assembles the response. Ranked `agentops` planning lists
 (`api_gaps` and `top_next_work`) live beside them in `g_agent_work_surfaces`
-so the compact command center is data-owned by the registry, not by response
+so the compact command center is data-owned by registries, not by response
 assembly code. `agentcontracts` also exposes `contract_summary`, generated
 from the same registries, so agents can read native/MCP/REST declaration
-counts and nested schema-surface counts without scanning the full contract
+counts plus review/schema-surface counts without scanning the full contract
 array. `registry_source` names the contract/command registry and
-`schema_registry_source` names the nested schema registry, so API clients can
-pin reviews to the owning C table. MCP tests verify every non-empty registry
-`mcp` tool resolves in the live router.
+`review_registry_source` / `schema_registry_source` name the review and nested
+schema registries, so API clients can pin reviews to the owning C tables. MCP
+tests verify every non-empty registry `mcp` tool resolves in the live router.
 
 ## Command Center
 

@@ -78,16 +78,8 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
 
     json_init(&review);
     json_set_object(&review);
-    json_push_kv_str(&review, "architecture_center",
-                     "progress.kv fact log plus reducer stages; projections and API are derived views");
-    json_push_kv_str(&review, "best_existing_primitive",
-                     "diagnostics_registry + zcl_state: one table maps subsystem names to C dumpers");
-    json_push_kv_str(&review, "main_dry_problem",
-                     "native CLI, live RPC, MCP, REST, and helper scripts still expose overlapping shapes");
-    json_push_kv_str(&review, "api_direction",
-                     "one C-owned JSON builder per contract; transports proxy it without reshaping");
-    json_push_kv_str(&review, "preferred_payload",
-                     "versioned JSON with direct decision fields and explicit drill-down commands");
+    agent_push_contract_review_surface_json(&review,
+                                            "agentops.architecture_review");
     json_push_kv(result, "architecture_review", &review);
     json_free(&review);
 

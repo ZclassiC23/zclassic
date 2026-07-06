@@ -382,10 +382,14 @@ void agent_push_contract_summary_json(struct json_value *out,
                      (int64_t)g_agent_field_surface_count);
     json_push_kv_int(&obj, "work_surface_count",
                      (int64_t)g_agent_work_surface_count);
+    json_push_kv_int(&obj, "review_surface_count",
+                     (int64_t)agent_contract_review_surface_total_count());
     json_push_kv_int(&obj, "schema_surface_count",
                      (int64_t)agent_contract_schema_surface_count());
     json_push_kv_str(&obj, "registry_source",
                      "agent_contracts.def + agent_contract_registry.c");
+    json_push_kv_str(&obj, "review_registry_source",
+                     "agent_contract_review_registry.c");
     json_push_kv_str(&obj, "schema_registry_source",
                      "agent_contract_schema_registry.c");
     json_push_kv_str(
