@@ -26,6 +26,7 @@ static void api_rest_index_aliases_json(struct json_value *aliases)
     json_push_kv_str(aliases, "node", "/api/v1/node");
     json_push_kv_str(aliases, "node_summary", "/api/v1/node/summary");
     json_push_kv_str(aliases, "status", "/api/v1/status");
+    json_push_kv_str(aliases, "protocols", "/api/v1/protocols");
     json_push_kv_str(aliases, "zslp_tokens", "/api/v1/zslp/tokens");
     json_push_kv_str(aliases, "names_show", "/api/v1/names/{name}");
     json_push_kv_str(aliases, "legacy_name_show", "/api/v1/name/{name}");
@@ -106,6 +107,9 @@ static void api_rest_index_resources_json(struct json_value *resources)
                                  "/api/v1/hodl", "", false);
     api_rest_index_push_resource(resources, "factoids",
                                  "/api/v1/factoids", "", false);
+    api_rest_index_push_resource(resources, "protocols",
+                                 "/api/v1/protocols",
+                                 "/api/v1/protocols/{name}", false);
     api_rest_index_push_resource(resources, "zslp_tokens",
                                  "/api/v1/zslp/tokens",
                                  "/api/v1/zslp/tokens/{token_id}", false);

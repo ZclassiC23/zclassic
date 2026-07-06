@@ -46,6 +46,10 @@ extern struct api_rpc_backend g_api_rpc;
 #define ZCL_REST_OPENAPI_SCHEMA "zcl.openapi.v1"
 #define ZCL_REST_ERROR_SCHEMA "zcl.rest_error.v1"
 #define ZCL_REST_ROUTE_CONTRACT_SCHEMA "zcl.rest_route_contract.v1"
+#define ZCL_APP_PROTOCOL_CONTRACT_SCHEMA \
+    "zcl.application_protocol_contract.v1"
+#define ZCL_APP_PROTOCOLS_INDEX_SCHEMA \
+    "zcl.application_protocols.index.v1"
 #define ZCL_PUBLIC_STATUS_SCHEMA "zcl.public_status.v1"
 #define ZCL_MILESTONE_STATUS_SCHEMA "zcl.milestone_status.v1"
 #define ZCL_REFOLD_STATUS_SCHEMA "zcl.refold_status.v1"
@@ -101,9 +105,15 @@ struct api_app_protocol_contract {
     const char *name;
     const char *status;
     const char *layer;
+    const char *base_layer;
+    const char *family;
     const char *anchor;
+    const char *anchor_kind;
     const char *rest_resource;
     const char *read_model;
+    const char *crud_capabilities_csv;
+    const char *construction_status;
+    const char *mutation_authority;
     const char *write_semantics;
     const char *consensus_boundary;
 };
@@ -124,6 +134,10 @@ api_app_protocol_lookup(const char *name);
 const struct api_app_protocol_contract *
 api_app_protocol_for_resource(const char *resource);
 void api_app_protocols_json(struct json_value *protocols);
+void api_app_protocol_crud_json(const struct api_app_protocol_contract *p,
+                                struct json_value *crud);
+bool api_app_protocols_index_json(struct json_value *out);
+bool api_app_protocol_show_json(const char *name, struct json_value *out);
 void api_app_protocol_push_openapi_extensions(
     const struct json_value *contract,
     struct json_value *operation);

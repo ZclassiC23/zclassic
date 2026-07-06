@@ -336,10 +336,23 @@ static void api_contract_push(struct json_value *out, const char *method,
                          "zcl.supply_legacy_number.v1");
     if (protocol) {
         json_push_kv_str(&item, "layer", protocol->layer);
+        json_push_kv_str(&item, "base_layer", protocol->base_layer);
         json_push_kv_str(&item, "application_protocol", protocol->name);
         json_push_kv_str(&item, "protocol_status", protocol->status);
+        json_push_kv_str(&item, "protocol_family", protocol->family);
         json_push_kv_str(&item, "source_anchor", protocol->anchor);
+        json_push_kv_str(&item, "protocol_anchor_kind",
+                         protocol->anchor_kind);
         json_push_kv_str(&item, "read_model", protocol->read_model);
+        struct json_value protocol_crud;
+        json_init(&protocol_crud);
+        api_app_protocol_crud_json(protocol, &protocol_crud);
+        json_push_kv(&item, "protocol_crud", &protocol_crud);
+        json_free(&protocol_crud);
+        json_push_kv_str(&item, "protocol_construction_status",
+                         protocol->construction_status);
+        json_push_kv_str(&item, "mutation_authority",
+                         protocol->mutation_authority);
         json_push_kv_str(&item, "write_semantics",
                          protocol->write_semantics);
         json_push_kv_str(&item, "consensus_boundary",

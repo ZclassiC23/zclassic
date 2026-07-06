@@ -695,6 +695,9 @@ int test_api(void)
                           "/api") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "first_call")),
                           "/api/v1/agent") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "aliases"),
+                                                "protocols")),
+                          "/api/v1/protocols") == 0;
         ok = ok && json_get(json_get(&root, "crud"), "read_collection") != NULL;
         ok = ok && json_get(json_get(&root, "crud"), "read_item") != NULL;
         ok = ok && json_get(json_get(&root, "crud"),
@@ -735,11 +738,31 @@ int test_api(void)
         ok = ok && protocols && protocols->type == JSON_ARR &&
              json_size(protocols) >= 6;
         ok = ok && zslp_protocol &&
+             strcmp(json_get_str(json_get(zslp_protocol, "schema")),
+                    "zcl.application_protocol_contract.v1") == 0;
+        ok = ok && zslp_protocol &&
              strcmp(json_get_str(json_get(zslp_protocol, "status")),
                     "active") == 0;
         ok = ok && zslp_protocol &&
+             strcmp(json_get_str(json_get(zslp_protocol, "base_layer")),
+                    "zclassic_l1") == 0;
+        ok = ok && zslp_protocol &&
+             strcmp(json_get_str(json_get(zslp_protocol, "family")),
+                    "token") == 0;
+        ok = ok && zslp_protocol &&
+             strcmp(json_get_str(json_get(zslp_protocol, "anchor_kind")),
+                    "op_return") == 0;
+        ok = ok && zslp_protocol &&
              strcmp(json_get_str(json_get(zslp_protocol, "rest_resource")),
                     "/api/v1/zslp/tokens") == 0;
+        ok = ok && zslp_protocol &&
+             api_test_array_has_str(json_get(zslp_protocol,
+                                             "crud_capabilities"),
+                                    "read_item");
+        ok = ok && zslp_protocol &&
+             strcmp(json_get_str(json_get(zslp_protocol,
+                                          "construction_status")),
+                    "transaction_builders_active") == 0;
         ok = ok && zslp_protocol &&
              strcmp(json_get_str(json_get(zslp_protocol,
                                           "consensus_boundary")),
@@ -755,6 +778,13 @@ int test_api(void)
              strcmp(json_get_str(json_get(script_protocol, "status")),
                     "in_progress") == 0;
         ok = ok && script_protocol &&
+             strcmp(json_get_str(json_get(script_protocol, "anchor_kind")),
+                    "standard_script") == 0;
+        ok = ok && script_protocol &&
+             strcmp(json_get_str(json_get(script_protocol,
+                                          "mutation_authority")),
+                    "operator_wallet_transaction") == 0;
+        ok = ok && script_protocol &&
              strstr(json_get_str(json_get(script_protocol, "anchor")),
                     "HTLC atomic swaps") != NULL;
         ok = ok && swap_protocol &&
@@ -763,7 +793,15 @@ int test_api(void)
         const struct json_value *resources = json_get(&root, "resources");
         const struct json_value *zslp_resource =
             api_test_find_named(resources, "zslp_tokens");
+        const struct json_value *protocols_resource =
+            api_test_find_named(resources, "protocols");
         ok = ok && resources && json_size(resources) >= 4;
+        ok = ok && protocols_resource &&
+             strcmp(json_get_str(json_get(protocols_resource, "collection")),
+                    "/api/v1/protocols") == 0;
+        ok = ok && protocols_resource &&
+             strcmp(json_get_str(json_get(protocols_resource, "item")),
+                    "/api/v1/protocols/{name}") == 0;
         ok = ok && zslp_resource &&
              strcmp(json_get_str(json_get(zslp_resource, "collection")),
                     "/api/v1/zslp/tokens") == 0;
@@ -778,6 +816,10 @@ int test_api(void)
             api_test_find_contract(routes, "/api/v1/wallet");
         const struct json_value *zslp =
             api_test_find_contract(routes, "/api/v1/zslp/tokens");
+        const struct json_value *protocols_route =
+            api_test_find_contract(routes, "/api/v1/protocols");
+        const struct json_value *protocol_show =
+            api_test_find_contract(routes, "/api/v1/protocols/{name}");
         const struct json_value *names =
             api_test_find_contract(routes, "/api/v1/names/{name}");
         const struct json_value *legacy_name =
@@ -866,11 +908,40 @@ int test_api(void)
                                     "application_protocol")),
                     "zslp") == 0;
         ok = ok && zslp &&
+             strcmp(json_get_str(json_get(zslp, "base_layer")),
+                    "zclassic_l1") == 0;
+        ok = ok && zslp &&
+             strcmp(json_get_str(json_get(zslp, "protocol_family")),
+                    "token") == 0;
+        ok = ok && zslp &&
+             strcmp(json_get_str(json_get(zslp, "protocol_anchor_kind")),
+                    "op_return") == 0;
+        ok = ok && zslp &&
+             api_test_array_has_str(json_get(zslp, "protocol_crud"),
+                                    "read_collection");
+        ok = ok && zslp &&
+             strcmp(json_get_str(json_get(zslp,
+                                    "protocol_construction_status")),
+                    "transaction_builders_active") == 0;
+        ok = ok && zslp &&
+             strcmp(json_get_str(json_get(zslp,
+                                    "mutation_authority")),
+                    "operator_wallet_transaction") == 0;
+        ok = ok && zslp &&
              strcmp(json_get_str(json_get(zslp, "layer")),
                     "zclassic23_application_layer") == 0;
         ok = ok && zslp &&
              strcmp(json_get_str(json_get(zslp, "source_anchor")),
                     "OP_RETURN token transactions") == 0;
+        ok = ok && protocols_route &&
+             strcmp(json_get_str(json_get(protocols_route,
+                                    "response_schema")),
+                    "zcl.application_protocols.index.v1") == 0;
+        ok = ok && protocol_show &&
+             strcmp(json_get_str(json_get(protocol_show, "crud_name")),
+                    "read_item") == 0;
+        ok = ok && protocol_show &&
+             api_test_contract_has_id_param(protocol_show, "name");
         ok = ok && events && api_test_contract_has_query(events, "limit");
         ok = ok && events && api_test_contract_has_query(events, "type");
         ok = ok && events && strcmp(json_get_str(json_get(events,
@@ -970,6 +1041,66 @@ int test_api(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("api: protocol registry endpoints expose overlay contracts... ");
+    {
+        static uint8_t protocols_resp[262144];
+        size_t n = api_handle_request("GET", "/api/v1/protocols", NULL, 0,
+                                      protocols_resp, sizeof(protocols_resp));
+        const char *body = api_test_body(protocols_resp, n,
+                                         sizeof(protocols_resp));
+        struct json_value root;
+        json_init(&root);
+        bool ok = n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.application_protocols.index.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "base_layer")),
+                          "zclassic_l1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "service_layer")),
+                          "zclassic23_application_layer") == 0;
+        const struct json_value *protocols = json_get(&root, "protocols");
+        ok = ok && protocols && json_get_int(json_get(&root,
+                          "protocol_count")) == (int64_t)json_size(protocols);
+        const struct json_value *zslp =
+            api_test_find_named(protocols, "zslp");
+        ok = ok && zslp &&
+             api_test_array_has_str(json_get(zslp, "crud_capabilities"),
+                                    "read_collection");
+        ok = ok && zslp &&
+             strcmp(json_get_str(json_get(zslp, "anchor_kind")),
+                    "op_return") == 0;
+        json_free(&root);
+
+        n = api_handle_request("GET", "/api/v1/protocols/script_contracts",
+                               NULL, 0, protocols_resp,
+                               sizeof(protocols_resp));
+        body = api_test_body(protocols_resp, n, sizeof(protocols_resp));
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.application_protocol_contract.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "name")),
+                          "script_contracts") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "anchor_kind")),
+                          "standard_script") == 0;
+        ok = ok && api_test_array_has_str(json_get(&root,
+                          "crud_capabilities"), "construct_contract");
+        ok = ok && strcmp(json_get_str(json_get(&root,
+                          "construction_status")),
+                          "htlc_builders_active_settlement_in_progress") == 0;
+        json_free(&root);
+
+        n = api_handle_request("GET", "/api/v1/protocols/not_real",
+                               NULL, 0, protocols_resp,
+                               sizeof(protocols_resp));
+        protocols_resp[n < sizeof(protocols_resp) ? n :
+                       sizeof(protocols_resp) - 1] = '\0';
+        ok = ok && strstr((char *)protocols_resp,
+                          "HTTP/1.1 404 Not Found") != NULL;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("api: OpenAPI document is generated from route contracts... ");
     {
         static uint8_t openapi_resp[262144];
@@ -1030,6 +1161,10 @@ int test_api(void)
             api_test_openapi_get(&root, "/api/v1/events");
         const struct json_value *zslp =
             api_test_openapi_get(&root, "/api/v1/zslp/tokens");
+        const struct json_value *protocols =
+            api_test_openapi_get(&root, "/api/v1/protocols");
+        const struct json_value *protocol_show =
+            api_test_openapi_get(&root, "/api/v1/protocols/{name}");
         const struct json_value *names =
             api_test_openapi_get(&root, "/api/v1/names/{name}");
         const struct json_value *swap_chains =
@@ -1093,8 +1228,36 @@ int test_api(void)
              strcmp(json_get_str(json_get(zslp,
                     "x-zcl-application-protocol")), "zslp") == 0;
         ok = ok && zslp &&
+             strcmp(json_get_str(json_get(zslp, "x-zcl-base-layer")),
+                    "zclassic_l1") == 0;
+        ok = ok && zslp &&
              strcmp(json_get_str(json_get(zslp, "x-zcl-layer")),
                     "zclassic23_application_layer") == 0;
+        ok = ok && zslp &&
+             strcmp(json_get_str(json_get(zslp,
+                    "x-zcl-protocol-family")), "token") == 0;
+        ok = ok && zslp &&
+             strcmp(json_get_str(json_get(zslp,
+                    "x-zcl-protocol-anchor-kind")), "op_return") == 0;
+        ok = ok && zslp &&
+             api_test_array_has_str(json_get(zslp, "x-zcl-protocol-crud"),
+                                    "read_collection");
+        ok = ok && zslp &&
+             strcmp(json_get_str(json_get(zslp,
+                    "x-zcl-protocol-construction-status")),
+                    "transaction_builders_active") == 0;
+        ok = ok && zslp &&
+             strcmp(json_get_str(json_get(zslp,
+                    "x-zcl-mutation-authority")),
+                    "operator_wallet_transaction") == 0;
+        ok = ok && protocols &&
+             strcmp(json_get_str(json_get(protocols, "x-response-schema")),
+                    "zcl.application_protocols.index.v1") == 0;
+        ok = ok && protocol_show &&
+             strcmp(json_get_str(json_get(protocol_show, "x-crud-name")),
+                    "read_item") == 0;
+        ok = ok && protocol_show &&
+             api_test_openapi_has_param(protocol_show, "name", "path");
         ok = ok && names &&
              strcmp(json_get_str(json_get(names,
                     "x-zcl-application-protocol")), "znam") == 0;

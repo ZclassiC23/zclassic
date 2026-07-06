@@ -38,9 +38,13 @@ direct/drilldown command lists, and the REST API index's native/MCP command
 fields consume that table instead of maintaining separate lists.
 REST application-layer protocol metadata lives in
 `app/controllers/src/api_controller_app_protocols.c`; the same rows feed
-`layer_model`, route-contract `application_protocol` fields, and generated
-OpenAPI `x-zcl-application-protocol` extensions for ZSLP, ZNAM, market,
-messaging, and script-contract resources.
+`GET /api/v1/protocols`, `GET /api/v1/protocols/{name}`, `layer_model`,
+route-contract `application_protocol` fields, and generated OpenAPI
+`x-zcl-application-protocol` / protocol CRUD extensions for ZSLP, ZNAM,
+market, messaging, and script-contract resources. Treat this as the layer-2
+overlay catalog: ZCL remains the base layer; zclassic23 exposes versioned
+application services that read, index, or construct valid ZCL transactions
+without changing consensus rules.
 
 ## Preferred Interface
 

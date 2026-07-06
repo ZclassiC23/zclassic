@@ -107,6 +107,9 @@ static const struct api_json_resource_route k_api_json_resource_routes[] = {
       "zcl.latency.index.v1", "", "peer_projection", "", false },
     { "GET", "/api/games", "games", "index", api_gametypes,
       "zcl.games.index.v1", "", "static", "", false },
+    { "GET", "/api/protocols", "protocols", "index",
+      api_app_protocols_index_json, ZCL_APP_PROTOCOLS_INDEX_SCHEMA, "",
+      "static", "", false },
     { "GET", "/api/names", "names", "index", api_name_list,
       "zcl.names.index.v1", "", "znam_projection", "", false },
     { "GET", "/api/market", "market", "index", api_market_list,
@@ -134,6 +137,7 @@ enum api_dynamic_dispatch_kind {
     API_DYN_EVENTS_INDEX,
     API_DYN_FILE_SHOW,
     API_DYN_NAME_SHOW,
+    API_DYN_PROTOCOL_SHOW,
 };
 
 struct api_dynamic_resource_route {
@@ -195,6 +199,9 @@ static const struct api_dynamic_resource_route k_api_dynamic_resource_routes[] =
     { "GET", "/api/name/{name}", "names", "show", "zcl.names.show.v1",
       "", "znam_projection", "/api/v1/names/{name}", false,
       API_DYN_NAME_SHOW },
+    { "GET", "/api/protocols/{name}", "protocols", "show",
+      ZCL_APP_PROTOCOL_CONTRACT_SCHEMA, "", "static", "", false,
+      API_DYN_PROTOCOL_SHOW },
 };
 
 static size_t api_dynamic_resource_route_count_internal(void)
@@ -471,6 +478,18 @@ static size_t api_dynamic_route_dispatch(
         json_free(&jr);
         return api_json_error(response, response_max, JSON_404_HEADERS,
                               "Name not found");
+    }
+    case API_DYN_PROTOCOL_SHOW: {
+        struct json_value jr = {0};
+        if (api_app_protocol_show_json(param, &jr)) {
+            api_json_add_freshness(&jr, route->freshness, -1);
+            size_t n = api_json_ok(response, response_max, &jr);
+            json_free(&jr);
+            return n;
+        }
+        json_free(&jr);
+        return api_json_error(response, response_max, JSON_404_HEADERS,
+                              "Protocol not found");
     }
     }
 
