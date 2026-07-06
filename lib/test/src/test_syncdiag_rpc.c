@@ -2492,6 +2492,8 @@ int test_syncdiag_rpc(void)
             find_object_with_str(findings, "name", "chain_serving");
         const struct json_value *peer_finding =
             find_object_with_str(findings, "name", "peer_lifecycle");
+        const struct json_value *mirror_finding =
+            find_object_with_str(findings, "name", "mirror");
         const struct json_value *agent = json_get(&result, "agent");
         const struct json_value *height_contract =
             agent ? json_get(agent, "height_contract") : NULL;
@@ -2522,15 +2524,57 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "safe_next_action")),
                           "monitor_agent_and_liveness") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "mirror_status")),
+                          "healthy") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "mirror_severity")),
+                          "ok") == 0;
+        ok = ok && json_get_bool(json_get(&result,
+                                          "mirror_advisory_only"));
+        ok = ok && !json_get_bool(json_get(&result,
+                                           "mirror_operator_action_required"));
         ok = ok && chain_finding && strcmp(json_get_str(json_get(
             chain_finding, "severity")), "ok") == 0;
         ok = ok && peer_finding && strcmp(json_get_str(json_get(
             peer_finding, "severity")), "info") == 0;
+        ok = ok && mirror_finding && strcmp(json_get_str(json_get(
+            mirror_finding, "severity")), "ok") == 0;
         ok = ok && height_contract && json_get_bool(json_get(
             height_contract, "normal_lookahead"));
 
         json_free(&result);
 
+        mirror_stats.reachable = false;
+        legacy_mirror_sync_test_set_stats(&mirror_stats, &ms);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "agentdiagnose", &params,
+                                     &result);
+        findings = json_get(&result, "findings");
+        mirror_finding = find_object_with_str(findings, "name",
+                                              "mirror");
+        ok = ok && strcmp(json_get_str(json_get(&result, "verdict")),
+                          "healthy") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "safe_next_action")),
+                          "monitor_agent_and_liveness") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "mirror_status")),
+                          "observing") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "mirror_severity")),
+                          "info") == 0;
+        ok = ok && json_get_bool(json_get(&result,
+                                          "mirror_advisory_only"));
+        ok = ok && !json_get_bool(json_get(&result,
+                                           "mirror_operator_action_required"));
+        ok = ok && mirror_finding && strcmp(json_get_str(json_get(
+            mirror_finding, "severity")), "info") == 0;
+
+        json_free(&result);
+
+        mirror_stats.reachable = true;
+        legacy_mirror_sync_test_set_stats(&mirror_stats, &ms);
         peer_lifecycle_reset_for_test();
         struct p2p_node zigma_a;
         struct p2p_node zigma_b;
@@ -2598,6 +2642,46 @@ int test_syncdiag_rpc(void)
                                          "peer_material_group_count")) >= 1;
         ok = ok && peer_finding && strcmp(json_get_str(json_get(
             peer_finding, "severity")), "attention") == 0;
+
+        json_free(&result);
+
+        peer_lifecycle_reset_for_test();
+        memset(&mirror_stats, 0, sizeof(mirror_stats));
+        mirror_stats.enabled = true;
+        mirror_stats.running = true;
+        mirror_stats.reachable = true;
+        mirror_stats.legacy_height = target_height;
+        mirror_stats.legacy_headers = target_height;
+        mirror_stats.local_height = target_height;
+        mirror_stats.best_header_height = target_height;
+        mirror_stats.target_height = target_height;
+        snprintf(mirror_stats.last_blocker_id,
+                 sizeof(mirror_stats.last_blocker_id),
+                 "hash-disagreement");
+        mirror_stats.last_blocker_class = BLOCKER_TRANSIENT;
+        legacy_mirror_sync_test_set_stats(&mirror_stats, &ms);
+
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "agentdiagnose", &params,
+                                     &result);
+        findings = json_get(&result, "findings");
+        mirror_finding = find_object_with_str(findings, "name",
+                                              "mirror");
+        ok = ok && strcmp(json_get_str(json_get(&result, "verdict")),
+                          "attention_needed") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "safe_next_action")),
+                          "inspect_mirror_status") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "mirror_status")),
+                          "blocked") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "mirror_severity")),
+                          "attention") == 0;
+        ok = ok && json_get_bool(json_get(&result,
+                                          "mirror_operator_action_required"));
+        ok = ok && mirror_finding && strcmp(json_get_str(json_get(
+            mirror_finding, "severity")), "attention") == 0;
 
         json_free(&params);
         json_free(&result);

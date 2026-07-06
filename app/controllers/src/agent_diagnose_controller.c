@@ -176,12 +176,31 @@ static const char *diagnose_peer_next_action(int64_t peer_count,
     return "monitor getnetworkinfo peer_lifecycle";
 }
 
+static bool diagnose_mirror_status_unhealthy(const char *status)
+{
+    return status && status[0] && strcmp(status, "healthy") != 0 &&
+           strcmp(status, "ok") != 0;
+}
+
+static const char *diagnose_mirror_next_action(bool mirror_present,
+                                               bool mirror_attention,
+                                               bool mirror_info)
+{
+    if (mirror_attention)
+        return "inspect_mirror_status";
+    if (mirror_info)
+        return "monitor advisory mirror status";
+    if (!mirror_present)
+        return "mirror status skipped or unavailable";
+    return "mirror is advisory only";
+}
+
 static const char *diagnose_next_action(bool operator_needed,
                                         bool agent_healthy,
                                         bool chain_attention,
                                         int64_t peer_count,
                                         bool peer_attention,
-                                        bool mirror_unhealthy)
+                                        bool mirror_attention)
 {
     if (operator_needed)
         return "inspect_condition_engine_and_operator_latch";
@@ -191,7 +210,7 @@ static const char *diagnose_next_action(bool operator_needed,
         return "inspect_peer_lifecycle_incidents_and_bootstrapstatus";
     if (peer_attention)
         return "inspect_peer_lifecycle_incidents";
-    if (mirror_unhealthy)
+    if (mirror_attention)
         return "inspect_mirror_status";
     return "monitor_agent_and_liveness";
 }
@@ -305,9 +324,24 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     const char *mirror_status =
         mirror_contract ? json_get_str(json_get(mirror_contract, "status"))
                         : "";
-    bool mirror_unhealthy =
-        mirror_present && mirror_status && mirror_status[0] &&
-        strcmp(mirror_status, "healthy") != 0;
+    const struct json_value *mirror_operator_required_j =
+        mirror_contract ? json_get(mirror_contract,
+                                   "operator_action_required") : NULL;
+    bool mirror_operator_action_required =
+        mirror_operator_required_j &&
+        json_get_bool(mirror_operator_required_j);
+    bool mirror_advisory_only =
+        mirror_contract &&
+        json_get_bool(json_get(mirror_contract, "advisory_only"));
+    bool mirror_status_unhealthy =
+        diagnose_mirror_status_unhealthy(mirror_status);
+    bool mirror_attention =
+        mirror_operator_required_j ? mirror_operator_action_required :
+        (mirror_present && mirror_status_unhealthy);
+    bool mirror_info =
+        mirror_present && !mirror_attention && mirror_status_unhealthy;
+    const char *mirror_severity =
+        mirror_attention ? "attention" : (mirror_info ? "info" : "ok");
 
     json_push_kv_bool(result, "healthy", agent_healthy);
     json_push_kv_bool(result, "serving", serving);
@@ -329,15 +363,20 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     json_push_kv_str(result, "peer_incident_summary",
                      diagnose_peer_detail(peer_count, peer_incidents,
                                           material_peer_signals));
+    json_push_kv_str(result, "mirror_status", mirror_status);
+    json_push_kv_str(result, "mirror_severity", mirror_severity);
+    json_push_kv_bool(result, "mirror_advisory_only", mirror_advisory_only);
+    json_push_kv_bool(result, "mirror_operator_action_required",
+                      mirror_operator_action_required);
     json_push_kv_bool(result, "partial_result", partial);
 
     bool chain_attention =
         !chain_serving_ready || (!normal_lookahead && gap > 0);
     const char *next_action =
         diagnose_next_action(operator_needed, agent_healthy, chain_attention,
-                             peer_count, peer_attention, mirror_unhealthy);
+                             peer_count, peer_attention, mirror_attention);
     bool attention = operator_needed || !agent_healthy || chain_attention ||
-                     peer_attention || mirror_unhealthy;
+                     peer_attention || mirror_attention;
     json_push_kv_str(result, "verdict",
                      attention ? "attention_needed" : "healthy");
     json_push_kv_str(result, "safe_next_action", next_action);
@@ -359,11 +398,12 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
                                                     peer_incidents,
                                                     material_peer_signals));
     diagnose_push_finding(&findings, "mirror",
-                          mirror_unhealthy ? "attention" : "ok",
+                          mirror_severity,
                           mirror_present ? mirror_status
                                          : "mirror status skipped or unavailable",
-                          mirror_unhealthy ? "inspect getmirrorstatus"
-                                           : "mirror is advisory only");
+                          diagnose_mirror_next_action(mirror_present,
+                                                      mirror_attention,
+                                                      mirror_info));
     json_push_kv(result, "findings", &findings);
     json_free(&findings);
 
