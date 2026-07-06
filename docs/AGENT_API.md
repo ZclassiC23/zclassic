@@ -140,6 +140,16 @@ condition list, attempts, thresholds, and detail. The MCP
 booleans before any legacy `blocker` string. When `getmirrorstatus` includes
 `mirror_contract.blocker_active=false`, `zcl_operator_summary` suppresses stale
 top-level mirror blocker strings.
+
+`healthcheck` is also a first-call API, but its default shape is bounded:
+`zclassic23 healthcheck` returns `zcl.healthcheck.v1` with
+`result_completeness="bounded"`, `partial_result=true`, cached fast fields, and
+an embedded `agent` summary. Use `zclassic23 healthcheck full` or
+`{"mode":"full"}` only when a diagnostic needs the heavier chain evidence,
+condition-engine, and chain-advance dumps. Agents should rely on the explicit
+`result_completeness` field instead of assuming the default response is the
+full evidence tree.
+
 When `runtime_build.stale=true`, the node is still useful to observe but its
 behavior predates the expected deployed source; use the lane safety contract
 before deciding whether to deploy dev or request an operator-gated canonical

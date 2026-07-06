@@ -1011,7 +1011,8 @@ int test_syncdiag_rpc(void)
 
         struct json_value params;
         json_init(&params);
-        json_set_array(&params);
+        json_set_object(&params);
+        json_push_kv_bool(&params, "full", true);
 
         struct json_value result;
         json_init(&result);
@@ -1233,6 +1234,56 @@ int test_syncdiag_rpc(void)
         mirror_consensus_reset_for_test();
     }
 
+    printf("healthcheck: default is bounded first-call JSON... ");
+    {
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        register_event_rpc_commands(&tbl);
+        if (rpc_is_in_warmup(NULL, 0))
+            set_rpc_warmup_finished();
+
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+
+        struct json_value result;
+        json_init(&result);
+
+        bool executed = rpc_table_execute(&tbl, "healthcheck",
+                                          &params, &result);
+        const struct json_value *checks = json_get(&result, "checks");
+        const struct json_value *agent = json_get(&result, "agent");
+        const struct json_value *ca =
+            checks ? json_get(checks, "chain_advance") : NULL;
+        bool ok = executed && result.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
+                          "zcl.healthcheck.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                          "result_completeness")), "bounded") == 0;
+        ok = ok && json_get_bool(json_get(&result, "partial_result"));
+        ok = ok && json_get(&result, "full_mode_command") != NULL;
+        ok = ok && json_get(&result, "healthy") != NULL;
+        ok = ok && json_get(&result, "serving") != NULL;
+        ok = ok && checks && checks->type == JSON_OBJ;
+        ok = ok && json_get_bool(json_get(checks, "bounded"));
+        ok = ok && json_get_bool(json_get(checks, "partial_result"));
+        ok = ok && json_get(checks, "peer_count") != NULL;
+        ok = ok && json_get(checks, "log_head") != NULL;
+        ok = ok && json_get(checks, "chain_evidence") == NULL;
+        ok = ok && ca && ca->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(ca, "source")),
+                          "cached_first_call") == 0;
+        ok = ok && json_get(ca, "block_source_status_cached") != NULL;
+        ok = ok && agent && agent->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(agent, "schema")),
+                          "zcl.public_status.v1") == 0;
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+        json_free(&params);
+        json_free(&result);
+    }
+
     printf("api: native RPC returns versioned discovery document... ");
     {
         struct rpc_table tbl;
@@ -1339,6 +1390,7 @@ int test_syncdiag_rpc(void)
         alerts_shutdown();
         unsetenv("ZCL_ALERTS_DISABLE");
         unsetenv("ZCL_ALERT_WEBHOOK_URL");
+        event_log_init();
         alerts_init();
         alerts_reset();
         const char *long_blocker =
@@ -1654,6 +1706,7 @@ int test_syncdiag_rpc(void)
 
         alerts_shutdown();
         unsetenv("ZCL_ALERTS_DISABLE");
+        event_log_init();
         alerts_init();
         alerts_reset();
         legacy_mirror_sync_reset_for_test();
@@ -2174,6 +2227,8 @@ int test_syncdiag_rpc(void)
         const char *files[] = {
             "app/controllers/src/agent_controller.c",
             "app/controllers/src/agent_lanes_controller.c",
+            "app/controllers/src/event_healthcheck_controller.c",
+            "app/controllers/include/controllers/event_healthcheck_controller.h",
             "tools/mcp/controllers/ops_controller.c",
             "docs/AGENT_API.md",
         };
@@ -2197,7 +2252,7 @@ int test_syncdiag_rpc(void)
         ok = ok && result.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
                           "zcl.agent_impact.v1") == 0;
-        ok = ok && json_get_int(json_get(&result, "files_count")) == 4;
+        ok = ok && json_get_int(json_get(&result, "files_count")) == 6;
         ok = ok && json_get_bool(json_get(&result, "code_changed"));
         ok = ok && !json_get_bool(json_get(&result, "docs_only"));
         ok = ok && json_get_bool(json_get(&result, "agent_api_changed"));
@@ -2205,10 +2260,10 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(&result, "mapping_source")),
                           "app/controllers/include/controllers/agent_impact_rules.def") == 0;
         ok = ok && json_get_int(json_get(&result, "shared_rule_count")) > 0;
-        ok = ok && json_get_int(json_get(&result, "shared_rule_hits")) >= 4;
+        ok = ok && json_get_int(json_get(&result, "shared_rule_hits")) >= 6;
         ok = ok && json_get_int(json_get(
                      &result, "relevant_test_groups_count")) >= 3;
-        ok = ok && out_files && json_size(out_files) == 4;
+        ok = ok && out_files && json_size(out_files) == 6;
         ok = ok && json_array_has_str(groups, "syncdiag_rpc");
         ok = ok && json_array_has_str(groups, "mcp_controllers");
         ok = ok && json_array_has_str(groups, "make_lint_gates");
@@ -3508,7 +3563,8 @@ int test_syncdiag_rpc(void)
         if (rpc_is_in_warmup(NULL, 0))
             set_rpc_warmup_finished();
         json_init(&params);
-        json_set_array(&params);
+        json_set_object(&params);
+        json_push_kv_bool(&params, "full", true);
         json_init(&result);
         ok = ok && rpc_table_execute(&tbl, "healthcheck", &params, &result);
 

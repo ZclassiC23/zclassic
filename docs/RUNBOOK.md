@@ -17,21 +17,23 @@ For live operators, start with one read-only topology probe before deciding to
 restart anything:
 
 ```bash
-tools/z topology --json
+build/bin/zclassic23 agentops
+build/bin/zclassic23 agent
+build/bin/zclassic23 agentliveness
 ```
 
-The probe checks the intended split: `zclassic23` owns public P2P `8033` and
-RPC `18232`, while the local legacy `zclassicd` oracle stays on P2P `8034` and
-RPC `8232`. It also reports service state, restart counts, peer counts, the
-clean c23 user-agent, reducer `H*`, mirror lag, consensus authority, and any
-drift issues in one JSON object. A healthy live pair has `ok=true`,
-`issue_count=0`, mirror `lag<=1`, `consensus_authority=local_consensus_validation`,
-and zero mirror overrides.
+`agentops` is the no-jq command center: it names the preferred transport,
+diagnostic drill-down commands, lane safety, runtime availability, and the next
+architecture work. `agent` is the compact live health packet. `agentliveness`
+checks whether the lane, supervisor tree, and background quality lanes are
+actually alive.
 
-Do not restart on a single stale-looking field if this probe shows active
-services, handshaked peers, and bounded mirror lag. Drill down with `tools/z
-mirror --json`, `tools/z state reducer_frontier`, and `tools/z peerlife` only
-when `issues[]` names a concrete problem.
+Do not restart on a single stale-looking field if these probes show active
+services, handshaked peers, and bounded mirror lag. Drill down with
+`build/bin/zclassic23 getmirrorstatus`,
+`build/bin/zclassic23 dumpstate reducer_frontier`, and
+`build/bin/zclassic23 dumpstate peer_lifecycle` only when the first-call JSON
+names a concrete problem.
 
 ---
 
@@ -76,8 +78,9 @@ coins-cursor lag/overshoot as recoverable (tip publishes as `LOCAL_IMPORT`);
 
 **Diagnose, read-only:**
 ```bash
-build/bin/zcl-rpc healthcheck | jq '.checks.chain_advance'   # tip_advance_age + named blocker
-build/bin/zcl-rpc getblockcount                              # is it climbing?
+build/bin/zclassic23 agent
+build/bin/zclassic23 dumpstate chain_advance_coordinator
+build/bin/zclassic23 getblockcount
 ```
 
 If genuinely stuck, `zcl_state subsystem=chain_evidence` names the precise reason
@@ -97,7 +100,7 @@ same-height self-write; a different-height duplicate is still a hard rejection.
 ```bash
 df -h $(build/bin/zclassic23 -datadir 2>/dev/null || echo ~/.zclassic-c23)
 du -sh ~/.zclassic-c23/*
-build/bin/zcl-rpc healthcheck | jq '.disk'
+build/bin/zclassic23 dumpstate disk_monitor
 ```
 
 **Fix:**
@@ -120,7 +123,8 @@ build/bin/zcl-rpc healthcheck | jq '.disk'
 
 **Diagnose:**
 ```bash
-build/bin/zcl-rpc getpeerinfo | jq '.[] | {id, addr, banscore, subver}'
+build/bin/zclassic23 getpeerinfo
+build/bin/zclassic23 dumpstate peer_lifecycle
 # Via MCP:
 # zcl_peers → check banscore field
 # zcl_peer_report → offence breakdown by kind
@@ -134,7 +138,7 @@ build/bin/zcl-rpc getpeerinfo | jq '.[] | {id, addr, banscore, subver}'
    ```
 2. If legitimate peers are getting banned (false positive), check whether the node's chain is correct:
    ```bash
-   build/bin/zcl-rpc getblockchaininfo | jq '{blocks, bestblockhash}'
+   build/bin/zclassic23 getblockchaininfo
    # Compare height with a known-good explorer
    ```
 3. If your node is on a stale fork, see **Tip Regressed / Stuck on Wrong Fork**.
@@ -149,16 +153,15 @@ build/bin/zcl-rpc getpeerinfo | jq '.[] | {id, addr, banscore, subver}'
 completed legacy-compatible or ZClassic23 handshakes, or watchdog repeats
 `PEER_FLOOR`, `HEADER_STALL`, or `STATE_STUCK`.
 
-**Diagnose:** four read-only dumps cover the P2P/advance picture (pipe each
-through `jq` for the fields named in the Fix steps below):
+**Diagnose:** these read-only native JSON calls cover the P2P/advance picture:
 ```bash
-tools/z topology --json             # one-shot service/port/peer/mirror drift check
-build/bin/zcl-rpc getnetworkinfo    # connections, *_handshaked_connections, inbound_handshake_seen, legacy_compatible_peers, zclassic23_peers, localaddresses, listening
-build/bin/zcl-rpc getpeerinfo       # per-peer state, inbound, magicbean, zclassic23, startingheight, lifecycle
-build/bin/zcl-rpc healthcheck       # .checks.chain_advance
-build/bin/zcl-rpc dumpstate peer_lifecycle              # .state.summary + per-source attempted/connected/handshake_complete/timeout/rejected
-build/bin/zcl-rpc dumpstate chain_advance_coordinator   # initialized, has_*, authority, decision, selected_source, activation_allowed, sources[] trust/score/blocker
-build/bin/zcl-rpc dumpstate legacy_mirror               # process/RPC/oracle fields, lag, candidate_*, unsafe_overrides_total, last_error
+build/bin/zclassic23 agent
+build/bin/zclassic23 getnetworkinfo
+build/bin/zclassic23 getpeerinfo
+build/bin/zclassic23 healthcheck
+build/bin/zclassic23 dumpstate peer_lifecycle
+build/bin/zclassic23 dumpstate chain_advance_coordinator
+build/bin/zclassic23 dumpstate legacy_mirror
 ```
 
 **Fix:**
@@ -189,7 +192,7 @@ build/bin/zcl-rpc dumpstate legacy_mirror               # process/RPC/oracle fie
 
 **Diagnose:**
 ```bash
-build/bin/zcl-rpc healthcheck | jq '.wallet'
+build/bin/zclassic23 healthcheck full
 ls -la ~/.zclassic-c23/node.db
 # Check if backup destination is writable
 ls -la ~/.zclassic-c23/backups/
@@ -214,8 +217,8 @@ ls -la ~/.zclassic-c23/backups/
 
 **Diagnose:**
 ```bash
-build/bin/zcl-rpc getblockchaininfo | jq '{blocks, headers, bestblockhash, difficulty}'
-build/bin/zcl-rpc getpeerinfo | jq '.[0:3] | .[] | {addr, startingheight, synced_headers}'
+build/bin/zclassic23 getblockchaininfo
+build/bin/zclassic23 getpeerinfo
 # Compare your tip hash against a trusted peer or explorer
 # Via MCP: zcl_syncstate, zcl_dataintegrity
 ```
@@ -226,7 +229,7 @@ build/bin/zcl-rpc getpeerinfo | jq '.[0:3] | .[] | {addr, startingheight, synced
    - Small (<10 blocks): normal, recovers automatically. Watch `EV_REORG_RECOVERY_COMPLETE`.
    - Large (>10 blocks): investigate whether peers agree on the fork:
      ```bash
-     build/bin/zcl-rpc getpeerinfo | jq '.[] | {addr, startingheight}'
+     build/bin/zclassic23 getpeerinfo
      ```
 3. If stuck on a dead fork (no peers agree), see the nuclear option below — invalidateblock / reconsiderblock RPCs are exposed (also as MCP tools zcl_invalidateblock / zcl_reconsiderblock) — use them to drop a stale fork.
 4. Nuclear option (last resort): stop node, delete state, resync:
@@ -248,9 +251,10 @@ build/bin/zcl-rpc getpeerinfo | jq '.[0:3] | .[] | {addr, startingheight, synced
 
 **Diagnose:**
 ```bash
-build/bin/zcl-rpc getpeerinfo | jq 'length'        # Any peers?
-build/bin/zcl-rpc getpeerinfo | jq '.[] | .addr'    # Who's connected?
-build/bin/zcl-rpc getnetworkinfo | jq '{connections, localservices}'
+build/bin/zclassic23 agent
+build/bin/zclassic23 getpeerinfo
+build/bin/zclassic23 getnetworkinfo
+build/bin/zclassic23 dumpstate peer_lifecycle
 # Via MCP: zcl_syncstate, zcl_peers
 ```
 
@@ -354,7 +358,7 @@ cat /proc/$(pgrep zclassic23)/status | grep -E 'VmRSS|VmPeak'
 2. If UTXO cache is large: the node batches flushes; a restart forces a flush and reclaims memory.
 3. If mempool is bloated:
    ```bash
-   build/bin/zcl-rpc getmempoolinfo | jq '{size, bytes}'
+   build/bin/zclassic23 getmempoolinfo
    # Mempool has configurable limits — check environment
    ```
 
