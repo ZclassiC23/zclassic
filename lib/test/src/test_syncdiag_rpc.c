@@ -3223,6 +3223,16 @@ int test_syncdiag_rpc(void)
         ok = ok && commands && commands->type == JSON_ARR;
         ok = ok && find_object_with_str(commands, "name", "impact") != NULL;
         ok = ok && find_object_with_str(commands, "name", "build") != NULL;
+        const struct json_value *map_state =
+            find_object_with_str(commands, "method", "dumpstate");
+        const struct json_value *map_log =
+            find_object_with_str(commands, "method", "getnodelog");
+        ok = ok && map_state &&
+            strcmp(json_get_str(json_get(map_state, "mcp")),
+                   "zcl_state") == 0;
+        ok = ok && map_log &&
+            strcmp(json_get_str(json_get(map_log, "mcp")),
+                   "zcl_node_log") == 0;
         ok = ok && subsystems && subsystems->type == JSON_ARR;
         ok = ok && find_object_with_str(subsystems, "name", "fast_ci") != NULL;
         ok = ok && shim && shim->type == JSON_OBJ;
@@ -3338,6 +3348,10 @@ int test_syncdiag_rpc(void)
             find_object_with_str(contract_list, "method", "api");
         const struct json_value *contract_app_protocols =
             find_object_with_str(contract_list, "method", "appprotocols");
+        const struct json_value *contract_dumpstate =
+            find_object_with_str(contract_list, "method", "dumpstate");
+        const struct json_value *contract_getnodelog =
+            find_object_with_str(contract_list, "method", "getnodelog");
         ok = ok && contracts.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&contracts, "schema")),
                           "zcl.agent_contracts.v1") == 0;
@@ -3404,6 +3418,22 @@ int test_syncdiag_rpc(void)
             strcmp(json_get_str(json_get(contract_app_protocols,
                                          "api_mcp_field")),
                    "app_protocols_tool") == 0;
+        ok = ok && contract_dumpstate &&
+            strcmp(json_get_str(json_get(contract_dumpstate, "native")),
+                   "zclassic23 dumpstate <subsystem> [key]") == 0;
+        ok = ok && contract_dumpstate &&
+            strcmp(json_get_str(json_get(contract_dumpstate, "mcp")),
+                   "zcl_state") == 0;
+        ok = ok && contract_dumpstate &&
+            strcmp(json_get_str(json_get(contract_dumpstate,
+                                         "ops_name")),
+                   "state_drilldown") == 0;
+        ok = ok && contract_getnodelog &&
+            strcmp(json_get_str(json_get(contract_getnodelog, "native")),
+                   "zclassic23 getnodelog <pattern>") == 0;
+        ok = ok && contract_getnodelog &&
+            strcmp(json_get_str(json_get(contract_getnodelog, "mcp")),
+                   "zcl_node_log") == 0;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_build.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
@@ -3432,6 +3462,11 @@ int test_syncdiag_rpc(void)
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.state_catalog.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
+                                        "subsystem-specific zcl_state JSON")
+            != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.node_log.v1") != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_lanes.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_liveness.v1") != NULL;
@@ -3456,6 +3491,8 @@ int test_syncdiag_rpc(void)
         ok = ok && json_array_has_substr(transports, "zcl_agent_diagnose");
         ok = ok && json_array_has_substr(transports, "zcl_app_protocols");
         ok = ok && json_array_has_substr(transports, "zcl_state_catalog");
+        ok = ok && json_array_has_substr(transports, "zcl_state");
+        ok = ok && json_array_has_substr(transports, "zcl_node_log");
         ok = ok && json_array_has_substr(transports, "zcl_timeline");
 
         struct json_value ops;
@@ -3510,6 +3547,12 @@ int test_syncdiag_rpc(void)
         const struct json_value *ops_direct_app_protocols =
             find_object_with_str(ops_direct_commands, "method",
                                  "appprotocols");
+        const struct json_value *ops_direct_dumpstate =
+            find_object_with_str(ops_direct_commands, "method",
+                                 "dumpstate");
+        const struct json_value *ops_direct_getnodelog =
+            find_object_with_str(ops_direct_commands, "method",
+                                 "getnodelog");
         ok = ok && ops_direct_diagnose &&
             strcmp(json_get_str(json_get(ops_direct_diagnose, "schema")),
                    "zcl.agent_diagnose.v1") == 0;
@@ -3524,6 +3567,15 @@ int test_syncdiag_rpc(void)
             strcmp(json_get_str(json_get(ops_direct_app_protocols,
                                          "mcp")),
                    "zcl_app_protocols") == 0;
+        ok = ok && ops_direct_dumpstate &&
+            strcmp(json_get_str(json_get(ops_direct_dumpstate, "native")),
+                   "zclassic23 dumpstate <subsystem> [key]") == 0;
+        ok = ok && ops_direct_dumpstate &&
+            strcmp(json_get_str(json_get(ops_direct_dumpstate, "mcp")),
+                   "zcl_state") == 0;
+        ok = ok && ops_direct_getnodelog &&
+            strcmp(json_get_str(json_get(ops_direct_getnodelog, "mcp")),
+                   "zcl_node_log") == 0;
         ok = ok && strstr(json_get_str(json_get(&ops,
                                                 "refold_plain_english")),
                           "borrowed snapshot seed") != NULL;

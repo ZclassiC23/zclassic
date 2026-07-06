@@ -14,21 +14,6 @@
 
 #include <stdint.h>
 
-static void agent_ops_push_command(struct json_value *arr, const char *name,
-                                   const char *native, const char *mcp,
-                                   const char *returns)
-{
-    struct json_value obj;
-    json_init(&obj);
-    json_set_object(&obj);
-    json_push_kv_str(&obj, "name", name);
-    json_push_kv_str(&obj, "native", native);
-    json_push_kv_str(&obj, "mcp", mcp);
-    json_push_kv_str(&obj, "returns", returns);
-    json_push_back(arr, &obj);
-    json_free(&obj);
-}
-
 static void agent_ops_push_work(struct json_value *arr, int64_t rank,
                                 const char *name, const char *why,
                                 const char *first_slice,
@@ -108,9 +93,11 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
                                           "statecatalog");
     agent_push_contract_mcp_field_json(result, "diagnostics_catalog_tool",
                                        "statecatalog");
-    json_push_kv_str(result, "diagnostics_drilldown_command",
-                     "zclassic23 dumpstate <subsystem> [key]");
-    json_push_kv_str(result, "diagnostics_drilldown_tool", "zcl_state");
+    agent_push_contract_native_field_json(result,
+                                          "diagnostics_drilldown_command",
+                                          "dumpstate");
+    agent_push_contract_mcp_field_json(result, "diagnostics_drilldown_tool",
+                                       "dumpstate");
     agent_push_contract_native_field_json(result, "timeline_command",
                                           "timeline");
     agent_push_contract_mcp_field_json(result, "timeline_tool", "timeline");
@@ -127,12 +114,6 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
     json_init(&api_rules);
     json_set_array(&api_rules);
     agent_push_contract_ops_surface_json(&api_rules, "direct");
-    agent_ops_push_command(&api_rules, "state_drilldown",
-                           "zclassic23 dumpstate <subsystem>", "zcl_state",
-                           "one subsystem state object with description");
-    agent_ops_push_command(&api_rules, "log_search",
-                           "zclassic23 getnodelog <pattern>", "zcl_node_log",
-                           "bounded server-side log search");
     json_push_kv(result, "direct_commands", &api_rules);
     json_free(&api_rules);
 

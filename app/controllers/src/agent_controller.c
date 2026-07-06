@@ -294,12 +294,12 @@ bool rpc_agent_map(const struct json_value *params, bool help,
                        "latest background fuzz/coverage lane verdicts");
     agent_push_command(&commands, "health", "zclassic23 healthcheck",
                        "zcl_health", "strict health drill-down");
-    agent_push_command(&commands, "logs", "zclassic23 getnodelog <regex>",
-                       "zcl_node_log", "bounded server-side log search");
+    agent_push_contract_command_json(&commands, "logs", "getnodelog",
+                                     "bounded server-side log search");
     agent_push_contract_command_json(&commands, "timeline", "timeline",
                                      "category-filtered event timeline with bounded filters");
-    agent_push_command(&commands, "state", "zclassic23 dumpstate <subsystem>",
-                       "zcl_state", "generic subsystem diagnostics");
+    agent_push_contract_command_json(&commands, "state", "dumpstate",
+                                     "generic subsystem diagnostics");
     agent_push_contract_command_json(&commands, "state_catalog",
                                      "statecatalog",
                                      "zcl_state subsystem catalog");
@@ -314,17 +314,14 @@ bool rpc_agent_map(const struct json_value *params, bool help,
     agent_push_command(&telemetry, "full_status", "zclassic23 healthcheck",
                        "zcl_status",
                        "wide health packet with peers, sync, chain, validation, and memory");
-    agent_push_command(&telemetry, "subsystem_state",
-                       "zclassic23 dumpstate <subsystem>",
-                       "zcl_state",
-                       "semantic subsystem internals through diagnostics registry");
+    agent_push_contract_command_json(&telemetry, "subsystem_state",
+                                     "dumpstate",
+                                     "semantic subsystem internals through diagnostics registry");
     agent_push_contract_command_json(&telemetry, "subsystem_catalog",
                                      "statecatalog",
                                      "machine catalog of diagnostics registry subsystems");
-    agent_push_command(&telemetry, "node_log",
-                       "zclassic23 getnodelog <regex>",
-                       "zcl_node_log",
-                       "server-side regex tail over node.log history");
+    agent_push_contract_command_json(&telemetry, "node_log", "getnodelog",
+                                     "server-side regex tail over node.log history");
     agent_push_command(&telemetry, "node_db",
                        "zclassic23 dbquery <select>",
                        "zcl_sql",

@@ -36,7 +36,10 @@ First-call method/schema/tool metadata lives in the C-owned registry
 `app/controllers/include/controllers/agent_contracts.def`; runtime availability,
 the contract registry, the interface capability matrix, the `agentops`
 direct/drilldown command lists, and the REST API index's native/MCP command
-fields consume that table instead of maintaining separate lists.
+fields consume that table instead of maintaining separate lists. Generic
+diagnostic primitives such as `dumpstate` / `zcl_state` and `getnodelog` /
+`zcl_node_log` are registry rows too, so agent command catalogs do not hand-copy
+their native/MCP names.
 REST application-layer protocol metadata lives in
 `app/controllers/src/api_controller_app_protocols.c`; the same rows feed
 `zclassic23 appprotocols`, `zcl_app_protocols`, `GET /api/v1/protocols`,
