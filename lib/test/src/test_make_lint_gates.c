@@ -3391,6 +3391,9 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(agent_registry_buf,
                       "g_agent_command_surfaces") != NULL);
+        ASSERT(strstr(agent_registry_buf, "DIRECT_COMMAND") != NULL);
+        ASSERT(strstr(agent_registry_buf, "native_override") != NULL);
+        ASSERT(strstr(agent_registry_buf, "mcp_override") != NULL);
         ASSERT(strstr(agent_registry_buf,
                       "agent_contract_command_surface_count") != NULL);
         ASSERT(strstr(agent_registry_buf,
@@ -3414,6 +3417,12 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_registry_buf, "\"node_db\", \"dbquery\"")
                != NULL);
         ASSERT(strstr(agent_registry_buf, "\"events\", \"eventlog\"")
+               != NULL);
+        ASSERT(strstr(agent_registry_buf, "\"command_center\"") != NULL);
+        ASSERT(strstr(agent_registry_buf, "\"full_status\"") != NULL);
+        ASSERT(strstr(agent_registry_buf, "\"quality_lanes\"") != NULL);
+        ASSERT(strstr(agent_registry_buf, "zcl_operator_summary") != NULL);
+        ASSERT(strstr(agent_registry_buf, "make quality-linger-status")
                != NULL);
         ASSERT(strstr(agent_registry_buf, "agent_contract_probe_params_json")
                != NULL);
@@ -3517,11 +3526,13 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_ctrl_buf, "agentmap.commands.core") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "agentmap.commands.drilldown") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "agentmap.telemetry") != NULL);
-        ASSERT(strstr(agent_ctrl_buf, "command_center") != NULL);
-        ASSERT(strstr(agent_ctrl_buf, "background_quality") != NULL);
-        ASSERT(strstr(agent_ctrl_buf, "zcl_operator_summary") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "agent_push_command(") == NULL);
+        ASSERT(strstr(agent_ctrl_buf, "command_center") == NULL);
+        ASSERT(strstr(agent_ctrl_buf, "full_status") == NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zcl_operator_summary") == NULL);
         ASSERT(strstr(agent_ctrl_buf, "telemetry_drilldowns") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl_events") == NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zclassic23 healthcheck") == NULL);
         ASSERT(strstr(agent_ctrl_buf, "zclassic23 dbquery <select>") == NULL);
         ASSERT(strstr(agent_ctrl_buf, "zclassic23 eventlog <count>")
                == NULL);

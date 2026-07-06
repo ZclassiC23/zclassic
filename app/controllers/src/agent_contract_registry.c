@@ -27,6 +27,8 @@ struct agent_contract_command_surface {
     int rank;
     const char *name;
     const char *method;
+    const char *native_override;
+    const char *mcp_override;
     const char *purpose_override;
 };
 
@@ -39,54 +41,76 @@ struct agent_contract_work_surface {
     const char *proof;
 };
 
+#define CONTRACT_COMMAND(surface, rank, name, method, purpose)               \
+    { surface, rank, name, method, "", "", purpose }
+#define DIRECT_COMMAND(surface, rank, name, native, mcp, purpose)            \
+    { surface, rank, name, "", native, mcp, purpose }
+
 static const struct agent_contract_command_surface g_agent_command_surfaces[] = {
-    { "agentmap.commands.core", 1, "status", "agent",
-      "compact live health/status contract" },
-    { "agentmap.commands.core", 2, "map", "agentmap",
-      "where code, docs, and tests live" },
-    { "agentmap.commands.core", 3, "impact", "agentimpact",
-      "changed files to recommended tests and risk flags" },
-    { "agentmap.commands.core", 4, "contracts", "agentcontracts",
-      "versioned schemas and transport contract list" },
-    { "agentmap.commands.core", 5, "build", "agentbuild",
-      "incremental/cache/reproducible build contract" },
-    { "agentmap.commands.core", 6, "anchor_status", "anchorstatus",
-      "offline anchor-mint progress and next action" },
-    { "agentmap.commands.core", 7, "interface", "agentinterface",
-      "preferred AI/operator transport and JSON rules" },
-    { "agentmap.commands.core", 8, "lanes", "agentlanes",
-      "canonical/soak/dev topology and restart/deploy rules" },
-    { "agentmap.commands.core", 9, "liveness", "agentliveness",
-      "lane/service/supervisor/background-quality liveness" },
-    { "agentmap.commands.core", 10, "deploy_guard", "agentdeployguard",
-      "C-native deploy/restart allow-refuse decision" },
+    CONTRACT_COMMAND("agentmap.commands.core", 1, "status", "agent",
+      "compact live health/status contract"),
+    CONTRACT_COMMAND("agentmap.commands.core", 2, "map", "agentmap",
+      "where code, docs, and tests live"),
+    CONTRACT_COMMAND("agentmap.commands.core", 3, "impact", "agentimpact",
+      "changed files to recommended tests and risk flags"),
+    CONTRACT_COMMAND("agentmap.commands.core", 4, "contracts", "agentcontracts",
+      "versioned schemas and transport contract list"),
+    CONTRACT_COMMAND("agentmap.commands.core", 5, "build", "agentbuild",
+      "incremental/cache/reproducible build contract"),
+    CONTRACT_COMMAND("agentmap.commands.core", 6, "anchor_status", "anchorstatus",
+      "offline anchor-mint progress and next action"),
+    CONTRACT_COMMAND("agentmap.commands.core", 7, "interface", "agentinterface",
+      "preferred AI/operator transport and JSON rules"),
+    CONTRACT_COMMAND("agentmap.commands.core", 8, "lanes", "agentlanes",
+      "canonical/soak/dev topology and restart/deploy rules"),
+    CONTRACT_COMMAND("agentmap.commands.core", 9, "liveness", "agentliveness",
+      "lane/service/supervisor/background-quality liveness"),
+    CONTRACT_COMMAND("agentmap.commands.core", 10, "deploy_guard", "agentdeployguard",
+      "C-native deploy/restart allow-refuse decision"),
+    DIRECT_COMMAND("agentmap.commands.core", 11, "command_center",
+      "zclassic23 agent", "zcl_operator_summary",
+      "one-shot live node status, blockers, next action, and drill-down tools"),
+    DIRECT_COMMAND("agentmap.commands.core", 12, "background_quality",
+      "make quality-linger-status", "zcl_agent_build",
+      "latest background fuzz/coverage lane verdicts"),
 
-    { "agentmap.commands.drilldown", 1, "health", "healthcheck",
-      "strict health drill-down" },
-    { "agentmap.commands.drilldown", 2, "logs", "getnodelog",
-      "bounded server-side log search" },
-    { "agentmap.commands.drilldown", 3, "timeline", "timeline",
-      "category-filtered event timeline with bounded filters" },
-    { "agentmap.commands.drilldown", 4, "state", "dumpstate",
-      "generic subsystem diagnostics" },
-    { "agentmap.commands.drilldown", 5, "state_catalog", "statecatalog",
-      "zcl_state subsystem catalog" },
+    CONTRACT_COMMAND("agentmap.commands.drilldown", 1, "health", "healthcheck",
+      "strict health drill-down"),
+    CONTRACT_COMMAND("agentmap.commands.drilldown", 2, "logs", "getnodelog",
+      "bounded server-side log search"),
+    CONTRACT_COMMAND("agentmap.commands.drilldown", 3, "timeline", "timeline",
+      "category-filtered event timeline with bounded filters"),
+    CONTRACT_COMMAND("agentmap.commands.drilldown", 4, "state", "dumpstate",
+      "generic subsystem diagnostics"),
+    CONTRACT_COMMAND("agentmap.commands.drilldown", 5, "state_catalog", "statecatalog",
+      "zcl_state subsystem catalog"),
 
-    { "agentmap.telemetry", 1, "subsystem_state", "dumpstate",
-      "semantic subsystem internals through diagnostics registry" },
-    { "agentmap.telemetry", 2, "subsystem_catalog", "statecatalog",
-      "machine catalog of diagnostics registry subsystems" },
-    { "agentmap.telemetry", 3, "node_log", "getnodelog",
-      "server-side regex tail over node.log history" },
-    { "agentmap.telemetry", 4, "timeline", "timeline",
-      "versioned category-filtered event timeline with bounded filters" },
-    { "agentmap.telemetry", 5, "anchor_status", "anchorstatus",
-      "read-only progress.kv status for the sovereign anchor producer" },
-    { "agentmap.telemetry", 6, "node_db", "dbquery",
-      "SELECT-only node.db inspection with limits" },
-    { "agentmap.telemetry", 7, "events", "eventlog",
-      "recent structured node events" },
+    DIRECT_COMMAND("agentmap.telemetry", 1, "summary",
+      "zclassic23 agent", "zcl_operator_summary",
+      "stable first-call status, blocker, next-action contract"),
+    DIRECT_COMMAND("agentmap.telemetry", 2, "full_status",
+      "zclassic23 healthcheck", "zcl_status",
+      "wide health packet with peers, sync, chain, validation, and memory"),
+    CONTRACT_COMMAND("agentmap.telemetry", 3, "subsystem_state", "dumpstate",
+      "semantic subsystem internals through diagnostics registry"),
+    CONTRACT_COMMAND("agentmap.telemetry", 4, "subsystem_catalog", "statecatalog",
+      "machine catalog of diagnostics registry subsystems"),
+    CONTRACT_COMMAND("agentmap.telemetry", 5, "node_log", "getnodelog",
+      "server-side regex tail over node.log history"),
+    CONTRACT_COMMAND("agentmap.telemetry", 6, "timeline", "timeline",
+      "versioned category-filtered event timeline with bounded filters"),
+    CONTRACT_COMMAND("agentmap.telemetry", 7, "anchor_status", "anchorstatus",
+      "read-only progress.kv status for the sovereign anchor producer"),
+    CONTRACT_COMMAND("agentmap.telemetry", 8, "node_db", "dbquery",
+      "SELECT-only node.db inspection with limits"),
+    CONTRACT_COMMAND("agentmap.telemetry", 9, "events", "eventlog",
+      "recent structured node events"),
+    DIRECT_COMMAND("agentmap.telemetry", 10, "quality_lanes",
+      "make quality-linger-status", "zcl_agent_build",
+      "background tests/fuzz/coverage verdicts"),
 };
+#undef DIRECT_COMMAND
+#undef CONTRACT_COMMAND
 
 static const size_t g_agent_command_surface_count =
     sizeof(g_agent_command_surfaces) / sizeof(g_agent_command_surfaces[0]);
@@ -414,6 +438,31 @@ size_t agent_contract_command_surface_count(const char *surface)
     return n;
 }
 
+static bool agent_push_command_surface_entry_json(
+    struct json_value *arr, const struct agent_contract_command_surface *e)
+{
+    if (!arr || !e)
+        return false;
+    if (e->method && e->method[0]) {
+        return agent_push_contract_command_json(arr, e->name, e->method,
+                                                e->purpose_override);
+    }
+
+    if (!e->native_override || !e->native_override[0])
+        return false;
+
+    struct json_value obj;
+    json_init(&obj);
+    json_set_object(&obj);
+    json_push_kv_str(&obj, "name", e->name);
+    json_push_kv_str(&obj, "native", e->native_override);
+    json_push_kv_str(&obj, "mcp", e->mcp_override);
+    json_push_kv_str(&obj, "purpose", e->purpose_override);
+    json_push_back(arr, &obj);
+    json_free(&obj);
+    return true;
+}
+
 size_t agent_push_contract_command_surface_json(struct json_value *arr,
                                                 const char *surface)
 {
@@ -437,8 +486,7 @@ size_t agent_push_contract_command_surface_json(struct json_value *arr,
             if (e->rank != rank || !e->surface ||
                 strcmp(e->surface, surface) != 0)
                 continue;
-            if (agent_push_contract_command_json(arr, e->name, e->method,
-                                                 e->purpose_override))
+            if (agent_push_command_surface_entry_json(arr, e))
                 pushed++;
         }
     }

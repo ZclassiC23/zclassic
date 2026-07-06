@@ -161,7 +161,9 @@ controller `k_routes[]` arrays.
   (`g_agent_command_surfaces`), including generic diagnostic primitives like
   `dumpstate`/`zcl_state`, `getnodelog`/`zcl_node_log`, and
   `dbquery`/`zcl_sql`, plus the raw event ring `eventlog`/`zcl_events`, not as
-  local string tables in the controllers. The same registry owns
+  local string tables in the controllers. Non-method aliases such as
+  `command_center`, `full_status`, and `quality_lanes` also live there as
+  direct native/MCP command-surface rows. The same registry owns
   `probe_params_json` for parameterized availability probes. REST-index
   operator drilldowns such as
   `healthcheck`/`zcl_health`, `milestone`/`zcl_milestone`, and

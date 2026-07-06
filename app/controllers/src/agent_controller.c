@@ -25,21 +25,6 @@ static void agent_push_str(struct json_value *arr, const char *s)
     json_free(&v);
 }
 
-static void agent_push_command(struct json_value *arr, const char *name,
-                               const char *native, const char *mcp,
-                               const char *purpose)
-{
-    struct json_value cmd;
-    json_init(&cmd);
-    json_set_object(&cmd);
-    json_push_kv_str(&cmd, "name", name);
-    json_push_kv_str(&cmd, "native", native);
-    json_push_kv_str(&cmd, "mcp", mcp);
-    json_push_kv_str(&cmd, "purpose", purpose);
-    json_push_back(arr, &cmd);
-    json_free(&cmd);
-}
-
 static void agent_push_build_command(struct json_value *arr, const char *name,
                                      const char *command,
                                      const char *purpose)
@@ -261,14 +246,6 @@ bool rpc_agent_map(const struct json_value *params, bool help,
     json_set_array(&commands);
     agent_push_contract_command_surface_json(&commands,
                                              "agentmap.commands.core");
-    agent_push_command(&commands, "command_center",
-                       "zclassic23 agent",
-                       "zcl_operator_summary",
-                       "one-shot live node status, blockers, next action, and drill-down tools");
-    agent_push_command(&commands, "background_quality",
-                       "make quality-linger-status",
-                       "zcl_agent_build",
-                       "latest background fuzz/coverage lane verdicts");
     agent_push_contract_command_surface_json(
         &commands, "agentmap.commands.drilldown");
     json_push_kv(result, "commands", &commands);
@@ -276,18 +253,8 @@ bool rpc_agent_map(const struct json_value *params, bool help,
 
     json_init(&telemetry);
     json_set_array(&telemetry);
-    agent_push_command(&telemetry, "summary", "zclassic23 agent",
-                       "zcl_operator_summary",
-                       "stable first-call status, blocker, next-action contract");
-    agent_push_command(&telemetry, "full_status", "zclassic23 healthcheck",
-                       "zcl_status",
-                       "wide health packet with peers, sync, chain, validation, and memory");
     agent_push_contract_command_surface_json(&telemetry,
                                              "agentmap.telemetry");
-    agent_push_command(&telemetry, "quality_lanes",
-                       "make quality-linger-status",
-                       "zcl_agent_build",
-                       "background tests/fuzz/coverage verdicts");
     json_push_kv(result, "telemetry_drilldowns", &telemetry);
     json_free(&telemetry);
 

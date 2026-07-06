@@ -3471,12 +3471,12 @@ int test_syncdiag_rpc(void)
                           "zcl.agent_map.v1") == 0;
         ok = ok &&
             agent_contract_command_surface_count("agentmap.commands.core") ==
-                10;
+                12;
         ok = ok &&
             agent_contract_command_surface_count(
                 "agentmap.commands.drilldown") == 5;
         ok = ok &&
-            agent_contract_command_surface_count("agentmap.telemetry") == 7;
+            agent_contract_command_surface_count("agentmap.telemetry") == 10;
         ok = ok &&
             agent_contract_command_surface_count("missing.surface") == 0;
         ok = ok && commands && commands->type == JSON_ARR;
@@ -3489,6 +3489,22 @@ int test_syncdiag_rpc(void)
                          != NULL;
         ok = ok && find_object_with_str(commands, "method", "statecatalog")
                          != NULL;
+        const struct json_value *map_command_center =
+            find_object_with_str(commands, "name", "command_center");
+        ok = ok && map_command_center &&
+            strcmp(json_get_str(json_get(map_command_center, "native")),
+                   "zclassic23 agent") == 0;
+        ok = ok && map_command_center &&
+            strcmp(json_get_str(json_get(map_command_center, "mcp")),
+                   "zcl_operator_summary") == 0;
+        const struct json_value *map_background_quality =
+            find_object_with_str(commands, "name", "background_quality");
+        ok = ok && map_background_quality &&
+            strcmp(json_get_str(json_get(map_background_quality, "native")),
+                   "make quality-linger-status") == 0;
+        ok = ok && map_background_quality &&
+            strcmp(json_get_str(json_get(map_background_quality, "mcp")),
+                   "zcl_agent_build") == 0;
         const struct json_value *map_state =
             find_object_with_str(commands, "method", "dumpstate");
         const struct json_value *map_log =
@@ -3500,6 +3516,19 @@ int test_syncdiag_rpc(void)
             strcmp(json_get_str(json_get(map_log, "mcp")),
                    "zcl_node_log") == 0;
         ok = ok && telemetry && telemetry->type == JSON_ARR;
+        const struct json_value *map_summary =
+            find_object_with_str(telemetry, "name", "summary");
+        ok = ok && map_summary &&
+            strcmp(json_get_str(json_get(map_summary, "mcp")),
+                   "zcl_operator_summary") == 0;
+        const struct json_value *map_full_status =
+            find_object_with_str(telemetry, "name", "full_status");
+        ok = ok && map_full_status &&
+            strcmp(json_get_str(json_get(map_full_status, "native")),
+                   "zclassic23 healthcheck") == 0;
+        ok = ok && map_full_status &&
+            strcmp(json_get_str(json_get(map_full_status, "mcp")),
+                   "zcl_status") == 0;
         ok = ok &&
             find_object_with_str(telemetry, "name", "node_log") != NULL;
         ok = ok &&
@@ -3526,6 +3555,14 @@ int test_syncdiag_rpc(void)
         ok = ok && map_events &&
             strcmp(json_get_str(json_get(map_events, "mcp")),
                    "zcl_events") == 0;
+        const struct json_value *map_quality_lanes =
+            find_object_with_str(telemetry, "name", "quality_lanes");
+        ok = ok && map_quality_lanes &&
+            strcmp(json_get_str(json_get(map_quality_lanes, "native")),
+                   "make quality-linger-status") == 0;
+        ok = ok && map_quality_lanes &&
+            strcmp(json_get_str(json_get(map_quality_lanes, "mcp")),
+                   "zcl_agent_build") == 0;
         ok = ok && subsystems && subsystems->type == JSON_ARR;
         ok = ok && find_object_with_str(subsystems, "name", "fast_ci") != NULL;
         ok = ok && shim && shim->type == JSON_OBJ;
