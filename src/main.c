@@ -5,6 +5,7 @@
  *   zclassic23 [node options]         — run as full node / linger service
  *   zclassic23 -mcp                   — MCP stdio server for agents
  *   zclassic23 api                    — API discovery from running node
+ *   zclassic23 appprotocols           — application protocol catalog
  *   zclassic23 agent                  — compact status from running node
  *   zclassic23 statecatalog           — zcl_state subsystem catalog
  *   zclassic23 agentlanes             — canonical/soak/dev lane topology
@@ -883,6 +884,7 @@ static bool cli_static_agent_method(const char *method)
            strcmp(method, "agentcontracts") == 0 ||
            strcmp(method, "agentbuild") == 0 ||
            strcmp(method, "anchorstatus") == 0 ||
+           strcmp(method, "appprotocols") == 0 ||
            strcmp(method, "agentinterface") == 0 ||
            strcmp(method, "agentops") == 0 ||
            strcmp(method, "statecatalog") == 0 ||
@@ -916,6 +918,8 @@ static bool cli_run_static_agent_method(const char *method,
         ok = rpc_agent_build(&params, false, &result);
     } else if (strcmp(method, "anchorstatus") == 0) {
         ok = rpc_agent_anchor_status(&params, false, &result);
+    } else if (strcmp(method, "appprotocols") == 0) {
+        ok = rpc_app_protocols(&params, false, &result);
     } else if (strcmp(method, "agentinterface") == 0) {
         ok = rpc_agent_interface(&params, false, &result);
     } else if (strcmp(method, "agentops") == 0) {
@@ -1195,6 +1199,7 @@ static void print_usage(const char *prog)
     printf("  %s agentcontracts          Versioned AI/operator contracts\n", prog);
     printf("  %s agentbuild              Fast cached/repro build contract\n", prog);
     printf("  %s anchorstatus            Offline anchor-mint progress JSON\n", prog);
+    printf("  %s appprotocols            Application protocol catalog JSON\n", prog);
     printf("  %s agentinterface          Preferred AI/operator interface\n", prog);
     printf("  %s agentops                Compact no-jq AI/operator command center\n", prog);
     printf("  %s agentdiagnose           Bounded no-jq live diagnosis\n", prog);

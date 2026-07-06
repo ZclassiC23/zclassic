@@ -71,6 +71,7 @@ answer.
 |------|-------|
 | `zclassic23 agentinterface` | Preferred AI/operator interface contract. Same contract as MCP `zcl_agent_interface`: MCP first, native CLI JSON second, REST read-only, no Python or `tools/z` logic required. |
 | `zclassic23 api` | Native API discovery from the running node. Same `zcl.rest_index.v1` body as `GET /api` and `GET /api/v1`: version, base path, resource routes, CRUD conventions, `layer_model` for the ZCL L1 / zclassic23 application-layer boundary, and first native/MCP/REST calls. Start here when choosing an interface. |
+| `zclassic23 appprotocols` | Native application-protocol catalog. Same contract as MCP `zcl_app_protocols` and `GET /api/v1/protocols`: ZSLP, ZNAM, market, messaging, and script-contract overlay services, their CRUD/read models, anchors, and consensus boundary. |
 | `zclassic23 agentlanes` | Native canonical/soak/dev topology and deployment-safety contract. Same contract as MCP `zcl_agent_lanes`; use it before choosing a deploy or restart target. |
 | `zclassic23 agentliveness` | Unified lane/service/supervisor/background-quality liveness. Same contract as MCP `zcl_agent_liveness`; use it when deciding whether a lane is active, stalled, missing quality verdicts, or only being inspected from a static binary. |
 | `zcl_agent` | The simple first MCP check: stable top-level status, served/indexed/target heights, gap, peer counts, primary blocker, and recommended next tool. Same contract as native `zclassic23 agent` and `GET /api/v1/agent`; `zcl_operator_summary` is the longer compatible alias. Start here when checking live state. |
@@ -146,8 +147,10 @@ this page.)
    `zclassic23 agentlanes` or `zcl_agent_lanes` for canonical/soak/dev safety,
    `zclassic23 agentliveness` or `zcl_agent_liveness` for the current lane's
    listener/supervisor/quality rollup,
-   `zclassic23 agentbuild` or `zcl_agent_build` for the cached build loop, and
-   `zclassic23 api` for interface discovery. Then use `zclassic23 agent` or
+   `zclassic23 agentbuild` or `zcl_agent_build` for the cached build loop,
+   `zclassic23 api` for interface discovery, and `zclassic23 appprotocols` or
+   `zcl_app_protocols` for the ZCL L1 / zclassic23 application-layer catalog.
+   Then use `zclassic23 agent` or
    `zcl_agent` for compact live state, and `zclassic23 milestone` or
    `zcl_milestone` for v1 progress bars. Drill down with `zcl_status` and
    `zcl_state subsystem=reducer_frontier` only if needed. A doc can be stale;

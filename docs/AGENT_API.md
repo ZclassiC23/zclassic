@@ -17,6 +17,7 @@ same native RPC methods. Shell wrappers are compatibility shims only.
 | Versioned contracts | `zclassic23 agentcontracts` | `zcl_agent_contracts` |
 | Fast build contract | `zclassic23 agentbuild` | `zcl_agent_build` |
 | Anchor producer status | `zclassic23 anchorstatus` | `zcl_rpc(method="anchorstatus")` |
+| Application protocol catalog | `zclassic23 appprotocols` | `zcl_app_protocols` |
 | Preferred interface contract | `zclassic23 agentinterface` | `zcl_agent_interface` |
 | State subsystem catalog | `zclassic23 statecatalog` | `zcl_state_catalog` |
 | Semantic event timeline | `zclassic23 timeline '{"category":"sync","count":50,"since_secs":3600}'` | `zcl_timeline` |
@@ -38,13 +39,15 @@ direct/drilldown command lists, and the REST API index's native/MCP command
 fields consume that table instead of maintaining separate lists.
 REST application-layer protocol metadata lives in
 `app/controllers/src/api_controller_app_protocols.c`; the same rows feed
-`GET /api/v1/protocols`, `GET /api/v1/protocols/{name}`, `layer_model`,
-route-contract `application_protocol` fields, and generated OpenAPI
+`zclassic23 appprotocols`, `zcl_app_protocols`, `GET /api/v1/protocols`,
+`GET /api/v1/protocols/{name}`, `layer_model`, route-contract
+`application_protocol` fields, and generated OpenAPI
 `x-zcl-application-protocol` / protocol CRUD extensions for ZSLP, ZNAM,
-market, messaging, and script-contract resources. Treat this as the layer-2
-overlay catalog: ZCL remains the base layer; zclassic23 exposes versioned
-application services that read, index, or construct valid ZCL transactions
-without changing consensus rules.
+market, messaging, and script-contract resources. Treat
+`zcl.application_protocols.index.v1` as the layer-2 overlay catalog: ZCL
+remains the base layer; zclassic23 exposes versioned application services that
+read, index, or construct valid ZCL transactions without changing consensus
+rules.
 
 ## Preferred Interface
 
@@ -55,7 +58,8 @@ start with `zcl_agent_ops` for the compact no-jq command center, use
 `zcl_agent_lanes`, `zcl_mirror_status`,
 `zcl_agent_impact`,
 `zcl_agent_build`, `zcl_state_catalog`, `zcl_state`, `zcl_timeline`,
-`zcl_node_log`, and `zcl_sql` as needed. The native binary commands (`zclassic23 agentinterface`,
+`zcl_app_protocols`, `zcl_node_log`, and `zcl_sql` as needed. The native
+binary commands (`zclassic23 agentinterface`, `zclassic23 appprotocols`,
 `zclassic23 agent`, etc.) are the second-best interface for terminal work and
 scripts. REST is the public read-only mirror.
 

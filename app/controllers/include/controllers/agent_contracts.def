@@ -112,3 +112,11 @@ AGENT_CONTRACT("api", "api_index", "zcl.api_index.v1",
                "api_command", "api_tool",
                "", 0, "", "",
                "native and REST API discovery index")
+AGENT_CONTRACT("appprotocols", "application_protocol_catalog",
+               "zcl.application_protocols.index.v1",
+               "zclassic23 appprotocols", "zcl_app_protocols",
+               "GET /api/v1/protocols",
+               "app_protocols_command", "app_protocols_tool",
+               "direct", 10, "app_protocols",
+               "ZSLP, ZNAM, market, messaging, and script-contract overlay catalog",
+               "base-layer/application-layer protocol catalog for zclassic23 overlay services")

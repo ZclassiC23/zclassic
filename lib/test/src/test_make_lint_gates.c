@@ -2954,6 +2954,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(main_buf, "%s agentcontracts") != NULL);
         ASSERT(strstr(main_buf, "%s agentbuild") != NULL);
         ASSERT(strstr(main_buf, "%s anchorstatus") != NULL);
+        ASSERT(strstr(main_buf, "%s appprotocols") != NULL);
         ASSERT(strstr(main_buf, "%s agentinterface") != NULL);
         ASSERT(strstr(main_buf, "%s agentops") != NULL);
         ASSERT(strstr(main_buf, "%s agentdiagnose") != NULL);
@@ -3002,6 +3003,8 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"anchorstatus\")")
                != NULL);
+        ASSERT(strstr(main_buf, "strcmp(method, \"appprotocols\")")
+               != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"statecatalog\")") != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"agentlanes\")") != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"agentdeployguard\")")
@@ -3027,6 +3030,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(main_buf,
                       "rpc_agent_anchor_status(&params, false, &result)")
                != NULL);
+        ASSERT(strstr(main_buf,
+                      "rpc_app_protocols(&params, false, &result)")
+               != NULL);
         char *static_agent_dispatch =
             strstr(main_buf, "if (cli_static_agent_method(method))");
         char *cookie_read = static_agent_dispatch
@@ -3037,6 +3043,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(static_agent_dispatch < cookie_read);
         ASSERT(strstr(event_buf, "{ \"control\", \"api\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"apiindex\"") != NULL);
+        ASSERT(strstr(event_buf, "{ \"control\", \"appprotocols\"")
+               != NULL);
+        ASSERT(strstr(event_buf, "{ \"control\", \"protocols\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agent\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agentops\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agentdiagnose\"")
@@ -3422,6 +3431,13 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_contracts_def_buf,
                       "\"api_command\", \"api_tool\"") != NULL);
         ASSERT(strstr(agent_contracts_def_buf,
+                      "\"app_protocols_command\", "
+                      "\"app_protocols_tool\"") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf,
+                      "zcl.application_protocols.index.v1") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl_app_protocols")
+               != NULL);
+        ASSERT(strstr(agent_contracts_def_buf,
                       "\"first_command\", \"first_tool\"") != NULL);
         ASSERT(strstr(agent_contracts_def_buf,
                       "\"ops_command\", \"ops_tool\"") != NULL);
@@ -3452,6 +3468,10 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "zcl_agent_build") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 anchorstatus") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.anchor_mint_status.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zclassic23 appprotocols") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl_app_protocols") != NULL);
+        ASSERT(strstr(agent_doc_buf,
+                      "zcl.application_protocols.index.v1") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentlanes") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_lanes") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.agent_lanes.v1") != NULL);

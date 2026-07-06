@@ -1748,6 +1748,9 @@ int test_syncdiag_rpc(void)
                           "zcl_agent_deploy_guard") == 0;
         ok = ok && strcmp(json_get_str(json_get(mcp, "api_tool")),
                           "zcl_openapi") == 0;
+        ok = ok && strcmp(json_get_str(json_get(mcp,
+                                                "app_protocols_tool")),
+                          "zcl_app_protocols") == 0;
         ok = ok && strcmp(json_get_str(json_get(mcp, "milestone_tool")),
                           "zcl_milestone") == 0;
         ok = ok && strcmp(json_get_str(json_get(mcp, "refold_tool")),
@@ -1755,6 +1758,9 @@ int test_syncdiag_rpc(void)
         ok = ok && cli && cli->type == JSON_OBJ &&
             strcmp(json_get_str(json_get(cli, "api_command")),
                    "zclassic23 api") == 0;
+        ok = ok && strcmp(json_get_str(json_get(cli,
+                                                "app_protocols_command")),
+                          "zclassic23 appprotocols") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "first_command")),
                           "zclassic23 agent") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "map_command")),
@@ -1785,6 +1791,66 @@ int test_syncdiag_rpc(void)
         ok = ok && alias_executed && alias.type == JSON_OBJ &&
             strcmp(json_get_str(json_get(&alias, "schema")),
                    "zcl.rest_index.v1") == 0;
+
+        json_free(&alias);
+        json_free(&params);
+        json_free(&result);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: native RPC returns application protocol catalog... ");
+    {
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        register_event_rpc_commands(&tbl);
+        if (rpc_is_in_warmup(NULL, 0))
+            set_rpc_warmup_finished();
+
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+
+        struct json_value result;
+        json_init(&result);
+
+        bool executed = rpc_table_execute(&tbl, "appprotocols",
+                                          &params, &result);
+        const struct json_value *protocols =
+            json_get(&result, "protocols");
+        const struct json_value *zslp =
+            find_object_with_str(protocols, "name", "zslp");
+        const struct json_value *script_contracts =
+            find_object_with_str(protocols, "name", "script_contracts");
+        bool ok = executed && result.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
+                          "zcl.application_protocols.index.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "base_layer")),
+                          "zclassic_l1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "service_layer")),
+                          "zclassic23_application_layer") == 0;
+        ok = ok && protocols && protocols->type == JSON_ARR &&
+            json_get_int(json_get(&result, "protocol_count")) ==
+            (int64_t)json_size(protocols);
+        ok = ok && zslp &&
+            json_array_has_str(json_get(zslp, "crud_capabilities"),
+                               "read_collection");
+        ok = ok && zslp &&
+            strcmp(json_get_str(json_get(zslp, "anchor_kind")),
+                   "op_return") == 0;
+        ok = ok && script_contracts &&
+            strcmp(json_get_str(json_get(script_contracts, "anchor_kind")),
+                   "standard_script") == 0;
+
+        struct json_value alias;
+        json_init(&alias);
+        bool alias_executed = rpc_table_execute(&tbl, "protocols",
+                                                &params, &alias);
+        ok = ok && alias_executed &&
+            strcmp(json_get_str(json_get(&alias, "schema")),
+                   "zcl.application_protocols.index.v1") == 0;
 
         json_free(&alias);
         json_free(&params);
@@ -3256,6 +3322,8 @@ int test_syncdiag_rpc(void)
             find_object_with_str(contract_list, "method", "agentdiagnose");
         const struct json_value *contract_api =
             find_object_with_str(contract_list, "method", "api");
+        const struct json_value *contract_app_protocols =
+            find_object_with_str(contract_list, "method", "appprotocols");
         ok = ok && contracts.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&contracts, "schema")),
                           "zcl.agent_contracts.v1") == 0;
@@ -3302,6 +3370,26 @@ int test_syncdiag_rpc(void)
         ok = ok && contract_api &&
             strcmp(json_get_str(json_get(contract_api, "api_mcp_field")),
                    "api_tool") == 0;
+        ok = ok && contract_app_protocols &&
+            strcmp(json_get_str(json_get(contract_app_protocols, "schema")),
+                   "zcl.application_protocols.index.v1") == 0;
+        ok = ok && contract_app_protocols &&
+            strcmp(json_get_str(json_get(contract_app_protocols, "native")),
+                   "zclassic23 appprotocols") == 0;
+        ok = ok && contract_app_protocols &&
+            strcmp(json_get_str(json_get(contract_app_protocols, "mcp")),
+                   "zcl_app_protocols") == 0;
+        ok = ok && contract_app_protocols &&
+            strcmp(json_get_str(json_get(contract_app_protocols, "rest")),
+                   "GET /api/v1/protocols") == 0;
+        ok = ok && contract_app_protocols &&
+            strcmp(json_get_str(json_get(contract_app_protocols,
+                                         "api_cli_field")),
+                   "app_protocols_command") == 0;
+        ok = ok && contract_app_protocols &&
+            strcmp(json_get_str(json_get(contract_app_protocols,
+                                         "api_mcp_field")),
+                   "app_protocols_tool") == 0;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_build.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
@@ -3352,6 +3440,7 @@ int test_syncdiag_rpc(void)
                                          "zclassic23 agentops");
         ok = ok && json_array_has_substr(transports, "zcl_agent_ops");
         ok = ok && json_array_has_substr(transports, "zcl_agent_diagnose");
+        ok = ok && json_array_has_substr(transports, "zcl_app_protocols");
         ok = ok && json_array_has_substr(transports, "zcl_state_catalog");
         ok = ok && json_array_has_substr(transports, "zcl_timeline");
 
@@ -3404,12 +3493,23 @@ int test_syncdiag_rpc(void)
         const struct json_value *ops_direct_diagnose =
             find_object_with_str(ops_direct_commands, "method",
                                  "agentdiagnose");
+        const struct json_value *ops_direct_app_protocols =
+            find_object_with_str(ops_direct_commands, "method",
+                                 "appprotocols");
         ok = ok && ops_direct_diagnose &&
             strcmp(json_get_str(json_get(ops_direct_diagnose, "schema")),
                    "zcl.agent_diagnose.v1") == 0;
         ok = ok && ops_direct_diagnose &&
             strcmp(json_get_str(json_get(ops_direct_diagnose, "mcp")),
                    "zcl_agent_diagnose") == 0;
+        ok = ok && ops_direct_app_protocols &&
+            strcmp(json_get_str(json_get(ops_direct_app_protocols,
+                                         "schema")),
+                   "zcl.application_protocols.index.v1") == 0;
+        ok = ok && ops_direct_app_protocols &&
+            strcmp(json_get_str(json_get(ops_direct_app_protocols,
+                                         "mcp")),
+                   "zcl_app_protocols") == 0;
         ok = ok && strstr(json_get_str(json_get(&ops,
                                                 "refold_plain_english")),
                           "borrowed snapshot seed") != NULL;
@@ -4165,6 +4265,9 @@ int test_syncdiag_rpc(void)
             find_object_with_str(capabilities, "name", "state_catalog");
         const struct json_value *timeline_cap =
             find_object_with_str(capabilities, "name", "semantic_timeline");
+        const struct json_value *app_protocols_cap =
+            find_object_with_str(capabilities, "name",
+                                 "application_protocol_catalog");
         const struct json_value *machine =
             json_get(&interface, "machine_contract");
         const struct json_value *runtime =
@@ -4195,6 +4298,12 @@ int test_syncdiag_rpc(void)
         ok = ok && json_array_has_substr(avoid,
                                          "do not require Python");
         ok = ok && capabilities && json_size(capabilities) >= 8;
+        ok = ok && app_protocols_cap &&
+            strcmp(json_get_str(json_get(app_protocols_cap, "schema")),
+                   "zcl.application_protocols.index.v1") == 0;
+        ok = ok && app_protocols_cap &&
+            strcmp(json_get_str(json_get(app_protocols_cap, "mcp")),
+                   "zcl_app_protocols") == 0;
         ok = ok && lane_topology &&
             strcmp(json_get_str(json_get(lane_topology, "schema")),
                    "zcl.agent_lanes.v1") == 0;

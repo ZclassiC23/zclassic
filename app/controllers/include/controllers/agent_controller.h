@@ -135,5 +135,7 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
                         struct json_value *result);
 bool rpc_agent_anchor_status(const struct json_value *params, bool help,
                              struct json_value *result);
+bool rpc_app_protocols(const struct json_value *params, bool help,
+                       struct json_value *result);
 
 #endif

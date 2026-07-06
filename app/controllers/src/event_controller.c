@@ -169,6 +169,22 @@ static bool rpc_api_index(const struct json_value *params, bool help,
     return true;
 }
 
+bool rpc_app_protocols(const struct json_value *params, bool help,
+                       struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "appprotocols\n"
+        "\nReturn the versioned zclassic23 application-protocol catalog. This\n"
+        "is the same JSON body served by GET /api/v1/protocols and exposed\n"
+        "through MCP zcl_app_protocols.\n"
+        "\nResult:\n"
+        "  { \"schema\":\"zcl.application_protocols.index.v1\", "
+        "\"base_layer\":\"zclassic_l1\", \"protocols\":[...] }\n");
+
+    return api_app_protocols_index_json(result);
+}
+
 static bool rpc_milestone_status(const struct json_value *params, bool help,
                                  struct json_value *result)
 {
@@ -274,6 +290,8 @@ void register_event_rpc_commands(struct rpc_table *t)
         { "control", "timeline",          rpc_timeline,          true },
         { "control", "api",               rpc_api_index,         true },
         { "control", "apiindex",          rpc_api_index,         true },
+        { "control", "appprotocols",      rpc_app_protocols,     true },
+        { "control", "protocols",         rpc_app_protocols,     true },
         { "control", "agent",             rpc_agent_summary,     true },
         { "control", "summary",           rpc_agent_summary,     true },
         { "control", "operatorsummary",   rpc_agent_summary,     true },
