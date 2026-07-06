@@ -891,15 +891,29 @@ static bool cli_static_agent_method(const char *method)
            strcmp(method, "agentdeployguard") == 0;
 }
 
-static bool cli_run_static_agent_method(const char *method,
-                                        const char **params_storage,
-                                        int nparams)
+static int cli_static_agent_result_exit_code(const char *method,
+                                             const struct json_value *result)
+{
+    if (strcmp(method, "agentdeployguard") != 0)
+        return 0;
+    const struct json_value *code_json = json_get(result, "exit_code");
+    if (!code_json || code_json->type != JSON_INT)
+        return 1;
+    int64_t code = json_get_int(code_json);
+    if (code < 0 || code > 125)
+        return 1;
+    return (int)code;
+}
+
+static int cli_run_static_agent_method(const char *method,
+                                       const char **params_storage,
+                                       int nparams)
 {
     struct json_value params, result;
     if (!rpc_convert_values(method, params_storage, (size_t)nparams, &params)) {
         fprintf(stderr, "Bad parameters\n");
         json_free(&params);
-        return false;
+        return 1;
     }
 
     json_init(&result);
@@ -932,18 +946,20 @@ static bool cli_run_static_agent_method(const char *method,
 
     char out[131072];
     size_t need = ok ? json_write(&result, out, sizeof(out)) : 0;
+    int exit_code = 1;
     if (ok && need >= sizeof(out)) {
         fprintf(stderr, "agent contract JSON exceeded CLI buffer\n");
         ok = false;
     } else if (ok) {
         printf("%s\n", out);
+        exit_code = cli_static_agent_result_exit_code(method, &result);
     } else {
         fprintf(stderr, "agent contract generation failed\n");
     }
 
     json_free(&result);
     json_free(&params);
-    return ok;
+    return exit_code;
 }
 
 enum { CLI_MAX_PARAMS = 128 };
@@ -1076,8 +1092,7 @@ static int cli_main(int argc, char **argv)
                                    datadir, cli_port, cli_p2p_port,
                                    cli_https_port, cli_fs_port);
         cli_probe_static_agent_target(datadir);
-        return cli_run_static_agent_method(method, params_storage, nparams) ?
-            0 : 1;
+        return cli_run_static_agent_method(method, params_storage, nparams);
     }
 
     if (!cli_read_cookie(datadir)) {

@@ -3012,6 +3012,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(main_buf, "strcmp(argv[i], \"--agent\")") != NULL);
         ASSERT(strstr(main_buf, "cli_static_agent_method") != NULL);
         ASSERT(strstr(main_buf, "cli_run_static_agent_method") != NULL);
+        ASSERT(strstr(main_buf, "cli_static_agent_result_exit_code") != NULL);
+        ASSERT(strstr(main_buf, "json_get(result, \"exit_code\")") != NULL);
+        ASSERT(strstr(main_buf, "code < 0 || code > 125") != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"agentinterface\")") != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"agentops\")") != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"agentliveness\")")
@@ -3595,6 +3598,10 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf,
                       "zclassic23 agentdeployguard deploy-dev")
                != NULL);
+        ASSERT(strstr(agent_doc_buf, "process exit status") != NULL);
+        ASSERT(strstr(agent_doc_buf, "JSON `exit_code`") != NULL);
+        ASSERT(strstr(agent_doc_buf,
+                      "Scripts therefore do not need\n`jq`") != NULL);
         ASSERT(strstr(agent_doc_buf, "target_lane_name=\"dev\"") != NULL);
         ASSERT(strstr(agent_doc_buf, "target_lane_name=\"canonical\"")
                != NULL);

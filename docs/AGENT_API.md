@@ -558,7 +558,10 @@ always evaluate `target_lane_name="canonical"` and refuse without an operator
 window, while `deploy-dev` / `restart-dev` evaluate `target_lane_name="dev"`
 even when the inspected service is canonical. Use
 `zclassic23 agentdeployguard deploy-dev` when checking the documented dev-lane
-deploy path from automation. If the dev lane has a pending
+deploy path from automation. The native command prints the same JSON every
+time and sets its process exit status from the JSON `exit_code`: `0` means the
+guard allowed the action; nonzero means refuse. Scripts therefore do not need
+`jq` just to decide whether to continue. If the dev lane has a pending
 `auto_reindex_request`, the guard refuses with
 `reason="pending_auto_reindex_requires_explicit_recovery_boot"`,
 `recovery_deploy_blocker=true`, `recovery_status="pending_auto_reindex"`, and
