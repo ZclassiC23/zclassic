@@ -570,11 +570,14 @@ static size_t agent_push_field_surface_entry_json(
 
     size_t pushed = 0;
     if (e->native_key && e->native_key[0] &&
+        !json_get(obj, e->native_key) &&
         c->native_command && c->native_command[0]) {
         json_push_kv_str(obj, e->native_key, c->native_command);
         pushed++;
     }
-    if (e->mcp_key && e->mcp_key[0] && c->mcp_tool && c->mcp_tool[0]) {
+    if (e->mcp_key && e->mcp_key[0] &&
+        !json_get(obj, e->mcp_key) &&
+        c->mcp_tool && c->mcp_tool[0]) {
         json_push_kv_str(obj, e->mcp_key, c->mcp_tool);
         pushed++;
     }
@@ -732,6 +735,9 @@ size_t agent_push_contract_identity_fields_json(struct json_value *obj,
         return 0;
 
     size_t pushed = 0;
+    if (!json_get(obj, "schema") && c->schema && c->schema[0] &&
+        json_push_kv_str(obj, "schema", c->schema))
+        pushed++;
     if (!json_get(obj, "method") &&
         json_push_kv_str(obj, "method", c->method))
         pushed++;

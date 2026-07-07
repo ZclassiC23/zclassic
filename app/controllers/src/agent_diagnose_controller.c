@@ -469,12 +469,11 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     bool timeline_present = false;
 
     json_set_object(result);
-    json_push_kv_str(result, "schema", "zcl.agent_diagnose.v1");
+    agent_push_contract_identity_fields_json(result, "agentdiagnose");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "status", "ok");
     json_push_kv_str(result, "build_commit", zcl_build_commit());
     json_push_kv_bool(result, "no_jq_required", true);
-    agent_push_contract_identity_fields_json(result, "agentdiagnose");
     json_push_kv_str(result, "detail_mode",
                      diagnose_detail_mode_name(detail_mode));
     json_push_kv_bool(result, "embedded_drilldowns", !brief_mode);

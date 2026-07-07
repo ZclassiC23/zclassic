@@ -47,7 +47,7 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
 
     struct json_value commands, api_rules, review, gaps, work;
     json_set_object(result);
-    json_push_kv_str(result, "schema", "zcl.agent_ops.v1");
+    agent_push_contract_identity_fields_json(result, "agentops");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "status", "ok");
     json_push_kv_str(result, "build_commit", zcl_build_commit());

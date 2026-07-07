@@ -1200,9 +1200,11 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
         return strdup("{\"schema\":\"zcl.agent_ops.v1\","
                       "\"api_version\":\"v1\","
                       "\"status\":\"ok\","
-                      "\"no_jq_required\":true,"
+                      "\"method\":\"agentops\","
                       "\"native_command\":\"zclassic23 agentops\","
                       "\"mcp_tool\":\"zcl_agent_ops\","
+                      "\"contract_source\":\"agent_contracts.def\","
+                      "\"no_jq_required\":true,"
                       "\"top_next_work\":[{\"rank\":1,"
                       "\"name\":\"finish_self_verified_utxo_anchor_rebuild\"}],"
                       "\"direct_commands\":[{\"name\":\"live_status\"}]}");
@@ -1624,9 +1626,15 @@ static int test_zcl_agent_dev_tools_dispatch(void)
         ASSERT(json_read(&root, body, strlen(body)));
         ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
                       "zcl.agent_ops.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "method")),
+                      "agentops");
         ASSERT(json_get_bool(json_get(&root, "no_jq_required")));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "native_command")),
+                      "zclassic23 agentops");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "mcp_tool")),
                       "zcl_agent_ops");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "contract_source")),
+                      "agent_contracts.def");
         ASSERT(json_get(&root, "top_next_work") != NULL);
         json_free(&root);
         free(body);

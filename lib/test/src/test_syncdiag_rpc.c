@@ -4058,11 +4058,15 @@ int test_syncdiag_rpc(void)
         ok = ok && ops.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&ops, "schema")),
                           "zcl.agent_ops.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&ops, "method")),
+                          "agentops") == 0;
         ok = ok && json_get_bool(json_get(&ops, "no_jq_required"));
         ok = ok && strcmp(json_get_str(json_get(&ops, "native_command")),
                           "zclassic23 agentops") == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops, "mcp_tool")),
                           "zcl_agent_ops") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&ops, "contract_source")),
+                          "agent_contracts.def") == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops,
                                                 "diagnostics_catalog_command")),
                           "zclassic23 statecatalog") == 0;

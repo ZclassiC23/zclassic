@@ -164,9 +164,10 @@ controller `k_routes[]` arrays.
   local string tables in the controllers. Non-method aliases such as
   `command_center`, `full_status`, and `quality_lanes` also live there as
   direct native/MCP command-surface rows. `agentops` first-call scalar fields
-  such as `native_command`, `diagnose_tool`, `anchor_status_command`, and
-  `peer_incidents_tool` live there too as `g_agent_field_surfaces`. The same
-  registry owns
+  such as `diagnose_tool`, `anchor_status_command`, and `peer_incidents_tool`
+  live there too as `g_agent_field_surfaces`, while its top-level
+  schema/method/native/MCP identity fields come from `agent_contracts.def`.
+  The same registry owns
   `probe_params_json` for parameterized availability probes; nested schema
   rows live in `app/controllers/src/agent_contract_schema_registry.c`
   (`g_agent_schema_surfaces`). REST-index
@@ -194,12 +195,12 @@ controller `k_routes[]` arrays.
 - `zclassic23 agentliveness` / `zcl_agent_liveness` — unified current-lane
   liveness rollup: lane identity, observed listeners, supervisor children,
   background quality verdicts, direct `overall_liveness`, and next drilldowns.
-  Top-level method/native/MCP identity fields are registry-owned by
+  Top-level schema/method/native/MCP identity fields are registry-owned by
   `agent_contracts.def`.
 - `zclassic23 agentdiagnose` / `zcl_agent_diagnose` — bounded no-jq
   diagnosis packet for first-call work: status, healthcheck, peer lifecycle
   incidents, mirror status, timeline pointers, and a safe next action. Its
-  top-level method/native/MCP identity fields are also registry-owned.
+  top-level schema/method/native/MCP identity fields are also registry-owned.
 - `zclassic23 peerincidents` / `zcl_peer_incidents` — compact bounded peer
   incident packet for reconnect storms, duplicate host entries, last
   disconnect reason, flat primary issue fields, host direction/mixed-direction

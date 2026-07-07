@@ -230,11 +230,10 @@ bool rpc_agent_liveness(const struct json_value *params, bool help,
     bool quality_skipped_for_budget = false;
     struct json_value supervisor_state, quality_status;
     json_set_object(result);
-    json_push_kv_str(result, "schema", "zcl.agent_liveness.v1");
+    agent_push_contract_identity_fields_json(result, "agentliveness");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "status", "ok");
     json_push_kv_str(result, "build_commit", zcl_build_commit());
-    agent_push_contract_identity_fields_json(result, "agentliveness");
     json_push_kv_str(result, "semantics",
                      "read-only composition of current_runtime_lane, runtime_services, supervisor_state, and background_quality_status");
 

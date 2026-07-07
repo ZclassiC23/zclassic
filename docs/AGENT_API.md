@@ -44,8 +44,9 @@ command catalogs do not hand-copy their native/MCP names. `agentmap` alias rows
 that are not one-to-one method contracts, such as `command_center`,
 `full_status`, and `quality_lanes`, live in
 `app/controllers/src/agent_contract_registry.c` with direct native/MCP fields
-instead of local controller tuples. `agentops` first-call scalar fields such as
-`native_command`, `diagnose_tool`, `timeline_tool`,
+instead of local controller tuples. `agentops` first-call envelope fields
+(`schema`, `method`, `native_command`, `mcp_tool`, and `contract_source`) plus
+scalar fields such as `diagnose_tool`, `timeline_tool`,
 `anchor_status_command`, and `peer_incidents_tool` are grouped in the same file as
 `g_agent_field_surfaces`, so the compact no-jq command center also reads
 method names from registry data instead of hand-copying them. Registry rows
@@ -129,12 +130,12 @@ runtime or cached field once mentioned a transient `hash-disagreement`.
 rollup. It composes `current_runtime_lane`, observed runtime listeners,
 `runtime_availability`, `supervisor_state`, and `background_quality_status`,
 then adds direct fields such as `overall_liveness`, `agent_next_action`,
-`liveness_summary`, and `recommended_drilldowns`. Its top-level `method`,
-`native_command`, `mcp_tool`, and `contract_source` fields are populated from
-`agent_contracts.def`, not handwritten in the controller. `runtime_services`
-is only the producer process' in-process listener state; when a native static
-command has successfully probed a target lane over RPC, `runtime_availability`
-marks `target_rpc_reachable=true`,
+`liveness_summary`, and `recommended_drilldowns`. Its top-level `schema`,
+`method`, `native_command`, `mcp_tool`, and `contract_source` fields are
+populated from `agent_contracts.def`, not handwritten in the controller.
+`runtime_services` is only the producer process' in-process listener state;
+when a native static command has successfully probed a target lane over RPC,
+`runtime_availability` marks `target_rpc_reachable=true`,
 `liveness_summary.effective_runtime_reachable=true`, and
 `liveness_summary.effective_runtime_scope="target_rpc_probe"`. This keeps
 `producer_runtime_state="inactive_or_static_probe"` from being mistaken for an
@@ -146,9 +147,10 @@ a running node.
 at next?" packet. It composes `agent`, default bounded `healthcheck`,
 `peer_lifecycle incidents`, advisory `getmirrorstatus`, and a small semantic
 timeline slice while staying inside `zcl.first_call_contract.v1`. Its
-top-level `method`, `native_command`, `mcp_tool`, and `contract_source` fields
-come from `agent_contracts.def`. The response duplicates the decision fields
-agents need most (`verdict`, `safe_next_action`, `gap`, `peer_count`,
+top-level `schema`, `method`, `native_command`, `mcp_tool`, and
+`contract_source` fields come from `agent_contracts.def`. The response
+duplicates the decision fields agents need most (`verdict`, `safe_next_action`,
+`gap`, `peer_count`,
 `peer_incident_count`, `duplicate_host_group_count`,
 `peer_host_incident_count`, `peer_host_count_returned`, `peer_primary_host`,
 `peer_primary_host_issue_class`, `peer_primary_host_next_action`,
