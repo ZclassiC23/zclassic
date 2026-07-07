@@ -949,11 +949,14 @@ For a long-running remote zclassic23 test node, run
 The service uses the remote test ports (`18033` P2P, `18233` RPC), appends
 logs to `~/.zclassic23-test/node.log`, and carries the soak resource budget
 (`MemoryHigh=24G`, `CPUWeight=30`, `IOWeight=30`) so a long bootstrap is not
-throttled at the 12G plateau. Dedicated remote hosts can add a reviewed
-`MemoryMax=32G` drop-in; the committed template leaves the hard cap out so the
-repo-wide systemd memory-budget lint does not double-count mutually exclusive
-example nodes. Check it with `make remote-test-node-status`; edit the env file
-before starting or restarting the service.
+throttled at the 12G plateau. Its env example sets
+`ZCL_LANE_SNAPSHOT_LOADER_FLAG=-load-snapshot-at-own-height`, matching the
+soak-node fast-bootstrap hook so remote nodes do not spend days replaying from
+genesis when a consensus-bound loader is available. Dedicated remote hosts can
+add a reviewed `MemoryMax=32G` drop-in; the committed template leaves the hard
+cap out so the repo-wide systemd memory-budget lint does not double-count
+mutually exclusive example nodes. Check it with `make remote-test-node-status`;
+edit the env file before starting or restarting the service.
 
 ## Background proof lanes
 

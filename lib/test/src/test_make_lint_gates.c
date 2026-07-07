@@ -3093,6 +3093,8 @@ static int t_remote_node_update_contract(void)
         ASSERT(strstr(doc, "make remote-test-node-status") != NULL);
         ASSERT(strstr(doc, "MemoryHigh=24G") != NULL);
         ASSERT(strstr(doc, "MemoryMax=32G") != NULL);
+        ASSERT(strstr(doc, "ZCL_LANE_SNAPSHOT_LOADER_FLAG=-load-snapshot-at-own-height")
+               != NULL);
         ASSERT(strstr(doc, "systemd memory-budget lint") != NULL);
         ASSERT(strstr(doc,
                       "deploy/examples/zclassic23-self-update.timer")
@@ -3112,6 +3114,7 @@ static int t_remote_node_update_contract(void)
         ASSERT(strstr(service, "MemoryHigh=24G") != NULL);
         ASSERT(strstr(service, "MemoryMax=32G") != NULL);
         ASSERT(strstr(service, "\nMemoryMax=32G\n") == NULL);
+        ASSERT(strstr(service, "$ZCL_LANE_SNAPSHOT_LOADER_FLAG") != NULL);
         ASSERT(strstr(service, "CPUWeight=30") != NULL);
         ASSERT(strstr(service, "IOWeight=30") != NULL);
         ASSERT(strstr(service, "StandardOutput=append:%h/.zclassic23-test/node.log")
@@ -3126,6 +3129,9 @@ static int t_remote_node_update_contract(void)
         ASSERT(strstr(service, "ZCL_TEST_EXTERNALIP_FLAG=-externalip=")
                != NULL);
         ASSERT(strstr(service, "ZCL_TEST_ADDNODE_FLAGS=-addnode=")
+               != NULL);
+        ASSERT(strstr(service,
+                      "ZCL_LANE_SNAPSHOT_LOADER_FLAG=-load-snapshot-at-own-height")
                != NULL);
         free(service);
         service = NULL;

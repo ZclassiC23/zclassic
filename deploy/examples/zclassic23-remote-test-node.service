@@ -23,6 +23,7 @@ ExecStart=%h/bin/zclassic23 \
     -nobgvalidation \
     $ZCL_TEST_EXTERNALIP_FLAG \
     $ZCL_TEST_ADDNODE_FLAGS \
+    $ZCL_LANE_SNAPSHOT_LOADER_FLAG \
     -showmetrics=0
 
 Restart=always
