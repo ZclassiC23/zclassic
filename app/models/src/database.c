@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -323,6 +324,7 @@ static bool prepare_statements(struct node_db *ndb)
 #define ZCL_NODE_DB_BUSY_TIMEOUT_MS 10000
 #define ZCL_DB_LONG_OP_PROGRESS_OPS 50000
 #define ZCL_DB_LONG_OP_LOG_MS       15000
+#define ZCL_DB_LONG_OP_LOG_MIN_BYTES (64LL * 1024LL * 1024LL)
 
 static void db_set_pragmas(sqlite3 *db)
 {
@@ -354,7 +356,17 @@ struct db_long_op_progress {
 
 static bool db_long_op_log_enabled(const char *path)
 {
-    return path && path[0] && strcmp(path, ":memory:") != 0;
+    if (!path || !path[0] || strcmp(path, ":memory:") == 0)
+        return false;
+
+    const char *force = getenv("ZCL_DB_LONG_OP_LOG_ALL");
+    if (force && force[0] && strcmp(force, "0") != 0)
+        return true;
+
+    struct stat st;
+    if (stat(path, &st) != 0)
+        return false;
+    return st.st_size >= ZCL_DB_LONG_OP_LOG_MIN_BYTES;
 }
 
 static int db_long_op_progress_cb(void *arg)
