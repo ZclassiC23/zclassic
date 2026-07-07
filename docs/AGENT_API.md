@@ -45,8 +45,8 @@ that are not one-to-one method contracts, such as `command_center`,
 `full_status`, and `quality_lanes`, live in
 `app/controllers/src/agent_contract_registry.c` with direct native/MCP fields
 instead of local controller tuples. `agentops` first-call scalar fields such as
-`native_command`, `diagnose_tool`, `timeline_tool`, and
-`anchor_status_command` are grouped in the same file as
+`native_command`, `diagnose_tool`, `timeline_tool`,
+`anchor_status_command`, and `peer_incidents_tool` are grouped in the same file as
 `g_agent_field_surfaces`, so the compact no-jq command center also reads
 method names from registry data instead of hand-copying them. Registry rows
 also own `probe_params_json`; parameterized first-call probes such as `dbquery`
@@ -291,9 +291,10 @@ For architecture and operator planning, the first call is `zcl_agent_ops`
 through MCP, or `zclassic23 agentops` from the native binary. It returns
 `zcl.agent_ops.v1`: direct decision fields, `no_jq_required=true`, current lane
 and runtime build contracts, background quality summary fields, named
-drill-down commands, API gaps, and the top next architecture work list. Do not
-pipe larger discovery payloads through `jq` to build this answer by hand; add a
-field to `agentops` when an agent repeatedly needs the same decision.
+drill-down commands, direct scalar pointers such as `peer_incidents_command` /
+`peer_incidents_tool`, API gaps, and the top next architecture work list. Do
+not pipe larger discovery payloads through `jq` to build this answer by hand;
+add a field to `agentops` when an agent repeatedly needs the same decision.
 
 The first-call operator status view is `zcl_agent` through MCP, or
 `zclassic23 agent` through the native binary. It returns the stable status,

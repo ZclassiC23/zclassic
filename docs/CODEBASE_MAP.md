@@ -164,8 +164,9 @@ controller `k_routes[]` arrays.
   local string tables in the controllers. Non-method aliases such as
   `command_center`, `full_status`, and `quality_lanes` also live there as
   direct native/MCP command-surface rows. `agentops` first-call scalar fields
-  such as `native_command`, `diagnose_tool`, and `anchor_status_command` live
-  there too as `g_agent_field_surfaces`. The same registry owns
+  such as `native_command`, `diagnose_tool`, `anchor_status_command`, and
+  `peer_incidents_tool` live there too as `g_agent_field_surfaces`. The same
+  registry owns
   `probe_params_json` for parameterized availability probes; nested schema
   rows live in `app/controllers/src/agent_contract_schema_registry.c`
   (`g_agent_schema_surfaces`). REST-index

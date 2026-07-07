@@ -4066,6 +4066,12 @@ int test_syncdiag_rpc(void)
                                                 "anchor_status_command")),
                           "zclassic23 anchorstatus [-datadir=<anchor-datadir>]")
             == 0;
+        ok = ok && strcmp(json_get_str(json_get(&ops,
+                                                "peer_incidents_command")),
+                          "zclassic23 peerincidents") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&ops,
+                                                "peer_incidents_tool")),
+                          "zcl_peer_incidents") == 0;
         ok = ok && ops_direct_agentops &&
             strcmp(json_get_str(json_get(ops_direct_agentops, "schema")),
                    "zcl.agent_ops.v1") == 0;
@@ -4129,7 +4135,7 @@ int test_syncdiag_rpc(void)
         ok = ok &&
             agent_contract_work_surface_count("missing.surface") == 0;
         ok = ok &&
-            agent_contract_field_surface_count("agentops.first_call") == 8;
+            agent_contract_field_surface_count("agentops.first_call") == 9;
         ok = ok &&
             agent_contract_field_surface_count("missing.surface") == 0;
         ok = ok &&
