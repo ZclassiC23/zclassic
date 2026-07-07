@@ -1434,8 +1434,8 @@ static int t_e11_doc_accuracy(void)
 }
 
 /* Model AR lifecycle gate — model sources must not hand-run save callback
- * internals. They must use AR_BEGIN_SAVE / AR_FINISH_SAVE so validation and
- * hooks stay one mechanical lifecycle. */
+ * internals, and real db_<model>_save() definitions must reach the AR save
+ * macros so validation and hooks stay one mechanical lifecycle. */
 static int t_model_ar_lifecycle_gate(void)
 {
     int failures = 0;
@@ -1451,15 +1451,32 @@ static int t_model_ar_lifecycle_gate(void)
                     "}\n") == 0)
             ? 0
             : -1;
-    int trip_rc =
+    int direct_trip_rc =
         planted == 0 ? run_gate_script(MODEL_AR_SCRIPT_REL, NULL) : -1;
+    unlink_rel(MODEL_AR_FIXTURE_DST);
+    int planted_bare_save =
+        (repo_path(path, sizeof(path), MODEL_AR_FIXTURE_DST) == 0 &&
+         write_file(path,
+                    "#include <stdbool.h>\n"
+                    "struct node_db;\n"
+                    "bool db_fixture_save(struct node_db *ndb, const void *row) {\n"
+                    "    (void)ndb;\n"
+                    "    (void)row;\n"
+                    "    return true;\n"
+                    "}\n") == 0)
+            ? 0
+            : -1;
+    int bare_save_trip_rc =
+        planted_bare_save == 0 ? run_gate_script(MODEL_AR_SCRIPT_REL, NULL) : -1;
     unlink_rel(MODEL_AR_FIXTURE_DST);
     int recover_rc = run_gate_script(MODEL_AR_SCRIPT_REL, NULL);
 
-    TEST("[lint-gate] model AR lifecycle gate: clean, trips direct callbacks, recovers") {
+    TEST("[lint-gate] model AR lifecycle gate: clean, trips bypasses, recovers") {
         ASSERT(baseline_rc == 0);
         ASSERT(planted == 0);
-        ASSERT(trip_rc != 0);
+        ASSERT(direct_trip_rc != 0);
+        ASSERT(planted_bare_save == 0);
+        ASSERT(bare_save_trip_rc != 0);
         ASSERT(recover_rc == 0);
         PASS();
     } _test_next:;

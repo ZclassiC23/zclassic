@@ -33,6 +33,109 @@ for f in "${files[@]}"; do
     done < <(grep -nHE '\bar_run_(before|after)_save[[:space:]]*\(' "$f" || true)
 done
 
+set +e
+save_scan=$(awk '
+function reset_fn() {
+    in_fn = 0
+    saw_open = 0
+    depth = 0
+    fn_name = ""
+    fn_body = ""
+    fn_line = 0
+}
+
+function brace_delta(s, tmp, opens, closes) {
+    tmp = s
+    opens = gsub(/\{/, "{", tmp)
+    tmp = s
+    closes = gsub(/\}/, "}", tmp)
+    return opens - closes
+}
+
+function finish_fn(   key) {
+    key = FILENAME SUBSEP fn_line SUBSEP fn_name
+    keys[++key_count] = key
+    names[key] = fn_name
+    paths[key] = FILENAME
+    lines[key] = fn_line
+    bodies[key] = fn_body
+    if (fn_body ~ /AR_BEGIN_SAVE|AR_ADHOC_SAVE|AR_CACHED_SAVE|ar-lifecycle-ok:/)
+        ar_reached[FILENAME SUBSEP fn_name] = 1
+    if (fn_name ~ /^db_[A-Za-z0-9_]+_save$/)
+        targets[++target_count] = key
+    reset_fn()
+}
+
+function calls_ar_helper(body, path,   i, key, name, needle) {
+    for (i = 1; i <= key_count; i++) {
+        key = keys[i]
+        if (paths[key] != path)
+            continue
+        name = names[key]
+        if (!ar_reached[path SUBSEP name])
+            continue
+        needle = "(^|[^A-Za-z0-9_])" name "[[:space:]]*\\("
+        if (body ~ needle)
+            return 1
+    }
+    return 0
+}
+
+BEGIN { reset_fn() }
+
+!in_fn &&
+/^[[:space:]]*(static[[:space:]]+)?bool[[:space:]]+[A-Za-z_][A-Za-z0-9_]*[[:space:]]*\(/ {
+    line = $0
+    sub(/^.*bool[[:space:]]+/, "", line)
+    sub(/[[:space:]]*\(.*/, "", line)
+    fn_name = line
+    fn_line = FNR
+    in_fn = 1
+}
+
+in_fn {
+    fn_body = fn_body $0 "\n"
+    if ($0 ~ /\{/)
+        saw_open = 1
+    if (saw_open)
+        depth += brace_delta($0)
+    if (saw_open && depth == 0)
+        finish_fn()
+}
+
+ENDFILE {
+    if (in_fn) {
+        printf("FATAL: unmatched function braces in %s at line %d\n",
+               FILENAME, fn_line) > "/dev/stderr"
+        exit 2
+    }
+    reset_fn()
+}
+
+END {
+    for (i = 1; i <= target_count; i++) {
+        key = targets[i]
+        body = bodies[key]
+        if (body ~ /AR_BEGIN_SAVE|AR_ADHOC_SAVE|AR_CACHED_SAVE|ar-lifecycle-ok:/)
+            continue
+        if (calls_ar_helper(body, paths[key]))
+            continue
+        printf("%s:%d: %s does not reach AR_BEGIN_SAVE / AR_ADHOC_SAVE / AR_CACHED_SAVE\n",
+               paths[key], lines[key], names[key])
+    }
+}
+' app/models/src/*.c
+)
+save_rc=$?
+set -e
+if (( save_rc >= 2 )); then
+    exit "$save_rc"
+fi
+while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    violations+=("$line")
+done <<< "$save_scan"
+
 if (( ${#violations[@]} == 0 )); then
     echo "check_model_ar_lifecycle: clean — model saves use AR lifecycle macros"
     exit 0

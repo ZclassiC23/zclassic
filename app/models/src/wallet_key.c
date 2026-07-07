@@ -7,6 +7,9 @@
  * validates :privkey, presence: true
  * validates :pubkey_len, custom: "must be 33 (compressed)"
  *
+ * WalletSeed:
+ * validates :seed, presence: true
+ *
  * SaplingKey:
  * validates :ivk, presence: true
  * validates :xsk, :xfvk, :diversifier, :pk_d, presence: true
@@ -41,6 +44,12 @@
 DEFINE_MODEL_CALLBACKS(wallet_key)
 DEFINE_MODEL_CALLBACKS(sapling_key)
 DEFINE_MODEL_CALLBACKS(wallet_script)
+DEFINE_MODEL_CALLBACKS(wallet_seed)
+
+struct db_wallet_seed_row {
+    uint8_t seed[32];
+    uint32_t next_child;
+};
 
 static bool wallet_key_before_save(void *record, void *ctx)
 {
@@ -193,6 +202,14 @@ bool db_wallet_script_validate(const struct db_wallet_script *sc,
         "redeem_script", "can't be null");
     validates_positive(errors, sc, script_len);
     validates_max(errors, sc, script_len, 10000);
+    return !ar_errors_any(errors);
+}
+
+static bool db_wallet_seed_validate(const struct db_wallet_seed_row *row,
+                                    struct ar_errors *errors)
+{
+    ar_errors_clear(errors);
+    validates_presence_of(errors, row, seed);
     return !ar_errors_any(errors);
 }
 
@@ -400,15 +417,20 @@ bool db_wallet_seed_save(struct node_db *ndb, const uint8_t seed[32],
                          uint32_t next_child)
 {
     if (!ndb->open) return false;
-    static const uint8_t zero[32] = {0};
-    if (memcmp(seed, zero, 32) == 0) return false;
+    struct db_wallet_seed_row row;
+    memset(&row, 0, sizeof(row));
+    if (seed)
+        memcpy(row.seed, seed, sizeof(row.seed));
+    row.next_child = next_child;
 
     sqlite3_stmt *s = NULL;
-    AR_EXEC_BOOL(ndb, s,
+    AR_ADHOC_SAVE(ndb, s,
         "INSERT OR REPLACE INTO wallet_seed(id,seed,next_child)"
         " VALUES(1,?,?)",
-        AR_BIND_BLOB(s, 1, seed, 32);
-        AR_BIND_INT(s, 2, (int)next_child));
+        db_wallet_seed_callbacks(), "wallet_seed", &row,
+        db_wallet_seed_validate,
+        AR_BIND_BLOB(s, 1, row.seed, 32);
+        AR_BIND_INT(s, 2, (int)row.next_child));
 }
 
 bool db_wallet_seed_load(struct node_db *ndb, uint8_t seed[32],
