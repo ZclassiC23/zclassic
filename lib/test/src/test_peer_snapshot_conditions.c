@@ -178,6 +178,46 @@ int test_peer_snapshot_conditions(void)
 
     {
         struct fake_clock_peer_snapshot clock;
+        fake_clock_install(&clock, 5000);
+        struct connman cm;
+        struct download_manager dm;
+        struct main_state ms;
+        reset_peer_snapshot_conditions(&cm, &dm, &ms);
+        bool ok = true;
+        register_sync_violation_lag();
+
+        struct block_index tip1 = {0};
+        tip1.nHeight = 100;
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip1);
+        struct p2p_node peer = {0};
+        peer.id = 1;
+        peer.starting_height = 250;
+        peer.state = PEER_ACTIVE;
+        peer.services = NODE_NETWORK;
+        struct p2p_node *peers[1] = { &peer };
+        cm.manager.nodes = peers;
+        cm.manager.num_nodes = 1;
+
+        condition_engine_tick();
+        fake_clock_set(&clock, 5601);
+        struct block_index tip2 = {0};
+        tip2.nHeight = 101;  /* still >100 behind, but visibly progressing */
+        tip2.pprev = &tip1;
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip2);
+        condition_engine_tick();
+        ok = ok && sync_violation_lag_test_remedy_calls() == 0;
+        ok = ok && !peer.disconnect;
+
+        fake_clock_set(&clock, 6202);
+        condition_engine_tick();
+        ok = ok && sync_violation_lag_test_remedy_calls() == 1;
+        ok = ok && peer.disconnect;
+        PEER_SNAPSHOT_CHECK("sync violation timer resets on local progress", ok);
+        cleanup_peer_snapshot_conditions();
+    }
+
+    {
+        struct fake_clock_peer_snapshot clock;
         fake_clock_install(&clock, 4000);
         struct connman cm;
         struct download_manager dm;

@@ -21,6 +21,7 @@
 
 static _Atomic int64_t g_first_seen_unix;
 static _Atomic int64_t g_last_attempt_unix;
+static _Atomic int g_last_local_seen;
 static _Atomic int g_local_tip_at_detect;
 static _Atomic int g_peer_max_at_detect;
 static _Atomic int g_gap_at_detect;
@@ -44,10 +45,18 @@ static bool detect_sync_violation_lag(void)
     int gap = peer_max - local;
     if (peer_max <= 0 || local < 0 || gap <= SYNC_VIOLATION_GAP) {
         atomic_store(&g_first_seen_unix, 0);
+        atomic_store(&g_last_local_seen, local);
         return false;
     }
 
     int64_t now = platform_time_wall_unix();
+    int last_local = atomic_load(&g_last_local_seen);
+    if (last_local != local) {
+        atomic_store(&g_last_local_seen, local);
+        atomic_store(&g_first_seen_unix, now);
+        return false;
+    }
+
     int64_t first = atomic_load(&g_first_seen_unix);
     if (first == 0) {
         atomic_store(&g_first_seen_unix, now);
@@ -131,6 +140,7 @@ void sync_violation_lag_test_reset(void)
 {
     atomic_store(&g_first_seen_unix, 0);
     atomic_store(&g_last_attempt_unix, 0);
+    atomic_store(&g_last_local_seen, -1);
     atomic_store(&g_local_tip_at_detect, -1);
     atomic_store(&g_peer_max_at_detect, -1);
     atomic_store(&g_gap_at_detect, 0);
