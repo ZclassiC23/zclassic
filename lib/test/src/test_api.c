@@ -1765,6 +1765,8 @@ int test_api(void)
             api_test_find_contract(routes, "/api/v1/service-catalog");
         const struct json_value *service_catalog_show =
             api_test_find_contract(routes, "/api/v1/service-catalog/{service}");
+        const struct json_value *service_operations_route =
+            api_test_find_contract(routes, "/api/v1/service-operations");
         const struct json_value *service_operation_show =
             api_test_find_contract(routes,
                                   "/api/v1/service-operations/{operation_id}");
@@ -1966,6 +1968,26 @@ int test_api(void)
                     "read_item") == 0;
         ok = ok && service_catalog_show &&
              api_test_contract_has_id_param(service_catalog_show, "service");
+        ok = ok && service_operations_route &&
+             strcmp(json_get_str(json_get(service_operations_route,
+                                    "response_schema")),
+                    "zcl.service_operations.index.v1") == 0;
+        ok = ok && service_operations_route &&
+             strcmp(json_get_str(json_get(service_operations_route,
+                                    "crud_name")),
+                    "read_collection") == 0;
+        ok = ok && service_operations_route &&
+             api_test_contract_has_query(service_operations_route, "service");
+        ok = ok && service_operations_route &&
+             api_test_contract_has_query(service_operations_route,
+                                         "write_safety");
+        ok = ok && service_operations_route &&
+             api_test_contract_has_query(service_operations_route,
+                                         "preferred_interface");
+        ok = ok && service_operations_route &&
+             api_test_contract_has_query(service_operations_route, "status");
+        ok = ok && service_operations_route &&
+             api_test_contract_has_query(service_operations_route, "surface");
         ok = ok && service_operation_show &&
              strcmp(json_get_str(json_get(service_operation_show,
                                     "response_schema")),
@@ -2164,7 +2186,7 @@ int test_api(void)
                           "zclassic23 servicecatalog") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
                                                 "service_operations_command")),
-                          "zclassic23 serviceoperations [operation_id]") == 0;
+                          "zclassic23 serviceoperations [operation_id|key=value...]") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
                                                 "first_command")),
                           "zclassic23 agent") == 0;
@@ -2812,6 +2834,67 @@ int test_api(void)
                     "mcp") == 0;
         ok = ok && register_op &&
              json_get_bool(json_get(register_op, "destructive"));
+        static uint8_t filtered_ops_resp[131072];
+        n = api_handle_request(
+            "GET",
+            "/api/v1/service-operations?service=znam_names&"
+            "write_safety=public_read_only&preferred_interface=rest&"
+            "surface=rest&status=active",
+            NULL, 0, filtered_ops_resp, sizeof(filtered_ops_resp));
+        body = api_test_body(filtered_ops_resp, n,
+                             sizeof(filtered_ops_resp));
+        struct json_value filtered_root;
+        json_init(&filtered_root);
+        ok = ok && n > 0 && body &&
+             json_read(&filtered_root, body, strlen(body));
+        const struct json_value *filters =
+            json_get(&filtered_root, "filters");
+        const struct json_value *filtered_ops =
+            json_get(&filtered_root, "operations");
+        const struct json_value *filtered_summary =
+            json_get(&filtered_root, "summary");
+        ok = ok && filters && json_get_bool(json_get(filters, "active"));
+        ok = ok && filters &&
+             strcmp(json_get_str(json_get(filters, "service")),
+                    "znam_names") == 0;
+        ok = ok && filters &&
+             strcmp(json_get_str(json_get(filters, "write_safety")),
+                    "public_read_only") == 0;
+        ok = ok && filters &&
+             strcmp(json_get_str(json_get(filters,
+                                          "preferred_interface")),
+                    "rest") == 0;
+        ok = ok && filters &&
+             strcmp(json_get_str(json_get(filters, "surface")),
+                    "rest") == 0;
+        ok = ok && filtered_ops && filtered_ops->type == JSON_ARR &&
+             json_size(filtered_ops) == 3;
+        ok = ok && filtered_summary &&
+             json_get_int(json_get(filtered_summary,
+                                   "operation_count")) == 3;
+        ok = ok && filtered_summary &&
+             json_get_int(json_get(filtered_summary,
+                                   "destructive_count")) == 0;
+        ok = ok && api_test_find_str_field(filtered_ops, "operation_id",
+                                           "znam_names.list_names");
+        ok = ok && api_test_find_str_field(filtered_ops, "operation_id",
+                                           "znam_names.resolve_name");
+        ok = ok && api_test_find_str_field(
+            filtered_ops, "operation_id",
+            "znam_names.resolve_service_directory");
+        json_free(&filtered_root);
+
+        n = api_handle_request("GET",
+                               "/api/v1/service-operations?"
+                               "write_safety=unsafe",
+                               NULL, 0, filtered_ops_resp,
+                               sizeof(filtered_ops_resp));
+        filtered_ops_resp[n < sizeof(filtered_ops_resp)
+                              ? n : sizeof(filtered_ops_resp) - 1] = '\0';
+        ok = ok && strstr((char *)filtered_ops_resp,
+                          "HTTP/1.1 400 Bad Request") != NULL;
+        ok = ok && strstr((char *)filtered_ops_resp,
+                          "invalid_service_operation_filter") != NULL;
         {
             static uint8_t index_resp[262144];
             struct json_value index_root;
@@ -3234,6 +3317,21 @@ int test_api(void)
              strcmp(json_get_str(json_get(service_operations,
                                           "x-crud-name")),
                     "read_collection") == 0;
+        ok = ok && service_operations &&
+             api_test_openapi_has_param(service_operations, "service",
+                                        "query");
+        ok = ok && service_operations &&
+             api_test_openapi_has_param(service_operations, "write_safety",
+                                        "query");
+        ok = ok && service_operations &&
+             api_test_openapi_has_param(service_operations,
+                                        "preferred_interface", "query");
+        ok = ok && service_operations &&
+             api_test_openapi_has_param(service_operations, "status",
+                                        "query");
+        ok = ok && service_operations &&
+             api_test_openapi_has_param(service_operations, "surface",
+                                        "query");
         ok = ok && service_catalog_show &&
              strcmp(json_get_str(json_get(service_catalog_show,
                                           "x-response-schema")),

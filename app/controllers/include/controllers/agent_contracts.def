@@ -184,7 +184,7 @@ AGENT_CONTRACT("servicecatalog", "sovereign_service_catalog",
                "UX-oriented sovereign service catalog with REST, native, MCP, transport, CRUD, and trust boundaries")
 AGENT_CONTRACT("serviceoperations", "sovereign_service_operations",
                "zcl.service_operations.index.v1",
-               "zclassic23 serviceoperations [operation_id]",
+               "zclassic23 serviceoperations [operation_id|key=value...]",
                "zcl_service_operations",
                "GET /api/v1/service-operations",
                "service_operations_command", "service_operations_tool",

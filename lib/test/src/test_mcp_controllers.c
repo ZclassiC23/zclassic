@@ -654,12 +654,22 @@ static int test_zcl_agent_dev_tools_shape(void)
         ASSERT(service_catalog->params[0].required == false);
         ASSERT_STR_EQ(service_catalog->params[0].default_json, "\"\"");
         ASSERT(service_catalog->self_test_args != NULL);
-        ASSERT(service_operations->num_params == 1);
+        ASSERT(service_operations->num_params == 6);
         ASSERT(strcmp(service_operations->params[0].name,
                       "operation_id") == 0);
         ASSERT(service_operations->params[0].type == MCP_PARAM_STR);
         ASSERT(service_operations->params[0].required == false);
         ASSERT_STR_EQ(service_operations->params[0].default_json, "\"\"");
+        ASSERT_STR_EQ(service_operations->params[1].name, "service");
+        ASSERT(service_operations->params[1].type == MCP_PARAM_STR);
+        ASSERT_STR_EQ(service_operations->params[2].name, "write_safety");
+        ASSERT(service_operations->params[2].enum_csv != NULL);
+        ASSERT(strstr(service_operations->params[2].enum_csv,
+                      "public_read_only") != NULL);
+        ASSERT_STR_EQ(service_operations->params[3].name,
+                      "preferred_interface");
+        ASSERT_STR_EQ(service_operations->params[4].name, "status");
+        ASSERT_STR_EQ(service_operations->params[5].name, "surface");
         ASSERT(service_operations->self_test_args != NULL);
         ASSERT(ops->num_params == 0);
         ASSERT(liveness->num_params == 1);
@@ -1187,6 +1197,7 @@ static bool g_agent_liveness_brief_params_seen;
 static bool g_agent_liveness_full_params_seen;
 static bool g_service_catalog_name_params_seen;
 static bool g_service_operations_id_params_seen;
+static bool g_service_operations_filter_params_seen;
 
 static char *mock_agent_dev_rpc(const char *method, const char *params_json)
 {
@@ -1326,6 +1337,23 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
                           "\"mcp_tool\":\"zcl_bootstrapstatus\","
                           "\"write_safety\":\"public_read_only\","
                           "\"agent_preferred_interface\":\"rest\"}");
+        }
+        if (params_json && contains(params_json, "service=bootstrap") &&
+            contains(params_json, "write_safety=public_read_only")) {
+            g_service_operations_filter_params_seen = true;
+            return strdup("{\"schema\":\"zcl.service_operations.index.v1\","
+                          "\"api_version\":\"v1\","
+                          "\"filters\":{\"active\":true,"
+                          "\"service\":\"bootstrap\","
+                          "\"write_safety\":\"public_read_only\"},"
+                          "\"operation_count\":2,"
+                          "\"summary\":{\"operation_count\":2,"
+                          "\"destructive_count\":0},"
+                          "\"operations\":["
+                          "{\"operation_id\":\"bootstrap.read_bootstrap_status\","
+                          "\"service\":\"bootstrap\"},"
+                          "{\"operation_id\":\"bootstrap.list_peer_projection\","
+                          "\"service\":\"bootstrap\"}]}");
         }
         return strdup("{\"schema\":\"zcl.service_operations.index.v1\","
                       "\"api_version\":\"v1\","
@@ -1867,6 +1895,31 @@ static int test_zcl_agent_dev_tools_dispatch(void)
         ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
                       "zcl.service_operations.index.v1");
         ASSERT(json_get(&root, "summary") != NULL);
+        ops = json_get(&root, "operations");
+        ASSERT(ops && ops->type == JSON_ARR && json_size(ops) == 2);
+        json_free(&root);
+        free(body);
+
+        const char *operation_filter_args =
+            "{\"service\":\"bootstrap\","
+            "\"write_safety\":\"public_read_only\"}";
+        json_free(&args);
+        json_init(&args);
+        ASSERT(json_read(&args, operation_filter_args,
+                         strlen(operation_filter_args)));
+        g_service_operations_filter_params_seen = false;
+        body = mcp_router_dispatch("zcl_service_operations", &args);
+        ASSERT(body != NULL);
+        ASSERT(g_service_operations_filter_params_seen);
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.service_operations.index.v1");
+        const struct json_value *filters = json_get(&root, "filters");
+        ASSERT(filters && json_get_bool(json_get(filters, "active")));
+        ASSERT_STR_EQ(json_get_str(json_get(filters, "service")),
+                      "bootstrap");
+        ASSERT(json_get_int(json_get(json_get(&root, "summary"),
+                                     "operation_count")) == 2);
         ops = json_get(&root, "operations");
         ASSERT(ops && ops->type == JSON_ARR && json_size(ops) == 2);
         json_free(&root);

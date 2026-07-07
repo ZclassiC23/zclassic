@@ -234,18 +234,84 @@ static void rpc_service_operation_error_json(const char *operation_id,
                      "a_listed_operation_id");
 }
 
+static void rpc_service_operation_filter_error_json(const char *message,
+                                                    struct json_value *result)
+{
+    json_set_object(result);
+    json_push_kv_str(result, "schema", "zcl.service_operation_error.v1");
+    json_push_kv_str(result, "api_version", ZCL_REST_API_VERSION);
+    json_push_kv_str(result, "error", "invalid_filter");
+    json_push_kv_str(result, "message",
+                     message && message[0] ? message :
+                     "invalid service operation filter");
+    json_push_kv_str(result, "allowed_filters",
+                     "service,write_safety,preferred_interface,status,"
+                     "surface");
+    json_push_kv_str(result, "example",
+                     "serviceoperations service=bootstrap "
+                     "write_safety=public_read_only");
+}
+
+static void rpc_service_operation_filter_arg(
+    const char *arg,
+    char *service,
+    size_t service_len,
+    char *write_safety,
+    size_t write_safety_len,
+    char *preferred_interface,
+    size_t preferred_interface_len,
+    char *status,
+    size_t status_len,
+    char *surface,
+    size_t surface_len)
+{
+    char key[40];
+    const char *eq;
+    size_t key_len;
+    const char *value;
+
+    if (!arg || !arg[0])
+        return;
+    eq = strchr(arg, '=');
+    if (!eq || eq == arg || !eq[1])
+        return;
+    key_len = (size_t)(eq - arg);
+    if (key_len >= sizeof(key))
+        key_len = sizeof(key) - 1;
+    memcpy(key, arg, key_len);
+    key[key_len] = '\0';
+    value = eq + 1;
+
+    if (strcmp(key, "service") == 0 && service && service_len > 0)
+        snprintf(service, service_len, "%s", value);
+    else if (strcmp(key, "write_safety") == 0 &&
+             write_safety && write_safety_len > 0)
+        snprintf(write_safety, write_safety_len, "%s", value);
+    else if ((strcmp(key, "preferred_interface") == 0 ||
+              strcmp(key, "interface") == 0) &&
+             preferred_interface && preferred_interface_len > 0)
+        snprintf(preferred_interface, preferred_interface_len, "%s", value);
+    else if (strcmp(key, "status") == 0 && status && status_len > 0)
+        snprintf(status, status_len, "%s", value);
+    else if (strcmp(key, "surface") == 0 && surface && surface_len > 0)
+        snprintf(surface, surface_len, "%s", value);
+}
+
 bool rpc_service_operations(const struct json_value *params, bool help,
                             struct json_value *result)
 {
     RPC_HELP(help, result,
-        "serviceoperations ( operation_id )\n"
+        "serviceoperations ( operation_id | key=value... )\n"
         "\nReturn the versioned zclassic23 service-operation catalog. This\n"
         "is the same JSON body served by GET /api/v1/service-operations\n"
         "and exposed through MCP zcl_service_operations. Pass an optional\n"
         "service.operation id, such as znam_names.resolve_name, to return\n"
         "the same contract as GET /api/v1/service-operations/{operation_id}.\n"
+        "Pass filters as key=value pairs for a bounded collection subset.\n"
         "\nArguments:\n"
         "1. operation_id (string, optional) Stable service.operation id\n"
+        "   or key=value filters: service, write_safety,\n"
+        "   preferred_interface, status, surface\n"
         "\nResult:\n"
         "  { \"schema\":\"zcl.service_operations.index.v1\", "
         "\"operations\":[...] }\n"
@@ -253,11 +319,58 @@ bool rpc_service_operations(const struct json_value *params, bool help,
         "\"operation_id\":\"...\" }\n");
 
     const char *operation_id = NULL;
-    if (params && params->type == JSON_ARR && params->num_children > 0)
-        operation_id = json_get_str(&params->children[0]);
+    const char *service = NULL;
+    const char *write_safety = NULL;
+    const char *preferred_interface = NULL;
+    const char *status = NULL;
+    const char *surface = NULL;
+    char service_buf[64] = {0};
+    char write_safety_buf[40] = {0};
+    char preferred_interface_buf[32] = {0};
+    char status_buf[32] = {0};
+    char surface_buf[16] = {0};
 
-    if (!operation_id || !operation_id[0])
-        return api_service_operations_index_json(result);
+    if (params && params->type == JSON_OBJ) {
+        operation_id = json_get_str(json_get(params, "operation_id"));
+        service = json_get_str(json_get(params, "service"));
+        write_safety = json_get_str(json_get(params, "write_safety"));
+        preferred_interface =
+            json_get_str(json_get(params, "preferred_interface"));
+        status = json_get_str(json_get(params, "status"));
+        surface = json_get_str(json_get(params, "surface"));
+    } else if (params && params->type == JSON_ARR &&
+               params->num_children > 0) {
+        const char *first = json_get_str(&params->children[0]);
+        if (first && first[0] && !strchr(first, '='))
+            operation_id = first;
+        else {
+            for (size_t i = 0; i < params->num_children; i++) {
+                rpc_service_operation_filter_arg(
+                    json_get_str(&params->children[i]),
+                    service_buf, sizeof(service_buf),
+                    write_safety_buf, sizeof(write_safety_buf),
+                    preferred_interface_buf,
+                    sizeof(preferred_interface_buf),
+                    status_buf, sizeof(status_buf),
+                    surface_buf, sizeof(surface_buf));
+            }
+            service = service_buf;
+            write_safety = write_safety_buf;
+            preferred_interface = preferred_interface_buf;
+            status = status_buf;
+            surface = surface_buf;
+        }
+    }
+
+    if (!operation_id || !operation_id[0]) {
+        char err[192] = {0};
+        if (api_service_operations_filtered_index_json(
+                result, service, write_safety, preferred_interface, status,
+                surface, err, sizeof(err)))
+            return true;
+        rpc_service_operation_filter_error_json(err, result);
+        return true;
+    }
 
     if (api_service_operation_show_json(operation_id, result))
         return true;

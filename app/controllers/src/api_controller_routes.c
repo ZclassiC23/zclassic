@@ -120,9 +120,6 @@ static const struct api_json_resource_route k_api_json_resource_routes[] = {
     { "GET", "/api/service-catalog", "service_catalog", "show",
       api_service_catalog_json, ZCL_SERVICE_CATALOG_SCHEMA, "",
       "static", "", false },
-    { "GET", "/api/service-operations", "service_operations", "index",
-      api_service_operations_index_json, ZCL_SERVICE_OPERATIONS_INDEX_SCHEMA,
-      "", "static", "", false },
     { "GET", "/api/names", "names", "index", api_name_list,
       "zcl.names.index.v1", "", "znam_projection", "", false },
     { "GET", "/api/market", "market", "index", api_market_list,
@@ -153,6 +150,7 @@ enum api_dynamic_dispatch_kind {
     API_DYN_NAME_SHOW,
     API_DYN_PROTOCOL_SHOW,
     API_DYN_SERVICE_CATALOG_SHOW,
+    API_DYN_SERVICE_OPERATIONS_INDEX,
     API_DYN_SERVICE_OPERATION_SHOW,
 };
 
@@ -224,6 +222,10 @@ static const struct api_dynamic_resource_route k_api_dynamic_resource_routes[] =
     { "GET", "/api/service-catalog/{service}", "service_catalog", "show",
       ZCL_SERVICE_CONTRACT_SCHEMA, "", "static", "", false,
       API_DYN_SERVICE_CATALOG_SHOW },
+    { "GET", "/api/service-operations", "service_operations", "index",
+      ZCL_SERVICE_OPERATIONS_INDEX_SCHEMA,
+      "service,write_safety,preferred_interface,status,surface", "static",
+      "", false, API_DYN_SERVICE_OPERATIONS_INDEX },
     { "GET", "/api/service-operations/{operation_id}", "service_operations",
       "show", ZCL_SERVICE_OPERATION_SCHEMA, "", "static", "", false,
       API_DYN_SERVICE_OPERATION_SHOW },
@@ -540,6 +542,8 @@ static size_t api_dynamic_route_dispatch(
         return api_json_error(response, response_max, JSON_404_HEADERS,
                               "Service not found");
     }
+    case API_DYN_SERVICE_OPERATIONS_INDEX:
+        return api_serve_service_operations(path, response, response_max);
     case API_DYN_SERVICE_OPERATION_SHOW: {
         struct json_value jr = {0};
         if (api_service_operation_show_json(param, &jr)) {

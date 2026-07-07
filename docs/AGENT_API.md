@@ -19,7 +19,7 @@ same native RPC methods. Shell wrappers are compatibility shims only.
 | Anchor producer status | `zclassic23 anchorstatus` | `zcl_rpc(method="anchorstatus")` |
 | Application protocol catalog | `zclassic23 appprotocols` | `zcl_app_protocols` |
 | Sovereign service catalog | `zclassic23 servicecatalog [name]` | `zcl_service_catalog(name?)` |
-| Sovereign operation catalog | `zclassic23 serviceoperations [operation_id]` | `zcl_service_operations(operation_id?)` |
+| Sovereign operation catalog | `zclassic23 serviceoperations [operation_id|key=value...]` | `zcl_service_operations(operation_id?, service?, write_safety?, preferred_interface?, status?, surface?)` |
 | Preferred interface contract | `zclassic23 agentinterface` | `zcl_agent_interface` |
 | State subsystem catalog | `zclassic23 statecatalog` | `zcl_state_catalog` |
 | Semantic event timeline | `zclassic23 timeline '{"category":"sync","count":50,"since_secs":3600}'` | `zcl_timeline` |
@@ -101,14 +101,19 @@ The UX-facing service catalog lives in
 `zclassic23 servicecatalog [name]`, `zcl_service_catalog(name?)`,
 `GET /api/v1/service-catalog`, and
 `GET /api/v1/service-catalog/{service}`. Operations are first-class too:
-`zclassic23 serviceoperations [operation_id]`,
-`zcl_service_operations(operation_id?)`, `GET /api/v1/service-operations`,
-and `GET /api/v1/service-operations/{operation_id}` list every operation or
-fetch one stable `service.operation` contract such as
-`znam_names.resolve_name`. Use these surfaces when the question is "what can
-this node host, advertise, verify, or construct for a user?" They distinguish
-the stable service/operation contracts from `/api/v1/services`, which remains
-runtime health.
+`zclassic23 serviceoperations [operation_id|key=value...]`,
+`zcl_service_operations(operation_id?, service?, write_safety?,
+preferred_interface?, status?, surface?)`, `GET /api/v1/service-operations`,
+and `GET /api/v1/service-operations/{operation_id}` list operations, filter
+the operation set, or fetch one stable `service.operation` contract such as
+`znam_names.resolve_name`. Server-side filters are exact-match:
+`service`, `write_safety`, `preferred_interface`, `status`, and `surface`.
+Examples: `zclassic23 serviceoperations service=bootstrap
+write_safety=public_read_only` and
+`GET /api/v1/service-operations?service=znam_names&surface=rest`. Use these
+surfaces when the question is "what can this node host, advertise, verify, or
+construct for a user?" They distinguish the stable service/operation
+contracts from `/api/v1/services`, which remains runtime health.
 REST route contracts bind back to this registry when a route is owned by a
 REST-callable service operation: `/api/v1` emits `service_contract`,
 `service_catalog_route`, `service_operation_id`, `service_operation_route`, and

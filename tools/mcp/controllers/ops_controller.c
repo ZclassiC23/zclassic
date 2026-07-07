@@ -1543,6 +1543,23 @@ static const struct mcp_param_spec p_service_operations[] = {
     { "operation_id", MCP_PARAM_STR, false,
       "Optional service.operation id to return one operation contract",
       0, 0, 0, 128, NULL, "\"\"" },
+    { "service", MCP_PARAM_STR, false,
+      "Optional service filter, for example bootstrap or znam_names",
+      0, 0, 0, 64, NULL, "\"\"" },
+    { "write_safety", MCP_PARAM_STR, false,
+      "Optional safety filter",
+      0, 0, 0, 40,
+      "public_read_only,operator_private,operator_private_destructive",
+      "\"\"" },
+    { "preferred_interface", MCP_PARAM_STR, false,
+      "Optional preferred interface filter",
+      0, 0, 0, 32, "rest,mcp,rpc,native_or_planned", "\"\"" },
+    { "status", MCP_PARAM_STR, false,
+      "Optional operation status filter",
+      0, 0, 0, 32, "active,in_progress", "\"\"" },
+    { "surface", MCP_PARAM_STR, false,
+      "Optional callable surface filter",
+      0, 0, 0, 16, "rest,mcp,rpc", "\"\"" },
 };
 
 static int h_zcl_service_catalog(const struct mcp_request *req,
@@ -1568,9 +1585,48 @@ static int h_zcl_service_operations(const struct mcp_request *req,
 {
     const char *operation_id =
         json_get_str_or(req ? req->args : NULL, "operation_id", "");
-    if (!operation_id || !operation_id[0])
-        return mcp_return_rpc_body(res, mcp_node_rpc("serviceoperations", NULL),
-                                   "serviceoperations", "mcp.ops");
+    const char *service =
+        json_get_str_or(req ? req->args : NULL, "service", "");
+    const char *write_safety =
+        json_get_str_or(req ? req->args : NULL, "write_safety", "");
+    const char *preferred_interface =
+        json_get_str_or(req ? req->args : NULL, "preferred_interface", "");
+    const char *status =
+        json_get_str_or(req ? req->args : NULL, "status", "");
+    const char *surface =
+        json_get_str_or(req ? req->args : NULL, "surface", "");
+    bool has_filter =
+        (service && service[0]) || (write_safety && write_safety[0]) ||
+        (preferred_interface && preferred_interface[0]) ||
+        (status && status[0]) || (surface && surface[0]);
+
+    if (!operation_id || !operation_id[0]) {
+        if (!has_filter)
+            return mcp_return_rpc_body(
+                res, mcp_node_rpc("serviceoperations", NULL),
+                "serviceoperations", "mcp.ops");
+
+        struct mcp_params p;
+        mcp_params_init(&p);
+        char kv[160];
+#define PUSH_FILTER_KV(key_, value_) do { \
+    if ((value_) && (value_)[0]) { \
+        snprintf(kv, sizeof(kv), "%s=%s", key_, value_); \
+        mcp_params_push_str(&p, kv); \
+    } \
+} while (0)
+        PUSH_FILTER_KV("service", service);
+        PUSH_FILTER_KV("write_safety", write_safety);
+        PUSH_FILTER_KV("preferred_interface", preferred_interface);
+        PUSH_FILTER_KV("status", status);
+        PUSH_FILTER_KV("surface", surface);
+#undef PUSH_FILTER_KV
+        char *params = mcp_params_to_json(&p);
+        char *out = params ? mcp_node_rpc("serviceoperations", params) : NULL;
+        free(params);
+        return mcp_return_rpc_body_ctx(res, out, "serviceoperations",
+                                       "mcp.ops", "filtered=true");
+    }
 
     struct mcp_params p;
     mcp_params_init(&p);

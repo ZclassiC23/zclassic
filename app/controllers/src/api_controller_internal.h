@@ -163,6 +163,22 @@ void api_service_catalog_error_json(const char *name, struct json_value *out);
 void api_service_operations_json(struct json_value *out,
                                  const char *service_name);
 bool api_service_operations_index_json(struct json_value *out);
+bool api_service_operations_filtered_index_json(
+    struct json_value *out,
+    const char *service,
+    const char *write_safety,
+    const char *preferred_interface,
+    const char *status,
+    const char *surface,
+    char *err,
+    size_t err_len);
+bool api_service_operations_index_path_json(const char *path,
+                                            struct json_value *out,
+                                            char *err,
+                                            size_t err_len);
+size_t api_serve_service_operations(const char *path,
+                                    uint8_t *response,
+                                    size_t response_max);
 bool api_service_operation_show_json(const char *operation_id,
                                      struct json_value *out);
 bool api_service_operation_has_id(const char *operation_id);

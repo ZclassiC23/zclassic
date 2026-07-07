@@ -2326,7 +2326,7 @@ syncdiag_net_split_done:
                           "zclassic23 servicecatalog") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli,
                                                 "service_operations_command")),
-                          "zclassic23 serviceoperations [operation_id]") == 0;
+                          "zclassic23 serviceoperations [operation_id|key=value...]") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "first_command")),
                           "zclassic23 agent") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "map_command")),
@@ -2730,8 +2730,54 @@ syncdiag_net_split_done:
                                                 "operation_collection_route")),
                           "/api/v1/service-operations") == 0;
 
+        struct json_value filtered_params;
+        json_init(&filtered_params);
+        json_set_array(&filtered_params);
+        struct json_value filter_arg;
+        json_init(&filter_arg);
+        json_set_str(&filter_arg, "service=bootstrap");
+        json_push_back(&filtered_params, &filter_arg);
+        json_set_str(&filter_arg, "write_safety=public_read_only");
+        json_push_back(&filtered_params, &filter_arg);
+        json_free(&filter_arg);
+
+        struct json_value filtered;
+        json_init(&filtered);
+        bool filtered_executed =
+            rpc_table_execute(&tbl, "serviceoperations",
+                              &filtered_params, &filtered);
+        const struct json_value *filtered_filters =
+            json_get(&filtered, "filters");
+        const struct json_value *filtered_summary =
+            json_get(&filtered, "summary");
+        const struct json_value *filtered_ops =
+            json_get(&filtered, "operations");
+        ok = ok && filtered_executed &&
+            strcmp(json_get_str(json_get(&filtered, "schema")),
+                   "zcl.service_operations.index.v1") == 0;
+        ok = ok && filtered_filters &&
+            json_get_bool(json_get(filtered_filters, "active"));
+        ok = ok && filtered_filters &&
+            strcmp(json_get_str(json_get(filtered_filters, "service")),
+                   "bootstrap") == 0;
+        ok = ok && filtered_filters &&
+            strcmp(json_get_str(json_get(filtered_filters,
+                                         "write_safety")),
+                   "public_read_only") == 0;
+        ok = ok && filtered_summary &&
+            json_get_int(json_get(filtered_summary,
+                                  "operation_count")) == 2;
+        ok = ok && filtered_ops && filtered_ops->type == JSON_ARR &&
+            json_size(filtered_ops) == 2;
+        ok = ok && find_object_with_str(filtered_ops, "operation_id",
+                                        "bootstrap.read_bootstrap_status");
+        ok = ok && find_object_with_str(filtered_ops, "operation_id",
+                                        "bootstrap.list_peer_projection");
+
         json_free(&bad);
         json_free(&bad_params);
+        json_free(&filtered);
+        json_free(&filtered_params);
         json_free(&one);
         json_free(&one_params);
         json_free(&alias);
@@ -4741,7 +4787,7 @@ syncdiag_net_split_done:
         ok = ok && contract_service_operations &&
             strcmp(json_get_str(json_get(contract_service_operations,
                                          "native")),
-                   "zclassic23 serviceoperations [operation_id]") == 0;
+                   "zclassic23 serviceoperations [operation_id|key=value...]") == 0;
         ok = ok && contract_service_operations &&
             strcmp(json_get_str(json_get(contract_service_operations,
                                          "mcp")),
@@ -5010,7 +5056,7 @@ syncdiag_net_split_done:
                           "zcl_service_catalog") == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops,
                                                 "service_operations_command")),
-                          "zclassic23 serviceoperations [operation_id]") == 0;
+                          "zclassic23 serviceoperations [operation_id|key=value...]") == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops,
                                                 "service_operations_tool")),
                           "zcl_service_operations") == 0;
