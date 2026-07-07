@@ -22,9 +22,14 @@
  * After this returns true:
  *   - main.utxos is populated from the snapshot.
  *   - node_state["coins_best_block"] holds the snapshot tip hash.
+ *   - progress.kv coins_kv is reseeded from main.utxos.
+ *   - coins_applied_height, utxo_sha3, and trusted stage cursors are clamped
+ *     to the snapshot height through the shared reindex epilogue.
  *
- * On failure: the UTXO write is rolled back atomically and the prior
- * coins_best_block (if any) is restored, so we never half-import.
+ * On pre-commit failure: the UTXO write is rolled back atomically and the
+ * prior coins_best_block (if any) is restored. On post-commit authority
+ * epilogue failure the function returns false after paging/logging; boot must
+ * not treat the snapshot as a complete fast rebuild.
  */
 
 #ifndef ZCL_BOOT_SNAPSHOT_IMPORT_H

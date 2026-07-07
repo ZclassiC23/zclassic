@@ -53,23 +53,22 @@ static void reindex_epi_page(int tip_h, const char *reason)
                 "check=reindex_epilogue tip_h=%d reason=%s", tip_h, reason);
 }
 
-bool reindex_epilogue_derive(struct main_state *ms, struct node_db *ndb,
-                             const char *datadir)
+static bool derive_authority_from_node_db_utxos(struct node_db *ndb,
+                                                const char *node_db_path,
+                                                int tip_h,
+                                                const uint8_t tip_hash[32],
+                                                const char *source)
 {
-    if (!ms || !ndb || !ndb->open || !ndb->db || !datadir) {
+    if (!ndb || !ndb->open || !ndb->db || !node_db_path ||
+        !node_db_path[0] || tip_h < 0 || !tip_hash) {
         reindex_epi_page(-1, "null_or_closed_arg");
-        LOG_RETURN(false, "reindex_epi", "NULL/closed arg ms=%p ndb=%p dd=%p",
-                   (void *)ms, (void *)ndb, (const void *)datadir);
+        LOG_RETURN(false, "reindex_epi",
+                   "NULL/closed authority args ndb=%p path=%p h=%d hash=%p",
+                   (void *)ndb, (const void *)node_db_path, tip_h,
+                   (const void *)tip_hash);
     }
-
-    struct block_index *tip = active_chain_tip(&ms->chain_active);
-    int tip_h = active_chain_height(&ms->chain_active);
-    if (!tip || !tip->phashBlock || tip_h < 0) {
-        reindex_epi_page(tip_h, "no_active_tip_after_replay");
-        LOG_RETURN(false, "reindex_epi", "no active tip after replay (h=%d)",
-                   tip_h);
-    }
-    const uint8_t *tip_hash = tip->phashBlock->data;
+    if (!source || !source[0])
+        source = "unknown";
 
     sqlite3 *pdb = progress_store_db();
     if (!pdb) {
@@ -83,21 +82,18 @@ bool reindex_epilogue_derive(struct main_state *ms, struct node_db *ndb,
      * a fresh copy of it. coins_kv_seed_from_node_db short-circuits when the
      * migration stamp is set, so reset_for_reseed truncates + unstamps FIRST —
      * otherwise the reseed would no-op over a pre-reindex set that may carry
-     * rows the replay legitimately deleted. */
-    char ndb_path[600];
-    int n = snprintf(ndb_path, sizeof(ndb_path), "%s/node.db", datadir);
-    if (n < 0 || n >= (int)sizeof(ndb_path)) {
-        reindex_epi_page(tip_h, "node_db_path_overflow");
-        LOG_RETURN(false, "reindex_epi", "node.db path overflow (dd=%s)",
-                   datadir);
-    }
+     * rows the replay legitimately deleted. Snapshot import uses the same
+     * derivation body after atomically copying the verified snapshot into
+     * node.db.utxos. */
     if (!coins_kv_reset_for_reseed(pdb)) {
         reindex_epi_page(tip_h, "coins_kv_reset_failed");
         LOG_RETURN(false, "reindex_epi", "coins_kv reset for reseed failed");
     }
-    if (!coins_kv_seed_from_node_db(pdb, ndb_path)) {
+    if (!coins_kv_seed_from_node_db(pdb, node_db_path)) {
         reindex_epi_page(tip_h, "coins_kv_reseed_failed");
-        LOG_RETURN(false, "reindex_epi", "coins_kv reseed from node.db failed");
+        LOG_RETURN(false, "reindex_epi",
+                   "coins_kv reseed from node.db failed path=%s",
+                   node_db_path);
     }
 
     /* ── (2) Recompute the SHA3 commitment over the replayed `utxos` mirror and
@@ -219,11 +215,51 @@ bool reindex_epilogue_derive(struct main_state *ms, struct node_db *ndb,
     }
 
     LOG_INFO("reindex_epi",
-             "reindex epilogue derived: tip=%d coins_applied=%d "
-             "utxo_count=%llu H*=%d (cursors clamped, commitment recomputed)",
-             tip_h, tip_h + 1, (unsigned long long)count, hstar);
+             "UTXO authority epilogue derived: source=%s tip=%d "
+             "coins_applied=%d utxo_count=%llu H*=%d (cursors clamped, "
+             "commitment recomputed)",
+             source, tip_h, tip_h + 1, (unsigned long long)count, hstar);
     event_emitf(EV_SYNC_STATE_CHANGE, 0,
-                "reindex_epilogue derived tip=%d count=%llu",
-                tip_h, (unsigned long long)count);
+                "utxo_authority_epilogue source=%s tip=%d count=%llu",
+                source, tip_h, (unsigned long long)count);
     return true;
+}
+
+bool reindex_epilogue_derive(struct main_state *ms, struct node_db *ndb,
+                             const char *datadir)
+{
+    if (!ms || !ndb || !ndb->open || !ndb->db || !datadir) {
+        reindex_epi_page(-1, "null_or_closed_arg");
+        LOG_RETURN(false, "reindex_epi", "NULL/closed arg ms=%p ndb=%p dd=%p",
+                   (void *)ms, (void *)ndb, (const void *)datadir);
+    }
+
+    struct block_index *tip = active_chain_tip(&ms->chain_active);
+    int tip_h = active_chain_height(&ms->chain_active);
+    if (!tip || !tip->phashBlock || tip_h < 0) {
+        reindex_epi_page(tip_h, "no_active_tip_after_replay");
+        LOG_RETURN(false, "reindex_epi", "no active tip after replay (h=%d)",
+                   tip_h);
+    }
+
+    char ndb_path[600];
+    int n = snprintf(ndb_path, sizeof(ndb_path), "%s/node.db", datadir);
+    if (n < 0 || n >= (int)sizeof(ndb_path)) {
+        reindex_epi_page(tip_h, "node_db_path_overflow");
+        LOG_RETURN(false, "reindex_epi", "node.db path overflow (dd=%s)",
+                   datadir);
+    }
+
+    return derive_authority_from_node_db_utxos(ndb, ndb_path, tip_h,
+                                               tip->phashBlock->data,
+                                               "reindex");
+}
+
+bool reindex_epilogue_derive_imported_snapshot(struct node_db *ndb,
+                                               const char *node_db_path,
+                                               int height,
+                                               const uint8_t hash[32])
+{
+    return derive_authority_from_node_db_utxos(ndb, node_db_path, height, hash,
+                                               "snapshot_import");
 }

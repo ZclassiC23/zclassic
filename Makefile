@@ -2,6 +2,13 @@
 # Copyright 2026 Rhett Creighton - Apache License 2.0
 
 CC = cc
+ZCL_USE_CCACHE ?= 1
+ZCL_CCACHE_BIN := $(shell if [ "$(ZCL_USE_CCACHE)" != "0" ]; then command -v ccache 2>/dev/null; fi)
+ifneq ($(ZCL_CCACHE_BIN),)
+ifneq ($(findstring ccache,$(notdir $(firstword $(CC)))),ccache)
+CC := $(ZCL_CCACHE_BIN) $(CC)
+endif
+endif
 # <short-hash>[-dirty] — the -dirty suffix means the binary contains
 # uncommitted tracked changes, so the hash alone does NOT identify the code
 # (a binary built minutes before its fix was committed reports the parent
@@ -298,7 +305,7 @@ test-parallel: test_parallel
 # the default `all`), so running build/bin/test_parallel directly after editing a test
 # can false-green an old binary or report "matched no groups" for a new test.
 # `make t ONLY=<group>` always rebuilds the harness first, closing that trap.
-.PHONY: t t-fast syntax-check build-only dev-bin zclassic23-dev lint-fast fast-ci agent-fast-ci dev-ci
+.PHONY: t t-fast syntax-check build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast lint-fast fast-ci agent-fast-ci dev-ci
 
 # Run ONE test group, always rebuilding the harness first:
 #   make t ONLY=service_state_driver
@@ -328,6 +335,8 @@ build-only: $(TMPL_GEN) $(ALL_OBJS)
 # Fast local node executable for AI/operator development. This deliberately
 # does not replace `zclassic23`, `make deploy`, or release artifacts.
 dev-bin zclassic23-dev: $(ZCLASSIC23_DEV_BIN)
+fast-rebuild rebuild-fast: dev-bin
+	@echo "fast-rebuild: use build/bin/zclassic23-dev for local iteration; run make zclassic23 or make deploy for release/live."
 
 $(ZCLASSIC23_DEV_BIN): $(TMPL_GEN) $(BUILD_COMMIT_STAMP) $(DEV_OBJS) | $(VENDOR_LIBS)
 	@mkdir -p $(dir $@)

@@ -35,16 +35,19 @@ Release builds intentionally use one whole-program LTO link. For day-to-day C
 development, use the non-release dev binary instead:
 
 ```bash
-make dev-bin
+make fast-rebuild
 build/bin/zclassic23-dev agentbuild
 ```
 
-`make dev-bin` writes cached per-file objects under `build/dev-obj/`, links
-without LTO, keeps symbols, and emits `build/bin/zclassic23-dev`. It defaults
-most code to `ZCL_DEV_OPT=-Og` while compiling consensus/crypto/script/
-validation hot paths at `ZCL_DEV_HOT_OPT=-O2`; both are overrideable. The link
-step auto-selects `mold` or `ld.lld` through `ZCL_DEV_LINKER` when available;
-set `ZCL_DEV_LINKER=` to force the platform linker.
+`make fast-rebuild` is an alias for the local dev binary (`make dev-bin`). It
+writes cached per-file objects under `build/dev-obj/`, links without LTO, keeps
+symbols, and emits `build/bin/zclassic23-dev`. It defaults most code to
+`ZCL_DEV_OPT=-Og` while compiling consensus/crypto/script/validation hot paths
+at `ZCL_DEV_HOT_OPT=-O2`; both are overrideable. The link step auto-selects
+`mold` or `ld.lld` through `ZCL_DEV_LINKER` when available; set
+`ZCL_DEV_LINKER=` to force the platform linker. When `ccache` is installed, the
+Makefile automatically wraps `CC` with it for rebuild speed; set
+`ZCL_USE_CCACHE=0` to opt out.
 
 This binary is for local AI/operator iteration only. `make zclassic23`,
 `make deploy`, reproducible builds, and releases continue to use

@@ -5004,7 +5004,7 @@ syncdiag_net_split_done:
                                                          "header_depfiles"));
         ok = ok && strcmp(json_get_str(json_get(incremental,
                                                 "dev_binary_command")),
-                          "make dev-bin") == 0;
+                          "make fast-rebuild") == 0;
         ok = ok && dev_binary && json_get_bool(json_get(dev_binary,
                                                         "enabled"));
         ok = ok && strcmp(json_get_str(json_get(dev_binary, "binary")),
@@ -5019,6 +5019,8 @@ syncdiag_net_split_done:
                                    "sccache cc") != NULL;
         ok = ok && find_object_with_str(commands, "name",
                                         "compile_check") != NULL;
+        ok = ok && find_object_with_str(commands, "name",
+                                        "fast_rebuild") != NULL;
         ok = ok && find_object_with_str(commands, "name",
                                         "dev_node_binary") != NULL;
         ok = ok && find_object_with_str(commands, "name",

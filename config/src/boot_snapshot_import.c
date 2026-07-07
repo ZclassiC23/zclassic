@@ -10,6 +10,7 @@
 #include "chain/checkpoints.h"
 #include "coins/utxo_commitment.h"
 #include "models/database.h"
+#include "services/reindex_epilogue.h"
 #include "util/ar_step_readonly.h"
 #include "util/boot_progress.h"
 #include "util/log_macros.h"
@@ -295,12 +296,7 @@ bool boot_import_snapshot_db(struct node_db *ndb,
     }
 
     /* CACHE-REFRESH (wave 2): 'coins_best_block' is a projection key —
-     * authority = reducer_frontier_derive_coins_best over coins_kv.
-     * FOLLOW-UP (plan step 5/F5, verified-install): this snapshot receive
-     * path must also seed coins_kv + coins_applied_height the way the LDB
-     * path does (utxo_recovery_restore.c coins_kv_seed_from_node_db), else
-     * the derivation returns found=false post-import and the node correctly
-     * runs the legacy fallbacks. */
+     * authority = reducer_frontier_derive_coins_best over coins_kv. */
     if (!node_db_state_set(ndb, "coins_best_block",
                            best_hash, sizeof(best_hash))) {
         /* utxos already committed; restore prior anchor so the next
@@ -309,6 +305,20 @@ bool boot_import_snapshot_db(struct node_db *ndb,
             node_db_state_set(ndb, "coins_best_block",
                               prior_cb, prior_cb_len);
         LOG_FAIL("boot_snapshot_import", "set coins_best_block failed");
+    }
+
+    /* Verified-install epilogue: a snapshot import is only a fast rebuild if
+     * it seeds the same durable authority surface as a full reindex. Reuse the
+     * reindex epilogue so both paths derive coins_kv, coins_applied_height,
+     * utxo_sha3, trusted cursors, and H* with one implementation. */
+    const char *main_db_path = sqlite3_db_filename(ndb->db, "main");
+    if (!reindex_epilogue_derive_imported_snapshot(
+            ndb, main_db_path, (int)snap_height, best_hash)) {
+        LOG_WARN("boot_snapshot_import",
+                 "snapshot imported into node.db but authority epilogue failed "
+                 "at h=%lld; refusing fast-rebuild success",
+                 (long long)snap_height);
+        return false;
     }
 
     if (out_utxo_count)  *out_utxo_count  = snap_utxos;

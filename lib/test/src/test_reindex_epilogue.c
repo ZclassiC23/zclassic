@@ -336,11 +336,126 @@ int test_reindex_epilogue(void)
     node_db_close(&ndb);
     test_cleanup_tmpdir(dir);
 
+    /* ── SNAPSHOT IMPORT REGRESSION: a verified snapshot import must derive
+     * the exact same durable authority surface as the full replay path. This
+     * is the fast-rebuild teeth: snapshot import is no longer just a node.db
+     * mirror copy plus a coins_best_block cache write. */
+    test_reset_shared_globals();
+    blocker_module_init();
+    blocker_reset_for_testing();
+    seed_integrity_gate_reset_for_testing();
+    {
+        char sdir[256];
+        test_fmt_tmpdir(sdir, sizeof(sdir), "reindex_epi", "snapshot");
+        mkdir_p_re(sdir);
+        char snpath[600];
+        snprintf(snpath, sizeof(snpath), "%s/node.db", sdir);
+
+        struct node_db sndb;
+        bool sok = node_db_open(&sndb, snpath);
+        RE_CHECK("snapshot: node.db opens", sok);
+        if (sok) {
+            seed_integrity_gate_set_node_db_for_testing(&sndb);
+            bool sutxos_ok = true;
+            sutxos_ok &= re_insert_utxo(&sndb, 0x44, 0, 11000, 11, 1);
+            sutxos_ok &= re_insert_utxo(&sndb, 0x55, 0, 12000, 12, 0);
+            sutxos_ok &= re_insert_utxo(&sndb, 0x66, 0, 13000, 13, 0);
+            RE_CHECK("snapshot: utxos seeded", sutxos_ok);
+
+            uint8_t sexpect_root[32]; uint64_t sexpect_count = 0;
+            utxo_commitment_sha3_compute(sndb.db, sexpect_root,
+                                         &sexpect_count);
+            RE_CHECK("snapshot: control utxo_count == 3",
+                     sexpect_count == 3);
+
+            RE_CHECK("snapshot: progress_store opens",
+                     progress_store_open(sdir));
+            sqlite3 *spdb = progress_store_db();
+            RE_CHECK("snapshot: pdb handle", spdb != NULL);
+
+            struct main_state sms;
+            memset(&sms, 0, sizeof(sms));
+            main_state_init(&sms);
+            struct re_chain ssc; memset(&ssc, 0, sizeof(ssc));
+            RE_CHECK("snapshot: synthetic chain to tip",
+                     re_build_chain(&ssc, &sms, TIP));
+            RE_CHECK("snapshot: tip_finalize stage init",
+                     tip_finalize_stage_init(&sms));
+
+            const int32_t SNAP_STALE_HIGH = TIP + 777;
+            {
+                char *err = NULL;
+                bool seed_ok =
+                    sqlite3_exec(spdb, "BEGIN IMMEDIATE", NULL, NULL, &err)
+                        == SQLITE_OK &&
+                    coins_kv_set_applied_height_in_tx(spdb, SNAP_STALE_HIGH) &&
+                    sqlite3_exec(spdb, "COMMIT", NULL, NULL, &err)
+                        == SQLITE_OK;
+                if (err) sqlite3_free(err);
+                RE_CHECK("snapshot: precond coins_applied stale-HIGH set",
+                         seed_ok);
+            }
+            RE_CHECK("snapshot: precond stale tip_finalize cursor",
+                     re_set_cursor(spdb, "tip_finalize", 3));
+            RE_CHECK("snapshot: precond stale utxo_apply cursor",
+                     re_set_cursor(spdb, "utxo_apply", 3));
+
+            bool sderived = reindex_epilogue_derive_imported_snapshot(
+                &sndb, snpath, TIP, ssc.hash.data);
+            RE_CHECK("snapshot: imported epilogue returns true", sderived);
+
+            RE_CHECK("snapshot: coins_kv count == mirror count (3)",
+                     coins_kv_count(spdb) == 3);
+            RE_CHECK("snapshot: coins_kv proven-authority",
+                     coins_kv_is_proven_authority(spdb, NULL));
+            {
+                int32_t ca = -1; bool found = false;
+                bool ok = coins_kv_get_applied_height(spdb, &ca, &found);
+                RE_CHECK("snapshot: coins_applied_height == tip+1",
+                         ok && found && ca == TIP + 1);
+            }
+            RE_CHECK("snapshot: tip_finalize cursor == tip",
+                     re_cursor(spdb, "tip_finalize") == TIP);
+            RE_CHECK("snapshot: utxo_apply cursor == tip+1",
+                     re_cursor(spdb, "utxo_apply") == TIP + 1);
+            RE_CHECK("snapshot: validate_headers cursor == tip+1",
+                     re_cursor(spdb, "validate_headers") == TIP + 1);
+            RE_CHECK("snapshot: reducer_trusted_base_height == tip",
+                     re_trusted_base(spdb) == TIP);
+            {
+                uint8_t got[32]; int32_t gh = -1; uint64_t gc = 0;
+                bool ld = utxo_commitment_sha3_load(sndb.db, got, &gh, &gc);
+                RE_CHECK("snapshot: utxo_sha3 stamp present", ld);
+                RE_CHECK("snapshot: utxo_sha3 == control compute",
+                         ld && memcmp(got, sexpect_root, 32) == 0 &&
+                         gc == sexpect_count && gh == TIP);
+            }
+            {
+                int32_t hs = 0, sf = 0;
+                progress_store_tx_lock();
+                bool ok = reducer_frontier_compute_hstar(spdb, &hs, &sf);
+                progress_store_tx_unlock();
+                RE_CHECK("snapshot: H* == imported tip", ok && hs == TIP);
+            }
+
+            tip_finalize_stage_shutdown();
+            main_state_free(&sms);
+            re_free_chain(&ssc);
+            progress_store_close();
+            seed_integrity_gate_reset_for_testing();
+            node_db_close(&sndb);
+        }
+        test_cleanup_tmpdir(sdir);
+    }
+
     /* ── NEGATIVE: empty/unreadable mirror + bad args -> false, no crash. */
     {
         /* NULL ms / ndb / datadir -> false (and the function pages + logs). */
         RE_CHECK("neg: NULL ms -> false",
                  !reindex_epilogue_derive(NULL, NULL, NULL));
+        RE_CHECK("neg: imported snapshot bad args -> false",
+                 !reindex_epilogue_derive_imported_snapshot(NULL, NULL, -1,
+                                                            NULL));
     }
     {
         char ndir[256];

@@ -789,6 +789,9 @@ This is a C23 project, so the edit loop should compile only what changed.
   `build/obj` plus header depfiles (`-MMD -MP` and included `.d` files), so
   unchanged translation units keep their existing `.o` files and changed
   headers recompile their dependents.
+- `make fast-rebuild` builds the local non-LTO node binary and is the preferred
+  edit-loop rebuild target. It is an alias for `make dev-bin`, with a clearer
+  name for agents and operators.
 - `make dev-bin` builds `build/bin/zclassic23-dev` from cached objects under
   `build/dev-obj`. It links without LTO, keeps symbols, defaults most code to
   `ZCL_DEV_OPT=-Og`, and keeps hot consensus/crypto/script/validation buckets
@@ -815,6 +818,8 @@ This is a C23 project, so the edit loop should compile only what changed.
   `ZCL_FAST_LIVE=0` as needed. Use `ZCL_FAST_CACHE=0` to force a rerun,
   `ZCL_FAST_CACHE_RESET=1` to clear the green-input cache, or
   `ZCL_FAST_CACHE_DIR=...` to move it.
+- Normal Makefile compile/link recipes also auto-wrap `CC` with `ccache` when
+  it is installed. Set `ZCL_USE_CCACHE=0` to force a direct compiler call.
 
 Before pushing `main`, the tracked pre-push hook computes the exact
 `origin/main..HEAD` changed-file set, rejects non-`main` remote refs, and runs

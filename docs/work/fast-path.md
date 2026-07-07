@@ -101,11 +101,13 @@ there so the CLI, MCP tool, and fast-CI shell lane do not drift.
 
 Use `make dev-bin` when you need to run a changed node/agent CLI locally without
 paying the release build's whole-program LTO pass. It emits
-`build/bin/zclassic23-dev` from cached per-file objects, with default
+`make fast-rebuild` builds `build/bin/zclassic23-dev` from cached per-file objects, with default
 `ZCL_DEV_OPT=-Og`, hot consensus/crypto/script/validation buckets at
 `ZCL_DEV_HOT_OPT=-O2`, no LTO, no strip, and optional fast-linker selection via
 `ZCL_DEV_LINKER` (auto-detects `mold` or `ld.lld` when present; override with
-`ZCL_DEV_LINKER=` to force the platform default). This is the right binary for
+`ZCL_DEV_LINKER=` to force the platform default). When `ccache` is installed,
+the Makefile auto-wraps `CC` with it unless `ZCL_USE_CCACHE=0` is set. This is
+the right binary for
 local `agentbuild`, `agentimpact`, parser, API, and diagnostics iteration; it is
 not a deploy or release artifact.
 

@@ -44,6 +44,7 @@ Useful faster loops:
 ```bash
 make zclassic23              # node only
 make build-only              # compile check, no final link
+make fast-rebuild            # fastest local node binary, no LTO
 make dev-bin                 # fast non-LTO local node binary
 make t-fast ONLY=<group>     # one test group
 make fast-ci                 # cache-aware lint/build/focused-test loop

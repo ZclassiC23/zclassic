@@ -1,8 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * reindex_epilogue — derive ALL durable post-reindex state from the
- * just-replayed UTXO set in ONE ordered commit discipline so the recovery
- * path can never manufacture the coins_applied > hstar wedge.
+ * just-replayed or verified-imported UTXO set in ONE ordered commit discipline
+ * so the recovery path can never manufacture the coins_applied > hstar wedge.
  *
  * tenacity-roadmap item 3: -reindex-chainstate (the crash-only auto-recovery
  * verb) used to end torn — boot_index_clear_coins_state DELETES the SHA3
@@ -11,12 +11,15 @@
  * STALE pre-reindex values. Stale cursors over a freshly-rebuilt coin set
  * manufacture the coins_applied > hstar coin-tear shape; with the never-give-up
  * unit that degrades into an infinite reindex loop. This epilogue closes it by
- * DERIVING every value from the replayed authoritative set. */
+ * DERIVING every value from the replayed authoritative set. Snapshot import
+ * uses the same epilogue so a verified local snapshot is a fast rebuild, not
+ * a weaker second authority path. */
 
 #ifndef ZCL_SERVICES_REINDEX_EPILOGUE_H
 #define ZCL_SERVICES_REINDEX_EPILOGUE_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 struct main_state;
 struct node_db;
@@ -38,5 +41,13 @@ struct node_db;
  * `datadir` locates <datadir>/node.db for the coins_kv reseed copy. */
 bool reindex_epilogue_derive(struct main_state *ms, struct node_db *ndb,
                              const char *datadir);
+
+/* Run after a verified snapshot import has populated node.db `utxos`.
+ * This is the same authority-derivation epilogue used by full reindex, but the
+ * source is a SHA3/anchor-verified snapshot rather than a genesis replay. */
+bool reindex_epilogue_derive_imported_snapshot(struct node_db *ndb,
+                                               const char *node_db_path,
+                                               int height,
+                                               const uint8_t hash[32]);
 
 #endif /* ZCL_SERVICES_REINDEX_EPILOGUE_H */
