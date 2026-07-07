@@ -1271,6 +1271,9 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
                           "\"service_layer\":\"zclassic23_application_layer\","
                           "\"name\":\"bootstrap\","
                           "\"self_route\":\"/api/v1/service-catalog/bootstrap\","
+                          "\"depends_on_services\":[\"full_node\"],"
+                          "\"read_model\":\"network_bootstrap_status_and_peer_projection\","
+                          "\"write_model\":\"seed_inventory_and_endpoint_advertisement\","
                           "\"operations\":[{\"schema\":\"zcl.service_operation.v1\","
                           "\"operation\":\"read_bootstrap_status\","
                           "\"mcp_tool\":\"zcl_bootstrapstatus\"}]}");
@@ -1279,12 +1282,20 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
                       "\"base_layer\":\"zclassic_l1\","
                       "\"service_layer\":\"zclassic23_application_layer\","
                       "\"operation_schema\":\"zcl.service_operation.v1\","
+                      "\"sovereign_ux\":{\"schema\":\"zcl.sovereign_ux_contract.v1\","
+                      "\"flow\":[\"read_agent_status\",\"inspect_service_catalog\","
+                      "\"resolve_znam_name\"]},"
                       "\"service_count\":2,"
                       "\"services\":[{\"name\":\"bootstrap\","
                       "\"rest_collection\":\"/api/v1/bootstrap\","
+                      "\"depends_on_services\":[\"full_node\"],"
+                      "\"read_model\":\"network_bootstrap_status_and_peer_projection\","
                       "\"operations\":[{\"operation\":\"read_bootstrap_status\"}]},"
                       "{\"name\":\"znam_names\","
-                      "\"application_protocol\":\"znam\"}]}");
+                      "\"application_protocol\":\"znam\","
+                      "\"depends_on_services\":[\"full_node\"],"
+                      "\"read_model\":\"name_records_by_confirmed_chain_state\","
+                      "\"write_model\":\"op_return_name_operation_lifecycle\"}]}");
     }
     if (strcmp(method, "agentdiagnose") == 0) {
         if (params_json && contains(params_json, "\"brief\""))
@@ -1774,6 +1785,12 @@ static int test_zcl_agent_dev_tools_dispatch(void)
         ASSERT_STR_EQ(json_get_str(json_get(&root, "base_layer")),
                       "zclassic_l1");
         ASSERT(json_get(&root, "services") != NULL);
+        const struct json_value *ux = json_get(&root, "sovereign_ux");
+        ASSERT(ux != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(ux, "schema")),
+                      "zcl.sovereign_ux_contract.v1");
+        ASSERT(json_array_has_str(json_get(ux, "flow"),
+                                  "resolve_znam_name"));
         json_free(&root);
         free(body);
 
@@ -1793,6 +1810,10 @@ static int test_zcl_agent_dev_tools_dispatch(void)
         ASSERT(ops && ops->type == JSON_ARR && json_size(ops) == 1);
         ASSERT_STR_EQ(json_get_str(json_get(json_at(ops, 0), "mcp_tool")),
                       "zcl_bootstrapstatus");
+        ASSERT(json_array_has_str(json_get(&root, "depends_on_services"),
+                                  "full_node"));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "read_model")),
+                      "network_bootstrap_status_and_peer_projection");
         json_free(&root);
         json_free(&args);
         json_init(&args);

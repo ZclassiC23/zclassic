@@ -153,6 +153,9 @@ bool api_app_protocol_show_json(const char *name, struct json_value *out);
 bool api_service_catalog_json(struct json_value *out);
 bool api_service_catalog_show_json(const char *name, struct json_value *out);
 void api_service_catalog_error_json(const char *name, struct json_value *out);
+void api_service_operations_json(struct json_value *out,
+                                 const char *service_name);
+void api_sovereign_ux_contract_json(struct json_value *out);
 void api_app_protocol_push_openapi_extensions(
     const struct json_value *contract,
     struct json_value *operation);

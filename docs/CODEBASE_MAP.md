@@ -160,7 +160,10 @@ controller `k_routes[]` arrays.
   `GET /api/v1/service-catalog/{service}` — UX-facing sovereign service
   catalog. It answers what this node can host, advertise, verify, or construct
   for a user across names, bootstrap, Tor/onion discovery, P2P, files, market,
-  messaging, and script contracts. The implementation is
+  messaging, and script contracts. The top-level `sovereign_ux` object gives
+  agents the canonical names→services→Tor/P2P→CRUD flow, and member contracts
+  expose `depends_on_services`, `read_model`, and `write_model` so agents do
+  not infer dependencies from prose. The implementation is
   `app/controllers/src/api_controller_service_catalog.c`; `/api/v1/services`
   remains runtime health.
 - `zclassic23 status` / `zclassic23 agent` / `zcl_agent` — bounded live status

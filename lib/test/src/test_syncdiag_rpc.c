@@ -2339,6 +2339,16 @@ syncdiag_net_split_done:
                           "zcl.service_catalog.v1") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result, "base_layer")),
                           "zclassic_l1") == 0;
+        const struct json_value *ux = json_get(&result, "sovereign_ux");
+        ok = ok && ux &&
+            strcmp(json_get_str(json_get(ux, "schema")),
+                   "zcl.sovereign_ux_contract.v1") == 0;
+        ok = ok && ux &&
+            json_array_has_str(json_get(ux, "flow"),
+                               "verify_service_records");
+        ok = ok && ux &&
+            json_array_has_str(json_get(ux, "primary_entities"),
+                               "endpoint_record");
         ok = ok && services && services->type == JSON_ARR &&
             json_get_int(json_get(&result, "service_count")) ==
             (int64_t)json_size(services);
@@ -2347,6 +2357,9 @@ syncdiag_net_split_done:
                    "/api/v1/bootstrap") == 0;
         ok = ok && bootstrap &&
             json_array_has_str(json_get(bootstrap, "transports"), "p2p");
+        ok = ok && bootstrap &&
+            json_array_has_str(json_get(bootstrap, "depends_on_services"),
+                               "full_node");
         const struct json_value *bootstrap_status_op =
             find_object_with_str(json_get(bootstrap, "operations"),
                                  "operation", "read_bootstrap_status");
@@ -2359,6 +2372,12 @@ syncdiag_net_split_done:
         ok = ok && names &&
             json_array_has_str(json_get(names, "crud_capabilities"),
                                "construct_transaction");
+        ok = ok && names &&
+            strcmp(json_get_str(json_get(names, "read_model")),
+                   "znam_projection_confirmed_chain_records") == 0;
+        ok = ok && names &&
+            strcmp(json_get_str(json_get(names, "write_model")),
+                   "construct_znam_op_return_transactions") == 0;
         const struct json_value *name_register_op =
             find_object_with_str(json_get(names, "operations"), "operation",
                                  "construct_name_register");
@@ -2402,6 +2421,10 @@ syncdiag_net_split_done:
         ok = ok && strcmp(json_get_str(json_get(&one, "self_route")),
                           "/api/v1/service-catalog/bootstrap") == 0;
         ok = ok && json_array_has_str(json_get(&one, "transports"), "p2p");
+        ok = ok && json_array_has_str(json_get(&one,
+                             "depends_on_services"), "full_node");
+        ok = ok && strcmp(json_get_str(json_get(&one, "read_model")),
+                          "network_bootstrap_status_and_peer_projection") == 0;
         bootstrap_status_op = find_object_with_str(json_get(&one,
                              "operations"), "operation",
                              "read_bootstrap_status");

@@ -112,6 +112,11 @@ capability, REST route when public, RPC method, MCP tool, input/output contract,
 authority, and whether the operation is destructive/operator-private. This is
 the no-guesswork path for agents building a UX from names, bootstrap, Tor/P2P,
 market, messaging, and script-contract capabilities.
+The collection also carries `sovereign_ux` (`zcl.sovereign_ux_contract.v1`):
+a machine-readable flow from agent status → service catalog → ZNAM resolution
+→ endpoint verification → direct P2P/onion routing → versioned CRUD operation.
+Each member contract carries `depends_on_services`, `read_model`, and
+`write_model`; use those fields instead of hand-inferring service dependencies.
 
 ## Preferred Interface
 

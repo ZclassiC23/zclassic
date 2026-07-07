@@ -1674,6 +1674,26 @@ int test_api(void)
         ok = ok && strstr(json_get_str(json_get(&root,
                           "consensus_boundary")),
                           "legacy consensus") != NULL;
+        const struct json_value *ux = json_get(&root, "sovereign_ux");
+        ok = ok && ux &&
+             strcmp(json_get_str(json_get(ux, "schema")),
+                    "zcl.sovereign_ux_contract.v1") == 0;
+        ok = ok && ux &&
+             strcmp(json_get_str(json_get(ux, "base_layer")),
+                    "zclassic_l1") == 0;
+        ok = ok && ux &&
+             api_test_array_has_str(json_get(ux, "flow"),
+                                    "resolve_znam_name");
+        ok = ok && ux &&
+             api_test_array_has_str(json_get(ux, "flow"),
+                                    "prefer_direct_p2p_when_handshaked");
+        ok = ok && ux &&
+             strcmp(json_get_str(json_get(json_get(ux, "routes"),
+                                          "service_catalog")),
+                    "/api/v1/service-catalog") == 0;
+        ok = ok && ux &&
+             strcmp(json_get_str(json_get(json_get(ux, "routes"), "names")),
+                    "/api/v1/names/{name}") == 0;
         const struct json_value *services = json_get(&root, "services");
         ok = ok && services && services->type == JSON_ARR &&
              json_get_int(json_get(&root, "service_count")) ==
@@ -1701,6 +1721,13 @@ int test_api(void)
         ok = ok && bootstrap &&
              api_test_array_has_str(json_get(bootstrap, "transports"),
                                     "p2p");
+        ok = ok && bootstrap &&
+             api_test_array_has_str(json_get(bootstrap,
+                                             "depends_on_services"),
+                                    "full_node");
+        ok = ok && bootstrap &&
+             strcmp(json_get_str(json_get(bootstrap, "read_model")),
+                    "network_bootstrap_status_and_peer_projection") == 0;
         const struct json_value *bootstrap_status_op =
             api_test_find_str_field(json_get(bootstrap, "operations"),
                                     "operation",
@@ -1720,6 +1747,12 @@ int test_api(void)
         ok = ok && names &&
              api_test_array_has_str(json_get(names, "crud_capabilities"),
                                     "construct_transaction");
+        ok = ok && names &&
+             api_test_array_has_str(json_get(names, "depends_on_services"),
+                                    "full_node");
+        ok = ok && names &&
+             strcmp(json_get_str(json_get(names, "write_model")),
+                    "construct_znam_op_return_transactions") == 0;
         ok = ok && names &&
              strstr(json_get_str(json_get(names, "verified_by")),
                     "op_return") != NULL;
@@ -1741,6 +1774,9 @@ int test_api(void)
         ok = ok && onion &&
              api_test_array_has_str(json_get(onion, "transports"),
                                     "onion");
+        ok = ok && onion &&
+             api_test_array_has_str(json_get(onion, "depends_on_services"),
+                                    "znam_names");
         ok = ok && files &&
              strcmp(json_get_str(json_get(files, "rest_item")),
                     "/api/v1/files/{sha3}") == 0;
@@ -1773,7 +1809,13 @@ int test_api(void)
                           "/api/v1/service-catalog/znam_names") == 0;
         ok = ok && api_test_array_has_str(json_get(&root,
                           "crud_capabilities"), "construct_transaction");
+        ok = ok && api_test_array_has_str(json_get(&root,
+                          "depends_on_services"), "full_node");
         ok = ok && json_get_int(json_get(&root, "operation_count")) >= 3;
+        ok = ok && strcmp(json_get_str(json_get(&root, "read_model")),
+                          "znam_projection_confirmed_chain_records") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "write_model")),
+                          "construct_znam_op_return_transactions") == 0;
         name_register_op =
             api_test_find_str_field(json_get(&root, "operations"),
                                     "operation",
