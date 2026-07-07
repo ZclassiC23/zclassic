@@ -1,17 +1,22 @@
-# Remote Node Cutover: 205.209.104.118
+# Remote Node Public Lane: 205.209.104.118
 
-Status as of 2026-07-07: the public service on `205.209.104.118:8033` is still
-`zclassicd-rhett.service`, so public connected-node tables correctly show
-`MagicBean:2.1.2beta6`. zclassic23 candidates can run on private ports for
-proof, but those ports will not show up as the public row.
+Status as of 2026-07-07 13:20 UTC: the public service on
+`205.209.104.118:8033` is `zclassic23`, not `zclassicd-rhett.service`.
+`zclassicd-rhett.service` is inactive, `zclassic23` owns the public P2P socket,
+and the running binary reports `zclassic23 v0.1.0 (build 894beee)`.
+
+The public crawler row can lag this live state. Trust a direct socket/RPC check
+first; crawler rows may keep showing the old `MagicBean:*` identity until they
+reconnect or expire cached peer state.
 
 ## Invariant
 
-Do not replace the public `8033` service until a zclassic23 candidate is synced
-near the remote zclassicd tip, advertises `/ZClassic23:0.1.0/`, has stable peers,
-and answers RPC on its private candidate port.
+Keep public `8033` owned by a synced `zclassic23` lane that advertises
+`/ZClassic23:0.1.0/`, has stable peers, and answers RPC on localhost
+`18232`. If the host ever regresses to `MagicBean:*`, re-run the historical
+cutover checklist below on a candidate before touching public `8033`.
 
-## Current Candidate Ports
+## Historical Candidate Ports
 
 - `18043` / RPC `18243`: blocks-less snapshot candidate using
   `~/.zclassic-c23`. It advertises the right subversion but started from the

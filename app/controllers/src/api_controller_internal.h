@@ -52,6 +52,7 @@ extern struct api_rpc_backend g_api_rpc;
     "zcl.application_protocols.index.v1"
 #define ZCL_SERVICE_CATALOG_SCHEMA "zcl.service_catalog.v1"
 #define ZCL_SERVICE_CONTRACT_SCHEMA "zcl.service_contract.v1"
+#define ZCL_SERVICE_OPERATIONS_INDEX_SCHEMA "zcl.service_operations.index.v1"
 #define ZCL_SERVICE_OPERATION_SCHEMA "zcl.service_operation.v1"
 #define ZCL_PUBLIC_STATUS_SCHEMA "zcl.public_status.v1"
 #define ZCL_MILESTONE_STATUS_SCHEMA "zcl.milestone_status.v1"
@@ -137,6 +138,7 @@ size_t api_json_status(uint8_t *r, size_t max, const char *status,
                        const struct json_value *body);
 size_t api_json_ok(uint8_t *r, size_t max, const struct json_value *body);
 const char *api_rest_index_body_json(void);
+void api_rest_index_resources_json(struct json_value *resources);
 void api_rest_index_mcp_json(struct json_value *mcp);
 void api_rest_index_cli_json(struct json_value *cli);
 void api_rest_layer_model_json(struct json_value *layer_model);
@@ -155,6 +157,7 @@ bool api_service_catalog_show_json(const char *name, struct json_value *out);
 void api_service_catalog_error_json(const char *name, struct json_value *out);
 void api_service_operations_json(struct json_value *out,
                                  const char *service_name);
+bool api_service_operations_index_json(struct json_value *out);
 bool api_service_operation_show_json(const char *operation_id,
                                      struct json_value *out);
 void api_sovereign_ux_contract_json(struct json_value *out);

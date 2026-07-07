@@ -347,7 +347,11 @@ static bool api_service_operation_matches(
     const struct api_service_operation_contract *op,
     const char *service_name)
 {
-    return op && service_name && strcmp(op->service_name, service_name) == 0;
+    if (!op)
+        return false;
+    if (!service_name || !service_name[0])
+        return true;
+    return strcmp(op->service_name, service_name) == 0;
 }
 
 static void api_service_operation_id(
@@ -504,6 +508,40 @@ void api_service_operations_json(struct json_value *out,
         json_push_back(out, &op);
         json_free(&op);
     }
+}
+
+bool api_service_operations_index_json(struct json_value *out)
+{
+    struct json_value operations;
+
+    if (!out)
+        return false;
+
+    json_set_object(out);
+    json_push_kv_str(out, "schema", ZCL_SERVICE_OPERATIONS_INDEX_SCHEMA);
+    json_push_kv_str(out, "api_version", ZCL_REST_API_VERSION);
+    json_push_kv_str(out, "catalog_route", "/api/v1/service-catalog");
+    json_push_kv_str(out, "service_member_route",
+                     "/api/v1/service-catalog/{service}");
+    json_push_kv_str(out, "member_route",
+                     "/api/v1/service-operations/{operation_id}");
+    json_push_kv_str(out, "operation_schema",
+                     ZCL_SERVICE_OPERATION_SCHEMA);
+    json_push_kv_str(out, "base_layer", "zclassic_l1");
+    json_push_kv_str(out, "service_layer",
+                     "zclassic23_application_layer");
+    json_push_kv_str(out, "filter_model",
+                     "service-specific operation subsets are embedded in "
+                     "/api/v1/service-catalog/{service}");
+
+    json_init(&operations);
+    api_service_operations_json(&operations, NULL);
+    json_push_kv(out, "operations", &operations);
+    json_push_kv_int(out, "operation_count",
+                     (int64_t)json_size(&operations));
+    json_free(&operations);
+
+    return true;
 }
 
 bool api_service_operation_show_json(const char *operation_id,

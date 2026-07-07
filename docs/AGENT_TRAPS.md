@@ -13,13 +13,13 @@ intentional consensus-parity decisions.
 
 ## (0) LIVE OPS TRAPS — public service vs private candidates
 
-- **Public connected-node tables only see the service bound to `8033`.** A
-  zclassic23 candidate on `18043` or `18044` can advertise
-  `/ZClassic23:0.1.0/` and still not change the public row for
-  `205.209.104.118`. That row remains `MagicBean:*` until
-  `zclassicd-rhett.service` is stopped and zclassic23 binds public `8033`.
-  Do not cut over while the candidate is materially behind tip just to change
-  the label. See `docs/work/remote-node-cutover-205209104118.md`.
+- **Public connected-node tables can lag or cache old peer identity.** Verify
+  the live socket before trusting a crawler row. As of 2026-07-07,
+  `205.209.104.118:8033` is owned by `zclassic23`, `zclassicd-rhett.service`
+  is inactive, and local peer telemetry sees that remote as
+  `/ZClassic23:0.1.0/`. A stale public row may still show the old
+  `MagicBean:*` service until the crawler reconnects or refreshes its peer
+  cache. See `docs/work/remote-node-cutover-205209104118.md`.
 - **Copied `block_index.bin` plus foreign `blocks/blk*.dat` is unsafe.** The
   block index contains source datadir file offsets. A non-empty block file with
   the same number is not enough proof that an indexed body is valid. In

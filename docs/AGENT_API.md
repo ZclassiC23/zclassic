@@ -99,14 +99,16 @@ The UX-facing service catalog lives in
 `app/controllers/src/api_controller_service_catalog.c` and is exposed as
 `zclassic23 servicecatalog [name]`, `zcl_service_catalog(name?)`,
 `GET /api/v1/service-catalog`, and
-`GET /api/v1/service-catalog/{service}`. Individual operations are addressable
-as `GET /api/v1/service-operations/{operation_id}`, where `operation_id` is the
-stable `service.operation` string carried by each operation object, for example
-`znam_names.resolve_name`. Use these routes when the question is "what can this
-node host, advertise, verify, or construct for a user?" They distinguish the
-stable service contract from `/api/v1/services`, which remains runtime health.
+`GET /api/v1/service-catalog/{service}`. Operations are also a first-class REST
+collection: `GET /api/v1/service-operations` lists every operation, and
+`GET /api/v1/service-operations/{operation_id}` fetches one stable
+`service.operation` contract such as `znam_names.resolve_name`. Use these
+routes when the question is "what can this node host, advertise, verify, or
+construct for a user?" They distinguish the stable service contract from
+`/api/v1/services`, which remains runtime health.
 The collection schema is `zcl.service_catalog.v1`; the member schema is
-`zcl.service_contract.v1`; operation members use
+`zcl.service_contract.v1`; the operation collection schema is
+`zcl.service_operations.index.v1`; operation members use
 `zcl.service_operation.v1`. Together they cover names, bootstrap, Tor/onion
 discovery, direct P2P, files, market, messaging, script contracts, CRUD
 capabilities, transports, verification model, trust model, privacy model, and a

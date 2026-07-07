@@ -158,6 +158,7 @@ controller `k_routes[]` arrays.
 - `zclassic23 servicecatalog [name]` / `zcl_service_catalog(name?)` /
   `GET /api/v1/service-catalog` /
   `GET /api/v1/service-catalog/{service}` /
+  `GET /api/v1/service-operations` /
   `GET /api/v1/service-operations/{operation_id}` — UX-facing sovereign
   service catalog. It answers what this node can host, advertise, verify, or
   construct for a user across names, bootstrap, Tor/onion discovery, P2P,
