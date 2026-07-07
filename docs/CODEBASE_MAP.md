@@ -200,8 +200,9 @@ controller `k_routes[]` arrays.
 - `zclassic23 peerincidents` / `zcl_peer_incidents` — compact bounded peer
   incident packet for reconnect storms, duplicate host entries, last
   disconnect reason, flat primary issue fields, host direction/mixed-direction
-  classification, services, advertised height, bootstrap/fast-sync readiness,
-  and stability blocker verdicts. The contract is registered in
+  classification, services, advertised height plus whether that height is
+  bootstrap-trusted, bootstrap/fast-sync readiness, and stability blocker
+  verdicts. The contract is registered in
   `agent_contracts.def`, so help, `agentcontracts`, MCP coverage, and API
   discovery stay in sync with the native command.
 - `zclassic23 agentimpact <files...>` / `zcl_agent_impact` — map changed paths

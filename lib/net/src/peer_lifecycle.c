@@ -72,6 +72,8 @@ struct peer_lifecycle_host_group {
     int64_t handshaked_unknown_connections;
     int64_t handshaked_network_connections;
     int64_t handshaked_advertised_height_connections;
+    int64_t handshaked_trusted_advertised_height_connections;
+    int64_t handshaked_untrusted_advertised_height_connections;
     int64_t handshaked_zclassic23_connections;
     int64_t bootstrap_useful_connections;
     int64_t fast_sync_useful_connections;
@@ -393,11 +395,31 @@ static void services_summary(uint64_t services, char *out, size_t out_sz)
         snprintf(out, out_sz, "none");
 }
 
-static bool entry_bootstrap_useful(const struct peer_lifecycle_entry *e)
+static bool entry_advertised_height_trusted(
+    const struct peer_lifecycle_entry *e)
 {
     return entry_current_connection_handshaked(e) &&
            (e->services & NODE_NETWORK) != 0 &&
            e->start_height > 0;
+}
+
+static bool entry_bootstrap_useful(const struct peer_lifecycle_entry *e)
+{
+    return entry_advertised_height_trusted(e);
+}
+
+static const char *entry_advertised_height_trust(
+    const struct peer_lifecycle_entry *e)
+{
+    if (!e || e->start_height <= 0)
+        return "missing";
+    if (!entry_connection_open(e))
+        return "stale_connection";
+    if (!entry_current_connection_handshaked(e))
+        return "handshake_incomplete";
+    if ((e->services & NODE_NETWORK) == 0)
+        return "untrusted_missing_NODE_NETWORK";
+    return "trusted";
 }
 
 static const char *entry_bootstrap_readiness(
@@ -433,6 +455,22 @@ static const char *host_group_bootstrap_readiness(
         return "missing_NODE_NETWORK";
     if (g->handshaked_advertised_height_connections <= 0)
         return "missing_advertised_height";
+    return "split_bootstrap_capabilities";
+}
+
+static const char *host_group_advertised_height_trust(
+    const struct peer_lifecycle_host_group *g)
+{
+    if (!g || g->handshaked_open_connections <= 0)
+        return "no_current_handshaked_connection";
+    if (g->handshaked_trusted_advertised_height_connections > 0)
+        return "trusted";
+    if (g->handshaked_advertised_height_connections <= 0)
+        return "missing";
+    if (g->handshaked_network_connections > 0)
+        return "split_bootstrap_capabilities";
+    if (g->handshaked_untrusted_advertised_height_connections > 0)
+        return "untrusted_missing_NODE_NETWORK";
     return "split_bootstrap_capabilities";
 }
 
@@ -772,6 +810,10 @@ static void entry_to_json(const struct peer_lifecycle_entry *e,
     json_push_kv_str(out, "services_summary", summary);
     json_push_kv_int(out, "startingheight", e->start_height);
     json_push_kv_int(out, "advertised_height", e->start_height);
+    json_push_kv_str(out, "advertised_height_trust",
+                     entry_advertised_height_trust(e));
+    json_push_kv_bool(out, "advertised_height_trusted",
+                      entry_advertised_height_trusted(e));
     json_push_kv_str(out, "subver", e->subver);
     json_push_kv_str(out, "bootstrap_readiness",
                      entry_bootstrap_readiness(e));
@@ -931,8 +973,13 @@ static void host_group_add_entry(struct peer_lifecycle_host_group *group,
             group->handshaked_unknown_connections++;
         if ((e->services & NODE_NETWORK) != 0)
             group->handshaked_network_connections++;
-        if (e->start_height > 0)
+        if (e->start_height > 0) {
             group->handshaked_advertised_height_connections++;
+            if (entry_advertised_height_trusted(e))
+                group->handshaked_trusted_advertised_height_connections++;
+            else
+                group->handshaked_untrusted_advertised_height_connections++;
+        }
         if (subver_is_zcl23(e->subver, e->services))
             group->handshaked_zclassic23_connections++;
     }
@@ -1207,6 +1254,10 @@ static void append_incident_peer_json(
     services_summary(e->services, summary, sizeof(summary));
     json_push_kv_str(&obj, "services_summary", summary);
     json_push_kv_int(&obj, "advertised_height", e->start_height);
+    json_push_kv_str(&obj, "advertised_height_trust",
+                     entry_advertised_height_trust(e));
+    json_push_kv_bool(&obj, "advertised_height_trusted",
+                      entry_advertised_height_trusted(e));
     json_push_kv_str(&obj, "subver", e->subver);
     json_push_kv_str(&obj, "bootstrap_readiness",
                      entry_bootstrap_readiness(e));
@@ -1271,6 +1322,12 @@ static void host_group_to_json(const struct peer_lifecycle_host_group *g,
                      g->handshaked_network_connections);
     json_push_kv_int(obj, "handshaked_advertised_height_connections",
                      g->handshaked_advertised_height_connections);
+    json_push_kv_int(obj,
+                     "handshaked_trusted_advertised_height_connections",
+                     g->handshaked_trusted_advertised_height_connections);
+    json_push_kv_int(obj,
+                     "handshaked_untrusted_advertised_height_connections",
+                     g->handshaked_untrusted_advertised_height_connections);
     json_push_kv_int(obj, "handshaked_zclassic23_connections",
                      g->handshaked_zclassic23_connections);
     json_push_kv_int(obj, "bootstrap_useful_connections",
@@ -1303,6 +1360,8 @@ static void host_group_to_json(const struct peer_lifecycle_host_group *g,
     json_push_kv_str(obj, "services_summary", summary);
     json_push_kv_int(obj, "max_advertised_height",
                      g->max_advertised_height);
+    json_push_kv_str(obj, "advertised_height_trust",
+                     host_group_advertised_height_trust(g));
     json_push_kv_str(obj, "bootstrap_readiness",
                      host_group_bootstrap_readiness(g));
     json_push_kv_str(obj, "fast_sync_readiness",

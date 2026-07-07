@@ -182,6 +182,14 @@ a higher-priority chain/operator issue exists. `peer_fast_sync_blocker=true`
 with bootstrap ready means the node has usable peers but no current zclassic23
 fast-sync-capable peer; that is `info` unless material reconnect/duplicate
 incidents are also present.
+Raw peer `advertised_height` values are telemetry, not proof of bootstrap
+usefulness. Treat `advertised_height_trust=trusted` /
+`advertised_height_trusted=true` as the compact signal that the height came
+from a current handshaked `NODE_NETWORK` peer; `untrusted_missing_NODE_NETWORK`
+means the peer reported a height but did not advertise the service bit needed
+for bootstrap. Host-level `advertised_height_trust` can also be
+`split_bootstrap_capabilities` when one current connection has the service bit
+and another has the height, but no single connection has both.
 `peer_incident_severity=info` means the raw peer lifecycle view still has
 forensic detail, but there is no duplicate/reconnect storm and the overall
 verdict can remain healthy. `peer_incident_severity=attention` means the
@@ -201,6 +209,12 @@ fast-sync usefulness without requiring log scraping. Host-level objects expose
 `current_handshaked_direction`, and per-direction current open/handshaked
 counts so reconnect storms that mix inbound ephemeral ports with outbound
 dial attempts are visible without expanding the full peer list.
+Host-level objects also split raw advertised-height counts into
+`handshaked_trusted_advertised_height_connections` and
+`handshaked_untrusted_advertised_height_connections`, and expose
+`advertised_height_trust` so agents can see whether the host has a usable
+bootstrap height, only an untrusted height report, or split capabilities across
+multiple current connections.
 Its top-level `bootstrap_readiness`, `fast_sync_readiness`,
 `bootstrap_blocked`, `fast_sync_blocked`, `incident_severity`,
 `stability_blocker`, and `safe_next_action` are the no-jq verdict fields.
@@ -444,8 +458,9 @@ with `primary_host_issue`, `top_host_incidents`, flat `primary_issue_host` /
 `primary_issue_class` / `primary_issue_next_action` fields, `top_incidents`,
 `duplicate_host_groups`, reconnect counts, last reasons,
 direction, handshake age, advertised height, service summaries, bootstrap
-readiness/usefulness, fast-sync readiness/usefulness, current handshaked
-service/height/ZClassic23 counts, host `direction` / `mixed_direction`,
+readiness/usefulness, fast-sync readiness/usefulness, advertised-height trust,
+current handshaked service/height/ZClassic23 counts, trusted/untrusted
+advertised-height host counts, host `direction` / `mixed_direction`,
 current open/handshaked direction summaries, reconnect cadence (`last_reconnect_interval_secs` and
 host min/max/latest reconnect intervals), current open/handshaked connection
 counts, top-level bootstrap/fast-sync blocker verdicts, and separate

@@ -654,6 +654,10 @@ static int test_peer_lifecycle_incident_view(void)
         ASSERT(json_get_int(json_get(group,
             "handshaked_advertised_height_connections")) == 1);
         ASSERT(json_get_int(json_get(group,
+            "handshaked_trusted_advertised_height_connections")) == 1);
+        ASSERT(json_get_int(json_get(group,
+            "handshaked_untrusted_advertised_height_connections")) == 0);
+        ASSERT(json_get_int(json_get(group,
                                      "handshaked_zclassic23_connections"))
                == 0);
         ASSERT(json_get_int(json_get(group,
@@ -722,6 +726,10 @@ static int test_peer_lifecycle_incident_view(void)
         ASSERT(strstr(json_get_str(json_get(a, "services_summary")),
                       "NODE_NETWORK") != NULL);
         ASSERT(json_get_int(json_get(a, "advertised_height")) == 3170407);
+        ASSERT(strcmp(json_get_str(json_get(a,
+                                            "advertised_height_trust")),
+                      "trusted") == 0);
+        ASSERT(json_get_bool(json_get(a, "advertised_height_trusted")));
         ASSERT(json_get_int(json_get(a, "handshake_age_secs")) >= 0);
         ASSERT(strcmp(json_get_str(json_get(a, "bootstrap_readiness")),
                       "useful") == 0);
@@ -884,6 +892,10 @@ static int test_peer_lifecycle_duplicate_current_bootstrap_view(void)
         ASSERT(json_get_int(json_get(group,
             "handshaked_advertised_height_connections")) == 2);
         ASSERT(json_get_int(json_get(group,
+            "handshaked_trusted_advertised_height_connections")) == 2);
+        ASSERT(json_get_int(json_get(group,
+            "handshaked_untrusted_advertised_height_connections")) == 0);
+        ASSERT(json_get_int(json_get(group,
                                      "handshaked_zclassic23_connections"))
                == 1);
         ASSERT(json_get_int(json_get(group,
@@ -900,6 +912,9 @@ static int test_peer_lifecycle_duplicate_current_bootstrap_view(void)
                       "NODE_ZCL23") != NULL);
         ASSERT(json_get_int(json_get(group, "max_advertised_height"))
                == 3172092);
+        ASSERT(strcmp(json_get_str(json_get(group,
+                                            "advertised_height_trust")),
+                      "trusted") == 0);
         ASSERT(strcmp(json_get_str(json_get(group, "bootstrap_readiness")),
                       "useful") == 0);
         ASSERT(strcmp(json_get_str(json_get(group, "fast_sync_readiness")),
@@ -937,6 +952,10 @@ static int test_peer_lifecycle_duplicate_current_bootstrap_view(void)
         ASSERT(fast && fast->type == JSON_OBJ);
         ASSERT(strcmp(json_get_str(json_get(fast, "bootstrap_readiness")),
                       "useful") == 0);
+        ASSERT(strcmp(json_get_str(json_get(fast,
+                                            "advertised_height_trust")),
+                      "trusted") == 0);
+        ASSERT(json_get_bool(json_get(fast, "advertised_height_trusted")));
         ASSERT(json_get_bool(json_get(fast, "bootstrap_useful")));
         ASSERT(json_get_bool(json_get(fast, "fast_sync_useful")));
         ASSERT(strstr(json_get_str(json_get(fast, "services_summary")),
@@ -1110,6 +1129,13 @@ static int test_peer_lifecycle_host_readiness_reasons(void)
                                      "handshaked_network_connections")) == 0);
         ASSERT(json_get_int(json_get(missing,
             "handshaked_advertised_height_connections")) == 2);
+        ASSERT(json_get_int(json_get(missing,
+            "handshaked_trusted_advertised_height_connections")) == 0);
+        ASSERT(json_get_int(json_get(missing,
+            "handshaked_untrusted_advertised_height_connections")) == 2);
+        ASSERT(strcmp(json_get_str(json_get(missing,
+                                            "advertised_height_trust")),
+                      "untrusted_missing_NODE_NETWORK") == 0);
         ASSERT(!json_get_bool(json_get(missing, "bootstrap_useful")));
         json_free(&incidents);
 
@@ -1164,6 +1190,13 @@ static int test_peer_lifecycle_host_readiness_reasons(void)
                                      "handshaked_network_connections")) == 1);
         ASSERT(json_get_int(json_get(split,
             "handshaked_advertised_height_connections")) == 1);
+        ASSERT(json_get_int(json_get(split,
+            "handshaked_trusted_advertised_height_connections")) == 0);
+        ASSERT(json_get_int(json_get(split,
+            "handshaked_untrusted_advertised_height_connections")) == 1);
+        ASSERT(strcmp(json_get_str(json_get(split,
+                                            "advertised_height_trust")),
+                      "split_bootstrap_capabilities") == 0);
         ASSERT(json_get_int(json_get(split,
                                      "handshaked_zclassic23_connections"))
                == 1);
