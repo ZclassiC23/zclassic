@@ -114,8 +114,12 @@ concrete UX story per service. Each service also carries an `operations[]`
 array of operation objects that names the action, CRUD capability, REST route
 when public, RPC method, MCP tool, input/output contract, authority, execution
 surface, write-safety class, and whether the operation is destructive or
-operator-private. This is the no-guesswork path for agents building a UX from
-names, bootstrap, Tor/P2P, market, messaging, and script-contract capabilities.
+operator-private. Each operation also carries `service_catalog_route`,
+`agent_preferred_interface`, `agent_next_step`, and `*_callable` booleans so an
+agent can choose REST for public reads, MCP for operator/private or destructive
+actions, and RPC only when that is the explicit fallback. This is the
+no-guesswork path for agents building a UX from names, bootstrap, Tor/P2P,
+market, messaging, and script-contract capabilities.
 The collection also carries `sovereign_ux` (`zcl.sovereign_ux_contract.v1`):
 a machine-readable flow from agent status → service catalog → ZNAM resolution
 → endpoint verification → direct P2P/onion routing → versioned CRUD operation.

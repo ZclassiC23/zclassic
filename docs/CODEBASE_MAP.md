@@ -166,8 +166,11 @@ controller `k_routes[]` arrays.
   flow, and member contracts expose `depends_on_services`, `read_model`,
   `write_model`, and `operations[]` so agents do not infer dependencies or
   write safety from prose. Operation IDs are stable `service.operation`
-  strings, such as `znam_names.resolve_name`. The implementation is split
-  between `app/controllers/src/api_controller_service_catalog.c` and
+  strings, such as `znam_names.resolve_name`. Each operation also publishes
+  `service_catalog_route`, `agent_preferred_interface`, `agent_next_step`, and
+  callable booleans so agents can navigate from service intent to the safest
+  callable surface without route guessing. The implementation is split between
+  `app/controllers/src/api_controller_service_catalog.c` and
   `app/controllers/src/api_controller_service_operations.c`; `/api/v1/services`
   remains runtime health.
 - `zclassic23 status` / `zclassic23 agent` / `zcl_agent` — bounded live status

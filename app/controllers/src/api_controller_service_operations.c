@@ -364,6 +364,46 @@ static void api_service_operation_id(
     buf[buf_len - 1] = '\0';
 }
 
+static const char *api_service_operation_agent_interface(
+    const struct api_service_operation_contract *op)
+{
+    if (!op)
+        return "native_or_planned";
+
+    if ((op->operator_private || op->destructive) &&
+        op->mcp_tool && op->mcp_tool[0])
+        return "mcp";
+    if (op->public_read && op->rest_method && op->rest_method[0] &&
+        op->rest_route && op->rest_route[0])
+        return "rest";
+    if (op->mcp_tool && op->mcp_tool[0])
+        return "mcp";
+    if (op->rpc_method && op->rpc_method[0])
+        return "rpc";
+    if (op->rest_method && op->rest_method[0] &&
+        op->rest_route && op->rest_route[0])
+        return "rest";
+    return "native_or_planned";
+}
+
+static const char *api_service_operation_agent_next_step(
+    const struct api_service_operation_contract *op)
+{
+    const char *iface = api_service_operation_agent_interface(op);
+
+    if (!op)
+        return "inspect_operation_contract";
+    if (op->destructive)
+        return "review_destructive_write_safety_then_call_mcp_tool";
+    if (strcmp(iface, "rest") == 0)
+        return "call_rest_route_and_validate_output_schema";
+    if (strcmp(iface, "mcp") == 0)
+        return "call_mcp_tool_with_operator_context";
+    if (strcmp(iface, "rpc") == 0)
+        return "call_rpc_method_with_explicit_datadir_or_port";
+    return "inspect_native_or_planned_contract";
+}
+
 static const struct api_service_operation_contract *
 api_service_operation_lookup_id(const char *operation_id)
 {
@@ -387,20 +427,27 @@ static void api_service_operation_json(
     const struct api_service_operation_contract *op)
 {
     char operation_id[128];
+    char service_route[160];
     char self_route[192];
+    const char *agent_interface;
 
     if (!obj || !op)
         return;
 
     api_service_operation_id(operation_id, sizeof(operation_id), op);
+    snprintf(service_route, sizeof(service_route),
+             "/api/v1/service-catalog/%s", op->service_name);
+    service_route[sizeof(service_route) - 1] = '\0';
     snprintf(self_route, sizeof(self_route),
              "/api/v1/service-operations/%s", operation_id);
     self_route[sizeof(self_route) - 1] = '\0';
+    agent_interface = api_service_operation_agent_interface(op);
 
     json_set_object(obj);
     json_push_kv_str(obj, "schema", ZCL_SERVICE_OPERATION_SCHEMA);
     json_push_kv_str(obj, "operation_id", operation_id);
     json_push_kv_str(obj, "self_route", self_route);
+    json_push_kv_str(obj, "service_catalog_route", service_route);
     json_push_kv_str(obj, "service", op->service_name);
     json_push_kv_str(obj, "operation", op->operation);
     json_push_kv_str(obj, "crud_capability", op->crud_capability);
@@ -428,6 +475,16 @@ static void api_service_operation_json(
                          ? "operator_private_destructive"
                          : op->operator_private ? "operator_private"
                                                 : "public_read_only");
+    json_push_kv_str(obj, "agent_preferred_interface", agent_interface);
+    json_push_kv_str(obj, "agent_next_step",
+                     api_service_operation_agent_next_step(op));
+    json_push_kv_bool(obj, "rest_callable",
+                      op->rest_method && op->rest_method[0] &&
+                      op->rest_route && op->rest_route[0]);
+    json_push_kv_bool(obj, "mcp_callable",
+                      op->mcp_tool && op->mcp_tool[0]);
+    json_push_kv_bool(obj, "rpc_callable",
+                      op->rpc_method && op->rpc_method[0]);
     json_push_kv_bool(obj, "public_read", op->public_read);
     json_push_kv_bool(obj, "operator_private", op->operator_private);
     json_push_kv_bool(obj, "destructive", op->destructive);

@@ -1863,6 +1863,10 @@ int test_api(void)
                     "/api/v1/service-operations/bootstrap.read_bootstrap_status")
              == 0;
         ok = ok && bootstrap_status_op &&
+             strcmp(json_get_str(json_get(bootstrap_status_op,
+                                          "service_catalog_route")),
+                    "/api/v1/service-catalog/bootstrap") == 0;
+        ok = ok && bootstrap_status_op &&
              strcmp(json_get_str(json_get(bootstrap_status_op, "rest_route")),
                     "/api/v1/bootstrap") == 0;
         ok = ok && bootstrap_status_op &&
@@ -1876,6 +1880,20 @@ int test_api(void)
              strcmp(json_get_str(json_get(bootstrap_status_op,
                                           "write_safety")),
                     "public_read_only") == 0;
+        ok = ok && bootstrap_status_op &&
+             strcmp(json_get_str(json_get(bootstrap_status_op,
+                                          "agent_preferred_interface")),
+                    "rest") == 0;
+        ok = ok && bootstrap_status_op &&
+             strcmp(json_get_str(json_get(bootstrap_status_op,
+                                          "agent_next_step")),
+                    "call_rest_route_and_validate_output_schema") == 0;
+        ok = ok && json_get_bool(json_get(bootstrap_status_op,
+                                          "rest_callable"));
+        ok = ok && json_get_bool(json_get(bootstrap_status_op,
+                                          "mcp_callable"));
+        ok = ok && json_get_bool(json_get(bootstrap_status_op,
+                                          "rpc_callable"));
         ok = ok && names &&
              strcmp(json_get_str(json_get(names, "application_protocol")),
                     "znam") == 0;
@@ -1911,8 +1929,26 @@ int test_api(void)
                     "znam_names.construct_name_register") == 0;
         ok = ok && name_register_op &&
              strcmp(json_get_str(json_get(name_register_op,
+                                          "service_catalog_route")),
+                    "/api/v1/service-catalog/znam_names") == 0;
+        ok = ok && name_register_op &&
+             strcmp(json_get_str(json_get(name_register_op,
                                           "write_safety")),
                     "operator_private_destructive") == 0;
+        ok = ok && name_register_op &&
+             strcmp(json_get_str(json_get(name_register_op,
+                                          "agent_preferred_interface")),
+                    "mcp") == 0;
+        ok = ok && name_register_op &&
+             strcmp(json_get_str(json_get(name_register_op,
+                                          "agent_next_step")),
+                    "review_destructive_write_safety_then_call_mcp_tool") == 0;
+        ok = ok && !json_get_bool(json_get(name_register_op,
+                                           "rest_callable"));
+        ok = ok && json_get_bool(json_get(name_register_op,
+                                          "mcp_callable"));
+        ok = ok && json_get_bool(json_get(name_register_op,
+                                          "rpc_callable"));
         ok = ok && name_register_op &&
              json_get_bool(json_get(name_register_op, "destructive"));
         ok = ok && onion &&
@@ -1990,6 +2026,9 @@ int test_api(void)
         ok = ok && strcmp(json_get_str(json_get(&root, "self_route")),
                           "/api/v1/service-operations/"
                           "znam_names.resolve_name") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root,
+                                                "service_catalog_route")),
+                          "/api/v1/service-catalog/znam_names") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "service")),
                           "znam_names") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "operation")),
@@ -2007,6 +2046,14 @@ int test_api(void)
                           "rest") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "write_safety")),
                           "public_read_only") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root,
+                                                "agent_preferred_interface")),
+                          "rest") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "agent_next_step")),
+                          "call_rest_route_and_validate_output_schema") == 0;
+        ok = ok && json_get_bool(json_get(&root, "rest_callable"));
+        ok = ok && json_get_bool(json_get(&root, "mcp_callable"));
+        ok = ok && json_get_bool(json_get(&root, "rpc_callable"));
         ok = ok && json_get_bool(json_get(&root, "public_read"));
         ok = ok && !json_get_bool(json_get(&root, "destructive"));
         json_free(&root);
