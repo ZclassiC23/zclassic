@@ -155,6 +155,10 @@ controller `k_routes[]` arrays.
   `app/controllers/src/agent_contract_capability_registry.c`; v1 compatibility
   aliases are marked with `registry_alias=true` instead of repeating
   schema/tool strings in the controller.
+- `zclassic23 status` / `zclassic23 agent` / `zcl_agent` — bounded live status
+  from the running node. `status` is a native compatibility alias owned by
+  `agent_contracts.def`; it emits the same `zcl.public_status.v1` payload as
+  `agent` and `GET /api/v1/agent`.
 - `zclassic23 agentmap` / `zcl_agent_map` — AI-coder map for the native/MCP
   operator surface: where code lives, which docs apply, and which tests cover
   each subsystem. The full contract guide is `docs/AGENT_API.md`.

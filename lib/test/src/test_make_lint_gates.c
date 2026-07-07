@@ -3036,7 +3036,12 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(main_buf, "cannot accidentally query") != NULL);
         ASSERT(strstr(main_buf, "params_storage") != NULL);
         ASSERT(strstr(main_buf, "strcmp(method, \"--agent\")") != NULL);
+        ASSERT(strstr(main_buf, "strcmp(method, \"--status\")") != NULL);
+        ASSERT(strstr(main_buf, "cli_runtime_rpc_method") != NULL);
+        ASSERT(strstr(main_buf, "strcmp(method, \"status\")") != NULL);
+        ASSERT(strstr(main_buf, "return \"agent\"") != NULL);
         ASSERT(strstr(main_buf, "strcmp(argv[i], \"--agent\")") != NULL);
+        ASSERT(strstr(main_buf, "strcmp(argv[i], \"--status\")") != NULL);
         ASSERT(strstr(main_buf, "cli_static_agent_method") != NULL);
         ASSERT(strstr(main_buf, "struct cli_static_agent_route") != NULL);
         ASSERT(strstr(main_buf, "g_cli_static_agent_routes") != NULL);
@@ -3085,6 +3090,7 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"protocols\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agent\"") != NULL);
+        ASSERT(strstr(event_buf, "{ \"control\", \"status\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agentops\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agentdiagnose\"")
                != NULL);
@@ -3288,6 +3294,10 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_contracts_buf, "zcl.agent_contracts.v1") != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "AGENT_CONTRACT") != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "zcl.public_status.v1")
+               != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "runtime_status_alias")
+               != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zclassic23 status")
                != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "zcl.agent_interface.v1")
                != NULL);
@@ -3747,6 +3757,10 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "readiness_status") != NULL);
         ASSERT(strstr(agent_doc_buf, "readiness_next_action") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentinterface") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zclassic23 status") != NULL);
+        ASSERT(strstr(agent_doc_buf,
+                      "native compatibility alias for\n"
+                      "`zclassic23 agent`") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_interface") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentops") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_ops") != NULL);

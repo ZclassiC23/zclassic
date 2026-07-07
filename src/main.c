@@ -7,6 +7,7 @@
  *   zclassic23 api                    — API discovery from running node
  *   zclassic23 appprotocols           — application protocol catalog
  *   zclassic23 agent                  — compact status from running node
+ *   zclassic23 status                 — compatibility alias for agent
  *   zclassic23 statecatalog           — zcl_state subsystem catalog
  *   zclassic23 agentlanes             — canonical/soak/dev lane topology
  *   zclassic23 agentliveness          — unified liveness rollup
@@ -742,6 +743,13 @@ static void cli_probe_record_response(const char *method, const char *resp,
     json_free(&root);
 }
 
+static const char *cli_runtime_rpc_method(const char *method)
+{
+    if (method && strcmp(method, "status") == 0)
+        return "agent";
+    return method;
+}
+
 static void cli_probe_static_agent_target(const char *datadir)
 {
     agent_runtime_availability_begin_probe("cli_target_rpc", datadir,
@@ -753,6 +761,7 @@ static void cli_probe_static_agent_target(const char *datadir)
     agent_runtime_availability_set_probe_status("probing");
     for (size_t i = 0; i < agent_runtime_probe_method_count(); i++) {
         const char *method = agent_runtime_probe_method_name(i);
+        const char *runtime_method = cli_runtime_rpc_method(method);
         const char *probe_params = agent_contract_probe_params_json(method);
         if (!probe_params || !probe_params[0])
             probe_params = "[]";
@@ -760,7 +769,7 @@ static void cli_probe_static_agent_target(const char *datadir)
         int blen = snprintf(body, sizeof(body),
             "{\"jsonrpc\":\"1.0\",\"id\":\"agent-availability\","
             "\"method\":\"%s\",\"params\":%s}",
-            method, probe_params);
+            runtime_method, probe_params);
         if (blen <= 0 || (size_t)blen >= sizeof(body)) {
             agent_runtime_availability_record_method(method, "unknown",
                                                      RPC_INTERNAL_ERROR,
@@ -1141,6 +1150,9 @@ static int cli_main(int argc, char **argv)
 
     if (strcmp(method, "--agent") == 0 || strcmp(method, "-agent") == 0)
         method = "agent";
+    else if (strcmp(method, "--status") == 0 ||
+             strcmp(method, "-status") == 0)
+        method = "status";
     else if (strcmp(method, "--summary") == 0 ||
              strcmp(method, "-summary") == 0)
         method = "summary";
@@ -1161,7 +1173,9 @@ static int cli_main(int argc, char **argv)
     }
 
     struct json_value jp;
-    if (!rpc_convert_values(method, params_storage, (size_t)nparams, &jp)) {
+    const char *runtime_method = cli_runtime_rpc_method(method);
+    if (!rpc_convert_values(runtime_method, params_storage, (size_t)nparams,
+                            &jp)) {
         fprintf(stderr, "Bad parameters\n");
         return 1;
     }
@@ -1173,7 +1187,7 @@ static int cli_main(int argc, char **argv)
     char body[65536];
     int blen = snprintf(body, sizeof(body),
         "{\"jsonrpc\":\"1.0\",\"id\":\"z\",\"method\":\"%s\",\"params\":%s}",
-        method, pbuf);
+        runtime_method, pbuf);
 
     char *resp = cli_rpc_call(body, (size_t)blen);
     if (!resp) { fprintf(stderr, "RPC failed\n"); return 1; }
@@ -1330,6 +1344,8 @@ static bool is_cli_mode(int argc, char **argv)
         if (argv[i][0] != '-') return true;  /* RPC method name */
         if (strcmp(argv[i], "--agent") == 0 ||
             strcmp(argv[i], "-agent") == 0 ||
+            strcmp(argv[i], "--status") == 0 ||
+            strcmp(argv[i], "-status") == 0 ||
             strcmp(argv[i], "--summary") == 0 ||
             strcmp(argv[i], "-summary") == 0)
             return true;

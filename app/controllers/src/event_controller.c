@@ -293,6 +293,7 @@ void register_event_rpc_commands(struct rpc_table *t)
         { "control", "appprotocols",      rpc_app_protocols,     true },
         { "control", "protocols",         rpc_app_protocols,     true },
         { "control", "agent",             rpc_agent_summary,     true },
+        { "control", "status",            rpc_agent_summary,     true },
         { "control", "summary",           rpc_agent_summary,     true },
         { "control", "operatorsummary",   rpc_agent_summary,     true },
         { "control", "agentmap",          rpc_agent_map,         true },

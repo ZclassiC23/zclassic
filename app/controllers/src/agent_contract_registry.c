@@ -239,26 +239,6 @@ void agent_print_native_usage(FILE *out, const char *prog)
     }
 }
 
-static void agent_append_summary(char *buf, size_t buf_sz, size_t *pos,
-                                 const char *separator, const char *text)
-{
-    if (!buf || buf_sz == 0 || !pos || !text || !text[0])
-        return;
-    if (*pos >= buf_sz) {
-        buf[buf_sz - 1] = '\0';
-        return;
-    }
-    int n = snprintf(buf + *pos, buf_sz - *pos, "%s%s",
-                     separator ? separator : "", text);
-    if (n < 0)
-        return;
-    size_t wrote = (size_t)n;
-    if (wrote >= buf_sz - *pos)
-        *pos = buf_sz - 1;
-    else
-        *pos += wrote;
-}
-
 static bool agent_contract_surface_has(const char *surfaces,
                                        const char *surface)
 {
@@ -403,50 +383,6 @@ void agent_push_contract_summary_json(struct json_value *out,
         "every non-empty mcp contract must resolve in zcl_tools_list");
     json_push_kv(out, key, &obj);
     json_free(&obj);
-}
-
-void agent_push_contract_transport_summary_json(struct json_value *arr)
-{
-    if (!arr)
-        return;
-
-    char native[4096];
-    char mcp[4096];
-    char rest[2048];
-    size_t native_pos = 0;
-    size_t mcp_pos = 0;
-    size_t rest_pos = 0;
-    bool native_first = true;
-    bool mcp_first = true;
-    bool rest_first = true;
-
-    native[0] = '\0';
-    mcp[0] = '\0';
-    rest[0] = '\0';
-    agent_append_summary(native, sizeof(native), &native_pos, "", "native: ");
-    agent_append_summary(mcp, sizeof(mcp), &mcp_pos, "", "mcp: ");
-    agent_append_summary(rest, sizeof(rest), &rest_pos, "", "rest: ");
-
-    for (size_t i = 0; i < g_agent_contract_count; i++) {
-        const struct agent_contract *c = &g_agent_contracts[i];
-        agent_append_summary(native, sizeof(native), &native_pos,
-                             native_first ? "" : " | ",
-                             c->native_command);
-        native_first = false;
-        agent_append_summary(mcp, sizeof(mcp), &mcp_pos,
-                             mcp_first ? "" : ", ", c->mcp_tool);
-        mcp_first = false;
-        if (c->rest_route && c->rest_route[0]) {
-            agent_append_summary(rest, sizeof(rest), &rest_pos,
-                                 rest_first ? "" : "; ", c->rest_route);
-            rest_first = false;
-        }
-    }
-
-    agent_push_str(arr, native);
-    agent_push_str(arr, mcp);
-    agent_push_str(arr, rest_first ? "rest: no REST-only agent route" : rest);
-    agent_push_str(arr, "deprecated: tools/z compatibility shim only");
 }
 
 void agent_push_contract_ops_surface_json(struct json_value *arr,

@@ -63,6 +63,7 @@ In another terminal, ask the running node for status:
 
 ```bash
 build/bin/zclassic23 -datadir="$HOME/.zclassic-c23" agent
+build/bin/zclassic23 -datadir="$HOME/.zclassic-c23" status
 build/bin/zclassic23 -datadir="$HOME/.zclassic-c23" agentops
 build/bin/zclassic-cli -datadir="$HOME/.zclassic-c23" getblockcount
 build/bin/zclassic-cli -datadir="$HOME/.zclassic-c23" getnetworkinfo
@@ -122,8 +123,9 @@ claude mcp add zcl23 -- build/bin/zclassic23 -mcp -datadir="$HOME/.zclassic-c23"
 
 Start with:
 
-- `zcl_status`
 - `zcl_agent_ops`
+- `zcl_agent`
+- `zcl_status`
 - `zcl_state`
 - `zcl_node_log`
 - `zcl_tools_list`

@@ -2443,6 +2443,46 @@ int test_syncdiag_rpc(void)
         else    { printf("FAIL\n"); failures++; }
     }
 
+    printf("api: native RPC status aliases bounded agent status... ");
+    {
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        register_event_rpc_commands(&tbl);
+        if (rpc_is_in_warmup(NULL, 0))
+            set_rpc_warmup_finished();
+
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+
+        struct json_value result;
+        json_init(&result);
+
+        bool ok = rpc_table_execute(&tbl, "status", &params, &result);
+        ok = ok && result.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
+                          "zcl.public_status.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "api_version")),
+                          "v1") == 0;
+        const struct json_value *first_call = json_get(&result, "first_call");
+        ok = ok && first_call && first_call->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(first_call, "schema")),
+                          "zcl.first_call_contract.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(first_call, "api")),
+                          "agent") == 0;
+        ok = ok && strcmp(json_get_str(json_get(first_call,
+                                                "budget_semantics")),
+                          "first-call path must use cached/bounded sources "
+                          "and return valid JSON") == 0;
+
+        json_free(&params);
+        json_free(&result);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
     printf("api: native RPC agent bounds optional detail when budget is spent... ");
     {
         struct rpc_table tbl;
@@ -3854,6 +3894,8 @@ int test_syncdiag_rpc(void)
             find_object_with_str(contract_list, "method", "api");
         const struct json_value *contract_app_protocols =
             find_object_with_str(contract_list, "method", "appprotocols");
+        const struct json_value *contract_status =
+            find_object_with_str(contract_list, "method", "status");
         const struct json_value *contract_dumpstate =
             find_object_with_str(contract_list, "method", "dumpstate");
         const struct json_value *contract_getnodelog =
@@ -3931,6 +3973,21 @@ int test_syncdiag_rpc(void)
             strcmp(json_get_str(json_get(contract_agentops,
                                          "ops_purpose")),
                    "compact top-level fields for common agent decisions") == 0;
+        ok = ok && contract_status &&
+            strcmp(json_get_str(json_get(contract_status, "capability")),
+                   "runtime_status_alias") == 0;
+        ok = ok && contract_status &&
+            strcmp(json_get_str(json_get(contract_status, "schema")),
+                   "zcl.public_status.v1") == 0;
+        ok = ok && contract_status &&
+            strcmp(json_get_str(json_get(contract_status, "native")),
+                   "zclassic23 status") == 0;
+        ok = ok && contract_status &&
+            strcmp(json_get_str(json_get(contract_status, "mcp")),
+                   "zcl_agent") == 0;
+        ok = ok && contract_status &&
+            strcmp(json_get_str(json_get(contract_status, "rest")),
+                   "GET /api/v1/agent") == 0;
         ok = ok && contract_diagnose &&
             strcmp(json_get_str(json_get(contract_diagnose, "schema")),
                    "zcl.agent_diagnose.v1") == 0;
@@ -4135,6 +4192,7 @@ int test_syncdiag_rpc(void)
         ok = ok && json_array_has_substr(transports, "zcl_health");
         ok = ok && json_array_has_substr(transports, "zcl_milestone");
         ok = ok && json_array_has_substr(transports, "zcl_refold_status");
+        ok = ok && json_array_has_substr(transports, "zclassic23 status");
 
         struct json_value ops;
         json_init(&ops);
@@ -5170,6 +5228,8 @@ int test_syncdiag_rpc(void)
             json_get(&interface, "capabilities");
         const struct json_value *runtime_status =
             find_object_with_str(capabilities, "name", "runtime_status");
+        const struct json_value *runtime_status_alias =
+            find_object_with_str(capabilities, "name", "runtime_status_alias");
         const struct json_value *mirror_status =
             find_object_with_str(capabilities, "name", "mirror_status");
         const struct json_value *lane_topology =
@@ -5252,6 +5312,18 @@ int test_syncdiag_rpc(void)
                    "zcl_agent") == 0;
         ok = ok && runtime_status &&
             strcmp(json_get_str(json_get(runtime_status, "schema")),
+                   "zcl.public_status.v1") == 0;
+        ok = ok && runtime_status_alias &&
+            strcmp(json_get_str(json_get(runtime_status_alias, "method")),
+                   "status") == 0;
+        ok = ok && runtime_status_alias &&
+            strcmp(json_get_str(json_get(runtime_status_alias, "native")),
+                   "zclassic23 status") == 0;
+        ok = ok && runtime_status_alias &&
+            strcmp(json_get_str(json_get(runtime_status_alias, "mcp")),
+                   "zcl_agent") == 0;
+        ok = ok && runtime_status_alias &&
+            strcmp(json_get_str(json_get(runtime_status_alias, "schema")),
                    "zcl.public_status.v1") == 0;
         ok = ok && mirror_status &&
             strcmp(json_get_str(json_get(mirror_status, "schema")),

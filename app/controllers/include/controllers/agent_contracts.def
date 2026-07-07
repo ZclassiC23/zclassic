@@ -16,6 +16,11 @@ AGENT_CONTRACT("agent", "runtime_status", "zcl.public_status.v1",
                "direct", 2, "live_status",
                "serving state, heights, peers, blockers, lane, readiness",
                "bounded live status: build, lane safety, heights, peers, blocker, and next action")
+AGENT_CONTRACT("status", "runtime_status_alias", "zcl.public_status.v1",
+               "zclassic23 status", "zcl_agent", "GET /api/v1/agent",
+               "", "",
+               "", 0, "", "",
+               "native compatibility alias for the bounded live status contract; payload is the agent status JSON")
 AGENT_CONTRACT("agentops", "operator_command_center", "zcl.agent_ops.v1",
                "zclassic23 agentops", "zcl_agent_ops", "",
                "ops_command", "ops_tool",
