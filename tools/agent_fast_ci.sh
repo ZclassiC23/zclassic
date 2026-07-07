@@ -374,8 +374,11 @@ cache_manifest() {
 
     for file in Makefile "$IMPACT_RULES_FILE" tools/agent_fast_ci.sh tools/z \
         tools/githooks/pre-push tools/deploy_guard.sh tools/deploy_verify.sh \
+        tools/scripts/remote_node_update.sh \
         tools/scripts/background_quality_lane.sh \
         tools/scripts/check_agentdeployguard_cli_exit.sh \
+        deploy/examples/zclassic23-self-update.service \
+        deploy/examples/zclassic23-self-update.timer \
         deploy/zclassic23-fuzz.service deploy/zclassic23-fuzz.timer \
         deploy/zclassic23-coverage.service deploy/zclassic23-coverage.timer \
         deploy/zclassic23-test-suite.service deploy/zclassic23-test-suite.timer \
@@ -462,6 +465,7 @@ run_shell_checks() {
     git diff --check
     for script in tools/agent_fast_ci.sh tools/z tools/githooks/pre-push \
         tools/deploy_guard.sh tools/deploy_verify.sh \
+        tools/scripts/remote_node_update.sh \
         tools/scripts/background_quality_lane.sh \
         tools/scripts/check_agentdeployguard_cli_exit.sh; do
         bash -n "$script"

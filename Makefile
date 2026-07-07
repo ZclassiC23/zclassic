@@ -201,7 +201,7 @@ vendor-force:
 $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
 	tools/scripts/build_vendor.sh $(notdir $@)
 
-.PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy deploy-dev lane-health lane-recover check-agent-cli check-restart-follow \
+.PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy deploy-dev remote-node-update lane-health lane-recover check-agent-cli check-restart-follow \
         background-fuzz background-coverage background-tests install-quality-linger quality-linger-status pre-push-ci \
         coverage coverage-clean docs-mcp docs-mcp-check ci audit release \
         bench bench-regress \
@@ -388,6 +388,13 @@ lint-fast: check-raw-sqlite check-malloc check-silent-errors check-model-validat
 #   make pre-push-ci               # skips live probe; code gate only
 fast-ci agent-fast-ci dev-ci:
 	@tools/agent_fast_ci.sh
+
+remote-node-update:
+	@if [ -n "$${ZCL_REMOTE_HOST:-}" ]; then \
+	    tools/scripts/remote_node_update.sh "$$ZCL_REMOTE_HOST"; \
+	else \
+	    tools/scripts/remote_node_update.sh $${ZCL_REMOTE_HOSTS:-}; \
+	fi
 
 # ── Live-truth diagnosis + safe reproduction ─────────────────────────────
 # diagnose-gap: one-shot three-orthogonal-views dump + root-cause verdict over

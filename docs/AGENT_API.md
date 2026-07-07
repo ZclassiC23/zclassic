@@ -892,6 +892,43 @@ from an older commit is useful history, not evidence for the running build.
 Agents should read that field first and use `make quality-linger-status` when
 they need systemd timer logs or human-formatted service output.
 
+## Remote Node Updates
+
+Use `tools/scripts/remote_node_update.sh <ssh-host>` or
+`make remote-node-update ZCL_REMOTE_HOST=<ssh-host>` to keep remote node
+worktrees on `main` and their compile caches warm. The contract schema is
+`zcl.remote_node_update.v1`; `zclassic23 agentbuild` / `zcl_agent_build`
+exposes the same command under `remote_node_update`.
+
+The default is intentionally observe-only:
+
+- `ZCL_REMOTE_DRY_RUN=1` prints the host, branch, current `HEAD`,
+  `origin/main`, target systemd unit, and the planned action.
+- The remote checkout must be `main`; `origin/main` is the only accepted
+  remote ref; updates use `git merge --ff-only origin/main`.
+- Tracked local changes on the remote refuse the run unless
+  `ZCL_REMOTE_ALLOW_DIRTY=1` is set after review.
+- `ZCL_REMOTE_RESTART=0` by default; restarts require explicit opt-in and run
+  through `tools/deploy_guard.sh` / `zcl.agent_deploy_guard.v1`.
+- No Python or `jq` is required.
+
+Common commands:
+
+```bash
+tools/scripts/remote_node_update.sh rhett@205.209.104.118
+ZCL_REMOTE_DRY_RUN=0 ZCL_REMOTE_BUILD=fast-rebuild tools/scripts/remote_node_update.sh rhett@205.209.104.118
+ZCL_REMOTE_DRY_RUN=0 ZCL_REMOTE_BUILD=release ZCL_REMOTE_INSTALL_BIN=/home/rhett/bin/zclassic23 tools/scripts/remote_node_update.sh rhett@205.209.104.118
+ZCL_REMOTE_DRY_RUN=0 ZCL_REMOTE_BUILD=release ZCL_REMOTE_INSTALL_BIN=/home/rhett/bin/zclassic23 ZCL_REMOTE_RESTART=1 ZCL_REMOTE_UNIT=zclassic23-test.service tools/scripts/remote_node_update.sh rhett@205.209.104.118
+```
+
+For a node to keep itself warm without giving it restart authority, install the
+example timer from `deploy/examples/zclassic23-self-update.timer`. It runs
+`remote_node_update.sh self` daily with `ZCL_REMOTE_BUILD=fast-rebuild`,
+`ZCL_REMOTE_DRY_RUN=0`, and `ZCL_REMOTE_RESTART=0`. Promote a node from
+warm-build to install/restart only with a reviewed systemd drop-in that sets
+`ZCL_REMOTE_BUILD=release`, `ZCL_REMOTE_INSTALL_BIN=...`, and
+`ZCL_REMOTE_RESTART=1`.
+
 ## Background proof lanes
 
 The background lanes keep expensive proof work running without blocking every

@@ -445,7 +445,7 @@ bool rpc_agent_build(const struct json_value *params, bool help,
         "\"commands\":[...], \"reproducible_release\":{...} }\n");
 
     struct json_value loop, incremental, dev, cache, knobs, commands, repro,
-                      background, quality_status, lanes, gates;
+                      background, quality_status, lanes, remote, gates;
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.agent_build.v1");
     json_push_kv_str(result, "api_version", "v1");
@@ -650,6 +650,30 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     agent_build_background_quality_status(&quality_status);
     json_push_kv(result, "background_quality_status", &quality_status);
     json_free(&quality_status);
+
+    json_init(&remote);
+    json_set_object(&remote);
+    json_push_kv_str(&remote, "schema", "zcl.remote_node_update.v1");
+    json_push_kv_str(&remote, "script",
+                     "tools/scripts/remote_node_update.sh");
+    json_push_kv_str(&remote, "make_target", "make remote-node-update");
+    json_push_kv_str(&remote, "dry_run_command",
+                     "tools/scripts/remote_node_update.sh rhett@host");
+    json_push_kv_str(&remote, "self_update_example",
+                     "deploy/examples/zclassic23-self-update.timer");
+    json_push_kv_str(&remote, "default_behavior",
+                     "dry-run remote main check; no install or restart");
+    json_push_kv_str(&remote, "enabled_update",
+                     "ZCL_REMOTE_DRY_RUN=0 ZCL_REMOTE_BUILD=fast-rebuild tools/scripts/remote_node_update.sh host");
+    json_push_kv_str(&remote, "release_install",
+                     "ZCL_REMOTE_DRY_RUN=0 ZCL_REMOTE_BUILD=release ZCL_REMOTE_INSTALL_BIN=/home/rhett/bin/zclassic23 tools/scripts/remote_node_update.sh host");
+    json_push_kv_bool(&remote, "main_only", true);
+    json_push_kv_bool(&remote, "fast_forward_only", true);
+    json_push_kv_bool(&remote, "restart_default", false);
+    json_push_kv_str(&remote, "restart_guard",
+                     "ZCL_REMOTE_RESTART=1 routes through tools/deploy_guard.sh / zcl.agent_deploy_guard.v1");
+    json_push_kv(result, "remote_node_update", &remote);
+    json_free(&remote);
 
     json_init(&gates);
     json_set_array(&gates);

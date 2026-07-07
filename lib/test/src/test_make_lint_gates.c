@@ -2935,6 +2935,118 @@ static int t_agent_fast_ci_contract(void)
     return failures;
 }
 
+static int t_remote_node_update_contract(void)
+{
+    int failures = 0;
+    char *script = NULL;
+    char *makefile = NULL;
+    char *agent = NULL;
+    char *doc = NULL;
+    char *fast_ci = NULL;
+    char *service = NULL;
+    char *timer = NULL;
+    TEST("remote node update is main-only and guarded") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path),
+                         "tools/scripts/remote_node_update.sh") == 0);
+        ASSERT(read_entire_file(path, &script) == 0);
+        ASSERT(strstr(script, "zcl.remote_node_update.v1") != NULL);
+        ASSERT(strstr(script, "ZCL_REMOTE_DRY_RUN") != NULL);
+        ASSERT(strstr(script, "ZCL_REMOTE_BRANCH") != NULL);
+        ASSERT(strstr(script, "ZCL_REMOTE_MAIN_REF") != NULL);
+        ASSERT(strstr(script, "only origin/main may be used") != NULL);
+        ASSERT(strstr(script, "git fetch --prune origin main") != NULL);
+        ASSERT(strstr(script, "git merge --ff-only origin/main") != NULL);
+        ASSERT(strstr(script, "remote checkout must be $expect_branch")
+               != NULL);
+        ASSERT(strstr(script, "remote update branch must be main") != NULL);
+        ASSERT(strstr(script, "ZCL_REMOTE_ALLOW_DIRTY") != NULL);
+        ASSERT(strstr(script, "make fast-rebuild") != NULL);
+        ASSERT(strstr(script, "make zclassic23") != NULL);
+        ASSERT(strstr(script, "ZCL_REMOTE_INSTALL_BIN") != NULL);
+        ASSERT(strstr(script, "ZCL_REMOTE_RESTART") != NULL);
+        ASSERT(strstr(script, "tools/deploy_guard.sh") != NULL);
+        ASSERT(strstr(script, "zcl.agent_deploy_guard.v1") != NULL);
+        ASSERT(strstr(script, "No Python is required") != NULL);
+        ASSERT(strstr(script, "python") == NULL);
+        free(script);
+        script = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "Makefile") == 0);
+        ASSERT(read_entire_file(path, &makefile) == 0);
+        ASSERT(strstr(makefile, "remote-node-update:") != NULL);
+        ASSERT(strstr(makefile, "tools/scripts/remote_node_update.sh")
+               != NULL);
+        free(makefile);
+        makefile = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "tools/agent_fast_ci.sh") == 0);
+        ASSERT(read_entire_file(path, &fast_ci) == 0);
+        ASSERT(strstr(fast_ci, "tools/scripts/remote_node_update.sh")
+               != NULL);
+        ASSERT(strstr(fast_ci,
+                      "deploy/examples/zclassic23-self-update.service")
+               != NULL);
+        ASSERT(strstr(fast_ci,
+                      "deploy/examples/zclassic23-self-update.timer")
+               != NULL);
+        free(fast_ci);
+        fast_ci = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/controllers/src/agent_controller.c") == 0);
+        ASSERT(read_entire_file(path, &agent) == 0);
+        ASSERT(strstr(agent, "remote_node_update") != NULL);
+        ASSERT(strstr(agent, "zcl.remote_node_update.v1") != NULL);
+        ASSERT(strstr(agent, "make remote-node-update") != NULL);
+        ASSERT(strstr(agent, "fast_forward_only") != NULL);
+        ASSERT(strstr(agent, "restart_default") != NULL);
+        free(agent);
+        agent = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "docs/AGENT_API.md") == 0);
+        ASSERT(read_entire_file(path, &doc) == 0);
+        ASSERT(strstr(doc, "## Remote Node Updates") != NULL);
+        ASSERT(strstr(doc, "zcl.remote_node_update.v1") != NULL);
+        ASSERT(strstr(doc, "make remote-node-update") != NULL);
+        ASSERT(strstr(doc, "git merge --ff-only origin/main") != NULL);
+        ASSERT(strstr(doc, "ZCL_REMOTE_RESTART=0") != NULL);
+        ASSERT(strstr(doc,
+                      "deploy/examples/zclassic23-self-update.timer")
+               != NULL);
+        free(doc);
+        doc = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "deploy/examples/zclassic23-self-update.service")
+               == 0);
+        ASSERT(read_entire_file(path, &service) == 0);
+        ASSERT(strstr(service, "remote_node_update.sh self") != NULL);
+        ASSERT(strstr(service, "ZCL_REMOTE_BUILD=fast-rebuild") != NULL);
+        ASSERT(strstr(service, "ZCL_REMOTE_RESTART=0") != NULL);
+        ASSERT(strstr(service, "MemoryHigh=8G") != NULL);
+        ASSERT(strstr(service, "IOSchedulingClass=idle") != NULL);
+        free(service);
+        service = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "deploy/examples/zclassic23-self-update.timer")
+               == 0);
+        ASSERT(read_entire_file(path, &timer) == 0);
+        ASSERT(strstr(timer, "OnCalendar=daily") != NULL);
+        ASSERT(strstr(timer, "RandomizedDelaySec=1h") != NULL);
+        PASS();
+    } _test_next:;
+    free(script);
+    free(makefile);
+    free(agent);
+    free(doc);
+    free(fast_ci);
+    free(service);
+    free(timer);
+    return failures;
+}
+
 static int t_native_agent_api_contract(void)
 {
     int failures = 0;
@@ -5834,6 +5946,7 @@ int test_make_lint_gates(void)
     failures += t_tools_z_operator_diagnostics_contract();
     failures += t_dev_lane_deploy_contract();
     failures += t_agent_fast_ci_contract();
+    failures += t_remote_node_update_contract();
     failures += t_native_agent_api_contract();
     failures += t_mvp_reporters_resolve_live_service_rpc_contract();
     failures += t_soak_assert_requires_known_mirror_lag();
