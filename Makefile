@@ -1845,6 +1845,20 @@ background-coverage:
 background-tests:
 	@./tools/scripts/background_quality_lane.sh tests
 
+.PHONY: install-self-update-linger self-update-status
+install-self-update-linger:
+	@install -d "$(HOME)/.config/systemd/user"
+	@install -m 644 deploy/examples/zclassic23-self-update.service "$(HOME)/.config/systemd/user/zclassic23-self-update.service"
+	@install -m 644 deploy/examples/zclassic23-self-update.timer "$(HOME)/.config/systemd/user/zclassic23-self-update.timer"
+	@systemctl --user daemon-reload
+	@systemctl --user enable --now zclassic23-self-update.timer
+	@echo "installed safe self-update warm/build lane: zclassic23-self-update.timer"
+	@echo "status: make self-update-status"
+
+self-update-status:
+	@systemctl --user list-timers zclassic23-self-update.timer --no-pager 2>/dev/null || true
+	@systemctl --user status zclassic23-self-update.service zclassic23-self-update.timer --no-pager -n 20 2>/dev/null || true
+
 install-quality-linger:
 	@install -d "$(HOME)/.config/systemd/user"
 	@install -m 644 deploy/zclassic23-fuzz.service "$(HOME)/.config/systemd/user/zclassic23-fuzz.service"

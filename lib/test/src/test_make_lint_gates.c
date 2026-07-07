@@ -3016,6 +3016,12 @@ static int t_remote_node_update_contract(void)
         ASSERT(strstr(makefile, "CXX_STDLIB_LDFLAGS") != NULL);
         ASSERT(strstr(makefile, "$(CXX) -print-file-name=libstdc++.a")
                != NULL);
+        ASSERT(strstr(makefile, "install-self-update-linger:") != NULL);
+        ASSERT(strstr(makefile, "self-update-status:") != NULL);
+        ASSERT(strstr(makefile, "zclassic23-self-update.timer") != NULL);
+        ASSERT(strstr(makefile,
+                      "systemctl --user enable --now zclassic23-self-update.timer")
+               != NULL);
         free(makefile);
         makefile = NULL;
 
@@ -3071,6 +3077,8 @@ static int t_remote_node_update_contract(void)
         ASSERT(strstr(doc, "git merge --ff-only origin/main") != NULL);
         ASSERT(strstr(doc, "ZCL_REMOTE_RESTART=0") != NULL);
         ASSERT(strstr(doc, "direct C++11 fallback") != NULL);
+        ASSERT(strstr(doc, "make install-self-update-linger") != NULL);
+        ASSERT(strstr(doc, "make self-update-status") != NULL);
         ASSERT(strstr(doc,
                       "deploy/examples/zclassic23-self-update.timer")
                != NULL);

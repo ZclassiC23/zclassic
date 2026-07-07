@@ -932,13 +932,14 @@ ZCL_REMOTE_DRY_RUN=0 ZCL_REMOTE_BUILD=release ZCL_REMOTE_INSTALL_BIN=/home/rhett
 ZCL_REMOTE_DRY_RUN=0 ZCL_REMOTE_BUILD=release ZCL_REMOTE_INSTALL_BIN=/home/rhett/bin/zclassic23 ZCL_REMOTE_RESTART=1 ZCL_REMOTE_UNIT=zclassic23-test.service tools/scripts/remote_node_update.sh rhett@205.209.104.118
 ```
 
-For a node to keep itself warm without giving it restart authority, install the
-example timer from `deploy/examples/zclassic23-self-update.timer`. It runs
+For a node to keep itself warm without giving it restart authority, run
+`make install-self-update-linger`. It installs the example timer from
+`deploy/examples/zclassic23-self-update.timer`, which runs
 `remote_node_update.sh self` daily with `ZCL_REMOTE_BUILD=fast-rebuild`,
-`ZCL_REMOTE_DRY_RUN=0`, and `ZCL_REMOTE_RESTART=0`. Promote a node from
-warm-build to install/restart only with a reviewed systemd drop-in that sets
-`ZCL_REMOTE_BUILD=release`, `ZCL_REMOTE_INSTALL_BIN=...`, and
-`ZCL_REMOTE_RESTART=1`.
+`ZCL_REMOTE_DRY_RUN=0`, and `ZCL_REMOTE_RESTART=0`. Check it with
+`make self-update-status`. Promote a node from warm-build to install/restart
+only with a reviewed systemd drop-in that sets `ZCL_REMOTE_BUILD=release`,
+`ZCL_REMOTE_INSTALL_BIN=...`, and `ZCL_REMOTE_RESTART=1`.
 
 ## Background proof lanes
 
