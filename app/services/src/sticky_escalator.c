@@ -22,6 +22,7 @@
 #include "jobs/stage_repair.h"
 #include "services/sync_monitor.h"
 #include "storage/boot_auto_reindex.h"
+#include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
 #include "util/supervisor.h"
 #include "util/blocker.h"
@@ -229,6 +230,48 @@ static enum sticky_rung_result rung_resnapshot_default(void)
     return STICKY_RUNG_NOT_IMPLEMENTED;
 }
 
+static bool reindex_replay_executable(int *probe_height_out,
+                                      const char **reason_out)
+{
+    if (probe_height_out)
+        *probe_height_out = -1;
+    if (reason_out)
+        *reason_out = "unknown";
+
+    if (!g_datadir || !g_datadir[0]) {
+        if (reason_out)
+            *reason_out = "no_datadir";
+        return false;
+    }
+
+    struct main_state *ms = g_ms ? g_ms : sync_monitor_main_state();
+    if (!ms) {
+        if (reason_out)
+            *reason_out = "no_main_state";
+        return false;
+    }
+
+    int tip_height = active_chain_height(&ms->chain_active);
+    if (tip_height < 0) {
+        if (reason_out)
+            *reason_out = "no_active_tip";
+        return false;
+    }
+
+    int probe_height = tip_height < 1 ? 0 : 1;
+    if (probe_height_out)
+        *probe_height_out = probe_height;
+
+    struct block_index *probe =
+        active_chain_at(&ms->chain_active, probe_height);
+    if (!block_index_have_data_readable(probe, g_datadir)) {
+        if (reason_out)
+            *reason_out = "replay_unexecutable";
+        return false;
+    }
+    return true;
+}
+
 static enum sticky_rung_result rung_reindex_default(void)
 {
     /* Durable, bounded-per-episode crash-only reindex: re-derive the UTXO set
@@ -241,6 +284,23 @@ static enum sticky_rung_result rung_reindex_default(void)
                     "action=sticky-reindex-skip reason=no_datadir");
         return STICKY_RUNG_NOT_IMPLEMENTED;
     }
+
+    int probe_height = -1;
+    const char *reason = "unknown";
+    if (!reindex_replay_executable(&probe_height, &reason)) {
+        if (boot_auto_reindex_pending(g_datadir))
+            boot_auto_reindex_clear(g_datadir);
+        LOG_WARN("sticky_escalator",
+                 "[sticky_escalator] reindex rung skipped: replay-from-blocks "
+                 "is not executable (reason=%s probe_h=%d); escalating to "
+                 "deeper recovery instead of arming auto_reindex_request",
+                 reason, probe_height);
+        event_emitf(EV_RECOVERY_ACTION, 0,
+                    "action=sticky-reindex-skip reason=%s probe_h=%d",
+                    reason, probe_height);
+        return STICKY_RUNG_FAILED;
+    }
+
     /* The on-disk count is the CROSS-BOOT attempt budget (boot_crashonly
      * treats n in [1..MAX] as "reindex attempt n"), so it must count BOOTS
      * that attempt the rebuild, not runtime dispatches. apply_drive

@@ -31,6 +31,7 @@
 #include "jobs/stage_repair.h"
 #include "services/sticky_escalator.h"
 #include "services/sync_monitor.h"
+#include "storage/boot_auto_reindex.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "validation/chainstate.h"
@@ -533,6 +534,47 @@ int test_sticky_escalator(void)
                  cursor_value(db, "tip_finalize") == A + 3 &&
                  total_log_rows(db) == rows_before);
 
+        teardown_fixture(&fx);
+    }
+
+    /* T3 — cold-import window: active-chain state exists, but genesis-side
+     * block data is not readable from this datadir. Runtime escalation must
+     * NOT arm auto_reindex_request, because the next boot would only consume
+     * and refuse the impossible replay-from-blocks verb. */
+    {
+        struct se_fixture fx;
+        SE_CHECK("T3: setup fixture", setup_fixture(&fx, "t3_cold_import"));
+        sqlite3 *db = progress_store_db();
+
+        SE_CHECK("T3: make rederive rung an honest no-op",
+                 put_tip_log(db, A + 2, 1, &fx.hashes[2]) &&
+                 put_tip_log(db, A + 3, 1, &fx.hashes[3]) &&
+                 seed_coins_applied(db, A + 4) &&
+                 seed_cursor(db, "tip_finalize", A + 3));
+
+        sync_monitor_set_context(NULL, NULL, &fx.ms);
+        sticky_escalator_test_reset();
+        stage_reducer_frontier_reset_detect_memo_for_testing();
+        sticky_escalator_set_datadir(fx.dir);
+
+        sticky_escalator_note_stall("test_cold_import_window");
+        int64_t t2 = (int64_t)platform_time_wall_time_t();
+        SE_CHECK("T3: retry window advances to targeted_rederive",
+                 sticky_escalator_test_drive(0, t2 + 31) ==
+                     STICKY_RUNG_TARGETED_REDERIVE);
+        SE_CHECK("T3: no-op rederive advances to resnapshot",
+                 sticky_escalator_test_drive(0, t2 + 32) ==
+                     STICKY_RUNG_RESNAPSHOT);
+        SE_CHECK("T3: resnapshot stub advances to reindex",
+                 sticky_escalator_test_drive(0, t2 + 33) ==
+                     STICKY_RUNG_REINDEX);
+        SE_CHECK("T3: unexecutable reindex escalates deeper",
+                 sticky_escalator_test_drive(0, t2 + 34) ==
+                     STICKY_RUNG_SELF_MINT_REFOLD);
+        SE_CHECK("T3: no auto-reindex marker written",
+                 !boot_auto_reindex_pending(fx.dir));
+
+        sticky_escalator_set_datadir(NULL);
         teardown_fixture(&fx);
     }
 
