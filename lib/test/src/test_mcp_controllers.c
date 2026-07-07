@@ -191,6 +191,30 @@ static bool seed_mcp_projection_height(const char *dir, int64_t height)
     return ok;
 }
 
+static bool g_name_list_rpc_called;
+static bool g_name_list_rpc_params_null;
+
+static char *mock_name_list_rpc(const char *method, const char *params_json)
+{
+    g_name_list_rpc_called = true;
+    g_name_list_rpc_params_null = params_json == NULL;
+
+    if (strcmp(method, "name_list") != 0)
+        return strdup("{\"error\":{\"code\":-32601,"
+                      "\"message\":\"unexpected method\"}}");
+
+    return strdup("{\"schema\":\"zcl.names.index.v1\","
+                  "\"limit\":100,\"count\":1,\"filtered\":false,"
+                  "\"names\":[{\"name\":\"alice\",\"owner\":\"t1owner\","
+                  "\"target_type\":1,\"type\":\"onion\","
+                  "\"value\":\"aliceexample.onion:8033\"}],"
+                  "\"_links\":{\"collection\":\"/api/v1/names\","
+                  "\"read\":\"/api/v1/names/{name}\"},"
+                  "\"zcl_verification\":{\"base_layer\":\"zclassic_l1\","
+                  "\"consensus_boundary\":"
+                  "\"legacy_zclassic_consensus_unchanged\"}}");
+}
+
 /* ── Tests ──────────────────────────────────────────────────── */
 
 static int test_register_total_count(void)
@@ -3077,6 +3101,59 @@ static int test_app_protocol_tools_registered(void)
     return failures;
 }
 
+static int test_zcl_name_list_returns_typed_index(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_name_list returns typed ZNAM index") {
+        register_all();
+        g_name_list_rpc_called = false;
+        g_name_list_rpc_params_null = false;
+        mcp_rpc_client_set_test_hook(mock_name_list_rpc);
+
+        char *body = mcp_router_dispatch("zcl_name_list", NULL);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+        ASSERT(g_name_list_rpc_called);
+        ASSERT(g_name_list_rpc_params_null);
+
+        struct json_value root = {0};
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.names.index.v1");
+        ASSERT(json_get_int(json_get(&root, "limit")) == 100);
+        ASSERT(json_get_int(json_get(&root, "count")) == 1);
+        ASSERT(!json_get_bool(json_get(&root, "filtered")));
+
+        const struct json_value *names = json_get(&root, "names");
+        ASSERT(names != NULL);
+        ASSERT(json_size(names) == 1);
+        ASSERT_STR_EQ(json_get_str(json_get(json_at(names, 0), "name")),
+                      "alice");
+
+        const struct json_value *links = json_get(&root, "_links");
+        ASSERT(links != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(links, "collection")),
+                      "/api/v1/names");
+        ASSERT_STR_EQ(json_get_str(json_get(links, "read")),
+                      "/api/v1/names/{name}");
+
+        const struct json_value *verification =
+            json_get(&root, "zcl_verification");
+        ASSERT(verification != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(verification, "base_layer")),
+                      "zclassic_l1");
+        ASSERT_STR_EQ(json_get_str(json_get(verification,
+                                            "consensus_boundary")),
+                      "legacy_zclassic_consensus_unchanged");
+
+        json_free(&root);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
 static int test_required_params_have_no_default(void)
 {
     int failures = 0;
@@ -3544,6 +3621,7 @@ int test_mcp_controllers(void)
     failures += test_reset_clears_and_reregister_restores();
     failures += test_wallet_shielded_tools_registered();
     failures += test_app_protocol_tools_registered();
+    failures += test_zcl_name_list_returns_typed_index();
     failures += test_required_params_have_no_default();
     failures += test_postmortem_tools_dispatch();
     failures += test_zcl_admin_dispatch_shape();

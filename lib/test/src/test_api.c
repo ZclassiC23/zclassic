@@ -700,9 +700,112 @@ int test_api(void)
             size_t n = api_handle_request("GET", "/api/names", NULL, 0,
                                           big_resp, sizeof(big_resp));
             big_resp[n < sizeof(big_resp) ? n : sizeof(big_resp) - 1] = '\0';
+            const char *body = api_test_body(big_resp, n, sizeof(big_resp));
+            struct json_value root;
+            json_init(&root);
             ok = n > 16384 &&
                  strstr((char *)big_resp, "HTTP/1.1 200 OK") != NULL &&
-                 strstr((char *)big_resp, "\"api-name-099\"") != NULL;
+                 body && json_read(&root, body, strlen(body));
+            const struct json_value *names =
+                ok ? json_get(&root, "names") : NULL;
+            const struct json_value *links =
+                ok ? json_get(&root, "_links") : NULL;
+            const struct json_value *verification =
+                ok ? json_get(&root, "zcl_verification") : NULL;
+            const struct json_value *last =
+                api_test_find_str_field(names, "name", "api-name-099");
+            ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                              "zcl.names.index.v1") == 0;
+            ok = ok && json_get_int(json_get(&root, "limit")) == 100;
+            ok = ok && json_get_int(json_get(&root, "count")) == 100;
+            ok = ok && !json_get_bool(json_get(&root, "filtered"));
+            ok = ok && json_size(names) == 100 && last != NULL;
+            ok = ok && strcmp(json_get_str(json_get(&root,
+                                                    "source_projection")),
+                              "znam_projection") == 0;
+            ok = ok && links &&
+                 strcmp(json_get_str(json_get(links, "collection")),
+                        "/api/v1/names") == 0;
+            ok = ok && strcmp(json_get_str(json_get(links, "read")),
+                              "/api/v1/names/{name}") == 0;
+            ok = ok && strcmp(json_get_str(json_get(links, "protocol")),
+                              "/api/v1/protocols/znam") == 0;
+            ok = ok && strcmp(json_get_str(json_get(links, "delete")),
+                              "not_supported_by_znam_v1") == 0;
+            ok = ok && verification &&
+                 strcmp(json_get_str(json_get(verification, "base_layer")),
+                        "zclassic_l1") == 0;
+            ok = ok &&
+                 strcmp(json_get_str(json_get(verification,
+                                              "consensus_boundary")),
+                        "legacy_zclassic_consensus_unchanged") == 0;
+            json_free(&root);
+
+            if (ok) {
+                struct rpc_table names_rpc;
+                struct json_value params = {0};
+                struct json_value rpc_result = {0};
+                const struct json_value *rpc_names;
+                const struct json_value *rpc_verification;
+                const struct rpc_command *cmd;
+
+                rpc_table_init(&names_rpc);
+                register_name_rpc_commands(&names_rpc);
+                cmd = rpc_table_find(&names_rpc, "name_list");
+                json_set_array(&params);
+                ok = cmd && cmd->actor(&params, false, &rpc_result);
+                rpc_names = ok ? json_get(&rpc_result, "names") : NULL;
+                rpc_verification =
+                    ok ? json_get(&rpc_result, "zcl_verification") : NULL;
+                ok = ok &&
+                     strcmp(json_get_str(json_get(&rpc_result, "schema")),
+                            "zcl.names.index.v1") == 0;
+                ok = ok &&
+                     json_get_int(json_get(&rpc_result, "limit")) == 100;
+                ok = ok &&
+                     json_get_int(json_get(&rpc_result, "count")) == 100;
+                ok = ok && !json_get_bool(json_get(&rpc_result, "filtered"));
+                ok = ok && json_size(rpc_names) == 100;
+                ok = ok && rpc_verification &&
+                     strcmp(json_get_str(json_get(rpc_verification,
+                                                  "base_layer")),
+                            "zclassic_l1") == 0;
+                json_free(&params);
+                json_free(&rpc_result);
+            }
+
+            if (ok) {
+                struct rpc_table names_rpc;
+                struct json_value params = {0};
+                struct json_value owner = {0};
+                struct json_value rpc_result = {0};
+                const struct json_value *rpc_names;
+                const struct json_value *match;
+                const struct rpc_command *cmd;
+
+                rpc_table_init(&names_rpc);
+                register_name_rpc_commands(&names_rpc);
+                cmd = rpc_table_find(&names_rpc, "name_list");
+                json_set_array(&params);
+                json_set_str(&owner, "owner-address-for-api-route-042");
+                json_push_back(&params, &owner);
+                json_free(&owner);
+                ok = cmd && cmd->actor(&params, false, &rpc_result);
+                rpc_names = ok ? json_get(&rpc_result, "names") : NULL;
+                match = api_test_find_str_field(rpc_names, "name",
+                                                "api-name-042");
+                ok = ok &&
+                     strcmp(json_get_str(json_get(&rpc_result, "schema")),
+                            "zcl.names.index.v1") == 0;
+                ok = ok && json_get_bool(json_get(&rpc_result, "filtered"));
+                ok = ok &&
+                     strcmp(json_get_str(json_get(&rpc_result, "owner")),
+                            "owner-address-for-api-route-042") == 0;
+                ok = ok && json_get_int(json_get(&rpc_result, "count")) == 1;
+                ok = ok && json_size(rpc_names) == 1 && match != NULL;
+                json_free(&params);
+                json_free(&rpc_result);
+            }
             rpc_name_set_state(NULL);
             node_db_close(&ndb);
         }
@@ -767,10 +870,20 @@ int test_api(void)
                 ok ? json_get(&root, "service_records") : NULL;
             const struct json_value *addrs =
                 ok ? json_get(&root, "address_records") : NULL;
+            const struct json_value *directory =
+                ok ? json_get(&root, "service_directory") : NULL;
+            const struct json_value *dir_records =
+                directory ? json_get(directory, "records") : NULL;
+            const struct json_value *links =
+                ok ? json_get(&root, "_links") : NULL;
+            const struct json_value *verification =
+                ok ? json_get(&root, "zcl_verification") : NULL;
             const struct json_value *url =
                 api_test_find_str_field(texts, "key", "url");
             const struct json_value *svc =
                 api_test_find_str_field(services, "key", "service.onion");
+            const struct json_value *dir_svc =
+                api_test_find_str_field(dir_records, "key", "service.onion");
             const struct json_value *btc =
                 api_test_find_str_field(addrs, "type", "bitcoin");
             const struct json_value *ltc =
@@ -803,6 +916,28 @@ int test_api(void)
             ok = ok && ltc &&
                  strcmp(json_get_str(json_get(ltc, "address")),
                         "LaliceAddress") == 0;
+            ok = ok && directory &&
+                 strcmp(json_get_str(json_get(directory, "schema")),
+                        "zcl.names.service_directory.v1") == 0;
+            ok = ok && json_get_bool(json_get(directory, "has_services"));
+            ok = ok && json_get_int(json_get(directory,
+                                             "service_record_count")) == 1;
+            ok = ok && json_size(dir_records) == 1 && dir_svc != NULL;
+            ok = ok && strcmp(json_get_str(json_get(directory,
+                                                    "transport_model")),
+                              "records_advertise_tor_or_p2p_endpoints") == 0;
+            ok = ok && links &&
+                 strcmp(json_get_str(json_get(links, "self")),
+                        "/api/v1/names/alice") == 0;
+            ok = ok && strcmp(json_get_str(json_get(links, "collection")),
+                              "/api/v1/names") == 0;
+            ok = ok && verification &&
+                 strcmp(json_get_str(json_get(verification, "anchor")),
+                        "confirmed_znam_op_return") == 0;
+            ok = ok &&
+                 strcmp(json_get_str(json_get(verification,
+                                              "mutation_authority")),
+                        "confirmed_chain_history") == 0;
             json_free(&root);
         }
 

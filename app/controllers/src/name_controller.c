@@ -87,6 +87,66 @@ static void entry_to_json(const struct znam_entry *e, struct json_value *obj)
 }
 
 #define ZNAM_API_RECORD_LIMIT 64
+#define ZNAM_API_LIST_LIMIT 100
+
+static void append_name_verification(struct json_value *obj)
+{
+    struct json_value verification = {0};
+
+    json_set_object(&verification);
+    json_push_kv_str(&verification, "schema", "zcl.names.verification.v1");
+    json_push_kv_str(&verification, "base_layer", "zclassic_l1");
+    json_push_kv_str(&verification, "application_layer",
+                     "zclassic23_application_layer");
+    json_push_kv_str(&verification, "anchor", "confirmed_znam_op_return");
+    json_push_kv_str(&verification, "projection", "znam_projection");
+    json_push_kv_str(&verification, "mutation_authority",
+                     "confirmed_chain_history");
+    json_push_kv_str(&verification, "consensus_boundary",
+                     "legacy_zclassic_consensus_unchanged");
+    json_push_kv(obj, "zcl_verification", &verification);
+    json_free(&verification);
+}
+
+static void append_name_crud_links(struct json_value *obj, const char *name)
+{
+    struct json_value links = {0};
+    char self[256];
+
+    json_set_object(&links);
+    json_push_kv_str(&links, "collection", "/api/v1/names");
+    json_push_kv_str(&links, "protocol", "/api/v1/protocols/znam");
+    json_push_kv_str(&links, "create", "name_register");
+    json_push_kv_str(&links, "read", "/api/v1/names/{name}");
+    json_push_kv_str(&links, "update", "name_register/update OP_RETURN");
+    json_push_kv_str(&links, "delete", "not_supported_by_znam_v1");
+    if (name && name[0]) {
+        snprintf(self, sizeof(self), "/api/v1/names/%s", name);
+        json_push_kv_str(&links, "self", self);
+    }
+    json_push_kv(obj, "_links", &links);
+    json_free(&links);
+}
+
+static void append_service_directory(struct json_value *obj,
+                                     const struct json_value *services,
+                                     int service_count)
+{
+    struct json_value directory = {0};
+
+    json_set_object(&directory);
+    json_push_kv_str(&directory, "schema",
+                     "zcl.names.service_directory.v1");
+    json_push_kv_str(&directory, "source", "znam_text_records");
+    json_push_kv_str(&directory, "transport_model",
+                     "records_advertise_tor_or_p2p_endpoints");
+    json_push_kv_str(&directory, "base_layer", "zclassic_l1");
+    json_push_kv_bool(&directory, "has_services", service_count > 0);
+    json_push_kv_int(&directory, "service_record_count", service_count);
+    json_push_kv(&directory, "records", services);
+    json_push_kv(obj, "service_directory", &directory);
+    json_free(&directory);
+}
 
 static bool has_prefix(const char *s, const char *prefix)
 {
@@ -174,6 +234,7 @@ static void append_record_arrays(const char *name, struct json_value *obj)
     json_push_kv_int(obj, "service_record_count", service_count);
     json_push_kv(obj, "address_records", &addrs);
     json_push_kv_int(obj, "address_record_count", addr_count);
+    append_service_directory(obj, &services, service_count);
 
     json_free(&texts);
     json_free(&services);
@@ -185,6 +246,8 @@ static void entry_to_show_json(const struct znam_entry *e,
 {
     entry_to_json(e, obj);
     json_push_kv_str(obj, "schema", "zcl.names.show.v1");
+    append_name_verification(obj);
+    append_name_crud_links(obj, e->name);
     append_record_arrays(e->name, obj);
 }
 
@@ -227,38 +290,57 @@ static bool rpc_name_resolve(const struct json_value *params, bool help,
 
 /* ── name_list ──────────────────────────────────────────────────── */
 
+static bool name_index_to_json(const char *owner, struct json_value *result)
+{
+    struct json_value names = {0};
+    struct znam_entry entries[ZNAM_API_LIST_LIMIT];
+    bool owner_filter = owner && owner[0];
+    int count = 0;
+
+    json_set_object(result);
+    json_push_kv_str(result, "schema", "zcl.names.index.v1");
+    append_name_verification(result);
+    append_name_crud_links(result, NULL);
+    json_push_kv_int(result, "limit", ZNAM_API_LIST_LIMIT);
+    json_push_kv_bool(result, "filtered", owner_filter);
+    if (owner_filter)
+        json_push_kv_str(result, "owner", owner);
+
+    json_set_array(&names);
+    if (g_name_ndb) {
+        if (owner_filter)
+            count = db_znam_list_by_owner(g_name_ndb, owner, entries,
+                                          ZNAM_API_LIST_LIMIT);
+        else
+            count = db_znam_list(g_name_ndb, entries, ZNAM_API_LIST_LIMIT);
+    }
+
+    for (int i = 0; i < count; i++) {
+        struct json_value e = {0};
+        entry_to_json(&entries[i], &e);
+        json_push_back(&names, &e);
+        json_free(&e);
+    }
+
+    json_push_kv(result, "names", &names);
+    json_push_kv_int(result, "count", count);
+    json_free(&names);
+    return true;
+}
+
 static bool rpc_name_list(const struct json_value *params, bool help,
                           struct json_value *result)
 {
     if (help) {
         json_set_str(result,
             "name_list [\"owner_address\"]\n"
-            "\nList registered ZCL Names, optionally filtered by owner.\n");
+            "\nList registered ZCL Names as zcl.names.index.v1, optionally filtered by owner.\n");
         return true;
     }
 
-    json_set_array(result);
-    if (!g_name_ndb) return true;
-
-    struct znam_entry entries[100];
-    int count;
-
     const struct json_value *arg0 = params ? json_at(params, 0) : NULL;
     const char *owner = arg0 ? json_get_str(arg0) : NULL;
-
-    if (owner && owner[0])
-        count = db_znam_list_by_owner(g_name_ndb, owner, entries, 100);
-    else
-        count = db_znam_list(g_name_ndb, entries, 100);
-
-    for (int i = 0; i < count; i++) {
-        struct json_value e = {0};
-        entry_to_json(&entries[i], &e);
-        json_push_back(result, &e);
-        json_free(&e);
-    }
-
-    return true;
+    return name_index_to_json(owner, result);
 }
 
 /* ── name_register ──────────────────────────────────────────────── */
@@ -377,7 +459,7 @@ static bool rpc_name_register(const struct json_value *params, bool help,
 
 bool api_name_list(struct json_value *result)
 {
-    return rpc_name_list(NULL, false, result);
+    return name_index_to_json(NULL, result);
 }
 
 bool rpc_name_resolve_api(const char *name, struct json_value *result)
