@@ -121,7 +121,11 @@ operator-private. Each operation also carries `service_catalog_route`,
 agent can choose REST for public reads, MCP for operator/private or destructive
 actions, and RPC only when that is the explicit fallback. This is the
 no-guesswork path for agents building a UX from names, bootstrap, Tor/P2P,
-market, messaging, and script-contract capabilities.
+market, messaging, and script-contract capabilities. The operation collection
+also carries `summary`, `service_facets`, `preferred_interface_facets`, and
+`write_safety_facets`; read those first when choosing a workflow or rendering a
+command palette, then fetch the specific operation contract only for the action
+the user selected.
 The collection also carries `sovereign_ux` (`zcl.sovereign_ux_contract.v1`):
 a machine-readable flow from agent status → service catalog → ZNAM resolution
 → endpoint verification → direct P2P/onion routing → versioned CRUD operation.

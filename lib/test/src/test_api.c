@@ -2009,6 +2009,50 @@ int test_api(void)
         ok = ok && operations && operations->type == JSON_ARR &&
              json_get_int(json_get(&root, "operation_count")) ==
              (int64_t)json_size(operations);
+        const struct json_value *summary = json_get(&root, "summary");
+        const struct json_value *service_facets =
+            json_get(&root, "service_facets");
+        const struct json_value *interface_facets =
+            json_get(&root, "preferred_interface_facets");
+        const struct json_value *safety_facets =
+            json_get(&root, "write_safety_facets");
+        ok = ok && summary &&
+             json_get_int(json_get(summary, "operation_count")) ==
+             (int64_t)json_size(operations);
+        ok = ok && service_facets && service_facets->type == JSON_ARR &&
+             json_get_int(json_get(summary, "service_count")) ==
+             (int64_t)json_size(service_facets);
+        ok = ok && json_get_int(json_get(summary, "rest_callable_count")) > 0;
+        ok = ok && json_get_int(json_get(summary, "mcp_callable_count")) > 0;
+        ok = ok && json_get_int(json_get(summary, "destructive_count")) > 0;
+        const struct json_value *znam_facet =
+            api_test_find_str_field(service_facets, "service", "znam_names");
+        ok = ok && znam_facet &&
+             json_get_int(json_get(znam_facet, "operation_count")) == 3;
+        ok = ok && znam_facet &&
+             json_get_int(json_get(znam_facet, "public_read_count")) == 2;
+        ok = ok && znam_facet &&
+             json_get_int(json_get(znam_facet, "destructive_count")) == 1;
+        ok = ok && znam_facet &&
+             json_get_int(json_get(znam_facet,
+                                   "preferred_rest_count")) == 2;
+        ok = ok && znam_facet &&
+             json_get_int(json_get(znam_facet,
+                                   "preferred_mcp_count")) == 1;
+        const struct json_value *rest_facet =
+            api_test_find_named(interface_facets, "rest");
+        const struct json_value *mcp_facet =
+            api_test_find_named(interface_facets, "mcp");
+        ok = ok && rest_facet &&
+             json_get_int(json_get(rest_facet, "operation_count")) > 0;
+        ok = ok && mcp_facet &&
+             json_get_int(json_get(mcp_facet, "operation_count")) > 0;
+        const struct json_value *destructive_facet =
+            api_test_find_named(safety_facets,
+                                "operator_private_destructive");
+        ok = ok && destructive_facet &&
+             json_get_int(json_get(destructive_facet,
+                                   "operation_count")) > 0;
         const struct json_value *resolve_op =
             api_test_find_str_field(operations, "operation_id",
                                     "znam_names.resolve_name");
