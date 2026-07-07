@@ -22,6 +22,7 @@ CACHE_TOOL="none"
 TEST_GROUPS=""
 UNMAPPED_CODE_CHANGES=""
 NODE_BIN="${ZCL_FAST_NODE_BIN:-build/bin/zclassic23}"
+DEV_NODE_BIN="${ZCL_FAST_DEV_NODE_BIN:-build/bin/zclassic23-dev}"
 FAST_JOBS="${ZCL_FAST_JOBS:-}"
 IMPACT_RULES_FILE="${ZCL_FAST_IMPACT_RULES_FILE:-app/controllers/include/controllers/agent_impact_rules.def}"
 
@@ -509,6 +510,22 @@ run_compile_gate() {
     make_fast "$target"
 }
 
+run_dev_rebuild() {
+    local start end size
+
+    start="$(date +%s)"
+    compile_changed_gate
+    log "dev-bin link target=$DEV_NODE_BIN"
+    make_fast "$DEV_NODE_BIN"
+    [ -x "$DEV_NODE_BIN" ] ||
+        fail "dev rebuild did not produce executable $DEV_NODE_BIN"
+
+    end="$(date +%s)"
+    size="$(stat -c '%s' "$DEV_NODE_BIN" 2>/dev/null || echo unknown)"
+    log "PASS: dev rebuild complete bin=$DEV_NODE_BIN size=$size elapsed_s=$((end - start))"
+    log "Use $DEV_NODE_BIN for local iteration; run make zclassic23 or make deploy for release/live."
+}
+
 compile_changed_gate() {
     local file fallback_reason
     DIRECT_DEV_OBJECTS=""
@@ -697,6 +714,10 @@ main() {
         compile-changed|changed-compile|fast-changed-compile)
             compile_changed_gate
             log "PASS: changed compile gate complete"
+            return
+            ;;
+        rebuild-dev|dev-rebuild|fast-rebuild|hot-rebuild)
+            run_dev_rebuild
             return
             ;;
         *)

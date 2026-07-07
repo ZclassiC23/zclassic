@@ -46,7 +46,8 @@ make zclassic23              # node only
 make fast-changed-compile    # cheapest guarded changed .c/.h/.def check
 make fast-compile            # fastest dev compile check, no final link
 make build-only              # strict release-flag compile check, no final link
-make fast-rebuild            # fastest local node binary, no LTO
+make fast-rebuild            # changed-file dev compile + non-LTO local node link
+make hot-rebuild             # alias for fast-rebuild during edit loops
 make dev-bin                 # fast non-LTO local node binary
 make t-fast ONLY=<group>     # one test group
 make fast-ci                 # cache-aware lint/build/focused-test loop

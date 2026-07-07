@@ -2576,6 +2576,10 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "fast-compile dev-build-only") != NULL);
         ASSERT(strstr(buf, "fast-changed-compile") != NULL);
         ASSERT(strstr(buf, "dev-bin zclassic23-dev") != NULL);
+        ASSERT(strstr(buf,
+                      "fast-rebuild rebuild-fast dev-rebuild "
+                      "hot-rebuild super-rebuild") != NULL);
+        ASSERT(strstr(buf, "tools/agent_fast_ci.sh rebuild-dev") != NULL);
         ASSERT(strstr(buf, "ZCLASSIC23_DEV_BIN") != NULL);
         ASSERT(strstr(buf, "DEV_OBJ_DIR") != NULL);
         ASSERT(strstr(buf, "DEV_CFLAGS") != NULL);
@@ -2668,7 +2672,14 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "make_fast \"$target\" ONLY") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_JOBS") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_NODE_BIN") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_DEV_NODE_BIN") != NULL);
         ASSERT(strstr(buf, "build/bin/zclassic23") != NULL);
+        ASSERT(strstr(buf, "build/bin/zclassic23-dev") != NULL);
+        ASSERT(strstr(buf, "run_dev_rebuild") != NULL);
+        ASSERT(strstr(buf, "dev-bin link target=$DEV_NODE_BIN") != NULL);
+        ASSERT(strstr(buf,
+                      "rebuild-dev|dev-rebuild|fast-rebuild|hot-rebuild")
+               != NULL);
         ASSERT(strstr(buf, "zcl.public_status.v1") != NULL);
         ASSERT(strstr(buf, ".status == \"healthy\"") != NULL);
         ASSERT(strstr(buf, ".healthy == true") != NULL);
@@ -3959,6 +3970,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "zcl_agent_deploy_guard") != NULL);
         ASSERT(strstr(agent_doc_buf, "No Python is required") != NULL);
         ASSERT(strstr(agent_doc_buf, "make build-only") != NULL);
+        ASSERT(strstr(agent_doc_buf, "make fast-rebuild") != NULL);
         ASSERT(strstr(agent_doc_buf, "make dev-bin") != NULL);
         ASSERT(strstr(agent_doc_buf, "build/bin/zclassic23-dev") != NULL);
         ASSERT(strstr(agent_doc_buf, "ZCL_DEV_HOT_OPT=-O2") != NULL);

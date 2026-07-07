@@ -306,7 +306,7 @@ test-parallel: test_parallel
 # the default `all`), so running build/bin/test_parallel directly after editing a test
 # can false-green an old binary or report "matched no groups" for a new test.
 # `make t ONLY=<group>` always rebuilds the harness first, closing that trap.
-.PHONY: t t-fast syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast lint-fast fast-ci agent-fast-ci dev-ci
+.PHONY: t t-fast syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci
 
 # Run ONE test group, always rebuilding the harness first:
 #   make t ONLY=service_state_driver
@@ -351,11 +351,13 @@ $(DEV_OBJ_COMPLETE): $(TMPL_GEN) $(DEV_OBJS)
 fast-changed-compile:
 	@ZCL_FAST_CC="$${ZCL_FAST_CC:-$(CC)}" tools/agent_fast_ci.sh compile-changed
 
-# Fast local node executable for AI/operator development. This deliberately
-# does not replace `zclassic23`, `make deploy`, or release artifacts.
+# Fast local node executable for AI/operator development. `fast-rebuild` first
+# runs the changed-file dev compile gate, then links the non-LTO dev binary.
+# This deliberately does not replace `zclassic23`, `make deploy`, or release
+# artifacts.
 dev-bin zclassic23-dev: $(ZCLASSIC23_DEV_BIN)
-fast-rebuild rebuild-fast: dev-bin
-	@echo "fast-rebuild: use build/bin/zclassic23-dev for local iteration; run make zclassic23 or make deploy for release/live."
+fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild:
+	@ZCL_FAST_CC="$${ZCL_FAST_CC:-$(CC)}" tools/agent_fast_ci.sh rebuild-dev
 
 $(ZCLASSIC23_DEV_BIN): $(TMPL_GEN) $(BUILD_COMMIT_STAMP) $(DEV_OBJS) | $(VENDOR_LIBS)
 	@mkdir -p $(dir $@)

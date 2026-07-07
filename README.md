@@ -70,6 +70,7 @@ minutes on a modern multi-core box.
 ```bash
 git clone https://github.com/ZclassiC23/zclassic.git && cd zclassic
 make                # node + CLI + RPC tool -> build/bin/{zclassic23,zclassic-cli,zcl-rpc}
+make fast-rebuild   # changed-file dev compile + non-LTO local node link
 make dev-bin        # fast non-LTO local node -> build/bin/zclassic23-dev
 make test           # full suite (488 parallel groups)
 make lint           # defensive-coding gates
