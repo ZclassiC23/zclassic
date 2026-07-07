@@ -54,6 +54,7 @@ Useful opt-ins:
   ZCL_REMOTE_INSTALL_BIN=/home/rhett/bin/zclassic23
   ZCL_REMOTE_RESTART=1
   ZCL_REMOTE_UNIT=zclassic23-test.service
+  ZCL_DEPLOY_ALLOW_CANONICAL=1    permit an intentional canonical restart
 
 No Python or jq is required. Canonical restarts remain guarded by
 tools/deploy_guard.sh / zcl.agent_deploy_guard.v1. With --json, operational
@@ -492,6 +493,7 @@ run_one_host() {
     env_prefix="$env_prefix ZCL_REMOTE_UNIT=$(shell_quote "${ZCL_REMOTE_UNIT:-zclassic23-test.service}")"
     env_prefix="$env_prefix ZCL_REMOTE_GUARD_ACTION=$(shell_quote "${ZCL_REMOTE_GUARD_ACTION:-}")"
     env_prefix="$env_prefix ZCL_REMOTE_JSON=$(shell_quote "${ZCL_REMOTE_JSON:-0}")"
+    env_prefix="$env_prefix ZCL_DEPLOY_ALLOW_CANONICAL=$(shell_quote "${ZCL_DEPLOY_ALLOW_CANONICAL:-0}")"
 
     if is_self_host "$host"; then
         remote_payload | env \
@@ -507,6 +509,7 @@ run_one_host() {
             ZCL_REMOTE_UNIT="${ZCL_REMOTE_UNIT:-zclassic23-test.service}" \
             ZCL_REMOTE_GUARD_ACTION="${ZCL_REMOTE_GUARD_ACTION:-}" \
             ZCL_REMOTE_JSON="${ZCL_REMOTE_JSON:-0}" \
+            ZCL_DEPLOY_ALLOW_CANONICAL="${ZCL_DEPLOY_ALLOW_CANONICAL:-0}" \
             bash -s
         return
     fi

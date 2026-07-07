@@ -2966,6 +2966,12 @@ static int t_remote_node_update_contract(void)
         ASSERT(strstr(script, "ZCL_REMOTE_INSTALL_BIN") != NULL);
         ASSERT(strstr(script, "ZCL_REMOTE_RESTART") != NULL);
         ASSERT(strstr(script, "ZCL_REMOTE_JSON") != NULL);
+        ASSERT(strstr(script, "ZCL_DEPLOY_ALLOW_CANONICAL=1") != NULL);
+        ASSERT(strstr(script,
+                      "ZCL_DEPLOY_ALLOW_CANONICAL=$(shell_quote") != NULL);
+        ASSERT(strstr(script,
+                      "ZCL_DEPLOY_ALLOW_CANONICAL=\"${ZCL_DEPLOY_ALLOW_CANONICAL:-0}\"")
+               != NULL);
         ASSERT(strstr(script, "--json") != NULL);
         ASSERT(strstr(script, "json_escape") != NULL);
         ASSERT(strstr(script, "emit_json_summary") != NULL);
