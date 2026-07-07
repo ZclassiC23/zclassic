@@ -144,9 +144,12 @@ missing quality verdicts, or merely being inspected from a static binary outside
 a running node.
 
 `agentdiagnose` (`zcl.agent_diagnose.v1`) is the bounded "what should I look
-at next?" packet. It composes `agent`, default bounded `healthcheck`,
-`peer_lifecycle incidents`, advisory `getmirrorstatus`, and a small semantic
-timeline slice while staying inside `zcl.first_call_contract.v1`. Its
+at next?" packet. The default mode is compact: it uses cheap `agent` status,
+peer lifecycle incident summary fields, advisory `getmirrorstatus`, and
+explicit drill-down commands while staying inside `zcl.first_call_contract.v1`.
+`agentdiagnose full` / `zcl_agent_diagnose(mode="full")` expands the packet with
+embedded `agent`, bounded `healthcheck`, `peer_incidents`, mirror, and timeline
+objects. Its
 top-level `schema`, `method`, `native_command`, `mcp_tool`, and
 `contract_source` fields come from `agent_contracts.def`. The response
 duplicates the decision fields agents need most (`verdict`, `safe_next_action`,
@@ -168,14 +171,15 @@ duplicates the decision fields agents need most (`verdict`, `safe_next_action`,
 marks skipped lower-priority sections as `partial_result=true` instead of
 hanging. Use it before raw logs when the node is behaving oddly but still
 answers RPC.
-Use `zclassic23 agentdiagnose brief` or `zcl_agent_diagnose(mode="brief")`
-when the first packet should stay compact: it preserves the top-level verdict,
+`zclassic23 agentdiagnose`, `zclassic23 agentdiagnose brief`, and
+`zcl_agent_diagnose(mode="brief")` all use the compact first-call shape: it
+preserves the top-level verdict,
 safe next action, peer/mirror counts, compact `peer_primary_host_issue`,
 findings, and recommended commands while omitting the embedded `agent`,
 `healthcheck`, `peer_incidents`, `mirror`, and `timeline` drill-down objects.
 The response includes `detail_mode`,
 `embedded_drilldowns=false`, `omitted_sections`, and a `full_diagnose_command`
-that expands back to the default payload.
+that expands to `zclassic23 agentdiagnose full`.
 For chain status, `agentdiagnose` follows the same `zcl.agent_readiness.v1`
 contract as `agent`: a small non-material tip gap remains healthy when
 `chain_serving_ready=true`. It also echoes `chain_readiness_status` and
@@ -213,8 +217,9 @@ counts, `primary_host_issue`, top per-host incidents, duplicate host groups,
 last disconnect reasons, service flags, advertised heights, and bootstrap /
 fast-sync usefulness without requiring log scraping. The native/MCP controller
 adds registry-owned `method`, `native_command`, `mcp_tool`, and
-`contract_source` fields, and the embedded `agentdiagnose.peer_incidents`
-object carries the same identity fields. Host-level objects expose
+`contract_source` fields, and the full-mode embedded
+`agentdiagnose.peer_incidents` object carries the same identity fields.
+Host-level objects expose
 `direction`, `mixed_direction`, `current_open_direction`,
 `current_handshaked_direction`, and per-direction current open/handshaked
 counts so reconnect storms that mix inbound ephemeral ports with outbound

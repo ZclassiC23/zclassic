@@ -974,7 +974,7 @@ static int h_zcl_agent_diagnose(const struct mcp_request *req,
 {
     struct mcp_params p;
     mcp_params_init(&p);
-    mcp_params_push_str(&p, json_get_str_or(req->args, "mode", "full"));
+    mcp_params_push_str(&p, json_get_str_or(req->args, "mode", "brief"));
     char *params = mcp_params_to_json(&p);
     char *body = params ? mcp_node_rpc("agentdiagnose", params) : NULL;
     free(params);
@@ -1515,8 +1515,8 @@ static const struct mcp_param_spec p_agent_deploy_guard[] = {
 };
 static const struct mcp_param_spec p_agent_diagnose[] = {
     { "mode", MCP_PARAM_STR, false,
-      "Detail mode: full embeds drill-down payloads; brief/compact/summary returns only decision fields",
-      0, 0, 0, 16, "full,brief,compact,summary", "\"full\"" },
+      "Detail mode: brief/compact/summary returns decision fields; full embeds drill-down payloads",
+      0, 0, 0, 16, "full,brief,compact,summary", "\"brief\"" },
 };
 
 struct agent_mcp_binding {

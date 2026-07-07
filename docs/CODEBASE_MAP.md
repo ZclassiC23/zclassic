@@ -198,16 +198,20 @@ controller `k_routes[]` arrays.
   Top-level schema/method/native/MCP identity fields are registry-owned by
   `agent_contracts.def`.
 - `zclassic23 agentdiagnose` / `zcl_agent_diagnose` — bounded no-jq
-  diagnosis packet for first-call work: status, healthcheck, peer lifecycle
-  incidents, mirror status, timeline pointers, and a safe next action. Its
-  top-level schema/method/native/MCP identity fields are also registry-owned.
+  diagnosis packet for first-call work: compact status, peer lifecycle incident
+  counts/primary host issue, mirror status, drill-down pointers, and a safe
+  next action. Use `agentdiagnose full` / `zcl_agent_diagnose(mode="full")`
+  only when embedded `agent`, `healthcheck`, `peer_incidents`, mirror, and
+  timeline objects are needed. Its top-level schema/method/native/MCP identity
+  fields are also registry-owned.
 - `zclassic23 peerincidents` / `zcl_peer_incidents` — compact bounded peer
   incident packet for reconnect storms, duplicate host entries, last
   disconnect reason, flat primary issue fields, host direction/mixed-direction
   classification, services, advertised height plus whether that height is
   bootstrap-trusted, bootstrap/fast-sync readiness, and stability blocker
-  verdicts. The native RPC and embedded `agentdiagnose.peer_incidents` payloads
-  add registry-owned `method`, `native_command`, `mcp_tool`, and
+  verdicts. The native RPC and full-mode embedded
+  `agentdiagnose.peer_incidents` payloads add registry-owned `method`,
+  `native_command`, `mcp_tool`, and
   `contract_source` fields from `agent_contracts.def`, so help,
   `agentcontracts`, MCP coverage, and API discovery stay in sync with the
   native command.

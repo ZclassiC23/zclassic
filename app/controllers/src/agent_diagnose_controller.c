@@ -69,15 +69,14 @@ static const char *diagnose_detail_mode_name(enum diagnose_detail_mode mode)
 
 static bool diagnose_detail_mode_is_brief(const char *mode)
 {
-    return mode && (strcmp(mode, "brief") == 0 ||
-                    strcmp(mode, "compact") == 0 ||
-                    strcmp(mode, "summary") == 0);
+    return !mode || !mode[0] || strcmp(mode, "default") == 0 ||
+           strcmp(mode, "brief") == 0 || strcmp(mode, "compact") == 0 ||
+           strcmp(mode, "summary") == 0;
 }
 
 static bool diagnose_detail_mode_is_full(const char *mode)
 {
-    return !mode || !mode[0] || strcmp(mode, "full") == 0 ||
-           strcmp(mode, "default") == 0 || strcmp(mode, "detailed") == 0;
+    return mode && (strcmp(mode, "full") == 0 || strcmp(mode, "detailed") == 0);
 }
 
 static bool diagnose_parse_detail_mode(const struct json_value *params,
@@ -87,7 +86,7 @@ static bool diagnose_parse_detail_mode(const struct json_value *params,
     struct rpc_params p;
     rpc_params_init(&p, params);
     rpc_params_expect(&p, 0, 1);
-    const char *raw = rpc_permit_str(&p, 0, "mode", "full");
+    const char *raw = rpc_permit_str(&p, 0, "mode", "brief");
     if (rpc_params_invalid(&p)) {
         json_set_object(result);
         json_push_kv_str(result, "schema", "zcl.agent_diagnose.v1");
@@ -351,6 +350,36 @@ static void diagnose_push_primary_host_issue(struct json_value *out,
     json_free(&obj);
 }
 
+static void diagnose_push_primary_host_issue_compact(
+    struct json_value *out, const struct json_value *primary)
+{
+    static const char *str_fields[] = { "status", "host", "issue_class",
+        "next_action", "direction", "bootstrap_readiness",
+        "fast_sync_readiness" };
+    static const char *int_fields[] = { "incident_score", "entries",
+        "open_connections", "handshaked_open_connections", "timeout",
+        "reconnects", "rejected", "pre_handshake_disconnects" };
+    static const char *bool_fields[] = { "mixed_direction",
+        "duplicate_current_connections", "duplicate_handshaked_connections" };
+    struct json_value obj = {0};
+    json_set_object(&obj);
+    json_push_kv_str(&obj, "schema", "zcl.peer_primary_host_issue.v1");
+    json_push_kv_str(&obj, "object_completeness", "compact");
+    for (size_t i = 0; i < sizeof(str_fields) / sizeof(str_fields[0]); i++)
+        json_push_kv_str(&obj, str_fields[i],
+                         diagnose_peer_host_str(primary, str_fields[i]));
+    for (size_t i = 0; i < sizeof(int_fields) / sizeof(int_fields[0]); i++)
+        json_push_kv_int(&obj, int_fields[i],
+                         diagnose_peer_host_int(primary, int_fields[i]));
+    for (size_t i = 0; i < sizeof(bool_fields) / sizeof(bool_fields[0]); i++)
+        json_push_kv_bool(&obj, bool_fields[i],
+                          diagnose_peer_host_bool(primary, bool_fields[i]));
+    json_push_kv_str(&obj, "full_detail_command", "zclassic23 peerincidents");
+    json_push_kv_str(&obj, "full_detail_tool", "zcl_peer_incidents");
+    json_push_kv(out, "peer_primary_host_issue", &obj);
+    json_free(&obj);
+}
+
 static const char *diagnose_peer_detail(int64_t peer_count,
                                         int64_t peer_incidents,
                                         int64_t material_signals,
@@ -441,10 +470,10 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     RPC_HELP(help, result,
         "agentdiagnose [full|brief]\n"
         "\nReturn a bounded no-jq diagnosis packet for AI/operators. It "
-        "composes cheap status, healthcheck, peer incident, mirror, and "
-        "timeline views without requiring a client-side pipeline. The "
-        "default full mode preserves embedded drill-downs; brief mode keeps "
-        "only the stable decision fields and findings.\n"
+        "composes cheap status, peer incident, mirror, and drill-down "
+        "pointers without requiring a client-side pipeline. The default "
+        "brief mode keeps only stable decision fields and findings; full "
+        "mode adds healthcheck, peer, mirror, and timeline drill-downs.\n"
         "\nResult:\n"
         "  { \"schema\":\"zcl.agent_diagnose.v1\", "
         "\"verdict\":\"healthy|attention_needed\", "
@@ -716,7 +745,10 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     json_push_kv(result, "recommended_commands", &commands);
     json_free(&commands);
 
-    diagnose_push_primary_host_issue(result, primary_host);
+    if (brief_mode)
+        diagnose_push_primary_host_issue_compact(result, primary_host);
+    else
+        diagnose_push_primary_host_issue(result, primary_host);
 
     if (brief_mode) {
         diagnose_push_brief_omissions(result);

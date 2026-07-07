@@ -3012,9 +3012,12 @@ int test_syncdiag_rpc(void)
             find_object_with_str(findings, "name", "peer_lifecycle");
         const struct json_value *mirror_finding =
             find_object_with_str(findings, "name", "mirror");
-        const struct json_value *agent = json_get(&result, "agent");
-        const struct json_value *height_contract =
-            agent ? json_get(agent, "height_contract") : NULL;
+        const struct json_value *default_first_call =
+            json_get(&result, "first_call");
+        const struct json_value *default_omitted =
+            json_get(&result, "omitted_sections");
+        const struct json_value *default_primary_host =
+            json_get(&result, "peer_primary_host_issue");
         ok = ok && result.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
                           "zcl.agent_diagnose.v1") == 0;
@@ -3028,6 +3031,10 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "contract_source")),
                           "agent_contracts.def") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "detail_mode")),
+                          "brief") == 0;
+        ok = ok && !json_get_bool(json_get(&result,
+                                           "embedded_drilldowns"));
         ok = ok && json_get_int(json_get(&result, "gap")) == 1;
         ok = ok && json_get_bool(json_get(&result,
                                           "chain_serving_ready"));
@@ -3044,7 +3051,13 @@ int test_syncdiag_rpc(void)
                                          "peer_host_incident_count")) >= 1;
         ok = ok && json_get_int(json_get(&result,
                                          "peer_host_count_returned")) >= 1;
-        ok = ok && json_get(&result, "peer_primary_host_issue") != NULL;
+        ok = ok && default_primary_host != NULL;
+        ok = ok && strcmp(json_get_str(json_get(default_primary_host,
+                                                "object_completeness")),
+                          "compact") == 0;
+        ok = ok && strcmp(json_get_str(json_get(default_primary_host,
+                                                "full_detail_command")),
+                          "zclassic23 peerincidents") == 0;
         ok = ok && json_get(&result, "peer_primary_host") != NULL;
         ok = ok && json_get(&result,
                             "peer_primary_host_issue_class") != NULL;
@@ -3094,8 +3107,50 @@ int test_syncdiag_rpc(void)
             peer_finding, "severity")), "info") == 0;
         ok = ok && mirror_finding && strcmp(json_get_str(json_get(
             mirror_finding, "severity")), "ok") == 0;
+        ok = ok && json_get(&result, "agent") == NULL;
+        ok = ok && json_get(&result, "healthcheck") == NULL;
+        ok = ok && json_get(&result, "peer_incidents") == NULL;
+        ok = ok && json_get(&result, "mirror") == NULL;
+        ok = ok && json_get(&result, "timeline") == NULL;
+        ok = ok && default_omitted &&
+            json_array_has_str(default_omitted, "timeline");
+        ok = ok && default_first_call &&
+            strcmp(json_get_str(json_get(default_first_call, "source")),
+                   "bounded_status_peer_mirror_brief") == 0;
+        ok = ok && default_first_call &&
+            strcmp(json_get_str(json_get(default_first_call,
+                                         "full_mode_command")),
+                   "zclassic23 agentdiagnose full") == 0;
+
+        json_free(&result);
+
+        struct json_value full_params;
+        json_init(&full_params);
+        json_set_array(&full_params);
+        struct json_value full_arg;
+        json_init(&full_arg);
+        json_set_str(&full_arg, "full");
+        json_push_back(&full_params, &full_arg);
+        json_free(&full_arg);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "agentdiagnose",
+                                     &full_params, &result);
+        const struct json_value *agent = json_get(&result, "agent");
+        const struct json_value *height_contract =
+            agent ? json_get(agent, "height_contract") : NULL;
+        ok = ok && strcmp(json_get_str(json_get(&result, "detail_mode")),
+                          "full") == 0;
+        ok = ok && json_get_bool(json_get(&result,
+                                          "embedded_drilldowns"));
+        ok = ok && agent != NULL;
+        ok = ok && json_get(&result, "healthcheck") != NULL;
+        ok = ok && json_get(&result, "peer_incidents") != NULL;
+        ok = ok && json_get(&result, "mirror") != NULL;
+        ok = ok && json_get(&result, "timeline") != NULL;
         ok = ok && height_contract && json_get_bool(json_get(
             height_contract, "normal_lookahead"));
+        json_free(&result);
+        json_free(&full_params);
 
         struct json_value bounded_health;
         json_init(&bounded_health);
@@ -3125,8 +3180,6 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get_bool(json_get(bounded_checks,
                                           "serving_ready"));
         json_free(&bounded_health);
-
-        json_free(&result);
 
         struct json_value brief_params;
         json_init(&brief_params);
@@ -3415,25 +3468,16 @@ int test_syncdiag_rpc(void)
             !json_get_bool(json_get(primary_host_issue, "mixed_direction"));
         ok = ok && primary_host_issue &&
             strcmp(json_get_str(json_get(primary_host_issue,
-                                         "current_open_direction")),
-                   "inbound") == 0;
-        ok = ok && primary_host_issue &&
-            !json_get_bool(json_get(primary_host_issue,
-                                    "current_open_mixed_direction"));
-        ok = ok && primary_host_issue &&
-            json_get_int(json_get(primary_host_issue,
-                                  "current_open_unknown_connections")) == 0;
+                                         "object_completeness")),
+                   "compact") == 0;
         ok = ok && primary_host_issue &&
             strcmp(json_get_str(json_get(primary_host_issue,
-                                         "current_handshaked_direction")),
-                   "inbound") == 0;
+                                         "full_detail_command")),
+                   "zclassic23 peerincidents") == 0;
         ok = ok && primary_host_issue &&
-            !json_get_bool(json_get(primary_host_issue,
-                                    "current_handshaked_mixed_direction"));
+            json_get(primary_host_issue, "current_open_direction") == NULL;
         ok = ok && primary_host_issue &&
-            json_get_int(json_get(primary_host_issue,
-                                  "current_handshaked_unknown_connections"))
-                == 0;
+            json_get(primary_host_issue, "current_handshaked_direction") == NULL;
         ok = ok && primary_host_issue &&
             strcmp(json_get_str(json_get(primary_host_issue,
                                          "bootstrap_readiness")),
@@ -4206,10 +4250,18 @@ int test_syncdiag_rpc(void)
 
         event_log_init();
         event_emitf(EV_SYNC_HEARTBEAT, 0, "diagnose sync heartbeat");
+        struct json_value diagnose_full_params;
+        json_init(&diagnose_full_params);
+        json_set_array(&diagnose_full_params);
+        struct json_value diagnose_full_arg;
+        json_init(&diagnose_full_arg);
+        json_set_str(&diagnose_full_arg, "full");
+        json_push_back(&diagnose_full_params, &diagnose_full_arg);
+        json_free(&diagnose_full_arg);
         struct json_value diagnose;
         json_init(&diagnose);
-        ok = ok && rpc_table_execute(&tbl, "agentdiagnose", &params,
-                                     &diagnose);
+        ok = ok && rpc_table_execute(&tbl, "agentdiagnose",
+                                     &diagnose_full_params, &diagnose);
         const struct json_value *diagnose_first_call =
             json_get(&diagnose, "first_call");
         const struct json_value *diagnose_peers =
@@ -4263,6 +4315,7 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get_bool(json_get(diagnose_first_call,
                                           "partial_result"));
         json_free(&diagnose);
+        json_free(&diagnose_full_params);
 
         struct json_value inferred_ops;
         json_init(&inferred_ops);

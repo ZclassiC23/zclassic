@@ -1127,6 +1127,7 @@ static bool g_agent_impact_params_seen;
 static bool g_agent_deploy_guard_params_seen;
 static bool g_agent_timeline_params_seen;
 static bool g_agent_diagnose_brief_params_seen;
+static bool g_agent_diagnose_full_params_seen;
 
 static char *mock_agent_dev_rpc(const char *method, const char *params_json)
 {
@@ -1220,17 +1221,35 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
     if (strcmp(method, "agentdiagnose") == 0) {
         if (params_json && contains(params_json, "\"brief\""))
             g_agent_diagnose_brief_params_seen = true;
+        if (params_json && contains(params_json, "\"full\"")) {
+            g_agent_diagnose_full_params_seen = true;
+            return strdup("{\"schema\":\"zcl.agent_diagnose.v1\","
+                          "\"api_version\":\"v1\","
+                          "\"method\":\"agentdiagnose\","
+                          "\"native_command\":\"zclassic23 agentdiagnose\","
+                          "\"mcp_tool\":\"zcl_agent_diagnose\","
+                          "\"contract_source\":\"agent_contracts.def\","
+                          "\"detail_mode\":\"full\","
+                          "\"embedded_drilldowns\":true,"
+                          "\"verdict\":\"healthy\","
+                          "\"safe_next_action\":\"monitor_agent_and_liveness\","
+                          "\"first_call\":{\"schema\":\"zcl.first_call_contract.v1\","
+                          "\"api\":\"agentdiagnose\"},"
+                          "\"peer_incidents\":{\"schema\":\"zcl.peer_incidents.v1\"}}");
+        }
         return strdup("{\"schema\":\"zcl.agent_diagnose.v1\","
                       "\"api_version\":\"v1\","
                       "\"method\":\"agentdiagnose\","
                       "\"native_command\":\"zclassic23 agentdiagnose\","
                       "\"mcp_tool\":\"zcl_agent_diagnose\","
                       "\"contract_source\":\"agent_contracts.def\","
+                      "\"detail_mode\":\"brief\","
+                      "\"embedded_drilldowns\":false,"
                       "\"verdict\":\"healthy\","
                       "\"safe_next_action\":\"monitor_agent_and_liveness\","
                       "\"first_call\":{\"schema\":\"zcl.first_call_contract.v1\","
                       "\"api\":\"agentdiagnose\"},"
-                      "\"peer_incidents\":{\"schema\":\"zcl.peer_incidents.v1\"}}");
+                      "\"omitted_sections\":[\"peer_incidents\"]}");
     }
     if (strcmp(method, "agentliveness") == 0)
         return strdup("{\"schema\":\"zcl.agent_liveness.v1\","
@@ -1663,8 +1682,11 @@ static int test_zcl_agent_dev_tools_dispatch(void)
                       "zcl_agent_diagnose");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "contract_source")),
                       "agent_contracts.def");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "detail_mode")),
+                      "brief");
+        ASSERT(!json_get_bool(json_get(&root, "embedded_drilldowns")));
         ASSERT(json_get(&root, "first_call") != NULL);
-        ASSERT(json_get(&root, "peer_incidents") != NULL);
+        ASSERT(json_get(&root, "peer_incidents") == NULL);
         json_free(&root);
         free(body);
 
@@ -1686,6 +1708,28 @@ static int test_zcl_agent_dev_tools_dispatch(void)
                       "zcl_agent_diagnose");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "contract_source")),
                       "agent_contracts.def");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "detail_mode")),
+                      "brief");
+        ASSERT(!json_get_bool(json_get(&root, "embedded_drilldowns")));
+        ASSERT(json_get(&root, "peer_incidents") == NULL);
+        json_free(&root);
+        free(body);
+
+        json_free(&args);
+        const char *diagnose_full_args = "{\"mode\":\"full\"}";
+        ASSERT(json_read(&args, diagnose_full_args,
+                         strlen(diagnose_full_args)));
+        g_agent_diagnose_full_params_seen = false;
+        body = mcp_router_dispatch("zcl_agent_diagnose", &args);
+        ASSERT(body != NULL);
+        ASSERT(g_agent_diagnose_full_params_seen);
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.agent_diagnose.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "detail_mode")),
+                      "full");
+        ASSERT(json_get_bool(json_get(&root, "embedded_drilldowns")));
+        ASSERT(json_get(&root, "peer_incidents") != NULL);
         json_free(&root);
         free(body);
 
