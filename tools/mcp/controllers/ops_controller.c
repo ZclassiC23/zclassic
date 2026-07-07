@@ -45,7 +45,6 @@ DEFINE_PT(h_zcl_refold_status,  "refold",         "mcp.ops")
 DEFINE_PT(h_zcl_agent,          "agent",          "mcp.ops")
 DEFINE_PT(h_zcl_agent_map,      "agentmap",       "mcp.ops")
 DEFINE_PT(h_zcl_agent_lanes,    "agentlanes",     "mcp.ops")
-DEFINE_PT(h_zcl_agent_liveness, "agentliveness",  "mcp.ops")
 DEFINE_PT(h_zcl_agent_contracts,"agentcontracts", "mcp.ops")
 DEFINE_PT(h_zcl_agent_build,    "agentbuild",     "mcp.ops")
 DEFINE_PT(h_zcl_agent_interface,"agentinterface", "mcp.ops")
@@ -969,6 +968,18 @@ static int h_zcl_agent_deploy_guard(const struct mcp_request *req,
     return mcp_return_rpc_body(res, body, "agentdeployguard", "mcp.ops");
 }
 
+static int h_zcl_agent_liveness(const struct mcp_request *req,
+                                struct mcp_response *res)
+{
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, json_get_str_or(req->args, "mode", "brief"));
+    char *params = mcp_params_to_json(&p);
+    char *body = params ? mcp_node_rpc("agentliveness", params) : NULL;
+    free(params);
+    return mcp_return_rpc_body(res, body, "agentliveness", "mcp.ops");
+}
+
 static int h_zcl_agent_diagnose(const struct mcp_request *req,
                                 struct mcp_response *res)
 {
@@ -1513,6 +1524,11 @@ static const struct mcp_param_spec p_agent_deploy_guard[] = {
       "Action to evaluate: canonical-deploy, canonical-restart, deploy, or restart",
       0, 0, 0, 64, NULL, "\"canonical-deploy\"" },
 };
+static const struct mcp_param_spec p_agent_liveness[] = {
+    { "mode", MCP_PARAM_STR, false,
+      "Detail mode: brief/compact/summary returns bounded counts; full embeds availability methods, supervisor domains, and quality lanes",
+      0, 0, 0, 16, "full,brief,compact,summary", "\"brief\"" },
+};
 static const struct mcp_param_spec p_agent_diagnose[] = {
     { "mode", MCP_PARAM_STR, false,
       "Detail mode: brief/compact/summary returns decision fields; full embeds drill-down payloads",
@@ -1532,7 +1548,8 @@ static const struct agent_mcp_binding k_agent_mcp_bindings[] = {
     { "agent", NULL, 0, h_zcl_agent, 0, NULL },
     { "agentmap", NULL, 0, h_zcl_agent_map, 0, NULL },
     { "agentlanes", NULL, 0, h_zcl_agent_lanes, 0, NULL },
-    { "agentliveness", NULL, 0, h_zcl_agent_liveness, 0, NULL },
+    { "agentliveness", p_agent_liveness, PARAM_COUNT(p_agent_liveness),
+      h_zcl_agent_liveness, 0, "{\"mode\":\"brief\"}" },
     { "agentimpact", p_agent_impact, PARAM_COUNT(p_agent_impact),
       h_zcl_agent_impact, 0,
       "{\"files\":[\"app/controllers/src/event_controller.c\","

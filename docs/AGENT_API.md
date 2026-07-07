@@ -127,12 +127,17 @@ same-height same-hash mirror with no active blocker is healthy even if an older
 runtime or cached field once mentioned a transient `hash-disagreement`.
 
 `agentliveness` (`zcl.agent_liveness.v1`) is the one-call runtime liveness
-rollup. It composes `current_runtime_lane`, observed runtime listeners,
-`runtime_availability`, `supervisor_state`, and `background_quality_status`,
-then adds direct fields such as `overall_liveness`, `agent_next_action`,
-`liveness_summary`, and `recommended_drilldowns`. Its top-level `schema`,
-`method`, `native_command`, `mcp_tool`, and `contract_source` fields are
-populated from `agent_contracts.def`, not handwritten in the controller.
+rollup. Its default mode is compact: it composes `current_runtime_lane`,
+observed runtime listeners, compact `runtime_availability`,
+`supervisor_state`, and `background_quality_status` count fields, then adds
+direct fields such as `overall_liveness`, `agent_next_action`,
+`liveness_summary`, `recommended_drilldowns`, `omitted_sections`, and
+`full_mode_command`. Use `agentliveness full` or
+`zcl_agent_liveness(mode="full")` when you need embedded
+`runtime_availability.methods[]`, supervisor `domains` / `root_orphans`, or
+background quality `lanes[]`. Its top-level `schema`, `method`,
+`native_command`, `mcp_tool`, and `contract_source` fields are populated from
+`agent_contracts.def`, not handwritten in the controller.
 `runtime_services` is only the producer process' in-process listener state;
 when a native static command has successfully probed a target lane over RPC,
 `runtime_availability` marks `target_rpc_reachable=true`,
@@ -178,7 +183,7 @@ safe next action, peer/mirror counts, compact `peer_primary_host_issue`,
 findings, and recommended commands while omitting the embedded `agent`,
 `healthcheck`, `peer_incidents`, `mirror`, and `timeline` drill-down objects.
 The response includes `detail_mode`,
-`embedded_drilldowns=false`, `omitted_sections`, and a `full_diagnose_command`
+`embedded_drilldowns=false`, `omitted_sections`, and a `full_mode_command`
 that expands to `zclassic23 agentdiagnose full`.
 For chain status, `agentdiagnose` follows the same `zcl.agent_readiness.v1`
 contract as `agent`: a small non-material tip gap remains healthy when
@@ -265,7 +270,7 @@ versioned as `zcl.agent_runtime_identity.v1`, `zcl.agent_capability.v1`, and
 `zcl.agent_machine_contract.v1`. Future operator APIs should extend that matrix
 before adding new wrapper behavior.
 
-`agentinterface`, `agentops`, `agentlanes`, and `agentliveness` also include
+`agentinterface`, `agentops`, `agentlanes`, and full-mode `agentliveness` also include
 `runtime_availability` (`zcl.agent_runtime_availability.v1`). Native static
 first-call commands are
 produced by the binary you just ran, but that producer may be newer than the
@@ -380,7 +385,10 @@ raw legacy sync-state predicate for callers that specifically need it.
 `result_completeness`, `partial_result`, `source`, `budget_ms`,
 `elapsed_ms`, and `budget_exceeded`. `agent` and `agentliveness` use that
 budget to return valid partial JSON responses instead of continuing into
-optional detail work after their first-call budget is spent.
+optional detail work after their first-call budget is spent. Default
+`agentliveness` sets `partial_result=true` because it intentionally omits
+the high-cardinality method, supervisor-domain, and quality-lane arrays; the
+full mode restores them for drilldown work.
 Default bounded `healthcheck` still preserves top-level deployment contract
 fields (`consensus_authority`, `candidate_source`, `candidate_trust`) so
 deploy verification and first-call clients do not need to parse nested

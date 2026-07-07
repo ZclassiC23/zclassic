@@ -23,6 +23,9 @@ struct agent_liveness_supervisor_counts {
     int64_t restart_count_total;
 };
 
+enum agent_liveness_detail_mode { AGENT_LIVENESS_DETAIL_BRIEF = 0,
+                                  AGENT_LIVENESS_DETAIL_FULL = 1 };
+
 static void agent_liveness_push_str(struct json_value *arr, const char *s)
 {
     struct json_value v;
@@ -30,6 +33,78 @@ static void agent_liveness_push_str(struct json_value *arr, const char *s)
     json_set_str(&v, s ? s : "");
     json_push_back(arr, &v);
     json_free(&v);
+}
+
+static void agent_liveness_copy_key(struct json_value *dst,
+                                    const struct json_value *src,
+                                    const char *key)
+{
+    const struct json_value *v = src ? json_get(src, key) : NULL;
+    if (v)
+        json_push_kv(dst, key, v);
+}
+
+static void agent_liveness_copy_keys(struct json_value *dst,
+                                     const struct json_value *src,
+                                     const char *const *keys,
+                                     size_t key_count)
+{
+    for (size_t i = 0; i < key_count; i++)
+        agent_liveness_copy_key(dst, src, keys[i]);
+}
+
+static const char *agent_liveness_detail_mode_name(enum agent_liveness_detail_mode mode)
+{
+    return mode == AGENT_LIVENESS_DETAIL_FULL ? "full" : "brief";
+}
+
+static bool agent_liveness_mode_is_brief(const char *mode)
+{
+    return !mode || !mode[0] || strcmp(mode, "default") == 0 ||
+           strcmp(mode, "brief") == 0 || strcmp(mode, "compact") == 0 ||
+           strcmp(mode, "summary") == 0;
+}
+
+static bool agent_liveness_mode_is_full(const char *mode)
+{
+    return mode &&
+           (strcmp(mode, "full") == 0 || strcmp(mode, "detailed") == 0);
+}
+
+static bool agent_liveness_parse_detail_mode(
+    const struct json_value *params, struct json_value *result,
+    enum agent_liveness_detail_mode *mode)
+{
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    rpc_params_expect(&p, 0, 1);
+    const char *raw = rpc_permit_str(&p, 0, "mode", "brief");
+    if (rpc_params_invalid(&p)) {
+        json_set_object(result);
+        json_push_kv_str(result, "schema", "zcl.agent_liveness.v1");
+        json_push_kv_str(result, "status", "error");
+        json_push_kv_str(result, "error", p.error);
+        json_push_kv_str(result, "allowed_modes",
+                         "full,brief,compact,summary");
+        return false;
+    }
+    if (agent_liveness_mode_is_brief(raw)) {
+        *mode = AGENT_LIVENESS_DETAIL_BRIEF;
+        return true;
+    }
+    if (agent_liveness_mode_is_full(raw)) {
+        *mode = AGENT_LIVENESS_DETAIL_FULL;
+        return true;
+    }
+
+    json_set_object(result);
+    json_push_kv_str(result, "schema", "zcl.agent_liveness.v1");
+    json_push_kv_str(result, "status", "error");
+    json_push_kv_str(result, "error", "invalid_agentliveness_mode");
+    json_push_kv_str(result, "mode", raw ? raw : "");
+    json_push_kv_str(result, "allowed_modes",
+                     "full,brief,compact,summary");
+    return false;
 }
 
 static void agent_liveness_count_children(
@@ -73,6 +148,99 @@ agent_liveness_supervisor_counts(const struct json_value *supervisor)
     }
     agent_liveness_count_children(orphans, &counts);
     return counts;
+}
+
+static void agent_liveness_push_omissions(struct json_value *out)
+{
+    struct json_value omitted;
+    json_init(&omitted);
+    json_set_array(&omitted);
+    agent_liveness_push_str(&omitted, "runtime_availability.methods");
+    agent_liveness_push_str(&omitted, "background_quality_status.lanes");
+    agent_liveness_push_str(&omitted, "supervisor_state.domains");
+    agent_liveness_push_str(&omitted, "supervisor_state.root_orphans");
+    json_push_kv(out, "omitted_sections", &omitted);
+    json_free(&omitted);
+}
+
+static void agent_liveness_push_availability_compact(
+    struct json_value *out, const struct json_value *full)
+{
+    static const char *const keys[] = {
+        "schema", "schema_version", "producer_build_commit",
+        "operator_lane_name", "operator_lane_source",
+        "operator_lane_declared", "operator_lane_inferred",
+        "producer_datadir", "producer_rpcport", "availability_scope",
+        "probe_source", "probe_status", "target_rpc_attempted",
+        "target_rpc_reachable", "target_datadir", "target_rpcport",
+        "target_build_commit", "producer_target_build_relation",
+        "supported_count", "unsupported_count", "error_count",
+        "unknown_count", "safe_next_action",
+    };
+    struct json_value obj;
+    json_init(&obj);
+    json_set_object(&obj);
+    agent_liveness_copy_keys(&obj, full, keys, sizeof(keys) / sizeof(keys[0]));
+    json_push_kv_str(&obj, "object_completeness", "compact");
+    json_push_kv_str(&obj, "full_detail_command",
+                     "zclassic23 agentliveness full");
+    json_push_kv_str(&obj, "full_detail_tool",
+                     "zcl_agent_liveness(mode=\"full\")");
+    json_push_kv(out, "runtime_availability", &obj);
+    json_free(&obj);
+}
+
+static void agent_liveness_push_quality_compact(
+    struct json_value *out, const struct json_value *full)
+{
+    static const char *const keys[] = {
+        "schema", "api_version", "status", "native_status_reader",
+        "requires_python", "status_command", "state_path_valid",
+        "pre_push_blocks_on_long_lanes", "lanes_configured",
+        "status_files_present", "status_files_valid", "passed_count",
+        "skipped_count", "running_count", "failed_count",
+        "current_commit_count", "stale_commit_count",
+        "unknown_commit_count", "summary", "agent_next_action",
+    };
+    struct json_value obj;
+    json_init(&obj);
+    json_set_object(&obj);
+    agent_liveness_copy_keys(&obj, full, keys, sizeof(keys) / sizeof(keys[0]));
+    json_push_kv_str(&obj, "object_completeness", "compact");
+    json_push_kv_str(&obj, "full_detail_command",
+                     "zclassic23 agentliveness full");
+    json_push_kv_str(&obj, "full_detail_tool",
+                     "zcl_agent_liveness(mode=\"full\")");
+    json_push_kv(out, "background_quality_status", &obj);
+    json_free(&obj);
+}
+
+static void agent_liveness_push_supervisor_compact(
+    struct json_value *out, const struct json_value *full,
+    const struct agent_liveness_supervisor_counts *counts)
+{
+    struct json_value obj;
+    json_init(&obj);
+    json_set_object(&obj);
+    json_push_kv_str(&obj, "object_completeness", "compact");
+    agent_liveness_copy_key(&obj, full, "running");
+    agent_liveness_copy_key(&obj, full, "thread_alive");
+    agent_liveness_copy_key(&obj, full, "tick_ms");
+    agent_liveness_copy_key(&obj, full, "child_count");
+    json_push_kv_int(&obj, "observed_child_count",
+                     counts ? counts->child_count : 0);
+    json_push_kv_int(&obj, "stale_child_count",
+                     counts ? counts->stale_child_count : 0);
+    json_push_kv_int(&obj, "stall_fires_total",
+                     counts ? counts->stall_fires_total : 0);
+    json_push_kv_int(&obj, "restart_count_total",
+                     counts ? counts->restart_count_total : 0);
+    json_push_kv_str(&obj, "full_detail_command",
+                     "zclassic23 agentliveness full");
+    json_push_kv_str(&obj, "full_detail_tool",
+                     "zcl_agent_liveness(mode=\"full\")");
+    json_push_kv(out, "supervisor_state", &obj);
+    json_free(&obj);
 }
 
 static void agent_liveness_push_drilldowns(struct json_value *out,
@@ -217,29 +385,44 @@ static void agent_liveness_push_summary(struct json_value *out,
 bool rpc_agent_liveness(const struct json_value *params, bool help,
                         struct json_value *result)
 {
-    (void)params;
     RPC_HELP(help, result,
-        "agentliveness\n"
+        "agentliveness [full|brief]\n"
         "\nReturn one AI/operator liveness contract that composes lane identity,\n"
         "runtime listeners, supervisor children, and background quality lanes.\n"
+        "Default brief mode keeps bounded summary/count fields; full mode embeds\n"
+        "availability methods, supervisor domains, and quality lane details.\n"
         "\nResult:\n"
         "  { \"schema\":\"zcl.agent_liveness.v1\", "
         "\"liveness_summary\":{...} }\n");
 
     int64_t first_call_started_us = agent_first_call_start_us();
     bool quality_skipped_for_budget = false;
-    struct json_value supervisor_state, quality_status;
+    enum agent_liveness_detail_mode detail_mode =
+        AGENT_LIVENESS_DETAIL_BRIEF;
+    if (!agent_liveness_parse_detail_mode(params, result, &detail_mode))
+        return true;
+    bool brief_mode = detail_mode == AGENT_LIVENESS_DETAIL_BRIEF;
+    struct json_value fragments, supervisor_state, quality_status;
+    struct agent_liveness_supervisor_counts supervisor_counts;
     json_set_object(result);
+    json_init(&fragments);
+    json_set_object(&fragments);
     agent_push_contract_identity_fields_json(result, "agentliveness");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "status", "ok");
     json_push_kv_str(result, "build_commit", zcl_build_commit());
+    json_push_kv_str(result, "detail_mode",
+                     agent_liveness_detail_mode_name(detail_mode));
+    json_push_kv_bool(result, "embedded_drilldowns", !brief_mode);
     json_push_kv_str(result, "semantics",
                      "read-only composition of current_runtime_lane, runtime_services, supervisor_state, and background_quality_status");
+    json_push_kv_str(result, "full_mode_command",
+                     "zclassic23 agentliveness full");
+    json_push_kv_str(result, "full_mode_params", "{\"mode\":\"full\"}");
 
-    agent_push_operator_lane_json(result, "current_runtime_lane");
-    agent_push_runtime_services_json(result, "runtime_services");
-    agent_push_runtime_availability_json(result, "runtime_availability");
+    agent_push_operator_lane_json(&fragments, "current_runtime_lane");
+    agent_push_runtime_services_json(&fragments, "runtime_services");
+    agent_push_runtime_availability_json(&fragments, "runtime_availability");
 
     json_init(&supervisor_state);
     if (!supervisor_dump_state_json(&supervisor_state, NULL)) {
@@ -247,7 +430,6 @@ bool rpc_agent_liveness(const struct json_value *params, bool help,
         json_set_object(&supervisor_state);
         json_push_kv_str(&supervisor_state, "status", "unavailable");
     }
-    json_push_kv(result, "supervisor_state", &supervisor_state);
 
     json_init(&quality_status);
     if (agent_first_call_budget_exceeded(
@@ -270,26 +452,48 @@ bool rpc_agent_liveness(const struct json_value *params, bool help,
     } else {
         agent_build_background_quality_status(&quality_status);
     }
-    json_push_kv(result, "background_quality_status", &quality_status);
+    json_push_kv(&fragments, "supervisor_state", &supervisor_state);
+    json_push_kv(&fragments, "background_quality_status", &quality_status);
 
+    supervisor_counts = agent_liveness_supervisor_counts(&supervisor_state);
+    json_push_kv(result, "current_runtime_lane",
+                 json_get(&fragments, "current_runtime_lane"));
+    json_push_kv(result, "runtime_services",
+                 json_get(&fragments, "runtime_services"));
+    if (brief_mode) {
+        agent_liveness_push_availability_compact(
+            result, json_get(&fragments, "runtime_availability"));
+        agent_liveness_push_supervisor_compact(
+            result, &supervisor_state, &supervisor_counts);
+        agent_liveness_push_quality_compact(result, &quality_status);
+        agent_liveness_push_omissions(result);
+    } else {
+        json_push_kv(result, "runtime_availability",
+                     json_get(&fragments, "runtime_availability"));
+        json_push_kv(result, "supervisor_state", &supervisor_state);
+        json_push_kv(result, "background_quality_status", &quality_status);
+    }
     agent_liveness_push_summary(
         result,
-        json_get(result, "current_runtime_lane"),
-        json_get(result, "runtime_services"),
-        json_get(result, "runtime_availability"),
+        json_get(&fragments, "current_runtime_lane"),
+        json_get(&fragments, "runtime_services"),
+        json_get(&fragments, "runtime_availability"),
         &quality_status,
         &supervisor_state);
 
     agent_push_first_call_simple_json(
         result, "first_call", "agentliveness",
-        "runtime_supervisor_quality_status",
+        brief_mode ? "runtime_supervisor_quality_status_brief"
+                   : "runtime_supervisor_quality_status_full",
         ZCL_AGENT_FIRST_CALL_BUDGET_LIVENESS_MS, first_call_started_us,
-        quality_skipped_for_budget,
+        brief_mode || quality_skipped_for_budget,
+        brief_mode ? "brief_mode_omits_embedded_drilldowns" :
         quality_skipped_for_budget
             ? "first_call_budget_exhausted_before_quality_scan" : "",
-        "");
+        brief_mode ? "zclassic23 agentliveness full" : "");
 
     json_free(&quality_status);
     json_free(&supervisor_state);
+    json_free(&fragments);
     return true;
 }

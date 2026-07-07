@@ -612,7 +612,12 @@ static int test_zcl_agent_dev_tools_shape(void)
         ASSERT(build->num_params == 0);
         ASSERT(interface->num_params == 0);
         ASSERT(ops->num_params == 0);
-        ASSERT(liveness->num_params == 0);
+        ASSERT(liveness->num_params == 1);
+        ASSERT(strcmp(liveness->params[0].name, "mode") == 0);
+        ASSERT(liveness->params[0].type == MCP_PARAM_STR);
+        ASSERT(liveness->params[0].required == false);
+        ASSERT_STR_EQ(liveness->params[0].default_json, "\"brief\"");
+        ASSERT(liveness->self_test_args != NULL);
         ASSERT(app_protocols->num_params == 0);
         ASSERT(contains(liveness->description, "liveness"));
         ASSERT(contains(app_protocols->description, "protocol catalog"));
@@ -1128,6 +1133,8 @@ static bool g_agent_deploy_guard_params_seen;
 static bool g_agent_timeline_params_seen;
 static bool g_agent_diagnose_brief_params_seen;
 static bool g_agent_diagnose_full_params_seen;
+static bool g_agent_liveness_brief_params_seen;
+static bool g_agent_liveness_full_params_seen;
 
 static char *mock_agent_dev_rpc(const char *method, const char *params_json)
 {
@@ -1251,17 +1258,46 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
                       "\"api\":\"agentdiagnose\"},"
                       "\"omitted_sections\":[\"peer_incidents\"]}");
     }
-    if (strcmp(method, "agentliveness") == 0)
+    if (strcmp(method, "agentliveness") == 0) {
+        if (params_json && contains(params_json, "\"brief\""))
+            g_agent_liveness_brief_params_seen = true;
+        if (params_json && contains(params_json, "\"full\"")) {
+            g_agent_liveness_full_params_seen = true;
+            return strdup("{\"schema\":\"zcl.agent_liveness.v1\","
+                          "\"api_version\":\"v1\","
+                          "\"method\":\"agentliveness\","
+                          "\"native_command\":\"zclassic23 agentliveness\","
+                          "\"mcp_tool\":\"zcl_agent_liveness\","
+                          "\"contract_source\":\"agent_contracts.def\","
+                          "\"detail_mode\":\"full\","
+                          "\"embedded_drilldowns\":true,"
+                          "\"overall_liveness\":\"active\","
+                          "\"agent_next_action\":\"inspect_recommended_drilldowns\","
+                          "\"runtime_availability\":{\"methods\":[{\"method\":\"agent\"}]},"
+                          "\"background_quality_status\":{\"lanes\":[{\"lane\":\"tests\"}]},"
+                          "\"supervisor_state\":{\"domains\":[]},"
+                          "\"liveness_summary\":{\"quality_failed_count\":0},"
+                          "\"recommended_drilldowns\":[\"zcl_state subsystem=supervisor\"]}");
+        }
         return strdup("{\"schema\":\"zcl.agent_liveness.v1\","
                       "\"api_version\":\"v1\","
                       "\"method\":\"agentliveness\","
                       "\"native_command\":\"zclassic23 agentliveness\","
                       "\"mcp_tool\":\"zcl_agent_liveness\","
                       "\"contract_source\":\"agent_contracts.def\","
+                      "\"detail_mode\":\"brief\","
+                      "\"embedded_drilldowns\":false,"
                       "\"overall_liveness\":\"active\","
                       "\"agent_next_action\":\"inspect_recommended_drilldowns\","
+                      "\"runtime_availability\":{\"object_completeness\":\"compact\"},"
+                      "\"background_quality_status\":{\"object_completeness\":\"compact\"},"
+                      "\"supervisor_state\":{\"object_completeness\":\"compact\"},"
                       "\"liveness_summary\":{\"quality_failed_count\":0},"
+                      "\"first_call\":{\"schema\":\"zcl.first_call_contract.v1\","
+                      "\"api\":\"agentliveness\"},"
+                      "\"omitted_sections\":[\"runtime_availability.methods\"],"
                       "\"recommended_drilldowns\":[\"zcl_state subsystem=supervisor\"]}");
+    }
     if (strcmp(method, "timeline") == 0) {
         g_agent_timeline_params_seen =
             params_json &&
@@ -1736,8 +1772,10 @@ static int test_zcl_agent_dev_tools_dispatch(void)
         json_free(&args);
         json_init(&args);
         json_set_object(&args);
+        g_agent_liveness_brief_params_seen = false;
         body = mcp_router_dispatch("zcl_agent_liveness", &args);
         ASSERT(body != NULL);
+        ASSERT(g_agent_liveness_brief_params_seen);
         ASSERT(json_read(&root, body, strlen(body)));
         ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
                       "zcl.agent_liveness.v1");
@@ -1749,10 +1787,43 @@ static int test_zcl_agent_dev_tools_dispatch(void)
                       "zcl_agent_liveness");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "contract_source")),
                       "agent_contracts.def");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "detail_mode")),
+                      "brief");
+        ASSERT(!json_get_bool(json_get(&root, "embedded_drilldowns")));
         ASSERT_STR_EQ(json_get_str(json_get(&root, "overall_liveness")),
                       "active");
+        ASSERT(json_get(&root, "first_call") != NULL);
+        ASSERT(json_get(json_get(&root, "runtime_availability"),
+                        "methods") == NULL);
+        ASSERT(json_get(json_get(&root, "background_quality_status"),
+                        "lanes") == NULL);
+        ASSERT(json_get(json_get(&root, "supervisor_state"),
+                        "domains") == NULL);
         ASSERT(json_get(&root, "liveness_summary") != NULL);
         ASSERT(json_get(&root, "recommended_drilldowns") != NULL);
+        json_free(&root);
+        free(body);
+
+        json_free(&args);
+        const char *liveness_full_args = "{\"mode\":\"full\"}";
+        ASSERT(json_read(&args, liveness_full_args,
+                         strlen(liveness_full_args)));
+        g_agent_liveness_full_params_seen = false;
+        body = mcp_router_dispatch("zcl_agent_liveness", &args);
+        ASSERT(body != NULL);
+        ASSERT(g_agent_liveness_full_params_seen);
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.agent_liveness.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "detail_mode")),
+                      "full");
+        ASSERT(json_get_bool(json_get(&root, "embedded_drilldowns")));
+        ASSERT(json_get(json_get(&root, "runtime_availability"),
+                        "methods") != NULL);
+        ASSERT(json_get(json_get(&root, "background_quality_status"),
+                        "lanes") != NULL);
+        ASSERT(json_get(json_get(&root, "supervisor_state"),
+                        "domains") != NULL);
         json_free(&root);
         free(body);
 

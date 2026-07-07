@@ -193,8 +193,11 @@ controller `k_routes[]` arrays.
   `zcl.operator_lane_recovery.v1` boot-recovery sentinel state. Use this before
   deciding where a fresh binary may be deployed or restarted.
 - `zclassic23 agentliveness` / `zcl_agent_liveness` — unified current-lane
-  liveness rollup: lane identity, observed listeners, supervisor children,
-  background quality verdicts, direct `overall_liveness`, and next drilldowns.
+  liveness rollup: compact lane identity, observed listeners, supervisor
+  counts, background quality counts, direct `overall_liveness`, and next
+  drilldowns. Use `agentliveness full` /
+  `zcl_agent_liveness(mode="full")` only when embedded runtime-availability
+  methods, supervisor domains, and quality lane arrays are needed.
   Top-level schema/method/native/MCP identity fields are registry-owned by
   `agent_contracts.def`.
 - `zclassic23 agentdiagnose` / `zcl_agent_diagnose` — bounded no-jq

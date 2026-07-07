@@ -4897,6 +4897,8 @@ int test_syncdiag_rpc(void)
             json_get(&liveness, "recommended_drilldowns");
         const struct json_value *live_first_call =
             json_get(&liveness, "first_call");
+        const struct json_value *live_omitted =
+            json_get(&liveness, "omitted_sections");
         ok = ok && liveness.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&liveness, "schema")),
                           "zcl.agent_liveness.v1") == 0;
@@ -4910,6 +4912,13 @@ int test_syncdiag_rpc(void)
         ok = ok && strcmp(json_get_str(json_get(&liveness,
                                                 "contract_source")),
                           "agent_contracts.def") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&liveness, "detail_mode")),
+                          "brief") == 0;
+        ok = ok && !json_get_bool(json_get(&liveness,
+                                           "embedded_drilldowns"));
+        ok = ok && strcmp(json_get_str(json_get(&liveness,
+                                                "full_mode_command")),
+                          "zclassic23 agentliveness full") == 0;
         ok = ok && live_first_call && live_first_call->type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(live_first_call, "schema")),
                           "zcl.first_call_contract.v1") == 0;
@@ -4919,11 +4928,25 @@ int test_syncdiag_rpc(void)
                                                 "result_completeness")),
                           "bounded") == 0;
         ok = ok && strcmp(json_get_str(json_get(live_first_call, "source")),
-                          "runtime_supervisor_quality_status") == 0;
+                          "runtime_supervisor_quality_status_brief") == 0;
+        ok = ok && json_get_bool(json_get(live_first_call,
+                                          "partial_result"));
+        ok = ok && strcmp(json_get_str(json_get(live_first_call,
+                                                "partial_reason")),
+                          "brief_mode_omits_embedded_drilldowns") == 0;
+        ok = ok && strcmp(json_get_str(json_get(live_first_call,
+                                                "full_mode_command")),
+                          "zclassic23 agentliveness full") == 0;
         ok = ok && json_get_int(json_get(live_first_call,
                                          "budget_ms")) == 750;
         ok = ok && json_get(live_first_call, "elapsed_ms") != NULL;
         ok = ok && json_get(live_first_call, "budget_exceeded") != NULL;
+        ok = ok && live_omitted &&
+            json_array_has_str(live_omitted, "runtime_availability.methods");
+        ok = ok && live_omitted &&
+            json_array_has_str(live_omitted, "background_quality_status.lanes");
+        ok = ok && live_omitted &&
+            json_array_has_str(live_omitted, "supervisor_state.domains");
         ok = ok && strcmp(json_get_str(json_get(&liveness,
                                                 "overall_liveness")),
                           "static_or_offline_context") == 0;
@@ -4940,6 +4963,12 @@ int test_syncdiag_rpc(void)
         ok = ok && live_availability &&
             strcmp(json_get_str(json_get(live_availability, "schema")),
                    "zcl.agent_runtime_availability.v1") == 0;
+        ok = ok && live_availability &&
+            strcmp(json_get_str(json_get(live_availability,
+                                         "object_completeness")),
+                   "compact") == 0;
+        ok = ok && live_availability &&
+            json_get(live_availability, "methods") == NULL;
         ok = ok && live_availability &&
             !json_get_bool(json_get(live_availability,
                                     "target_rpc_attempted"));
@@ -4968,10 +4997,57 @@ int test_syncdiag_rpc(void)
         ok = ok && live_quality &&
             strcmp(json_get_str(json_get(live_quality, "schema")),
                    "zcl.background_quality_runtime.v1") == 0;
+        ok = ok && live_quality &&
+            strcmp(json_get_str(json_get(live_quality,
+                                         "object_completeness")),
+                   "compact") == 0;
+        ok = ok && live_quality &&
+            json_get(live_quality, "lanes") == NULL;
         ok = ok && live_supervisor &&
             json_get(live_supervisor, "running") != NULL;
+        ok = ok && live_supervisor &&
+            strcmp(json_get_str(json_get(live_supervisor,
+                                         "object_completeness")),
+                   "compact") == 0;
+        ok = ok && live_supervisor &&
+            json_get(live_supervisor, "domains") == NULL;
         ok = ok && live_drilldowns &&
             json_array_has_substr(live_drilldowns, "zcl_state");
+
+        struct json_value liveness_full_params, full_mode, liveness_full;
+        json_init(&liveness_full_params);
+        json_set_array(&liveness_full_params);
+        json_init(&full_mode);
+        json_set_str(&full_mode, "full");
+        json_push_back(&liveness_full_params, &full_mode);
+        json_free(&full_mode);
+        json_init(&liveness_full);
+        ok = ok && rpc_table_execute(&tbl, "agentliveness",
+                                     &liveness_full_params, &liveness_full);
+        const struct json_value *full_availability =
+            json_get(&liveness_full, "runtime_availability");
+        const struct json_value *full_quality =
+            json_get(&liveness_full, "background_quality_status");
+        const struct json_value *full_supervisor =
+            json_get(&liveness_full, "supervisor_state");
+        const struct json_value *full_first_call =
+            json_get(&liveness_full, "first_call");
+        ok = ok && strcmp(json_get_str(json_get(&liveness_full,
+                                                "detail_mode")),
+                          "full") == 0;
+        ok = ok && json_get_bool(json_get(&liveness_full,
+                                          "embedded_drilldowns"));
+        ok = ok && json_get(&liveness_full, "omitted_sections") == NULL;
+        ok = ok && full_availability &&
+            json_get(full_availability, "methods") != NULL;
+        ok = ok && full_quality && json_get(full_quality, "lanes") != NULL;
+        ok = ok && full_supervisor &&
+            json_get(full_supervisor, "domains") != NULL;
+        ok = ok && full_first_call &&
+            strcmp(json_get_str(json_get(full_first_call, "source")),
+                   "runtime_supervisor_quality_status_full") == 0;
+        json_free(&liveness_full);
+        json_free(&liveness_full_params);
 
         agent_runtime_availability_begin_probe("test_target_rpc",
                                                "/tmp/zcl-canonical",
