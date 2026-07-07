@@ -244,7 +244,7 @@ void push_version(struct msg_processor *mp, struct p2p_node *node)
      * reorg. Lock-free cached atomic — see reducer_frontier_provable_tip_cached.
      * (void) the window arg's owner intentionally: internal window readers stay
      * on active_chain_height; only this OUTWARD claim switches to H*.) */
-    int start_height = reducer_frontier_provable_tip_cached();
+    int start_height = reducer_frontier_external_tip_height();
     msg_version_build(&ver, mp, node, start_height);
 
     struct byte_stream s;

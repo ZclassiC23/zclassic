@@ -81,6 +81,14 @@ int32_t reducer_frontier_floor(void);
  * getter is a plain lock-free atomic load; never takes progress_store_tx_lock(). */
 int32_t reducer_frontier_provable_tip_cached(void);
 
+/* Height safe to advertise to EXTERNAL consumers during boot. Once H* has
+ * been published, this is exactly reducer_frontier_provable_tip_cached().
+ * During the short pre-publish boot window, fall back to the durable
+ * tip_finalize witness instead of advertising height 0 to peers and public
+ * bootstrap clients. Returns 0 only when no published or durable served tip is
+ * available. */
+int32_t reducer_frontier_external_tip_height(void);
+
 /* True once the provable-tip cache has been published a real H* (not the -1
  * "unpublished" sentinel). The tip_finalize step uses this to warm the cache
  * exactly once at boot when the node comes up already at tip — there is no

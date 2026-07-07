@@ -17,11 +17,9 @@
 #include "event_agent_readiness.h"
 #include "json/json.h"
 #include "jobs/reducer_frontier.h"
-#include "jobs/tip_finalize_stage.h"
 #include "net/download.h"
 #include "services/anchor_selfmint.h"
 #include "services/node_health_service.h"
-#include "storage/progress_store.h"
 #include "sync/sync_state.h"
 #include "util/clientversion.h"
 
@@ -172,20 +170,7 @@ static const char *api_json_str_field(const struct json_value *obj,
 
 int64_t api_served_tip_height(void)
 {
-    if (reducer_frontier_provable_tip_is_published()) {
-        int served = reducer_frontier_provable_tip_cached();
-        if (served >= 0)
-            return served;
-    }
-
-    sqlite3 *db = progress_store_db();
-    int durable_height = 0;
-    uint8_t durable_hash[32];
-    if (db && tip_finalize_stage_resolve_durable_tip(
-            db, &durable_height, durable_hash) && durable_height >= 0)
-        return durable_height;
-
-    return 0;
+    return reducer_frontier_external_tip_height();
 }
 
 void api_milestone_status_json(struct json_value *result)

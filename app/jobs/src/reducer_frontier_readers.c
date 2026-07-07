@@ -20,6 +20,21 @@
 #include <stdio.h>
 #include <string.h>
 
+int32_t reducer_frontier_external_tip_height(void)
+{
+    if (reducer_frontier_provable_tip_is_published())
+        return reducer_frontier_provable_tip_cached();
+
+    sqlite3 *pdb = progress_store_db();
+    int durable_height = -1;
+    uint8_t durable_hash[32];
+    if (pdb && tip_finalize_stage_resolve_durable_tip(
+            pdb, &durable_height, durable_hash) && durable_height >= 0)
+        return durable_height;
+
+    return reducer_frontier_provable_tip_cached();
+}
+
 bool reducer_frontier_derive_coins_best(sqlite3 *progress_db,
                                         int32_t *out_height,
                                         uint8_t out_hash[32],

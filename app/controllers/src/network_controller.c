@@ -324,7 +324,7 @@ static bool rpc_bootstrapstatus(const struct json_value *params, bool help,
     uint16_t ext_port = 0;
     bool has_external_ip =
         msg_version_get_external_ip(ext_ip, sizeof(ext_ip), &ext_port);
-    int32_t advertised_height = reducer_frontier_provable_tip_cached();
+    int32_t advertised_height = reducer_frontier_external_tip_height();
     bool has_connman = ctx->connman != NULL;
     bool node_network = (counts.local_services & NODE_NETWORK) != 0;
     bool node_zcl23 = (counts.local_services & NODE_ZCL23) != 0;

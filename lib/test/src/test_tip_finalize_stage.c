@@ -898,6 +898,8 @@ int test_tip_finalize_stage(void)
         TF_CHECK("provable_tip_init: setup", ok_setup);
         TF_CHECK("provable_tip_init: cache starts unpublished",
                  reducer_frontier_provable_tip_cached() == 0);
+        TF_CHECK("provable_tip_init: external height uses durable witness",
+                 reducer_frontier_external_tip_height() == 2);
         TF_CHECK("provable_tip_init: init warms from durable frontier",
                  ok_setup && tip_finalize_stage_init(&ms));
         TF_CHECK("provable_tip_init: durable H* published without step",
