@@ -154,6 +154,9 @@ emit_json_summary() {
     json="${json},\"unit\":\"$(json_escape "${unit:-}")\""
     json="${json},\"unit_active\":\"$(json_escape "${active:-}")\""
     json="${json},\"plan\":\"$(json_escape "$plan")\""
+    if [ -n "${ZCL_REMOTE_ERROR:-}" ]; then
+        json="${json},\"error\":\"$(json_escape "$ZCL_REMOTE_ERROR")\""
+    fi
     json="${json},\"updated\":$(json_bool "$updated")"
     json="${json},\"build_ran\":$(json_bool "$build_ran")"
     json="${json},\"install_ran\":$(json_bool "$install_ran")"
@@ -177,6 +180,65 @@ service_execstart() {
         sed -n '1p' || true
 }
 
+missing_vendor_archives() {
+    local missing="" archive
+    for archive in libcrypto.a libssl.a libevent.a libevent_openssl.a \
+        libevent_pthreads.a libleveldb.a libsqlite3.a libz.a \
+        libtor_stub.a; do
+        if [ ! -f "vendor/lib/$archive" ]; then
+            missing="${missing}${missing:+ }$archive"
+        fi
+    done
+    printf '%s' "$missing"
+}
+
+require_tool_for_preflight() {
+    local tool="$1" detail="$2"
+    if ! command -v "$tool" >/dev/null 2>&1; then
+        preflight_error="missing_build_tool:$tool ($detail)"
+        return 1
+    fi
+    return 0
+}
+
+preflight_build() {
+    local mode="$1" missing
+    preflight_error=""
+    case "$mode" in
+        none|status) return 0 ;;
+    esac
+
+    require_tool_for_preflight make "required by build target" || return 1
+    require_tool_for_preflight cc "required by C build" || return 1
+    require_tool_for_preflight ar "required by vendor archives" || return 1
+    require_tool_for_preflight sha256sum "required by vendor verification" ||
+        return 1
+    require_tool_for_preflight tar "required by vendor extraction" || return 1
+
+    missing="$(missing_vendor_archives)"
+    [ -z "$missing" ] && return 0
+
+    if ! command -v curl >/dev/null 2>&1 && ! command -v wget >/dev/null 2>&1; then
+        preflight_error="missing_build_tool:curl_or_wget (required for missing vendor archives: $missing)"
+        return 1
+    fi
+
+    case " $missing " in
+        *" libsqlite3.a "*)
+            require_tool_for_preflight unzip "required for libsqlite3.a" ||
+                return 1
+            ;;
+    esac
+    case " $missing " in
+        *" libleveldb.a "*)
+            require_tool_for_preflight cmake "required for libleveldb.a" ||
+                return 1
+            ;;
+    esac
+
+    return 0
+}
+
 run_build() {
     local build="$1"
     ZCL_REMOTE_ARTIFACT=""
@@ -186,24 +248,26 @@ run_build() {
             ;;
         fast-rebuild|dev)
             log "build_command=make fast-rebuild"
-            run_cmd make fast-rebuild
+            run_cmd make fast-rebuild || return $?
             ZCL_REMOTE_ARTIFACT="build/bin/zclassic23-dev"
             ;;
         build-only|strict)
             log "build_command=make build-only"
-            run_cmd make build-only
+            run_cmd make build-only || return $?
             ;;
         fast-ci)
             log "build_command=ZCL_FAST_LIVE=0 make fast-ci"
             if is_true "${ZCL_REMOTE_JSON:-0}"; then
-                ZCL_FAST_LIVE="${ZCL_FAST_LIVE:-0}" make fast-ci >&2
+                ZCL_FAST_LIVE="${ZCL_FAST_LIVE:-0}" make fast-ci >&2 ||
+                    return $?
             else
-                ZCL_FAST_LIVE="${ZCL_FAST_LIVE:-0}" make fast-ci
+                ZCL_FAST_LIVE="${ZCL_FAST_LIVE:-0}" make fast-ci ||
+                    return $?
             fi
             ;;
         release|zclassic23)
             log "build_command=make zclassic23"
-            run_cmd make zclassic23
+            run_cmd make zclassic23 || return $?
             ZCL_REMOTE_ARTIFACT="build/bin/zclassic23"
             ;;
         *)
@@ -220,10 +284,10 @@ install_artifact() {
         fail "ZCL_REMOTE_INSTALL_BIN requires release/dev build or ZCL_REMOTE_INSTALL_ARTIFACT"
     [ -x "$artifact" ] || fail "install artifact is not executable: $artifact"
     parent="$(dirname "$target")"
-    install -d "$parent"
+    install -d "$parent" || return $?
     tmp="${target}.tmp.$$"
-    install -m 755 "$artifact" "$tmp"
-    mv -f "$tmp" "$target"
+    install -m 755 "$artifact" "$tmp" || return $?
+    mv -f "$tmp" "$target" || return $?
     log "installed_artifact=$artifact target=$target"
 }
 
@@ -242,8 +306,9 @@ guarded_restart() {
         esac
     fi
 
-    ZCL_DEPLOY_GUARD_UNIT="$unit" ./tools/deploy_guard.sh "$action"
-    run_cmd systemctl --user restart "$unit"
+    ZCL_DEPLOY_GUARD_UNIT="$unit" ./tools/deploy_guard.sh "$action" ||
+        return $?
+    run_cmd systemctl --user restart "$unit" || return $?
     log "restarted_unit=$unit guard_action=$action"
 }
 
@@ -251,6 +316,7 @@ main() {
     local repo branch expect_branch main_ref build dry_run allow_dirty
     local install_bin unit dirty head origin_head active execstart
     local plan updated build_ran install_ran restart_ran final_head
+    local preflight_error
 
     log "schema=zcl.remote_node_update.v1"
     repo="${ZCL_REMOTE_REPO:-$HOME/github/zclassic23}"
@@ -282,7 +348,16 @@ main() {
         fail "remote checkout has tracked local changes; set ZCL_REMOTE_ALLOW_DIRTY=1 only after review"
     fi
 
-    run_cmd git fetch --prune origin main
+    if ! run_cmd git fetch --prune origin main; then
+        head="$(git rev-parse HEAD 2>/dev/null || true)"
+        origin_head=""
+        active="$(service_active "$unit")"
+        ZCL_REMOTE_ERROR="git_fetch_failed"
+        log "fetch_failed=1"
+        emit_json_summary "error" "fetch_failed" 0 0 0 0 "$head" \
+            "check_network_or_remote_origin"
+        exit 2
+    fi
     head="$(git rev-parse HEAD)"
     origin_head="$(git rev-parse origin/main)"
     git merge-base --is-ancestor HEAD origin/main ||
@@ -314,15 +389,59 @@ main() {
     restart_ran=0
     [ "$head" = "$origin_head" ] || updated=1
 
-    run_cmd git merge --ff-only origin/main
-    run_build "$build"
+    if ! preflight_build "$build"; then
+        final_head="$head"
+        active="$(service_active "$unit")"
+        plan="preflight_failed"
+        ZCL_REMOTE_ERROR="$preflight_error"
+        log "preflight_failed=$preflight_error"
+        emit_json_summary "error" "$plan" "$updated" 0 0 0 "$final_head" \
+            "install_missing_build_prerequisites_before_update"
+        exit 2
+    fi
+
+    if ! run_cmd git merge --ff-only origin/main; then
+        final_head="$(git rev-parse HEAD 2>/dev/null || printf '%s' "$head")"
+        active="$(service_active "$unit")"
+        ZCL_REMOTE_ERROR="git_merge_ff_only_failed"
+        log "merge_failed=1"
+        emit_json_summary "error" "merge_failed" "$updated" 0 0 0 \
+            "$final_head" "inspect_remote_repo_before_retry"
+        exit 2
+    fi
+    if ! run_build "$build"; then
+        final_head="$(git rev-parse HEAD 2>/dev/null || printf '%s' "$head")"
+        active="$(service_active "$unit")"
+        ZCL_REMOTE_ERROR="build_failed:$build"
+        log "build_failed=$build"
+        emit_json_summary "error" "build_failed" "$updated" 0 0 0 \
+            "$final_head" "inspect_remote_build_prerequisites_and_logs"
+        exit 2
+    fi
     case "$build" in
         none|status) ;;
         *) build_ran=1 ;;
     esac
-    install_artifact "$install_bin"
+    if ! install_artifact "$install_bin"; then
+        final_head="$(git rev-parse HEAD 2>/dev/null || printf '%s' "$head")"
+        active="$(service_active "$unit")"
+        ZCL_REMOTE_ERROR="install_failed:$install_bin"
+        log "install_failed=$install_bin"
+        emit_json_summary "error" "install_failed" "$updated" "$build_ran" \
+            0 0 "$final_head" "inspect_install_path_permissions"
+        exit 2
+    fi
     [ -z "$install_bin" ] || install_ran=1
-    guarded_restart "$unit"
+    if ! guarded_restart "$unit"; then
+        final_head="$(git rev-parse HEAD 2>/dev/null || printf '%s' "$head")"
+        active="$(service_active "$unit")"
+        ZCL_REMOTE_ERROR="restart_failed:$unit"
+        log "restart_failed=$unit"
+        emit_json_summary "error" "restart_failed" "$updated" "$build_ran" \
+            "$install_ran" 0 "$final_head" \
+            "inspect_deploy_guard_and_unit_logs"
+        exit 2
+    fi
     if is_true "${ZCL_REMOTE_RESTART:-0}"; then
         restart_ran=1
     fi

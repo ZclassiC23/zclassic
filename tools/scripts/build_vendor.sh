@@ -39,6 +39,8 @@ WORK="$VENDOR/.build"
 
 JOBS="$(nproc 2>/dev/null || echo 4)"
 FORCE="${VENDOR_FORCE:-0}"
+VENDOR_LOCK_DIR="${VENDOR_LOCK_DIR:-$VENDOR/.build.lock}"
+VENDOR_LOCK_TIMEOUT_SEC="${VENDOR_LOCK_TIMEOUT_SEC:-600}"
 
 # --- pinned versions + SHA256 (verified upstream-published hashes) ----------
 SQLITE_YEAR="2025"
@@ -73,6 +75,26 @@ ok()   { printf '\033[32m[vendor]\033[0m %s\n' "$*" >&2; }
 die()  { printf '\033[31m[vendor] ERROR:\033[0m %s\n' "$*" >&2; exit 1; }
 
 need() { command -v "$1" >/dev/null 2>&1 || die "required tool not found: $1"; }
+
+release_vendor_lock() {
+    if [[ "${VENDOR_LOCK_HELD:-0}" == "1" ]]; then
+        rmdir "$VENDOR_LOCK_DIR" 2>/dev/null || true
+        VENDOR_LOCK_HELD=0
+    fi
+}
+
+acquire_vendor_lock() {
+    local waited=0
+    while ! mkdir "$VENDOR_LOCK_DIR" 2>/dev/null; do
+        if (( waited >= VENDOR_LOCK_TIMEOUT_SEC )); then
+            die "timed out waiting for vendor build lock: $VENDOR_LOCK_DIR"
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    VENDOR_LOCK_HELD=1
+    trap release_vendor_lock EXIT INT TERM
+}
 
 # --- download + verify ------------------------------------------------------
 fetch() {
@@ -223,6 +245,7 @@ build_leveldb() {      # FETCHED: LevelDB -> libleveldb.a
 # --- orchestration ----------------------------------------------------------
 need cc; need ar; need sha256sum; need tar; need make
 mkdir -p "$LIB" "$INC" "$WORK"
+acquire_vendor_lock
 
 # Build order: openssl before libevent (libevent_openssl needs its headers).
 ALL=(build_tor_stub build_zlib build_sqlite build_openssl build_libevent build_leveldb)

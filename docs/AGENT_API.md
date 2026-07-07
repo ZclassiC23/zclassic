@@ -913,6 +913,9 @@ The default is intentionally observe-only:
 - No Python or `jq` is required. Pass `--json`, set `ZCL_REMOTE_JSON=1`, or
   run `make remote-node-update-json` for one JSON object per host; operational
   logs move to stderr.
+- Non-dry-run builds preflight cold-build prerequisites before fast-forwarding.
+  Failures return the same `zcl.remote_node_update.v1` JSON shape with
+  `status:"error"` and an `error` field.
 
 Common commands:
 

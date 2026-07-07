@@ -2969,6 +2969,14 @@ static int t_remote_node_update_contract(void)
         ASSERT(strstr(script, "--json") != NULL);
         ASSERT(strstr(script, "json_escape") != NULL);
         ASSERT(strstr(script, "emit_json_summary") != NULL);
+        ASSERT(strstr(script, "missing_vendor_archives") != NULL);
+        ASSERT(strstr(script, "preflight_build") != NULL);
+        ASSERT(strstr(script, "preflight_failed") != NULL);
+        ASSERT(strstr(script, "\\\"error\\\"") != NULL);
+        ASSERT(strstr(script, "git_fetch_failed") != NULL);
+        ASSERT(strstr(script, "build_failed:$build") != NULL);
+        ASSERT(strstr(script, "install_failed:$install_bin") != NULL);
+        ASSERT(strstr(script, "restart_failed:$unit") != NULL);
         ASSERT(strstr(script, "\\\"plan\\\"") != NULL);
         ASSERT(strstr(script, "\\\"safe_next_action\\\"") != NULL);
         ASSERT(strstr(script, "printf '%s\\n' \"$json\"") != NULL);
@@ -3005,6 +3013,17 @@ static int t_remote_node_update_contract(void)
         free(makefile);
         makefile = NULL;
 
+        ASSERT(repo_path(path, sizeof(path), "tools/scripts/build_vendor.sh")
+               == 0);
+        ASSERT(read_entire_file(path, &script) == 0);
+        ASSERT(strstr(script, "VENDOR_LOCK_DIR") != NULL);
+        ASSERT(strstr(script, "acquire_vendor_lock") != NULL);
+        ASSERT(strstr(script, "release_vendor_lock") != NULL);
+        ASSERT(strstr(script, "timed out waiting for vendor build lock")
+               != NULL);
+        free(script);
+        script = NULL;
+
         ASSERT(repo_path(path, sizeof(path), "tools/agent_fast_ci.sh") == 0);
         ASSERT(read_entire_file(path, &fast_ci) == 0);
         ASSERT(strstr(fast_ci, "tools/scripts/remote_node_update.sh")
@@ -3038,6 +3057,7 @@ static int t_remote_node_update_contract(void)
         ASSERT(strstr(doc, "make remote-node-update") != NULL);
         ASSERT(strstr(doc, "make remote-node-update-json") != NULL);
         ASSERT(strstr(doc, "ZCL_REMOTE_JSON=1") != NULL);
+        ASSERT(strstr(doc, "status:\"error\"") != NULL);
         ASSERT(strstr(doc, "git merge --ff-only origin/main") != NULL);
         ASSERT(strstr(doc, "ZCL_REMOTE_RESTART=0") != NULL);
         ASSERT(strstr(doc,
