@@ -659,6 +659,8 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_push_kv_str(&remote, "make_target", "make remote-node-update");
     json_push_kv_str(&remote, "dry_run_command",
                      "tools/scripts/remote_node_update.sh rhett@host");
+    json_push_kv_str(&remote, "json_dry_run_command",
+                     "tools/scripts/remote_node_update.sh --json rhett@host");
     json_push_kv_str(&remote, "self_update_example",
                      "deploy/examples/zclassic23-self-update.timer");
     json_push_kv_str(&remote, "default_behavior",
@@ -669,6 +671,7 @@ bool rpc_agent_build(const struct json_value *params, bool help,
                      "ZCL_REMOTE_DRY_RUN=0 ZCL_REMOTE_BUILD=release ZCL_REMOTE_INSTALL_BIN=/home/rhett/bin/zclassic23 tools/scripts/remote_node_update.sh host");
     json_push_kv_bool(&remote, "main_only", true);
     json_push_kv_bool(&remote, "fast_forward_only", true);
+    json_push_kv_bool(&remote, "json_summary", true);
     json_push_kv_bool(&remote, "restart_default", false);
     json_push_kv_str(&remote, "restart_guard",
                      "ZCL_REMOTE_RESTART=1 routes through tools/deploy_guard.sh / zcl.agent_deploy_guard.v1");

@@ -201,7 +201,7 @@ vendor-force:
 $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
 	tools/scripts/build_vendor.sh $(notdir $@)
 
-.PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy deploy-dev remote-node-update lane-health lane-recover check-agent-cli check-restart-follow \
+.PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy deploy-dev remote-node-update remote-node-update-json lane-health lane-recover check-agent-cli check-restart-follow \
         background-fuzz background-coverage background-tests install-quality-linger quality-linger-status pre-push-ci \
         coverage coverage-clean docs-mcp docs-mcp-check ci audit release \
         bench bench-regress \
@@ -395,6 +395,9 @@ remote-node-update:
 	else \
 	    tools/scripts/remote_node_update.sh $${ZCL_REMOTE_HOSTS:-}; \
 	fi
+
+remote-node-update-json:
+	@ZCL_REMOTE_JSON=1 $(MAKE) --no-print-directory remote-node-update
 
 # ── Live-truth diagnosis + safe reproduction ─────────────────────────────
 # diagnose-gap: one-shot three-orthogonal-views dump + root-cause verdict over

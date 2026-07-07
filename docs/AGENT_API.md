@@ -910,12 +910,16 @@ The default is intentionally observe-only:
   `ZCL_REMOTE_ALLOW_DIRTY=1` is set after review.
 - `ZCL_REMOTE_RESTART=0` by default; restarts require explicit opt-in and run
   through `tools/deploy_guard.sh` / `zcl.agent_deploy_guard.v1`.
-- No Python or `jq` is required.
+- No Python or `jq` is required. Pass `--json`, set `ZCL_REMOTE_JSON=1`, or
+  run `make remote-node-update-json` for one JSON object per host; operational
+  logs move to stderr.
 
 Common commands:
 
 ```bash
 tools/scripts/remote_node_update.sh rhett@205.209.104.118
+tools/scripts/remote_node_update.sh --json rhett@205.209.104.118
+make remote-node-update-json ZCL_REMOTE_HOST=rhett@205.209.104.118
 ZCL_REMOTE_DRY_RUN=0 ZCL_REMOTE_BUILD=fast-rebuild tools/scripts/remote_node_update.sh rhett@205.209.104.118
 ZCL_REMOTE_DRY_RUN=0 ZCL_REMOTE_BUILD=release ZCL_REMOTE_INSTALL_BIN=/home/rhett/bin/zclassic23 tools/scripts/remote_node_update.sh rhett@205.209.104.118
 ZCL_REMOTE_DRY_RUN=0 ZCL_REMOTE_BUILD=release ZCL_REMOTE_INSTALL_BIN=/home/rhett/bin/zclassic23 ZCL_REMOTE_RESTART=1 ZCL_REMOTE_UNIT=zclassic23-test.service tools/scripts/remote_node_update.sh rhett@205.209.104.118

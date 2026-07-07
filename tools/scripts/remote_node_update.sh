@@ -11,8 +11,19 @@ set -euo pipefail
 
 SCHEMA="zcl.remote_node_update.v1"
 
+is_true() {
+    case "${1:-}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 log() {
-    printf 'remote_node_update: %s\n' "$*"
+    if is_true "${ZCL_REMOTE_JSON:-0}"; then
+        printf 'remote_node_update: %s\n' "$*" >&2
+    else
+        printf 'remote_node_update: %s\n' "$*"
+    fi
 }
 
 fail() {
@@ -22,7 +33,7 @@ fail() {
 
 usage() {
     cat <<'USAGE'
-usage: tools/scripts/remote_node_update.sh HOST [HOST...]
+usage: tools/scripts/remote_node_update.sh [--json] HOST [HOST...]
        ZCL_REMOTE_HOSTS='host1 host2' tools/scripts/remote_node_update.sh
        tools/scripts/remote_node_update.sh self
 
@@ -34,16 +45,20 @@ Defaults:
   ZCL_REMOTE_MAIN_REF=origin/main refuse non-main remote refs
   ZCL_REMOTE_BUILD=fast-rebuild   cache-aware non-LTO dev binary when enabled
   ZCL_REMOTE_RESTART=0            never restart by default
+  ZCL_REMOTE_JSON=0               line logs; set 1 or pass --json for JSON
 
 Useful opt-ins:
+  --json
   ZCL_REMOTE_DRY_RUN=0
   ZCL_REMOTE_BUILD=release        build build/bin/zclassic23
   ZCL_REMOTE_INSTALL_BIN=/home/rhett/bin/zclassic23
   ZCL_REMOTE_RESTART=1
   ZCL_REMOTE_UNIT=zclassic23-test.service
 
-No Python is required. Canonical restarts remain guarded by
-tools/deploy_guard.sh / zcl.agent_deploy_guard.v1.
+No Python or jq is required. Canonical restarts remain guarded by
+tools/deploy_guard.sh / zcl.agent_deploy_guard.v1. With --json, operational
+logs go to stderr and each target emits one zcl.remote_node_update.v1 JSON
+object on stdout.
 USAGE
 }
 
@@ -71,8 +86,19 @@ remote_payload() {
     cat <<'REMOTE_PAYLOAD'
 set -euo pipefail
 
+is_true() {
+    case "${1:-}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
 log() {
-    printf 'remote_node_update: %s\n' "$*"
+    if is_true "${ZCL_REMOTE_JSON:-0}"; then
+        printf 'remote_node_update: %s\n' "$*" >&2
+    else
+        printf 'remote_node_update: %s\n' "$*"
+    fi
 }
 
 fail() {
@@ -80,11 +106,62 @@ fail() {
     exit 1
 }
 
-is_true() {
-    case "${1:-}" in
-        1|true|TRUE|yes|YES|on|ON) return 0 ;;
-        *) return 1 ;;
-    esac
+run_cmd() {
+    if is_true "${ZCL_REMOTE_JSON:-0}"; then
+        "$@" >&2
+    else
+        "$@"
+    fi
+}
+
+json_escape() {
+    local s="${1:-}"
+    s="${s//\\/\\\\}"
+    s="${s//\"/\\\"}"
+    s="${s//$'\n'/\\n}"
+    s="${s//$'\r'/\\r}"
+    s="${s//$'\t'/\\t}"
+    printf '%s' "$s"
+}
+
+json_bool() {
+    if is_true "${1:-0}"; then
+        printf 'true'
+    else
+        printf 'false'
+    fi
+}
+
+emit_json_summary() {
+    local status="$1" plan="$2" updated="$3" build_ran="$4"
+    local install_ran="$5" restart_ran="$6" final_head="$7"
+    local safe_next_action="$8" host_name json
+    is_true "${ZCL_REMOTE_JSON:-0}" || return 0
+    host_name="$(hostname -f 2>/dev/null || hostname)"
+    json="{\"schema\":\"zcl.remote_node_update.v1\""
+    json="${json},\"api_version\":\"v1\""
+    json="${json},\"status\":\"$(json_escape "$status")\""
+    json="${json},\"host\":\"$(json_escape "$host_name")\""
+    json="${json},\"repo\":\"$(json_escape "${repo:-}")\""
+    json="${json},\"branch\":\"$(json_escape "${branch:-}")\""
+    json="${json},\"head\":\"$(json_escape "${head:-}")\""
+    json="${json},\"origin_main\":\"$(json_escape "${origin_head:-}")\""
+    json="${json},\"final_head\":\"$(json_escape "$final_head")\""
+    json="${json},\"dry_run\":$(json_bool "${dry_run:-0}")"
+    json="${json},\"build\":\"$(json_escape "${build:-}")\""
+    json="${json},\"install_bin\":\"$(json_escape "${install_bin:-}")\""
+    json="${json},\"restart\":$(json_bool "${ZCL_REMOTE_RESTART:-0}")"
+    json="${json},\"unit\":\"$(json_escape "${unit:-}")\""
+    json="${json},\"unit_active\":\"$(json_escape "${active:-}")\""
+    json="${json},\"plan\":\"$(json_escape "$plan")\""
+    json="${json},\"updated\":$(json_bool "$updated")"
+    json="${json},\"build_ran\":$(json_bool "$build_ran")"
+    json="${json},\"install_ran\":$(json_bool "$install_ran")"
+    json="${json},\"restart_ran\":$(json_bool "$restart_ran")"
+    json="${json},\"main_only\":true"
+    json="${json},\"fast_forward_only\":true"
+    json="${json},\"safe_next_action\":\"$(json_escape "$safe_next_action")\"}"
+    printf '%s\n' "$json"
 }
 
 service_active() {
@@ -109,20 +186,24 @@ run_build() {
             ;;
         fast-rebuild|dev)
             log "build_command=make fast-rebuild"
-            make fast-rebuild
+            run_cmd make fast-rebuild
             ZCL_REMOTE_ARTIFACT="build/bin/zclassic23-dev"
             ;;
         build-only|strict)
             log "build_command=make build-only"
-            make build-only
+            run_cmd make build-only
             ;;
         fast-ci)
             log "build_command=ZCL_FAST_LIVE=0 make fast-ci"
-            ZCL_FAST_LIVE="${ZCL_FAST_LIVE:-0}" make fast-ci
+            if is_true "${ZCL_REMOTE_JSON:-0}"; then
+                ZCL_FAST_LIVE="${ZCL_FAST_LIVE:-0}" make fast-ci >&2
+            else
+                ZCL_FAST_LIVE="${ZCL_FAST_LIVE:-0}" make fast-ci
+            fi
             ;;
         release|zclassic23)
             log "build_command=make zclassic23"
-            make zclassic23
+            run_cmd make zclassic23
             ZCL_REMOTE_ARTIFACT="build/bin/zclassic23"
             ;;
         *)
@@ -162,13 +243,14 @@ guarded_restart() {
     fi
 
     ZCL_DEPLOY_GUARD_UNIT="$unit" ./tools/deploy_guard.sh "$action"
-    systemctl --user restart "$unit"
+    run_cmd systemctl --user restart "$unit"
     log "restarted_unit=$unit guard_action=$action"
 }
 
 main() {
     local repo branch expect_branch main_ref build dry_run allow_dirty
     local install_bin unit dirty head origin_head active execstart
+    local plan updated build_ran install_ran restart_ran final_head
 
     log "schema=zcl.remote_node_update.v1"
     repo="${ZCL_REMOTE_REPO:-$HOME/github/zclassic23}"
@@ -200,7 +282,7 @@ main() {
         fail "remote checkout has tracked local changes; set ZCL_REMOTE_ALLOW_DIRTY=1 only after review"
     fi
 
-    git fetch --prune origin main
+    run_cmd git fetch --prune origin main
     head="$(git rev-parse HEAD)"
     origin_head="$(git rev-parse origin/main)"
     git merge-base --is-ancestor HEAD origin/main ||
@@ -215,19 +297,46 @@ main() {
 
     if is_true "$dry_run"; then
         if [ "$head" = "$origin_head" ]; then
-            log "plan=already_current"
+            plan="already_current"
         else
-            log "plan=fast_forward_then_build"
+            plan="fast_forward_then_build"
         fi
+        log "plan=$plan"
         log "dry_run_complete=1"
+        emit_json_summary "ok" "$plan" 0 0 0 0 "$head" \
+            "dry_run_only_no_install_no_restart"
         exit 0
     fi
 
-    git merge --ff-only origin/main
+    updated=0
+    build_ran=0
+    install_ran=0
+    restart_ran=0
+    [ "$head" = "$origin_head" ] || updated=1
+
+    run_cmd git merge --ff-only origin/main
     run_build "$build"
+    case "$build" in
+        none|status) ;;
+        *) build_ran=1 ;;
+    esac
     install_artifact "$install_bin"
+    [ -z "$install_bin" ] || install_ran=1
     guarded_restart "$unit"
-    log "complete=1 final_head=$(git rev-parse HEAD) active=$(service_active "$unit")"
+    if is_true "${ZCL_REMOTE_RESTART:-0}"; then
+        restart_ran=1
+    fi
+    final_head="$(git rev-parse HEAD)"
+    active="$(service_active "$unit")"
+    if [ "$updated" = "1" ]; then
+        plan="fast_forward_applied"
+    else
+        plan="already_current"
+    fi
+    log "complete=1 final_head=$final_head active=$active"
+    emit_json_summary "ok" "$plan" "$updated" "$build_ran" \
+        "$install_ran" "$restart_ran" "$final_head" \
+        "inspect_unit_health_before_promoting_public_ports"
 }
 
 main "$@"
@@ -250,6 +359,7 @@ run_one_host() {
     env_prefix="$env_prefix ZCL_REMOTE_RESTART=$(shell_quote "${ZCL_REMOTE_RESTART:-0}")"
     env_prefix="$env_prefix ZCL_REMOTE_UNIT=$(shell_quote "${ZCL_REMOTE_UNIT:-zclassic23-test.service}")"
     env_prefix="$env_prefix ZCL_REMOTE_GUARD_ACTION=$(shell_quote "${ZCL_REMOTE_GUARD_ACTION:-}")"
+    env_prefix="$env_prefix ZCL_REMOTE_JSON=$(shell_quote "${ZCL_REMOTE_JSON:-0}")"
 
     if is_self_host "$host"; then
         remote_payload | env \
@@ -264,6 +374,7 @@ run_one_host() {
             ZCL_REMOTE_RESTART="${ZCL_REMOTE_RESTART:-0}" \
             ZCL_REMOTE_UNIT="${ZCL_REMOTE_UNIT:-zclassic23-test.service}" \
             ZCL_REMOTE_GUARD_ACTION="${ZCL_REMOTE_GUARD_ACTION:-}" \
+            ZCL_REMOTE_JSON="${ZCL_REMOTE_JSON:-0}" \
             bash -s
         return
     fi
@@ -273,6 +384,21 @@ run_one_host() {
 }
 
 main() {
+    while [ "$#" -gt 0 ]; do
+        case "${1:-}" in
+            --json)
+                ZCL_REMOTE_JSON=1
+                export ZCL_REMOTE_JSON
+                shift
+                ;;
+            --)
+                shift
+                break
+                ;;
+            *) break ;;
+        esac
+    done
+
     if [ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ]; then
         usage
         exit 0

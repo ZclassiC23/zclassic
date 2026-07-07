@@ -2965,9 +2965,32 @@ static int t_remote_node_update_contract(void)
         ASSERT(strstr(script, "make zclassic23") != NULL);
         ASSERT(strstr(script, "ZCL_REMOTE_INSTALL_BIN") != NULL);
         ASSERT(strstr(script, "ZCL_REMOTE_RESTART") != NULL);
+        ASSERT(strstr(script, "ZCL_REMOTE_JSON") != NULL);
+        ASSERT(strstr(script, "--json") != NULL);
+        ASSERT(strstr(script, "json_escape") != NULL);
+        ASSERT(strstr(script, "emit_json_summary") != NULL);
+        ASSERT(strstr(script, "\\\"plan\\\"") != NULL);
+        ASSERT(strstr(script, "\\\"safe_next_action\\\"") != NULL);
+        ASSERT(strstr(script, "printf '%s\\n' \"$json\"") != NULL);
+        const char *dry_done = strstr(script, "log \"dry_run_complete=1\"");
+        const char *dry_summary =
+            strstr(script,
+                   "emit_json_summary \"ok\" \"$plan\" 0 0 0 0 \"$head\"");
+        ASSERT(dry_done != NULL);
+        ASSERT(dry_summary != NULL);
+        ASSERT(dry_done < dry_summary);
+        const char *complete_done =
+            strstr(script,
+                   "log \"complete=1 final_head=$final_head active=$active\"");
+        const char *complete_summary =
+            strstr(script,
+                   "emit_json_summary \"ok\" \"$plan\" \"$updated\"");
+        ASSERT(complete_done != NULL);
+        ASSERT(complete_summary != NULL);
+        ASSERT(complete_done < complete_summary);
         ASSERT(strstr(script, "tools/deploy_guard.sh") != NULL);
         ASSERT(strstr(script, "zcl.agent_deploy_guard.v1") != NULL);
-        ASSERT(strstr(script, "No Python is required") != NULL);
+        ASSERT(strstr(script, "No Python or jq is required") != NULL);
         ASSERT(strstr(script, "python") == NULL);
         free(script);
         script = NULL;
@@ -2975,6 +2998,8 @@ static int t_remote_node_update_contract(void)
         ASSERT(repo_path(path, sizeof(path), "Makefile") == 0);
         ASSERT(read_entire_file(path, &makefile) == 0);
         ASSERT(strstr(makefile, "remote-node-update:") != NULL);
+        ASSERT(strstr(makefile, "remote-node-update-json:") != NULL);
+        ASSERT(strstr(makefile, "ZCL_REMOTE_JSON=1") != NULL);
         ASSERT(strstr(makefile, "tools/scripts/remote_node_update.sh")
                != NULL);
         free(makefile);
@@ -2999,6 +3024,8 @@ static int t_remote_node_update_contract(void)
         ASSERT(strstr(agent, "remote_node_update") != NULL);
         ASSERT(strstr(agent, "zcl.remote_node_update.v1") != NULL);
         ASSERT(strstr(agent, "make remote-node-update") != NULL);
+        ASSERT(strstr(agent, "json_dry_run_command") != NULL);
+        ASSERT(strstr(agent, "json_summary") != NULL);
         ASSERT(strstr(agent, "fast_forward_only") != NULL);
         ASSERT(strstr(agent, "restart_default") != NULL);
         free(agent);
@@ -3009,6 +3036,8 @@ static int t_remote_node_update_contract(void)
         ASSERT(strstr(doc, "## Remote Node Updates") != NULL);
         ASSERT(strstr(doc, "zcl.remote_node_update.v1") != NULL);
         ASSERT(strstr(doc, "make remote-node-update") != NULL);
+        ASSERT(strstr(doc, "make remote-node-update-json") != NULL);
+        ASSERT(strstr(doc, "ZCL_REMOTE_JSON=1") != NULL);
         ASSERT(strstr(doc, "git merge --ff-only origin/main") != NULL);
         ASSERT(strstr(doc, "ZCL_REMOTE_RESTART=0") != NULL);
         ASSERT(strstr(doc,
