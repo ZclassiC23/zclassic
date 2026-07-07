@@ -131,6 +131,9 @@ a machine-readable flow from agent status → service catalog → ZNAM resolutio
 → endpoint verification → direct P2P/onion routing → versioned CRUD operation.
 Each member contract carries `depends_on_services`, `read_model`, and
 `write_model`; use those fields instead of hand-inferring service dependencies.
+Each member also carries `operation_summary`, a compact count of public reads,
+operator-private calls, destructive calls, callable surfaces, status buckets,
+and preferred interfaces for that service's `operations[]`.
 
 ZNAM resolution responses (`zcl.names.show.v1`) normalize service text records
 for agents. In addition to raw `text_records`, read `service_records[]` and

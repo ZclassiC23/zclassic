@@ -1859,6 +1859,25 @@ int test_api(void)
         ok = ok && bootstrap &&
              strcmp(json_get_str(json_get(bootstrap, "read_model")),
                     "network_bootstrap_status_and_peer_projection") == 0;
+        const struct json_value *bootstrap_summary =
+            json_get(bootstrap, "operation_summary");
+        ok = ok && bootstrap_summary &&
+             json_get_int(json_get(bootstrap_summary, "operation_count")) == 2;
+        ok = ok && bootstrap_summary &&
+             json_get_int(json_get(bootstrap_summary,
+                                   "public_read_count")) == 1;
+        ok = ok && bootstrap_summary &&
+             json_get_int(json_get(bootstrap_summary,
+                                   "operator_private_count")) == 1;
+        ok = ok && bootstrap_summary &&
+             json_get_int(json_get(bootstrap_summary,
+                                   "destructive_count")) == 0;
+        ok = ok && bootstrap_summary &&
+             json_get_int(json_get(bootstrap_summary,
+                                   "preferred_rest_count")) == 1;
+        ok = ok && bootstrap_summary &&
+             json_get_int(json_get(bootstrap_summary,
+                                   "preferred_mcp_count")) == 1;
         const struct json_value *bootstrap_status_op =
             api_test_find_str_field(json_get(bootstrap, "operations"),
                                     "operation",
@@ -2099,6 +2118,29 @@ int test_api(void)
         ok = ok && api_test_array_has_str(json_get(&root,
                           "depends_on_services"), "full_node");
         ok = ok && json_get_int(json_get(&root, "operation_count")) >= 3;
+        const struct json_value *znam_summary =
+            json_get(&root, "operation_summary");
+        ok = ok && znam_summary &&
+             json_get_int(json_get(znam_summary, "operation_count")) == 3;
+        ok = ok && znam_summary &&
+             json_get_int(json_get(znam_summary, "public_read_count")) == 2;
+        ok = ok && znam_summary &&
+             json_get_int(json_get(znam_summary,
+                                   "operator_private_count")) == 1;
+        ok = ok && znam_summary &&
+             json_get_int(json_get(znam_summary, "destructive_count")) == 1;
+        ok = ok && znam_summary &&
+             json_get_int(json_get(znam_summary,
+                                   "rest_callable_count")) == 2;
+        ok = ok && znam_summary &&
+             json_get_int(json_get(znam_summary,
+                                   "mcp_callable_count")) == 3;
+        ok = ok && znam_summary &&
+             json_get_int(json_get(znam_summary,
+                                   "preferred_rest_count")) == 2;
+        ok = ok && znam_summary &&
+             json_get_int(json_get(znam_summary,
+                                   "preferred_mcp_count")) == 1;
         ok = ok && strcmp(json_get_str(json_get(&root, "read_model")),
                           "znam_projection_confirmed_chain_records") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "write_model")),

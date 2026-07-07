@@ -165,9 +165,10 @@ controller `k_routes[]` arrays.
   files, market, messaging, and script contracts. The top-level
   `sovereign_ux` object gives agents the canonical names→services→Tor/P2P→CRUD
   flow, and member contracts expose `depends_on_services`, `read_model`,
-  `write_model`, and `operations[]` so agents do not infer dependencies or
-  write safety from prose. Operation IDs are stable `service.operation`
-  strings, such as `znam_names.resolve_name`. Each operation also publishes
+  `write_model`, `operation_summary`, and `operations[]` so agents do not infer
+  dependencies or write safety from prose. Operation IDs are stable
+  `service.operation` strings, such as `znam_names.resolve_name`. Each
+  operation also publishes
   `service_catalog_route`, `agent_preferred_interface`, `agent_next_step`, and
   callable booleans so agents can navigate from service intent to the safest
   callable surface without route guessing. The implementation is split between

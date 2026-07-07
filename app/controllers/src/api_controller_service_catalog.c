@@ -35,6 +35,22 @@ struct api_service_contract {
     bool operator_private_write;
 };
 
+struct api_service_operation_summary_counts {
+    int64_t operation_count;
+    int64_t public_read_count;
+    int64_t operator_private_count;
+    int64_t destructive_count;
+    int64_t rest_callable_count;
+    int64_t mcp_callable_count;
+    int64_t rpc_callable_count;
+    int64_t active_count;
+    int64_t in_progress_count;
+    int64_t preferred_rest_count;
+    int64_t preferred_mcp_count;
+    int64_t preferred_rpc_count;
+    int64_t preferred_native_count;
+};
+
 static const struct api_service_contract k_api_services[] = {
     {
         .name = "full_node",
@@ -285,6 +301,86 @@ static void api_service_names_json(struct json_value *out)
     }
 }
 
+static void api_service_operation_summary_count(
+    const struct json_value *op,
+    struct api_service_operation_summary_counts *counts)
+{
+    const char *status;
+    const char *iface;
+
+    if (!op || !counts)
+        return;
+
+    status = json_get_str(json_get(op, "status"));
+    iface = json_get_str(json_get(op, "agent_preferred_interface"));
+
+    counts->operation_count++;
+    if (json_get_bool(json_get(op, "public_read")))
+        counts->public_read_count++;
+    if (json_get_bool(json_get(op, "operator_private")))
+        counts->operator_private_count++;
+    if (json_get_bool(json_get(op, "destructive")))
+        counts->destructive_count++;
+    if (json_get_bool(json_get(op, "rest_callable")))
+        counts->rest_callable_count++;
+    if (json_get_bool(json_get(op, "mcp_callable")))
+        counts->mcp_callable_count++;
+    if (json_get_bool(json_get(op, "rpc_callable")))
+        counts->rpc_callable_count++;
+    if (strcmp(status, "active") == 0)
+        counts->active_count++;
+    if (strcmp(status, "in_progress") == 0)
+        counts->in_progress_count++;
+    if (strcmp(iface, "rest") == 0)
+        counts->preferred_rest_count++;
+    else if (strcmp(iface, "mcp") == 0)
+        counts->preferred_mcp_count++;
+    else if (strcmp(iface, "rpc") == 0)
+        counts->preferred_rpc_count++;
+    else
+        counts->preferred_native_count++;
+}
+
+static void api_service_operation_summary_json(
+    const struct json_value *operations,
+    struct json_value *summary)
+{
+    struct api_service_operation_summary_counts counts = {0};
+
+    if (!summary)
+        return;
+
+    for (size_t i = 0; i < json_size(operations); i++)
+        api_service_operation_summary_count(json_at(operations, i),
+                                            &counts);
+
+    json_set_object(summary);
+    json_push_kv_int(summary, "operation_count", counts.operation_count);
+    json_push_kv_int(summary, "public_read_count",
+                     counts.public_read_count);
+    json_push_kv_int(summary, "operator_private_count",
+                     counts.operator_private_count);
+    json_push_kv_int(summary, "destructive_count",
+                     counts.destructive_count);
+    json_push_kv_int(summary, "rest_callable_count",
+                     counts.rest_callable_count);
+    json_push_kv_int(summary, "mcp_callable_count",
+                     counts.mcp_callable_count);
+    json_push_kv_int(summary, "rpc_callable_count",
+                     counts.rpc_callable_count);
+    json_push_kv_int(summary, "active_count", counts.active_count);
+    json_push_kv_int(summary, "in_progress_count",
+                     counts.in_progress_count);
+    json_push_kv_int(summary, "preferred_rest_count",
+                     counts.preferred_rest_count);
+    json_push_kv_int(summary, "preferred_mcp_count",
+                     counts.preferred_mcp_count);
+    json_push_kv_int(summary, "preferred_rpc_count",
+                     counts.preferred_rpc_count);
+    json_push_kv_int(summary, "preferred_native_count",
+                     counts.preferred_native_count);
+}
+
 static void api_service_object_json(struct json_value *obj,
                                     const struct api_service_contract *svc)
 {
@@ -293,6 +389,7 @@ static void api_service_object_json(struct json_value *obj,
     struct json_value object_types;
     struct json_value dependencies;
     struct json_value operations;
+    struct json_value operation_summary;
     char self_route[128];
 
     if (!obj || !svc)
@@ -337,6 +434,10 @@ static void api_service_object_json(struct json_value *obj,
 
     json_init(&operations);
     api_service_operations_json(&operations, svc->name);
+    json_init(&operation_summary);
+    api_service_operation_summary_json(&operations, &operation_summary);
+    json_push_kv(obj, "operation_summary", &operation_summary);
+    json_free(&operation_summary);
     json_push_kv(obj, "operations", &operations);
     json_push_kv_int(obj, "operation_count",
                      (int64_t)json_size(&operations));
