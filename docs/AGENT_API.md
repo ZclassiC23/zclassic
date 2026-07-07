@@ -129,6 +129,12 @@ the user selected.
 The collection also carries `sovereign_ux` (`zcl.sovereign_ux_contract.v1`):
 a machine-readable flow from agent status → service catalog → ZNAM resolution
 → endpoint verification → direct P2P/onion routing → versioned CRUD operation.
+The collection-level `runtime_probes[]` matrix is the compact first-pass live
+verification checklist: one row per service with the REST route, expected
+schema, operation contract, freshness source, success signal, and failure next
+action. It is generated from the same service contracts as member
+`runtime_probe`, and tests require every probe route and operation ID to resolve
+through the REST/operation indexes.
 Each member contract carries `depends_on_services`, `read_model`, and
 `write_model`; use those fields instead of hand-inferring service dependencies.
 Each member also carries `operation_summary`, a compact count of public reads,

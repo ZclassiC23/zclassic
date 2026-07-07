@@ -491,6 +491,38 @@ static void api_service_runtime_probe_json(
                       !svc->public_read);
 }
 
+static void api_service_runtime_probe_index_json(
+    const struct api_service_contract *svc,
+    struct json_value *probe)
+{
+    char service_route[160];
+
+    if (!probe || !svc)
+        return;
+
+    api_service_runtime_probe_json(svc, probe);
+    snprintf(service_route, sizeof(service_route),
+             "/api/v1/service-catalog/%s", svc->name);
+    service_route[sizeof(service_route) - 1] = '\0';
+    json_push_kv_str(probe, "service", svc->name);
+    json_push_kv_str(probe, "service_catalog_route", service_route);
+}
+
+static void api_service_runtime_probes_json(struct json_value *out)
+{
+    if (!out)
+        return;
+
+    json_set_array(out);
+    for (size_t i = 0; i < api_service_count(); i++) {
+        struct json_value probe;
+        json_init(&probe);
+        api_service_runtime_probe_index_json(&k_api_services[i], &probe);
+        json_push_back(out, &probe);
+        json_free(&probe);
+    }
+}
+
 static void api_service_object_json(struct json_value *obj,
                                     const struct api_service_contract *svc)
 {
@@ -614,10 +646,18 @@ bool api_service_catalog_json(struct json_value *out)
                      "state changes; public reads are projection snapshots");
 
     struct json_value ux;
+    struct json_value runtime_probes;
     json_init(&ux);
     api_sovereign_ux_contract_json(&ux);
     json_push_kv(out, "sovereign_ux", &ux);
     json_free(&ux);
+
+    json_init(&runtime_probes);
+    api_service_runtime_probes_json(&runtime_probes);
+    json_push_kv(out, "runtime_probes", &runtime_probes);
+    json_push_kv_int(out, "runtime_probe_count",
+                     (int64_t)json_size(&runtime_probes));
+    json_free(&runtime_probes);
 
     struct json_value services;
     json_init(&services);

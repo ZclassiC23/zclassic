@@ -207,6 +207,69 @@ static const struct json_value *api_test_find_str_field(
     return NULL;
 }
 
+static bool api_test_runtime_probes_consistent(
+    const struct json_value *catalog,
+    const struct json_value *operations,
+    const struct json_value *route_contracts)
+{
+    const struct json_value *services;
+    const struct json_value *probes;
+
+    if (!catalog || !operations || !route_contracts)
+        return false;
+
+    services = json_get(catalog, "services");
+    probes = json_get(catalog, "runtime_probes");
+    if (!services || services->type != JSON_ARR ||
+        !probes || probes->type != JSON_ARR)
+        return false;
+    if (json_size(probes) != json_size(services))
+        return false;
+    if (json_get_int(json_get(catalog, "runtime_probe_count")) !=
+        (int64_t)json_size(probes))
+        return false;
+
+    for (size_t i = 0; i < json_size(probes); i++) {
+        const struct json_value *probe = json_at(probes, i);
+        const char *service = json_get_str(json_get(probe, "service"));
+        const char *route = json_get_str(json_get(probe, "route"));
+        const char *expected_schema =
+            json_get_str(json_get(probe, "expected_schema"));
+        const char *operation_id =
+            json_get_str(json_get(probe, "operation_id"));
+        const struct json_value *svc =
+            api_test_find_named(services, service);
+        const struct json_value *member_probe =
+            svc ? json_get(svc, "runtime_probe") : NULL;
+        const struct json_value *route_contract =
+            api_test_find_contract(route_contracts, route);
+        const struct json_value *operation =
+            api_test_find_str_field(operations, "operation_id",
+                                    operation_id);
+
+        if (!svc || !member_probe || !route_contract || !operation)
+            return false;
+        if (strcmp(json_get_str(json_get(probe, "schema")),
+                   "zcl.service_runtime_probe.v1") != 0)
+            return false;
+        if (strcmp(json_get_str(json_get(member_probe, "route")),
+                   route) != 0)
+            return false;
+        if (strcmp(json_get_str(json_get(member_probe, "operation_id")),
+                   operation_id) != 0)
+            return false;
+        if (strcmp(json_get_str(json_get(member_probe, "expected_schema")),
+                   expected_schema) != 0)
+            return false;
+        if (strcmp(json_get_str(json_get(route_contract,
+                                         "response_schema")),
+                   expected_schema) != 0)
+            return false;
+    }
+
+    return true;
+}
+
 static bool api_test_expect_readiness_shape(const struct json_value *root)
 {
     const struct json_value *readiness = json_get(root, "readiness");
@@ -1777,6 +1840,7 @@ int test_api(void)
                                       sizeof(catalog_resp));
         const char *body = api_test_body(catalog_resp, n,
                                          sizeof(catalog_resp));
+        const char *catalog_body = body;
         struct json_value root;
         json_init(&root);
         bool ok = n > 0 && body && json_read(&root, body, strlen(body));
@@ -1832,6 +1896,27 @@ int test_api(void)
         ok = ok && services && services->type == JSON_ARR &&
              json_get_int(json_get(&root, "service_count")) ==
              (int64_t)json_size(services);
+        const struct json_value *runtime_probes =
+            json_get(&root, "runtime_probes");
+        ok = ok && runtime_probes && runtime_probes->type == JSON_ARR &&
+             json_get_int(json_get(&root, "runtime_probe_count")) ==
+             (int64_t)json_size(runtime_probes);
+        ok = ok && runtime_probes &&
+             json_size(runtime_probes) == json_size(services);
+        const struct json_value *bootstrap_matrix_probe =
+            api_test_find_str_field(runtime_probes, "service", "bootstrap");
+        ok = ok && bootstrap_matrix_probe &&
+             strcmp(json_get_str(json_get(bootstrap_matrix_probe,
+                                          "route")),
+                    "/api/v1/bootstrap") == 0;
+        ok = ok && bootstrap_matrix_probe &&
+             strcmp(json_get_str(json_get(bootstrap_matrix_probe,
+                                          "operation_id")),
+                    "bootstrap.read_bootstrap_status") == 0;
+        ok = ok && bootstrap_matrix_probe &&
+             strcmp(json_get_str(json_get(bootstrap_matrix_probe,
+                                          "service_catalog_route")),
+                    "/api/v1/service-catalog/bootstrap") == 0;
 
         const struct json_value *bootstrap =
             api_test_find_named(services, "bootstrap");
@@ -2127,6 +2212,27 @@ int test_api(void)
                     "mcp") == 0;
         ok = ok && register_op &&
              json_get_bool(json_get(register_op, "destructive"));
+        {
+            static uint8_t index_resp[262144];
+            struct json_value index_root;
+            struct json_value catalog_root;
+            size_t in = api_handle_request("GET", "/api/v1", NULL, 0,
+                                           index_resp, sizeof(index_resp));
+            const char *index_body =
+                api_test_body(index_resp, in, sizeof(index_resp));
+            json_init(&index_root);
+            json_init(&catalog_root);
+            ok = ok && in > 0 && index_body &&
+                 json_read(&index_root, index_body, strlen(index_body));
+            ok = ok && catalog_body &&
+                 json_read(&catalog_root, catalog_body,
+                           strlen(catalog_body));
+            ok = ok && api_test_runtime_probes_consistent(
+                &catalog_root, operations,
+                json_get(&index_root, "route_contracts"));
+            json_free(&catalog_root);
+            json_free(&index_root);
+        }
         json_free(&root);
 
         static uint8_t show_resp[65536];
