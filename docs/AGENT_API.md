@@ -788,6 +788,12 @@ This is a C23 project, so the edit loop should compile only what changed.
   `build/obj` plus header depfiles (`-MMD -MP` and included `.d` files), so
   unchanged translation units keep their existing `.o` files and changed
   headers recompile their dependents.
+- `make dev-bin` builds `build/bin/zclassic23-dev` from cached objects under
+  `build/dev-obj`. It links without LTO, keeps symbols, defaults most code to
+  `ZCL_DEV_OPT=-Og`, and keeps hot consensus/crypto/script/validation buckets
+  at `ZCL_DEV_HOT_OPT=-O2`. `ZCL_DEV_LINKER` auto-selects `mold` or `ld.lld`
+  when present and can be set empty to force the platform linker. This binary
+  is for local agent/API iteration, not deploy or release.
 - `make t-fast ONLY=<group>` uses `build/test-obj` and
   `build/bin/test_parallel_fast`, a cached non-LTO test harness for hot-path
   focused tests.
@@ -821,6 +827,8 @@ tests. Full-suite, fuzz, and coverage evidence belongs to the background quality
 `make install-quality-linger` and inspect them with `make quality-linger-status`.
 Status JSON is written under `~/.local/state/zclassic23-quality`. The native
 `zclassic23 agentbuild` / `zcl_agent_build` response also embeds
+`dev_node_binary` (`make dev-bin`, `build/bin/zclassic23-dev`, hot-path
+optimization buckets, and release/deploy boundary) plus
 `background_quality_status` (`zcl.background_quality_runtime.v1`), a C-native
 reader for those status files. It reports the resolved state/status directory,
 one entry each for `fuzz`, `coverage`, and `tests`, whether each lane verdict

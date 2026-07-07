@@ -16,6 +16,7 @@
 make                     # test_zcl + zclassic23 + zclassic-cli
 make vendor              # build missing vendor/lib archives from pinned sources
 make build-only          # compile check, no final link
+make dev-bin             # fast non-LTO local node binary: build/bin/zclassic23-dev
 make t-fast ONLY=<group> # one fast test group, e.g. make t-fast ONLY=service_state_driver
 make fast-ci             # cache-aware lint/build/focused-test agent loop
 make test                # full test suite
@@ -23,10 +24,11 @@ make lint                # defensive-coding gates (must be clean)
 make ci                  # local full gate: lint + tests + MVP slices + fuzz where available
 ```
 
-`make t-fast ONLY=<group>` is the normal inner loop: it rebuilds the fast
-harness and runs only the matching group(s). `make fast-ci` adds cache-aware
-lint/build/focused-test selection from changed files. Never run the full
-`test_zcl` binary in the inner loop.
+`make dev-bin` is the normal way to get a changed local node/agent executable
+without paying release LTO. `make t-fast ONLY=<group>` is the normal test inner
+loop: it rebuilds the fast harness and runs only the matching group(s). `make
+fast-ci` adds cache-aware lint/build/focused-test selection from changed files.
+Never run the full `test_zcl` binary in the inner loop.
 
 ## The defensive-coding contract
 

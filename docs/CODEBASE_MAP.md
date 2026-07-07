@@ -238,8 +238,8 @@ controller `k_routes[]` arrays.
   `app/controllers/include/controllers/agent_impact_rules.def` and is consumed
   by both native `agentimpact` and `make fast-ci`.
 - `zclassic23 agentbuild` / `zcl_agent_build` — fast cached build contract:
-  `make build-only`, `make t-fast`, `make fast-ci`, cache knobs, strict gates,
-  and `make ci-reproducible`.
+  `make build-only`, `make dev-bin`, `make t-fast`, `make fast-ci`, cache
+  knobs, strict gates, and `make ci-reproducible`.
 - `zclassic23 statecatalog` / `zcl_state_catalog` — machine-readable catalog
   for every `zcl_state` subsystem: name, description, accepted key forms,
   expected cost, freshness, owner shape/file, read-only safety level, focused
@@ -372,6 +372,7 @@ Confirm the target before acting.
 |---------|--------|
 | `make -j$(nproc)` | Build `zclassic23`, `test_zcl`, `zclassic-cli`. `-j` only overlaps the 2–3 binaries + LTO link, not per-binary front-end. |
 | `make build-only` | 664 genuinely-parallel `cc -c` with depfile header tracking — fast inner loop. |
+| `make dev-bin` | Build `build/bin/zclassic23-dev` from cached per-file objects, non-LTO/unstripped, with hot consensus/crypto/script/validation buckets still optimized. Local iteration only; not deploy/release. |
 | `make test` | Runs `test_parallel` (isolated per-process runner). **Use this**, not test_zcl. Green = regression floor, NOT a liveness proof. |
 | `make test-full` | Runs the `test_zcl` monolith (sequential). |
 | `make lint` | All 45+ `check-*` gates. Must pass before tests. HARD gates fail the build; RATCHET gates compare to baselines. |

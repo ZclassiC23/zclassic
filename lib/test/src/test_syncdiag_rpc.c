@@ -4981,6 +4981,8 @@ syncdiag_net_split_done:
         ok = ok && rpc_table_execute(&tbl, "agentbuild", &params, &build);
         const struct json_value *incremental =
             json_get(&build, "incremental_compile");
+        const struct json_value *dev_binary =
+            json_get(&build, "dev_node_binary");
         const struct json_value *cache = json_get(&build, "cache");
         const struct json_value *commands = json_get(&build, "commands");
         const struct json_value *repro =
@@ -5000,11 +5002,25 @@ syncdiag_net_split_done:
                           "zcl.agent_build.v1") == 0;
         ok = ok && incremental && json_get_bool(json_get(incremental,
                                                          "header_depfiles"));
+        ok = ok && strcmp(json_get_str(json_get(incremental,
+                                                "dev_binary_command")),
+                          "make dev-bin") == 0;
+        ok = ok && dev_binary && json_get_bool(json_get(dev_binary,
+                                                        "enabled"));
+        ok = ok && strcmp(json_get_str(json_get(dev_binary, "binary")),
+                          "build/bin/zclassic23-dev") == 0;
+        ok = ok && !json_get_bool(json_get(dev_binary,
+                                           "release_or_deploy_artifact"));
+        ok = ok && strstr(json_get_str(json_get(dev_binary,
+                                                "hot_path_buckets")),
+                          "lib/crypto") != NULL;
         ok = ok && cache && strstr(json_get_str(json_get(cache,
                                                          "auto_select_order")),
                                    "sccache cc") != NULL;
         ok = ok && find_object_with_str(commands, "name",
                                         "compile_check") != NULL;
+        ok = ok && find_object_with_str(commands, "name",
+                                        "dev_node_binary") != NULL;
         ok = ok && find_object_with_str(commands, "name",
                                         "byte_identity") != NULL;
         ok = ok && repro && strcmp(json_get_str(json_get(repro, "command")),

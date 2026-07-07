@@ -14,6 +14,7 @@ BUILD_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)$
 BUILD_DIR = build
 BIN_DIR = $(BUILD_DIR)/bin
 OBJ_DIR = $(BUILD_DIR)/obj
+DEV_OBJ_DIR = $(BUILD_DIR)/dev-obj
 
 # ZCL_BUILD_COMMIT is a -D macro, so a new commit never dirties any .o; a TU
 # reports whatever HEAD was when IT last recompiled. With the getter inlined
@@ -27,6 +28,7 @@ $(shell mkdir -p $(BUILD_DIR); \
   printf '%s' "$(BUILD_COMMIT)" > $(BUILD_COMMIT_STAMP))
 
 ZCLASSIC23_BIN = $(BIN_DIR)/zclassic23
+ZCLASSIC23_DEV_BIN = $(BIN_DIR)/zclassic23-dev
 TEST_ZCL_BIN = $(BIN_DIR)/test_zcl
 TEST_PARALLEL_BIN = $(BIN_DIR)/test_parallel
 ZCLASSIC_CLI_BIN = $(BIN_DIR)/zclassic-cli
@@ -105,15 +107,12 @@ MCP_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard tools/mcp/*.c) $(wildcard tools/mcp/controllers/*.c) \
 	$(wildcard tools/mcp/views/*.c))
 
+NODE_ENTRY_SRCS = src/main.c tools/mcp_server.c
 ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS) $(DOMAIN_SRCS) $(APPLICATION_SRCS) $(ADAPTERS_SRCS) $(MCP_SRCS)
 ALL_OBJS = $(patsubst %.c,$(OBJ_DIR)/%.o,$(ALL_SRCS))
 
-# Header-dependency tracking for the per-object / build-only inner loop. Without
-# this a header edit is invisible to make and build-only false-greens against
-# stale objects. The .d files are emitted by -MMD -MP in the %.o rule below; the
-# whole-program monolith (zclassic23 / test_zcl) recompiles all TUs regardless,
-# so it is unaffected. Leading '-' suppresses the first-build "no .d" noise.
--include $(ALL_OBJS:.o=.d)
+DEV_SRCS = $(NODE_ENTRY_SRCS) $(ALL_SRCS)
+DEV_OBJS = $(patsubst %.c,$(DEV_OBJ_DIR)/%.o,$(DEV_SRCS))
 
 GTK_CFLAGS := $(shell pkg-config --cflags gtk+-3.0 2>/dev/null)
 GTK_LIBS   := $(shell pkg-config --libs gtk+-3.0 2>/dev/null)
@@ -141,6 +140,20 @@ CFLAGS = -std=c23 -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) -flto=a
 	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE -DZCL_BUILD_COMMIT=\"$(BUILD_COMMIT)\" -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
 	$(WEBKIT_DEF) $(WEBKIT_CFLAGS)
 LDFLAGS = -pthread -flto=auto -rdynamic $(HARDEN_LDFLAGS)
+ZCL_DEV_OPT ?= -Og
+ZCL_DEV_HOT_OPT ?= -O2
+ZCL_DEV_LINKER ?= $(shell if command -v mold >/dev/null 2>&1; then printf '%s' '-fuse-ld=mold'; elif command -v ld.lld >/dev/null 2>&1; then printf '%s' '-fuse-ld=lld'; fi)
+DEV_CFLAGS = $(filter-out -O3 -flto=auto -Werror,$(CFLAGS)) $(ZCL_DEV_OPT) -g3 -DZCL_DEV_BUILD \
+	-Wno-deprecated-declarations -Wno-format-truncation -Wno-maybe-uninitialized
+DEV_HOT_CFLAGS = $(filter-out $(ZCL_DEV_OPT),$(DEV_CFLAGS)) $(ZCL_DEV_HOT_OPT)
+DEV_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS)) $(ZCL_DEV_LINKER)
+
+# Header-dependency tracking for the per-object / build-only and dev-bin inner
+# loops. Without this a header edit is invisible to make and the fast paths can
+# false-green against stale objects. The .d files are emitted by -MMD -MP in the
+# %.o rules below; the release monolith still recompiles all TUs regardless.
+-include $(ALL_OBJS:.o=.d)
+-include $(DEV_OBJS:.o=.d)
 # Use vendor/tor/libtor.a when Tor is built from source.
 # Tor: use full Tor if built, otherwise fall back to stub.
 TOR_FULL = $(wildcard vendor/tor/libtor.a \
@@ -285,7 +298,7 @@ test-parallel: test_parallel
 # the default `all`), so running build/bin/test_parallel directly after editing a test
 # can false-green an old binary or report "matched no groups" for a new test.
 # `make t ONLY=<group>` always rebuilds the harness first, closing that trap.
-.PHONY: t t-fast syntax-check build-only lint-fast fast-ci agent-fast-ci dev-ci
+.PHONY: t t-fast syntax-check build-only dev-bin zclassic23-dev lint-fast fast-ci agent-fast-ci dev-ci
 
 # Run ONE test group, always rebuilding the harness first:
 #   make t ONLY=service_state_driver
@@ -312,9 +325,18 @@ build-only: CFLAGS += -Wno-deprecated-declarations
 build-only: $(TMPL_GEN) $(ALL_OBJS)
 	@echo "build-only: all node objects compiled"
 
+# Fast local node executable for AI/operator development. This deliberately
+# does not replace `zclassic23`, `make deploy`, or release artifacts.
+dev-bin zclassic23-dev: $(ZCLASSIC23_DEV_BIN)
+
+$(ZCLASSIC23_DEV_BIN): $(TMPL_GEN) $(BUILD_COMMIT_STAMP) $(DEV_OBJS) | $(VENDOR_LIBS)
+	@mkdir -p $(dir $@)
+	$(CC) $(DEV_CFLAGS) $(DEV_LDFLAGS) -o $@ $(DEV_OBJS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
+	@echo "dev-bin: $@ (non-LTO, unstripped; not for release/deploy)"
+
 # Full no-link syntax check across every TU in one shot (no incremental state).
 syntax-check: $(TMPL_GEN)
-	@$(CC) $(CFLAGS) -Wno-deprecated-declarations -fsyntax-only $(ALL_SRCS) src/main.c && echo "syntax-check: OK"
+	@$(CC) $(CFLAGS) -Wno-deprecated-declarations -fsyntax-only $(ALL_SRCS) $(NODE_ENTRY_SRCS) && echo "syntax-check: OK"
 
 # The highest-signal lint gates for the inner loop. Run full `make lint` at
 # sub-wave boundaries / before commit.
@@ -554,7 +576,7 @@ spec: spec_zcl
 
 .PHONY: zclassic23
 zclassic23: $(ZCLASSIC23_BIN)
-$(ZCLASSIC23_BIN): $(TMPL_GEN) $(BUILD_COMMIT_STAMP) src/main.c tools/mcp_server.c $(ALL_SRCS) | $(VENDOR_LIBS)
+$(ZCLASSIC23_BIN): $(TMPL_GEN) $(BUILD_COMMIT_STAMP) $(NODE_ENTRY_SRCS) $(ALL_SRCS) | $(VENDOR_LIBS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN) $(BUILD_COMMIT_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
 	strip -s $@
@@ -1628,6 +1650,26 @@ $(OBJ_DIR)/%.o: %.c $(TMPL_GEN)
 
 # The one TU that bakes in ZCL_BUILD_COMMIT — see the stamp comment up top.
 $(OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_COMMIT_STAMP)
+
+# Dev-bin keeps most TUs at -Og for quick debug compiles, but leaves the
+# consensus/crypto/script/validation hot paths at a configurable optimized
+# level. This catches more optimizer-sensitive behavior without paying global
+# LTO or making every unrelated edit slow.
+DEV_COMPILE_CFLAGS = $(DEV_CFLAGS)
+$(DEV_OBJ_DIR)/lib/chain/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
+$(DEV_OBJ_DIR)/lib/consensus/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
+$(DEV_OBJ_DIR)/lib/crypto/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
+$(DEV_OBJ_DIR)/lib/primitives/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
+$(DEV_OBJ_DIR)/lib/sapling/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
+$(DEV_OBJ_DIR)/lib/script/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
+$(DEV_OBJ_DIR)/lib/validation/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
+
+$(DEV_OBJ_DIR)/%.o: %.c $(TMPL_GEN)
+	@mkdir -p $(dir $@)
+	$(CC) $(DEV_COMPILE_CFLAGS) -MMD -MP -c -o $@ $<
+
+# The dev object tree also needs the commit TU refreshed when HEAD changes.
+$(DEV_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_COMMIT_STAMP)
 
 $(TEST_FAST_OBJ_DIR)/%.o: %.c $(TMPL_GEN)
 	@mkdir -p $(dir $@)

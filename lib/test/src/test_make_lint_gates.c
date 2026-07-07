@@ -2520,6 +2520,14 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "fast-ci agent-fast-ci dev-ci") != NULL);
         ASSERT(strstr(buf, "t-fast") != NULL);
         ASSERT(strstr(buf, "test_parallel_fast") != NULL);
+        ASSERT(strstr(buf, "dev-bin zclassic23-dev") != NULL);
+        ASSERT(strstr(buf, "ZCLASSIC23_DEV_BIN") != NULL);
+        ASSERT(strstr(buf, "DEV_OBJ_DIR") != NULL);
+        ASSERT(strstr(buf, "DEV_CFLAGS") != NULL);
+        ASSERT(strstr(buf, "DEV_HOT_CFLAGS") != NULL);
+        ASSERT(strstr(buf, "DEV_LDFLAGS") != NULL);
+        ASSERT(strstr(buf, "ZCL_DEV_LINKER") != NULL);
+        ASSERT(strstr(buf, "not for release/deploy") != NULL);
         ASSERT(strstr(buf, "tools/agent_fast_ci.sh") != NULL);
         ASSERT(strstr(buf, "tools/deploy_guard.sh") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_TESTS") != NULL);
@@ -2647,6 +2655,7 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(rules, "lib/net/include/net/port_policy.h") != NULL);
         ASSERT(strstr(rules, "README.md") != NULL);
         ASSERT(strstr(rules, ".github/CONTRIBUTING.md") != NULL);
+        ASSERT(strstr(rules, "docs/BUILD.md") != NULL);
         ASSERT(strstr(rules, "docs/GETTING_STARTED.md") != NULL);
         ASSERT(strstr(rules, "app/controllers/include/controllers/network_controller.h")
                != NULL);
@@ -2718,8 +2727,14 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "`make fast-ci`") != NULL);
         ASSERT(strstr(buf, "`make t-fast ONLY=<group>`") != NULL);
+        ASSERT(strstr(buf, "`make dev-bin`") != NULL);
         ASSERT(strstr(buf, "`make ci-reproducible`") != NULL);
         ASSERT(strstr(buf, "build/bin/test_parallel_fast") != NULL);
+        ASSERT(strstr(buf, "build/bin/zclassic23-dev") != NULL);
+        ASSERT(strstr(buf, "ZCL_DEV_OPT=-Og") != NULL);
+        ASSERT(strstr(buf, "ZCL_DEV_HOT_OPT=-O2") != NULL);
+        ASSERT(strstr(buf, "ZCL_DEV_LINKER") != NULL);
+        ASSERT(strstr(buf, "not a deploy or release artifact") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CC") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_TESTS") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_STRICT_TESTS=1") != NULL);
@@ -2751,6 +2766,7 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "docs/GETTING_STARTED.md") != NULL);
         ASSERT(strstr(buf, "Public start here") != NULL);
+        ASSERT(strstr(buf, "make dev-bin") != NULL);
         ASSERT(strstr(buf, "488 parallel groups") != NULL);
         ASSERT(strstr(buf, "build/bin/zclassic23 agentops") != NULL);
         ASSERT(strstr(buf, "| jq") == NULL);
@@ -2763,6 +2779,7 @@ static int t_agent_fast_ci_contract(void)
                != NULL);
         ASSERT(strstr(buf, "make vendor") != NULL);
         ASSERT(strstr(buf, "make -j\"$(nproc)\"") != NULL);
+        ASSERT(strstr(buf, "make dev-bin") != NULL);
         ASSERT(strstr(buf, "make t-fast ONLY=<group>") != NULL);
         ASSERT(strstr(buf, "build/bin/zclassic23 -datadir=\"$HOME/.zclassic-c23\" agent")
                != NULL);
@@ -2779,6 +2796,7 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "make vendor") != NULL);
         ASSERT(strstr(buf, "make build-only") != NULL);
+        ASSERT(strstr(buf, "make dev-bin") != NULL);
         ASSERT(strstr(buf, "make t-fast ONLY=<group>") != NULL);
         ASSERT(strstr(buf, "make fast-ci") != NULL);
         ASSERT(strstr(buf, "fresh clone will not link") == NULL);
@@ -3327,6 +3345,10 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_contracts_def_buf,
                       "zcl.anchor_mint_status.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_build.v1") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "dev_node_binary") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "make dev-bin") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "build/bin/zclassic23-dev") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "ZCL_DEV_HOT_OPT=-O2") != NULL);
         ASSERT(strstr(agent_schema_registry_buf,
                       "zcl.background_quality_runtime.v1") != NULL);
         ASSERT(strstr(agent_schema_registry_buf, "zcl.first_call_contract.v1")
@@ -3818,6 +3840,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "zcl_agent_deploy_guard") != NULL);
         ASSERT(strstr(agent_doc_buf, "No Python is required") != NULL);
         ASSERT(strstr(agent_doc_buf, "make build-only") != NULL);
+        ASSERT(strstr(agent_doc_buf, "make dev-bin") != NULL);
+        ASSERT(strstr(agent_doc_buf, "build/bin/zclassic23-dev") != NULL);
+        ASSERT(strstr(agent_doc_buf, "ZCL_DEV_HOT_OPT=-O2") != NULL);
         ASSERT(strstr(agent_doc_buf, "make t-fast ONLY=<group>") != NULL);
         ASSERT(strstr(agent_doc_buf, "ZCL_FAST_CACHE=0") != NULL);
         ASSERT(strstr(agent_doc_buf, "ZCL_FAST_CACHE_RESET=1") != NULL);

@@ -29,6 +29,27 @@ tools/scripts/build_vendor.sh libz.a libsqlite3.a   # a subset
 `make build-only` (compile every `.o`, no link) does not need the archives and
 is the fastest way to confirm a clean checkout compiles.
 
+## Fast development binary
+
+Release builds intentionally use one whole-program LTO link. For day-to-day C
+development, use the non-release dev binary instead:
+
+```bash
+make dev-bin
+build/bin/zclassic23-dev agentbuild
+```
+
+`make dev-bin` writes cached per-file objects under `build/dev-obj/`, links
+without LTO, keeps symbols, and emits `build/bin/zclassic23-dev`. It defaults
+most code to `ZCL_DEV_OPT=-Og` while compiling consensus/crypto/script/
+validation hot paths at `ZCL_DEV_HOT_OPT=-O2`; both are overrideable. The link
+step auto-selects `mold` or `ld.lld` through `ZCL_DEV_LINKER` when available;
+set `ZCL_DEV_LINKER=` to force the platform linker.
+
+This binary is for local AI/operator iteration only. `make zclassic23`,
+`make deploy`, reproducible builds, and releases continue to use
+`build/bin/zclassic23` with the release flag profile.
+
 ## Prerequisites
 
 - **gcc 14+** (or clang with working `-std=c23`) and **GNU make**.
@@ -81,6 +102,7 @@ Notes:
 ```bash
 make audit          # tools/dep_audit.sh — versions vs minimum-safe CVE floors
 make build-only     # compile every .o (no link) — should be clean
+make dev-bin        # fast non-LTO local node binary: build/bin/zclassic23-dev
 make vendor         # build the vendored archives from source
 make zclassic23     # full link
 ```
@@ -89,6 +111,7 @@ make zclassic23     # full link
 
 ```bash
 make -j"$(nproc)"   # test_zcl + zclassic23 + zclassic-cli
+make dev-bin        # fast local node executable, not for deploy/release
 make test           # full suite (488 parallel groups)
 make lint           # 40 defensive-coding gates
 make ci             # local gate: lint + tests + MVP slices (runs locally, not on GitHub Actions)

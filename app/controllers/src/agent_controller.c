@@ -444,31 +444,53 @@ bool rpc_agent_build(const struct json_value *params, bool help,
         "  { \"schema\":\"zcl.agent_build.v1\", "
         "\"commands\":[...], \"reproducible_release\":{...} }\n");
 
-    struct json_value incremental, cache, knobs, commands, repro, background,
-                      quality_status, lanes, gates;
+    struct json_value incremental, dev, cache, knobs, commands, repro,
+                      background, quality_status, lanes, gates;
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.agent_build.v1");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "status", "ok");
     json_push_kv_str(result, "language", "c23");
     json_push_kv_str(result, "summary",
-                     "Use object/dependency builds for edit loops, compiler caches when available, and make ci-reproducible for byte identity.");
+                     "Use object/dependency builds, the non-LTO dev node binary, compiler caches when available, and make ci-reproducible for byte identity.");
 
     json_init(&incremental);
     json_set_object(&incremental);
     json_push_kv_bool(&incremental, "enabled", true);
     json_push_kv_str(&incremental, "node_object_dir", "build/obj");
+    json_push_kv_str(&incremental, "dev_node_object_dir", "build/dev-obj");
     json_push_kv_str(&incremental, "fast_test_object_dir", "build/test-obj");
     json_push_kv_bool(&incremental, "header_depfiles", true);
     json_push_kv_str(&incremental, "depfile_rule",
-                     "-MMD -MP with -include $(ALL_OBJS:.o=.d)");
+                     "-MMD -MP with included .d files for build-only, dev-bin, and test_parallel_fast");
     json_push_kv_str(&incremental, "compile_check", "make build-only");
+    json_push_kv_str(&incremental, "dev_binary_command", "make dev-bin");
     json_push_kv_str(&incremental, "behavior",
                      "Unchanged translation units keep their .o files; changed headers recompile dependent objects through .d files.");
     json_push_kv_str(&incremental, "whole_program_link_caveat",
-                     "The release binaries still use whole-program LTO links; build-only is the fast no-link compile gate.");
+                     "The release binary still uses whole-program LTO; make dev-bin is the fast linked executable gate.");
     json_push_kv(result, "incremental_compile", &incremental);
     json_free(&incremental);
+
+    json_init(&dev);
+    json_set_object(&dev);
+    json_push_kv_bool(&dev, "enabled", true);
+    json_push_kv_str(&dev, "command", "make dev-bin");
+    json_push_kv_str(&dev, "alias", "make zclassic23-dev");
+    json_push_kv_str(&dev, "binary", "build/bin/zclassic23-dev");
+    json_push_kv_str(&dev, "object_dir", "build/dev-obj");
+    json_push_kv_bool(&dev, "lto", false);
+    json_push_kv_bool(&dev, "stripped", false);
+    json_push_kv_bool(&dev, "release_or_deploy_artifact", false);
+    json_push_kv_str(&dev, "default_opt", "ZCL_DEV_OPT=-Og");
+    json_push_kv_str(&dev, "hot_opt", "ZCL_DEV_HOT_OPT=-O2");
+    json_push_kv_str(&dev, "hot_path_buckets",
+                     "lib/chain, lib/consensus, lib/crypto, lib/primitives, lib/sapling, lib/script, lib/validation");
+    json_push_kv_str(&dev, "linker_knob", "ZCL_DEV_LINKER");
+    json_push_kv_str(&dev, "purpose",
+                     "Run changed native agent, diagnostics, parser, and API code without paying the release LTO link.");
+    json_push_kv(result, "dev_node_binary", &dev);
+    json_free(&dev);
 
     json_init(&cache);
     json_set_object(&cache);
@@ -500,6 +522,12 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     agent_push_build_knob(&knobs, "ZCL_FAST_CACHE_DIR",
                           ".cache/zcl-agent-fast-ci",
                           "override green-input cache directory");
+    agent_push_build_knob(&knobs, "ZCL_DEV_OPT", "-Og",
+                          "default optimization for make dev-bin");
+    agent_push_build_knob(&knobs, "ZCL_DEV_HOT_OPT", "-O2",
+                          "optimization for dev-bin hot-path buckets");
+    agent_push_build_knob(&knobs, "ZCL_DEV_LINKER", "auto",
+                          "optional fast linker for make dev-bin");
     json_push_kv(&cache, "knobs", &knobs);
     json_free(&knobs);
     json_push_kv(result, "cache", &cache);
@@ -509,6 +537,8 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_set_array(&commands);
     agent_push_build_command(&commands, "compile_check", "make build-only",
                              "incremental no-link compile of all node objects");
+    agent_push_build_command(&commands, "dev_node_binary", "make dev-bin",
+                             "incremental non-LTO node executable for local agent/API iteration");
     agent_push_build_command(&commands, "focused_fast_test",
                              "make t-fast ONLY=<group>",
                              "cached non-LTO per-file test harness");
