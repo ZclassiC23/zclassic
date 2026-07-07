@@ -914,6 +914,8 @@ The default is intentionally observe-only:
   run `make remote-node-update-json` for one JSON object per host; operational
   logs move to stderr.
 - Non-dry-run builds preflight cold-build prerequisites before fast-forwarding.
+  LevelDB accepts either `cmake` or the direct C++11 fallback, so warm remote
+  nodes do not need package-manager access just to rebuild that archive.
   Failures return the same `zcl.remote_node_update.v1` JSON shape with
   `status:"error"` and an `error` field.
 

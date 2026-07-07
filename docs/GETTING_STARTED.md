@@ -21,8 +21,9 @@ Install:
 
 - gcc 14+ or clang with working `-std=c23` support.
 - GNU make.
-- `cmake`, `autoconf`, `curl` or `wget`, `unzip`, and `sha256sum` for the
-  one-time vendored-library build.
+- `c++` or `g++`, `autoconf`, `curl` or `wget`, `unzip`, and `sha256sum` for
+  the one-time vendored-library build. `cmake` is optional; when it is absent,
+  LevelDB is built by the repo's direct static-library fallback.
 
 The first build needs internet access. Third-party source tarballs are fetched
 from pinned URLs, checked against pinned SHA-256 hashes, and built locally into

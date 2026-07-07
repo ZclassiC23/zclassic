@@ -231,8 +231,12 @@ preflight_build() {
     esac
     case " $missing " in
         *" libleveldb.a "*)
-            require_tool_for_preflight cmake "required for libleveldb.a" ||
+            if ! command -v cmake >/dev/null 2>&1 &&
+               ! command -v c++ >/dev/null 2>&1 &&
+               ! command -v g++ >/dev/null 2>&1; then
+                preflight_error="missing_build_tool:c++_or_cmake (required for libleveldb.a)"
                 return 1
+            fi
             ;;
     esac
 

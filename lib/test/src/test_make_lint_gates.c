@@ -2972,6 +2972,7 @@ static int t_remote_node_update_contract(void)
         ASSERT(strstr(script, "missing_vendor_archives") != NULL);
         ASSERT(strstr(script, "preflight_build") != NULL);
         ASSERT(strstr(script, "preflight_failed") != NULL);
+        ASSERT(strstr(script, "missing_build_tool:c++_or_cmake") != NULL);
         ASSERT(strstr(script, "\\\"error\\\"") != NULL);
         ASSERT(strstr(script, "git_fetch_failed") != NULL);
         ASSERT(strstr(script, "build_failed:$build") != NULL);
@@ -3021,6 +3022,10 @@ static int t_remote_node_update_contract(void)
         ASSERT(strstr(script, "release_vendor_lock") != NULL);
         ASSERT(strstr(script, "timed out waiting for vendor build lock")
                != NULL);
+        ASSERT(strstr(script, "build_leveldb_direct") != NULL);
+        ASSERT(strstr(script, "leveldb_cxx_compiler") != NULL);
+        ASSERT(strstr(script, "LEVELDB_PLATFORM_POSIX=1") != NULL);
+        ASSERT(strstr(script, "#define HAVE_SNAPPY 0") != NULL);
         free(script);
         script = NULL;
 
@@ -3060,6 +3065,7 @@ static int t_remote_node_update_contract(void)
         ASSERT(strstr(doc, "status:\"error\"") != NULL);
         ASSERT(strstr(doc, "git merge --ff-only origin/main") != NULL);
         ASSERT(strstr(doc, "ZCL_REMOTE_RESTART=0") != NULL);
+        ASSERT(strstr(doc, "direct C++11 fallback") != NULL);
         ASSERT(strstr(doc,
                       "deploy/examples/zclassic23-self-update.timer")
                != NULL);

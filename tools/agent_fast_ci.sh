@@ -375,6 +375,7 @@ cache_manifest() {
     for file in Makefile "$IMPACT_RULES_FILE" tools/agent_fast_ci.sh tools/z \
         tools/githooks/pre-push tools/deploy_guard.sh tools/deploy_verify.sh \
         tools/scripts/remote_node_update.sh \
+        tools/scripts/build_vendor.sh \
         tools/scripts/background_quality_lane.sh \
         tools/scripts/check_agentdeployguard_cli_exit.sh \
         deploy/examples/zclassic23-self-update.service \
@@ -466,6 +467,7 @@ run_shell_checks() {
     for script in tools/agent_fast_ci.sh tools/z tools/githooks/pre-push \
         tools/deploy_guard.sh tools/deploy_verify.sh \
         tools/scripts/remote_node_update.sh \
+        tools/scripts/build_vendor.sh \
         tools/scripts/background_quality_lane.sh \
         tools/scripts/check_agentdeployguard_cli_exit.sh; do
         bash -n "$script"

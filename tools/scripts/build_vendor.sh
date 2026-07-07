@@ -222,21 +222,125 @@ build_libevent() {     # FETCHED: libevent -> libevent.a + libevent_openssl.a + 
     ok "built   libevent*.a"
 }
 
+leveldb_cxx_compiler() {
+    if [[ -n "${CXX:-}" ]]; then
+        command -v "$CXX" >/dev/null 2>&1 || die "CXX not found: $CXX"
+        printf '%s' "$CXX"
+        return
+    fi
+    if command -v c++ >/dev/null 2>&1; then
+        printf '%s' c++
+        return
+    fi
+    if command -v g++ >/dev/null 2>&1; then
+        printf '%s' g++
+        return
+    fi
+    die "required tool not found: c++ or g++ (LevelDB direct fallback)"
+}
+
+build_leveldb_direct() {
+    local d="$1" cxx gen objdir src obj
+    local objs=()
+    local sources=(
+        db/builder.cc
+        db/c.cc
+        db/db_impl.cc
+        db/db_iter.cc
+        db/dbformat.cc
+        db/dumpfile.cc
+        db/filename.cc
+        db/log_reader.cc
+        db/log_writer.cc
+        db/memtable.cc
+        db/repair.cc
+        db/table_cache.cc
+        db/version_edit.cc
+        db/version_set.cc
+        db/write_batch.cc
+        table/block_builder.cc
+        table/block.cc
+        table/filter_block.cc
+        table/format.cc
+        table/iterator.cc
+        table/merger.cc
+        table/table_builder.cc
+        table/table.cc
+        table/two_level_iterator.cc
+        util/arena.cc
+        util/bloom.cc
+        util/cache.cc
+        util/coding.cc
+        util/comparator.cc
+        util/crc32c.cc
+        util/env.cc
+        util/filter_policy.cc
+        util/hash.cc
+        util/logging.cc
+        util/options.cc
+        util/status.cc
+        util/env_posix.cc
+        helpers/memenv/memenv.cc
+    )
+
+    cxx="$(leveldb_cxx_compiler)"
+    say "build   libleveldb.a  (direct C++11 fallback, no cmake)"
+    gen="$WORK/leveldb-direct/include/port"
+    objdir="$WORK/leveldb-direct/obj"
+    rm -rf "$WORK/leveldb-direct"
+    mkdir -p "$gen" "$objdir"
+    cat > "$gen/port_config.h" <<'EOF'
+#ifndef STORAGE_LEVELDB_PORT_PORT_CONFIG_H_
+#define STORAGE_LEVELDB_PORT_PORT_CONFIG_H_
+#ifndef HAVE_FDATASYNC
+#define HAVE_FDATASYNC 1
+#endif
+#ifndef HAVE_FULLFSYNC
+#define HAVE_FULLFSYNC 0
+#endif
+#ifndef HAVE_O_CLOEXEC
+#define HAVE_O_CLOEXEC 1
+#endif
+#ifndef HAVE_CRC32C
+#define HAVE_CRC32C 0
+#endif
+#ifndef HAVE_SNAPPY
+#define HAVE_SNAPPY 0
+#endif
+#endif
+EOF
+
+    for src in "${sources[@]}"; do
+        obj="$objdir/${src//\//_}.o"
+        "$cxx" -std=c++11 -O2 -DNDEBUG -fPIC -fno-exceptions -fno-rtti \
+            -DLEVELDB_PLATFORM_POSIX=1 -DLEVELDB_COMPILE_LIBRARY \
+            -I"$WORK/leveldb-direct/include" -I"$d" -I"$d/include" \
+            -c "$d/$src" -o "$obj"
+        objs+=("$obj")
+    done
+    rm -f "$LIB/libleveldb.a"
+    ar $ARFLAGS_DET "$LIB/libleveldb.a" "${objs[@]}" 2>/dev/null ||
+        ar cr "$LIB/libleveldb.a" "${objs[@]}"
+}
+
 build_leveldb() {      # FETCHED: LevelDB -> libleveldb.a
     have libleveldb.a && { say "skip    libleveldb.a (present)"; return; }
     say "build   libleveldb.a  (LevelDB ${LEVELDB_VER})"
     local tb; tb="$(fetch "$LEVELDB_URL" "$LEVELDB_SHA" "leveldb-${LEVELDB_VER}.tar.gz")"
     local d="$WORK/leveldb-${LEVELDB_VER}"
     rm -rf "$d"; tar -C "$WORK" -xzf "$tb"
-    need cmake
-    ( cd "$d" && cmake -S . -B build_static \
-        -DCMAKE_BUILD_TYPE=Release \
-        -DBUILD_SHARED_LIBS=OFF \
-        -DLEVELDB_BUILD_TESTS=OFF \
-        -DLEVELDB_BUILD_BENCHMARKS=OFF \
-        -DCMAKE_POSITION_INDEPENDENT_CODE=ON >/dev/null \
-        && cmake --build build_static -j"$JOBS" --target leveldb >/dev/null 2>&1 )
-    cp -f "$d/build_static/libleveldb.a" "$LIB/libleveldb.a"
+    if command -v cmake >/dev/null 2>&1; then
+        ( cd "$d" && cmake -S . -B build_static \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DLEVELDB_BUILD_TESTS=OFF \
+            -DLEVELDB_BUILD_BENCHMARKS=OFF \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON >/dev/null \
+            && cmake --build build_static -j"$JOBS" --target leveldb >/dev/null 2>&1 )
+        cp -f "$d/build_static/libleveldb.a" "$LIB/libleveldb.a"
+    else
+        build_leveldb_direct "$d"
+    fi
     # Tracked vendor/include/leveldb/*.h (1.18) expose the same stable C API
     # (leveldb/c.h) the repo uses; we intentionally do NOT overwrite them.
     ok "built   libleveldb.a"

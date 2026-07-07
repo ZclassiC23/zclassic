@@ -61,9 +61,10 @@ This binary is for local AI/operator iteration only. `make zclassic23`,
 ## Prerequisites
 
 - **gcc 14+** (or clang with working `-std=c23`) and **GNU make**.
-- For `make vendor`: **`cmake`** (LevelDB), **`autoconf`** + an autotools
-  toolchain (libevent, zlib), **`curl`** or **`wget`**, **`unzip`** (SQLite
-  amalgamation zip), and **`sha256sum`**.
+- For `make vendor`: a C++11 compiler (`c++` or `g++`) for LevelDB, optional
+  **`cmake`** for the preferred LevelDB build path, **`autoconf`** + an
+  autotools toolchain (libevent, zlib), **`curl`** or **`wget`**, **`unzip`**
+  (SQLite amalgamation zip), and **`sha256sum`**.
 - For the embedded Tor onion service (optional): the `vendor/tor` submodule
   (`git submodule update --init`). When that submodule is built, the Makefile
   links the real Tor; otherwise it links the in-tree `libtor_stub.a` that
@@ -97,7 +98,9 @@ Notes:
 - **LevelDB 1.23** is built, while the committed `vendor/include/leveldb/*.h`
   headers are 1.18. That is intentional and safe: the repo uses only LevelDB's
   stable C API (`<leveldb/c.h>`), which is unchanged across 1.18→1.23, so the
-  headers and the built library stay compatible.
+  headers and the built library stay compatible. `cmake` is used when present;
+  otherwise `tools/scripts/build_vendor.sh` builds the same static source set
+  directly with a C++11 compiler and a generated POSIX `port_config.h`.
 - **SQLite 3.49.0** amalgamation; `make vendor` also refreshes
   `vendor/include/sqlite3.h` and `vendor/sqlite3.c` so the rest of the build
   (e.g. `tools/sqlq.c`) stays in sync.
