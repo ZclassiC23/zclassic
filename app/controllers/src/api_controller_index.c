@@ -26,6 +26,8 @@ static void api_rest_index_aliases_json(struct json_value *aliases)
     json_push_kv_str(aliases, "node", "/api/v1/node");
     json_push_kv_str(aliases, "node_summary", "/api/v1/node/summary");
     json_push_kv_str(aliases, "status", "/api/v1/status");
+    json_push_kv_str(aliases, "bootstrap", "/api/v1/bootstrap");
+    json_push_kv_str(aliases, "bootstrapstatus", "/api/v1/bootstrap");
     json_push_kv_str(aliases, "protocols", "/api/v1/protocols");
     json_push_kv_str(aliases, "zslp_tokens", "/api/v1/zslp/tokens");
     json_push_kv_str(aliases, "names_show", "/api/v1/names/{name}");
@@ -94,6 +96,8 @@ static void api_rest_index_resources_json(struct json_value *resources)
                                  "/api/v1/milestone", "", false);
     api_rest_index_push_resource(resources, "refold",
                                  "/api/v1/refold", "", false);
+    api_rest_index_push_resource(resources, "bootstrap",
+                                 "/api/v1/bootstrap", "", false);
     api_rest_index_push_resource(resources, "blocks",
                                  "/api/v1/blocks",
                                  "/api/v1/block/{height_or_hash}", false);
@@ -138,6 +142,7 @@ static void api_rest_index_drilldown_json(struct json_value *drilldown)
     json_push_kv_str(drilldown, "downloads", "/api/v1/downloadstats");
     json_push_kv_str(drilldown, "full_node_status",
                      "/api/v1/node/status");
+    json_push_kv_str(drilldown, "bootstrap", "/api/v1/bootstrap");
 }
 
 static const char *api_openapi_method_key(const char *method, char *buf,

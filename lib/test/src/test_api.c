@@ -839,6 +839,12 @@ int test_api(void)
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "aliases"),
                                                 "protocols")),
                           "/api/v1/protocols") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "aliases"),
+                                                "bootstrap")),
+                          "/api/v1/bootstrap") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "aliases"),
+                                                "bootstrapstatus")),
+                          "/api/v1/bootstrap") == 0;
         ok = ok && json_get(json_get(&root, "crud"), "read_collection") != NULL;
         ok = ok && json_get(json_get(&root, "crud"), "read_item") != NULL;
         ok = ok && json_get(json_get(&root, "crud"),
@@ -983,11 +989,16 @@ int test_api(void)
              strcmp(json_get_str(json_get(swap_protocol, "status")),
                     "in_progress") == 0;
         const struct json_value *resources = json_get(&root, "resources");
+        const struct json_value *bootstrap_resource =
+            api_test_find_named(resources, "bootstrap");
         const struct json_value *zslp_resource =
             api_test_find_named(resources, "zslp_tokens");
         const struct json_value *protocols_resource =
             api_test_find_named(resources, "protocols");
         ok = ok && resources && json_size(resources) >= 4;
+        ok = ok && bootstrap_resource &&
+             strcmp(json_get_str(json_get(bootstrap_resource, "collection")),
+                    "/api/v1/bootstrap") == 0;
         ok = ok && protocols_resource &&
              strcmp(json_get_str(json_get(protocols_resource, "collection")),
                     "/api/v1/protocols") == 0;
@@ -1004,6 +1015,10 @@ int test_api(void)
              (int64_t)api_route_contract_count();
         const struct json_value *hodl =
             api_test_find_contract(routes, "/api/v1/hodl");
+        const struct json_value *bootstrap =
+            api_test_find_contract(routes, "/api/v1/bootstrap");
+        const struct json_value *legacy_bootstrap =
+            api_test_find_contract(routes, "/api/v1/bootstrapstatus");
         const struct json_value *wallet =
             api_test_find_contract(routes, "/api/v1/wallet");
         const struct json_value *zslp =
@@ -1039,6 +1054,21 @@ int test_api(void)
         ok = ok && hodl && strcmp(json_get_str(json_get(hodl,
                                     "response_schema")),
                                   "zcl.hodl_wave.v1") == 0;
+        ok = ok && bootstrap &&
+             strcmp(json_get_str(json_get(bootstrap, "response_schema")),
+                    "zcl.bootstrap_status.v1") == 0;
+        ok = ok && bootstrap &&
+             strcmp(json_get_str(json_get(bootstrap, "crud_name")),
+                    "read_singleton") == 0;
+        ok = ok && bootstrap &&
+             strcmp(json_get_str(json_get(bootstrap, "freshness")),
+                    "network_bootstrap") == 0;
+        ok = ok && bootstrap && !json_get_bool(json_get(bootstrap,
+                                                        "private"));
+        ok = ok && legacy_bootstrap &&
+             strcmp(json_get_str(json_get(legacy_bootstrap,
+                                          "legacy_alias_of")),
+                    "/api/v1/bootstrap") == 0;
         ok = ok && hodl && strcmp(json_get_str(json_get(hodl,
                                     "error_schema")),
                                   "zcl.rest_error.v1") == 0;
@@ -1231,6 +1261,10 @@ int test_api(void)
              strcmp(json_get_str(json_get(legacy_swap_chains,
                                           "legacy_alias_of")),
                     "/api/v1/swaps/chains") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root,
+                                                "drilldown"),
+                                                "bootstrap")),
+                          "/api/v1/bootstrap") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
                                                 "first_tool")),
                           "zcl_agent") == 0;
@@ -1269,6 +1303,69 @@ int test_api(void)
                           "zclassic23 refold") == 0;
         ok = ok && json_get(json_get(&root, "cli"),
                             "compat_command") == NULL;
+        json_free(&root);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: bootstrap status is a first-class REST resource... ");
+    {
+        static uint8_t bootstrap_resp[262144];
+
+        rpc_net_set_connman(NULL);
+        rpc_net_set_boot_context(NULL, NULL);
+        reducer_frontier_provable_tip_reset();
+
+        size_t n = api_handle_request("GET", "/api/v1/bootstrap", NULL, 0,
+                                      bootstrap_resp,
+                                      sizeof(bootstrap_resp));
+        const char *body = api_test_body(bootstrap_resp, n,
+                                         sizeof(bootstrap_resp));
+        struct json_value root;
+        json_init(&root);
+        bool ok = n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.bootstrap_status.v1") == 0;
+        ok = ok && json_get_int(json_get(&root, "schema_version")) == 1;
+        ok = ok && !json_get_bool(json_get(&root, "ok"));
+        ok = ok && !json_get_bool(json_get(&root,
+                                           "serving_p2p_bootstrap"));
+        ok = ok && json_get(&root, "binary") != NULL;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "binary"),
+                                                "build_commit")),
+                          zcl_build_commit()) == 0;
+        const char *subver =
+            json_get_str(json_get(json_get(&root, "binary"),
+                                  "advertised_subver"));
+        ok = ok && subver && subver[0] != '\0';
+        ok = ok && json_get_int(json_get(json_get(&root, "p2p"),
+                                         "protocolversion")) > 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root,
+                          "legacy_p2p_bootstrap"), "schema")),
+                          "zcl.bootstrap.p2p.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root,
+                          "beta6_snapshot_bootstrap"), "schema")),
+                          "zclassicd.bootstrap.snapshot.v3") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root,
+                          "snapshot_loader"), "schema")),
+                          "zcl.snapshot_loader.v1") == 0;
+        ok = ok && api_test_array_has_str(json_get(&root, "blockers"),
+                                          "p2p_not_initialized");
+        ok = ok && api_test_array_has_str(json_get(&root, "blockers"),
+                                          "provable_tip_not_published");
+        ok = ok && strcmp(json_get_str(json_get(&root,
+                                                "source_projection")),
+                          "network_bootstrap") == 0;
+        json_free(&root);
+
+        n = api_handle_request("GET", "/api/v1/bootstrapstatus", NULL, 0,
+                               bootstrap_resp, sizeof(bootstrap_resp));
+        body = api_test_body(bootstrap_resp, n, sizeof(bootstrap_resp));
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.bootstrap_status.v1") == 0;
         json_free(&root);
 
         if (ok) printf("OK\n");
@@ -1419,6 +1516,10 @@ int test_api(void)
 
         const struct json_value *hodl =
             api_test_openapi_get(&root, "/api/v1/hodl");
+        const struct json_value *bootstrap =
+            api_test_openapi_get(&root, "/api/v1/bootstrap");
+        const struct json_value *legacy_bootstrap =
+            api_test_openapi_get(&root, "/api/v1/bootstrapstatus");
         const struct json_value *wallet =
             api_test_openapi_get(&root, "/api/v1/wallet");
         const struct json_value *events =
@@ -1457,6 +1558,23 @@ int test_api(void)
         ok = ok && hodl &&
              strcmp(json_get_str(json_get(hodl, "x-response-schema")),
                     "zcl.hodl_wave.v1") == 0;
+        ok = ok && bootstrap &&
+             strcmp(json_get_str(json_get(bootstrap, "x-resource")),
+                    "bootstrap") == 0;
+        ok = ok && bootstrap &&
+             strcmp(json_get_str(json_get(bootstrap, "x-crud-name")),
+                    "read_singleton") == 0;
+        ok = ok && bootstrap &&
+             strcmp(json_get_str(json_get(bootstrap, "x-response-schema")),
+                    "zcl.bootstrap_status.v1") == 0;
+        ok = ok && bootstrap &&
+             strcmp(json_get_str(json_get(json_get(bootstrap,
+                    "x-zcl-telemetry"), "freshness_source")),
+                    "network_bootstrap") == 0;
+        ok = ok && legacy_bootstrap &&
+             strcmp(json_get_str(json_get(legacy_bootstrap,
+                                          "x-legacy-alias-of")),
+                    "/api/v1/bootstrap") == 0;
         ok = ok && hodl &&
              strcmp(json_get_str(json_get(hodl, "x-auth-policy")),
                     "public") == 0;

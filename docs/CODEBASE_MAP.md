@@ -349,6 +349,12 @@ Milestone/version progress lives beside public status in
 `milestone`/`mvpstatus`, REST `/api/v1/milestone`, and MCP `zcl_milestone`.
 Keep strict MRS scoring separate from partial/proxy subgoal progress.
 
+Bootstrap-service readiness is the network-facing public singleton
+`/api/v1/bootstrap` (compat alias `/api/v1/bootstrapstatus`) over the shared
+`network_bootstrap_status_json()` contract. Keep it schema-identical with RPC
+`bootstrapstatus` and MCP `zcl_bootstrapstatus`; do not duplicate bootstrap
+field assembly in a REST-only handler.
+
 ### MCP target gotcha
 `mcp__zcl23-dev__*` hit the DEV node (`~/.zclassic-c23-dev`, port 18252).
 For LIVE, use `mcp__zcl23-live__*` / curl port 18232 (`~/.zclassic-c23`).

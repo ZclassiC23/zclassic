@@ -13,6 +13,7 @@
 #include "controllers/health_controller.h"
 #include "controllers/messaging_controller.h"
 #include "controllers/name_controller.h"
+#include "controllers/network_controller.h"
 #include "controllers/swap_controller.h"
 #include "json/json.h"
 #include "models/zslp.h"
@@ -101,6 +102,12 @@ struct api_json_resource_route {
 static const struct api_json_resource_route k_api_json_resource_routes[] = {
     { "GET", "/api/sync/detail", "sync", "detail", api_getsyncdetail,
       "zcl.sync.detail.v1", "", "sync_projection", "", false },
+    { "GET", "/api/bootstrap", "bootstrap", "show",
+      network_bootstrap_status_json, "zcl.bootstrap_status.v1", "",
+      "network_bootstrap", "", false },
+    { "GET", "/api/bootstrapstatus", "bootstrap", "show",
+      network_bootstrap_status_json, "zcl.bootstrap_status.v1", "",
+      "network_bootstrap", "/api/v1/bootstrap", false },
     { "GET", "/api/services", "services", "index", api_getservicehealth,
       "zcl.services.index.v1", "", "service_registry", "", false },
     { "GET", "/api/latency", "latency", "index", api_getpeerlatency,

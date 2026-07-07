@@ -579,6 +579,13 @@ static bool rpc_bootstrapstatus(const struct json_value *params, bool help,
     return true;
 }
 
+bool network_bootstrap_status_json(struct json_value *out)
+{
+    if (!out)
+        LOG_FAIL("network", "bootstrap status output is NULL");
+    return rpc_bootstrapstatus(NULL, false, out);
+}
+
 static bool rpc_getpeerinfo(const struct json_value *params, bool help,
                               struct json_value *result)
 {

@@ -750,9 +750,10 @@ instead of falsely declaring the new binary healthy.
 
 ## Bootstrap Service Status
 
-Use `zcl_bootstrapstatus` (or raw RPC `bootstrapstatus`) before claiming a
-zclassic23 node is helping fresh peers bootstrap. The response is versioned as
-`zcl.bootstrap_status.v1` and separates two surfaces:
+Use REST `GET /api/v1/bootstrap`, MCP `zcl_bootstrapstatus`, or raw RPC
+`bootstrapstatus` before claiming a zclassic23 node is helping fresh peers
+bootstrap. Compatibility alias: `GET /api/v1/bootstrapstatus`. The response is
+versioned as `zcl.bootstrap_status.v1` and separates two surfaces:
 
 - `legacy_p2p_bootstrap`: ordinary full-node serving over `version`,
   `getheaders`, `getdata`, `getaddr`, and related P2P messages. This is the

@@ -20,6 +20,9 @@ void register_net_rpc_commands(struct rpc_table *t);
 
 struct json_value;
 
+/* Shared bootstrap-service readiness contract for RPC, REST, and MCP. */
+bool network_bootstrap_status_json(struct json_value *out);
+
 /* Normalize `dumpstate peer_lifecycle incidents` into the standalone
  * `peerincidents` contract. This is used only as a compatibility fallback
  * when a running target predates the direct peerincidents RPC method. */
