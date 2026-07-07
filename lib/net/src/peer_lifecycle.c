@@ -859,6 +859,30 @@ bool peer_lifecycle_peer_json(const struct p2p_node *node,
     return true;
 }
 
+bool peer_lifecycle_addr_json(const char *addr, struct json_value *out)
+{
+    struct peer_lifecycle_entry copy;
+    bool found = false;
+
+    if (!addr || !addr[0] || !out)
+        return false;
+
+    pthread_mutex_lock(&g_pl.lock);
+    const struct peer_lifecycle_entry *e =
+        find_entry_locked(addr, -1, false);
+    if (e) {
+        copy = *e;
+        found = true;
+    }
+    pthread_mutex_unlock(&g_pl.lock);
+
+    if (!found)
+        return false;
+
+    entry_to_json(&copy, out);
+    return true;
+}
+
 static void summary_to_json(const struct peer_lifecycle_summary *s,
                             struct json_value *out)
 {

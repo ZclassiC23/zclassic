@@ -15,7 +15,9 @@
 #include "models/file_service.h"
 #include "models/znam.h"
 #include "net/connman.h"
+#include "net/fast_sync.h"
 #include "net/net.h"
+#include "net/peer_lifecycle.h"
 #include "platform/time_compat.h"
 #include "services/block_source_policy.h"
 #include "services/node_health_service.h"
@@ -4424,12 +4426,37 @@ int test_api(void)
 
         if (ok) {
             struct db_peer peer;
+            struct p2p_node live;
             memset(&peer, 0, sizeof(peer));
-            memset(peer.ip, 0x55, sizeof(peer.ip));
+            peer.ip[10] = 0xff;
+            peer.ip[11] = 0xff;
+            peer.ip[12] = 203;
+            peer.ip[13] = 0;
+            peer.ip[14] = 113;
+            peer.ip[15] = 85;
             peer.port = 8333;
             peer.services = 5;
-            peer.is_zcl23 = true;
+            peer.is_zcl23 = false;
             ok = db_peer_save(&ndb, &peer);
+
+            peer_lifecycle_reset_for_test();
+            memset(&live, 0, sizeof(live));
+            memcpy(live.addr.svc.addr.ip, peer.ip, sizeof(peer.ip));
+            live.addr.svc.port = peer.port;
+            live.id = 833301;
+            live.state = PEER_HANDSHAKE_COMPLETE;
+            live.services = NODE_NETWORK | NODE_ZCL23;
+            snprintf(live.addr_name, sizeof(live.addr_name),
+                     "203.0.113.85:8333");
+            snprintf(live.sub_ver, sizeof(live.sub_ver),
+                     "%s", "/ZClassic23:0.1.0/");
+            peer_lifecycle_note_connected(&live,
+                                          PEER_LIFECYCLE_SOURCE_ADDNODE);
+            peer_lifecycle_note_version_received(&live, live.services,
+                                                 3173000, live.sub_ver);
+            peer_lifecycle_note_handshake_complete(&live);
+            peer_lifecycle_note_active(&live);
+
             ok = ok && api_test_seed_durable_tip(dbdir, 66);
             reducer_frontier_provable_tip_reset();
             api_set_state(NULL, NULL, NULL, &ndb, dbdir);
@@ -4445,9 +4472,39 @@ int test_api(void)
                               "zcl.peers.index.v1") == 0;
             ok = ok && api_test_expect_freshness(&root, "peer_projection",
                                                  66, 66, true);
-            ok = ok && json_size(json_get(&root, "peers")) == 1;
-            ok = ok && json_get_int(json_get(json_at(json_get(&root,
-                                      "peers"), 0), "port")) == 8333;
+            const struct json_value *peers = json_get(&root, "peers");
+            const struct json_value *item = json_at(peers, 0);
+            ok = ok && json_size(peers) == 1;
+            ok = ok && item &&
+                 json_get_int(json_get(item, "port")) == 8333;
+            ok = ok && item &&
+                 strcmp(json_get_str(json_get(item, "addr")),
+                        "203.0.113.85:8333") == 0;
+            ok = ok && item &&
+                 !json_get_bool(json_get(item, "projection_is_zcl23"));
+            ok = ok && item &&
+                 json_get_bool(json_get(item, "live_peer"));
+            ok = ok && item &&
+                 json_get_bool(json_get(item, "live_zclassic23"));
+            ok = ok && item &&
+                 json_get_bool(json_get(item, "is_zcl23"));
+            ok = ok && item &&
+                 json_get_bool(json_get(item,
+                                        "zclassic23_projection_stale"));
+            ok = ok && item &&
+                 strcmp(json_get_str(json_get(item,
+                                              "zclassic23_verified_by")),
+                        "live_handshake") == 0;
+            ok = ok && item &&
+                 strcmp(json_get_str(json_get(item,
+                                              "bootstrap_readiness")),
+                        "useful") == 0;
+            ok = ok && item &&
+                 json_get_bool(json_get(item, "fast_sync_useful"));
+            const struct json_value *live_lifecycle =
+                item ? json_get(item, "live_lifecycle") : NULL;
+            ok = ok && live_lifecycle &&
+                 json_get_bool(json_get(live_lifecycle, "zclassic23"));
             json_free(&root);
 
             n = api_handle_request("GET", "/api/peers?limit=99",
@@ -4458,6 +4515,7 @@ int test_api(void)
             reducer_frontier_provable_tip_reset();
             progress_store_close();
             node_db_close(&ndb);
+            peer_lifecycle_reset_for_test();
         }
 
         char cmd[384];

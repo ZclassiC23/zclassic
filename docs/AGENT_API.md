@@ -284,6 +284,14 @@ means the peer reported a height but did not advertise the service bit needed
 for bootstrap. Host-level `advertised_height_trust` can also be
 `split_bootstrap_capabilities` when one current connection has the service bit
 and another has the height, but no single connection has both.
+Public REST `GET /api/v1/peers` is the lightweight collection for explorers
+and simple agents. Each row keeps the persisted projection flag as
+`projection_is_zcl23` and adds live lifecycle evidence when available:
+`live_peer`, `live_zclassic23`, `bootstrap_readiness`, `fast_sync_useful`,
+`live_lifecycle`, and `zclassic23_verified_by`. The row-level `is_zcl23` is
+the resolved verdict (`projection_is_zcl23 || live_zclassic23`), and
+`zclassic23_projection_stale=true` means the live handshake has already proven
+ZClassic23 support even though the persisted peer projection has not refreshed.
 `peer_incident_severity=info` means the raw peer lifecycle view still has
 forensic detail, but there is no duplicate/reconnect storm and the overall
 verdict can remain healthy. `peer_incident_severity=attention` means the

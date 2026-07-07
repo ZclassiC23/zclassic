@@ -363,6 +363,54 @@ static int test_peer_lifecycle_counters(void)
     return failures;
 }
 
+static int test_peer_lifecycle_addr_lookup(void)
+{
+    int failures = 0;
+    TEST_CASE("peer_lifecycle: exact address lookup returns live readiness")
+    {
+        struct net_address addr;
+        struct p2p_node node;
+        struct json_value peer;
+        struct json_value missing;
+
+        peer_lifecycle_reset_for_test();
+        memset(&node, 0, sizeof(node));
+        test_addr_ipv4(&addr, 198, 51, 100, 37, 8033);
+        node.addr = addr;
+        node.id = 3703;
+        node.state = PEER_HANDSHAKE_COMPLETE;
+        node.services = NODE_NETWORK | NODE_ZCL23;
+        snprintf(node.addr_name, sizeof(node.addr_name),
+                 "198.51.100.37:8033");
+        snprintf(node.sub_ver, sizeof(node.sub_ver),
+                 "%s", msg_version_user_agent());
+
+        peer_lifecycle_note_connected(&node,
+                                      PEER_LIFECYCLE_SOURCE_ADDNODE);
+        peer_lifecycle_note_version_received(&node, node.services,
+                                             3173000, node.sub_ver);
+        peer_lifecycle_note_handshake_complete(&node);
+        peer_lifecycle_note_active(&node);
+
+        json_init(&peer);
+        ASSERT(peer_lifecycle_addr_json("198.51.100.37:8033", &peer));
+        ASSERT(strcmp(json_get_str(json_get(&peer, "addr")),
+                      "198.51.100.37:8033") == 0);
+        ASSERT(json_get_bool(json_get(&peer, "zclassic23")));
+        ASSERT(json_get_bool(json_get(&peer, "fast_sync_useful")));
+        ASSERT(strcmp(json_get_str(json_get(&peer,
+                                            "bootstrap_readiness")),
+                      "useful") == 0);
+        json_free(&peer);
+
+        json_init(&missing);
+        ASSERT(!peer_lifecycle_addr_json("198.51.100.37:18033",
+                                         &missing));
+        json_free(&missing);
+    } TEST_END
+    return failures;
+}
+
 static int test_peer_lifecycle_inbound_source_bucket(void)
 {
     int failures = 0;
@@ -1261,6 +1309,7 @@ int test_peer_lifecycle(void)
     failures += test_peer_lifecycle_skips_inbound_ephemeral_cache();
     failures += test_peer_lifecycle_inbound_ephemeral_skip_is_not_incident();
     failures += test_peer_lifecycle_counters();
+    failures += test_peer_lifecycle_addr_lookup();
     failures += test_peer_lifecycle_inbound_source_bucket();
     failures += test_peer_lifecycle_duplicate_connect_duration();
     failures += test_peer_lifecycle_inbound_classifies_remote_version();

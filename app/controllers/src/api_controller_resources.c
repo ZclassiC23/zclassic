@@ -26,6 +26,7 @@
 #include "models/hodl_wave.h"
 #include "models/onion_announcement.h"
 #include "models/peer.h"
+#include "net/peer_lifecycle.h"
 #include "models/zslp.h"
 #include "net/download.h"
 #include "views/explorer_factoids_view.h"
@@ -364,6 +365,9 @@ size_t api_serve_file_services(const char *path,
     return n;
 }
 
+static bool api_peer_addr_key(const struct db_peer *peer,
+                              char *out, size_t out_sz);
+
 size_t api_serve_peers(const char *path,
                               uint8_t *response,
                               size_t response_max)
@@ -393,14 +397,42 @@ size_t api_serve_peers(const char *path,
     for (int i = 0; i < count; i++) {
         char ip_hex[33];
         char src_hex[33];
+        char addr_key[256] = {0};
+        struct json_value live_lifecycle = {0};
+        bool live_peer = false;
+        bool live_zclassic23 = false;
+        bool live_fast_sync_useful = false;
+        const char *bootstrap_readiness = "unknown";
+        const char *zclassic23_verified_by = "not_verified";
+
         for (int j = 0; j < 16; j++) {
             snprintf(ip_hex + j * 2, 3, "%02x", rows[i].ip[j]);
             snprintf(src_hex + j * 2, 3, "%02x", rows[i].source[j]);
         }
+        json_init(&live_lifecycle);
+        if (api_peer_addr_key(&rows[i], addr_key, sizeof(addr_key)))
+            live_peer = peer_lifecycle_addr_json(addr_key, &live_lifecycle);
+        if (live_peer) {
+            live_zclassic23 =
+                json_get_bool(json_get(&live_lifecycle, "zclassic23"));
+            live_fast_sync_useful =
+                json_get_bool(json_get(&live_lifecycle,
+                                       "fast_sync_useful"));
+            bootstrap_readiness =
+                json_get_str(json_get(&live_lifecycle,
+                                      "bootstrap_readiness"));
+            if (live_zclassic23)
+                zclassic23_verified_by = "live_handshake";
+        }
+        if (!live_zclassic23 && rows[i].is_zcl23)
+            zclassic23_verified_by = "peer_projection";
+
         struct json_value item;
         json_init(&item);
         json_set_object(&item);
         json_push_kv_str(&item, "ip", ip_hex);
+        if (addr_key[0])
+            json_push_kv_str(&item, "addr", addr_key);
         json_push_kv_int(&item, "port", rows[i].port);
         json_push_kv_int(&item, "services", (int64_t)rows[i].services);
         json_push_kv_int(&item, "last_seen", rows[i].last_seen);
@@ -408,11 +440,27 @@ size_t api_serve_peers(const char *path,
         json_push_kv_int(&item, "attempts", rows[i].attempts);
         json_push_kv_int(&item, "bandwidth_score",
                          (int64_t)rows[i].bandwidth_score);
-        json_push_kv_bool(&item, "is_zcl23", rows[i].is_zcl23);
+        json_push_kv_bool(&item, "projection_is_zcl23",
+                          rows[i].is_zcl23);
+        json_push_kv_bool(&item, "live_peer", live_peer);
+        json_push_kv_bool(&item, "live_zclassic23", live_zclassic23);
+        json_push_kv_bool(&item, "is_zcl23",
+                          rows[i].is_zcl23 || live_zclassic23);
+        json_push_kv_str(&item, "zclassic23_verified_by",
+                         zclassic23_verified_by);
+        json_push_kv_bool(&item, "zclassic23_projection_stale",
+                          live_zclassic23 && !rows[i].is_zcl23);
+        json_push_kv_str(&item, "bootstrap_readiness",
+                         bootstrap_readiness);
+        json_push_kv_bool(&item, "fast_sync_useful",
+                          live_fast_sync_useful);
+        if (live_peer)
+            json_push_kv(&item, "live_lifecycle", &live_lifecycle);
         if (rows[i].has_source)
             json_push_kv_str(&item, "source", src_hex);
         json_push_back(&arr, &item);
         json_free(&item);
+        json_free(&live_lifecycle);
     }
     json_push_kv(&root, "peers", &arr);
     json_free(&arr);
@@ -420,4 +468,18 @@ size_t api_serve_peers(const char *path,
     size_t n = api_json_ok(response, response_max, &root);
     json_free(&root);
     return n;
+}
+
+static bool api_peer_addr_key(const struct db_peer *peer,
+                              char *out, size_t out_sz)
+{
+    struct net_service svc;
+
+    if (!peer || !out || out_sz == 0)
+        return false;
+
+    net_service_init(&svc);
+    memcpy(svc.addr.ip, peer->ip, sizeof(svc.addr.ip));
+    svc.port = peer->port;
+    return net_service_to_string(&svc, out, out_sz) > 0 && out[0] != '\0';
 }

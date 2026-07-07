@@ -67,6 +67,7 @@ void peer_lifecycle_note_cache_skipped_addr(const char *addr,
 
 bool peer_lifecycle_peer_json(const struct p2p_node *node,
                               struct json_value *out);
+bool peer_lifecycle_addr_json(const char *addr, struct json_value *out);
 bool peer_lifecycle_summary_json(struct json_value *out);
 bool peer_lifecycle_incidents_json(struct json_value *out);
 bool peer_lifecycle_dump_state_json(struct json_value *out,
