@@ -21,7 +21,7 @@ same native RPC methods. Shell wrappers are compatibility shims only.
 | Preferred interface contract | `zclassic23 agentinterface` | `zcl_agent_interface` |
 | State subsystem catalog | `zclassic23 statecatalog` | `zcl_state_catalog` |
 | Semantic event timeline | `zclassic23 timeline '{"category":"sync","count":50,"since_secs":3600}'` | `zcl_timeline` |
-| Peer incident view | `zclassic23 dumpstate peer_lifecycle incidents` | `zcl_state subsystem=peer_lifecycle key=incidents` |
+| Peer incident view | `zclassic23 peerincidents` | `zcl_peer_incidents` |
 | Deploy/restart guard | `zclassic23 agentdeployguard [action]` | `zcl_agent_deploy_guard` |
 | Mirror lag/blocker contract | `zclassic23 getmirrorstatus` | `zcl_mirror_status` |
 
@@ -190,7 +190,9 @@ signals and `safe_next_action` will point at a host-specific
 `peer_primary_host_next_action` when the compact host scorer can name one;
 otherwise it falls back to the generic peer-lifecycle drill-down.
 For a peer-only packet without the rest of `agentdiagnose`, use native
-`zclassic23 peerincidents` or MCP `zcl_peer_incidents`. The response schema is
+`zclassic23 peerincidents` or MCP `zcl_peer_incidents`; the generic fallback is
+`zclassic23 dumpstate peer_lifecycle incidents` / `zcl_state
+subsystem=peer_lifecycle key=incidents`. The first-class response schema is
 `zcl.peer_incidents.v1` and is bounded by design: it returns aggregate incident
 counts, `primary_host_issue`, top per-host incidents, duplicate host groups,
 last disconnect reasons, service flags, advertised heights, and bootstrap /
@@ -433,11 +435,12 @@ tie a timeline slice to later drill-downs. The same payload includes
 stays server-side.
 
 For peer churn, reconnect, or duplicate-entry reports, start with
+`zclassic23 peerincidents` / `zcl_peer_incidents`; use
 `zclassic23 dumpstate peer_lifecycle incidents` /
-`zcl_state(subsystem="peer_lifecycle", key="incidents")`. It returns bounded
-`zcl.peer_incidents.v1` JSON with `primary_host_issue`, `top_host_incidents`,
-flat `primary_issue_host` / `primary_issue_class` /
-`primary_issue_next_action` fields, `top_incidents`,
+`zcl_state(subsystem="peer_lifecycle", key="incidents")` only as the generic
+fallback. The first-class command returns bounded `zcl.peer_incidents.v1` JSON
+with `primary_host_issue`, `top_host_incidents`, flat `primary_issue_host` /
+`primary_issue_class` / `primary_issue_next_action` fields, `top_incidents`,
 `duplicate_host_groups`, reconnect counts, last reasons,
 direction, handshake age, advertised height, service summaries, bootstrap
 readiness/usefulness, fast-sync readiness/usefulness, current handshaked

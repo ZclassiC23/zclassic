@@ -1901,6 +1901,9 @@ int test_syncdiag_rpc(void)
                           "zcl_milestone") == 0;
         ok = ok && strcmp(json_get_str(json_get(mcp, "refold_tool")),
                           "zcl_refold_status") == 0;
+        ok = ok && strcmp(json_get_str(json_get(mcp,
+                                                "peer_incidents_tool")),
+                          "zcl_peer_incidents") == 0;
         ok = ok && cli && cli->type == JSON_OBJ &&
             strcmp(json_get_str(json_get(cli, "api_command")),
                    "zclassic23 api") == 0;
@@ -1931,6 +1934,9 @@ int test_syncdiag_rpc(void)
                           "zclassic23 milestone") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "refold_command")),
                           "zclassic23 refold") == 0;
+        ok = ok && strcmp(json_get_str(json_get(cli,
+                                                "peer_incidents_command")),
+                          "zclassic23 peerincidents") == 0;
 
         struct json_value alias;
         json_init(&alias);
@@ -3517,9 +3523,9 @@ int test_syncdiag_rpc(void)
                 12;
         ok = ok &&
             agent_contract_command_surface_count(
-                "agentmap.commands.drilldown") == 5;
+                "agentmap.commands.drilldown") == 6;
         ok = ok &&
-            agent_contract_command_surface_count("agentmap.telemetry") == 10;
+            agent_contract_command_surface_count("agentmap.telemetry") == 11;
         ok = ok &&
             agent_contract_command_surface_count("missing.surface") == 0;
         ok = ok && commands && commands->type == JSON_ARR;
@@ -3531,6 +3537,8 @@ int test_syncdiag_rpc(void)
         ok = ok && find_object_with_str(commands, "method", "healthcheck")
                          != NULL;
         ok = ok && find_object_with_str(commands, "method", "statecatalog")
+                         != NULL;
+        ok = ok && find_object_with_str(commands, "method", "peerincidents")
                          != NULL;
         const struct json_value *map_command_center =
             find_object_with_str(commands, "name", "command_center");
@@ -3559,6 +3567,11 @@ int test_syncdiag_rpc(void)
             strcmp(json_get_str(json_get(map_log, "mcp")),
                    "zcl_node_log") == 0;
         ok = ok && telemetry && telemetry->type == JSON_ARR;
+        const struct json_value *map_peer_incidents =
+            find_object_with_str(telemetry, "method", "peerincidents");
+        ok = ok && map_peer_incidents &&
+            strcmp(json_get_str(json_get(map_peer_incidents, "mcp")),
+                   "zcl_peer_incidents") == 0;
         const struct json_value *map_summary =
             find_object_with_str(telemetry, "name", "summary");
         ok = ok && map_summary &&
@@ -3737,6 +3750,8 @@ int test_syncdiag_rpc(void)
             find_object_with_str(contract_list, "method", "milestone");
         const struct json_value *contract_refold =
             find_object_with_str(contract_list, "method", "refold");
+        const struct json_value *contract_peerincidents =
+            find_object_with_str(contract_list, "method", "peerincidents");
         ok = ok && contracts.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&contracts, "schema")),
                           "zcl.agent_contracts.v1") == 0;
@@ -3904,8 +3919,31 @@ int test_syncdiag_rpc(void)
         ok = ok && contract_refold &&
             strcmp(json_get_str(json_get(contract_refold, "mcp")),
                    "zcl_refold_status") == 0;
+        ok = ok && contract_peerincidents &&
+            strcmp(json_get_str(json_get(contract_peerincidents, "schema")),
+                   "zcl.peer_incidents.v1") == 0;
+        ok = ok && contract_peerincidents &&
+            strcmp(json_get_str(json_get(contract_peerincidents, "native")),
+                   "zclassic23 peerincidents") == 0;
+        ok = ok && contract_peerincidents &&
+            strcmp(json_get_str(json_get(contract_peerincidents, "mcp")),
+                   "zcl_peer_incidents") == 0;
+        ok = ok && contract_peerincidents &&
+            strcmp(json_get_str(json_get(contract_peerincidents,
+                                         "api_cli_field")),
+                   "peer_incidents_command") == 0;
+        ok = ok && contract_peerincidents &&
+            strcmp(json_get_str(json_get(contract_peerincidents,
+                                         "api_mcp_field")),
+                   "peer_incidents_tool") == 0;
+        ok = ok && contract_peerincidents &&
+            strcmp(json_get_str(json_get(contract_peerincidents,
+                                         "ops_name")),
+                   "peer_incidents") == 0;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_build.v1") != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.peer_incidents.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.background_quality_runtime.v1")
             != NULL;
@@ -4049,6 +4087,9 @@ int test_syncdiag_rpc(void)
         const struct json_value *ops_direct_getnodelog =
             find_object_with_str(ops_direct_commands, "method",
                                  "getnodelog");
+        const struct json_value *ops_direct_peerincidents =
+            find_object_with_str(ops_direct_commands, "method",
+                                 "peerincidents");
         ok = ok && ops_direct_diagnose &&
             strcmp(json_get_str(json_get(ops_direct_diagnose, "schema")),
                    "zcl.agent_diagnose.v1") == 0;
@@ -4072,6 +4113,12 @@ int test_syncdiag_rpc(void)
         ok = ok && ops_direct_getnodelog &&
             strcmp(json_get_str(json_get(ops_direct_getnodelog, "mcp")),
                    "zcl_node_log") == 0;
+        ok = ok && ops_direct_peerincidents &&
+            strcmp(json_get_str(json_get(ops_direct_peerincidents, "native")),
+                   "zclassic23 peerincidents") == 0;
+        ok = ok && ops_direct_peerincidents &&
+            strcmp(json_get_str(json_get(ops_direct_peerincidents, "mcp")),
+                   "zcl_peer_incidents") == 0;
         ok = ok && strstr(json_get_str(json_get(&ops,
                                                 "refold_plain_english")),
                           "borrowed snapshot seed") != NULL;

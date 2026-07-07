@@ -20,13 +20,16 @@ restart anything:
 build/bin/zclassic23 agentops
 build/bin/zclassic23 agent
 build/bin/zclassic23 agentliveness
+build/bin/zclassic23 peerincidents
 ```
 
 `agentops` is the no-jq command center: it names the preferred transport,
 diagnostic drill-down commands, lane safety, runtime availability, and the next
 architecture work. `agent` is the compact live health packet. `agentliveness`
 checks whether the lane, supervisor tree, and background quality lanes are
-actually alive.
+actually alive. `peerincidents` is the compact peer-only packet for reconnect
+storms, duplicate host entries, bootstrap usefulness, and last disconnect
+reasons.
 
 Do not restart on a single stale-looking field if these probes show active
 services, handshaked peers, and bounded mirror lag. Drill down with
@@ -159,7 +162,7 @@ build/bin/zclassic23 agent
 build/bin/zclassic23 getnetworkinfo
 build/bin/zclassic23 getpeerinfo
 build/bin/zclassic23 healthcheck
-build/bin/zclassic23 dumpstate peer_lifecycle incidents
+build/bin/zclassic23 peerincidents
 build/bin/zclassic23 dumpstate peer_lifecycle
 build/bin/zclassic23 dumpstate chain_advance_coordinator
 build/bin/zclassic23 dumpstate legacy_mirror

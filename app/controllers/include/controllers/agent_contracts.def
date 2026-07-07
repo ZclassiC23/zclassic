@@ -73,6 +73,13 @@ AGENT_CONTRACT("agentliveness", "unified_liveness",
                "direct,drilldown", 4, "unified_liveness",
                "lane, listener, supervisor, and background quality liveness",
                "one lane, listener, supervisor, and background quality liveness rollup")
+AGENT_CONTRACT("peerincidents", "peer_lifecycle_incidents",
+               "zcl.peer_incidents.v1", "zclassic23 peerincidents",
+               "zcl_peer_incidents", "",
+               "peer_incidents_command", "peer_incidents_tool",
+               "direct,drilldown", 5, "peer_incidents",
+               "compact peer reconnect, duplicate, and bootstrap stability view",
+               "bounded peer lifecycle incident packet with reconnect counts, duplicate hosts, disconnect reasons, services, advertised heights, and bootstrap usefulness")
 AGENT_CONTRACT("agentimpact", "changed_files_to_tests",
                "zcl.agent_impact.v1", "zclassic23 agentimpact <files...>",
                "zcl_agent_impact", "",

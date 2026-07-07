@@ -381,7 +381,7 @@ static const char *diagnose_peer_next_action(int64_t peer_count,
     if (bootstrap_blocker)
         return "inspect_peer_lifecycle_bootstrap_readiness";
     if (material_signals > 0)
-        return "dumpstate peer_lifecycle incidents";
+        return "zclassic23 peerincidents";
     if (fast_sync_blocker)
         return "prefer_zclassic23_fast_sync_peer";
     if (peer_incidents > 0)
@@ -717,8 +717,7 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     json_set_array(&commands);
     agent_push_contract_native_command_json(&commands, "agent");
     agent_push_contract_native_command_json(&commands, "agentliveness");
-    diagnose_push_str(&commands,
-                      "zclassic23 dumpstate peer_lifecycle incidents");
+    agent_push_contract_native_command_json(&commands, "peerincidents");
     agent_push_contract_native_command_json(&commands, "timeline");
     diagnose_push_str(&commands, "zclassic23 healthcheck full");
     json_push_kv(result, "recommended_commands", &commands);
