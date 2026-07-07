@@ -170,5 +170,7 @@ bool rpc_app_protocols(const struct json_value *params, bool help,
                        struct json_value *result);
 bool rpc_service_catalog(const struct json_value *params, bool help,
                          struct json_value *result);
+bool rpc_service_operations(const struct json_value *params, bool help,
+                            struct json_value *result);
 
 #endif

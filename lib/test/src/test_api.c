@@ -1550,6 +1550,9 @@ int test_api(void)
                                                 "service_catalog")),
                           "/api/v1/service-catalog") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "aliases"),
+                                                "service_operations")),
+                          "/api/v1/service-operations") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "aliases"),
                                                 "bootstrap")),
                           "/api/v1/bootstrap") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "aliases"),
@@ -2122,6 +2125,10 @@ int test_api(void)
                                                 "drilldown"),
                                                 "service_catalog")),
                           "/api/v1/service-catalog") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root,
+                                                "drilldown"),
+                                                "service_operations")),
+                          "/api/v1/service-operations") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
                                                 "first_tool")),
                           "zcl_agent") == 0;
@@ -2134,6 +2141,9 @@ int test_api(void)
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
                                                 "service_catalog_tool")),
                           "zcl_service_catalog") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
+                                                "service_operations_tool")),
+                          "zcl_service_operations") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
                                                 "drilldown_tool")),
                           "zcl_health") == 0;
@@ -2152,6 +2162,9 @@ int test_api(void)
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
                                                 "service_catalog_command")),
                           "zclassic23 servicecatalog") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
+                                                "service_operations_command")),
+                          "zclassic23 serviceoperations [operation_id]") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
                                                 "first_command")),
                           "zclassic23 agent") == 0;

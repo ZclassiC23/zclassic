@@ -216,6 +216,56 @@ bool rpc_service_catalog(const struct json_value *params, bool help,
     return true;
 }
 
+static void rpc_service_operation_error_json(const char *operation_id,
+                                             struct json_value *result)
+{
+    json_set_object(result);
+    json_push_kv_str(result, "schema", "zcl.service_operation_error.v1");
+    json_push_kv_str(result, "api_version", ZCL_REST_API_VERSION);
+    json_push_kv_str(result, "error", "operation_not_found");
+    json_push_kv_str(result, "operation_id",
+                     operation_id ? operation_id : "");
+    json_push_kv_str(result, "operation_collection_route",
+                     "/api/v1/service-operations");
+    json_push_kv_str(result, "operation_route",
+                     "/api/v1/service-operations/{operation_id}");
+    json_push_kv_str(result, "next_action",
+                     "call_serviceoperations_without_arguments_then_select_"
+                     "a_listed_operation_id");
+}
+
+bool rpc_service_operations(const struct json_value *params, bool help,
+                            struct json_value *result)
+{
+    RPC_HELP(help, result,
+        "serviceoperations ( operation_id )\n"
+        "\nReturn the versioned zclassic23 service-operation catalog. This\n"
+        "is the same JSON body served by GET /api/v1/service-operations\n"
+        "and exposed through MCP zcl_service_operations. Pass an optional\n"
+        "service.operation id, such as znam_names.resolve_name, to return\n"
+        "the same contract as GET /api/v1/service-operations/{operation_id}.\n"
+        "\nArguments:\n"
+        "1. operation_id (string, optional) Stable service.operation id\n"
+        "\nResult:\n"
+        "  { \"schema\":\"zcl.service_operations.index.v1\", "
+        "\"operations\":[...] }\n"
+        "  or { \"schema\":\"zcl.service_operation.v1\", "
+        "\"operation_id\":\"...\" }\n");
+
+    const char *operation_id = NULL;
+    if (params && params->type == JSON_ARR && params->num_children > 0)
+        operation_id = json_get_str(&params->children[0]);
+
+    if (!operation_id || !operation_id[0])
+        return api_service_operations_index_json(result);
+
+    if (api_service_operation_show_json(operation_id, result))
+        return true;
+
+    rpc_service_operation_error_json(operation_id, result);
+    return true;
+}
+
 static bool rpc_milestone_status(const struct json_value *params, bool help,
                                  struct json_value *result)
 {
@@ -325,6 +375,9 @@ void register_event_rpc_commands(struct rpc_table *t)
         { "control", "protocols",         rpc_app_protocols,     true },
         { "control", "servicecatalog",    rpc_service_catalog,   true },
         { "control", "service_catalog",   rpc_service_catalog,   true },
+        { "control", "serviceoperations", rpc_service_operations, true },
+        { "control", "serviceoperation",  rpc_service_operations, true },
+        { "control", "service_operations",rpc_service_operations, true },
         { "control", "agent",             rpc_agent_summary,     true },
         { "control", "status",            rpc_agent_summary,     true },
         { "control", "summary",           rpc_agent_summary,     true },

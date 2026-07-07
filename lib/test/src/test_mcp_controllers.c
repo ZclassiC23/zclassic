@@ -48,7 +48,7 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL     121  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
+#define EXPECTED_TOTAL     122  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
                                  * +3 power-user tools: chain_tip,
                                  * reorg_history, mempool_inspect;
                                  * +1 Round 6 C5: zcl_blockers;
@@ -67,8 +67,9 @@
                                  * +1 state catalog: zcl_state_catalog
                                  * +1 app protocol catalog: zcl_app_protocols
                                  * +1 service catalog: zcl_service_catalog
+                                 * +1 service operation catalog: zcl_service_operations
                                  * +1 semantic timeline: zcl_timeline */
-#define EXPECTED_OPS        55  /* + zcl_rebuild_recent (bounded recovery);
+#define EXPECTED_OPS        56  /* + zcl_rebuild_recent (bounded recovery);
                                  * status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, state + node_log + sql (round 6.5 MCP primitives),
@@ -89,6 +90,7 @@
                                  * +8 zcl_agent_* development tools
                                  * + zcl_app_protocols
                                  * + zcl_service_catalog
+                                 * + zcl_service_operations
                                  * + zcl_timeline */
 #define EXPECTED_CHAIN      19  /* + chain_tip + reorg_history
                                  * + zcl_replay_verify (offline replay verifier)
@@ -613,6 +615,8 @@ static int test_zcl_agent_dev_tools_shape(void)
             mcp_router_find("zcl_app_protocols");
         const struct mcp_tool_route *service_catalog =
             mcp_router_find("zcl_service_catalog");
+        const struct mcp_tool_route *service_operations =
+            mcp_router_find("zcl_service_operations");
         ASSERT(agent != NULL);
         ASSERT(map != NULL);
         ASSERT(lanes != NULL);
@@ -625,6 +629,7 @@ static int test_zcl_agent_dev_tools_shape(void)
         ASSERT(deploy_guard != NULL);
         ASSERT(app_protocols != NULL);
         ASSERT(service_catalog != NULL);
+        ASSERT(service_operations != NULL);
         ASSERT(strcmp(agent->domain, "ops") == 0);
         ASSERT(strcmp(map->domain, "ops") == 0);
         ASSERT(strcmp(lanes->domain, "ops") == 0);
@@ -637,6 +642,7 @@ static int test_zcl_agent_dev_tools_shape(void)
         ASSERT(strcmp(deploy_guard->domain, "ops") == 0);
         ASSERT(strcmp(app_protocols->domain, "ops") == 0);
         ASSERT(strcmp(service_catalog->domain, "ops") == 0);
+        ASSERT(strcmp(service_operations->domain, "ops") == 0);
         ASSERT(agent->num_params == 0);
         ASSERT(map->num_params == 0);
         ASSERT(contracts->num_params == 0);
@@ -648,6 +654,13 @@ static int test_zcl_agent_dev_tools_shape(void)
         ASSERT(service_catalog->params[0].required == false);
         ASSERT_STR_EQ(service_catalog->params[0].default_json, "\"\"");
         ASSERT(service_catalog->self_test_args != NULL);
+        ASSERT(service_operations->num_params == 1);
+        ASSERT(strcmp(service_operations->params[0].name,
+                      "operation_id") == 0);
+        ASSERT(service_operations->params[0].type == MCP_PARAM_STR);
+        ASSERT(service_operations->params[0].required == false);
+        ASSERT_STR_EQ(service_operations->params[0].default_json, "\"\"");
+        ASSERT(service_operations->self_test_args != NULL);
         ASSERT(ops->num_params == 0);
         ASSERT(liveness->num_params == 1);
         ASSERT(strcmp(liveness->params[0].name, "mode") == 0);
@@ -1173,6 +1186,7 @@ static bool g_agent_diagnose_full_params_seen;
 static bool g_agent_liveness_brief_params_seen;
 static bool g_agent_liveness_full_params_seen;
 static bool g_service_catalog_name_params_seen;
+static bool g_service_operations_id_params_seen;
 
 static char *mock_agent_dev_rpc(const char *method, const char *params_json)
 {
@@ -1296,6 +1310,33 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
                       "\"depends_on_services\":[\"full_node\"],"
                       "\"read_model\":\"name_records_by_confirmed_chain_state\","
                       "\"write_model\":\"op_return_name_operation_lifecycle\"}]}");
+    }
+    if (strcmp(method, "serviceoperations") == 0) {
+        if (params_json &&
+            contains(params_json,
+                     "\"bootstrap.read_bootstrap_status\"")) {
+            g_service_operations_id_params_seen = true;
+            return strdup("{\"schema\":\"zcl.service_operation.v1\","
+                          "\"api_version\":\"v1\","
+                          "\"operation_id\":\"bootstrap.read_bootstrap_status\","
+                          "\"service\":\"bootstrap\","
+                          "\"operation\":\"read_bootstrap_status\","
+                          "\"crud_capability\":\"read_singleton\","
+                          "\"rest_route\":\"/api/v1/bootstrap\","
+                          "\"mcp_tool\":\"zcl_bootstrapstatus\","
+                          "\"write_safety\":\"public_read_only\","
+                          "\"agent_preferred_interface\":\"rest\"}");
+        }
+        return strdup("{\"schema\":\"zcl.service_operations.index.v1\","
+                      "\"api_version\":\"v1\","
+                      "\"catalog_route\":\"/api/v1/service-catalog\","
+                      "\"operation_count\":2,"
+                      "\"summary\":{\"operation_count\":2},"
+                      "\"operations\":["
+                      "{\"operation_id\":\"bootstrap.read_bootstrap_status\","
+                      "\"service\":\"bootstrap\"},"
+                      "{\"operation_id\":\"znam_names.resolve_name\","
+                      "\"service\":\"znam_names\"}]}");
     }
     if (strcmp(method, "agentdiagnose") == 0) {
         if (params_json && contains(params_json, "\"brief\""))
@@ -1814,6 +1855,41 @@ static int test_zcl_agent_dev_tools_dispatch(void)
                                   "full_node"));
         ASSERT_STR_EQ(json_get_str(json_get(&root, "read_model")),
                       "network_bootstrap_status_and_peer_projection");
+        json_free(&root);
+        free(body);
+
+        json_free(&args);
+        json_init(&args);
+        json_set_object(&args);
+        body = mcp_router_dispatch("zcl_service_operations", &args);
+        ASSERT(body != NULL);
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.service_operations.index.v1");
+        ASSERT(json_get(&root, "summary") != NULL);
+        ops = json_get(&root, "operations");
+        ASSERT(ops && ops->type == JSON_ARR && json_size(ops) == 2);
+        json_free(&root);
+        free(body);
+
+        const char *operation_args =
+            "{\"operation_id\":\"bootstrap.read_bootstrap_status\"}";
+        json_free(&args);
+        json_init(&args);
+        ASSERT(json_read(&args, operation_args, strlen(operation_args)));
+        g_service_operations_id_params_seen = false;
+        body = mcp_router_dispatch("zcl_service_operations", &args);
+        ASSERT(body != NULL);
+        ASSERT(g_service_operations_id_params_seen);
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.service_operation.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "operation_id")),
+                      "bootstrap.read_bootstrap_status");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "mcp_tool")),
+                      "zcl_bootstrapstatus");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "write_safety")),
+                      "public_read_only");
         json_free(&root);
         json_free(&args);
         json_init(&args);

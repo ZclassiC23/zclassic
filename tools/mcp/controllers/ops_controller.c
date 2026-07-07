@@ -1539,6 +1539,11 @@ static const struct mcp_param_spec p_service_catalog[] = {
       "Optional service name to return one service contract",
       0, 0, 0, 64, NULL, "\"\"" },
 };
+static const struct mcp_param_spec p_service_operations[] = {
+    { "operation_id", MCP_PARAM_STR, false,
+      "Optional service.operation id to return one operation contract",
+      0, 0, 0, 128, NULL, "\"\"" },
+};
 
 static int h_zcl_service_catalog(const struct mcp_request *req,
                                  struct mcp_response *res)
@@ -1556,6 +1561,25 @@ static int h_zcl_service_catalog(const struct mcp_request *req,
     free(params);
     return mcp_return_rpc_body_ctx(res, out, "servicecatalog", "mcp.ops",
                                    "name=%s", name);
+}
+
+static int h_zcl_service_operations(const struct mcp_request *req,
+                                    struct mcp_response *res)
+{
+    const char *operation_id =
+        json_get_str_or(req ? req->args : NULL, "operation_id", "");
+    if (!operation_id || !operation_id[0])
+        return mcp_return_rpc_body(res, mcp_node_rpc("serviceoperations", NULL),
+                                   "serviceoperations", "mcp.ops");
+
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, operation_id);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("serviceoperations", params) : NULL;
+    free(params);
+    return mcp_return_rpc_body_ctx(res, out, "serviceoperations", "mcp.ops",
+                                   "operation_id=%s", operation_id);
 }
 
 struct agent_mcp_binding {
@@ -1584,6 +1608,9 @@ static const struct agent_mcp_binding k_agent_mcp_bindings[] = {
     { "appprotocols", NULL, 0, h_zcl_app_protocols, 0, NULL },
     { "servicecatalog", p_service_catalog, PARAM_COUNT(p_service_catalog),
       h_zcl_service_catalog, 0, "{\"name\":\"bootstrap\"}" },
+    { "serviceoperations", p_service_operations,
+      PARAM_COUNT(p_service_operations), h_zcl_service_operations, 0,
+      "{\"operation_id\":\"bootstrap.read_bootstrap_status\"}" },
     { "agentdiagnose", p_agent_diagnose, PARAM_COUNT(p_agent_diagnose),
       h_zcl_agent_diagnose, 0, "{\"mode\":\"brief\"}" },
     { "agentdeployguard", p_agent_deploy_guard,

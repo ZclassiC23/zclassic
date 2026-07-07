@@ -140,7 +140,7 @@ actually fires.
 
 ## 3. The agent surface (MCP)
 
-113 typed tools. Discover them live with `zcl_tools_list`; smoke-test with
+100+ typed tools. Discover them live with `zcl_tools_list`; smoke-test with
 `zcl_self_test`; dump schemas with `zcl_openapi`. Source of truth is the
 controller `k_routes[]` arrays.
 
@@ -158,6 +158,8 @@ controller `k_routes[]` arrays.
 - `zclassic23 servicecatalog [name]` / `zcl_service_catalog(name?)` /
   `GET /api/v1/service-catalog` /
   `GET /api/v1/service-catalog/{service}` /
+- `zclassic23 serviceoperations [operation_id]` /
+  `zcl_service_operations(operation_id?)` /
   `GET /api/v1/service-operations` /
   `GET /api/v1/service-operations/{operation_id}` /
   `GET /api/v1/names/{name}/services` — UX-facing sovereign

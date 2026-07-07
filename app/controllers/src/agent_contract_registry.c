@@ -149,6 +149,10 @@ static const struct agent_contract_field_surface g_agent_field_surfaces[] = {
                   "anchorstatus"),
     FIELD_BINDING("agentops.first_call", 9, "peer_incidents_command",
                   "peer_incidents_tool", "peerincidents"),
+    FIELD_BINDING("agentops.first_call", 10, "service_catalog_command",
+                  "service_catalog_tool", "servicecatalog"),
+    FIELD_BINDING("agentops.first_call", 11, "service_operations_command",
+                  "service_operations_tool", "serviceoperations"),
 };
 
 #undef FIELD_BINDING
