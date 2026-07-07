@@ -357,6 +357,11 @@ by `api_route_contracts_json()` carries `crud_operation` (`read`, `create`,
 `layer`, `source_anchor`, `read_model`, `write_semantics`,
 `consensus_boundary`, object types, UX surfaces, projection/reorg behavior,
 cryptographic model, transport model, privacy model, and diagnostics surface.
+Routes with strict path validators carry `path_param_contract`
+(`zcl.path_param_contract.v1`); `/api/v1/openapi` mirrors that as
+`x-zcl-path-param-contract`. ZNAM `{name}` routes currently advertise the
+`znam_validate_name` lifecycle contract there so agents can reject malformed
+names before probing a route.
 Routes backed by a REST-callable service operation also carry
 `service_contract`, `service_catalog_route`, `service_operation_id`,
 `service_operation_route`, and embedded `service_binding`; OpenAPI mirrors that
@@ -431,6 +436,9 @@ subcollection for that same directory; it must stay a copy of the embedded
 service-record serializer. The directory-level `routing_plan` summarizes the
 preferred transport order and valid/invalid endpoint counts for agents that
 need one bounded object before deciding direct P2P vs onion fallback.
+The route metadata must keep the ZNAM `{name}` path contract in sync with
+`znam_validate_name`, and `test_api` pins the contract in both `/api/v1` and
+OpenAPI.
 
 ### MCP target gotcha
 `mcp__zcl23-dev__*` hit the DEV node (`~/.zclassic-c23-dev`, port 18252).

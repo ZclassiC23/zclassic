@@ -57,6 +57,7 @@ extern struct api_rpc_backend g_api_rpc;
 #define ZCL_SERVICE_OPERATION_SCHEMA "zcl.service_operation.v1"
 #define ZCL_NAMES_SERVICE_DIRECTORY_SCHEMA "zcl.names.service_directory.v1"
 #define ZCL_QUERY_FILTER_CONTRACT_SCHEMA "zcl.query_filter_contract.v1"
+#define ZCL_PATH_PARAM_CONTRACT_SCHEMA "zcl.path_param_contract.v1"
 #define ZCL_PUBLIC_STATUS_SCHEMA "zcl.public_status.v1"
 #define ZCL_MILESTONE_STATUS_SCHEMA "zcl.milestone_status.v1"
 #define ZCL_REFOLD_STATUS_SCHEMA "zcl.refold_status.v1"
@@ -196,6 +197,10 @@ void api_query_filter_allowed_filters_json(const char *contract_name,
                                            struct json_value *out);
 void api_query_filter_contract_json(const char *contract_name,
                                     struct json_value *out);
+bool api_path_param_contracts_json(const char *method,
+                                   const char *public_path,
+                                   const char *alias_of,
+                                   struct json_value *out);
 int64_t api_served_tip_height(void);
 void api_freshness_prepare(struct api_freshness_meta *out,
                            const char *source_projection,

@@ -220,7 +220,11 @@ recomputed for that filtered view. Directory responses include
 accepted aliases, and example call. Unknown filter names fail closed with a
 structured `400 invalid_name_service_filter` response instead of returning an
 accidentally unfiltered directory. The same contract is available from the
-REST route index and from OpenAPI as `x-zcl-filter-contract`. Agents should
+REST route index and from OpenAPI as `x-zcl-filter-contract`. The `{name}`
+path parameter is also machine-described there as `path_param_contract` /
+`x-zcl-path-param-contract` (`zcl.path_param_contract.v1`), pinned to
+`znam_validate_name`: 1-63 lowercase ASCII letters/digits/hyphens, no leading
+or trailing hyphen. Agents should
 verify the
 chain-projected ZNAM record first, inspect the linked service/operation
 contract and runtime probe, then prefer direct P2P for low latency and fall

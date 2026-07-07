@@ -2234,6 +2234,30 @@ int test_api(void)
                     "znam") == 0;
         ok = ok && names_services &&
              api_test_contract_has_id_param(names_services, "name");
+        const struct json_value *names_services_path_contract =
+            names_services ? json_get(names_services,
+                                      "path_param_contract") : NULL;
+        const struct json_value *names_services_path_params =
+            names_services_path_contract ?
+            json_get(names_services_path_contract, "params") : NULL;
+        const struct json_value *names_services_name_contract =
+            names_services_path_params ?
+            json_get(names_services_path_params, "name") : NULL;
+        ok = ok && names_services_path_contract &&
+             strcmp(json_get_str(json_get(names_services_path_contract,
+                                          "schema")),
+                    "zcl.path_param_contract.v1") == 0;
+        ok = ok && names_services_name_contract &&
+             strcmp(json_get_str(json_get(names_services_name_contract,
+                                          "contract_name")),
+                    "znam_name") == 0;
+        ok = ok && names_services_name_contract &&
+             strcmp(json_get_str(json_get(names_services_name_contract,
+                                          "validator")),
+                    "znam_validate_name") == 0;
+        ok = ok && names_services_name_contract &&
+             json_get_int(json_get(names_services_name_contract,
+                                   "max_length")) == 63;
         ok = ok && names_services &&
              api_test_contract_has_query(names_services, "service");
         ok = ok && names_services &&
@@ -2312,8 +2336,31 @@ int test_api(void)
              strstr(json_get_str(json_get(names, "privacy_model")),
                     "public") != NULL;
         ok = ok && names && api_test_contract_has_id_param(names, "name");
+        const struct json_value *names_path_contract =
+            names ? json_get(names, "path_param_contract") : NULL;
+        const struct json_value *names_path_name =
+            names_path_contract ?
+            json_get(json_get(names_path_contract, "params"), "name") :
+            NULL;
+        ok = ok && names_path_contract &&
+             strcmp(json_get_str(json_get(names_path_contract, "schema")),
+                    "zcl.path_param_contract.v1") == 0;
+        ok = ok && names_path_name &&
+             strcmp(json_get_str(json_get(names_path_name, "pattern")),
+                    "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$") == 0;
         ok = ok && legacy_name &&
              !json_get_bool(json_get(legacy_name, "canonical"));
+        const struct json_value *legacy_name_path_contract =
+            legacy_name ? json_get(legacy_name, "path_param_contract") :
+            NULL;
+        const struct json_value *legacy_name_path_name =
+            legacy_name_path_contract ?
+            json_get(json_get(legacy_name_path_contract, "params"), "name") :
+            NULL;
+        ok = ok && legacy_name_path_name &&
+             strcmp(json_get_str(json_get(legacy_name_path_name,
+                                          "validator")),
+                    "znam_validate_name") == 0;
         ok = ok && legacy_name &&
              strcmp(json_get_str(json_get(legacy_name, "legacy_alias_of")),
                     "/api/v1/names/{name}") == 0;
@@ -3636,6 +3683,26 @@ int test_api(void)
                     "x-zcl-application-protocol")), "znam") == 0;
         ok = ok && names_services &&
              api_test_openapi_has_param(names_services, "name", "path");
+        const struct json_value *names_services_openapi_path_contract =
+            names_services ? json_get(names_services,
+                                      "x-zcl-path-param-contract") : NULL;
+        const struct json_value *names_services_openapi_path_params =
+            names_services_openapi_path_contract ?
+            json_get(names_services_openapi_path_contract, "params") : NULL;
+        const struct json_value *names_services_openapi_name_contract =
+            names_services_openapi_path_params ?
+            json_get(names_services_openapi_path_params, "name") : NULL;
+        ok = ok && names_services_openapi_path_contract &&
+             strcmp(json_get_str(json_get(
+                        names_services_openapi_path_contract, "schema")),
+                    "zcl.path_param_contract.v1") == 0;
+        ok = ok && names_services_openapi_name_contract &&
+             strcmp(json_get_str(json_get(
+                        names_services_openapi_name_contract, "validator")),
+                    "znam_validate_name") == 0;
+        ok = ok && names_services_openapi_name_contract &&
+             json_get_int(json_get(names_services_openapi_name_contract,
+                                   "min_length")) == 1;
         ok = ok && names_services &&
              api_test_openapi_has_param(names_services, "service", "query");
         ok = ok && names_services &&
@@ -3681,6 +3748,20 @@ int test_api(void)
              strcmp(json_get_str(json_get(names_services_openapi_binding,
                                           "output_schema")),
                     "zcl.names.service_directory.v1") == 0;
+        const struct json_value *names_openapi_path_contract =
+            names ? json_get(names, "x-zcl-path-param-contract") : NULL;
+        const struct json_value *names_openapi_name_contract =
+            names_openapi_path_contract ?
+            json_get(json_get(names_openapi_path_contract, "params"),
+                     "name") : NULL;
+        ok = ok && names_openapi_name_contract &&
+             strcmp(json_get_str(json_get(names_openapi_name_contract,
+                                          "contract_name")),
+                    "znam_name") == 0;
+        ok = ok && names_openapi_name_contract &&
+             strcmp(json_get_str(json_get(names_openapi_name_contract,
+                                          "pattern")),
+                    "^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$") == 0;
         ok = ok && swap_chains &&
              strcmp(json_get_str(json_get(swap_chains,
                     "x-zcl-application-protocol")),

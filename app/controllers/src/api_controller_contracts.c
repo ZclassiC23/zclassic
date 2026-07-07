@@ -438,6 +438,14 @@ static void api_contract_push(struct json_value *out, const char *method,
         json_free(&filter_contract);
     }
 
+    struct json_value path_param_contract;
+    json_init(&path_param_contract);
+    if (api_path_param_contracts_json(method, public_path, alias_of,
+                                      &path_param_contract))
+        json_push_kv(&item, "path_param_contract",
+                     &path_param_contract);
+    json_free(&path_param_contract);
+
     struct json_value query_params;
     json_init(&query_params);
     api_contract_query_params_json(query_params_csv, &query_params);
