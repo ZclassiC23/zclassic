@@ -12,6 +12,7 @@ cd "$ROOT"
 SCHEMA="zcl.agent_fast_ci.v1"
 CACHE_SCHEMA="zcl.agent_fast_ci.cache.v1"
 FAST_CC="${ZCL_FAST_CC:-}"
+FAST_COMPILE="${ZCL_FAST_COMPILE:-dev}"
 CACHE_ROOT="${ZCL_FAST_CACHE_DIR:-$ROOT/.cache/zcl-agent-fast-ci}"
 CACHE_KEY=""
 CACHE_RECORD=""
@@ -238,6 +239,7 @@ cache_manifest() {
     printf 'fast_cc\t%s\n' "$FAST_CC"
     printf 'cache_tool\t%s\n' "$CACHE_TOOL"
     printf 'fast_jobs\t%s\n' "$FAST_JOBS"
+    printf 'fast_compile\t%s\n' "$FAST_COMPILE"
     printf 'fast_tests_env\t%s\n' "${ZCL_FAST_TESTS:-}"
     printf 'fast_changed_files_file\t%s\n' "${ZCL_FAST_CHANGED_FILES_FILE:-}"
     printf 'fast_changed_files_env\t%s\n' "${ZCL_FAST_CHANGED_FILES:-}"
@@ -320,7 +322,7 @@ maybe_fast_cache_hit() {
         rm -f "$CACHE_RECORD"
         return 1
     fi
-    log "fast result cache hit key=$CACHE_KEY; skipping lint-fast/build-only/focused tests"
+    log "fast result cache hit key=$CACHE_KEY; skipping lint-fast/compile-gate/focused tests"
     return 0
 }
 
@@ -377,6 +379,23 @@ run_focused_tests() {
         log "focused test: $group"
         make_fast "$target" ONLY="$group"
     done
+}
+
+run_compile_gate() {
+    local target
+    case "$FAST_COMPILE" in
+        dev|fast|quick|"")
+            target="fast-compile"
+            ;;
+        strict|release|build-only)
+            target="build-only"
+            ;;
+        *)
+            fail "unknown ZCL_FAST_COMPILE=${FAST_COMPILE}"
+            ;;
+    esac
+    log "$target"
+    make_fast "$target"
 }
 
 live_service_detected() {
@@ -483,7 +502,7 @@ main() {
     log "schema=$SCHEMA"
     select_compiler
     resolve_fast_jobs
-    log "compiler=$FAST_CC cache=$CACHE_TOOL jobs=$FAST_JOBS"
+    log "compiler=$FAST_CC cache=$CACHE_TOOL jobs=$FAST_JOBS compile=$FAST_COMPILE"
     maybe_reset_fast_cache
     select_test_groups
     fail_on_unmapped_code_changes
@@ -500,8 +519,7 @@ main() {
     run_shell_checks
     log "lint-fast"
     make_fast lint-fast
-    log "build-only"
-    make_fast build-only
+    run_compile_gate
     run_focused_tests
     maybe_live_probe
 

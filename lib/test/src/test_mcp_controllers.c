@@ -2637,7 +2637,24 @@ static char *mock_networkinfo_rpc(const char *method, const char *params_json)
                       "\"active_loader_configured\":true,"
                       "\"active_loader_path\":\"/tmp/zcl-test/utxo-seed-3170000.snapshot\","
                       "\"active_loader_matches_bundle\":true,"
-                      "\"recovery_hint\":\"loader_active\"},"
+                      "\"recovery_hint\":\"loader_active\","
+                      "\"authority\":{"
+                      "\"schema\":\"zcl.snapshot_loader_authority.v1\","
+                      "\"schema_version\":1,"
+                      "\"progress_store_open\":true,"
+                      "\"hstar_available\":true,"
+                      "\"hstar\":3170000,"
+                      "\"served_floor\":3170000,"
+                      "\"coins_applied_height_readable\":true,"
+                      "\"coins_applied_height_present\":true,"
+                      "\"coins_applied_height\":3170001,"
+                      "\"coins_kv_proven_authority\":true,"
+                      "\"coins_cover_hstar\":true,"
+                      "\"fast_rebuild_authority_ready\":true,"
+                      "\"self_folded_marker\":false,"
+                      "\"self_derived_tip_static_checks\":false,"
+                      "\"self_derived_reason\":\"borrowed_seed_no_refold_marker\","
+                      "\"authority_posture\":\"proven_but_not_self_folded\"}},"
                       "\"beta6_snapshot_bootstrap\":{"
                       "\"required_service_bit\":\"NODE_BOOTSTRAP\","
                       "\"required_service_bit_value\":16777216,"
@@ -2856,6 +2873,20 @@ static int test_zcl_bootstrapstatus_exposes_beta6_contract(void)
                       "/tmp/zcl-test/utxo-seed-3170000.snapshot");
         ASSERT_STR_EQ(json_get_str(json_get(loader, "recovery_hint")),
                       "loader_active");
+        const struct json_value *authority =
+            json_get(loader, "authority");
+        ASSERT(authority && authority->type == JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(authority, "schema")),
+                      "zcl.snapshot_loader_authority.v1");
+        ASSERT(json_get_bool(json_get(authority,
+                                      "coins_kv_proven_authority")));
+        ASSERT(json_get_bool(json_get(authority,
+                                      "fast_rebuild_authority_ready")));
+        ASSERT(!json_get_bool(json_get(authority,
+                                       "self_folded_marker")));
+        ASSERT_STR_EQ(json_get_str(json_get(authority,
+                                            "authority_posture")),
+                      "proven_but_not_self_folded");
 
         const struct json_value *beta6 =
             json_get(&root, "beta6_snapshot_bootstrap");

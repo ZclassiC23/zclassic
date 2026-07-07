@@ -238,8 +238,8 @@ controller `k_routes[]` arrays.
   `app/controllers/include/controllers/agent_impact_rules.def` and is consumed
   by both native `agentimpact` and `make fast-ci`.
 - `zclassic23 agentbuild` / `zcl_agent_build` — fast cached build contract:
-  `make build-only`, `make dev-bin`, `make t-fast`, `make fast-ci`, cache
-  knobs, strict gates, and `make ci-reproducible`.
+  `make fast-compile`, `make build-only`, `make dev-bin`, `make t-fast`,
+  `make fast-ci`, cache knobs, strict gates, and `make ci-reproducible`.
 - `zclassic23 statecatalog` / `zcl_state_catalog` — machine-readable catalog
   for every `zcl_state` subsystem: name, description, accepted key forms,
   expected cost, freshness, owner shape/file, read-only safety level, focused
@@ -353,7 +353,11 @@ Bootstrap-service readiness is the network-facing public singleton
 `/api/v1/bootstrap` (compat alias `/api/v1/bootstrapstatus`) over the shared
 `network_bootstrap_status_json()` contract. Keep it schema-identical with RPC
 `bootstrapstatus` and MCP `zcl_bootstrapstatus`; do not duplicate bootstrap
-field assembly in a REST-only handler.
+field assembly in a REST-only handler. The nested
+`snapshot_loader.authority` object is the C-native proof that a fast-start
+bundle actually became local durable authority (`coins_kv`,
+`coins_applied_height`, reducer H*, and self-folded marker), not just files on
+disk.
 
 ### MCP target gotcha
 `mcp__zcl23-dev__*` hit the DEV node (`~/.zclassic-c23-dev`, port 18252).
@@ -377,7 +381,8 @@ Confirm the target before acting.
 | Command | Effect |
 |---------|--------|
 | `make -j$(nproc)` | Build `zclassic23`, `test_zcl`, `zclassic-cli`. `-j` only overlaps the 2–3 binaries + LTO link, not per-binary front-end. |
-| `make build-only` | 664 genuinely-parallel `cc -c` with depfile header tracking — fast inner loop. |
+| `make fast-compile` | Fastest no-link dev compile check; cached non-LTO `build/dev-obj` objects. |
+| `make build-only` | Strict release-flag `cc -c` with depfile header tracking; use before push/release. |
 | `make fast-rebuild` | Fast local node binary alias for `make dev-bin`; cached per-file objects, no LTO, uses `ccache` automatically when installed. |
 | `make dev-bin` | Build `build/bin/zclassic23-dev` from cached per-file objects, non-LTO/unstripped, with hot consensus/crypto/script/validation buckets still optimized. Local iteration only; not deploy/release. |
 | `make test` | Runs `test_parallel` (isolated per-process runner). **Use this**, not test_zcl. Green = regression floor, NOT a liveness proof. |

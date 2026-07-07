@@ -17,6 +17,8 @@
 #include "net/peer_lifecycle.h"
 #include "net/protocol.h"
 #include "net/version.h"
+#include "storage/coins_kv.h"
+#include "storage/progress_store.h"
 #include "util/clientversion.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -322,6 +324,76 @@ static void push_snapshot_loader_status(struct json_value *result,
                       loader_configured && bundle_path_ready &&
                       strcmp(loader_path, bundle_path) == 0);
     json_push_kv_str(&loader, "recovery_hint", recovery_hint);
+
+    sqlite3 *pdb = progress_store_db();
+    bool progress_open = pdb != NULL;
+    bool applied_found = false;
+    bool applied_ok = false;
+    bool proven_authority = false;
+    bool self_folded = false;
+    bool hstar_ok = false;
+    bool coins_cover_hstar = false;
+    bool self_derived = false;
+    int32_t applied = -1;
+    int32_t hstar = -1;
+    int32_t served_floor = -1;
+    char self_reason[128] = "progress_store_not_open";
+
+    if (pdb) {
+        progress_store_tx_lock();
+        applied_ok = coins_kv_get_applied_height(pdb, &applied,
+                                                 &applied_found);
+        proven_authority = coins_kv_is_proven_authority(pdb, NULL);
+        self_folded = coins_kv_contains_refold_marker(pdb);
+        hstar_ok = reducer_frontier_compute_hstar(pdb, &hstar,
+                                                  &served_floor);
+        if (hstar_ok) {
+            coins_cover_hstar = applied_ok && applied_found &&
+                applied >= hstar + 1;
+            self_derived = coins_kv_tip_is_self_derived(
+                pdb, hstar, self_reason, sizeof(self_reason));
+            if (self_derived)
+                snprintf(self_reason, sizeof(self_reason), "ok");
+        } else {
+            snprintf(self_reason, sizeof(self_reason), "hstar_unavailable");
+        }
+        progress_store_tx_unlock();
+    }
+
+    struct json_value authority = {0};
+    json_set_object(&authority);
+    json_push_kv_str(&authority, "schema",
+                     "zcl.snapshot_loader_authority.v1");
+    json_push_kv_int(&authority, "schema_version", 1);
+    json_push_kv_bool(&authority, "progress_store_open", progress_open);
+    json_push_kv_bool(&authority, "hstar_available", hstar_ok);
+    json_push_kv_int(&authority, "hstar", hstar_ok ? hstar : -1);
+    json_push_kv_int(&authority, "served_floor",
+                     hstar_ok ? served_floor : -1);
+    json_push_kv_bool(&authority, "coins_applied_height_readable",
+                      applied_ok);
+    json_push_kv_bool(&authority, "coins_applied_height_present",
+                      applied_found);
+    json_push_kv_int(&authority, "coins_applied_height",
+                     applied_found ? applied : -1);
+    json_push_kv_bool(&authority, "coins_kv_proven_authority",
+                      proven_authority);
+    json_push_kv_bool(&authority, "coins_cover_hstar",
+                      coins_cover_hstar);
+    json_push_kv_bool(&authority, "fast_rebuild_authority_ready",
+                      proven_authority && coins_cover_hstar);
+    json_push_kv_bool(&authority, "self_folded_marker", self_folded);
+    json_push_kv_bool(&authority, "self_derived_tip_static_checks",
+                      self_derived);
+    json_push_kv_str(&authority, "self_derived_reason", self_reason);
+    json_push_kv_str(&authority, "authority_posture",
+                     !progress_open ? "unknown_no_progress_store" :
+                     !proven_authority ? "not_proven" :
+                     self_folded ? "self_folded_marker_present" :
+                     "proven_but_not_self_folded");
+    json_push_kv(&loader, "authority", &authority);
+    json_free(&authority);
+
     json_push_kv(result, "snapshot_loader", &loader);
     json_free(&loader);
 }

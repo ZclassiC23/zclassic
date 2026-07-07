@@ -305,7 +305,7 @@ test-parallel: test_parallel
 # the default `all`), so running build/bin/test_parallel directly after editing a test
 # can false-green an old binary or report "matched no groups" for a new test.
 # `make t ONLY=<group>` always rebuilds the harness first, closing that trap.
-.PHONY: t t-fast syntax-check build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast lint-fast fast-ci agent-fast-ci dev-ci
+.PHONY: t t-fast syntax-check build-only fast-compile dev-build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast lint-fast fast-ci agent-fast-ci dev-ci
 
 # Run ONE test group, always rebuilding the harness first:
 #   make t ONLY=service_state_driver
@@ -331,6 +331,12 @@ t-fast: test_parallel_fast
 build-only: CFLAGS += -Wno-deprecated-declarations
 build-only: $(TMPL_GEN) $(ALL_OBJS)
 	@echo "build-only: all node objects compiled"
+
+# Fastest no-link compile-check for local edit loops. This uses the same
+# non-LTO dev object tree as zclassic23-dev, so changed files compile quickly
+# and no final executable link is paid.
+fast-compile dev-build-only: $(TMPL_GEN) $(DEV_OBJS)
+	@echo "fast-compile: all dev node objects compiled (non-LTO, no link)"
 
 # Fast local node executable for AI/operator development. This deliberately
 # does not replace `zclassic23`, `make deploy`, or release artifacts.
@@ -2030,7 +2036,7 @@ docs-mcp-check: zclassic23
 #   make ci SKIP_FUZZ=1     # skip the fuzz stage (faster)
 #   make ci SKIP_COV=1      # skip coverage (faster)
 pre-push-ci:
-	@ZCL_FAST_LIVE=0 $(MAKE) fast-ci
+	@ZCL_FAST_LIVE=0 ZCL_FAST_COMPILE=strict $(MAKE) fast-ci
 
 check-agent-cli: zclassic23
 	@tools/scripts/check_agentdeployguard_cli_exit.sh

@@ -778,6 +778,13 @@ datadir, highest `utxo-seed-<h>.snapshot`, seed height, matching
 `block_index.bin`, failed marker, active `-load-snapshot-at-own-height` path,
 and `recovery_hint` (`loader_active`,
 `restart_with_load_snapshot_at_own_height`, `install_tip_seed_snapshot`, etc.).
+Its nested `authority` object (`zcl.snapshot_loader_authority.v1`) reports the
+durable progress-store side of the proof: whether `coins_kv` is a proven local
+authority, the `coins_applied_height`, the current reducer H*, whether the coin
+set covers H*, whether the fast-rebuild authority surface is ready, and whether
+the self-folded sovereignty marker is present. A node can have a bootable
+snapshot bundle but still report `fast_rebuild_authority_ready=false` until the
+loader/reindex epilogue has seeded `coins_kv`, cursors, and `utxo_sha3`.
 Operational scripts should consume this versioned C API instead of scraping
 systemd command lines whenever the node RPC is reachable.
 
@@ -789,6 +796,9 @@ This is a C23 project, so the edit loop should compile only what changed.
   `build/obj` plus header depfiles (`-MMD -MP` and included `.d` files), so
   unchanged translation units keep their existing `.o` files and changed
   headers recompile their dependents.
+- `make fast-compile` is the cheapest no-link edit-loop compile check. It uses
+  the non-LTO dev object tree (`build/dev-obj`) and skips the final executable
+  link, so it is the right first command for "did this C change compile?".
 - `make fast-rebuild` builds the local non-LTO node binary and is the preferred
   edit-loop rebuild target. It is an alias for `make dev-bin`, with a clearer
   name for agents and operators.
@@ -802,7 +812,7 @@ This is a C23 project, so the edit loop should compile only what changed.
   `build/bin/test_parallel_fast`, a cached non-LTO test harness for hot-path
   focused tests.
 - `make fast-ci` runs `git diff --check`, shell syntax checks, `lint-fast`,
-  `build-only`, focused tests inferred from changed files, and a native
+  `fast-compile`, focused tests inferred from changed files, and a native
   linger-service probe when the service is available. Repeated identical green
   inputs hit `.cache/zcl-agent-fast-ci/` and skip repeated lint/build/focused
   tests while still refreshing the live probe. The live probe trusts the
@@ -814,8 +824,10 @@ This is a C23 project, so the edit loop should compile only what changed.
   there first, then verify `agentimpact` reports `shared_rule_hits > 0`.
 - `make fast-ci` auto-selects `sccache cc`, then `ccache cc`, then `cc`.
   Override with `ZCL_FAST_CC='ccache cc'`. Use `ZCL_FAST_JOBS=N`,
-  `ZCL_FAST_TESTS=group[,group]`, `ZCL_FAST_STRICT_TESTS=1`, and
-  `ZCL_FAST_LIVE=0` as needed. Use `ZCL_FAST_CACHE=0` to force a rerun,
+  `ZCL_FAST_COMPILE=strict` to replace `fast-compile` with strict
+  `build-only`, `ZCL_FAST_TESTS=group[,group]`,
+  `ZCL_FAST_STRICT_TESTS=1`, and `ZCL_FAST_LIVE=0` as needed.
+  Use `ZCL_FAST_CACHE=0` to force a rerun,
   `ZCL_FAST_CACHE_RESET=1` to clear the green-input cache, or
   `ZCL_FAST_CACHE_DIR=...` to move it.
 - Normal Makefile compile/link recipes also auto-wrap `CC` with `ccache` when
@@ -824,15 +836,19 @@ This is a C23 project, so the edit loop should compile only what changed.
 Before pushing `main`, the tracked pre-push hook computes the exact
 `origin/main..HEAD` changed-file set, rejects non-`main` remote refs, and runs
 `make pre-push-ci`. That command uses cached `make t-fast ONLY=<group>` tests
-selected by `tools/agent_fast_ci.sh`, plus `make build-only` for compiler and
-`-Werror` coverage; it does not rerun the full suite when the changed files only
-require narrower coverage. It also sets `ZCL_FAST_LIVE=0`, so an already-running
+selected by `tools/agent_fast_ci.sh`, plus `ZCL_FAST_COMPILE=strict` so the
+compile gate is `make build-only` for compiler and `-Werror` coverage; it does
+not rerun the full suite when the changed files only require narrower coverage.
+It also sets `ZCL_FAST_LIVE=0`, so an already-running
 node condition is visible through telemetry but does not block a code push. Set
 `ZCL_FAST_STRICT_TESTS=1` when a change needs strict whole-harness focused
 tests. Full-suite, fuzz, and coverage evidence belongs to the background quality lanes: install them with
 `make install-quality-linger` and inspect them with `make quality-linger-status`.
 Status JSON is written under `~/.local/state/zclassic23-quality`. The native
 `zclassic23 agentbuild` / `zcl_agent_build` response also embeds
+`recommended_loop` (`zcl.agent_build_loop.v1`) with the cheapest command for
+each intent (`fast-compile`, `fast-rebuild`, focused `t-fast`, and
+`pre-push-ci`),
 `dev_node_binary` (`make dev-bin`, `build/bin/zclassic23-dev`, hot-path
 optimization buckets, and release/deploy boundary) plus
 `background_quality_status` (`zcl.background_quality_runtime.v1`), a C-native

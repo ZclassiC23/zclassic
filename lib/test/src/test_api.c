@@ -1485,6 +1485,12 @@ int test_api(void)
         ok = ok && strcmp(json_get_str(json_get(json_get(&root,
                           "snapshot_loader"), "schema")),
                           "zcl.snapshot_loader.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(json_get(&root,
+                          "snapshot_loader"), "authority"), "schema")),
+                          "zcl.snapshot_loader_authority.v1") == 0;
+        ok = ok && !json_get_bool(json_get(json_get(json_get(&root,
+                          "snapshot_loader"), "authority"),
+                          "progress_store_open"));
         ok = ok && api_test_array_has_str(json_get(&root, "blockers"),
                                           "p2p_not_initialized");
         ok = ok && api_test_array_has_str(json_get(&root, "blockers"),

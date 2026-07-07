@@ -444,7 +444,7 @@ bool rpc_agent_build(const struct json_value *params, bool help,
         "  { \"schema\":\"zcl.agent_build.v1\", "
         "\"commands\":[...], \"reproducible_release\":{...} }\n");
 
-    struct json_value incremental, dev, cache, knobs, commands, repro,
+    struct json_value loop, incremental, dev, cache, knobs, commands, repro,
                       background, quality_status, lanes, gates;
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.agent_build.v1");
@@ -452,7 +452,26 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_push_kv_str(result, "status", "ok");
     json_push_kv_str(result, "language", "c23");
     json_push_kv_str(result, "summary",
-                     "Use object/dependency builds, make fast-rebuild for the non-LTO dev node binary, compiler caches when available, and make ci-reproducible for byte identity.");
+                     "Use make fast-compile for the cheapest no-link dev compile, make fast-rebuild when a runnable non-LTO dev node is needed, compiler caches when available, and make ci-reproducible for byte identity.");
+
+    json_init(&loop);
+    json_set_object(&loop);
+    json_push_kv_str(&loop, "schema", "zcl.agent_build_loop.v1");
+    json_push_kv_int(&loop, "schema_version", 1);
+    json_push_kv_str(&loop, "default_edit_gate", "make fast-ci");
+    json_push_kv_str(&loop, "fast_no_link_compile", "make fast-compile");
+    json_push_kv_str(&loop, "strict_no_link_compile", "make build-only");
+    json_push_kv_str(&loop, "runnable_dev_binary", "make fast-rebuild");
+    json_push_kv_str(&loop, "focused_fast_test", "make t-fast ONLY=<group>");
+    json_push_kv_str(&loop, "pre_push_gate", "make pre-push-ci");
+    json_push_kv_str(&loop, "fast_ci_compile_default",
+                     "ZCL_FAST_COMPILE=dev -> make fast-compile");
+    json_push_kv_str(&loop, "pre_push_compile_default",
+                     "ZCL_FAST_COMPILE=strict -> make build-only");
+    json_push_kv_str(&loop, "rule",
+                     "Compile cheaply first; link a dev binary only when you need to run it; push through the strict pre-push gate.");
+    json_push_kv(result, "recommended_loop", &loop);
+    json_free(&loop);
 
     json_init(&incremental);
     json_set_object(&incremental);
@@ -464,6 +483,10 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_push_kv_str(&incremental, "depfile_rule",
                      "-MMD -MP with included .d files for build-only, dev-bin, and test_parallel_fast");
     json_push_kv_str(&incremental, "compile_check", "make build-only");
+    json_push_kv_str(&incremental, "fast_compile_check",
+                     "make fast-compile");
+    json_push_kv_str(&incremental, "strict_compile_check",
+                     "make build-only");
     json_push_kv_str(&incremental, "dev_binary_command", "make fast-rebuild");
     json_push_kv_str(&incremental, "behavior",
                      "Unchanged translation units keep their .o files; changed headers recompile dependent objects through .d files.");
@@ -510,6 +533,8 @@ bool rpc_agent_build(const struct json_value *params, bool help,
                           "override compiler/cache wrapper");
     agent_push_build_knob(&knobs, "ZCL_FAST_JOBS", "auto, capped at 16",
                           "parallel jobs for fast-ci");
+    agent_push_build_knob(&knobs, "ZCL_FAST_COMPILE", "dev",
+                          "dev uses make fast-compile; strict uses make build-only");
     agent_push_build_knob(&knobs, "ZCL_FAST_TESTS",
                           "group[,group]",
                           "force focused test groups");
@@ -539,8 +564,10 @@ bool rpc_agent_build(const struct json_value *params, bool help,
 
     json_init(&commands);
     json_set_array(&commands);
+    agent_push_build_command(&commands, "fast_compile", "make fast-compile",
+                             "fastest non-LTO no-link dev compile check");
     agent_push_build_command(&commands, "compile_check", "make build-only",
-                             "incremental no-link compile of all node objects");
+                             "strict incremental no-link compile of all release-flag node objects");
     agent_push_build_command(&commands, "fast_rebuild", "make fast-rebuild",
                              "incremental non-LTO node executable; preferred local rebuild target");
     agent_push_build_command(&commands, "dev_node_binary", "make dev-bin",

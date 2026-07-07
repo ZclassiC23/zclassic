@@ -36,6 +36,7 @@
 #include "services/node_health_service.h"
 #include "services/sync_monitor.h"
 #include "storage/boot_auto_reindex.h"
+#include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "validation/mirror_consensus.h"
 #include "event/event.h"
@@ -106,6 +107,24 @@ static bool syncdiag_touch_file(const char *path)
         return false;
     fclose(f);
     return true;
+}
+
+static bool syncdiag_set_coins_applied(sqlite3 *db, int32_t height)
+{
+    char *err = NULL;
+
+    if (!db)
+        return false;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    bool ok = coins_kv_set_applied_height_in_tx(db, height);
+    const char *finish = ok ? "COMMIT" : "ROLLBACK";
+    if (sqlite3_exec(db, finish, NULL, NULL, &err) != SQLITE_OK)
+        ok = false;
+    if (err) sqlite3_free(err);
+    return ok;
 }
 
 static const struct json_value *find_object_with_str(const struct json_value *arr,
@@ -200,6 +219,37 @@ static bool syncdiag_seed_cursor(sqlite3 *db, const char *name, int cursor)
     bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
+}
+
+static bool syncdiag_seed_reducer_frontier_at_anchor(sqlite3 *db,
+                                                     int32_t anchor)
+{
+    static const char *const ddl =
+        "CREATE TABLE IF NOT EXISTS validate_headers_log ("
+        "  height INTEGER PRIMARY KEY, hash BLOB NOT NULL, ok INTEGER NOT NULL,"
+        "  fail_reason TEXT, validated_at INTEGER);"
+        "CREATE TABLE IF NOT EXISTS script_validate_log ("
+        "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+        "  block_hash BLOB);"
+        "CREATE TABLE IF NOT EXISTS body_persist_log ("
+        "  height INTEGER PRIMARY KEY, source TEXT, ok INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS proof_validate_log ("
+        "  height INTEGER PRIMARY KEY, ok INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
+        "  height INTEGER PRIMARY KEY, ok INTEGER NOT NULL,"
+        "  spent_count INTEGER, added_count INTEGER);"
+        "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
+        "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+        "  tip_hash BLOB);";
+
+    return db &&
+        syncdiag_exec_sql(db, ddl) &&
+        syncdiag_seed_cursor(db, "validate_headers", anchor + 1) &&
+        syncdiag_seed_cursor(db, "script_validate", anchor + 1) &&
+        syncdiag_seed_cursor(db, "body_persist", anchor + 1) &&
+        syncdiag_seed_cursor(db, "proof_validate", anchor + 1) &&
+        syncdiag_seed_cursor(db, "utxo_apply", anchor + 1) &&
+        syncdiag_seed_cursor(db, "tip_finalize", anchor);
 }
 
 static void syncdiag_write_le32(uint8_t *p, uint32_t v)
@@ -1043,6 +1093,7 @@ int test_syncdiag_rpc(void)
     printf("bootstrapstatus: exposes versioned P2P and beta6 "
            "snapshot contract (RED)... ");
     {
+        progress_store_close();
         struct connman cm;
         struct node_signals sigs;
         struct rpc_table tbl;
@@ -1162,6 +1213,18 @@ int test_syncdiag_rpc(void)
             "active_loader_matches_bundle"));
         ok = ok && strcmp(json_get_str(json_get(loader,
             "recovery_hint")), "loader_active") == 0;
+        const struct json_value *authority = json_get(loader, "authority");
+        ok = ok && authority && authority->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(authority, "schema")),
+                          "zcl.snapshot_loader_authority.v1") == 0;
+        ok = ok && !json_get_bool(json_get(authority,
+                                           "progress_store_open"));
+        ok = ok && !json_get_bool(json_get(authority,
+                                           "coins_kv_proven_authority"));
+        ok = ok && !json_get_bool(json_get(authority,
+                                           "fast_rebuild_authority_ready"));
+        ok = ok && strcmp(json_get_str(json_get(authority,
+            "authority_posture")), "unknown_no_progress_store") == 0;
 
         const struct json_value *legacy =
             json_get(&result, "legacy_p2p_bootstrap");
@@ -1220,6 +1283,112 @@ int test_syncdiag_rpc(void)
             unlink(index_path);
             rmdir(tmp_dir);
         }
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("bootstrapstatus: exposes snapshot authority posture (RED)... ");
+    {
+        test_reset_shared_globals();
+        progress_store_close();
+        chain_params_select(CHAIN_MAIN);
+
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "syncdiag", "bootstrap_authority");
+
+        struct rpc_table tbl;
+        struct json_value params = {0};
+        struct json_value result = {0};
+        sqlite3 *pdb = NULL;
+        uint8_t txid[32] = {0};
+        const uint8_t one = 0x01;
+        bool ok = progress_store_open(dir);
+        if (ok)
+            pdb = progress_store_db();
+        if (ok) {
+            memset(txid, 0xB7, sizeof(txid));
+            ok = pdb &&
+                 coins_kv_ensure_schema(pdb) &&
+                 syncdiag_seed_reducer_frontier_at_anchor(
+                     pdb, REDUCER_FRONTIER_TRUSTED_ANCHOR) &&
+                 coins_kv_add(pdb, txid, 0, 5000000000LL,
+                              REDUCER_FRONTIER_TRUSTED_ANCHOR, true,
+                              NULL, 0) &&
+                 syncdiag_set_coins_applied(
+                     pdb, REDUCER_FRONTIER_TRUSTED_ANCHOR + 1) &&
+                 progress_meta_set(pdb, COINS_KV_MIGRATION_COMPLETE_KEY,
+                                   &one, sizeof(one));
+        }
+
+        rpc_table_init(&tbl);
+        register_net_rpc_commands(&tbl);
+        rpc_net_set_connman(NULL);
+        rpc_net_set_boot_context(dir, NULL);
+
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "bootstrapstatus",
+                                     &params, &result);
+
+        const struct json_value *loader =
+            json_get(&result, "snapshot_loader");
+        const struct json_value *authority =
+            loader ? json_get(loader, "authority") : NULL;
+        ok = ok && authority && authority->type == JSON_OBJ;
+        ok = ok && json_get_bool(json_get(authority,
+                                          "progress_store_open"));
+        ok = ok && json_get_bool(json_get(authority,
+                                          "hstar_available"));
+        ok = ok && json_get_int(json_get(authority, "hstar")) ==
+                  REDUCER_FRONTIER_TRUSTED_ANCHOR;
+        ok = ok && json_get_bool(json_get(authority,
+                                          "coins_applied_height_readable"));
+        ok = ok && json_get_bool(json_get(authority,
+                                          "coins_applied_height_present"));
+        ok = ok && json_get_int(json_get(authority,
+                                         "coins_applied_height")) ==
+                  REDUCER_FRONTIER_TRUSTED_ANCHOR + 1;
+        ok = ok && json_get_bool(json_get(authority,
+                                          "coins_kv_proven_authority"));
+        ok = ok && json_get_bool(json_get(authority,
+                                          "coins_cover_hstar"));
+        ok = ok && json_get_bool(json_get(authority,
+                                          "fast_rebuild_authority_ready"));
+        ok = ok && !json_get_bool(json_get(authority,
+                                           "self_folded_marker"));
+        ok = ok && !json_get_bool(json_get(authority,
+            "self_derived_tip_static_checks"));
+        ok = ok && strcmp(json_get_str(json_get(authority,
+            "self_derived_reason")), "borrowed_seed_no_refold_marker") == 0;
+        ok = ok && strcmp(json_get_str(json_get(authority,
+            "authority_posture")), "proven_but_not_self_folded") == 0;
+
+        json_free(&result);
+        json_init(&result);
+        ok = ok && coins_kv_mark_self_folded(pdb);
+        ok = ok && rpc_table_execute(&tbl, "bootstrapstatus",
+                                     &params, &result);
+        loader = json_get(&result, "snapshot_loader");
+        authority = loader ? json_get(loader, "authority") : NULL;
+        ok = ok && authority && authority->type == JSON_OBJ;
+        ok = ok && json_get_bool(json_get(authority,
+                                          "self_folded_marker"));
+        ok = ok && json_get_bool(json_get(authority,
+            "self_derived_tip_static_checks"));
+        ok = ok && strcmp(json_get_str(json_get(authority,
+            "self_derived_reason")), "ok") == 0;
+        ok = ok && strcmp(json_get_str(json_get(authority,
+            "authority_posture")), "self_folded_marker_present") == 0;
+
+        json_free(&params);
+        json_free(&result);
+        rpc_net_set_connman(NULL);
+        rpc_net_set_boot_context(NULL, NULL);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+        test_reset_shared_globals();
 
         if (ok) printf("OK\n");
         else    { printf("FAIL\n"); failures++; }
@@ -4979,6 +5148,8 @@ syncdiag_net_split_done:
         struct json_value build;
         json_init(&build);
         ok = ok && rpc_table_execute(&tbl, "agentbuild", &params, &build);
+        const struct json_value *loop =
+            json_get(&build, "recommended_loop");
         const struct json_value *incremental =
             json_get(&build, "incremental_compile");
         const struct json_value *dev_binary =
@@ -5000,8 +5171,19 @@ syncdiag_net_split_done:
         ok = ok && build.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&build, "schema")),
                           "zcl.agent_build.v1") == 0;
+        ok = ok && loop && strcmp(json_get_str(json_get(loop, "schema")),
+                                  "zcl.agent_build_loop.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(loop,
+                           "fast_no_link_compile")),
+                          "make fast-compile") == 0;
+        ok = ok && strcmp(json_get_str(json_get(loop,
+                           "pre_push_compile_default")),
+                          "ZCL_FAST_COMPILE=strict -> make build-only") == 0;
         ok = ok && incremental && json_get_bool(json_get(incremental,
                                                          "header_depfiles"));
+        ok = ok && strcmp(json_get_str(json_get(incremental,
+                                                "fast_compile_check")),
+                          "make fast-compile") == 0;
         ok = ok && strcmp(json_get_str(json_get(incremental,
                                                 "dev_binary_command")),
                           "make fast-rebuild") == 0;
@@ -5017,6 +5199,8 @@ syncdiag_net_split_done:
         ok = ok && cache && strstr(json_get_str(json_get(cache,
                                                          "auto_select_order")),
                                    "sccache cc") != NULL;
+        ok = ok && find_object_with_str(commands, "name",
+                                        "fast_compile") != NULL;
         ok = ok && find_object_with_str(commands, "name",
                                         "compile_check") != NULL;
         ok = ok && find_object_with_str(commands, "name",

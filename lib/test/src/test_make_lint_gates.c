@@ -2573,6 +2573,7 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "fast-ci agent-fast-ci dev-ci") != NULL);
         ASSERT(strstr(buf, "t-fast") != NULL);
         ASSERT(strstr(buf, "test_parallel_fast") != NULL);
+        ASSERT(strstr(buf, "fast-compile dev-build-only") != NULL);
         ASSERT(strstr(buf, "dev-bin zclassic23-dev") != NULL);
         ASSERT(strstr(buf, "ZCLASSIC23_DEV_BIN") != NULL);
         ASSERT(strstr(buf, "DEV_OBJ_DIR") != NULL);
@@ -2590,7 +2591,9 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES_FILE") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES") != NULL);
         ASSERT(strstr(buf, "pre-push-ci") != NULL);
-        ASSERT(strstr(buf, "ZCL_FAST_LIVE=0 $(MAKE) fast-ci") != NULL);
+        ASSERT(strstr(buf,
+                      "ZCL_FAST_LIVE=0 ZCL_FAST_COMPILE=strict $(MAKE) fast-ci")
+               != NULL);
         ASSERT(strstr(buf, "check-agent-cli: zclassic23") != NULL);
         ASSERT(strstr(buf,
                       "tools/scripts/check_agentdeployguard_cli_exit.sh")
@@ -2621,7 +2624,12 @@ static int t_agent_fast_ci_contract(void)
                       "tools/scripts/check_agentdeployguard_cli_exit.sh")
                != NULL);
         ASSERT(strstr(buf, "make_fast lint-fast") != NULL);
-        ASSERT(strstr(buf, "make_fast build-only") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_COMPILE") != NULL);
+        ASSERT(strstr(buf, "run_compile_gate") != NULL);
+        ASSERT(strstr(buf, "target=\"fast-compile\"") != NULL);
+        ASSERT(strstr(buf, "target=\"build-only\"") != NULL);
+        ASSERT(strstr(buf, "make_fast \"$target\"") != NULL);
+        ASSERT(strstr(buf, "fast_compile") != NULL);
         ASSERT(strstr(buf, "UNMAPPED_CODE_CHANGES") != NULL);
         ASSERT(strstr(buf, "no focused test mapping for code changes")
                != NULL);
@@ -2648,13 +2656,15 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "run make build-only or set ZCL_FAST_LIVE=0")
                != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_TESTS") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_COMPILE") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_LIVE") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CACHE") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CACHE_RESET") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CACHE_DIR") != NULL);
         ASSERT(strstr(buf, "fast result cache hit") != NULL);
         ASSERT(strstr(buf,
-                      "skipping lint-fast/build-only/focused tests") != NULL);
+                      "skipping lint-fast/compile-gate/focused tests")
+               != NULL);
         ASSERT(strstr(buf, "record_fast_cache_pass") != NULL);
         ASSERT(strstr(buf, "not full release CI") != NULL);
         ASSERT(strstr(buf, "make pre-push-ci") != NULL);
@@ -2783,6 +2793,7 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "`make fast-ci`") != NULL);
         ASSERT(strstr(buf, "`make t-fast ONLY=<group>`") != NULL);
+        ASSERT(strstr(buf, "`make fast-compile`") != NULL);
         ASSERT(strstr(buf, "`make dev-bin`") != NULL);
         ASSERT(strstr(buf, "`make ci-reproducible`") != NULL);
         ASSERT(strstr(buf, "build/bin/test_parallel_fast") != NULL);
@@ -2792,6 +2803,7 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "ZCL_DEV_LINKER") != NULL);
         ASSERT(strstr(buf, "not a deploy or release artifact") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CC") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_COMPILE=strict") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_TESTS") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_STRICT_TESTS=1") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_JOBS") != NULL);
