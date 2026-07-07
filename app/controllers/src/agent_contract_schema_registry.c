@@ -63,6 +63,9 @@ static const struct agent_contract_schema_surface g_agent_schema_surfaces[] = {
     { 17, "zcl.restart_watchdog.v1",
       "nested in zcl.public_status.v1 restart_watchdog",
       "chain tip watchdog restart budget and last autonomous recycle reason" },
+    { 18, "zcl.security_posture.v1",
+      "nested in zcl.public_status.v1 security_posture",
+      "bounded bootstrap trust and shielded-nullifier history completeness posture" },
 };
 
 static const size_t g_agent_schema_surface_count =

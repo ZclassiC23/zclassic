@@ -9,6 +9,7 @@
 #include "controllers/agent_height_contract.h"
 #include "controllers/agent_restart_watchdog.h"
 #include "controllers/agent_resources.h"
+#include "controllers/agent_security_posture.h"
 #include "controllers/api_controller.h"
 #include "api_controller_internal.h"
 #include "config/runtime.h"
@@ -641,6 +642,9 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
         &body, "height_contract", height, health.tip_height,
         health.header_height, health.peer_best_height, target, gap,
         health.log_head, health.log_head_gap);
+    agent_push_security_posture_json(
+        &body, "security_posture",
+        g_api_ctx.node_db ? g_api_ctx.node_db : app_runtime_node_db());
     json_push_kv_str(&body, "sync_state",
                      sync_state_name(health.sync_state));
     agent_push_restart_watchdog_json(&body, "restart_watchdog", NULL);

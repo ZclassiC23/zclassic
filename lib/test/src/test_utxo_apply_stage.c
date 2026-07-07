@@ -5,7 +5,9 @@
 
 #include "bloom/merkle.h"
 #include "chain/chain.h"
+#include "controllers/agent_security_posture.h"
 #include "core/uint256.h"
+#include "json/json.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "jobs/utxo_apply_nullifiers.h"
@@ -94,6 +96,36 @@ static bool make_tx(struct transaction *tx, int h, bool coinbase,
     tx->vout[0].script_pub_key.size = 0;
     synthetic_txid(&tx->hash, h, coinbase ? 1 : 2);
     return true;
+}
+
+static bool uv_security_posture_nullifier_gap(bool expect_gap,
+                                              int64_t expect_cursor)
+{
+    struct json_value root;
+    json_init(&root);
+    json_set_object(&root);
+    agent_push_security_posture_json(&root, "security_posture", NULL);
+    const struct json_value *posture = json_get(&root, "security_posture");
+    bool ok = posture && posture->type == JSON_OBJ;
+    ok = ok && strcmp(json_get_str(json_get(posture, "schema")),
+                      "zcl.security_posture.v1") == 0;
+    ok = ok && json_get_bool(json_get(posture, "nullifier_backfill_gap")) ==
+        expect_gap;
+    ok = ok && json_get_int(json_get(posture,
+                                     "nullifier_activation_cursor")) ==
+        expect_cursor;
+    ok = ok && json_get_bool(json_get(posture,
+                                      "nullifier_history_complete")) ==
+        !expect_gap;
+    if (expect_gap) {
+        ok = ok && strcmp(json_get_str(json_get(posture, "status")),
+                          "review_required_nullifier_backfill_gap") == 0;
+        ok = ok && strcmp(json_get_str(json_get(posture, "next_action")),
+                          "run_shielded_history_backfill_or_from_genesis_refold")
+            == 0;
+    }
+    json_free(&root);
+    return ok;
 }
 
 static bool make_body(struct synth_chain_uv *sc, int h)
@@ -1087,12 +1119,16 @@ int test_utxo_apply_stage(void)
         UV_CHECK("nf gap: blocker is PERMANENT (operator-clear only)",
                  blocker_class_for(UTXO_APPLY_NF_GAP_BLOCKER_ID) ==
                      BLOCKER_PERMANENT);
+        UV_CHECK("nf gap: security posture exposes review-required gap",
+                 uv_security_posture_nullifier_gap(true, 3134000));
         UV_CHECK("nf gap: marker reset",
                  progress_meta_set(db, "nullifier_kv.activation_cursor",
                                    "0", 1));
         utxo_apply_nullifier_gap_blocker_refresh(db);
         UV_CHECK("nf gap: blocker cleared for marker == 0",
                  !blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID));
+        UV_CHECK("nf gap: security posture clears nullifier gap",
+                 uv_security_posture_nullifier_gap(false, 0));
         uv_teardown(dir, &ms, &sc);
     }
 

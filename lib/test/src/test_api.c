@@ -218,6 +218,29 @@ static bool api_test_expect_readiness_shape(const struct json_value *root)
            json_get(readiness, "semantics") != NULL;
 }
 
+static bool api_test_expect_security_posture_shape(
+    const struct json_value *root)
+{
+    const struct json_value *posture = json_get(root, "security_posture");
+    if (!posture || posture->type != JSON_OBJ)
+        return false;
+
+    return strcmp(json_get_str(json_get(posture, "schema")),
+                  "zcl.security_posture.v1") == 0 &&
+           json_get_int(json_get(posture, "schema_version")) == 1 &&
+           json_get(posture, "status") != NULL &&
+           json_get(posture, "review_required") != NULL &&
+           json_get(posture, "bootstrap_model") != NULL &&
+           json_get(posture, "snapshot_full_validation_complete") != NULL &&
+           json_get(posture, "full_history_validation_state") != NULL &&
+           json_get(posture, "nullifier_history_complete") != NULL &&
+           json_get(posture, "nullifier_activation_cursor") != NULL &&
+           json_get(posture, "nullifier_history_state") != NULL &&
+           json_get(posture, "next_action") != NULL &&
+           strstr(json_get_str(json_get(posture, "semantics")),
+                  "serving/healthy are liveness signals") != NULL;
+}
+
 static bool api_test_expect_lane_safety_fields(
     const struct json_value *root, const char *lane,
     bool restart_ok, bool deploy_ok, bool requires,
@@ -1772,6 +1795,7 @@ int test_api(void)
         ok = ok && json_get(&root, "height") != NULL;
         ok = ok && json_get(&root, "recommended_endpoints") != NULL;
         ok = ok && api_test_expect_readiness_shape(&root);
+        ok = ok && api_test_expect_security_posture_shape(&root);
         ok = ok && api_test_expect_lane_safety_fields(
             &root, "canonical", false, false, true, "dev",
             "observe_only_or_use_dev_lane");
@@ -1818,6 +1842,7 @@ int test_api(void)
         ok = ok && api_test_expect_freshness(&root, "served_tip",
                                              2, 2, true);
         ok = ok && api_test_expect_readiness_shape(&root);
+        ok = ok && api_test_expect_security_posture_shape(&root);
         ok = ok && api_test_expect_lane_safety_fields(
             &root, "canonical", false, false, true, "dev",
             "observe_only_or_use_dev_lane");

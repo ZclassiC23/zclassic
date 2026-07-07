@@ -2308,6 +2308,16 @@ int test_syncdiag_rpc(void)
                             "restarts_remaining") != NULL;
         ok = ok && json_get(restart_watchdog,
                             "deep_state") != NULL;
+        const struct json_value *security =
+            json_get(&result, "security_posture");
+        ok = ok && security && security->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(security, "schema")),
+                          "zcl.security_posture.v1") == 0;
+        ok = ok && json_get(security, "bootstrap_model") != NULL;
+        ok = ok && json_get(security,
+                            "full_history_validation_state") != NULL;
+        ok = ok && json_get(security,
+                            "nullifier_history_state") != NULL;
         ok = ok && readiness && readiness->type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(readiness, "schema")),
                           "zcl.agent_readiness.v1") == 0;
@@ -2475,6 +2485,22 @@ int test_syncdiag_rpc(void)
                                                 "budget_semantics")),
                           "first-call path must use cached/bounded sources "
                           "and return valid JSON") == 0;
+        const struct json_value *security =
+            json_get(&result, "security_posture");
+        ok = ok && security && security->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(security, "schema")),
+                          "zcl.security_posture.v1") == 0;
+        ok = ok && json_get(security, "bootstrap_model") != NULL;
+        ok = ok && json_get(security,
+                            "full_history_validation_state") != NULL;
+        ok = ok && json_get(security,
+                            "snapshot_full_validation_complete") != NULL;
+        ok = ok && json_get(security,
+                            "nullifier_history_complete") != NULL;
+        ok = ok && json_get(security,
+                            "nullifier_activation_cursor") != NULL;
+        ok = ok && strstr(json_get_str(json_get(security, "semantics")),
+                          "serving/healthy are liveness signals") != NULL;
 
         json_free(&params);
         json_free(&result);
@@ -3941,7 +3967,7 @@ int test_syncdiag_rpc(void)
             json_get_int(json_get(contract_summary,
                                   "review_surface_count")) ==
                 (int64_t)agent_contract_review_surface_total_count();
-        ok = ok && agent_contract_schema_surface_count() >= 17;
+        ok = ok && agent_contract_schema_surface_count() >= 18;
         ok = ok && agent_contract_review_surface_total_count() >= 5;
         ok = ok && contract_agentops &&
             strcmp(json_get_str(json_get(contract_agentops, "schema")),

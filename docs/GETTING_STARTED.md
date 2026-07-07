@@ -73,6 +73,8 @@ Healthy synced status means:
 
 - `status=healthy`
 - `serving=true`
+- `security_posture.review_required=false` when you need a fully reviewed
+  bootstrap/nullifier-history posture, not just a live serving node
 - `operator_needed=false`
 - `sync_state=at_tip`
 - `gap` is small, normally 0 or 1 near the moving network tip.

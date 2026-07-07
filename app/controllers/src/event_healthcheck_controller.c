@@ -215,6 +215,7 @@ static bool rpc_healthcheck_bounded(const struct json_value *params,
     healthcheck_copy_from_object(result, "warning_count", health,
                                  "warning_count");
     healthcheck_copy_key(result, &agent, "mirror_contract");
+    healthcheck_copy_key(result, &agent, "security_posture");
 
     struct json_value checks = {0};
     json_set_object(&checks);
@@ -272,6 +273,8 @@ static bool rpc_healthcheck_bounded(const struct json_value *params,
                                  "validation_pack_ok");
     healthcheck_copy_from_object(&checks, "validation_pack_detail", reducer,
                                  "validation_pack_detail");
+    healthcheck_copy_from_object(&checks, "security_posture", &agent,
+                                 "security_posture");
     {
         struct json_value ca = {0};
         json_set_object(&ca);

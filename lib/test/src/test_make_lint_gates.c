@@ -3191,6 +3191,10 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(api_status_buf, "agent_push_readiness_contract_json")
                != NULL);
+        ASSERT(strstr(agent_summary_buf, "agent_push_security_posture_json")
+               != NULL);
+        ASSERT(strstr(api_status_buf, "agent_push_security_posture_json")
+               != NULL);
         ASSERT(strstr(agent_readiness_buf, "agent_push_readiness_json")
                != NULL);
         ASSERT(strstr(agent_readiness_buf, "agent_push_readiness_fields_json")
@@ -3200,6 +3204,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(api_status_buf, "agent_push_height_contract_fields_json")
                != NULL);
         ASSERT(strstr(agent_readiness_buf, "zcl.agent_readiness.v1") != NULL);
+        ASSERT(strstr(agent_schema_registry_buf, "zcl.security_posture.v1")
+               != NULL);
         ASSERT(strstr(agent_readiness_buf, "chain_serving_ready") != NULL);
         ASSERT(strstr(agent_readiness_buf, "index_projection_ready") != NULL);
         ASSERT(strstr(agent_readiness_buf, "agent_work_ready") != NULL);
