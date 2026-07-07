@@ -103,6 +103,48 @@ static size_t emit_chaincard_grid(uint8_t *r, size_t max, size_t off,
     return off;
 }
 
+static size_t emit_bootstrap_peer_band(uint8_t *r, size_t max, size_t off,
+        const struct explorer_dashboard_network_view *n)
+{
+    const char *state =
+        (n && n->zclassic23_peers > 0) ? "Ready" : "Searching";
+    const char *tone =
+        (n && n->zclassic23_peers > 0) ? "bootstrap-ready" : "bootstrap-watch";
+    size_t peers = n ? n->peer_count : 0;
+    size_t z23 = n ? n->zclassic23_peers : 0;
+    size_t legacy = n ? n->magicbean_peers : 0;
+
+    APPEND(off, r, max,
+        "<style>"
+        ".bootstrap-band{display:grid;grid-template-columns:1.4fr repeat(3,1fr);"
+        "gap:10px;margin:14px 0 18px;align-items:stretch}"
+        ".bootstrap-band .bb{background:#101010;border:1px solid #242424;"
+        "border-radius:8px;padding:12px 14px}"
+        ".bootstrap-band .bb-title{color:#888;font-size:12px;"
+        "text-transform:uppercase;letter-spacing:.5px}"
+        ".bootstrap-band .bb-value{font-family:ui-monospace,Menlo,monospace;"
+        "font-size:21px;font-weight:700;color:#e8e8e8;margin-top:4px}"
+        ".bootstrap-band .bb-note{color:#777;font-size:12px;margin-top:3px}"
+        ".bootstrap-band .bootstrap-ready .bb-value{color:#33ff99}"
+        ".bootstrap-band .bootstrap-watch .bb-value{color:#ffcc66}"
+        "@media(max-width:760px){.bootstrap-band{grid-template-columns:1fr 1fr}"
+        ".bootstrap-band .bb-main{grid-column:1/-1}}"
+        "</style>"
+        "<div class='bootstrap-band'>"
+        "<div class='bb bb-main %s'><div class='bb-title'>ZClassic23 Bootstrap</div>"
+        "<div class='bb-value'>%s</div>"
+        "<div class='bb-note'>verified live peer handshakes</div></div>"
+        "<div class='bb'><div class='bb-title'>Connected Peers</div>"
+        "<div class='bb-value'>%zu</div><div class='bb-note'>handshakes now</div></div>"
+        "<div class='bb bootstrap-ready'><div class='bb-title'>ZClassic23 Peers</div>"
+        "<div class='bb-value'>%zu</div><div class='bb-note'>fast-sync capable</div></div>"
+        "<div class='bb'><div class='bb-title'>Legacy Peers</div>"
+        "<div class='bb-value'>%zu</div><div class='bb-note'>MagicBean-compatible</div></div>"
+        "</div>",
+        tone, state, peers, z23, legacy);
+    return off;
+}
+
 /* ── Dashboard (RPC proxy mode) ───────────────────────────── */
 
 size_t explorer_dashboard_view_rpc(uint8_t *r, size_t max,
@@ -127,6 +169,7 @@ size_t explorer_dashboard_view_rpc(uint8_t *r, size_t max,
     off = emit_chaincard_grid(r, max, off, v->tip, v->difficulty,
                               v->mempool_count, v->mempool_bytes,
                               v->tip_time, v->recent_avg_interval);
+    off = emit_bootstrap_peer_band(r, max, off, &v->network);
 
     /* Latest blocks */
     APPEND(off, r, max,
@@ -177,6 +220,8 @@ size_t explorer_dashboard_view_native(uint8_t *r, size_t max,
                                   (int64_t)v->mempool_count,
                                   (int64_t)v->mempool_bytes,
                                   v->tip_time, v->recent_avg_interval);
+    if (v->page == 0)
+        off = emit_bootstrap_peer_band(r, max, off, &v->network);
 
     APPEND(off, r, max,
         "<h2>Latest Blocks</h2>"

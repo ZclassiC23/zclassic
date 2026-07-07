@@ -15,6 +15,7 @@
 #include "core/uint256.h"
 #include "primitives/block.h"
 #include "jobs/reducer_frontier.h"
+#include "services/node_health_service.h"
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
 #include <stdio.h>
@@ -24,6 +25,19 @@
 #include "views/explorer_dashboard_view.h"
 #include "views/format_helpers.h"
 #include "explorer_controller_internal.h"
+
+static struct explorer_dashboard_network_view
+dashboard_network_view(const struct main_state *ms)
+{
+    struct node_health_snapshot health;
+    struct explorer_dashboard_network_view out = {0};
+
+    node_health_collect(&health, NULL, ms);
+    out.peer_count = health.peer_count;
+    out.zclassic23_peers = health.zclassic_c23_peer_count;
+    out.magicbean_peers = health.magicbean_peer_count;
+    return out;
+}
 
 /* ── Dashboard (RPC proxy mode) ───────────────────────────── */
 
@@ -99,6 +113,7 @@ static size_t serve_dashboard_rpc(uint8_t *r, size_t max)
         .mempool_bytes = mp_bytes,
         .tip_time = first_blk_time,
         .recent_avg_interval = recent_interval,
+        .network = dashboard_network_view(NULL),
         .rows = rows,
         .row_count = n,
     };
@@ -171,6 +186,7 @@ static size_t serve_dashboard_native_page(uint8_t *r, size_t max, int page)
         .mempool_bytes = mp_bytes,
         .tip_time = tip_bi ? (int64_t)tip_bi->nTime : 0,
         .recent_avg_interval = recent_interval,
+        .network = dashboard_network_view(ctx->main_state),
         .rows = rows,
         .row_count = n,
         .page = page,

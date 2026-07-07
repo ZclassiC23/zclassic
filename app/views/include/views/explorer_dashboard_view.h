@@ -14,6 +14,14 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* Compact live network summary shown on the landing dashboard. These values
+ * are runtime handshake evidence, not persisted peer-projection guesses. */
+struct explorer_dashboard_network_view {
+    size_t peer_count;
+    size_t zclassic23_peers;
+    size_t magicbean_peers;
+};
+
 /* ── RPC-proxy mode ───────────────────────────────────────── */
 
 /* One "Latest Blocks" row, RPC-proxy mode. The controller pre-formats
@@ -38,6 +46,7 @@ struct explorer_dashboard_rpc_view {
     int64_t mempool_bytes;
     int64_t tip_time;            /* tip block unix time (0 if unknown) */
     double  recent_avg_interval; /* avg interval over shown blocks (s, 0 if n/a) */
+    struct explorer_dashboard_network_view network;
     const struct explorer_dashboard_rpc_row *rows;
     int     row_count;
 };
@@ -69,6 +78,7 @@ struct explorer_dashboard_native_view {
     uint64_t mempool_bytes;
     int64_t  tip_time;            /* tip block unix time (0 if unknown) */
     double   recent_avg_interval; /* avg interval over shown blocks (s, 0 if n/a) */
+    struct explorer_dashboard_network_view network;
     const struct explorer_dashboard_native_row *rows;
     int      row_count;
     int      page;          /* current page (>= 0) */

@@ -9,6 +9,7 @@
 #include "crypto/sha3.h"
 #include "views/explorer_factoids_internal.h"
 #include "views/explorer_factoids_view.h"
+#include "views/explorer_dashboard_view.h"
 #include "views/explorer_pages_loading_view.h"
 #include "views/explorer_pages_view.h"
 #include "views/explorer_stats_internal.h"
@@ -88,6 +89,37 @@ int test_explorer(void)
              strstr((char *)out, "Auto-refresh") == NULL &&
              strstr((char *)out, "Refresh in a minute") == NULL &&
              strstr((char *)out, "please retry") == NULL;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("explorer: dashboard exposes verified bootstrap peers... ");
+    {
+        uint8_t out[65536];
+        struct explorer_dashboard_native_view v = {0};
+
+        v.tip = 3173255;
+        v.difficulty = 102.20;
+        v.mempool_count = 0;
+        v.mempool_bytes = 0;
+        v.network.peer_count = 9;
+        v.network.zclassic23_peers = 2;
+        v.network.magicbean_peers = 6;
+
+        size_t n = explorer_dashboard_view_native(out, sizeof(out) - 1, &v);
+        out[n < sizeof(out) ? n : sizeof(out) - 1] = '\0';
+        bool ok = n > 0 &&
+             strstr((char *)out, "ZClassic23 Bootstrap") != NULL &&
+             strstr((char *)out, "Ready") != NULL &&
+             strstr((char *)out, "verified live peer handshakes") != NULL &&
+             strstr((char *)out, "Connected Peers</div>"
+                    "<div class='bb-value'>9") != NULL &&
+             strstr((char *)out, "ZClassic23 Peers</div>"
+                    "<div class='bb-value'>2") != NULL &&
+             strstr((char *)out, "Legacy Peers</div>"
+                    "<div class='bb-value'>6") != NULL &&
+             strstr((char *)out, "Searching") == NULL;
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
