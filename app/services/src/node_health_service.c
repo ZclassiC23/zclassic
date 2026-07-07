@@ -336,7 +336,8 @@ void node_health_collect(struct node_health_snapshot *snapshot,
             msg_version_classify_peer(node->sub_ver, node->services,
                                       &is_mb, &is_z23);
             if (is_mb) snapshot->magicbean_peer_count++;
-            if (is_z23) snapshot->zclassic_c23_peer_count++;
+            if (is_z23 && !msg_version_peer_uses_external_host(node))
+                snapshot->zclassic_c23_peer_count++;
         }
         zcl_mutex_unlock(&cm->manager.cs_nodes);
     }

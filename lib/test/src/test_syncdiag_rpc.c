@@ -1153,7 +1153,10 @@ int test_syncdiag_rpc(void)
         struct p2p_node *legacy_peer = ok
             ? syncdiag_add_peer(&cm, 23, false, PEER_HANDSHAKE_COMPLETE)
             : NULL;
-        ok = ok && zcl_a && zcl_b && legacy_peer;
+        struct p2p_node *self_hairpin = ok
+            ? syncdiag_add_peer(&cm, 24, true, PEER_HANDSHAKE_COMPLETE)
+            : NULL;
+        ok = ok && zcl_a && zcl_b && legacy_peer && self_hairpin;
         if (ok) {
             snprintf(zcl_a->addr_name, sizeof(zcl_a->addr_name),
                      "198.51.100.21:8033");
@@ -1179,6 +1182,13 @@ int test_syncdiag_rpc(void)
             legacy_peer->starting_height = 3170000;
             syncdiag_note_peer_lifecycle_active(
                 legacy_peer, PEER_LIFECYCLE_SOURCE_ADDRMAN);
+
+            snprintf(self_hairpin->addr_name,
+                     sizeof(self_hairpin->addr_name),
+                     "203.0.113.7:49152");
+            self_hairpin->starting_height = 3170000;
+            syncdiag_note_peer_lifecycle_active(
+                self_hairpin, PEER_LIFECYCLE_SOURCE_INBOUND);
         }
 
         rpc_table_init(&tbl);
@@ -1236,9 +1246,11 @@ int test_syncdiag_rpc(void)
         const struct json_value *first_verified =
             verified && json_size(verified) > 0 ? json_at(verified, 0) : NULL;
         ok = ok && peers && peers->type == JSON_OBJ;
-        ok = ok && json_get_int(json_get(peers, "connections")) == 3;
+        ok = ok && json_get_int(json_get(peers, "connections")) == 4;
         ok = ok && json_get_int(json_get(peers,
             "zclassic23_peers")) == 2;
+        ok = ok && json_get_int(json_get(peers,
+            "zclassic23_self_connections_excluded")) == 1;
         ok = ok && json_get_bool(json_get(peers,
             "local_zclassic23_node_included"));
         ok = ok && json_get_int(json_get(peers,
@@ -1255,6 +1267,8 @@ int test_syncdiag_rpc(void)
             "legacy_compatible_peers")) == 1;
         ok = ok && json_get_int(json_get(peers,
             "verified_zclassic23_bootstrap_peer_count")) == 2;
+        ok = ok && json_get_int(json_get(peers,
+            "verified_zclassic23_self_connections_excluded")) == 1;
         ok = ok && json_get_int(json_get(peers,
             "fast_sync_useful_zclassic23_peer_count")) == 2;
         ok = ok && json_get_int(json_get(peers,

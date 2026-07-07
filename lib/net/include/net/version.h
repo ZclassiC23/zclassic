@@ -10,6 +10,8 @@
 #include <stddef.h>
 #include <stdint.h>
 
+struct p2p_node;
+
 #define PROTOCOL_VERSION 170011
 #define INIT_PROTO_VERSION 209
 #define GETHEADERS_VERSION 31800
@@ -27,5 +29,6 @@ void msg_version_clear_external_ip_for_test(void);
 const char *msg_version_user_agent(void);
 bool msg_version_classify_peer(const char *subver, uint64_t services,
                                bool *is_magicbean, bool *is_zcl23);
+bool msg_version_peer_uses_external_host(const struct p2p_node *node);
 
 #endif

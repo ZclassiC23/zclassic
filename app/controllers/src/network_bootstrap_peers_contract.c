@@ -66,6 +66,7 @@ void network_push_verified_zclassic23_bootstrap_peers(
     struct json_value arr = {0};
     int64_t verified_count = 0;
     int64_t fast_sync_count = 0;
+    int64_t self_excluded = 0;
     int64_t included = 0;
 
     json_set_array(&arr);
@@ -74,6 +75,12 @@ void network_push_verified_zclassic23_bootstrap_peers(
         for (size_t i = 0; i < cm->manager.num_nodes; i++) {
             struct p2p_node *node = cm->manager.nodes[i];
             bool fast_sync_useful;
+
+            if (node_is_zclassic23(node) &&
+                msg_version_peer_uses_external_host(node)) {
+                self_excluded++;
+                continue;
+            }
 
             if (!node_is_verified_zclassic23_bootstrap(node))
                 continue;
@@ -135,6 +142,8 @@ void network_push_verified_zclassic23_bootstrap_peers(
                      verified_count);
     json_push_kv_int(peers, "fast_sync_useful_zclassic23_peer_count",
                      fast_sync_count);
+    json_push_kv_int(peers, "verified_zclassic23_self_connections_excluded",
+                     self_excluded);
     json_push_kv_int(peers, "zclassic23_bootstrap_quorum_target",
                      BOOTSTRAP_ZCL23_PEER_QUORUM_TARGET);
     json_push_kv_str(peers, "zclassic23_bootstrap_quorum_status",

@@ -42,6 +42,7 @@ struct network_counts {
     int outbound_handshaked;
     int legacy_compatible;
     int zcl23;
+    int zcl23_self_connections;
     size_t listen_socket_count;
     uint64_t local_services;
     size_t addrman_entries;
@@ -114,8 +115,12 @@ static void network_counts_collect(struct connman *cm,
                                       &is_legacy, &is_z23);
             if (is_legacy)
                 out->legacy_compatible++;
-            if (is_z23)
-                out->zcl23++;
+            if (is_z23) {
+                if (msg_version_peer_uses_external_host(node))
+                    out->zcl23_self_connections++;
+                else
+                    out->zcl23++;
+            }
         }
     }
     zcl_mutex_unlock(&cm->manager.cs_nodes);
@@ -290,6 +295,8 @@ static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
     json_push_kv_int(result, "magicbean_peers", counts.legacy_compatible);
     json_push_kv_int(result, "zclassic23_peers", counts.zcl23);
     json_push_kv_int(result, "zclassic_c23_peers", counts.zcl23);
+    json_push_kv_int(result, "zclassic23_self_connections_excluded",
+                     counts.zcl23_self_connections);
     json_push_kv_bool(result, "local_zclassic23_node_included", local_zcl23);
     json_push_kv_int(result, "zclassic23_nodes_seen", zcl23_nodes_seen);
     json_push_kv_bool(result, "zclassic23_two_node_floor_met",
@@ -411,6 +418,8 @@ static bool rpc_bootstrapstatus(const struct json_value *params, bool help,
     json_push_kv_int(&peers, "legacy_compatible_peers",
                      counts.legacy_compatible);
     json_push_kv_int(&peers, "zclassic23_peers", counts.zcl23);
+    json_push_kv_int(&peers, "zclassic23_self_connections_excluded",
+                     counts.zcl23_self_connections);
     network_push_verified_zclassic23_bootstrap_peers(&peers, ctx->connman);
     int64_t verified_zcl23_peers = json_get_int(json_get(&peers,
         "verified_zclassic23_bootstrap_peer_count"));

@@ -173,6 +173,25 @@ bool msg_version_classify_peer(const char *subver, uint64_t services,
     return mb || z23;
 }
 
+static bool addr_name_host_is_external(const char *addr_name)
+{
+    char ext[INET_ADDRSTRLEN] = {0};
+    uint16_t port = 0;
+    size_t host_len;
+
+    if (!addr_name || !msg_version_get_external_ip(ext, sizeof(ext), &port))
+        return false;
+
+    host_len = strcspn(addr_name, ":");
+    return host_len == strlen(ext) &&
+           strncmp(addr_name, ext, host_len) == 0;
+}
+
+bool msg_version_peer_uses_external_host(const struct p2p_node *node)
+{
+    return node && addr_name_host_is_external(node->addr_name);
+}
+
 static bool msg_version_addr_is_external_self(const struct net_address *addr)
 {
     if (!addr || !g_has_external_ip || !net_addr_is_ipv4(&addr->svc.addr))
