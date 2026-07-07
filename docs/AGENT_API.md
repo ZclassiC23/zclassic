@@ -112,6 +112,11 @@ REST-callable service operation: `/api/v1` emits `service_contract`,
 the embedded `service_binding`; `/api/v1/openapi` mirrors the same operation
 object as `x-zcl-service-binding`. Prefer these fields over hardcoded
 route-to-service maps.
+For bootstrap specifically, public peer listing is
+`bootstrap.list_peer_projection` (`GET /api/v1/peers`,
+`zcl.peers.index.v1`); peer incident analysis remains the operator diagnostic
+operation `bootstrap.inspect_peer_bootstrap_readiness` via
+`zcl_peer_incidents` / `peerincidents`.
 The collection schema is `zcl.service_catalog.v1`; the member schema is
 `zcl.service_contract.v1`; the operation collection schema is
 `zcl.service_operations.index.v1`; operation members use

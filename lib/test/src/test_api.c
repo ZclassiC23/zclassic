@@ -272,6 +272,135 @@ static bool api_test_runtime_probes_consistent(
     return true;
 }
 
+static bool api_test_rest_operation_route_matches(
+    const struct json_value *operation,
+    const struct json_value *route_contract,
+    const char *expected_route)
+{
+    const char *operation_id;
+    const char *service;
+    const char *rest_method;
+    const char *rest_route;
+    const char *output_schema;
+    const char *service_route;
+    const char *self_route;
+    const struct json_value *binding;
+
+    if (!operation || !route_contract || !expected_route)
+        return false;
+
+    operation_id = json_get_str(json_get(operation, "operation_id"));
+    service = json_get_str(json_get(operation, "service"));
+    rest_method = json_get_str(json_get(operation, "rest_method"));
+    rest_route = json_get_str(json_get(operation, "rest_route"));
+    output_schema = json_get_str(json_get(operation, "output_schema"));
+    service_route = json_get_str(json_get(operation, "service_catalog_route"));
+    self_route = json_get_str(json_get(operation, "self_route"));
+    binding = json_get(route_contract, "service_binding");
+
+    if (!operation_id || !operation_id[0] || !service || !service[0] ||
+        !rest_method || !rest_method[0] || !rest_route || !rest_route[0] ||
+        !output_schema || !output_schema[0] || !binding)
+        return false;
+    if (strcmp(rest_route, expected_route) != 0)
+        return false;
+    if (strcmp(json_get_str(json_get(route_contract, "method")),
+               rest_method) != 0)
+        return false;
+    if (strcmp(json_get_str(json_get(route_contract, "response_schema")),
+               output_schema) != 0)
+        return false;
+    if (strcmp(json_get_str(json_get(route_contract,
+                                     "service_contract")),
+               service) != 0)
+        return false;
+    if (strcmp(json_get_str(json_get(route_contract,
+                                     "service_catalog_route")),
+               service_route) != 0)
+        return false;
+    if (strcmp(json_get_str(json_get(route_contract,
+                                     "service_operation_id")),
+               operation_id) != 0)
+        return false;
+    if (strcmp(json_get_str(json_get(route_contract,
+                                     "service_operation_route")),
+               self_route) != 0)
+        return false;
+    if (strcmp(json_get_str(json_get(binding, "operation_id")),
+               operation_id) != 0)
+        return false;
+    if (strcmp(json_get_str(json_get(binding, "service")), service) != 0)
+        return false;
+    if (strcmp(json_get_str(json_get(binding, "rest_route")),
+               rest_route) != 0)
+        return false;
+    if (strcmp(json_get_str(json_get(binding, "output_schema")),
+               output_schema) != 0)
+        return false;
+    if (strcmp(json_get_str(json_get(binding, "service_catalog_route")),
+               service_route) != 0)
+        return false;
+
+    return true;
+}
+
+static bool api_test_rest_service_operations_bound(
+    const struct json_value *operations,
+    const struct json_value *route_contracts)
+{
+    size_t rest_operation_count = 0;
+    size_t route_binding_count = 0;
+
+    if (!operations || operations->type != JSON_ARR ||
+        !route_contracts || route_contracts->type != JSON_ARR)
+        return false;
+
+    for (size_t i = 0; i < json_size(operations); i++) {
+        const struct json_value *op = json_at(operations, i);
+        const char *route = json_get_str(json_get(op, "rest_route"));
+        const struct json_value *contract;
+
+        if (!json_get_bool(json_get(op, "rest_callable")))
+            continue;
+
+        rest_operation_count++;
+        contract = api_test_find_contract(route_contracts, route);
+        if (!contract ||
+            !api_test_rest_operation_route_matches(op, contract, route))
+            return false;
+    }
+
+    for (size_t i = 0; i < json_size(route_contracts); i++) {
+        const struct json_value *contract = json_at(route_contracts, i);
+        const struct json_value *binding =
+            json_get(contract, "service_binding");
+        const char *operation_id;
+        const char *path;
+        const char *alias_of;
+        const char *expected_route;
+        const struct json_value *op;
+
+        if (!binding)
+            continue;
+
+        route_binding_count++;
+        operation_id = json_get_str(json_get(binding, "operation_id"));
+        op = api_test_find_str_field(operations, "operation_id",
+                                     operation_id);
+        path = json_get_str(json_get(contract, "path"));
+        alias_of = json_get_str(json_get(contract, "legacy_alias_of"));
+        expected_route = alias_of && alias_of[0] ? alias_of : path;
+
+        if (!op || !json_get_bool(json_get(op, "rest_callable")) ||
+            !api_test_rest_operation_route_matches(op, contract,
+                                                   expected_route))
+            return false;
+    }
+
+    return rest_operation_count > 0 &&
+           route_binding_count >= rest_operation_count;
+}
+
 static bool api_test_expect_readiness_shape(const struct json_value *root)
 {
     const struct json_value *readiness = json_get(root, "readiness");
@@ -2376,10 +2505,10 @@ int test_api(void)
         const struct json_value *bootstrap_summary =
             json_get(bootstrap, "operation_summary");
         ok = ok && bootstrap_summary &&
-             json_get_int(json_get(bootstrap_summary, "operation_count")) == 2;
+             json_get_int(json_get(bootstrap_summary, "operation_count")) == 3;
         ok = ok && bootstrap_summary &&
              json_get_int(json_get(bootstrap_summary,
-                                   "public_read_count")) == 1;
+                                   "public_read_count")) == 2;
         ok = ok && bootstrap_summary &&
              json_get_int(json_get(bootstrap_summary,
                                    "operator_private_count")) == 1;
@@ -2388,7 +2517,7 @@ int test_api(void)
                                    "destructive_count")) == 0;
         ok = ok && bootstrap_summary &&
              json_get_int(json_get(bootstrap_summary,
-                                   "preferred_rest_count")) == 1;
+                                   "preferred_rest_count")) == 2;
         ok = ok && bootstrap_summary &&
              json_get_int(json_get(bootstrap_summary,
                                    "preferred_mcp_count")) == 1;
@@ -2439,6 +2568,24 @@ int test_api(void)
                                           "mcp_callable"));
         ok = ok && json_get_bool(json_get(bootstrap_status_op,
                                           "rpc_callable"));
+        const struct json_value *bootstrap_peers_op =
+            api_test_find_str_field(json_get(bootstrap, "operations"),
+                                    "operation", "list_peer_projection");
+        ok = ok && bootstrap_peers_op &&
+             strcmp(json_get_str(json_get(bootstrap_peers_op,
+                                          "operation_id")),
+                    "bootstrap.list_peer_projection") == 0;
+        ok = ok && bootstrap_peers_op &&
+             strcmp(json_get_str(json_get(bootstrap_peers_op, "rest_route")),
+                    "/api/v1/peers") == 0;
+        ok = ok && bootstrap_peers_op &&
+             strcmp(json_get_str(json_get(bootstrap_peers_op,
+                                          "output_schema")),
+                    "zcl.peers.index.v1") == 0;
+        ok = ok && bootstrap_peers_op &&
+             json_get_bool(json_get(bootstrap_peers_op, "rest_callable"));
+        ok = ok && bootstrap_peers_op &&
+             !json_get_bool(json_get(bootstrap_peers_op, "mcp_callable"));
         ok = ok && names &&
              strcmp(json_get_str(json_get(names, "application_protocol")),
                     "znam") == 0;
@@ -2670,6 +2817,8 @@ int test_api(void)
             ok = ok && api_test_runtime_probes_consistent(
                 &catalog_root, operations,
                 json_get(&index_root, "route_contracts"));
+            ok = ok && api_test_rest_service_operations_bound(
+                operations, json_get(&index_root, "route_contracts"));
             json_free(&catalog_root);
             json_free(&index_root);
         }

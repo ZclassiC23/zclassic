@@ -349,7 +349,10 @@ Routes backed by a REST-callable service operation also carry
 `service_contract`, `service_catalog_route`, `service_operation_id`,
 `service_operation_route`, and embedded `service_binding`; OpenAPI mirrors that
 as `x-zcl-service-binding`. Keep those bindings generated from
-`api_controller_service_operations.c`, not duplicated in route docs.
+`api_controller_service_operations.c`, not duplicated in route docs. `test_api`
+checks the full invariant: every REST-callable service operation must bind to a
+route contract, and every route `service_binding` must point back to the same
+operation.
 Keep `/api/v1` and `/api/v1/openapi` generated from that
 one contract source and pin representative collection/item/singleton routes in
 `test_api` whenever adding a new route shape. Service-operation member routes
