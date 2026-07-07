@@ -381,6 +381,7 @@ Confirm the target before acting.
 | Command | Effect |
 |---------|--------|
 | `make -j$(nproc)` | Build `zclassic23`, `test_zcl`, `zclassic-cli`. `-j` only overlaps the 2–3 binaries + LTO link, not per-binary front-end. |
+| `make fast-changed-compile` | Cheapest guarded edit check; compiles changed node `.c` files directly into `build/dev-obj/`, with safe fallback to `fast-compile`. |
 | `make fast-compile` | Fastest no-link dev compile check; cached non-LTO `build/dev-obj` objects. |
 | `make build-only` | Strict release-flag `cc -c` with depfile header tracking; use before push/release. |
 | `make fast-rebuild` | Fast local node binary alias for `make dev-bin`; cached per-file objects, no LTO, uses `ccache` automatically when installed. |

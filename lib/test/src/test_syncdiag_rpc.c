@@ -5174,13 +5174,22 @@ syncdiag_net_split_done:
         ok = ok && loop && strcmp(json_get_str(json_get(loop, "schema")),
                                   "zcl.agent_build_loop.v1") == 0;
         ok = ok && strcmp(json_get_str(json_get(loop,
+                           "direct_changed_compile")),
+                          "make fast-changed-compile") == 0;
+        ok = ok && strcmp(json_get_str(json_get(loop,
                            "fast_no_link_compile")),
                           "make fast-compile") == 0;
+        ok = ok && strcmp(json_get_str(json_get(loop,
+                           "fast_ci_compile_default")),
+                          "ZCL_FAST_COMPILE=changed -> make fast-changed-compile with safe fallback") == 0;
         ok = ok && strcmp(json_get_str(json_get(loop,
                            "pre_push_compile_default")),
                           "ZCL_FAST_COMPILE=strict -> make build-only") == 0;
         ok = ok && incremental && json_get_bool(json_get(incremental,
                                                          "header_depfiles"));
+        ok = ok && strcmp(json_get_str(json_get(incremental,
+                                                "changed_compile_check")),
+                          "make fast-changed-compile") == 0;
         ok = ok && strcmp(json_get_str(json_get(incremental,
                                                 "fast_compile_check")),
                           "make fast-compile") == 0;
@@ -5199,6 +5208,10 @@ syncdiag_net_split_done:
         ok = ok && cache && strstr(json_get_str(json_get(cache,
                                                          "auto_select_order")),
                                    "sccache cc") != NULL;
+        ok = ok && find_object_with_str(json_get(cache, "knobs"), "name",
+                                        "ZCL_FAST_CHANGED_FILES_ONLY") != NULL;
+        ok = ok && find_object_with_str(commands, "name",
+                                        "fast_changed_compile") != NULL;
         ok = ok && find_object_with_str(commands, "name",
                                         "fast_compile") != NULL;
         ok = ok && find_object_with_str(commands, "name",

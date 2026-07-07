@@ -305,7 +305,7 @@ test-parallel: test_parallel
 # the default `all`), so running build/bin/test_parallel directly after editing a test
 # can false-green an old binary or report "matched no groups" for a new test.
 # `make t ONLY=<group>` always rebuilds the harness first, closing that trap.
-.PHONY: t t-fast syntax-check build-only fast-compile dev-build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast lint-fast fast-ci agent-fast-ci dev-ci
+.PHONY: t t-fast syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast lint-fast fast-ci agent-fast-ci dev-ci
 
 # Run ONE test group, always rebuilding the harness first:
 #   make t ONLY=service_state_driver
@@ -338,6 +338,13 @@ build-only: $(TMPL_GEN) $(ALL_OBJS)
 fast-compile dev-build-only: $(TMPL_GEN) $(DEV_OBJS)
 	@echo "fast-compile: all dev node objects compiled (non-LTO, no link)"
 
+# Cheapest guarded compile-check for the common `.c` edit loop. It compiles
+# only changed node translation units into build/dev-obj when safe, and falls
+# back to depfile-safe `fast-compile` for headers, templates, Makefile changes,
+# removed sources, or broad edits.
+fast-changed-compile:
+	@ZCL_FAST_CC="$${ZCL_FAST_CC:-$(CC)}" tools/agent_fast_ci.sh compile-changed
+
 # Fast local node executable for AI/operator development. This deliberately
 # does not replace `zclassic23`, `make deploy`, or release artifacts.
 dev-bin zclassic23-dev: $(ZCLASSIC23_DEV_BIN)
@@ -367,6 +374,8 @@ lint-fast: check-raw-sqlite check-malloc check-silent-errors check-model-validat
 #   ZCL_FAST_LIVE=0 make fast-ci   # skip live linger-service probe
 #   ZCL_FAST_CHANGED_FILES_FILE=/tmp/files make fast-ci
 #   ZCL_FAST_CHANGED_FILES='app/controllers/src/agent_controller.c' make fast-ci
+#   ZCL_FAST_CHANGED_FILES_ONLY=1  # trust only the explicit changed-file list
+#   ZCL_FAST_COMPILE=dev make fast-ci  # force full dev-object fast-compile
 #   make pre-push-ci               # skips live probe; code gate only
 fast-ci agent-fast-ci dev-ci:
 	@tools/agent_fast_ci.sh

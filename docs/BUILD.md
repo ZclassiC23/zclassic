@@ -49,6 +49,11 @@ at `ZCL_DEV_HOT_OPT=-O2`; both are overrideable. The link step auto-selects
 Makefile automatically wraps `CC` with it for rebuild speed; set
 `ZCL_USE_CCACHE=0` to opt out.
 
+For the absolute cheapest edit check, run `make fast-changed-compile`. It
+compiles only changed node `.c` files into `build/dev-obj/` when that is safe,
+and automatically falls back to `make fast-compile` for header, template,
+Makefile, removed-source, or broad edits.
+
 This binary is for local AI/operator iteration only. `make zclassic23`,
 `make deploy`, reproducible builds, and releases continue to use
 `build/bin/zclassic23` with the release flag profile.

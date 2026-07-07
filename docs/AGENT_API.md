@@ -796,6 +796,10 @@ This is a C23 project, so the edit loop should compile only what changed.
   `build/obj` plus header depfiles (`-MMD -MP` and included `.d` files), so
   unchanged translation units keep their existing `.o` files and changed
   headers recompile their dependents.
+- `make fast-changed-compile` is the cheapest guarded edit check. It compiles
+  changed node `.c` files directly into `build/dev-obj/` and falls back to
+  `make fast-compile` for header, template, Makefile, removed-source, or broad
+  edits.
 - `make fast-compile` is the cheapest no-link edit-loop compile check. It uses
   the non-LTO dev object tree (`build/dev-obj`) and skips the final executable
   link, so it is the right first command for "did this C change compile?".
@@ -812,10 +816,10 @@ This is a C23 project, so the edit loop should compile only what changed.
   `build/bin/test_parallel_fast`, a cached non-LTO test harness for hot-path
   focused tests.
 - `make fast-ci` runs `git diff --check`, shell syntax checks, `lint-fast`,
-  `fast-compile`, focused tests inferred from changed files, and a native
-  linger-service probe when the service is available. Repeated identical green
-  inputs hit `.cache/zcl-agent-fast-ci/` and skip repeated lint/build/focused
-  tests while still refreshing the live probe. The live probe trusts the
+  the changed compile gate, focused tests inferred from changed files, and a
+  native linger-service probe when the service is available. Repeated identical
+  green inputs hit `.cache/zcl-agent-fast-ci/` and skip repeated
+  lint/build/focused tests while still refreshing the live probe. The live probe trusts the
   native `zcl.public_status.v1` health contract instead of duplicating height
   gap policy in shell, and prints compact status JSON when it fails.
 - Focused test routing is DRY: both native `zclassic23 agentimpact` and
@@ -824,8 +828,11 @@ This is a C23 project, so the edit loop should compile only what changed.
   there first, then verify `agentimpact` reports `shared_rule_hits > 0`.
 - `make fast-ci` auto-selects `sccache cc`, then `ccache cc`, then `cc`.
   Override with `ZCL_FAST_CC='ccache cc'`. Use `ZCL_FAST_JOBS=N`,
-  `ZCL_FAST_COMPILE=strict` to replace `fast-compile` with strict
-  `build-only`, `ZCL_FAST_TESTS=group[,group]`,
+  `ZCL_FAST_COMPILE=dev` to force full `fast-compile`,
+  `ZCL_FAST_COMPILE=strict` to replace the changed compile gate with strict
+  `build-only`, `ZCL_FAST_CHANGED_COMPILE_LIMIT=N`,
+  `ZCL_FAST_CHANGED_FILES_ONLY=1` when an explicit changed-file list is exact,
+  `ZCL_FAST_TESTS=group[,group]`,
   `ZCL_FAST_STRICT_TESTS=1`, and `ZCL_FAST_LIVE=0` as needed.
   Use `ZCL_FAST_CACHE=0` to force a rerun,
   `ZCL_FAST_CACHE_RESET=1` to clear the green-input cache, or
@@ -847,7 +854,7 @@ tests. Full-suite, fuzz, and coverage evidence belongs to the background quality
 Status JSON is written under `~/.local/state/zclassic23-quality`. The native
 `zclassic23 agentbuild` / `zcl_agent_build` response also embeds
 `recommended_loop` (`zcl.agent_build_loop.v1`) with the cheapest command for
-each intent (`fast-compile`, `fast-rebuild`, focused `t-fast`, and
+each intent (`fast-changed-compile`, `fast-compile`, `fast-rebuild`, focused `t-fast`, and
 `pre-push-ci`),
 `dev_node_binary` (`make dev-bin`, `build/bin/zclassic23-dev`, hot-path
 optimization buckets, and release/deploy boundary) plus

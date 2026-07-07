@@ -37,8 +37,9 @@ if ! awk '
     /refs\/heads\/main/ { main_only=1 }
     /git diff --name-only "\$rsha" "\$lsha"/ { range_diff=1 }
     /ZCL_FAST_CHANGED_FILES_FILE="\$changed_files"/ { changed_env=1 }
-    /^[[:space:]]*if[[:space:]]+![[:space:]]+ZCL_FAST_CHANGED_FILES_FILE="\$changed_files"[[:space:]]+\$CMD;[[:space:]]*then[[:space:]]*$/ { invokes_cmd=1 }
-    END { exit !(default_cmd && main_only && range_diff && changed_env && invokes_cmd) }
+    /ZCL_FAST_CHANGED_FILES_ONLY=1/ { changed_only_env=1 }
+    /^[[:space:]]*if[[:space:]]+![[:space:]]+ZCL_FAST_CHANGED_FILES_FILE="\$changed_files"[[:space:]]+ZCL_FAST_CHANGED_FILES_ONLY=1[[:space:]]+\$CMD;[[:space:]]*then[[:space:]]*$/ { invokes_cmd=1 }
+    END { exit !(default_cmd && main_only && range_diff && changed_env && changed_only_env && invokes_cmd) }
 ' "$hook"; then
     echo "check_git_hooks_installed: FAIL — $hook does not run the local range-aware make pre-push-ci gate" >&2
     echo "  Restore the tracked pre-push hook or run: git checkout -- $hook" >&2

@@ -66,7 +66,7 @@ echo "pre-push: running local CI gate ($CMD) before push to origin…" >&2
 echo "pre-push: semantic changed-file count: $(wc -l < "$changed_files" | tr -d ' ')." >&2
 echo "pre-push: full-suite/fuzz/coverage lanes run via 'make install-quality-linger'." >&2
 echo "pre-push: bypass one push with 'git push --no-verify' if you must." >&2
-if ! ZCL_FAST_CHANGED_FILES_FILE="$changed_files" $CMD; then
+if ! ZCL_FAST_CHANGED_FILES_FILE="$changed_files" ZCL_FAST_CHANGED_FILES_ONLY=1 $CMD; then
     echo "" >&2
     echo "pre-push: LOCAL CI FAILED — push BLOCKED." >&2
     echo "pre-push: fix it, or override this one push with 'git push --no-verify'." >&2

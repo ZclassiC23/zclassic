@@ -12,7 +12,8 @@ cd "$ROOT"
 SCHEMA="zcl.agent_fast_ci.v1"
 CACHE_SCHEMA="zcl.agent_fast_ci.cache.v1"
 FAST_CC="${ZCL_FAST_CC:-}"
-FAST_COMPILE="${ZCL_FAST_COMPILE:-dev}"
+FAST_COMPILE="${ZCL_FAST_COMPILE:-changed}"
+FAST_CHANGED_COMPILE_LIMIT="${ZCL_FAST_CHANGED_COMPILE_LIMIT:-24}"
 CACHE_ROOT="${ZCL_FAST_CACHE_DIR:-$ROOT/.cache/zcl-agent-fast-ci}"
 CACHE_KEY=""
 CACHE_RECORD=""
@@ -90,6 +91,22 @@ make_fast() {
     make -j"$FAST_JOBS" CC="$FAST_CC" "$@"
 }
 
+fast_changed_files_only() {
+    case "${ZCL_FAST_CHANGED_FILES_ONLY:-0}" in
+        1|true|yes|only) return 0 ;;
+        0|false|no|"") return 1 ;;
+        *) fail "unknown ZCL_FAST_CHANGED_FILES_ONLY=${ZCL_FAST_CHANGED_FILES_ONLY}" ;;
+    esac
+}
+
+validate_changed_files_only() {
+    if fast_changed_files_only &&
+       [ -z "${ZCL_FAST_CHANGED_FILES_FILE:-}" ] &&
+       [ -z "${ZCL_FAST_CHANGED_FILES:-}" ]; then
+        fail "ZCL_FAST_CHANGED_FILES_ONLY requires ZCL_FAST_CHANGED_FILES_FILE or ZCL_FAST_CHANGED_FILES"
+    fi
+}
+
 changed_files() {
     if [ -n "${ZCL_FAST_CHANGED_FILES_FILE:-}" ]; then
         [ -f "$ZCL_FAST_CHANGED_FILES_FILE" ] ||
@@ -98,6 +115,9 @@ changed_files() {
     fi
     if [ -n "${ZCL_FAST_CHANGED_FILES:-}" ]; then
         printf '%s\n' "$ZCL_FAST_CHANGED_FILES" | tr ' ,' '\n'
+    fi
+    if fast_changed_files_only; then
+        return
     fi
     if [ -n "${ZCL_FAST_BASE:-}" ]; then
         git diff --name-only "$ZCL_FAST_BASE"...HEAD -- || true
@@ -135,6 +155,52 @@ is_code_like_change() {
         *)
             return 1
             ;;
+    esac
+}
+
+is_graph_wide_compile_change() {
+    local file="$1"
+    case "$file" in
+        *.h|Makefile|*.mk|app/views/templates/*|app/views/css/*|tools/gen_templates.c|vendor/include/*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+is_node_c_source() {
+    local file="$1"
+    case "$file" in
+        */_*fixture*.c|_*fixture*.c)
+            return 1
+            ;;
+        src/main.c|tools/mcp_server.c|app/*/src/*.c|config/src/*.c|\
+        lib/*/src/*.c|domain/*/src/*.c|application/*/src/*.c|\
+        adapters/outbound/persistence/src/*.c|tools/mcp/*.c|\
+        tools/mcp/controllers/*.c|tools/mcp/views/*.c)
+            case "$file" in
+                lib/test/*|tools/sim/*)
+                    return 1
+                    ;;
+                *)
+                    return 0
+                    ;;
+            esac
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+add_direct_dev_object() {
+    local file="$1" obj
+    obj="build/dev-obj/${file%.c}.o"
+    case " $DIRECT_DEV_OBJECTS " in
+        *" $obj "*) ;;
+        *) DIRECT_DEV_OBJECTS="${DIRECT_DEV_OBJECTS:+$DIRECT_DEV_OBJECTS }$obj" ;;
     esac
 }
 
@@ -240,7 +306,9 @@ cache_manifest() {
     printf 'cache_tool\t%s\n' "$CACHE_TOOL"
     printf 'fast_jobs\t%s\n' "$FAST_JOBS"
     printf 'fast_compile\t%s\n' "$FAST_COMPILE"
+    printf 'fast_changed_compile_limit\t%s\n' "$FAST_CHANGED_COMPILE_LIMIT"
     printf 'fast_tests_env\t%s\n' "${ZCL_FAST_TESTS:-}"
+    printf 'fast_changed_files_only\t%s\n' "${ZCL_FAST_CHANGED_FILES_ONLY:-0}"
     printf 'fast_changed_files_file\t%s\n' "${ZCL_FAST_CHANGED_FILES_FILE:-}"
     printf 'fast_changed_files_env\t%s\n' "${ZCL_FAST_CHANGED_FILES:-}"
     printf 'fast_strict_tests\t%s\n' "${ZCL_FAST_STRICT_TESTS:-0}"
@@ -384,6 +452,10 @@ run_focused_tests() {
 run_compile_gate() {
     local target
     case "$FAST_COMPILE" in
+        changed|changed-dev|auto)
+            compile_changed_gate
+            return
+            ;;
         dev|fast|quick|"")
             target="fast-compile"
             ;;
@@ -396,6 +468,70 @@ run_compile_gate() {
     esac
     log "$target"
     make_fast "$target"
+}
+
+compile_changed_gate() {
+    local file fallback_reason count
+    DIRECT_DEV_OBJECTS=""
+    fallback_reason=""
+    count=0
+
+    case "$FAST_CHANGED_COMPILE_LIMIT" in
+        ''|*[!0-9]*)
+            fail "ZCL_FAST_CHANGED_COMPILE_LIMIT must be a non-negative integer (got ${FAST_CHANGED_COMPILE_LIMIT:-empty})"
+            ;;
+    esac
+
+    while IFS= read -r file; do
+        [ -n "$file" ] || continue
+
+        if is_graph_wide_compile_change "$file"; then
+            fallback_reason="graph-wide change: $file"
+            break
+        fi
+
+        case "$file" in
+            *.c)
+                if [ ! -f "$file" ]; then
+                    fallback_reason="removed or moved C source: $file"
+                    break
+                fi
+                if is_node_c_source "$file"; then
+                    add_direct_dev_object "$file"
+                    count=$((count + 1))
+                fi
+                ;;
+            *)
+                if is_code_like_change "$file"; then
+                    fallback_reason="non-C code/config change: $file"
+                    break
+                fi
+                ;;
+        esac
+    done <<EOF
+$(changed_files | sort -u)
+EOF
+
+    if [ -n "$fallback_reason" ]; then
+        log "fast-changed-compile: fallback to fast-compile ($fallback_reason)"
+        make_fast fast-compile
+        return
+    fi
+
+    if [ "$FAST_CHANGED_COMPILE_LIMIT" -gt 0 ] &&
+       [ "$count" -gt "$FAST_CHANGED_COMPILE_LIMIT" ]; then
+        log "fast-changed-compile: fallback to fast-compile ($count changed node sources > limit $FAST_CHANGED_COMPILE_LIMIT)"
+        make_fast fast-compile
+        return
+    fi
+
+    if [ -z "$DIRECT_DEV_OBJECTS" ]; then
+        log "fast-changed-compile: no changed node C sources; compile gate is already satisfied"
+        return
+    fi
+
+    log "fast-changed-compile: direct dev object compile count=$count"
+    make_fast $DIRECT_DEV_OBJECTS
 }
 
 live_service_detected() {
@@ -499,10 +635,25 @@ maybe_live_probe() {
 }
 
 main() {
+    local mode="${1:-run}"
     log "schema=$SCHEMA"
     select_compiler
     resolve_fast_jobs
     log "compiler=$FAST_CC cache=$CACHE_TOOL jobs=$FAST_JOBS compile=$FAST_COMPILE"
+    validate_changed_files_only
+
+    case "$mode" in
+        run|"") ;;
+        compile-changed|changed-compile|fast-changed-compile)
+            compile_changed_gate
+            log "PASS: changed compile gate complete"
+            return
+            ;;
+        *)
+            fail "unknown mode: $mode"
+            ;;
+    esac
+
     maybe_reset_fast_cache
     select_test_groups
     fail_on_unmapped_code_changes

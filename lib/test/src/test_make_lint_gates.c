@@ -2574,6 +2574,7 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "t-fast") != NULL);
         ASSERT(strstr(buf, "test_parallel_fast") != NULL);
         ASSERT(strstr(buf, "fast-compile dev-build-only") != NULL);
+        ASSERT(strstr(buf, "fast-changed-compile") != NULL);
         ASSERT(strstr(buf, "dev-bin zclassic23-dev") != NULL);
         ASSERT(strstr(buf, "ZCLASSIC23_DEV_BIN") != NULL);
         ASSERT(strstr(buf, "DEV_OBJ_DIR") != NULL);
@@ -2590,6 +2591,7 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "ZCL_FAST_CACHE_RESET=1") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES_FILE") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES_ONLY") != NULL);
         ASSERT(strstr(buf, "pre-push-ci") != NULL);
         ASSERT(strstr(buf,
                       "ZCL_FAST_LIVE=0 ZCL_FAST_COMPILE=strict $(MAKE) fast-ci")
@@ -2617,6 +2619,9 @@ static int t_agent_fast_ci_contract(void)
                != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES_FILE") != NULL);
         ASSERT(strstr(buf, "fast_changed_files_file") != NULL);
+        ASSERT(strstr(buf, "fast_changed_files_only") != NULL);
+        ASSERT(strstr(buf, "fast_changed_files_only()") != NULL);
+        ASSERT(strstr(buf, "validate_changed_files_only") != NULL);
         ASSERT(strstr(buf, "impact_rules_file") != NULL);
         ASSERT(strstr(buf, "bash -n \"$script\"") != NULL);
         ASSERT(strstr(buf, "tools/deploy_guard.sh") != NULL);
@@ -2625,7 +2630,19 @@ static int t_agent_fast_ci_contract(void)
                != NULL);
         ASSERT(strstr(buf, "make_fast lint-fast") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_COMPILE") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_CHANGED_COMPILE_LIMIT") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES_ONLY") != NULL);
+        ASSERT(strstr(buf, "FAST_COMPILE=\"${ZCL_FAST_COMPILE:-changed}\"")
+               != NULL);
+        ASSERT(strstr(buf, "compile_changed_gate") != NULL);
+        ASSERT(strstr(buf, "is_graph_wide_compile_change") != NULL);
+        ASSERT(strstr(buf, "is_node_c_source") != NULL);
+        ASSERT(strstr(buf, "DIRECT_DEV_OBJECTS") != NULL);
+        ASSERT(strstr(buf, "fast-changed-compile: direct dev object compile")
+               != NULL);
+        ASSERT(strstr(buf, "fallback to fast-compile") != NULL);
         ASSERT(strstr(buf, "run_compile_gate") != NULL);
+        ASSERT(strstr(buf, "changed|changed-dev|auto") != NULL);
         ASSERT(strstr(buf, "target=\"fast-compile\"") != NULL);
         ASSERT(strstr(buf, "target=\"build-only\"") != NULL);
         ASSERT(strstr(buf, "make_fast \"$target\"") != NULL);
@@ -2661,6 +2678,7 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "ZCL_FAST_CACHE") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CACHE_RESET") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CACHE_DIR") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES_ONLY") != NULL);
         ASSERT(strstr(buf, "fast result cache hit") != NULL);
         ASSERT(strstr(buf,
                       "skipping lint-fast/compile-gate/focused tests")
@@ -2793,6 +2811,7 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "`make fast-ci`") != NULL);
         ASSERT(strstr(buf, "`make t-fast ONLY=<group>`") != NULL);
+        ASSERT(strstr(buf, "`make fast-changed-compile`") != NULL);
         ASSERT(strstr(buf, "`make fast-compile`") != NULL);
         ASSERT(strstr(buf, "`make dev-bin`") != NULL);
         ASSERT(strstr(buf, "`make ci-reproducible`") != NULL);
@@ -2804,6 +2823,9 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "not a deploy or release artifact") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CC") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_COMPILE=strict") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_COMPILE=changed") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_CHANGED_COMPILE_LIMIT") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES_ONLY=1") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_TESTS") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_STRICT_TESTS=1") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_JOBS") != NULL);

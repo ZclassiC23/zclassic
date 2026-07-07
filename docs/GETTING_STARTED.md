@@ -43,6 +43,7 @@ Useful faster loops:
 
 ```bash
 make zclassic23              # node only
+make fast-changed-compile    # cheapest guarded .c-only compile check
 make fast-compile            # fastest dev compile check, no final link
 make build-only              # strict release-flag compile check, no final link
 make fast-rebuild            # fastest local node binary, no LTO
