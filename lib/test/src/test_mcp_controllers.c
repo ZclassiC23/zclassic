@@ -2709,10 +2709,38 @@ static char *mock_networkinfo_rpc(const char *method, const char *params_json)
     if (strcmp(method, "bootstrapstatus") == 0)
         return strdup("{\"schema\":\"zcl.bootstrap_status.v1\","
                       "\"schema_version\":1,"
+                      "\"readiness\":\"ready_p2p_and_addr\","
+                      "\"fresh_node_next_action\":\"connect_direct_p2p_and_request_headers_blocks\","
                       "\"serving_p2p_bootstrap\":true,"
                       "\"serving_snapshot_bootstrap\":false,"
+                      "\"zclassic23_fast_sync_compatible\":true,"
                       "\"zclassicd_beta6_p2p_compatible\":true,"
                       "\"zclassicd_beta6_fast_bootstrap_compatible\":false,"
+                      "\"zclassic23_bootstrap\":{"
+                      "\"schema\":\"zcl.bootstrap.zclassic23.v1\","
+                      "\"schema_version\":1,"
+                      "\"serving\":true,"
+                      "\"preferred_for_fresh_zclassic23\":true,"
+                      "\"full_node_bootstrap\":true,"
+                      "\"addr_relay_ready\":true,"
+                      "\"fast_sync_service_bit_advertised\":true,"
+                      "\"fast_sync_service_bit_value\":1024,"
+                      "\"route_preference\":\"direct_p2p_then_znam_onion_fallback\","
+                      "\"endpoint_source\":\"localaddresses_or_znam_service_directory\","
+                      "\"endpoint_record_schema\":\"zcl.names.service_record.v1\","
+                      "\"name_resolution_schema\":\"zcl.names.show.v1\","
+                      "\"service_catalog_member\":\"/api/v1/service-catalog/bootstrap\","
+                      "\"bootstrap_api\":\"/api/v1/bootstrap\","
+                      "\"clearnet_address\":\"203.0.113.7\","
+                      "\"p2p_port\":8033,"
+                      "\"onion_fallback\":\"use_znam_service_record_transport_onion_when_direct_p2p_unreachable\","
+                      "\"next_action\":\"connect_direct_p2p_and_request_headers_blocks\","
+                      "\"fresh_node_flow\":[\"read_bootstrapstatus\","
+                      "\"connect_direct_p2p_endpoint\","
+                      "\"request_headers_and_blocks\","
+                      "\"resolve_znam_service_directory_if_direct_p2p_fails\","
+                      "\"fallback_to_onion_endpoint\","
+                      "\"validate_all_data_against_zclassic_l1_consensus\"]},"
                       "\"snapshot_loader\":{"
                       "\"schema\":\"zcl.snapshot_loader.v1\","
                       "\"schema_version\":1,"
@@ -2943,10 +2971,34 @@ static int test_zcl_bootstrapstatus_exposes_beta6_contract(void)
                                       "serving_p2p_bootstrap")));
         ASSERT(!json_get_bool(json_get(&root,
                                        "serving_snapshot_bootstrap")));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "readiness")),
+                      "ready_p2p_and_addr");
+        ASSERT_STR_EQ(json_get_str(json_get(&root,
+                                            "fresh_node_next_action")),
+                      "connect_direct_p2p_and_request_headers_blocks");
+        ASSERT(json_get_bool(json_get(&root,
+                                      "zclassic23_fast_sync_compatible")));
         ASSERT(json_get_bool(json_get(&root,
                                       "zclassicd_beta6_p2p_compatible")));
         ASSERT(!json_get_bool(json_get(&root,
             "zclassicd_beta6_fast_bootstrap_compatible")));
+
+        const struct json_value *zcl23_bootstrap =
+            json_get(&root, "zclassic23_bootstrap");
+        ASSERT(zcl23_bootstrap && zcl23_bootstrap->type == JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(zcl23_bootstrap, "schema")),
+                      "zcl.bootstrap.zclassic23.v1");
+        ASSERT(json_get_bool(json_get(zcl23_bootstrap,
+                                      "preferred_for_fresh_zclassic23")));
+        ASSERT_STR_EQ(json_get_str(json_get(zcl23_bootstrap,
+                                            "route_preference")),
+                      "direct_p2p_then_znam_onion_fallback");
+        ASSERT_STR_EQ(json_get_str(json_get(zcl23_bootstrap,
+                                            "endpoint_record_schema")),
+                      "zcl.names.service_record.v1");
+        ASSERT(json_array_has_str(json_get(zcl23_bootstrap,
+                                           "fresh_node_flow"),
+                                  "fallback_to_onion_endpoint"));
 
         const struct json_value *loader =
             json_get(&root, "snapshot_loader");

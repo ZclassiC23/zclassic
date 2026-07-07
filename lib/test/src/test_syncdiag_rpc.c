@@ -1166,6 +1166,13 @@ int test_syncdiag_rpc(void)
                                           "serving_addr_bootstrap"));
         ok = ok && !json_get_bool(json_get(&result,
                                            "serving_snapshot_bootstrap"));
+        ok = ok && strcmp(json_get_str(json_get(&result, "readiness")),
+                          "ready_p2p_and_addr") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+            "fresh_node_next_action")),
+                          "connect_direct_p2p_and_request_headers_blocks") == 0;
+        ok = ok && json_get_bool(json_get(&result,
+                                          "zclassic23_fast_sync_compatible"));
         ok = ok && json_get_bool(json_get(&result,
             "zclassicd_beta6_p2p_compatible"));
         ok = ok && !json_get_bool(json_get(&result,
@@ -1190,6 +1197,28 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get_int(json_get(addrman, "entries")) == 1;
         ok = ok && json_get_bool(json_get(addrman,
                                           "addr_relay_ready"));
+
+        const struct json_value *zcl23 =
+            json_get(&result, "zclassic23_bootstrap");
+        ok = ok && zcl23 && zcl23->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(zcl23, "schema")),
+                          "zcl.bootstrap.zclassic23.v1") == 0;
+        ok = ok && json_get_bool(json_get(zcl23, "serving"));
+        ok = ok && json_get_bool(json_get(zcl23,
+            "preferred_for_fresh_zclassic23"));
+        ok = ok && json_get_bool(json_get(zcl23, "full_node_bootstrap"));
+        ok = ok && json_get_bool(json_get(zcl23, "addr_relay_ready"));
+        ok = ok && strcmp(json_get_str(json_get(zcl23,
+            "route_preference")),
+                          "direct_p2p_then_znam_onion_fallback") == 0;
+        ok = ok && strcmp(json_get_str(json_get(zcl23,
+            "endpoint_record_schema")),
+                          "zcl.names.service_record.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(zcl23,
+            "clearnet_address")), "203.0.113.7") == 0;
+        ok = ok && json_get_int(json_get(zcl23, "p2p_port")) == 8033;
+        ok = ok && json_array_has_str(json_get(zcl23,
+            "fresh_node_flow"), "fallback_to_onion_endpoint");
 
         const struct json_value *loader =
             json_get(&result, "snapshot_loader");

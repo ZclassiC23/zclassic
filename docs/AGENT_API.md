@@ -803,10 +803,22 @@ versioned as `zcl.bootstrap_status.v1` and separates two surfaces:
 
 The key booleans are `serving_p2p_bootstrap`,
 `serving_addr_bootstrap`, `serving_snapshot_bootstrap`,
-`zclassicd_beta6_p2p_compatible`, and
+`zclassic23_fast_sync_compatible`, `zclassicd_beta6_p2p_compatible`, and
 `zclassicd_beta6_fast_bootstrap_compatible`. `blockers[]` names missing
 requirements such as `not_listening`, `provable_tip_not_published`, or
 `beta6_NODE_BOOTSTRAP_not_advertised`.
+
+For a fresh zclassic23 node, consume `readiness`,
+`fresh_node_next_action`, and `zclassic23_bootstrap`
+(`zcl.bootstrap.zclassic23.v1`) before using peer gossip or ZNAM endpoint
+records. That object names whether this node is preferred for fresh zclassic23
+bootstrap, the `NODE_ZCL23` fast-sync service bit, the direct-P2P-first route
+preference, the ZNAM service-record schema to use for onion fallback, and the
+ordered `fresh_node_flow`. The intended UX is: connect to the direct P2P
+endpoint when `serving=true`; if direct reachability fails, resolve a
+`zcl.names.show.v1` service directory, pick an onion endpoint from
+`zcl.names.service_record.v1`, then validate all downloaded data against
+normal ZClassic L1 consensus.
 
 The same response also includes `snapshot_loader` (`zcl.snapshot_loader.v1`),
 the binary-owned recovery contract for the node's own fast-start bundle:

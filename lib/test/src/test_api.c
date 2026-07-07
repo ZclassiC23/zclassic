@@ -1552,8 +1552,15 @@ int test_api(void)
                           "zcl.bootstrap_status.v1") == 0;
         ok = ok && json_get_int(json_get(&root, "schema_version")) == 1;
         ok = ok && !json_get_bool(json_get(&root, "ok"));
+        ok = ok && strcmp(json_get_str(json_get(&root, "readiness")),
+                          "blocked") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root,
+                          "fresh_node_next_action")),
+                          "fix_named_blockers_before_advertising_bootstrap") == 0;
         ok = ok && !json_get_bool(json_get(&root,
                                            "serving_p2p_bootstrap"));
+        ok = ok && !json_get_bool(json_get(&root,
+                                           "zclassic23_fast_sync_compatible"));
         ok = ok && json_get(&root, "binary") != NULL;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "binary"),
                                                 "build_commit")),
@@ -1570,6 +1577,23 @@ int test_api(void)
         ok = ok && strcmp(json_get_str(json_get(json_get(&root,
                           "beta6_snapshot_bootstrap"), "schema")),
                           "zclassicd.bootstrap.snapshot.v3") == 0;
+        const struct json_value *zcl23_bootstrap =
+            json_get(&root, "zclassic23_bootstrap");
+        ok = ok && zcl23_bootstrap &&
+             strcmp(json_get_str(json_get(zcl23_bootstrap, "schema")),
+                    "zcl.bootstrap.zclassic23.v1") == 0;
+        ok = ok && !json_get_bool(json_get(zcl23_bootstrap, "serving"));
+        ok = ok && !json_get_bool(json_get(zcl23_bootstrap,
+                         "preferred_for_fresh_zclassic23"));
+        ok = ok && strcmp(json_get_str(json_get(zcl23_bootstrap,
+                         "route_preference")),
+                          "direct_p2p_then_znam_onion_fallback") == 0;
+        ok = ok && strcmp(json_get_str(json_get(zcl23_bootstrap,
+                         "endpoint_record_schema")),
+                          "zcl.names.service_record.v1") == 0;
+        ok = ok && api_test_array_has_str(json_get(zcl23_bootstrap,
+                         "fresh_node_flow"),
+                         "resolve_znam_service_directory_if_direct_p2p_fails");
         ok = ok && strcmp(json_get_str(json_get(json_get(&root,
                           "snapshot_loader"), "schema")),
                           "zcl.snapshot_loader.v1") == 0;

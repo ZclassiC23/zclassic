@@ -6,6 +6,8 @@
 #define ZCL_RPC_NET_H
 
 #include "rpc/server.h"
+#include <stdbool.h>
+#include <stdint.h>
 
 struct connman;
 struct msg_processor;
@@ -22,6 +24,20 @@ struct json_value;
 
 /* Shared bootstrap-service readiness contract for RPC, REST, and MCP. */
 bool network_bootstrap_status_json(struct json_value *out);
+const char *network_bootstrap_readiness_label(bool p2p_serving,
+                                              bool addr_relay_ready);
+const char *network_bootstrap_next_action(bool p2p_serving,
+                                          bool node_zcl23,
+                                          bool addr_relay_ready);
+void network_push_zclassic23_bootstrap_contract(struct json_value *result,
+                                                bool p2p_serving,
+                                                bool addr_relay_ready,
+                                                bool node_zcl23,
+                                                const char *ext_ip,
+                                                uint16_t ext_port);
+void network_push_snapshot_loader_status(struct json_value *result,
+                                         const char *datadir,
+                                         const char *load_snapshot_at_own_height);
 
 /* Normalize `dumpstate peer_lifecycle incidents` into the standalone
  * `peerincidents` contract. This is used only as a compatibility fallback
