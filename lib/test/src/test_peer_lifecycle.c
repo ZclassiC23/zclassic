@@ -589,6 +589,17 @@ static int test_peer_lifecycle_incident_view(void)
                       "inspect primary_host_issue and top_host_incidents")
                == 0);
         ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "primary_issue_host")),
+                      "40.160.53.56") == 0);
+        ASSERT(json_get_int(json_get(&incidents,
+                                     "primary_issue_score")) > 0);
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "primary_issue_class")),
+                      "reconnect_timeout_pressure") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "primary_issue_next_action")),
+                      "inspect_peer_timeline_for_reconnect_timeouts") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
                                             "bootstrap_readiness")),
                       "ready") == 0);
         ASSERT(strcmp(json_get_str(json_get(&incidents,
@@ -812,6 +823,15 @@ static int test_peer_lifecycle_duplicate_current_bootstrap_view(void)
                                             "safe_next_action")),
                       "inspect primary_host_issue and top_host_incidents")
                == 0);
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "primary_issue_host")),
+                      "203.0.113.42") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "primary_issue_class")),
+                      "duplicate_handshaked_connections") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "primary_issue_next_action")),
+                      "inspect_duplicate_current_connections_for_host") == 0);
         ASSERT(strcmp(json_get_str(json_get(&incidents,
                                             "bootstrap_readiness")),
                       "ready") == 0);
@@ -1182,6 +1202,17 @@ static int test_peer_lifecycle_empty_incident_readiness(void)
         ASSERT(strcmp(json_get_str(json_get(&incidents,
                                             "safe_next_action")),
                       "add_or_fix_bootstrap_peers") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "primary_issue_host")),
+                      "") == 0);
+        ASSERT(json_get_int(json_get(&incidents,
+                                     "primary_issue_score")) == 0);
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "primary_issue_class")),
+                      "none") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&incidents,
+                                            "primary_issue_next_action")),
+                      "monitor_peer_lifecycle") == 0);
         json_free(&incidents);
     } TEST_END
     return failures;

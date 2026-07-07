@@ -878,6 +878,18 @@ int test_syncdiag_rpc(void)
                           "attention") == 0;
         ok = ok && json_get_bool(json_get(&result,
                                           "stability_blocker"));
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "primary_issue_host")),
+                          "40.160.53.56") == 0;
+        ok = ok && json_get_int(json_get(&result,
+                                         "primary_issue_score")) > 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "primary_issue_class")),
+                          "duplicate_handshaked_connections") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "primary_issue_next_action")),
+                          "inspect_duplicate_current_connections_for_host")
+            == 0;
         ok = ok && json_get_int(json_get(&result,
                          "duplicate_host_group_count")) == 1;
         ok = ok && json_get_int(json_get(&result,

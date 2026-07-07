@@ -1471,6 +1471,10 @@ bool peer_lifecycle_incidents_json(struct json_value *out)
     const char *next_action =
         peer_incidents_next_action(host_pick_count, incident_count,
                                    bootstrap_blocked, fast_sync_blocked);
+    const struct peer_lifecycle_host_pick *primary_pick =
+        host_pick_count > 0 ? &host_picks[0] : NULL;
+    const struct peer_lifecycle_host_group *primary_group =
+        primary_pick ? primary_pick->group : NULL;
 
     json_set_object(out);
     json_push_kv_str(out, "schema", "zcl.peer_incidents.v1");
@@ -1511,8 +1515,17 @@ bool peer_lifecycle_incidents_json(struct json_value *out)
                      "bounded peer lifecycle incident view grouped by host; "
                      "use full peer_lifecycle only for raw forensic dumps");
     json_push_kv_str(out, "safe_next_action", next_action);
-    append_primary_host_issue_json(host_pick_count > 0 ? &host_picks[0]
-                                                       : NULL, out);
+    json_push_kv_str(out, "primary_issue_host",
+                     primary_group ? primary_group->host : "");
+    json_push_kv_int(out, "primary_issue_score",
+                     primary_pick ? primary_pick->score : 0);
+    json_push_kv_str(out, "primary_issue_class",
+                     primary_group ? host_group_issue_class(primary_group)
+                                   : "none");
+    json_push_kv_str(out, "primary_issue_next_action",
+                     primary_group ? host_group_next_action(primary_group)
+                                   : "monitor_peer_lifecycle");
+    append_primary_host_issue_json(primary_pick, out);
 
     struct json_value incidents = {0};
     json_set_array(&incidents);

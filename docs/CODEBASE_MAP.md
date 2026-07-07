@@ -198,9 +198,9 @@ controller `k_routes[]` arrays.
   incidents, mirror status, timeline pointers, and a safe next action.
 - `zclassic23 peerincidents` / `zcl_peer_incidents` — compact bounded peer
   incident packet for reconnect storms, duplicate host entries, last
-  disconnect reason, host direction/mixed-direction classification, services,
-  advertised height, bootstrap/fast-sync readiness, and stability blocker
-  verdicts.
+  disconnect reason, flat primary issue fields, host direction/mixed-direction
+  classification, services, advertised height, bootstrap/fast-sync readiness,
+  and stability blocker verdicts.
 - `zclassic23 agentimpact <files...>` / `zcl_agent_impact` — map changed paths
   to risk flags and focused test groups before choosing the verification set.
   The shared routing table lives at

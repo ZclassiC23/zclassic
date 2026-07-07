@@ -436,7 +436,9 @@ For peer churn, reconnect, or duplicate-entry reports, start with
 `zclassic23 dumpstate peer_lifecycle incidents` /
 `zcl_state(subsystem="peer_lifecycle", key="incidents")`. It returns bounded
 `zcl.peer_incidents.v1` JSON with `primary_host_issue`, `top_host_incidents`,
-`top_incidents`, `duplicate_host_groups`, reconnect counts, last reasons,
+flat `primary_issue_host` / `primary_issue_class` /
+`primary_issue_next_action` fields, `top_incidents`,
+`duplicate_host_groups`, reconnect counts, last reasons,
 direction, handshake age, advertised height, service summaries, bootstrap
 readiness/usefulness, fast-sync readiness/usefulness, current handshaked
 service/height/ZClassic23 counts, host `direction` / `mixed_direction`,
