@@ -26,6 +26,94 @@ DEFINE_MODEL_CALLBACKS(znam_entry)
 DEFINE_MODEL_CALLBACKS(znam_text)
 DEFINE_MODEL_CALLBACKS(znam_addr)
 
+static void znam_entry_after_save(void *record, void *ctx)
+{
+    const struct znam_entry *entry = record;
+
+    (void)ctx;
+    if (!entry || !znam_projection_event_log())
+        return;
+
+    /* Projection event emit. Always emit REGISTER — the projection uses
+     * INSERT OR REPLACE so re-registers are idempotent and the primary-target
+     * fields stay in sync without a separate UPDATE. */
+    if (!znam_projection_emit_register(
+            entry->name, entry->owner_address, entry->target_type,
+            entry->target_value, entry->reg_txid, entry->reg_height,
+            (uint32_t)(clock_now_wall_ms() / 1000), 0)) {
+        fprintf(stderr,  // obs-ok:znam-projection-emit
+                "znam projection emit failed for register\n");
+    }
+}
+
+static void znam_text_after_save(void *record, void *ctx)
+{
+    const struct znam_text_record *rec = record;
+    static const uint8_t zero_txid[32] = {0};
+
+    (void)ctx;
+    if (!rec || !znam_projection_event_log())
+        return;
+
+    /* update_txid unknown at this layer; the legacy caller didn't track it,
+     * so pass zeros — consumers tolerate it because it only bumps
+     * last_update_txid for audit. */
+    if (!znam_projection_emit_update_text(rec->name, rec->key,
+                                          rec->value, zero_txid)) {
+        fprintf(stderr,  // obs-ok:znam-projection-emit
+                "znam projection emit failed for text update\n");
+    }
+}
+
+static void znam_addr_after_save(void *record, void *ctx)
+{
+    const struct znam_addr_record *rec = record;
+    static const uint8_t zero_txid[32] = {0};
+
+    (void)ctx;
+    if (!rec || !znam_projection_event_log())
+        return;
+
+    if (!znam_projection_emit_update_addr(rec->name, rec->coin_type,
+                                          rec->address, zero_txid)) {
+        fprintf(stderr,  // obs-ok:znam-projection-emit
+                "znam projection emit failed for addr update\n");
+    }
+}
+
+static struct ar_callbacks *znam_entry_callbacks_ready(void)
+{
+    struct ar_callbacks *cbs = db_znam_entry_callbacks();
+    static bool hooks_done = false;
+    if (!hooks_done) {
+        ar_register_after_save(cbs, znam_entry_after_save);
+        hooks_done = true;
+    }
+    return cbs;
+}
+
+static struct ar_callbacks *znam_text_callbacks_ready(void)
+{
+    struct ar_callbacks *cbs = db_znam_text_callbacks();
+    static bool hooks_done = false;
+    if (!hooks_done) {
+        ar_register_after_save(cbs, znam_text_after_save);
+        hooks_done = true;
+    }
+    return cbs;
+}
+
+static struct ar_callbacks *znam_addr_callbacks_ready(void)
+{
+    struct ar_callbacks *cbs = db_znam_addr_callbacks();
+    static bool hooks_done = false;
+    if (!hooks_done) {
+        ar_register_after_save(cbs, znam_addr_after_save);
+        hooks_done = true;
+    }
+    return cbs;
+}
+
 bool db_znam_entry_validate(const struct znam_entry *entry,
                             struct ar_errors *errors)
 {
@@ -106,7 +194,7 @@ bool db_znam_save(struct node_db *ndb, const struct znam_entry *entry)
     if (!ndb || !ndb->open) LOG_FAIL("znam", "db_znam_save: db not open");
     if (!entry) LOG_FAIL("znam", "db_znam_save: entry is NULL");
 
-    struct ar_callbacks *cbs = db_znam_entry_callbacks();
+    struct ar_callbacks *cbs = znam_entry_callbacks_ready();
     sqlite3_stmt *s = NULL;
     AR_BEGIN_SAVE(cbs, "znam_entry", entry, db_znam_entry_validate);
     AR_PREPARE_BOOL(ndb, s,
@@ -124,20 +212,7 @@ bool db_znam_save(struct node_db *ndb, const struct znam_entry *entry)
 
     bool ok = false;
     AR_FINALIZE_STEP_DONE(s, ok);
-    if (ok) ar_run_after_save(cbs, (void *)entry);
-    if (ok && znam_projection_event_log()) {
-        /* Projection event emit. Always emit REGISTER — the projection
-         * uses INSERT OR REPLACE so re-registers are idempotent and the
-         * primary-target fields stay in sync without a separate UPDATE. */
-        if (!znam_projection_emit_register(
-                entry->name, entry->owner_address, entry->target_type,
-                entry->target_value, entry->reg_txid, entry->reg_height,
-                (uint32_t)(clock_now_wall_ms() / 1000), 0)) {
-            fprintf(stderr,  // obs-ok:znam-projection-emit
-                    "znam projection emit failed for register\n");
-        }
-    }
-    return ok;
+    AR_FINISH_SAVE(cbs, entry, ok);
 }
 
 static void row_to_znam(sqlite3_stmt *s, struct znam_entry *out)
@@ -225,7 +300,7 @@ bool db_znam_text_save(struct node_db *ndb, const char *name,
     snprintf(rec.key, sizeof(rec.key), "%s", key);
     if (value) snprintf(rec.value, sizeof(rec.value), "%s", value);
 
-    struct ar_callbacks *cbs = db_znam_text_callbacks();
+    struct ar_callbacks *cbs = znam_text_callbacks_ready();
     sqlite3_stmt *s = NULL;
     AR_BEGIN_SAVE(cbs, "znam_text", &rec, db_znam_text_validate);
     AR_PREPARE_BOOL(ndb, s,
@@ -237,19 +312,7 @@ bool db_znam_text_save(struct node_db *ndb, const char *name,
 
     bool ok = false;
     AR_FINALIZE_STEP_DONE(s, ok);
-    if (ok) ar_run_after_save(cbs, &rec);
-    if (ok && znam_projection_event_log()) {
-        /* Projection event emit. update_txid unknown at this layer; the
-         * legacy caller didn't track it, so pass zeros — consumers should
-         * tolerate it because it only bumps last_update_txid for audit. */
-        static const uint8_t zero_txid[32] = {0};
-        if (!znam_projection_emit_update_text(rec.name, rec.key,
-                                              rec.value, zero_txid)) {
-            fprintf(stderr,  // obs-ok:znam-projection-emit
-                    "znam projection emit failed for text update\n");
-        }
-    }
-    return ok;
+    AR_FINISH_SAVE(cbs, &rec, ok);
 }
 
 bool db_znam_text_get(struct node_db *ndb, const char *name,
@@ -309,7 +372,7 @@ bool db_znam_addr_save(struct node_db *ndb, const char *name,
     rec.coin_type = coin_type;
     snprintf(rec.address, sizeof(rec.address), "%s", address);
 
-    struct ar_callbacks *cbs = db_znam_addr_callbacks();
+    struct ar_callbacks *cbs = znam_addr_callbacks_ready();
     sqlite3_stmt *s = NULL;
     AR_BEGIN_SAVE(cbs, "znam_addr", &rec, db_znam_addr_validate);
     AR_PREPARE_BOOL(ndb, s,
@@ -321,16 +384,7 @@ bool db_znam_addr_save(struct node_db *ndb, const char *name,
 
     bool ok = false;
     AR_FINALIZE_STEP_DONE(s, ok);
-    if (ok) ar_run_after_save(cbs, &rec);
-    if (ok && znam_projection_event_log()) {
-        static const uint8_t zero_txid[32] = {0};
-        if (!znam_projection_emit_update_addr(rec.name, rec.coin_type,
-                                              rec.address, zero_txid)) {
-            fprintf(stderr,  // obs-ok:znam-projection-emit
-                    "znam projection emit failed for addr update\n");
-        }
-    }
-    return ok;
+    AR_FINISH_SAVE(cbs, &rec, ok);
 }
 
 bool db_znam_addr_get(struct node_db *ndb, const char *name,

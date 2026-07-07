@@ -16,7 +16,7 @@ DEFINE_MODEL_CALLBACKS(store_order)
 static void store_product_read_content(sqlite3_stmt *s, int col,
                                        struct db_store_product *out);
 
-static bool store_product_before_save(void *record, void *ctx)
+static bool store_product_before_validate(void *record, void *ctx)
 {
     struct db_store_product *p = (struct db_store_product *)record;
     (void)ctx;
@@ -27,7 +27,7 @@ static bool store_product_before_save(void *record, void *ctx)
     return true;
 }
 
-static bool store_order_before_save(void *record, void *ctx)
+static bool store_order_before_validate(void *record, void *ctx)
 {
     struct db_store_order *o = (struct db_store_order *)record;
     (void)ctx;
@@ -38,8 +38,8 @@ static bool store_order_before_save(void *record, void *ctx)
     return true;
 }
 
-DEFINE_MODEL_BEFORE_SAVE_READY(store_product, store_product_before_save)
-DEFINE_MODEL_BEFORE_SAVE_READY(store_order, store_order_before_save)
+DEFINE_MODEL_BEFORE_VALIDATE_READY(store_product, store_product_before_validate)
+DEFINE_MODEL_BEFORE_VALIDATE_READY(store_order, store_order_before_validate)
 
 bool db_store_product_validate(const struct db_store_product *p,
                                struct ar_errors *errors)
@@ -116,11 +116,7 @@ bool db_store_product_save(struct node_db *ndb, const struct db_store_product *p
     if (!ndb || !ndb->open || !p)
         return false;
     cbs = store_product_callbacks_ready();
-    if (!ar_run_before_save(cbs, (void *)p)) {
-        fprintf(stderr, "store_product save vetoed by before_save\n");
-        return false;
-    }
-    AR_VALIDATE_RECORD(cbs, "store_product", p, db_store_product_validate);
+    AR_BEGIN_SAVE(cbs, "store_product", p, db_store_product_validate);
 
     AR_PREPARE_BOOL(ndb, s,
         "INSERT INTO products "
@@ -202,7 +198,7 @@ bool db_store_product_find_by_token(struct node_db *ndb, const char *token_id,
     if (!ndb || !ndb->open || !out || !token_id || !token_id[0])
         return false;
     memset(out, 0, sizeof(*out));
-    /* token ids are stored upcased by store_product_before_save; compare
+    /* token ids are stored upcased by store_product_before_validate; compare
      * case-insensitively so a lowercase query token still resolves. */
     AR_PREPARE_BOOL(ndb, s,
         "SELECT id,name,description,price_zatoshi,token_id,"
@@ -300,11 +296,7 @@ bool db_store_order_save(struct node_db *ndb, struct db_store_order *o)
         o->created_at = (int64_t)platform_time_wall_time_t();
 
     cbs = store_order_callbacks_ready();
-    if (!ar_run_before_save(cbs, (void *)o)) {
-        fprintf(stderr, "store_order save vetoed by before_save\n");
-        return false;
-    }
-    AR_VALIDATE_RECORD(cbs, "store_order", o, db_store_order_validate);
+    AR_BEGIN_SAVE(cbs, "store_order", o, db_store_order_validate);
 
     AR_PREPARE_BOOL(ndb, s,
         "INSERT INTO orders "

@@ -201,9 +201,10 @@ lint` fails.
 An agent that pushes code with raw malloc, silent errors, bypassed AR
 validation, unpaired stderr diagnostics, a critical model missing its
 before_save hook, a model file with no `validates_*` call and no
-`ar-validate-skip:<tag>` marker, or a controller/service function over 500 lines
-without a `long-function-ok:<tag>` override, gets a red build before any human
-sees it.
+`ar-validate-skip:<tag>` marker, a model save that hand-runs
+`ar_run_before_save()` / `ar_run_after_save()` instead of the AR lifecycle
+macros, or a controller/service function over 500 lines without a
+`long-function-ok:<tag>` override, gets a red build before any human sees it.
 
 Gates fall into three modes:
 
@@ -240,6 +241,13 @@ assert green).
   `ar-validate-skip:<tag>` marker explaining why AR validation does not apply
   (e.g. `connection-handle-not-a-row`). Pins the wave-6 result. Impl:
   `tools/scripts/check_model_validation.sh`.
+
+- **Gate #11b: `check-model-ar-lifecycle`** (HARD) — `app/models/src/*.c` may
+  not call `ar_run_before_save()` or `ar_run_after_save()` directly. Save paths
+  must use `AR_BEGIN_SAVE`, `AR_ADHOC_SAVE`, `AR_CACHED_SAVE`, and
+  `AR_FINISH_SAVE` so `before_validate -> validate -> before_save -> SQL ->
+  after_save` stays one mechanically enforced lifecycle. Impl:
+  `tools/scripts/check_model_ar_lifecycle.sh`.
 
 - **Gate #12: `check-long-functions`** (HARD) — flags any top-level function in
   `app/controllers/src/*.c` or `app/services/src/*.c` whose body spans >500
@@ -375,6 +383,7 @@ add/remove a gate.
 - `check-log-macro-return-type`
 - `check-long-functions`
 - `check-malloc`
+- `check-model-ar-lifecycle`
 - `check-model-validation`
 - `check-no-raw-clock-outside-platform`
 - `check-no-raw-sqlite-in-controllers`

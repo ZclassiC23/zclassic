@@ -116,11 +116,9 @@ bool db_utxo_save(struct node_db *ndb, const struct db_utxo *u)
     AR_BIND_INT(s, 8, u->is_coinbase ? 1 : 0);
 
     bool ok = AR_STEP_DONE(s);
-    if (ok) {
-        ar_run_after_save(cbs, (void *)u);
-        /* Don't emit per-UTXO events during bulk import — too noisy */
-    }
-    return ok;
+    /* Don't emit per-UTXO events during bulk import — db_utxo_insert_raw()
+     * deliberately bypasses this model lifecycle. */
+    AR_FINISH_SAVE(cbs, u, ok);
 }
 
 /* ── Bulk Import (fast path) ───────────────────────────────────── */

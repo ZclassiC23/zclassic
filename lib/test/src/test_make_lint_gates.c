@@ -1011,6 +1011,8 @@ static int t_git_hooks_gate_rejects_noop_pre_push(void)
 #define E10_SQL_SCRIPT_REL "tools/lint/check_no_raw_sqlite_in_controllers.sh"
 #define E10_SQL_FIXTURE_DST "app/controllers/src/_e10_rawsql_fixture_tmp.c"
 #define E11_SCRIPT_REL   "tools/scripts/check_doc_accuracy.sh"
+#define MODEL_AR_SCRIPT_REL "tools/scripts/check_model_ar_lifecycle.sh"
+#define MODEL_AR_FIXTURE_DST "app/models/src/_model_ar_lifecycle_fixture_tmp.c"
 #define E2_SCRIPT_REL    "tools/scripts/check_one_result_type.sh"
 #define E2_FIXTURE_DST   "app/services/src/_e2_one_result_fixture_tmp.c"
 #define E3_SCRIPT_REL    "tools/scripts/check_shape_includes_header.sh"
@@ -1426,6 +1428,39 @@ static int t_e11_doc_accuracy(void)
     int failures = 0;
     TEST("[lint-gate] E11 doc gate list matches Makefile lint: target") {
         ASSERT(run_gate_script(E11_SCRIPT_REL, NULL) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Model AR lifecycle gate — model sources must not hand-run save callback
+ * internals. They must use AR_BEGIN_SAVE / AR_FINISH_SAVE so validation and
+ * hooks stay one mechanical lifecycle. */
+static int t_model_ar_lifecycle_gate(void)
+{
+    int failures = 0;
+    unlink_rel(MODEL_AR_FIXTURE_DST);
+    int baseline_rc = run_gate_script(MODEL_AR_SCRIPT_REL, NULL);
+    char path[PATH_MAX];
+    int planted =
+        (repo_path(path, sizeof(path), MODEL_AR_FIXTURE_DST) == 0 &&
+         write_file(path,
+                    "#include \"models/activerecord.h\"\n"
+                    "void fixture(struct ar_callbacks *cbs, void *row) {\n"
+                    "    ar_run_after_save(cbs, row);\n"
+                    "}\n") == 0)
+            ? 0
+            : -1;
+    int trip_rc =
+        planted == 0 ? run_gate_script(MODEL_AR_SCRIPT_REL, NULL) : -1;
+    unlink_rel(MODEL_AR_FIXTURE_DST);
+    int recover_rc = run_gate_script(MODEL_AR_SCRIPT_REL, NULL);
+
+    TEST("[lint-gate] model AR lifecycle gate: clean, trips direct callbacks, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
         PASS();
     } _test_next:;
     return failures;
@@ -1923,6 +1958,7 @@ static void unlink_lint_fixtures(void)
         E1_FIXTURE_DST,
         E10_SHAPE_FIXTURE_DST,
         E10_SQL_FIXTURE_DST,
+        MODEL_AR_FIXTURE_DST,
         E2_FIXTURE_DST,
         E3_FIXTURE_DST,
         E4_FIXTURE_DST,
@@ -2647,7 +2683,10 @@ static int t_agent_fast_ci_contract(void)
                != NULL);
         ASSERT(strstr(rules, "lib/test/src/test_rpc_safety.c") != NULL);
         ASSERT(strstr(rules, "rpc_safety") != NULL);
-        ASSERT(strstr(rules, "app/models/src/peer.c") != NULL);
+        ASSERT(strstr(rules, "app/models/src/*.c") != NULL);
+        ASSERT(strstr(rules, "app/models/include/models/*.h") != NULL);
+        ASSERT(strstr(rules, "lib/test/src/test_models*.c") != NULL);
+        ASSERT(strstr(rules, "\"models make_lint_gates\"") != NULL);
         ASSERT(strstr(rules, "lib/net/src/connman.c") != NULL);
         ASSERT(strstr(rules, "docs/AGENT_API.md") != NULL);
         ASSERT(strstr(rules, "deploy/*.service") != NULL);
@@ -5750,6 +5789,7 @@ int test_make_lint_gates(void)
     failures += t_gate22_framework_filename_suffix();
     failures += t_log_macro_return_type_gate();
     failures += t_e11_doc_accuracy();
+    failures += t_model_ar_lifecycle_gate();
     failures += t_e2_one_result_type();
     failures += t_e3_shape_includes_header();
     failures += t_e4_projections_pure();

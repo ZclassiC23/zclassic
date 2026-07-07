@@ -27,7 +27,7 @@
 
 DEFINE_MODEL_CALLBACKS(peer)
 
-static bool peer_before_save(void *record, void *ctx)
+static bool peer_before_validate(void *record, void *ctx)
 {
     struct db_peer *peer = record;
     static const uint8_t zero_ip[16] = {0};
@@ -46,7 +46,7 @@ static bool peer_before_save(void *record, void *ctx)
     return true;
 }
 
-DEFINE_MODEL_BEFORE_SAVE_READY(peer, peer_before_save)
+DEFINE_MODEL_BEFORE_VALIDATE_READY(peer, peer_before_validate)
 
 /* ── Validation ────────────────────────────────────────────────── */
 
@@ -100,9 +100,7 @@ static bool db_peer_save_with_attempts(struct node_db *ndb,
     if (!ndb->open) return false;
 
     struct ar_callbacks *cbs = peer_callbacks_ready();
-    if (!ar_run_before_save(cbs, (void *)p))
-        return false;
-    AR_VALIDATE_RECORD(cbs, "peer", p, db_peer_validate);
+    AR_BEGIN_SAVE(cbs, "peer", p, db_peer_validate);
 
     sqlite3_stmt *s = ndb->stmt_peer_save;
     bool locked_stmt = false;

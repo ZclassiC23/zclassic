@@ -252,6 +252,25 @@ static inline void ar_errors_full_messages(const struct ar_errors *e,
         return cbs; \
     }
 
+/* Define a lazy callback-registration helper for a single before_validate
+ * hook. Use this for normalization/canonicalization that validators must see
+ * (trimming strings, filling default timestamps, uppercasing keys). */
+#define DEFINE_MODEL_BEFORE_VALIDATE_READY(model, hook_fn) \
+    static struct ar_callbacks *model##_callbacks_ready(void) { \
+        struct ar_callbacks *cbs = db_##model##_callbacks(); \
+        bool hook_present = false; \
+        for (int i = 0; i < cbs->n_before_validate; i++) { \
+            if (cbs->before_validate[i] == (hook_fn)) { \
+                hook_present = true; \
+                break; \
+            } \
+        } \
+        if (!hook_present) { \
+            ar_register_before_validate(cbs, hook_fn); \
+        } \
+        return cbs; \
+    }
+
 /* Safe malloc with NULL check — returns false from enclosing function. */
 #define AR_MALLOC_OR_FAIL(ptr, size) do { \
     (ptr) = malloc(size); /* raw-alloc-ok:ar-framework-macro */ \
@@ -639,7 +658,8 @@ static inline void ar_errors_full_messages(const struct ar_errors *e,
 } while (0)
 
 /* ── Validate + Save lifecycle macro ──────────────────────────── *
- * Standard Rails-like lifecycle: validate → before_save → SQL → after_save.
+ * Standard lifecycle: before_validate → validate → after_validate →
+ * before_save → SQL → after_save.
  * Use in _save() implementations to eliminate boilerplate.
  *
  * Usage:

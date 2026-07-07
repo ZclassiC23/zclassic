@@ -10,7 +10,7 @@
 
 DEFINE_MODEL_CALLBACKS(contact)
 
-static bool contact_before_save(void *record, void *ctx)
+static bool contact_before_validate(void *record, void *ctx)
 {
     struct db_contact *contact = record;
 
@@ -38,14 +38,14 @@ static void contact_after_save(void *record, void *ctx)
     }
 }
 
-/* Registers contact's before_save + after_save hooks once on the callback
+/* Registers contact's before_validate + after_save hooks once on the callback
  * singleton (db_contact_callbacks returns a static struct). */
 static struct ar_callbacks *contact_callbacks_ready(void)
 {
     struct ar_callbacks *cbs = db_contact_callbacks();
     static bool hooks_done = false;
     if (!hooks_done) {
-        ar_register_before_save(cbs, contact_before_save);
+        ar_register_before_validate(cbs, contact_before_validate);
         ar_register_after_save(cbs, contact_after_save);
         hooks_done = true;
     }
@@ -84,11 +84,7 @@ bool db_contact_save(struct node_db *ndb, const struct db_contact *c)
         ((struct db_contact *)c)->last_used = (int64_t)platform_time_wall_time_t();
 
     cbs = contact_callbacks_ready();
-    if (!ar_run_before_save(cbs, (void *)c)) {
-        LOG_FAIL("model", "contact save vetoed by before_save");
-        return false;
-    }
-    AR_VALIDATE_RECORD(cbs, "contact", c, db_contact_validate);
+    AR_BEGIN_SAVE(cbs, "contact", c, db_contact_validate);
 
     if (sqlite3_prepare_v2(ndb->db,
             "INSERT OR REPLACE INTO contacts (address,name,last_used) "
@@ -105,8 +101,7 @@ bool db_contact_save(struct node_db *ndb, const struct db_contact *c)
         return false;
     }
     AR_FINALIZE(s);
-    ar_run_after_save(cbs, (void *)c);
-    return true;
+    AR_FINISH_SAVE(cbs, c, true);
 }
 
 int db_contact_recent(struct node_db *ndb, struct db_contact *out, size_t max)

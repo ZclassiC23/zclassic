@@ -56,6 +56,8 @@ static void block_after_save(void *record, void *ctx)
     (void)ctx;
     const struct db_block *b = record;
     event_emitf(EV_BLOCK_SAVED, 0, "height=%d ntx=%d", b->height, b->num_tx);
+    event_emitf(EV_MODEL_SAVED, 0, "model=block height=%d ntx=%d",
+                b->height, b->num_tx);
 }
 
 static void block_init_hooks(void)
@@ -281,12 +283,7 @@ bool db_block_save(struct node_db *ndb, const struct db_block *b)
         }
     }
 
-    if (ok) {
-        ar_run_after_save(cbs, (void *)b);
-        event_emitf(EV_MODEL_SAVED, 0, "model=block height=%d ntx=%d",
-                    b->height, b->num_tx);
-    }
-    return ok;
+    AR_FINISH_SAVE(cbs, b, ok);
 }
 
 bool db_block_save_canonical(struct node_db *ndb, const struct db_block *b)

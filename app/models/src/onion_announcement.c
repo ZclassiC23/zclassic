@@ -10,7 +10,7 @@
 
 DEFINE_MODEL_CALLBACKS(onion_announcement)
 
-static bool onion_announcement_before_save(void *record, void *ctx)
+static bool onion_announcement_before_validate(void *record, void *ctx)
 {
     struct db_onion_announcement *ann = record;
 
@@ -40,7 +40,7 @@ static void onion_announcement_after_save(void *record, void *ctx)
     }
 }
 
-/* Registers onion_announcement's before_save + after_save hooks once on the
+/* Registers onion_announcement's before_validate + after_save hooks once on the
  * callback singleton (db_onion_announcement_callbacks returns a static
  * struct). */
 static struct ar_callbacks *onion_announcement_callbacks_ready(void)
@@ -48,7 +48,7 @@ static struct ar_callbacks *onion_announcement_callbacks_ready(void)
     struct ar_callbacks *cbs = db_onion_announcement_callbacks();
     static bool hooks_done = false;
     if (!hooks_done) {
-        ar_register_before_save(cbs, onion_announcement_before_save);
+        ar_register_before_validate(cbs, onion_announcement_before_validate);
         ar_register_after_save(cbs, onion_announcement_after_save);
         hooks_done = true;
     }
@@ -95,12 +95,8 @@ bool db_onion_announcement_save(struct node_db *ndb,
         ((struct db_onion_announcement *)a)->announced_at = (int64_t)platform_time_wall_time_t();
 
     cbs = onion_announcement_callbacks_ready();
-    if (!ar_run_before_save(cbs, (void *)a)) {
-        fprintf(stderr, "onion_announcement save vetoed by before_save\n");
-        return false;
-    }
-    AR_VALIDATE_RECORD(cbs, "onion_announcement", a,
-                       db_onion_announcement_validate);
+    AR_BEGIN_SAVE(cbs, "onion_announcement", a,
+                  db_onion_announcement_validate);
 
     if (sqlite3_prepare_v2(ndb->db,
             "INSERT OR REPLACE INTO onion_announcements "
@@ -118,8 +114,7 @@ bool db_onion_announcement_save(struct node_db *ndb,
         return false;
     }
     AR_FINALIZE(s);
-    ar_run_after_save(cbs, (void *)a);
-    return true;
+    AR_FINISH_SAVE(cbs, a, true);
 }
 
 bool db_onion_announcement_exists(struct node_db *ndb,

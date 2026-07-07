@@ -27,9 +27,9 @@
 DEFINE_MODEL_CALLBACKS(zslp_token)
 DEFINE_MODEL_CALLBACKS(zslp_transfer)
 DEFINE_MODEL_CALLBACKS(zslp_balance)
-static bool zslp_token_before_save(void *record, void *ctx);
+static bool zslp_token_before_validate(void *record, void *ctx);
 
-static bool zslp_balance_before_save(void *record, void *ctx)
+static bool zslp_balance_before_validate(void *record, void *ctx)
 {
     (void)ctx;
     struct db_zslp_balance *b = (struct db_zslp_balance *)record;
@@ -37,8 +37,8 @@ static bool zslp_balance_before_save(void *record, void *ctx)
     return true;
 }
 
-DEFINE_MODEL_BEFORE_SAVE_READY(zslp_token, zslp_token_before_save)
-DEFINE_MODEL_BEFORE_SAVE_READY(zslp_balance, zslp_balance_before_save)
+DEFINE_MODEL_BEFORE_VALIDATE_READY(zslp_token, zslp_token_before_validate)
+DEFINE_MODEL_BEFORE_VALIDATE_READY(zslp_balance, zslp_balance_before_validate)
 
 /* ── Token Validation ─────────────────────────────────────────── */
 
@@ -57,7 +57,7 @@ struct zslp_token_key_record {
     int64_t initial_quantity;
 };
 
-static bool zslp_token_before_save(void *record, void *ctx)
+static bool zslp_token_before_validate(void *record, void *ctx)
 {
     struct zslp_token_key_record *rec = (struct zslp_token_key_record *)record;
     (void)ctx;
@@ -182,11 +182,7 @@ bool db_zslp_token_save(struct node_db *ndb, const uint8_t token_id[32],
         fprintf(stderr, "zslp_token validation FAILED: ticker invalid\n");
         return false;
     }
-    if (!ar_run_before_save(cbs, &rec)) {
-        fprintf(stderr, "zslp_token save vetoed by before_save\n");
-        return false;
-    }
-    AR_VALIDATE_RECORD(cbs, "zslp_token", &rec, db_zslp_token_validate_record);
+    AR_BEGIN_SAVE(cbs, "zslp_token", &rec, db_zslp_token_validate_record);
 
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(ndb->db,
@@ -204,16 +200,13 @@ bool db_zslp_token_save(struct node_db *ndb, const uint8_t token_id[32],
     AR_BIND_INT(s, 6, genesis_height);
     AR_BIND_INT(s, 7, initial_quantity);
 
-    bool ok = AR_STEP_DONE(s);
-    AR_FINALIZE(s);
-
-    if (ok) {
-        ar_run_after_save(cbs, &rec);
+    bool ok = false;
+    AR_FINALIZE_STEP_DONE(s, ok);
+    if (ok)
         event_emitf(EV_MODEL_SAVED, 0, "model=zslp_token ticker=%s", ticker);
-    } else {
+    else
         fprintf(stderr, "zslp_token save failed: %s\n", sqlite3_errmsg(ndb->db));
-    }
-    return ok;
+    AR_FINISH_SAVE(cbs, &rec, ok);
 }
 
 bool db_zslp_token_save_key(struct node_db *ndb, const char *token_key,
@@ -238,11 +231,8 @@ bool db_zslp_token_save_key(struct node_db *ndb, const char *token_key,
         fprintf(stderr, "zslp_token validation FAILED: ticker invalid\n");
         return false;
     }
-    if (!ar_run_before_save(cbs, &rec)) {
-        fprintf(stderr, "zslp_token save_key vetoed by before_save\n");
-        return false;
-    }
-    AR_VALIDATE_RECORD(cbs, "zslp_token", &rec, db_zslp_token_key_validate_record);
+    AR_BEGIN_SAVE(cbs, "zslp_token", &rec,
+                  db_zslp_token_key_validate_record);
 
     if (sqlite3_prepare_v2(ndb->db,
             "INSERT OR REPLACE INTO zslp_tokens"
@@ -259,15 +249,14 @@ bool db_zslp_token_save_key(struct node_db *ndb, const char *token_key,
     AR_BIND_INT(s, 6, genesis_height);
     AR_BIND_INT(s, 7, initial_quantity);
 
-    if (!AR_STEP_DONE(s)) {
+    bool ok = false;
+    AR_FINALIZE_STEP_DONE(s, ok);
+    if (!ok) {
         fprintf(stderr, "zslp_token save_key failed: %s\n", sqlite3_errmsg(ndb->db));
-        AR_FINALIZE(s);
-        return false;
+    } else {
+        event_emitf(EV_MODEL_SAVED, 0, "model=zslp_token token_id=%s", rec.token_id);
     }
-    AR_FINALIZE(s);
-    ar_run_after_save(cbs, &rec);
-    event_emitf(EV_MODEL_SAVED, 0, "model=zslp_token token_id=%s", rec.token_id);
-    return true;
+    AR_FINISH_SAVE(cbs, &rec, ok);
 }
 
 bool db_zslp_transfer_save(struct node_db *ndb, const uint8_t txid[32],
@@ -284,8 +273,8 @@ bool db_zslp_transfer_save(struct node_db *ndb, const uint8_t txid[32],
     rec.amount = amount;
     rec.vout = vout;
     struct ar_callbacks *cbs = db_zslp_transfer_callbacks();
-    AR_VALIDATE_RECORD(cbs, "zslp_transfer", &rec, db_zslp_transfer_validate_record);
-    if (!ar_run_before_save(cbs, &rec)) return false;
+    AR_BEGIN_SAVE(cbs, "zslp_transfer", &rec,
+                  db_zslp_transfer_validate_record);
 
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(ndb->db,
@@ -306,16 +295,13 @@ bool db_zslp_transfer_save(struct node_db *ndb, const uint8_t txid[32],
     else
         AR_BIND_NULL(s, 7);
 
-    bool ok = AR_STEP_DONE(s);
-    AR_FINALIZE(s);
-
-    if (ok)
-        ar_run_after_save(cbs, &rec);
-    else
+    bool ok = false;
+    AR_FINALIZE_STEP_DONE(s, ok);
+    if (!ok)
         // obs-ok:caller-logs — callers (explorer_index_zslp.c) LOG_WARN the
         // false return with height+vout+type, so the failure is observable.
         fprintf(stderr, "zslp_transfer save failed: %s\n", sqlite3_errmsg(ndb->db));
-    return ok;
+    AR_FINISH_SAVE(cbs, &rec, ok);
 }
 
 bool db_zslp_balance_save(struct node_db *ndb, const struct db_zslp_balance *b)
@@ -327,12 +313,7 @@ bool db_zslp_balance_save(struct node_db *ndb, const struct db_zslp_balance *b)
         return false;
 
     cbs = zslp_balance_callbacks_ready();
-
-    if (!ar_run_before_save(cbs, (void *)b)) {
-        fprintf(stderr, "zslp_balance save vetoed by before_save\n");
-        return false;
-    }
-    AR_VALIDATE_RECORD(cbs, "zslp_balance", b, db_zslp_balance_validate);
+    AR_BEGIN_SAVE(cbs, "zslp_balance", b, db_zslp_balance_validate);
 
     if (sqlite3_prepare_v2(ndb->db,
             "INSERT INTO zslp_balances (token_id,address,balance) "
@@ -345,15 +326,14 @@ bool db_zslp_balance_save(struct node_db *ndb, const struct db_zslp_balance *b)
     AR_BIND_TEXT(s, 2, b->address);
     AR_BIND_INT(s, 3, b->balance);
 
-    if (!AR_STEP_DONE(s)) {
+    bool ok = false;
+    AR_FINALIZE_STEP_DONE(s, ok);
+    if (!ok) {
         fprintf(stderr, "zslp_balance save failed: %s\n", sqlite3_errmsg(ndb->db));
-        AR_FINALIZE(s);
-        return false;
+    } else {
+        event_emitf(EV_MODEL_SAVED, 0, "model=zslp_balance token_id=%s", b->token_id);
     }
-    AR_FINALIZE(s);
-    ar_run_after_save(cbs, (void *)b);
-    event_emitf(EV_MODEL_SAVED, 0, "model=zslp_balance token_id=%s", b->token_id);
-    return true;
+    AR_FINISH_SAVE(cbs, b, ok);
 }
 
 bool db_zslp_balance_find(struct node_db *ndb, const char *token_id,
