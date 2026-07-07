@@ -1270,14 +1270,19 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
                           "\"base_layer\":\"zclassic_l1\","
                           "\"service_layer\":\"zclassic23_application_layer\","
                           "\"name\":\"bootstrap\","
-                          "\"self_route\":\"/api/v1/service-catalog/bootstrap\"}");
+                          "\"self_route\":\"/api/v1/service-catalog/bootstrap\","
+                          "\"operations\":[{\"schema\":\"zcl.service_operation.v1\","
+                          "\"operation\":\"read_bootstrap_status\","
+                          "\"mcp_tool\":\"zcl_bootstrapstatus\"}]}");
         }
         return strdup("{\"schema\":\"zcl.service_catalog.v1\","
                       "\"base_layer\":\"zclassic_l1\","
                       "\"service_layer\":\"zclassic23_application_layer\","
+                      "\"operation_schema\":\"zcl.service_operation.v1\","
                       "\"service_count\":2,"
                       "\"services\":[{\"name\":\"bootstrap\","
-                      "\"rest_collection\":\"/api/v1/bootstrap\"},"
+                      "\"rest_collection\":\"/api/v1/bootstrap\","
+                      "\"operations\":[{\"operation\":\"read_bootstrap_status\"}]},"
                       "{\"name\":\"znam_names\","
                       "\"application_protocol\":\"znam\"}]}");
     }
@@ -1784,6 +1789,10 @@ static int test_zcl_agent_dev_tools_dispatch(void)
         ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
                       "zcl.service_contract.v1");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "name")), "bootstrap");
+        const struct json_value *ops = json_get(&root, "operations");
+        ASSERT(ops && ops->type == JSON_ARR && json_size(ops) == 1);
+        ASSERT_STR_EQ(json_get_str(json_get(json_at(ops, 0), "mcp_tool")),
+                      "zcl_bootstrapstatus");
         json_free(&root);
         json_free(&args);
         json_init(&args);

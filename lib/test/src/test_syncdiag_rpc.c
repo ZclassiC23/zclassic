@@ -2347,12 +2347,26 @@ syncdiag_net_split_done:
                    "/api/v1/bootstrap") == 0;
         ok = ok && bootstrap &&
             json_array_has_str(json_get(bootstrap, "transports"), "p2p");
+        const struct json_value *bootstrap_status_op =
+            find_object_with_str(json_get(bootstrap, "operations"),
+                                 "operation", "read_bootstrap_status");
+        ok = ok && bootstrap_status_op &&
+            strcmp(json_get_str(json_get(bootstrap_status_op, "mcp_tool")),
+                   "zcl_bootstrapstatus") == 0;
         ok = ok && names &&
             strcmp(json_get_str(json_get(names, "application_protocol")),
                    "znam") == 0;
         ok = ok && names &&
             json_array_has_str(json_get(names, "crud_capabilities"),
                                "construct_transaction");
+        const struct json_value *name_register_op =
+            find_object_with_str(json_get(names, "operations"), "operation",
+                                 "construct_name_register");
+        ok = ok && name_register_op &&
+            strcmp(json_get_str(json_get(name_register_op, "rpc_method")),
+                   "name_register") == 0;
+        ok = ok && name_register_op &&
+            json_get_bool(json_get(name_register_op, "destructive"));
         ok = ok && onion &&
             json_array_has_str(json_get(onion, "transports"), "onion");
         ok = ok && contracts &&
@@ -2388,6 +2402,12 @@ syncdiag_net_split_done:
         ok = ok && strcmp(json_get_str(json_get(&one, "self_route")),
                           "/api/v1/service-catalog/bootstrap") == 0;
         ok = ok && json_array_has_str(json_get(&one, "transports"), "p2p");
+        bootstrap_status_op = find_object_with_str(json_get(&one,
+                             "operations"), "operation",
+                             "read_bootstrap_status");
+        ok = ok && bootstrap_status_op &&
+            strcmp(json_get_str(json_get(bootstrap_status_op, "rpc_method")),
+                   "bootstrapstatus") == 0;
 
         struct json_value bad_params;
         json_init(&bad_params);

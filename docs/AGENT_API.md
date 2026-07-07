@@ -106,7 +106,12 @@ health. The collection schema is `zcl.service_catalog.v1`; the member schema is
 `zcl.service_contract.v1`. Together they cover names, bootstrap, Tor/onion
 discovery, direct P2P, files, market, messaging, script contracts, CRUD
 capabilities, transports, verification model, trust model, privacy model, and a
-concrete UX story per service.
+concrete UX story per service. Each service also carries an `operations[]`
+array of `zcl.service_operation.v1` objects that names the action, CRUD
+capability, REST route when public, RPC method, MCP tool, input/output contract,
+authority, and whether the operation is destructive/operator-private. This is
+the no-guesswork path for agents building a UX from names, bootstrap, Tor/P2P,
+market, messaging, and script-contract capabilities.
 
 ## Preferred Interface
 

@@ -52,6 +52,7 @@ extern struct api_rpc_backend g_api_rpc;
     "zcl.application_protocols.index.v1"
 #define ZCL_SERVICE_CATALOG_SCHEMA "zcl.service_catalog.v1"
 #define ZCL_SERVICE_CONTRACT_SCHEMA "zcl.service_contract.v1"
+#define ZCL_SERVICE_OPERATION_SCHEMA "zcl.service_operation.v1"
 #define ZCL_PUBLIC_STATUS_SCHEMA "zcl.public_status.v1"
 #define ZCL_MILESTONE_STATUS_SCHEMA "zcl.milestone_status.v1"
 #define ZCL_REFOLD_STATUS_SCHEMA "zcl.refold_status.v1"

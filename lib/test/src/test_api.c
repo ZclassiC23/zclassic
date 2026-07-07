@@ -1668,6 +1668,9 @@ int test_api(void)
                           "/api/v1/protocols") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "member_route")),
                           "/api/v1/service-catalog/{service}") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root,
+                          "operation_schema")),
+                          "zcl.service_operation.v1") == 0;
         ok = ok && strstr(json_get_str(json_get(&root,
                           "consensus_boundary")),
                           "legacy consensus") != NULL;
@@ -1698,6 +1701,19 @@ int test_api(void)
         ok = ok && bootstrap &&
              api_test_array_has_str(json_get(bootstrap, "transports"),
                                     "p2p");
+        const struct json_value *bootstrap_status_op =
+            api_test_find_str_field(json_get(bootstrap, "operations"),
+                                    "operation",
+                                    "read_bootstrap_status");
+        ok = ok && bootstrap_status_op &&
+             strcmp(json_get_str(json_get(bootstrap_status_op, "schema")),
+                    "zcl.service_operation.v1") == 0;
+        ok = ok && bootstrap_status_op &&
+             strcmp(json_get_str(json_get(bootstrap_status_op, "rest_route")),
+                    "/api/v1/bootstrap") == 0;
+        ok = ok && bootstrap_status_op &&
+             strcmp(json_get_str(json_get(bootstrap_status_op, "mcp_tool")),
+                    "zcl_bootstrapstatus") == 0;
         ok = ok && names &&
              strcmp(json_get_str(json_get(names, "application_protocol")),
                     "znam") == 0;
@@ -1707,6 +1723,18 @@ int test_api(void)
         ok = ok && names &&
              strstr(json_get_str(json_get(names, "verified_by")),
                     "op_return") != NULL;
+        const struct json_value *name_register_op =
+            api_test_find_str_field(json_get(names, "operations"),
+                                    "operation",
+                                    "construct_name_register");
+        ok = ok && name_register_op &&
+             strcmp(json_get_str(json_get(name_register_op, "rpc_method")),
+                    "name_register") == 0;
+        ok = ok && name_register_op &&
+             strcmp(json_get_str(json_get(name_register_op, "mcp_tool")),
+                    "zcl_name_register") == 0;
+        ok = ok && name_register_op &&
+             json_get_bool(json_get(name_register_op, "destructive"));
         ok = ok && onion &&
              strcmp(json_get_str(json_get(onion, "rest_collection")),
                     "/api/v1/onion/announcements") == 0;
@@ -1745,6 +1773,14 @@ int test_api(void)
                           "/api/v1/service-catalog/znam_names") == 0;
         ok = ok && api_test_array_has_str(json_get(&root,
                           "crud_capabilities"), "construct_transaction");
+        ok = ok && json_get_int(json_get(&root, "operation_count")) >= 3;
+        name_register_op =
+            api_test_find_str_field(json_get(&root, "operations"),
+                                    "operation",
+                                    "construct_name_register");
+        ok = ok && name_register_op &&
+             strcmp(json_get_str(json_get(name_register_op, "effect")),
+                    "construct_or_broadcast_znam_op_return_transaction") == 0;
         ok = ok && strstr(json_get_str(json_get(&root, "verified_by")),
                           "op_return") != NULL;
         json_free(&root);
