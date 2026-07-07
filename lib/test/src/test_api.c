@@ -1461,6 +1461,11 @@ int test_api(void)
                 const struct json_value *svc_onion =
                     api_test_find_str_field(svc_records, "key",
                                             "service.onion");
+                const struct json_value *svc_filter_contract =
+                    ok ? json_get(&svc_root, "filter_contract") : NULL;
+                const struct json_value *svc_allowed_filters =
+                    svc_filter_contract ?
+                    json_get(svc_filter_contract, "allowed_filters") : NULL;
                 ok = ok &&
                      strcmp(json_get_str(json_get(&svc_root, "schema")),
                             "zcl.names.service_directory.v1") == 0;
@@ -1509,6 +1514,21 @@ int test_api(void)
                                                   "next_action")),
                             "use_records_then_run_runtime_probe_before_routing")
                      == 0;
+                ok = ok && svc_filter_contract &&
+                     strcmp(json_get_str(json_get(svc_filter_contract,
+                                                  "schema")),
+                            "zcl.query_filter_contract.v1") == 0;
+                ok = ok && svc_filter_contract &&
+                     json_get_bool(json_get(svc_filter_contract,
+                                            "unknown_filters_error"));
+                ok = ok && svc_allowed_filters &&
+                     strcmp(json_get_str(json_get(svc_allowed_filters,
+                                                  "transport")),
+                            "p2p,onion,p2p_or_onion,unspecified,none") == 0;
+                ok = ok && svc_allowed_filters &&
+                     strcmp(json_get_str(json_get(svc_allowed_filters,
+                                                  "contract")),
+                            "alias_for_service_contract") == 0;
                 json_free(&svc_root);
             }
 
@@ -1617,6 +1637,29 @@ int test_api(void)
                 ok = ok && allowed &&
                      strcmp(json_get_str(json_get(allowed, "valid")),
                             "true,false") == 0;
+                json_free(&invalid_root);
+
+                rpc_name_set_state(&ndb);
+                in = api_handle_request(
+                    "GET", "/api/v1/names/alice/services?tranport=p2p",
+                    NULL, 0, invalid_resp, sizeof(invalid_resp));
+                rpc_name_set_state(NULL);
+                invalid_resp[in < sizeof(invalid_resp) ? in :
+                             sizeof(invalid_resp) - 1] = '\0';
+                invalid_body =
+                    api_test_body(invalid_resp, in, sizeof(invalid_resp));
+                json_init(&invalid_root);
+                ok = ok && in > 0 &&
+                     strstr((char *)invalid_resp, "400 Bad Request") != NULL &&
+                     invalid_body &&
+                     json_read(&invalid_root, invalid_body,
+                               strlen(invalid_body));
+                ok = ok &&
+                     strcmp(json_get_str(json_get(&invalid_root, "error")),
+                            "invalid_name_service_filter") == 0;
+                ok = ok &&
+                     strstr(json_get_str(json_get(&invalid_root, "message")),
+                            "unknown filter 'tranport'") != NULL;
                 json_free(&invalid_root);
             }
         }
@@ -2973,6 +3016,11 @@ int test_api(void)
             json_get(&filtered_root, "operations");
         const struct json_value *filtered_summary =
             json_get(&filtered_root, "summary");
+        const struct json_value *filter_contract =
+            json_get(&filtered_root, "filter_contract");
+        const struct json_value *allowed_filters =
+            filter_contract ? json_get(filter_contract, "allowed_filters") :
+            NULL;
         ok = ok && filters && json_get_bool(json_get(filters, "active"));
         ok = ok && filters &&
              strcmp(json_get_str(json_get(filters, "service")),
@@ -3002,6 +3050,19 @@ int test_api(void)
         ok = ok && api_test_find_str_field(
             filtered_ops, "operation_id",
             "znam_names.resolve_service_directory");
+        ok = ok && filter_contract &&
+             strcmp(json_get_str(json_get(filter_contract, "schema")),
+                    "zcl.query_filter_contract.v1") == 0;
+        ok = ok && filter_contract &&
+             json_get_bool(json_get(filter_contract,
+                                    "unknown_filters_error"));
+        ok = ok && allowed_filters &&
+             strcmp(json_get_str(json_get(allowed_filters,
+                                          "preferred_interface")),
+                    "rest,mcp,rpc,native_or_planned") == 0;
+        ok = ok && allowed_filters &&
+             strcmp(json_get_str(json_get(allowed_filters, "interface")),
+                    "alias_for_preferred_interface") == 0;
         json_free(&filtered_root);
 
         n = api_handle_request("GET",
@@ -3015,6 +3076,17 @@ int test_api(void)
                           "HTTP/1.1 400 Bad Request") != NULL;
         ok = ok && strstr((char *)filtered_ops_resp,
                           "invalid_service_operation_filter") != NULL;
+        n = api_handle_request("GET",
+                               "/api/v1/service-operations?"
+                               "servce=bootstrap",
+                               NULL, 0, filtered_ops_resp,
+                               sizeof(filtered_ops_resp));
+        filtered_ops_resp[n < sizeof(filtered_ops_resp)
+                              ? n : sizeof(filtered_ops_resp) - 1] = '\0';
+        ok = ok && strstr((char *)filtered_ops_resp,
+                          "HTTP/1.1 400 Bad Request") != NULL;
+        ok = ok && strstr((char *)filtered_ops_resp,
+                          "unknown filter 'servce'") != NULL;
         {
             static uint8_t index_resp[262144];
             struct json_value index_root;

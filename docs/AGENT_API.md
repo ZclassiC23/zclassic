@@ -110,7 +110,10 @@ the operation set, or fetch one stable `service.operation` contract such as
 `service`, `write_safety`, `preferred_interface`, `status`, and `surface`.
 Examples: `zclassic23 serviceoperations service=bootstrap
 write_safety=public_read_only` and
-`GET /api/v1/service-operations?service=znam_names&surface=rest`. Use these
+`GET /api/v1/service-operations?service=znam_names&surface=rest`. The
+collection includes `filter_contract` (`zcl.query_filter_contract.v1`), and
+unknown filter names fail closed with `400 invalid_service_operation_filter`
+instead of returning an accidentally unfiltered operation list. Use these
 surfaces when the question is "what can this node host, advertise, verify, or
 construct for a user?" They distinguish the stable service/operation
 contracts from `/api/v1/services`, which remains runtime health.
@@ -209,7 +212,11 @@ can ask the server to narrow this projection with exact-match filters:
 `endpoint_only`. For example,
 `GET /api/v1/names/alice/services?transport=p2p&valid=true&endpoint_only=true`
 returns only valid direct-P2P endpoint hints, with counts and routing plan
-recomputed for that filtered view. Agents should verify the
+recomputed for that filtered view. Directory responses include
+`filter_contract` (`zcl.query_filter_contract.v1`) with the allowed keys,
+accepted aliases, and example call. Unknown filter names fail closed with a
+structured `400 invalid_name_service_filter` response instead of returning an
+accidentally unfiltered directory. Agents should verify the
 chain-projected ZNAM record first, inspect the linked service/operation
 contract and runtime probe, then prefer direct P2P for low latency and fall
 back to onion reachability when NAT or firewall conditions require it.

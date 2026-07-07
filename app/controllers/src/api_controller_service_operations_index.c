@@ -38,6 +38,7 @@ struct api_service_operation_filter {
     char preferred_interface[32];
     char status[32];
     char surface[16];
+    char unknown_key[48];
     bool active;
 };
 
@@ -333,6 +334,15 @@ static bool api_service_operation_filter_validate(
     if (!filter)
         return true;
 
+    if (filter->unknown_key[0]) {
+        if (err && err_len > 0)
+            snprintf(err, err_len,
+                     "unknown filter '%s' (allowed: service, "
+                     "write_safety, preferred_interface, status, surface)",
+                     filter->unknown_key);
+        return false; /* raw-return-ok:filter-validation-error */
+    }
+
 #define FILTER_FAIL(field_, value_, allowed_) do { \
     if (err && err_len > 0) \
         snprintf(err, err_len, \
@@ -367,13 +377,32 @@ static bool api_service_operation_filter_validate(
     return true;
 }
 
-static void api_service_operation_filter_set(
+static bool api_service_operation_filter_key_known(const char *key)
+{
+    if (!key || !key[0])
+        return true;
+    return strcmp(key, "service") == 0 ||
+           strcmp(key, "write_safety") == 0 ||
+           strcmp(key, "preferred_interface") == 0 ||
+           strcmp(key, "interface") == 0 ||
+           strcmp(key, "status") == 0 ||
+           strcmp(key, "surface") == 0;
+}
+
+static bool api_service_operation_filter_set(
     struct api_service_operation_filter *f,
     const char *key,
     const char *value)
 {
-    if (!f || !key || !value || !value[0])
-        return;
+    if (!f || !key || !key[0])
+        return true;
+    if (!api_service_operation_filter_key_known(key)) {
+        if (!f->unknown_key[0])
+            snprintf(f->unknown_key, sizeof(f->unknown_key), "%s", key);
+        return false; /* raw-return-ok:filter-validation-error */
+    }
+    if (!value || !value[0])
+        return true;
     if (strcmp(key, "service") == 0) {
         snprintf(f->service, sizeof(f->service), "%s", value);
         f->active = true;
@@ -392,6 +421,7 @@ static void api_service_operation_filter_set(
         snprintf(f->surface, sizeof(f->surface), "%s", value);
         f->active = true;
     }
+    return true;
 }
 
 static void api_service_operation_filter_from_query(
@@ -416,22 +446,20 @@ static void api_service_operation_filter_from_query(
         size_t key_len;
         size_t value_len;
 
-        if (!eq || (size_t)(eq - q) >= pair_len) {
-            if (!pair_end)
-                break;
-            q = pair_end + 1;
-            continue;
-        }
-
-        key_len = (size_t)(eq - q);
-        value_len = pair_len - key_len - 1;
+        key_len = eq && (size_t)(eq - q) < pair_len
+                      ? (size_t)(eq - q)
+                      : pair_len;
+        value_len = eq && (size_t)(eq - q) < pair_len
+                        ? pair_len - key_len - 1
+                        : 0;
         if (key_len >= sizeof(key))
             key_len = sizeof(key) - 1;
         if (value_len >= sizeof(value))
             value_len = sizeof(value) - 1;
         memcpy(key, q, key_len);
         key[key_len] = '\0';
-        memcpy(value, eq + 1, value_len);
+        if (value_len > 0)
+            memcpy(value, eq + 1, value_len);
         value[value_len] = '\0';
         api_service_operation_filter_set(filter, key, value);
 
@@ -439,6 +467,38 @@ static void api_service_operation_filter_from_query(
             break;
         q = pair_end + 1;
     }
+}
+
+static void api_service_operation_allowed_filters_json(struct json_value *out)
+{
+    json_set_object(out);
+    json_push_kv_str(out, "service",
+                     "letters,digits,underscore,dash,dot");
+    json_push_kv_str(out, "write_safety",
+                     "public_read_only,operator_private,"
+                     "operator_private_destructive");
+    json_push_kv_str(out, "preferred_interface",
+                     "rest,mcp,rpc,native_or_planned");
+    json_push_kv_str(out, "interface",
+                     "alias_for_preferred_interface");
+    json_push_kv_str(out, "status", "active,in_progress");
+    json_push_kv_str(out, "surface", "rest,mcp,rpc");
+}
+
+static void api_service_operation_filter_contract_json(struct json_value *out)
+{
+    struct json_value allowed = {0};
+
+    json_set_object(out);
+    json_push_kv_str(out, "schema", "zcl.query_filter_contract.v1");
+    json_push_kv_bool(out, "unknown_filters_error", true);
+    json_push_kv_str(out, "semantics", "server_side_exact_match");
+    api_service_operation_allowed_filters_json(&allowed);
+    json_push_kv(out, "allowed_filters", &allowed);
+    json_free(&allowed);
+    json_push_kv_str(out, "example",
+                     "/api/v1/service-operations?"
+                     "service=bootstrap&write_safety=public_read_only");
 }
 
 static void api_service_operation_filters_json(
@@ -499,6 +559,7 @@ bool api_service_operations_filtered_index_json(
     struct json_value interface_facets;
     struct json_value safety_facets;
     struct json_value filters;
+    struct json_value filter_contract;
     struct api_service_operation_counts counts;
     struct api_service_operation_filter filter = {0};
 
@@ -537,6 +598,10 @@ bool api_service_operations_filtered_index_json(
     api_service_operation_filters_json(&filters, &filter);
     json_push_kv(out, "filters", &filters);
     json_free(&filters);
+    json_init(&filter_contract);
+    api_service_operation_filter_contract_json(&filter_contract);
+    json_push_kv(out, "filter_contract", &filter_contract);
+    json_free(&filter_contract);
 
     json_init(&service_facets);
     api_service_operation_service_facets_json(&service_facets, &filter);
@@ -587,6 +652,8 @@ bool api_service_operations_index_path_json(const char *path,
     if (!out)
         return false; /* raw-return-ok:builder-null-output */
     api_service_operation_filter_from_query(path, &filter);
+    if (!api_service_operation_filter_validate(&filter, err, err_len))
+        return false; /* raw-return-ok:filter-validation-error */
     return api_service_operations_filtered_index_json(
         out,
         filter.service,
@@ -613,16 +680,7 @@ static void api_service_operation_filter_error_json(
                      "invalid service operation filter");
 
     json_init(&allowed);
-    json_set_object(&allowed);
-    json_push_kv_str(&allowed, "service",
-                     "letters,digits,underscore,dash,dot");
-    json_push_kv_str(&allowed, "write_safety",
-                     "public_read_only,operator_private,"
-                     "operator_private_destructive");
-    json_push_kv_str(&allowed, "preferred_interface",
-                     "rest,mcp,rpc,native_or_planned");
-    json_push_kv_str(&allowed, "status", "active,in_progress");
-    json_push_kv_str(&allowed, "surface", "rest,mcp,rpc");
+    api_service_operation_allowed_filters_json(&allowed);
     json_push_kv(out, "allowed_filters", &allowed);
     json_free(&allowed);
     json_push_kv_str(out, "example",

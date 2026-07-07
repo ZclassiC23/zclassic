@@ -183,7 +183,11 @@ controller `k_routes[]` arrays.
   operation also publishes
   `service_catalog_route`, `agent_preferred_interface`, `agent_next_step`, and
   callable booleans so agents can navigate from service intent to the safest
-  callable surface without route guessing. The implementation is split between
+  callable surface without route guessing. Filtered service-operation and
+  name-service-directory responses include `filter_contract`
+  (`zcl.query_filter_contract.v1`); unknown filter names fail closed with
+  structured 400 errors instead of returning accidentally unfiltered
+  collections. The implementation is split between
   `app/controllers/src/api_controller_service_catalog.c` and
   `app/controllers/src/api_controller_service_operations.c`; `/api/v1/services`
   remains runtime health.

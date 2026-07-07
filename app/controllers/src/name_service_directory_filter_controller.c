@@ -22,6 +22,7 @@ struct api_name_service_filter {
     char endpoint_kind[64];
     char valid[8];
     char endpoint_only[8];
+    char unknown_key[48];
     bool active;
 };
 
@@ -74,6 +75,16 @@ static bool api_name_service_filter_validate(
     if (!filter)
         return true;
 
+    if (filter->unknown_key[0]) {
+        if (err && err_len > 0)
+            snprintf(err, err_len,
+                     "unknown filter '%s' (allowed: service, "
+                     "service_contract, transport, endpoint_kind, valid, "
+                     "endpoint_only)",
+                     filter->unknown_key);
+        return false; /* raw-return-ok:filter-validation-error */
+    }
+
 #define FILTER_FAIL(field_, value_, allowed_) do { \
     if (err && err_len > 0) \
         snprintf(err, err_len, \
@@ -105,13 +116,34 @@ static bool api_name_service_filter_validate(
     return true;
 }
 
-static void api_name_service_filter_set(
+static bool api_name_service_filter_key_known(const char *key)
+{
+    if (!key || !key[0])
+        return true;
+    return strcmp(key, "service") == 0 ||
+           strcmp(key, "service_contract") == 0 ||
+           strcmp(key, "contract") == 0 ||
+           strcmp(key, "transport") == 0 ||
+           strcmp(key, "endpoint_kind") == 0 ||
+           strcmp(key, "valid") == 0 ||
+           strcmp(key, "endpoint_only") == 0;
+}
+
+static bool api_name_service_filter_set(
     struct api_name_service_filter *filter,
     const char *key,
     const char *value)
 {
-    if (!filter || !key || !value || !value[0])
-        return;
+    if (!filter || !key || !key[0])
+        return true;
+    if (!api_name_service_filter_key_known(key)) {
+        if (!filter->unknown_key[0])
+            snprintf(filter->unknown_key, sizeof(filter->unknown_key),
+                     "%s", key);
+        return false; /* raw-return-ok:filter-validation-error */
+    }
+    if (!value || !value[0])
+        return true;
     if (strcmp(key, "service") == 0) {
         snprintf(filter->service, sizeof(filter->service), "%s", value);
         filter->active = true;
@@ -135,6 +167,7 @@ static void api_name_service_filter_set(
                  "%s", value);
         filter->active = true;
     }
+    return true;
 }
 
 static void api_name_service_filter_from_query(
@@ -159,22 +192,20 @@ static void api_name_service_filter_from_query(
         size_t key_len;
         size_t value_len;
 
-        if (!eq || (size_t)(eq - q) >= pair_len) {
-            if (!pair_end)
-                break;
-            q = pair_end + 1;
-            continue;
-        }
-
-        key_len = (size_t)(eq - q);
-        value_len = pair_len - key_len - 1;
+        key_len = eq && (size_t)(eq - q) < pair_len
+                      ? (size_t)(eq - q)
+                      : pair_len;
+        value_len = eq && (size_t)(eq - q) < pair_len
+                        ? pair_len - key_len - 1
+                        : 0;
         if (key_len >= sizeof(key))
             key_len = sizeof(key) - 1;
         if (value_len >= sizeof(value))
             value_len = sizeof(value) - 1;
         memcpy(key, q, key_len);
         key[key_len] = '\0';
-        memcpy(value, eq + 1, value_len);
+        if (value_len > 0)
+            memcpy(value, eq + 1, value_len);
         value[value_len] = '\0';
         api_name_service_filter_set(filter, key, value);
 
@@ -182,6 +213,39 @@ static void api_name_service_filter_from_query(
             break;
         q = pair_end + 1;
     }
+}
+
+static void api_name_service_allowed_filters_json(struct json_value *out)
+{
+    json_set_object(out);
+    json_push_kv_str(out, "service",
+                     "letters,digits,underscore,dash,dot");
+    json_push_kv_str(out, "service_contract",
+                     "letters,digits,underscore,dash,dot");
+    json_push_kv_str(out, "contract",
+                     "alias_for_service_contract");
+    json_push_kv_str(out, "transport",
+                     "p2p,onion,p2p_or_onion,unspecified,none");
+    json_push_kv_str(out, "endpoint_kind",
+                     "letters,digits,underscore,dash,dot");
+    json_push_kv_str(out, "valid", "true,false");
+    json_push_kv_str(out, "endpoint_only", "true,false");
+}
+
+static void api_name_service_filter_contract_json(struct json_value *out)
+{
+    struct json_value allowed = {0};
+
+    json_set_object(out);
+    json_push_kv_str(out, "schema", "zcl.query_filter_contract.v1");
+    json_push_kv_bool(out, "unknown_filters_error", true);
+    json_push_kv_str(out, "semantics", "server_side_exact_match");
+    api_name_service_allowed_filters_json(&allowed);
+    json_push_kv(out, "allowed_filters", &allowed);
+    json_free(&allowed);
+    json_push_kv_str(out, "example",
+                     "/api/v1/names/alice/services?"
+                     "transport=p2p&valid=true&endpoint_only=true");
 }
 
 static void api_name_service_filters_json(
@@ -345,6 +409,7 @@ static void api_name_service_filtered_directory_json(
 {
     const struct json_value *base_records;
     struct json_value filters = {0};
+    struct json_value filter_contract = {0};
     struct json_value records = {0};
     struct json_value endpoints = {0};
     struct json_value plan = {0};
@@ -376,6 +441,9 @@ static void api_name_service_filtered_directory_json(
     api_name_service_filters_json(&filters, filter);
     json_push_kv(out, "filters", &filters);
     json_free(&filters);
+    api_name_service_filter_contract_json(&filter_contract);
+    json_push_kv(out, "filter_contract", &filter_contract);
+    json_free(&filter_contract);
 
     json_set_array(&records);
     json_set_array(&endpoints);
@@ -466,15 +534,19 @@ bool api_name_service_directory_path(const char *name, const char *path,
     }
 
     api_name_service_filter_from_query(path, &filter);
-    if (!filter.active) {
-        json_copy(result, &base);
-        json_free(&base);
-        return true;
-    }
-
     if (!api_name_service_filter_validate(&filter, err, err_len)) {
         json_free(&base);
         return false; /* raw-return-ok:filter-validation-error */
+    }
+
+    if (!filter.active) {
+        struct json_value filter_contract = {0};
+        json_copy(result, &base);
+        api_name_service_filter_contract_json(&filter_contract);
+        json_push_kv(result, "filter_contract", &filter_contract);
+        json_free(&filter_contract);
+        json_free(&base);
+        return true;
     }
 
     api_name_service_filtered_directory_json(&base, &filter, result);
@@ -495,17 +567,7 @@ static void api_name_service_filter_error_json(struct json_value *out,
                      message && message[0] ? message :
                      "invalid name service filter");
 
-    json_set_object(&allowed);
-    json_push_kv_str(&allowed, "service",
-                     "letters,digits,underscore,dash,dot");
-    json_push_kv_str(&allowed, "service_contract",
-                     "letters,digits,underscore,dash,dot");
-    json_push_kv_str(&allowed, "transport",
-                     "p2p,onion,p2p_or_onion,unspecified,none");
-    json_push_kv_str(&allowed, "endpoint_kind",
-                     "letters,digits,underscore,dash,dot");
-    json_push_kv_str(&allowed, "valid", "true,false");
-    json_push_kv_str(&allowed, "endpoint_only", "true,false");
+    api_name_service_allowed_filters_json(&allowed);
     json_push_kv(out, "allowed_filters", &allowed);
     json_free(&allowed);
     json_push_kv_str(out, "example",
