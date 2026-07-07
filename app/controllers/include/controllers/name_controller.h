@@ -12,6 +12,7 @@
 
 #include "rpc/server.h"
 #include "models/database.h"
+#include <stdint.h>
 
 struct wallet;
 struct tx_mempool;
@@ -19,11 +20,14 @@ struct tx_mempool;
 void rpc_name_set_state(struct node_db *ndb);
 void rpc_name_set_wallet(struct wallet *w, struct tx_mempool *mp);
 void register_name_rpc_commands(struct rpc_table *t);
+const char *znam_type_name(uint8_t t);
 
 /* REST API */
 #include "json/json.h"
 bool api_name_list(struct json_value *result);
 bool rpc_name_resolve_api(const char *name, struct json_value *result);
 bool api_name_service_directory(const char *name, struct json_value *result);
+void api_name_append_records(struct node_db *ndb, const char *name,
+                             struct json_value *obj);
 
 #endif

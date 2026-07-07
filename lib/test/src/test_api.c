@@ -916,6 +916,8 @@ int test_api(void)
                                      "aliceexample.onion:8033");
         ok = ok && db_znam_text_save(&ndb, "alice", "service.p2p",
                                      "74.50.74.102:8033");
+        ok = ok && db_znam_text_save(&ndb, "alice", "svc.direct_p2p",
+                                     "missing-port");
         ok = ok && db_znam_text_save(&ndb, "alice", "bootstrap",
                                      "205.209.104.118:8033");
         ok = ok && db_znam_text_save(&ndb, "alice", "service.unknown",
@@ -926,7 +928,7 @@ int test_api(void)
                                      "1aliceAddress");
 
         if (ok) {
-            uint8_t resp[32768];
+            uint8_t resp[65536];
             rpc_name_set_state(&ndb);
             size_t n = api_handle_request("GET", "/api/v1/names/alice",
                                           NULL, 0, resp, sizeof(resp));
@@ -957,6 +959,8 @@ int test_api(void)
                 api_test_find_str_field(services, "key", "service.onion");
             const struct json_value *svc_p2p =
                 api_test_find_str_field(services, "key", "service.p2p");
+            const struct json_value *svc_bad_p2p =
+                api_test_find_str_field(services, "key", "svc.direct_p2p");
             const struct json_value *svc_bootstrap =
                 api_test_find_str_field(services, "key", "bootstrap");
             const struct json_value *svc_unknown =
@@ -965,14 +969,31 @@ int test_api(void)
                 svc ? json_get(svc, "runtime_probe") : NULL;
             const struct json_value *svc_p2p_probe =
                 svc_p2p ? json_get(svc_p2p, "runtime_probe") : NULL;
+            const struct json_value *svc_p2p_validation =
+                svc_p2p ? json_get(svc_p2p, "endpoint_validation") : NULL;
+            const struct json_value *svc_p2p_routing =
+                svc_p2p ? json_get(svc_p2p, "endpoint_routing") : NULL;
+            const struct json_value *svc_bad_p2p_validation =
+                svc_bad_p2p ? json_get(svc_bad_p2p,
+                                       "endpoint_validation") : NULL;
+            const struct json_value *svc_bad_p2p_routing =
+                svc_bad_p2p ? json_get(svc_bad_p2p,
+                                       "endpoint_routing") : NULL;
             const struct json_value *svc_bootstrap_probe =
                 svc_bootstrap ? json_get(svc_bootstrap,
                                          "runtime_probe") : NULL;
             const struct json_value *svc_resolution =
                 svc ? json_get(svc, "contract_resolution") : NULL;
+            const struct json_value *svc_validation =
+                svc ? json_get(svc, "endpoint_validation") : NULL;
+            const struct json_value *svc_routing =
+                svc ? json_get(svc, "endpoint_routing") : NULL;
             const struct json_value *svc_unknown_resolution =
                 svc_unknown ? json_get(svc_unknown,
                                        "contract_resolution") : NULL;
+            const struct json_value *svc_unknown_validation =
+                svc_unknown ? json_get(svc_unknown,
+                                       "endpoint_validation") : NULL;
             const struct json_value *dir_svc =
                 api_test_find_str_field(dir_records, "key", "service.onion");
             const struct json_value *dir_endpoint =
@@ -981,6 +1002,8 @@ int test_api(void)
                 api_test_find_str_field(addrs, "type", "bitcoin");
             const struct json_value *ltc =
                 api_test_find_str_field(addrs, "type", "litecoin");
+            const struct json_value *routing_plan =
+                directory ? json_get(directory, "routing_plan") : NULL;
             ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
                               "zcl.names.show.v1") == 0;
             ok = ok && strcmp(json_get_str(json_get(&root, "name")),
@@ -989,11 +1012,11 @@ int test_api(void)
                        ZNAM_TYPE_BTC;
             ok = ok && strcmp(json_get_str(json_get(&root, "type")),
                               "bitcoin") == 0;
-            ok = ok && json_size(texts) == 5 &&
-                       json_get_int(json_get(&root, "text_record_count")) == 5;
-            ok = ok && json_size(services) == 4 &&
+            ok = ok && json_size(texts) == 6 &&
+                       json_get_int(json_get(&root, "text_record_count")) == 6;
+            ok = ok && json_size(services) == 5 &&
                        json_get_int(json_get(&root,
-                                             "service_record_count")) == 4;
+                                             "service_record_count")) == 5;
             ok = ok && json_size(addrs) == 2 &&
                        json_get_int(json_get(&root,
                                              "address_record_count")) == 2;
@@ -1061,6 +1084,34 @@ int test_api(void)
                               "zcl.onion_announcements.index.v1") == 0;
             ok = ok && strcmp(json_get_str(json_get(svc, "transport")),
                               "onion") == 0;
+            ok = ok && json_get_int(json_get(svc,
+                                             "routing_priority")) == 30;
+            ok = ok && json_get_bool(json_get(svc,
+                                              "endpoint_hint_valid"));
+            ok = ok && svc_validation &&
+                 strcmp(json_get_str(json_get(svc_validation, "schema")),
+                        "zcl.names.endpoint_validation.v1") == 0;
+            ok = ok && svc_validation &&
+                 strcmp(json_get_str(json_get(svc_validation, "status")),
+                        "valid_endpoint_hint") == 0;
+            ok = ok && svc_validation &&
+                 json_get_bool(json_get(svc_validation, "accepted"));
+            ok = ok && svc_validation &&
+                 strcmp(json_get_str(json_get(svc_validation, "reason")),
+                        "onion_host_hint_present") == 0;
+            ok = ok && svc_routing &&
+                 strcmp(json_get_str(json_get(svc_routing, "schema")),
+                        "zcl.names.endpoint_routing.v1") == 0;
+            ok = ok && svc_routing &&
+                 json_get_int(json_get(svc_routing, "priority")) == 30;
+            ok = ok && svc_routing &&
+                 strcmp(json_get_str(json_get(svc_routing,
+                                              "preferred_transport")),
+                        "onion") == 0;
+            ok = ok && svc_routing &&
+                 strcmp(json_get_str(json_get(svc_routing,
+                                              "fallback_transport")),
+                        "direct_p2p_if_directory_advertises_it") == 0;
             ok = ok && json_get_bool(json_get(svc, "chain_verified"));
             ok = ok && svc_p2p &&
                  strcmp(json_get_str(json_get(svc_p2p, "service_name")),
@@ -1086,6 +1137,45 @@ int test_api(void)
                               "connect_direct_p2p_and_verify_peer_readiness") == 0;
             ok = ok && strcmp(json_get_str(json_get(svc_p2p, "transport")),
                               "p2p") == 0;
+            ok = ok && json_get_int(json_get(svc_p2p,
+                                             "routing_priority")) == 10;
+            ok = ok && json_get_bool(json_get(svc_p2p,
+                                              "endpoint_hint_valid"));
+            ok = ok && svc_p2p_validation &&
+                 strcmp(json_get_str(json_get(svc_p2p_validation, "status")),
+                        "valid_endpoint_hint") == 0;
+            ok = ok && svc_p2p_validation &&
+                 strcmp(json_get_str(json_get(svc_p2p_validation, "reason")),
+                        "host_port_hint_present") == 0;
+            ok = ok && svc_p2p_routing &&
+                 strcmp(json_get_str(json_get(svc_p2p_routing,
+                                              "preferred_transport")),
+                        "p2p") == 0;
+            ok = ok && svc_p2p_routing &&
+                 strcmp(json_get_str(json_get(svc_p2p_routing,
+                                              "fallback_transport")),
+                        "onion") == 0;
+            ok = ok && svc_bad_p2p &&
+                 strcmp(json_get_str(json_get(svc_bad_p2p,
+                                              "service_name")),
+                        "direct_p2p") == 0;
+            ok = ok && svc_bad_p2p &&
+                 !json_get_bool(json_get(svc_bad_p2p,
+                                         "endpoint_hint_valid"));
+            ok = ok && svc_bad_p2p_validation &&
+                 strcmp(json_get_str(json_get(svc_bad_p2p_validation,
+                                              "status")),
+                        "invalid_endpoint_hint") == 0;
+            ok = ok && svc_bad_p2p_validation &&
+                 !json_get_bool(json_get(svc_bad_p2p_validation,
+                                         "accepted"));
+            ok = ok && svc_bad_p2p_validation &&
+                 strcmp(json_get_str(json_get(svc_bad_p2p_validation,
+                                              "reason")),
+                        "missing_host_port") == 0;
+            ok = ok && svc_bad_p2p_routing &&
+                 json_get_int(json_get(svc_bad_p2p_routing,
+                                       "priority")) == 10;
             ok = ok && svc_bootstrap &&
                  strcmp(json_get_str(json_get(svc_bootstrap,
                                               "service_name")),
@@ -1119,6 +1209,10 @@ int test_api(void)
             ok = ok && strcmp(json_get_str(json_get(svc_unknown,
                                                     "contract_resolution_status")),
                               "service_unknown") == 0;
+            ok = ok && svc_unknown_validation &&
+                 strcmp(json_get_str(json_get(svc_unknown_validation,
+                                              "status")),
+                        "not_endpoint") == 0;
             ok = ok && svc_unknown_resolution &&
                  strcmp(json_get_str(json_get(svc_unknown_resolution,
                                               "status")),
@@ -1144,17 +1238,45 @@ int test_api(void)
                         "zcl.names.service_directory.v1") == 0;
             ok = ok && json_get_bool(json_get(directory, "has_services"));
             ok = ok && json_get_int(json_get(directory,
-                                             "service_record_count")) == 4;
+                                             "service_record_count")) == 5;
             ok = ok && json_get_int(json_get(directory,
-                                             "endpoint_count")) == 3;
+                                             "endpoint_count")) == 4;
+            ok = ok && json_get_int(json_get(directory,
+                                             "valid_endpoint_count")) == 3;
+            ok = ok && json_get_int(json_get(directory,
+                                             "invalid_endpoint_count")) == 1;
             ok = ok && json_get_bool(json_get(directory,
                                               "supports_onion"));
             ok = ok && json_get_bool(json_get(directory,
                                               "supports_direct_p2p"));
             ok = ok && json_get_bool(json_get(directory,
                                               "supports_bootstrap"));
-            ok = ok && json_size(dir_records) == 4 && dir_svc != NULL;
-            ok = ok && json_size(dir_endpoints) == 3 && dir_endpoint != NULL;
+            ok = ok && json_size(dir_records) == 5 && dir_svc != NULL;
+            ok = ok && json_size(dir_endpoints) == 4 && dir_endpoint != NULL;
+            ok = ok && routing_plan &&
+                 strcmp(json_get_str(json_get(routing_plan, "schema")),
+                        "zcl.names.service_routing_plan.v1") == 0;
+            ok = ok && routing_plan &&
+                 strcmp(json_get_str(json_get(routing_plan, "strategy")),
+                        "prefer_valid_direct_p2p_then_bootstrap_then_onion")
+                    == 0;
+            ok = ok && routing_plan &&
+                 strcmp(json_get_str(json_get(routing_plan,
+                                              "preferred_transport")),
+                        "p2p") == 0;
+            ok = ok && routing_plan &&
+                 strcmp(json_get_str(json_get(routing_plan,
+                                              "fallback_transport")),
+                        "onion") == 0;
+            ok = ok && routing_plan &&
+                 json_get_int(json_get(routing_plan,
+                                       "valid_endpoint_count")) == 3;
+            ok = ok && routing_plan &&
+                 json_get_int(json_get(routing_plan,
+                                       "invalid_endpoint_count")) == 1;
+            ok = ok && routing_plan &&
+                 json_get_bool(json_get(routing_plan,
+                                        "requires_runtime_probe"));
             ok = ok && strcmp(json_get_str(json_get(directory,
                                                     "transport_model")),
                               "records_advertise_tor_or_p2p_endpoints") == 0;
@@ -1191,7 +1313,7 @@ int test_api(void)
             json_free(&root);
 
             {
-                uint8_t svc_resp[32768];
+                uint8_t svc_resp[65536];
                 struct json_value svc_root;
                 rpc_name_set_state(&ndb);
                 size_t sn = api_handle_request(
@@ -1237,12 +1359,18 @@ int test_api(void)
                             "znam_projection") == 0;
                 ok = ok &&
                      json_get_int(json_get(&svc_root,
-                                           "service_record_count")) == 4;
+                                           "service_record_count")) == 5;
                 ok = ok &&
                      json_get_int(json_get(&svc_root,
-                                           "endpoint_count")) == 3;
-                ok = ok && svc_records && json_size(svc_records) == 4;
-                ok = ok && svc_endpoints && json_size(svc_endpoints) == 3;
+                                           "endpoint_count")) == 4;
+                ok = ok &&
+                     json_get_int(json_get(&svc_root,
+                                           "valid_endpoint_count")) == 3;
+                ok = ok &&
+                     json_get_int(json_get(&svc_root,
+                                           "invalid_endpoint_count")) == 1;
+                ok = ok && svc_records && json_size(svc_records) == 5;
+                ok = ok && svc_endpoints && json_size(svc_endpoints) == 4;
                 ok = ok && svc_onion &&
                      strcmp(json_get_str(json_get(svc_onion,
                                                   "contract_resolution_status")),

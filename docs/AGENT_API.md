@@ -159,7 +159,9 @@ for agents. In addition to raw `text_records`, read `service_records[]` and
 `service_operation_route`, `service_contract_known`,
 `service_operation_required`, `service_operation_known`,
 `contract_resolution_status`,
-`contract_resolution`, `runtime_probe`, and `next_action`. The nested
+`contract_resolution`, `runtime_probe`, `endpoint_validation`,
+`endpoint_routing`, `routing_priority`, `endpoint_hint_valid`, and
+`next_action`. The nested
 `contract_resolution` object is `zcl.names.service_contract_resolution.v1`;
 `status=resolved` means the chain-projected service hint maps to a canonical
 Zclassic23 service contract and, when present, operation contract. Unknown
@@ -167,15 +169,23 @@ service hints remain visible but are explicitly marked `service_unknown` so
 agents do not treat arbitrary text records as trusted node capabilities. The
 nested `runtime_probe` is the same `zcl.service_runtime_probe.v1` object
 exposed by the service catalog member, so agents can verify the live route
-without a second lookup. When a client only needs routing records, use the
+without a second lookup. `endpoint_validation`
+(`zcl.names.endpoint_validation.v1`) fails closed on malformed hints while
+leaving the chain record visible; `endpoint_routing`
+(`zcl.names.endpoint_routing.v1`) gives the preferred transport, fallback
+transport, and priority for direct P2P vs onion decisions. When a client only
+needs routing records, use the
 dedicated subcollection `GET /api/v1/names/{name}/services`; it returns
 `zcl.names.service_directory.v1` with `name_route`, `self_route`,
 `operation_id=znam_names.resolve_service_directory`, concrete
 `operation_route`, and the same
 `records[]`/`endpoints[]` objects. The directory also publishes
-`endpoints[]`, `endpoint_count`, `supports_onion`, `supports_direct_p2p`,
-`supports_bootstrap`, the service/operation contract route templates, the
-runtime probe schema/field name, and a routing policy. Agents should verify the
+`endpoints[]`, `endpoint_count`, `valid_endpoint_count`,
+`invalid_endpoint_count`, `supports_onion`, `supports_direct_p2p`,
+`supports_bootstrap`, `routing_plan`
+(`zcl.names.service_routing_plan.v1`), the service/operation contract route
+templates, the runtime probe schema/field name, and a routing policy. Agents
+should verify the
 chain-projected ZNAM record first, inspect the linked service/operation
 contract and runtime probe, then prefer direct P2P for low latency and fall
 back to onion reachability when NAT or firewall conditions require it.

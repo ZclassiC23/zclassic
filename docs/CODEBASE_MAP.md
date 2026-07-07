@@ -393,14 +393,19 @@ machine-readable: every endpoint hint should include `service_contract`,
 `service_catalog_route`, `recommended_operation_id`, `service_operation_route`,
 `service_contract_known`, `service_operation_required`,
 `service_operation_known`, `contract_resolution_status`,
-`contract_resolution`, `runtime_probe`, and `next_action` so an agent can go
+`contract_resolution`, `runtime_probe`, `endpoint_validation`,
+`endpoint_routing`, `routing_priority`, `endpoint_hint_valid`, and
+`next_action` so an agent can go
 from a confirmed name to a Tor/P2P endpoint, distinguish canonical service
 contracts from arbitrary chain text, prove the linked service is usable on the
-running node, and then reach the exact CRUD operation contract without
-guessing. `GET /api/v1/names/{name}/services` is the narrow read
+running node, reject malformed endpoint hints without hiding them, and then
+reach the exact CRUD operation contract without guessing.
+`GET /api/v1/names/{name}/services` is the narrow read
 subcollection for that same directory; it must stay a copy of the embedded
 `service_directory` model plus standalone route metadata, not a second
-service-record serializer.
+service-record serializer. The directory-level `routing_plan` summarizes the
+preferred transport order and valid/invalid endpoint counts for agents that
+need one bounded object before deciding direct P2P vs onion fallback.
 
 ### MCP target gotcha
 `mcp__zcl23-dev__*` hit the DEV node (`~/.zclassic-c23-dev`, port 18252).

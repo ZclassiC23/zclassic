@@ -59,7 +59,7 @@ AGENT_IMPACT_RULE("app/controllers/src/health_controller.c|app/controllers/inclu
 AGENT_IMPACT_RULE("lib/util/src/alerts.c|lib/util/include/util/alerts.h|lib/test/src/test_alerts.c", "alerts node_health_service api syncdiag_rpc make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/block_intake_json.c|app/controllers/include/controllers/block_intake_json.h", "api syncdiag_rpc mcp_controllers make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/api_controller*.c|app/controllers/src/api_controller_internal.h|lib/test/src/test_api.c", "api")
-AGENT_IMPACT_RULE("app/controllers/src/name_controller.c|app/controllers/include/controllers/name_controller.h|app/models/src/znam.c|app/models/include/models/znam.h|lib/znam/*|lib/test/src/test_znam.c", "znam protocols api make_lint_gates")
+AGENT_IMPACT_RULE("app/controllers/src/name_controller.c|app/controllers/src/name_service_directory_controller.c|app/controllers/include/controllers/name_controller.h|app/models/src/znam.c|app/models/include/models/znam.h|lib/znam/*|lib/test/src/test_znam.c", "znam protocols api make_lint_gates")
 AGENT_IMPACT_RULE("lib/zslp/*|lib/test/src/test_slp.c|lib/test/src/test_protocols.c|lib/script/include/script/op_return_push.h", "slp protocols make_lint_gates")
 AGENT_IMPACT_RULE("lib/rpc/include/rpc/client.h|lib/rpc/src/client.c|src/cli.c|src/main.c", "rpc syncdiag_rpc make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_rpc.c", "rpc")

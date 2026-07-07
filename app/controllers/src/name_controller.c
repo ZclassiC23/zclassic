@@ -7,6 +7,7 @@
  *   name_resolve   — look up a name's target
  *   name_list      — list all registered names */
 
+#include "controllers/name_controller.h"
 #include "models/znam.h"
 #include "api_controller_internal.h"
 #include "json/json.h"
@@ -40,7 +41,7 @@ void rpc_name_set_wallet(struct wallet *w, struct tx_mempool *mp)
 
 /* ── Helper ─────────────────────────────────────────────────────── */
 
-static const char *type_name(uint8_t t)
+const char *znam_type_name(uint8_t t)
 {
     switch (t) {
     case ZNAM_TYPE_ONION: return "onion";
@@ -79,7 +80,7 @@ static void entry_to_json(const struct znam_entry *e, struct json_value *obj)
     json_push_kv_str(obj, "name", e->name);
     json_push_kv_str(obj, "owner", e->owner_address);
     json_push_kv_int(obj, "target_type", e->target_type);
-    json_push_kv_str(obj, "type", type_name(e->target_type));
+    json_push_kv_str(obj, "type", znam_type_name(e->target_type));
     json_push_kv_str(obj, "value", e->target_value);
     json_push_kv_int(obj, "reg_height", e->reg_height);
     char hex[65];
@@ -87,7 +88,6 @@ static void entry_to_json(const struct znam_entry *e, struct json_value *obj)
     json_push_kv_str(obj, "reg_txid", hex);
 }
 
-#define ZNAM_API_RECORD_LIMIT 64
 #define ZNAM_API_LIST_LIMIT 100
 
 static void append_name_verification(struct json_value *obj)
@@ -133,387 +133,6 @@ static void append_name_crud_links(struct json_value *obj, const char *name)
     json_free(&links);
 }
 
-struct service_record_classification {
-    const char *service_name;
-    const char *service_contract_name;
-    const char *recommended_operation_id;
-    const char *next_action;
-    const char *transport;
-    const char *endpoint_kind;
-    bool is_endpoint_hint;
-    bool supports_onion;
-    bool supports_direct_p2p;
-    bool supports_bootstrap;
-};
-
-static bool str_eq(const char *a, const char *b)
-{
-    return a && b && strcmp(a, b) == 0;
-}
-
-static bool value_mentions_onion(const char *value)
-{
-    return value && strstr(value, ".onion") != NULL;
-}
-
-static bool has_prefix(const char *s, const char *prefix)
-{
-    size_t n;
-
-    if (!s || !prefix)
-        return false;
-    n = strlen(prefix);
-    return strncmp(s, prefix, n) == 0;
-}
-
-static const char *service_key_suffix(const char *key)
-{
-    if (has_prefix(key, "service."))
-        return key + strlen("service.");
-    if (has_prefix(key, "svc."))
-        return key + strlen("svc.");
-    return NULL;
-}
-
-static struct service_record_classification
-classify_service_record(const char *key, const char *value)
-{
-    const char *suffix = service_key_suffix(key);
-    struct service_record_classification c = {
-        .service_name = "service_hint",
-        .service_contract_name = "znam_names",
-        .recommended_operation_id = "znam_names.resolve_name",
-        .next_action = "inspect_service_record_metadata",
-        .transport = "unspecified",
-        .endpoint_kind = "service_metadata",
-    };
-
-    if (str_eq(key, "onion") || str_eq(suffix, "onion") ||
-        value_mentions_onion(value)) {
-        c.service_name = "onion_directory";
-        c.service_contract_name = "onion_directory";
-        c.recommended_operation_id =
-            "onion_directory.list_onion_announcements";
-        c.next_action =
-            "probe_onion_endpoint_then_prefer_direct_p2p_when_available";
-        c.transport = "onion";
-        c.endpoint_kind = "tor_hidden_service";
-        c.is_endpoint_hint = true;
-        c.supports_onion = true;
-        return c;
-    }
-
-    if (str_eq(key, "p2p") || str_eq(suffix, "p2p") ||
-        str_eq(suffix, "direct_p2p")) {
-        c.service_name = "direct_p2p";
-        c.service_contract_name = "bootstrap";
-        c.recommended_operation_id =
-            "bootstrap.inspect_peer_bootstrap_readiness";
-        c.next_action = "connect_direct_p2p_and_verify_peer_readiness";
-        c.transport = "p2p";
-        c.endpoint_kind = "direct_peer_endpoint";
-        c.is_endpoint_hint = true;
-        c.supports_direct_p2p = true;
-        return c;
-    }
-
-    if (str_eq(key, "bootstrap") || str_eq(suffix, "bootstrap")) {
-        c.service_name = "bootstrap";
-        c.service_contract_name = "bootstrap";
-        c.recommended_operation_id = "bootstrap.read_bootstrap_status";
-        c.next_action = "read_bootstrap_status_before_using_peer";
-        c.transport = "p2p_or_onion";
-        c.endpoint_kind = "bootstrap_hint";
-        c.is_endpoint_hint = true;
-        c.supports_bootstrap = true;
-        return c;
-    }
-
-    if (str_eq(key, "service")) {
-        c.service_name = "declared_service";
-        c.service_contract_name = "znam_names";
-        c.recommended_operation_id = "znam_names.resolve_name";
-        c.endpoint_kind = "service_hint";
-        return c;
-    }
-
-    if (suffix && suffix[0]) {
-        c.service_name = suffix;
-        c.service_contract_name = suffix;
-        c.recommended_operation_id = "";
-        c.next_action = "inspect_declared_service_catalog_entry";
-        c.endpoint_kind = "service_metadata";
-    }
-
-    return c;
-}
-
-static void push_service_route_links(
-    struct json_value *obj,
-    const struct service_record_classification *classification)
-{
-    struct json_value runtime_probe = {0};
-    struct json_value resolution = {0};
-    char catalog_route[160];
-    char operation_route[192];
-    bool service_known = false;
-    bool operation_required = false;
-    bool operation_known = false;
-    const char *resolution_status = "service_unknown";
-    const char *resolution_next_action =
-        "inspect_service_catalog_before_trusting_chain_hint";
-
-    if (!obj || !classification)
-        return;
-
-    if (classification->service_contract_name &&
-        classification->service_contract_name[0]) {
-        service_known = api_service_catalog_has_service(
-            classification->service_contract_name);
-        snprintf(catalog_route, sizeof(catalog_route),
-                 "/api/v1/service-catalog/%s",
-                 classification->service_contract_name);
-        catalog_route[sizeof(catalog_route) - 1] = '\0';
-        json_push_kv_str(obj, "service_contract",
-                         classification->service_contract_name);
-        json_push_kv_str(obj, "service_catalog_route", catalog_route);
-        if (api_service_runtime_probe_json_for_service(
-                classification->service_contract_name, &runtime_probe)) {
-            json_push_kv(obj, "runtime_probe", &runtime_probe);
-            json_free(&runtime_probe);
-        }
-    }
-
-    json_push_kv_str(obj, "recommended_operation_id",
-                     classification->recommended_operation_id
-                         ? classification->recommended_operation_id : "");
-    if (classification->recommended_operation_id &&
-        classification->recommended_operation_id[0]) {
-        operation_required = true;
-        operation_known = api_service_operation_has_id(
-            classification->recommended_operation_id);
-        snprintf(operation_route, sizeof(operation_route),
-                 "/api/v1/service-operations/%s",
-                 classification->recommended_operation_id);
-        operation_route[sizeof(operation_route) - 1] = '\0';
-        json_push_kv_str(obj, "service_operation_route", operation_route);
-    }
-
-    if (service_known && (!operation_required || operation_known)) {
-        resolution_status = "resolved";
-        resolution_next_action = "run_runtime_probe_before_routing";
-    } else if (service_known) {
-        resolution_status = "operation_unknown";
-        resolution_next_action =
-            "inspect_service_operation_contract_before_execution";
-    }
-
-    json_push_kv_bool(obj, "service_contract_known", service_known);
-    json_push_kv_bool(obj, "service_operation_required",
-                      operation_required);
-    json_push_kv_bool(obj, "service_operation_known", operation_known);
-    json_push_kv_str(obj, "contract_resolution_status",
-                     resolution_status);
-
-    json_set_object(&resolution);
-    json_push_kv_str(&resolution, "schema",
-                     "zcl.names.service_contract_resolution.v1");
-    json_push_kv_str(&resolution, "status", resolution_status);
-    json_push_kv_bool(&resolution, "service_contract_known",
-                      service_known);
-    json_push_kv_bool(&resolution, "operation_required",
-                      operation_required);
-    json_push_kv_bool(&resolution, "service_operation_known",
-                      operation_known);
-    json_push_kv_str(&resolution, "next_action",
-                     resolution_next_action);
-    json_push_kv(obj, "contract_resolution", &resolution);
-    json_free(&resolution);
-
-    json_push_kv_str(obj, "next_action",
-                     classification->next_action
-                         ? classification->next_action : "");
-}
-
-static void append_service_directory(struct json_value *obj,
-                                     const struct json_value *services,
-                                     int service_count,
-                                     const struct json_value *endpoints,
-                                     int endpoint_count,
-                                     bool supports_onion,
-                                     bool supports_direct_p2p,
-                                     bool supports_bootstrap)
-{
-    struct json_value directory = {0};
-
-    json_set_object(&directory);
-    json_push_kv_str(&directory, "schema",
-                     ZCL_NAMES_SERVICE_DIRECTORY_SCHEMA);
-    json_push_kv_int(&directory, "schema_version", 1);
-    json_push_kv_str(&directory, "source", "znam_text_records");
-    json_push_kv_str(&directory, "transport_model",
-                     "records_advertise_tor_or_p2p_endpoints");
-    json_push_kv_str(&directory, "base_layer", "zclassic_l1");
-    json_push_kv_str(&directory, "routing_policy",
-                     "verify_zcl_name_record_then_prefer_direct_p2p_then_onion");
-    json_push_kv_str(&directory, "service_contract_route",
-                     "/api/v1/service-catalog/{service}");
-    json_push_kv_str(&directory, "operation_contract_route",
-                     "/api/v1/service-operations/{operation_id}");
-    json_push_kv_str(&directory, "runtime_probe_schema",
-                     ZCL_SERVICE_RUNTIME_PROBE_SCHEMA);
-    json_push_kv_str(&directory, "runtime_probe_contract_field",
-                     "runtime_probe");
-    json_push_kv_str(&directory, "runtime_probe_policy",
-                     "use_the_linked_service_contract_probe_before_routing");
-    json_push_kv_bool(&directory, "has_services", service_count > 0);
-    json_push_kv_int(&directory, "service_record_count", service_count);
-    json_push_kv_int(&directory, "endpoint_count", endpoint_count);
-    json_push_kv_bool(&directory, "supports_onion", supports_onion);
-    json_push_kv_bool(&directory, "supports_direct_p2p",
-                      supports_direct_p2p);
-    json_push_kv_bool(&directory, "supports_bootstrap",
-                      supports_bootstrap);
-    json_push_kv(&directory, "records", services);
-    json_push_kv(&directory, "endpoints", endpoints);
-    json_push_kv(obj, "service_directory", &directory);
-    json_free(&directory);
-}
-
-static bool is_service_record_key(const char *key)
-{
-    if (!key)
-        return false;
-    return strcmp(key, "service") == 0 ||
-           strcmp(key, "onion") == 0 ||
-           strcmp(key, "p2p") == 0 ||
-           strcmp(key, "bootstrap") == 0 ||
-           has_prefix(key, "service.") ||
-           has_prefix(key, "svc.");
-}
-
-static void text_record_to_json(const struct znam_text_record *rec,
-                                struct json_value *obj)
-{
-    json_set_object(obj);
-    json_push_kv_str(obj, "name", rec->name);
-    json_push_kv_str(obj, "key", rec->key);
-    json_push_kv_str(obj, "value", rec->value);
-}
-
-static void service_record_to_json(
-    const struct znam_text_record *rec,
-    const struct service_record_classification *classification,
-    struct json_value *obj)
-{
-    json_set_object(obj);
-    json_push_kv_str(obj, "schema", "zcl.names.service_record.v1");
-    json_push_kv_str(obj, "name", rec->name);
-    json_push_kv_str(obj, "key", rec->key);
-    json_push_kv_str(obj, "value", rec->value);
-    json_push_kv_str(obj, "service_name",
-                     classification->service_name);
-    push_service_route_links(obj, classification);
-    json_push_kv_str(obj, "transport", classification->transport);
-    json_push_kv_str(obj, "endpoint_kind",
-                     classification->endpoint_kind);
-    json_push_kv_str(obj, "endpoint", rec->value);
-    json_push_kv_bool(obj, "is_endpoint_hint",
-                      classification->is_endpoint_hint);
-    json_push_kv_bool(obj, "chain_verified", true);
-    json_push_kv_str(obj, "verified_by", "confirmed_znam_text_record");
-    json_push_kv_str(obj, "reachability_proof",
-                     "requires_runtime_peer_or_onion_probe");
-}
-
-static void addr_record_to_json(const struct znam_addr_record *rec,
-                                struct json_value *obj)
-{
-    json_set_object(obj);
-    json_push_kv_str(obj, "name", rec->name);
-    json_push_kv_int(obj, "coin_type", rec->coin_type);
-    json_push_kv_str(obj, "type", type_name(rec->coin_type));
-    json_push_kv_str(obj, "address", rec->address);
-}
-
-static void append_record_arrays(const char *name, struct json_value *obj)
-{
-    struct json_value texts = {0};
-    struct json_value services = {0};
-    struct json_value endpoints = {0};
-    struct json_value addrs = {0};
-    struct znam_text_record text_rows[ZNAM_API_RECORD_LIMIT];
-    struct znam_addr_record addr_rows[ZNAM_API_RECORD_LIMIT];
-    int text_count = 0;
-    int service_count = 0;
-    int endpoint_count = 0;
-    int addr_count = 0;
-    bool supports_onion = false;
-    bool supports_direct_p2p = false;
-    bool supports_bootstrap = false;
-
-    json_set_array(&texts);
-    json_set_array(&services);
-    json_set_array(&endpoints);
-    json_set_array(&addrs);
-
-    if (g_name_ndb && name) {
-        text_count = db_znam_text_list(g_name_ndb, name, text_rows,
-                                       ZNAM_API_RECORD_LIMIT);
-        for (int i = 0; i < text_count; i++) {
-            struct json_value row = {0};
-            text_record_to_json(&text_rows[i], &row);
-            json_push_back(&texts, &row);
-            if (is_service_record_key(text_rows[i].key)) {
-                struct service_record_classification classification =
-                    classify_service_record(text_rows[i].key,
-                                            text_rows[i].value);
-                struct json_value svc = {0};
-                service_record_to_json(&text_rows[i], &classification,
-                                       &svc);
-                json_push_back(&services, &svc);
-                if (classification.is_endpoint_hint) {
-                    json_push_back(&endpoints, &svc);
-                    endpoint_count++;
-                }
-                supports_onion = supports_onion ||
-                                 classification.supports_onion;
-                supports_direct_p2p = supports_direct_p2p ||
-                                      classification.supports_direct_p2p;
-                supports_bootstrap = supports_bootstrap ||
-                                     classification.supports_bootstrap;
-                json_free(&svc);
-                service_count++;
-            }
-            json_free(&row);
-        }
-
-        addr_count = db_znam_addr_list(g_name_ndb, name, addr_rows,
-                                       ZNAM_API_RECORD_LIMIT);
-        for (int i = 0; i < addr_count; i++) {
-            struct json_value row = {0};
-            addr_record_to_json(&addr_rows[i], &row);
-            json_push_back(&addrs, &row);
-            json_free(&row);
-        }
-    }
-
-    json_push_kv(obj, "text_records", &texts);
-    json_push_kv_int(obj, "text_record_count", text_count);
-    json_push_kv(obj, "service_records", &services);
-    json_push_kv_int(obj, "service_record_count", service_count);
-    json_push_kv(obj, "address_records", &addrs);
-    json_push_kv_int(obj, "address_record_count", addr_count);
-    append_service_directory(obj, &services, service_count, &endpoints,
-                             endpoint_count, supports_onion,
-                             supports_direct_p2p, supports_bootstrap);
-
-    json_free(&texts);
-    json_free(&services);
-    json_free(&endpoints);
-    json_free(&addrs);
-}
-
 static void entry_to_show_json(const struct znam_entry *e,
                                struct json_value *obj)
 {
@@ -521,7 +140,7 @@ static void entry_to_show_json(const struct znam_entry *e,
     json_push_kv_str(obj, "schema", "zcl.names.show.v1");
     append_name_verification(obj);
     append_name_crud_links(obj, e->name);
-    append_record_arrays(e->name, obj);
+    api_name_append_records(g_name_ndb, e->name, obj);
 }
 
 /* ── name_resolve ───────────────────────────────────────────────── */
@@ -696,7 +315,7 @@ static bool rpc_name_register(const struct json_value *params, bool help,
         /* Return success with txid */
         json_set_object(result);
         json_push_kv_str(result, "name", name);
-        json_push_kv_str(result, "type", type_name(target_type));
+        json_push_kv_str(result, "type", znam_type_name(target_type));
         json_push_kv_str(result, "value", value);
 
         char txid_hex[65];
@@ -713,7 +332,7 @@ static bool rpc_name_register(const struct json_value *params, bool help,
     /* No wallet — return the OP_RETURN hex for manual inclusion */
     json_set_object(result);
     json_push_kv_str(result, "name", name);
-    json_push_kv_str(result, "type", type_name(target_type));
+    json_push_kv_str(result, "type", znam_type_name(target_type));
     json_push_kv_str(result, "value", value);
 
     char hex[1025];
