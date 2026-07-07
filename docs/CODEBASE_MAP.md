@@ -323,7 +323,10 @@ one contract source and pin representative collection/item/singleton routes in
 
 Application protocols such as ZSLP, ZNAM, market, messaging, and future
 script-contract workflows should expose noun-shaped REST resources over
-chain-derived projections. Reads come from indexed projections at the served
+chain-derived projections. Treat **ZLSP** as the umbrella for this
+application/service layer: ZCL remains the base layer, while zclassic23 exposes
+versioned CRUD resources and typed MCP/native JSON methods for services built
+from valid ZCL transactions. Reads come from indexed projections at the served
 frontier; mutations construct/broadcast explicit transactions or operator-gated
 actions and never bypass the base-layer reducer/consensus path with direct
 state writes. The machine-readable version of this boundary is

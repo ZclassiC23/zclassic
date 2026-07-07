@@ -16,6 +16,10 @@ void api_rest_layer_model_json(struct json_value *layer_model)
     json_push_kv_str(layer_model, "base_layer", "zclassic_l1");
     json_push_kv_str(layer_model, "service_layer",
                      "zclassic23_application_layer");
+    json_push_kv_str(layer_model, "service_layer_alias",
+                     "zclassic23_l2");
+    json_push_kv_str(layer_model, "application_protocol_umbrella",
+                     "zlsp");
     json_push_kv_str(layer_model, "consensus_authority",
                      "local_consensus_reducer");
     json_push_kv_str(layer_model, "read_rule",
@@ -24,6 +28,10 @@ void api_rest_layer_model_json(struct json_value *layer_model)
                      "mutations construct or broadcast explicit ZCL transactions "
                      "or operator-gated actions; they do not directly write "
                      "chain-derived state");
+    json_push_kv_str(layer_model, "crud_service_rule",
+                     "application services expose noun-shaped REST resources; "
+                     "writes are transaction-construction requests, never "
+                     "direct projection mutations");
     json_push_kv_str(layer_model, "consensus_boundary",
                      "application protocols may interpret OP_RETURN, memo, and "
                      "script-contract data but must not change block, tx, PoW, "

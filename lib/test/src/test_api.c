@@ -742,14 +742,28 @@ int test_api(void)
                     "zclassic23_application_layer") == 0;
         ok = ok && layer_model &&
              strcmp(json_get_str(json_get(layer_model,
+                                          "service_layer_alias")),
+                    "zclassic23_l2") == 0;
+        ok = ok && layer_model &&
+             strcmp(json_get_str(json_get(layer_model,
+                                          "application_protocol_umbrella")),
+                    "zlsp") == 0;
+        ok = ok && layer_model &&
+             strcmp(json_get_str(json_get(layer_model,
                                           "consensus_authority")),
                     "local_consensus_reducer") == 0;
+        ok = ok && layer_model &&
+             strstr(json_get_str(json_get(layer_model,
+                                          "crud_service_rule")),
+                    "transaction-construction requests") != NULL;
         ok = ok && layer_model &&
              strstr(json_get_str(json_get(layer_model,
                                           "consensus_boundary")),
                     "must not change block") != NULL;
         const struct json_value *protocols =
             layer_model ? json_get(layer_model, "application_protocols") : NULL;
+        const struct json_value *zlsp_protocol =
+            api_test_find_named(protocols, "zlsp");
         const struct json_value *zslp_protocol =
             api_test_find_named(protocols, "zslp");
         const struct json_value *znam_protocol =
@@ -759,7 +773,20 @@ int test_api(void)
         const struct json_value *swap_protocol =
             api_test_find_named(protocols, "atomic_swaps");
         ok = ok && protocols && protocols->type == JSON_ARR &&
-             json_size(protocols) >= 6;
+             json_size(protocols) >= 7;
+        ok = ok && zlsp_protocol &&
+             strcmp(json_get_str(json_get(zlsp_protocol, "status")),
+                    "design") == 0;
+        ok = ok && zlsp_protocol &&
+             strcmp(json_get_str(json_get(zlsp_protocol, "family")),
+                    "application_protocol_framework") == 0;
+        ok = ok && zlsp_protocol &&
+             strcmp(json_get_str(json_get(zlsp_protocol, "anchor_kind")),
+                    "base_layer_transaction_contract") == 0;
+        ok = ok && zlsp_protocol &&
+             api_test_array_has_str(json_get(zlsp_protocol,
+                                             "crud_capabilities"),
+                                    "construct_transaction");
         ok = ok && zslp_protocol &&
              strcmp(json_get_str(json_get(zslp_protocol, "schema")),
                     "zcl.application_protocol_contract.v1") == 0;
@@ -960,6 +987,14 @@ int test_api(void)
              strcmp(json_get_str(json_get(protocols_route,
                                     "response_schema")),
                     "zcl.application_protocols.index.v1") == 0;
+        ok = ok && protocols_route &&
+             strcmp(json_get_str(json_get(protocols_route,
+                                    "application_protocol")),
+                    "zlsp") == 0;
+        ok = ok && protocols_route &&
+             strcmp(json_get_str(json_get(protocols_route,
+                                    "protocol_family")),
+                    "application_protocol_framework") == 0;
         ok = ok && protocol_show &&
              strcmp(json_get_str(json_get(protocol_show, "crud_name")),
                     "read_item") == 0;
@@ -1172,6 +1207,14 @@ int test_api(void)
         ok = ok && openapi_layer &&
              strcmp(json_get_str(json_get(openapi_layer, "base_layer")),
                     "zclassic_l1") == 0;
+        ok = ok && openapi_layer &&
+             strcmp(json_get_str(json_get(openapi_layer,
+                                          "application_protocol_umbrella")),
+                    "zlsp") == 0;
+        ok = ok && openapi_layer &&
+             api_test_find_named(json_get(openapi_layer,
+                                          "application_protocols"),
+                                 "zlsp") != NULL;
         ok = ok && openapi_layer &&
              api_test_find_named(json_get(openapi_layer,
                                           "application_protocols"),

@@ -14,6 +14,26 @@
 
 static const struct api_app_protocol_contract k_api_app_protocols[] = {
     {
+        .name = "zlsp",
+        .status = "design",
+        .layer = "zclassic23_application_layer",
+        .base_layer = "zclassic_l1",
+        .family = "application_protocol_framework",
+        .anchor =
+            "versioned services that interpret or construct valid ZCL transactions",
+        .anchor_kind = "base_layer_transaction_contract",
+        .rest_resource = "/api/v1/protocols",
+        .read_model = "application_protocol_registry",
+        .crud_capabilities_csv =
+            "read_collection,read_item,construct_transaction",
+        .construction_status = "protocol_framework_design",
+        .mutation_authority = "versioned_controller_transaction_builder",
+        .write_semantics =
+            "CRUD mutations become valid ZCL transaction-construction requests",
+        .consensus_boundary =
+            "interprets_or_constructs_valid_zcl_transactions_only",
+    },
+    {
         .name = "zslp",
         .status = "active",
         .layer = "zclassic23_application_layer",
@@ -148,6 +168,8 @@ api_app_protocol_for_resource(const char *resource)
 
     if (strncmp(resource, "zslp_", 5) == 0)
         return api_app_protocol_lookup("zslp");
+    if (strcmp(resource, "protocols") == 0)
+        return api_app_protocol_lookup("zlsp");
     if (strcmp(resource, "names") == 0)
         return api_app_protocol_lookup("znam");
     if (strcmp(resource, "market") == 0 ||

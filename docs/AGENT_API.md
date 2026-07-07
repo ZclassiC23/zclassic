@@ -82,12 +82,13 @@ REST application-layer protocol metadata lives in
 `zclassic23 appprotocols`, `zcl_app_protocols`, `GET /api/v1/protocols`,
 `GET /api/v1/protocols/{name}`, `layer_model`, route-contract
 `application_protocol` fields, and generated OpenAPI
-`x-zcl-application-protocol` / protocol CRUD extensions for ZSLP, ZNAM,
+`x-zcl-application-protocol` / protocol CRUD extensions for ZLSP, ZSLP, ZNAM,
 market, messaging, and script-contract resources. Treat
 `zcl.application_protocols.index.v1` as the layer-2 overlay catalog: ZCL
-remains the base layer; zclassic23 exposes versioned application services that
-read, index, or construct valid ZCL transactions without changing consensus
-rules.
+remains the base layer; zclassic23 exposes ZLSP-style versioned application
+services that read, index, or construct valid ZCL transactions without changing
+consensus rules. ZSLP is the token protocol inside this model; ZLSP is the
+broader service/protocol umbrella.
 
 ## Preferred Interface
 

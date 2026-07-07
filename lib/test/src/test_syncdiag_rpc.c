@@ -2037,6 +2037,8 @@ int test_syncdiag_rpc(void)
                                           &params, &result);
         const struct json_value *protocols =
             json_get(&result, "protocols");
+        const struct json_value *zlsp =
+            find_object_with_str(protocols, "name", "zlsp");
         const struct json_value *zslp =
             find_object_with_str(protocols, "name", "zslp");
         const struct json_value *script_contracts =
@@ -2052,6 +2054,15 @@ int test_syncdiag_rpc(void)
         ok = ok && protocols && protocols->type == JSON_ARR &&
             json_get_int(json_get(&result, "protocol_count")) ==
             (int64_t)json_size(protocols);
+        ok = ok && zlsp &&
+            strcmp(json_get_str(json_get(zlsp, "status")),
+                   "design") == 0;
+        ok = ok && zlsp &&
+            strcmp(json_get_str(json_get(zlsp, "family")),
+                   "application_protocol_framework") == 0;
+        ok = ok && zlsp &&
+            json_array_has_str(json_get(zlsp, "crud_capabilities"),
+                               "construct_transaction");
         ok = ok && zslp &&
             json_array_has_str(json_get(zslp, "crud_capabilities"),
                                "read_collection");

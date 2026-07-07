@@ -33,7 +33,12 @@ CRUD REST resources may interpret, index, and construct transactions anchored
 to ZCL — but they must not drift from the L1 rules. Product innovation lives in
 versioned controllers, services, projections, OP_RETURN/memo/script protocols,
 and operator APIs; Equihash parameters, activation heights, block/transaction
-validity, and coin accounting remain consensus-parity territory.
+validity, and coin accounting remain consensus-parity territory. The working
+umbrella for that application/service layer is **ZLSP** (ZCL Layer Service
+Protocol): noun-shaped REST resources and typed MCP/native JSON methods over
+ZCL-anchored services. ZSLP tokens, ZNAM names, messaging, market flows, and
+script-contract workflows are ZLSP-style services; they may build valid ZCL
+transactions, but they never become a second consensus engine.
 
 Every failure this node has ever had is the same failure: `(tip, utxo)` fell
 behind and the reason was *emergent* — smeared across a legacy mutate-in-place
