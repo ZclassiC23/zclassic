@@ -29,6 +29,13 @@ static int64_t db_now_seconds(void)
     return (int64_t)platform_time_wall_time_t();
 }
 
+static int64_t db_now_ms(void)
+{
+    struct timespec ts;
+    platform_time_monotonic_timespec(&ts);
+    return ts.tv_sec * 1000LL + ts.tv_nsec / 1000000LL;
+}
+
 static void node_db_state_init(struct node_db *ndb)
 {
     if (!ndb)
@@ -314,6 +321,8 @@ static bool prepare_statements(struct node_db *ndb)
 #define ZCL_NODE_DB_CACHE_SIZE_KIB  65536   /* -65536 → ~64 MiB page cache */
 #define ZCL_NODE_DB_MMAP_BYTES      (256LL * 1024 * 1024)  /* 256 MiB */
 #define ZCL_NODE_DB_BUSY_TIMEOUT_MS 10000
+#define ZCL_DB_LONG_OP_PROGRESS_OPS 50000
+#define ZCL_DB_LONG_OP_LOG_MS       15000
 
 static void db_set_pragmas(sqlite3 *db)
 {
@@ -334,12 +343,103 @@ static void db_set_pragmas(sqlite3 *db)
     sqlite3_busy_timeout(db, ZCL_NODE_DB_BUSY_TIMEOUT_MS);
 }
 
-static bool db_quick_check_ok(sqlite3 *db)
+struct db_long_op_progress {
+    const char *op;
+    const char *path;
+    int64_t start_ms;
+    int64_t last_log_ms;
+    uint64_t callbacks;
+    bool log_enabled;
+};
+
+static bool db_long_op_log_enabled(const char *path)
+{
+    return path && path[0] && strcmp(path, ":memory:") != 0;
+}
+
+static int db_long_op_progress_cb(void *arg)
+{
+    struct db_long_op_progress *p = arg;
+    if (!p)
+        return 0;
+
+    p->callbacks++;
+    if (!p->log_enabled)
+        return 0;
+
+    int64_t now_ms = db_now_ms();
+    if (now_ms - p->last_log_ms < ZCL_DB_LONG_OP_LOG_MS)
+        return 0;
+
+    LOG_INFO("db",
+             "db: %s still running path=%s elapsed_ms=%lld callbacks=%llu",
+             p->op ? p->op : "long_op",
+             p->path ? p->path : "(unknown)",
+             (long long)(now_ms - p->start_ms),
+             (unsigned long long)p->callbacks);
+    p->last_log_ms = now_ms;
+    return 0;
+}
+
+static void db_long_op_start(sqlite3 *db, struct db_long_op_progress *progress,
+                             const char *op, const char *path)
+{
+    if (!progress)
+        return;
+
+    progress->op = op;
+    progress->path = path ? path : (db ? sqlite3_db_filename(db, "main") : NULL);
+    progress->start_ms = db_now_ms();
+    progress->last_log_ms = progress->start_ms;
+    progress->callbacks = 0;
+    progress->log_enabled = db_long_op_log_enabled(progress->path);
+
+    if (!db || !progress->log_enabled)
+        return;
+
+    LOG_INFO("db", "db: %s start path=%s",
+             progress->op ? progress->op : "long_op",
+             progress->path ? progress->path : "(unknown)");
+    sqlite3_progress_handler(db, ZCL_DB_LONG_OP_PROGRESS_OPS,
+                             db_long_op_progress_cb, progress);
+}
+
+static void db_long_op_finish(sqlite3 *db, struct db_long_op_progress *progress,
+                              bool ok, int rc)
+{
+    if (db)
+        sqlite3_progress_handler(db, 0, NULL, NULL);
+    if (!progress || !progress->log_enabled)
+        return;
+
+    int64_t elapsed_ms = db_now_ms() - progress->start_ms;
+    LOG_INFO("db",
+             "db: %s done path=%s ok=%d rc=%d elapsed_ms=%lld callbacks=%llu",
+             progress->op ? progress->op : "long_op",
+             progress->path ? progress->path : "(unknown)", ok ? 1 : 0, rc,
+             (long long)elapsed_ms, (unsigned long long)progress->callbacks);
+}
+
+static int db_exec_checked_progress(sqlite3 *db, const char *sql,
+                                    const char *where, const char *path)
+{
+    struct db_long_op_progress progress;
+    db_long_op_start(db, &progress, where, path);
+    int rc = db_exec_checked(db, sql, where);
+    db_long_op_finish(db, &progress, rc == SQLITE_OK, rc);
+    return rc;
+}
+
+static bool db_quick_check_ok(sqlite3 *db, const char *path)
 {
     sqlite3_stmt *stmt = NULL;
     bool ok = false;
+    struct db_long_op_progress progress;
+    db_long_op_start(db, &progress, "quick_check", path);
+
     int rc = sqlite3_prepare_v2(db, "PRAGMA quick_check(1)", -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
+        db_long_op_finish(db, &progress, false, rc);
         LOG_FAIL("db", "db: quick_check prepare failed: %s",
                 sqlite3_errmsg(db));
     }
@@ -354,6 +454,7 @@ static bool db_quick_check_ok(sqlite3 *db)
         LOG_WARN("db", "db: quick_check step failed: %s", sqlite3_errmsg(db));
     }
     sqlite3_finalize(stmt);
+    db_long_op_finish(db, &progress, ok, rc);
     return ok;
 }
 
@@ -445,7 +546,7 @@ bool node_db_open(struct node_db *ndb, const char *path)
         return false;
     }
 
-    if (!db_quick_check_ok(ndb->db)) {
+    if (!db_quick_check_ok(ndb->db, path)) {
         LOG_INFO("db", "db: %s is malformed; rebuilding fresh SQLite state", path);
         sqlite3_close(ndb->db);
         ndb->db = NULL;
@@ -476,12 +577,12 @@ bool node_db_open(struct node_db *ndb, const char *path)
     /* Crash recovery: staged snapshot rows are never authoritative across
      * process lifetimes. If the node died mid-receive or mid-verify, discard
      * the incomplete staging namespace before normal boot continues. */
-    if (db_exec_checked(ndb->db,
+    if (db_exec_checked_progress(ndb->db,
             "DELETE FROM snapshot_staging_utxos",
-            "snapshot_staging_boot_cleanup") != SQLITE_OK ||
-        db_exec_checked(ndb->db,
+            "snapshot_staging_boot_cleanup", path) != SQLITE_OK ||
+        db_exec_checked_progress(ndb->db,
             "DELETE FROM node_state WHERE key LIKE 'snapshot_staging_%'",
-            "snapshot_staging_state_boot_cleanup") != SQLITE_OK) {
+            "snapshot_staging_state_boot_cleanup", path) != SQLITE_OK) {
         sqlite3_close(ndb->db);
         ndb->db = NULL;
         node_db_state_destroy(ndb);
