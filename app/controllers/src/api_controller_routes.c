@@ -149,6 +149,7 @@ enum api_dynamic_dispatch_kind {
     API_DYN_NAME_SHOW,
     API_DYN_PROTOCOL_SHOW,
     API_DYN_SERVICE_CATALOG_SHOW,
+    API_DYN_SERVICE_OPERATION_SHOW,
 };
 
 struct api_dynamic_resource_route {
@@ -216,6 +217,9 @@ static const struct api_dynamic_resource_route k_api_dynamic_resource_routes[] =
     { "GET", "/api/service-catalog/{service}", "service_catalog", "show",
       ZCL_SERVICE_CONTRACT_SCHEMA, "", "static", "", false,
       API_DYN_SERVICE_CATALOG_SHOW },
+    { "GET", "/api/service-operations/{operation_id}", "service_operations",
+      "show", ZCL_SERVICE_OPERATION_SCHEMA, "", "static", "", false,
+      API_DYN_SERVICE_OPERATION_SHOW },
 };
 
 static size_t api_dynamic_resource_route_count_internal(void)
@@ -516,6 +520,18 @@ static size_t api_dynamic_route_dispatch(
         json_free(&jr);
         return api_json_error(response, response_max, JSON_404_HEADERS,
                               "Service not found");
+    }
+    case API_DYN_SERVICE_OPERATION_SHOW: {
+        struct json_value jr = {0};
+        if (api_service_operation_show_json(param, &jr)) {
+            api_json_add_freshness(&jr, route->freshness, -1);
+            size_t n = api_json_ok(response, response_max, &jr);
+            json_free(&jr);
+            return n;
+        }
+        json_free(&jr);
+        return api_json_error(response, response_max, JSON_404_HEADERS,
+                              "Service operation not found");
     }
     }
 

@@ -99,19 +99,23 @@ The UX-facing service catalog lives in
 `app/controllers/src/api_controller_service_catalog.c` and is exposed as
 `zclassic23 servicecatalog [name]`, `zcl_service_catalog(name?)`,
 `GET /api/v1/service-catalog`, and
-`GET /api/v1/service-catalog/{service}`. Use it when the question is "what can
-this node host, advertise, verify, or construct for a user?" It distinguishes
-the stable service contract from `/api/v1/services`, which remains runtime
-health. The collection schema is `zcl.service_catalog.v1`; the member schema is
-`zcl.service_contract.v1`. Together they cover names, bootstrap, Tor/onion
+`GET /api/v1/service-catalog/{service}`. Individual operations are addressable
+as `GET /api/v1/service-operations/{operation_id}`, where `operation_id` is the
+stable `service.operation` string carried by each operation object, for example
+`znam_names.resolve_name`. Use these routes when the question is "what can this
+node host, advertise, verify, or construct for a user?" They distinguish the
+stable service contract from `/api/v1/services`, which remains runtime health.
+The collection schema is `zcl.service_catalog.v1`; the member schema is
+`zcl.service_contract.v1`; operation members use
+`zcl.service_operation.v1`. Together they cover names, bootstrap, Tor/onion
 discovery, direct P2P, files, market, messaging, script contracts, CRUD
 capabilities, transports, verification model, trust model, privacy model, and a
 concrete UX story per service. Each service also carries an `operations[]`
-array of `zcl.service_operation.v1` objects that names the action, CRUD
-capability, REST route when public, RPC method, MCP tool, input/output contract,
-authority, and whether the operation is destructive/operator-private. This is
-the no-guesswork path for agents building a UX from names, bootstrap, Tor/P2P,
-market, messaging, and script-contract capabilities.
+array of operation objects that names the action, CRUD capability, REST route
+when public, RPC method, MCP tool, input/output contract, authority, execution
+surface, write-safety class, and whether the operation is destructive or
+operator-private. This is the no-guesswork path for agents building a UX from
+names, bootstrap, Tor/P2P, market, messaging, and script-contract capabilities.
 The collection also carries `sovereign_ux` (`zcl.sovereign_ux_contract.v1`):
 a machine-readable flow from agent status → service catalog → ZNAM resolution
 → endpoint verification → direct P2P/onion routing → versioned CRUD operation.

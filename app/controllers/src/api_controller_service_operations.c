@@ -11,6 +11,7 @@
 #include "json/json.h"
 
 #include <stddef.h>
+#include <stdio.h>
 #include <string.h>
 
 struct api_service_operation_contract {
@@ -349,15 +350,57 @@ static bool api_service_operation_matches(
     return op && service_name && strcmp(op->service_name, service_name) == 0;
 }
 
+static void api_service_operation_id(
+    char *buf,
+    size_t buf_len,
+    const struct api_service_operation_contract *op)
+{
+    if (!buf || buf_len == 0)
+        return;
+
+    snprintf(buf, buf_len, "%s.%s",
+             op && op->service_name ? op->service_name : "",
+             op && op->operation ? op->operation : "");
+    buf[buf_len - 1] = '\0';
+}
+
+static const struct api_service_operation_contract *
+api_service_operation_lookup_id(const char *operation_id)
+{
+    char id[128];
+
+    if (!operation_id || !operation_id[0])
+        return NULL;
+
+    for (size_t i = 0; i < api_service_operation_count(); i++) {
+        api_service_operation_id(id, sizeof(id),
+                                 &k_api_service_operations[i]);
+        if (strcmp(id, operation_id) == 0)
+            return &k_api_service_operations[i];
+    }
+
+    return NULL;
+}
+
 static void api_service_operation_json(
     struct json_value *obj,
     const struct api_service_operation_contract *op)
 {
+    char operation_id[128];
+    char self_route[192];
+
     if (!obj || !op)
         return;
 
+    api_service_operation_id(operation_id, sizeof(operation_id), op);
+    snprintf(self_route, sizeof(self_route),
+             "/api/v1/service-operations/%s", operation_id);
+    self_route[sizeof(self_route) - 1] = '\0';
+
     json_set_object(obj);
     json_push_kv_str(obj, "schema", ZCL_SERVICE_OPERATION_SCHEMA);
+    json_push_kv_str(obj, "operation_id", operation_id);
+    json_push_kv_str(obj, "self_route", self_route);
     json_push_kv_str(obj, "service", op->service_name);
     json_push_kv_str(obj, "operation", op->operation);
     json_push_kv_str(obj, "crud_capability", op->crud_capability);
@@ -374,6 +417,17 @@ static void api_service_operation_json(
     json_push_kv_str(obj, "output_schema", op->output_schema);
     json_push_kv_str(obj, "authority", op->authority);
     json_push_kv_str(obj, "effect", op->effect);
+    json_push_kv_str(obj, "execution_surface",
+                     op->rest_method && op->rest_method[0]
+                         ? "rest"
+                         : op->mcp_tool && op->mcp_tool[0]
+                               ? "mcp_or_native"
+                               : "native_or_planned");
+    json_push_kv_str(obj, "write_safety",
+                     op->destructive
+                         ? "operator_private_destructive"
+                         : op->operator_private ? "operator_private"
+                                                : "public_read_only");
     json_push_kv_bool(obj, "public_read", op->public_read);
     json_push_kv_bool(obj, "operator_private", op->operator_private);
     json_push_kv_bool(obj, "destructive", op->destructive);
@@ -393,4 +447,23 @@ void api_service_operations_json(struct json_value *out,
         json_push_back(out, &op);
         json_free(&op);
     }
+}
+
+bool api_service_operation_show_json(const char *operation_id,
+                                     struct json_value *out)
+{
+    const struct api_service_operation_contract *op =
+        api_service_operation_lookup_id(operation_id);
+
+    if (!out || !op)
+        return false;
+
+    api_service_operation_json(out, op);
+    json_push_kv_str(out, "api_version", ZCL_REST_API_VERSION);
+    json_push_kv_str(out, "catalog_route", "/api/v1/service-catalog");
+    json_push_kv_str(out, "operation_route",
+                     "/api/v1/service-operations/{operation_id}");
+    json_push_kv_str(out, "base_layer", "zclassic_l1");
+    json_push_kv_str(out, "service_layer", "zclassic23_application_layer");
+    return true;
 }

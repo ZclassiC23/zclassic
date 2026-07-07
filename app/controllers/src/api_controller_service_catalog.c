@@ -383,6 +383,8 @@ bool api_service_catalog_json(struct json_value *out)
     json_push_kv_str(out, "openapi_route", "/api/v1/openapi");
     json_push_kv_str(out, "member_route",
                      "/api/v1/service-catalog/{service}");
+    json_push_kv_str(out, "operation_route",
+                     "/api/v1/service-operations/{operation_id}");
     json_push_kv_str(out, "operation_schema", ZCL_SERVICE_OPERATION_SCHEMA);
     json_push_kv_str(out, "consensus_boundary",
                      "services interpret, index, advertise, or construct "
@@ -418,6 +420,8 @@ bool api_service_catalog_show_json(const char *name, struct json_value *out)
     api_service_object_json(out, svc);
     json_push_kv_str(out, "api_version", ZCL_REST_API_VERSION);
     json_push_kv_str(out, "catalog_route", "/api/v1/service-catalog");
+    json_push_kv_str(out, "operation_route",
+                     "/api/v1/service-operations/{operation_id}");
     json_push_kv_str(out, "base_layer", "zclassic_l1");
     json_push_kv_str(out, "service_layer", "zclassic23_application_layer");
     return true;

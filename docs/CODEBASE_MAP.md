@@ -157,14 +157,18 @@ controller `k_routes[]` arrays.
   schema/tool strings in the controller.
 - `zclassic23 servicecatalog [name]` / `zcl_service_catalog(name?)` /
   `GET /api/v1/service-catalog` /
-  `GET /api/v1/service-catalog/{service}` — UX-facing sovereign service
-  catalog. It answers what this node can host, advertise, verify, or construct
-  for a user across names, bootstrap, Tor/onion discovery, P2P, files, market,
-  messaging, and script contracts. The top-level `sovereign_ux` object gives
-  agents the canonical names→services→Tor/P2P→CRUD flow, and member contracts
-  expose `depends_on_services`, `read_model`, and `write_model` so agents do
-  not infer dependencies from prose. The implementation is
-  `app/controllers/src/api_controller_service_catalog.c`; `/api/v1/services`
+  `GET /api/v1/service-catalog/{service}` /
+  `GET /api/v1/service-operations/{operation_id}` — UX-facing sovereign
+  service catalog. It answers what this node can host, advertise, verify, or
+  construct for a user across names, bootstrap, Tor/onion discovery, P2P,
+  files, market, messaging, and script contracts. The top-level
+  `sovereign_ux` object gives agents the canonical names→services→Tor/P2P→CRUD
+  flow, and member contracts expose `depends_on_services`, `read_model`,
+  `write_model`, and `operations[]` so agents do not infer dependencies or
+  write safety from prose. Operation IDs are stable `service.operation`
+  strings, such as `znam_names.resolve_name`. The implementation is split
+  between `app/controllers/src/api_controller_service_catalog.c` and
+  `app/controllers/src/api_controller_service_operations.c`; `/api/v1/services`
   remains runtime health.
 - `zclassic23 status` / `zclassic23 agent` / `zcl_agent` — bounded live status
   from the running node. `status` is a native compatibility alias owned by
@@ -332,7 +336,9 @@ by `api_route_contracts_json()` carries `crud_operation` (`read`, `create`,
 cryptographic model, transport model, privacy model, and diagnostics surface.
 Keep `/api/v1` and `/api/v1/openapi` generated from that
 one contract source and pin representative collection/item/singleton routes in
-`test_api` whenever adding a new route shape.
+`test_api` whenever adding a new route shape. Service-operation member routes
+must stay read-only metadata lookups unless a separate, operator-authenticated
+write surface is deliberately added and tested.
 
 Application protocols such as ZSLP, ZNAM, market, messaging, and future
 script-contract workflows should expose noun-shaped REST resources over
