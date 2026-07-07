@@ -724,6 +724,30 @@ bool agent_push_contract_mcp_field_json(struct json_value *obj,
     return json_push_kv_str(obj, key, c->mcp_tool);
 }
 
+size_t agent_push_contract_identity_fields_json(struct json_value *obj,
+                                                const char *method)
+{
+    const struct agent_contract *c = agent_contract_lookup(method);
+    if (!obj || !c)
+        return 0;
+
+    size_t pushed = 0;
+    if (!json_get(obj, "method") &&
+        json_push_kv_str(obj, "method", c->method))
+        pushed++;
+    if (!json_get(obj, "native_command") && c->native_command &&
+        c->native_command[0] &&
+        json_push_kv_str(obj, "native_command", c->native_command))
+        pushed++;
+    if (!json_get(obj, "mcp_tool") && c->mcp_tool && c->mcp_tool[0] &&
+        json_push_kv_str(obj, "mcp_tool", c->mcp_tool))
+        pushed++;
+    if (!json_get(obj, "contract_source") &&
+        json_push_kv_str(obj, "contract_source", "agent_contracts.def"))
+        pushed++;
+    return pushed;
+}
+
 bool agent_push_contract_native_command_json(struct json_value *arr,
                                              const char *method)
 {

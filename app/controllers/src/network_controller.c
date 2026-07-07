@@ -3,6 +3,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "platform/time_compat.h"
+#include "controllers/agent_controller.h"
 #include "controllers/diagnostics_internal.h"
 #include "controllers/network_controller.h"
 #include "util/log_macros.h"
@@ -671,6 +672,7 @@ static bool rpc_peerincidents(const struct json_value *params, bool help,
         json_set_str(result, "peer lifecycle incident view unavailable");
         return false;
     }
+    agent_push_contract_identity_fields_json(result, "peerincidents");
     return true;
 }
 

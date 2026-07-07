@@ -202,9 +202,11 @@ controller `k_routes[]` arrays.
   disconnect reason, flat primary issue fields, host direction/mixed-direction
   classification, services, advertised height plus whether that height is
   bootstrap-trusted, bootstrap/fast-sync readiness, and stability blocker
-  verdicts. The contract is registered in
-  `agent_contracts.def`, so help, `agentcontracts`, MCP coverage, and API
-  discovery stay in sync with the native command.
+  verdicts. The native RPC and embedded `agentdiagnose.peer_incidents` payloads
+  add registry-owned `method`, `native_command`, `mcp_tool`, and
+  `contract_source` fields from `agent_contracts.def`, so help,
+  `agentcontracts`, MCP coverage, and API discovery stay in sync with the
+  native command.
 - `zclassic23 agentimpact <files...>` / `zcl_agent_impact` — map changed paths
   to risk flags and focused test groups before choosing the verification set.
   The shared routing table lives at

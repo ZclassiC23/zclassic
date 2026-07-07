@@ -204,7 +204,10 @@ subsystem=peer_lifecycle key=incidents`. The first-class response schema is
 `zcl.peer_incidents.v1` and is bounded by design: it returns aggregate incident
 counts, `primary_host_issue`, top per-host incidents, duplicate host groups,
 last disconnect reasons, service flags, advertised heights, and bootstrap /
-fast-sync usefulness without requiring log scraping. Host-level objects expose
+fast-sync usefulness without requiring log scraping. The native/MCP controller
+adds registry-owned `method`, `native_command`, `mcp_tool`, and
+`contract_source` fields, and the embedded `agentdiagnose.peer_incidents`
+object carries the same identity fields. Host-level objects expose
 `direction`, `mixed_direction`, `current_open_direction`,
 `current_handshaked_direction`, and per-direction current open/handshaked
 counts so reconnect storms that mix inbound ephemeral ports with outbound

@@ -502,6 +502,7 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     }
 
     peer_lifecycle_incidents_json(&peers);
+    agent_push_contract_identity_fields_json(&peers, "peerincidents");
 
     if (agent_first_call_budget_exceeded(
             started_us, ZCL_AGENT_FIRST_CALL_BUDGET_DIAGNOSE_MS)) {

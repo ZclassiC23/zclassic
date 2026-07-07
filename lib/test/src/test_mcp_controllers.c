@@ -2382,6 +2382,10 @@ static char *mock_networkinfo_rpc(const char *method, const char *params_json)
     if (strcmp(method, "peerincidents") == 0)
         return strdup("{\"schema\":\"zcl.peer_incidents.v1\","
                       "\"schema_version\":1,"
+                      "\"method\":\"peerincidents\","
+                      "\"native_command\":\"zclassic23 peerincidents\","
+                      "\"mcp_tool\":\"zcl_peer_incidents\","
+                      "\"contract_source\":\"agent_contracts.def\","
                       "\"bounded\":true,"
                       "\"incident_count\":2,"
                       "\"duplicate_host_group_count\":1,"
@@ -2517,6 +2521,14 @@ static int test_zcl_peer_incidents_exposes_duplicate_host_view(void)
         ASSERT(json_read(&root, body, strlen(body)));
         ASSERT(strcmp(json_get_str(json_get(&root, "schema")),
                       "zcl.peer_incidents.v1") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&root, "method")),
+                      "peerincidents") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&root, "native_command")),
+                      "zclassic23 peerincidents") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&root, "mcp_tool")),
+                      "zcl_peer_incidents") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&root, "contract_source")),
+                      "agent_contracts.def") == 0);
         ASSERT(json_get_bool(json_get(&root, "bounded")));
         ASSERT(json_get_int(json_get(&root,
                                      "duplicate_host_group_count")) == 1);

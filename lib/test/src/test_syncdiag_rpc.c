@@ -862,6 +862,16 @@ int test_syncdiag_rpc(void)
         ok = ok && result.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
                           "zcl.peer_incidents.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "method")),
+                          "peerincidents") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "native_command")),
+                          "zclassic23 peerincidents") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "mcp_tool")),
+                          "zcl_peer_incidents") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "contract_source")),
+                          "agent_contracts.def") == 0;
         ok = ok && json_get_bool(json_get(&result, "bounded"));
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "bootstrap_readiness")),
@@ -4209,6 +4219,17 @@ int test_syncdiag_rpc(void)
         ok = ok && diagnose_peers && diagnose_peers->type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(diagnose_peers, "schema")),
                           "zcl.peer_incidents.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(diagnose_peers, "method")),
+                          "peerincidents") == 0;
+        ok = ok && strcmp(json_get_str(json_get(diagnose_peers,
+                                                "native_command")),
+                          "zclassic23 peerincidents") == 0;
+        ok = ok && strcmp(json_get_str(json_get(diagnose_peers,
+                                                "mcp_tool")),
+                          "zcl_peer_incidents") == 0;
+        ok = ok && strcmp(json_get_str(json_get(diagnose_peers,
+                                                "contract_source")),
+                          "agent_contracts.def") == 0;
         ok = ok && diagnose_timeline && diagnose_timeline->type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(diagnose_timeline,
                                                 "schema")),

@@ -106,6 +106,8 @@ bool agent_push_contract_native_field_json(struct json_value *obj,
 bool agent_push_contract_mcp_field_json(struct json_value *obj,
                                         const char *key,
                                         const char *method);
+size_t agent_push_contract_identity_fields_json(struct json_value *obj,
+                                                const char *method);
 bool agent_push_contract_native_command_json(struct json_value *arr,
                                              const char *method);
 bool agent_push_contract_mcp_tool_json(struct json_value *arr,
