@@ -20,10 +20,13 @@
 static inline const uint8_t *read_push(const uint8_t *p, const uint8_t *end,
                                        const uint8_t **data, size_t *len)
 {
+    if (!p || !end || !data || !len) return NULL;
     if (p >= end) return NULL;
     uint8_t opcode = *p++;
 
-    if (opcode >= 0x01 && opcode <= 0x4b) {
+    if (opcode == 0x00) { /* OP_0 / OP_FALSE: canonical empty push */
+        *len = 0;
+    } else if (opcode >= 0x01 && opcode <= 0x4b) {
         *len = opcode;
     } else if (opcode == 0x4c) { /* OP_PUSHDATA1 */
         if (p >= end) return NULL;

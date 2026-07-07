@@ -32,9 +32,11 @@ bool znam_validate_name(const char *name)
 bool znam_parse(const uint8_t *script, size_t script_len,
                 struct znam_message *msg)
 {
+    if (!msg) return false;
     memset(msg, 0, sizeof(*msg));
     msg->command = ZNAM_CMD_INVALID;
 
+    if (!script || script_len == 0) return false;
     const uint8_t *p = script;
     const uint8_t *end = script + script_len;
 

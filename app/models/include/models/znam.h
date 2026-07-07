@@ -78,5 +78,7 @@ bool db_znam_addr_save(struct node_db *ndb, const char *name,
                        uint8_t coin_type, const char *address);
 bool db_znam_addr_get(struct node_db *ndb, const char *name,
                       uint8_t coin_type, char *addr_out, size_t max);
+int db_znam_addr_list(struct node_db *ndb, const char *name,
+                      struct znam_addr_record *out, size_t max);
 
 #endif

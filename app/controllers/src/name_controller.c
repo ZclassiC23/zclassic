@@ -45,6 +45,10 @@ static const char *type_name(uint8_t t)
     case ZNAM_TYPE_ONION: return "onion";
     case ZNAM_TYPE_ZADDR: return "z-address";
     case ZNAM_TYPE_TADDR: return "t-address";
+    case ZNAM_TYPE_BTC: return "bitcoin";
+    case ZNAM_TYPE_LTC: return "litecoin";
+    case ZNAM_TYPE_DOGE: return "dogecoin";
+    case ZNAM_TYPE_CONTENT: return "content";
     default: return "unknown";
     }
 }
@@ -57,6 +61,14 @@ static uint8_t parse_type(const char *s)
         return ZNAM_TYPE_ZADDR;
     if (strcmp(s, "taddr") == 0 || strcmp(s, "t-address") == 0)
         return ZNAM_TYPE_TADDR;
+    if (strcmp(s, "btc") == 0 || strcmp(s, "bitcoin") == 0)
+        return ZNAM_TYPE_BTC;
+    if (strcmp(s, "ltc") == 0 || strcmp(s, "litecoin") == 0)
+        return ZNAM_TYPE_LTC;
+    if (strcmp(s, "doge") == 0 || strcmp(s, "dogecoin") == 0)
+        return ZNAM_TYPE_DOGE;
+    if (strcmp(s, "content") == 0 || strcmp(s, "content-hash") == 0)
+        return ZNAM_TYPE_CONTENT;
     return 0;
 }
 
@@ -65,12 +77,115 @@ static void entry_to_json(const struct znam_entry *e, struct json_value *obj)
     json_set_object(obj);
     json_push_kv_str(obj, "name", e->name);
     json_push_kv_str(obj, "owner", e->owner_address);
+    json_push_kv_int(obj, "target_type", e->target_type);
     json_push_kv_str(obj, "type", type_name(e->target_type));
     json_push_kv_str(obj, "value", e->target_value);
     json_push_kv_int(obj, "reg_height", e->reg_height);
     char hex[65];
     HexStr(e->reg_txid, 32, false, hex, sizeof(hex));
     json_push_kv_str(obj, "reg_txid", hex);
+}
+
+#define ZNAM_API_RECORD_LIMIT 64
+
+static bool has_prefix(const char *s, const char *prefix)
+{
+    size_t n;
+
+    if (!s || !prefix)
+        return false;
+    n = strlen(prefix);
+    return strncmp(s, prefix, n) == 0;
+}
+
+static bool is_service_record_key(const char *key)
+{
+    if (!key)
+        return false;
+    return strcmp(key, "service") == 0 ||
+           strcmp(key, "onion") == 0 ||
+           strcmp(key, "p2p") == 0 ||
+           strcmp(key, "bootstrap") == 0 ||
+           has_prefix(key, "service.") ||
+           has_prefix(key, "svc.");
+}
+
+static void text_record_to_json(const struct znam_text_record *rec,
+                                struct json_value *obj)
+{
+    json_set_object(obj);
+    json_push_kv_str(obj, "name", rec->name);
+    json_push_kv_str(obj, "key", rec->key);
+    json_push_kv_str(obj, "value", rec->value);
+}
+
+static void addr_record_to_json(const struct znam_addr_record *rec,
+                                struct json_value *obj)
+{
+    json_set_object(obj);
+    json_push_kv_str(obj, "name", rec->name);
+    json_push_kv_int(obj, "coin_type", rec->coin_type);
+    json_push_kv_str(obj, "type", type_name(rec->coin_type));
+    json_push_kv_str(obj, "address", rec->address);
+}
+
+static void append_record_arrays(const char *name, struct json_value *obj)
+{
+    struct json_value texts = {0};
+    struct json_value services = {0};
+    struct json_value addrs = {0};
+    struct znam_text_record text_rows[ZNAM_API_RECORD_LIMIT];
+    struct znam_addr_record addr_rows[ZNAM_API_RECORD_LIMIT];
+    int text_count = 0;
+    int service_count = 0;
+    int addr_count = 0;
+
+    json_set_array(&texts);
+    json_set_array(&services);
+    json_set_array(&addrs);
+
+    if (g_name_ndb && name) {
+        text_count = db_znam_text_list(g_name_ndb, name, text_rows,
+                                       ZNAM_API_RECORD_LIMIT);
+        for (int i = 0; i < text_count; i++) {
+            struct json_value row = {0};
+            text_record_to_json(&text_rows[i], &row);
+            json_push_back(&texts, &row);
+            if (is_service_record_key(text_rows[i].key)) {
+                json_push_back(&services, &row);
+                service_count++;
+            }
+            json_free(&row);
+        }
+
+        addr_count = db_znam_addr_list(g_name_ndb, name, addr_rows,
+                                       ZNAM_API_RECORD_LIMIT);
+        for (int i = 0; i < addr_count; i++) {
+            struct json_value row = {0};
+            addr_record_to_json(&addr_rows[i], &row);
+            json_push_back(&addrs, &row);
+            json_free(&row);
+        }
+    }
+
+    json_push_kv(obj, "text_records", &texts);
+    json_push_kv_int(obj, "text_record_count", text_count);
+    json_push_kv(obj, "service_records", &services);
+    json_push_kv_int(obj, "service_record_count", service_count);
+    json_push_kv(obj, "address_records", &addrs);
+    json_push_kv_int(obj, "address_record_count", addr_count);
+
+    json_free(&texts);
+    json_free(&services);
+    json_free(&addrs);
+}
+
+static void entry_to_show_json(const struct znam_entry *e,
+                               struct json_value *obj)
+{
+    entry_to_json(e, obj);
+    json_push_kv_str(obj, "schema", "zcl.names.show.v1");
+    append_record_arrays(e->name, obj);
 }
 
 /* ── name_resolve ───────────────────────────────────────────────── */
@@ -81,7 +196,7 @@ static bool rpc_name_resolve(const struct json_value *params, bool help,
     if (help || !params || json_size(params) < 1) {
         json_set_str(result,
             "name_resolve \"name\"\n"
-            "\nResolve a ZCL Name to its target (.onion, z-addr, t-addr).\n"
+            "\nResolve a ZCL Name to its target and resolver records.\n"
             "\nArguments:\n"
             "1. name (string, required) The name to resolve\n"
             "\nResult: the name entry or null.\n");
@@ -106,7 +221,7 @@ static bool rpc_name_resolve(const struct json_value *params, bool help,
         return true;
     }
 
-    entry_to_json(&entry, result);
+    entry_to_show_json(&entry, result);
     return true;
 }
 
@@ -157,8 +272,8 @@ static bool rpc_name_register(const struct json_value *params, bool help,
             "\nRegister a ZCL Name on-chain via OP_RETURN transaction.\n"
             "\nArguments:\n"
             "1. name  (string) Name to register (1-63 chars, lowercase+hyphens)\n"
-            "2. type  (string) Target type: onion, zaddr, taddr\n"
-            "3. value (string) Target value (.onion address, z-addr, t-addr)\n"
+            "2. type  (string) Target type: onion, zaddr, taddr, btc, ltc, doge, content\n"
+            "3. value (string) Target value (.onion, address, or content hash)\n"
             "\nNote: Requires wallet to create and broadcast the transaction.\n"
             "For now, returns the OP_RETURN hex that needs to be included\n"
             "in a transaction's first output.\n");
@@ -181,7 +296,8 @@ static bool rpc_name_register(const struct json_value *params, bool help,
 
     uint8_t target_type = parse_type(type_str);
     if (target_type == 0) {
-        json_set_str(result, "Invalid type (use: onion, zaddr, taddr)");
+        json_set_str(result,
+            "Invalid type (use: onion, zaddr, taddr, btc, ltc, doge, content)");
         return false;
     }
 
@@ -270,7 +386,7 @@ bool rpc_name_resolve_api(const char *name, struct json_value *result)
     if (!g_name_ndb) LOG_FAIL("name", "rpc_name_resolve_api: name database not initialized");
     struct znam_entry entry;
     if (!db_znam_find(g_name_ndb, name, &entry)) LOG_FAIL("name", "name '%s' not found in database", name);
-    entry_to_json(&entry, result);
+    entry_to_show_json(&entry, result);
     return true;
 }
 

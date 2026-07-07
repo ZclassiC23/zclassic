@@ -288,7 +288,8 @@ int db_znam_text_list(struct node_db *ndb, const char *name,
 
     sqlite3_stmt *s = NULL;
     AR_QUERY_LIST(ndb, s,
-        "SELECT name,key,value FROM znam_text_records WHERE name=? LIMIT ?",
+        "SELECT name,key,value FROM znam_text_records"
+        " WHERE name=? ORDER BY key LIMIT ?",
         out, max,
         AR_BIND_TEXT(s, 1, name);
         AR_BIND_INT(s, 2, (int)max),
@@ -345,4 +346,32 @@ bool db_znam_addr_get(struct node_db *ndb, const char *name,
         AR_BIND_INT(s, 2, coin_type),
         const char *a = (const char *)sqlite3_column_text(s, 0);
         if (a) snprintf(addr_out, max, "%s", a));
+}
+
+static void row_to_znam_addr(sqlite3_stmt *s, struct znam_addr_record *out)
+{
+    memset(out, 0, sizeof(*out));
+    const char *n = (const char *)sqlite3_column_text(s, 0);
+    if (n) snprintf(out->name, sizeof(out->name), "%s", n);
+    out->coin_type = (uint8_t)sqlite3_column_int(s, 1);
+    const char *a = (const char *)sqlite3_column_text(s, 2);
+    if (a) snprintf(out->address, sizeof(out->address), "%s", a);
+}
+
+int db_znam_addr_list(struct node_db *ndb, const char *name,
+                      struct znam_addr_record *out, size_t max)
+{
+    if (!ndb || !ndb->open) return 0;
+    if (!name) return 0;
+    if (!out && max > 0)
+        LOG_RETURN(0, "znam", "db_znam_addr_list: out is NULL");
+
+    sqlite3_stmt *s = NULL;
+    AR_QUERY_LIST(ndb, s,
+        "SELECT name,coin_type,address FROM znam_addr_records"
+        " WHERE name=? ORDER BY coin_type LIMIT ?",
+        out, max,
+        AR_BIND_TEXT(s, 1, name);
+        AR_BIND_INT(s, 2, (int)max),
+        row_to_znam_addr(s, &out[count]));
 }

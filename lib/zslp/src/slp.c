@@ -55,9 +55,11 @@ static void slp_copy_str_field(const uint8_t *data, size_t len,
 bool slp_parse(const uint8_t *script, size_t script_len,
                struct slp_message *msg)
 {
+    if (!msg) return false;
     memset(msg, 0, sizeof(*msg));
     msg->type = SLP_TX_INVALID;
 
+    if (!script || script_len == 0) return false;
     const uint8_t *p = script;
     const uint8_t *end = script + script_len;
 

@@ -124,6 +124,13 @@ int test_slp(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    printf("slp_parse NULL output message... ");
+    {
+        uint8_t buf[] = { 0x6a };
+        bool ok = !slp_parse(buf, sizeof(buf), NULL);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
     printf("slp_parse empty script... ");
     {
         uint8_t buf[1] = { 0 };

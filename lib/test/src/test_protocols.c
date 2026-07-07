@@ -96,6 +96,20 @@ int test_protocols(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    printf("znam_build_set_text empty-value round-trip... ");
+    {
+        uint8_t buf[512];
+        size_t len = znam_build_set_text(buf, sizeof(buf),
+            "alice", "service", "");
+        struct znam_message msg;
+        bool ok = len > 0 && znam_parse(buf, len, &msg);
+        ok = ok && msg.command == ZNAM_CMD_SET_TEXT;
+        ok = ok && strcmp(msg.name, "alice") == 0;
+        ok = ok && strcmp(msg.text_key, "service") == 0;
+        ok = ok && msg.text_value[0] == '\0';
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
     /* ── ZNAM: name validation ────────────────────────────── */
 
     printf("znam_validate_name valid names... ");
@@ -127,6 +141,7 @@ int test_protocols(void)
     {
         struct znam_message msg;
         bool ok = !znam_parse(NULL, 0, &msg);
+        ok = ok && !znam_parse((const uint8_t *)"", 0, NULL);
         uint8_t bad[] = { 0x6a, 0x04, 'Z', 'N', 'A', 'X' }; /* wrong lokad */
         ok = ok && !znam_parse(bad, sizeof(bad), &msg);
         uint8_t just_op = { 0x6a };

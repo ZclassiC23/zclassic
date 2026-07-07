@@ -198,23 +198,20 @@ int test_znam(void)
     }
 
     /* ── SET_TEXT with empty value ─────────────────────────────── */
-    /* Note: empty push (len=0) produces OP_0 which read_push can't
-     * decode back, so empty-value SET_TEXT doesn't round-trip.
-     * The builder succeeds but the parser rejects the result. */
 
-    printf("znam build+parse SET_TEXT empty value (no roundtrip)... ");
+    printf("znam build+parse SET_TEXT empty value roundtrip... ");
     {
         uint8_t buf[256];
         size_t len = znam_build_set_text(buf, sizeof(buf),
                                          "mynode", "avatar", "");
-        /* Builder succeeds */
-        if (len > 0) {
-            struct znam_message msg;
-            /* Parser fails because OP_0 isn't a valid push */
-            bool parsed = znam_parse(buf, len, &msg);
-            if (!parsed) printf("OK (expected: builder ok, parser rejects OP_0 push)\n");
-            else { printf("FAIL (parser should reject)\n"); failures++; }
-        } else { printf("FAIL (builder)\n"); failures++; }
+        struct znam_message msg;
+        bool ok = len > 0 && znam_parse(buf, len, &msg);
+        ok = ok && msg.command == ZNAM_CMD_SET_TEXT;
+        ok = ok && strcmp(msg.name, "mynode") == 0;
+        ok = ok && strcmp(msg.text_key, "avatar") == 0;
+        ok = ok && msg.text_value[0] == '\0';
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
     }
 
     /* ── Parser edge cases ────────────────────────────────────── */
@@ -223,6 +220,13 @@ int test_znam(void)
     {
         struct znam_message msg;
         if (!znam_parse(NULL, 0, &msg)) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("znam_parse: reject null output message... ");
+    {
+        uint8_t script[] = {0x6a};
+        if (!znam_parse(script, sizeof(script), NULL)) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
@@ -471,14 +475,22 @@ int test_znam(void)
             }
 
             /* Address records */
-            printf("znam DB addr records save+get... ");
+            printf("znam DB addr records save+get+list... ");
             bool a_save = db_znam_addr_save(&ndb, "alice", ZNAM_TYPE_BTC, "1abc");
+            bool a_save2 = db_znam_addr_save(&ndb, "alice", ZNAM_TYPE_LTC, "Labc");
             char addr[256] = {0};
             bool a_get = db_znam_addr_get(&ndb, "alice", ZNAM_TYPE_BTC, addr, sizeof(addr));
-            if (a_save && a_get && strcmp(addr, "1abc") == 0) {
+            struct znam_addr_record addrs[10];
+            int a_count = db_znam_addr_list(&ndb, "alice", addrs, 10);
+            if (a_save && a_save2 && a_get && strcmp(addr, "1abc") == 0 &&
+                a_count == 2 && addrs[0].coin_type == ZNAM_TYPE_BTC &&
+                addrs[1].coin_type == ZNAM_TYPE_LTC &&
+                strcmp(addrs[1].address, "Labc") == 0) {
                 printf("OK\n");
             } else {
-                printf("FAIL\n"); failures++;
+                printf("FAIL (save=%d get=%d count=%d)\n",
+                       a_save && a_save2, a_get, a_count);
+                failures++;
             }
 
             /* List by owner */

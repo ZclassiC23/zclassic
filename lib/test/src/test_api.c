@@ -191,6 +191,22 @@ static const struct json_value *api_test_find_named(
     return NULL;
 }
 
+static const struct json_value *api_test_find_str_field(
+    const struct json_value *arr,
+    const char *field,
+    const char *value)
+{
+    if (!arr || !field || !value)
+        return NULL;
+    for (size_t i = 0; i < json_size(arr); i++) {
+        const struct json_value *item = json_at(arr, i);
+        const char *item_value = json_get_str(json_get(item, field));
+        if (item_value && strcmp(item_value, value) == 0)
+            return item;
+    }
+    return NULL;
+}
+
 static bool api_test_expect_readiness_shape(const struct json_value *root)
 {
     const struct json_value *readiness = json_get(root, "readiness");
@@ -697,6 +713,108 @@ int test_api(void)
 
     if (ok) printf("OK\n");
     else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: name show includes service and address records... ");
+    {
+        char dbdir[256];
+        char dbpath[320];
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        snprintf(dbdir, sizeof(dbdir), ".zcl_test_api_name_show_%d",
+                 (int)getpid());
+        mkdir(dbdir, 0755);
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+
+        bool opened = node_db_open(&ndb, dbpath);
+        bool ok = opened;
+        if (ok) {
+            struct znam_entry e;
+            memset(&e, 0, sizeof(e));
+            snprintf(e.name, sizeof(e.name), "alice");
+            snprintf(e.owner_address, sizeof(e.owner_address),
+                     "t1owner-for-name-show");
+            e.target_type = ZNAM_TYPE_BTC;
+            snprintf(e.target_value, sizeof(e.target_value),
+                     "1primary-target-address");
+            memset(e.reg_txid, 0x42, sizeof(e.reg_txid));
+            e.reg_height = 42;
+            memset(e.last_update_txid, 0x43, sizeof(e.last_update_txid));
+            ok = db_znam_save(&ndb, &e);
+        }
+        ok = ok && db_znam_text_save(&ndb, "alice", "url",
+                                     "https://alice.example");
+        ok = ok && db_znam_text_save(&ndb, "alice", "service.onion",
+                                     "aliceexample.onion:8033");
+        ok = ok && db_znam_addr_save(&ndb, "alice", ZNAM_TYPE_LTC,
+                                     "LaliceAddress");
+        ok = ok && db_znam_addr_save(&ndb, "alice", ZNAM_TYPE_BTC,
+                                     "1aliceAddress");
+
+        if (ok) {
+            uint8_t resp[32768];
+            rpc_name_set_state(&ndb);
+            size_t n = api_handle_request("GET", "/api/v1/names/alice",
+                                          NULL, 0, resp, sizeof(resp));
+            rpc_name_set_state(NULL);
+            const char *body = api_test_body(resp, n, sizeof(resp));
+            struct json_value root;
+            json_init(&root);
+            ok = n > 0 && body && json_read(&root, body, strlen(body));
+            const struct json_value *texts =
+                ok ? json_get(&root, "text_records") : NULL;
+            const struct json_value *services =
+                ok ? json_get(&root, "service_records") : NULL;
+            const struct json_value *addrs =
+                ok ? json_get(&root, "address_records") : NULL;
+            const struct json_value *url =
+                api_test_find_str_field(texts, "key", "url");
+            const struct json_value *svc =
+                api_test_find_str_field(services, "key", "service.onion");
+            const struct json_value *btc =
+                api_test_find_str_field(addrs, "type", "bitcoin");
+            const struct json_value *ltc =
+                api_test_find_str_field(addrs, "type", "litecoin");
+            ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                              "zcl.names.show.v1") == 0;
+            ok = ok && strcmp(json_get_str(json_get(&root, "name")),
+                              "alice") == 0;
+            ok = ok && json_get_int(json_get(&root, "target_type")) ==
+                       ZNAM_TYPE_BTC;
+            ok = ok && strcmp(json_get_str(json_get(&root, "type")),
+                              "bitcoin") == 0;
+            ok = ok && json_size(texts) == 2 &&
+                       json_get_int(json_get(&root, "text_record_count")) == 2;
+            ok = ok && json_size(services) == 1 &&
+                       json_get_int(json_get(&root,
+                                             "service_record_count")) == 1;
+            ok = ok && json_size(addrs) == 2 &&
+                       json_get_int(json_get(&root,
+                                             "address_record_count")) == 2;
+            ok = ok && url &&
+                 strcmp(json_get_str(json_get(url, "value")),
+                        "https://alice.example") == 0;
+            ok = ok && svc &&
+                 strcmp(json_get_str(json_get(svc, "value")),
+                        "aliceexample.onion:8033") == 0;
+            ok = ok && btc &&
+                 strcmp(json_get_str(json_get(btc, "address")),
+                        "1aliceAddress") == 0;
+            ok = ok && ltc &&
+                 strcmp(json_get_str(json_get(ltc, "address")),
+                        "LaliceAddress") == 0;
+            json_free(&root);
+        }
+
+        rpc_name_set_state(NULL);
+        if (opened)
+            node_db_close(&ndb);
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
     }
 
     printf("api: REST index explains v1 first call and CRUD shape... ");
