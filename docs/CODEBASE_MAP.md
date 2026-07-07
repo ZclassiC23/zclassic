@@ -383,7 +383,12 @@ helper prefers the published in-memory H* frontier and falls back to the durable
 Milestone/version progress lives beside public status in
 `api_milestone_status_json()` and is exposed through native RPC
 `milestone`/`mvpstatus`, REST `/api/v1/milestone`, and MCP `zcl_milestone`.
-Keep strict MRS scoring separate from partial/proxy subgoal progress.
+Keep strict MRS scoring separate from partial/proxy subgoal progress. When
+milestone says `live.source="agent_cached_summary"`, its live height, peer, and
+sync fields must match a direct agent-status packet; `test_api` and
+`test_syncdiag_rpc` enforce that. If any required agent field is missing, the
+endpoint must say `agent_cached_summary_with_fallbacks` and name the fallback
+source rather than silently mixing authorities.
 
 Bootstrap-service readiness is the network-facing public singleton
 `/api/v1/bootstrap` (compat alias `/api/v1/bootstrapstatus`) over the shared

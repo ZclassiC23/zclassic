@@ -5,6 +5,12 @@ Status as of 2026-07-07 13:20 UTC: the public service on
 `zclassicd-rhett.service` is inactive, `zclassic23` owns the public P2P socket,
 and the running binary reports `zclassic23 v0.1.0 (build 894beee)`.
 
+Re-verified 2026-07-07 17:37 UTC from the primary `zclnet.net` node:
+`205.209.104.118:8033` is a live handshaked peer with subversion
+`/ZClassic23:0.1.0/`, services `NODE_NETWORK|NODE_ZCL23`, and bootstrap
+readiness `useful`. The explorer dashboard therefore has two ZClassic23 nodes:
+the primary node plus this remote peer.
+
 The public crawler row can lag this live state. Trust a direct socket/RPC check
 first; crawler rows may keep showing the old `MagicBean:*` identity until they
 reconnect or expire cached peer state.

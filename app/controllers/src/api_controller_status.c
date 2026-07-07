@@ -134,6 +134,13 @@ static int api_json_int_field(const struct json_value *obj, const char *key,
     return (int)n;
 }
 
+static bool api_json_has_int_field(const struct json_value *obj,
+                                   const char *key)
+{
+    const struct json_value *v = obj ? json_get(obj, key) : NULL;
+    return v && (v->type == JSON_INT || v->type == JSON_REAL);
+}
+
 static int api_json_nested_int_field(const struct json_value *obj,
                                      const char *parent,
                                      const char *key, int fallback)
@@ -149,6 +156,13 @@ static bool api_json_bool_field(const struct json_value *obj, const char *key,
     if (!v || v->type != JSON_BOOL)
         return fallback;
     return json_get_bool(v);
+}
+
+static bool api_json_has_bool_field(const struct json_value *obj,
+                                    const char *key)
+{
+    const struct json_value *v = obj ? json_get(obj, key) : NULL;
+    return v && v->type == JSON_BOOL;
 }
 
 static bool api_json_nested_bool_field(const struct json_value *obj,
@@ -168,6 +182,19 @@ static const char *api_json_str_field(const struct json_value *obj,
     return json_get_str(v);
 }
 
+static bool api_json_has_str_field(const struct json_value *obj,
+                                   const char *key)
+{
+    const struct json_value *v = obj ? json_get(obj, key) : NULL;
+    return v && v->type == JSON_STR && json_get_str(v)[0];
+}
+
+static void api_milestone_require_field(bool *complete, bool present)
+{
+    if (complete && !present)
+        *complete = false;
+}
+
 int64_t api_served_tip_height(void)
 {
     return reducer_frontier_external_tip_height();
@@ -181,6 +208,57 @@ void api_milestone_status_json(struct json_value *result)
         g_api_ctx.main_state);
     struct json_value agent = {0};
     bool agent_ok = api_milestone_agent_snapshot(&agent);
+    const struct json_value *agent_peers = json_get(&agent, "peers");
+    const struct json_value *agent_services = json_get(&agent, "services");
+    const struct json_value *agent_height_contract =
+        json_get(&agent, "height_contract");
+    bool agent_fields_complete = agent_ok;
+
+    api_milestone_require_field(&agent_fields_complete,
+                                api_json_has_str_field(&agent, "status"));
+    api_milestone_require_field(&agent_fields_complete,
+                                api_json_has_str_field(&agent,
+                                                       "readiness_status"));
+    api_milestone_require_field(
+        &agent_fields_complete,
+        api_json_has_str_field(agent_height_contract, "status"));
+    api_milestone_require_field(&agent_fields_complete,
+                                api_json_has_bool_field(&agent, "healthy"));
+    api_milestone_require_field(&agent_fields_complete,
+                                api_json_has_bool_field(&agent, "serving"));
+    api_milestone_require_field(&agent_fields_complete,
+                                api_json_has_int_field(&agent,
+                                                       "served_height"));
+    api_milestone_require_field(&agent_fields_complete,
+                                api_json_has_int_field(&agent,
+                                                       "indexed_height"));
+    api_milestone_require_field(&agent_fields_complete,
+                                api_json_has_int_field(&agent,
+                                                       "header_height"));
+    api_milestone_require_field(&agent_fields_complete,
+                                api_json_has_int_field(&agent,
+                                                       "peer_best_height"));
+    api_milestone_require_field(&agent_fields_complete,
+                                api_json_has_int_field(&agent,
+                                                       "target_height"));
+    api_milestone_require_field(&agent_fields_complete,
+                                api_json_has_int_field(&agent, "gap"));
+    api_milestone_require_field(&agent_fields_complete,
+                                api_json_has_bool_field(agent_peers,
+                                                        "has_peers"));
+    api_milestone_require_field(&agent_fields_complete,
+                                api_json_has_int_field(agent_peers, "total"));
+    api_milestone_require_field(&agent_fields_complete,
+                                api_json_has_bool_field(agent_services,
+                                                        "tor_enabled"));
+    api_milestone_require_field(&agent_fields_complete,
+                                api_json_has_bool_field(agent_services,
+                                                        "tor_ready"));
+    api_milestone_require_field(
+        &agent_fields_complete,
+        api_json_has_bool_field(agent_services, "onion_service_ready"));
+    api_milestone_require_field(&agent_fields_complete,
+                                api_json_has_str_field(&agent, "sync_state"));
 
     int served_height = agent_ok
         ? api_json_int_field(&agent, "served_height",
@@ -237,8 +315,8 @@ void api_milestone_status_json(struct json_value *result)
         : health.onion_service_ready;
     const char *sync_state = agent_ok
         ? api_json_str_field(&agent, "sync_state",
-                             sync_state_name(health.sync_state))
-        : sync_state_name(health.sync_state);
+                             sync_state_name(sync_get_state()))
+        : sync_state_name(sync_get_state());
     const char *agent_status = agent_ok
         ? api_json_str_field(&agent, "status", "unavailable")
         : "unavailable";
@@ -295,11 +373,21 @@ void api_milestone_status_json(struct json_value *result)
     json_init(&live);
     json_set_object(&live);
     json_push_kv_str(&live, "source",
-                     agent_ok ? "agent_cached_summary"
-                              : "node_health_collect_fallback");
+                     agent_ok && agent_fields_complete
+                         ? "agent_cached_summary"
+                         : agent_ok ? "agent_cached_summary_with_fallbacks"
+                                    : "node_health_collect_fallback");
     json_push_kv_str(&live, "source_schema",
                      agent_ok ? "zcl.public_status.v1"
                               : "zcl.node_health_snapshot");
+    json_push_kv_bool(&live, "agent_summary_available", agent_ok);
+    json_push_kv_bool(&live, "agent_fields_complete",
+                      agent_fields_complete);
+    json_push_kv_str(&live, "fallback_source",
+                     agent_ok && agent_fields_complete
+                         ? "none"
+                         : agent_ok ? "node_health_collect+sync_state"
+                                    : "node_health_collect");
     json_push_kv_str(&live, "agent_status", agent_status);
     json_push_kv_str(&live, "readiness_status", readiness_status);
     json_push_kv_str(&live, "height_contract_status", height_status);

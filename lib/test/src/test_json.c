@@ -63,6 +63,7 @@ int test_json(void)
     printf("json build object + write... ");
     {
         struct json_value v;
+        json_init(&v);
         json_set_object(&v);
         json_push_kv_str(&v, "ticker", "ZTEST");
         json_push_kv_int(&v, "supply", 1000);
@@ -232,6 +233,7 @@ int test_json(void)
     printf("json write + read roundtrip... ");
     {
         struct json_value v;
+        json_init(&v);
         json_set_object(&v);
         json_push_kv_str(&v, "name", "ZClassic");
         json_push_kv_int(&v, "height", 3045000);

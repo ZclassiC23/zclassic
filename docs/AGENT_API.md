@@ -541,8 +541,13 @@ diagnostic objects for the node authority posture.
 health authority. Its `live` block is derived from the bounded
 `zcl.public_status.v1` agent summary when available and names that with
 `live.source="agent_cached_summary"` / `live.source_schema="zcl.public_status.v1"`.
-If that first-call contract is unavailable, it falls back to the older
-node-health snapshot and says so in `live.source`.
+When the agent packet is available, `live.agent_fields_complete=true` means the
+milestone live fields are copied from that same agent contract and are regression
+tested against a direct `/api/v1/agent` read. If any required first-call field is
+missing, milestone sets `live.source="agent_cached_summary_with_fallbacks"`,
+`live.agent_fields_complete=false`, and names `live.fallback_source`; if the
+agent contract is unavailable entirely, it falls back to the older node-health
+snapshot and says so in `live.source`.
 
 When `runtime_build.stale=true`, the node is still useful to observe but its
 behavior predates the expected deployed source; use the lane safety contract

@@ -31,6 +31,11 @@ struct json_value {
     size_t children_cap;
 };
 
+/* Lifecycle: json_value is not self-initializing. Stack values must be
+ * zero-initialized or passed through json_init() before any json_set_*(),
+ * json_push_*(), json_free(), or json_copy() call. Setters free any previous
+ * contents before replacing the value, so calling them on uninitialized stack
+ * memory is undefined and can crash. */
 void json_init(struct json_value *v);
 void json_free(struct json_value *v);
 

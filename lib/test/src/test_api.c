@@ -3352,6 +3352,16 @@ int test_api(void)
 
     printf("api: milestone endpoint returns node-computed ASCII bars... ");
     {
+        uint8_t agent_resp[65536];
+        size_t agent_n = api_handle_request("GET", "/api/v1/agent", NULL, 0,
+                                            agent_resp, sizeof(agent_resp));
+        const char *agent_body = api_test_body(agent_resp, agent_n,
+                                               sizeof(agent_resp));
+        struct json_value agent_root;
+        json_init(&agent_root);
+        bool agent_ok = agent_n > 0 && agent_body &&
+            json_read(&agent_root, agent_body, strlen(agent_body));
+
         size_t n = api_handle_request("GET", "/api/v1/milestone", NULL, 0,
                                       resp, sizeof(resp));
         const char *body = api_test_body(resp, n, sizeof(resp));
@@ -3362,6 +3372,7 @@ int test_api(void)
         const struct json_value *bars = json_get(&root, "bars");
         const struct json_value *criteria = json_get(&root, "criteria");
         const struct json_value *live = json_get(&root, "live");
+        const char *live_source = json_get_str(json_get(live, "source"));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
                           "zcl.milestone_status.v1") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "milestone")),
@@ -3374,13 +3385,65 @@ int test_api(void)
         ok = ok && bars && strcmp(json_get_str(json_get(json_get(bars,
                           "subgoals"), "bar")), "[########--]") == 0;
         ok = ok && criteria && json_size(criteria) == 8;
-        ok = ok && live && strcmp(json_get_str(json_get(live, "source")),
-                                  "agent_cached_summary") == 0;
+        bool live_full_agent = live_source &&
+            strcmp(live_source, "agent_cached_summary") == 0;
+        bool live_agent_fallback = live_source &&
+            strcmp(live_source,
+                   "agent_cached_summary_with_fallbacks") == 0;
+        ok = ok && live && (live_full_agent || live_agent_fallback);
         ok = ok && strcmp(json_get_str(json_get(live, "source_schema")),
                           "zcl.public_status.v1") == 0;
+        ok = ok && json_get_bool(json_get(live,
+                                          "agent_summary_available"));
+        ok = ok && json_get_bool(json_get(live, "agent_fields_complete")) ==
+            live_full_agent;
+        if (live_full_agent)
+            ok = ok && strcmp(json_get_str(json_get(live,
+                                                    "fallback_source")),
+                              "none") == 0;
+        if (live_agent_fallback)
+            ok = ok && strcmp(json_get_str(json_get(live,
+                                                    "fallback_source")),
+                              "none") != 0;
         ok = ok && json_get(live, "agent_status") != NULL;
         ok = ok && json_get(live, "readiness_status") != NULL;
         ok = ok && json_get(live, "height_contract_status") != NULL;
+        int64_t agent_served =
+            json_get_int(json_get(&agent_root, "served_height"));
+        if (ok && agent_ok && live_full_agent && agent_served > 0) {
+            const struct json_value *agent_peers =
+                json_get(&agent_root, "peers");
+            const struct json_value *agent_services =
+                json_get(&agent_root, "services");
+            bool agent_onion =
+                json_get_bool(json_get(agent_services, "tor_enabled")) &&
+                json_get_bool(json_get(agent_services, "tor_ready")) &&
+                json_get_bool(json_get(agent_services,
+                                       "onion_service_ready"));
+
+            ok = ok && json_get_int(json_get(live, "served_height")) ==
+                json_get_int(json_get(&agent_root, "served_height"));
+            ok = ok && json_get_int(json_get(live, "indexed_height")) ==
+                json_get_int(json_get(&agent_root, "indexed_height"));
+            ok = ok && json_get_int(json_get(live, "header_height")) ==
+                json_get_int(json_get(&agent_root, "header_height"));
+            ok = ok && json_get_int(json_get(live, "peer_best_height")) ==
+                json_get_int(json_get(&agent_root, "peer_best_height"));
+            ok = ok && json_get_int(json_get(live, "target_height")) ==
+                json_get_int(json_get(&agent_root, "target_height"));
+            ok = ok && json_get_int(json_get(live, "gap")) ==
+                json_get_int(json_get(&agent_root, "gap"));
+            ok = ok && json_get_int(json_get(live, "peers")) ==
+                json_get_int(json_get(agent_peers, "total"));
+            ok = ok && json_get_bool(json_get(live, "tor_enabled")) ==
+                json_get_bool(json_get(agent_services, "tor_enabled"));
+            ok = ok && json_get_bool(json_get(live, "onion_ready")) ==
+                agent_onion;
+            ok = ok && strcmp(json_get_str(json_get(live, "sync_state")),
+                              json_get_str(json_get(&agent_root,
+                                                    "sync_state"))) == 0;
+        }
+        json_free(&agent_root);
         json_free(&root);
 
         if (ok) printf("OK\n");
@@ -4031,6 +4094,36 @@ int test_api(void)
             commands, "make t ONLY=chain_advance_coordinator");
         ok = ok && api_test_array_has_str(commands,
                                           "make t ONLY=mcp_controllers");
+        json_free(&params);
+        json_free(&result);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: agentimpact maps json library to focused gates... ");
+    {
+        const char *params_json =
+            "[\"lib/json/include/json/json.h\","
+            "\"lib/test/src/test_json.c\"]";
+        struct json_value params, result;
+        json_init(&params);
+        json_init(&result);
+        bool ok = json_read(&params, params_json, strlen(params_json));
+        ok = ok && rpc_agent_impact(&params, false, &result);
+        ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
+                          "zcl.agent_impact.v1") == 0;
+        ok = ok && json_get_int(json_get(&result, "files_count")) == 2;
+        ok = ok && json_get_int(json_get(&result,
+                                         "relevant_test_groups_count")) == 6;
+        const struct json_value *groups =
+            json_get(&result, "relevant_test_groups");
+        ok = ok && api_test_array_has_str(groups, "json");
+        ok = ok && api_test_array_has_str(groups, "rpc");
+        ok = ok && api_test_array_has_str(groups, "api");
+        ok = ok && api_test_array_has_str(groups, "syncdiag_rpc");
+        ok = ok && api_test_array_has_str(groups, "mcp_controllers");
+        ok = ok && api_test_array_has_str(groups, "make_lint_gates");
         json_free(&params);
         json_free(&result);
 
