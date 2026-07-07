@@ -11,6 +11,7 @@
 #include "net/msg_internal.h"
 #include "net/addrman.h"
 #include "net/version.h"
+#include "net/peer_identity.h"
 #include "net/p2p_message.h"
 #include "net/file_service.h"
 #include "net/peer_lifecycle.h"
@@ -189,7 +190,14 @@ static bool addr_name_host_is_external(const char *addr_name)
 
 bool msg_version_peer_uses_external_host(const struct p2p_node *node)
 {
-    return node && addr_name_host_is_external(node->addr_name);
+    char host[ZCL_PEER_HOST_KEY_MAX];
+
+    if (!node)
+        return false;
+    if (zcl_peer_host_key(node, host, sizeof(host)) &&
+        addr_name_host_is_external(host))
+        return true;
+    return addr_name_host_is_external(node->addr_name);
 }
 
 static bool msg_version_addr_is_external_self(const struct net_address *addr)

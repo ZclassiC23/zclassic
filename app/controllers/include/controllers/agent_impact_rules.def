@@ -14,7 +14,7 @@ AGENT_IMPACT_RULE("tools/mcp/*|tools/mcp_server.c|app/controllers/src/*mcp*|lib/
 AGENT_IMPACT_RULE("lib/mcp/*|lib/util/src/mcp_*|lib/test/src/test_mcp_*|app/controllers/src/diagnostics_registry.c", "mcp_controllers rpc")
 AGENT_IMPACT_RULE("app/controllers/src/diagnostics_*.c|app/controllers/include/controllers/diagnostics_*.h", "syncdiag_rpc mcp_controllers make_lint_gates rpc")
 
-AGENT_IMPACT_RULE("lib/net/src/peer_lifecycle.c|lib/net/src/msg_version.c|lib/net/src/protocol.c|app/controllers/src/network_controller.c|lib/test/src/test_peer_lifecycle.c", "peer_lifecycle")
+AGENT_IMPACT_RULE("lib/net/src/peer_lifecycle.c|lib/net/src/peer_identity.c|lib/net/include/net/peer_identity.h|lib/net/src/msg_version.c|lib/net/src/protocol.c|app/controllers/src/network_controller.c|lib/test/src/test_peer_lifecycle.c", "peer_lifecycle syncdiag_rpc node_health_service explorer")
 AGENT_IMPACT_RULE("app/controllers/src/network_peer_incidents_compat_controller.c", "syncdiag_rpc mcp_controllers peer_lifecycle")
 AGENT_IMPACT_RULE("lib/net/src/connman.c|lib/net/include/net/connman.h|lib/test/src/test_connman_addnode_fallback.c", "connman_addnode_fallback net make_lint_gates")
 AGENT_IMPACT_RULE("lib/net/include/net/msg_internal.h|lib/net/include/net/peer_lifecycle.h|lib/net/include/net/port_policy.h|lib/net/include/net/version.h", "peer_lifecycle")

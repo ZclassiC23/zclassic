@@ -12,6 +12,7 @@
 #include "net/connman.h"
 #include "net/fast_sync.h"
 #include "net/net.h"
+#include "net/peer_identity.h"
 #include "net/peer_lifecycle.h"
 #include "net/protocol.h"
 #include "net/version.h"
@@ -60,21 +61,46 @@ static bool node_is_verified_zclassic23_bootstrap(
            strcmp(node_bootstrap_readiness(node), "useful") == 0;
 }
 
+static bool bootstrap_peer_preferred(const struct p2p_node *candidate,
+                                     const struct p2p_node *current)
+{
+    if (!candidate)
+        return false;
+    if (!current)
+        return true;
+    if (!candidate->inbound && current->inbound)
+        return true;
+    if (candidate->inbound != current->inbound)
+        return false;
+    return candidate->addr.svc.port == 8033 && current->addr.svc.port != 8033;
+}
+
 void network_push_verified_zclassic23_bootstrap_peers(
     struct json_value *peers, struct connman *cm)
 {
     struct json_value arr = {0};
+    struct zcl_peer_host_set verified_hosts;
+    const struct p2p_node *representatives[ZCL_PEER_HOST_SET_MAX];
+    bool representative_fast_sync[ZCL_PEER_HOST_SET_MAX];
     int64_t verified_count = 0;
+    int64_t verified_connection_count = 0;
+    int64_t duplicate_connections = 0;
     int64_t fast_sync_count = 0;
+    int64_t fast_sync_connection_count = 0;
     int64_t self_excluded = 0;
     int64_t included = 0;
 
+    zcl_peer_host_set_init(&verified_hosts);
+    memset(representatives, 0, sizeof(representatives));
+    memset(representative_fast_sync, 0, sizeof(representative_fast_sync));
     json_set_array(&arr);
     if (cm) {
         zcl_mutex_lock(&cm->manager.cs_nodes);
         for (size_t i = 0; i < cm->manager.num_nodes; i++) {
             struct p2p_node *node = cm->manager.nodes[i];
             bool fast_sync_useful;
+            char host[ZCL_PEER_HOST_KEY_MAX];
+            int host_index;
 
             if (node_is_zclassic23(node) &&
                 msg_version_peer_uses_external_host(node)) {
@@ -86,18 +112,52 @@ void network_push_verified_zclassic23_bootstrap_peers(
                 continue;
 
             fast_sync_useful = peer_supports_fast_sync(node->services);
-            verified_count++;
+            verified_connection_count++;
             if (fast_sync_useful)
-                fast_sync_count++;
+                fast_sync_connection_count++;
 
-            if (included >= BOOTSTRAP_ZCL23_PEER_LIST_LIMIT)
+            if (!zcl_peer_host_key(node, host, sizeof(host)))
                 continue;
 
+            host_index = zcl_peer_host_set_find_host(&verified_hosts, host);
+            if (host_index < 0) {
+                if (zcl_peer_host_set_add_host(&verified_hosts, host)) {
+                    verified_count++;
+                    if (fast_sync_useful)
+                        fast_sync_count++;
+                    if (verified_hosts.count > 0 &&
+                        verified_hosts.count <= ZCL_PEER_HOST_SET_MAX) {
+                        size_t stored = verified_hosts.count - 1;
+                        representatives[stored] = node;
+                        representative_fast_sync[stored] =
+                            fast_sync_useful;
+                    }
+                }
+                continue;
+            }
+
+            duplicate_connections++;
+            if (fast_sync_useful && !representative_fast_sync[host_index]) {
+                representative_fast_sync[host_index] = true;
+                fast_sync_count++;
+            }
+            if (bootstrap_peer_preferred(node,
+                                         representatives[host_index]))
+                representatives[host_index] = node;
+        }
+
+        for (size_t i = 0; i < verified_hosts.count &&
+             included < BOOTSTRAP_ZCL23_PEER_LIST_LIMIT; i++) {
+            const struct p2p_node *node = representatives[i];
             struct json_value item = {0};
             struct json_value lifecycle = {0};
             const char *source = "";
             int64_t handshake_age = -1;
+            bool fast_sync_useful;
 
+            if (!node)
+                continue;
+            fast_sync_useful = peer_supports_fast_sync(node->services);
             json_set_object(&item);
             json_push_kv_str(&item, "addr", node->addr_name);
             json_push_kv_bool(&item, "inbound", node->inbound);
@@ -140,8 +200,17 @@ void network_push_verified_zclassic23_bootstrap_peers(
 
     json_push_kv_int(peers, "verified_zclassic23_bootstrap_peer_count",
                      verified_count);
+    json_push_kv_int(peers,
+                     "verified_zclassic23_bootstrap_connection_count",
+                     verified_connection_count);
     json_push_kv_int(peers, "fast_sync_useful_zclassic23_peer_count",
                      fast_sync_count);
+    json_push_kv_int(peers,
+                     "fast_sync_useful_zclassic23_connection_count",
+                     fast_sync_connection_count);
+    json_push_kv_int(peers,
+                     "verified_zclassic23_duplicate_connections_excluded",
+                     duplicate_connections);
     json_push_kv_int(peers, "verified_zclassic23_self_connections_excluded",
                      self_excluded);
     json_push_kv_int(peers, "zclassic23_bootstrap_quorum_target",

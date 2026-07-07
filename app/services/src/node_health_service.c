@@ -32,6 +32,7 @@
 #include "validation/main_state.h"
 #include "net/connman.h"
 #include "net/download.h"
+#include "net/peer_identity.h"
 #include "net/tor_integration.h"
 #include "net/version.h"
 #include "adapters/outbound/persistence/node_health_store_sqlite.h"
@@ -327,6 +328,8 @@ void node_health_collect(struct node_health_snapshot *snapshot,
      * msg_version_classify_peer() helper as getnetworkinfo so the two
      * surfaces never drift. */
     if (cm) {
+        struct zcl_peer_host_set zcl23_hosts;
+        zcl_peer_host_set_init(&zcl23_hosts);
         zcl_mutex_lock(&cm->manager.cs_nodes);
         for (size_t i = 0; i < cm->manager.num_nodes; i++) {
             struct p2p_node *node = cm->manager.nodes[i];
@@ -336,7 +339,8 @@ void node_health_collect(struct node_health_snapshot *snapshot,
             msg_version_classify_peer(node->sub_ver, node->services,
                                       &is_mb, &is_z23);
             if (is_mb) snapshot->magicbean_peer_count++;
-            if (is_z23 && !msg_version_peer_uses_external_host(node))
+            if (is_z23 && !msg_version_peer_uses_external_host(node) &&
+                zcl_peer_host_set_add_peer(&zcl23_hosts, node))
                 snapshot->zclassic_c23_peer_count++;
         }
         zcl_mutex_unlock(&cm->manager.cs_nodes);

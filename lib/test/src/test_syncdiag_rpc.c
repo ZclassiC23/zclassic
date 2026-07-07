@@ -483,9 +483,9 @@ static struct p2p_node *syncdiag_add_peer(struct connman *cm,
     if (!cm)
         return NULL;
     if (!cm->manager.nodes) {
-        cm->manager.nodes = zcl_calloc(4, sizeof(*cm->manager.nodes),
+        cm->manager.nodes = zcl_calloc(8, sizeof(*cm->manager.nodes),
                                        "syncdiag_net_nodes");
-        cm->manager.nodes_cap = 4;
+        cm->manager.nodes_cap = 8;
         if (!cm->manager.nodes)
             return NULL;
     }
@@ -1150,13 +1150,17 @@ int test_syncdiag_rpc(void)
         struct p2p_node *zcl_b = ok
             ? syncdiag_add_peer(&cm, 22, true, PEER_HANDSHAKE_COMPLETE)
             : NULL;
+        struct p2p_node *zcl_b_dup = ok
+            ? syncdiag_add_peer(&cm, 22, false, PEER_HANDSHAKE_COMPLETE)
+            : NULL;
         struct p2p_node *legacy_peer = ok
             ? syncdiag_add_peer(&cm, 23, false, PEER_HANDSHAKE_COMPLETE)
             : NULL;
         struct p2p_node *self_hairpin = ok
             ? syncdiag_add_peer(&cm, 24, true, PEER_HANDSHAKE_COMPLETE)
             : NULL;
-        ok = ok && zcl_a && zcl_b && legacy_peer && self_hairpin;
+        ok = ok && zcl_a && zcl_b && zcl_b_dup && legacy_peer &&
+             self_hairpin;
         if (ok) {
             snprintf(zcl_a->addr_name, sizeof(zcl_a->addr_name),
                      "198.51.100.21:8033");
@@ -1169,6 +1173,13 @@ int test_syncdiag_rpc(void)
             zcl_b->starting_height = 3169999;
             syncdiag_note_peer_lifecycle_active(
                 zcl_b, PEER_LIFECYCLE_SOURCE_INBOUND);
+
+            syncdiag_set_ipv4(&zcl_b_dup->addr, 198, 51, 100, 22, 8033);
+            snprintf(zcl_b_dup->addr_name, sizeof(zcl_b_dup->addr_name),
+                     "198.51.100.22:8033");
+            zcl_b_dup->starting_height = 3170000;
+            syncdiag_note_peer_lifecycle_active(
+                zcl_b_dup, PEER_LIFECYCLE_SOURCE_ADDRMAN);
 
             legacy_peer->services = NODE_NETWORK;
             snprintf(legacy_peer->addr_name,
@@ -1246,9 +1257,13 @@ int test_syncdiag_rpc(void)
         const struct json_value *first_verified =
             verified && json_size(verified) > 0 ? json_at(verified, 0) : NULL;
         ok = ok && peers && peers->type == JSON_OBJ;
-        ok = ok && json_get_int(json_get(peers, "connections")) == 4;
+        ok = ok && json_get_int(json_get(peers, "connections")) == 5;
         ok = ok && json_get_int(json_get(peers,
             "zclassic23_peers")) == 2;
+        ok = ok && json_get_int(json_get(peers,
+            "zclassic23_peer_connections")) == 3;
+        ok = ok && json_get_int(json_get(peers,
+            "zclassic23_duplicate_connections_excluded")) == 1;
         ok = ok && json_get_int(json_get(peers,
             "zclassic23_self_connections_excluded")) == 1;
         ok = ok && json_get_bool(json_get(peers,
@@ -1268,9 +1283,15 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get_int(json_get(peers,
             "verified_zclassic23_bootstrap_peer_count")) == 2;
         ok = ok && json_get_int(json_get(peers,
+            "verified_zclassic23_bootstrap_connection_count")) == 3;
+        ok = ok && json_get_int(json_get(peers,
+            "verified_zclassic23_duplicate_connections_excluded")) == 1;
+        ok = ok && json_get_int(json_get(peers,
             "verified_zclassic23_self_connections_excluded")) == 1;
         ok = ok && json_get_int(json_get(peers,
             "fast_sync_useful_zclassic23_peer_count")) == 2;
+        ok = ok && json_get_int(json_get(peers,
+            "fast_sync_useful_zclassic23_connection_count")) == 3;
         ok = ok && json_get_int(json_get(peers,
             "zclassic23_bootstrap_quorum_target")) == 2;
         ok = ok && json_get_bool(json_get(peers,

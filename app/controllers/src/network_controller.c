@@ -13,6 +13,7 @@
 #include "net/connman.h"
 #include "net/fast_sync.h"
 #include "net/netbase.h"
+#include "net/peer_identity.h"
 #include "net/peer_lifecycle.h"
 #include "net/protocol.h"
 #include "net/version.h"
@@ -42,6 +43,8 @@ struct network_counts {
     int outbound_handshaked;
     int legacy_compatible;
     int zcl23;
+    int zcl23_connections;
+    int zcl23_duplicate_connections;
     int zcl23_self_connections;
     size_t listen_socket_count;
     uint64_t local_services;
@@ -87,9 +90,12 @@ void rpc_net_set_boot_context(const char *datadir,
 static void network_counts_collect(struct connman *cm,
                                    struct network_counts *out)
 {
+    struct zcl_peer_host_set zcl23_hosts;
+
     memset(out, 0, sizeof(*out));
     if (!cm)
         return;
+    zcl_peer_host_set_init(&zcl23_hosts);
 
     out->connections = connman_get_node_count(cm);
     out->listen_socket_count = cm->manager.num_listen_sockets;
@@ -118,8 +124,13 @@ static void network_counts_collect(struct connman *cm,
             if (is_z23) {
                 if (msg_version_peer_uses_external_host(node))
                     out->zcl23_self_connections++;
-                else
-                    out->zcl23++;
+                else {
+                    out->zcl23_connections++;
+                    if (zcl_peer_host_set_add_peer(&zcl23_hosts, node))
+                        out->zcl23++;
+                    else
+                        out->zcl23_duplicate_connections++;
+                }
             }
         }
     }
@@ -295,6 +306,11 @@ static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
     json_push_kv_int(result, "magicbean_peers", counts.legacy_compatible);
     json_push_kv_int(result, "zclassic23_peers", counts.zcl23);
     json_push_kv_int(result, "zclassic_c23_peers", counts.zcl23);
+    json_push_kv_int(result, "zclassic23_peer_connections",
+                     counts.zcl23_connections);
+    json_push_kv_int(result,
+                     "zclassic23_duplicate_connections_excluded",
+                     counts.zcl23_duplicate_connections);
     json_push_kv_int(result, "zclassic23_self_connections_excluded",
                      counts.zcl23_self_connections);
     json_push_kv_bool(result, "local_zclassic23_node_included", local_zcl23);
@@ -418,6 +434,11 @@ static bool rpc_bootstrapstatus(const struct json_value *params, bool help,
     json_push_kv_int(&peers, "legacy_compatible_peers",
                      counts.legacy_compatible);
     json_push_kv_int(&peers, "zclassic23_peers", counts.zcl23);
+    json_push_kv_int(&peers, "zclassic23_peer_connections",
+                     counts.zcl23_connections);
+    json_push_kv_int(&peers,
+                     "zclassic23_duplicate_connections_excluded",
+                     counts.zcl23_duplicate_connections);
     json_push_kv_int(&peers, "zclassic23_self_connections_excluded",
                      counts.zcl23_self_connections);
     network_push_verified_zclassic23_bootstrap_peers(&peers, ctx->connman);

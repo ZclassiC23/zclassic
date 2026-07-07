@@ -136,10 +136,9 @@ struct node_health_snapshot {
 
     /* Magic Bean / zclassic23 peer classification: counts of currently
      * connected peers whose advertised subver matches the legacy
-     * /MagicBean:.../ or the native /ZClassic23:.../ identifier. Goal 3
-     * of the redundancy plan ("magic bean reporting"): operators can
-     * see at a glance how many zclassicd-era peers are connecting to
-     * us and how many native zclassic23 peers we have. */
+     * /MagicBean:.../ or the native /ZClassic23:.../ identifier. ZClassic23 is
+     * counted by unique remote host so an inbound+outbound socket pair to one
+     * node does not inflate the physical-node count shown on dashboards. */
     size_t   magicbean_peer_count;
     size_t   zclassic_c23_peer_count;
 

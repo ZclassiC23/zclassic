@@ -104,8 +104,8 @@ int test_explorer(void)
         v.mempool_count = 0;
         v.mempool_bytes = 0;
         v.network.peer_count = 9;
-        v.network.zclassic23_peers = 2;
-        v.network.zclassic23_nodes_seen = 3;
+        v.network.zclassic23_peers = 1;
+        v.network.zclassic23_nodes_seen = 2;
         v.network.magicbean_peers = 6;
 
         size_t n = explorer_dashboard_view_native(out, sizeof(out) - 1, &v);
@@ -117,8 +117,8 @@ int test_explorer(void)
              strstr((char *)out, "Connected Peers</div>"
                     "<div class='bb-value'>9") != NULL &&
              strstr((char *)out, "ZClassic23 Nodes</div>"
-                    "<div class='bb-value'>3") != NULL &&
-             strstr((char *)out, "this node + 2 peers") != NULL &&
+                    "<div class='bb-value'>2") != NULL &&
+             strstr((char *)out, "this node + 1 peer") != NULL &&
              strstr((char *)out, "Legacy Peers</div>"
                     "<div class='bb-value'>6") != NULL &&
              strstr((char *)out, "Searching") == NULL;
