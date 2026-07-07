@@ -357,6 +357,25 @@ static void api_contract_push(struct json_value *out, const char *method,
                          protocol->write_semantics);
         json_push_kv_str(&item, "consensus_boundary",
                          protocol->consensus_boundary);
+        struct json_value object_types;
+        json_init(&object_types);
+        api_app_protocol_csv_json(protocol->object_types_csv, &object_types);
+        json_push_kv(&item, "protocol_object_types", &object_types);
+        json_free(&object_types);
+        struct json_value ux_surfaces;
+        json_init(&ux_surfaces);
+        api_app_protocol_csv_json(protocol->ux_surfaces_csv, &ux_surfaces);
+        json_push_kv(&item, "protocol_ux_surfaces", &ux_surfaces);
+        json_free(&ux_surfaces);
+        json_push_kv_str(&item, "projection_model",
+                         protocol->projection_model);
+        json_push_kv_str(&item, "reorg_model", protocol->reorg_model);
+        json_push_kv_str(&item, "crypto_model", protocol->crypto_model);
+        json_push_kv_str(&item, "transport_model",
+                         protocol->transport_model);
+        json_push_kv_str(&item, "privacy_model", protocol->privacy_model);
+        json_push_kv_str(&item, "diagnostics_surface",
+                         protocol->diagnostics_surface);
     }
     json_push_kv_str(&item, "freshness", fresh);
     json_push_kv_bool(&item, "freshness_scoped",

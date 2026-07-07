@@ -316,8 +316,10 @@ by `api_route_contracts_json()` carries `crud_operation` (`read`, `create`,
 `update`, `delete`), `resource_scope` (`collection`, `item`, `singleton`,
 `subcollection`, `subresource`), `crud_name` (`read_item`, etc.), and
 `id_params`. Application-layer routes also carry `application_protocol`,
-`layer`, `source_anchor`, `read_model`, `write_semantics`, and
-`consensus_boundary`. Keep `/api/v1` and `/api/v1/openapi` generated from that
+`layer`, `source_anchor`, `read_model`, `write_semantics`,
+`consensus_boundary`, object types, UX surfaces, projection/reorg behavior,
+cryptographic model, transport model, privacy model, and diagnostics surface.
+Keep `/api/v1` and `/api/v1/openapi` generated from that
 one contract source and pin representative collection/item/singleton routes in
 `test_api` whenever adding a new route shape.
 
@@ -333,8 +335,9 @@ state writes. The machine-readable version of this boundary is
 `app/controllers/src/api_controller_app_protocols.c`, surfaced as
 `layer_model` in `zclassic23 api` / `/api/v1`, `x-zcl-layer-model` in
 `/api/v1/openapi`, and per-route `application_protocol` /
-`x-zcl-application-protocol`; update that C-owned registry before adding
-wrapper prose or out-of-band docs for a new application protocol.
+`x-zcl-application-protocol` plus security/projection/UX OpenAPI extensions;
+update that C-owned registry before adding wrapper prose or out-of-band docs
+for a new application protocol.
 
 Public status/freshness endpoints must get their served height through
 `api_served_tip_height()`, not by reading one endpoint-specific cursor. That

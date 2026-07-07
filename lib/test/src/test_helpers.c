@@ -2,6 +2,7 @@
  * Shared test helper functions. */
 
 #include "test/test_helpers.h"
+#include "services/chain_evidence_authority_service.h"
 #include "validation/chain_linkage_check.h"
 #include "jobs/tip_finalize_stage.h"
 #include <signal.h>
@@ -27,6 +28,8 @@ void test_reset_shared_globals(void)
     /* chain-linkage HOLD / refuse-from cursor (survives until a witnessed
      * success otherwise). */
     chain_linkage_reset_for_testing();
+    /* pending finalized-tip slot (health drain side-effect). */
+    chain_evidence_pending_tip_test_reset();
     /* fatal-signal disposition: a prior group that installed the node crash
      * handlers leaves SIGABRT/SIGSEGV/SIGBUS/SIGFPE armed, which makes
      * postmortem_install() refuse (it requires SIG_DFL) and breaks the

@@ -87,6 +87,14 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "node_health_syncdiag") == 0) {
+        printf("[test] ZCL_TEST_ONLY=node_health_syncdiag — running node health then sync RPC diagnostics\n");
+        failures += test_node_health_service();
+        failures += test_syncdiag_rpc();
+        printf("\n=== node_health_syncdiag subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "shielded_payment") == 0) {
         printf("[test] ZCL_TEST_ONLY=shielded_payment — running shielded-payment gate only\n");
         { extern int test_shielded_payment_gate(void);
@@ -429,6 +437,21 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "chain_evidence_live_advance") == 0) {
+        printf("[test] ZCL_TEST_ONLY=chain_evidence_live_advance — running chain evidence live advance only\n");
+        failures += test_chain_evidence_live_advance();
+        printf("\n=== chain_evidence_live_advance subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "chain_evidence_controller_live") == 0) {
+        printf("[test] ZCL_TEST_ONLY=chain_evidence_controller_live — running chain evidence controller then live advance\n");
+        failures += test_chain_evidence_controller();
+        failures += test_chain_evidence_live_advance();
+        printf("\n=== chain_evidence_controller_live subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "chain_state_repo") == 0) {
         printf("[test] ZCL_TEST_ONLY=chain_state_repo — running chain state repository only\n");
         failures += test_chain_state_repo();
@@ -594,6 +617,13 @@ int main(void)
         printf("[test] ZCL_TEST_ONLY=syncdiag_rpc — running sync RPC diagnostics subset\n");
         failures += test_syncdiag_rpc();
         printf("\n=== syncdiag_rpc subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "api") == 0) {
+        printf("[test] ZCL_TEST_ONLY=api — running REST/API contract subset\n");
+        failures += test_api();
+        printf("\n=== api subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
     }

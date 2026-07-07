@@ -83,7 +83,11 @@ REST application-layer protocol metadata lives in
 `GET /api/v1/protocols/{name}`, `layer_model`, route-contract
 `application_protocol` fields, and generated OpenAPI
 `x-zcl-application-protocol` / protocol CRUD extensions for ZLSP, ZSLP, ZNAM,
-market, messaging, and script-contract resources. Treat
+market, messaging, and script-contract resources. The registry also carries
+object types, UX surfaces, projection/reorg behavior, cryptographic model,
+transport model, privacy model, and diagnostics surface, so agents can reason
+about what the node can safely read, construct, rebuild, expose, and explain
+without scanning per-feature prose first. Treat
 `zcl.application_protocols.index.v1` as the layer-2 overlay catalog: ZCL
 remains the base layer; zclassic23 exposes ZLSP-style versioned application
 services that read, index, or construct valid ZCL transactions without changing

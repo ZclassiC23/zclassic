@@ -42,6 +42,7 @@
 #include "net/connman.h"
 #include "net/download.h"
 #include "net/fast_sync.h"
+#include "net/netbase.h"
 #include "net/peer_lifecycle.h"
 #include "net/version.h"
 #include "platform/time_compat.h"
@@ -471,9 +472,19 @@ static void syncdiag_note_peer_lifecycle_active(
     }
 }
 
+static void syncdiag_reset_rpc_globals_for_test(void)
+{
+    rpc_net_set_connman(NULL);
+    rpc_net_set_boot_context(NULL, NULL);
+    msg_version_clear_external_ip_for_test();
+    peer_lifecycle_reset_for_test();
+}
+
 int test_syncdiag_rpc(void)
 {
     int failures = 0;
+
+    syncdiag_reset_rpc_globals_for_test();
 
     printf("rpc_getsyncdiag: returns valid JSON without abort "
            "(RED)... ");
@@ -1035,8 +1046,8 @@ int test_syncdiag_rpc(void)
         struct connman cm;
         struct node_signals sigs;
         struct rpc_table tbl;
-        struct json_value params;
-        struct json_value result;
+        struct json_value params = {0};
+        struct json_value result = {0};
         char tmp_template[] = "/tmp/zcl-bootstrapstatus-XXXXXX";
         char *tmp_dir = mkdtemp(tmp_template);
         char snap_path[512] = {0};
@@ -1220,8 +1231,8 @@ int test_syncdiag_rpc(void)
         struct connman cm;
         struct node_signals sigs;
         struct rpc_table tbl;
-        struct json_value params;
-        struct json_value result;
+        struct json_value params = {0};
+        struct json_value result = {0};
 
         chain_params_select(CHAIN_MAIN);
         memset(&cm, 0, sizeof(cm));
@@ -1231,20 +1242,20 @@ int test_syncdiag_rpc(void)
                                      PEER_HANDSHAKE_COMPLETE) != NULL;
         ok = ok && syncdiag_add_peer(&cm, 12, true,
                                      PEER_HANDSHAKE_COMPLETE) != NULL;
+        if (!ok)
+            goto syncdiag_net_split_done;
         if (ok) {
             struct net_address addr;
+            struct net_service svc;
             net_address_init(&addr);
-            memset(addr.svc.addr.ip, 0, 10);
-            addr.svc.addr.ip[10] = 0xff;
-            addr.svc.addr.ip[11] = 0xff;
-            addr.svc.addr.ip[12] = 51;
-            addr.svc.addr.ip[13] = 178;
-            addr.svc.addr.ip[14] = 179;
-            addr.svc.addr.ip[15] = 75;
-            addr.svc.port = 8033;
-            cm.addnodes[cm.num_addnodes++] = addr;
-            connman_record_addnode_failure(&cm, 0,
-                                           CONNMAN_ADDNODE_FAILURE_TCP);
+            ok = lookup_numeric("51.178.179.75:8033", &svc,
+                                cm.manager.default_port);
+            if (ok) {
+                addr.svc = svc;
+                cm.addnodes[cm.num_addnodes++] = addr;
+                connman_record_addnode_failure(&cm, 0,
+                                               CONNMAN_ADDNODE_FAILURE_TCP);
+            }
         }
 
         rpc_table_init(&tbl);
@@ -1296,6 +1307,8 @@ int test_syncdiag_rpc(void)
              json_get_int(json_get(first, "tcp_failures")) == 1;
         ok = ok && first &&
              json_get_int(json_get(first, "protocol_failures")) == 0;
+        if (!ok)
+            goto syncdiag_net_split_done;
 
         json_free(&params);
         json_init(&params);
@@ -1313,6 +1326,8 @@ int test_syncdiag_rpc(void)
         json_free(&result);
         json_init(&result);
         ok = ok && rpc_table_execute(&tbl, "addnode", &params, &result);
+        if (!ok)
+            goto syncdiag_net_split_done;
 
         json_free(&params);
         json_init(&params);
@@ -1324,6 +1339,8 @@ int test_syncdiag_rpc(void)
         addnodes = json_get(&result, "addnode_status");
         ok = ok && addnodes && addnodes->type == JSON_ARR;
         ok = ok && json_size(addnodes) == 0;
+        if (!ok)
+            goto syncdiag_net_split_done;
 
         json_free(&params);
         json_init(&params);
@@ -1340,6 +1357,8 @@ int test_syncdiag_rpc(void)
         json_init(&result);
         ok = ok && !rpc_table_execute(&tbl, "addnode", &params, &result);
         ok = ok && strstr(json_get_str(&result), "not found") != NULL;
+        if (!ok)
+            goto syncdiag_net_split_done;
 
         json_free(&params);
         json_init(&params);
@@ -1356,6 +1375,8 @@ int test_syncdiag_rpc(void)
         json_init(&result);
         ok = ok && !rpc_table_execute(&tbl, "addnode", &params, &result);
         ok = ok && strstr(json_get_str(&result), "must be") != NULL;
+        if (!ok)
+            goto syncdiag_net_split_done;
 
         json_free(&params);
         json_init(&params);
@@ -1369,6 +1390,7 @@ int test_syncdiag_rpc(void)
         ok = ok && peer0 && json_get_bool(json_get(peer0, "zclassic23"));
         ok = ok && peer0 && json_get_bool(json_get(peer0, "zclassic_c23"));
 
+syncdiag_net_split_done:
         json_free(&params);
         json_free(&result);
         rpc_net_set_connman(NULL);
@@ -2041,6 +2063,10 @@ int test_syncdiag_rpc(void)
             find_object_with_str(protocols, "name", "zlsp");
         const struct json_value *zslp =
             find_object_with_str(protocols, "name", "zslp");
+        const struct json_value *znam =
+            find_object_with_str(protocols, "name", "znam");
+        const struct json_value *market =
+            find_object_with_str(protocols, "name", "market");
         const struct json_value *script_contracts =
             find_object_with_str(protocols, "name", "script_contracts");
         bool ok = executed && result.type == JSON_OBJ;
@@ -2069,9 +2095,27 @@ int test_syncdiag_rpc(void)
         ok = ok && zslp &&
             strcmp(json_get_str(json_get(zslp, "anchor_kind")),
                    "op_return") == 0;
+        ok = ok && zslp &&
+            json_array_has_str(json_get(zslp, "object_types"),
+                               "token_genesis");
+        ok = ok && znam &&
+            json_array_has_str(json_get(znam, "ux_surfaces"),
+                               "identity_profile");
+        ok = ok && znam &&
+            strstr(json_get_str(json_get(znam, "crypto_model")),
+                   "owner_authority") != NULL;
+        ok = ok && market &&
+            json_array_has_str(json_get(market, "object_types"),
+                               "signed_listing");
+        ok = ok && market &&
+            strstr(json_get_str(json_get(market, "privacy_model")),
+                   "allowlist") != NULL;
         ok = ok && script_contracts &&
             strcmp(json_get_str(json_get(script_contracts, "anchor_kind")),
                    "standard_script") == 0;
+        ok = ok && script_contracts &&
+            strstr(json_get_str(json_get(script_contracts, "crypto_model")),
+                   "legacy_valid_zclassic_script") != NULL;
 
         struct json_value alias;
         json_init(&alias);
@@ -6423,5 +6467,6 @@ int test_syncdiag_rpc(void)
         mirror_consensus_reset_for_test();
     }
 
+    syncdiag_reset_rpc_globals_for_test();
     return failures;
 }

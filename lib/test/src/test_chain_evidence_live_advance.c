@@ -36,6 +36,7 @@ struct live_fixture {
 
 static bool live_fixture_init(struct live_fixture *f)
 {
+    chain_evidence_pending_tip_test_reset();
     chain_evidence_controller_test_reset_startup_reconcile();
     memset(f, 0, sizeof(*f));
     if (!node_db_open(&f->ndb, ":memory:"))
@@ -70,6 +71,7 @@ static bool live_fixture_init(struct live_fixture *f)
 
 static void live_fixture_free(struct live_fixture *f)
 {
+    chain_evidence_pending_tip_test_reset();
     csr_free(&f->csr);
     coins_view_cache_free(&f->coins_tip);
     active_chain_free(&f->chain);

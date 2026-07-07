@@ -71,10 +71,14 @@ bool lookup_host(const char *name, struct net_addr *results,
                  size_t max_results, size_t *num_results,
                  bool allow_lookup)
 {
+    if (!name || !results || !num_results || max_results == 0)
+        LOG_FAIL("net", "lookup_host: invalid arguments");
+
     *num_results = 0;
 
     struct in_addr ipv4;
     if (inet_pton(AF_INET, name, &ipv4) > 0) {
+        net_addr_init(&results[0]);
         memcpy(results[0].ip, pchIPv4Map, 12);
         memcpy(results[0].ip + 12, &ipv4, 4);
         *num_results = 1;
@@ -83,6 +87,7 @@ bool lookup_host(const char *name, struct net_addr *results,
 
     struct in6_addr ipv6;
     if (inet_pton(AF_INET6, name, &ipv6) > 0) {
+        net_addr_init(&results[0]);
         memcpy(results[0].ip, &ipv6, 16);
         *num_results = 1;
         return true;
@@ -109,14 +114,14 @@ bool lookup_host(const char *name, struct net_addr *results,
          ai = ai->ai_next) {
         if (ai->ai_family == AF_INET) {
             struct sockaddr_in *s4 = (struct sockaddr_in *)ai->ai_addr;
+            net_addr_init(&results[*num_results]);
             memcpy(results[*num_results].ip, pchIPv4Map, 12);
             memcpy(results[*num_results].ip + 12, &s4->sin_addr, 4);
-            results[*num_results].has_torv3 = false;
             (*num_results)++;
         } else if (ai->ai_family == AF_INET6) {
             struct sockaddr_in6 *s6 = (struct sockaddr_in6 *)ai->ai_addr;
+            net_addr_init(&results[*num_results]);
             memcpy(results[*num_results].ip, &s6->sin6_addr, 16);
-            results[*num_results].has_torv3 = false;
             (*num_results)++;
         }
     }

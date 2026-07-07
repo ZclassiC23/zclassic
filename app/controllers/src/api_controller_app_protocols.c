@@ -32,6 +32,22 @@ static const struct api_app_protocol_contract k_api_app_protocols[] = {
             "CRUD mutations become valid ZCL transaction-construction requests",
         .consensus_boundary =
             "interprets_or_constructs_valid_zcl_transactions_only",
+        .object_types_csv =
+            "protocol_contract,service_contract,transaction_builder_contract",
+        .ux_surfaces_csv =
+            "protocol_catalog,api_discovery,agent_command_center",
+        .projection_model =
+            "static_registry_declares_chain_anchors_crud_and_security",
+        .reorg_model =
+            "protocols_must_define_rebuildable_projection_behavior",
+        .crypto_model =
+            "base_layer_bytes_verified_by_full_node_protocol_objects_versioned",
+        .transport_model =
+            "mcp_native_json_first_rest_public_read_mirror",
+        .privacy_model =
+            "public_catalog_no_private_wallet_material",
+        .diagnostics_surface =
+            "zclassic23_app_protocols_zcl_app_protocols_api_v1_protocols",
     },
     {
         .name = "zslp",
@@ -49,6 +65,20 @@ static const struct api_app_protocol_contract k_api_app_protocols[] = {
         .write_semantics = "construct_and_broadcast_zslp_transactions",
         .consensus_boundary =
             "interprets_or_constructs_valid_zcl_transactions_only",
+        .object_types_csv = "token_genesis,token_transfer,token_mint",
+        .ux_surfaces_csv = "token_explorer,asset_inventory,token_transfer_history",
+        .projection_model =
+            "confirmed_op_return_projection_at_served_frontier",
+        .reorg_model =
+            "delete_and_replay_projection_rows_from_reorg_height",
+        .crypto_model =
+            "transaction_hash_and_script_bytes_verified_by_zcl_consensus",
+        .transport_model =
+            "chain_anchored_reads_rest_mcp_native_transaction_builders_private",
+        .privacy_model =
+            "token_activity_is_public_chain_metadata",
+        .diagnostics_surface =
+            "zclassic23_app_protocols_zcl_app_protocols_zcl_state_zslp_projection",
     },
     {
         .name = "znam",
@@ -66,6 +96,22 @@ static const struct api_app_protocol_contract k_api_app_protocols[] = {
         .write_semantics = "construct_and_broadcast_znam_transactions",
         .consensus_boundary =
             "interprets_or_constructs_valid_zcl_transactions_only",
+        .object_types_csv =
+            "name_record,service_record,endpoint_record,text_record,revocation_record",
+        .ux_surfaces_csv =
+            "identity_profile,node_service_directory,onion_address_book",
+        .projection_model =
+            "confirmed_chain_name_projection_ordered_by_height_and_txindex",
+        .reorg_model =
+            "rebuild_name_state_from_confirmed_chain_after_disconnect",
+        .crypto_model =
+            "op_return_bytes_bound_to_txid_owner_authority_from_valid_zcl_inputs",
+        .transport_model =
+            "chain_records_advertise_onion_and_clearnet_endpoints_without_hosting",
+        .privacy_model =
+            "name_records_are_public_and_should_use_dedicated_identity_keys",
+        .diagnostics_surface =
+            "zclassic23_app_protocols_zcl_app_protocols_zcl_state_znam_projection",
     },
     {
         .name = "market",
@@ -84,6 +130,22 @@ static const struct api_app_protocol_contract k_api_app_protocols[] = {
             "offer_and_purchase_flows_are_operator_or_payment_gated",
         .consensus_boundary =
             "interprets_or_constructs_valid_zcl_transactions_only",
+        .object_types_csv =
+            "signed_listing,content_descriptor,buy_intent,mirror_advertisement,payment_receipt",
+        .ux_surfaces_csv =
+            "storefront,listing_search,buyer_checkout,content_hosting_controls",
+        .projection_model =
+            "payment_and_manifest_projection_with_disposable_signed_object_cache",
+        .reorg_model =
+            "chain_settlement_replays_projection_signed_objects_expire_or_revalidate",
+        .crypto_model =
+            "listings_and_content_hashes_are_signed_hash_addressed_and_size_capped",
+        .transport_model =
+            "tor_reachable_storefront_direct_p2p_for_low_latency_when_verified",
+        .privacy_model =
+            "content_hosting_explicit_allowlist_chain_stores_commitments_not_files",
+        .diagnostics_surface =
+            "zclassic23_app_protocols_zcl_app_protocols_zcl_state_file_market_projection",
     },
     {
         .name = "messaging",
@@ -102,6 +164,21 @@ static const struct api_app_protocol_contract k_api_app_protocols[] = {
             "send_p2p_messages_or_construct_memo_transactions_when_wired",
         .consensus_boundary =
             "interprets_or_constructs_valid_zcl_transactions_only",
+        .object_types_csv =
+            "p2p_message,delivery_receipt,planned_sapling_memo_message",
+        .ux_surfaces_csv = "inbox,outbox,contact_thread,delivery_status",
+        .projection_model =
+            "message_projection_from_local_delivery_events_and_future_memos",
+        .reorg_model =
+            "offchain_messages_are_local_state_onchain_memos_replay_by_height",
+        .crypto_model =
+            "future_messages_must_be_signed_or_shielded_before_trusted_storage",
+        .transport_model =
+            "p2p_active_tor_fallback_planned_shielded_memo_channel",
+        .privacy_model =
+            "p2p_channel_currently_plaintext_memo_channel_planned_for_private_content",
+        .diagnostics_surface =
+            "zclassic23_app_protocols_zcl_app_protocols_zcl_state_message_projection",
     },
     {
         .name = "script_contracts",
@@ -120,6 +197,22 @@ static const struct api_app_protocol_contract k_api_app_protocols[] = {
             "construct_standard_script_contract_transactions_without_consensus_changes",
         .consensus_boundary =
             "interprets_or_constructs_valid_zcl_transactions_only",
+        .object_types_csv =
+            "contract_template,redeem_script,refund_path,contract_state",
+        .ux_surfaces_csv =
+            "contract_workbench,script_preview,redeem_refund_tracker",
+        .projection_model =
+            "contract_projection_from_standard_script_transactions_and_status_events",
+        .reorg_model =
+            "replay_contract_status_from_chain_and_wallet_events",
+        .crypto_model =
+            "uses_only_legacy_valid_zclassic_script_hashlocks_timelocks_and_signatures",
+        .transport_model =
+            "operator_private_builders_public_read_status_when_safe",
+        .privacy_model =
+            "transparent_contract_terms_are_public_unless_settled_through_shielded_flows",
+        .diagnostics_surface =
+            "zclassic23_app_protocols_zcl_app_protocols_zcl_state_swap_contract_projection",
     },
     {
         .name = "atomic_swaps",
@@ -138,6 +231,22 @@ static const struct api_app_protocol_contract k_api_app_protocols[] = {
             "construct_script_contract_transactions_without_consensus_changes",
         .consensus_boundary =
             "interprets_or_constructs_valid_zcl_transactions_only",
+        .object_types_csv =
+            "htlc_contract,secret_hash,redeem_transaction,refund_transaction,settlement_state",
+        .ux_surfaces_csv =
+            "swap_workbench,counterparty_offer,settlement_tracker",
+        .projection_model =
+            "swap_projection_from_standard_script_transactions_and_wallet_events",
+        .reorg_model =
+            "replay_swap_state_from_confirmed_chain_with_mempool_status_advisory_only",
+        .crypto_model =
+            "hashlock_timelock_contracts_use_existing_zclassic_script_consensus",
+        .transport_model =
+            "p2p_or_tor_offer_exchange_with_chain_settlement",
+        .privacy_model =
+            "counterparty_metadata_local_confirmed_script_state_public",
+        .diagnostics_surface =
+            "zclassic23_app_protocols_zcl_app_protocols_zcl_state_swap_contract_projection",
     },
 };
 
@@ -214,6 +323,25 @@ static void api_app_protocol_set_json(
     json_push_kv_str(obj, "mutation_authority", p->mutation_authority);
     json_push_kv_str(obj, "write_semantics", p->write_semantics);
     json_push_kv_str(obj, "consensus_boundary", p->consensus_boundary);
+
+    struct json_value object_types;
+    json_init(&object_types);
+    api_app_protocol_csv_json(p->object_types_csv, &object_types);
+    json_push_kv(obj, "object_types", &object_types);
+    json_free(&object_types);
+
+    struct json_value ux_surfaces;
+    json_init(&ux_surfaces);
+    api_app_protocol_csv_json(p->ux_surfaces_csv, &ux_surfaces);
+    json_push_kv(obj, "ux_surfaces", &ux_surfaces);
+    json_free(&ux_surfaces);
+
+    json_push_kv_str(obj, "projection_model", p->projection_model);
+    json_push_kv_str(obj, "reorg_model", p->reorg_model);
+    json_push_kv_str(obj, "crypto_model", p->crypto_model);
+    json_push_kv_str(obj, "transport_model", p->transport_model);
+    json_push_kv_str(obj, "privacy_model", p->privacy_model);
+    json_push_kv_str(obj, "diagnostics_surface", p->diagnostics_surface);
 }
 
 static void api_app_protocol_push_json(
@@ -230,14 +358,16 @@ static void api_app_protocol_push_json(
     json_free(&obj);
 }
 
-void api_app_protocol_crud_json(const struct api_app_protocol_contract *p,
-                                struct json_value *crud)
+void api_app_protocol_csv_json(const char *csv, struct json_value *out)
 {
-    json_set_array(crud);
-    if (!p || !p->crud_capabilities_csv || !p->crud_capabilities_csv[0])
+    if (!out)
         return;
 
-    const char *cursor = p->crud_capabilities_csv;
+    json_set_array(out);
+    if (!csv || !csv[0])
+        return;
+
+    const char *cursor = csv;
     while (*cursor) {
         while (*cursor == ',' || *cursor == ' ')
             cursor++;
@@ -258,12 +388,18 @@ void api_app_protocol_crud_json(const struct api_app_protocol_contract *p,
             struct json_value item;
             json_init(&item);
             json_set_str(&item, item_buf);
-            json_push_back(crud, &item);
+            json_push_back(out, &item);
             json_free(&item);
         }
         if (*cursor == ',')
             cursor++;
     }
+}
+
+void api_app_protocol_crud_json(const struct api_app_protocol_contract *p,
+                                struct json_value *crud)
+{
+    api_app_protocol_csv_json(p ? p->crud_capabilities_csv : NULL, crud);
 }
 
 void api_app_protocols_json(struct json_value *protocols)
@@ -338,6 +474,18 @@ void api_app_protocol_push_openapi_extensions(
         json_get_str(json_get(contract, "write_semantics"));
     const char *consensus_boundary =
         json_get_str(json_get(contract, "consensus_boundary"));
+    const char *projection_model =
+        json_get_str(json_get(contract, "projection_model"));
+    const char *reorg_model =
+        json_get_str(json_get(contract, "reorg_model"));
+    const char *crypto_model =
+        json_get_str(json_get(contract, "crypto_model"));
+    const char *transport_model =
+        json_get_str(json_get(contract, "transport_model"));
+    const char *privacy_model =
+        json_get_str(json_get(contract, "privacy_model"));
+    const char *diagnostics_surface =
+        json_get_str(json_get(contract, "diagnostics_surface"));
 
     if (layer && layer[0])
         json_push_kv_str(operation, "x-zcl-layer", layer);
@@ -359,6 +507,16 @@ void api_app_protocol_push_openapi_extensions(
     const struct json_value *crud = json_get(contract, "protocol_crud");
     if (crud)
         json_push_kv(operation, "x-zcl-protocol-crud", crud);
+    const struct json_value *object_types =
+        json_get(contract, "protocol_object_types");
+    if (object_types)
+        json_push_kv(operation, "x-zcl-protocol-object-types",
+                     object_types);
+    const struct json_value *ux_surfaces =
+        json_get(contract, "protocol_ux_surfaces");
+    if (ux_surfaces)
+        json_push_kv(operation, "x-zcl-protocol-ux-surfaces",
+                     ux_surfaces);
     if (construction_status && construction_status[0])
         json_push_kv_str(operation, "x-zcl-protocol-construction-status",
                          construction_status);
@@ -371,4 +529,19 @@ void api_app_protocol_push_openapi_extensions(
     if (consensus_boundary && consensus_boundary[0])
         json_push_kv_str(operation, "x-zcl-consensus-boundary",
                          consensus_boundary);
+    if (projection_model && projection_model[0])
+        json_push_kv_str(operation, "x-zcl-projection-model",
+                         projection_model);
+    if (reorg_model && reorg_model[0])
+        json_push_kv_str(operation, "x-zcl-reorg-model", reorg_model);
+    if (crypto_model && crypto_model[0])
+        json_push_kv_str(operation, "x-zcl-crypto-model", crypto_model);
+    if (transport_model && transport_model[0])
+        json_push_kv_str(operation, "x-zcl-transport-model",
+                         transport_model);
+    if (privacy_model && privacy_model[0])
+        json_push_kv_str(operation, "x-zcl-privacy-model", privacy_model);
+    if (diagnostics_surface && diagnostics_surface[0])
+        json_push_kv_str(operation, "x-zcl-diagnostics-surface",
+                         diagnostics_surface);
 }

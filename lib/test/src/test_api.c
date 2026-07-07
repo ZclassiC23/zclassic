@@ -787,6 +787,10 @@ int test_api(void)
              api_test_array_has_str(json_get(zlsp_protocol,
                                              "crud_capabilities"),
                                     "construct_transaction");
+        ok = ok && zlsp_protocol &&
+             api_test_array_has_str(json_get(zlsp_protocol,
+                                             "ux_surfaces"),
+                                    "agent_command_center");
         ok = ok && zslp_protocol &&
              strcmp(json_get_str(json_get(zslp_protocol, "schema")),
                     "zcl.application_protocol_contract.v1") == 0;
@@ -818,6 +822,26 @@ int test_api(void)
                                           "consensus_boundary")),
                     "interprets_or_constructs_valid_zcl_transactions_only")
              == 0;
+        ok = ok && zslp_protocol &&
+             api_test_array_has_str(json_get(zslp_protocol,
+                                             "object_types"),
+                                    "token_genesis");
+        ok = ok && zslp_protocol &&
+             strcmp(json_get_str(json_get(zslp_protocol,
+                                          "projection_model")),
+                    "confirmed_op_return_projection_at_served_frontier") == 0;
+        ok = ok && znam_protocol &&
+             api_test_array_has_str(json_get(znam_protocol, "object_types"),
+                                    "service_record");
+        ok = ok && znam_protocol &&
+             api_test_array_has_str(json_get(znam_protocol, "ux_surfaces"),
+                                    "identity_profile");
+        ok = ok && znam_protocol &&
+             strstr(json_get_str(json_get(znam_protocol, "crypto_model")),
+                    "owner_authority") != NULL;
+        ok = ok && script_protocol &&
+             strstr(json_get_str(json_get(script_protocol, "crypto_model")),
+                    "legacy_valid_zclassic_script") != NULL;
         ok = ok && znam_protocol &&
              strcmp(json_get_str(json_get(znam_protocol, "status")),
                     "active") == 0;
@@ -1047,6 +1071,21 @@ int test_api(void)
              strcmp(json_get_str(json_get(names,
                                     "application_protocol")),
                     "znam") == 0;
+        ok = ok && names &&
+             api_test_array_has_str(json_get(names,
+                                             "protocol_object_types"),
+                                    "service_record");
+        ok = ok && names &&
+             api_test_array_has_str(json_get(names,
+                                             "protocol_ux_surfaces"),
+                                    "identity_profile");
+        ok = ok && names &&
+             strcmp(json_get_str(json_get(names, "reorg_model")),
+                    "rebuild_name_state_from_confirmed_chain_after_disconnect")
+             == 0;
+        ok = ok && names &&
+             strstr(json_get_str(json_get(names, "privacy_model")),
+                    "public") != NULL;
         ok = ok && names && api_test_contract_has_id_param(names, "name");
         ok = ok && legacy_name &&
              !json_get_bool(json_get(legacy_name, "canonical"));
@@ -1063,6 +1102,13 @@ int test_api(void)
              strstr(json_get_str(json_get(swap_chains,
                                           "source_anchor")),
                     "HTLC atomic swaps") != NULL;
+        ok = ok && swap_chains &&
+             api_test_array_has_str(json_get(swap_chains,
+                                             "protocol_object_types"),
+                                    "contract_template");
+        ok = ok && swap_chains &&
+             strstr(json_get_str(json_get(swap_chains, "crypto_model")),
+                    "hashlocks_timelocks") != NULL;
         ok = ok && legacy_swap_chains &&
              strcmp(json_get_str(json_get(legacy_swap_chains,
                                           "legacy_alias_of")),
@@ -1132,12 +1178,28 @@ int test_api(void)
                           "protocol_count")) == (int64_t)json_size(protocols);
         const struct json_value *zslp =
             api_test_find_named(protocols, "zslp");
+        const struct json_value *znam =
+            api_test_find_named(protocols, "znam");
+        const struct json_value *market =
+            api_test_find_named(protocols, "market");
         ok = ok && zslp &&
              api_test_array_has_str(json_get(zslp, "crud_capabilities"),
                                     "read_collection");
         ok = ok && zslp &&
              strcmp(json_get_str(json_get(zslp, "anchor_kind")),
                     "op_return") == 0;
+        ok = ok && zslp &&
+             api_test_array_has_str(json_get(zslp, "object_types"),
+                                    "token_transfer");
+        ok = ok && znam &&
+             api_test_array_has_str(json_get(znam, "ux_surfaces"),
+                                    "node_service_directory");
+        ok = ok && market &&
+             api_test_array_has_str(json_get(market, "object_types"),
+                                    "content_descriptor");
+        ok = ok && market &&
+             strstr(json_get_str(json_get(market, "transport_model")),
+                    "direct_p2p") != NULL;
         json_free(&root);
 
         n = api_handle_request("GET", "/api/v1/protocols/script_contracts",
@@ -1157,6 +1219,12 @@ int test_api(void)
         ok = ok && strcmp(json_get_str(json_get(&root,
                           "construction_status")),
                           "htlc_builders_active_settlement_in_progress") == 0;
+        ok = ok && api_test_array_has_str(json_get(&root,
+                          "object_types"), "contract_template");
+        ok = ok && api_test_array_has_str(json_get(&root,
+                          "ux_surfaces"), "script_preview");
+        ok = ok && strstr(json_get_str(json_get(&root, "crypto_model")),
+                          "legacy_valid_zclassic_script") != NULL;
         json_free(&root);
 
         n = api_handle_request("GET", "/api/v1/protocols/not_real",
@@ -1321,6 +1389,9 @@ int test_api(void)
              api_test_array_has_str(json_get(zslp, "x-zcl-protocol-crud"),
                                     "read_collection");
         ok = ok && zslp &&
+             api_test_array_has_str(json_get(zslp,
+                    "x-zcl-protocol-object-types"), "token_genesis");
+        ok = ok && zslp &&
              strcmp(json_get_str(json_get(zslp,
                     "x-zcl-protocol-construction-status")),
                     "transaction_builders_active") == 0;
@@ -1339,6 +1410,19 @@ int test_api(void)
         ok = ok && names &&
              strcmp(json_get_str(json_get(names,
                     "x-zcl-application-protocol")), "znam") == 0;
+        ok = ok && names &&
+             api_test_array_has_str(json_get(names,
+                    "x-zcl-protocol-object-types"), "service_record");
+        ok = ok && names &&
+             api_test_array_has_str(json_get(names,
+                    "x-zcl-protocol-ux-surfaces"), "identity_profile");
+        ok = ok && names &&
+             strcmp(json_get_str(json_get(names, "x-zcl-reorg-model")),
+                    "rebuild_name_state_from_confirmed_chain_after_disconnect")
+             == 0;
+        ok = ok && names &&
+             strstr(json_get_str(json_get(names, "x-zcl-privacy-model")),
+                    "public") != NULL;
         ok = ok && swap_chains &&
              strcmp(json_get_str(json_get(swap_chains,
                     "x-zcl-application-protocol")),
@@ -1346,6 +1430,10 @@ int test_api(void)
         ok = ok && swap_chains &&
              strstr(json_get_str(json_get(swap_chains,
                     "x-zcl-source-anchor")), "HTLC atomic swaps") != NULL;
+        ok = ok && swap_chains &&
+             strstr(json_get_str(json_get(swap_chains,
+                    "x-zcl-crypto-model")),
+                    "legacy_valid_zclassic_script") != NULL;
         ok = ok && block_show &&
              api_test_openapi_has_param(block_show, "height_or_hash", "path");
         ok = ok && block_show &&

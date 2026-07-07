@@ -184,6 +184,10 @@ bool chain_evidence_controller_record_finalized_tip(
  * acquired while it is held), safe under any lock the drive holds. */
 void chain_evidence_note_finalized_tip(const struct block_index *finalized_tip);
 
+/* Test/monolith isolation: clear the process-wide pending-tip slot so one
+ * fixture's synthetic finalized tip cannot be drained by a later fixture. */
+void chain_evidence_pending_tip_test_reset(void);
+
 /* Health-side half: if a published tip is pending, run record_finalized_tip
  * for it under the caller's (health-collect) lock order — csr->lock before
  * coins_kv. Call AFTER chain_evidence_controller_init and BEFORE the

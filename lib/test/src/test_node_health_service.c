@@ -739,6 +739,7 @@ int test_node_health_service(void)
         if (ok) {
             (void)node;
             alerts_shutdown();
+            event_log_init();
             unsetenv("ZCL_ALERTS_DISABLE");
             unsetenv("ZCL_ALERT_WEBHOOK_URL");
             alerts_init();

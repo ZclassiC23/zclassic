@@ -93,6 +93,14 @@ void chain_evidence_note_finalized_tip(const struct block_index *finalized_tip)
     pthread_mutex_unlock(&g_pending_lock);
 }
 
+void chain_evidence_pending_tip_test_reset(void)
+{
+    pthread_mutex_lock(&g_pending_lock);
+    g_pending_height = -1;
+    memset(&g_pending_hash, 0, sizeof(g_pending_hash));
+    pthread_mutex_unlock(&g_pending_lock);
+}
+
 bool chain_evidence_drain_pending_tip(
     struct chain_evidence_controller *authority)
 {

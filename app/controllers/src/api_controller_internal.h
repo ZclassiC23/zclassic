@@ -116,6 +116,14 @@ struct api_app_protocol_contract {
     const char *mutation_authority;
     const char *write_semantics;
     const char *consensus_boundary;
+    const char *object_types_csv;
+    const char *ux_surfaces_csv;
+    const char *projection_model;
+    const char *reorg_model;
+    const char *crypto_model;
+    const char *transport_model;
+    const char *privacy_model;
+    const char *diagnostics_surface;
 };
 
 /* ── Helpers defined in api_controller.c ── */
@@ -134,6 +142,7 @@ api_app_protocol_lookup(const char *name);
 const struct api_app_protocol_contract *
 api_app_protocol_for_resource(const char *resource);
 void api_app_protocols_json(struct json_value *protocols);
+void api_app_protocol_csv_json(const char *csv, struct json_value *out);
 void api_app_protocol_crud_json(const struct api_app_protocol_contract *p,
                                 struct json_value *crud);
 bool api_app_protocols_index_json(struct json_value *out);

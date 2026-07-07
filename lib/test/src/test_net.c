@@ -512,8 +512,14 @@ int test_net(void)
     {
         struct net_addr addrs[4];
         size_t n = 0;
+        for (size_t i = 0; i < 4; i++) {
+            net_addr_init(&addrs[i]);
+            addrs[i].has_torv3 = true;
+            memset(addrs[i].torv3, 0xa5, sizeof(addrs[i].torv3));
+        }
         bool ok = lookup_host("127.0.0.1", addrs, 4, &n, false);
-        if (ok && n == 1 && addrs[0].ip[12] == 127 && addrs[0].ip[15] == 1)
+        if (ok && n == 1 && !addrs[0].has_torv3 &&
+            addrs[0].ip[12] == 127 && addrs[0].ip[15] == 1)
             printf("OK\n");
         else { printf("FAIL (ok=%d n=%zu)\n", ok, n); failures++; }
     }
@@ -522,7 +528,8 @@ int test_net(void)
     {
         struct net_service svc;
         bool ok = lookup_numeric("10.0.0.1:8233", &svc, 0);
-        if (ok && svc.addr.ip[12] == 10 && svc.port == 8233)
+        if (ok && !svc.addr.has_torv3 && svc.addr.ip[12] == 10 &&
+            svc.port == 8233)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
