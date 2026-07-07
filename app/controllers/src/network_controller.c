@@ -256,6 +256,8 @@ static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
     struct network_context *ctx = network_ctx();
     struct network_counts counts;
     network_counts_collect(ctx->connman, &counts);
+    bool local_zcl23 = (counts.local_services & NODE_ZCL23) != 0;
+    int64_t zcl23_nodes_seen = counts.zcl23 + (local_zcl23 ? 1 : 0);
     json_push_kv_int(result, "connections", (int64_t)counts.connections);
     json_push_kv_int(result, "localservices",
                      (int64_t)counts.local_services);
@@ -288,6 +290,10 @@ static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
     json_push_kv_int(result, "magicbean_peers", counts.legacy_compatible);
     json_push_kv_int(result, "zclassic23_peers", counts.zcl23);
     json_push_kv_int(result, "zclassic_c23_peers", counts.zcl23);
+    json_push_kv_bool(result, "local_zclassic23_node_included", local_zcl23);
+    json_push_kv_int(result, "zclassic23_nodes_seen", zcl23_nodes_seen);
+    json_push_kv_bool(result, "zclassic23_two_node_floor_met",
+                      zcl23_nodes_seen >= 2);
     json_push_kv_int(result, "listen_socket_count",
                      (int64_t)counts.listen_socket_count);
     json_push_kv_bool(result, "listening", counts.listen_socket_count > 0);
@@ -406,6 +412,22 @@ static bool rpc_bootstrapstatus(const struct json_value *params, bool help,
                      counts.legacy_compatible);
     json_push_kv_int(&peers, "zclassic23_peers", counts.zcl23);
     network_push_verified_zclassic23_bootstrap_peers(&peers, ctx->connman);
+    int64_t verified_zcl23_peers = json_get_int(json_get(&peers,
+        "verified_zclassic23_bootstrap_peer_count"));
+    bool local_verified_zcl23_bootstrap = p2p_serving && node_zcl23;
+    json_push_kv_bool(&peers, "local_zclassic23_node_included", node_zcl23);
+    json_push_kv_int(&peers, "zclassic23_nodes_seen",
+                     counts.zcl23 + (node_zcl23 ? 1 : 0));
+    json_push_kv_bool(&peers, "zclassic23_two_node_floor_met",
+                      counts.zcl23 + (node_zcl23 ? 1 : 0) >= 2);
+    json_push_kv_bool(&peers, "local_zclassic23_bootstrap_node_verified",
+                      local_verified_zcl23_bootstrap);
+    json_push_kv_int(&peers, "verified_zclassic23_bootstrap_nodes_seen",
+                     verified_zcl23_peers +
+                         (local_verified_zcl23_bootstrap ? 1 : 0));
+    json_push_kv_bool(&peers, "verified_zclassic23_two_node_floor_met",
+                      verified_zcl23_peers +
+                          (local_verified_zcl23_bootstrap ? 1 : 0) >= 2);
     json_push_kv(result, "peers", &peers);
     json_free(&peers);
 

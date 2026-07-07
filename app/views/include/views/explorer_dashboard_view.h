@@ -19,6 +19,7 @@
 struct explorer_dashboard_network_view {
     size_t peer_count;
     size_t zclassic23_peers;
+    size_t zclassic23_nodes_seen;
     size_t magicbean_peers;
 };
 

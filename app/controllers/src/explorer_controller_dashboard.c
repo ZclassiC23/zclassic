@@ -35,6 +35,7 @@ dashboard_network_view(const struct main_state *ms)
     node_health_collect(&health, NULL, ms);
     out.peer_count = health.peer_count;
     out.zclassic23_peers = health.zclassic_c23_peer_count;
+    out.zclassic23_nodes_seen = health.zclassic_c23_peer_count + 1;
     out.magicbean_peers = health.magicbean_peer_count;
     return out;
 }

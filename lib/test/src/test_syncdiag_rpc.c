@@ -1239,6 +1239,18 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get_int(json_get(peers, "connections")) == 3;
         ok = ok && json_get_int(json_get(peers,
             "zclassic23_peers")) == 2;
+        ok = ok && json_get_bool(json_get(peers,
+            "local_zclassic23_node_included"));
+        ok = ok && json_get_int(json_get(peers,
+            "zclassic23_nodes_seen")) == 3;
+        ok = ok && json_get_bool(json_get(peers,
+            "zclassic23_two_node_floor_met"));
+        ok = ok && json_get_bool(json_get(peers,
+            "local_zclassic23_bootstrap_node_verified"));
+        ok = ok && json_get_int(json_get(peers,
+            "verified_zclassic23_bootstrap_nodes_seen")) == 3;
+        ok = ok && json_get_bool(json_get(peers,
+            "verified_zclassic23_two_node_floor_met"));
         ok = ok && json_get_int(json_get(peers,
             "legacy_compatible_peers")) == 1;
         ok = ok && json_get_int(json_get(peers,

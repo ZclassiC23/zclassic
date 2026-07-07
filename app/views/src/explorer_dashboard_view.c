@@ -107,11 +107,13 @@ static size_t emit_bootstrap_peer_band(uint8_t *r, size_t max, size_t off,
         const struct explorer_dashboard_network_view *n)
 {
     const char *state =
-        (n && n->zclassic23_peers > 0) ? "Ready" : "Searching";
+        (n && n->zclassic23_nodes_seen >= 2) ? "Ready" : "Searching";
     const char *tone =
-        (n && n->zclassic23_peers > 0) ? "bootstrap-ready" : "bootstrap-watch";
+        (n && n->zclassic23_nodes_seen >= 2) ? "bootstrap-ready" :
+                                               "bootstrap-watch";
     size_t peers = n ? n->peer_count : 0;
     size_t z23 = n ? n->zclassic23_peers : 0;
+    size_t z23_nodes = n ? n->zclassic23_nodes_seen : 0;
     size_t legacy = n ? n->magicbean_peers : 0;
 
     APPEND(off, r, max,
@@ -136,12 +138,12 @@ static size_t emit_bootstrap_peer_band(uint8_t *r, size_t max, size_t off,
         "<div class='bb-note'>verified live peer handshakes</div></div>"
         "<div class='bb'><div class='bb-title'>Connected Peers</div>"
         "<div class='bb-value'>%zu</div><div class='bb-note'>handshakes now</div></div>"
-        "<div class='bb bootstrap-ready'><div class='bb-title'>ZClassic23 Peers</div>"
-        "<div class='bb-value'>%zu</div><div class='bb-note'>fast-sync capable</div></div>"
+        "<div class='bb bootstrap-ready'><div class='bb-title'>ZClassic23 Nodes</div>"
+        "<div class='bb-value'>%zu</div><div class='bb-note'>this node + %zu peer%s</div></div>"
         "<div class='bb'><div class='bb-title'>Legacy Peers</div>"
         "<div class='bb-value'>%zu</div><div class='bb-note'>MagicBean-compatible</div></div>"
         "</div>",
-        tone, state, peers, z23, legacy);
+        tone, state, peers, z23_nodes, z23, z23 == 1 ? "" : "s", legacy);
     return off;
 }
 
