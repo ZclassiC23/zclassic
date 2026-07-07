@@ -51,7 +51,7 @@ Useful opt-ins:
   --json
   ZCL_REMOTE_DRY_RUN=0
   ZCL_REMOTE_BUILD=release        build build/bin/zclassic23
-  ZCL_REMOTE_INSTALL_BIN=/home/rhett/bin/zclassic23
+  ZCL_REMOTE_INSTALL_BIN=$HOME/bin/zclassic23
   ZCL_REMOTE_RESTART=1
   ZCL_REMOTE_UNIT=zclassic23-test.service
   ZCL_DEPLOY_ALLOW_CANONICAL=1    permit an intentional canonical restart

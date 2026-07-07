@@ -1173,8 +1173,14 @@ int test_api(void)
             ok = ok && links &&
                  strcmp(json_get_str(json_get(links, "self")),
                         "/api/v1/names/alice") == 0;
+            ok = ok && links &&
+                 strcmp(json_get_str(json_get(links, "services")),
+                        "/api/v1/names/alice/services") == 0;
             ok = ok && strcmp(json_get_str(json_get(links, "collection")),
                               "/api/v1/names") == 0;
+            ok = ok && strcmp(json_get_str(json_get(links,
+                                                    "service_directory")),
+                              "/api/v1/names/{name}/services") == 0;
             ok = ok && verification &&
                  strcmp(json_get_str(json_get(verification, "anchor")),
                         "confirmed_znam_op_return") == 0;
@@ -1183,6 +1189,71 @@ int test_api(void)
                                               "mutation_authority")),
                         "confirmed_chain_history") == 0;
             json_free(&root);
+
+            {
+                uint8_t svc_resp[32768];
+                struct json_value svc_root;
+                rpc_name_set_state(&ndb);
+                size_t sn = api_handle_request(
+                    "GET", "/api/v1/names/alice/services",
+                    NULL, 0, svc_resp, sizeof(svc_resp));
+                rpc_name_set_state(NULL);
+                const char *svc_body =
+                    api_test_body(svc_resp, sn, sizeof(svc_resp));
+                json_init(&svc_root);
+                ok = ok && sn > 0 && svc_body &&
+                     json_read(&svc_root, svc_body, strlen(svc_body));
+                const struct json_value *svc_records =
+                    ok ? json_get(&svc_root, "records") : NULL;
+                const struct json_value *svc_endpoints =
+                    ok ? json_get(&svc_root, "endpoints") : NULL;
+                const struct json_value *svc_onion =
+                    api_test_find_str_field(svc_records, "key",
+                                            "service.onion");
+                ok = ok &&
+                     strcmp(json_get_str(json_get(&svc_root, "schema")),
+                            "zcl.names.service_directory.v1") == 0;
+                ok = ok &&
+                     strcmp(json_get_str(json_get(&svc_root, "name")),
+                            "alice") == 0;
+                ok = ok &&
+                     strcmp(json_get_str(json_get(&svc_root, "self_route")),
+                            "/api/v1/names/alice/services") == 0;
+                ok = ok &&
+                     strcmp(json_get_str(json_get(&svc_root, "name_route")),
+                            "/api/v1/names/alice") == 0;
+                ok = ok &&
+                     strcmp(json_get_str(json_get(&svc_root,
+                                                  "operation_id")),
+                            "znam_names.resolve_service_directory") == 0;
+                ok = ok &&
+                     strcmp(json_get_str(json_get(&svc_root,
+                                                  "operation_route")),
+                            "/api/v1/service-operations/"
+                            "znam_names.resolve_service_directory") == 0;
+                ok = ok &&
+                     strcmp(json_get_str(json_get(&svc_root,
+                                                  "source_projection")),
+                            "znam_projection") == 0;
+                ok = ok &&
+                     json_get_int(json_get(&svc_root,
+                                           "service_record_count")) == 4;
+                ok = ok &&
+                     json_get_int(json_get(&svc_root,
+                                           "endpoint_count")) == 3;
+                ok = ok && svc_records && json_size(svc_records) == 4;
+                ok = ok && svc_endpoints && json_size(svc_endpoints) == 3;
+                ok = ok && svc_onion &&
+                     strcmp(json_get_str(json_get(svc_onion,
+                                                  "contract_resolution_status")),
+                            "resolved") == 0;
+                ok = ok &&
+                     strcmp(json_get_str(json_get(&svc_root,
+                                                  "next_action")),
+                            "use_records_then_run_runtime_probe_before_routing")
+                     == 0;
+                json_free(&svc_root);
+            }
         }
 
         rpc_name_set_state(NULL);
@@ -1381,6 +1452,8 @@ int test_api(void)
             api_test_find_named(resources, "service_catalog");
         const struct json_value *service_operations_resource =
             api_test_find_named(resources, "service_operations");
+        const struct json_value *name_services_resource =
+            api_test_find_named(resources, "name_services");
         ok = ok && resources && json_size(resources) >= 4;
         ok = ok && bootstrap_resource &&
              strcmp(json_get_str(json_get(bootstrap_resource, "collection")),
@@ -1405,6 +1478,9 @@ int test_api(void)
         ok = ok && service_operations_resource &&
              strcmp(json_get_str(json_get(service_operations_resource, "item")),
                     "/api/v1/service-operations/{operation_id}") == 0;
+        ok = ok && name_services_resource &&
+             strcmp(json_get_str(json_get(name_services_resource, "item")),
+                    "/api/v1/names/{name}/services") == 0;
         ok = ok && zslp_resource &&
              strcmp(json_get_str(json_get(zslp_resource, "collection")),
                     "/api/v1/zslp/tokens") == 0;
@@ -1436,6 +1512,8 @@ int test_api(void)
             api_test_find_contract(routes, "/api/v1/protocols/{name}");
         const struct json_value *names =
             api_test_find_contract(routes, "/api/v1/names/{name}");
+        const struct json_value *names_services =
+            api_test_find_contract(routes, "/api/v1/names/{name}/services");
         const struct json_value *legacy_name =
             api_test_find_contract(routes, "/api/v1/name/{name}");
         const struct json_value *swap_chains =
@@ -1655,6 +1733,24 @@ int test_api(void)
         ok = ok && names && strcmp(json_get_str(json_get(names,
                                     "resource_scope")),
                                    "item") == 0;
+        ok = ok && names_services &&
+             strcmp(json_get_str(json_get(names_services,
+                                    "response_schema")),
+                    "zcl.names.service_directory.v1") == 0;
+        ok = ok && names_services &&
+             strcmp(json_get_str(json_get(names_services,
+                                    "crud_name")),
+                    "read_subcollection") == 0;
+        ok = ok && names_services &&
+             strcmp(json_get_str(json_get(names_services,
+                                    "resource_scope")),
+                    "subcollection") == 0;
+        ok = ok && names_services &&
+             strcmp(json_get_str(json_get(names_services,
+                                    "application_protocol")),
+                    "znam") == 0;
+        ok = ok && names_services &&
+             api_test_contract_has_id_param(names_services, "name");
         ok = ok && names &&
              strcmp(json_get_str(json_get(names,
                                     "application_protocol")),
@@ -1986,6 +2082,9 @@ int test_api(void)
                                     "resolve_znam_name");
         ok = ok && ux &&
              api_test_array_has_str(json_get(ux, "flow"),
+                                    "read_name_service_directory");
+        ok = ok && ux &&
+             api_test_array_has_str(json_get(ux, "flow"),
                                     "prefer_direct_p2p_when_handshaked");
         ok = ok && ux &&
              strcmp(json_get_str(json_get(json_get(ux, "routes"),
@@ -1994,6 +2093,10 @@ int test_api(void)
         ok = ok && ux &&
              strcmp(json_get_str(json_get(json_get(ux, "routes"), "names")),
                     "/api/v1/names/{name}") == 0;
+        ok = ok && ux &&
+             strcmp(json_get_str(json_get(json_get(ux, "routes"),
+                                          "name_services")),
+                    "/api/v1/names/{name}/services") == 0;
         const struct json_value *services = json_get(&root, "services");
         ok = ok && services && services->type == JSON_ARR &&
              json_get_int(json_get(&root, "service_count")) ==
@@ -2155,6 +2258,9 @@ int test_api(void)
              api_test_array_has_str(json_get(names, "crud_capabilities"),
                                     "construct_transaction");
         ok = ok && names &&
+             api_test_array_has_str(json_get(names, "crud_capabilities"),
+                                    "read_subcollection");
+        ok = ok && names &&
              api_test_array_has_str(json_get(names, "depends_on_services"),
                                     "full_node");
         ok = ok && names &&
@@ -2163,6 +2269,35 @@ int test_api(void)
         ok = ok && names &&
              strstr(json_get_str(json_get(names, "verified_by")),
                     "op_return") != NULL;
+        const struct json_value *name_services_op =
+            api_test_find_str_field(json_get(names, "operations"),
+                                    "operation",
+                                    "resolve_service_directory");
+        ok = ok && name_services_op &&
+             strcmp(json_get_str(json_get(name_services_op,
+                                          "operation_id")),
+                    "znam_names.resolve_service_directory") == 0;
+        ok = ok && name_services_op &&
+             strcmp(json_get_str(json_get(name_services_op, "rest_route")),
+                    "/api/v1/names/{name}/services") == 0;
+        ok = ok && name_services_op &&
+             strcmp(json_get_str(json_get(name_services_op,
+                                          "crud_capability")),
+                    "read_subcollection") == 0;
+        ok = ok && name_services_op &&
+             strcmp(json_get_str(json_get(name_services_op,
+                                          "output_schema")),
+                    "zcl.names.service_directory.v1") == 0;
+        ok = ok && name_services_op &&
+             strcmp(json_get_str(json_get(name_services_op,
+                                          "agent_preferred_interface")),
+                    "rest") == 0;
+        ok = ok && name_services_op &&
+             json_get_bool(json_get(name_services_op, "rest_callable"));
+        ok = ok && name_services_op &&
+             !json_get_bool(json_get(name_services_op, "mcp_callable"));
+        ok = ok && name_services_op &&
+             !json_get_bool(json_get(name_services_op, "rpc_callable"));
         const struct json_value *name_register_op =
             api_test_find_str_field(json_get(names, "operations"),
                                     "operation",
@@ -2270,14 +2405,14 @@ int test_api(void)
         const struct json_value *znam_facet =
             api_test_find_str_field(service_facets, "service", "znam_names");
         ok = ok && znam_facet &&
-             json_get_int(json_get(znam_facet, "operation_count")) == 3;
+             json_get_int(json_get(znam_facet, "operation_count")) == 4;
         ok = ok && znam_facet &&
-             json_get_int(json_get(znam_facet, "public_read_count")) == 2;
+             json_get_int(json_get(znam_facet, "public_read_count")) == 3;
         ok = ok && znam_facet &&
              json_get_int(json_get(znam_facet, "destructive_count")) == 1;
         ok = ok && znam_facet &&
              json_get_int(json_get(znam_facet,
-                                   "preferred_rest_count")) == 2;
+                                   "preferred_rest_count")) == 3;
         ok = ok && znam_facet &&
              json_get_int(json_get(znam_facet,
                                    "preferred_mcp_count")) == 1;
@@ -2303,6 +2438,21 @@ int test_api(void)
                     "znam_names") == 0;
         ok = ok && resolve_op &&
              strcmp(json_get_str(json_get(resolve_op,
+                                          "agent_preferred_interface")),
+                    "rest") == 0;
+        const struct json_value *resolve_services_op =
+            api_test_find_str_field(operations, "operation_id",
+                                    "znam_names.resolve_service_directory");
+        ok = ok && resolve_services_op &&
+             strcmp(json_get_str(json_get(resolve_services_op,
+                                          "rest_route")),
+                    "/api/v1/names/{name}/services") == 0;
+        ok = ok && resolve_services_op &&
+             strcmp(json_get_str(json_get(resolve_services_op,
+                                          "output_schema")),
+                    "zcl.names.service_directory.v1") == 0;
+        ok = ok && resolve_services_op &&
+             strcmp(json_get_str(json_get(resolve_services_op,
                                           "agent_preferred_interface")),
                     "rest") == 0;
         const struct json_value *register_op =
@@ -2360,14 +2510,16 @@ int test_api(void)
         ok = ok && api_test_array_has_str(json_get(&root,
                           "crud_capabilities"), "construct_transaction");
         ok = ok && api_test_array_has_str(json_get(&root,
+                          "crud_capabilities"), "read_subcollection");
+        ok = ok && api_test_array_has_str(json_get(&root,
                           "depends_on_services"), "full_node");
-        ok = ok && json_get_int(json_get(&root, "operation_count")) >= 3;
+        ok = ok && json_get_int(json_get(&root, "operation_count")) >= 4;
         const struct json_value *znam_summary =
             json_get(&root, "operation_summary");
         ok = ok && znam_summary &&
-             json_get_int(json_get(znam_summary, "operation_count")) == 3;
+             json_get_int(json_get(znam_summary, "operation_count")) == 4;
         ok = ok && znam_summary &&
-             json_get_int(json_get(znam_summary, "public_read_count")) == 2;
+             json_get_int(json_get(znam_summary, "public_read_count")) == 3;
         ok = ok && znam_summary &&
              json_get_int(json_get(znam_summary,
                                    "operator_private_count")) == 1;
@@ -2375,13 +2527,13 @@ int test_api(void)
              json_get_int(json_get(znam_summary, "destructive_count")) == 1;
         ok = ok && znam_summary &&
              json_get_int(json_get(znam_summary,
-                                   "rest_callable_count")) == 2;
+                                   "rest_callable_count")) == 3;
         ok = ok && znam_summary &&
              json_get_int(json_get(znam_summary,
                                    "mcp_callable_count")) == 3;
         ok = ok && znam_summary &&
              json_get_int(json_get(znam_summary,
-                                   "preferred_rest_count")) == 2;
+                                   "preferred_rest_count")) == 3;
         ok = ok && znam_summary &&
              json_get_int(json_get(znam_summary,
                                    "preferred_mcp_count")) == 1;
@@ -2463,6 +2615,33 @@ int test_api(void)
         ok = ok && json_get_bool(json_get(&root, "rpc_callable"));
         ok = ok && json_get_bool(json_get(&root, "public_read"));
         ok = ok && !json_get_bool(json_get(&root, "destructive"));
+        json_free(&root);
+
+        n = api_handle_request("GET",
+                               "/api/v1/service-operations/"
+                               "znam_names.resolve_service_directory",
+                               NULL, 0, show_resp, sizeof(show_resp));
+        body = api_test_body(show_resp, n, sizeof(show_resp));
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "operation_id")),
+                          "znam_names.resolve_service_directory") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "operation")),
+                          "resolve_service_directory") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root,
+                                                "crud_capability")),
+                          "read_subcollection") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "rest_route")),
+                          "/api/v1/names/{name}/services") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root,
+                                                "output_schema")),
+                          "zcl.names.service_directory.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root,
+                                                "agent_preferred_interface")),
+                          "rest") == 0;
+        ok = ok && json_get_bool(json_get(&root, "rest_callable"));
+        ok = ok && !json_get_bool(json_get(&root, "mcp_callable"));
+        ok = ok && !json_get_bool(json_get(&root, "rpc_callable"));
         json_free(&root);
 
         n = api_handle_request("GET",
@@ -2570,6 +2749,9 @@ int test_api(void)
             api_test_openapi_get(&root, "/api/v1/protocols/{name}");
         const struct json_value *names =
             api_test_openapi_get(&root, "/api/v1/names/{name}");
+        const struct json_value *names_services =
+            api_test_openapi_get(&root,
+                                 "/api/v1/names/{name}/services");
         const struct json_value *swap_chains =
             api_test_openapi_get(&root, "/api/v1/swaps/chains");
         const struct json_value *block_show =
@@ -2735,6 +2917,21 @@ int test_api(void)
         ok = ok && names &&
              strstr(json_get_str(json_get(names, "x-zcl-privacy-model")),
                     "public") != NULL;
+        ok = ok && names_services &&
+             strcmp(json_get_str(json_get(names_services,
+                    "x-response-schema")),
+                    "zcl.names.service_directory.v1") == 0;
+        ok = ok && names_services &&
+             strcmp(json_get_str(json_get(names_services,
+                    "x-crud-name")), "read_subcollection") == 0;
+        ok = ok && names_services &&
+             strcmp(json_get_str(json_get(names_services,
+                    "x-resource-scope")), "subcollection") == 0;
+        ok = ok && names_services &&
+             strcmp(json_get_str(json_get(names_services,
+                    "x-zcl-application-protocol")), "znam") == 0;
+        ok = ok && names_services &&
+             api_test_openapi_has_param(names_services, "name", "path");
         ok = ok && swap_chains &&
              strcmp(json_get_str(json_get(swap_chains,
                     "x-zcl-application-protocol")),

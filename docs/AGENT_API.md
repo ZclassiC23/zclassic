@@ -125,7 +125,11 @@ market, messaging, and script-contract capabilities. The operation collection
 also carries `summary`, `service_facets`, `preferred_interface_facets`, and
 `write_safety_facets`; read those first when choosing a workflow or rendering a
 command palette, then fetch the specific operation contract only for the action
-the user selected.
+the user selected. Name service-directory reads are first-class:
+`znam_names.resolve_service_directory` maps to public REST
+`GET /api/v1/names/{name}/services` and returns
+`zcl.names.service_directory.v1` without requiring a client to parse the full
+name profile.
 The collection also carries `sovereign_ux` (`zcl.sovereign_ux_contract.v1`):
 a machine-readable flow from agent status → service catalog → ZNAM resolution
 → endpoint verification → direct P2P/onion routing → versioned CRUD operation.
@@ -163,7 +167,12 @@ service hints remain visible but are explicitly marked `service_unknown` so
 agents do not treat arbitrary text records as trusted node capabilities. The
 nested `runtime_probe` is the same `zcl.service_runtime_probe.v1` object
 exposed by the service catalog member, so agents can verify the live route
-without a second lookup. The directory also publishes
+without a second lookup. When a client only needs routing records, use the
+dedicated subcollection `GET /api/v1/names/{name}/services`; it returns
+`zcl.names.service_directory.v1` with `name_route`, `self_route`,
+`operation_id=znam_names.resolve_service_directory`, concrete
+`operation_route`, and the same
+`records[]`/`endpoints[]` objects. The directory also publishes
 `endpoints[]`, `endpoint_count`, `supports_onion`, `supports_direct_p2p`,
 `supports_bootstrap`, the service/operation contract route templates, the
 runtime probe schema/field name, and a routing policy. Agents should verify the
@@ -1006,8 +1015,8 @@ tools/scripts/remote_node_update.sh rhett@205.209.104.118
 tools/scripts/remote_node_update.sh --json rhett@205.209.104.118
 make remote-node-update-json ZCL_REMOTE_HOST=rhett@205.209.104.118
 ZCL_REMOTE_DRY_RUN=0 ZCL_REMOTE_BUILD=fast-rebuild tools/scripts/remote_node_update.sh rhett@205.209.104.118
-ZCL_REMOTE_DRY_RUN=0 ZCL_REMOTE_BUILD=release ZCL_REMOTE_INSTALL_BIN=/home/rhett/bin/zclassic23 tools/scripts/remote_node_update.sh rhett@205.209.104.118
-ZCL_REMOTE_DRY_RUN=0 ZCL_REMOTE_BUILD=release ZCL_REMOTE_INSTALL_BIN=/home/rhett/bin/zclassic23 ZCL_REMOTE_RESTART=1 ZCL_REMOTE_UNIT=zclassic23-test.service tools/scripts/remote_node_update.sh rhett@205.209.104.118
+ZCL_REMOTE_DRY_RUN=0 ZCL_REMOTE_BUILD=release ZCL_REMOTE_INSTALL_BIN=$HOME/bin/zclassic23 tools/scripts/remote_node_update.sh rhett@205.209.104.118
+ZCL_REMOTE_DRY_RUN=0 ZCL_REMOTE_BUILD=release ZCL_REMOTE_INSTALL_BIN=$HOME/bin/zclassic23 ZCL_REMOTE_RESTART=1 ZCL_REMOTE_UNIT=zclassic23-test.service tools/scripts/remote_node_update.sh rhett@205.209.104.118
 ```
 
 For a node to keep itself warm without giving it restart authority, run

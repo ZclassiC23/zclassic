@@ -83,6 +83,8 @@ void api_rest_index_resources_json(struct json_value *resources)
     api_rest_index_push_resource(resources, "names",
                                  "/api/v1/names",
                                  "/api/v1/names/{name}", false);
+    api_rest_index_push_resource(resources, "name_services", "",
+                                 "/api/v1/names/{name}/services", false);
     api_rest_index_push_resource(resources, "market",
                                  "/api/v1/market", "", false);
     api_rest_index_push_resource(resources, "swaps",

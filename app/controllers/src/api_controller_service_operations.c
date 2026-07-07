@@ -48,37 +48,25 @@ struct api_service_operation_counts {
     int64_t preferred_native_count;
 };
 
+#define API_PUBLIC_REST_OP(service_, operation_, crud_, route_, rpc_, mcp_, \
+                           input_, schema_, authority_, effect_) \
+    { .service_name = service_, .operation = operation_, \
+      .crud_capability = crud_, .status = "active", \
+      .rest_method = "GET", .rest_route = route_, .rpc_method = rpc_, \
+      .mcp_tool = mcp_, .input_contract = input_, \
+      .output_schema = schema_, .authority = authority_, .effect = effect_, \
+      .public_read = true }
+
 static const struct api_service_operation_contract k_api_service_operations[] = {
-    {
-        .service_name = "full_node",
-        .operation = "read_status",
-        .crud_capability = "read_singleton",
-        .status = "active",
-        .rest_method = "GET",
-        .rest_route = "/api/v1/agent",
-        .rpc_method = "agent",
-        .mcp_tool = "zcl_agent",
-        .input_contract = "none",
-        .output_schema = ZCL_PUBLIC_STATUS_SCHEMA,
-        .authority = "public_projection",
-        .effect = "read_only",
-        .public_read = true,
-    },
-    {
-        .service_name = "bootstrap",
-        .operation = "read_bootstrap_status",
-        .crud_capability = "read_singleton",
-        .status = "active",
-        .rest_method = "GET",
-        .rest_route = "/api/v1/bootstrap",
-        .rpc_method = "bootstrapstatus",
-        .mcp_tool = "zcl_bootstrapstatus",
-        .input_contract = "none",
-        .output_schema = "zcl.bootstrap_status.v1",
-        .authority = "public_projection",
-        .effect = "read_only",
-        .public_read = true,
-    },
+    API_PUBLIC_REST_OP("full_node", "read_status", "read_singleton",
+                       "/api/v1/agent", "agent", "zcl_agent", "none",
+                       ZCL_PUBLIC_STATUS_SCHEMA, "public_projection",
+                       "read_only"),
+    API_PUBLIC_REST_OP("bootstrap", "read_bootstrap_status",
+                       "read_singleton", "/api/v1/bootstrap",
+                       "bootstrapstatus", "zcl_bootstrapstatus", "none",
+                       "zcl.bootstrap_status.v1", "public_projection",
+                       "read_only"),
     {
         .service_name = "bootstrap",
         .operation = "inspect_peer_bootstrap_readiness",
@@ -94,36 +82,19 @@ static const struct api_service_operation_contract k_api_service_operations[] = 
         .effect = "read_only",
         .operator_private = true,
     },
-    {
-        .service_name = "znam_names",
-        .operation = "list_names",
-        .crud_capability = "read_collection",
-        .status = "active",
-        .rest_method = "GET",
-        .rest_route = "/api/v1/names",
-        .rpc_method = "name_list",
-        .mcp_tool = "zcl_name_list",
-        .input_contract = "optional_owner_filter",
-        .output_schema = "zcl.names.index.v1",
-        .authority = "confirmed_chain_projection",
-        .effect = "read_only",
-        .public_read = true,
-    },
-    {
-        .service_name = "znam_names",
-        .operation = "resolve_name",
-        .crud_capability = "read_item",
-        .status = "active",
-        .rest_method = "GET",
-        .rest_route = "/api/v1/names/{name}",
-        .rpc_method = "name_resolve",
-        .mcp_tool = "zcl_name_resolve",
-        .input_contract = "name",
-        .output_schema = "zcl.names.show.v1",
-        .authority = "confirmed_chain_projection",
-        .effect = "read_only",
-        .public_read = true,
-    },
+    API_PUBLIC_REST_OP("znam_names", "list_names", "read_collection",
+                       "/api/v1/names", "name_list", "zcl_name_list",
+                       "optional_owner_filter", "zcl.names.index.v1",
+                       "confirmed_chain_projection", "read_only"),
+    API_PUBLIC_REST_OP("znam_names", "resolve_name", "read_item",
+                       "/api/v1/names/{name}", "name_resolve",
+                       "zcl_name_resolve", "name", "zcl.names.show.v1",
+                       "confirmed_chain_projection", "read_only"),
+    API_PUBLIC_REST_OP("znam_names", "resolve_service_directory",
+                       "read_subcollection", "/api/v1/names/{name}/services",
+                       "", "", "name", ZCL_NAMES_SERVICE_DIRECTORY_SCHEMA,
+                       "confirmed_chain_projection",
+                       "read_only_service_directory_projection"),
     {
         .service_name = "znam_names",
         .operation = "construct_name_register",
@@ -352,6 +323,8 @@ static const struct api_service_operation_contract k_api_service_operations[] = 
         .operator_private = true,
     },
 };
+
+#undef API_PUBLIC_REST_OP
 
 static size_t api_service_operation_count(void)
 {

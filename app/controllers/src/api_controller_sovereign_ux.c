@@ -34,7 +34,8 @@ void api_sovereign_ux_contract_json(struct json_value *out)
     json_init(&flow);
     api_app_protocol_csv_json(
         "read_agent_status,inspect_service_catalog,resolve_znam_name,"
-        "verify_service_records,prefer_direct_p2p_when_handshaked,"
+        "read_name_service_directory,verify_service_records,"
+        "prefer_direct_p2p_when_handshaked,"
         "fallback_to_onion_when_needed,use_versioned_crud_operation",
         &flow);
     json_push_kv(out, "flow", &flow);
@@ -53,6 +54,8 @@ void api_sovereign_ux_contract_json(struct json_value *out)
     json_push_kv_str(&routes, "status", "/api/v1/agent");
     json_push_kv_str(&routes, "service_catalog", "/api/v1/service-catalog");
     json_push_kv_str(&routes, "names", "/api/v1/names/{name}");
+    json_push_kv_str(&routes, "name_services",
+                     "/api/v1/names/{name}/services");
     json_push_kv_str(&routes, "bootstrap", "/api/v1/bootstrap");
     json_push_kv_str(&routes, "onion_directory",
                      "/api/v1/onion/announcements");

@@ -24,5 +24,6 @@ void register_name_rpc_commands(struct rpc_table *t);
 #include "json/json.h"
 bool api_name_list(struct json_value *result);
 bool rpc_name_resolve_api(const char *name, struct json_value *result);
+bool api_name_service_directory(const char *name, struct json_value *result);
 
 #endif

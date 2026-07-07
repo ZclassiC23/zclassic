@@ -159,7 +159,8 @@ controller `k_routes[]` arrays.
   `GET /api/v1/service-catalog` /
   `GET /api/v1/service-catalog/{service}` /
   `GET /api/v1/service-operations` /
-  `GET /api/v1/service-operations/{operation_id}` — UX-facing sovereign
+  `GET /api/v1/service-operations/{operation_id}` /
+  `GET /api/v1/names/{name}/services` — UX-facing sovereign
   service catalog. It answers what this node can host, advertise, verify, or
   construct for a user across names, bootstrap, Tor/onion discovery, P2P,
   files, market, messaging, and script contracts. The top-level
@@ -396,7 +397,10 @@ machine-readable: every endpoint hint should include `service_contract`,
 from a confirmed name to a Tor/P2P endpoint, distinguish canonical service
 contracts from arbitrary chain text, prove the linked service is usable on the
 running node, and then reach the exact CRUD operation contract without
-guessing.
+guessing. `GET /api/v1/names/{name}/services` is the narrow read
+subcollection for that same directory; it must stay a copy of the embedded
+`service_directory` model plus standalone route metadata, not a second
+service-record serializer.
 
 ### MCP target gotcha
 `mcp__zcl23-dev__*` hit the DEV node (`~/.zclassic-c23-dev`, port 18252).

@@ -668,7 +668,7 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_push_kv_str(&remote, "enabled_update",
                      "ZCL_REMOTE_DRY_RUN=0 ZCL_REMOTE_BUILD=fast-rebuild tools/scripts/remote_node_update.sh host");
     json_push_kv_str(&remote, "release_install",
-                     "ZCL_REMOTE_DRY_RUN=0 ZCL_REMOTE_BUILD=release ZCL_REMOTE_INSTALL_BIN=/home/rhett/bin/zclassic23 tools/scripts/remote_node_update.sh host");
+                     "ZCL_REMOTE_DRY_RUN=0 ZCL_REMOTE_BUILD=release ZCL_REMOTE_INSTALL_BIN=$HOME/bin/zclassic23 tools/scripts/remote_node_update.sh host");
     json_push_kv_bool(&remote, "main_only", true);
     json_push_kv_bool(&remote, "fast_forward_only", true);
     json_push_kv_bool(&remote, "json_summary", true);

@@ -138,7 +138,8 @@ static const struct api_service_contract k_api_services[] = {
             "confirmed_znam_projection_route_returns_valid_json",
         .runtime_probe_failure_next_action =
             "inspect_agent_readiness_and_znam_projection",
-        .crud_capabilities_csv = "read_collection,read_item,construct_transaction",
+        .crud_capabilities_csv =
+            "read_collection,read_item,read_subcollection,construct_transaction",
         .transports_csv = "rest,mcp,native,chain",
         .object_types_csv = "name_record,service_record,endpoint_record,text_record",
         .depends_on_services_csv = "full_node",

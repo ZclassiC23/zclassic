@@ -119,11 +119,15 @@ static void append_name_crud_links(struct json_value *obj, const char *name)
     json_push_kv_str(&links, "protocol", "/api/v1/protocols/znam");
     json_push_kv_str(&links, "create", "name_register");
     json_push_kv_str(&links, "read", "/api/v1/names/{name}");
+    json_push_kv_str(&links, "service_directory",
+                     "/api/v1/names/{name}/services");
     json_push_kv_str(&links, "update", "name_register/update OP_RETURN");
     json_push_kv_str(&links, "delete", "not_supported_by_znam_v1");
     if (name && name[0]) {
         snprintf(self, sizeof(self), "/api/v1/names/%s", name);
         json_push_kv_str(&links, "self", self);
+        snprintf(self, sizeof(self), "/api/v1/names/%s/services", name);
+        json_push_kv_str(&links, "services", self);
     }
     json_push_kv(obj, "_links", &links);
     json_free(&links);
@@ -344,7 +348,7 @@ static void append_service_directory(struct json_value *obj,
 
     json_set_object(&directory);
     json_push_kv_str(&directory, "schema",
-                     "zcl.names.service_directory.v1");
+                     ZCL_NAMES_SERVICE_DIRECTORY_SCHEMA);
     json_push_kv_int(&directory, "schema_version", 1);
     json_push_kv_str(&directory, "source", "znam_text_records");
     json_push_kv_str(&directory, "transport_model",
@@ -738,6 +742,46 @@ bool rpc_name_resolve_api(const char *name, struct json_value *result)
     struct znam_entry entry;
     if (!db_znam_find(g_name_ndb, name, &entry)) LOG_FAIL("name", "name '%s' not found in database", name);
     entry_to_show_json(&entry, result);
+    return true;
+}
+
+bool api_name_service_directory(const char *name, struct json_value *result)
+{
+    struct json_value show = {0};
+    const struct json_value *directory;
+    char route[256];
+
+    if (!name)
+        LOG_FAIL("name", "api_name_service_directory called with NULL name");
+    if (!result)
+        LOG_FAIL("name", "api_name_service_directory called with NULL result");
+
+    if (!rpc_name_resolve_api(name, &show)) {
+        json_free(&show);
+        return false;
+    }
+
+    directory = json_get(&show, "service_directory");
+    if (!directory) {
+        json_free(&show);
+        LOG_FAIL("name", "service_directory missing for name '%s'", name);
+    }
+
+    json_copy(result, directory);
+    json_push_kv_str(result, "name", name);
+    snprintf(route, sizeof(route), "/api/v1/names/%s", name);
+    json_push_kv_str(result, "name_route", route);
+    snprintf(route, sizeof(route), "/api/v1/names/%s/services", name);
+    json_push_kv_str(result, "self_route", route);
+    json_push_kv_str(result, "operation_id",
+                     "znam_names.resolve_service_directory");
+    json_push_kv_str(result, "operation_route",
+                     "/api/v1/service-operations/"
+                     "znam_names.resolve_service_directory");
+    json_push_kv_str(result, "parent_schema", "zcl.names.show.v1");
+    json_push_kv_str(result, "next_action",
+                     "use_records_then_run_runtime_probe_before_routing");
+    json_free(&show);
     return true;
 }
 
