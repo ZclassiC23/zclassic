@@ -276,6 +276,46 @@ static void api_contract_crypto_policy_json(struct json_value *out)
     json_push_kv_bool(out, "signature_scheme_claimed", false);
 }
 
+static void api_contract_service_binding_json(struct json_value *item,
+                                              const char *method,
+                                              const char *public_path,
+                                              const char *alias_of)
+{
+    struct json_value binding;
+    const char *binding_path =
+        alias_of && alias_of[0] ? alias_of : public_path;
+
+    if (!item || !method || !binding_path)
+        return;
+
+    json_init(&binding);
+    if (!api_service_operation_for_rest_route(method, binding_path,
+                                              &binding)) {
+        json_free(&binding);
+        return;
+    }
+
+    const char *service = json_get_str(json_get(&binding, "service"));
+    const char *service_route =
+        json_get_str(json_get(&binding, "service_catalog_route"));
+    const char *operation_id =
+        json_get_str(json_get(&binding, "operation_id"));
+    const char *operation_route =
+        json_get_str(json_get(&binding, "self_route"));
+
+    if (service && service[0])
+        json_push_kv_str(item, "service_contract", service);
+    if (service_route && service_route[0])
+        json_push_kv_str(item, "service_catalog_route", service_route);
+    if (operation_id && operation_id[0])
+        json_push_kv_str(item, "service_operation_id", operation_id);
+    if (operation_route && operation_route[0])
+        json_push_kv_str(item, "service_operation_route",
+                         operation_route);
+    json_push_kv(item, "service_binding", &binding);
+    json_free(&binding);
+}
+
 static void api_contract_push(struct json_value *out, const char *method,
                               const char *path, const char *resource,
                               const char *action,
@@ -334,6 +374,7 @@ static void api_contract_push(struct json_value *out, const char *method,
     if (strcmp(path, "/api/supply") == 0)
         json_push_kv_str(&item, "compat_response_schema",
                          "zcl.supply_legacy_number.v1");
+    api_contract_service_binding_json(&item, method, public_path, alias_of);
     if (protocol) {
         json_push_kv_str(&item, "layer", protocol->layer);
         json_push_kv_str(&item, "base_layer", protocol->base_layer);

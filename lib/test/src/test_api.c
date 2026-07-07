@@ -1676,12 +1676,44 @@ int test_api(void)
         ok = ok && bootstrap &&
              strcmp(json_get_str(json_get(bootstrap, "freshness")),
                     "network_bootstrap") == 0;
+        const struct json_value *bootstrap_binding =
+            bootstrap ? json_get(bootstrap, "service_binding") : NULL;
+        ok = ok && bootstrap &&
+             strcmp(json_get_str(json_get(bootstrap, "service_contract")),
+                    "bootstrap") == 0;
+        ok = ok && bootstrap &&
+             strcmp(json_get_str(json_get(bootstrap,
+                                          "service_catalog_route")),
+                    "/api/v1/service-catalog/bootstrap") == 0;
+        ok = ok && bootstrap &&
+             strcmp(json_get_str(json_get(bootstrap,
+                                          "service_operation_id")),
+                    "bootstrap.read_bootstrap_status") == 0;
+        ok = ok && bootstrap &&
+             strcmp(json_get_str(json_get(bootstrap,
+                                          "service_operation_route")),
+                    "/api/v1/service-operations/"
+                    "bootstrap.read_bootstrap_status") == 0;
+        ok = ok && bootstrap_binding &&
+             strcmp(json_get_str(json_get(bootstrap_binding,
+                                          "operation_id")),
+                    "bootstrap.read_bootstrap_status") == 0;
+        ok = ok && bootstrap_binding &&
+             strcmp(json_get_str(json_get(bootstrap_binding,
+                                          "agent_preferred_interface")),
+                    "rest") == 0;
+        ok = ok && bootstrap_binding &&
+             json_get_bool(json_get(bootstrap_binding, "public_read"));
         ok = ok && bootstrap && !json_get_bool(json_get(bootstrap,
                                                         "private"));
         ok = ok && legacy_bootstrap &&
              strcmp(json_get_str(json_get(legacy_bootstrap,
                                           "legacy_alias_of")),
                     "/api/v1/bootstrap") == 0;
+        ok = ok && legacy_bootstrap &&
+             strcmp(json_get_str(json_get(legacy_bootstrap,
+                                          "service_operation_id")),
+                    "bootstrap.read_bootstrap_status") == 0;
         ok = ok && hodl && strcmp(json_get_str(json_get(hodl,
                                     "error_schema")),
                                   "zcl.rest_error.v1") == 0;
@@ -1879,6 +1911,34 @@ int test_api(void)
                     "znam") == 0;
         ok = ok && names_services &&
              api_test_contract_has_id_param(names_services, "name");
+        const struct json_value *names_services_binding =
+            names_services ? json_get(names_services, "service_binding")
+                           : NULL;
+        ok = ok && names_services &&
+             strcmp(json_get_str(json_get(names_services,
+                                          "service_contract")),
+                    "znam_names") == 0;
+        ok = ok && names_services &&
+             strcmp(json_get_str(json_get(names_services,
+                                          "service_catalog_route")),
+                    "/api/v1/service-catalog/znam_names") == 0;
+        ok = ok && names_services &&
+             strcmp(json_get_str(json_get(names_services,
+                                          "service_operation_id")),
+                    "znam_names.resolve_service_directory") == 0;
+        ok = ok && names_services &&
+             strcmp(json_get_str(json_get(names_services,
+                                          "service_operation_route")),
+                    "/api/v1/service-operations/"
+                    "znam_names.resolve_service_directory") == 0;
+        ok = ok && names_services_binding &&
+             strcmp(json_get_str(json_get(names_services_binding,
+                                          "output_schema")),
+                    "zcl.names.service_directory.v1") == 0;
+        ok = ok && names_services_binding &&
+             strcmp(json_get_str(json_get(names_services_binding,
+                                          "authority")),
+                    "confirmed_chain_projection") == 0;
         ok = ok && names &&
              strcmp(json_get_str(json_get(names,
                                     "application_protocol")),
@@ -2919,6 +2979,16 @@ int test_api(void)
              strcmp(json_get_str(json_get(json_get(bootstrap,
                     "x-zcl-telemetry"), "freshness_source")),
                     "network_bootstrap") == 0;
+        const struct json_value *bootstrap_openapi_binding =
+            bootstrap ? json_get(bootstrap, "x-zcl-service-binding") : NULL;
+        ok = ok && bootstrap_openapi_binding &&
+             strcmp(json_get_str(json_get(bootstrap_openapi_binding,
+                                          "operation_id")),
+                    "bootstrap.read_bootstrap_status") == 0;
+        ok = ok && bootstrap_openapi_binding &&
+             strcmp(json_get_str(json_get(bootstrap_openapi_binding,
+                                          "service")),
+                    "bootstrap") == 0;
         ok = ok && legacy_bootstrap &&
              strcmp(json_get_str(json_get(legacy_bootstrap,
                                           "x-legacy-alias-of")),
@@ -3060,6 +3130,17 @@ int test_api(void)
                     "x-zcl-application-protocol")), "znam") == 0;
         ok = ok && names_services &&
              api_test_openapi_has_param(names_services, "name", "path");
+        const struct json_value *names_services_openapi_binding =
+            names_services ? json_get(names_services,
+                                      "x-zcl-service-binding") : NULL;
+        ok = ok && names_services_openapi_binding &&
+             strcmp(json_get_str(json_get(names_services_openapi_binding,
+                                          "operation_id")),
+                    "znam_names.resolve_service_directory") == 0;
+        ok = ok && names_services_openapi_binding &&
+             strcmp(json_get_str(json_get(names_services_openapi_binding,
+                                          "output_schema")),
+                    "zcl.names.service_directory.v1") == 0;
         ok = ok && swap_chains &&
              strcmp(json_get_str(json_get(swap_chains,
                     "x-zcl-application-protocol")),

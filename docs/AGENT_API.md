@@ -106,6 +106,12 @@ collection: `GET /api/v1/service-operations` lists every operation, and
 routes when the question is "what can this node host, advertise, verify, or
 construct for a user?" They distinguish the stable service contract from
 `/api/v1/services`, which remains runtime health.
+REST route contracts bind back to this registry when a route is owned by a
+REST-callable service operation: `/api/v1` emits `service_contract`,
+`service_catalog_route`, `service_operation_id`, `service_operation_route`, and
+the embedded `service_binding`; `/api/v1/openapi` mirrors the same operation
+object as `x-zcl-service-binding`. Prefer these fields over hardcoded
+route-to-service maps.
 The collection schema is `zcl.service_catalog.v1`; the member schema is
 `zcl.service_contract.v1`; the operation collection schema is
 `zcl.service_operations.index.v1`; operation members use

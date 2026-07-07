@@ -345,6 +345,11 @@ by `api_route_contracts_json()` carries `crud_operation` (`read`, `create`,
 `layer`, `source_anchor`, `read_model`, `write_semantics`,
 `consensus_boundary`, object types, UX surfaces, projection/reorg behavior,
 cryptographic model, transport model, privacy model, and diagnostics surface.
+Routes backed by a REST-callable service operation also carry
+`service_contract`, `service_catalog_route`, `service_operation_id`,
+`service_operation_route`, and embedded `service_binding`; OpenAPI mirrors that
+as `x-zcl-service-binding`. Keep those bindings generated from
+`api_controller_service_operations.c`, not duplicated in route docs.
 Keep `/api/v1` and `/api/v1/openapi` generated from that
 one contract source and pin representative collection/item/singleton routes in
 `test_api` whenever adding a new route shape. Service-operation member routes

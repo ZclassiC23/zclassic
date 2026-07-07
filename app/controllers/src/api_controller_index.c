@@ -409,6 +409,10 @@ static void api_openapi_operation_json(const struct json_value *contract,
         json_get(contract, "crypto_policy");
     if (crypto_policy)
         json_push_kv(operation, "x-zcl-crypto-policy", crypto_policy);
+    const struct json_value *service_binding =
+        json_get(contract, "service_binding");
+    if (service_binding)
+        json_push_kv(operation, "x-zcl-service-binding", service_binding);
     const struct json_value *id_params = json_get(contract, "id_params");
     if (id_params)
         json_push_kv(operation, "x-id-params", id_params);

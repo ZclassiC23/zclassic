@@ -166,6 +166,9 @@ bool api_service_operations_index_json(struct json_value *out);
 bool api_service_operation_show_json(const char *operation_id,
                                      struct json_value *out);
 bool api_service_operation_has_id(const char *operation_id);
+bool api_service_operation_for_rest_route(const char *method,
+                                          const char *route,
+                                          struct json_value *out);
 void api_sovereign_ux_contract_json(struct json_value *out);
 void api_app_protocol_push_openapi_extensions(
     const struct json_value *contract,

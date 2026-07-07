@@ -419,6 +419,7 @@ bool api_service_operation_has_id(const char *operation_id)
 {
     return api_service_operation_lookup_id(operation_id) != NULL;
 }
+
 static void api_service_operation_json(
     struct json_value *obj,
     const struct api_service_operation_contract *op)
@@ -485,6 +486,29 @@ static void api_service_operation_json(
     json_push_kv_bool(obj, "public_read", op->public_read);
     json_push_kv_bool(obj, "operator_private", op->operator_private);
     json_push_kv_bool(obj, "destructive", op->destructive);
+}
+
+bool api_service_operation_for_rest_route(const char *method,
+                                          const char *route,
+                                          struct json_value *out)
+{
+    if (!method || !route || !out)
+        return false; /* raw-return-ok:predicate-null-input */
+
+    for (size_t i = 0; i < api_service_operation_count(); i++) {
+        const struct api_service_operation_contract *op =
+            &k_api_service_operations[i];
+        if (!op->rest_method || !op->rest_route ||
+            !op->rest_method[0] || !op->rest_route[0])
+            continue;
+        if (strcmp(op->rest_method, method) == 0 &&
+            strcmp(op->rest_route, route) == 0) {
+            api_service_operation_json(out, op);
+            return true;
+        }
+    }
+
+    return false; /* raw-return-ok:predicate-negative-match */
 }
 
 static void api_service_operation_counts_add(
