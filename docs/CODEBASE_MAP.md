@@ -165,8 +165,11 @@ controller `k_routes[]` arrays.
   files, market, messaging, and script contracts. The top-level
   `sovereign_ux` object gives agents the canonical names→services→Tor/P2P→CRUD
   flow, and member contracts expose `depends_on_services`, `read_model`,
-  `write_model`, `operation_summary`, and `operations[]` so agents do not infer
-  dependencies or write safety from prose. Operation IDs are stable
+  `write_model`, `runtime_probe`, `operation_summary`, and `operations[]` so
+  agents do not infer dependencies, live proof routes, or write safety from
+  prose. `runtime_probe` is the per-service recipe for verifying the running
+  node: route, expected schema, freshness source, success signal, operation
+  contract link, and next action on failure. Operation IDs are stable
   `service.operation` strings, such as `znam_names.resolve_name`. Each
   operation also publishes
   `service_catalog_route`, `agent_preferred_interface`, `agent_next_step`, and

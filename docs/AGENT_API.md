@@ -133,7 +133,12 @@ Each member contract carries `depends_on_services`, `read_model`, and
 `write_model`; use those fields instead of hand-inferring service dependencies.
 Each member also carries `operation_summary`, a compact count of public reads,
 operator-private calls, destructive calls, callable surfaces, status buckets,
-and preferred interfaces for that service's `operations[]`.
+and preferred interfaces for that service's `operations[]`. Each member also
+has `runtime_probe` (`zcl.service_runtime_probe.v1`): the concrete REST route,
+operation contract link, expected response schema, freshness source, success
+signal, and failure next action to prove the service is usable on the running
+node. Use it before telling a user that bootstrap, ZNAM, onion discovery, file
+services, market, messaging, script contracts, or telemetry are live.
 
 ZNAM resolution responses (`zcl.names.show.v1`) normalize service text records
 for agents. In addition to raw `text_records`, read `service_records[]` and

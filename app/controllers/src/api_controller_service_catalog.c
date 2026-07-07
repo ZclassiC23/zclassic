@@ -21,6 +21,12 @@ struct api_service_contract {
     const char *rest_collection;
     const char *rest_item;
     const char *runtime_health_route;
+    const char *runtime_probe_route;
+    const char *runtime_probe_operation_id;
+    const char *runtime_probe_expected_schema;
+    const char *runtime_probe_freshness;
+    const char *runtime_probe_success_signal;
+    const char *runtime_probe_failure_next_action;
     const char *crud_capabilities_csv;
     const char *transports_csv;
     const char *object_types_csv;
@@ -60,6 +66,13 @@ static const struct api_service_contract k_api_services[] = {
         .rest_collection = "/api/v1/agent",
         .rest_item = "",
         .runtime_health_route = "/api/v1/services",
+        .runtime_probe_route = "/api/v1/agent",
+        .runtime_probe_operation_id = "full_node.read_status",
+        .runtime_probe_expected_schema = ZCL_PUBLIC_STATUS_SCHEMA,
+        .runtime_probe_freshness = "served_height",
+        .runtime_probe_success_signal =
+            "chain_serving_ready=true_and_operator_action_required=false",
+        .runtime_probe_failure_next_action = "inspect_agentdiagnose",
         .crud_capabilities_csv = "read_singleton",
         .transports_csv = "rest,mcp,native,p2p",
         .object_types_csv = "block_header,block,transaction,peer",
@@ -84,6 +97,14 @@ static const struct api_service_contract k_api_services[] = {
         .rest_collection = "/api/v1/bootstrap",
         .rest_item = "",
         .runtime_health_route = "/api/v1/services",
+        .runtime_probe_route = "/api/v1/bootstrap",
+        .runtime_probe_operation_id = "bootstrap.read_bootstrap_status",
+        .runtime_probe_expected_schema = "zcl.bootstrap_status.v1",
+        .runtime_probe_freshness = "network_bootstrap",
+        .runtime_probe_success_signal =
+            "serving_p2p_bootstrap=true_and_zclassic23_fast_sync_compatible=true",
+        .runtime_probe_failure_next_action =
+            "inspect_peer_bootstrap_readiness",
         .crud_capabilities_csv = "read_singleton",
         .transports_csv = "rest,mcp,native,p2p",
         .object_types_csv = "bootstrap_status,snapshot_offer,peer_capability",
@@ -109,6 +130,14 @@ static const struct api_service_contract k_api_services[] = {
         .rest_collection = "/api/v1/names",
         .rest_item = "/api/v1/names/{name}",
         .runtime_health_route = "/api/v1/services",
+        .runtime_probe_route = "/api/v1/names",
+        .runtime_probe_operation_id = "znam_names.list_names",
+        .runtime_probe_expected_schema = "zcl.names.index.v1",
+        .runtime_probe_freshness = "znam_projection",
+        .runtime_probe_success_signal =
+            "confirmed_znam_projection_route_returns_valid_json",
+        .runtime_probe_failure_next_action =
+            "inspect_agent_readiness_and_znam_projection",
         .crud_capabilities_csv = "read_collection,read_item,construct_transaction",
         .transports_csv = "rest,mcp,native,chain",
         .object_types_csv = "name_record,service_record,endpoint_record,text_record",
@@ -132,6 +161,15 @@ static const struct api_service_contract k_api_services[] = {
         .rest_collection = "/api/v1/onion/announcements",
         .rest_item = "",
         .runtime_health_route = "/api/v1/services",
+        .runtime_probe_route = "/api/v1/onion/announcements",
+        .runtime_probe_operation_id =
+            "onion_directory.list_onion_announcements",
+        .runtime_probe_expected_schema =
+            "zcl.onion_announcements.index.v1",
+        .runtime_probe_freshness = "onion_projection",
+        .runtime_probe_success_signal =
+            "onion_announcement_projection_route_returns_valid_json",
+        .runtime_probe_failure_next_action = "inspect_onion_status",
         .crud_capabilities_csv = "read_collection",
         .transports_csv = "rest,onion,p2p",
         .object_types_csv = "onion_announcement,clearnet_endpoint,service_hint",
@@ -156,6 +194,14 @@ static const struct api_service_contract k_api_services[] = {
         .rest_collection = "/api/v1/file-services",
         .rest_item = "/api/v1/files/{sha3}",
         .runtime_health_route = "/api/v1/services",
+        .runtime_probe_route = "/api/v1/file-services",
+        .runtime_probe_operation_id = "file_services.list_file_services",
+        .runtime_probe_expected_schema = "zcl.file_services.index.v1",
+        .runtime_probe_freshness = "file_service_projection",
+        .runtime_probe_success_signal =
+            "file_service_projection_route_returns_valid_json",
+        .runtime_probe_failure_next_action =
+            "inspect_file_service_projection_and_market_offers",
         .crud_capabilities_csv = "read_collection,read_item",
         .transports_csv = "rest,onion,p2p",
         .object_types_csv = "content_hash,file_manifest,chunk,mirror",
@@ -180,6 +226,14 @@ static const struct api_service_contract k_api_services[] = {
         .rest_collection = "/api/v1/market",
         .rest_item = "",
         .runtime_health_route = "/api/v1/services",
+        .runtime_probe_route = "/api/v1/market",
+        .runtime_probe_operation_id = "market.list_market",
+        .runtime_probe_expected_schema = "zcl.market.index.v1",
+        .runtime_probe_freshness = "market_projection",
+        .runtime_probe_success_signal =
+            "market_projection_route_returns_valid_json",
+        .runtime_probe_failure_next_action =
+            "inspect_market_projection_and_events",
         .crud_capabilities_csv = "read_collection,create_offer,create_purchase",
         .transports_csv = "rest,onion,p2p,chain",
         .object_types_csv =
@@ -206,6 +260,14 @@ static const struct api_service_contract k_api_services[] = {
         .rest_collection = "/api/v1/messages",
         .rest_item = "",
         .runtime_health_route = "/api/v1/services",
+        .runtime_probe_route = "/api/v1/messages",
+        .runtime_probe_operation_id = "messaging.read_inbox",
+        .runtime_probe_expected_schema = "zcl.messages.index.v1",
+        .runtime_probe_freshness = "message_projection",
+        .runtime_probe_success_signal =
+            "operator_private_message_projection_route_returns_valid_json",
+        .runtime_probe_failure_next_action =
+            "call_mcp_msg_inbox_with_operator_context",
         .crud_capabilities_csv = "read_collection,create_message",
         .transports_csv = "mcp,native,p2p,planned_sapling_memo",
         .object_types_csv = "p2p_message,delivery_receipt,planned_memo_message",
@@ -231,6 +293,14 @@ static const struct api_service_contract k_api_services[] = {
         .rest_collection = "/api/v1/swaps/chains",
         .rest_item = "",
         .runtime_health_route = "/api/v1/services",
+        .runtime_probe_route = "/api/v1/swaps/chains",
+        .runtime_probe_operation_id = "script_contracts.list_swap_chains",
+        .runtime_probe_expected_schema = "zcl.swaps.chains.v1",
+        .runtime_probe_freshness = "static_contract_registry",
+        .runtime_probe_success_signal =
+            "static_script_contract_registry_available",
+        .runtime_probe_failure_next_action =
+            "inspect_script_contract_registry_build",
         .crud_capabilities_csv = "read_capabilities,construct_contract",
         .transports_csv = "rest,mcp,native,chain",
         .object_types_csv = "htlc_contract,redeem_script,refund_path",
@@ -255,6 +325,14 @@ static const struct api_service_contract k_api_services[] = {
         .rest_collection = "/api/v1/events",
         .rest_item = "",
         .runtime_health_route = "/api/v1/services",
+        .runtime_probe_route = "/api/v1/events",
+        .runtime_probe_operation_id = "events.read_events",
+        .runtime_probe_expected_schema = "zcl.events.index.v1",
+        .runtime_probe_freshness = "event_projection",
+        .runtime_probe_success_signal =
+            "event_projection_route_returns_valid_json",
+        .runtime_probe_failure_next_action =
+            "inspect_timeline_or_node_log",
         .crud_capabilities_csv = "read_collection",
         .transports_csv = "rest,mcp,native",
         .object_types_csv = "event,incident,timeline_cursor",
@@ -381,6 +459,38 @@ static void api_service_operation_summary_json(
                      counts.preferred_native_count);
 }
 
+static void api_service_runtime_probe_json(
+    const struct api_service_contract *svc,
+    struct json_value *probe)
+{
+    char operation_route[192];
+
+    if (!probe || !svc)
+        return;
+
+    snprintf(operation_route, sizeof(operation_route),
+             "/api/v1/service-operations/%s",
+             svc->runtime_probe_operation_id);
+    operation_route[sizeof(operation_route) - 1] = '\0';
+
+    json_set_object(probe);
+    json_push_kv_str(probe, "schema", ZCL_SERVICE_RUNTIME_PROBE_SCHEMA);
+    json_push_kv_str(probe, "route", svc->runtime_probe_route);
+    json_push_kv_str(probe, "operation_id",
+                     svc->runtime_probe_operation_id);
+    json_push_kv_str(probe, "operation_route", operation_route);
+    json_push_kv_str(probe, "expected_schema",
+                     svc->runtime_probe_expected_schema);
+    json_push_kv_str(probe, "freshness",
+                     svc->runtime_probe_freshness);
+    json_push_kv_str(probe, "success_signal",
+                     svc->runtime_probe_success_signal);
+    json_push_kv_str(probe, "failure_next_action",
+                     svc->runtime_probe_failure_next_action);
+    json_push_kv_bool(probe, "operator_private",
+                      !svc->public_read);
+}
+
 static void api_service_object_json(struct json_value *obj,
                                     const struct api_service_contract *svc)
 {
@@ -390,6 +500,7 @@ static void api_service_object_json(struct json_value *obj,
     struct json_value dependencies;
     struct json_value operations;
     struct json_value operation_summary;
+    struct json_value runtime_probe;
     char self_route[128];
 
     if (!obj || !svc)
@@ -411,6 +522,10 @@ static void api_service_object_json(struct json_value *obj,
     json_push_kv_str(obj, "self_route", self_route);
     json_push_kv_str(obj, "runtime_health_route",
                      svc->runtime_health_route);
+    json_init(&runtime_probe);
+    api_service_runtime_probe_json(svc, &runtime_probe);
+    json_push_kv(obj, "runtime_probe", &runtime_probe);
+    json_free(&runtime_probe);
 
     json_init(&crud);
     api_app_protocol_csv_json(svc->crud_capabilities_csv, &crud);
@@ -489,6 +604,8 @@ bool api_service_catalog_json(struct json_value *out)
     json_push_kv_str(out, "operation_route",
                      "/api/v1/service-operations/{operation_id}");
     json_push_kv_str(out, "operation_schema", ZCL_SERVICE_OPERATION_SCHEMA);
+    json_push_kv_str(out, "runtime_probe_schema",
+                     ZCL_SERVICE_RUNTIME_PROBE_SCHEMA);
     json_push_kv_str(out, "consensus_boundary",
                      "services interpret, index, advertise, or construct "
                      "valid ZCL data without changing legacy consensus");

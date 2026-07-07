@@ -1802,6 +1802,9 @@ int test_api(void)
         ok = ok && strcmp(json_get_str(json_get(&root,
                           "operation_schema")),
                           "zcl.service_operation.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root,
+                          "runtime_probe_schema")),
+                          "zcl.service_runtime_probe.v1") == 0;
         ok = ok && strstr(json_get_str(json_get(&root,
                           "consensus_boundary")),
                           "legacy consensus") != NULL;
@@ -1859,6 +1862,39 @@ int test_api(void)
         ok = ok && bootstrap &&
              strcmp(json_get_str(json_get(bootstrap, "read_model")),
                     "network_bootstrap_status_and_peer_projection") == 0;
+        const struct json_value *bootstrap_probe =
+            json_get(bootstrap, "runtime_probe");
+        ok = ok && bootstrap_probe &&
+             strcmp(json_get_str(json_get(bootstrap_probe, "schema")),
+                    "zcl.service_runtime_probe.v1") == 0;
+        ok = ok && bootstrap_probe &&
+             strcmp(json_get_str(json_get(bootstrap_probe, "route")),
+                    "/api/v1/bootstrap") == 0;
+        ok = ok && bootstrap_probe &&
+             strcmp(json_get_str(json_get(bootstrap_probe, "operation_id")),
+                    "bootstrap.read_bootstrap_status") == 0;
+        ok = ok && bootstrap_probe &&
+             strcmp(json_get_str(json_get(bootstrap_probe,
+                                          "operation_route")),
+                    "/api/v1/service-operations/"
+                    "bootstrap.read_bootstrap_status") == 0;
+        ok = ok && bootstrap_probe &&
+             strcmp(json_get_str(json_get(bootstrap_probe,
+                                          "expected_schema")),
+                    "zcl.bootstrap_status.v1") == 0;
+        ok = ok && bootstrap_probe &&
+             strcmp(json_get_str(json_get(bootstrap_probe, "freshness")),
+                    "network_bootstrap") == 0;
+        ok = ok && bootstrap_probe &&
+             strstr(json_get_str(json_get(bootstrap_probe,
+                                          "success_signal")),
+                    "zclassic23_fast_sync_compatible") != NULL;
+        ok = ok && bootstrap_probe &&
+             strcmp(json_get_str(json_get(bootstrap_probe,
+                                          "failure_next_action")),
+                    "inspect_peer_bootstrap_readiness") == 0;
+        ok = ok && !json_get_bool(json_get(bootstrap_probe,
+                                           "operator_private"));
         const struct json_value *bootstrap_summary =
             json_get(bootstrap, "operation_summary");
         ok = ok && bootstrap_summary &&
@@ -2145,6 +2181,25 @@ int test_api(void)
                           "znam_projection_confirmed_chain_records") == 0;
         ok = ok && strcmp(json_get_str(json_get(&root, "write_model")),
                           "construct_znam_op_return_transactions") == 0;
+        const struct json_value *znam_probe =
+            json_get(&root, "runtime_probe");
+        ok = ok && znam_probe &&
+             strcmp(json_get_str(json_get(znam_probe, "schema")),
+                    "zcl.service_runtime_probe.v1") == 0;
+        ok = ok && znam_probe &&
+             strcmp(json_get_str(json_get(znam_probe, "route")),
+                    "/api/v1/names") == 0;
+        ok = ok && znam_probe &&
+             strcmp(json_get_str(json_get(znam_probe, "operation_id")),
+                    "znam_names.list_names") == 0;
+        ok = ok && znam_probe &&
+             strcmp(json_get_str(json_get(znam_probe, "expected_schema")),
+                    "zcl.names.index.v1") == 0;
+        ok = ok && znam_probe &&
+             strcmp(json_get_str(json_get(znam_probe, "freshness")),
+                    "znam_projection") == 0;
+        ok = ok && !json_get_bool(json_get(znam_probe,
+                                           "operator_private"));
         name_register_op =
             api_test_find_str_field(json_get(&root, "operations"),
                                     "operation",
