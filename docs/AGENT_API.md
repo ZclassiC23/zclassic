@@ -270,6 +270,14 @@ versioned as `zcl.agent_runtime_identity.v1`, `zcl.agent_capability.v1`, and
 `zcl.agent_machine_contract.v1`. Future operator APIs should extend that matrix
 before adding new wrapper behavior.
 
+`capabilities[]` is registry-owned: canonical rows and append-only v1 aliases
+are emitted through `agent_push_contract_capability_json()` from
+`agent_contracts.def`, so `method`, `schema`, `native`, `mcp`, `rest`, and
+`contract_source` do not drift between `agentinterface`, `agentcontracts`,
+MCP, and native CLI help. Alias rows set `registry_alias=true` and name their
+`canonical_capability`; keep compatibility aliases there instead of repeating
+schema/tool strings in `agent_interface_controller.c`.
+
 `agentinterface`, `agentops`, `agentlanes`, and full-mode `agentliveness` also include
 `runtime_availability` (`zcl.agent_runtime_availability.v1`). Native static
 first-call commands are
@@ -302,7 +310,9 @@ operator/architecture answers that should not require `jq` belong in
 `app/controllers/src/agent_ops_controller.c`, then get exposed through
 MCP/native/REST. Registry-backed command groupings for `agentmap` and
 telemetry live in `app/controllers/src/agent_contract_registry.c`
-(`g_agent_command_surfaces`), while registry-backed nested schema rows live in
+(`g_agent_command_surfaces`); `agentinterface` capability rows are emitted
+from `app/controllers/src/agent_contract_capability_registry.c`, while
+registry-backed nested schema rows live in
 `app/controllers/src/agent_contract_schema_registry.c`
 (`g_agent_schema_surfaces`). Registry-backed review objects such as
 `agentops.architecture_review` live in

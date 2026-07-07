@@ -2813,6 +2813,7 @@ static int t_native_agent_api_contract(void)
     char *agent_summary_json_buf = NULL;
     char *agent_operator_buf = NULL;
     char *agent_ctrl_buf = NULL;
+    char *agent_capability_registry_buf = NULL;
     char *agent_registry_buf = NULL;
     char *agent_review_registry_buf = NULL;
     char *agent_schema_registry_buf = NULL;
@@ -2843,6 +2844,7 @@ static int t_native_agent_api_contract(void)
         char agent_summary_json_path[PATH_MAX];
         char agent_operator_path[PATH_MAX];
         char agent_ctrl_path[PATH_MAX];
+        char agent_capability_registry_path[PATH_MAX];
         char agent_registry_path[PATH_MAX];
         char agent_review_registry_path[PATH_MAX];
         char agent_schema_registry_path[PATH_MAX];
@@ -2880,6 +2882,10 @@ static int t_native_agent_api_contract(void)
                == 0);
         ASSERT(repo_path(agent_ctrl_path, sizeof(agent_ctrl_path),
                          "app/controllers/src/agent_controller.c") == 0);
+        ASSERT(repo_path(agent_capability_registry_path,
+                         sizeof(agent_capability_registry_path),
+                         "app/controllers/src/agent_contract_capability_registry.c")
+               == 0);
         ASSERT(repo_path(agent_registry_path, sizeof(agent_registry_path),
                          "app/controllers/src/agent_contract_registry.c")
                == 0);
@@ -2955,6 +2961,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(read_entire_file(agent_operator_path, &agent_operator_buf)
                == 0);
         ASSERT(read_entire_file(agent_ctrl_path, &agent_ctrl_buf) == 0);
+        ASSERT(read_entire_file(agent_capability_registry_path,
+                                &agent_capability_registry_buf) == 0);
         ASSERT(read_entire_file(agent_registry_path, &agent_registry_buf) == 0);
         ASSERT(read_entire_file(agent_review_registry_path,
                                 &agent_review_registry_buf) == 0);
@@ -3393,9 +3401,20 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_iface_buf, "runtime_availability") != NULL);
         ASSERT(strstr(agent_iface_buf, "preferred_transport") != NULL);
         ASSERT(strstr(agent_iface_buf,
-                      "agent_interface_push_registry_capabilities")
+                      "agent_push_contract_capabilities_json(&capabilities)")
                != NULL);
-        ASSERT(strstr(agent_iface_buf, "agent_contract_count()") != NULL);
+        ASSERT(strstr(agent_iface_buf,
+                      "agent_push_contract_capability_json(") != NULL);
+        ASSERT(strstr(agent_capability_registry_buf,
+                      "agent_contract_count()") != NULL);
+        ASSERT(strstr(agent_capability_registry_buf,
+                      "agent_contract_at(i)") != NULL);
+        ASSERT(strstr(agent_capability_registry_buf,
+                      "registry_alias") != NULL);
+        ASSERT(strstr(agent_capability_registry_buf,
+                      "canonical_capability") != NULL);
+        ASSERT(strstr(agent_capability_registry_buf,
+                      "contract_source") != NULL);
         ASSERT(strstr(agent_iface_buf,
                       "agent_push_contract_mcp_field_json(&loop")
                != NULL);
@@ -3821,6 +3840,7 @@ static int t_native_agent_api_contract(void)
     free(agent_summary_json_buf);
     free(agent_operator_buf);
     free(agent_ctrl_buf);
+    free(agent_capability_registry_buf);
     free(agent_registry_buf);
     free(agent_review_registry_buf);
     free(agent_schema_registry_buf);

@@ -79,6 +79,11 @@ void agent_push_contracts_json(struct json_value *arr);
 void agent_push_contract_summary_json(struct json_value *out,
                                       const char *key);
 void agent_push_contract_transport_summary_json(struct json_value *arr);
+bool agent_push_contract_capability_json(struct json_value *arr,
+                                         const char *method,
+                                         const char *name_override,
+                                         const char *purpose_override);
+void agent_push_contract_capabilities_json(struct json_value *arr);
 void agent_push_contract_ops_surface_json(struct json_value *arr,
                                           const char *surface);
 size_t agent_contract_command_surface_count(const char *surface);

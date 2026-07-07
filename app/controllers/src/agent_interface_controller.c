@@ -43,39 +43,6 @@ static void agent_interface_push_transport(struct json_value *arr,
     json_free(&obj);
 }
 
-static void agent_interface_push_capability(struct json_value *arr,
-                                            const char *name,
-                                            const char *schema,
-                                            const char *native,
-                                            const char *mcp,
-                                            const char *rest,
-                                            const char *purpose)
-{
-    struct json_value obj;
-    json_init(&obj);
-    json_set_object(&obj);
-    json_push_kv_str(&obj, "name", name);
-    json_push_kv_str(&obj, "schema", schema);
-    json_push_kv_str(&obj, "native", native);
-    json_push_kv_str(&obj, "mcp", mcp);
-    json_push_kv_str(&obj, "rest", rest);
-    json_push_kv_str(&obj, "purpose", purpose);
-    json_push_back(arr, &obj);
-    json_free(&obj);
-}
-
-static void agent_interface_push_registry_capabilities(struct json_value *arr)
-{
-    for (size_t i = 0; i < agent_contract_count(); i++) {
-        const struct agent_contract *c = agent_contract_at(i);
-        if (!c)
-            continue;
-        agent_interface_push_capability(arr, c->capability, c->schema,
-                                        c->native_command, c->mcp_tool,
-                                        c->rest_route, c->purpose);
-    }
-}
-
 static const char *agent_interface_param0_str(const struct json_value *params,
                                               const char *fallback)
 {
@@ -203,18 +170,15 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
 
     json_init(&capabilities);
     json_set_array(&capabilities);
-    agent_interface_push_registry_capabilities(&capabilities);
-    agent_interface_push_capability(&capabilities, "semantic_state",
-        "subsystem-specific zcl_state JSON", "zclassic23 dumpstate <subsystem>",
-        "zcl_state", "",
+    agent_push_contract_capabilities_json(&capabilities);
+    agent_push_contract_capability_json(
+        &capabilities, "dumpstate", "semantic_state",
         "generic subsystem state without adding bespoke tools");
-    agent_interface_push_capability(&capabilities, "bounded_logs",
-        "zcl.node_log.v1", "zclassic23 getnodelog <pattern>",
-        "zcl_node_log", "",
+    agent_push_contract_capability_json(
+        &capabilities, "getnodelog", "bounded_logs",
         "server-side log search without shipping full node.log history");
-    agent_interface_push_capability(&capabilities, "select_sql",
-        "zcl.sql_result.v1", "zclassic23 dbquery <SELECT>",
-        "zcl_sql", "",
+    agent_push_contract_capability_json(
+        &capabilities, "dbquery", "select_sql",
         "bounded SELECT-only node.db inspection");
     json_push_kv(result, "capabilities", &capabilities);
     json_free(&capabilities);
@@ -272,9 +236,10 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
                                        "agentcontracts");
     agent_push_contract_mcp_field_json(&loop, "deploy_guard",
                                        "agentdeployguard");
-    json_push_kv_str(&loop, "subsystem_state", "zcl_state");
-    json_push_kv_str(&loop, "logs", "zcl_node_log");
-    json_push_kv_str(&loop, "database", "zcl_sql");
+    agent_push_contract_mcp_field_json(&loop, "subsystem_state",
+                                       "dumpstate");
+    agent_push_contract_mcp_field_json(&loop, "logs", "getnodelog");
+    agent_push_contract_mcp_field_json(&loop, "database", "dbquery");
     json_push_kv_str(&loop, "quality_lanes", "make quality-linger-status");
     json_push_kv(result, "development_loop", &loop);
     json_free(&loop);

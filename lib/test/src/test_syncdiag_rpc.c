@@ -5185,10 +5185,24 @@ int test_syncdiag_rpc(void)
         const struct json_value *app_protocols_cap =
             find_object_with_str(capabilities, "name",
                                  "application_protocol_catalog");
+        const struct json_value *subsystem_state_cap =
+            find_object_with_str(capabilities, "name", "subsystem_state");
+        const struct json_value *semantic_state_cap =
+            find_object_with_str(capabilities, "name", "semantic_state");
+        const struct json_value *node_log_cap =
+            find_object_with_str(capabilities, "name", "node_log_search");
+        const struct json_value *bounded_logs_cap =
+            find_object_with_str(capabilities, "name", "bounded_logs");
+        const struct json_value *sql_cap =
+            find_object_with_str(capabilities, "name", "sql_inspection");
+        const struct json_value *select_sql_cap =
+            find_object_with_str(capabilities, "name", "select_sql");
         const struct json_value *machine =
             json_get(&interface, "machine_contract");
         const struct json_value *runtime =
             json_get(&interface, "runtime_identity");
+        const struct json_value *development_loop =
+            json_get(&interface, "development_loop");
         const struct json_value *availability =
             json_get(&interface, "runtime_availability");
         const struct json_value *availability_methods =
@@ -5263,6 +5277,65 @@ int test_syncdiag_rpc(void)
         ok = ok && timeline_cap &&
             strcmp(json_get_str(json_get(timeline_cap, "mcp")),
                    "zcl_timeline") == 0;
+        ok = ok && subsystem_state_cap &&
+            strcmp(json_get_str(json_get(subsystem_state_cap, "method")),
+                   "dumpstate") == 0;
+        ok = ok && subsystem_state_cap &&
+            strcmp(json_get_str(json_get(subsystem_state_cap, "mcp")),
+                   "zcl_state") == 0;
+        ok = ok && subsystem_state_cap &&
+            strcmp(json_get_str(json_get(subsystem_state_cap,
+                                         "contract_source")),
+                   "agent_contracts.def") == 0;
+        ok = ok && !json_get_bool(json_get(subsystem_state_cap,
+                                           "registry_alias"));
+        ok = ok && semantic_state_cap &&
+            strcmp(json_get_str(json_get(semantic_state_cap, "method")),
+                   "dumpstate") == 0;
+        ok = ok && semantic_state_cap &&
+            strcmp(json_get_str(json_get(semantic_state_cap, "schema")),
+                   json_get_str(json_get(subsystem_state_cap, "schema"))) == 0;
+        ok = ok && semantic_state_cap &&
+            strcmp(json_get_str(json_get(semantic_state_cap, "mcp")),
+                   json_get_str(json_get(subsystem_state_cap, "mcp"))) == 0;
+        ok = ok && semantic_state_cap &&
+            json_get_bool(json_get(semantic_state_cap, "registry_alias"));
+        ok = ok && semantic_state_cap &&
+            strcmp(json_get_str(json_get(semantic_state_cap,
+                                         "canonical_capability")),
+                   "subsystem_state") == 0;
+        ok = ok && node_log_cap &&
+            strcmp(json_get_str(json_get(node_log_cap, "method")),
+                   "getnodelog") == 0;
+        ok = ok && bounded_logs_cap &&
+            strcmp(json_get_str(json_get(bounded_logs_cap, "method")),
+                   "getnodelog") == 0;
+        ok = ok && bounded_logs_cap &&
+            strcmp(json_get_str(json_get(bounded_logs_cap, "mcp")),
+                   json_get_str(json_get(node_log_cap, "mcp"))) == 0;
+        ok = ok && bounded_logs_cap &&
+            json_get_bool(json_get(bounded_logs_cap, "registry_alias"));
+        ok = ok && sql_cap &&
+            strcmp(json_get_str(json_get(sql_cap, "method")),
+                   "dbquery") == 0;
+        ok = ok && select_sql_cap &&
+            strcmp(json_get_str(json_get(select_sql_cap, "method")),
+                   "dbquery") == 0;
+        ok = ok && select_sql_cap &&
+            strcmp(json_get_str(json_get(select_sql_cap, "mcp")),
+                   json_get_str(json_get(sql_cap, "mcp"))) == 0;
+        ok = ok && select_sql_cap &&
+            json_get_bool(json_get(select_sql_cap, "registry_alias"));
+        ok = ok && development_loop &&
+            strcmp(json_get_str(json_get(development_loop,
+                                         "subsystem_state")),
+                   "zcl_state") == 0;
+        ok = ok && development_loop &&
+            strcmp(json_get_str(json_get(development_loop, "logs")),
+                   "zcl_node_log") == 0;
+        ok = ok && development_loop &&
+            strcmp(json_get_str(json_get(development_loop, "database")),
+                   "zcl_sql") == 0;
         ok = ok && machine &&
             strcmp(json_get_str(json_get(machine, "schema")),
                    "zcl.agent_machine_contract.v1") == 0;

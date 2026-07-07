@@ -150,7 +150,11 @@ controller `k_routes[]` arrays.
   the script/human fallback, REST is public read-only, and no Python or
   `tools/z` logic is required. Its `capabilities[]` matrix and
   `machine_contract` block are the programmatic source for agent transport,
-  schema, JSON, and compatibility expectations.
+  schema, JSON, and compatibility expectations. Capability rows are emitted
+  from `agent_contracts.def` via
+  `app/controllers/src/agent_contract_capability_registry.c`; v1 compatibility
+  aliases are marked with `registry_alias=true` instead of repeating
+  schema/tool strings in the controller.
 - `zclassic23 agentmap` / `zcl_agent_map` — AI-coder map for the native/MCP
   operator surface: where code lives, which docs apply, and which tests cover
   each subsystem. The full contract guide is `docs/AGENT_API.md`.
