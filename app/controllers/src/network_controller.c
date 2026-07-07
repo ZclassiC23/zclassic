@@ -405,6 +405,7 @@ static bool rpc_bootstrapstatus(const struct json_value *params, bool help,
     json_push_kv_int(&peers, "legacy_compatible_peers",
                      counts.legacy_compatible);
     json_push_kv_int(&peers, "zclassic23_peers", counts.zcl23);
+    network_push_verified_zclassic23_bootstrap_peers(&peers, ctx->connman);
     json_push_kv(result, "peers", &peers);
     json_free(&peers);
 

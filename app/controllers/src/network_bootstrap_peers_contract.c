@@ -1,0 +1,154 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * Distributed under the MIT software license, see the accompanying
+ * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
+
+/* Live ZClassic23 peer evidence for bootstrapstatus. This stays separate from
+ * the generic network RPC controller so the first-call bootstrap contract can
+ * grow without turning network_controller.c into a peer-reporting dump. */
+
+#include "controllers/network_controller.h"
+
+#include "json/json.h"
+#include "net/connman.h"
+#include "net/fast_sync.h"
+#include "net/net.h"
+#include "net/peer_lifecycle.h"
+#include "net/protocol.h"
+#include "net/version.h"
+#include <string.h>
+
+#define BOOTSTRAP_ZCL23_PEER_QUORUM_TARGET 2
+#define BOOTSTRAP_ZCL23_PEER_LIST_LIMIT 8
+
+static const char *bootstrap_zcl23_quorum_status(int64_t peers)
+{
+    if (peers >= BOOTSTRAP_ZCL23_PEER_QUORUM_TARGET)
+        return "redundant";
+    if (peers > 0)
+        return "single_peer";
+    return "missing";
+}
+
+static const char *node_bootstrap_readiness(const struct p2p_node *node)
+{
+    if (!node || node->disconnect)
+        return "not_connected";
+    if (node->state < PEER_HANDSHAKE_COMPLETE)
+        return "handshake_incomplete";
+    if ((node->services & NODE_NETWORK) == 0)
+        return "missing_NODE_NETWORK";
+    if (node->starting_height <= 0)
+        return "missing_advertised_height";
+    return "useful";
+}
+
+static bool node_is_zclassic23(const struct p2p_node *node)
+{
+    bool is_legacy = false, is_z23 = false;
+
+    if (!node)
+        return false;
+    msg_version_classify_peer(node->sub_ver, node->services,
+                              &is_legacy, &is_z23);
+    return is_z23;
+}
+
+static bool node_is_verified_zclassic23_bootstrap(
+    const struct p2p_node *node)
+{
+    return node_is_zclassic23(node) &&
+           strcmp(node_bootstrap_readiness(node), "useful") == 0;
+}
+
+void network_push_verified_zclassic23_bootstrap_peers(
+    struct json_value *peers, struct connman *cm)
+{
+    struct json_value arr = {0};
+    int64_t verified_count = 0;
+    int64_t fast_sync_count = 0;
+    int64_t included = 0;
+
+    json_set_array(&arr);
+    if (cm) {
+        zcl_mutex_lock(&cm->manager.cs_nodes);
+        for (size_t i = 0; i < cm->manager.num_nodes; i++) {
+            struct p2p_node *node = cm->manager.nodes[i];
+            bool fast_sync_useful;
+
+            if (!node_is_verified_zclassic23_bootstrap(node))
+                continue;
+
+            fast_sync_useful = peer_supports_fast_sync(node->services);
+            verified_count++;
+            if (fast_sync_useful)
+                fast_sync_count++;
+
+            if (included >= BOOTSTRAP_ZCL23_PEER_LIST_LIMIT)
+                continue;
+
+            struct json_value item = {0};
+            struct json_value lifecycle = {0};
+            const char *source = "";
+            int64_t handshake_age = -1;
+
+            json_set_object(&item);
+            json_push_kv_str(&item, "addr", node->addr_name);
+            json_push_kv_bool(&item, "inbound", node->inbound);
+            json_push_kv_str(&item, "subver",
+                             node->clean_sub_ver[0]
+                                 ? node->clean_sub_ver
+                                 : node->sub_ver);
+            json_push_kv_int(&item, "services",
+                             (int64_t)node->services);
+            json_push_kv_bool(&item, "node_network", true);
+            json_push_kv_bool(&item, "node_zclassic23", true);
+            json_push_kv_bool(&item,
+                              "fast_sync_service_bit_advertised",
+                              peer_supports_fast_sync(node->services));
+            json_push_kv_int(&item, "advertised_height",
+                             node->starting_height);
+            json_push_kv_str(&item, "verified_by", "live_handshake");
+            json_push_kv_str(&item, "bootstrap_readiness", "useful");
+            json_push_kv_bool(&item, "bootstrap_useful", true);
+            json_push_kv_bool(&item, "fast_sync_useful",
+                              fast_sync_useful);
+
+            if (peer_lifecycle_peer_json(node, &lifecycle)) {
+                source = json_get_str(json_get(&lifecycle, "source"));
+                handshake_age =
+                    json_get_int(json_get(&lifecycle,
+                                           "handshake_age_secs"));
+            }
+            json_push_kv_str(&item, "source", source ? source : "");
+            json_push_kv_int(&item, "handshake_age_secs",
+                             handshake_age);
+            json_free(&lifecycle);
+
+            json_push_back(&arr, &item);
+            json_free(&item);
+            included++;
+        }
+        zcl_mutex_unlock(&cm->manager.cs_nodes);
+    }
+
+    json_push_kv_int(peers, "verified_zclassic23_bootstrap_peer_count",
+                     verified_count);
+    json_push_kv_int(peers, "fast_sync_useful_zclassic23_peer_count",
+                     fast_sync_count);
+    json_push_kv_int(peers, "zclassic23_bootstrap_quorum_target",
+                     BOOTSTRAP_ZCL23_PEER_QUORUM_TARGET);
+    json_push_kv_str(peers, "zclassic23_bootstrap_quorum_status",
+                     bootstrap_zcl23_quorum_status(verified_count));
+    json_push_kv_bool(peers, "zclassic23_bootstrap_quorum_met",
+                      verified_count >=
+                          BOOTSTRAP_ZCL23_PEER_QUORUM_TARGET);
+    json_push_kv_bool(peers, "zclassic23_fast_sync_quorum_met",
+                      fast_sync_count >=
+                          BOOTSTRAP_ZCL23_PEER_QUORUM_TARGET);
+    json_push_kv_int(peers, "verified_zclassic23_bootstrap_peer_list_limit",
+                     BOOTSTRAP_ZCL23_PEER_LIST_LIMIT);
+    json_push_kv_bool(peers, "verified_zclassic23_bootstrap_peers_truncated",
+                      verified_count > BOOTSTRAP_ZCL23_PEER_LIST_LIMIT);
+    json_push_kv(peers, "verified_zclassic23_bootstrap_peers", &arr);
+    json_free(&arr);
+}

@@ -1144,6 +1144,43 @@ int test_syncdiag_rpc(void)
             ok = addrman_add(&cm.manager.addrman, &addr, &src, 0);
         }
 
+        struct p2p_node *zcl_a = ok
+            ? syncdiag_add_peer(&cm, 21, false, PEER_HANDSHAKE_COMPLETE)
+            : NULL;
+        struct p2p_node *zcl_b = ok
+            ? syncdiag_add_peer(&cm, 22, true, PEER_HANDSHAKE_COMPLETE)
+            : NULL;
+        struct p2p_node *legacy_peer = ok
+            ? syncdiag_add_peer(&cm, 23, false, PEER_HANDSHAKE_COMPLETE)
+            : NULL;
+        ok = ok && zcl_a && zcl_b && legacy_peer;
+        if (ok) {
+            snprintf(zcl_a->addr_name, sizeof(zcl_a->addr_name),
+                     "198.51.100.21:8033");
+            zcl_a->starting_height = 3170000;
+            syncdiag_note_peer_lifecycle_active(
+                zcl_a, PEER_LIFECYCLE_SOURCE_ADDNODE);
+
+            snprintf(zcl_b->addr_name, sizeof(zcl_b->addr_name),
+                     "198.51.100.22:8033");
+            zcl_b->starting_height = 3169999;
+            syncdiag_note_peer_lifecycle_active(
+                zcl_b, PEER_LIFECYCLE_SOURCE_INBOUND);
+
+            legacy_peer->services = NODE_NETWORK;
+            snprintf(legacy_peer->addr_name,
+                     sizeof(legacy_peer->addr_name),
+                     "198.51.100.23:8033");
+            snprintf(legacy_peer->sub_ver, sizeof(legacy_peer->sub_ver),
+                     "%s", "/MagicBean:2.1.2-beta6/");
+            snprintf(legacy_peer->clean_sub_ver,
+                     sizeof(legacy_peer->clean_sub_ver),
+                     "%s", legacy_peer->sub_ver);
+            legacy_peer->starting_height = 3170000;
+            syncdiag_note_peer_lifecycle_active(
+                legacy_peer, PEER_LIFECYCLE_SOURCE_ADDRMAN);
+        }
+
         rpc_table_init(&tbl);
         register_net_rpc_commands(&tbl);
         rpc_net_set_connman(&cm);
@@ -1191,6 +1228,43 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get_int(json_get(p2p,
                                           "advertised_start_height")) ==
                   3170000;
+
+        const struct json_value *peers = json_get(&result, "peers");
+        const struct json_value *verified =
+            peers ? json_get(peers,
+                "verified_zclassic23_bootstrap_peers") : NULL;
+        const struct json_value *first_verified =
+            verified && json_size(verified) > 0 ? json_at(verified, 0) : NULL;
+        ok = ok && peers && peers->type == JSON_OBJ;
+        ok = ok && json_get_int(json_get(peers, "connections")) == 3;
+        ok = ok && json_get_int(json_get(peers,
+            "zclassic23_peers")) == 2;
+        ok = ok && json_get_int(json_get(peers,
+            "legacy_compatible_peers")) == 1;
+        ok = ok && json_get_int(json_get(peers,
+            "verified_zclassic23_bootstrap_peer_count")) == 2;
+        ok = ok && json_get_int(json_get(peers,
+            "fast_sync_useful_zclassic23_peer_count")) == 2;
+        ok = ok && json_get_int(json_get(peers,
+            "zclassic23_bootstrap_quorum_target")) == 2;
+        ok = ok && json_get_bool(json_get(peers,
+            "zclassic23_bootstrap_quorum_met"));
+        ok = ok && json_get_bool(json_get(peers,
+            "zclassic23_fast_sync_quorum_met"));
+        ok = ok && strcmp(json_get_str(json_get(peers,
+            "zclassic23_bootstrap_quorum_status")),
+                          "redundant") == 0;
+        ok = ok && verified && verified->type == JSON_ARR;
+        ok = ok && json_size(verified) == 2;
+        ok = ok && first_verified && first_verified->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(first_verified,
+            "verified_by")), "live_handshake") == 0;
+        ok = ok && json_get_bool(json_get(first_verified,
+            "bootstrap_useful"));
+        ok = ok && json_get_bool(json_get(first_verified,
+            "fast_sync_useful"));
+        ok = ok && strcmp(json_get_str(json_get(first_verified,
+            "bootstrap_readiness")), "useful") == 0;
 
         const struct json_value *addrman = json_get(&result, "addrman");
         ok = ok && addrman && addrman->type == JSON_OBJ;

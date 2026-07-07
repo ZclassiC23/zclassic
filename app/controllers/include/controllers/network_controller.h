@@ -35,6 +35,8 @@ void network_push_zclassic23_bootstrap_contract(struct json_value *result,
                                                 bool node_zcl23,
                                                 const char *ext_ip,
                                                 uint16_t ext_port);
+void network_push_verified_zclassic23_bootstrap_peers(
+    struct json_value *peers, struct connman *cm);
 void network_push_snapshot_loader_status(struct json_value *result,
                                          const char *datadir,
                                          const char *load_snapshot_at_own_height);
