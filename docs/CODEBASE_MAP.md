@@ -406,6 +406,10 @@ sync fields must match a direct agent-status packet; `test_api` and
 `test_syncdiag_rpc` enforce that. If any required agent field is missing, the
 endpoint must say `agent_cached_summary_with_fallbacks` and name the fallback
 source rather than silently mixing authorities.
+The bounded agent fast path may use a cached chain-advance decision only when
+its projection fields are internally consistent with the served/tip frontier;
+stale cache shapes are named as `cached_status_inconsistent` and leave the
+top-level `indexed_height` on the current frontier.
 
 Bootstrap-service readiness is the network-facing public singleton
 `/api/v1/bootstrap` (compat alias `/api/v1/bootstrapstatus`) over the shared

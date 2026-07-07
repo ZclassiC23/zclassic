@@ -3677,6 +3677,8 @@ syncdiag_net_split_done:
         ok = ok && json_get_int(json_get(&result, "indexed_height")) ==
             served_height;
         ok = ok && json_get_int(json_get(&result, "index_gap")) == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "sync_state")),
+                          "at_tip") == 0;
         const struct json_value *readiness = json_get(&result, "readiness");
         ok = ok && readiness && readiness->type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(readiness, "schema")),
@@ -3729,6 +3731,47 @@ syncdiag_net_split_done:
         ok = ok && strstr(json_get_str(json_get(health,
                                                 "warning_reasons")),
                           "block_source_status_busy") != NULL;
+
+        json_free(&result);
+        json_init(&result);
+
+        struct cac_decision stale_decision;
+        memset(&stale_decision, 0, sizeof(stale_decision));
+        (void)block_source_policy_local_header_refill_needed(
+            served_height - 1, served_height, 0, 0, 2, false,
+            &stale_decision);
+        ok = ok && stale_decision.projection_height == 0;
+        ok = ok && stale_decision.projection_lag == 0;
+        ok = ok && stale_decision.projection_state[0] == '\0';
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "agent stale cache");
+
+        ok = ok && rpc_table_execute(&tbl, "agent", &params, &result);
+        indexer = json_get(&result, "indexer");
+        health = json_get(&result, "health");
+        ok = ok && result.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&result, "status")),
+                          "healthy") == 0;
+        ok = ok && json_get_int(json_get(&result, "served_height")) ==
+            served_height;
+        ok = ok && json_get_int(json_get(&result, "indexed_height")) ==
+            served_height;
+        ok = ok && json_get_int(json_get(&result, "index_gap")) == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "sync_state")),
+                          "at_tip") == 0;
+        ok = ok && indexer && indexer->type == JSON_OBJ;
+        ok = ok && !json_get_bool(json_get(indexer,
+                                           "block_source_status_cached"));
+        ok = ok && json_get_int(json_get(indexer, "height")) ==
+            served_height;
+        ok = ok && json_get_int(json_get(indexer, "projection_height")) ==
+            -1;
+        ok = ok && strcmp(json_get_str(json_get(indexer,
+                                                "projection_state")),
+                          "cached_status_inconsistent") == 0;
+        ok = ok && health && health->type == JSON_OBJ;
+        ok = ok && strstr(json_get_str(json_get(health,
+                                                "warning_reasons")),
+                          "block_source_status_stale") != NULL;
 
         json_free(&params);
         json_free(&result);

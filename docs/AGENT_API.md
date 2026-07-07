@@ -578,6 +578,14 @@ missing, milestone sets `live.source="agent_cached_summary_with_fallbacks"`,
 agent contract is unavailable entirely, it falls back to the older node-health
 snapshot and says so in `live.source`.
 
+The bounded agent packet may read a cached chain-advance decision for speed, but
+it must reject internally inconsistent projection cache data. A stale decision
+such as `projection_height=0`, empty `projection_state`, and zero lag while the
+served/tip frontier is far above zero is surfaced as
+`indexer.projection_state="cached_status_inconsistent"` with
+`block_source_status_stale`; it must not lower top-level `indexed_height` or
+make milestone/health disagree about a node that is effectively at tip.
+
 When `runtime_build.stale=true`, the node is still useful to observe but its
 behavior predates the expected deployed source; use the lane safety contract
 before deciding whether to deploy dev or request an operator-gated canonical

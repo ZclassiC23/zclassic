@@ -180,27 +180,59 @@ static void agent_fast_collect_indexer(struct agent_fast_snapshot *s)
     struct cac_decision decision;
     memset(&decision, 0, sizeof(decision));
     if (block_source_policy_get_cached_status(&decision)) {
-        s->block_source_status_cached = true;
-        if (decision.target_height > s->target_height)
-            s->target_height = decision.target_height;
-        if (decision.projection_height >= 0) {
-            s->projection_height = decision.projection_height;
-            s->indexed_height = decision.projection_height;
+        int projection_basis = s->target_height;
+        if (s->served_height > projection_basis)
+            projection_basis = s->served_height;
+        if (s->tip_height > projection_basis)
+            projection_basis = s->tip_height;
+        if (decision.local_height > projection_basis)
+            projection_basis = decision.local_height;
+        if (decision.target_height > projection_basis)
+            projection_basis = decision.target_height;
+
+        bool cache_consistent = true;
+        if (projection_basis > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS &&
+            decision.projection_height >= 0 &&
+            decision.projection_lag <= 0 &&
+            decision.projection_height + ZCL_NODE_HEALTH_LAG_WARN_BLOCKS <
+                projection_basis) {
+            cache_consistent = false;
         }
-        s->projection_lag = decision.projection_lag;
-        s->projection_deferred = decision.projection_deferred;
-        s->projection_deferred_total = decision.projection_deferred_total;
-        s->last_projection_deferred_height =
-            decision.last_projection_deferred_height;
-        s->last_projection_deferred_time =
-            decision.last_projection_deferred_time;
-        snprintf(s->projection_state, sizeof(s->projection_state),
-                 "%s", decision.projection_state);
-        snprintf(s->last_projection_deferred_reason,
-                 sizeof(s->last_projection_deferred_reason),
-                 "%s", decision.last_projection_deferred_reason);
-        if (s->projection_lag > 1)
-            agent_fast_add_warning(s, "projection_lag");
+        if (projection_basis > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS &&
+            decision.projection_height == 0 &&
+            decision.projection_lag == 0 &&
+            !decision.projection_state[0]) {
+            cache_consistent = false;
+        }
+
+        if (!cache_consistent) {
+            snprintf(s->projection_state, sizeof(s->projection_state),
+                     "cached_status_inconsistent");
+            agent_fast_add_warning(s, "block_source_status_stale");
+        } else {
+            s->block_source_status_cached = true;
+            if (decision.target_height > s->target_height)
+                s->target_height = decision.target_height;
+            if (decision.projection_height >= 0) {
+                s->projection_height = decision.projection_height;
+                s->indexed_height = decision.projection_height;
+            }
+            s->projection_lag = decision.projection_lag;
+            s->projection_deferred = decision.projection_deferred;
+            s->projection_deferred_total =
+                decision.projection_deferred_total;
+            s->last_projection_deferred_height =
+                decision.last_projection_deferred_height;
+            s->last_projection_deferred_time =
+                decision.last_projection_deferred_time;
+            snprintf(s->projection_state, sizeof(s->projection_state),
+                     "%s", decision.projection_state);
+            snprintf(s->last_projection_deferred_reason,
+                     sizeof(s->last_projection_deferred_reason),
+                     "%s", decision.last_projection_deferred_reason);
+            if (s->projection_lag > 1)
+                agent_fast_add_warning(s, "projection_lag");
+        }
     } else {
         snprintf(s->projection_state, sizeof(s->projection_state),
                  "cached_status_unavailable");
@@ -369,9 +401,6 @@ static void agent_fast_collect(struct agent_fast_snapshot *s,
     }
 
     s->tip_advance_age_seconds = sync_monitor_tip_advance_age();
-    if (s->tip_advance_age_seconds > 600 &&
-        s->sync_state != SYNC_AT_TIP)
-        agent_fast_add_warning(s, "tip_advance_stale");
     agent_fast_collect_errors(s);
     s->validation_pack_ok =
         invariant_sentinel_healthy(s->validation_pack_detail,
@@ -398,6 +427,14 @@ static void agent_fast_collect(struct agent_fast_snapshot *s,
         s->index_gap = 0;
     }
     s->serving = s->served_height > 0;
+    if (s->sync_state != SYNC_AT_TIP &&
+        s->serving && s->has_peers && s->gap <= 1 &&
+        (s->log_head_gap < 0 || s->log_head_gap <= 1)) {
+        s->sync_state = SYNC_AT_TIP;
+    }
+    if (s->tip_advance_age_seconds > 600 &&
+        s->sync_state != SYNC_AT_TIP)
+        agent_fast_add_warning(s, "tip_advance_stale");
 
     bool frontier_recovered =
         s->serving && s->has_peers && s->gap <= 1 &&
