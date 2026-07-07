@@ -253,6 +253,11 @@ The node serves a web block explorer (`/explorer`, with a JSON API under `/api`)
 It is **not** on the RPC port (`18232`) — a plain `GET` there returns
 `405 Method Not Allowed`, by design. The explorer is reachable two ways:
 
+Start API discovery at `/api/v1`. Use `/api/v1/service-catalog` to see what the
+node can host, advertise, verify, or construct for users, `/api/v1/protocols` to
+see the ZCL application-protocol contracts, and `/api/v1/bootstrap` to check
+whether the node is currently useful for fresh-peer bootstrap.
+
 - **Over the onion service** — build the bundled Tor fork (see the opt-in note in
   [Quick start](#quick-start)) and run `-tor`; the explorer is then served on the
   node's `.onion` (visible via `zcl_status`). No certificate needed.

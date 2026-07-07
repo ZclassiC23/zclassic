@@ -50,6 +50,7 @@ DEFINE_PT(h_zcl_agent_build,    "agentbuild",     "mcp.ops")
 DEFINE_PT(h_zcl_agent_interface,"agentinterface", "mcp.ops")
 DEFINE_PT(h_zcl_agent_ops,      "agentops",       "mcp.ops")
 DEFINE_PT(h_zcl_app_protocols,  "appprotocols",   "mcp.ops")
+DEFINE_PT(h_zcl_service_catalog,"servicecatalog", "mcp.ops")
 
 static char *json_value_to_body(struct json_value *v, const char *label);
 
@@ -1559,6 +1560,7 @@ static const struct agent_mcp_binding k_agent_mcp_bindings[] = {
     { "agentinterface", NULL, 0, h_zcl_agent_interface, 0, NULL },
     { "agentops", NULL, 0, h_zcl_agent_ops, 0, NULL },
     { "appprotocols", NULL, 0, h_zcl_app_protocols, 0, NULL },
+    { "servicecatalog", NULL, 0, h_zcl_service_catalog, 0, NULL },
     { "agentdiagnose", p_agent_diagnose, PARAM_COUNT(p_agent_diagnose),
       h_zcl_agent_diagnose, 0, "{\"mode\":\"brief\"}" },
     { "agentdeployguard", p_agent_deploy_guard,

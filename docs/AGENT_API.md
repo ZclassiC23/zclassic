@@ -18,6 +18,7 @@ same native RPC methods. Shell wrappers are compatibility shims only.
 | Fast build contract | `zclassic23 agentbuild` | `zcl_agent_build` |
 | Anchor producer status | `zclassic23 anchorstatus` | `zcl_rpc(method="anchorstatus")` |
 | Application protocol catalog | `zclassic23 appprotocols` | `zcl_app_protocols` |
+| Sovereign service catalog | `zclassic23 servicecatalog` | `zcl_service_catalog` |
 | Preferred interface contract | `zclassic23 agentinterface` | `zcl_agent_interface` |
 | State subsystem catalog | `zclassic23 statecatalog` | `zcl_state_catalog` |
 | Semantic event timeline | `zclassic23 timeline '{"category":"sync","count":50,"since_secs":3600}'` | `zcl_timeline` |
@@ -94,6 +95,17 @@ services that read, index, or construct valid ZCL transactions without changing
 consensus rules. ZSLP is the token protocol inside this model; ZLSP is the
 broader service/protocol umbrella.
 
+The UX-facing service catalog lives in
+`app/controllers/src/api_controller_service_catalog.c` and is exposed as
+`zclassic23 servicecatalog`, `zcl_service_catalog`, and
+`GET /api/v1/service-catalog`. Use it when the question is "what can this node
+host, advertise, verify, or construct for a user?" It distinguishes the stable
+service contract from `/api/v1/services`, which remains runtime health. The
+response schema is `zcl.service_catalog.v1` and covers names, bootstrap,
+Tor/onion discovery, direct P2P, files, market, messaging, script contracts,
+CRUD capabilities, transports, verification model, trust model, privacy model,
+and a concrete UX story per service.
+
 ## Preferred Interface
 
 The best interface for an AI coding operator is MCP with typed JSON tools:
@@ -103,8 +115,9 @@ start with `zcl_agent_ops` for the compact no-jq command center, use
 `zcl_agent_lanes`, `zcl_mirror_status`,
 `zcl_agent_impact`,
 `zcl_agent_build`, `zcl_state_catalog`, `zcl_state`, `zcl_timeline`,
-`zcl_app_protocols`, `zcl_node_log`, and `zcl_sql` as needed. The native
-binary commands (`zclassic23 agentinterface`, `zclassic23 appprotocols`,
+`zcl_app_protocols`, `zcl_service_catalog`, `zcl_node_log`, and `zcl_sql` as
+needed. The native binary commands (`zclassic23 agentinterface`,
+`zclassic23 appprotocols`, `zclassic23 servicecatalog`,
 `zclassic23 status` / `zclassic23 agent`, etc.) are the second-best interface for terminal work and
 scripts. REST is the public read-only mirror.
 
@@ -797,9 +810,10 @@ This is a C23 project, so the edit loop should compile only what changed.
   unchanged translation units keep their existing `.o` files and changed
   headers recompile their dependents.
 - `make fast-changed-compile` is the cheapest guarded edit check. It compiles
-  changed node `.c` files directly into `build/dev-obj/` and falls back to
-  `make fast-compile` for header, template, Makefile, removed-source, or broad
-  edits.
+  changed node `.c` files directly into `build/dev-obj/`, and after the dev
+  object graph is warmed it compiles direct depfile dependents for narrow
+  `.h`/`.def` edits. It falls back to `make fast-compile` for templates,
+  Makefile changes, removed files, unwarmed depfiles, or broad edits.
 - `make fast-compile` is the cheapest no-link edit-loop compile check. It uses
   the non-LTO dev object tree (`build/dev-obj`) and skips the final executable
   link, so it is the right first command for "did this C change compile?".
@@ -837,8 +851,9 @@ This is a C23 project, so the edit loop should compile only what changed.
   Use `ZCL_FAST_CACHE=0` to force a rerun,
   `ZCL_FAST_CACHE_RESET=1` to clear the green-input cache, or
   `ZCL_FAST_CACHE_DIR=...` to move it.
-- Normal Makefile compile/link recipes also auto-wrap `CC` with `ccache` when
-  it is installed. Set `ZCL_USE_CCACHE=0` to force a direct compiler call.
+- Normal Makefile compile/link recipes also auto-wrap `CC` with `sccache` when
+  installed, otherwise `ccache`. Set `ZCL_USE_CCACHE=0` to force a direct
+  compiler call.
 
 Before pushing `main`, the tracked pre-push hook computes the exact
 `origin/main..HEAD` changed-file set, rejects non-`main` remote refs, and runs

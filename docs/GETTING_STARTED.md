@@ -43,7 +43,7 @@ Useful faster loops:
 
 ```bash
 make zclassic23              # node only
-make fast-changed-compile    # cheapest guarded .c-only compile check
+make fast-changed-compile    # cheapest guarded changed .c/.h/.def check
 make fast-compile            # fastest dev compile check, no final link
 make build-only              # strict release-flag compile check, no final link
 make fast-rebuild            # fastest local node binary, no LTO
@@ -134,6 +134,7 @@ Start with:
 - `zcl_status`
 - `zcl_state`
 - `zcl_node_log`
+- `zcl_service_catalog`
 - `zcl_tools_list`
 
 MCP is a local operator interface. Do not expose RPC or MCP to untrusted

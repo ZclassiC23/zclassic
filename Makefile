@@ -3,9 +3,9 @@
 
 CC = cc
 ZCL_USE_CCACHE ?= 1
-ZCL_CCACHE_BIN := $(shell if [ "$(ZCL_USE_CCACHE)" != "0" ]; then command -v ccache 2>/dev/null; fi)
+ZCL_CCACHE_BIN := $(shell if [ "$(ZCL_USE_CCACHE)" != "0" ]; then command -v sccache 2>/dev/null || command -v ccache 2>/dev/null; fi)
 ifneq ($(ZCL_CCACHE_BIN),)
-ifneq ($(findstring ccache,$(notdir $(firstword $(CC)))),ccache)
+ifeq ($(filter sccache ccache,$(notdir $(firstword $(CC)))),)
 CC := $(ZCL_CCACHE_BIN) $(CC)
 endif
 endif
@@ -120,6 +120,7 @@ ALL_OBJS = $(patsubst %.c,$(OBJ_DIR)/%.o,$(ALL_SRCS))
 
 DEV_SRCS = $(NODE_ENTRY_SRCS) $(ALL_SRCS)
 DEV_OBJS = $(patsubst %.c,$(DEV_OBJ_DIR)/%.o,$(DEV_SRCS))
+DEV_OBJ_COMPLETE = $(DEV_OBJ_DIR)/.complete
 
 GTK_CFLAGS := $(shell pkg-config --cflags gtk+-3.0 2>/dev/null)
 GTK_LIBS   := $(shell pkg-config --libs gtk+-3.0 2>/dev/null)
@@ -335,13 +336,18 @@ build-only: $(TMPL_GEN) $(ALL_OBJS)
 # Fastest no-link compile-check for local edit loops. This uses the same
 # non-LTO dev object tree as zclassic23-dev, so changed files compile quickly
 # and no final executable link is paid.
-fast-compile dev-build-only: $(TMPL_GEN) $(DEV_OBJS)
+fast-compile dev-build-only: $(DEV_OBJ_COMPLETE)
 	@echo "fast-compile: all dev node objects compiled (non-LTO, no link)"
 
-# Cheapest guarded compile-check for the common `.c` edit loop. It compiles
-# only changed node translation units into build/dev-obj when safe, and falls
-# back to depfile-safe `fast-compile` for headers, templates, Makefile changes,
-# removed sources, or broad edits.
+$(DEV_OBJ_COMPLETE): $(TMPL_GEN) $(DEV_OBJS)
+	@mkdir -p $(dir $@)
+	@touch $@
+
+# Cheapest guarded compile-check for common edit loops. It compiles changed
+# node translation units directly into build/dev-obj, compiles direct depfile
+# dependents for narrow `.h` / `.def` edits, and falls back to depfile-safe
+# `fast-compile` for templates, Makefile changes, removed sources, or broad
+# edits where the graph cannot be proven cheaply.
 fast-changed-compile:
 	@ZCL_FAST_CC="$${ZCL_FAST_CC:-$(CC)}" tools/agent_fast_ci.sh compile-changed
 
@@ -354,6 +360,7 @@ fast-rebuild rebuild-fast: dev-bin
 $(ZCLASSIC23_DEV_BIN): $(TMPL_GEN) $(BUILD_COMMIT_STAMP) $(DEV_OBJS) | $(VENDOR_LIBS)
 	@mkdir -p $(dir $@)
 	$(CC) $(DEV_CFLAGS) $(DEV_LDFLAGS) -o $@ $(DEV_OBJS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
+	@touch $(DEV_OBJ_COMPLETE)
 	@echo "dev-bin: $@ (non-LTO, unstripped; not for release/deploy)"
 
 # Full no-link syntax check across every TU in one shot (no incremental state).

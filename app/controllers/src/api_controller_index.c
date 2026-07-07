@@ -29,6 +29,8 @@ static void api_rest_index_aliases_json(struct json_value *aliases)
     json_push_kv_str(aliases, "bootstrap", "/api/v1/bootstrap");
     json_push_kv_str(aliases, "bootstrapstatus", "/api/v1/bootstrap");
     json_push_kv_str(aliases, "protocols", "/api/v1/protocols");
+    json_push_kv_str(aliases, "service_catalog",
+                     "/api/v1/service-catalog");
     json_push_kv_str(aliases, "zslp_tokens", "/api/v1/zslp/tokens");
     json_push_kv_str(aliases, "names_show", "/api/v1/names/{name}");
     json_push_kv_str(aliases, "legacy_name_show", "/api/v1/name/{name}");
@@ -114,6 +116,8 @@ static void api_rest_index_resources_json(struct json_value *resources)
     api_rest_index_push_resource(resources, "protocols",
                                  "/api/v1/protocols",
                                  "/api/v1/protocols/{name}", false);
+    api_rest_index_push_resource(resources, "service_catalog",
+                                 "/api/v1/service-catalog", "", false);
     api_rest_index_push_resource(resources, "zslp_tokens",
                                  "/api/v1/zslp/tokens",
                                  "/api/v1/zslp/tokens/{token_id}", false);
@@ -143,6 +147,8 @@ static void api_rest_index_drilldown_json(struct json_value *drilldown)
     json_push_kv_str(drilldown, "full_node_status",
                      "/api/v1/node/status");
     json_push_kv_str(drilldown, "bootstrap", "/api/v1/bootstrap");
+    json_push_kv_str(drilldown, "service_catalog",
+                     "/api/v1/service-catalog");
 }
 
 static const char *api_openapi_method_key(const char *method, char *buf,

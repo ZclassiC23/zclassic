@@ -471,7 +471,7 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_push_kv_str(&loop, "pre_push_compile_default",
                      "ZCL_FAST_COMPILE=strict -> make build-only");
     json_push_kv_str(&loop, "rule",
-                     "Compile changed .c files directly when safe; fall back to depfile-safe fast-compile for graph-wide edits; push through the strict pre-push gate.");
+                     "Compile changed .c files directly, compile direct depfile dependents for narrow .h/.def edits after the dev graph is warmed, fall back to depfile-safe fast-compile for graph-wide edits, and push through the strict pre-push gate.");
     json_push_kv(result, "recommended_loop", &loop);
     json_free(&loop);
 
@@ -493,9 +493,9 @@ bool rpc_agent_build(const struct json_value *params, bool help,
                      "make build-only");
     json_push_kv_str(&incremental, "dev_binary_command", "make fast-rebuild");
     json_push_kv_str(&incremental, "behavior",
-                     "Changed node .c files can compile only their dev objects; changed headers recompile dependent objects through .d files.");
+                     "Changed node .c files compile only their dev objects; changed .h/.def files compile direct dependents from build/dev-obj depfiles once build/dev-obj/.complete exists.");
     json_push_kv_str(&incremental, "changed_compile_fallbacks",
-                     "headers, templates, Makefile changes, removed sources, broad edits");
+                     "templates, Makefile changes, removed sources/dependencies, unwarmed depfiles, broad edits");
     json_push_kv_str(&incremental, "whole_program_link_caveat",
                      "The release binary still uses whole-program LTO; make dev-bin is the fast linked executable gate.");
     json_push_kv(result, "incremental_compile", &incremental);
@@ -525,7 +525,7 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_set_object(&cache);
     json_push_kv_str(&cache, "auto_select_order", "sccache cc, ccache cc, cc");
     json_push_kv_str(&cache, "makefile_auto_wrapper",
-                     "ccache cc when ccache exists; set ZCL_USE_CCACHE=0 to disable");
+                     "sccache cc when available, else ccache cc; set ZCL_USE_CCACHE=0 to disable");
     json_push_kv_str(&cache, "script", "tools/agent_fast_ci.sh");
     json_push_kv_str(&cache, "default_loop", "make fast-ci");
     json_push_kv_str(&cache, "success_fingerprint_dir",
@@ -542,7 +542,7 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     agent_push_build_knob(&knobs, "ZCL_FAST_COMPILE", "changed",
                           "changed compiles direct dev objects with safe fallback; dev uses make fast-compile; strict uses make build-only");
     agent_push_build_knob(&knobs, "ZCL_FAST_CHANGED_COMPILE_LIMIT", "24",
-                          "changed source count above this falls back to make fast-compile; 0 disables the limit");
+                          "direct dev-object count above this falls back to make fast-compile; 0 disables the limit");
     agent_push_build_knob(&knobs, "ZCL_FAST_CHANGED_FILES_ONLY", "0",
                           "set to 1 when ZCL_FAST_CHANGED_FILES[_FILE] is the exact semantic input");
     agent_push_build_knob(&knobs, "ZCL_FAST_TESTS",
@@ -560,7 +560,7 @@ bool rpc_agent_build(const struct json_value *params, bool help,
                           ".cache/zcl-agent-fast-ci",
                           "override green-input cache directory");
     agent_push_build_knob(&knobs, "ZCL_USE_CCACHE", "1",
-                          "Makefile auto-wraps CC with ccache when available; set 0 to disable");
+                          "Makefile auto-wraps CC with sccache/ccache when available; set 0 to disable");
     agent_push_build_knob(&knobs, "ZCL_DEV_OPT", "-Og",
                           "default optimization for make dev-bin");
     agent_push_build_knob(&knobs, "ZCL_DEV_HOT_OPT", "-O2",
@@ -576,7 +576,7 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_set_array(&commands);
     agent_push_build_command(&commands, "fast_changed_compile",
                              "make fast-changed-compile",
-                             "direct changed-.c dev-object compile with safe fallback");
+                             "direct changed-.c or narrow .h/.def dependent dev-object compile with safe fallback");
     agent_push_build_command(&commands, "fast_compile", "make fast-compile",
                              "fastest non-LTO no-link dev compile check");
     agent_push_build_command(&commands, "compile_check", "make build-only",

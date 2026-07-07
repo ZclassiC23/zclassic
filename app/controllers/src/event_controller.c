@@ -185,6 +185,22 @@ bool rpc_app_protocols(const struct json_value *params, bool help,
     return api_app_protocols_index_json(result);
 }
 
+bool rpc_service_catalog(const struct json_value *params, bool help,
+                         struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "servicecatalog\n"
+        "\nReturn the versioned zclassic23 sovereign service catalog. This\n"
+        "is the same JSON body served by GET /api/v1/service-catalog and\n"
+        "exposed through MCP zcl_service_catalog.\n"
+        "\nResult:\n"
+        "  { \"schema\":\"zcl.service_catalog.v1\", "
+        "\"base_layer\":\"zclassic_l1\", \"services\":[...] }\n");
+
+    return api_service_catalog_json(result);
+}
+
 static bool rpc_milestone_status(const struct json_value *params, bool help,
                                  struct json_value *result)
 {
@@ -292,6 +308,8 @@ void register_event_rpc_commands(struct rpc_table *t)
         { "control", "apiindex",          rpc_api_index,         true },
         { "control", "appprotocols",      rpc_app_protocols,     true },
         { "control", "protocols",         rpc_app_protocols,     true },
+        { "control", "servicecatalog",    rpc_service_catalog,   true },
+        { "control", "service_catalog",   rpc_service_catalog,   true },
         { "control", "agent",             rpc_agent_summary,     true },
         { "control", "status",            rpc_agent_summary,     true },
         { "control", "summary",           rpc_agent_summary,     true },

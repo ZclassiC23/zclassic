@@ -975,6 +975,9 @@ int test_api(void)
                                                 "protocols")),
                           "/api/v1/protocols") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "aliases"),
+                                                "service_catalog")),
+                          "/api/v1/service-catalog") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "aliases"),
                                                 "bootstrap")),
                           "/api/v1/bootstrap") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "aliases"),
@@ -1130,6 +1133,8 @@ int test_api(void)
             api_test_find_named(resources, "zslp_tokens");
         const struct json_value *protocols_resource =
             api_test_find_named(resources, "protocols");
+        const struct json_value *service_catalog_resource =
+            api_test_find_named(resources, "service_catalog");
         ok = ok && resources && json_size(resources) >= 4;
         ok = ok && bootstrap_resource &&
              strcmp(json_get_str(json_get(bootstrap_resource, "collection")),
@@ -1140,6 +1145,10 @@ int test_api(void)
         ok = ok && protocols_resource &&
              strcmp(json_get_str(json_get(protocols_resource, "item")),
                     "/api/v1/protocols/{name}") == 0;
+        ok = ok && service_catalog_resource &&
+             strcmp(json_get_str(json_get(service_catalog_resource,
+                                          "collection")),
+                    "/api/v1/service-catalog") == 0;
         ok = ok && zslp_resource &&
              strcmp(json_get_str(json_get(zslp_resource, "collection")),
                     "/api/v1/zslp/tokens") == 0;
@@ -1160,6 +1169,8 @@ int test_api(void)
             api_test_find_contract(routes, "/api/v1/zslp/tokens");
         const struct json_value *protocols_route =
             api_test_find_contract(routes, "/api/v1/protocols");
+        const struct json_value *service_catalog_route =
+            api_test_find_contract(routes, "/api/v1/service-catalog");
         const struct json_value *protocol_show =
             api_test_find_contract(routes, "/api/v1/protocols/{name}");
         const struct json_value *names =
@@ -1302,6 +1313,18 @@ int test_api(void)
              strcmp(json_get_str(json_get(protocols_route,
                                     "protocol_family")),
                     "application_protocol_framework") == 0;
+        ok = ok && service_catalog_route &&
+             strcmp(json_get_str(json_get(service_catalog_route,
+                                    "response_schema")),
+                    "zcl.service_catalog.v1") == 0;
+        ok = ok && service_catalog_route &&
+             strcmp(json_get_str(json_get(service_catalog_route,
+                                    "crud_name")),
+                    "read_singleton") == 0;
+        ok = ok && service_catalog_route &&
+             strcmp(json_get_str(json_get(service_catalog_route,
+                                    "freshness")),
+                    "static") == 0;
         ok = ok && protocol_show &&
              strcmp(json_get_str(json_get(protocol_show, "crud_name")),
                     "read_item") == 0;
@@ -1400,6 +1423,10 @@ int test_api(void)
                                                 "drilldown"),
                                                 "bootstrap")),
                           "/api/v1/bootstrap") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root,
+                                                "drilldown"),
+                                                "service_catalog")),
+                          "/api/v1/service-catalog") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
                                                 "first_tool")),
                           "zcl_agent") == 0;
@@ -1409,6 +1436,9 @@ int test_api(void)
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
                                                 "app_protocols_tool")),
                           "zcl_app_protocols") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
+                                                "service_catalog_tool")),
+                          "zcl_service_catalog") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "mcp"),
                                                 "drilldown_tool")),
                           "zcl_health") == 0;
@@ -1424,6 +1454,9 @@ int test_api(void)
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
                                                 "app_protocols_command")),
                           "zclassic23 appprotocols") == 0;
+        ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
+                                                "service_catalog_command")),
+                          "zclassic23 servicecatalog") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
                                                 "first_command")),
                           "zclassic23 agent") == 0;
@@ -1595,6 +1628,87 @@ int test_api(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("api: service catalog exposes sovereign UX contracts... ");
+    {
+        static uint8_t catalog_resp[262144];
+        size_t n = api_handle_request("GET", "/api/v1/service-catalog",
+                                      NULL, 0, catalog_resp,
+                                      sizeof(catalog_resp));
+        const char *body = api_test_body(catalog_resp, n,
+                                         sizeof(catalog_resp));
+        struct json_value root;
+        json_init(&root);
+        bool ok = n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.service_catalog.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "base_layer")),
+                          "zclassic_l1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "service_layer")),
+                          "zclassic23_application_layer") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root,
+                          "runtime_health_route")),
+                          "/api/v1/services") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root,
+                          "application_protocols_route")),
+                          "/api/v1/protocols") == 0;
+        ok = ok && strstr(json_get_str(json_get(&root,
+                          "consensus_boundary")),
+                          "legacy consensus") != NULL;
+        const struct json_value *services = json_get(&root, "services");
+        ok = ok && services && services->type == JSON_ARR &&
+             json_get_int(json_get(&root, "service_count")) ==
+             (int64_t)json_size(services);
+
+        const struct json_value *bootstrap =
+            api_test_find_named(services, "bootstrap");
+        const struct json_value *names =
+            api_test_find_named(services, "znam_names");
+        const struct json_value *onion =
+            api_test_find_named(services, "onion_directory");
+        const struct json_value *files =
+            api_test_find_named(services, "file_services");
+        const struct json_value *contracts =
+            api_test_find_named(services, "script_contracts");
+        ok = ok && bootstrap &&
+             strcmp(json_get_str(json_get(bootstrap, "rest_collection")),
+                    "/api/v1/bootstrap") == 0;
+        ok = ok && bootstrap &&
+             api_test_array_has_str(json_get(bootstrap, "transports"),
+                                    "p2p");
+        ok = ok && names &&
+             strcmp(json_get_str(json_get(names, "application_protocol")),
+                    "znam") == 0;
+        ok = ok && names &&
+             api_test_array_has_str(json_get(names, "crud_capabilities"),
+                                    "construct_transaction");
+        ok = ok && names &&
+             strstr(json_get_str(json_get(names, "verified_by")),
+                    "op_return") != NULL;
+        ok = ok && onion &&
+             strcmp(json_get_str(json_get(onion, "rest_collection")),
+                    "/api/v1/onion/announcements") == 0;
+        ok = ok && onion &&
+             api_test_array_has_str(json_get(onion, "transports"),
+                                    "onion");
+        ok = ok && files &&
+             strcmp(json_get_str(json_get(files, "rest_item")),
+                    "/api/v1/files/{sha3}") == 0;
+        ok = ok && files &&
+             api_test_array_has_str(json_get(files, "object_types"),
+                                    "chunk");
+        ok = ok && contracts &&
+             strcmp(json_get_str(json_get(contracts,
+                                          "application_protocol")),
+                    "script_contracts") == 0;
+        ok = ok && contracts &&
+             strstr(json_get_str(json_get(contracts, "trust_model")),
+                    "no_consensus_extension") != NULL;
+        json_free(&root);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     printf("api: OpenAPI document is generated from route contracts... ");
     {
         static uint8_t openapi_resp[262144];
@@ -1669,6 +1783,8 @@ int test_api(void)
             api_test_openapi_get(&root, "/api/v1/zslp/tokens");
         const struct json_value *protocols =
             api_test_openapi_get(&root, "/api/v1/protocols");
+        const struct json_value *service_catalog =
+            api_test_openapi_get(&root, "/api/v1/service-catalog");
         const struct json_value *protocol_show =
             api_test_openapi_get(&root, "/api/v1/protocols/{name}");
         const struct json_value *names =
@@ -1779,6 +1895,14 @@ int test_api(void)
         ok = ok && protocols &&
              strcmp(json_get_str(json_get(protocols, "x-response-schema")),
                     "zcl.application_protocols.index.v1") == 0;
+        ok = ok && service_catalog &&
+             strcmp(json_get_str(json_get(service_catalog,
+                                          "x-response-schema")),
+                    "zcl.service_catalog.v1") == 0;
+        ok = ok && service_catalog &&
+             strcmp(json_get_str(json_get(service_catalog,
+                                          "x-crud-name")),
+                    "read_singleton") == 0;
         ok = ok && protocol_show &&
              strcmp(json_get_str(json_get(protocol_show, "x-crud-name")),
                     "read_item") == 0;

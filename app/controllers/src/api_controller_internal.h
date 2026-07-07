@@ -50,6 +50,7 @@ extern struct api_rpc_backend g_api_rpc;
     "zcl.application_protocol_contract.v1"
 #define ZCL_APP_PROTOCOLS_INDEX_SCHEMA \
     "zcl.application_protocols.index.v1"
+#define ZCL_SERVICE_CATALOG_SCHEMA "zcl.service_catalog.v1"
 #define ZCL_PUBLIC_STATUS_SCHEMA "zcl.public_status.v1"
 #define ZCL_MILESTONE_STATUS_SCHEMA "zcl.milestone_status.v1"
 #define ZCL_REFOLD_STATUS_SCHEMA "zcl.refold_status.v1"
@@ -147,6 +148,7 @@ void api_app_protocol_crud_json(const struct api_app_protocol_contract *p,
                                 struct json_value *crud);
 bool api_app_protocols_index_json(struct json_value *out);
 bool api_app_protocol_show_json(const char *name, struct json_value *out);
+bool api_service_catalog_json(struct json_value *out);
 void api_app_protocol_push_openapi_extensions(
     const struct json_value *contract,
     struct json_value *operation);

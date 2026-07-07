@@ -6,6 +6,7 @@
  *   zclassic23 -mcp                   — MCP stdio server for agents
  *   zclassic23 api                    — API discovery from running node
  *   zclassic23 appprotocols           — application protocol catalog
+ *   zclassic23 servicecatalog         — sovereign service UX catalog
  *   zclassic23 agent                  — compact status from running node
  *   zclassic23 status                 — compatibility alias for agent
  *   zclassic23 statecatalog           — zcl_state subsystem catalog
@@ -950,6 +951,7 @@ static const struct cli_static_agent_route g_cli_static_agent_routes[] = {
     { "agentbuild", rpc_agent_build },
     { "anchorstatus", rpc_agent_anchor_status },
     { "appprotocols", rpc_app_protocols },
+    { "servicecatalog", rpc_service_catalog },
     { "agentinterface", rpc_agent_interface },
     { "agentops", rpc_agent_ops },
     { "statecatalog", diag_rpc_statecatalog },

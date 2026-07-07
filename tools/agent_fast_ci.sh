@@ -195,13 +195,52 @@ is_node_c_source() {
     esac
 }
 
-add_direct_dev_object() {
-    local file="$1" obj
-    obj="build/dev-obj/${file%.c}.o"
+add_dev_object_path() {
+    local obj="$1"
     case " $DIRECT_DEV_OBJECTS " in
         *" $obj "*) ;;
-        *) DIRECT_DEV_OBJECTS="${DIRECT_DEV_OBJECTS:+$DIRECT_DEV_OBJECTS }$obj" ;;
+        *)
+            DIRECT_DEV_OBJECTS="${DIRECT_DEV_OBJECTS:+$DIRECT_DEV_OBJECTS }$obj"
+            DIRECT_DEV_OBJECT_COUNT=$((DIRECT_DEV_OBJECT_COUNT + 1))
+            ;;
     esac
+}
+
+add_direct_dev_object() {
+    local file="$1"
+    add_dev_object_path "build/dev-obj/${file%.c}.o"
+}
+
+is_direct_dependency_compile_change() {
+    local file="$1"
+    case "$file" in
+        *.h|*.def|*.inc)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
+dev_depfiles_available() {
+    [ -f build/dev-obj/.complete ] || return 1
+    find build/dev-obj -type f -name '*.d' -print -quit 2>/dev/null |
+        grep -q .
+}
+
+add_dependent_dev_objects() {
+    local file="$1" dep obj
+
+    dev_depfiles_available || return 1
+
+    while IFS= read -r dep; do
+        [ -n "$dep" ] || continue
+        obj="${dep%.d}.o"
+        add_dev_object_path "$obj"
+    done < <(find build/dev-obj -type f -name '*.d' -exec grep -F -l -- "$file" {} + 2>/dev/null || true)
+
+    return 0
 }
 
 match_shared_impact_rules() {
@@ -471,10 +510,10 @@ run_compile_gate() {
 }
 
 compile_changed_gate() {
-    local file fallback_reason count
+    local file fallback_reason
     DIRECT_DEV_OBJECTS=""
+    DIRECT_DEV_OBJECT_COUNT=0
     fallback_reason=""
-    count=0
 
     case "$FAST_CHANGED_COMPILE_LIMIT" in
         ''|*[!0-9]*)
@@ -484,6 +523,18 @@ compile_changed_gate() {
 
     while IFS= read -r file; do
         [ -n "$file" ] || continue
+
+        if is_direct_dependency_compile_change "$file"; then
+            if [ ! -f "$file" ]; then
+                fallback_reason="removed or moved dependency: $file"
+                break
+            fi
+            if ! add_dependent_dev_objects "$file"; then
+                fallback_reason="dependency depfiles unavailable for: $file"
+                break
+            fi
+            continue
+        fi
 
         if is_graph_wide_compile_change "$file"; then
             fallback_reason="graph-wide change: $file"
@@ -498,7 +549,6 @@ compile_changed_gate() {
                 fi
                 if is_node_c_source "$file"; then
                     add_direct_dev_object "$file"
-                    count=$((count + 1))
                 fi
                 ;;
             *)
@@ -519,8 +569,8 @@ EOF
     fi
 
     if [ "$FAST_CHANGED_COMPILE_LIMIT" -gt 0 ] &&
-       [ "$count" -gt "$FAST_CHANGED_COMPILE_LIMIT" ]; then
-        log "fast-changed-compile: fallback to fast-compile ($count changed node sources > limit $FAST_CHANGED_COMPILE_LIMIT)"
+       [ "$DIRECT_DEV_OBJECT_COUNT" -gt "$FAST_CHANGED_COMPILE_LIMIT" ]; then
+        log "fast-changed-compile: fallback to fast-compile ($DIRECT_DEV_OBJECT_COUNT direct dev objects > limit $FAST_CHANGED_COMPILE_LIMIT)"
         make_fast fast-compile
         return
     fi
@@ -530,7 +580,7 @@ EOF
         return
     fi
 
-    log "fast-changed-compile: direct dev object compile count=$count"
+    log "fast-changed-compile: direct dev object compile count=$DIRECT_DEV_OBJECT_COUNT"
     make_fast $DIRECT_DEV_OBJECTS
 }
 

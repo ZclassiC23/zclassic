@@ -56,7 +56,7 @@ that deleted tip_finalize_log rows, shipped without a reset-safe test).
 |---|---|
 | `make t ONLY=<group>` | run ONE test group, rebuilding the harness first (closes the stale-`test_parallel` rebuild trap) |
 | `make t-fast ONLY=<group>` | hot-path ONE test group via cached per-file test objects and a non-LTO harness |
-| `make fast-changed-compile` | cheapest guarded compile check: direct changed `.c` dev-object compile, safe fallback for graph-wide edits |
+| `make fast-changed-compile` | cheapest guarded compile check: direct changed `.c` dev-object compile, direct `.h`/`.def` depfile dependents after warm-up, safe fallback for graph-wide edits |
 | `make fast-compile` | fastest no-link dev compile check using cached non-LTO `build/dev-obj` objects |
 | `make build-only` | strict release-flag incremental compile-check of the whole node (no link) |
 | `make dev-bin` | incremental non-LTO node executable at `build/bin/zclassic23-dev`; local AI/operator iteration only, not for release/deploy |
@@ -77,14 +77,16 @@ that rebuilds only changed test/node objects after the first warm-up. It is
 non-`-Werror`; compile warning enforcement stays in `make build-only`, strict
 `make t`, and full CI. By default it uses `ZCL_FAST_COMPILE=changed`, which
 runs `make fast-changed-compile`: changed node `.c` files compile directly into
-`build/dev-obj/`, while header/template/Makefile/removed-source/broad edits
-fall back to `make fast-compile`. Use `ZCL_FAST_COMPILE=dev` to force the full
+`build/dev-obj/`, and once `build/dev-obj/.complete` exists, narrow `.h`/`.def`
+edits compile only the dev objects whose depfiles mention that dependency.
+Template/Makefile/removed-file/unwarmed-depfile/broad edits fall back to
+`make fast-compile`. Use `ZCL_FAST_COMPILE=dev` to force the full
 dev-object compile, or `ZCL_FAST_COMPILE=strict` when you want `make build-only`; `make pre-push-ci`
 sets that automatically. Force focused test groups with
 `ZCL_FAST_TESTS=make_lint_gates,mcp_controllers`; use `ZCL_FAST_STRICT_TESTS=1`
 to pay the strict `make t` whole-harness rebuild. Set parallelism with
 `ZCL_FAST_JOBS=N` (default caps at 16). Set
-`ZCL_FAST_CHANGED_COMPILE_LIMIT=N` to control when many changed `.c` files fall
+`ZCL_FAST_CHANGED_COMPILE_LIMIT=N` to control when many direct dev objects fall
 back to `fast-compile` (`0` disables the limit). Set
 `ZCL_FAST_CHANGED_FILES_ONLY=1` when `ZCL_FAST_CHANGED_FILES[_FILE]` is already
 the exact semantic input, as the pre-push hook does. Successful runs write a content
@@ -116,8 +118,8 @@ paying the release build's whole-program LTO pass. It emits
 `ZCL_DEV_OPT=-Og`, hot consensus/crypto/script/validation buckets at
 `ZCL_DEV_HOT_OPT=-O2`, no LTO, no strip, and optional fast-linker selection via
 `ZCL_DEV_LINKER` (auto-detects `mold` or `ld.lld` when present; override with
-`ZCL_DEV_LINKER=` to force the platform default). When `ccache` is installed,
-the Makefile auto-wraps `CC` with it unless `ZCL_USE_CCACHE=0` is set. This is
+`ZCL_DEV_LINKER=` to force the platform default). When `sccache` or `ccache` is
+installed, the Makefile auto-wraps `CC` with it unless `ZCL_USE_CCACHE=0` is set. This is
 the right binary for
 local `agentbuild`, `agentimpact`, parser, API, and diagnostics iteration; it is
 not a deploy or release artifact.

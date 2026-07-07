@@ -66,6 +66,9 @@ static const struct agent_contract_schema_surface g_agent_schema_surfaces[] = {
     { 18, "zcl.security_posture.v1",
       "nested in zcl.public_status.v1 security_posture",
       "bounded bootstrap trust and shielded-nullifier history completeness posture" },
+    { 19, "zcl.service_catalog.v1",
+      "zclassic23 servicecatalog / GET /api/v1/service-catalog / zcl_service_catalog",
+      "UX-oriented sovereign service catalog with transport, CRUD, verification, and trust boundaries" },
 };
 
 static const size_t g_agent_schema_surface_count =

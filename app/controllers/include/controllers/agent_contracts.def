@@ -174,3 +174,11 @@ AGENT_CONTRACT("appprotocols", "application_protocol_catalog",
                "direct", 10, "app_protocols",
                "ZSLP, ZNAM, market, messaging, and script-contract overlay catalog",
                "base-layer/application-layer protocol catalog for zclassic23 overlay services")
+AGENT_CONTRACT("servicecatalog", "sovereign_service_catalog",
+               "zcl.service_catalog.v1",
+               "zclassic23 servicecatalog", "zcl_service_catalog",
+               "GET /api/v1/service-catalog",
+               "service_catalog_command", "service_catalog_tool",
+               "direct", 11, "service_catalog",
+               "names, services, Tor/P2P, bootstrap, CRUD, and verification catalog",
+               "UX-oriented sovereign service catalog with REST, native, MCP, transport, CRUD, and trust boundaries")

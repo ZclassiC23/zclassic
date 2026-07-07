@@ -2582,6 +2582,10 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "DEV_HOT_CFLAGS") != NULL);
         ASSERT(strstr(buf, "DEV_LDFLAGS") != NULL);
         ASSERT(strstr(buf, "ZCL_DEV_LINKER") != NULL);
+        ASSERT(strstr(buf, "command -v sccache") != NULL);
+        ASSERT(strstr(buf, "DEV_OBJ_COMPLETE") != NULL);
+        ASSERT(strstr(buf, ".complete") != NULL);
+        ASSERT(strstr(buf, "direct depfile") != NULL);
         ASSERT(strstr(buf, "not for release/deploy") != NULL);
         ASSERT(strstr(buf, "tools/agent_fast_ci.sh") != NULL);
         ASSERT(strstr(buf, "tools/deploy_guard.sh") != NULL);
@@ -2636,6 +2640,11 @@ static int t_agent_fast_ci_contract(void)
                != NULL);
         ASSERT(strstr(buf, "compile_changed_gate") != NULL);
         ASSERT(strstr(buf, "is_graph_wide_compile_change") != NULL);
+        ASSERT(strstr(buf, "is_direct_dependency_compile_change") != NULL);
+        ASSERT(strstr(buf, "dev_depfiles_available") != NULL);
+        ASSERT(strstr(buf, "add_dependent_dev_objects") != NULL);
+        ASSERT(strstr(buf, "build/dev-obj/.complete") != NULL);
+        ASSERT(strstr(buf, "DIRECT_DEV_OBJECT_COUNT") != NULL);
         ASSERT(strstr(buf, "is_node_c_source") != NULL);
         ASSERT(strstr(buf, "DIRECT_DEV_OBJECTS") != NULL);
         ASSERT(strstr(buf, "fast-changed-compile: direct dev object compile")
@@ -2817,6 +2826,9 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "`make ci-reproducible`") != NULL);
         ASSERT(strstr(buf, "build/bin/test_parallel_fast") != NULL);
         ASSERT(strstr(buf, "build/bin/zclassic23-dev") != NULL);
+        ASSERT(strstr(buf, "direct `.h`/`.def` depfile dependents")
+               != NULL);
+        ASSERT(strstr(buf, "build/dev-obj/.complete") != NULL);
         ASSERT(strstr(buf, "ZCL_DEV_OPT=-Og") != NULL);
         ASSERT(strstr(buf, "ZCL_DEV_HOT_OPT=-O2") != NULL);
         ASSERT(strstr(buf, "ZCL_DEV_LINKER") != NULL);
@@ -3172,6 +3184,8 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(main_buf, "\"appprotocols\", rpc_app_protocols")
                != NULL);
+        ASSERT(strstr(main_buf, "\"servicecatalog\", rpc_service_catalog")
+               != NULL);
         ASSERT(strstr(main_buf, "\"agentinterface\", rpc_agent_interface")
                != NULL);
         ASSERT(strstr(main_buf, "\"agentops\", rpc_agent_ops") != NULL);
@@ -3197,6 +3211,10 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(event_buf, "{ \"control\", \"appprotocols\"")
                != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"protocols\"") != NULL);
+        ASSERT(strstr(event_buf, "{ \"control\", \"servicecatalog\"")
+               != NULL);
+        ASSERT(strstr(event_buf, "{ \"control\", \"service_catalog\"")
+               != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agent\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"status\"") != NULL);
         ASSERT(strstr(event_buf, "{ \"control\", \"agentops\"") != NULL);
@@ -3788,6 +3806,13 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_contracts_def_buf, "zcl_app_protocols")
                != NULL);
         ASSERT(strstr(agent_contracts_def_buf,
+                      "\"service_catalog_command\", "
+                      "\"service_catalog_tool\"") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf,
+                      "zcl.service_catalog.v1") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl_service_catalog")
+               != NULL);
+        ASSERT(strstr(agent_contracts_def_buf,
                       "\"first_command\", \"first_tool\"") != NULL);
         ASSERT(strstr(agent_contracts_def_buf,
                       "\"ops_command\", \"ops_tool\"") != NULL);
@@ -3837,6 +3862,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "zcl_app_protocols") != NULL);
         ASSERT(strstr(agent_doc_buf,
                       "zcl.application_protocols.index.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zclassic23 servicecatalog") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl_service_catalog") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.service_catalog.v1") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentlanes") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_lanes") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.agent_lanes.v1") != NULL);
