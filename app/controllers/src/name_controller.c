@@ -130,6 +130,9 @@ static void append_name_crud_links(struct json_value *obj, const char *name)
 
 struct service_record_classification {
     const char *service_name;
+    const char *service_contract_name;
+    const char *recommended_operation_id;
+    const char *next_action;
     const char *transport;
     const char *endpoint_kind;
     bool is_endpoint_hint;
@@ -173,6 +176,9 @@ classify_service_record(const char *key, const char *value)
     const char *suffix = service_key_suffix(key);
     struct service_record_classification c = {
         .service_name = "service_hint",
+        .service_contract_name = "znam_names",
+        .recommended_operation_id = "znam_names.resolve_name",
+        .next_action = "inspect_service_record_metadata",
         .transport = "unspecified",
         .endpoint_kind = "service_metadata",
     };
@@ -180,6 +186,11 @@ classify_service_record(const char *key, const char *value)
     if (str_eq(key, "onion") || str_eq(suffix, "onion") ||
         value_mentions_onion(value)) {
         c.service_name = "onion_directory";
+        c.service_contract_name = "onion_directory";
+        c.recommended_operation_id =
+            "onion_directory.list_onion_announcements";
+        c.next_action =
+            "probe_onion_endpoint_then_prefer_direct_p2p_when_available";
         c.transport = "onion";
         c.endpoint_kind = "tor_hidden_service";
         c.is_endpoint_hint = true;
@@ -190,6 +201,10 @@ classify_service_record(const char *key, const char *value)
     if (str_eq(key, "p2p") || str_eq(suffix, "p2p") ||
         str_eq(suffix, "direct_p2p")) {
         c.service_name = "direct_p2p";
+        c.service_contract_name = "bootstrap";
+        c.recommended_operation_id =
+            "bootstrap.inspect_peer_bootstrap_readiness";
+        c.next_action = "connect_direct_p2p_and_verify_peer_readiness";
         c.transport = "p2p";
         c.endpoint_kind = "direct_peer_endpoint";
         c.is_endpoint_hint = true;
@@ -199,6 +214,9 @@ classify_service_record(const char *key, const char *value)
 
     if (str_eq(key, "bootstrap") || str_eq(suffix, "bootstrap")) {
         c.service_name = "bootstrap";
+        c.service_contract_name = "bootstrap";
+        c.recommended_operation_id = "bootstrap.read_bootstrap_status";
+        c.next_action = "read_bootstrap_status_before_using_peer";
         c.transport = "p2p_or_onion";
         c.endpoint_kind = "bootstrap_hint";
         c.is_endpoint_hint = true;
@@ -208,16 +226,59 @@ classify_service_record(const char *key, const char *value)
 
     if (str_eq(key, "service")) {
         c.service_name = "declared_service";
+        c.service_contract_name = "znam_names";
+        c.recommended_operation_id = "znam_names.resolve_name";
         c.endpoint_kind = "service_hint";
         return c;
     }
 
     if (suffix && suffix[0]) {
         c.service_name = suffix;
+        c.service_contract_name = suffix;
+        c.recommended_operation_id = "";
+        c.next_action = "inspect_declared_service_catalog_entry";
         c.endpoint_kind = "service_metadata";
     }
 
     return c;
+}
+
+static void push_service_route_links(
+    struct json_value *obj,
+    const struct service_record_classification *classification)
+{
+    char catalog_route[160];
+    char operation_route[192];
+
+    if (!obj || !classification)
+        return;
+
+    if (classification->service_contract_name &&
+        classification->service_contract_name[0]) {
+        snprintf(catalog_route, sizeof(catalog_route),
+                 "/api/v1/service-catalog/%s",
+                 classification->service_contract_name);
+        catalog_route[sizeof(catalog_route) - 1] = '\0';
+        json_push_kv_str(obj, "service_contract",
+                         classification->service_contract_name);
+        json_push_kv_str(obj, "service_catalog_route", catalog_route);
+    }
+
+    json_push_kv_str(obj, "recommended_operation_id",
+                     classification->recommended_operation_id
+                         ? classification->recommended_operation_id : "");
+    if (classification->recommended_operation_id &&
+        classification->recommended_operation_id[0]) {
+        snprintf(operation_route, sizeof(operation_route),
+                 "/api/v1/service-operations/%s",
+                 classification->recommended_operation_id);
+        operation_route[sizeof(operation_route) - 1] = '\0';
+        json_push_kv_str(obj, "service_operation_route", operation_route);
+    }
+
+    json_push_kv_str(obj, "next_action",
+                     classification->next_action
+                         ? classification->next_action : "");
 }
 
 static void append_service_directory(struct json_value *obj,
@@ -241,6 +302,10 @@ static void append_service_directory(struct json_value *obj,
     json_push_kv_str(&directory, "base_layer", "zclassic_l1");
     json_push_kv_str(&directory, "routing_policy",
                      "verify_zcl_name_record_then_prefer_direct_p2p_then_onion");
+    json_push_kv_str(&directory, "service_contract_route",
+                     "/api/v1/service-catalog/{service}");
+    json_push_kv_str(&directory, "operation_contract_route",
+                     "/api/v1/service-operations/{operation_id}");
     json_push_kv_bool(&directory, "has_services", service_count > 0);
     json_push_kv_int(&directory, "service_record_count", service_count);
     json_push_kv_int(&directory, "endpoint_count", endpoint_count);
@@ -288,6 +353,7 @@ static void service_record_to_json(
     json_push_kv_str(obj, "value", rec->value);
     json_push_kv_str(obj, "service_name",
                      classification->service_name);
+    push_service_route_links(obj, classification);
     json_push_kv_str(obj, "transport", classification->transport);
     json_push_kv_str(obj, "endpoint_kind",
                      classification->endpoint_kind);

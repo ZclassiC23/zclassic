@@ -376,6 +376,13 @@ bundle actually became local durable authority (`coins_kv`,
 `coins_applied_height`, reducer H*, and self-folded marker), not just files on
 disk.
 
+ZNAM service records bridge chain-projected names into service contracts in
+`app/controllers/src/name_controller.c`. Keep `service_records[]` additive and
+machine-readable: every endpoint hint should include `service_contract`,
+`service_catalog_route`, `recommended_operation_id`, `service_operation_route`,
+and `next_action` so an agent can go from a confirmed name to a Tor/P2P
+endpoint and then to the exact CRUD operation contract without guessing.
+
 ### MCP target gotcha
 `mcp__zcl23-dev__*` hit the DEV node (`~/.zclassic-c23-dev`, port 18252).
 For LIVE, use `mcp__zcl23-live__*` / curl port 18232 (`~/.zclassic-c23`).

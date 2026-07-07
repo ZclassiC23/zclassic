@@ -926,18 +926,51 @@ int test_api(void)
                               "zcl.names.service_record.v1") == 0;
             ok = ok && strcmp(json_get_str(json_get(svc, "service_name")),
                               "onion_directory") == 0;
+            ok = ok && strcmp(json_get_str(json_get(svc,
+                                                    "service_contract")),
+                              "onion_directory") == 0;
+            ok = ok && strcmp(json_get_str(json_get(svc,
+                                                    "service_catalog_route")),
+                              "/api/v1/service-catalog/onion_directory") == 0;
+            ok = ok && strcmp(json_get_str(json_get(svc,
+                                                    "recommended_operation_id")),
+                              "onion_directory.list_onion_announcements") == 0;
+            ok = ok && strcmp(json_get_str(json_get(svc,
+                                                    "service_operation_route")),
+                              "/api/v1/service-operations/"
+                              "onion_directory.list_onion_announcements") == 0;
             ok = ok && strcmp(json_get_str(json_get(svc, "transport")),
                               "onion") == 0;
             ok = ok && json_get_bool(json_get(svc, "chain_verified"));
             ok = ok && svc_p2p &&
                  strcmp(json_get_str(json_get(svc_p2p, "service_name")),
                         "direct_p2p") == 0;
+            ok = ok && strcmp(json_get_str(json_get(svc_p2p,
+                                                    "service_contract")),
+                              "bootstrap") == 0;
+            ok = ok && strcmp(json_get_str(json_get(svc_p2p,
+                                                    "recommended_operation_id")),
+                              "bootstrap.inspect_peer_bootstrap_readiness") == 0;
+            ok = ok && strcmp(json_get_str(json_get(svc_p2p,
+                                                    "service_operation_route")),
+                              "/api/v1/service-operations/"
+                              "bootstrap.inspect_peer_bootstrap_readiness") == 0;
+            ok = ok && strcmp(json_get_str(json_get(svc_p2p,
+                                                    "next_action")),
+                              "connect_direct_p2p_and_verify_peer_readiness") == 0;
             ok = ok && strcmp(json_get_str(json_get(svc_p2p, "transport")),
                               "p2p") == 0;
             ok = ok && svc_bootstrap &&
                  strcmp(json_get_str(json_get(svc_bootstrap,
                                               "service_name")),
                         "bootstrap") == 0;
+            ok = ok && strcmp(json_get_str(json_get(svc_bootstrap,
+                                                    "recommended_operation_id")),
+                              "bootstrap.read_bootstrap_status") == 0;
+            ok = ok && strcmp(json_get_str(json_get(svc_bootstrap,
+                                                    "service_operation_route")),
+                              "/api/v1/service-operations/"
+                              "bootstrap.read_bootstrap_status") == 0;
             ok = ok && strcmp(json_get_str(json_get(svc_bootstrap,
                                                     "endpoint_kind")),
                               "bootstrap_hint") == 0;
@@ -966,6 +999,12 @@ int test_api(void)
             ok = ok && strcmp(json_get_str(json_get(directory,
                                                     "transport_model")),
                               "records_advertise_tor_or_p2p_endpoints") == 0;
+            ok = ok && strcmp(json_get_str(json_get(directory,
+                                                    "service_contract_route")),
+                              "/api/v1/service-catalog/{service}") == 0;
+            ok = ok && strcmp(json_get_str(json_get(directory,
+                                                    "operation_contract_route")),
+                              "/api/v1/service-operations/{operation_id}") == 0;
             ok = ok && links &&
                  strcmp(json_get_str(json_get(links, "self")),
                         "/api/v1/names/alice") == 0;

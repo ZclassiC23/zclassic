@@ -126,11 +126,14 @@ ZNAM resolution responses (`zcl.names.show.v1`) normalize service text records
 for agents. In addition to raw `text_records`, read `service_records[]` and
 `service_directory`: each service record has schema
 `zcl.names.service_record.v1`, `service_name`, `transport`, `endpoint_kind`,
-`endpoint`, `chain_verified`, and `reachability_proof`. The directory also
-publishes `endpoints[]`, `endpoint_count`, `supports_onion`,
-`supports_direct_p2p`, `supports_bootstrap`, and a routing policy. Agents
-should verify the chain-projected ZNAM record first, then prefer direct P2P for
-low latency and fall back to onion reachability when NAT or firewall conditions
+`endpoint`, `chain_verified`, `reachability_proof`, `service_contract`,
+`service_catalog_route`, `recommended_operation_id`,
+`service_operation_route`, and `next_action`. The directory also publishes
+`endpoints[]`, `endpoint_count`, `supports_onion`, `supports_direct_p2p`,
+`supports_bootstrap`, the service/operation contract route templates, and a
+routing policy. Agents should verify the chain-projected ZNAM record first,
+inspect the linked service/operation contract, then prefer direct P2P for low
+latency and fall back to onion reachability when NAT or firewall conditions
 require it.
 
 ## Preferred Interface
