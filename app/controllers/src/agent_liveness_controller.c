@@ -234,8 +234,7 @@ bool rpc_agent_liveness(const struct json_value *params, bool help,
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "status", "ok");
     json_push_kv_str(result, "build_commit", zcl_build_commit());
-    json_push_kv_str(result, "native_command", "zclassic23 agentliveness");
-    json_push_kv_str(result, "mcp_tool", "zcl_agent_liveness");
+    agent_push_contract_identity_fields_json(result, "agentliveness");
     json_push_kv_str(result, "semantics",
                      "read-only composition of current_runtime_lane, runtime_services, supervisor_state, and background_quality_status");
 

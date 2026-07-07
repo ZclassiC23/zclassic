@@ -455,8 +455,6 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     if (!diagnose_parse_detail_mode(params, result, &detail_mode))
         return true;
     bool brief_mode = detail_mode == DIAGNOSE_DETAIL_BRIEF;
-    const struct agent_contract *contract =
-        agent_contract_lookup("agentdiagnose");
     struct json_value empty_params = {0};
     struct json_value agent = {0};
     struct json_value health = {0};
@@ -476,12 +474,7 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     json_push_kv_str(result, "status", "ok");
     json_push_kv_str(result, "build_commit", zcl_build_commit());
     json_push_kv_bool(result, "no_jq_required", true);
-    json_push_kv_str(result, "native_command",
-                     contract ? contract->native_command
-                              : "zclassic23 agentdiagnose");
-    json_push_kv_str(result, "mcp_tool",
-                     contract ? contract->mcp_tool
-                              : "zcl_agent_diagnose");
+    agent_push_contract_identity_fields_json(result, "agentdiagnose");
     json_push_kv_str(result, "detail_mode",
                      diagnose_detail_mode_name(detail_mode));
     json_push_kv_bool(result, "embedded_drilldowns", !brief_mode);

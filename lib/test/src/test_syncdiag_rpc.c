@@ -3018,6 +3018,16 @@ int test_syncdiag_rpc(void)
         ok = ok && result.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
                           "zcl.agent_diagnose.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "method")),
+                          "agentdiagnose") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "native_command")),
+                          "zclassic23 agentdiagnose") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "mcp_tool")),
+                          "zcl_agent_diagnose") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "contract_source")),
+                          "agent_contracts.def") == 0;
         ok = ok && json_get_int(json_get(&result, "gap")) == 1;
         ok = ok && json_get_bool(json_get(&result,
                                           "chain_serving_ready"));
@@ -4205,12 +4215,17 @@ int test_syncdiag_rpc(void)
         ok = ok && diagnose.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&diagnose, "schema")),
                           "zcl.agent_diagnose.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&diagnose, "method")),
+                          "agentdiagnose") == 0;
         ok = ok && json_get_bool(json_get(&diagnose, "no_jq_required"));
         ok = ok && strcmp(json_get_str(json_get(&diagnose,
                                                 "native_command")),
                           "zclassic23 agentdiagnose") == 0;
         ok = ok && strcmp(json_get_str(json_get(&diagnose, "mcp_tool")),
                           "zcl_agent_diagnose") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&diagnose,
+                                                "contract_source")),
+                          "agent_contracts.def") == 0;
         ok = ok && json_get(&diagnose, "verdict") != NULL;
         ok = ok && json_get(&diagnose, "safe_next_action") != NULL;
         ok = ok && json_get(&diagnose, "findings") != NULL;
@@ -4828,8 +4843,16 @@ int test_syncdiag_rpc(void)
         ok = ok && liveness.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&liveness, "schema")),
                           "zcl.agent_liveness.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&liveness, "method")),
+                          "agentliveness") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&liveness,
+                                                "native_command")),
+                          "zclassic23 agentliveness") == 0;
         ok = ok && strcmp(json_get_str(json_get(&liveness, "mcp_tool")),
                           "zcl_agent_liveness") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&liveness,
+                                                "contract_source")),
+                          "agent_contracts.def") == 0;
         ok = ok && live_first_call && live_first_call->type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(live_first_call, "schema")),
                           "zcl.first_call_contract.v1") == 0;

@@ -129,11 +129,14 @@ runtime or cached field once mentioned a transient `hash-disagreement`.
 rollup. It composes `current_runtime_lane`, observed runtime listeners,
 `runtime_availability`, `supervisor_state`, and `background_quality_status`,
 then adds direct fields such as `overall_liveness`, `agent_next_action`,
-`liveness_summary`, and `recommended_drilldowns`. `runtime_services` is only
-the producer process' in-process listener state; when a native static command
-has successfully probed a target lane over RPC, `runtime_availability` marks
-`target_rpc_reachable=true`, `liveness_summary.effective_runtime_reachable=true`,
-and `liveness_summary.effective_runtime_scope="target_rpc_probe"`. This keeps
+`liveness_summary`, and `recommended_drilldowns`. Its top-level `method`,
+`native_command`, `mcp_tool`, and `contract_source` fields are populated from
+`agent_contracts.def`, not handwritten in the controller. `runtime_services`
+is only the producer process' in-process listener state; when a native static
+command has successfully probed a target lane over RPC, `runtime_availability`
+marks `target_rpc_reachable=true`,
+`liveness_summary.effective_runtime_reachable=true`, and
+`liveness_summary.effective_runtime_scope="target_rpc_probe"`. This keeps
 `producer_runtime_state="inactive_or_static_probe"` from being mistaken for an
 offline target lane. Use it when deciding whether a lane is alive, stalled,
 missing quality verdicts, or merely being inspected from a static binary outside
@@ -142,9 +145,11 @@ a running node.
 `agentdiagnose` (`zcl.agent_diagnose.v1`) is the bounded "what should I look
 at next?" packet. It composes `agent`, default bounded `healthcheck`,
 `peer_lifecycle incidents`, advisory `getmirrorstatus`, and a small semantic
-timeline slice while staying inside `zcl.first_call_contract.v1`. The response
-duplicates the decision fields agents need most (`verdict`, `safe_next_action`,
-`gap`, `peer_count`, `peer_incident_count`, `duplicate_host_group_count`,
+timeline slice while staying inside `zcl.first_call_contract.v1`. Its
+top-level `method`, `native_command`, `mcp_tool`, and `contract_source` fields
+come from `agent_contracts.def`. The response duplicates the decision fields
+agents need most (`verdict`, `safe_next_action`, `gap`, `peer_count`,
+`peer_incident_count`, `duplicate_host_group_count`,
 `peer_host_incident_count`, `peer_host_count_returned`, `peer_primary_host`,
 `peer_primary_host_issue_class`, `peer_primary_host_next_action`,
 `peer_primary_host_direction`, `peer_primary_host_mixed_direction`,

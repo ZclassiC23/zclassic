@@ -1220,9 +1220,12 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
             g_agent_diagnose_brief_params_seen = true;
         return strdup("{\"schema\":\"zcl.agent_diagnose.v1\","
                       "\"api_version\":\"v1\","
+                      "\"method\":\"agentdiagnose\","
+                      "\"native_command\":\"zclassic23 agentdiagnose\","
+                      "\"mcp_tool\":\"zcl_agent_diagnose\","
+                      "\"contract_source\":\"agent_contracts.def\","
                       "\"verdict\":\"healthy\","
                       "\"safe_next_action\":\"monitor_agent_and_liveness\","
-                      "\"mcp_tool\":\"zcl_agent_diagnose\","
                       "\"first_call\":{\"schema\":\"zcl.first_call_contract.v1\","
                       "\"api\":\"agentdiagnose\"},"
                       "\"peer_incidents\":{\"schema\":\"zcl.peer_incidents.v1\"}}");
@@ -1230,6 +1233,10 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
     if (strcmp(method, "agentliveness") == 0)
         return strdup("{\"schema\":\"zcl.agent_liveness.v1\","
                       "\"api_version\":\"v1\","
+                      "\"method\":\"agentliveness\","
+                      "\"native_command\":\"zclassic23 agentliveness\","
+                      "\"mcp_tool\":\"zcl_agent_liveness\","
+                      "\"contract_source\":\"agent_contracts.def\","
                       "\"overall_liveness\":\"active\","
                       "\"agent_next_action\":\"inspect_recommended_drilldowns\","
                       "\"liveness_summary\":{\"quality_failed_count\":0},"
@@ -1640,8 +1647,14 @@ static int test_zcl_agent_dev_tools_dispatch(void)
         ASSERT(json_read(&root, body, strlen(body)));
         ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
                       "zcl.agent_diagnose.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "method")),
+                      "agentdiagnose");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "native_command")),
+                      "zclassic23 agentdiagnose");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "mcp_tool")),
                       "zcl_agent_diagnose");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "contract_source")),
+                      "agent_contracts.def");
         ASSERT(json_get(&root, "first_call") != NULL);
         ASSERT(json_get(&root, "peer_incidents") != NULL);
         json_free(&root);
@@ -1657,8 +1670,14 @@ static int test_zcl_agent_dev_tools_dispatch(void)
         ASSERT(json_read(&root, body, strlen(body)));
         ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
                       "zcl.agent_diagnose.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "method")),
+                      "agentdiagnose");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "native_command")),
+                      "zclassic23 agentdiagnose");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "mcp_tool")),
                       "zcl_agent_diagnose");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "contract_source")),
+                      "agent_contracts.def");
         json_free(&root);
         free(body);
 
@@ -1670,6 +1689,14 @@ static int test_zcl_agent_dev_tools_dispatch(void)
         ASSERT(json_read(&root, body, strlen(body)));
         ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
                       "zcl.agent_liveness.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "method")),
+                      "agentliveness");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "native_command")),
+                      "zclassic23 agentliveness");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "mcp_tool")),
+                      "zcl_agent_liveness");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "contract_source")),
+                      "agent_contracts.def");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "overall_liveness")),
                       "active");
         ASSERT(json_get(&root, "liveness_summary") != NULL);

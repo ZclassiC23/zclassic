@@ -194,9 +194,12 @@ controller `k_routes[]` arrays.
 - `zclassic23 agentliveness` / `zcl_agent_liveness` — unified current-lane
   liveness rollup: lane identity, observed listeners, supervisor children,
   background quality verdicts, direct `overall_liveness`, and next drilldowns.
+  Top-level method/native/MCP identity fields are registry-owned by
+  `agent_contracts.def`.
 - `zclassic23 agentdiagnose` / `zcl_agent_diagnose` — bounded no-jq
   diagnosis packet for first-call work: status, healthcheck, peer lifecycle
-  incidents, mirror status, timeline pointers, and a safe next action.
+  incidents, mirror status, timeline pointers, and a safe next action. Its
+  top-level method/native/MCP identity fields are also registry-owned.
 - `zclassic23 peerincidents` / `zcl_peer_incidents` — compact bounded peer
   incident packet for reconnect storms, duplicate host entries, last
   disconnect reason, flat primary issue fields, host direction/mixed-direction
