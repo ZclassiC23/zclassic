@@ -427,6 +427,17 @@ static void api_contract_push(struct json_value *out, const char *method,
     if (alias_of && alias_of[0])
         json_push_kv_str(&item, "legacy_alias_of", alias_of);
 
+    const char *filter_contract_name =
+        api_query_filter_contract_for_route(method, public_path);
+    if (filter_contract_name) {
+        struct json_value filter_contract;
+        json_init(&filter_contract);
+        api_query_filter_contract_json(filter_contract_name,
+                                       &filter_contract);
+        json_push_kv(&item, "filter_contract", &filter_contract);
+        json_free(&filter_contract);
+    }
+
     struct json_value query_params;
     json_init(&query_params);
     api_contract_query_params_json(query_params_csv, &query_params);

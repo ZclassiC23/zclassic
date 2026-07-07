@@ -113,7 +113,10 @@ write_safety=public_read_only` and
 `GET /api/v1/service-operations?service=znam_names&surface=rest`. The
 collection includes `filter_contract` (`zcl.query_filter_contract.v1`), and
 unknown filter names fail closed with `400 invalid_service_operation_filter`
-instead of returning an accidentally unfiltered operation list. Use these
+instead of returning an accidentally unfiltered operation list. The same
+contract is advertised in `/api/v1` route contracts and `/api/v1/openapi` as
+`x-zcl-filter-contract`, so agents can validate query keys before making a
+call. Use these
 surfaces when the question is "what can this node host, advertise, verify, or
 construct for a user?" They distinguish the stable service/operation
 contracts from `/api/v1/services`, which remains runtime health.
@@ -216,7 +219,9 @@ recomputed for that filtered view. Directory responses include
 `filter_contract` (`zcl.query_filter_contract.v1`) with the allowed keys,
 accepted aliases, and example call. Unknown filter names fail closed with a
 structured `400 invalid_name_service_filter` response instead of returning an
-accidentally unfiltered directory. Agents should verify the
+accidentally unfiltered directory. The same contract is available from the
+REST route index and from OpenAPI as `x-zcl-filter-contract`. Agents should
+verify the
 chain-projected ZNAM record first, inspect the linked service/operation
 contract and runtime probe, then prefer direct P2P for low latency and fall
 back to onion reachability when NAT or firewall conditions require it.

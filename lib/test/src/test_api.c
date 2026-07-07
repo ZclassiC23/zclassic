@@ -2139,6 +2139,24 @@ int test_api(void)
              api_test_contract_has_query(service_operations_route, "status");
         ok = ok && service_operations_route &&
              api_test_contract_has_query(service_operations_route, "surface");
+        const struct json_value *service_operations_filter_contract =
+            service_operations_route ?
+            json_get(service_operations_route, "filter_contract") : NULL;
+        const struct json_value *service_operations_allowed =
+            service_operations_filter_contract ?
+            json_get(service_operations_filter_contract, "allowed_filters") :
+            NULL;
+        ok = ok && service_operations_filter_contract &&
+             strcmp(json_get_str(json_get(
+                        service_operations_filter_contract, "schema")),
+                    "zcl.query_filter_contract.v1") == 0;
+        ok = ok && service_operations_filter_contract &&
+             json_get_bool(json_get(service_operations_filter_contract,
+                                    "unknown_filters_error"));
+        ok = ok && service_operations_allowed &&
+             strcmp(json_get_str(json_get(service_operations_allowed,
+                                          "interface")),
+                    "alias_for_preferred_interface") == 0;
         ok = ok && service_operation_show &&
              strcmp(json_get_str(json_get(service_operation_show,
                                     "response_schema")),
@@ -2228,6 +2246,24 @@ int test_api(void)
              api_test_contract_has_query(names_services, "valid");
         ok = ok && names_services &&
              api_test_contract_has_query(names_services, "endpoint_only");
+        const struct json_value *names_services_filter_contract =
+            names_services ? json_get(names_services, "filter_contract") :
+            NULL;
+        const struct json_value *names_services_allowed =
+            names_services_filter_contract ?
+            json_get(names_services_filter_contract, "allowed_filters") :
+            NULL;
+        ok = ok && names_services_filter_contract &&
+             strcmp(json_get_str(json_get(names_services_filter_contract,
+                                          "schema")),
+                    "zcl.query_filter_contract.v1") == 0;
+        ok = ok && names_services_filter_contract &&
+             json_get_bool(json_get(names_services_filter_contract,
+                                    "unknown_filters_error"));
+        ok = ok && names_services_allowed &&
+             strcmp(json_get_str(json_get(names_services_allowed,
+                                          "contract")),
+                    "alias_for_service_contract") == 0;
         const struct json_value *names_services_binding =
             names_services ? json_get(names_services, "service_binding")
                            : NULL;
@@ -3524,6 +3560,24 @@ int test_api(void)
         ok = ok && service_operations &&
              api_test_openapi_has_param(service_operations, "surface",
                                         "query");
+        const struct json_value *service_operations_openapi_filter =
+            service_operations ? json_get(service_operations,
+                                          "x-zcl-filter-contract") : NULL;
+        const struct json_value *service_operations_openapi_allowed =
+            service_operations_openapi_filter ?
+            json_get(service_operations_openapi_filter, "allowed_filters") :
+            NULL;
+        ok = ok && service_operations_openapi_filter &&
+             strcmp(json_get_str(json_get(service_operations_openapi_filter,
+                                          "schema")),
+                    "zcl.query_filter_contract.v1") == 0;
+        ok = ok && service_operations_openapi_filter &&
+             json_get_bool(json_get(service_operations_openapi_filter,
+                                    "unknown_filters_error"));
+        ok = ok && service_operations_openapi_allowed &&
+             strcmp(json_get_str(json_get(
+                        service_operations_openapi_allowed, "surface")),
+                    "rest,mcp,rpc") == 0;
         ok = ok && service_catalog_show &&
              strcmp(json_get_str(json_get(service_catalog_show,
                                           "x-response-schema")),
@@ -3598,6 +3652,24 @@ int test_api(void)
         ok = ok && names_services &&
              api_test_openapi_has_param(names_services, "endpoint_only",
                                         "query");
+        const struct json_value *names_services_openapi_filter =
+            names_services ? json_get(names_services,
+                                      "x-zcl-filter-contract") : NULL;
+        const struct json_value *names_services_openapi_allowed =
+            names_services_openapi_filter ?
+            json_get(names_services_openapi_filter, "allowed_filters") :
+            NULL;
+        ok = ok && names_services_openapi_filter &&
+             strcmp(json_get_str(json_get(names_services_openapi_filter,
+                                          "schema")),
+                    "zcl.query_filter_contract.v1") == 0;
+        ok = ok && names_services_openapi_filter &&
+             json_get_bool(json_get(names_services_openapi_filter,
+                                    "unknown_filters_error"));
+        ok = ok && names_services_openapi_allowed &&
+             strcmp(json_get_str(json_get(names_services_openapi_allowed,
+                                          "valid")),
+                    "true,false") == 0;
         const struct json_value *names_services_openapi_binding =
             names_services ? json_get(names_services,
                                       "x-zcl-service-binding") : NULL;

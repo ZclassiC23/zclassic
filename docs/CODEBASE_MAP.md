@@ -187,7 +187,9 @@ controller `k_routes[]` arrays.
   name-service-directory responses include `filter_contract`
   (`zcl.query_filter_contract.v1`); unknown filter names fail closed with
   structured 400 errors instead of returning accidentally unfiltered
-  collections. The implementation is split between
+  collections. `/api/v1` route contracts and `/api/v1/openapi` expose the same
+  data as `filter_contract` / `x-zcl-filter-contract`, so agents can validate
+  query keys without probing an endpoint first. The implementation is split between
   `app/controllers/src/api_controller_service_catalog.c` and
   `app/controllers/src/api_controller_service_operations.c`; `/api/v1/services`
   remains runtime health.

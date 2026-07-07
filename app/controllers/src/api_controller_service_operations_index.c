@@ -469,38 +469,6 @@ static void api_service_operation_filter_from_query(
     }
 }
 
-static void api_service_operation_allowed_filters_json(struct json_value *out)
-{
-    json_set_object(out);
-    json_push_kv_str(out, "service",
-                     "letters,digits,underscore,dash,dot");
-    json_push_kv_str(out, "write_safety",
-                     "public_read_only,operator_private,"
-                     "operator_private_destructive");
-    json_push_kv_str(out, "preferred_interface",
-                     "rest,mcp,rpc,native_or_planned");
-    json_push_kv_str(out, "interface",
-                     "alias_for_preferred_interface");
-    json_push_kv_str(out, "status", "active,in_progress");
-    json_push_kv_str(out, "surface", "rest,mcp,rpc");
-}
-
-static void api_service_operation_filter_contract_json(struct json_value *out)
-{
-    struct json_value allowed = {0};
-
-    json_set_object(out);
-    json_push_kv_str(out, "schema", "zcl.query_filter_contract.v1");
-    json_push_kv_bool(out, "unknown_filters_error", true);
-    json_push_kv_str(out, "semantics", "server_side_exact_match");
-    api_service_operation_allowed_filters_json(&allowed);
-    json_push_kv(out, "allowed_filters", &allowed);
-    json_free(&allowed);
-    json_push_kv_str(out, "example",
-                     "/api/v1/service-operations?"
-                     "service=bootstrap&write_safety=public_read_only");
-}
-
 static void api_service_operation_filters_json(
     struct json_value *out,
     const struct api_service_operation_filter *filter)
@@ -599,7 +567,7 @@ bool api_service_operations_filtered_index_json(
     json_push_kv(out, "filters", &filters);
     json_free(&filters);
     json_init(&filter_contract);
-    api_service_operation_filter_contract_json(&filter_contract);
+    api_query_filter_contract_json("service_operations", &filter_contract);
     json_push_kv(out, "filter_contract", &filter_contract);
     json_free(&filter_contract);
 
@@ -680,7 +648,7 @@ static void api_service_operation_filter_error_json(
                      "invalid service operation filter");
 
     json_init(&allowed);
-    api_service_operation_allowed_filters_json(&allowed);
+    api_query_filter_allowed_filters_json("service_operations", &allowed);
     json_push_kv(out, "allowed_filters", &allowed);
     json_free(&allowed);
     json_push_kv_str(out, "example",

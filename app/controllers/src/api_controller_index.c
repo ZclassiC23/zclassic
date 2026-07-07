@@ -417,6 +417,10 @@ static void api_openapi_operation_json(const struct json_value *contract,
         json_get(contract, "service_binding");
     if (service_binding)
         json_push_kv(operation, "x-zcl-service-binding", service_binding);
+    const struct json_value *filter_contract =
+        json_get(contract, "filter_contract");
+    if (filter_contract)
+        json_push_kv(operation, "x-zcl-filter-contract", filter_contract);
     const struct json_value *id_params = json_get(contract, "id_params");
     if (id_params)
         json_push_kv(operation, "x-id-params", id_params);
@@ -454,6 +458,9 @@ static void api_openapi_operation_json(const struct json_value *contract,
     api_openapi_push_schema_component(schemas, response_schema);
     api_openapi_push_schema_component(schemas, error_schema);
     api_openapi_push_schema_component(schemas, compat_schema);
+    if (filter_contract)
+        api_openapi_push_schema_component(schemas,
+                                          ZCL_QUERY_FILTER_CONTRACT_SCHEMA);
 }
 
 static void api_openapi_components_json(struct json_value *components,
