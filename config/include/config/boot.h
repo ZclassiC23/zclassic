@@ -257,16 +257,23 @@ void boot_refold_from_anchor_reset(struct node_db *ndb);
  * snapshot's hdr.anchor_block_hash to the PoW-proven header at seed_h — a
  * mismatch is FATAL, so a self-consistent-but-FORGED snapshot can never seed
  * coins_kv. `ms` may be NULL only in unit tests with no chain loaded (the
- * binding is then skipped with a loud warning). */
+ * binding is then skipped with a loud warning).
+ *
+ * `trust_existing_block_files` is true for legacy-import/datadir boots, where a
+ * non-empty blk file is a trusted local body source. It is false for
+ * `-nolegacyimport` snapshot boots, where copied or partial blk files must pass
+ * per-block read/hash verification before their BLOCK_HAVE_DATA claim survives. */
 struct main_state;
 void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
                                             const char *path,
                                             const char *datadir,
-                                            struct main_state *ms);
+                                            struct main_state *ms,
+                                            bool trust_existing_block_files);
 
 #ifdef ZCL_TESTING
 size_t boot_snapshot_drop_bodiless_have_data_above_seed_for_test(
-    struct main_state *ms, const char *datadir, int seed_h);
+    struct main_state *ms, const char *datadir, int seed_h,
+    bool trust_existing_block_files);
 #endif
 
 /* Testable production transaction used by both SHA3-verified snapshot seed

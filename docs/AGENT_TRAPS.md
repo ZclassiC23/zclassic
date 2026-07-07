@@ -11,6 +11,27 @@ intentional consensus-parity decisions.
 
 ---
 
+## (0) LIVE OPS TRAPS — public service vs private candidates
+
+- **Public connected-node tables only see the service bound to `8033`.** A
+  zclassic23 candidate on `18043` or `18044` can advertise
+  `/ZClassic23:0.1.0/` and still not change the public row for
+  `205.209.104.118`. That row remains `MagicBean:*` until
+  `zclassicd-rhett.service` is stopped and zclassic23 binds public `8033`.
+  Do not cut over while the candidate is materially behind tip just to change
+  the label. See `docs/work/remote-node-cutover-205209104118.md`.
+- **Copied `block_index.bin` plus foreign `blocks/blk*.dat` is unsafe.** The
+  block index contains source datadir file offsets. A non-empty block file with
+  the same number is not enough proof that an indexed body is valid. In
+  `-nolegacyimport` snapshot boots, existing block files must be untrusted
+  unless the indexed block reads back and hashes to its block-index entry.
+- **HODL/explorer wait regressions have a public smoke test.** Use
+  `tools/scripts/public_explorer_smoke.sh`; it checks both `/api/v1/hodl` and
+  `/explorer/hodl` without `jq` and fails on "refresh", "not processed",
+  "retry", or "waiting" user-visible states.
+
+---
+
 ## (1) STALE FACTS — old belief → current truth
 
 - **getblockcount serves active_chain_height.** FALSE at HEAD. It serves `reducer_frontier_provable_tip_cached()` (H*, the provable frontier) since commit `e75b5c62c` (2026-06-20). Internal code still uses `active_chain_height` for lookahead, but only external/served RPCs use H*. → `app/controllers/src/blockchain_controller_blocks.c:50-66`.

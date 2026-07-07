@@ -4,7 +4,11 @@
 
 #include "chain/chain.h"
 #include "config/boot.h"
+#include "core/amount.h"
 #include "core/uint256.h"
+#include "primitives/block.h"
+#include "primitives/transaction.h"
+#include "storage/disk_block_io.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
@@ -44,6 +48,23 @@ static struct block_index *bsd_insert(struct main_state *ms, int h,
     return bi;
 }
 
+static struct block_index *bsd_insert_hash(struct main_state *ms, int h,
+                                           const struct uint256 *hash,
+                                           unsigned int status, int nfile,
+                                           unsigned int npos, unsigned int ntx)
+{
+    struct block_index *bi =
+        chainstate_insert_block_index((struct chainstate *)ms, hash);
+    if (!bi)
+        return NULL;
+    bi->nHeight = h;
+    bi->nStatus = status;
+    bi->nFile = nfile;
+    bi->nDataPos = npos;
+    bi->nTx = ntx;
+    return bi;
+}
+
 static bool bsd_mkdir_blocks(const char *datadir)
 {
     char path[512];
@@ -68,6 +89,24 @@ static bool bsd_write_blk(const char *datadir, int nfile, bool nonempty)
     }
     ok = fclose(f) == 0 && ok;
     return ok;
+}
+
+static void bsd_build_block(struct block *b, uint32_t seed)
+{
+    block_init(b);
+    b->header.nVersion = 4;
+    b->header.nTime = seed;
+    b->header.nBits = 0x2000ffff;
+    b->header.nNonce.data[0] = (uint8_t)(seed & 0xff);
+    b->header.nNonce.data[1] = (uint8_t)((seed >> 8) & 0xff);
+    b->num_vtx = 1;
+    b->vtx = calloc(1, sizeof(struct transaction)); // raw-alloc-ok:test-fixture
+    if (!b->vtx)
+        return;
+    transaction_init(&b->vtx[0]);
+    transaction_alloc(&b->vtx[0], 1, 1);
+    b->vtx[0].vin[0].sequence = 0xffffffff;
+    b->vtx[0].vout[0].value = (CAmount)seed * COIN;
 }
 
 static bool bsd_is_cleared(const struct block_index *bi)
@@ -102,7 +141,7 @@ int test_boot_snapshot_drop_bodiless(void)
 
         size_t cleared =
             boot_snapshot_drop_bodiless_have_data_above_seed_for_test(
-                &ms, dir, seed_h);
+                &ms, dir, seed_h, true);
 
         BSD_CHECK("missing: below+above bodiless entries cleared",
                   cleared == 2 && bsd_is_cleared(below) &&
@@ -135,7 +174,7 @@ int test_boot_snapshot_drop_bodiless(void)
 
         size_t cleared =
             boot_snapshot_drop_bodiless_have_data_above_seed_for_test(
-                &ms, dir, 10);
+                &ms, dir, 10, true);
 
         BSD_CHECK("present: real block bodies keep HAVE_DATA",
                   cleared == 0 &&
@@ -169,7 +208,7 @@ int test_boot_snapshot_drop_bodiless(void)
 
         size_t cleared =
             boot_snapshot_drop_bodiless_have_data_above_seed_for_test(
-                &ms, dir, 10);
+                &ms, dir, 10, true);
 
         BSD_CHECK("absent: nFile=-1 and empty blk file clear",
                   cleared == 2 &&
@@ -185,6 +224,66 @@ int test_boot_snapshot_drop_bodiless(void)
                   no_have_data->nTx == 10);
 
         main_state_free(&ms);
+        test_rm_rf_recursive(dir);
+    }
+
+    {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "boot_snapshot_drop", "untrusted");
+        BSD_CHECK("untrusted: blocks dir created", bsd_mkdir_blocks(dir));
+        BSD_CHECK("untrusted: bogus non-empty blk file written",
+                  bsd_write_blk(dir, 4, true));
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct block_index *bogus = bsd_insert(
+            &ms, 12, BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA, 4, 8, 1);
+
+        size_t cleared =
+            boot_snapshot_drop_bodiless_have_data_above_seed_for_test(
+                &ms, dir, 10, false);
+
+        BSD_CHECK("untrusted: non-empty but unreadable body clears",
+                  cleared == 1 && bsd_is_cleared(bogus));
+
+        main_state_free(&ms);
+        test_rm_rf_recursive(dir);
+    }
+
+    {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "boot_snapshot_drop", "verified");
+        BSD_CHECK("verified: blocks dir created", bsd_mkdir_blocks(dir));
+
+        struct block blk;
+        bsd_build_block(&blk, 0x23);
+        struct uint256 hash;
+        block_get_hash(&blk, &hash);
+        unsigned char msg_start[4] = {0x24, 0xe9, 0x27, 0x64};
+        struct disk_block_pos pos;
+        disk_block_pos_init(&pos);
+        BSD_CHECK("verified: real block body written",
+                  write_block_to_disk(&blk, &pos, dir, msg_start));
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct block_index *real = bsd_insert_hash(
+            &ms, 12, &hash, BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA,
+            pos.nFile, pos.nPos, 1);
+
+        size_t cleared =
+            boot_snapshot_drop_bodiless_have_data_above_seed_for_test(
+                &ms, dir, 10, false);
+
+        BSD_CHECK("verified: hash-readable body keeps HAVE_DATA",
+                  cleared == 0 && real &&
+                  (real->nStatus & BLOCK_HAVE_DATA) &&
+                  real->nFile == pos.nFile &&
+                  real->nDataPos == pos.nPos &&
+                  real->nTx == 1);
+
+        main_state_free(&ms);
+        block_free(&blk);
         test_rm_rf_recursive(dir);
     }
 

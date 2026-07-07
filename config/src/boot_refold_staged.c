@@ -22,6 +22,7 @@
 #include "models/database.h"
 #include "storage/progress_store.h"
 #include "storage/coins_kv.h"
+#include "storage/disk_block_io.h"       /* block_index_have_data_readable */
 #include "config/boot_internal.h"        /* boot_index_clear_coins_state */
 #include "config/mint_anchor_progress.h" /* mint_anchor_progress_* */
 #include "jobs/reducer_frontier.h"       /* progress_meta_delete_in_tx,
@@ -185,14 +186,15 @@ static bool mint_snapshot_path(struct node_db *ndb, char *buf, size_t cap)
  *     at a readable position; the window never extends past seed_h+1, and
  *     tip_finalize wedges on lookahead_tip_missing (H* frozen at the seed).
  *
- * Fix: BEFORE the staged pipeline starts, drop the borrowed have-data claim for
- * every block ABOVE seed_h whose referenced blk file is NOT present on disk —
- * reset (nFile=-1, nDataPos=0), clear BLOCK_HAVE_DATA, and floor validity at
- * header-only (BLOCK_VALID_TREE) so chain selection still sees the header but
- * the body is re-fetched + re-indexed cleanly via P2P. A blocks-PRESENT bundle
- * (live / legacy import) keeps its real bodies untouched — the per-file stat
- * gate only fires when the file is genuinely absent. Cheap: one stat() per
- * distinct nFile (memoized), header-only walk, no body reads.
+ * Fix: BEFORE the staged pipeline starts, drop the borrowed have-data claim
+ * whose referenced blk file is not trusted on THIS node — reset (nFile=-1,
+ * nDataPos=0), clear BLOCK_HAVE_DATA, and floor validity at header-only
+ * (BLOCK_VALID_TREE) so chain selection still sees the header but the body is
+ * re-fetched + re-indexed cleanly via P2P. A legacy-import/datadir boot can
+ * keep a non-empty blk file by the cheap stat() gate. A no-legacy snapshot boot
+ * is stricter: it keeps an indexed body only if the block reads back and hashes
+ * to the block-index entry, which rejects foreign or partial blk files while
+ * preserving blocks this node genuinely fetched later.
  *
  * Returns the number of blocks whose borrowed have-data was dropped (0 on a
  * blocks-present bundle). The caller uses a non-zero return to retract the
@@ -202,7 +204,8 @@ static bool mint_snapshot_path(struct node_db *ndb, char *buf, size_t cap)
  * retraction the node floods the TOP of the gap (header-tip successors) and
  * never fetches the connectable bottom (seed_h+1) the staged fold needs next. */
 static size_t boot_snapshot_drop_bodiless_have_data_above_seed(
-    struct main_state *ms, const char *datadir, int seed_h)
+    struct main_state *ms, const char *datadir, int seed_h,
+    bool trust_existing_block_files)
 {
     if (!ms || !datadir || seed_h < 0)
         return 0;
@@ -210,9 +213,11 @@ static size_t boot_snapshot_drop_bodiless_have_data_above_seed(
     /* Memoize stat() per nFile so a ~3k-block forward window costs ~1 stat per
      * blk file, not one per block. -1 = unknown, 0 = missing, 1 = present. */
     int8_t file_present[4096];
+    off_t file_size[4096];
     memset(file_present, -1, sizeof(file_present));
+    memset(file_size, 0, sizeof(file_size));
 
-    size_t cleared = 0, kept = 0;
+    size_t cleared = 0, kept = 0, verified = 0, rejected = 0;
     size_t iter = 0;
     struct block_index *p = NULL;
     while (block_map_next(&ms->map_block_index, &iter, NULL, &p)) {
@@ -231,12 +236,14 @@ static size_t boot_snapshot_drop_bodiless_have_data_above_seed(
             continue;
 
         int present;
+        off_t present_size = 0;
         int fn = p->nFile;
         if (fn < 0) {
             present = 0;  /* HAVE_DATA but no file slot — definitionally absent */
         } else if (fn < (int)(sizeof(file_present) / sizeof(file_present[0])) &&
                    file_present[fn] >= 0) {
             present = file_present[fn];
+            present_size = file_size[fn];
         } else {
             char path[PATH_MAX];
             int n = snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
@@ -244,8 +251,23 @@ static size_t boot_snapshot_drop_bodiless_have_data_above_seed(
             struct stat st;
             present = (n > 0 && (size_t)n < sizeof(path) &&
                        stat(path, &st) == 0 && st.st_size > 0) ? 1 : 0;
-            if (fn < (int)(sizeof(file_present) / sizeof(file_present[0])))
+            present_size = present ? st.st_size : 0;
+            if (fn < (int)(sizeof(file_present) / sizeof(file_present[0]))) {
                 file_present[fn] = (int8_t)present;
+                file_size[fn] = present_size;
+            }
+        }
+
+        if (present && !trust_existing_block_files) {
+            if (!p->phashBlock || p->nDataPos == 0 ||
+                (present_size > 0 && (off_t)p->nDataPos >= present_size)) {
+                present = 0;
+            } else if (block_index_have_data_readable(p, datadir)) {
+                verified++;
+            } else {
+                present = 0;
+                rejected++;
+            }
         }
 
         if (present) {
@@ -270,18 +292,23 @@ static size_t boot_snapshot_drop_bodiless_have_data_above_seed(
         fprintf(stderr,
                 "[boot] -load-snapshot-at-own-height: blocks-less bundle — "
                 "dropped borrowed have-data on %zu block(s) around seed h=%d "
-                "(below+above; no body on disk; %zu kept with real bodies; seed "
-                "block protected); have-data-gated walkers now skip them\n",
-                cleared, seed_h, kept);
+                "(below+above; no trusted body on disk; %zu kept with real "
+                "bodies; %zu hash-verified; %zu rejected by hash/read check; "
+                "seed block protected; trust_existing_block_files=%s); "
+                "have-data-gated walkers now skip them\n",
+                cleared, seed_h, kept, verified, rejected,
+                trust_existing_block_files ? "true" : "false");
     return cleared;
 }
 
 #ifdef ZCL_TESTING
 size_t boot_snapshot_drop_bodiless_have_data_above_seed_for_test(
-    struct main_state *ms, const char *datadir, int seed_h)
+    struct main_state *ms, const char *datadir, int seed_h,
+    bool trust_existing_block_files)
 {
     return boot_snapshot_drop_bodiless_have_data_above_seed(ms, datadir,
-                                                           seed_h);
+                                                           seed_h,
+                                                           trust_existing_block_files);
 }
 #endif
 
@@ -1036,7 +1063,8 @@ char *boot_autodetect_bundle_snapshot(const char *datadir)
 void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
                                             const char *path,
                                             const char *datadir,
-                                            struct main_state *ms)
+                                            struct main_state *ms,
+                                            bool trust_existing_block_files)
 {
     if (!path || !path[0]) {
         fprintf(stderr, "FATAL: -load-snapshot-at-own-height: empty path\n");
@@ -1367,7 +1395,7 @@ retry_authority_store:
      * are really present (live / legacy-import datadirs). */
     if (ms) {
         size_t bodiless = boot_snapshot_drop_bodiless_have_data_above_seed(
-            ms, datadir, seed_h);
+            ms, datadir, seed_h, trust_existing_block_files);
         /* On a blocks-less bundle, retract the active-chain tip to the seed. The
          * boot's earlier CSR restore promoted the active tip to the top of the
          * now-cleared borrowed span (e.g. 3,159,325), and the P2P download window

@@ -513,7 +513,7 @@ int test_load_verify_boot(void)
         progress_store_close();
         LV_CHECK("(e1) corrupt progress.kv fixture written",
                  lv_write_junk_progress_store(dir));
-        boot_load_snapshot_at_own_height_reset(&ndb, snap_path, dir, NULL);
+        boot_load_snapshot_at_own_height_reset(&ndb, snap_path, dir, NULL, true);
         pdb = progress_store_db();
         int32_t applied = -1;
         bool found = false;
@@ -529,7 +529,7 @@ int test_load_verify_boot(void)
                  lv_write_bad_stage_cursor_store(dir));
         LV_CHECK("(e2) bad schema progress_store opens",
                  progress_store_open(dir));
-        boot_load_snapshot_at_own_height_reset(&ndb, snap_path, dir, NULL);
+        boot_load_snapshot_at_own_height_reset(&ndb, snap_path, dir, NULL, true);
         pdb = progress_store_db();
         applied = -1;
         found = false;
@@ -581,7 +581,8 @@ int test_load_verify_boot(void)
         seed_integrity_gate_reset_for_testing();
         seed_integrity_gate_set_node_db_for_testing(&ndb);
         if (ok)
-            boot_load_snapshot_at_own_height_reset(&ndb, snap_path, dir, &ms);
+            boot_load_snapshot_at_own_height_reset(&ndb, snap_path, dir, &ms,
+                                                   true);
         seed_integrity_gate_reset_for_testing();
 
         int32_t hstar_after = pdb ? lv_compute_hstar(pdb) : -1;

@@ -3204,7 +3204,8 @@ sapling_tree_boot_check_done:
         boot_load_snapshot_at_own_height_reset(&g_node_db,
                                                ctx->load_snapshot_at_own_height,
                                                ctx->datadir,
-                                               &g_state);
+                                               &g_state,
+                                               !ctx->no_legacy_auto_import);
     /* The snapshot seed returned cleanly (the loader _exit()s on failure, so
      * reaching here means success) — drop the failure-memory marker (autodetect
      * OR explicit) so a later deliberate re-seed of the same bundle is allowed. */
