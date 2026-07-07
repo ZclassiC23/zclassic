@@ -2,6 +2,7 @@
 # Copyright 2026 Rhett Creighton - Apache License 2.0
 
 CC = cc
+CXX ?= c++
 ZCL_USE_CCACHE ?= 1
 ZCL_CCACHE_BIN := $(shell if [ "$(ZCL_USE_CCACHE)" != "0" ]; then command -v sccache 2>/dev/null || command -v ccache 2>/dev/null; fi)
 ifneq ($(ZCL_CCACHE_BIN),)
@@ -172,8 +173,14 @@ TOR_LIBS = $(if $(TOR_FULL),$(TOR_FULL),-Lvendor/lib -ltor_stub)
 # All dependencies bundled in vendor/lib as static archives.
 # Zero system library requirements beyond libc.
 # OpenSSL 3.0 (Apache 2.0), libevent, zlib — all vendored.
+# LevelDB is a C++ archive behind a C API. Link with cc for release LTO
+# consistency, but add the C++ driver's stdlib search directory so hosts whose
+# cc/c++ packages are split still find libstdc++.
+CXX_STDLIB_FILE := $(shell $(CXX) -print-file-name=libstdc++.a 2>/dev/null)
+CXX_STDLIB_DIR := $(if $(filter /%,$(CXX_STDLIB_FILE)),$(dir $(CXX_STDLIB_FILE)),)
+CXX_STDLIB_LDFLAGS := $(if $(CXX_STDLIB_DIR),-L$(CXX_STDLIB_DIR),)
 LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
-	-lstdc++ -lm -lsqlite3 -ldl -lpthread \
+	$(CXX_STDLIB_LDFLAGS) -lstdc++ -lm -lsqlite3 -ldl -lpthread \
 	-levent -levent_openssl -levent_pthreads \
 	-lssl -lcrypto -lz
 

@@ -100,7 +100,10 @@ Notes:
   stable C API (`<leveldb/c.h>`), which is unchanged across 1.18→1.23, so the
   headers and the built library stay compatible. `cmake` is used when present;
   otherwise `tools/scripts/build_vendor.sh` builds the same static source set
-  directly with a C++11 compiler and a generated POSIX `port_config.h`.
+  directly with a C++11 compiler and a generated POSIX `port_config.h`. Final
+  node links still use `cc`; the Makefile asks `c++` for libstdc++'s directory
+  and adds it to the linker search path so mixed distro compiler packages do
+  not break cold remote builds.
 - **SQLite 3.49.0** amalgamation; `make vendor` also refreshes
   `vendor/include/sqlite3.h` and `vendor/sqlite3.c` so the rest of the build
   (e.g. `tools/sqlq.c`) stays in sync.

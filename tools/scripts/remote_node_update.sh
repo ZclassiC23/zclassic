@@ -201,6 +201,15 @@ require_tool_for_preflight() {
     return 0
 }
 
+require_cxx_for_preflight() {
+    if command -v c++ >/dev/null 2>&1 ||
+       command -v g++ >/dev/null 2>&1; then
+        return 0
+    fi
+    preflight_error="missing_build_tool:c++_or_g++ (required for LevelDB/libstdc++ link)"
+    return 1
+}
+
 preflight_build() {
     local mode="$1" missing
     preflight_error=""
@@ -214,6 +223,7 @@ preflight_build() {
     require_tool_for_preflight sha256sum "required by vendor verification" ||
         return 1
     require_tool_for_preflight tar "required by vendor extraction" || return 1
+    require_cxx_for_preflight || return 1
 
     missing="$(missing_vendor_archives)"
     [ -z "$missing" ] && return 0
@@ -232,8 +242,7 @@ preflight_build() {
     case " $missing " in
         *" libleveldb.a "*)
             if ! command -v cmake >/dev/null 2>&1 &&
-               ! command -v c++ >/dev/null 2>&1 &&
-               ! command -v g++ >/dev/null 2>&1; then
+               ! require_cxx_for_preflight; then
                 preflight_error="missing_build_tool:c++_or_cmake (required for libleveldb.a)"
                 return 1
             fi

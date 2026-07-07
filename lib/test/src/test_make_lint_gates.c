@@ -2973,6 +2973,8 @@ static int t_remote_node_update_contract(void)
         ASSERT(strstr(script, "preflight_build") != NULL);
         ASSERT(strstr(script, "preflight_failed") != NULL);
         ASSERT(strstr(script, "missing_build_tool:c++_or_cmake") != NULL);
+        ASSERT(strstr(script, "missing_build_tool:c++_or_g++") != NULL);
+        ASSERT(strstr(script, "require_cxx_for_preflight") != NULL);
         ASSERT(strstr(script, "\\\"error\\\"") != NULL);
         ASSERT(strstr(script, "git_fetch_failed") != NULL);
         ASSERT(strstr(script, "build_failed:$build") != NULL);
@@ -3010,6 +3012,9 @@ static int t_remote_node_update_contract(void)
         ASSERT(strstr(makefile, "remote-node-update-json:") != NULL);
         ASSERT(strstr(makefile, "ZCL_REMOTE_JSON=1") != NULL);
         ASSERT(strstr(makefile, "tools/scripts/remote_node_update.sh")
+               != NULL);
+        ASSERT(strstr(makefile, "CXX_STDLIB_LDFLAGS") != NULL);
+        ASSERT(strstr(makefile, "$(CXX) -print-file-name=libstdc++.a")
                != NULL);
         free(makefile);
         makefile = NULL;
