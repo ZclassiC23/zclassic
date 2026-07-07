@@ -491,6 +491,18 @@ static void api_service_runtime_probe_json(
                       !svc->public_read);
 }
 
+bool api_service_runtime_probe_json_for_service(const char *name,
+                                                struct json_value *out)
+{
+    const struct api_service_contract *svc = api_service_lookup(name);
+
+    if (!out || !svc)
+        return false;
+
+    api_service_runtime_probe_json(svc, out);
+    return true;
+}
+
 static void api_service_runtime_probe_index_json(
     const struct api_service_contract *svc,
     struct json_value *probe)

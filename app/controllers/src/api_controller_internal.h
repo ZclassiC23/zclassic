@@ -155,6 +155,8 @@ bool api_app_protocols_index_json(struct json_value *out);
 bool api_app_protocol_show_json(const char *name, struct json_value *out);
 bool api_service_catalog_json(struct json_value *out);
 bool api_service_catalog_show_json(const char *name, struct json_value *out);
+bool api_service_runtime_probe_json_for_service(const char *name,
+                                                struct json_value *out);
 void api_service_catalog_error_json(const char *name, struct json_value *out);
 void api_service_operations_json(struct json_value *out,
                                  const char *service_name);

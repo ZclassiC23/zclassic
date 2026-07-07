@@ -390,8 +390,9 @@ ZNAM service records bridge chain-projected names into service contracts in
 `app/controllers/src/name_controller.c`. Keep `service_records[]` additive and
 machine-readable: every endpoint hint should include `service_contract`,
 `service_catalog_route`, `recommended_operation_id`, `service_operation_route`,
-and `next_action` so an agent can go from a confirmed name to a Tor/P2P
-endpoint and then to the exact CRUD operation contract without guessing.
+`runtime_probe`, and `next_action` so an agent can go from a confirmed name to
+a Tor/P2P endpoint, prove the linked service is usable on the running node, and
+then reach the exact CRUD operation contract without guessing.
 
 ### MCP target gotcha
 `mcp__zcl23-dev__*` hit the DEV node (`~/.zclassic-c23-dev`, port 18252).

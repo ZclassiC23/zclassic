@@ -8,6 +8,7 @@
  *   name_list      — list all registered names */
 
 #include "models/znam.h"
+#include "api_controller_internal.h"
 #include "json/json.h"
 #include "rpc/server.h"
 #include "models/database.h"
@@ -247,6 +248,7 @@ static void push_service_route_links(
     struct json_value *obj,
     const struct service_record_classification *classification)
 {
+    struct json_value runtime_probe = {0};
     char catalog_route[160];
     char operation_route[192];
 
@@ -262,6 +264,11 @@ static void push_service_route_links(
         json_push_kv_str(obj, "service_contract",
                          classification->service_contract_name);
         json_push_kv_str(obj, "service_catalog_route", catalog_route);
+        if (api_service_runtime_probe_json_for_service(
+                classification->service_contract_name, &runtime_probe)) {
+            json_push_kv(obj, "runtime_probe", &runtime_probe);
+            json_free(&runtime_probe);
+        }
     }
 
     json_push_kv_str(obj, "recommended_operation_id",
@@ -306,6 +313,12 @@ static void append_service_directory(struct json_value *obj,
                      "/api/v1/service-catalog/{service}");
     json_push_kv_str(&directory, "operation_contract_route",
                      "/api/v1/service-operations/{operation_id}");
+    json_push_kv_str(&directory, "runtime_probe_schema",
+                     ZCL_SERVICE_RUNTIME_PROBE_SCHEMA);
+    json_push_kv_str(&directory, "runtime_probe_contract_field",
+                     "runtime_probe");
+    json_push_kv_str(&directory, "runtime_probe_policy",
+                     "use_the_linked_service_contract_probe_before_routing");
     json_push_kv_bool(&directory, "has_services", service_count > 0);
     json_push_kv_int(&directory, "service_record_count", service_count);
     json_push_kv_int(&directory, "endpoint_count", endpoint_count);

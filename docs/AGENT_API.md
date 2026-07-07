@@ -152,13 +152,16 @@ for agents. In addition to raw `text_records`, read `service_records[]` and
 `zcl.names.service_record.v1`, `service_name`, `transport`, `endpoint_kind`,
 `endpoint`, `chain_verified`, `reachability_proof`, `service_contract`,
 `service_catalog_route`, `recommended_operation_id`,
-`service_operation_route`, and `next_action`. The directory also publishes
+`service_operation_route`, `runtime_probe`, and `next_action`. The nested
+`runtime_probe` is the same `zcl.service_runtime_probe.v1` object exposed by
+the service catalog member, so agents can verify the live route without a
+second lookup. The directory also publishes
 `endpoints[]`, `endpoint_count`, `supports_onion`, `supports_direct_p2p`,
-`supports_bootstrap`, the service/operation contract route templates, and a
-routing policy. Agents should verify the chain-projected ZNAM record first,
-inspect the linked service/operation contract, then prefer direct P2P for low
-latency and fall back to onion reachability when NAT or firewall conditions
-require it.
+`supports_bootstrap`, the service/operation contract route templates, the
+runtime probe schema/field name, and a routing policy. Agents should verify the
+chain-projected ZNAM record first, inspect the linked service/operation
+contract and runtime probe, then prefer direct P2P for low latency and fall
+back to onion reachability when NAT or firewall conditions require it.
 
 ## Preferred Interface
 

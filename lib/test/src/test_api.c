@@ -955,6 +955,13 @@ int test_api(void)
                 api_test_find_str_field(services, "key", "service.p2p");
             const struct json_value *svc_bootstrap =
                 api_test_find_str_field(services, "key", "bootstrap");
+            const struct json_value *svc_probe =
+                svc ? json_get(svc, "runtime_probe") : NULL;
+            const struct json_value *svc_p2p_probe =
+                svc_p2p ? json_get(svc_p2p, "runtime_probe") : NULL;
+            const struct json_value *svc_bootstrap_probe =
+                svc_bootstrap ? json_get(svc_bootstrap,
+                                         "runtime_probe") : NULL;
             const struct json_value *dir_svc =
                 api_test_find_str_field(dir_records, "key", "service.onion");
             const struct json_value *dir_endpoint =
@@ -1002,6 +1009,17 @@ int test_api(void)
                                                     "service_operation_route")),
                               "/api/v1/service-operations/"
                               "onion_directory.list_onion_announcements") == 0;
+            ok = ok && svc_probe &&
+                 strcmp(json_get_str(json_get(svc_probe, "schema")),
+                        "zcl.service_runtime_probe.v1") == 0;
+            ok = ok && strcmp(json_get_str(json_get(svc_probe, "route")),
+                              "/api/v1/onion/announcements") == 0;
+            ok = ok && strcmp(json_get_str(json_get(svc_probe,
+                                                    "operation_id")),
+                              "onion_directory.list_onion_announcements") == 0;
+            ok = ok && strcmp(json_get_str(json_get(svc_probe,
+                                                    "expected_schema")),
+                              "zcl.onion_announcements.index.v1") == 0;
             ok = ok && strcmp(json_get_str(json_get(svc, "transport")),
                               "onion") == 0;
             ok = ok && json_get_bool(json_get(svc, "chain_verified"));
@@ -1018,6 +1036,12 @@ int test_api(void)
                                                     "service_operation_route")),
                               "/api/v1/service-operations/"
                               "bootstrap.inspect_peer_bootstrap_readiness") == 0;
+            ok = ok && svc_p2p_probe &&
+                 strcmp(json_get_str(json_get(svc_p2p_probe, "route")),
+                        "/api/v1/bootstrap") == 0;
+            ok = ok && strcmp(json_get_str(json_get(svc_p2p_probe,
+                                                    "operation_id")),
+                              "bootstrap.read_bootstrap_status") == 0;
             ok = ok && strcmp(json_get_str(json_get(svc_p2p,
                                                     "next_action")),
                               "connect_direct_p2p_and_verify_peer_readiness") == 0;
@@ -1034,6 +1058,12 @@ int test_api(void)
                                                     "service_operation_route")),
                               "/api/v1/service-operations/"
                               "bootstrap.read_bootstrap_status") == 0;
+            ok = ok && svc_bootstrap_probe &&
+                 strcmp(json_get_str(json_get(svc_bootstrap_probe, "route")),
+                        "/api/v1/bootstrap") == 0;
+            ok = ok && strcmp(json_get_str(json_get(svc_bootstrap_probe,
+                                                    "expected_schema")),
+                              "zcl.bootstrap_status.v1") == 0;
             ok = ok && strcmp(json_get_str(json_get(svc_bootstrap,
                                                     "endpoint_kind")),
                               "bootstrap_hint") == 0;
@@ -1068,6 +1098,12 @@ int test_api(void)
             ok = ok && strcmp(json_get_str(json_get(directory,
                                                     "operation_contract_route")),
                               "/api/v1/service-operations/{operation_id}") == 0;
+            ok = ok && strcmp(json_get_str(json_get(directory,
+                                                    "runtime_probe_schema")),
+                              "zcl.service_runtime_probe.v1") == 0;
+            ok = ok && strcmp(json_get_str(json_get(directory,
+                                                    "runtime_probe_contract_field")),
+                              "runtime_probe") == 0;
             ok = ok && links &&
                  strcmp(json_get_str(json_get(links, "self")),
                         "/api/v1/names/alice") == 0;
