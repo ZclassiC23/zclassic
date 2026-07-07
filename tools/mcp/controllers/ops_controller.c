@@ -50,7 +50,6 @@ DEFINE_PT(h_zcl_agent_build,    "agentbuild",     "mcp.ops")
 DEFINE_PT(h_zcl_agent_interface,"agentinterface", "mcp.ops")
 DEFINE_PT(h_zcl_agent_ops,      "agentops",       "mcp.ops")
 DEFINE_PT(h_zcl_app_protocols,  "appprotocols",   "mcp.ops")
-DEFINE_PT(h_zcl_service_catalog,"servicecatalog", "mcp.ops")
 
 static char *json_value_to_body(struct json_value *v, const char *label);
 
@@ -1535,6 +1534,29 @@ static const struct mcp_param_spec p_agent_diagnose[] = {
       "Detail mode: brief/compact/summary returns decision fields; full embeds drill-down payloads",
       0, 0, 0, 16, "full,brief,compact,summary", "\"brief\"" },
 };
+static const struct mcp_param_spec p_service_catalog[] = {
+    { "name", MCP_PARAM_STR, false,
+      "Optional service name to return one service contract",
+      0, 0, 0, 64, NULL, "\"\"" },
+};
+
+static int h_zcl_service_catalog(const struct mcp_request *req,
+                                 struct mcp_response *res)
+{
+    const char *name = json_get_str_or(req ? req->args : NULL, "name", "");
+    if (!name || !name[0])
+        return mcp_return_rpc_body(res, mcp_node_rpc("servicecatalog", NULL),
+                                   "servicecatalog", "mcp.ops");
+
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, name);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("servicecatalog", params) : NULL;
+    free(params);
+    return mcp_return_rpc_body_ctx(res, out, "servicecatalog", "mcp.ops",
+                                   "name=%s", name);
+}
 
 struct agent_mcp_binding {
     const char *method;
@@ -1560,7 +1582,8 @@ static const struct agent_mcp_binding k_agent_mcp_bindings[] = {
     { "agentinterface", NULL, 0, h_zcl_agent_interface, 0, NULL },
     { "agentops", NULL, 0, h_zcl_agent_ops, 0, NULL },
     { "appprotocols", NULL, 0, h_zcl_app_protocols, 0, NULL },
-    { "servicecatalog", NULL, 0, h_zcl_service_catalog, 0, NULL },
+    { "servicecatalog", p_service_catalog, PARAM_COUNT(p_service_catalog),
+      h_zcl_service_catalog, 0, "{\"name\":\"bootstrap\"}" },
     { "agentdiagnose", p_agent_diagnose, PARAM_COUNT(p_agent_diagnose),
       h_zcl_agent_diagnose, 0, "{\"mode\":\"brief\"}" },
     { "agentdeployguard", p_agent_deploy_guard,

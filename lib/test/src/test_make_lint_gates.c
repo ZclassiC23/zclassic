@@ -3865,6 +3865,7 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "zclassic23 servicecatalog") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_service_catalog") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.service_catalog.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.service_contract.v1") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentlanes") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_lanes") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.agent_lanes.v1") != NULL);

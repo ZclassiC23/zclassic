@@ -254,9 +254,11 @@ It is **not** on the RPC port (`18232`) — a plain `GET` there returns
 `405 Method Not Allowed`, by design. The explorer is reachable two ways:
 
 Start API discovery at `/api/v1`. Use `/api/v1/service-catalog` to see what the
-node can host, advertise, verify, or construct for users, `/api/v1/protocols` to
-see the ZCL application-protocol contracts, and `/api/v1/bootstrap` to check
-whether the node is currently useful for fresh-peer bootstrap.
+node can host, advertise, verify, or construct for users, and
+`/api/v1/service-catalog/{service}` for one service contract.
+`/api/v1/protocols` lists ZCL application-protocol contracts, and
+`/api/v1/bootstrap` checks whether the node is currently useful for fresh-peer
+bootstrap.
 
 - **Over the onion service** — build the bundled Tor fork (see the opt-in note in
   [Quick start](#quick-start)) and run `-tor`; the explorer is then served on the

@@ -69,6 +69,9 @@ static const struct agent_contract_schema_surface g_agent_schema_surfaces[] = {
     { 19, "zcl.service_catalog.v1",
       "zclassic23 servicecatalog / GET /api/v1/service-catalog / zcl_service_catalog",
       "UX-oriented sovereign service catalog with transport, CRUD, verification, and trust boundaries" },
+    { 20, "zcl.service_contract.v1",
+      "zclassic23 servicecatalog <name> / GET /api/v1/service-catalog/{service} / zcl_service_catalog(name)",
+      "one sovereign service contract with CRUD surface, transports, verification, trust, and privacy model" },
 };
 
 static const size_t g_agent_schema_surface_count =

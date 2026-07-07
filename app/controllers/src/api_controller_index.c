@@ -117,7 +117,8 @@ static void api_rest_index_resources_json(struct json_value *resources)
                                  "/api/v1/protocols",
                                  "/api/v1/protocols/{name}", false);
     api_rest_index_push_resource(resources, "service_catalog",
-                                 "/api/v1/service-catalog", "", false);
+                                 "/api/v1/service-catalog",
+                                 "/api/v1/service-catalog/{service}", false);
     api_rest_index_push_resource(resources, "zslp_tokens",
                                  "/api/v1/zslp/tokens",
                                  "/api/v1/zslp/tokens/{token_id}", false);

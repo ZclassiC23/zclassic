@@ -1149,6 +1149,9 @@ int test_api(void)
              strcmp(json_get_str(json_get(service_catalog_resource,
                                           "collection")),
                     "/api/v1/service-catalog") == 0;
+        ok = ok && service_catalog_resource &&
+             strcmp(json_get_str(json_get(service_catalog_resource, "item")),
+                    "/api/v1/service-catalog/{service}") == 0;
         ok = ok && zslp_resource &&
              strcmp(json_get_str(json_get(zslp_resource, "collection")),
                     "/api/v1/zslp/tokens") == 0;
@@ -1171,6 +1174,8 @@ int test_api(void)
             api_test_find_contract(routes, "/api/v1/protocols");
         const struct json_value *service_catalog_route =
             api_test_find_contract(routes, "/api/v1/service-catalog");
+        const struct json_value *service_catalog_show =
+            api_test_find_contract(routes, "/api/v1/service-catalog/{service}");
         const struct json_value *protocol_show =
             api_test_find_contract(routes, "/api/v1/protocols/{name}");
         const struct json_value *names =
@@ -1325,6 +1330,16 @@ int test_api(void)
              strcmp(json_get_str(json_get(service_catalog_route,
                                     "freshness")),
                     "static") == 0;
+        ok = ok && service_catalog_show &&
+             strcmp(json_get_str(json_get(service_catalog_show,
+                                    "response_schema")),
+                    "zcl.service_contract.v1") == 0;
+        ok = ok && service_catalog_show &&
+             strcmp(json_get_str(json_get(service_catalog_show,
+                                    "crud_name")),
+                    "read_item") == 0;
+        ok = ok && service_catalog_show &&
+             api_test_contract_has_id_param(service_catalog_show, "service");
         ok = ok && protocol_show &&
              strcmp(json_get_str(json_get(protocol_show, "crud_name")),
                     "read_item") == 0;
@@ -1651,6 +1666,8 @@ int test_api(void)
         ok = ok && strcmp(json_get_str(json_get(&root,
                           "application_protocols_route")),
                           "/api/v1/protocols") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "member_route")),
+                          "/api/v1/service-catalog/{service}") == 0;
         ok = ok && strstr(json_get_str(json_get(&root,
                           "consensus_boundary")),
                           "legacy consensus") != NULL;
@@ -1672,6 +1689,12 @@ int test_api(void)
         ok = ok && bootstrap &&
              strcmp(json_get_str(json_get(bootstrap, "rest_collection")),
                     "/api/v1/bootstrap") == 0;
+        ok = ok && bootstrap &&
+             strcmp(json_get_str(json_get(bootstrap, "schema")),
+                    "zcl.service_contract.v1") == 0;
+        ok = ok && bootstrap &&
+             strcmp(json_get_str(json_get(bootstrap, "self_route")),
+                    "/api/v1/service-catalog/bootstrap") == 0;
         ok = ok && bootstrap &&
              api_test_array_has_str(json_get(bootstrap, "transports"),
                                     "p2p");
@@ -1704,6 +1727,33 @@ int test_api(void)
              strstr(json_get_str(json_get(contracts, "trust_model")),
                     "no_consensus_extension") != NULL;
         json_free(&root);
+
+        static uint8_t show_resp[65536];
+        n = api_handle_request("GET",
+                               "/api/v1/service-catalog/znam_names",
+                               NULL, 0, show_resp, sizeof(show_resp));
+        body = api_test_body(show_resp, n, sizeof(show_resp));
+        json_init(&root);
+        ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.service_contract.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "name")),
+                          "znam_names") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "catalog_route")),
+                          "/api/v1/service-catalog") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&root, "self_route")),
+                          "/api/v1/service-catalog/znam_names") == 0;
+        ok = ok && api_test_array_has_str(json_get(&root,
+                          "crud_capabilities"), "construct_transaction");
+        ok = ok && strstr(json_get_str(json_get(&root, "verified_by")),
+                          "op_return") != NULL;
+        json_free(&root);
+
+        n = api_handle_request("GET", "/api/v1/service-catalog/not_real",
+                               NULL, 0, show_resp, sizeof(show_resp));
+        show_resp[n < sizeof(show_resp) ? n : sizeof(show_resp) - 1] = '\0';
+        ok = ok && strstr((char *)show_resp,
+                          "HTTP/1.1 404 Not Found") != NULL;
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -1785,6 +1835,8 @@ int test_api(void)
             api_test_openapi_get(&root, "/api/v1/protocols");
         const struct json_value *service_catalog =
             api_test_openapi_get(&root, "/api/v1/service-catalog");
+        const struct json_value *service_catalog_show =
+            api_test_openapi_get(&root, "/api/v1/service-catalog/{service}");
         const struct json_value *protocol_show =
             api_test_openapi_get(&root, "/api/v1/protocols/{name}");
         const struct json_value *names =
@@ -1903,6 +1955,17 @@ int test_api(void)
              strcmp(json_get_str(json_get(service_catalog,
                                           "x-crud-name")),
                     "read_singleton") == 0;
+        ok = ok && service_catalog_show &&
+             strcmp(json_get_str(json_get(service_catalog_show,
+                                          "x-response-schema")),
+                    "zcl.service_contract.v1") == 0;
+        ok = ok && service_catalog_show &&
+             strcmp(json_get_str(json_get(service_catalog_show,
+                                          "x-crud-name")),
+                    "read_item") == 0;
+        ok = ok && service_catalog_show &&
+             api_test_openapi_has_param(service_catalog_show, "service",
+                                        "path");
         ok = ok && protocol_show &&
              strcmp(json_get_str(json_get(protocol_show, "x-crud-name")),
                     "read_item") == 0;

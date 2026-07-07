@@ -10,6 +10,7 @@
 
 #include "json/json.h"
 
+#include <stdio.h>
 #include <string.h>
 
 struct api_service_contract {
@@ -229,53 +230,92 @@ static size_t api_service_count(void)
     return sizeof(k_api_services) / sizeof(k_api_services[0]);
 }
 
+static const struct api_service_contract *api_service_lookup(const char *name)
+{
+    if (!name || !name[0])
+        return NULL;
+
+    for (size_t i = 0; i < api_service_count(); i++) {
+        if (strcmp(k_api_services[i].name, name) == 0)
+            return &k_api_services[i];
+    }
+    return NULL;
+}
+
+static void api_service_names_json(struct json_value *out)
+{
+    json_set_array(out);
+    for (size_t i = 0; i < api_service_count(); i++) {
+        struct json_value name;
+        json_init(&name);
+        json_set_str(&name, k_api_services[i].name);
+        json_push_back(out, &name);
+        json_free(&name);
+    }
+}
+
+static void api_service_object_json(struct json_value *obj,
+                                    const struct api_service_contract *svc)
+{
+    struct json_value crud;
+    struct json_value transports;
+    struct json_value object_types;
+    char self_route[128];
+
+    if (!obj || !svc)
+        return;
+
+    json_set_object(obj);
+    json_push_kv_str(obj, "schema", ZCL_SERVICE_CONTRACT_SCHEMA);
+    json_push_kv_str(obj, "name", svc->name);
+    json_push_kv_str(obj, "status", svc->status);
+    json_push_kv_str(obj, "category", svc->category);
+    if (svc->application_protocol && svc->application_protocol[0])
+        json_push_kv_str(obj, "application_protocol",
+                         svc->application_protocol);
+    json_push_kv_str(obj, "rest_collection", svc->rest_collection);
+    if (svc->rest_item && svc->rest_item[0])
+        json_push_kv_str(obj, "rest_item", svc->rest_item);
+    snprintf(self_route, sizeof(self_route), "/api/v1/service-catalog/%s",
+             svc->name);
+    json_push_kv_str(obj, "self_route", self_route);
+    json_push_kv_str(obj, "runtime_health_route",
+                     svc->runtime_health_route);
+
+    json_init(&crud);
+    api_app_protocol_csv_json(svc->crud_capabilities_csv, &crud);
+    json_push_kv(obj, "crud_capabilities", &crud);
+    json_free(&crud);
+
+    json_init(&transports);
+    api_app_protocol_csv_json(svc->transports_csv, &transports);
+    json_push_kv(obj, "transports", &transports);
+    json_free(&transports);
+
+    json_init(&object_types);
+    api_app_protocol_csv_json(svc->object_types_csv, &object_types);
+    json_push_kv(obj, "object_types", &object_types);
+    json_free(&object_types);
+
+    json_push_kv_str(obj, "verified_by", svc->verified_by);
+    json_push_kv_str(obj, "trust_model", svc->trust_model);
+    json_push_kv_str(obj, "privacy_model", svc->privacy_model);
+    json_push_kv_str(obj, "user_story", svc->user_story);
+    json_push_kv_bool(obj, "public_read", svc->public_read);
+    json_push_kv_bool(obj, "operator_private_write",
+                      svc->operator_private_write);
+}
+
 static void api_service_push_json(struct json_value *services,
                                   const struct api_service_contract *svc)
 {
     struct json_value obj;
-    struct json_value crud;
-    struct json_value transports;
-    struct json_value object_types;
 
     if (!services || !svc)
         return;
 
     json_init(&obj);
-    json_set_object(&obj);
-    json_push_kv_str(&obj, "name", svc->name);
-    json_push_kv_str(&obj, "status", svc->status);
-    json_push_kv_str(&obj, "category", svc->category);
-    if (svc->application_protocol && svc->application_protocol[0])
-        json_push_kv_str(&obj, "application_protocol",
-                         svc->application_protocol);
-    json_push_kv_str(&obj, "rest_collection", svc->rest_collection);
-    if (svc->rest_item && svc->rest_item[0])
-        json_push_kv_str(&obj, "rest_item", svc->rest_item);
-    json_push_kv_str(&obj, "runtime_health_route",
-                     svc->runtime_health_route);
-
-    json_init(&crud);
-    api_app_protocol_csv_json(svc->crud_capabilities_csv, &crud);
-    json_push_kv(&obj, "crud_capabilities", &crud);
-    json_free(&crud);
-
-    json_init(&transports);
-    api_app_protocol_csv_json(svc->transports_csv, &transports);
-    json_push_kv(&obj, "transports", &transports);
-    json_free(&transports);
-
-    json_init(&object_types);
-    api_app_protocol_csv_json(svc->object_types_csv, &object_types);
-    json_push_kv(&obj, "object_types", &object_types);
-    json_free(&object_types);
-
-    json_push_kv_str(&obj, "verified_by", svc->verified_by);
-    json_push_kv_str(&obj, "trust_model", svc->trust_model);
-    json_push_kv_str(&obj, "privacy_model", svc->privacy_model);
-    json_push_kv_str(&obj, "user_story", svc->user_story);
-    json_push_kv_bool(&obj, "public_read", svc->public_read);
-    json_push_kv_bool(&obj, "operator_private_write",
-                      svc->operator_private_write);
+    api_service_object_json(&obj, svc);
     json_push_back(services, &obj);
     json_free(&obj);
 }
@@ -294,6 +334,8 @@ bool api_service_catalog_json(struct json_value *out)
     json_push_kv_str(out, "application_protocols_route",
                      "/api/v1/protocols");
     json_push_kv_str(out, "openapi_route", "/api/v1/openapi");
+    json_push_kv_str(out, "member_route",
+                     "/api/v1/service-catalog/{service}");
     json_push_kv_str(out, "consensus_boundary",
                      "services interpret, index, advertise, or construct "
                      "valid ZCL data without changing legacy consensus");
@@ -311,4 +353,38 @@ bool api_service_catalog_json(struct json_value *out)
     json_free(&services);
 
     return true;
+}
+
+bool api_service_catalog_show_json(const char *name, struct json_value *out)
+{
+    const struct api_service_contract *svc = api_service_lookup(name);
+    if (!out || !svc)
+        return false;
+
+    api_service_object_json(out, svc);
+    json_push_kv_str(out, "api_version", ZCL_REST_API_VERSION);
+    json_push_kv_str(out, "catalog_route", "/api/v1/service-catalog");
+    json_push_kv_str(out, "base_layer", "zclassic_l1");
+    json_push_kv_str(out, "service_layer", "zclassic23_application_layer");
+    return true;
+}
+
+void api_service_catalog_error_json(const char *name, struct json_value *out)
+{
+    struct json_value names;
+
+    if (!out)
+        return;
+
+    json_set_object(out);
+    json_push_kv_str(out, "schema", "zcl.service_catalog_error.v1");
+    json_push_kv_str(out, "api_version", ZCL_REST_API_VERSION);
+    json_push_kv_str(out, "error", "service_not_found");
+    json_push_kv_str(out, "name", name ? name : "");
+    json_push_kv_str(out, "catalog_route", "/api/v1/service-catalog");
+
+    json_init(&names);
+    api_service_names_json(&names);
+    json_push_kv(out, "valid_services", &names);
+    json_free(&names);
 }

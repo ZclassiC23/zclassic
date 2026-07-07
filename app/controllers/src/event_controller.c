@@ -188,17 +188,32 @@ bool rpc_app_protocols(const struct json_value *params, bool help,
 bool rpc_service_catalog(const struct json_value *params, bool help,
                          struct json_value *result)
 {
-    (void)params;
     RPC_HELP(help, result,
-        "servicecatalog\n"
+        "servicecatalog ( name )\n"
         "\nReturn the versioned zclassic23 sovereign service catalog. This\n"
         "is the same JSON body served by GET /api/v1/service-catalog and\n"
-        "exposed through MCP zcl_service_catalog.\n"
+        "exposed through MCP zcl_service_catalog. Pass an optional service\n"
+        "name to return the same contract as GET\n"
+        "/api/v1/service-catalog/{service}.\n"
+        "\nArguments:\n"
+        "1. name      (string, optional) Service name, e.g. bootstrap\n"
         "\nResult:\n"
         "  { \"schema\":\"zcl.service_catalog.v1\", "
-        "\"base_layer\":\"zclassic_l1\", \"services\":[...] }\n");
+        "\"base_layer\":\"zclassic_l1\", \"services\":[...] }\n"
+        "  or { \"schema\":\"zcl.service_contract.v1\", \"name\":\"...\" }\n");
 
-    return api_service_catalog_json(result);
+    const char *name = NULL;
+    if (params && params->type == JSON_ARR && params->num_children > 0)
+        name = json_get_str(&params->children[0]);
+
+    if (!name || !name[0])
+        return api_service_catalog_json(result);
+
+    if (api_service_catalog_show_json(name, result))
+        return true;
+
+    api_service_catalog_error_json(name, result);
+    return true;
 }
 
 static bool rpc_milestone_status(const struct json_value *params, bool help,

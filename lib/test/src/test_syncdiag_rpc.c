@@ -2367,6 +2367,51 @@ syncdiag_net_split_done:
             strcmp(json_get_str(json_get(&alias, "schema")),
                    "zcl.service_catalog.v1") == 0;
 
+        struct json_value one_params;
+        json_init(&one_params);
+        json_set_array(&one_params);
+        struct json_value one_name;
+        json_init(&one_name);
+        json_set_str(&one_name, "bootstrap");
+        json_push_back(&one_params, &one_name);
+        json_free(&one_name);
+
+        struct json_value one;
+        json_init(&one);
+        bool one_executed = rpc_table_execute(&tbl, "servicecatalog",
+                                              &one_params, &one);
+        ok = ok && one_executed &&
+            strcmp(json_get_str(json_get(&one, "schema")),
+                   "zcl.service_contract.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&one, "name")),
+                          "bootstrap") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&one, "self_route")),
+                          "/api/v1/service-catalog/bootstrap") == 0;
+        ok = ok && json_array_has_str(json_get(&one, "transports"), "p2p");
+
+        struct json_value bad_params;
+        json_init(&bad_params);
+        json_set_array(&bad_params);
+        struct json_value bad_name;
+        json_init(&bad_name);
+        json_set_str(&bad_name, "not_real");
+        json_push_back(&bad_params, &bad_name);
+        json_free(&bad_name);
+
+        struct json_value bad;
+        json_init(&bad);
+        bool bad_executed = rpc_table_execute(&tbl, "servicecatalog",
+                                              &bad_params, &bad);
+        ok = ok && bad_executed &&
+            strcmp(json_get_str(json_get(&bad, "schema")),
+                   "zcl.service_catalog_error.v1") == 0;
+        ok = ok && json_array_has_str(json_get(&bad, "valid_services"),
+                                      "bootstrap");
+
+        json_free(&bad);
+        json_free(&bad_params);
+        json_free(&one);
+        json_free(&one_params);
         json_free(&alias);
         json_free(&params);
         json_free(&result);
@@ -4478,6 +4523,8 @@ syncdiag_net_split_done:
                                         "zcl.operator_latch.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.service_catalog.v1") != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.service_contract.v1") != NULL;
         ok = ok &&
             find_object_with_str(schemas, "schema",
                                  "zcl.condition_engine_summary.v1") != NULL;

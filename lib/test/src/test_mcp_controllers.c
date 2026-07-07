@@ -642,7 +642,12 @@ static int test_zcl_agent_dev_tools_shape(void)
         ASSERT(contracts->num_params == 0);
         ASSERT(build->num_params == 0);
         ASSERT(interface->num_params == 0);
-        ASSERT(service_catalog->num_params == 0);
+        ASSERT(service_catalog->num_params == 1);
+        ASSERT(strcmp(service_catalog->params[0].name, "name") == 0);
+        ASSERT(service_catalog->params[0].type == MCP_PARAM_STR);
+        ASSERT(service_catalog->params[0].required == false);
+        ASSERT_STR_EQ(service_catalog->params[0].default_json, "\"\"");
+        ASSERT(service_catalog->self_test_args != NULL);
         ASSERT(ops->num_params == 0);
         ASSERT(liveness->num_params == 1);
         ASSERT(strcmp(liveness->params[0].name, "mode") == 0);
@@ -1167,6 +1172,7 @@ static bool g_agent_diagnose_brief_params_seen;
 static bool g_agent_diagnose_full_params_seen;
 static bool g_agent_liveness_brief_params_seen;
 static bool g_agent_liveness_full_params_seen;
+static bool g_service_catalog_name_params_seen;
 
 static char *mock_agent_dev_rpc(const char *method, const char *params_json)
 {
@@ -1257,7 +1263,15 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
                       "\"schema\":\"zcl.application_protocol_contract.v1\"},"
                       "{\"name\":\"script_contracts\","
                       "\"anchor_kind\":\"standard_script\"}]}");
-    if (strcmp(method, "servicecatalog") == 0)
+    if (strcmp(method, "servicecatalog") == 0) {
+        if (params_json && contains(params_json, "\"bootstrap\"")) {
+            g_service_catalog_name_params_seen = true;
+            return strdup("{\"schema\":\"zcl.service_contract.v1\","
+                          "\"base_layer\":\"zclassic_l1\","
+                          "\"service_layer\":\"zclassic23_application_layer\","
+                          "\"name\":\"bootstrap\","
+                          "\"self_route\":\"/api/v1/service-catalog/bootstrap\"}");
+        }
         return strdup("{\"schema\":\"zcl.service_catalog.v1\","
                       "\"base_layer\":\"zclassic_l1\","
                       "\"service_layer\":\"zclassic23_application_layer\","
@@ -1266,6 +1280,7 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
                       "\"rest_collection\":\"/api/v1/bootstrap\"},"
                       "{\"name\":\"znam_names\","
                       "\"application_protocol\":\"znam\"}]}");
+    }
     if (strcmp(method, "agentdiagnose") == 0) {
         if (params_json && contains(params_json, "\"brief\""))
             g_agent_diagnose_brief_params_seen = true;
@@ -1755,6 +1770,24 @@ static int test_zcl_agent_dev_tools_dispatch(void)
                       "zclassic_l1");
         ASSERT(json_get(&root, "services") != NULL);
         json_free(&root);
+        free(body);
+
+        const char *service_args = "{\"name\":\"bootstrap\"}";
+        json_free(&args);
+        json_init(&args);
+        ASSERT(json_read(&args, service_args, strlen(service_args)));
+        g_service_catalog_name_params_seen = false;
+        body = mcp_router_dispatch("zcl_service_catalog", &args);
+        ASSERT(body != NULL);
+        ASSERT(g_service_catalog_name_params_seen);
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.service_contract.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "name")), "bootstrap");
+        json_free(&root);
+        json_free(&args);
+        json_init(&args);
+        json_set_object(&args);
         free(body);
 
         body = mcp_router_dispatch("zcl_agent_diagnose", &args);

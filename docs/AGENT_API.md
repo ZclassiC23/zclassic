@@ -18,7 +18,7 @@ same native RPC methods. Shell wrappers are compatibility shims only.
 | Fast build contract | `zclassic23 agentbuild` | `zcl_agent_build` |
 | Anchor producer status | `zclassic23 anchorstatus` | `zcl_rpc(method="anchorstatus")` |
 | Application protocol catalog | `zclassic23 appprotocols` | `zcl_app_protocols` |
-| Sovereign service catalog | `zclassic23 servicecatalog` | `zcl_service_catalog` |
+| Sovereign service catalog | `zclassic23 servicecatalog [name]` | `zcl_service_catalog(name?)` |
 | Preferred interface contract | `zclassic23 agentinterface` | `zcl_agent_interface` |
 | State subsystem catalog | `zclassic23 statecatalog` | `zcl_state_catalog` |
 | Semantic event timeline | `zclassic23 timeline '{"category":"sync","count":50,"since_secs":3600}'` | `zcl_timeline` |
@@ -97,14 +97,16 @@ broader service/protocol umbrella.
 
 The UX-facing service catalog lives in
 `app/controllers/src/api_controller_service_catalog.c` and is exposed as
-`zclassic23 servicecatalog`, `zcl_service_catalog`, and
-`GET /api/v1/service-catalog`. Use it when the question is "what can this node
-host, advertise, verify, or construct for a user?" It distinguishes the stable
-service contract from `/api/v1/services`, which remains runtime health. The
-response schema is `zcl.service_catalog.v1` and covers names, bootstrap,
-Tor/onion discovery, direct P2P, files, market, messaging, script contracts,
-CRUD capabilities, transports, verification model, trust model, privacy model,
-and a concrete UX story per service.
+`zclassic23 servicecatalog [name]`, `zcl_service_catalog(name?)`,
+`GET /api/v1/service-catalog`, and
+`GET /api/v1/service-catalog/{service}`. Use it when the question is "what can
+this node host, advertise, verify, or construct for a user?" It distinguishes
+the stable service contract from `/api/v1/services`, which remains runtime
+health. The collection schema is `zcl.service_catalog.v1`; the member schema is
+`zcl.service_contract.v1`. Together they cover names, bootstrap, Tor/onion
+discovery, direct P2P, files, market, messaging, script contracts, CRUD
+capabilities, transports, verification model, trust model, privacy model, and a
+concrete UX story per service.
 
 ## Preferred Interface
 
@@ -117,7 +119,7 @@ start with `zcl_agent_ops` for the compact no-jq command center, use
 `zcl_agent_build`, `zcl_state_catalog`, `zcl_state`, `zcl_timeline`,
 `zcl_app_protocols`, `zcl_service_catalog`, `zcl_node_log`, and `zcl_sql` as
 needed. The native binary commands (`zclassic23 agentinterface`,
-`zclassic23 appprotocols`, `zclassic23 servicecatalog`,
+`zclassic23 appprotocols`, `zclassic23 servicecatalog bootstrap`,
 `zclassic23 status` / `zclassic23 agent`, etc.) are the second-best interface for terminal work and
 scripts. REST is the public read-only mirror.
 
