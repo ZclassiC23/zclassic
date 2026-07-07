@@ -1,6 +1,6 @@
 [Unit]
 Description=ZClassic23 safe self-update warm/build lane
-Documentation=%h/github/zclassic23/docs/AGENT_API.md
+Documentation=file:%h/github/zclassic23/docs/AGENT_API.md
 Wants=network-online.target
 After=network-online.target
 

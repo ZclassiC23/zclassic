@@ -3089,6 +3089,9 @@ static int t_remote_node_update_contract(void)
                          "deploy/examples/zclassic23-self-update.service")
                == 0);
         ASSERT(read_entire_file(path, &service) == 0);
+        ASSERT(strstr(service,
+                      "Documentation=file:%h/github/zclassic23/docs/AGENT_API.md")
+               != NULL);
         ASSERT(strstr(service, "remote_node_update.sh self") != NULL);
         ASSERT(strstr(service, "ZCL_REMOTE_BUILD=fast-rebuild") != NULL);
         ASSERT(strstr(service, "ZCL_REMOTE_RESTART=0") != NULL);
