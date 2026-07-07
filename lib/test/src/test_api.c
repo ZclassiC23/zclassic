@@ -3150,10 +3150,14 @@ int test_api(void)
 
         size_t n = api_handle_request("GET", "/api/hodl", NULL, 0,
                                       resp, sizeof(resp));
+        resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
         const char *body = api_test_body(resp, n, sizeof(resp));
         struct json_value root;
         json_init(&root);
         ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strstr((char *)resp, "HTTP/1.1 200 OK") != NULL &&
+             strstr((char *)resp, "please retry") == NULL &&
+             strstr((char *)resp, "refreshing") == NULL;
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
                           "zcl.hodl_wave.v1") == 0;
         ok = ok && json_get_int(json_get(&root, "height")) == 7;
@@ -3168,9 +3172,13 @@ int test_api(void)
         reducer_frontier_provable_tip_set(8);
         n = api_handle_request("GET", "/api/hodl", NULL, 0,
                                resp, sizeof(resp));
+        resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
         body = api_test_body(resp, n, sizeof(resp));
         json_init(&root);
         ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strstr((char *)resp, "HTTP/1.1 200 OK") != NULL &&
+             strstr((char *)resp, "please retry") == NULL &&
+             strstr((char *)resp, "refreshing") == NULL;
         ok = ok && json_get_int(json_get(&root, "height")) == 8;
         ok = ok && json_get_int(json_get(&root, "served_tip_height")) == 8;
         ok = ok && json_get_int(json_get(&root, "indexed_tip_height")) == 8;

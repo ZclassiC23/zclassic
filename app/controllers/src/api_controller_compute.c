@@ -311,7 +311,8 @@ size_t compute_supply_legacy(uint8_t *r, size_t max)
 size_t compute_hodl(uint8_t *r, size_t max)
 {
     if (!g_api_ctx.datadir)
-        return api_json_error(r, max, JSON_503_HEADERS, "Data loading, please retry in a few seconds");
+        return api_json_error(r, max, JSON_503_HEADERS,
+                              "HODL datadir unavailable");
 
     char db_path[1024];
     snprintf(db_path, sizeof(db_path), "%s/node.db", g_api_ctx.datadir);

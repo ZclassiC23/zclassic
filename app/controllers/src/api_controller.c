@@ -534,7 +534,7 @@ static size_t serve_from_cache(const char *cache, const size_t *cache_len,
     if (len == 0) {
         pthread_mutex_unlock(&g_api_cache_mutex);
         return api_json_error(r, max, JSON_503_HEADERS,
-                          "Data loading, please retry in a few seconds");
+                          "Cached data unavailable");
     }
     size_t copy = len < max ? len : max;
     memcpy(r, cache, copy);
@@ -565,12 +565,6 @@ static size_t serve_hodl_fresh(uint8_t *r, size_t max)
     if (len > 0 && len < API_HODL_CACHE_SIZE &&
         api_response_cacheable(tmp, len)) {
         int64_t height = api_response_height(tmp, len);
-        if (current_height >= 0 && height < current_height) {
-            free(tmp);
-            return api_json_error(r, max, JSON_503_HEADERS,
-                                  "HODL data refreshing, please retry");
-        }
-
         pthread_mutex_lock(&g_api_cache_mutex);
         memcpy(g_api_hodl_cache, tmp, len);
         g_api_hodl_cache_len = len;
@@ -585,7 +579,7 @@ static size_t serve_hodl_fresh(uint8_t *r, size_t max)
 
     free(tmp);
     return api_json_error(r, max, JSON_503_HEADERS,
-                          "HODL data unavailable, please retry");
+                          "HODL data unavailable");
 }
 
 bool api_route_is_operator_private(const char *path)
@@ -690,7 +684,7 @@ size_t api_handle_request(const char *method, const char *path,
     /* Start background cache thread on first request */
     if (!ensure_cache_thread()) {
         return api_json_error(response, response_max, JSON_503_HEADERS,
-                          "API cache unavailable, please retry");
+                          "API cache unavailable");
     }
 
     /* Handle CORS preflight */

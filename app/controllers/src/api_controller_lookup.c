@@ -549,7 +549,7 @@ size_t do_lookup(enum lookup_type type, const char *param,
 {
     if (!ensure_lookup_thread()) {
         return api_json_error(response, response_max, JSON_503_HEADERS,
-                          "Lookup unavailable, please retry");
+                          "Lookup worker unavailable");
     }
 
     pthread_mutex_lock(&g_lookup_mutex);
@@ -558,7 +558,7 @@ size_t do_lookup(enum lookup_type type, const char *param,
     if (g_lookup_type != LOOKUP_NONE) {
         pthread_mutex_unlock(&g_lookup_mutex);
         return api_json_error(response, response_max, JSON_503_HEADERS,
-                          "Server busy, please retry");
+                          "Lookup worker busy");
     }
 
     snprintf(g_lookup_param, sizeof(g_lookup_param), "%s", param);

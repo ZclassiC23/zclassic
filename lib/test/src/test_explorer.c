@@ -9,6 +9,7 @@
 #include "crypto/sha3.h"
 #include "views/explorer_factoids_internal.h"
 #include "views/explorer_factoids_view.h"
+#include "views/explorer_pages_loading_view.h"
 #include "views/explorer_pages_view.h"
 #include "views/explorer_stats_internal.h"
 #include <string.h>
@@ -56,6 +57,38 @@ int test_explorer(void)
         size_t n = explorer_handle_request("GET", "/foobar", NULL, 0,
                                             resp, sizeof(resp));
         bool ok = (n == 0);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("explorer: projection status pages do not ask users to refresh... ");
+    {
+        uint8_t out[16384];
+        size_t n = explorer_view_loading_placeholder(out, sizeof(out) - 1,
+            "Statistics Index Warming", "#33ff99",
+            "Charts are being computed from blockchain data.");
+        out[n < sizeof(out) ? n : sizeof(out) - 1] = '\0';
+        bool ok = n > 0 &&
+             strstr((char *)out, "Statistics Index Warming") != NULL &&
+             strstr((char *)out, "Open blocks") != NULL &&
+             strstr((char *)out, "/api/v1/status") != NULL &&
+             strstr((char *)out, "http-equiv='refresh'") == NULL &&
+             strstr((char *)out, "Auto-refresh") == NULL &&
+             strstr((char *)out, "Refresh in a minute") == NULL &&
+             strstr((char *)out, "please retry") == NULL;
+
+        n = explorer_view_tokens_loading(out, sizeof(out) - 1);
+        out[n < sizeof(out) ? n : sizeof(out) - 1] = '\0';
+        ok = ok && n > 0 &&
+             strstr((char *)out, "Token Index Warming") != NULL &&
+             strstr((char *)out, "Open blocks") != NULL &&
+             strstr((char *)out, "/api/v1/status") != NULL &&
+             strstr((char *)out, "Loading Token Data") == NULL &&
+             strstr((char *)out, "http-equiv='refresh'") == NULL &&
+             strstr((char *)out, "Auto-refresh") == NULL &&
+             strstr((char *)out, "Refresh in a minute") == NULL &&
+             strstr((char *)out, "please retry") == NULL;
+
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
