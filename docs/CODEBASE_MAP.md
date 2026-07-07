@@ -217,7 +217,10 @@ controller `k_routes[]` arrays.
   `native_command`, `mcp_tool`, and
   `contract_source` fields from `agent_contracts.def`, so help,
   `agentcontracts`, MCP coverage, and API discovery stay in sync with the
-  native command.
+  native command. Native CLI and MCP automatically fall back to
+  `dumpstate peer_lifecycle incidents` when an older running target lacks the
+  direct `peerincidents` RPC, preserving the same schema and marking
+  `compatibility_fallback=true`.
 - `zclassic23 agentimpact <files...>` / `zcl_agent_impact` — map changed paths
   to risk flags and focused test groups before choosing the verification set.
   The shared routing table lives at

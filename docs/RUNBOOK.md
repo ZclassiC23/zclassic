@@ -168,6 +168,12 @@ build/bin/zclassic23 dumpstate chain_advance_coordinator
 build/bin/zclassic23 dumpstate legacy_mirror
 ```
 
+`peerincidents` is the preferred no-jq entry point. If the running node is one
+deploy behind and does not expose the direct RPC yet, the native CLI/MCP path
+falls back through `dumpstate peer_lifecycle incidents` and marks the response
+with `compatibility_fallback=true` while preserving the
+`zcl.peer_incidents.v1` schema.
+
 **Fix:**
 1. **No completed handshakes:** check outbound reachability and peer quality before restarting.
    ```bash

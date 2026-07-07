@@ -2486,9 +2486,10 @@ static int test_zcl_syncdiag_invalid_children_stay_parseable(void)
     return failures;
 }
 
+static bool g_mock_peerincidents_missing = false;
+
 static char *mock_networkinfo_rpc(const char *method, const char *params_json)
 {
-    (void)params_json;
     if (strcmp(method, "getnetworkinfo") == 0)
         return strdup("{\"connections\":2,"
                       "\"inbound_connections\":1,"
@@ -2529,7 +2530,38 @@ static char *mock_networkinfo_rpc(const char *method, const char *params_json)
                       "\"localaddresses\":[{\"address\":\"203.0.113.7\","
                       "\"port\":8033,\"score\":1}],"
                       "\"listening\":true}");
-    if (strcmp(method, "peerincidents") == 0)
+    if (strcmp(method, "dumpstate") == 0 && params_json &&
+        strstr(params_json, "peer_lifecycle") != NULL &&
+        strstr(params_json, "incidents") != NULL)
+        return strdup("{\"subsystem\":\"peer_lifecycle\","
+                      "\"captured_at\":1782240005,"
+                      "\"state\":{\"schema\":\"zcl.peer_incidents.v1\","
+                      "\"schema_version\":1,"
+                      "\"bounded\":true,"
+                      "\"incident_count\":2,"
+                      "\"duplicate_host_group_count\":1,"
+                      "\"duplicate_open_host_group_count\":1,"
+                      "\"duplicate_handshaked_host_group_count\":1,"
+                      "\"current_open_connection_count\":2,"
+                      "\"current_handshaked_connection_count\":2,"
+                      "\"bootstrap_useful_count\":2,"
+                      "\"safe_next_action\":\"inspect primary_host_issue and top_host_incidents\","
+                      "\"primary_host_issue\":{"
+                      "\"status\":\"attention\","
+                      "\"host\":\"40.160.53.56\","
+                      "\"issue_class\":\"duplicate_handshaked_connections\","
+                      "\"direction\":\"mixed\","
+                      "\"mixed_direction\":true,"
+                      "\"duplicate_current_connections\":true,"
+                      "\"duplicate_handshaked_connections\":true,"
+                      "\"bootstrap_useful\":true,"
+                      "\"last_disconnect_reason\":\"inbound_ephemeral_port\"},"
+                      "\"top_host_incidents\":[{\"host\":\"40.160.53.56\"}],"
+                      "\"top_incidents\":[],"
+                      "\"duplicate_host_groups\":[{\"host\":\"40.160.53.56\"}]}}");
+    if (strcmp(method, "peerincidents") == 0) {
+        if (g_mock_peerincidents_missing)
+            return strdup("{\"code\":-32601,\"message\":\"Method not found\"}");
         return strdup("{\"schema\":\"zcl.peer_incidents.v1\","
                       "\"schema_version\":1,"
                       "\"method\":\"peerincidents\","
@@ -2558,6 +2590,7 @@ static char *mock_networkinfo_rpc(const char *method, const char *params_json)
                       "\"top_host_incidents\":[{\"host\":\"40.160.53.56\"}],"
                       "\"top_incidents\":[],"
                       "\"duplicate_host_groups\":[{\"host\":\"40.160.53.56\"}]}");
+    }
     if (strcmp(method, "bootstrapstatus") == 0)
         return strdup("{\"schema\":\"zcl.bootstrap_status.v1\","
                       "\"schema_version\":1,"
@@ -2659,6 +2692,7 @@ static int test_zcl_peer_incidents_exposes_duplicate_host_view(void)
     int failures = 0;
     TEST("controllers: zcl_peer_incidents exposes duplicate host view") {
         register_all();
+        g_mock_peerincidents_missing = false;
         mcp_rpc_client_set_test_hook(mock_networkinfo_rpc);
         struct json_value args;
         json_init(&args);
@@ -2700,6 +2734,58 @@ static int test_zcl_peer_incidents_exposes_duplicate_host_view(void)
         free(body);
         PASS();
     } _test_next:;
+    g_mock_peerincidents_missing = false;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_zcl_peer_incidents_falls_back_to_dumpstate(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_peer_incidents falls back to dumpstate on stale target") {
+        register_all();
+        g_mock_peerincidents_missing = true;
+        mcp_rpc_client_set_test_hook(mock_networkinfo_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_peer_incidents", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        g_mock_peerincidents_missing = false;
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.peer_incidents.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "method")),
+                      "peerincidents");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "native_command")),
+                      "zclassic23 peerincidents");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "mcp_tool")),
+                      "zcl_peer_incidents");
+        ASSERT(json_get_bool(json_get(&root, "compatibility_fallback")));
+        ASSERT_STR_EQ(json_get_str(json_get(&root,
+                                            "compatibility_source")),
+                      "dumpstate peer_lifecycle incidents");
+        ASSERT_STR_EQ(json_get_str(json_get(&root,
+                                            "compatibility_reason")),
+                      "Method not found");
+        ASSERT_STR_EQ(json_get_str(json_get(&root,
+                                            "fallback_native_command")),
+                      "zclassic23 dumpstate peer_lifecycle incidents");
+        const struct json_value *primary =
+            json_get(&root, "primary_host_issue");
+        ASSERT(primary && primary->type == JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(primary, "host")),
+                      "40.160.53.56");
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    g_mock_peerincidents_missing = false;
     mcp_rpc_client_set_test_hook(NULL);
     return failures;
 }
@@ -3447,6 +3533,7 @@ int test_mcp_controllers(void)
     failures += test_zcl_syncdiag_invalid_children_stay_parseable();
     failures += test_zcl_networkinfo_exposes_reachability_fields();
     failures += test_zcl_peer_incidents_exposes_duplicate_host_view();
+    failures += test_zcl_peer_incidents_falls_back_to_dumpstate();
     failures += test_zcl_bootstrapstatus_exposes_beta6_contract();
     failures += test_meta_tools_in_ops_domain();
     failures += test_zcl_logtail_handles_null_eventlog_rpc();

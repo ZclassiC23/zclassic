@@ -476,7 +476,13 @@ For peer churn, reconnect, or duplicate-entry reports, start with
 `zclassic23 peerincidents` / `zcl_peer_incidents`; use
 `zclassic23 dumpstate peer_lifecycle incidents` /
 `zcl_state(subsystem="peer_lifecycle", key="incidents")` only as the generic
-fallback. The first-class command returns bounded `zcl.peer_incidents.v1` JSON
+fallback. If a running target predates the direct `peerincidents` RPC but still
+supports `dumpstate`, the native CLI and MCP tool automatically normalize
+`dumpstate peer_lifecycle incidents` back into the same
+`zcl.peer_incidents.v1` contract and add
+`compatibility_fallback=true` plus `compatibility_source` /
+`compatibility_reason` fields. The first-class command returns bounded
+`zcl.peer_incidents.v1` JSON
 with `primary_host_issue`, `top_host_incidents`, flat `primary_issue_host` /
 `primary_issue_class` / `primary_issue_next_action` fields, `top_incidents`,
 `duplicate_host_groups`, reconnect counts, last reasons,

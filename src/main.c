@@ -27,6 +27,7 @@
 #include "models/database.h"
 #include "controllers/agent_controller.h"
 #include "controllers/diagnostics_controller.h"
+#include "controllers/network_controller.h"
 #include "controllers/sync_controller.h"
 #include "controllers/snapshot_controller.h"
 #include "storage/coins_db.h"
@@ -822,6 +823,50 @@ static bool cli_rpc_error_is_method_not_found(const char *resp,
     return code == RPC_METHOD_NOT_FOUND;
 }
 
+static bool cli_print_peer_incidents_dumpstate_fallback(const char *method,
+                                                        const char *reason)
+{
+    if (!method || strcmp(method, "peerincidents") != 0)
+        return false;
+
+    const char *params = "[\"peer_lifecycle\",\"incidents\"]";
+    char body[512];
+    int blen = snprintf(body, sizeof(body),
+        "{\"jsonrpc\":\"1.0\",\"id\":\"z-peerincidents-fallback\","
+        "\"method\":\"dumpstate\",\"params\":%s}", params);
+    if (blen <= 0 || (size_t)blen >= sizeof(body))
+        return false;
+
+    char *resp = cli_rpc_call(body, (size_t)blen);
+    if (!resp)
+        return false;
+
+    struct json_value root;
+    json_init(&root);
+    bool ok = false;
+    if (json_read(&root, resp, strlen(resp)) && root.type == JSON_OBJ) {
+        const struct json_value *result = json_get(&root, "result");
+        struct json_value normalized;
+        json_init(&normalized);
+        if (result && peer_incidents_from_dumpstate_result_json(
+                          result, &normalized, reason)) {
+            char out[262144];
+            size_t need = json_write(&normalized, out, sizeof(out));
+            if (need < sizeof(out)) {
+                printf("%s\n", out);
+                ok = true;
+            } else {
+                fprintf(stderr, "peerincidents fallback JSON exceeded "
+                                "CLI buffer\n");
+            }
+        }
+        json_free(&normalized);
+    }
+    json_free(&root);
+    free(resp);
+    return ok;
+}
+
 static bool cli_print_contract_method_skew_diagnostic(
     const char *method,
     const char *datadir,
@@ -1134,13 +1179,19 @@ static int cli_main(int argc, char **argv)
     if (!resp) { fprintf(stderr, "RPC failed\n"); return 1; }
     char rpc_error_message[192];
     if (cli_rpc_error_is_method_not_found(resp, rpc_error_message,
-                                          sizeof(rpc_error_message)) &&
-        cli_print_contract_method_skew_diagnostic(method, datadir,
-                                                  operator_lane,
-                                                  runtime_profile,
-                                                  rpc_error_message)) {
-        free(resp);
-        return 1;
+                                          sizeof(rpc_error_message))) {
+        if (cli_print_peer_incidents_dumpstate_fallback(method,
+                                                        rpc_error_message)) {
+            free(resp);
+            return 0;
+        }
+        if (cli_print_contract_method_skew_diagnostic(method, datadir,
+                                                      operator_lane,
+                                                      runtime_profile,
+                                                      rpc_error_message)) {
+            free(resp);
+            return 1;
+        }
     }
     int rc = rpc_cli_print_json_result(resp, stdout, stderr);
     free(resp);

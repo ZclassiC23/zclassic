@@ -18,4 +18,13 @@ void rpc_net_set_boot_context(const char *datadir,
                               const char *load_snapshot_at_own_height);
 void register_net_rpc_commands(struct rpc_table *t);
 
+struct json_value;
+
+/* Normalize `dumpstate peer_lifecycle incidents` into the standalone
+ * `peerincidents` contract. This is used only as a compatibility fallback
+ * when a running target predates the direct peerincidents RPC method. */
+bool peer_incidents_from_dumpstate_result_json(const struct json_value *result,
+                                               struct json_value *out,
+                                               const char *reason);
+
 #endif

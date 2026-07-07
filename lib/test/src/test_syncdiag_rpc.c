@@ -926,6 +926,60 @@ int test_syncdiag_rpc(void)
         else    { printf("FAIL\n"); failures++; }
     }
 
+    printf("peerincidents: normalizes dumpstate compatibility fallback "
+           "(RED)... ");
+    {
+        struct json_value state;
+        struct json_value dumpstate;
+        struct json_value result;
+
+        peer_lifecycle_reset_for_test();
+        json_init(&state);
+        json_init(&dumpstate);
+        json_init(&result);
+        bool ok = peer_lifecycle_incidents_json(&state);
+        json_set_object(&dumpstate);
+        json_push_kv_str(&dumpstate, "subsystem", "peer_lifecycle");
+        json_push_kv_str(&dumpstate, "description", "fixture");
+        json_push_kv(&dumpstate, "state", &state);
+        ok = ok && peer_incidents_from_dumpstate_result_json(
+            &dumpstate, &result, "target_peerincidents_method_not_found");
+        ok = ok && result.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
+                          "zcl.peer_incidents.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "method")),
+                          "peerincidents") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "native_command")),
+                          "zclassic23 peerincidents") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "mcp_tool")),
+                          "zcl_peer_incidents") == 0;
+        ok = ok && json_get_bool(json_get(&result,
+                                          "compatibility_fallback"));
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "compatibility_source")),
+                          "dumpstate peer_lifecycle incidents") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "compatibility_reason")),
+                          "target_peerincidents_method_not_found") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "fallback_native_command")),
+                          "zclassic23 dumpstate peer_lifecycle incidents")
+            == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "fallback_mcp_tool")),
+                          "zcl_state subsystem=peer_lifecycle key=incidents")
+            == 0;
+
+        json_free(&result);
+        json_free(&dumpstate);
+        json_free(&state);
+        peer_lifecycle_reset_for_test();
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
     printf("getnetworkinfo: exposes configured external endpoint "
            "(RED)... ");
     {
