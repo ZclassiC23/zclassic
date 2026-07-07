@@ -367,6 +367,11 @@ static const struct api_service_contract *api_service_lookup(const char *name)
     return NULL;
 }
 
+bool api_service_catalog_has_service(const char *name)
+{
+    return api_service_lookup(name) != NULL;
+}
+
 static void api_service_names_json(struct json_value *out)
 {
     json_set_array(out);

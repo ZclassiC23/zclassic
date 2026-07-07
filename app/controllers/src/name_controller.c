@@ -249,14 +249,23 @@ static void push_service_route_links(
     const struct service_record_classification *classification)
 {
     struct json_value runtime_probe = {0};
+    struct json_value resolution = {0};
     char catalog_route[160];
     char operation_route[192];
+    bool service_known = false;
+    bool operation_required = false;
+    bool operation_known = false;
+    const char *resolution_status = "service_unknown";
+    const char *resolution_next_action =
+        "inspect_service_catalog_before_trusting_chain_hint";
 
     if (!obj || !classification)
         return;
 
     if (classification->service_contract_name &&
         classification->service_contract_name[0]) {
+        service_known = api_service_catalog_has_service(
+            classification->service_contract_name);
         snprintf(catalog_route, sizeof(catalog_route),
                  "/api/v1/service-catalog/%s",
                  classification->service_contract_name);
@@ -276,12 +285,46 @@ static void push_service_route_links(
                          ? classification->recommended_operation_id : "");
     if (classification->recommended_operation_id &&
         classification->recommended_operation_id[0]) {
+        operation_required = true;
+        operation_known = api_service_operation_has_id(
+            classification->recommended_operation_id);
         snprintf(operation_route, sizeof(operation_route),
                  "/api/v1/service-operations/%s",
                  classification->recommended_operation_id);
         operation_route[sizeof(operation_route) - 1] = '\0';
         json_push_kv_str(obj, "service_operation_route", operation_route);
     }
+
+    if (service_known && (!operation_required || operation_known)) {
+        resolution_status = "resolved";
+        resolution_next_action = "run_runtime_probe_before_routing";
+    } else if (service_known) {
+        resolution_status = "operation_unknown";
+        resolution_next_action =
+            "inspect_service_operation_contract_before_execution";
+    }
+
+    json_push_kv_bool(obj, "service_contract_known", service_known);
+    json_push_kv_bool(obj, "service_operation_required",
+                      operation_required);
+    json_push_kv_bool(obj, "service_operation_known", operation_known);
+    json_push_kv_str(obj, "contract_resolution_status",
+                     resolution_status);
+
+    json_set_object(&resolution);
+    json_push_kv_str(&resolution, "schema",
+                     "zcl.names.service_contract_resolution.v1");
+    json_push_kv_str(&resolution, "status", resolution_status);
+    json_push_kv_bool(&resolution, "service_contract_known",
+                      service_known);
+    json_push_kv_bool(&resolution, "operation_required",
+                      operation_required);
+    json_push_kv_bool(&resolution, "service_operation_known",
+                      operation_known);
+    json_push_kv_str(&resolution, "next_action",
+                     resolution_next_action);
+    json_push_kv(obj, "contract_resolution", &resolution);
+    json_free(&resolution);
 
     json_push_kv_str(obj, "next_action",
                      classification->next_action

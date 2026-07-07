@@ -442,6 +442,10 @@ api_service_operation_lookup_id(const char *operation_id)
     return NULL;
 }
 
+bool api_service_operation_has_id(const char *operation_id)
+{
+    return api_service_operation_lookup_id(operation_id) != NULL;
+}
 static void api_service_operation_json(
     struct json_value *obj,
     const struct api_service_operation_contract *op)

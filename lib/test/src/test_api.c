@@ -918,6 +918,8 @@ int test_api(void)
                                      "74.50.74.102:8033");
         ok = ok && db_znam_text_save(&ndb, "alice", "bootstrap",
                                      "205.209.104.118:8033");
+        ok = ok && db_znam_text_save(&ndb, "alice", "service.unknown",
+                                     "unknown-service-metadata");
         ok = ok && db_znam_addr_save(&ndb, "alice", ZNAM_TYPE_LTC,
                                      "LaliceAddress");
         ok = ok && db_znam_addr_save(&ndb, "alice", ZNAM_TYPE_BTC,
@@ -957,6 +959,8 @@ int test_api(void)
                 api_test_find_str_field(services, "key", "service.p2p");
             const struct json_value *svc_bootstrap =
                 api_test_find_str_field(services, "key", "bootstrap");
+            const struct json_value *svc_unknown =
+                api_test_find_str_field(services, "key", "service.unknown");
             const struct json_value *svc_probe =
                 svc ? json_get(svc, "runtime_probe") : NULL;
             const struct json_value *svc_p2p_probe =
@@ -964,6 +968,11 @@ int test_api(void)
             const struct json_value *svc_bootstrap_probe =
                 svc_bootstrap ? json_get(svc_bootstrap,
                                          "runtime_probe") : NULL;
+            const struct json_value *svc_resolution =
+                svc ? json_get(svc, "contract_resolution") : NULL;
+            const struct json_value *svc_unknown_resolution =
+                svc_unknown ? json_get(svc_unknown,
+                                       "contract_resolution") : NULL;
             const struct json_value *dir_svc =
                 api_test_find_str_field(dir_records, "key", "service.onion");
             const struct json_value *dir_endpoint =
@@ -980,11 +989,11 @@ int test_api(void)
                        ZNAM_TYPE_BTC;
             ok = ok && strcmp(json_get_str(json_get(&root, "type")),
                               "bitcoin") == 0;
-            ok = ok && json_size(texts) == 4 &&
-                       json_get_int(json_get(&root, "text_record_count")) == 4;
-            ok = ok && json_size(services) == 3 &&
+            ok = ok && json_size(texts) == 5 &&
+                       json_get_int(json_get(&root, "text_record_count")) == 5;
+            ok = ok && json_size(services) == 4 &&
                        json_get_int(json_get(&root,
-                                             "service_record_count")) == 3;
+                                             "service_record_count")) == 4;
             ok = ok && json_size(addrs) == 2 &&
                        json_get_int(json_get(&root,
                                              "address_record_count")) == 2;
@@ -1011,6 +1020,34 @@ int test_api(void)
                                                     "service_operation_route")),
                               "/api/v1/service-operations/"
                               "onion_directory.list_onion_announcements") == 0;
+            ok = ok && json_get_bool(json_get(svc,
+                                              "service_contract_known"));
+            ok = ok && json_get_bool(json_get(svc,
+                                              "service_operation_required"));
+            ok = ok && json_get_bool(json_get(svc,
+                                              "service_operation_known"));
+            ok = ok && strcmp(json_get_str(json_get(svc,
+                                                    "contract_resolution_status")),
+                              "resolved") == 0;
+            ok = ok && svc_resolution &&
+                 strcmp(json_get_str(json_get(svc_resolution, "schema")),
+                        "zcl.names.service_contract_resolution.v1") == 0;
+            ok = ok && svc_resolution &&
+                 strcmp(json_get_str(json_get(svc_resolution, "status")),
+                        "resolved") == 0;
+            ok = ok && svc_resolution &&
+                 json_get_bool(json_get(svc_resolution,
+                                        "service_contract_known"));
+            ok = ok && svc_resolution &&
+                 json_get_bool(json_get(svc_resolution,
+                                        "operation_required"));
+            ok = ok && svc_resolution &&
+                 json_get_bool(json_get(svc_resolution,
+                                        "service_operation_known"));
+            ok = ok && svc_resolution &&
+                 strcmp(json_get_str(json_get(svc_resolution,
+                                              "next_action")),
+                        "run_runtime_probe_before_routing") == 0;
             ok = ok && svc_probe &&
                  strcmp(json_get_str(json_get(svc_probe, "schema")),
                         "zcl.service_runtime_probe.v1") == 0;
@@ -1069,6 +1106,33 @@ int test_api(void)
             ok = ok && strcmp(json_get_str(json_get(svc_bootstrap,
                                                     "endpoint_kind")),
                               "bootstrap_hint") == 0;
+            ok = ok && svc_unknown &&
+                 strcmp(json_get_str(json_get(svc_unknown,
+                                              "service_contract")),
+                        "unknown") == 0;
+            ok = ok && !json_get_bool(json_get(svc_unknown,
+                                               "service_contract_known"));
+            ok = ok && !json_get_bool(json_get(svc_unknown,
+                                               "service_operation_required"));
+            ok = ok && !json_get_bool(json_get(svc_unknown,
+                                               "service_operation_known"));
+            ok = ok && strcmp(json_get_str(json_get(svc_unknown,
+                                                    "contract_resolution_status")),
+                              "service_unknown") == 0;
+            ok = ok && svc_unknown_resolution &&
+                 strcmp(json_get_str(json_get(svc_unknown_resolution,
+                                              "status")),
+                        "service_unknown") == 0;
+            ok = ok && svc_unknown_resolution &&
+                 !json_get_bool(json_get(svc_unknown_resolution,
+                                         "service_contract_known"));
+            ok = ok && svc_unknown_resolution &&
+                 !json_get_bool(json_get(svc_unknown_resolution,
+                                         "operation_required"));
+            ok = ok && svc_unknown_resolution &&
+                 strcmp(json_get_str(json_get(svc_unknown_resolution,
+                                              "next_action")),
+                        "inspect_service_catalog_before_trusting_chain_hint") == 0;
             ok = ok && btc &&
                  strcmp(json_get_str(json_get(btc, "address")),
                         "1aliceAddress") == 0;
@@ -1080,7 +1144,7 @@ int test_api(void)
                         "zcl.names.service_directory.v1") == 0;
             ok = ok && json_get_bool(json_get(directory, "has_services"));
             ok = ok && json_get_int(json_get(directory,
-                                             "service_record_count")) == 3;
+                                             "service_record_count")) == 4;
             ok = ok && json_get_int(json_get(directory,
                                              "endpoint_count")) == 3;
             ok = ok && json_get_bool(json_get(directory,
@@ -1089,7 +1153,7 @@ int test_api(void)
                                               "supports_direct_p2p"));
             ok = ok && json_get_bool(json_get(directory,
                                               "supports_bootstrap"));
-            ok = ok && json_size(dir_records) == 3 && dir_svc != NULL;
+            ok = ok && json_size(dir_records) == 4 && dir_svc != NULL;
             ok = ok && json_size(dir_endpoints) == 3 && dir_endpoint != NULL;
             ok = ok && strcmp(json_get_str(json_get(directory,
                                                     "transport_model")),
