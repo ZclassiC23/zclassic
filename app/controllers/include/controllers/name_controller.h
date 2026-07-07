@@ -12,6 +12,7 @@
 
 #include "rpc/server.h"
 #include "models/database.h"
+#include <stddef.h>
 #include <stdint.h>
 
 struct wallet;
@@ -27,6 +28,13 @@ const char *znam_type_name(uint8_t t);
 bool api_name_list(struct json_value *result);
 bool rpc_name_resolve_api(const char *name, struct json_value *result);
 bool api_name_service_directory(const char *name, struct json_value *result);
+bool api_name_service_directory_path(const char *name, const char *path,
+                                     struct json_value *result,
+                                     char *err, size_t err_len);
+size_t api_serve_name_service_directory(const char *name, const char *path,
+                                        const char *freshness,
+                                        uint8_t *response,
+                                        size_t response_max);
 void api_name_append_records(struct node_db *ndb, const char *name,
                              struct json_value *obj);
 

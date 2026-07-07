@@ -204,7 +204,12 @@ dedicated subcollection `GET /api/v1/names/{name}/services`; it returns
 `supports_bootstrap`, `routing_plan`
 (`zcl.names.service_routing_plan.v1`), the service/operation contract route
 templates, the runtime probe schema/field name, and a routing policy. Agents
-should verify the
+can ask the server to narrow this projection with exact-match filters:
+`service`, `service_contract`, `transport`, `endpoint_kind`, `valid`, and
+`endpoint_only`. For example,
+`GET /api/v1/names/alice/services?transport=p2p&valid=true&endpoint_only=true`
+returns only valid direct-P2P endpoint hints, with counts and routing plan
+recomputed for that filtered view. Agents should verify the
 chain-projected ZNAM record first, inspect the linked service/operation
 contract and runtime probe, then prefer direct P2P for low latency and fall
 back to onion reachability when NAT or firewall conditions require it.

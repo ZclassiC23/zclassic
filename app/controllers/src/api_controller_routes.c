@@ -209,7 +209,9 @@ static const struct api_dynamic_resource_route k_api_dynamic_resource_routes[] =
     { "GET", "/api/files/{sha3}", "files", "show", "zcl.files.show.v1",
       "", "file_service", "", false, API_DYN_FILE_SHOW },
     { "GET", "/api/names/{name}/services", "names", "index",
-      ZCL_NAMES_SERVICE_DIRECTORY_SCHEMA, "", "znam_projection", "", false,
+      ZCL_NAMES_SERVICE_DIRECTORY_SCHEMA,
+      "service,service_contract,transport,endpoint_kind,valid,endpoint_only",
+      "znam_projection", "", false,
       API_DYN_NAME_SERVICES },
     { "GET", "/api/names/{name}", "names", "show", "zcl.names.show.v1",
       "", "znam_projection", "", false, API_DYN_NAME_SHOW },
@@ -495,16 +497,9 @@ static size_t api_dynamic_route_dispatch(
                                   "Invalid file hash");
         return api_serve_file_chunk(param, response, response_max);
     case API_DYN_NAME_SERVICES: {
-        struct json_value jr = {0};
-        if (api_name_service_directory(param, &jr)) {
-            api_json_add_freshness(&jr, route->freshness, -1);
-            size_t n = api_json_ok(response, response_max, &jr);
-            json_free(&jr);
-            return n;
-        }
-        json_free(&jr);
-        return api_json_error(response, response_max, JSON_404_HEADERS,
-                              "Name service directory not found");
+        return api_serve_name_service_directory(param, path,
+                                                route->freshness,
+                                                response, response_max);
     }
     case API_DYN_NAME_SHOW: {
         struct json_value jr = {0};

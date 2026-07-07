@@ -164,7 +164,9 @@ controller `k_routes[]` arrays.
   preferred_interface?, status?, surface?)` /
   `GET /api/v1/service-operations?service=znam_names&surface=rest` /
   `GET /api/v1/service-operations/{operation_id}` /
-  `GET /api/v1/names/{name}/services` — UX-facing sovereign
+  `GET /api/v1/names/{name}/services` /
+  `GET /api/v1/names/{name}/services?transport=p2p&valid=true&endpoint_only=true`
+  — UX-facing sovereign
   service catalog. It answers what this node can host, advertise, verify, or
   construct for a user across names, bootstrap, Tor/onion discovery, P2P,
   files, market, messaging, and script contracts. The top-level

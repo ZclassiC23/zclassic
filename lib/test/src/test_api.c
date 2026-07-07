@@ -1511,6 +1511,114 @@ int test_api(void)
                      == 0;
                 json_free(&svc_root);
             }
+
+            {
+                uint8_t filtered_resp[65536];
+                struct json_value filtered_root;
+                rpc_name_set_state(&ndb);
+                size_t fn = api_handle_request(
+                    "GET",
+                    "/api/v1/names/alice/services?"
+                    "transport=p2p&valid=true&endpoint_only=true",
+                    NULL, 0, filtered_resp, sizeof(filtered_resp));
+                rpc_name_set_state(NULL);
+                const char *filtered_body =
+                    api_test_body(filtered_resp, fn, sizeof(filtered_resp));
+                json_init(&filtered_root);
+                ok = ok && fn > 0 && filtered_body &&
+                     json_read(&filtered_root, filtered_body,
+                               strlen(filtered_body));
+                const struct json_value *filters =
+                    ok ? json_get(&filtered_root, "filters") : NULL;
+                const struct json_value *filtered_records =
+                    ok ? json_get(&filtered_root, "records") : NULL;
+                const struct json_value *filtered_endpoints =
+                    ok ? json_get(&filtered_root, "endpoints") : NULL;
+                const struct json_value *filtered_p2p =
+                    api_test_find_str_field(filtered_records, "key",
+                                            "service.p2p");
+                const struct json_value *filtered_plan =
+                    ok ? json_get(&filtered_root, "routing_plan") : NULL;
+                ok = ok &&
+                     strcmp(json_get_str(json_get(&filtered_root, "schema")),
+                            "zcl.names.service_directory.v1") == 0;
+                ok = ok && filters &&
+                     json_get_bool(json_get(filters, "active"));
+                ok = ok && filters &&
+                     strcmp(json_get_str(json_get(filters, "transport")),
+                            "p2p") == 0;
+                ok = ok && filters &&
+                     json_get_bool(json_get(filters, "valid"));
+                ok = ok && filters &&
+                     json_get_bool(json_get(filters, "endpoint_only"));
+                ok = ok &&
+                     json_get_int(json_get(&filtered_root,
+                                           "service_record_count")) == 1;
+                ok = ok &&
+                     json_get_int(json_get(&filtered_root,
+                                           "endpoint_count")) == 1;
+                ok = ok &&
+                     json_get_int(json_get(&filtered_root,
+                                           "valid_endpoint_count")) == 1;
+                ok = ok &&
+                     json_get_int(json_get(&filtered_root,
+                                           "invalid_endpoint_count")) == 0;
+                ok = ok && json_get_bool(json_get(&filtered_root,
+                                                  "supports_direct_p2p"));
+                ok = ok && !json_get_bool(json_get(&filtered_root,
+                                                   "supports_onion"));
+                ok = ok && !json_get_bool(json_get(&filtered_root,
+                                                   "supports_bootstrap"));
+                ok = ok && filtered_records &&
+                     json_size(filtered_records) == 1 && filtered_p2p;
+                ok = ok && filtered_endpoints &&
+                     json_size(filtered_endpoints) == 1;
+                ok = ok && filtered_plan &&
+                     strcmp(json_get_str(json_get(filtered_plan,
+                                                  "preferred_transport")),
+                            "p2p") == 0;
+                ok = ok && filtered_plan &&
+                     strcmp(json_get_str(json_get(filtered_plan,
+                                                  "fallback_transport")),
+                            "bootstrap") == 0;
+                ok = ok &&
+                     strcmp(json_get_str(json_get(&filtered_root,
+                                                  "source_projection")),
+                            "znam_projection") == 0;
+                json_free(&filtered_root);
+            }
+
+            {
+                uint8_t invalid_resp[8192];
+                struct json_value invalid_root;
+                rpc_name_set_state(&ndb);
+                size_t in = api_handle_request(
+                    "GET", "/api/v1/names/alice/services?valid=maybe",
+                    NULL, 0, invalid_resp, sizeof(invalid_resp));
+                rpc_name_set_state(NULL);
+                invalid_resp[in < sizeof(invalid_resp) ? in :
+                             sizeof(invalid_resp) - 1] = '\0';
+                const char *invalid_body =
+                    api_test_body(invalid_resp, in, sizeof(invalid_resp));
+                json_init(&invalid_root);
+                ok = ok && in > 0 &&
+                     strstr((char *)invalid_resp, "400 Bad Request") != NULL &&
+                     invalid_body &&
+                     json_read(&invalid_root, invalid_body,
+                               strlen(invalid_body));
+                const struct json_value *allowed =
+                    ok ? json_get(&invalid_root, "allowed_filters") : NULL;
+                ok = ok &&
+                     strcmp(json_get_str(json_get(&invalid_root, "schema")),
+                            "zcl.rest_error.v1") == 0;
+                ok = ok &&
+                     strcmp(json_get_str(json_get(&invalid_root, "error")),
+                            "invalid_name_service_filter") == 0;
+                ok = ok && allowed &&
+                     strcmp(json_get_str(json_get(allowed, "valid")),
+                            "true,false") == 0;
+                json_free(&invalid_root);
+            }
         }
 
         rpc_name_set_state(NULL);
@@ -2065,6 +2173,18 @@ int test_api(void)
                     "znam") == 0;
         ok = ok && names_services &&
              api_test_contract_has_id_param(names_services, "name");
+        ok = ok && names_services &&
+             api_test_contract_has_query(names_services, "service");
+        ok = ok && names_services &&
+             api_test_contract_has_query(names_services, "service_contract");
+        ok = ok && names_services &&
+             api_test_contract_has_query(names_services, "transport");
+        ok = ok && names_services &&
+             api_test_contract_has_query(names_services, "endpoint_kind");
+        ok = ok && names_services &&
+             api_test_contract_has_query(names_services, "valid");
+        ok = ok && names_services &&
+             api_test_contract_has_query(names_services, "endpoint_only");
         const struct json_value *names_services_binding =
             names_services ? json_get(names_services, "service_binding")
                            : NULL;
@@ -3390,6 +3510,22 @@ int test_api(void)
                     "x-zcl-application-protocol")), "znam") == 0;
         ok = ok && names_services &&
              api_test_openapi_has_param(names_services, "name", "path");
+        ok = ok && names_services &&
+             api_test_openapi_has_param(names_services, "service", "query");
+        ok = ok && names_services &&
+             api_test_openapi_has_param(names_services, "service_contract",
+                                        "query");
+        ok = ok && names_services &&
+             api_test_openapi_has_param(names_services, "transport",
+                                        "query");
+        ok = ok && names_services &&
+             api_test_openapi_has_param(names_services, "endpoint_kind",
+                                        "query");
+        ok = ok && names_services &&
+             api_test_openapi_has_param(names_services, "valid", "query");
+        ok = ok && names_services &&
+             api_test_openapi_has_param(names_services, "endpoint_only",
+                                        "query");
         const struct json_value *names_services_openapi_binding =
             names_services ? json_get(names_services,
                                       "x-zcl-service-binding") : NULL;
@@ -4205,6 +4341,37 @@ int test_api(void)
             commands, "make t ONLY=chain_advance_coordinator");
         ok = ok && api_test_array_has_str(commands,
                                           "make t ONLY=mcp_controllers");
+        json_free(&params);
+        json_free(&result);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: agentimpact maps ZNAM service directory filters... ");
+    {
+        const char *params_json =
+            "[\"app/controllers/src/"
+            "name_service_directory_filter_controller.c\"]";
+        struct json_value params, result;
+        json_init(&params);
+        json_init(&result);
+        bool ok = json_read(&params, params_json, strlen(params_json));
+        ok = ok && rpc_agent_impact(&params, false, &result);
+        ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
+                          "zcl.agent_impact.v1") == 0;
+        ok = ok && json_get_int(json_get(&result, "files_count")) == 1;
+        ok = ok && json_get_int(json_get(&result,
+                                         "relevant_test_groups_count")) == 4;
+        const struct json_value *groups =
+            json_get(&result, "relevant_test_groups");
+        ok = ok && api_test_array_has_str(groups, "znam");
+        ok = ok && api_test_array_has_str(groups, "protocols");
+        ok = ok && api_test_array_has_str(groups, "api");
+        ok = ok && api_test_array_has_str(groups, "make_lint_gates");
+        const struct json_value *commands =
+            json_get(&result, "recommended_commands");
+        ok = ok && api_test_array_has_str(commands, "make t ONLY=api");
         json_free(&params);
         json_free(&result);
 
