@@ -378,6 +378,8 @@ cache_manifest() {
         tools/scripts/build_vendor.sh \
         tools/scripts/background_quality_lane.sh \
         tools/scripts/check_agentdeployguard_cli_exit.sh \
+        deploy/examples/zclassic23-remote-test-node.service \
+        deploy/examples/zclassic23-remote-test.env.example \
         deploy/examples/zclassic23-self-update.service \
         deploy/examples/zclassic23-self-update.timer \
         deploy/zclassic23-fuzz.service deploy/zclassic23-fuzz.timer \

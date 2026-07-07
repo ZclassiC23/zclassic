@@ -941,6 +941,20 @@ For a node to keep itself warm without giving it restart authority, run
 only with a reviewed systemd drop-in that sets `ZCL_REMOTE_BUILD=release`,
 `ZCL_REMOTE_INSTALL_BIN=...`, and `ZCL_REMOTE_RESTART=1`.
 
+For a long-running remote zclassic23 test node, run
+`make install-remote-test-node-linger`. It installs
+`deploy/examples/zclassic23-remote-test-node.service` as
+`zclassic23-test.service`, creates `~/.zclassic23-test`, and creates
+`~/.config/zclassic23/remote-test.env` only if it does not already exist.
+The service uses the remote test ports (`18033` P2P, `18233` RPC), appends
+logs to `~/.zclassic23-test/node.log`, and carries the soak resource budget
+(`MemoryHigh=24G`, `CPUWeight=30`, `IOWeight=30`) so a long bootstrap is not
+throttled at the 12G plateau. Dedicated remote hosts can add a reviewed
+`MemoryMax=32G` drop-in; the committed template leaves the hard cap out so the
+repo-wide systemd memory-budget lint does not double-count mutually exclusive
+example nodes. Check it with `make remote-test-node-status`; edit the env file
+before starting or restarting the service.
+
 ## Background proof lanes
 
 The background lanes keep expensive proof work running without blocking every

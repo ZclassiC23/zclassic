@@ -1859,6 +1859,24 @@ self-update-status:
 	@systemctl --user list-timers zclassic23-self-update.timer --no-pager 2>/dev/null || true
 	@systemctl --user status zclassic23-self-update.service zclassic23-self-update.timer --no-pager -n 20 2>/dev/null || true
 
+.PHONY: install-remote-test-node-linger remote-test-node-status
+install-remote-test-node-linger:
+	@install -d "$(HOME)/.config/systemd/user" "$(HOME)/.config/zclassic23" "$(HOME)/.zclassic23-test"
+	@if [ ! -f "$(HOME)/.config/zclassic23/remote-test.env" ]; then \
+		install -m 600 deploy/examples/zclassic23-remote-test.env.example "$(HOME)/.config/zclassic23/remote-test.env"; \
+		echo "installed editable env: $(HOME)/.config/zclassic23/remote-test.env"; \
+	fi
+	@install -m 644 deploy/examples/zclassic23-remote-test-node.service "$(HOME)/.config/systemd/user/zclassic23-test.service"
+	@systemctl --user daemon-reload
+	@systemctl --user enable zclassic23-test.service
+	@echo "installed remote test node service: zclassic23-test.service"
+	@echo "edit $(HOME)/.config/zclassic23/remote-test.env, then start/restart when ready"
+	@echo "status: make remote-test-node-status"
+
+remote-test-node-status:
+	@systemctl --user status zclassic23-test.service --no-pager -n 40 2>/dev/null || true
+	@systemctl --user show zclassic23-test.service -p ActiveState -p SubState -p MainPID -p MemoryHigh -p MemoryMax -p CPUWeight -p IOWeight --no-pager 2>/dev/null || true
+
 install-quality-linger:
 	@install -d "$(HOME)/.config/systemd/user"
 	@install -m 644 deploy/zclassic23-fuzz.service "$(HOME)/.config/systemd/user/zclassic23-fuzz.service"

@@ -3018,6 +3018,10 @@ static int t_remote_node_update_contract(void)
                != NULL);
         ASSERT(strstr(makefile, "install-self-update-linger:") != NULL);
         ASSERT(strstr(makefile, "self-update-status:") != NULL);
+        ASSERT(strstr(makefile, "install-remote-test-node-linger:") != NULL);
+        ASSERT(strstr(makefile, "remote-test-node-status:") != NULL);
+        ASSERT(strstr(makefile, "zclassic23-remote-test-node.service") != NULL);
+        ASSERT(strstr(makefile, "zclassic23-remote-test.env.example") != NULL);
         ASSERT(strstr(makefile, "zclassic23-self-update.timer") != NULL);
         ASSERT(strstr(makefile,
                       "systemctl --user enable --now zclassic23-self-update.timer")
@@ -3043,6 +3047,12 @@ static int t_remote_node_update_contract(void)
         ASSERT(repo_path(path, sizeof(path), "tools/agent_fast_ci.sh") == 0);
         ASSERT(read_entire_file(path, &fast_ci) == 0);
         ASSERT(strstr(fast_ci, "tools/scripts/remote_node_update.sh")
+               != NULL);
+        ASSERT(strstr(fast_ci,
+                      "deploy/examples/zclassic23-remote-test-node.service")
+               != NULL);
+        ASSERT(strstr(fast_ci,
+                      "deploy/examples/zclassic23-remote-test.env.example")
                != NULL);
         ASSERT(strstr(fast_ci,
                       "deploy/examples/zclassic23-self-update.service")
@@ -3079,11 +3089,46 @@ static int t_remote_node_update_contract(void)
         ASSERT(strstr(doc, "direct C++11 fallback") != NULL);
         ASSERT(strstr(doc, "make install-self-update-linger") != NULL);
         ASSERT(strstr(doc, "make self-update-status") != NULL);
+        ASSERT(strstr(doc, "make install-remote-test-node-linger") != NULL);
+        ASSERT(strstr(doc, "make remote-test-node-status") != NULL);
+        ASSERT(strstr(doc, "MemoryHigh=24G") != NULL);
+        ASSERT(strstr(doc, "MemoryMax=32G") != NULL);
+        ASSERT(strstr(doc, "systemd memory-budget lint") != NULL);
         ASSERT(strstr(doc,
                       "deploy/examples/zclassic23-self-update.timer")
                != NULL);
         free(doc);
         doc = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "deploy/examples/zclassic23-remote-test-node.service")
+               == 0);
+        ASSERT(read_entire_file(path, &service) == 0);
+        ASSERT(strstr(service, "EnvironmentFile=-%h/.config/zclassic23/remote-test.env")
+               != NULL);
+        ASSERT(strstr(service, "-datadir=%h/.zclassic23-test") != NULL);
+        ASSERT(strstr(service, "-port=18033") != NULL);
+        ASSERT(strstr(service, "-rpcport=18233") != NULL);
+        ASSERT(strstr(service, "MemoryHigh=24G") != NULL);
+        ASSERT(strstr(service, "MemoryMax=32G") != NULL);
+        ASSERT(strstr(service, "\nMemoryMax=32G\n") == NULL);
+        ASSERT(strstr(service, "CPUWeight=30") != NULL);
+        ASSERT(strstr(service, "IOWeight=30") != NULL);
+        ASSERT(strstr(service, "StandardOutput=append:%h/.zclassic23-test/node.log")
+               != NULL);
+        free(service);
+        service = NULL;
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "deploy/examples/zclassic23-remote-test.env.example")
+               == 0);
+        ASSERT(read_entire_file(path, &service) == 0);
+        ASSERT(strstr(service, "ZCL_TEST_EXTERNALIP_FLAG=-externalip=")
+               != NULL);
+        ASSERT(strstr(service, "ZCL_TEST_ADDNODE_FLAGS=-addnode=")
+               != NULL);
+        free(service);
+        service = NULL;
 
         ASSERT(repo_path(path, sizeof(path),
                          "deploy/examples/zclassic23-self-update.service")
