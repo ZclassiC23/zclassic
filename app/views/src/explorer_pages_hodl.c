@@ -286,15 +286,77 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
                     "<p>The HODL chart is temporarily unavailable.</p>"
                     "</div>");
             } else if (n < 2) {
+                int64_t latest_height = hodl.tip_height;
+                int64_t latest_time = (int64_t)platform_time_wall_time_t();
+                int64_t latest_total = hodl.total_value;
+                int64_t latest_older = hodl.older_than_1y_value;
+                double latest_pct = older_pct;
+                if (n == 1) {
+                    latest_height = rows[0].height;
+                    latest_time = rows[0].time;
+                    latest_total = rows[0].total_zat;
+                    latest_older = rows[0].older_1y_zat;
+                    latest_pct = rows[0].older_1y_pct;
+                }
+
+                char latest_total_fmt[64];
+                char latest_older_fmt[64];
+                char latest_date[32] = "current tip";
+                zcl_format_zcl(latest_total_fmt, sizeof(latest_total_fmt),
+                               latest_total);
+                zcl_format_zcl(latest_older_fmt, sizeof(latest_older_fmt),
+                               latest_older);
+                if (latest_time > 0) {
+                    time_t tt = (time_t)latest_time;
+                    struct tm tm_;
+                    if (gmtime_r(&tt, &tm_) != NULL)
+                        strftime(latest_date, sizeof(latest_date), "%Y-%m-%d",
+                                 &tm_);
+                }
+
                 APPEND(off, r, max,
                     "<div style='max-width:1000px;margin:20px auto;"
                     "padding:16px;background:#0c0c0c;border:1px solid #1a1a1a;"
                     "border-radius:8px;color:#888'>"
                     "<h2 style='color:#bbb;margin-top:0'>"
-                    "%% held &gt; 1 year over time</h2>"
-                    "<p>The HODL history snapshots are still being indexed. Refresh in "
-                    "a minute.</p>"
-                    "</div>");
+                    "Historical transparent UTXO value: %% held &gt; 1 year</h2>"
+                    "<svg viewBox='0 0 1000 170' role='img' "
+                    "aria-label='Latest HODL measurement at block %" PRId64 "' "
+                    "style='width:100%%;height:auto;background:#080808;"
+                    "border:1px solid #181818;border-radius:6px;display:block'>"
+                    "<text x='30' y='34' fill='#bbb' font-size='18' "
+                    "font-family='Georgia,serif'>Latest measurement</text>"
+                    "<line x1='70' y1='104' x2='930' y2='104' "
+                    "stroke='#1f1f1f'/>"
+                    "<circle cx='500' cy='92' r='6' fill='#33ff99'/>"
+                    "<text x='500' y='74' fill='#33ff99' font-size='26' "
+                    "font-weight='700' text-anchor='middle'>%.3f%%</text>"
+                    "<text x='500' y='128' fill='#999' font-size='14' "
+                    "text-anchor='middle' font-family='Georgia,serif'>"
+                    "block %" PRId64 " - %s</text>"
+                    "</svg>"
+                    "<div style='display:grid;grid-template-columns:"
+                    "repeat(auto-fit,minmax(160px,1fr));gap:14px;"
+                    "margin-top:14px'>"
+                    "<div style='border-top:1px solid #202020;padding-top:10px'>"
+                    "<div style='color:#777;font-size:13px'>Total transparent UTXO</div>"
+                    "<div style='color:#eee;font-size:18px'>%s ZCL</div>"
+                    "</div>"
+                    "<div style='border-top:1px solid #202020;padding-top:10px'>"
+                    "<div style='color:#777;font-size:13px'>Older than 1 year</div>"
+                    "<div style='color:#eee;font-size:18px'>%s ZCL</div>"
+                    "</div>"
+                    "<div style='border-top:1px solid #202020;padding-top:10px'>"
+                    "<div style='color:#777;font-size:13px'>Samples available</div>"
+                    "<div style='color:#eee;font-size:18px'>1 current tip anchor</div>"
+                    "</div>"
+                    "</div>"
+                    "<p style='margin:14px 0 0;color:#777'>This panel uses "
+                    "the current verified transparent UTXO distribution now; "
+                    "older samples are added to the chart when available.</p>"
+                    "</div>",
+                    latest_height, latest_pct, latest_height, latest_date,
+                    latest_total_fmt, latest_older_fmt);
             } else {
                 /* Compute min/max for y-axis scaling. Use [floor..100]
                  * with a 5%% headroom floor to keep the curve readable
