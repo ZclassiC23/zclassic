@@ -128,24 +128,24 @@ static void append_name_crud_links(struct json_value *obj, const char *name)
     json_free(&links);
 }
 
-static void append_service_directory(struct json_value *obj,
-                                     const struct json_value *services,
-                                     int service_count)
-{
-    struct json_value directory = {0};
+struct service_record_classification {
+    const char *service_name;
+    const char *transport;
+    const char *endpoint_kind;
+    bool is_endpoint_hint;
+    bool supports_onion;
+    bool supports_direct_p2p;
+    bool supports_bootstrap;
+};
 
-    json_set_object(&directory);
-    json_push_kv_str(&directory, "schema",
-                     "zcl.names.service_directory.v1");
-    json_push_kv_str(&directory, "source", "znam_text_records");
-    json_push_kv_str(&directory, "transport_model",
-                     "records_advertise_tor_or_p2p_endpoints");
-    json_push_kv_str(&directory, "base_layer", "zclassic_l1");
-    json_push_kv_bool(&directory, "has_services", service_count > 0);
-    json_push_kv_int(&directory, "service_record_count", service_count);
-    json_push_kv(&directory, "records", services);
-    json_push_kv(obj, "service_directory", &directory);
-    json_free(&directory);
+static bool str_eq(const char *a, const char *b)
+{
+    return a && b && strcmp(a, b) == 0;
+}
+
+static bool value_mentions_onion(const char *value)
+{
+    return value && strstr(value, ".onion") != NULL;
 }
 
 static bool has_prefix(const char *s, const char *prefix)
@@ -156,6 +156,103 @@ static bool has_prefix(const char *s, const char *prefix)
         return false;
     n = strlen(prefix);
     return strncmp(s, prefix, n) == 0;
+}
+
+static const char *service_key_suffix(const char *key)
+{
+    if (has_prefix(key, "service."))
+        return key + strlen("service.");
+    if (has_prefix(key, "svc."))
+        return key + strlen("svc.");
+    return NULL;
+}
+
+static struct service_record_classification
+classify_service_record(const char *key, const char *value)
+{
+    const char *suffix = service_key_suffix(key);
+    struct service_record_classification c = {
+        .service_name = "service_hint",
+        .transport = "unspecified",
+        .endpoint_kind = "service_metadata",
+    };
+
+    if (str_eq(key, "onion") || str_eq(suffix, "onion") ||
+        value_mentions_onion(value)) {
+        c.service_name = "onion_directory";
+        c.transport = "onion";
+        c.endpoint_kind = "tor_hidden_service";
+        c.is_endpoint_hint = true;
+        c.supports_onion = true;
+        return c;
+    }
+
+    if (str_eq(key, "p2p") || str_eq(suffix, "p2p") ||
+        str_eq(suffix, "direct_p2p")) {
+        c.service_name = "direct_p2p";
+        c.transport = "p2p";
+        c.endpoint_kind = "direct_peer_endpoint";
+        c.is_endpoint_hint = true;
+        c.supports_direct_p2p = true;
+        return c;
+    }
+
+    if (str_eq(key, "bootstrap") || str_eq(suffix, "bootstrap")) {
+        c.service_name = "bootstrap";
+        c.transport = "p2p_or_onion";
+        c.endpoint_kind = "bootstrap_hint";
+        c.is_endpoint_hint = true;
+        c.supports_bootstrap = true;
+        return c;
+    }
+
+    if (str_eq(key, "service")) {
+        c.service_name = "declared_service";
+        c.endpoint_kind = "service_hint";
+        return c;
+    }
+
+    if (suffix && suffix[0]) {
+        c.service_name = suffix;
+        c.endpoint_kind = "service_metadata";
+    }
+
+    return c;
+}
+
+static void append_service_directory(struct json_value *obj,
+                                     const struct json_value *services,
+                                     int service_count,
+                                     const struct json_value *endpoints,
+                                     int endpoint_count,
+                                     bool supports_onion,
+                                     bool supports_direct_p2p,
+                                     bool supports_bootstrap)
+{
+    struct json_value directory = {0};
+
+    json_set_object(&directory);
+    json_push_kv_str(&directory, "schema",
+                     "zcl.names.service_directory.v1");
+    json_push_kv_int(&directory, "schema_version", 1);
+    json_push_kv_str(&directory, "source", "znam_text_records");
+    json_push_kv_str(&directory, "transport_model",
+                     "records_advertise_tor_or_p2p_endpoints");
+    json_push_kv_str(&directory, "base_layer", "zclassic_l1");
+    json_push_kv_str(&directory, "routing_policy",
+                     "verify_zcl_name_record_then_prefer_direct_p2p_then_onion");
+    json_push_kv_bool(&directory, "has_services", service_count > 0);
+    json_push_kv_int(&directory, "service_record_count", service_count);
+    json_push_kv_int(&directory, "endpoint_count", endpoint_count);
+    json_push_kv_bool(&directory, "supports_onion", supports_onion);
+    json_push_kv_bool(&directory, "supports_direct_p2p",
+                      supports_direct_p2p);
+    json_push_kv_bool(&directory, "supports_bootstrap",
+                      supports_bootstrap);
+    json_push_kv(&directory, "records", services);
+    json_push_kv(&directory, "endpoints", endpoints);
+    json_push_kv(obj, "service_directory", &directory);
+    json_free(&directory);
 }
 
 static bool is_service_record_key(const char *key)
@@ -179,6 +276,30 @@ static void text_record_to_json(const struct znam_text_record *rec,
     json_push_kv_str(obj, "value", rec->value);
 }
 
+static void service_record_to_json(
+    const struct znam_text_record *rec,
+    const struct service_record_classification *classification,
+    struct json_value *obj)
+{
+    json_set_object(obj);
+    json_push_kv_str(obj, "schema", "zcl.names.service_record.v1");
+    json_push_kv_str(obj, "name", rec->name);
+    json_push_kv_str(obj, "key", rec->key);
+    json_push_kv_str(obj, "value", rec->value);
+    json_push_kv_str(obj, "service_name",
+                     classification->service_name);
+    json_push_kv_str(obj, "transport", classification->transport);
+    json_push_kv_str(obj, "endpoint_kind",
+                     classification->endpoint_kind);
+    json_push_kv_str(obj, "endpoint", rec->value);
+    json_push_kv_bool(obj, "is_endpoint_hint",
+                      classification->is_endpoint_hint);
+    json_push_kv_bool(obj, "chain_verified", true);
+    json_push_kv_str(obj, "verified_by", "confirmed_znam_text_record");
+    json_push_kv_str(obj, "reachability_proof",
+                     "requires_runtime_peer_or_onion_probe");
+}
+
 static void addr_record_to_json(const struct znam_addr_record *rec,
                                 struct json_value *obj)
 {
@@ -193,15 +314,21 @@ static void append_record_arrays(const char *name, struct json_value *obj)
 {
     struct json_value texts = {0};
     struct json_value services = {0};
+    struct json_value endpoints = {0};
     struct json_value addrs = {0};
     struct znam_text_record text_rows[ZNAM_API_RECORD_LIMIT];
     struct znam_addr_record addr_rows[ZNAM_API_RECORD_LIMIT];
     int text_count = 0;
     int service_count = 0;
+    int endpoint_count = 0;
     int addr_count = 0;
+    bool supports_onion = false;
+    bool supports_direct_p2p = false;
+    bool supports_bootstrap = false;
 
     json_set_array(&texts);
     json_set_array(&services);
+    json_set_array(&endpoints);
     json_set_array(&addrs);
 
     if (g_name_ndb && name) {
@@ -212,7 +339,24 @@ static void append_record_arrays(const char *name, struct json_value *obj)
             text_record_to_json(&text_rows[i], &row);
             json_push_back(&texts, &row);
             if (is_service_record_key(text_rows[i].key)) {
-                json_push_back(&services, &row);
+                struct service_record_classification classification =
+                    classify_service_record(text_rows[i].key,
+                                            text_rows[i].value);
+                struct json_value svc = {0};
+                service_record_to_json(&text_rows[i], &classification,
+                                       &svc);
+                json_push_back(&services, &svc);
+                if (classification.is_endpoint_hint) {
+                    json_push_back(&endpoints, &svc);
+                    endpoint_count++;
+                }
+                supports_onion = supports_onion ||
+                                 classification.supports_onion;
+                supports_direct_p2p = supports_direct_p2p ||
+                                      classification.supports_direct_p2p;
+                supports_bootstrap = supports_bootstrap ||
+                                     classification.supports_bootstrap;
+                json_free(&svc);
                 service_count++;
             }
             json_free(&row);
@@ -234,10 +378,13 @@ static void append_record_arrays(const char *name, struct json_value *obj)
     json_push_kv_int(obj, "service_record_count", service_count);
     json_push_kv(obj, "address_records", &addrs);
     json_push_kv_int(obj, "address_record_count", addr_count);
-    append_service_directory(obj, &services, service_count);
+    append_service_directory(obj, &services, service_count, &endpoints,
+                             endpoint_count, supports_onion,
+                             supports_direct_p2p, supports_bootstrap);
 
     json_free(&texts);
     json_free(&services);
+    json_free(&endpoints);
     json_free(&addrs);
 }
 

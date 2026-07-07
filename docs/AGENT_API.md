@@ -118,6 +118,17 @@ a machine-readable flow from agent status → service catalog → ZNAM resolutio
 Each member contract carries `depends_on_services`, `read_model`, and
 `write_model`; use those fields instead of hand-inferring service dependencies.
 
+ZNAM resolution responses (`zcl.names.show.v1`) normalize service text records
+for agents. In addition to raw `text_records`, read `service_records[]` and
+`service_directory`: each service record has schema
+`zcl.names.service_record.v1`, `service_name`, `transport`, `endpoint_kind`,
+`endpoint`, `chain_verified`, and `reachability_proof`. The directory also
+publishes `endpoints[]`, `endpoint_count`, `supports_onion`,
+`supports_direct_p2p`, `supports_bootstrap`, and a routing policy. Agents
+should verify the chain-projected ZNAM record first, then prefer direct P2P for
+low latency and fall back to onion reachability when NAT or firewall conditions
+require it.
+
 ## Preferred Interface
 
 The best interface for an AI coding operator is MCP with typed JSON tools:

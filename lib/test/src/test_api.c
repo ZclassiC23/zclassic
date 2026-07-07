@@ -849,6 +849,10 @@ int test_api(void)
                                      "https://alice.example");
         ok = ok && db_znam_text_save(&ndb, "alice", "service.onion",
                                      "aliceexample.onion:8033");
+        ok = ok && db_znam_text_save(&ndb, "alice", "service.p2p",
+                                     "74.50.74.102:8033");
+        ok = ok && db_znam_text_save(&ndb, "alice", "bootstrap",
+                                     "205.209.104.118:8033");
         ok = ok && db_znam_addr_save(&ndb, "alice", ZNAM_TYPE_LTC,
                                      "LaliceAddress");
         ok = ok && db_znam_addr_save(&ndb, "alice", ZNAM_TYPE_BTC,
@@ -874,6 +878,8 @@ int test_api(void)
                 ok ? json_get(&root, "service_directory") : NULL;
             const struct json_value *dir_records =
                 directory ? json_get(directory, "records") : NULL;
+            const struct json_value *dir_endpoints =
+                directory ? json_get(directory, "endpoints") : NULL;
             const struct json_value *links =
                 ok ? json_get(&root, "_links") : NULL;
             const struct json_value *verification =
@@ -882,8 +888,14 @@ int test_api(void)
                 api_test_find_str_field(texts, "key", "url");
             const struct json_value *svc =
                 api_test_find_str_field(services, "key", "service.onion");
+            const struct json_value *svc_p2p =
+                api_test_find_str_field(services, "key", "service.p2p");
+            const struct json_value *svc_bootstrap =
+                api_test_find_str_field(services, "key", "bootstrap");
             const struct json_value *dir_svc =
                 api_test_find_str_field(dir_records, "key", "service.onion");
+            const struct json_value *dir_endpoint =
+                api_test_find_str_field(dir_endpoints, "key", "service.p2p");
             const struct json_value *btc =
                 api_test_find_str_field(addrs, "type", "bitcoin");
             const struct json_value *ltc =
@@ -896,11 +908,11 @@ int test_api(void)
                        ZNAM_TYPE_BTC;
             ok = ok && strcmp(json_get_str(json_get(&root, "type")),
                               "bitcoin") == 0;
-            ok = ok && json_size(texts) == 2 &&
-                       json_get_int(json_get(&root, "text_record_count")) == 2;
-            ok = ok && json_size(services) == 1 &&
+            ok = ok && json_size(texts) == 4 &&
+                       json_get_int(json_get(&root, "text_record_count")) == 4;
+            ok = ok && json_size(services) == 3 &&
                        json_get_int(json_get(&root,
-                                             "service_record_count")) == 1;
+                                             "service_record_count")) == 3;
             ok = ok && json_size(addrs) == 2 &&
                        json_get_int(json_get(&root,
                                              "address_record_count")) == 2;
@@ -910,6 +922,25 @@ int test_api(void)
             ok = ok && svc &&
                  strcmp(json_get_str(json_get(svc, "value")),
                         "aliceexample.onion:8033") == 0;
+            ok = ok && strcmp(json_get_str(json_get(svc, "schema")),
+                              "zcl.names.service_record.v1") == 0;
+            ok = ok && strcmp(json_get_str(json_get(svc, "service_name")),
+                              "onion_directory") == 0;
+            ok = ok && strcmp(json_get_str(json_get(svc, "transport")),
+                              "onion") == 0;
+            ok = ok && json_get_bool(json_get(svc, "chain_verified"));
+            ok = ok && svc_p2p &&
+                 strcmp(json_get_str(json_get(svc_p2p, "service_name")),
+                        "direct_p2p") == 0;
+            ok = ok && strcmp(json_get_str(json_get(svc_p2p, "transport")),
+                              "p2p") == 0;
+            ok = ok && svc_bootstrap &&
+                 strcmp(json_get_str(json_get(svc_bootstrap,
+                                              "service_name")),
+                        "bootstrap") == 0;
+            ok = ok && strcmp(json_get_str(json_get(svc_bootstrap,
+                                                    "endpoint_kind")),
+                              "bootstrap_hint") == 0;
             ok = ok && btc &&
                  strcmp(json_get_str(json_get(btc, "address")),
                         "1aliceAddress") == 0;
@@ -921,8 +952,17 @@ int test_api(void)
                         "zcl.names.service_directory.v1") == 0;
             ok = ok && json_get_bool(json_get(directory, "has_services"));
             ok = ok && json_get_int(json_get(directory,
-                                             "service_record_count")) == 1;
-            ok = ok && json_size(dir_records) == 1 && dir_svc != NULL;
+                                             "service_record_count")) == 3;
+            ok = ok && json_get_int(json_get(directory,
+                                             "endpoint_count")) == 3;
+            ok = ok && json_get_bool(json_get(directory,
+                                              "supports_onion"));
+            ok = ok && json_get_bool(json_get(directory,
+                                              "supports_direct_p2p"));
+            ok = ok && json_get_bool(json_get(directory,
+                                              "supports_bootstrap"));
+            ok = ok && json_size(dir_records) == 3 && dir_svc != NULL;
+            ok = ok && json_size(dir_endpoints) == 3 && dir_endpoint != NULL;
             ok = ok && strcmp(json_get_str(json_get(directory,
                                                     "transport_model")),
                               "records_advertise_tor_or_p2p_endpoints") == 0;
