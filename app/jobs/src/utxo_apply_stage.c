@@ -95,6 +95,9 @@ _Atomic uint64_t g_ua_window_miss_total = 0;
 _Atomic int64_t  g_ua_window_miss_height = -1;
 _Atomic uint64_t g_ua_hash_bound_fallback_total = 0;
 _Atomic int64_t  g_ua_hash_bound_fallback_height = -1;
+_Atomic uint64_t g_ua_select_idle_total = 0;
+_Atomic int64_t  g_ua_select_idle_height = -1;
+_Atomic int64_t  g_ua_select_idle_reason = UA_SELECT_IDLE_NONE;
 
 /* Author the validated block delta into the progress.kv `coins` table
  * (coins_kv) on the stage's own db handle, INSIDE stage_run_once's BEGIN
@@ -160,6 +163,13 @@ static job_result_t block_apply_failure(struct stage_step_ctx *c, int height,
                                         const char *kind,
                                         const uint8_t detail[36])
 {
+    static struct {
+        int height;
+        char status[32];
+        char kind[32];
+        uint64_t reps;
+    } warn_memo = { .height = INT32_MIN };
+
     char reason[BLOCKER_REASON_MAX];
     char txid_hex[65] = {0};
     uint32_t vout = 0;
@@ -174,18 +184,40 @@ static job_result_t block_apply_failure(struct stage_step_ctx *c, int height,
                ((uint32_t)detail[35] << 24);
     }
 
+    const char *safe_status = status ? status : "unknown";
+    const char *safe_kind = kind ? kind : "";
+    bool changed = warn_memo.height != height ||
+                   strncmp(warn_memo.status, safe_status,
+                           sizeof(warn_memo.status) - 1) != 0 ||
+                   strncmp(warn_memo.kind, safe_kind,
+                           sizeof(warn_memo.kind) - 1) != 0;
+    if (changed) {
+        uint64_t suppressed = warn_memo.reps;
+        warn_memo.height = height;
+        snprintf(warn_memo.status, sizeof(warn_memo.status), "%s",
+                 safe_status);
+        snprintf(warn_memo.kind, sizeof(warn_memo.kind), "%s", safe_kind);
+        warn_memo.reps = 0;
+        LOG_WARN(STAGE_NAME,
+                 "[utxo_apply] apply blocked height=%d status=%s kind=%s "
+                 "txid=%s vout=%u (suppressed=%llu)",
+                 height, safe_status, safe_kind, txid_hex, vout,
+                 (unsigned long long)suppressed);
+    } else {
+        warn_memo.reps++;
+    }
+
     if (txid_hex[0]) {
         snprintf(reason, sizeof(reason),
                  "height=%d status=%s kind=%s txid=%s vout=%u; "
                  "utxo_apply cursor held to prevent applying coins above "
                  "an unresolved hole",
-                 height, status ? status : "unknown",
-                 kind ? kind : "", txid_hex, vout);
+                 height, safe_status, safe_kind, txid_hex, vout);
     } else {
         snprintf(reason, sizeof(reason),
                  "height=%d status=%s kind=%s; utxo_apply cursor held to "
                  "prevent applying coins above an unresolved hole",
-                 height, status ? status : "unknown", kind ? kind : "");
+                 height, safe_status, safe_kind);
     }
 
     blocker_init(&c->blocker, "utxo_apply.apply_failed", STAGE_NAME,
@@ -320,6 +352,8 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     struct block blk;
     block_init(&blk);
     if (!stage_read_block(&blk, bi, next_h, g_datadir, g_reader, g_reader_user)) {
+        utxo_apply_select_idle_note(next_h, UA_SELECT_IDLE_STAGE_READ_FAILED,
+                                    bi);
         block_free(&blk);
         atomic_store(&g_ua_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
@@ -523,6 +557,53 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     return JOB_ADVANCED;
 }
 
+static void utxo_apply_step_noadvance_note(sqlite3 *db, job_result_t r,
+                                           uint64_t select_before,
+                                           uint64_t select_after)
+{
+    static struct {
+        uint64_t cursor;
+        uint64_t proof_cursor;
+        uint64_t select_total;
+        int result;
+        uint64_t reps;
+    } memo = { .cursor = UINT64_MAX, .proof_cursor = UINT64_MAX,
+               .select_total = UINT64_MAX, .result = -1 };
+
+    uint64_t ua_cursor = db ? stage_cursor_persisted(db, STAGE_NAME,
+                                                     STAGE_NAME) : 0;
+    uint64_t pv_cursor = db ? stage_cursor_persisted(db, "proof_validate",
+                                                     STAGE_NAME) : 0;
+    if (r == JOB_IDLE && ua_cursor >= pv_cursor)
+        return;
+
+    bool changed = memo.cursor != ua_cursor ||
+                   memo.proof_cursor != pv_cursor ||
+                   memo.select_total != select_after ||
+                   memo.result != (int)r;
+    if (!changed) {
+        memo.reps++;
+        return;
+    }
+
+    uint64_t suppressed = memo.reps;
+    memo.cursor = ua_cursor;
+    memo.proof_cursor = pv_cursor;
+    memo.select_total = select_after;
+    memo.result = (int)r;
+    memo.reps = 0;
+
+    LOG_WARN(STAGE_NAME,
+             "[utxo_apply] step no-advance result=%s cursor=%llu "
+             "proof_cursor=%llu selection_reached=%d select_total=%llu "
+             "(suppressed=%llu)",
+             stage_result_name(r), (unsigned long long)ua_cursor,
+             (unsigned long long)pv_cursor,
+             select_after > select_before ? 1 : 0,
+             (unsigned long long)select_after,
+             (unsigned long long)suppressed);
+}
+
 bool utxo_apply_stage_init(struct main_state *ms)
 {
     if (!ms) LOG_FAIL("utxo_apply", "init: NULL main_state");
@@ -677,7 +758,9 @@ job_result_t utxo_apply_stage_step_once(void)
         coins_ram_writer_exit();
         return JOB_FATAL;
     }
+    uint64_t select_before = atomic_load(&g_ua_select_idle_total);
     job_result_t r = stage_run_once(g_stage, db);
+    uint64_t select_after = atomic_load(&g_ua_select_idle_total);
     progress_store_tx_unlock();
     /* No projection catch_up fold needed: utxo_apply_stage_lookup_live reads the
      * coins_kv rows apply_coins_kv writes IN this stage's BEGIN IMMEDIATE
@@ -696,6 +779,8 @@ job_result_t utxo_apply_stage_step_once(void)
             return JOB_FATAL;
         }
     }
+    if (r != JOB_ADVANCED)
+        utxo_apply_step_noadvance_note(db, r, select_before, select_after);
     coins_ram_writer_exit();
     return r;
 }
@@ -787,6 +872,10 @@ void utxo_apply_stage_shutdown(void)
     atomic_store(&g_ua_window_miss_height, (int64_t)-1);
     atomic_store(&g_ua_hash_bound_fallback_total, (uint64_t)0);
     atomic_store(&g_ua_hash_bound_fallback_height, (int64_t)-1);
+    atomic_store(&g_ua_select_idle_total, (uint64_t)0);
+    atomic_store(&g_ua_select_idle_height, (int64_t)-1);
+    atomic_store(&g_ua_select_idle_reason,
+                 (int64_t)UA_SELECT_IDLE_NONE);
     utxo_apply_observe_reset();
     pthread_mutex_unlock(&g_lock);
 }

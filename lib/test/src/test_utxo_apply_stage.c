@@ -14,11 +14,13 @@
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/tip_finalize_stage.h"
 #include "storage/coins_kv.h"
+#include "storage/disk_block_io.h"
 #include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
 #include "util/stage.h"
+#include "util/util.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
@@ -340,6 +342,29 @@ static bool seed_tip_finalize_anchor_row(sqlite3 *db, int height,
     return done;
 }
 
+static bool uv_write_body_to_disk(struct synth_chain_uv *sc, int height)
+{
+    if (!sc || height < 0 || height >= sc->n)
+        return false;
+    char datadir[512];
+    GetDataDir(true, datadir, sizeof(datadir));
+    if (mkdir_p_uv(datadir) != 0)
+        return false;
+    char blocks_dir[640];
+    snprintf(blocks_dir, sizeof(blocks_dir), "%s/blocks", datadir);
+    if (mkdir_p_uv(blocks_dir) != 0)
+        return false;
+
+    const unsigned char msg_start[4] = {0x24, 0xe9, 0x27, 0x64};
+    struct disk_block_pos pos;
+    disk_block_pos_init(&pos);
+    if (!write_block_to_disk(&sc->bodies[height], &pos, datadir, msg_start))
+        return false;
+    sc->blocks[height].nFile = pos.nFile;
+    sc->blocks[height].nDataPos = pos.nPos;
+    return true;
+}
+
 static bool log_row_at(sqlite3 *db, int height, int *out_ok,
                        char *out_status, size_t status_size,
                        char *out_kind, size_t kind_size)
@@ -376,6 +401,7 @@ static int uv_setup(const char *tag, int n, enum uv_fail_kind fail_kind,
     test_fmt_tmpdir(dir_out, dir_out_size, "utxo_apply", tag);
     mkdir_p_uv("./test-tmp");
     mkdir_p_uv(dir_out);
+    SetDataDir(dir_out);
     if (!progress_store_open(dir_out)) return 1;
 
     memset(sc, 0, sizeof(*sc));
@@ -403,6 +429,8 @@ static void uv_teardown(const char *dir, struct main_state *ms,
     block_map_free(&ms->map_block_index);
     synth_chain_uv_free(sc);
     progress_store_close();
+    SetDataDir("");
+    ClearDataDirCache();
     test_cleanup_tmpdir(dir);
 }
 
@@ -669,6 +697,45 @@ int test_utxo_apply_stage(void)
                  uv_dump_has("\"hash_bound_fallback_total\":1"));
         UV_CHECK("hash_fallback: fallback height recorded",
                  uv_dump_has("\"hash_bound_fallback_height\":1"));
+        uv_teardown(dir, &ms, &sc);
+    }
+
+    {
+        /* Anchor-resume stale-data-bit fallback: a resumed offline mint can
+         * have durable proof/script rows for h1 and a correct disk position in
+         * the block index, while the in-memory BLOCK_HAVE_DATA bit was lost
+         * during boot/window repair. The hash-bound fallback may refresh that
+         * bit only after the indexed body re-reads and hashes to the scripted
+         * block, then the production reader must apply h1. */
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        UV_CHECK("hash_fallback_stale_data_bit: setup",
+                 uv_setup("hash_fallback_stale_data_bit", 3, UV_FAIL_NONE, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        UV_CHECK("hash_fallback_stale_data_bit: visible h0 only",
+                 active_chain_move_window_tip(&ms.chain_active,
+                                              &sc.blocks[0]));
+        UV_CHECK("hash_fallback_stale_data_bit: seed h1 script hash verdict",
+                 seed_script_validate_row(progress_store_db(), 1, 1,
+                                          sc.blocks[1].phashBlock));
+        UV_CHECK("hash_fallback_stale_data_bit: block_map has h1 by hash",
+                 block_map_insert(&ms.map_block_index, sc.blocks[1].phashBlock,
+                                  &sc.blocks[1]));
+        UV_CHECK("hash_fallback_stale_data_bit: h1 body on disk",
+                 uv_write_body_to_disk(&sc, 1));
+        sc.blocks[1].nStatus &= ~(unsigned)BLOCK_HAVE_DATA;
+        UV_CHECK("hash_fallback_stale_data_bit: h1 data bit cleared",
+                 (sc.blocks[1].nStatus & BLOCK_HAVE_DATA) == 0);
+        UV_CHECK("hash_fallback_stale_data_bit: h0 applies",
+                 utxo_apply_stage_step_once() == JOB_ADVANCED);
+        utxo_apply_stage_set_reader(NULL, NULL);
+        UV_CHECK("hash_fallback_stale_data_bit: h1 applies with refreshed bit",
+                 utxo_apply_stage_step_once() == JOB_ADVANCED);
+        UV_CHECK("hash_fallback_stale_data_bit: cursor at 2",
+                 utxo_apply_stage_cursor() == 2);
+        UV_CHECK("hash_fallback_stale_data_bit: data bit restored",
+                 (sc.blocks[1].nStatus & BLOCK_HAVE_DATA) != 0);
+        UV_CHECK("hash_fallback_stale_data_bit: fallback counter recorded",
+                 uv_dump_has("\"hash_bound_fallback_total\":1"));
         uv_teardown(dir, &ms, &sc);
     }
 

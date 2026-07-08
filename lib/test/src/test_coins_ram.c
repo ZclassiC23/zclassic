@@ -52,6 +52,18 @@ static struct uint256 cr_txid(uint8_t tag)
     return t;
 }
 
+static int64_t cr_scalar_i64(sqlite3 *db, const char *sql)
+{
+    sqlite3_stmt *s = NULL;
+    int64_t out = -1;
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) == SQLITE_OK) {
+        if (sqlite3_step(s) == SQLITE_ROW)
+            out = sqlite3_column_int64(s, 0);
+        sqlite3_finalize(s);
+    }
+    return out;
+}
+
 /* One logical mutation in a deterministic fold script. */
 struct fold_op { bool spend; uint8_t tag; uint32_t vout; int64_t value;
                  int32_t height; bool cb; uint8_t script[8]; size_t slen; };
@@ -339,6 +351,101 @@ int test_coins_ram(void)
         /* watermark was 20 -> cursor rewound to 21 (watermark+1). */
         CR_CHECK("reconcile: cursor rewound to watermark+1 (21)", cur == 21);
     }
+    /* If the process stopped cleanly enough to flush the first replay height,
+     * cursor can already equal watermark+1 while stale replay-domain rows above
+     * it remain from the pre-flush RAM tail. A mint/refold marker means those
+     * downstream rows must still be purged before resuming. */
+    {
+        progress_store_tx_lock();
+        sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "INSERT OR REPLACE INTO progress_meta(key,value) "
+            "VALUES('refold_in_progress',x'01');"
+            "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
+            "height INTEGER PRIMARY KEY, status TEXT NOT NULL, "
+            "ok INTEGER NOT NULL, spent_count INTEGER NOT NULL, "
+            "added_count INTEGER NOT NULL, "
+            "total_value_delta INTEGER NOT NULL, "
+            "first_failure_kind TEXT, first_failure_detail BLOB, "
+            "applied_at INTEGER NOT NULL);"
+            "CREATE TABLE IF NOT EXISTS utxo_apply_delta ("
+            "height INTEGER PRIMARY KEY, branch_hash BLOB NOT NULL, "
+            "spent_blob BLOB NOT NULL, added_blob BLOB NOT NULL);"
+            "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
+            "height INTEGER PRIMARY KEY, status TEXT NOT NULL, "
+            "ok INTEGER NOT NULL, work_delta_high INTEGER NOT NULL, "
+            "work_delta_low INTEGER NOT NULL, "
+            "utxo_size_after INTEGER NOT NULL, "
+            "reorg_depth INTEGER NOT NULL, finalized_at INTEGER NOT NULL, "
+            "tip_hash BLOB);"
+            "CREATE TABLE IF NOT EXISTS nullifiers ("
+            "nf BLOB NOT NULL, pool INTEGER NOT NULL, "
+            "height INTEGER NOT NULL, PRIMARY KEY(nf,pool)) "
+            "WITHOUT ROWID;"
+            "INSERT OR REPLACE INTO utxo_apply_log"
+            "(height,status,ok,spent_count,added_count,"
+            "total_value_delta,applied_at) "
+            "VALUES(20,'verified',1,0,1,1,1),"
+            "(21,'verified',1,0,1,1,1),"
+            "(42,'verified',1,0,1,1,1);"
+            "INSERT OR REPLACE INTO utxo_apply_delta"
+            "(height,branch_hash,spent_blob,added_blob) "
+            "VALUES(20,zeroblob(32),x'',x'00'),"
+            "(21,zeroblob(32),x'',x'00'),"
+            "(42,zeroblob(32),x'',x'00');"
+            "INSERT OR REPLACE INTO tip_finalize_log"
+            "(height,status,ok,work_delta_high,work_delta_low,"
+            "utxo_size_after,reorg_depth,finalized_at,tip_hash) "
+            "VALUES(20,'finalized',1,0,0,0,0,1,zeroblob(32)),"
+            "(42,'finalized',1,0,0,0,0,1,zeroblob(32));"
+            "INSERT INTO stage_cursor(name,cursor,updated_at) "
+            "VALUES('tip_finalize', 42, 0) "
+            "ON CONFLICT(name) DO UPDATE SET cursor=42;"
+            "INSERT OR REPLACE INTO nullifiers(nf,pool,height) "
+            "VALUES(zeroblob(32),0,42);"
+            "INSERT OR REPLACE INTO coins"
+            "(txid,vout,value,height,is_coinbase,script) "
+            "VALUES(zeroblob(32),20,20,20,0,x'51'),"
+            "(zeroblob(32),21,21,21,0,x'51'),"
+            "(zeroblob(32),42,42,42,0,x'51')",
+            NULL, NULL, NULL);
+        sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+        progress_store_tx_unlock();
+        CR_CHECK("reconcile: equal-cursor stale tail ok",
+                 coins_ram_reconcile_boot(db));
+        CR_CHECK("reconcile: equal-cursor keeps durable coin below tail",
+                 cr_scalar_i64(db,
+                     "SELECT COUNT(*) FROM coins "
+                     "WHERE height=20 AND vout=20") == 1);
+        CR_CHECK("reconcile: equal-cursor purges durable coin tail",
+                 cr_scalar_i64(db,
+                     "SELECT COUNT(*) FROM coins "
+                     "WHERE height>=21") == 0);
+        CR_CHECK("reconcile: equal-cursor keeps applied row",
+                 cr_scalar_i64(db,
+                     "SELECT COUNT(*) FROM utxo_apply_log "
+                     "WHERE height=20") == 1);
+        CR_CHECK("reconcile: equal-cursor purges utxo tail",
+                 cr_scalar_i64(db,
+                     "SELECT COUNT(*) FROM utxo_apply_log "
+                     "WHERE height>=21") == 0);
+        CR_CHECK("reconcile: equal-cursor purges delta tail",
+                 cr_scalar_i64(db,
+                     "SELECT COUNT(*) FROM utxo_apply_delta "
+                     "WHERE height>=21") == 0);
+        CR_CHECK("reconcile: equal-cursor purges tip tail",
+                 cr_scalar_i64(db,
+                     "SELECT COUNT(*) FROM tip_finalize_log "
+                     "WHERE height>=20") == 0);
+        CR_CHECK("reconcile: equal-cursor purges nullifier tail",
+                 cr_scalar_i64(db,
+                     "SELECT COUNT(*) FROM nullifiers "
+                     "WHERE height>=21") == 0);
+        CR_CHECK("reconcile: equal-cursor tip cursor clamped",
+                 cr_scalar_i64(db,
+                     "SELECT cursor FROM stage_cursor "
+                     "WHERE name='tip_finalize'") == 20);
+    }
     /* If a mint/refold run crashes before the first RAM flush, no watermark
      * exists yet. The boot replay point must be genesis, not the stale cursor. */
     {
@@ -351,7 +458,61 @@ int test_coins_ram(void)
             "VALUES('refold_in_progress',x'01');"
             "INSERT INTO stage_cursor(name,cursor,updated_at) "
             "VALUES('utxo_apply', 99, 0) "
-            "ON CONFLICT(name) DO UPDATE SET cursor=99",
+            "ON CONFLICT(name) DO UPDATE SET cursor=99;"
+            "INSERT INTO stage_cursor(name,cursor,updated_at) "
+            "VALUES('tip_finalize', 99, 0) "
+            "ON CONFLICT(name) DO UPDATE SET cursor=99;"
+            "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
+            "height INTEGER PRIMARY KEY, status TEXT NOT NULL, "
+            "ok INTEGER NOT NULL, spent_count INTEGER NOT NULL, "
+            "added_count INTEGER NOT NULL, "
+            "total_value_delta INTEGER NOT NULL, "
+            "first_failure_kind TEXT, first_failure_detail BLOB, "
+            "applied_at INTEGER NOT NULL);"
+            "CREATE TABLE IF NOT EXISTS utxo_apply_delta ("
+            "height INTEGER PRIMARY KEY, branch_hash BLOB NOT NULL, "
+            "spent_blob BLOB NOT NULL, added_blob BLOB NOT NULL);"
+            "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
+            "height INTEGER PRIMARY KEY, status TEXT NOT NULL, "
+            "ok INTEGER NOT NULL, work_delta_high INTEGER NOT NULL, "
+            "work_delta_low INTEGER NOT NULL, "
+            "utxo_size_after INTEGER NOT NULL, "
+            "reorg_depth INTEGER NOT NULL, finalized_at INTEGER NOT NULL, "
+            "tip_hash BLOB);"
+            "CREATE TABLE IF NOT EXISTS nullifiers ("
+            "nf BLOB NOT NULL, pool INTEGER NOT NULL, "
+            "height INTEGER NOT NULL, PRIMARY KEY(nf,pool)) "
+            "WITHOUT ROWID;"
+            "CREATE TABLE IF NOT EXISTS created_outputs ("
+            "txid BLOB NOT NULL, vout INTEGER NOT NULL, "
+            "value INTEGER NOT NULL, script BLOB NOT NULL, "
+            "height INTEGER NOT NULL, PRIMARY KEY(txid,vout)) "
+            "WITHOUT ROWID;"
+            "INSERT OR REPLACE INTO utxo_apply_log"
+            "(height,status,ok,spent_count,added_count,"
+            "total_value_delta,applied_at) "
+            "VALUES(0,'verified',1,0,0,0,1),"
+            "(1,'verified',1,0,1,1,1),"
+            "(42,'verified',1,0,1,1,1);"
+            "INSERT OR REPLACE INTO utxo_apply_delta"
+            "(height,branch_hash,spent_blob,added_blob) "
+            "VALUES(0,zeroblob(32),x'',x''),"
+            "(1,zeroblob(32),x'',x'00'),"
+            "(42,zeroblob(32),x'',x'00');"
+            "INSERT OR REPLACE INTO tip_finalize_log"
+            "(height,status,ok,work_delta_high,work_delta_low,"
+            "utxo_size_after,reorg_depth,finalized_at,tip_hash) "
+            "VALUES(0,'finalized',1,0,0,0,0,1,zeroblob(32)),"
+            "(42,'finalized',1,0,0,0,0,1,zeroblob(32));"
+            "INSERT OR REPLACE INTO nullifiers(nf,pool,height) "
+            "VALUES(zeroblob(32),0,42);"
+            "INSERT OR REPLACE INTO coins"
+            "(txid,vout,value,height,is_coinbase,script) "
+            "VALUES(zeroblob(32),1,1,1,0,x'51'),"
+            "(zeroblob(32),42,42,42,0,x'51');"
+            "INSERT OR REPLACE INTO created_outputs"
+            "(txid,vout,value,script,height) "
+            "VALUES(zeroblob(32),0,1,x'51',42)",
             NULL, NULL, NULL);
         sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
         progress_store_tx_unlock();
@@ -374,6 +535,22 @@ int test_coins_ram(void)
                  coins_kv_get_applied_height(db, &zero_applied, &zero_found));
         CR_CHECK("reconcile: absent watermark applied == 0",
                  zero_found && zero_applied == 0);
+        CR_CHECK("reconcile: stale utxo log purged",
+                 cr_scalar_i64(db, "SELECT COUNT(*) FROM utxo_apply_log") == 0);
+        CR_CHECK("reconcile: stale utxo delta purged",
+                 cr_scalar_i64(db, "SELECT COUNT(*) FROM utxo_apply_delta") == 0);
+        CR_CHECK("reconcile: stale tip finalize purged",
+                 cr_scalar_i64(db, "SELECT COUNT(*) FROM tip_finalize_log") == 0);
+        CR_CHECK("reconcile: stale nullifiers purged",
+                 cr_scalar_i64(db, "SELECT COUNT(*) FROM nullifiers") == 0);
+        CR_CHECK("reconcile: stale durable coins purged",
+                 cr_scalar_i64(db, "SELECT COUNT(*) FROM coins") == 0);
+        CR_CHECK("reconcile: upstream created_outputs preserved",
+                 cr_scalar_i64(db, "SELECT COUNT(*) FROM created_outputs") == 1);
+        CR_CHECK("reconcile: tip cursor clamped to replay point",
+                 cr_scalar_i64(db,
+                     "SELECT cursor FROM stage_cursor "
+                     "WHERE name='tip_finalize'") == 0);
     }
 
     coins_ram_writer_exit();

@@ -810,6 +810,80 @@ static bool coins_ram_table_exists(sqlite3 *db, const char *name, bool *exists)
     return rc == SQLITE_ROW || rc == SQLITE_DONE;
 }
 
+static bool coins_ram_delete_tail_if_table_exists(sqlite3 *db,
+                                                  const char *table,
+                                                  int64_t first_height)
+{
+    bool exists = false;
+    if (!coins_ram_table_exists(db, table, &exists))
+        return false;
+    if (!exists)
+        return true;
+
+    char sql[128];
+    snprintf(sql, sizeof(sql), "DELETE FROM %s WHERE height >= ?1", table);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("coins_ram", "reconcile_boot: tail purge prepare failed "
+                 "table=%s: %s", table, sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)first_height);
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        LOG_WARN("coins_ram", "reconcile_boot: tail purge failed table=%s "
+                 "first_height=%lld rc=%d",
+                 table, (long long)first_height, rc);
+        return false;
+    }
+    return true;
+}
+
+static bool coins_ram_purge_replay_tail(sqlite3 *db, int64_t want_cursor)
+{
+    static const char *const replay_tail_tables[] = {
+        "coins",
+        "utxo_apply_log",
+        "utxo_apply_delta",
+        "nullifiers",
+    };
+    for (size_t i = 0; i < sizeof(replay_tail_tables) /
+                            sizeof(replay_tail_tables[0]); i++) {
+        if (!coins_ram_delete_tail_if_table_exists(db, replay_tail_tables[i],
+                                                   want_cursor))
+            return false;
+    }
+
+    int64_t tip_cursor = want_cursor > 0 ? want_cursor - 1 : 0;
+    if (!coins_ram_delete_tail_if_table_exists(db, "tip_finalize_log",
+                                               tip_cursor))
+        return false;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT INTO stage_cursor (name, cursor, updated_at) "
+            "VALUES ('tip_finalize', ?1, strftime('%s','now')) "
+            "ON CONFLICT(name) DO UPDATE SET "
+            "  cursor=CASE WHEN cursor > excluded.cursor "
+            "              THEN excluded.cursor ELSE cursor END,"
+            "  updated_at=excluded.updated_at",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("coins_ram", "reconcile_boot: tip cursor clamp prepare "
+                 "failed: %s", sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)tip_cursor);
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE) {
+        LOG_WARN("coins_ram", "reconcile_boot: tip cursor clamp failed rc=%d",
+                 rc);
+        return false;
+    }
+    return true;
+}
+
 static bool coins_ram_utxo_log_ok_at(sqlite3 *db, int32_t height,
                                      bool *ok_at_height)
 {
@@ -1095,11 +1169,10 @@ bool coins_ram_reconcile_boot(struct sqlite3 *db)
                            &wlen, &wfound))
         LOG_FAIL("coins_ram", "reconcile_boot: watermark read failed");
     int32_t watermark = -1;
+    bool replay_marker = false;
+    if (!coins_ram_boot_replay_marker_present(db, &replay_marker))
+        LOG_FAIL("coins_ram", "reconcile_boot: replay marker read failed");
     if (!wfound) {
-        bool replay_marker = false;
-        if (!coins_ram_boot_replay_marker_present(db, &replay_marker))
-            LOG_FAIL("coins_ram",
-                     "reconcile_boot: replay marker read failed");
         if (!replay_marker)
             return true;
     } else if (wlen != 8) {
@@ -1128,20 +1201,33 @@ bool coins_ram_reconcile_boot(struct sqlite3 *db)
     }
     progress_store_tx_unlock();
 
-    /* Cursor at/below the durable watermark (+1) → coins_kv already holds
-     * everything the cursor claims. Nothing to do. */
+    /* Cursor below the durable watermark (+1) → coins_kv already holds more
+     * than the cursor claims. Do not purge durable log evidence in that
+     * inconsistent-but-conservative shape; another reconcile owns cursor lift. */
     int64_t want_cursor = (int64_t)watermark + 1;
-    if (cursor < 0 || cursor <= want_cursor)
+    if (cursor < 0 || cursor < want_cursor)
         return true;
 
-    /* Crash between flushes: the cursor advanced past the last durable flush.
-     * Rewind cursor + coins_applied_height to the watermark so the fold
-     * re-applies the un-flushed tail (the self-verify still gates correctness). */
+    bool rewind_cursor = cursor > want_cursor;
+    bool purge_equal_tail = replay_marker && cursor == want_cursor;
+    if (!rewind_cursor && !purge_equal_tail)
+        return true;
+
+    /* Crash between flushes: the cursor advanced past the last durable flush,
+     * or a mint/refold marker says a prior crash/stop left replay-domain rows
+     * at the exact replay cursor. Rewind cursor + coins_applied_height when
+     * needed, and purge downstream rows at/above the replay point: those rows
+     * were written before the overlay flushed, so after process death they no
+     * longer describe durable coins. This includes durable `coins` rows whose
+     * creation height is at/above the replay cursor: keeping them makes the
+     * replayed block collide with its own stale output. Keeping log/finalize
+     * rows also leaves tip_finalize ahead of the coin frontier and can trap
+     * mint/refold in an unwind/replay loop. */
     progress_store_tx_lock();
     char *err = NULL;
     bool ok = true;
     if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) ok = false;
-    if (ok) {
+    if (ok && rewind_cursor) {
         sqlite3_stmt *u2 = NULL;
         if (sqlite3_prepare_v2(db,
             "UPDATE stage_cursor SET cursor=?1, updated_at=strftime('%s','now') "
@@ -1153,7 +1239,10 @@ bool coins_ram_reconcile_boot(struct sqlite3 *db)
             sqlite3_finalize(u2);
         }
     }
-    if (ok && !coins_kv_set_applied_height_in_tx(db, (int32_t)want_cursor))
+    if (ok && rewind_cursor &&
+        !coins_kv_set_applied_height_in_tx(db, (int32_t)want_cursor))
+        ok = false;
+    if (ok && !coins_ram_purge_replay_tail(db, want_cursor))
         ok = false;
     if (ok && sqlite3_exec(db, "COMMIT", NULL, NULL, &err) != SQLITE_OK) ok = false;
     if (!ok) sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
@@ -1162,9 +1251,17 @@ bool coins_ram_reconcile_boot(struct sqlite3 *db)
     if (!ok)
         LOG_FAIL("coins_ram", "reconcile_boot: rewind commit failed");
 
-    LOG_INFO("coins_ram",
-             "[coins_ram] crash-replay: rewound utxo_apply cursor %lld -> %lld "
-             "(durable flush watermark=%d); the fold re-applies the tail",
-             (long long)cursor, (long long)want_cursor, watermark);
+    if (rewind_cursor) {
+        LOG_INFO("coins_ram",
+                 "[coins_ram] crash-replay: rewound utxo_apply cursor %lld -> "
+                 "%lld (durable flush watermark=%d); the fold re-applies the "
+                 "tail",
+                 (long long)cursor, (long long)want_cursor, watermark);
+    } else {
+        LOG_INFO("coins_ram",
+                 "[coins_ram] crash-replay: purged stale replay tail at "
+                 "utxo_apply cursor %lld (durable flush watermark=%d)",
+                 (long long)want_cursor, watermark);
+    }
     return true;
 }

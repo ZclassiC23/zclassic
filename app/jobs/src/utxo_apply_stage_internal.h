@@ -69,12 +69,37 @@ extern _Atomic uint64_t g_ua_label_splice_total;
 /* Active-chain window misses at a height whose upstream proof row is already
  * ok. A hash-bound fallback is allowed only when script_validate_log binds the
  * same height to an ok block hash present in the block map, that block has
- * data, and it extends either the visible parent or the durable finalized
- * parent witnessed in tip_finalize_log. */
+ * data (or its indexed body re-reads and hash-verifies, allowing a stale
+ * cleared HAVE_DATA bit to be refreshed), and it extends either the visible
+ * parent or the durable finalized parent witnessed in tip_finalize_log. */
 extern _Atomic uint64_t g_ua_window_miss_total;
 extern _Atomic int64_t  g_ua_window_miss_height;
 extern _Atomic uint64_t g_ua_hash_bound_fallback_total;
 extern _Atomic int64_t  g_ua_hash_bound_fallback_height;
+extern _Atomic uint64_t g_ua_select_idle_total;
+extern _Atomic int64_t  g_ua_select_idle_height;
+extern _Atomic int64_t  g_ua_select_idle_reason;
+
+enum utxo_apply_select_idle_reason {
+    UA_SELECT_IDLE_NONE = 0,
+    UA_SELECT_IDLE_NO_MAIN_STATE,
+    UA_SELECT_IDLE_ACTIVE_CHAIN_MISSING,
+    UA_SELECT_IDLE_ACTIVE_CHAIN_BODILESS,
+    UA_SELECT_IDLE_NO_SCRIPT_HASH,
+    UA_SELECT_IDLE_BLOCK_MAP_MISS,
+    UA_SELECT_IDLE_HEIGHT_MISMATCH,
+    UA_SELECT_IDLE_INDEXED_BODY_MISSING,
+    UA_SELECT_IDLE_INDEXED_BODY_READ_FAILED,
+    UA_SELECT_IDLE_INDEXED_BODY_HASH_MISMATCH,
+    UA_SELECT_IDLE_PARENT_MISMATCH,
+    UA_SELECT_IDLE_STAGE_READ_FAILED
+};
+
+const char *utxo_apply_select_idle_reason_name(
+        enum utxo_apply_select_idle_reason reason);
+void utxo_apply_select_idle_note(int height,
+        enum utxo_apply_select_idle_reason reason,
+        const struct block_index *bi);
 
 /* The live stage handle (NULL before init / after shutdown). The dump reads
  * it lock-free. */

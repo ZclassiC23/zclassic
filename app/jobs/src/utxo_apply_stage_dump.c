@@ -137,6 +137,14 @@ bool utxo_apply_dump_state_json(struct json_value *out, const char *key)
                       (int64_t)atomic_load(&g_ua_hash_bound_fallback_total));
     json_push_kv_int (out, "hash_bound_fallback_height",
                       atomic_load(&g_ua_hash_bound_fallback_height));
+    int64_t select_reason = atomic_load(&g_ua_select_idle_reason);
+    json_push_kv_int (out, "select_idle_total",
+                      (int64_t)atomic_load(&g_ua_select_idle_total));
+    json_push_kv_int (out, "select_idle_height",
+                      atomic_load(&g_ua_select_idle_height));
+    json_push_kv_str (out, "select_idle_reason",
+                      utxo_apply_select_idle_reason_name(
+                          (enum utxo_apply_select_idle_reason)select_reason));
     json_push_kv_int (out, "log_rows",
                       db ? stage_log_row_count(db, STAGE_NAME,
                                                "utxo_apply_log") : 0);
