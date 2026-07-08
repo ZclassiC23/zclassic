@@ -69,6 +69,8 @@ void register_wallet_diagnostic_rpc_commands(struct rpc_table *t)
         { "wallet", "listwalletkeys",      rpc_listwalletkeys,       false },
         { "wallet", "listwallettxdetail",  rpc_listwallettxdetail,   false },
         { "wallet", "getbalanceflow",      rpc_getbalanceflow,       false },
+        { "wallet", "walletbackupstatus",  rpc_walletbackupstatus,   false },
+        { "wallet", "walletbackupnow",     rpc_walletbackupnow,      false },
         { "wallet", "reconcilewalletutxos", rpc_reconcilewalletutxos, false },
         { "wallet", "purgephantomutxos",   rpc_purgephantomutxos,    false },
         { "wallet", "diagnoseutxos",       rpc_diagnoseutxos,        false },

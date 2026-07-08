@@ -48,7 +48,7 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL     122  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
+#define EXPECTED_TOTAL     125  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
                                  * +3 power-user tools: chain_tip,
                                  * reorg_history, mempool_inspect;
                                  * +1 Round 6 C5: zcl_blockers;
@@ -68,7 +68,10 @@
                                  * +1 app protocol catalog: zcl_app_protocols
                                  * +1 service catalog: zcl_service_catalog
                                  * +1 service operation catalog: zcl_service_operations
-                                 * +1 semantic timeline: zcl_timeline */
+                                 * +1 semantic timeline: zcl_timeline
+                                 * +2 wallet backup tools: zcl_wallet_backup_status,
+                                 *   zcl_wallet_backup_now
+                                 * +1 wallet receive intent */
 #define EXPECTED_OPS        56  /* + zcl_rebuild_recent (bounded recovery);
                                  * status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
@@ -101,7 +104,7 @@
                                  * + zcl_onion_health (wave 6 #7),
                                  * + zcl_bootstrapstatus
                                  * + zcl_peer_incidents */
-#define EXPECTED_WALLET     20
+#define EXPECTED_WALLET     23
 #define EXPECTED_APP        16
 #define EXPECTED_HEADROOM   32
 
@@ -289,7 +292,7 @@ static int test_net_domain_count(void)
 static int test_wallet_domain_count(void)
 {
     int failures = 0;
-    TEST("controllers: wallet domain has 20 tools") {
+    TEST("controllers: wallet domain has 23 tools") {
         register_all();
         size_t n = count_by_domain("wallet");
         if (n != EXPECTED_WALLET) {
@@ -3305,8 +3308,10 @@ static int test_destructive_tools_registered(void)
          * the wire — otherwise the compat contract breaks. */
         const char *k[] = {
             "zcl_send", "zcl_sendtoaddress", "zcl_importprivkey",
+            "zcl_wallet_receive_intent",
             "zcl_rescanblockchain", "zcl_replaywalletfromchain",
-            "zcl_dumpprivkey", "zcl_addnode", "zcl_pingpeer",
+            "zcl_dumpprivkey", "zcl_wallet_backup_now",
+            "zcl_addnode", "zcl_pingpeer",
             "zcl_name_register", "zcl_msg_send", "zcl_market_offer",
             "zcl_swap_initiate",
         };

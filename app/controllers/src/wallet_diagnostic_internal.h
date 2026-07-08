@@ -48,6 +48,10 @@ bool rpc_listwallettxdetail(const struct json_value *params, bool help,
                             struct json_value *result);
 bool rpc_getbalanceflow(const struct json_value *params, bool help,
                         struct json_value *result);
+bool rpc_walletbackupstatus(const struct json_value *params, bool help,
+                            struct json_value *result);
+bool rpc_walletbackupnow(const struct json_value *params, bool help,
+                         struct json_value *result);
 
 /* wallet_diagnostic_audit.c */
 bool rpc_walletaudit(const struct json_value *params, bool help,

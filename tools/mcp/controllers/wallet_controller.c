@@ -23,8 +23,113 @@ DEFINE_PT(h_zcl_z_getnewaddress,       "z_getnewaddress",   "mcp.wallet")
 DEFINE_PT(h_zcl_getwalletinfo,         "getwalletinfo",     "mcp.wallet")
 DEFINE_PT(h_zcl_z_listaddresses,       "z_listaddresses",   "mcp.wallet")
 DEFINE_PT(h_zcl_walletaudit,           "walletaudit",       "mcp.wallet")
+DEFINE_PT(h_zcl_wallet_backup_status,  "walletbackupstatus","mcp.wallet")
+DEFINE_PT(h_zcl_wallet_backup_now,     "walletbackupnow",   "mcp.wallet")
 
 /* ── Parameterized handlers ──────────────────────────────────── */
+
+static bool parse_rpc_string_result(const char *raw, char *out, size_t out_cap)
+{
+    if (!raw || !out || out_cap == 0)
+        return false;
+
+    struct json_value v;
+    json_init(&v);
+    bool ok = json_read(&v, raw, strlen(raw)) && v.type == JSON_STR;
+    if (ok)
+        snprintf(out, out_cap, "%s", json_get_str(&v));
+    json_free(&v);
+    return ok && out[0] != '\0';
+}
+
+static bool parse_backup_ok(const char *raw, struct json_value *backup_out)
+{
+    if (!backup_out)
+        return false;
+    json_init(backup_out);
+    if (!raw)
+        return false;
+    if (!json_read(backup_out, raw, strlen(raw)))
+        return false;
+    const struct json_value *ok = json_get(backup_out, "ok");
+    return ok && ok->type == JSON_BOOL && json_get_bool(ok);
+}
+
+static int h_zcl_wallet_receive_intent(const struct mcp_request *req,
+                                       struct mcp_response *res)
+{
+    const char *purpose = json_get_str_or(req->args, "purpose", "agent-lab");
+
+    char *t_raw = mcp_node_rpc("getnewaddress", NULL);
+    char taddr[160] = "";
+    if (!parse_rpc_string_result(t_raw, taddr, sizeof(taddr))) {
+        free(t_raw);
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "getnewaddress did not return a transparent address");
+        LOG_ERR("mcp.wallet", "wallet_receive_intent: getnewaddress failed");
+        return 0;
+    }
+    free(t_raw);
+
+    char *z_raw = mcp_node_rpc("z_getnewaddress", NULL);
+    char zaddr[256] = "";
+    if (!parse_rpc_string_result(z_raw, zaddr, sizeof(zaddr))) {
+        free(z_raw);
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "z_getnewaddress did not return a Sapling address; "
+                 "do not fund the transparent address until backup is checked");
+        LOG_ERR("mcp.wallet", "wallet_receive_intent: z_getnewaddress failed "
+                "after taddr=%s", taddr);
+        return 0;
+    }
+    free(z_raw);
+
+    char *backup_raw = mcp_node_rpc("walletbackupnow", NULL);
+    struct json_value backup;
+    if (!parse_backup_ok(backup_raw, &backup)) {
+        free(backup_raw);
+        json_free(&backup);
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "walletbackupnow failed after address creation; do not fund");
+        snprintf(res->error_param, sizeof(res->error_param), "walletbackupnow");
+        LOG_ERR("mcp.wallet", "wallet_receive_intent: walletbackupnow failed "
+                "after taddr=%s zaddr=%s", taddr, zaddr);
+        return 0;
+    }
+    free(backup_raw);
+
+    struct json_value root;
+    json_init(&root);
+    json_set_object(&root);
+    json_push_kv_str(&root, "purpose", purpose ? purpose : "agent-lab");
+    json_push_kv_str(&root, "funding_address", taddr);
+    json_push_kv_str(&root, "transparent_address", taddr);
+    json_push_kv_str(&root, "sapling_address", zaddr);
+    json_push_kv_bool(&root, "safe_to_fund", true);
+    json_push_kv_str(&root, "qr_payload", taddr);
+    json_push_kv(&root, "backup", &backup);
+
+    size_t need = json_write(&root, NULL, 0) + 1;
+    char *body = zcl_malloc(need, "wallet_receive_intent_body");
+    if (!body) {
+        json_free(&backup);
+        json_free(&root);
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for wallet receive intent response");
+        LOG_ERR("mcp.wallet", "wallet_receive_intent: malloc failed (%zu bytes)",
+                need);
+        return 0;
+    }
+    json_write(&root, body, need);
+    json_free(&backup);
+    json_free(&root);
+    res->body = body;
+    return 0;
+}
 
 static int h_zcl_send(const struct mcp_request *req, struct mcp_response *res)
 {
@@ -237,9 +342,19 @@ static int h_zcl_rescanblockchain(const struct mcp_request *req,
 static int h_zcl_listwalletkeys(const struct mcp_request *req,
                                   struct mcp_response *res)
 {
+    if (json_get_bool_or(req->args, "include_privkeys", false)) {
+        res->error = MCP_ERR_OUT_OF_RANGE;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "zcl_listwalletkeys never returns private keys over MCP; "
+                 "use explicit destructive key-export tools instead");
+        snprintf(res->error_param, sizeof(res->error_param),
+                 "include_privkeys");
+        LOG_ERR("mcp.wallet",
+                "zcl_listwalletkeys rejected include_privkeys=true");
+        return 0;
+    }
     char params[32];
-    snprintf(params, sizeof(params), "[%s]",
-             json_get_bool_or(req->args, "include_privkeys", false) ? "true" : "false");
+    snprintf(params, sizeof(params), "[false]");
     return mcp_return_rpc_body(res, mcp_node_rpc("listwalletkeys", params),
                                 "listwalletkeys", "mcp.wallet");
 }
@@ -349,6 +464,12 @@ static const struct mcp_param_spec p_confirm[] = {
       0, 0, 0, 0, NULL, NULL },
 };
 
+static const struct mcp_param_spec p_receive_intent[] = {
+    { "purpose", MCP_PARAM_STR, false,
+      "Short label for the receive intent",
+      0, 0, 0, 96, NULL, "\"agent-lab\"" },
+};
+
 /* ── Route table ─────────────────────────────────────────────── */
 
 static const struct mcp_tool_route k_routes[] = {
@@ -361,6 +482,12 @@ static const struct mcp_tool_route k_routes[] = {
     { "zcl_z_getnewaddress", "wallet",
       "Generate new shielded Sapling (z-addr) receiving address.",
       NULL, 0, h_zcl_z_getnewaddress, 0, NULL },
+    { "zcl_wallet_receive_intent", "wallet",
+      "Create t/z lab receive addresses and force a verified wallet backup "
+      "before returning public funding data.",
+      p_receive_intent, PARAM_COUNT(p_receive_intent),
+      h_zcl_wallet_receive_intent,
+      .flags = MCP_TOOL_FLAG_DESTRUCTIVE },
     { "zcl_send", "wallet",
       "Send ZCL (transparent or shielded).",
       p_send, PARAM_COUNT(p_send), h_zcl_send,
@@ -418,8 +545,15 @@ static const struct mcp_tool_route k_routes[] = {
     { "zcl_walletaudit", "wallet",
       "Reconcile the wallet against the on-chain UTXO set.",
       NULL, 0, h_zcl_walletaudit, 0, NULL },
+    { "zcl_wallet_backup_status", "wallet",
+      "Wallet backup service status and last verified backup.",
+      NULL, 0, h_zcl_wallet_backup_status, 0, NULL },
+    { "zcl_wallet_backup_now", "wallet",
+      "Run one synchronous verified wallet backup.",
+      NULL, 0, h_zcl_wallet_backup_now,
+      .flags = MCP_TOOL_FLAG_DESTRUCTIVE },
     { "zcl_listwalletkeys", "wallet",
-      "List all keys (metadata, and optionally WIFs).",
+      "List all wallet key metadata without private key material.",
       p_listkeys, PARAM_COUNT(p_listkeys),
       h_zcl_listwalletkeys, 0, NULL },
     { "zcl_replaywalletfromchain", "wallet",

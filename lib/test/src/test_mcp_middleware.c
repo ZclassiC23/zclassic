@@ -619,7 +619,9 @@ static int test_destructive_detection(void)
 
         const char *destructive[] = {
             "zcl_send", "zcl_sendtoaddress", "zcl_importprivkey",
+            "zcl_wallet_receive_intent",
             "zcl_rescanblockchain", "zcl_replaywalletfromchain",
+            "zcl_wallet_backup_now",
             "zcl_addnode", "zcl_swap_initiate", "zcl_swap_participate",
             "zcl_market_buy", "zcl_market_offer",
             "zcl_msg_send", "zcl_msg_send_named", "zcl_name_register",
