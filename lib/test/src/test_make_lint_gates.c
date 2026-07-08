@@ -4562,6 +4562,34 @@ static int t_db_service_query_handle_is_canonical(void)
     return failures;
 }
 
+static int t_txindex_releases_node_db_between_batches(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("txindex releases node.db between batches") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/controllers/src/snapshot_controller_txindex.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "#define TX_INDEX_BATCH_TXS 1000") != NULL);
+        ASSERT(strstr(buf, "#define TX_INDEX_BATCH_YIELD_MS 100") != NULL);
+        ASSERT(strstr(buf, "platform_sleep_ms(TX_INDEX_BATCH_YIELD_MS)") != NULL);
+        char *fail_begin = strstr(buf, "tx_index begin bulk load transaction");
+        char *finalize = fail_begin ? strstr(fail_begin, "sqlite3_finalize(query)") : NULL;
+        char *close_read = fail_begin ? strstr(fail_begin, "sqlite3_close(read_db)") : NULL;
+        char *close_ndb = fail_begin ? strstr(fail_begin, "node_db_close(&ndb)") : NULL;
+        ASSERT(fail_begin != NULL);
+        ASSERT(finalize != NULL);
+        ASSERT(close_read != NULL);
+        ASSERT(close_ndb != NULL);
+        ASSERT(finalize < close_read);
+        ASSERT(close_read < close_ndb);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_peer_save_busy_reports_db_error(void)
 {
     int failures = 0;
@@ -6142,6 +6170,7 @@ int test_make_lint_gates(void)
     failures += t_boot_shutdown_persistence_order_contract();
     failures += t_hodl_history_uses_runtime_db_service();
     failures += t_db_service_query_handle_is_canonical();
+    failures += t_txindex_releases_node_db_between_batches();
     failures += t_peer_save_busy_reports_db_error();
     failures += t_handshake_peer_save_is_async();
     failures += t_p2p_app_persistence_is_callback_injected();

@@ -32,6 +32,9 @@
 #include "util/log_macros.h"
 #include "util/thread_registry.h"
 
+#define TX_INDEX_BATCH_TXS 1000
+#define TX_INDEX_BATCH_YIELD_MS 100
+
 static bool snapshot_deserialize_index_block(const uint8_t *data,
                                              size_t avail,
                                              int height,
@@ -153,7 +156,7 @@ static bool snapshot_tx_index_maybe_commit(struct node_db *ndb,
 {
     if (!ndb || !tx_open)
         return false;
-    if (indexed <= 0 || (indexed % 5000) != 0)
+    if (indexed <= 0 || (indexed % TX_INDEX_BATCH_TXS) != 0)
         return true;
 
     if (!snapshot_tx_commit_checked(ndb, "tx_index batch commit")) {
@@ -165,6 +168,9 @@ static bool snapshot_tx_index_maybe_commit(struct node_db *ndb,
     int rate = elapsed > 0 ? indexed / (int)elapsed : indexed;
     printf("tx_index: %d transactions (%d/s)\n", indexed, rate);
     fflush(stdout);
+    /* txindex is a background convenience index. Release node.db long enough
+     * for chain evidence, tip cursors, and other liveness writes to drain. */
+    platform_sleep_ms(TX_INDEX_BATCH_YIELD_MS);
     if (!snapshot_tx_begin_checked(ndb, "tx_index batch reopen"))
         return false;
     *tx_open = true;
@@ -363,6 +369,7 @@ static void *build_tx_index_thread(void *arg)
     if (!snapshot_tx_begin_checked(&ndb,
             "tx_index begin bulk load transaction")) {
         sqlite3_finalize(query);
+        sqlite3_close(read_db);
         node_db_close(&ndb);
         return NULL;
     }
