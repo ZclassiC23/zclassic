@@ -376,12 +376,20 @@ footer {
 
     .nav {
         padding: 10px 12px;
-        gap: 10px;
-        flex-direction: column;
-        align-items: stretch;
+        gap: 8px;
+        align-items: center;
     }
-    .nav a { font-size: 16px; }
-    .nav .search { min-width: unset; }
+    .nav a {
+        flex: 1 1 calc(33.333% - 8px);
+        min-width: 96px;
+        text-align: center;
+        font-size: 16px;
+        padding: 8px 6px;
+    }
+    .nav .search {
+        flex: 1 1 100%;
+        min-width: unset;
+    }
     .nav input { font-size: 16px; padding: 10px 12px; }
 
     .stats-row {
