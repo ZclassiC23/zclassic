@@ -128,6 +128,12 @@ make zclassic23-chaos
 build/bin/zclassic23-chaos --scenario=tools/sim/scenarios/peer_churn.scenario --verbose
 ```
 
+The checked-in corpus includes `partition_recovery_c3.scenario`, a deterministic
+C3-shaped replay where block traffic at the operator-bundle seed frontier is
+dropped during a virtual partition and accepted after the partition expires.
+Use it as the small simulator repro for "body transfer paused, then resumed"
+before escalating to the full `make mvp-coldstart-to-tip-local` wall-clock proof.
+
 Replay a scenario under a specific seed:
 
 ```bash

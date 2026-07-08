@@ -1,0 +1,28 @@
+# C3-style body transfer recovery: traffic at the seeded frontier is dropped
+# during a partition, then the same peer set resumes deterministic block
+# delivery after the virtual partition expires. Heights are the operator-bundle
+# seed height plus the first two forward blocks.
+
+seed        0x0000000000302782
+boot_phase  listening
+peer_count  2
+
+partition_network for=30s
+send_block  peer=0 file=tests/fixtures/blocks/height-000001.fixture height=3155843
+
+expect      partition_drops == 1
+expect      blocks_sent == 0
+expect      tip_height == 0
+expect      consensus_rejects == 0
+
+advance_clock +30s
+send_block  peer=1 file=tests/fixtures/blocks/height-000001.fixture height=3155843
+send_block  peer=0 file=tests/fixtures/blocks/height-000002.fixture height=3155844
+
+expect      no_crash
+expect      partition_drops == 1
+expect      blocks_sent == 2
+expect      block_bytes > 0
+expect      active_peers == 2
+expect      tip_height == 3155844
+expect      consensus_rejects == 0
