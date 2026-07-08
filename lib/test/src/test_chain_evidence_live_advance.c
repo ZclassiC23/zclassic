@@ -277,6 +277,46 @@ static int test_live_advance_note_then_drain(void)
     return failures;
 }
 
+/* Startup reconcile / deploy verification can leave the live CSR tip ahead of
+ * the persisted cec.active_tip_* keys without any reducer pending slot in
+ * memory. The health drain must still retry the durable follow from the
+ * current CSR tip instead of waiting for the next block. */
+static int test_live_advance_drain_repairs_current_tip_without_pending(void)
+{
+    int failures = 0;
+    struct live_fixture f;
+    if (!live_fixture_init(&f))
+        return 1;
+
+    if (!promote_to(&f, 1))
+        failures++;
+    if (!reducer_move_served_tip(&f, 2))
+        failures++;
+
+    struct chain_evidence_controller_view before;
+    chain_evidence_controller_snapshot(&f.authority, &before);
+    if (before.persisted_active_tip_height != 1 ||
+        !before.active_tip_hash_mismatch)
+        failures++;
+
+    if (!chain_evidence_drain_pending_tip(&f.authority))
+        failures++;
+
+    struct chain_evidence_controller_view after;
+    chain_evidence_controller_snapshot(&f.authority, &after);
+    if (after.persisted_active_tip_height != 2 ||
+        after.active_tip_hash_mismatch ||
+        after.health_reason[0] != '\0')
+        failures++;
+    if (!after.has_persisted_active_tip_hash ||
+        memcmp(after.persisted_active_tip_hash.data,
+               f.blocks[2].phashBlock->data, 32) != 0)
+        failures++;
+
+    live_fixture_free(&f);
+    return failures;
+}
+
 /* Null / invalid args decline gracefully — no crash, no write, returns false. */
 static int test_live_advance_rejects_bad_args(void)
 {
@@ -401,6 +441,7 @@ int test_chain_evidence_live_advance(void)
     printf("\n=== chain_evidence_live_advance tests ===\n");
     failures += test_live_advance_clears_active_tip_hash_mismatch();
     failures += test_live_advance_note_then_drain();
+    failures += test_live_advance_drain_repairs_current_tip_without_pending();
     failures += test_live_advance_is_idempotent();
     failures += test_live_advance_declines_when_frozen();
     failures += test_live_advance_clears_boot_tip_divergence_freeze();

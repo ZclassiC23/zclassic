@@ -101,6 +101,10 @@ void chain_evidence_pending_tip_test_reset(void)
     pthread_mutex_unlock(&g_pending_lock);
 }
 
+static bool cla_load_u256(struct node_db *ndb, const char *key,
+                          struct uint256 *out);
+static int cla_state_get_i32(struct node_db *ndb, const char *key, int def);
+
 bool chain_evidence_drain_pending_tip(
     struct chain_evidence_controller *authority)
 {
@@ -108,8 +112,36 @@ bool chain_evidence_drain_pending_tip(
     int height = g_pending_height;
     struct uint256 hash = g_pending_hash;
     pthread_mutex_unlock(&g_pending_lock);
-    if (height < 0)
-        return true; /* nothing pending */
+    if (height < 0) {
+        if (!authority || !authority->ndb || !authority->csr)
+            return true; /* nothing pending */
+
+        struct chain_state_view view;
+        memset(&view, 0, sizeof(view));
+        csr_snapshot(authority->csr, &view);
+        if (view.tip_height < 0)
+            return true; /* no current tip to repair */
+
+        struct uint256 persisted_hash;
+        bool persisted_matches =
+            cla_load_u256(authority->ndb, "cec.active_tip_hash",
+                          &persisted_hash) &&
+            memcmp(persisted_hash.data, view.tip_hash.data, 32) == 0 &&
+            cla_state_get_i32(authority->ndb, "cec.active_tip_height", -1) ==
+                view.tip_height &&
+            cla_state_get_i32(authority->ndb,
+                              "cec.repaired_active_tip_evidence", 0) == 1;
+        if (persisted_matches)
+            return true;
+
+        struct block_index tip;
+        memset(&tip, 0, sizeof(tip));
+        tip.nHeight = view.tip_height;
+        tip.hashBlock = view.tip_hash;
+        tip.phashBlock = &tip.hashBlock;
+        return chain_evidence_controller_record_finalized_tip(
+            authority, &tip, "health.drain_current_tip");
+    }
 
     /* Local index node: record_finalized_tip reads only nHeight and
      * *phashBlock. The slot lock is NOT held across the record call (it

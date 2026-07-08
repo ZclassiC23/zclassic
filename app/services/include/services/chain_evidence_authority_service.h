@@ -190,10 +190,14 @@ void chain_evidence_pending_tip_test_reset(void);
 
 /* Health-side half: if a published tip is pending, run record_finalized_tip
  * for it under the caller's (health-collect) lock order — csr->lock before
- * coins_kv. Call AFTER chain_evidence_controller_init and BEFORE the
- * snapshot, so the mismatch the follow clears is never observed. Returns
- * false only when a record attempt failed (slot stays pending; next drain
- * retries); true when drained or nothing was pending. */
+ * coins_kv. If no pending slot exists but the current CSR tip is ahead of
+ * cec.active_tip_*, retry the same durable follow for the current tip; this
+ * covers startup/deploy races where SQLite contention left persisted evidence
+ * stale and no reducer note survived in memory. Call AFTER
+ * chain_evidence_controller_init and BEFORE the snapshot, so the mismatch the
+ * follow clears is never observed. Returns false only when a record attempt
+ * failed (slot/current tip will be retried on the next drain); true when
+ * drained, repaired, or already current. */
 bool chain_evidence_drain_pending_tip(
     struct chain_evidence_controller *authority);
 
