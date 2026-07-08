@@ -42,7 +42,8 @@ BUDGET="${ZCL_C3_BUDGET_SECS:-600}"          # 10-minute MVP target
 P2P=39070; RPC=39071; FS=39072; HTTPS=39073
 BUNDLE_SUCCESS_PATTERN='-load-snapshot-at-own-height: coin set RE-SEEDED'
 ARTIFACT_ROOT="${ZCL_C3_ARTIFACT_ROOT:-$REPO_ROOT/build/c3-probe}"
-ARTIFACT_DIR=""
+RUN_ID="${ZCL_C3_RUN_ID:-$(date -u +%Y%m%dT%H%M%SZ)-$$}"
+ARTIFACT_DIR="$ARTIFACT_ROOT/$RUN_ID"
 DATADIR=""
 PID=""
 start=0
@@ -50,21 +51,56 @@ seeded=0
 last_h=-1
 last_hdr=-1
 
+json_escape() {
+    printf '%s' "$1" \
+        | sed 's/\\/\\\\/g; s/"/\\"/g; s/	/\\t/g; s/\r/\\r/g' \
+        | tr '\n' ' '
+}
+
+json_string() {
+    printf '"%s"' "$(json_escape "$1")"
+}
+
+json_number_or_null() {
+    case "${1:-}" in
+        ''|*[!0-9]*) printf 'null' ;;
+        *) printf '%s' "$1" ;;
+    esac
+}
+
+json_bool() {
+    if [ "${1:-0}" = "1" ]; then
+        printf 'true'
+    else
+        printf 'false'
+    fi
+}
+
 write_artifact() {
     verdict="$1"
     rc="$2"
-    [ -n "${ARTIFACT_DIR:-}" ] || return 0
+    reason="${3:-}"
+    captured_at="$(date +%s)"
+    elapsed=0
+    if [ "${start:-0}" -gt 0 ]; then
+        elapsed=$((captured_at - start))
+    fi
+    reached_at_tip=0
+    [ "$verdict" = "pass" ] && reached_at_tip=1
     mkdir -p "$ARTIFACT_DIR" "$ARTIFACT_ROOT" 2>/dev/null || return 0
     {
         echo "schema=zcl.c3_probe_artifact.v1"
         echo "verdict=$verdict"
         echo "exit_code=$rc"
-        echo "captured_at_unix=$(date +%s)"
+        echo "reason=$reason"
+        echo "captured_at_unix=$captured_at"
+        echo "elapsed_seconds=$elapsed"
         echo "peer=$PEER"
         echo "peer_tip=${PEER_TIP:-}"
         echo "budget_seconds=$BUDGET"
         echo "mode=${MODE:-unknown}"
         echo "seeded=$seeded"
+        echo "reached_at_tip=$reached_at_tip"
         echo "last_height=$last_h"
         echo "last_headers=$last_hdr"
         echo "bundle_snapshot=${BUNDLE_SNAP:-}"
@@ -72,6 +108,34 @@ write_artifact() {
         echo "scratch_datadir=${DATADIR:-}"
         echo "scratch_datadir_removed=true"
     } >"$ARTIFACT_DIR/summary.txt"
+    {
+        printf '{\n'
+        printf '  "schema": "zcl.c3_probe_artifact.v2",\n'
+        printf '  "api_version": "v1",\n'
+        printf '  "verdict": %s,\n' "$(json_string "$verdict")"
+        printf '  "exit_code": %s,\n' "$rc"
+        printf '  "reason": %s,\n' "$(json_string "$reason")"
+        printf '  "captured_at_unix": %s,\n' "$captured_at"
+        printf '  "elapsed_seconds": %s,\n' "$elapsed"
+        printf '  "budget_seconds": %s,\n' "$(json_number_or_null "$BUDGET")"
+        printf '  "seed_authority_loaded": %s,\n' "$(json_bool "$seeded")"
+        printf '  "reached_at_tip": %s,\n' "$(json_bool "$reached_at_tip")"
+        printf '  "peer": %s,\n' "$(json_string "$PEER")"
+        printf '  "peer_tip": %s,\n' "$(json_number_or_null "${PEER_TIP:-}")"
+        printf '  "mode": %s,\n' "$(json_string "${MODE:-unknown}")"
+        printf '  "last_height": %s,\n' "$(json_number_or_null "$last_h")"
+        printf '  "last_headers": %s,\n' "$(json_number_or_null "$last_hdr")"
+        printf '  "bundle_snapshot": %s,\n' "$(json_string "${BUNDLE_SNAP:-}")"
+        printf '  "bundle_index": %s,\n' "$(json_string "${BUNDLE_INDEX:-}")"
+        printf '  "scratch_datadir": %s,\n' "$(json_string "${DATADIR:-}")"
+        printf '  "scratch_datadir_removed": true,\n'
+        printf '  "artifacts": {\n'
+        printf '    "summary_text": "summary.txt",\n'
+        printf '    "probe_log": "probe.log",\n'
+        printf '    "probe_tail": "probe.tail.log"\n'
+        printf '  }\n'
+        printf '}\n'
+    } >"$ARTIFACT_DIR/proof.json"
     if [ -n "${DATADIR:-}" ] && [ -f "$DATADIR/probe.log" ]; then
         cp "$DATADIR/probe.log" "$ARTIFACT_DIR/probe.log" 2>/dev/null || true
         tail -80 "$DATADIR/probe.log" >"$ARTIFACT_DIR/probe.tail.log" 2>/dev/null || true
@@ -80,8 +144,8 @@ write_artifact() {
     echo "c3-probe: artifact=$ARTIFACT_DIR"
 }
 
-skip() { echo "c3-probe: SKIP ($*)"; exit 2; }
-die()  { echo "c3-probe: FAIL: $*" >&2; write_artifact "fail" 1; exit 1; }
+skip() { echo "c3-probe: SKIP ($*)"; write_artifact "skip" 2 "$*"; exit 2; }
+die()  { echo "c3-probe: FAIL: $*" >&2; write_artifact "fail" 1 "$*"; exit 1; }
 
 [ -x "$NODE_BIN" ] || skip "node binary absent: $NODE_BIN"
 [ -x "$RPC_BIN" ]  || skip "zcl-rpc absent: $RPC_BIN"
@@ -123,8 +187,6 @@ printf '%s' "$PEER_TIP" | grep -qE '^[0-9]+$' || skip "tip source ($PEER_RPC) no
 [ "$PEER_TIP" -gt 1000000 ] || skip "reference peer tip implausibly low ($PEER_TIP)"
 
 DATADIR="$(mktemp -d /tmp/zcl-c3-probe.XXXXXX)" || die "mktemp datadir failed"
-RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
-ARTIFACT_DIR="$ARTIFACT_ROOT/$RUN_ID"
 mkdir -p "$ARTIFACT_DIR" || die "artifact dir create failed: $ARTIFACT_DIR"
 cleanup() {
     [ -n "$PID" ] && kill -KILL -- "-$PID" 2>/dev/null || true
@@ -217,14 +279,14 @@ done
 
 if [ "$reached" = 1 ]; then
     echo "=== c3-probe: PASS — fresh datadir -> snapshot import -> delta sync -> at_tip@$PEER_TIP within budget ==="
-    write_artifact "pass" 0
+    write_artifact "pass" 0 "fresh datadir reached peer tip within budget"
     exit 0
 fi
 echo "c3-probe: did NOT reach at_tip in ${BUDGET}s (seeded=$seeded last_height=$last_h). Log tail:"
 tail -20 "$DATADIR/probe.log" | sed 's/^/  /'
 if [ "$seeded" = 1 ]; then
     echo "=== c3-probe: SEAM — seed authority loaded but forward-sync to at_tip did NOT complete within budget ==="
-    write_artifact "seam" 3
+    write_artifact "seam" 3 "seed authority loaded but forward-sync did not complete within budget"
     exit 3
 fi
 die "seed authority itself did not complete (<1M height/UTXOs) in budget"

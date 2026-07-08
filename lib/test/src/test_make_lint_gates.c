@@ -2481,6 +2481,15 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(coldstart_tip, "127.0.0.1:8033") != NULL);
         ASSERT(strstr(coldstart_tip, "-load-snapshot-at-own-height") != NULL);
         ASSERT(strstr(coldstart_tip, "BUNDLE_SUCCESS_PATTERN") != NULL);
+        ASSERT(strstr(coldstart_tip, "zcl.c3_probe_artifact.v2") != NULL);
+        ASSERT(strstr(coldstart_tip, "proof.json") != NULL);
+        ASSERT(strstr(coldstart_tip, "\"seed_authority_loaded\"") != NULL);
+        ASSERT(strstr(coldstart_tip, "\"reached_at_tip\"") != NULL);
+        ASSERT(strstr(coldstart_tip,
+                      "write_artifact \"skip\" 2 \"$*\"") != NULL);
+        ASSERT(strstr(coldstart_tip,
+                      "seed authority loaded but forward-sync did not complete")
+               != NULL);
         ASSERT(strstr(coldstart_tip, "python") == NULL);
         ASSERT(strstr(makefile, "mvp-coldstart-to-tip-local:") != NULL);
         ASSERT(strstr(makefile, "tools/scripts/cold_start_to_tip_probe.sh")

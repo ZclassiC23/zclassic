@@ -86,6 +86,10 @@ MRS unchanged at 4/8, FAIL=1 — never green.)
 ## Files
 
 - `tools/scripts/mvp_scoreboard.sh` — the reporter (run by `make mvp`).
+- `tools/scripts/cold_start_to_tip_probe.sh` — the full C3 local proof harness.
+  Every run, including setup SKIPs and sync seams, writes
+  `build/c3-probe/<run>/proof.json` plus `summary.txt` and the probe log tail;
+  `build/c3-probe/latest.txt` points at the newest evidence directory.
 - `Makefile` target `mvp` — `make mvp`; also invoked as a visible non-fatal
   report at the end of `make ci`.
 - `docs/MVP.md` — the 8 criteria (source of truth for the claims).
