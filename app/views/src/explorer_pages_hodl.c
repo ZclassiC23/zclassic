@@ -35,33 +35,38 @@
 /* ── HODL Wave Page ────────────────────────────────────────── */
 
 static const char HODL_VIEW_CSS[] =
-    ".hodl-page{max-width:1120px;margin:0 auto 10px;}"
+    ".hodl-page{max-width:1160px;margin:0 auto 10px;}"
     ".hodl-hero{display:flex;justify-content:space-between;gap:22px;"
-    "align-items:flex-end;text-align:left;margin:22px auto 18px;"
-    "padding:22px 0 16px;border-bottom:1px solid #202936;}"
+    "align-items:center;text-align:left;margin:18px auto 14px;"
+    "padding:16px 0 14px;border-bottom:1px solid #1d2832;}"
     ".hodl-kicker{color:#8fffc3;font-size:13px;font-weight:760;"
     "text-transform:uppercase;letter-spacing:0;margin:0 0 8px;}"
     ".hodl-title{color:#f5f7fa;font-family:-apple-system,'Segoe UI',Roboto,"
-    "Helvetica,Arial,sans-serif;font-size:44px;font-weight:820;line-height:1.08;"
+    "Helvetica,Arial,sans-serif;font-size:40px;font-weight:820;line-height:1.08;"
     "letter-spacing:0;margin:0;max-width:920px;overflow-wrap:break-word;}"
-    ".hodl-subtitle{font-size:16px;color:#9aa6b2;margin:10px 0 0;"
+    ".hodl-subtitle{font-size:15px;color:#9aa6b2;margin:8px 0 0;"
     "max-width:760px;}"
     ".hodl-hero-badge{flex:0 0 auto;color:#ffd166;background:#18150d;"
     "border:1px solid #3a2f14;border-radius:8px;padding:9px 12px;"
     "font-size:13px;font-weight:720;white-space:nowrap;}"
-    ".hodl-panel{margin:20px auto;padding:18px;background:#10151a;"
+    ".hodl-panel{margin:18px auto;padding:18px;background:#10151a;"
     "border:1px solid #24303a;border-radius:8px;color:#a3adb8;"
     "box-shadow:0 18px 42px rgba(0,0,0,.20);}"
     ".hodl-panel h2{color:#e1e8ee;margin-top:0;border-bottom-color:#242e37;}"
-    ".hodl-chart-wrap{max-width:1120px;margin:18px auto;padding:12px;"
+    ".hodl-chart-wrap{max-width:1160px;margin:18px auto;padding:14px;"
     "overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-color:#33414d #0b0f13;"
-    "background:#0c1116;border:1px solid #22303a;border-radius:8px;"
+    "background:#0a0f14;border:1px solid #22303a;border-radius:8px;"
     "box-shadow:0 18px 42px rgba(0,0,0,.22);}"
+    ".hodl-chart-wrap:focus-within{border-color:#365365;"
+    "box-shadow:0 18px 46px rgba(0,0,0,.28),0 0 0 1px rgba(98,199,255,.16);}"
     ".hodl-wave-interactive{position:relative;}"
-    ".hodl-svg{width:100%;min-width:860px;height:auto;background:#080b0f;"
-    "border:1px solid #17232c;border-radius:6px;display:block;}"
+    ".hodl-svg{width:100%;min-width:860px;height:auto;background:transparent;"
+    "border:0;border-radius:0;display:block;}"
     ".hodl-svg-title{font-family:-apple-system,'Segoe UI',Roboto,sans-serif;"
     "font-weight:780;letter-spacing:0;}"
+    ".hodl-end-label{font-family:-apple-system,'Segoe UI',Roboto,sans-serif;"
+    "font-weight:760;paint-order:stroke;stroke:#071016;stroke-width:3px;"
+    "stroke-linejoin:round;}"
     ".hodl-age-bar{transition:opacity .12s ease,stroke-width .12s ease,"
     "filter .12s ease;}"
     ".hodl-age-hit{cursor:crosshair;}"
@@ -87,18 +92,18 @@ static const char HODL_VIEW_CSS[] =
     ".hodl-source{max-width:900px;margin:18px auto;color:#9aa3ad;"
     "font-size:16px;line-height:1.7;}"
     "@media (max-width:900px){.hodl-hero{display:block;}.hodl-hero-badge{"
-    "display:inline-block;margin-top:14px;}.hodl-title{font-size:38px;}"
+    "display:inline-block;margin-top:12px;}.hodl-title{font-size:36px;}"
     ".hodl-stats{grid-template-columns:repeat(2,minmax(0,1fr));}"
     ".hodl-mini-grid{grid-template-columns:1fr;}}"
     "@media (max-width:560px){.hodl-page{max-width:none;}.hodl-hero{"
-    "margin:18px auto 12px;padding:16px 0 12px;}.hodl-title{font-size:31px;"
+    "margin:14px auto 10px;padding:12px 0 10px;}.hodl-title{font-size:29px;"
     "line-height:1.14;}"
     ".hodl-subtitle{font-size:15px;}.hodl-panel{padding:12px;}"
     ".hodl-stats{grid-template-columns:1fr;gap:10px;}"
     ".hodl-stats .num{font-size:26px;}.hodl-chart-wrap{margin:14px -10px;"
     "padding:8px 10px;border-left:0;border-right:0;border-radius:0;}"
     ".hodl-svg{min-width:820px;}.hodl-table{min-width:620px;}}"
-    "@media (max-width:420px){.hodl-title{font-size:28px;}}";
+    "@media (max-width:420px){.hodl-title{font-size:27px;}}";
 
 static const char HODL_PAGE_OPEN_TEMPLATE[] =
     "HTTP/1.1 200 OK\r\n"
@@ -108,6 +113,7 @@ static const char HODL_PAGE_OPEN_TEMPLATE[] =
     "<!DOCTYPE html><html><head><meta charset='utf-8'>"
     "<meta name='viewport' content='width=device-width,initial-scale=1'>"
     "<title>HODL Wave</title>"
+    "<link rel='icon' type='image/png' href='/explorer/favicon.png'>"
     "<link rel='stylesheet' href='/explorer/style.css'>"
     "<style>{{{css}}}</style>"
     "</head><body>";
@@ -1080,7 +1086,7 @@ static void hodl_emit_survival_chart(size_t *off, uint8_t *r, size_t max,
     int W = 1000;
     int H = 470;
     int pl = 70;
-    int pr = 35;
+    int pr = 118;
     int pt = 112;
     int pb = 66;
     int pw = W - pl - pr;
@@ -1101,11 +1107,11 @@ static void hodl_emit_survival_chart(size_t *off, uint8_t *r, size_t max,
         "and 5 year holding thresholds.' style='outline:none'>"
         "<defs>"
         "<linearGradient id='hodl-survival-bg' x1='0' y1='0' x2='0' y2='1'>"
-        "<stop offset='0%%' stop-color='#101821'/>"
-        "<stop offset='100%%' stop-color='#090d11'/>"
+        "<stop offset='0%%' stop-color='#121b24'/>"
+        "<stop offset='100%%' stop-color='#0a0f14'/>"
         "</linearGradient>"
         "<linearGradient id='hodl-survival-area' x1='0' y1='0' x2='0' y2='1'>"
-        "<stop offset='0%%' stop-color='#33ff99' stop-opacity='0.18'/>"
+        "<stop offset='0%%' stop-color='#33ff99' stop-opacity='0.20'/>"
         "<stop offset='100%%' stop-color='#33ff99' stop-opacity='0.01'/>"
         "</linearGradient>"
         "<filter id='hodl-line-glow' x='-4%%' y='-8%%' width='108%%' height='116%%'>"
@@ -1115,8 +1121,8 @@ static void hodl_emit_survival_chart(size_t *off, uint8_t *r, size_t max,
         "</defs>"
         "<text class='hodl-svg-title' x='30' y='34' fill='#f5f7fa' "
         "font-size='21'>HODL Wave over time</text>"
-        "<text x='30' y='58' fill='#8d96a0' font-size='12'>"
-        "Age-threshold share of current unspent transparent value</text>"
+        "<text x='30' y='58' fill='#9aa8b5' font-size='12'>"
+        "Share of transparent UTXO value older than each age threshold</text>"
         "<text x='%d' y='34' fill='#68717d' font-size='12' text-anchor='end'>"
         "%s</text>",
         W, H, W - pr, sample_meta);
@@ -1134,14 +1140,15 @@ static void hodl_emit_survival_chart(size_t *off, uint8_t *r, size_t max,
 
     APPEND(*off, r, max,
         "<rect x='%d' y='%d' width='%d' height='%d' rx='5' "
-        "fill='url(#hodl-survival-bg)' stroke='#26333f'/>",
+        "fill='url(#hodl-survival-bg)' stroke='#293846'/>",
         pl, pt, pw, ph);
 
     for (int g = 0; g <= 4; g++) {
         int pct = g * 25;
         int y = pt + ph - ph * g / 4;
         APPEND(*off, r, max,
-            "<line x1='%d' y1='%d' x2='%d' y2='%d' stroke='#1b222b'/>"
+            "<line x1='%d' y1='%d' x2='%d' y2='%d' stroke='#22303b' "
+            "opacity='0.62'/>"
             "<text x='%d' y='%d' fill='#8d96a0' font-size='12' "
             "text-anchor='end'>%d%%</text>",
             pl, y, pl + pw, y, pl - 8, y + 4, pct);
@@ -1156,7 +1163,8 @@ static void hodl_emit_survival_chart(size_t *off, uint8_t *r, size_t max,
         gmtime_r(&tt, &tm_);
         strftime(dbuf, sizeof(dbuf), "%Y-%m", &tm_);
         APPEND(*off, r, max,
-            "<line x1='%d' y1='%d' x2='%d' y2='%d' stroke='#151a20'/>"
+            "<line x1='%d' y1='%d' x2='%d' y2='%d' stroke='#1a2731' "
+            "opacity='0.52'/>"
             "<text x='%d' y='%d' fill='#8d96a0' font-size='12' "
             "text-anchor='middle'>%s</text>",
             x, pt, x, pt + ph, x, pt + ph + 20, dbuf);
@@ -1194,6 +1202,41 @@ static void hodl_emit_survival_chart(size_t *off, uint8_t *r, size_t max,
             "<circle cx='%d' cy='%d' r='%d' fill='%s' stroke='#071015' "
             "stroke-width='2'/>",
             x, y, t == 1 ? 5 : 4, HODL_THRESHOLDS[t].color);
+    }
+
+    int label_y[HODL_SURVIVAL_THRESHOLDS];
+    int label_x = pl + pw + 14;
+    int label_top = pt + 12;
+    int label_bottom = pt + ph - 8;
+    int last_y = label_top - 17;
+    for (int t = 0; t < HODL_SURVIVAL_THRESHOLDS; t++) {
+        int y = hodl_survival_y(&rows[n - 1], t, pt, ph);
+        if (y < last_y + 17)
+            y = last_y + 17;
+        label_y[t] = y;
+        last_y = y;
+    }
+    if (last_y > label_bottom) {
+        int shift = last_y - label_bottom;
+        for (int t = 0; t < HODL_SURVIVAL_THRESHOLDS; t++) {
+            label_y[t] -= shift;
+            if (label_y[t] < label_top)
+                label_y[t] = label_top;
+        }
+    }
+    for (int t = 0; t < HODL_SURVIVAL_THRESHOLDS; t++) {
+        int x = hodl_survival_x(&rows[n - 1], pl, pw, t_min, t_max);
+        int y = hodl_survival_y(&rows[n - 1], t, pt, ph);
+        double pct = (double)rows[n - 1].pct_x1000[t] / 1000.0;
+        APPEND(*off, r, max,
+            "<path d='M%d,%d L%d,%d L%d,%d' fill='none' stroke='%s' "
+            "stroke-width='1.2' opacity='0.68'/>"
+            "<text class='hodl-end-label' x='%d' y='%d' fill='%s' "
+            "font-size='11'>%s %.1f%%</text>",
+            x + 6, y, label_x - 8, label_y[t], label_x - 2, label_y[t],
+            HODL_THRESHOLDS[t].color,
+            label_x, label_y[t] + 4, HODL_THRESHOLDS[t].color,
+            HODL_THRESHOLDS[t].label, pct);
     }
 
     APPEND(*off, r, max,
@@ -1341,29 +1384,29 @@ static void hodl_emit_age_distribution_chart(size_t *off, uint8_t *r,
         "Use mouse, touch, or arrow keys to inspect each age band.'>"
         "<defs>"
         "<linearGradient id='hodl-age-bg' x1='0' y1='0' x2='0' y2='1'>"
-        "<stop offset='0%%' stop-color='#10151a'/>"
-        "<stop offset='100%%' stop-color='#090b0d'/>"
+        "<stop offset='0%%' stop-color='#121b24'/>"
+        "<stop offset='100%%' stop-color='#0a0f14'/>"
         "</linearGradient>"
         "<linearGradient id='hodl-age-glow' x1='0' y1='0' x2='0' y2='1'>"
-        "<stop offset='0%%' stop-color='#33ff99' stop-opacity='0.24'/>"
+        "<stop offset='0%%' stop-color='#33ff99' stop-opacity='0.18'/>"
         "<stop offset='100%%' stop-color='#33ff99' stop-opacity='0.02'/>"
         "</linearGradient>"
         "</defs>"
         "<text class='hodl-svg-title' x='30' y='34' fill='#f5f7fa' "
         "font-size='20'>Unspent transparent value by age</text>"
-        "<text x='30' y='58' fill='#8d96a0' font-size='12'>"
-        "Use mouse, touch, or arrow keys to inspect "
-        "current transparent UTXO value distribution.</text>");
+        "<text x='30' y='58' fill='#9aa8b5' font-size='12'>"
+        "Current transparent UTXO value distribution.</text>");
 
     int x0 = 70, y0 = 326, chart_w = 860, chart_h = 216;
     APPEND(*off, r, max,
         "<rect x='%d' y='%d' width='%d' height='%d' rx='5' "
-        "fill='url(#hodl-age-bg)' stroke='#1d2530'/>",
+        "fill='url(#hodl-age-bg)' stroke='#293846'/>",
         x0, y0 - chart_h, chart_w, chart_h);
     for (int g = 0; g <= 4; g++) {
         int y = y0 - chart_h * g / 4;
         APPEND(*off, r, max,
-            "<line x1='%d' y1='%d' x2='%d' y2='%d' stroke='#1b222b'/>"
+            "<line x1='%d' y1='%d' x2='%d' y2='%d' stroke='#22303b' "
+            "opacity='0.62'/>"
             "<text x='%d' y='%d' fill='#8d96a0' font-size='12' "
             "text-anchor='end'>%d%%</text>",
             x0, y, x0 + chart_w, y, x0 - 8, y + 4, g * 25);
@@ -1409,9 +1452,7 @@ static void hodl_emit_age_distribution_chart(size_t *off, uint8_t *r,
             "<title>%s: %.3f%%, %s ZCL, %" PRId64 " UTXOs</title>"
             "</rect>"
             "<text x='%d' y='%d' fill='#aaa' font-size='11' "
-            "text-anchor='middle' transform='rotate(-35,%d,%d)'>%s</text>"
-            "<text x='%d' y='%d' fill='#eee' font-size='12' "
-            "text-anchor='middle'>%.2f%%</text>",
+            "text-anchor='middle' transform='rotate(-35,%d,%d)'>%s</text>",
             b, x, y, bar_w, bh > 1 ? bh : 1, h->buckets[b].color,
             b == selected ? "1" : "0.82",
             b == selected ? "#fff" : h->buckets[b].color,
@@ -1420,8 +1461,13 @@ static void hodl_emit_age_distribution_chart(size_t *off, uint8_t *r,
             b, x, y0 - chart_h, bar_w, chart_h,
             h->buckets[b].html_label, pct, val_fmt, h->buckets[b].count,
             x + bar_w / 2, y0 + 26, x + bar_w / 2, y0 + 26,
-            h->buckets[b].html_label,
-            x + bar_w / 2, y - 6, pct);
+            h->buckets[b].html_label);
+        if (pct >= 1.0 || b == selected) {
+            APPEND(*off, r, max,
+                "<text x='%d' y='%d' fill='#eee' font-size='12' "
+                "text-anchor='middle'>%.2f%%</text>",
+                x + bar_w / 2, y - 6, pct);
+        }
     }
 
     APPEND(*off, r, max,
@@ -1437,8 +1483,6 @@ static void hodl_emit_age_distribution_chart(size_t *off, uint8_t *r,
         "<text id='hodl-age-tip-count' x='20' y='93' fill='#8d96a0' "
         "font-size='12'>-</text>"
         "</g>"
-        "<text x='970' y='431' fill='#5f6874' font-size='11' text-anchor='end'>"
-        "Hover, touch, or focus the chart for exact values</text>"
         "<text x='970' y='447' fill='#4d5662' font-size='11' text-anchor='end'>"
         "Source: %s</text></svg></section>"
         "<script>(function(){"

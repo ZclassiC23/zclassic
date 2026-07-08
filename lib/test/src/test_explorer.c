@@ -205,6 +205,7 @@ int test_explorer(void)
              strstr((char *)out, "class='txlist hodl-table'") != NULL &&
              strstr((char *)out, "id='hodl-survival-wave'") != NULL &&
              strstr((char *)out, "HODL Wave over time") != NULL &&
+             strstr((char *)out, "class='hodl-end-label'") != NULL &&
              strstr((char *)out, "6 months") != NULL &&
              strstr((char *)out, "2 years") != NULL &&
              strstr((char *)out, "5 years") != NULL &&
@@ -264,9 +265,10 @@ int test_explorer(void)
         ok = ok && n > 0 &&
              strstr((char *)out, "Current tip") != NULL &&
              strstr((char *)out, "Unspent transparent value by age") != NULL &&
+             strstr((char *)out,
+                    "Current transparent UTXO value distribution") != NULL &&
              strstr((char *)out, "id='hodl-age-wave'") != NULL &&
              strstr((char *)out, "class='hodl-age-hit'") != NULL &&
-             strstr((char *)out, "Hover, touch, or focus the chart") != NULL &&
              strstr((char *)out, "svg.addEventListener('keydown'") != NULL &&
              strstr((char *)out, "class='hodl-mini-grid'") != NULL &&
              strstr((char *)out, "class='hodl-mini-value'") != NULL &&
