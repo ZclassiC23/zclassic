@@ -1039,8 +1039,6 @@ bool app_init(struct app_context *ctx)
     printf("[boot] %-30s %lldms\n", "prologue",
            (long long)(boot_clock_ms() - t_boot_start));
 
-    boot_step_start_maintenance_services();
-
     boot_stale_locks_preflight(ctx->datadir);
 
     /* Open SQLite node database */
@@ -1078,6 +1076,8 @@ bool app_init(struct app_context *ctx)
     }
     printf("[boot] %-30s %lldms\n", "sqlite_open_migrate",
            (long long)(boot_clock_ms() - t_phase));
+
+    boot_step_start_maintenance_services();
 
     /* Initialize wallet. MUST run AFTER node.db is opened above
      * (node_db_sync_init → create_schema → g_node_db.open=true) and
