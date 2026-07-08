@@ -1839,6 +1839,11 @@ static int test_zcl_agent_dev_tools_dispatch(void)
 
         ASSERT(setenv("ZCL_AGENT_DEV_STATUS_CMD",
                       "printf '%s\\n' '{\"schema\":\"zcl.agent_dev_status.v1\","
+                      "\"worker_lane\":{\"name\":\"dev\",\"role\":\"worker\","
+                      "\"mutation_policy\":\"noncanonical_dev_only\","
+                      "\"canonical_guard\":\"never_touches_live_or_soak\","
+                      "\"stage_command\":\"make agent-stage-dev\","
+                      "\"recover_command\":\"make lane-recover LANE=dev\"},"
                       "\"next_action\":\"unit-test\","
                       "\"service\":{\"active_state\":\"active\"},"
                       "\"rpc\":{\"status\":\"ok\"}}'",
@@ -1856,6 +1861,18 @@ static int test_zcl_agent_dev_tools_dispatch(void)
                       "zcl_agent_dev_status");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "next_action")),
                       "unit-test");
+        const struct json_value *worker = json_get(&root, "worker_lane");
+        ASSERT(worker != NULL);
+        ASSERT(worker->type == JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(worker, "role")), "worker");
+        ASSERT_STR_EQ(json_get_str(json_get(worker, "mutation_policy")),
+                      "noncanonical_dev_only");
+        ASSERT_STR_EQ(json_get_str(json_get(worker, "canonical_guard")),
+                      "never_touches_live_or_soak");
+        ASSERT_STR_EQ(json_get_str(json_get(worker, "stage_command")),
+                      "make agent-stage-dev");
+        ASSERT_STR_EQ(json_get_str(json_get(worker, "recover_command")),
+                      "make lane-recover LANE=dev");
         json_free(&root);
         free(body);
 

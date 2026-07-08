@@ -947,8 +947,10 @@ cheap machine-readable breadcrumb.
 `make agent-dev-status` / `zclassic23 agentdevstatus` /
 `zcl_agent_dev_status` expose the same restart hazard before deploy as
 `deploy_blocker`, `deploy_blocker_reason`, `explicit_recovery_env`, and
-`auto_reindex_stale_candidate`, so a healthy dev RPC cannot hide an
-`auto_reindex_request` that would be consumed on the next restart.
+`auto_reindex_stale_candidate`. The same response starts with the explicit
+`worker_lane` contract (`role=worker`, `mutation_policy=noncanonical_dev_only`,
+and `canonical_guard=never_touches_live_or_soak`), so a healthy dev RPC cannot
+hide an `auto_reindex_request` or blur the dev lane into canonical/soak.
 For a stale candidate, `make agent-clear-stale-dev-reindex` archives the marker
 only after the dev RPC is serving at or above the marker anchor and the dev
 agent contract is not blocked; it does not restart or mutate canonical/soak.
@@ -1045,6 +1047,9 @@ This is a C23 project, so the edit loop should compile only what changed.
   when present and can be set empty to force the platform linker. This binary
   is for local agent/API iteration, not deploy or release.
 - `make agent-dev-status` is the no-build dev-lane status command. It reports
+  the lane's explicit `worker_lane` contract (`role=worker`,
+  `mutation_policy=noncanonical_dev_only`, safe status/deploy/stage/recover
+  commands, and the guard that it never touches live or soak),
   the source and installed dev binaries, whether the staged binary matches the
   source-tree binary, `zcl23-dev` linger service state, RPC readiness or
   pre-RPC recovery progress, saved `agent-deploy.json`, auto-reindex marker

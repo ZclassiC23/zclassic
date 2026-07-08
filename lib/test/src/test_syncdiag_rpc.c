@@ -6256,6 +6256,11 @@ syncdiag_net_split_done:
         ok = ok && setenv(
             "ZCL_AGENT_DEV_STATUS_CMD",
             "printf '%s\\n' '{\"schema\":\"zcl.agent_dev_status.v1\","
+            "\"worker_lane\":{\"name\":\"dev\",\"role\":\"worker\","
+            "\"mutation_policy\":\"noncanonical_dev_only\","
+            "\"canonical_guard\":\"never_touches_live_or_soak\","
+            "\"stage_command\":\"make agent-stage-dev\","
+            "\"recover_command\":\"make lane-recover LANE=dev\"},"
             "\"next_action\":\"unit-test\","
             "\"service\":{\"active_state\":\"active\"},"
             "\"rpc\":{\"status\":\"ok\"}}'",
@@ -6282,6 +6287,23 @@ syncdiag_net_split_done:
         ok = ok && strcmp(json_get_str(json_get(&dev_status,
                                                 "next_action")),
                           "unit-test") == 0;
+        const struct json_value *dev_worker =
+            json_get(&dev_status, "worker_lane");
+        ok = ok && dev_worker && dev_worker->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(dev_worker, "role")),
+                          "worker") == 0;
+        ok = ok && strcmp(json_get_str(json_get(dev_worker,
+                                                "mutation_policy")),
+                          "noncanonical_dev_only") == 0;
+        ok = ok && strcmp(json_get_str(json_get(dev_worker,
+                                                "canonical_guard")),
+                          "never_touches_live_or_soak") == 0;
+        ok = ok && strcmp(json_get_str(json_get(dev_worker,
+                                                "stage_command")),
+                          "make agent-stage-dev") == 0;
+        ok = ok && strcmp(json_get_str(json_get(dev_worker,
+                                                "recover_command")),
+                          "make lane-recover LANE=dev") == 0;
 
         struct json_value liveness;
         json_init(&liveness);

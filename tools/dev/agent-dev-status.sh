@@ -83,6 +83,12 @@ auto_reindex_json() {
         "$(json_escape "$count")"
 }
 
+worker_lane_json() {
+    printf '{"name":"dev","role":"worker","purpose":"fresh-build development lane for frequent agent iteration","unit":"%s","datadir":"%s","rpcport":"%s","mutation_policy":"noncanonical_dev_only","canonical_guard":"never_touches_live_or_soak","status_command":"make agent-dev-status","deploy_command":"make agent-deploy-fast","stage_command":"make agent-stage-dev","recover_command":"make lane-recover LANE=dev"}' \
+        "$(json_escape "$UNIT")" "$(json_escape "$DEV_DATADIR")" \
+        "$(json_escape "$DEV_RPCPORT")"
+}
+
 json_bool_field() {
     local body="$1" key="$2" token
     token="$(printf '%s\n' "$body" |
@@ -228,7 +234,7 @@ next_action() {
 }
 
 emit_json() {
-    local src installed service rpc deploy auto active_state rpc_status auto_pending
+    local src installed service rpc deploy auto worker active_state rpc_status auto_pending
     local rpc_height auto_anchor auto_count agent_probe agent_ready agent_reason
     local deploy_blocker="false"
     local deploy_blocker_reason="" stale_candidate="false" staged="false" action
@@ -238,6 +244,7 @@ emit_json() {
     rpc="$(rpc_json)"
     deploy="$(deploy_state_summary_json)"
     auto="$(auto_reindex_json)"
+    worker="$(worker_lane_json)"
     staged_matches && staged="true"
     active_state="$(printf '%s\n' "$service" |
         sed -n 's/.*"active_state":"\([^"]*\)".*/\1/p')"
@@ -270,6 +277,7 @@ emit_json() {
         "$stale_candidate")"
     printf '{\n'
     printf '  "schema": "%s",\n' "$SCHEMA"
+    printf '  "worker_lane": %s,\n' "$worker"
     printf '  "source_binary": %s,\n' "$src"
     printf '  "installed_binary": %s,\n' "$installed"
     printf '  "installed_matches_source": %s,\n' "$staged"
@@ -299,6 +307,10 @@ emit_text() {
             " pid=" + .service.main_pid +
             " rpc=" + .rpc.status +
             " detail=" + .rpc.detail,
+            "[agent-dev-status] worker_lane=" + .worker_lane.name +
+            " role=" + .worker_lane.role +
+            " policy=" + .worker_lane.mutation_policy +
+            " guard=" + .worker_lane.canonical_guard,
             "[agent-dev-status] source_bin=" + .source_binary.path +
             " installed_bin=" + .installed_binary.path +
             " source_commit=" + .source_binary.build_commit +

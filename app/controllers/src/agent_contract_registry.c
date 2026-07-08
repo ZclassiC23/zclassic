@@ -66,7 +66,7 @@ static const struct agent_contract_command_surface g_agent_command_surfaces[] = 
     CONTRACT_COMMAND("agentmap.commands.core", 5, "build", "agentbuild",
       "incremental/cache/reproducible build contract"),
     CONTRACT_COMMAND("agentmap.commands.core", 6, "dev_status",
-      "agentdevstatus", "read-only dev-lane status and next safe action"),
+      "agentdevstatus", "read-only worker-lane dev status and next safe action"),
     CONTRACT_COMMAND("agentmap.commands.core", 7, "anchor_status", "anchorstatus",
       "offline anchor-mint progress and next action"),
     CONTRACT_COMMAND("agentmap.commands.core", 8, "interface", "agentinterface",

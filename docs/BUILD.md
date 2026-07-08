@@ -62,11 +62,13 @@ dev-lane status, recent focused-test failure hints, dirty-file count, and the
 next safe command. Use `make agent-doctor ARGS=--json` for
 `zcl.agent_doctor.v1`.
 `make agent-dev-status` is the no-build read-only lane check: it reports the
-source/staged binaries, linger service PID, RPC readiness, saved deploy state,
-auto-reindex marker, deploy blocker/reason, stale-marker candidate, and next
-safe action. Use `make agent-dev-status ARGS=--json`, native
-`zclassic23 agentdevstatus`, or MCP `zcl_agent_dev_status` for the
-machine-readable `zcl.agent_dev_status.v1` form.
+explicit `worker_lane` contract (`role=worker`,
+`mutation_policy=noncanonical_dev_only`, and
+`canonical_guard=never_touches_live_or_soak`), source/staged binaries, linger
+service PID, RPC readiness, saved deploy state, auto-reindex marker, deploy
+blocker/reason, stale-marker candidate, and next safe action. Use
+`make agent-dev-status ARGS=--json`, native `zclassic23 agentdevstatus`, or MCP
+`zcl_agent_dev_status` for the machine-readable `zcl.agent_dev_status.v1` form.
 When that status reports `auto_reindex_stale_candidate=true`, run
 `make agent-clear-stale-dev-reindex`; it archives the dev-lane marker only after
 the dev RPC serves at or above the marker anchor, and never touches canonical or

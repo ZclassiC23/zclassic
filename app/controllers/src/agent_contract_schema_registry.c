@@ -80,7 +80,7 @@ static const struct agent_contract_schema_surface g_agent_schema_surfaces[] = {
       "one stable service.operation contract with input/output, authority, effect, and safety metadata" },
     { 23, "zcl.agent_dev_status.v1",
       "zclassic23 agentdevstatus / zcl_agent_dev_status",
-      "read-only dev-lane staged binary, linger service, RPC/recovery, deploy state, and next-action status" },
+      "read-only worker-lane contract, staged binary, linger service, RPC/recovery, deploy state, and next-action status" },
     { 24, "zcl.mvp_operator_proofs.v1",
       "nested in zcl.milestone_status.v1",
       "MVP criterion proof commands, local dependencies, CI regression floors, and pending blockers" },
