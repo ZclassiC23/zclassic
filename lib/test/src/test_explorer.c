@@ -215,7 +215,9 @@ int test_explorer(void)
              strstr((char *)out, "4 verified samples") != NULL &&
              strstr((char *)out, "Source: historical UTXO snapshots") != NULL &&
              strstr((char *)out, "class='hodl-end-label'") != NULL &&
-             strstr((char *)out, "Block height axis") != NULL &&
+             strstr((char *)out, "Timeline by block height") != NULL &&
+             strstr((char *)out, "id='hodl-survival-wrap'") != NULL &&
+             strstr((char *)out, "requestAnimationFrame(maybeScrollLatest)") != NULL &&
              strstr((char *)out, "var hmin=") != NULL &&
              strstr((char *)out, "var tmin=") == NULL &&
              strstr((char *)out, "6 months") != NULL &&
@@ -341,7 +343,12 @@ int test_explorer(void)
              strstr((char *)out,
                     "Current transparent UTXO value distribution") != NULL &&
              strstr((char *)out, "id='hodl-age-wave'") != NULL &&
+             strstr((char *)out, "id='hodl-age-wrap'") != NULL &&
              strstr((char *)out, "class='hodl-age-hit'") != NULL &&
+             strstr((char *)out, "aria-label='") != NULL &&
+             strstr((char *)out, "requestAnimationFrame(maybeScrollSelected)") != NULL &&
+             strstr((char *)out, "stroke-width='1'><title>") == NULL &&
+             strstr((char *)out, "stroke-width='2'><title>") == NULL &&
              strstr((char *)out, "svg.addEventListener('keydown'") != NULL &&
              strstr((char *)out, "id='hodl-ts'") == NULL &&
              strstr((char *)out, "{{") == NULL &&
