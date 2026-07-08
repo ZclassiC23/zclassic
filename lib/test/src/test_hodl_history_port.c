@@ -63,9 +63,18 @@ static bool make_fixture_db(sqlite3 **out_db)
         " height INTEGER PRIMARY KEY,"
         " time INTEGER NOT NULL,"
         " total_zat INTEGER NOT NULL DEFAULT 0 CHECK(total_zat >= 0),"
+        " older_6m_zat INTEGER NOT NULL DEFAULT 0"
+        "   CHECK(older_6m_zat >= 0 AND older_6m_zat <= total_zat),"
         " older_1y_zat INTEGER NOT NULL DEFAULT 0"
         "   CHECK(older_1y_zat >= 0 AND older_1y_zat <= total_zat),"
+        " older_2y_zat INTEGER NOT NULL DEFAULT 0"
+        "   CHECK(older_2y_zat >= 0 AND older_2y_zat <= total_zat),"
+        " older_5y_zat INTEGER NOT NULL DEFAULT 0"
+        "   CHECK(older_5y_zat >= 0 AND older_5y_zat <= total_zat),"
+        " older_6m_pct REAL NOT NULL DEFAULT 0,"
         " older_1y_pct REAL NOT NULL DEFAULT 0,"
+        " older_2y_pct REAL NOT NULL DEFAULT 0,"
+        " older_5y_pct REAL NOT NULL DEFAULT 0,"
         " calc_version INTEGER NOT NULL DEFAULT 0,"
         " source_tip_height INTEGER NOT NULL DEFAULT -1);";
     if (sqlite3_exec(db, ddl, NULL, NULL, NULL) != SQLITE_OK) {
@@ -177,20 +186,42 @@ int test_hodl_history_port(void)
         HH_CHECK("block_time(99) miss",
                  !port.block_time(port.self, 99, &bt_miss));
 
-        int64_t total = -1, older = -1;
-        int64_t cutoff = (2 * YEAR) - YEAR;   /* = 1y */
+        int64_t total = -1;
+        int64_t older[HODL_HISTORY_THRESHOLDS] = {-1, -1, -1, -1};
+        int64_t cutoffs[HODL_HISTORY_THRESHOLDS] = {
+            (2 * YEAR) - HODL_HISTORY_HALF_YEAR_SECONDS,
+            (2 * YEAR) - HODL_HISTORY_ONE_YEAR_SECONDS,
+            (2 * YEAR) - HODL_HISTORY_TWO_YEAR_SECONDS,
+            (2 * YEAR) - HODL_HISTORY_FIVE_YEAR_SECONDS,
+        };
         HH_CHECK("compute_snapshot ok",
-                 port.compute_snapshot(port.self, 3, cutoff, &total, &older));
+                 port.compute_snapshot(port.self, 3, cutoffs, &total, older));
         HH_CHECK("total alive at 3 == 300", total == 300);
-        HH_CHECK("older-than-1y == 100", older == 100);
+        HH_CHECK("older-than-6m == 300",
+                 older[HODL_HISTORY_THRESHOLD_6M] == 300);
+        HH_CHECK("older-than-1y == 100",
+                 older[HODL_HISTORY_THRESHOLD_1Y] == 100);
+        HH_CHECK("older-than-2y includes exact boundary",
+                 older[HODL_HISTORY_THRESHOLD_2Y] == 100);
+        HH_CHECK("older-than-5y == 0",
+                 older[HODL_HISTORY_THRESHOLD_5Y] == 0);
 
         HH_CHECK("max_filled empty == 0",
                  port.max_filled_height(port.self) == 0);
 
         struct hodl_history_snapshot row = {
             .height = 3, .time = 2 * YEAR,
-            .total_zat = total, .older_1y_zat = older,
-            .older_1y_pct = (double)older / (double)total * 100.0,
+            .total_zat = total,
+            .older_6m_zat = older[HODL_HISTORY_THRESHOLD_6M],
+            .older_1y_zat = older[HODL_HISTORY_THRESHOLD_1Y],
+            .older_2y_zat = older[HODL_HISTORY_THRESHOLD_2Y],
+            .older_5y_zat = older[HODL_HISTORY_THRESHOLD_5Y],
+            .older_6m_pct = 100.0,
+            .older_1y_pct = (double)older[HODL_HISTORY_THRESHOLD_1Y] /
+                             (double)total * 100.0,
+            .older_2y_pct = (double)older[HODL_HISTORY_THRESHOLD_2Y] /
+                             (double)total * 100.0,
+            .older_5y_pct = 0.0,
         };
         HH_CHECK("upsert ok", port.upsert_snapshot(port.self, &row));
         HH_CHECK("max_filled == 3", port.max_filled_height(port.self) == 3);
@@ -203,7 +234,11 @@ int test_hodl_history_port(void)
         HH_CHECK("load_all returns 1 row", n == 1);
         HH_CHECK("loaded height", n == 1 && loaded[0].height == 3);
         HH_CHECK("loaded total", n == 1 && loaded[0].total_zat == 300);
+        HH_CHECK("loaded older 6m", n == 1 && loaded[0].older_6m_zat == 300);
         HH_CHECK("loaded older", n == 1 && loaded[0].older_1y_zat == 100);
+        HH_CHECK("loaded older 2y", n == 1 && loaded[0].older_2y_zat == 100);
+        HH_CHECK("loaded older 5y", n == 1 && loaded[0].older_5y_zat == 0);
+        HH_CHECK("loaded pct 6m", n == 1 && loaded[0].older_6m_pct == 100.0);
         HH_CHECK("loaded pct ~33.33",
                  n == 1 && loaded[0].older_1y_pct > 33.0 &&
                  loaded[0].older_1y_pct < 33.5);
@@ -229,7 +264,15 @@ int test_hodl_history_port(void)
         HH_CHECK("service height 3", n == 1 && rows[0].height == 3);
         HH_CHECK("service time 2y", n == 1 && rows[0].time == 2 * YEAR);
         HH_CHECK("service total 300", n == 1 && rows[0].total_zat == 300);
+        HH_CHECK("service older 6m 300",
+                 n == 1 && rows[0].older_6m_zat == 300);
         HH_CHECK("service older 100", n == 1 && rows[0].older_1y_zat == 100);
+        HH_CHECK("service older 2y 100",
+                 n == 1 && rows[0].older_2y_zat == 100);
+        HH_CHECK("service older 5y 0",
+                 n == 1 && rows[0].older_5y_zat == 0);
+        HH_CHECK("service pct 6m",
+                 n == 1 && rows[0].older_6m_pct == 100.0);
         HH_CHECK("service pct ~33.33",
                  n == 1 && rows[0].older_1y_pct > 33.0 &&
                  rows[0].older_1y_pct < 33.5);
@@ -349,10 +392,12 @@ int test_hodl_history_port(void)
         HH_CHECK("recency rows seed",
                  exec_sql(db,
                      "INSERT INTO hodl_history(height,time,total_zat,"
-                     "older_1y_zat,older_1y_pct) VALUES"
-                     "(1,10,100,10,10.0),"
-                     "(2,20,200,20,10.0),"
-                     "(3,30,300,30,10.0);"));
+                     "older_6m_zat,older_1y_zat,older_2y_zat,older_5y_zat,"
+                     "older_6m_pct,older_1y_pct,older_2y_pct,older_5y_pct,"
+                     "calc_version,source_tip_height) VALUES"
+                     "(1,10,100,20,10,0,0,20.0,10.0,0.0,0.0,2,1),"
+                     "(2,20,200,40,20,0,0,20.0,10.0,0.0,0.0,2,2),"
+                     "(3,30,300,60,30,0,0,20.0,10.0,0.0,0.0,2,3);"));
 
         struct hodl_history_row rows[2];
         int n = hodl_history_load_all(db, rows, 2);

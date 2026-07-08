@@ -3,8 +3,9 @@
  * hodl_history_service — see header.
  *
  * The SQL for one snapshot at height H:
- *   total_zat   = SUM(o.value)               where o is "alive at H"
- *   older_1y_zat = SUM(o.value) where also b.time(o.block_height) <= T_H - 31557600
+ *   total_zat = SUM(o.value) where o is "alive at H"
+ *   older_*_zat = SUM(o.value) where also b.time(o.block_height) <=
+ *                 T_H - threshold_seconds
  *
  * "Alive at H" means o was created on a block ≤ H and not spent on a
  * block ≤ H. tx_inputs holds (prev_txid, prev_vout, block_height) for
@@ -44,13 +45,34 @@ _Static_assert(offsetof(struct hodl_history_row, height) ==
                    offsetof(struct hodl_history_snapshot, time) &&
                offsetof(struct hodl_history_row, total_zat) ==
                    offsetof(struct hodl_history_snapshot, total_zat) &&
+               offsetof(struct hodl_history_row, older_6m_zat) ==
+                   offsetof(struct hodl_history_snapshot, older_6m_zat) &&
                offsetof(struct hodl_history_row, older_1y_zat) ==
                    offsetof(struct hodl_history_snapshot, older_1y_zat) &&
+               offsetof(struct hodl_history_row, older_2y_zat) ==
+                   offsetof(struct hodl_history_snapshot, older_2y_zat) &&
+               offsetof(struct hodl_history_row, older_5y_zat) ==
+                   offsetof(struct hodl_history_snapshot, older_5y_zat) &&
+               offsetof(struct hodl_history_row, older_6m_pct) ==
+                   offsetof(struct hodl_history_snapshot, older_6m_pct) &&
                offsetof(struct hodl_history_row, older_1y_pct) ==
-                   offsetof(struct hodl_history_snapshot, older_1y_pct),
+                   offsetof(struct hodl_history_snapshot, older_1y_pct) &&
+               offsetof(struct hodl_history_row, older_2y_pct) ==
+                   offsetof(struct hodl_history_snapshot, older_2y_pct) &&
+               offsetof(struct hodl_history_row, older_5y_pct) ==
+                   offsetof(struct hodl_history_snapshot, older_5y_pct),
                "hodl_history_row fields must match hodl_history_snapshot");
 
-#define JULIAN_YEAR_SECONDS  ((int64_t)31557600)
+static double hodl_history_pct(int64_t older, int64_t total)
+{
+    if (older > total)
+        older = total;
+    if (total < 0)
+        total = 0;
+    if (older < 0)
+        older = 0;
+    return total > 0 ? (double)older / (double)total * 100.0 : 0.0;
+}
 
 /* Compute and persist one snapshot via the storage port. This is the
  * port-driven core that hodl_history_fill_one wraps once it has bound
@@ -65,29 +87,43 @@ static bool fill_one_via_port(struct hodl_history_port *port, int64_t height)
     if (block_time <= 0)
         return false;
 
-    int64_t cutoff_time = block_time - JULIAN_YEAR_SECONDS;
+    int64_t cutoff_times[HODL_HISTORY_THRESHOLDS] = {
+        block_time - HODL_HISTORY_HALF_YEAR_SECONDS,
+        block_time - HODL_HISTORY_ONE_YEAR_SECONDS,
+        block_time - HODL_HISTORY_TWO_YEAR_SECONDS,
+        block_time - HODL_HISTORY_FIVE_YEAR_SECONDS,
+    };
 
-    int64_t total = 0, older = 0;
-    if (!port->compute_snapshot(port->self, height, cutoff_time,
-                                &total, &older))
+    int64_t total = 0;
+    int64_t older[HODL_HISTORY_THRESHOLDS] = {0};
+    if (!port->compute_snapshot(port->self, height, cutoff_times,
+                                &total, older))
         return false;
 
-    /* Clamp older to total — same invariant the CHECK constraint
-     * enforces. A small underflow from concurrent writes would only
-     * happen during initial sync; pin to the valid range. */
-    if (older > total) older = total;
     if (total < 0) total = 0;
-    if (older < 0) older = 0;
-    double pct = total > 0
-        ? (double)older / (double)total * 100.0
-        : 0.0;
+    for (int i = 0; i < HODL_HISTORY_THRESHOLDS; i++) {
+        if (older[i] > total)
+            older[i] = total;
+        if (older[i] < 0)
+            older[i] = 0;
+    }
 
     struct hodl_history_snapshot row = {
         .height       = height,
         .time         = block_time,
         .total_zat    = total,
-        .older_1y_zat = older,
-        .older_1y_pct = pct,
+        .older_6m_zat = older[HODL_HISTORY_THRESHOLD_6M],
+        .older_1y_zat = older[HODL_HISTORY_THRESHOLD_1Y],
+        .older_2y_zat = older[HODL_HISTORY_THRESHOLD_2Y],
+        .older_5y_zat = older[HODL_HISTORY_THRESHOLD_5Y],
+        .older_6m_pct = hodl_history_pct(older[HODL_HISTORY_THRESHOLD_6M],
+                                          total),
+        .older_1y_pct = hodl_history_pct(older[HODL_HISTORY_THRESHOLD_1Y],
+                                          total),
+        .older_2y_pct = hodl_history_pct(older[HODL_HISTORY_THRESHOLD_2Y],
+                                          total),
+        .older_5y_pct = hodl_history_pct(older[HODL_HISTORY_THRESHOLD_5Y],
+                                          total),
     };
     if (!port->upsert_snapshot(port->self, &row)) {
         /* upsert already logged the failure context. */
@@ -96,7 +132,8 @@ static bool fill_one_via_port(struct hodl_history_port *port, int64_t height)
 
     if (height > INT32_MAX || block_time > UINT32_MAX ||
         !hodl_history_projection_emit_snapshot(
-            (int32_t)height, (uint32_t)block_time, total, older, pct)) {
+            (int32_t)height, (uint32_t)block_time, total,
+            row.older_1y_zat, row.older_1y_pct)) {
         LOG_WARN("service", "hodl history projection emit failed for snapshot");
     }
     return true;

@@ -2,7 +2,7 @@
  * Copyright 2026 Rhett Creighton
  *
  * hodl_history_port — storage interface for the explorer-side HODL-wave
- * history (the "% of supply held > 1 year" time series).
+ * history (the HODL-wave time series).
  *
  * This is a read-mostly, NON-CONSENSUS projection: it reads the block
  * timestamp index and the tx_outputs / tx_inputs indices to compute one
@@ -14,8 +14,8 @@
  * here capture exactly the queries the service issues:
  *
  *   block_time(h)            "SELECT time FROM blocks WHERE height = ?"
- *   compute_snapshot(h, cut) the single-pass alive-at-H aggregate that
- *                            yields (total_zat, older_than_1y_zat)
+ *   compute_snapshot(h, cuts) the single-pass alive-at-H aggregate that
+ *                             yields total_zat plus age-threshold totals
  *   upsert_snapshot(row)     "INSERT OR REPLACE INTO hodl_history ..."
  *   max_filled_height()      "SELECT COALESCE(MAX(height),0) FROM ..."
  *   next_fill_height()       first missing/stale sample height in stride order
@@ -40,7 +40,15 @@
 /* Bump when the persisted HODL snapshot calculation semantics change.
  * Rows with an older version are lazily recomputed by the background
  * filler. */
-#define HODL_HISTORY_SNAPSHOT_CALC_VERSION 1
+enum {
+    HODL_HISTORY_THRESHOLD_6M = 0,
+    HODL_HISTORY_THRESHOLD_1Y = 1,
+    HODL_HISTORY_THRESHOLD_2Y = 2,
+    HODL_HISTORY_THRESHOLD_5Y = 3,
+    HODL_HISTORY_THRESHOLDS = 4
+};
+
+#define HODL_HISTORY_SNAPSHOT_CALC_VERSION 2
 
 /* One persisted supply-age snapshot. Mirrors struct hodl_history_row in
  * services/hodl_history_service.h field-for-field; declared here so the
@@ -49,8 +57,14 @@ struct hodl_history_snapshot {
     int64_t height;
     int64_t time;            /* unix seconds at this block */
     int64_t total_zat;
+    int64_t older_6m_zat;
     int64_t older_1y_zat;
+    int64_t older_2y_zat;
+    int64_t older_5y_zat;
+    double  older_6m_pct;
     double  older_1y_pct;
+    double  older_2y_pct;
+    double  older_5y_pct;
 };
 
 struct hodl_history_port {
@@ -65,15 +79,15 @@ struct hodl_history_port {
     /* Single-pass "alive at H" aggregate. Computes:
      *   *out_total = SUM(value) of outputs created on a block <= height
      *                and not spent on a block <= height.
-     *   *out_older = the subset of that whose creation block time
-     *                <= cutoff_time.
+     *   out_older[i] = the subset of that whose creation block time
+     *                  <= cutoff_times[i].
      * Returns true on success (including the all-zero case). On storage
-     * error returns false and leaves *out_total / *out_older untouched. */
+     * error returns false and leaves *out_total / out_older untouched. */
     bool (*compute_snapshot)(void *self,
                              int64_t height,
-                             int64_t cutoff_time,
+                             const int64_t cutoff_times[HODL_HISTORY_THRESHOLDS],
                              int64_t *out_total,
-                             int64_t *out_older);
+                             int64_t out_older[HODL_HISTORY_THRESHOLDS]);
 
     /* Persist (insert-or-replace) one snapshot row keyed by height.
      * Returns true on success. */

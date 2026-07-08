@@ -168,17 +168,24 @@ int test_explorer(void)
             "CREATE TABLE blocks(height INTEGER, time INTEGER);"
             "CREATE TABLE utxos(height INTEGER, value INTEGER);"
             "CREATE TABLE hodl_history(height INTEGER, time INTEGER,"
-            "total_zat INTEGER, older_1y_zat INTEGER, older_1y_pct REAL);"
+            "total_zat INTEGER,"
+            "older_6m_zat INTEGER, older_1y_zat INTEGER,"
+            "older_2y_zat INTEGER, older_5y_zat INTEGER,"
+            "older_6m_pct REAL, older_1y_pct REAL,"
+            "older_2y_pct REAL, older_5y_pct REAL,"
+            "calc_version INTEGER, source_tip_height INTEGER);"
             "INSERT INTO blocks(height,time) VALUES"
             "(4320,1000),(8640,2000),(21600,5000),(25920,6000);"
             "INSERT INTO utxos(height,value) VALUES"
             "(4320,400),(8640,400),(21600,100),(25920,100);"
-            "INSERT INTO hodl_history(height,time,total_zat,older_1y_zat,"
-            "older_1y_pct) VALUES"
-            "(4320,1000,400,50,12.5),"
-            "(8640,2000,800,200,25.0),"
-            "(21600,5000,900,450,50.0),"
-            "(25920,6000,1000,800,80.0);",
+            "INSERT INTO hodl_history(height,time,total_zat,"
+            "older_6m_zat,older_1y_zat,older_2y_zat,older_5y_zat,"
+            "older_6m_pct,older_1y_pct,older_2y_pct,older_5y_pct,"
+            "calc_version,source_tip_height) VALUES"
+            "(4320,1000,400,80,50,25,0,20.0,12.5,6.25,0.0,2,4320),"
+            "(8640,2000,800,300,200,100,50,37.5,25.0,12.5,6.25,2,8640),"
+            "(21600,5000,900,600,450,200,100,66.667,50.0,22.222,11.111,2,21600),"
+            "(25920,6000,1000,900,800,500,200,90.0,80.0,50.0,20.0,2,25920);",
             NULL, NULL, NULL) == SQLITE_OK;
         if (db)
             sqlite3_close(db);
@@ -189,11 +196,11 @@ int test_explorer(void)
         reducer_frontier_provable_tip_reset();
         out[n < sizeof(out) ? n : sizeof(out) - 1] = '\0';
 
-        int green_segments = 0;
+        int one_year_segments = 0;
         const char *scan = (const char *)out;
         while ((scan = strstr(scan,
-                              "<polyline fill='none' stroke='#33ff99'")) != NULL) {
-            green_segments++;
+                              "<polyline fill='none' stroke='#35d07f'")) != NULL) {
+            one_year_segments++;
             scan++;
         }
         ok = ok && n > 0 &&
@@ -204,21 +211,20 @@ int test_explorer(void)
              strstr((char *)out, "class='hodl-table-wrap'") != NULL &&
              strstr((char *)out, "class='txlist hodl-table'") != NULL &&
              strstr((char *)out, "id='hodl-survival-wave'") != NULL &&
-             strstr((char *)out, "HODL Wave over time") != NULL &&
+             strstr((char *)out, "Historical HODL wave") != NULL &&
+             strstr((char *)out, "4 verified samples") != NULL &&
+             strstr((char *)out, "Source: historical UTXO snapshots") != NULL &&
              strstr((char *)out, "class='hodl-end-label'") != NULL &&
              strstr((char *)out, "6 months") != NULL &&
              strstr((char *)out, "2 years") != NULL &&
              strstr((char *)out, "5 years") != NULL &&
              strstr((char *)out, "id='hodl-survival-dot-0'") != NULL &&
              strstr((char *)out, "{{") == NULL &&
-             strstr((char *)out, "Historical transparent UTXO value") != NULL &&
-             strstr((char *)out, "[4320,1000,400,50,12500]") != NULL &&
-             strstr((char *)out, "[8640,2000,800,200,25000]") != NULL &&
-             strstr((char *)out, "[21600,5000,900,450,50000]") != NULL &&
-             strstr((char *)out, "[25920,6000,1000,800,80000]") != NULL &&
-             strstr((char *)out, "4 samples · 1 gap") != NULL &&
-             strstr((char *)out, "backfilling") != NULL &&
-             green_segments == 3 &&
+             strstr((char *)out, "[4320,1000,400,20000,12500,6250,0,80,50,25,0]") != NULL &&
+             strstr((char *)out, "[8640,2000,800,37500,25000,12500,6250,300,200,100,50]") != NULL &&
+             strstr((char *)out, "[25920,6000,1000,90000,80000,50000,20000,900,800,500,200]") != NULL &&
+             strstr((char *)out, "id='hodl-ts'") == NULL &&
+             one_year_segments == 1 &&
              strstr((char *)out, "surviving creation") == NULL &&
              strstr((char *)out,
                     "style='max-width:1000px;margin:20px auto'") == NULL &&
@@ -248,7 +254,12 @@ int test_explorer(void)
             "CREATE TABLE blocks(height INTEGER, hash BLOB, time INTEGER);"
             "CREATE TABLE utxos(height INTEGER, value INTEGER);"
             "CREATE TABLE hodl_history(height INTEGER, time INTEGER,"
-            "total_zat INTEGER, older_1y_zat INTEGER, older_1y_pct REAL);"
+            "total_zat INTEGER,"
+            "older_6m_zat INTEGER, older_1y_zat INTEGER,"
+            "older_2y_zat INTEGER, older_5y_zat INTEGER,"
+            "older_6m_pct REAL, older_1y_pct REAL,"
+            "older_2y_pct REAL, older_5y_pct REAL,"
+            "calc_version INTEGER, source_tip_height INTEGER);"
             "INSERT INTO blocks(height,hash,time) VALUES"
             "(10,x'1111111111111111111111111111111111111111111111111111111111111111',1000);"
             "INSERT INTO utxos(height,value) VALUES(10,100000000);",
@@ -263,23 +274,18 @@ int test_explorer(void)
         out[n < sizeof(out) ? n : sizeof(out) - 1] = '\0';
 
         ok = ok && n > 0 &&
-             strstr((char *)out, "Current tip") != NULL &&
              strstr((char *)out, "Unspent transparent value by age") != NULL &&
              strstr((char *)out,
                     "Current transparent UTXO value distribution") != NULL &&
              strstr((char *)out, "id='hodl-age-wave'") != NULL &&
              strstr((char *)out, "class='hodl-age-hit'") != NULL &&
              strstr((char *)out, "svg.addEventListener('keydown'") != NULL &&
-             strstr((char *)out, "class='hodl-mini-grid'") != NULL &&
-             strstr((char *)out, "class='hodl-mini-value'") != NULL &&
-             strstr((char *)out, ".hodl-mini-grid{grid-template-columns:1fr") != NULL &&
+             strstr((char *)out, "id='hodl-ts'") == NULL &&
              strstr((char *)out, "{{") == NULL &&
-             strstr((char *)out,
-                    "current verified transparent UTXO distribution") != NULL &&
              strstr((char *)out, "Refresh in a minute") == NULL &&
              strstr((char *)out, "still being indexed") == NULL;
         ok = ok && strstr((char *)out, "Unspent transparent value by age") <
-                   strstr((char *)out, "Current tip");
+                   strstr((char *)out, "class='stats-row hodl-stats'");
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
@@ -307,7 +313,12 @@ int test_explorer(void)
             "CREATE TABLE blocks(height INTEGER, hash BLOB, time INTEGER);"
             "CREATE TABLE utxos(height INTEGER, value INTEGER);"
             "CREATE TABLE hodl_history(height INTEGER, time INTEGER,"
-            "total_zat INTEGER, older_1y_zat INTEGER, older_1y_pct REAL);"
+            "total_zat INTEGER,"
+            "older_6m_zat INTEGER, older_1y_zat INTEGER,"
+            "older_2y_zat INTEGER, older_5y_zat INTEGER,"
+            "older_6m_pct REAL, older_1y_pct REAL,"
+            "older_2y_pct REAL, older_5y_pct REAL,"
+            "calc_version INTEGER, source_tip_height INTEGER);"
             "INSERT INTO blocks(height,hash,time) VALUES"
             "(10,x'1111111111111111111111111111111111111111111111111111111111111111',1000);"
             "INSERT INTO utxos(height,value) VALUES(10,100000000);",

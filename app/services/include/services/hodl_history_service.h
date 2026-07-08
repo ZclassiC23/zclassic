@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * hodl_history_service — populates the hodl_history table with
- * "% of supply held > 1 year" snapshots at regular height intervals.
+ * HODL-wave snapshots at regular height intervals.
  *
  * The fill is lazy + idempotent:
  *  - hodl_history_fill_one(db, height_h) computes one row, INSERT OR
@@ -26,13 +26,23 @@
 
 #define HODL_HISTORY_SAMPLE_STRIDE 4320  /* ~1 day at 75s/block */
 #define HODL_HISTORY_BLOCKS_PER_YEAR 420768  /* 365.25d * 86400s / 75s */
+#define HODL_HISTORY_HALF_YEAR_SECONDS 15778800LL
+#define HODL_HISTORY_ONE_YEAR_SECONDS 31557600LL
+#define HODL_HISTORY_TWO_YEAR_SECONDS 63115200LL
+#define HODL_HISTORY_FIVE_YEAR_SECONDS 157788000LL
 
 struct hodl_history_row {
     int64_t height;
     int64_t time;            /* unix seconds at this block */
     int64_t total_zat;
+    int64_t older_6m_zat;
     int64_t older_1y_zat;
+    int64_t older_2y_zat;
+    int64_t older_5y_zat;
+    double  older_6m_pct;
     double  older_1y_pct;
+    double  older_2y_pct;
+    double  older_5y_pct;
 };
 
 /* Compute and persist one snapshot. Returns a non-ok zcl_result on SQL

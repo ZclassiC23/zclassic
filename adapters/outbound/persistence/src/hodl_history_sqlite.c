@@ -84,45 +84,53 @@ static bool hh_block_time(void *self, int64_t height, int64_t *out_time)
 
 static bool hh_compute_snapshot(void *self,
                                 int64_t height,
-                                int64_t cutoff_time,
+                                const int64_t cutoff_times[HODL_HISTORY_THRESHOLDS],
                                 int64_t *out_total,
-                                int64_t *out_older)
+                                int64_t out_older[HODL_HISTORY_THRESHOLDS])
 {
     sqlite3 *db = db_of(self);
-    if (!db || !out_total || !out_older)
+    if (!db || !cutoff_times || !out_total || !out_older)
         return false;
 
-    /* Compute total + older-than-1y in a single pass.
+    /* Compute total + all age thresholds in a single pass.
      *   o "alive at H": LEFT JOIN tx_inputs filtered to spends <= H,
      *                   keep only rows where no such spend exists.
-     *   "older than 1y": creation-block time <= block_time - 1y. */
+     *   "older than X": creation-block time <= block_time - X. */
     const char *sql =
         "SELECT "
         "  COALESCE(SUM(o.value), 0) AS total_zat,"
-        "  COALESCE(SUM(CASE WHEN b.time <= ?1 THEN o.value ELSE 0 END), 0) "
-        "    AS older_zat "
+        "  COALESCE(SUM(CASE WHEN b.time <= ?1 THEN o.value ELSE 0 END), 0),"
+        "  COALESCE(SUM(CASE WHEN b.time <= ?2 THEN o.value ELSE 0 END), 0),"
+        "  COALESCE(SUM(CASE WHEN b.time <= ?3 THEN o.value ELSE 0 END), 0),"
+        "  COALESCE(SUM(CASE WHEN b.time <= ?4 THEN o.value ELSE 0 END), 0) "
         "FROM tx_outputs o "
         "JOIN blocks b ON b.height = o.block_height "
         "LEFT JOIN tx_inputs i "
         "  ON i.prev_txid = o.txid AND i.prev_vout = o.vout "
-        "     AND i.block_height <= ?2 "
-        "WHERE o.block_height <= ?2 AND i.txid IS NULL";
+        "     AND i.block_height <= ?5 "
+        "WHERE o.block_height <= ?5 AND i.txid IS NULL";
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK || !s) {
         LOG_FAIL("hodl_history",
                  "prepare snapshot SQL failed: %s", sqlite3_errmsg(db));
         return false;
     }
-    sqlite3_bind_int64(s, 1, cutoff_time);
-    sqlite3_bind_int64(s, 2, height);
-    int64_t total = 0, older = 0;
+    sqlite3_bind_int64(s, 1, cutoff_times[HODL_HISTORY_THRESHOLD_6M]);
+    sqlite3_bind_int64(s, 2, cutoff_times[HODL_HISTORY_THRESHOLD_1Y]);
+    sqlite3_bind_int64(s, 3, cutoff_times[HODL_HISTORY_THRESHOLD_2Y]);
+    sqlite3_bind_int64(s, 4, cutoff_times[HODL_HISTORY_THRESHOLD_5Y]);
+    sqlite3_bind_int64(s, 5, height);
+    int64_t total = 0;
+    int64_t older[HODL_HISTORY_THRESHOLDS] = {0};
     if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         total = sqlite3_column_int64(s, 0);
-        older = sqlite3_column_int64(s, 1);
+        for (int i = 0; i < HODL_HISTORY_THRESHOLDS; i++)
+            older[i] = sqlite3_column_int64(s, i + 1);
     }
     sqlite3_finalize(s);
     *out_total = total;
-    *out_older = older;
+    for (int i = 0; i < HODL_HISTORY_THRESHOLDS; i++)
+        out_older[i] = older[i];
     return true;
 }
 
@@ -136,9 +144,11 @@ static bool hh_upsert_snapshot(void *self,
     int64_t source_tip = hh_projection_tip_height(db, row->height);
     const char *ins_sql =
         "INSERT OR REPLACE INTO hodl_history "
-        "(height, time, total_zat, older_1y_zat, older_1y_pct, "
+        "(height, time, total_zat, "
+        " older_6m_zat, older_1y_zat, older_2y_zat, older_5y_zat, "
+        " older_6m_pct, older_1y_pct, older_2y_pct, older_5y_pct, "
         " calc_version, source_tip_height) "
-        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)";
+        "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)";
     if (sqlite3_prepare_v2(db, ins_sql, -1, &ins, NULL) != SQLITE_OK || !ins) {
         LOG_FAIL("hodl_history",
                  "prepare INSERT failed: %s", sqlite3_errmsg(db));
@@ -147,10 +157,16 @@ static bool hh_upsert_snapshot(void *self,
     sqlite3_bind_int64(ins, 1, row->height);
     sqlite3_bind_int64(ins, 2, row->time);
     sqlite3_bind_int64(ins, 3, row->total_zat);
-    sqlite3_bind_int64(ins, 4, row->older_1y_zat);
-    sqlite3_bind_double(ins, 5, row->older_1y_pct);
-    sqlite3_bind_int(ins, 6, HODL_HISTORY_SNAPSHOT_CALC_VERSION);
-    sqlite3_bind_int64(ins, 7, source_tip);
+    sqlite3_bind_int64(ins, 4, row->older_6m_zat);
+    sqlite3_bind_int64(ins, 5, row->older_1y_zat);
+    sqlite3_bind_int64(ins, 6, row->older_2y_zat);
+    sqlite3_bind_int64(ins, 7, row->older_5y_zat);
+    sqlite3_bind_double(ins, 8, row->older_6m_pct);
+    sqlite3_bind_double(ins, 9, row->older_1y_pct);
+    sqlite3_bind_double(ins, 10, row->older_2y_pct);
+    sqlite3_bind_double(ins, 11, row->older_5y_pct);
+    sqlite3_bind_int(ins, 12, HODL_HISTORY_SNAPSHOT_CALC_VERSION);
+    sqlite3_bind_int64(ins, 13, source_tip);
     int rc = AR_STEP_WRITE(ins);
     sqlite3_finalize(ins);
     if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
@@ -238,22 +254,35 @@ static int hh_load_all(void *self,
     if (!db || !out || max_rows <= 0)
         return 0;
     const char *sql =
-        "SELECT height, time, total_zat, older_1y_zat, older_1y_pct "
+        "SELECT height, time, total_zat, "
+        "older_6m_zat, older_1y_zat, older_2y_zat, older_5y_zat, "
+        "older_6m_pct, older_1y_pct, older_2y_pct, older_5y_pct "
         "FROM ("
-        "  SELECT height, time, total_zat, older_1y_zat, older_1y_pct "
-        "  FROM hodl_history ORDER BY height DESC LIMIT ?"
+        "  SELECT height, time, total_zat, "
+        "  older_6m_zat, older_1y_zat, older_2y_zat, older_5y_zat, "
+        "  older_6m_pct, older_1y_pct, older_2y_pct, older_5y_pct "
+        "  FROM hodl_history "
+        "  WHERE calc_version >= ?2 AND source_tip_height >= height "
+        "  ORDER BY height DESC LIMIT ?1"
         ") ORDER BY height ASC";
     sqlite3_stmt *s = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK || !s)
         return 0;
     sqlite3_bind_int(s, 1, max_rows);
+    sqlite3_bind_int(s, 2, HODL_HISTORY_SNAPSHOT_CALC_VERSION);
     int n = 0;
     while (n < max_rows && AR_STEP_ROW_READONLY(s) == SQLITE_ROW) {
         out[n].height       = sqlite3_column_int64(s, 0);
         out[n].time         = sqlite3_column_int64(s, 1);
         out[n].total_zat    = sqlite3_column_int64(s, 2);
-        out[n].older_1y_zat = sqlite3_column_int64(s, 3);
-        out[n].older_1y_pct = sqlite3_column_double(s, 4);
+        out[n].older_6m_zat = sqlite3_column_int64(s, 3);
+        out[n].older_1y_zat = sqlite3_column_int64(s, 4);
+        out[n].older_2y_zat = sqlite3_column_int64(s, 5);
+        out[n].older_5y_zat = sqlite3_column_int64(s, 6);
+        out[n].older_6m_pct = sqlite3_column_double(s, 7);
+        out[n].older_1y_pct = sqlite3_column_double(s, 8);
+        out[n].older_2y_pct = sqlite3_column_double(s, 9);
+        out[n].older_5y_pct = sqlite3_column_double(s, 10);
         n++;
     }
     sqlite3_finalize(s);

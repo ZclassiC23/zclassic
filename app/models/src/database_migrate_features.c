@@ -319,6 +319,58 @@ int node_db_migrate_features(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 24) {
+        /* v24: HODL wave history stores the same alive-at-height snapshot for
+         * 6m/1y/2y/5y thresholds. Existing v19-v23 rows are left in place but
+         * have calc_version < HODL_HISTORY_SNAPSHOT_CALC_VERSION, so the lazy
+         * background filler recomputes them before the explorer reads them. */
+        if (db_exec_tolerant(ndb->db,
+            "ALTER TABLE hodl_history "
+            "ADD COLUMN older_6m_zat INTEGER NOT NULL DEFAULT 0 "
+            "CHECK(older_6m_zat >= 0 AND older_6m_zat <= total_zat)",
+            "v24: add hodl_history.older_6m_zat",
+            "duplicate column name") != SQLITE_OK)
+            LOG_ERR("db", "v24 migration failed adding hodl_history.older_6m_zat");
+        if (db_exec_tolerant(ndb->db,
+            "ALTER TABLE hodl_history "
+            "ADD COLUMN older_2y_zat INTEGER NOT NULL DEFAULT 0 "
+            "CHECK(older_2y_zat >= 0 AND older_2y_zat <= total_zat)",
+            "v24: add hodl_history.older_2y_zat",
+            "duplicate column name") != SQLITE_OK)
+            LOG_ERR("db", "v24 migration failed adding hodl_history.older_2y_zat");
+        if (db_exec_tolerant(ndb->db,
+            "ALTER TABLE hodl_history "
+            "ADD COLUMN older_5y_zat INTEGER NOT NULL DEFAULT 0 "
+            "CHECK(older_5y_zat >= 0 AND older_5y_zat <= total_zat)",
+            "v24: add hodl_history.older_5y_zat",
+            "duplicate column name") != SQLITE_OK)
+            LOG_ERR("db", "v24 migration failed adding hodl_history.older_5y_zat");
+        if (db_exec_tolerant(ndb->db,
+            "ALTER TABLE hodl_history "
+            "ADD COLUMN older_6m_pct REAL NOT NULL DEFAULT 0",
+            "v24: add hodl_history.older_6m_pct",
+            "duplicate column name") != SQLITE_OK)
+            LOG_ERR("db", "v24 migration failed adding hodl_history.older_6m_pct");
+        if (db_exec_tolerant(ndb->db,
+            "ALTER TABLE hodl_history "
+            "ADD COLUMN older_2y_pct REAL NOT NULL DEFAULT 0",
+            "v24: add hodl_history.older_2y_pct",
+            "duplicate column name") != SQLITE_OK)
+            LOG_ERR("db", "v24 migration failed adding hodl_history.older_2y_pct");
+        if (db_exec_tolerant(ndb->db,
+            "ALTER TABLE hodl_history "
+            "ADD COLUMN older_5y_pct REAL NOT NULL DEFAULT 0",
+            "v24: add hodl_history.older_5y_pct",
+            "duplicate column name") != SQLITE_OK)
+            LOG_ERR("db", "v24 migration failed adding hodl_history.older_5y_pct");
+        if (!node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('024')"))
+            LOG_ERR("db", "v24 migration failed stamping schema_migrations");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 24);
+        current_ver = 24;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }
