@@ -28,6 +28,7 @@
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/stage.h"
 
 #include <sqlite3.h>
 #include <stdint.h>
@@ -787,6 +788,110 @@ bool coins_ram_snapshot_write_v2(const char *out_path, int32_t height,
 
 /* ── flush ───────────────────────────────────────────────────────────── */
 
+static bool coins_ram_table_exists(sqlite3 *db, const char *name, bool *exists)
+{
+    if (exists)
+        *exists = false;
+    if (!db || !name)
+        return false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("coins_ram", "flush witness table probe prepare failed: %s",
+                 sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (exists)
+        *exists = (rc == SQLITE_ROW);
+    sqlite3_finalize(st);
+    return rc == SQLITE_ROW || rc == SQLITE_DONE;
+}
+
+static bool coins_ram_utxo_log_ok_at(sqlite3 *db, int32_t height,
+                                     bool *ok_at_height)
+{
+    if (ok_at_height)
+        *ok_at_height = false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT ok FROM utxo_apply_log WHERE height=?1",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("coins_ram", "flush witness log probe prepare failed: %s",
+                 sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)height);
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW && ok_at_height)
+        *ok_at_height = sqlite3_column_int(st, 0) == 1;
+    sqlite3_finalize(st);
+    return rc == SQLITE_ROW || rc == SQLITE_DONE;
+}
+
+static bool coins_ram_delta_exists_at(sqlite3 *db, int32_t height,
+                                      bool *exists_at_height)
+{
+    if (exists_at_height)
+        *exists_at_height = false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT 1 FROM utxo_apply_delta WHERE height=?1",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("coins_ram", "flush witness delta probe prepare failed: %s",
+                 sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)height);
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (exists_at_height)
+        *exists_at_height = (rc == SQLITE_ROW);
+    sqlite3_finalize(st);
+    return rc == SQLITE_ROW || rc == SQLITE_DONE;
+}
+
+static bool coins_ram_flush_has_reducer_witness(sqlite3 *db,
+                                                int32_t flushed_height)
+{
+    if (flushed_height < 0)
+        return true;
+
+    bool has_log = false;
+    if (!coins_ram_table_exists(db, "utxo_apply_log", &has_log))
+        return false;
+    if (has_log) {
+        bool ok_at_height = false;
+        if (!coins_ram_utxo_log_ok_at(db, flushed_height, &ok_at_height))
+            return false;
+        if (!ok_at_height) {
+            LOG_WARN("coins_ram",
+                     "flush witness refused: missing ok=1 utxo_apply_log "
+                     "height=%d",
+                     flushed_height);
+            return false;
+        }
+    }
+
+    bool has_delta = false;
+    if (!coins_ram_table_exists(db, "utxo_apply_delta", &has_delta))
+        return false;
+    if (has_delta) {
+        bool delta_at_height = false;
+        if (!coins_ram_delta_exists_at(db, flushed_height, &delta_at_height))
+            return false;
+        if (!delta_at_height) {
+            LOG_WARN("coins_ram",
+                     "flush witness refused: missing utxo_apply_delta "
+                     "height=%d",
+                     flushed_height);
+            return false;
+        }
+    }
+    return true;
+}
+
 /* Drain the overlay into coins_kv (adds via coins_kv_add_many, spends via
  * coins_kv_spend_many) and advance the durable cursor — ALL inside ONE
  * BEGIN IMMEDIATE on the progress.kv handle. Mirrors apply_coins_kv's
@@ -799,7 +904,16 @@ bool coins_ram_snapshot_write_v2(const char *out_path, int32_t height,
 bool coins_ram_flush(int32_t flushed_height)
 {
     if (!coins_ram_active()) return false;
+    if (stage_batch_active())
+        LOG_FAIL("coins_ram",
+                 "flush: stage batch is active at height=%d; defer until "
+                 "after stage_batch_end",
+                 flushed_height);
     sqlite3 *db = G.db;
+    if (!coins_ram_flush_has_reducer_witness(db, flushed_height))
+        LOG_FAIL("coins_ram",
+                 "flush: reducer witness missing at height=%d",
+                 flushed_height);
 
     /* Gather LIVE adds and TOMB spends into row arrays. */
     size_t nadd = G.live_count, nspend = 0;
@@ -907,13 +1021,24 @@ bool coins_ram_flush(int32_t flushed_height)
     return true;
 }
 
+bool coins_ram_flush_due(void)
+{
+    if (!coins_ram_active()) return true;
+    if (G.last_applied < 0 || G.since_flush < G.flush_every)
+        return true;
+    return coins_ram_flush(G.last_applied);
+}
+
 bool coins_ram_note_applied(int32_t height)
 {
     if (!coins_ram_active()) return true;
     G.last_applied = height;
     G.since_flush++;
-    if (G.since_flush >= G.flush_every)
+    if (G.since_flush >= G.flush_every) {
+        if (stage_batch_active())
+            return true;
         return coins_ram_flush(height);
+    }
     return true;
 }
 
@@ -926,6 +1051,34 @@ bool coins_ram_flush_final(void)
 }
 
 /* ── boot crash-replay reconcile ─────────────────────────────────────── */
+
+static bool coins_ram_boot_replay_marker_present(sqlite3 *db, bool *present)
+{
+    if (present)
+        *present = false;
+    if (!db)
+        return false;
+
+    uint8_t buf[64] = {0};
+    size_t len = 0;
+    bool found = false;
+    if (!progress_meta_get(db, "mint_anchor_in_progress_v1",
+                           buf, sizeof(buf), &len, &found))
+        return false;
+    if (found) {
+        if (present)
+            *present = true;
+        return true;
+    }
+    len = 0;
+    found = false;
+    if (!progress_meta_get(db, "refold_in_progress",
+                           buf, sizeof(buf), &len, &found))
+        return false;
+    if (present)
+        *present = found;
+    return true;
+}
 
 bool coins_ram_reconcile_boot(struct sqlite3 *db)
 {
@@ -941,15 +1094,23 @@ bool coins_ram_reconcile_boot(struct sqlite3 *db)
     if (!progress_meta_get(db, COINS_RAM_FLUSHED_HEIGHT_KEY, wm, sizeof(wm),
                            &wlen, &wfound))
         LOG_FAIL("coins_ram", "reconcile_boot: watermark read failed");
-    if (!wfound) return true;
-    if (wlen != 8) {
+    int32_t watermark = -1;
+    if (!wfound) {
+        bool replay_marker = false;
+        if (!coins_ram_boot_replay_marker_present(db, &replay_marker))
+            LOG_FAIL("coins_ram",
+                     "reconcile_boot: replay marker read failed");
+        if (!replay_marker)
+            return true;
+    } else if (wlen != 8) {
         LOG_WARN("coins_ram", "reconcile_boot: watermark malformed (len=%zu)",
                  wlen);
         return false;
+    } else {
+        uint64_t u = 0;
+        for (int i = 0; i < 8; i++) u |= (uint64_t)wm[i] << (8 * i);
+        watermark = (int32_t)u;
     }
-    uint64_t u = 0;
-    for (int i = 0; i < 8; i++) u |= (uint64_t)wm[i] << (8 * i);
-    int32_t watermark = (int32_t)u;
 
     /* Read the persisted utxo_apply cursor. */
     progress_store_tx_lock();

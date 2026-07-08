@@ -27,11 +27,23 @@ struct wallet;
 
 #ifdef ZCL_TESTING
 #include <stddef.h>
+#include <stdbool.h>
 #include <stdint.h>
 uint8_t *node_db_catchup_test_mmap_block_file_quiet(const char *datadir,
                                                     int file_num,
                                                     size_t *out_size,
                                                     int *out_errno);
+bool node_db_catchup_test_sparse_prefix_can_advance(int indexed,
+                                                    int total,
+                                                    int lean_holes,
+                                                    int first_hole_h,
+                                                    int start,
+                                                    int chain_tip,
+                                                    int suspicious_holes,
+                                                    int missing_file_holes,
+                                                    int missing_index_holes,
+                                                    bool proven_authority,
+                                                    int32_t proven_applied);
 #endif
 
 /* Indexes blocks from (sqlite_tip+1) to chain_tip into SQLite. Also scans

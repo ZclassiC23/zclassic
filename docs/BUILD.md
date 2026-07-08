@@ -35,9 +35,45 @@ Release builds intentionally use one whole-program LTO link. For day-to-day C
 development, use the non-release dev binary instead:
 
 ```bash
+make agent-loop
 make fast-rebuild
+make agent-mcp-call TOOL=zcl_tools_list
+make agent-mcp-call-hot TOOL=zcl_status
+make agent-mcp-call-dev TOOL=zcl_status
+make agent-doctor
+make agent-dev-status
+build/bin/zclassic23-dev agentdevstatus
+make agent-stage-dev
 build/bin/zclassic23-dev agentbuild
 ```
+
+`make agent-loop` is the default AI/operator edit loop. It runs the cache-aware
+fast checks; set `ZCL_AGENT_LOOP_BIN=1` to also link the local dev binary, or
+`ZCL_AGENT_LOOP_DEPLOY=dev` to hot-swap the dev lane with the fast dev build.
+`make agent-mcp-call` is the fresh source-tree typed MCP path; it refreshes
+`build/bin/zclassic23-dev` before calling `mcpcall`, so API smoke checks after a
+code edit use the current local code without paying the release LTO link. For
+read-only status and schema checks where recompiling would be noise,
+`make agent-mcp-call-hot TOOL=<tool>` reuses the existing source-tree dev
+binary, and `make agent-mcp-call-dev TOOL=<tool>` reuses the installed
+`~/.local/bin/zclassic23-dev` binary with the dev-lane datadir and RPC port.
+`make agent-doctor` is the no-build combined development check: build binary,
+dev-lane status, recent focused-test failure hints, dirty-file count, and the
+next safe command. Use `make agent-doctor ARGS=--json` for
+`zcl.agent_doctor.v1`.
+`make agent-dev-status` is the no-build read-only lane check: it reports the
+source/staged binaries, linger service PID, RPC readiness, saved deploy state,
+auto-reindex marker, deploy blocker/reason, stale-marker candidate, and next
+safe action. Use `make agent-dev-status ARGS=--json`, native
+`zclassic23 agentdevstatus`, or MCP `zcl_agent_dev_status` for the
+machine-readable `zcl.agent_dev_status.v1` form.
+When that status reports `auto_reindex_stale_candidate=true`, run
+`make agent-clear-stale-dev-reindex`; it archives the dev-lane marker only after
+the dev RPC serves at or above the marker anchor, and never touches canonical or
+soak.
+When the dev service is busy and should not be restarted, `make agent-stage-dev`
+builds the fast dev binary and atomically stages it at
+`~/.local/bin/zclassic23-dev` for the next `zcl23-dev` restart.
 
 `make fast-rebuild` is an alias for the local dev binary (`make dev-bin`). It
 writes cached per-file objects under `build/dev-obj/`, links without LTO, keeps

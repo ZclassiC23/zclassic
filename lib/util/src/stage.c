@@ -115,13 +115,9 @@ bool stage_last_fatal(char *stage_out, size_t stage_cap,
     return true;
 }
 
-/* Record a FATAL verdict: bump error_count, latch (stage, reason) for the
- * drain driver, and emit ONE throttled LOUD line. Always returns JOB_FATAL
- * so call sites read `return stage_note_fatal(s, "...");`. */
-static job_result_t stage_note_fatal(stage_t *s, const char *reason)
+job_result_t stage_record_fatal(const char *stage_name, const char *reason)
 {
-    const char *name = s ? s->name : "(null)";
-    if (s) atomic_fetch_add(&s->error_count, 1u);
+    const char *name = (stage_name && stage_name[0]) ? stage_name : "(null)";
 
     pthread_mutex_lock(&g_fatal_lock);
     atomic_fetch_add(&g_fatal_generation, 1u);
@@ -145,6 +141,15 @@ static job_result_t stage_note_fatal(stage_t *s, const char *reason)
                 "[stage] FATAL %s: %s (cursor unchanged; error verdict)\n",
                 name, reason ? reason : "(no reason)");
     return JOB_FATAL;
+}
+
+/* Record a FATAL verdict: bump error_count, latch (stage, reason) for the
+ * drain driver, and emit ONE throttled LOUD line. Always returns JOB_FATAL
+ * so call sites read `return stage_note_fatal(s, "...");`. */
+static job_result_t stage_note_fatal(stage_t *s, const char *reason)
+{
+    if (s) atomic_fetch_add(&s->error_count, 1u);
+    return stage_record_fatal(s ? s->name : "(null)", reason);
 }
 
 /* ── Schema bootstrap ──────────────────────────────────────────────── */

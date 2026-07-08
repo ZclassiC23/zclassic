@@ -199,12 +199,18 @@ int mcp_server_main(const char *datadir, int rpc_port)
     mcp_metrics_init();
     mcp_replay_init();
 
+    bool notify_started = false;
+    const char *notify_env = getenv("ZCL_MCP_NOTIFY");
+
     /* Start the event push out-channel: operator-class EV_* events the
      * node emits are converted to MCP notifications/message frames and
      * pushed on stdout, so a chain halt / SLO breach / operator-needed
-     * condition reaches the agent without it polling zcl_events. */
-    mcp_notify_start(mcp_notify_eventlog_fetch, NULL,
-                     mcp_notify_sink_stdout, NULL, 750);
+     * condition reaches the agent without it polling zcl_events. One-shot
+     * tooling can set ZCL_MCP_NOTIFY=0 to avoid a background eventlog poll. */
+    if (!notify_env || strcmp(notify_env, "0") != 0) {
+        notify_started = mcp_notify_start(mcp_notify_eventlog_fetch, NULL,
+                                          mcp_notify_sink_stdout, NULL, 750);
+    }
 
     char line[65536];
     while (fgets(line, sizeof(line), stdin)) {
@@ -250,7 +256,8 @@ int mcp_server_main(const char *datadir, int rpc_port)
     }
 
     /* stdin closed (agent disconnected) — drain and join the notifier. */
-    mcp_notify_stop();
+    if (notify_started)
+        mcp_notify_stop();
     return 0;
 }
 

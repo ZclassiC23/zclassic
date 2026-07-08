@@ -164,12 +164,11 @@ static bool rpc_healthcheck_bounded(const struct json_value *params,
     const struct json_value *indexer = json_get(&agent, "indexer");
     const struct json_value *height_contract = json_get(&agent,
                                                         "height_contract");
-    const char *sync_state = json_get_str(json_get(&agent, "sync_state"));
     const char *height_contract_status =
         json_get_str(json_get(height_contract, "status"));
     bool normal_lookahead =
         json_get_bool(json_get(height_contract, "normal_lookahead"));
-    bool sync_fsm_at_tip = sync_state && strcmp(sync_state, "at_tip") == 0;
+    bool sync_fsm_at_tip = sync_get_state() == SYNC_AT_TIP;
     bool chain_serving_ready =
         json_get_bool(json_get(&agent, "chain_serving_ready"));
     bool height_contract_current =

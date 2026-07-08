@@ -82,6 +82,12 @@ uint64_t stage_fatal_generation(void);
 bool stage_last_fatal(char *stage_out, size_t stage_cap,
                       char *reason_out, size_t reason_cap);
 
+/* Record a FATAL verdict for code that participates in a stage drain but is
+ * not running inside stage_run_once() at the failure point. This updates the
+ * same generation/last-fatal latch used by stage_run_once(), so supervisors
+ * can distinguish "made no progress because fatal" from healthy idle. */
+job_result_t stage_record_fatal(const char *stage_name, const char *reason);
+
 /* Context passed to a step function. The step:
  *   - Reads `cursor_in` (the current persisted cursor).
  *   - Does bounded work.

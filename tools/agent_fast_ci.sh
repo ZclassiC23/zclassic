@@ -10,6 +10,7 @@ ROOT="$(git rev-parse --show-toplevel)"
 cd "$ROOT"
 
 SCHEMA="zcl.agent_fast_ci.v1"
+PLAN_SCHEMA="zcl.agent_fast_plan.v1"
 CACHE_SCHEMA="zcl.agent_fast_ci.cache.v1"
 FAST_CC="${ZCL_FAST_CC:-}"
 FAST_COMPILE="${ZCL_FAST_COMPILE:-changed}"
@@ -21,6 +22,12 @@ CACHE_AVAILABLE=0
 CACHE_TOOL="none"
 TEST_GROUPS=""
 UNMAPPED_CODE_CHANGES=""
+DIRECT_DEV_OBJECTS=""
+DIRECT_DEV_OBJECT_COUNT=0
+COMPILE_PLAN_KIND=""
+COMPILE_PLAN_TARGET=""
+COMPILE_PLAN_DETAIL=""
+COMPILE_PLAN_FALLBACK_REASON=""
 NODE_BIN="${ZCL_FAST_NODE_BIN:-build/bin/zclassic23}"
 DEV_NODE_BIN="${ZCL_FAST_DEV_NODE_BIN:-build/bin/zclassic23-dev}"
 FAST_JOBS="${ZCL_FAST_JOBS:-}"
@@ -33,6 +40,32 @@ log() {
 fail() {
     log "FAIL: $*"
     exit 1
+}
+
+json_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+json_array_words() {
+    local sep="" item
+    printf '['
+    for item in "$@"; do
+        [ -n "$item" ] || continue
+        printf '%s"%s"' "$sep" "$(json_escape "$item")"
+        sep=","
+    done
+    printf ']'
+}
+
+json_array_stdin() {
+    local sep="" item
+    printf '['
+    while IFS= read -r item; do
+        [ -n "$item" ] || continue
+        printf '%s"%s"' "$sep" "$(json_escape "$item")"
+        sep=","
+    done
+    printf ']'
 }
 
 select_compiler() {
@@ -374,6 +407,8 @@ cache_manifest() {
 
     for file in Makefile "$IMPACT_RULES_FILE" tools/agent_fast_ci.sh tools/z \
         tools/githooks/pre-push tools/deploy_guard.sh tools/deploy_verify.sh \
+        tools/dev/deploy-dev-lane.sh tools/dev/agent-dev-status.sh \
+        tools/dev/agent-doctor.sh \
         tools/scripts/remote_node_update.sh \
         tools/scripts/build_vendor.sh \
         tools/scripts/background_quality_lane.sh \
@@ -462,12 +497,169 @@ record_fast_cache_pass() {
     log "fast result cache stored key=$CACHE_KEY"
 }
 
+PLAN_CACHE_ENABLED="true"
+PLAN_CACHE_AVAILABLE="false"
+PLAN_CACHE_HIT="false"
+PLAN_CACHE_REASON=""
+
+compute_plan_cache_status() {
+    local manifest key record
+    PLAN_CACHE_ENABLED="true"
+    PLAN_CACHE_AVAILABLE="false"
+    PLAN_CACHE_HIT="false"
+    PLAN_CACHE_REASON=""
+    CACHE_KEY=""
+    CACHE_RECORD=""
+
+    case "${ZCL_FAST_CACHE:-1}" in
+        1|true|yes|on|"") ;;
+        0|false|no|off|skip)
+            PLAN_CACHE_ENABLED="false"
+            PLAN_CACHE_REASON="disabled_by_ZCL_FAST_CACHE"
+            return
+            ;;
+        *)
+            PLAN_CACHE_REASON="invalid_ZCL_FAST_CACHE"
+            return
+            ;;
+    esac
+
+    if ! command -v sha256sum >/dev/null 2>&1; then
+        PLAN_CACHE_REASON="sha256sum_not_found"
+        return
+    fi
+    if ! mkdir -p "$CACHE_ROOT" 2>/dev/null; then
+        PLAN_CACHE_REASON="cache_root_unwritable"
+        return
+    fi
+    manifest="$(mktemp "$CACHE_ROOT/manifest.XXXXXX" 2>/dev/null || true)"
+    if [ -z "$manifest" ]; then
+        PLAN_CACHE_REASON="manifest_create_failed"
+        return
+    fi
+    if ! cache_manifest >"$manifest"; then
+        rm -f "$manifest"
+        PLAN_CACHE_REASON="manifest_write_failed"
+        return
+    fi
+    key="$(sha256sum "$manifest" | awk '{print $1}')"
+    rm -f "$manifest"
+    if [ -z "$key" ]; then
+        PLAN_CACHE_REASON="cache_key_empty"
+        return
+    fi
+
+    record="$CACHE_ROOT/$key.ok"
+    CACHE_KEY="$key"
+    CACHE_RECORD="$record"
+    PLAN_CACHE_AVAILABLE="true"
+    if [ -f "$record" ] && grep -q "^schema=$CACHE_SCHEMA$" "$record"; then
+        PLAN_CACHE_HIT="true"
+        PLAN_CACHE_REASON="green_input_cache_hit"
+    else
+        PLAN_CACHE_REASON="cache_miss"
+    fi
+}
+
+changed_file_count() {
+    changed_files | sort -u | sed '/^$/d' | wc -l | tr -d ' '
+}
+
+recommended_plan_command() {
+    local changed_count="$1"
+    if [ -n "$UNMAPPED_CODE_CHANGES" ]; then
+        printf 'set ZCL_FAST_TESTS=<group[,group]> or extend %s' "$IMPACT_RULES_FILE"
+    elif [ "$changed_count" = "0" ]; then
+        printf 'make agent-dev-status'
+    elif [ "$PLAN_CACHE_HIT" = "true" ]; then
+        printf 'make fast-ci'
+    else
+        printf 'make agent-loop'
+    fi
+}
+
+emit_plan_json() {
+    local changed_count command
+
+    select_compiler
+    resolve_fast_jobs
+    validate_changed_files_only
+    select_test_groups
+    compute_changed_compile_plan
+    compute_plan_cache_status
+
+    changed_count="$(changed_file_count)"
+    command="$(recommended_plan_command "$changed_count")"
+
+    printf '{\n'
+    printf '  "schema": "%s",\n' "$PLAN_SCHEMA"
+    printf '  "status": "ok",\n'
+    printf '  "compiler": "%s",\n' "$(json_escape "$FAST_CC")"
+    printf '  "cache_tool": "%s",\n' "$(json_escape "$CACHE_TOOL")"
+    printf '  "jobs": "%s",\n' "$(json_escape "$FAST_JOBS")"
+    printf '  "fast_compile_mode": "%s",\n' "$(json_escape "$FAST_COMPILE")"
+    printf '  "changed_file_count": %s,\n' "$changed_count"
+    printf '  "changed_files": '
+    changed_files | sort -u | json_array_stdin
+    printf ',\n'
+    printf '  "test_groups": '
+    json_array_words $TEST_GROUPS
+    printf ',\n'
+    printf '  "unmapped_code_changes": '
+    json_array_words $UNMAPPED_CODE_CHANGES
+    printf ',\n'
+    printf '  "compile_plan": {\n'
+    printf '    "schema": "zcl.agent_changed_compile_plan.v1",\n'
+    printf '    "kind": "%s",\n' "$(json_escape "$COMPILE_PLAN_KIND")"
+    printf '    "target": "%s",\n' "$(json_escape "$COMPILE_PLAN_TARGET")"
+    printf '    "detail": "%s",\n' "$(json_escape "$COMPILE_PLAN_DETAIL")"
+    printf '    "fallback_reason": "%s",\n' "$(json_escape "$COMPILE_PLAN_FALLBACK_REASON")"
+    printf '    "direct_object_count": %s,\n' "$DIRECT_DEV_OBJECT_COUNT"
+    printf '    "direct_objects": '
+    json_array_words $DIRECT_DEV_OBJECTS
+    printf '\n'
+    printf '  },\n'
+    printf '  "green_input_cache": {\n'
+    printf '    "schema": "%s",\n' "$CACHE_SCHEMA"
+    printf '    "enabled": %s,\n' "$PLAN_CACHE_ENABLED"
+    printf '    "available": %s,\n' "$PLAN_CACHE_AVAILABLE"
+    printf '    "hit": %s,\n' "$PLAN_CACHE_HIT"
+    printf '    "key": "%s",\n' "$(json_escape "$CACHE_KEY")"
+    printf '    "record": "%s",\n' "$(json_escape "$CACHE_RECORD")"
+    printf '    "reason": "%s",\n' "$(json_escape "$PLAN_CACHE_REASON")"
+    printf '    "root": "%s"\n' "$(json_escape "$CACHE_ROOT")"
+    printf '  },\n'
+    printf '  "mcp_shortcuts": {\n'
+    printf '    "fresh_source_tree": "make agent-mcp-call TOOL=<tool> [ARGS='
+    printf "'{}'"
+    printf ']",\n'
+    printf '    "hot_source_tree": "make agent-mcp-call-hot TOOL=<tool> [ARGS='
+    printf "'{}'"
+    printf ']",\n'
+    printf '    "dev_linger_lane": "make agent-mcp-call-dev TOOL=<tool> [ARGS='
+    printf "'{}'"
+    printf ']"\n'
+    printf '  },\n'
+    printf '  "dev_lane": {\n'
+    printf '    "status": "make agent-dev-status",\n'
+    printf '    "stage_without_restart": "make agent-stage-dev",\n'
+    printf '    "hot_swap_restart": "make agent-deploy-fast",\n'
+    printf '    "loop_stage": "ZCL_AGENT_LOOP_DEPLOY=stage make agent-loop",\n'
+    printf '    "loop_deploy": "ZCL_AGENT_LOOP_DEPLOY=dev make agent-loop"\n'
+    printf '  },\n'
+    printf '  "live_probe_mode": "%s",\n' "$(json_escape "${ZCL_FAST_LIVE:-auto}")"
+    printf '  "recommended_command": "%s"\n' "$(json_escape "$command")"
+    printf '}\n'
+}
+
 run_shell_checks() {
     local script
     log "shell checks"
     git diff --check
     for script in tools/agent_fast_ci.sh tools/z tools/githooks/pre-push \
         tools/deploy_guard.sh tools/deploy_verify.sh \
+        tools/dev/deploy-dev-lane.sh tools/dev/agent-dev-status.sh \
+        tools/dev/agent-doctor.sh \
         tools/scripts/remote_node_update.sh \
         tools/scripts/build_vendor.sh \
         tools/scripts/background_quality_lane.sh \
@@ -497,47 +689,14 @@ run_focused_tests() {
     done
 }
 
-run_compile_gate() {
-    local target
-    case "$FAST_COMPILE" in
-        changed|changed-dev|auto)
-            compile_changed_gate
-            return
-            ;;
-        dev|fast|quick|"")
-            target="fast-compile"
-            ;;
-        strict|release|build-only)
-            target="build-only"
-            ;;
-        *)
-            fail "unknown ZCL_FAST_COMPILE=${FAST_COMPILE}"
-            ;;
-    esac
-    log "$target"
-    make_fast "$target"
-}
-
-run_dev_rebuild() {
-    local start end size
-
-    start="$(date +%s)"
-    compile_changed_gate
-    log "dev-bin link target=$DEV_NODE_BIN"
-    make_fast "$DEV_NODE_BIN"
-    [ -x "$DEV_NODE_BIN" ] ||
-        fail "dev rebuild did not produce executable $DEV_NODE_BIN"
-
-    end="$(date +%s)"
-    size="$(stat -c '%s' "$DEV_NODE_BIN" 2>/dev/null || echo unknown)"
-    log "PASS: dev rebuild complete bin=$DEV_NODE_BIN size=$size elapsed_s=$((end - start))"
-    log "Use $DEV_NODE_BIN for local iteration; run make zclassic23 or make deploy for release/live."
-}
-
-compile_changed_gate() {
+compute_changed_compile_plan() {
     local file fallback_reason
     DIRECT_DEV_OBJECTS=""
     DIRECT_DEV_OBJECT_COUNT=0
+    COMPILE_PLAN_KIND=""
+    COMPILE_PLAN_TARGET=""
+    COMPILE_PLAN_DETAIL=""
+    COMPILE_PLAN_FALLBACK_REASON=""
     fallback_reason=""
 
     case "$FAST_CHANGED_COMPILE_LIMIT" in
@@ -588,25 +747,90 @@ $(changed_files | sort -u)
 EOF
 
     if [ -n "$fallback_reason" ]; then
-        log "fast-changed-compile: fallback to fast-compile ($fallback_reason)"
-        make_fast fast-compile
+        COMPILE_PLAN_KIND="fast_compile_fallback"
+        COMPILE_PLAN_TARGET="fast-compile"
+        COMPILE_PLAN_DETAIL="fallback to fast-compile"
+        COMPILE_PLAN_FALLBACK_REASON="$fallback_reason"
         return
     fi
 
     if [ "$FAST_CHANGED_COMPILE_LIMIT" -gt 0 ] &&
        [ "$DIRECT_DEV_OBJECT_COUNT" -gt "$FAST_CHANGED_COMPILE_LIMIT" ]; then
-        log "fast-changed-compile: fallback to fast-compile ($DIRECT_DEV_OBJECT_COUNT direct dev objects > limit $FAST_CHANGED_COMPILE_LIMIT)"
-        make_fast fast-compile
+        COMPILE_PLAN_KIND="fast_compile_fallback"
+        COMPILE_PLAN_TARGET="fast-compile"
+        COMPILE_PLAN_DETAIL="fallback to fast-compile"
+        COMPILE_PLAN_FALLBACK_REASON="$DIRECT_DEV_OBJECT_COUNT direct dev objects > limit $FAST_CHANGED_COMPILE_LIMIT"
         return
     fi
 
     if [ -z "$DIRECT_DEV_OBJECTS" ]; then
-        log "fast-changed-compile: no changed node C sources; compile gate is already satisfied"
+        COMPILE_PLAN_KIND="already_satisfied"
+        COMPILE_PLAN_TARGET="none"
+        COMPILE_PLAN_DETAIL="no changed node C sources"
         return
     fi
 
-    log "fast-changed-compile: direct dev object compile count=$DIRECT_DEV_OBJECT_COUNT"
-    make_fast $DIRECT_DEV_OBJECTS
+    COMPILE_PLAN_KIND="direct_dev_objects"
+    COMPILE_PLAN_TARGET="$DIRECT_DEV_OBJECTS"
+    COMPILE_PLAN_DETAIL="direct dev object compile"
+}
+
+compile_changed_gate() {
+    compute_changed_compile_plan
+
+    case "$COMPILE_PLAN_KIND" in
+        fast_compile_fallback)
+            log "fast-changed-compile: fallback to fast-compile ($COMPILE_PLAN_FALLBACK_REASON)"
+            make_fast fast-compile
+            ;;
+        already_satisfied)
+            log "fast-changed-compile: no changed node C sources; compile gate is already satisfied"
+            ;;
+        direct_dev_objects)
+            log "fast-changed-compile: direct dev object compile count=$DIRECT_DEV_OBJECT_COUNT"
+            make_fast $DIRECT_DEV_OBJECTS
+            ;;
+        *)
+            fail "internal error: unknown changed compile plan ${COMPILE_PLAN_KIND:-empty}"
+            ;;
+    esac
+}
+
+run_compile_gate() {
+    local target
+    case "$FAST_COMPILE" in
+        changed|changed-dev|auto)
+            compile_changed_gate
+            return
+            ;;
+        dev|fast|quick|"")
+            target="fast-compile"
+            ;;
+        strict|release|build-only)
+            target="build-only"
+            ;;
+        *)
+            fail "unknown ZCL_FAST_COMPILE=${FAST_COMPILE}"
+            ;;
+    esac
+    log "$target"
+    make_fast "$target"
+}
+
+run_dev_rebuild() {
+    local start end size
+
+    start="$(date +%s)"
+    compile_changed_gate
+    log "dev-bin link target=$DEV_NODE_BIN"
+    make_fast "$DEV_NODE_BIN"
+    [ -x "$DEV_NODE_BIN" ] ||
+        fail "dev rebuild did not produce executable $DEV_NODE_BIN"
+
+    end="$(date +%s)"
+    size="$(stat -c '%s' "$DEV_NODE_BIN" 2>/dev/null || echo unknown)"
+    log "PASS: dev rebuild complete bin=$DEV_NODE_BIN size=$size elapsed_s=$((end - start))"
+    log "Use $DEV_NODE_BIN for local iteration; run make zclassic23 or make deploy for release/live."
 }
 
 live_service_detected() {
@@ -711,6 +935,13 @@ maybe_live_probe() {
 
 main() {
     local mode="${1:-run}"
+    case "$mode" in
+        plan|plan-json|doctor-json)
+            emit_plan_json
+            return
+            ;;
+    esac
+
     log "schema=$SCHEMA"
     select_compiler
     resolve_fast_jobs

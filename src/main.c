@@ -8,6 +8,7 @@
  *   zclassic23 appprotocols           — application protocol catalog
  *   zclassic23 servicecatalog         — sovereign service UX catalog
  *   zclassic23 serviceoperations      — sovereign operation UX catalog
+ *   zclassic23 mcpcall <tool> [json]  — typed MCP tool call from this binary
  *   zclassic23 agent                  — compact status from running node
  *   zclassic23 status                 — compatibility alias for agent
  *   zclassic23 statecatalog           — zcl_state subsystem catalog
@@ -47,6 +48,10 @@
 #include "util/clientversion.h"
 #include "util/sd_notify.h"               /* #8: detect NOTIFY_SOCKET */
 #include "util/ar_step_readonly.h"
+#include "mcp/controllers.h"
+#include "mcp/middleware.h"
+#include "mcp/router.h"
+#include "mcp/rpc_client.h"
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -950,6 +955,7 @@ static const struct cli_static_agent_route g_cli_static_agent_routes[] = {
     { "agentimpact", rpc_agent_impact },
     { "agentcontracts", rpc_agent_contracts },
     { "agentbuild", rpc_agent_build },
+    { "agentdevstatus", rpc_agent_dev_status },
     { "anchorstatus", rpc_agent_anchor_status },
     { "appprotocols", rpc_app_protocols },
     { "servicecatalog", rpc_service_catalog },
@@ -1033,6 +1039,109 @@ static int cli_run_static_agent_method(const char *method,
     json_free(&result);
     json_free(&params);
     return exit_code;
+}
+
+static void cli_mcp_register_all(void)
+{
+    mcp_router_reset();
+    mcp_register_ops();
+    mcp_register_diagnostics();
+    mcp_register_chain();
+    mcp_register_net();
+    mcp_register_wallet();
+    mcp_register_app();
+    mcp_register_meta();
+}
+
+static bool cli_mcp_parse_args_object(const char *raw,
+                                      struct json_value *args)
+{
+    json_init(args);
+    if (!raw || !raw[0]) {
+        json_set_object(args);
+        return true;
+    }
+
+    if (!json_read(args, raw, strlen(raw))) {
+        json_free(args);
+        return false;
+    }
+    if (args->type != JSON_OBJ) {
+        json_free(args);
+        return false;
+    }
+    return true;
+}
+
+static bool cli_json_top_error(const char *raw)
+{
+    struct json_value root;
+    if (!raw)
+        return true;
+    if (!json_read(&root, raw, strlen(raw))) {
+        json_free(&root);
+        return true;
+    }
+    const struct json_value *err = json_get(&root, "error");
+    bool has_error = err && !json_is_null(err);
+    json_free(&root);
+    return has_error;
+}
+
+static int cli_run_mcp_call(const char *datadir,
+                            const char **params_storage,
+                            int nparams)
+{
+    if (nparams < 1 || nparams > 2) {
+        fprintf(stderr,
+                "usage: zclassic23 mcpcall <tool> [json-object]\n");
+        fprintf(stderr,
+                "example: zclassic23 mcpcall zcl_state "
+                "'{\"subsystem\":\"supervisor\"}'\n");
+        return 2;
+    }
+
+    const char *tool = params_storage[0];
+    const char *args_json = nparams >= 2 ? params_storage[1] : "{}";
+
+    struct json_value args;
+    if (!cli_mcp_parse_args_object(args_json, &args)) {
+        fprintf(stderr, "mcpcall arguments must be one JSON object\n");
+        return 2;
+    }
+
+    mcp_rpc_client_init(datadir, cli_port);
+    cli_mcp_register_all();
+
+    struct mcp_middleware mw;
+    mcp_middleware_init(&mw);
+    mcp_middleware_load_from_env(&mw);
+    /* One-shot CLI dispatch must not leave a detached timeout worker holding
+     * pointers into this stack frame after the process is already printing. */
+    mw.default_timeout_ms = 0;
+
+    const char *bearer = getenv("ZCL_MCP_CALL_BEARER_TOKEN");
+    if (!bearer || !bearer[0]) {
+        if (mcp_middleware_is_destructive(&mw, tool))
+            bearer = getenv("ZCL_MCP_DESTRUCTIVE_BEARER_TOKEN");
+        if (!bearer || !bearer[0])
+            bearer = getenv("ZCL_MCP_BEARER_TOKEN");
+    }
+
+    char *result = mcp_middleware_dispatch(&mw, tool, &args,
+                                           bearer && bearer[0] ? bearer : NULL);
+    json_free(&args);
+    mcp_middleware_destroy(&mw);
+
+    if (!result) {
+        fprintf(stderr, "mcpcall failed: no result body\n");
+        return 1;
+    }
+
+    printf("%s\n", result);
+    int rc = cli_json_top_error(result) ? 1 : 0;
+    free(result);
+    return rc;
 }
 
 enum { CLI_MAX_PARAMS = 128 };
@@ -1160,6 +1269,9 @@ static int cli_main(int argc, char **argv)
     else if (strcmp(method, "--summary") == 0 ||
              strcmp(method, "-summary") == 0)
         method = "summary";
+
+    if (strcmp(method, "mcpcall") == 0 || strcmp(method, "mcp") == 0)
+        return cli_run_mcp_call(datadir, params_storage, nparams);
 
     if (cli_static_agent_method(method)) {
         agent_runtime_availability_reset();
@@ -1293,6 +1405,7 @@ static void print_usage(const char *prog)
     agent_print_native_usage(stdout, prog);
     printf("  %s --agent                 Same compact status\n", prog);
     printf("  %s -mcp                    Run MCP server (stdio)\n", prog);
+    printf("  %s mcpcall <tool> [json]   Call one typed MCP tool\n", prog);
     printf("  %s <method> [params...]    RPC client\n\n", prog);
     printf("Node options:\n");
     printf("  -datadir=<dir>      Data directory\n");

@@ -394,6 +394,53 @@ int test_chaos_harness(void)
 
     rc = run_temp_scenario(
         "seed 1\n"
+        "auto_reindex_request anchor=3173739\n"
+        "expect auto_reindex_pending == 1\n"
+        "expect auto_reindex_terminal == 0\n"
+        "expect auto_reindex_anchor == 3173739\n"
+        "expect auto_reindex_count == 1\n"
+        "expect auto_reindex_requests == 1\n"
+        "auto_reindex_clear_if_covered coins_best=3173739\n"
+        "expect auto_reindex_pending == 1\n"
+        "expect auto_reindex_clears == 0\n"
+        "auto_reindex_clear_if_covered coins_best=3173740\n"
+        "expect auto_reindex_pending == 0\n"
+        "expect auto_reindex_clears == 1\n",
+        &ctx);
+    CHAOS_CHECK("auto_reindex stale clear boundary passes", rc == 0);
+    CHAOS_CHECK("auto_reindex stale clear records final metrics",
+                ctx.auto_reindex_anchor == 0 &&
+                ctx.auto_reindex_count == 0 &&
+                ctx.auto_reindex_pending == 0 &&
+                ctx.auto_reindex_terminal == 0 &&
+                ctx.auto_reindex_requests == 1 &&
+                ctx.auto_reindex_clears == 1);
+
+    rc = run_temp_scenario(
+        "seed 1\n"
+        "auto_reindex_request anchor=5000\n"
+        "auto_reindex_request anchor=4990\n"
+        "auto_reindex_request anchor=4980\n"
+        "expect auto_reindex_anchor == 4980\n"
+        "expect auto_reindex_count == 3\n"
+        "expect auto_reindex_requests == 3\n",
+        &ctx);
+    CHAOS_CHECK("auto_reindex moving-tip budget passes", rc == 0);
+
+    rc = run_temp_scenario(
+        "seed 1\n"
+        "auto_reindex_request anchor=100\n"
+        "auto_reindex_mark_terminal anchor=100\n"
+        "auto_reindex_clear_if_covered coins_best=999\n"
+        "expect auto_reindex_pending == 0\n"
+        "expect auto_reindex_terminal == 1\n"
+        "expect auto_reindex_count == -1\n"
+        "expect auto_reindex_clears == 0\n",
+        &ctx);
+    CHAOS_CHECK("auto_reindex terminal marker is not stale-cleared", rc == 0);
+
+    rc = run_temp_scenario(
+        "seed 1\n"
         "expect tip_height > 0\n",
         NULL);
     CHAOS_CHECK("failing expect fails scenario", rc != 0);
@@ -413,6 +460,10 @@ int test_chaos_harness(void)
     fail_ctx.clock_advance_seconds = 30;
     fail_ctx.net_partition_seconds = 5;
     fail_ctx.net_partition_drops = 1;
+    fail_ctx.auto_reindex_anchor = 3173739;
+    fail_ctx.auto_reindex_count = 1;
+    fail_ctx.auto_reindex_pending = 1;
+    fail_ctx.auto_reindex_requests = 1;
     char artifact_dir[128];
     int dn = snprintf(artifact_dir, sizeof(artifact_dir),
                       "/tmp/zcl_chaos_artifacts_%d_XXXXXX", (int)getpid());
@@ -435,6 +486,8 @@ int test_chaos_harness(void)
                 file_contains_text(summary_path, "block_bytes=12") &&
                 file_contains_text(summary_path, "clock_advance_seconds=30") &&
                 file_contains_text(summary_path, "partition_drops=1") &&
+                file_contains_text(summary_path, "auto_reindex_anchor=3173739") &&
+                file_contains_text(summary_path, "auto_reindex_pending=1") &&
                 file_contains_text(summary_path, "replay_command=build/bin/zclassic23-chaos") &&
                 file_contains_text(copied_path, "expect tip_height > 0"));
     unlink(summary_path);

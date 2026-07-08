@@ -1,6 +1,6 @@
 # Sovereign cutover runbook - replace the borrowed seed with the self-minted anchor
 
-**Status 2026-07-03.** The sovereign cure is ~95% in place. This is the exact,
+**Status 2026-07-08.** The sovereign cure is ~95% in place. This is the exact,
 copy-prove-gated procedure to execute the last step when the mint finishes.
 The previous transient producer was stopped before publishing an artifact after
 review exposed that `-mint-anchor-fast` could still start normal runtime
@@ -11,6 +11,13 @@ stages are initialized without supervisor children, and shutdown uses
 OOM-killed before producing an artifact; `-mint-anchor` is now restart-safe via
 a checkpoint-bound `progress.kv` marker (`mint_anchor_in_progress_v1`) so a
 restart resumes a matching interrupted fold instead of resetting to genesis.
+On 2026-07-08, the resumed producer was diagnosed as torn: its coin frontier had
+advanced past a missing `utxo_apply_log` / `utxo_apply_delta` row. That datadir
+is preserved at `$HOME/.zclassic-c23-anchor-mint-torn-20260708-083231`, the
+current tree now refuses RAM flushes without reducer witness rows, and a fresh
+producer was relaunched from the stopped full-history source copy. The artifact
+is still pending. Monitor the fresh run with `zclassic23 anchorstatus`; do not
+cut over from a partial fold.
 Re-verify every file:line before acting; specifics rot.
 
 ## Where we are (the only remaining gate is the durable artifact, not code)
@@ -76,6 +83,25 @@ Re-verify every file:line before acting; specifics rot.
   `-fold-inram`; the journal confirmed `ZCL_FOLD_INRAM active` and the 115000
   to 115999 UTXO batch committed. No verified anchor snapshot exists yet, so
   the copy-prove and live cutover sections below remain blocked on the artifact.
+
+  **2026-07-08 update:** the resumed datadir was not a trustworthy resume source.
+  `anchorstatus` plus direct SQLite probes showed `coins_applied_height=164001`
+  and `coins_ram_flushed_height=164000`, but no `utxo_apply_log[164000]` and no
+  `utxo_apply_delta[164000]`. It was moved to
+  `$HOME/.zclassic-c23-anchor-mint-torn-20260708-083231`. The current source adds
+  a richer `utxo_apply_probe`, refuses RAM flush advancement without reducer
+  witness rows, and replays from genesis when a mint/refold marker exists but the
+  RAM flush watermark is absent. The fresh producer was recreated from
+  `$HOME/.zclassic-c23-COPY-20260701-113424-stall-3166384` and relaunched at
+  08:33 UTC with the same `systemd-run` command above. At 08:50 UTC it was
+  active as PID `2475996`, memory about 3.7 GB, summary `mint_in_progress`,
+  stage cursors at `17000` for header/body-fetch front stages and `16000` for
+  UTXO apply/tip-finalize, history diagnosis
+  `utxo_apply_history_consistent`, and no snapshot artifact existed yet. Use
+  `build/bin/zclassic23-dev anchorstatus` for the current summary logic until
+  the release binary is refreshed. `coins_ram_flushed_height=-1` is expected
+  before the first RAM flush; avoid casual restarts before the first flush or
+  before the boot-reconcile fix is linked into the producer binary.
 
 ## Restart posture
 

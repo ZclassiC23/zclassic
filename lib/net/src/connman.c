@@ -57,6 +57,22 @@ static pthread_t g_thread_open;
 static pthread_t g_thread_message;
 static volatile bool g_stop = false;
 
+#define CONNMAN_RECV_LOW_WATER_SLOTS 16
+
+static size_t connman_recv_cap_for_queue(size_t queued, size_t base_cap)
+{
+    if (queued >= MAX_RECV_MESSAGES)
+        return 0;
+
+    size_t free_slots = MAX_RECV_MESSAGES - queued;
+    if (free_slots < CONNMAN_RECV_LOW_WATER_SLOTS) {
+        size_t cap = free_slots * (size_t)MSG_HEADER_SIZE;
+        if (cap < base_cap)
+            return cap;
+    }
+    return base_cap;
+}
+
 static void dns_seed_resolve(struct connman *cm)
 {
     for (size_t i = 0; i < cm->params->nSeeds; i++) {
@@ -1186,14 +1202,24 @@ static void *thread_socket_handler(void *arg)
                  * until the processing thread drains it. This prevents
                  * disconnecting fast senders (e.g. snapshot serving over
                  * localhost) just because we can't parse fast enough. */
-                if (node->recv_msg_count >= MAX_RECV_MESSAGES) {
+                size_t queued = node->recv_msg_count;
+                if (queued >= MAX_RECV_MESSAGES) {
                     zcl_mutex_unlock(&node->cs_recv);
                     goto skip_recv;
                 }
                 char buf[0x10000];
-                /* Cap recv size to bandwidth budget. */
-                size_t recv_cap = sizeof(buf);
+                /* Cap recv size to bandwidth budget and remaining queue
+                 * space. If a fast peer is close to filling the complete
+                 * message queue, avoid reading a large kernel buffer that
+                 * would overflow the in-process protocol stream before the
+                 * message thread can drain it. */
+                size_t recv_cap = connman_recv_cap_for_queue(queued,
+                                                             sizeof(buf));
                 if (bw_avail < recv_cap) recv_cap = bw_avail;
+                if (recv_cap == 0) {
+                    zcl_mutex_unlock(&node->cs_recv);
+                    goto skip_recv;
+                }
                 ssize_t n = recv(target_fd, buf, recv_cap, MSG_DONTWAIT);
                 if (n > 0) {
                     if (!p2p_node_receive_bytes(node, buf, (unsigned int)n,

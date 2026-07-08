@@ -45,7 +45,7 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
         "  { \"schema\":\"zcl.agent_ops.v1\", \"no_jq_required\":true, "
         "\"top_next_work\":[...] }\n");
 
-    struct json_value commands, api_rules, review, gaps, work;
+    struct json_value commands, api_rules, review, gaps, workflow, ux, work;
     json_set_object(result);
     agent_push_contract_identity_fields_json(result, "agentops");
     json_push_kv_str(result, "api_version", "v1");
@@ -55,6 +55,10 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
     json_push_kv_str(result, "purpose",
                      "one compact agent-ready view of API shape, service architecture, and next work");
     json_push_kv_str(result, "preferred_transport", "mcp");
+    json_push_kv_str(result, "api_style",
+                     "one compact first call, then registry-owned primitive drilldowns");
+    json_push_kv_str(result, "dry_source",
+                     "agent_contracts.def + agent_contract_registry.c");
     agent_push_contract_field_surface_json(result, "agentops.first_call");
     json_push_kv_str(result, "refold_plain_english",
                      "Rebuild the UTXO/trust anchor from zclassic23's own verified block history, then cut over so the node no longer depends on a borrowed snapshot seed.");
@@ -83,11 +87,29 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
     json_push_kv(result, "architecture_review", &review);
     json_free(&review);
 
+    json_init(&ux);
+    json_set_object(&ux);
+    json_push_kv_str(&ux, "start_here", "zclassic23 agentops / zcl_agent_ops");
+    json_push_kv_str(&ux, "change_router",
+                     "zclassic23 agentimpact <files...>");
+    json_push_kv_str(&ux, "preferred_drilldowns",
+                     "zcl_state, zcl_node_log, zcl_sql, zcl_timeline");
+    json_push_kv_str(&ux, "add_new_api_rule",
+                     "try registry-owned primitives first; add bespoke tools only when a repeated decision needs a stable field");
+    json_push_kv(result, "api_ux", &ux);
+    json_free(&ux);
+
     json_init(&gaps);
     json_set_array(&gaps);
     agent_push_contract_work_surface_json(&gaps, "agentops.api_gaps");
     json_push_kv(result, "api_gaps", &gaps);
     json_free(&gaps);
+
+    json_init(&workflow);
+    json_set_array(&workflow);
+    agent_push_contract_work_surface_json(&workflow, "agentops.workflow");
+    json_push_kv(result, "workflow", &workflow);
+    json_free(&workflow);
 
     json_init(&work);
     json_set_array(&work);

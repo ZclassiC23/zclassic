@@ -1,26 +1,25 @@
 #!/usr/bin/env bash
 # Copyright 2026 Rhett Creighton - Apache License 2.0
 #
-# cold_start_to_tip_probe.sh — empirical C3 settle: does a FRESH datadir that
-# imports the consensus snapshot then forward-syncs the header chain + body
-# delta from a serving peer actually reach zcl_syncstate at_tip at the PEER
-# tip within the budget? The existing cold_start gates prove only the UTXO
-# IMPORT (>1M UTXOs <90s) or the FSM transitions — neither proves the full
-# operator claim (fresh datadir -> phase=at_tip). This probe settles whether
-# the snapshot->delta composite reaches at_tip with a wrapper, or surfaces the
-# documented coins_kv-not-seeded / no-header-chain seam (needing a code fix).
+# cold_start_to_tip_probe.sh — empirical C3 settle: does a FRESH datadir boot
+# from the current operator bundle, then forward-sync the remaining header/body
+# delta from a serving zclassic23 peer, and reach at_tip at the peer tip within
+# the budget? The fast cold_start gate proves only the seed authority (>1M
+# UTXOs <90s) or the FSM transitions — neither proves the full operator claim
+# (fresh datadir -> phase=at_tip). This probe is the long wall-clock proof for
+# that full C3 claim.
 #
 # FULLY ISOLATED + NON-DESTRUCTIVE to the live node:
-#   - /tmp-only datadir, isolated 39xxx ports (never the live 8023/18232 or the
+#   - /tmp-only datadir, isolated 39xxx ports (never the live 8033/18232 or the
 #     soak 18242 or zclassicd 8034/8232),
-#   - dials the zclassicd reference peer (P2P 8034) as a CLIENT only, so the
-#     live soak node's network surface is untouched,
-#   - -nolegacyimport (never reads ~/.zclassic), -nobgvalidation (lean),
+#   - copies only public local fixtures (block_index.bin + utxo-seed snapshot),
+#   - dials the serving zclassic23 peer (default P2P 8033) as a CLIENT only,
+#   - -listen=0, -nolegacyimport (never reads ~/.zclassic), -nobgvalidation,
 #   - process-group SIGKILL teardown on every exit.
 #
 # Exit: 0 reached at_tip at peer-tip within budget (C3 wrapper viable)
-#       3 imported snapshot but did NOT reach at_tip in budget (code seam — needs the fix)
-#       2 SKIP (no snapshot fixture / no serving peer / binaries absent)
+#       3 seeded authority but did NOT reach at_tip in budget (code seam)
+#       2 SKIP (no bundle fixture / no serving peer / binaries absent)
 #       1 FAIL (harness/setup error)
 
 set -uo pipefail
@@ -28,8 +27,12 @@ set -uo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 NODE_BIN="${ZCL_NODE_BIN:-$REPO_ROOT/build/bin/zclassic23}"
 RPC_BIN="${ZCL_RPC_BIN:-$REPO_ROOT/build/bin/zcl-rpc}"
-SNAPSHOT="${ZCL_C3_SNAPSHOT:-$HOME/.zclassic-c23/consensus_snapshot.db}"
-PEER="${ZCL_C3_PEER:-127.0.0.1:8034}"        # zclassicd P2P — DIAL this for sync
+LEGACY_SNAPSHOT="${ZCL_C3_SNAPSHOT:-$HOME/.zclassic-c23/consensus_snapshot.db}"
+BUNDLE_SNAP_CANDIDATES=(
+    "$HOME"/.zclassic-c23-test/utxo-seed-*.snapshot
+    "$HOME"/.zclassic-c23/utxo-seed-*.snapshot
+)
+PEER="${ZCL_C3_PEER:-127.0.0.1:8033}"        # zclassic23 P2P — DIAL this for sync
 # Read the target tip from a zclassic23 node that answers zcl-rpc cleanly (the
 # live node), rather than zclassicd (whose RPC uses a different cookie). Same
 # chain → same tip. This is one cheap getblockcount, no sync load on it.
@@ -37,13 +40,43 @@ TIP_DATADIR="${ZCL_C3_TIP_DATADIR:-$HOME/.zclassic-c23}"
 PEER_RPC="${ZCL_C3_PEER_RPC:-18232}"         # live zclassic23 RPC (read tip only)
 BUDGET="${ZCL_C3_BUDGET_SECS:-600}"          # 10-minute MVP target
 P2P=39070; RPC=39071; FS=39072; HTTPS=39073
+BUNDLE_SUCCESS_PATTERN='-load-snapshot-at-own-height: coin set RE-SEEDED'
 
 skip() { echo "c3-probe: SKIP ($*)"; exit 2; }
 die()  { echo "c3-probe: FAIL: $*" >&2; exit 1; }
 
 [ -x "$NODE_BIN" ] || skip "node binary absent: $NODE_BIN"
 [ -x "$RPC_BIN" ]  || skip "zcl-rpc absent: $RPC_BIN"
-[ -r "$SNAPSHOT" ] || skip "snapshot fixture absent: $SNAPSHOT"
+
+copy_fixture() {
+    src="$1"
+    dst="$2"
+    cp --reflink=auto "$src" "$dst" 2>/dev/null || cp "$src" "$dst"
+}
+
+select_newest_bundle_snapshot() {
+    newest_mtime=0
+    newest_path=""
+    for cand in "${BUNDLE_SNAP_CANDIDATES[@]}"; do
+        [ -f "$cand" ] || continue
+        size=$(stat -c %s "$cand" 2>/dev/null || echo 0)
+        [ "$size" -gt $((10*1024*1024)) ] || continue
+        mt=$(stat -c %Y "$cand" 2>/dev/null || echo 0)
+        if [ "$mt" -ge "$newest_mtime" ]; then
+            newest_mtime="$mt"
+            newest_path="$cand"
+        fi
+    done
+    printf '%s' "$newest_path"
+}
+
+peer_host="${PEER%:*}"
+peer_port="${PEER##*:}"
+[ -n "$peer_host" ] && [ -n "$peer_port" ] && [ "$peer_host" != "$peer_port" ] \
+    || skip "invalid peer address: $PEER"
+if ! timeout 3 bash -c "exec 3<>/dev/tcp/$peer_host/$peer_port" 2>/dev/null; then
+    skip "serving peer not reachable: $PEER"
+fi
 
 # Reference peer tip (the target). zclassicd has no params on getblockcount.
 PEER_TIP="$(ZCL_DATADIR="$TIP_DATADIR" ZCL_RPCPORT="$PEER_RPC" "$RPC_BIN" getblockcount 2>/dev/null \
@@ -59,20 +92,57 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
-# Seed ONLY the snapshot into the fresh datadir (the cold-start trigger).
-echo "c3-probe: peer_tip=$PEER_TIP  budget=${BUDGET}s  datadir=$DATADIR"
-echo "c3-probe: copying snapshot ($(du -h "$SNAPSHOT" | cut -f1)) ..."
-cp --reflink=auto "$SNAPSHOT" "$DATADIR/consensus_snapshot.db" 2>/dev/null \
-    || cp "$SNAPSHOT" "$DATADIR/consensus_snapshot.db" || die "snapshot copy failed"
+BUNDLE_SNAP="${ZCL_C3_BUNDLE_SNAPSHOT:-}"
+BUNDLE_INDEX="${ZCL_C3_BLOCK_INDEX:-}"
+if [ -z "$BUNDLE_SNAP" ]; then
+    BUNDLE_SNAP="$(select_newest_bundle_snapshot)"
+fi
+if [ -n "$BUNDLE_SNAP" ] && [ -z "$BUNDLE_INDEX" ]; then
+    BUNDLE_INDEX="$(dirname "$BUNDLE_SNAP")/block_index.bin"
+fi
 
-echo "c3-probe: booting fresh node (snapshot import -> delta sync from $PEER) ..."
-setsid "$NODE_BIN" -datadir="$DATADIR" -port=$P2P -rpcport=$RPC -fsport=$FS \
-    -httpsport=$HTTPS -connect="$PEER" -nolegacyimport -nobgvalidation \
-    -showmetrics=0 >"$DATADIR/probe.log" 2>&1 &
+MODE="operator-bundle"
+declare -a LOAD_ARGS=()
+if [ -n "$BUNDLE_SNAP" ] &&
+   [ -f "$BUNDLE_SNAP" ] &&
+   [ -f "$BUNDLE_INDEX" ] &&
+   [ "$(stat -c %s "$BUNDLE_INDEX" 2>/dev/null || echo 0)" -gt $((10*1024*1024)) ]; then
+    bundle_snap="$DATADIR/$(basename "$BUNDLE_SNAP")"
+    echo "c3-probe: peer=$PEER peer_tip=$PEER_TIP budget=${BUDGET}s datadir=$DATADIR"
+    echo "c3-probe: using operator bundle snapshot: $BUNDLE_SNAP"
+    echo "c3-probe: using operator bundle block index: $BUNDLE_INDEX"
+    echo "c3-probe: snapshot $(du -h "$BUNDLE_SNAP" | cut -f1), block_index $(du -h "$BUNDLE_INDEX" | cut -f1)"
+    copy_fixture "$BUNDLE_SNAP" "$bundle_snap" || die "bundle snapshot copy failed"
+    copy_fixture "$BUNDLE_INDEX" "$DATADIR/block_index.bin" || die "block_index.bin copy failed"
+    LOAD_ARGS=("-load-snapshot-at-own-height=$bundle_snap")
+elif [ -r "$LEGACY_SNAPSHOT" ]; then
+    MODE="legacy-consensus-snapshot"
+    echo "c3-probe: peer=$PEER peer_tip=$PEER_TIP budget=${BUDGET}s datadir=$DATADIR"
+    echo "c3-probe: no complete operator bundle found; using legacy consensus snapshot: $LEGACY_SNAPSHOT"
+    echo "c3-probe: legacy snapshot $(du -h "$LEGACY_SNAPSHOT" | cut -f1)"
+    copy_fixture "$LEGACY_SNAPSHOT" "$DATADIR/consensus_snapshot.db" || die "legacy snapshot copy failed"
+else
+    skip "no operator bundle (utxo-seed snapshot + block_index.bin) or legacy consensus_snapshot.db found"
+fi
+
+echo "c3-probe: booting fresh node mode=$MODE (seed authority -> delta sync from $PEER) ..."
+setsid "$NODE_BIN" \
+    -datadir="$DATADIR" \
+    -port=$P2P \
+    -rpcport=$RPC \
+    -fsport=$FS \
+    -httpsport=$HTTPS \
+    -listen=0 \
+    -connect="$PEER" \
+    -nolegacyimport \
+    -nobgvalidation \
+    -showmetrics=0 \
+    "${LOAD_ARGS[@]}" \
+    >"$DATADIR/probe.log" 2>&1 &
 PID=$!
 
 start=$(date +%s)
-imported=0; reached=0; last_h=-1
+seeded=0; reached=0; last_h=-1
 while :; do
     now=$(date +%s); elapsed=$((now - start))
     [ "$elapsed" -ge "$BUDGET" ] && break
@@ -83,12 +153,19 @@ while :; do
     fi
     # getblockchaininfo is param-free and reports both blocks (connected tip)
     # and headers (header chain) — at_tip = both >= peer tip AND blocks==headers.
+    if [ "$MODE" = "operator-bundle" ] && [ "$seeded" = 0 ]; then
+        seed_hit=$(grep -m1 -F -- "$BUNDLE_SUCCESS_PATTERN" "$DATADIR/probe.log" 2>/dev/null || true)
+        if [ -n "$seed_hit" ]; then
+            seeded=1
+            echo "c3-probe: seed authority ready — $seed_hit"
+        fi
+    fi
     bci="$(ZCL_DATADIR="$DATADIR" ZCL_RPCPORT="$RPC" "$RPC_BIN" getblockchaininfo 2>/dev/null)"
     h="$(printf '%s' "$bci"   | sed -E 's/.*"blocks":(-?[0-9]+).*/\1/')"
     hdr="$(printf '%s' "$bci" | sed -E 's/.*"headers":(-?[0-9]+).*/\1/')"
     if printf '%s' "$h" | grep -qE '^[0-9]+$'; then
         [ "$h" != "$last_h" ] && { echo "c3-probe: t=${elapsed}s blocks=$h headers=${hdr:-?}"; last_h="$h"; }
-        [ "$h" -ge 1000000 ] && imported=1
+        [ "$h" -ge 1000000 ] && seeded=1
         if [ "$h" -ge "$PEER_TIP" ] && printf '%s' "$hdr" | grep -qE '^[0-9]+$' \
            && [ "$hdr" -ge "$PEER_TIP" ] && [ "$h" -eq "$hdr" ]; then
             reached=1; echo "c3-probe: REACHED at_tip blocks=$h headers=$hdr in ${elapsed}s"; break
@@ -101,10 +178,10 @@ if [ "$reached" = 1 ]; then
     echo "=== c3-probe: PASS — fresh datadir -> snapshot import -> delta sync -> at_tip@$PEER_TIP within budget ==="
     exit 0
 fi
-echo "c3-probe: did NOT reach at_tip in ${BUDGET}s (imported=$imported last_height=$last_h). Log tail:"
+echo "c3-probe: did NOT reach at_tip in ${BUDGET}s (seeded=$seeded last_height=$last_h). Log tail:"
 tail -20 "$DATADIR/probe.log" | sed 's/^/  /'
-if [ "$imported" = 1 ]; then
-    echo "=== c3-probe: SEAM — snapshot imported (>1M) but forward-sync to at_tip did NOT complete (needs the coins_kv-seed / header-wiring fix) ==="
+if [ "$seeded" = 1 ]; then
+    echo "=== c3-probe: SEAM — seed authority loaded but forward-sync to at_tip did NOT complete within budget ==="
     exit 3
 fi
-die "snapshot import itself did not complete (<1M utxos) in budget"
+die "seed authority itself did not complete (<1M height/UTXOs) in budget"

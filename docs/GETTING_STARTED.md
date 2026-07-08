@@ -50,8 +50,16 @@ make build-only              # strict release-flag compile check, no final link
 make fast-rebuild            # changed-file dev compile + non-LTO local node link
 make hot-rebuild             # alias for fast-rebuild during edit loops
 make dev-bin                 # fast non-LTO local node binary
+make agent-doctor            # combined build/dev-lane/test-failure next action
+make agent-dev-status        # no-build dev-lane status + next safe action
+make agent-clear-stale-dev-reindex # clear proven-stale dev auto-reindex marker
+build/bin/zclassic23-dev agentdevstatus   # native typed dev-lane status
+make agent-stage-dev         # stage dev binary for next linger restart without stopping service
 make t-fast ONLY=<group>     # one test group
+make agent-loop              # default AI/operator loop; fast-ci plus optional dev knobs
 make fast-ci                 # cache-aware lint/build/focused-test loop
+make agent-mcp-call-hot TOOL=zcl_status   # no-build local typed MCP read
+make agent-mcp-call-dev TOOL=zcl_status   # no-build dev-lane typed MCP read
 ```
 
 Build details, dependency versions, and reproducible-release notes are in

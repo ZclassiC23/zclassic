@@ -1,3 +1,133 @@
+## CURRENT STATE (2026-07-08, P0 anchor mint restarted from clean copy)
+
+**2026-07-08 08:50 UTC - P0 sovereign trust-root producer is running again,
+but the durable anchor artifact is still pending.** The 2026-07-03 resumed
+producer never published `utxo-anchor.snapshot`. Offline inspection found a
+torn in-RAM fold witness, not a consensus failure: `coins_applied_height=164001`
+and `coins_ram_flushed_height=164000` existed while `utxo_apply_log[164000]`
+and `utxo_apply_delta[164000]` were missing; proof/script validation rows around
+the gap were already `ok=1`. That datadir was preserved for forensics at
+`$HOME/.zclassic-c23-anchor-mint-torn-20260708-083231`.
+
+The local tree now hardens this class before it recurs:
+
+- `anchorstatus` emits an explicit `utxo_apply_probe` with next-row, previous
+  row, and previous-delta diagnostics, plus a machine-readable next action.
+- `coins_ram_flush()` refuses to advance the durable coin frontier when reducer
+  witness rows are missing.
+- mint/refold boot reconcile treats an absent RAM-flush watermark as genesis
+  only when the checkpoint-bound mint/refold marker exists, so an early crash
+  before the first RAM flush replays from 0 instead of inheriting a false
+  frontier.
+
+**2026-07-08 11:10 UTC - first-flush blocker diagnosed and fixed in-tree.**
+The active anchor-mint unit (PID `2475996`) reached the first RAM flush window
+and logged:
+
+```text
+coins_ram_flush(): flush: BEGIN failed: cannot start a transaction within a transaction
+[stage] batch COMMIT: cannot commit - no transaction is active
+```
+
+Correct-datadir `anchorstatus` showed the producer stuck at
+`utxo_apply=49000`, `tip_finalize=49000`, `proof_validate=119000`,
+`coins_ram_flushed_height=-1`, `snapshot_present=false`. Root cause: the
+generic stage drain opens an outer batch transaction; `coins_ram_note_applied()`
+crossed the 50k-block flush cadence while that batch was still open, and
+`coins_ram_flush()` tried to open its own `BEGIN IMMEDIATE` inside it.
+
+The local fix keeps the flush's own transaction/clear contract intact:
+`coins_ram_note_applied()` now defers while a stage batch is active,
+`utxo_apply_stage_drain()` commits the outer batch first, then calls
+`coins_ram_flush_due()`, and any post-batch flush failure is recorded through
+the stage FATAL latch. Regression: `test_coins_ram` now opens a real
+`stage_batch_begin()`, crosses `flush_every=1`, proves no nested BEGIN occurs,
+then flushes after `stage_batch_end()`.
+
+The release binary was rebuilt and the producer was restarted with this fix at
+11:15:45 UTC. The active unit is PID `3748445`:
+
+```bash
+/home/rhett/github/zclassic23/build/bin/zclassic23 \
+  -datadir=/home/rhett/.zclassic-c23-anchor-mint \
+  -nolegacyimport -mint-anchor -mint-anchor-fast -fold-inram -nobgvalidation
+```
+
+At 11:49 UTC, `anchorstatus` showed the old nested-transaction failure was gone,
+but the producer has a new named blocker: `utxo_apply` cursor `1`,
+`tip_finalize` cursor `48999`, `utxo_apply_log` count `49000`,
+`coins_applied_height=1`, `coins_ram_flushed_height=-1`, no snapshot artifact,
+and `utxo_apply_probe.next_diagnosis=utxo_apply_row_exists_but_cursor_not_advanced`.
+`agent_next_action=inspect_utxo_apply_idle_reason_before_waiting_more`. Treat
+that as the current anchor-producer blocker, not as the earlier nested-BEGIN
+bug.
+
+Focused proof is green: `git diff --check`, `bash -n tools/dev/*.sh`,
+`make t-fast ONLY=syncdiag_rpc`, `make t-fast ONLY=coins_ram`, and
+`make t-fast ONLY=make_lint_gates`.
+
+**2026-07-08 C3 proof hygiene:** `mvp-coldstart-local` no longer wraps
+`make ci-coldstart` (GNU make maps any failed recipe to exit 2, which had
+misreported a real cold-start failure as a fixture SKIP). It now calls
+`tools/scripts/cold_start_test.sh` directly. The script prefers the current
+secure operator bundle (`block_index.bin` + `utxo-seed-*.snapshot`) and passes
+on the self-verified `-load-snapshot-at-own-height` seed line. Local proof
+run-passed in 17s with `count=1344903`, `body SHA3 OK`, H*=3155842. This is
+the C3 seed-authority proof only. The full C3 proof is now
+`make mvp-coldstart-to-tip-local`: `tools/scripts/cold_start_to_tip_probe.sh`
+uses the same operator bundle path, dials a serving zclassic23 peer
+(`ZCL_C3_PEER`, default `127.0.0.1:8033`), and must reach that peer's captured
+tip within the 10-minute budget. The full fresh zclassic23→zclassic23
+sync-to-tip proof remains pending until that command run-passes.
+
+**2026-07-08 C3 zclassic23-to-zclassic23 probe verdict:** both canonical and
+the remote zclassic23 peer advertise the fast-sync service bit and
+`fast_sync_useful=true` (`205.209.104.118:8033` is reachable and identified as
+`/ZClassic23:0.1.0/`). A remote-only isolated C3 probe loaded the seed authority
+quickly but did not handshake from this host; the log repeatedly named
+`protocol failure before handshake (remote-close, state=connecting/version_sent)`.
+A local canonical peer probe initially hit receive queue overflow. The in-tree
+backpressure fix raises `MAX_RECV_MESSAGES` to 1024, drains up to
+`ZCL_MSG_PROCESS_MAX_PER_CYCLE=128`, and caps socket reads near full queue via
+`connman_recv_cap_for_queue()`. After that patch, the probe stayed connected and
+advanced from seed height `3155842` to `3156697` in the 600s budget, with logs
+persisting bodies beyond `3156960`, but it still missed tip (`headers=3174247`).
+The remaining full-C3 blocker is throughput/reducer intake, named in the log as
+`p2p-block-intake-full`; the previous disconnect/pin failure is no longer the
+active blocker.
+
+**2026-07-08 agent API UX/DRY update:** `agentops` is the one-call operator API.
+It now exposes `api_style`, `dry_source`, `api_ux`, a registry-owned
+`agentops.workflow` list, and scalar `deploy_guard_command` /
+`deploy_guard_tool` fields. The workflow rows live in
+`app/controllers/src/agent_contract_registry.c`, not in the response assembly
+controller, so native/MCP callers get the same simple path without copying tool
+names into scripts or docs.
+
+Earlier in the same run, the producer was recreated from the stopped source copy
+`$HOME/.zclassic-c23-COPY-20260701-113424-stall-3166384` and launched at
+08:33:14 UTC as:
+
+```bash
+systemd-run --user --unit=zclassic23-anchor-mint \
+  --description='zclassic23 resumable anchor mint (fold-inram)' \
+  --property=WorkingDirectory=/home/rhett/github/zclassic23 \
+  --setenv=ZCL_MINT_ANCHOR_OUT=/home/rhett/.zclassic-c23-anchor-mint/utxo-anchor.snapshot \
+  /home/rhett/github/zclassic23/build/bin/zclassic23 \
+  -datadir=/home/rhett/.zclassic-c23-anchor-mint \
+  -nolegacyimport -mint-anchor -mint-anchor-fast -fold-inram -nobgvalidation
+```
+
+At 08:50 UTC that earlier service was active as PID `2475996`, with no snapshot
+artifact yet. It later hit the first-flush nested transaction bug described
+above and has been superseded by the 11:15 UTC PID `3748445` running the rebuilt
+binary. Use the current `anchorstatus` section above for the live producer
+state.
+
+No `utxo-anchor.snapshot` exists yet. The sovereign cutover remains blocked on
+the final verified artifact and the copy-prove gates in
+`docs/work/sovereign-cutover-runbook.md`.
+
 ## CURRENT STATE (2026-07-03, P0 anchor mint resumed with in-RAM fold)
 
 **2026-07-03 11:55 UTC — P0 sovereign trust-root producer is code-unblocked,

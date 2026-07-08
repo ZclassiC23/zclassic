@@ -41,6 +41,12 @@ TEST_ZCL_BIN = $(BIN_DIR)/test_zcl
 TEST_PARALLEL_BIN = $(BIN_DIR)/test_parallel
 ZCLASSIC_CLI_BIN = $(BIN_DIR)/zclassic-cli
 ZCL_RPC_BIN = $(BIN_DIR)/zcl-rpc
+ZCL_AGENT_BIN ?= $(ZCLASSIC23_DEV_BIN)
+ZCL_AGENT_DEV_BIN ?= $(HOME)/.local/bin/zclassic23-dev
+ZCL_AGENT_DEV_DATADIR ?= $(HOME)/.zclassic-c23-dev
+ZCL_AGENT_DEV_RPCPORT ?= 18252
+ZCL_AGENT_MCP_BUILD ?= 1
+ZCL_AGENT_MCP_ARGS ?=
 ZCL_NODECTL_BIN = $(BIN_DIR)/zcl-nodectl
 WAL_CHECKPOINT_BIN = $(BIN_DIR)/wal_checkpoint
 SOAK_RUNNER_BIN = $(BIN_DIR)/soak_runner
@@ -64,8 +70,8 @@ APP_INCLUDES = $(foreach d,$(APP_DIRS),-Iapp/$(d)/include)
 # Lint-gate tests intentionally plant short-lived fixture files inside the
 # production scan tree so the lint scopes stay honest. Those files must remain
 # visible to lint, but concurrent builds must never compile them.
-ZCL_EPHEMERAL_SOURCE_PATTERNS = %/_%fixture%.c
-zcl_filter_ephemeral_sources = $(filter-out $(ZCL_EPHEMERAL_SOURCE_PATTERNS),$(1))
+zcl_ephemeral_sources = $(foreach s,$(1),$(if $(findstring /_,$(s)),$(s)))
+zcl_filter_ephemeral_sources = $(filter-out $(call zcl_ephemeral_sources,$(1)),$(1))
 APP_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(foreach d,$(APP_DIRS),$(wildcard app/$(d)/src/*.c)))
 
@@ -313,7 +319,7 @@ test-parallel: test_parallel
 # the default `all`), so running build/bin/test_parallel directly after editing a test
 # can false-green an old binary or report "matched no groups" for a new test.
 # `make t ONLY=<group>` always rebuilds the harness first, closing that trap.
-.PHONY: t t-fast syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci
+.PHONY: t t-fast syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop immutable-history-canaries historical-canaries agent-mcp-call agent-mcp-call-hot agent-mcp-call-dev agent-dev-status agent-clear-stale-dev-reindex agent-doctor stage-dev-bin agent-stage-dev deploy-dev-fast agent-deploy-fast
 
 # Run ONE test group, always rebuilding the harness first:
 #   make t ONLY=service_state_driver
@@ -395,6 +401,38 @@ lint-fast: check-raw-sqlite check-malloc check-silent-errors check-model-validat
 #   make pre-push-ci               # skips live probe; code gate only
 fast-ci agent-fast-ci dev-ci:
 	@tools/agent_fast_ci.sh
+
+agent-plan:
+	@tools/agent_fast_ci.sh plan-json
+
+immutable-history-canaries historical-canaries:
+	@echo "==> immutable history canaries: real ZClassic mainnet facts"
+	@$(MAKE) --no-print-directory t-fast ONLY=domain_consensus_tx_structural
+	@$(MAKE) --no-print-directory t-fast ONLY=consensus_parity
+	@echo "immutable-history-canaries: PASS (fast historic KATs; full replay gates: make replay-canary-anchor / make replay-canary-genesis)"
+
+# One-command AI/operator development loop. Default is checks only. Opt into a
+# runnable dev binary, no-restart dev-lane staging, or dev-lane hot-swap without changing the safe fast-ci
+# contract:
+#   make agent-loop
+#   ZCL_AGENT_LOOP_BIN=1 make agent-loop
+#   ZCL_AGENT_LOOP_DEPLOY=stage make agent-loop
+#   ZCL_AGENT_LOOP_DEPLOY=dev make agent-loop
+agent-loop agent-dev-loop:
+	@tools/agent_fast_ci.sh
+	@case "$${ZCL_AGENT_LOOP_DEPLOY:-}" in \
+	  "") \
+	    if [ "$${ZCL_AGENT_LOOP_BIN:-0}" = "1" ]; then \
+	      $(MAKE) dev-bin; \
+	    fi ;; \
+	  stage) \
+	    $(MAKE) agent-stage-dev ;; \
+	  dev) \
+	    $(MAKE) agent-deploy-fast ;; \
+	  *) \
+	    echo "agent-loop: unsupported ZCL_AGENT_LOOP_DEPLOY=$${ZCL_AGENT_LOOP_DEPLOY} (use stage, dev, or unset)"; \
+	    exit 2 ;; \
+	esac
 
 remote-node-update:
 	@if [ -n "$${ZCL_REMOTE_HOST:-}" ]; then \
@@ -741,14 +779,15 @@ $(ZCLASSIC23_CHAOS_BIN): tools/sim/chaos.c tools/sim/sim_peer.c \
 	lib/util/src/safe_alloc.c \
 	lib/util/include/util/safe_alloc.h lib/net/src/net_fault.c \
 	lib/net/include/net/net_fault.h lib/platform/src/clock.c \
-	lib/platform/include/platform/clock.h lib/platform/include/platform/time_compat.h
+	lib/platform/include/platform/clock.h lib/platform/include/platform/time_compat.h \
+	lib/storage/src/boot_auto_reindex.c lib/storage/include/storage/boot_auto_reindex.h
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -D_POSIX_C_SOURCE=200809L -Ilib/util/include -Ilib/net/include \
-	    -Ilib/platform/include -Itools \
+	    -Ilib/platform/include -Ilib/storage/include -Itools \
 	    -o $@ tools/sim/chaos.c tools/sim/sim_peer.c \
 	    lib/util/src/safe_alloc.c lib/net/src/net_fault.c \
-	    lib/platform/src/clock.c
+	    lib/platform/src/clock.c lib/storage/src/boot_auto_reindex.c
 
 chaos: zclassic23-chaos
 	@set -eu; \
@@ -1373,20 +1412,41 @@ mvp-onion-local: test_zcl
 #
 # The FULL C3 claim (a fresh node cold-syncs to tip in <10min) needs a second
 # serving node + real wall-clock and cannot be hermetic. The nearest REAL proof
-# is the snapshot-first import boot (ci-coldstart -> cold_start_test.sh): boot a
-# fresh /tmp datadir from a COPY of consensus_snapshot.db and assert >1M UTXOs
-# in <90s. ci-coldstart was orphaned (referenced nowhere), so the only real
-# cold-boot proof could silently rot. This wraps it for mvp-verify with the
-# same SKIP-not-FAIL discipline as mvp-onion-local: cold_start_test.sh exits 2
-# when the snapshot/binaries are absent, which we map to a clean SKIP (exit 0)
-# so a fixture-less host never false-FAILs. Locally-verified; NOT a hermetic-✅.
+# is the snapshot authority boot: cold_start_test.sh starts a fresh /tmp datadir
+# from the local operator bundle (block_index.bin + utxo-seed-*.snapshot) and
+# asserts >1M UTXOs are self-verified + seeded in <90s. It falls back to
+# consensus_snapshot.db only for checkpoint-height fixtures. This wraps the
+# underlying script directly for mvp-verify with the same SKIP-not-FAIL
+# discipline as mvp-onion-local: cold_start_test.sh exits 2 when the fixture or
+# binaries are absent, which we map to a clean SKIP (exit 0). Do not wrap this
+# through `make ci-coldstart` here: GNU make returns 2 for a failed recipe,
+# which would misclassify a real cold-start failure as "missing fixture".
+# Locally-verified; NOT a hermetic-✅.
 .PHONY: mvp-coldstart-local
 mvp-coldstart-local: zclassic23 zcl-rpc
 	@bash -c 'set -uo pipefail; \
 	 echo "══ MVP C3 (real): snapshot-first cold boot >1M UTXOs <90s (fixture-gated) ══"; \
-	 $(MAKE) --no-print-directory ci-coldstart; rc=$$?; \
+	 bash tools/scripts/cold_start_test.sh; rc=$$?; \
 	 if [ "$$rc" -eq 2 ]; then \
-	     echo "mvp-coldstart-local: SKIP (no consensus_snapshot.db / binaries — run on a host with the fixture)"; \
+	     echo "mvp-coldstart-local: SKIP (no operator bundle / consensus_snapshot.db / binaries — run on a host with the fixture)"; \
+	     exit 0; \
+	 fi; \
+	 exit $$rc'
+
+# ── mvp-coldstart-to-tip-local (C3 full fresh bundle -> at-tip proof) ─
+#
+# This is the LONG empirical C3 proof: a fresh /tmp datadir loads the secure
+# operator bundle (block_index.bin + utxo-seed-*.snapshot), dials a serving
+# zclassic23 peer, and must reach that peer's captured tip within the 10-minute
+# MVP budget. It SKIPs only when the local bundle or serving peer is absent.
+# Exit 3 is an honest C3 seam, not a fixture skip.
+.PHONY: mvp-coldstart-to-tip-local
+mvp-coldstart-to-tip-local: zclassic23 zcl-rpc
+	@bash -c 'set -uo pipefail; \
+	 echo "══ MVP C3 FULL (real): fresh operator bundle -> zclassic23 peer tip <10min ══"; \
+	 bash tools/scripts/cold_start_to_tip_probe.sh; rc=$$?; \
+	 if [ "$$rc" -eq 2 ]; then \
+	     echo "mvp-coldstart-to-tip-local: SKIP (no operator bundle / serving peer / binaries — run on a synced host)"; \
 	     exit 0; \
 	 fi; \
 	 exit $$rc'
@@ -1417,8 +1477,10 @@ mvp-coldstart-local: zclassic23 zcl-rpc
 #                               --user start of an isolated linger unit (no docker)
 #   test-crash-bootstrap   C7 — single-node full-binary kill-9 boot recovery
 #   test-two-node-peer-tip C7 — two-node native-P2P peer-tip kill-9 recovery
-#   mvp-coldstart-local    C3 — real snapshot-first cold boot (>1M UTXOs <90s,
-#                               fixture-gated, SKIPs cleanly when absent)
+#   mvp-coldstart-to-tip-local
+#                            C3 — FULL real bundle cold boot + zclassic23
+#                               peer delta sync to tip (<10min, fixture/peer
+#                               gated, SKIPs cleanly when absent)
 #   mvp-shielded-receive   C4 — params-free receive half (note→ivk→z-balance)
 #   test-shielded-payment  C4 — FULL Groth16 t→z send + wallet decrypt
 #                               (params-gated, SKIPs cleanly without params)
@@ -1446,12 +1508,12 @@ mvp-verify: zclassic23 zcl-rpc test_zcl
 	   [4]="C7 two-node peer-tip kill-9 recovery (test-two-node-peer-tip)" \
 	   [5]="C4 shielded receive, params-free (mvp-shielded-receive)" \
 	   [6]="C4 full shielded send+receive, params-gated (test-shielded-payment)" \
-	   [7]="C3 real snapshot cold boot, fixture-gated (mvp-coldstart-local)" \
+	   [7]="C3 FULL cold boot to peer tip, fixture/peer-gated (mvp-coldstart-to-tip-local)" \
 	   [8]="C2 real onion bootstrap, Tor-egress-gated (mvp-onion-local)" ); \
 	 declare -A TGT=( [1]=ci-install [2]=ci-install-linger \
 	   [3]=test-crash-bootstrap [4]=test-two-node-peer-tip \
 	   [5]=mvp-shielded-receive [6]=test-shielded-payment \
-	   [7]=mvp-coldstart-local [8]=mvp-onion-local ); \
+	   [7]=mvp-coldstart-to-tip-local [8]=mvp-onion-local ); \
 	 declare -A ST; fails=0; \
 	 for i in 1 2 3 4 5 6 7 8; do \
 	   echo ""; echo "── mvp-verify [$$i/8]: $${NAME[$$i]} ──"; \
@@ -1829,6 +1891,63 @@ seed-anchor-snapshot:
 # First run bootstraps via two-step cold import; later runs hot-swap the binary.
 deploy-dev:
 	@./tools/dev/deploy-dev-lane.sh
+
+deploy-dev-fast agent-deploy-fast:
+	@ZCL_DEV_DEPLOY_BUILD=fast ./tools/dev/deploy-dev-lane.sh
+
+agent-mcp-call:
+	@if [ -z "$(TOOL)" ]; then \
+	  echo "usage: make agent-mcp-call TOOL=zcl_status [ARGS='{}']"; \
+	  exit 2; \
+	fi
+	@bin="$(ZCL_AGENT_BIN)"; \
+	case "$${ZCL_AGENT_MCP_BUILD:-1}" in \
+	  1|true|yes|fresh) mcp_build=1 ;; \
+	  0|false|no|skip|hot) mcp_build=0 ;; \
+	  *) echo "agent-mcp-call: unsupported ZCL_AGENT_MCP_BUILD=$${ZCL_AGENT_MCP_BUILD} (use 1 or 0)"; exit 2 ;; \
+	esac; \
+	if [ "$$mcp_build" = "1" ] && [ "$$bin" = "$(ZCLASSIC23_DEV_BIN)" ]; then \
+	  $(MAKE) dev-bin >/dev/null; \
+	fi; \
+	if [ ! -x "$$bin" ]; then \
+	  if [ "$$mcp_build" = "0" ]; then \
+	    echo "agent-mcp-call: $$bin is not executable (set ZCL_AGENT_MCP_BUILD=1 or run make dev-bin / make agent-deploy-fast)"; \
+	    exit 2; \
+	  elif [ "$$bin" = "$(ZCLASSIC23_BIN)" ]; then \
+	    $(MAKE) zclassic23 >/dev/null; \
+	  else \
+	    echo "agent-mcp-call: $$bin is not executable"; \
+	    exit 2; \
+	  fi; \
+	fi; \
+	"$$bin" $(ZCL_AGENT_MCP_ARGS) mcpcall "$(TOOL)" '$(or $(ARGS),{})'
+
+agent-mcp-call-hot:
+	@$(MAKE) --no-print-directory agent-mcp-call ZCL_AGENT_MCP_BUILD=0 TOOL="$(TOOL)" ARGS='$(or $(ARGS),{})'
+
+agent-mcp-call-dev:
+	@$(MAKE) --no-print-directory agent-mcp-call \
+	  ZCL_AGENT_BIN="$(ZCL_AGENT_DEV_BIN)" \
+	  ZCL_AGENT_MCP_BUILD=0 \
+	  ZCL_AGENT_MCP_ARGS="-datadir=$(ZCL_AGENT_DEV_DATADIR) -rpcport=$(ZCL_AGENT_DEV_RPCPORT)" \
+	  TOOL="$(TOOL)" ARGS='$(or $(ARGS),{})'
+
+agent-dev-status:
+	@tools/dev/agent-dev-status.sh $(ARGS)
+
+agent-clear-stale-dev-reindex:
+	@tools/dev/agent-clear-stale-reindex.sh $(ARGS)
+
+agent-doctor:
+	@tools/dev/agent-doctor.sh $(ARGS)
+
+stage-dev-bin agent-stage-dev:
+	@$(MAKE) fast-rebuild
+	@mkdir -p "$(dir $(ZCL_AGENT_DEV_BIN))"
+	@tmp="$$(mktemp "$(ZCL_AGENT_DEV_BIN).next.XXXXXX")"; \
+	  install -m 755 "$(ZCLASSIC23_DEV_BIN)" "$$tmp"; \
+	  mv -f "$$tmp" "$(ZCL_AGENT_DEV_BIN)"; \
+	  echo "stage-dev-bin: staged $(ZCLASSIC23_DEV_BIN) at $(ZCL_AGENT_DEV_BIN) for the next zcl23-dev restart"
 
 lane-health:
 	@./tools/scripts/lane_health.sh

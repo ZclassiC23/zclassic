@@ -206,6 +206,21 @@ assertions over broad smoke checks.
   duration. Peer block traffic during the window is counted as
   `partition_drops` and is not delivered to the simulated node.
 
+`auto_reindex_request anchor=N`
+: Writes the durable auto-reindex marker through the production
+  `boot_auto_reindex_request()` primitive and updates the auto-reindex metrics.
+  Repeated lower anchors fold the marker down to the minimum anchor while
+  incrementing the bounded attempt count.
+
+`auto_reindex_clear_if_covered coins_best=N`
+: Models the stale-marker cleanup gate used during boot: a positive,
+  nonterminal marker clears only when `coins_best` is strictly greater than the
+  marker anchor. Equality intentionally leaves the marker pending.
+
+`auto_reindex_mark_terminal anchor=N`
+: Rewrites the marker as terminal (`count=-1`). Terminal markers are
+  present-but-not-pending and are not cleared by the stale-marker cleanup gate.
+
 `expect no_crash`
 : Asserts that the scenario did not mark itself crashed.
 
@@ -215,7 +230,10 @@ assertions over broad smoke checks.
   `mempool_prunes`, `active_peers`, `killed_peers`, `blocks_sent`,
   `malformed_blocks`, `block_bytes`, `clock_advance_count`,
   `clock_advance_seconds`, `scheduled_events`, `alloc_faults`,
-  `graceful_shutdowns`, `partition_drops`, and `sim_time`.
+  `graceful_shutdowns`, `partition_drops`, `sim_time`,
+  `auto_reindex_anchor`, `auto_reindex_count`, `auto_reindex_pending`,
+  `auto_reindex_terminal`, `auto_reindex_requests`, and
+  `auto_reindex_clears`.
 
 ## Adding Fault Injection
 

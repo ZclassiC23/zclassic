@@ -289,7 +289,8 @@ static bool syncdiag_create_height_log(sqlite3 *db, const char *table)
     if (!db || !table)
         return false;
     snprintf(sql, sizeof(sql),
-             "CREATE TABLE IF NOT EXISTS %s(height INTEGER PRIMARY KEY)",
+             "CREATE TABLE IF NOT EXISTS %s("
+             "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER)",
              table);
     return syncdiag_exec_sql(db, sql);
 }
@@ -306,6 +307,27 @@ static bool syncdiag_seed_log_point(sqlite3 *db, const char *table,
     if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
         return false;
     sqlite3_bind_int64(st, 1, (sqlite3_int64)height);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool syncdiag_seed_log_verdict(sqlite3 *db, const char *table,
+                                      int64_t height, const char *status,
+                                      int ok_value)
+{
+    char sql[200];
+    sqlite3_stmt *st = NULL;
+    if (!db || !table || !status)
+        return false;
+    snprintf(sql, sizeof(sql),
+             "INSERT OR REPLACE INTO %s(height,status,ok) "
+             "VALUES(?1,?2,?3)", table);
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int64(st, 1, (sqlite3_int64)height);
+    sqlite3_bind_text(st, 2, status, -1, SQLITE_STATIC);
+    sqlite3_bind_int(st, 3, ok_value);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
@@ -352,9 +374,16 @@ static bool syncdiag_seed_anchorstatus_progress(const char *dir)
     ok = ok && syncdiag_seed_log_point(db, "header_admit_log", 0);
     ok = ok && syncdiag_seed_log_point(db, "header_admit_log", 3166384);
     ok = ok && syncdiag_seed_log_point(db, "proof_validate_log", 0);
-    ok = ok && syncdiag_seed_log_point(db, "proof_validate_log", 2790999);
-    ok = ok && syncdiag_seed_log_point(db, "utxo_apply_log", 0);
-    ok = ok && syncdiag_seed_log_point(db, "utxo_apply_log", 163999);
+    ok = ok && syncdiag_seed_log_verdict(db, "proof_validate_log", 164000,
+                                         "verified", 1);
+    ok = ok && syncdiag_seed_log_verdict(db, "script_validate_log", 164000,
+                                         "verified", 1);
+    ok = ok && syncdiag_seed_log_verdict(db, "proof_validate_log", 2790999,
+                                         "verified", 1);
+    ok = ok && syncdiag_seed_log_verdict(db, "utxo_apply_log", 0,
+                                         "verified", 1);
+    ok = ok && syncdiag_seed_log_verdict(db, "utxo_apply_log", 163999,
+                                         "verified", 1);
 
     const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
     uint8_t marker[48] = {0};
@@ -662,6 +691,43 @@ int test_syncdiag_rpc(void)
                                   "stale_header_rows_above_anchor")) == 1;
         ok = ok && json_get(&result, "stale_rows_above_anchor") != NULL &&
             json_get_bool(json_get(&result, "stale_rows_above_anchor"));
+        ok = ok && json_get(&result, "utxo_apply_probe_next_action") != NULL &&
+            strcmp(json_get_str(json_get(&result,
+                                         "utxo_apply_probe_next_action")),
+                   "restart_anchor_mint_with_stdout_capture_and_check_window_miss") == 0;
+
+        const struct json_value *probe =
+            json_get(&result, "utxo_apply_probe");
+        ok = ok && probe != NULL && probe->type == JSON_OBJ;
+        ok = ok && json_get(probe, "next_height") != NULL &&
+            json_get_int(json_get(probe, "next_height")) == 164000;
+        ok = ok && json_get(probe, "previous_height") != NULL &&
+            json_get_int(json_get(probe, "previous_height")) == 163999;
+        ok = ok && json_get(probe, "previous_row_expected") != NULL &&
+            json_get_bool(json_get(probe, "previous_row_expected"));
+        ok = ok && json_get(probe, "next_diagnosis") != NULL &&
+            strcmp(json_get_str(json_get(probe, "next_diagnosis")),
+                   "utxo_apply_idle_after_validated_row") == 0;
+        ok = ok && json_get(probe, "history_diagnosis") != NULL &&
+            strcmp(json_get_str(json_get(probe, "history_diagnosis")),
+                   "utxo_apply_history_consistent") == 0;
+        ok = ok && json_get(probe, "next_action") != NULL &&
+            strcmp(json_get_str(json_get(probe, "next_action")),
+                   "restart_anchor_mint_with_stdout_capture_and_check_window_miss") == 0;
+
+        const struct json_value *proof_next =
+            json_get(probe, "proof_validate_at_next");
+        ok = ok && proof_next != NULL;
+        ok = ok && json_get(proof_next, "row_present") != NULL &&
+            json_get_bool(json_get(proof_next, "row_present"));
+        ok = ok && json_get(proof_next, "ok") != NULL &&
+            json_get_int(json_get(proof_next, "ok")) == 1;
+
+        const struct json_value *utxo_next =
+            json_get(probe, "utxo_apply_at_next");
+        ok = ok && utxo_next != NULL;
+        ok = ok && json_get(utxo_next, "row_present") != NULL &&
+            !json_get_bool(json_get(utxo_next, "row_present"));
 
         const struct json_value *utxo =
             find_object_with_str(json_get(&result, "stages"),
@@ -3775,6 +3841,7 @@ syncdiag_net_split_done:
 
         json_free(&params);
         json_free(&result);
+        sync_set_state(SYNC_IDLE, "agent stale cache cleanup");
         sync_monitor_set_context(NULL, NULL, NULL);
         rpc_net_set_connman(NULL);
         reducer_frontier_provable_tip_reset();
@@ -4457,7 +4524,7 @@ syncdiag_net_split_done:
                           "zcl.agent_map.v1") == 0;
         ok = ok &&
             agent_contract_command_surface_count("agentmap.commands.core") ==
-                12;
+                13;
         ok = ok &&
             agent_contract_command_surface_count(
                 "agentmap.commands.drilldown") == 6;
@@ -4471,6 +4538,14 @@ syncdiag_net_split_done:
             find_object_with_str(commands, "method", "agentdeployguard") != NULL;
         ok = ok && find_object_with_str(commands, "name", "impact") != NULL;
         ok = ok && find_object_with_str(commands, "name", "build") != NULL;
+        const struct json_value *map_dev_status =
+            find_object_with_str(commands, "name", "dev_status");
+        ok = ok && map_dev_status &&
+            strcmp(json_get_str(json_get(map_dev_status, "native")),
+                   "zclassic23 agentdevstatus") == 0;
+        ok = ok && map_dev_status &&
+            strcmp(json_get_str(json_get(map_dev_status, "mcp")),
+                   "zcl_agent_dev_status") == 0;
         ok = ok && find_object_with_str(commands, "method", "healthcheck")
                          != NULL;
         ok = ok && find_object_with_str(commands, "method", "statecatalog")
@@ -4667,6 +4742,8 @@ syncdiag_net_split_done:
             json_get(&contracts, "transports");
         const struct json_value *contract_agentops =
             find_object_with_str(contract_list, "method", "agentops");
+        const struct json_value *contract_agentdevstatus =
+            find_object_with_str(contract_list, "method", "agentdevstatus");
         const struct json_value *contract_diagnose =
             find_object_with_str(contract_list, "method", "agentdiagnose");
         const struct json_value *contract_api =
@@ -4756,6 +4833,23 @@ syncdiag_net_split_done:
             strcmp(json_get_str(json_get(contract_agentops,
                                          "ops_purpose")),
                    "compact top-level fields for common agent decisions") == 0;
+        ok = ok && contract_agentdevstatus &&
+            strcmp(json_get_str(json_get(contract_agentdevstatus, "schema")),
+                   "zcl.agent_dev_status.v1") == 0;
+        ok = ok && contract_agentdevstatus &&
+            strcmp(json_get_str(json_get(contract_agentdevstatus, "native")),
+                   "zclassic23 agentdevstatus") == 0;
+        ok = ok && contract_agentdevstatus &&
+            strcmp(json_get_str(json_get(contract_agentdevstatus, "mcp")),
+                   "zcl_agent_dev_status") == 0;
+        ok = ok && contract_agentdevstatus &&
+            strcmp(json_get_str(json_get(contract_agentdevstatus,
+                                         "api_cli_field")),
+                   "dev_status_command") == 0;
+        ok = ok && contract_agentdevstatus &&
+            strcmp(json_get_str(json_get(contract_agentdevstatus,
+                                         "ops_surface")),
+                   "direct") == 0;
         ok = ok && contract_status &&
             strcmp(json_get_str(json_get(contract_status, "capability")),
                    "runtime_status_alias") == 0;
@@ -4945,6 +5039,11 @@ syncdiag_net_split_done:
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_build.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.agent_dev_status.v1") != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.mvp_operator_proofs.v1")
+            != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.peer_incidents.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.background_quality_runtime.v1")
@@ -5015,6 +5114,8 @@ syncdiag_net_split_done:
                                  "zcl.operator_deployment_safety.v1") != NULL;
         ok = ok && json_array_has_substr(transports, "zcl_agent_build");
         ok = ok && json_array_has_substr(transports,
+                                         "zcl_agent_dev_status");
+        ok = ok && json_array_has_substr(transports,
                                          "zclassic23 agentops");
         ok = ok && json_array_has_substr(transports, "zcl_agent_ops");
         ok = ok && json_array_has_substr(transports, "zcl_agent_diagnose");
@@ -5039,6 +5140,8 @@ syncdiag_net_split_done:
         ok = ok && rpc_table_execute(&tbl, "agentops", &params, &ops);
         const struct json_value *ops_work = json_get(&ops, "top_next_work");
         const struct json_value *ops_gaps = json_get(&ops, "api_gaps");
+        const struct json_value *ops_workflow = json_get(&ops, "workflow");
+        const struct json_value *ops_api_ux = json_get(&ops, "api_ux");
         const struct json_value *ops_availability =
             json_get(&ops, "runtime_availability");
         const struct json_value *ops_availability_methods =
@@ -5062,6 +5165,10 @@ syncdiag_net_split_done:
                           "zcl_agent_ops") == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops, "contract_source")),
                           "agent_contracts.def") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&ops, "api_style")),
+                          "one compact first call, then registry-owned primitive drilldowns") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&ops, "dry_source")),
+                          "agent_contracts.def + agent_contract_registry.c") == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops,
                                                 "diagnostics_catalog_command")),
                           "zclassic23 statecatalog") == 0;
@@ -5103,6 +5210,18 @@ syncdiag_net_split_done:
         ok = ok && strcmp(json_get_str(json_get(&ops,
                                                 "service_operations_tool")),
                           "zcl_service_operations") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&ops,
+                                                "dev_status_command")),
+                          "zclassic23 agentdevstatus") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&ops,
+                                                "dev_status_tool")),
+                          "zcl_agent_dev_status") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&ops,
+                                                "deploy_guard_command")),
+                          "zclassic23 agentdeployguard [action]") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&ops,
+                                                "deploy_guard_tool")),
+                          "zcl_agent_deploy_guard") == 0;
         ok = ok && ops_direct_agentops &&
             strcmp(json_get_str(json_get(ops_direct_agentops, "schema")),
                    "zcl.agent_ops.v1") == 0;
@@ -5130,6 +5249,9 @@ syncdiag_net_split_done:
         const struct json_value *ops_direct_peerincidents =
             find_object_with_str(ops_direct_commands, "method",
                                  "peerincidents");
+        const struct json_value *ops_direct_dev_status =
+            find_object_with_str(ops_direct_commands, "method",
+                                 "agentdevstatus");
         ok = ok && ops_direct_diagnose &&
             strcmp(json_get_str(json_get(ops_direct_diagnose, "schema")),
                    "zcl.agent_diagnose.v1") == 0;
@@ -5167,17 +5289,28 @@ syncdiag_net_split_done:
         ok = ok && ops_direct_peerincidents &&
             strcmp(json_get_str(json_get(ops_direct_peerincidents, "mcp")),
                    "zcl_peer_incidents") == 0;
+        ok = ok && ops_direct_dev_status &&
+            strcmp(json_get_str(json_get(ops_direct_dev_status, "schema")),
+                   "zcl.agent_dev_status.v1") == 0;
+        ok = ok && ops_direct_dev_status &&
+            strcmp(json_get_str(json_get(ops_direct_dev_status, "native")),
+                   "zclassic23 agentdevstatus") == 0;
+        ok = ok && ops_direct_dev_status &&
+            strcmp(json_get_str(json_get(ops_direct_dev_status, "mcp")),
+                   "zcl_agent_dev_status") == 0;
         ok = ok && strstr(json_get_str(json_get(&ops,
                                                 "refold_plain_english")),
                           "borrowed snapshot seed") != NULL;
         ok = ok &&
             agent_contract_work_surface_count("agentops.api_gaps") == 3;
         ok = ok &&
+            agent_contract_work_surface_count("agentops.workflow") == 5;
+        ok = ok &&
             agent_contract_work_surface_count("agentops.top_next_work") == 5;
         ok = ok &&
             agent_contract_work_surface_count("missing.surface") == 0;
         ok = ok &&
-            agent_contract_field_surface_count("agentops.first_call") == 11;
+            agent_contract_field_surface_count("agentops.first_call") == 13;
         ok = ok &&
             agent_contract_field_surface_count("missing.surface") == 0;
         ok = ok &&
@@ -5190,6 +5323,19 @@ syncdiag_net_split_done:
                                         "runtime_identity_everywhere") != NULL;
         ok = ok && find_object_with_str(ops_gaps, "name",
                                         "timeline_query") != NULL;
+        ok = ok && ops_workflow && json_size(ops_workflow) == 5;
+        ok = ok && find_object_with_str(ops_workflow, "name",
+                                        "first_call") != NULL;
+        ok = ok && find_object_with_str(ops_workflow, "name",
+                                        "change_with_impact") != NULL;
+        ok = ok && find_object_with_str(ops_workflow, "name",
+                                        "drill_down_only_when_needed") != NULL;
+        ok = ok && ops_api_ux &&
+            strstr(json_get_str(json_get(ops_api_ux, "preferred_drilldowns")),
+                   "zcl_state") != NULL;
+        ok = ok && ops_api_ux &&
+            strstr(json_get_str(json_get(ops_api_ux, "add_new_api_rule")),
+                   "registry-owned primitives") != NULL;
         ok = ok && ops_work && json_size(ops_work) == 5;
         ok = ok && find_object_with_str(ops_work, "name",
                                         "finish_self_verified_utxo_anchor_rebuild")
@@ -5767,6 +5913,8 @@ syncdiag_net_split_done:
         const struct json_value *dev_binary =
             json_get(&build, "dev_node_binary");
         const struct json_value *cache = json_get(&build, "cache");
+        const struct json_value *history =
+            json_get(&build, "immutable_history_canaries");
         const struct json_value *commands = json_get(&build, "commands");
         const struct json_value *repro =
             json_get(&build, "reproducible_release");
@@ -5783,11 +5931,46 @@ syncdiag_net_split_done:
         ok = ok && build.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&build, "schema")),
                           "zcl.agent_build.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&build, "build_commit")),
+                          zcl_build_commit()) == 0;
         ok = ok && loop && strcmp(json_get_str(json_get(loop, "schema")),
                                   "zcl.agent_build_loop.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(loop, "default_edit_gate")),
+                          "make agent-loop") == 0;
+        ok = ok && strcmp(json_get_str(json_get(loop,
+                           "default_underlying_gate")),
+                          "make fast-ci") == 0;
+        ok = ok && strcmp(json_get_str(json_get(loop,
+                           "read_only_fast_plan")),
+                          "make agent-plan") == 0;
+        ok = ok && strcmp(json_get_str(json_get(loop, "doctor")),
+                          "make agent-doctor") == 0;
+        ok = ok && strcmp(json_get_str(json_get(loop,
+                           "dev_lane_status")),
+                          "make agent-dev-status") == 0;
+        ok = ok && strcmp(json_get_str(json_get(loop,
+                           "native_dev_lane_status")),
+                          "zclassic23 agentdevstatus") == 0;
+        ok = ok && strcmp(json_get_str(json_get(loop,
+                           "mcp_dev_lane_status")),
+                          "zcl_agent_dev_status") == 0;
+        ok = ok && strcmp(json_get_str(json_get(loop,
+                           "stage_dev_binary_no_restart")),
+                          "make agent-stage-dev") == 0;
+        ok = ok && strcmp(json_get_str(json_get(loop,
+                           "optional_dev_stage_no_restart")),
+                          "ZCL_AGENT_LOOP_DEPLOY=stage make agent-loop") == 0;
         ok = ok && strcmp(json_get_str(json_get(loop,
                            "direct_changed_compile")),
                           "make fast-changed-compile") == 0;
+        ok = ok && strcmp(json_get_str(json_get(loop, "one_binary_mcp")),
+                          "make agent-mcp-call TOOL=<tool> [ARGS='{}']") == 0;
+        ok = ok && strcmp(json_get_str(json_get(loop, "hot_mcp")),
+                          "make agent-mcp-call-hot TOOL=<tool> [ARGS='{}']") == 0;
+        ok = ok && strcmp(json_get_str(json_get(loop, "dev_lane_mcp")),
+                          "make agent-mcp-call-dev TOOL=<tool> [ARGS='{}']") == 0;
+        ok = ok && strstr(json_get_str(json_get(loop, "direct_binary_mcp")),
+                          "build/bin/zclassic23 mcpcall") != NULL;
         ok = ok && strcmp(json_get_str(json_get(loop,
                            "fast_no_link_compile")),
                           "make fast-compile") == 0;
@@ -5796,6 +5979,9 @@ syncdiag_net_split_done:
                           "ZCL_FAST_COMPILE=changed -> make fast-changed-compile with safe fallback") == 0;
         ok = ok && strstr(json_get_str(json_get(loop, "rule")),
                           ".h/.def edits") != NULL;
+        ok = ok && strcmp(json_get_str(json_get(loop,
+                           "immutable_history_canaries")),
+                          "make immutable-history-canaries") == 0;
         ok = ok && strcmp(json_get_str(json_get(loop,
                            "pre_push_compile_default")),
                           "ZCL_FAST_COMPILE=strict -> make build-only") == 0;
@@ -5819,6 +6005,15 @@ syncdiag_net_split_done:
                                                         "enabled"));
         ok = ok && strcmp(json_get_str(json_get(dev_binary, "binary")),
                           "build/bin/zclassic23-dev") == 0;
+        ok = ok && strcmp(json_get_str(json_get(dev_binary,
+                                                "native_status_command")),
+                          "zclassic23 agentdevstatus") == 0;
+        ok = ok && strcmp(json_get_str(json_get(dev_binary,
+                                                "agent_loop_stage_no_restart")),
+                          "ZCL_AGENT_LOOP_DEPLOY=stage make agent-loop") == 0;
+        ok = ok && strcmp(json_get_str(json_get(dev_binary,
+                                                "mcp_status_tool")),
+                          "zcl_agent_dev_status") == 0;
         ok = ok && !json_get_bool(json_get(dev_binary,
                                            "release_or_deploy_artifact"));
         ok = ok && strstr(json_get_str(json_get(dev_binary,
@@ -5827,13 +6022,60 @@ syncdiag_net_split_done:
         ok = ok && cache && strstr(json_get_str(json_get(cache,
                                                          "auto_select_order")),
                                    "sccache cc") != NULL;
+        ok = ok && strcmp(json_get_str(json_get(cache, "plan_command")),
+                          "make agent-plan") == 0;
+        ok = ok && strcmp(json_get_str(json_get(cache, "plan_schema")),
+                          "zcl.agent_fast_plan.v1") == 0;
         ok = ok && strstr(json_get_str(json_get(cache,
                                                 "makefile_auto_wrapper")),
                           "sccache cc") != NULL;
         ok = ok && find_object_with_str(json_get(cache, "knobs"), "name",
                                         "ZCL_FAST_CHANGED_FILES_ONLY") != NULL;
+        ok = ok && history && history->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(history, "schema")),
+                          "zcl.immutable_history_canaries.v1") == 0;
+        ok = ok && json_get_bool(json_get(history, "enabled"));
+        ok = ok && strcmp(json_get_str(json_get(history, "fast_command")),
+                          "make immutable-history-canaries") == 0;
+        ok = ok && strstr(json_get_str(json_get(history, "fast_groups")),
+                          "domain_consensus_tx_structural") != NULL;
+        ok = ok && strstr(json_get_str(json_get(history, "fast_groups")),
+                          "consensus_parity") != NULL;
+        ok = ok && strstr(json_get_str(json_get(history,
+                                                "pinned_fixture")),
+                          "h=478544") != NULL;
+        ok = ok && strstr(json_get_str(json_get(history,
+                                                "pinned_fixture")),
+                          "size=125811") != NULL;
+        ok = ok && strstr(json_get_str(json_get(history, "provenance")),
+                          "fixture_tx_oversize_478544.c") != NULL;
+        ok = ok && strcmp(json_get_str(json_get(history,
+                                                "full_replay_anchor")),
+                          "make replay-canary-anchor") == 0;
+        ok = ok && strcmp(json_get_str(json_get(history,
+                                                "full_replay_genesis")),
+                          "make replay-canary-genesis") == 0;
+        ok = ok && strstr(json_get_str(json_get(history,
+                                                "tightening_rule")),
+                          "real-chain replay") != NULL;
+        ok = ok && find_object_with_str(commands, "name",
+                                        "agent_plan") != NULL;
         ok = ok && find_object_with_str(commands, "name",
                                         "fast_changed_compile") != NULL;
+        ok = ok && find_object_with_str(commands, "name",
+                                        "agent_loop") != NULL;
+        ok = ok && find_object_with_str(commands, "name",
+                                        "agent_doctor") != NULL;
+        ok = ok && find_object_with_str(commands, "name",
+                                        "agent_dev_status_native") != NULL;
+        ok = ok && find_object_with_str(commands, "name",
+                                        "agent_clear_stale_dev_reindex") != NULL;
+        ok = ok && find_object_with_str(commands, "name",
+                                        "agent_dev_status_mcp") != NULL;
+        ok = ok && find_object_with_str(commands, "name",
+                                        "agent_mcp_call") != NULL;
+        ok = ok && find_object_with_str(commands, "name",
+                                        "fast_dev_deploy") != NULL;
         ok = ok && find_object_with_str(commands, "name",
                                         "fast_compile") != NULL;
         ok = ok && find_object_with_str(commands, "name",
@@ -5842,6 +6084,8 @@ syncdiag_net_split_done:
                                         "fast_rebuild") != NULL;
         ok = ok && find_object_with_str(commands, "name",
                                         "dev_node_binary") != NULL;
+        ok = ok && find_object_with_str(commands, "name",
+                                        "immutable_history_canaries") != NULL;
         ok = ok && find_object_with_str(commands, "name",
                                         "byte_identity") != NULL;
         ok = ok && repro && strcmp(json_get_str(json_get(repro, "command")),
@@ -5908,6 +6152,48 @@ syncdiag_net_split_done:
         ok = ok && coverage_lane &&
             strcmp(json_get_str(json_get(coverage_lane, "commit_freshness")),
                    "no_verdict") == 0;
+
+        const char *old_dev_status_cmd = getenv("ZCL_AGENT_DEV_STATUS_CMD");
+        char old_dev_status_cmd_buf[4096];
+        bool old_dev_status_cmd_set = old_dev_status_cmd != NULL;
+        bool old_dev_status_cmd_saved = true;
+        if (old_dev_status_cmd_set) {
+            int n = snprintf(old_dev_status_cmd_buf,
+                             sizeof(old_dev_status_cmd_buf), "%s",
+                             old_dev_status_cmd);
+            old_dev_status_cmd_saved = n >= 0 &&
+                (size_t)n < sizeof(old_dev_status_cmd_buf);
+        }
+        ok = ok && old_dev_status_cmd_saved;
+        ok = ok && setenv(
+            "ZCL_AGENT_DEV_STATUS_CMD",
+            "printf '%s\\n' '{\"schema\":\"zcl.agent_dev_status.v1\","
+            "\"next_action\":\"unit-test\","
+            "\"service\":{\"active_state\":\"active\"},"
+            "\"rpc\":{\"status\":\"ok\"}}'",
+            1) == 0;
+        struct json_value dev_status;
+        json_init(&dev_status);
+        ok = ok && rpc_table_execute(&tbl, "agentdevstatus", &params,
+                                     &dev_status);
+        if (old_dev_status_cmd_set)
+            setenv("ZCL_AGENT_DEV_STATUS_CMD",
+                   old_dev_status_cmd_buf, 1);
+        else
+            unsetenv("ZCL_AGENT_DEV_STATUS_CMD");
+        ok = ok && dev_status.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&dev_status, "schema")),
+                          "zcl.agent_dev_status.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&dev_status, "status")),
+                          "ok") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&dev_status,
+                                                "native_command")),
+                          "zclassic23 agentdevstatus") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&dev_status, "mcp_tool")),
+                          "zcl_agent_dev_status") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&dev_status,
+                                                "next_action")),
+                          "unit-test") == 0;
 
         struct json_value liveness;
         json_init(&liveness);
@@ -7004,6 +7290,7 @@ syncdiag_net_split_done:
         json_free(&catalog);
         json_free(&lanes);
         json_free(&build);
+        json_free(&dev_status);
         json_free(&liveness);
         json_free(&interface);
         json_free(&guard_params);
@@ -7051,6 +7338,14 @@ syncdiag_net_split_done:
         const struct json_value *ascii = json_get(&result, "ascii");
         const struct json_value *bars = json_get(&result, "bars");
         const struct json_value *criteria = json_get(&result, "criteria");
+        const struct json_value *operator_proofs =
+            json_get(&result, "operator_proofs");
+        const struct json_value *proof_items =
+            operator_proofs ? json_get(operator_proofs, "items") : NULL;
+        const struct json_value *cold_start =
+            find_object_with_str(proof_items, "key", "cold_start_sync");
+        const struct json_value *soak =
+            find_object_with_str(proof_items, "key", "seven_day_soak");
         const struct json_value *live = json_get(&result, "live");
         const char *live_source = json_get_str(json_get(live, "source"));
         bool ok = executed && result.type == JSON_OBJ;
@@ -7063,6 +7358,37 @@ syncdiag_net_split_done:
         ok = ok && bars && strcmp(json_get_str(json_get(json_get(bars,
                           "subgoals"), "bar")), "[########--]") == 0;
         ok = ok && criteria && json_size(criteria) == 8;
+        ok = ok && operator_proofs &&
+            strcmp(json_get_str(json_get(operator_proofs, "schema")),
+                   "zcl.mvp_operator_proofs.v1") == 0;
+        ok = ok && json_get_int(json_get(operator_proofs,
+                                         "accepted_count")) == 4;
+        ok = ok && json_get_int(json_get(operator_proofs,
+                                         "pending_count")) == 4;
+        ok = ok && json_get_int(json_get(operator_proofs,
+                                         "target_count")) == 8;
+        ok = ok && strcmp(json_get_str(json_get(operator_proofs,
+                                                "next_command")),
+                          "make mvp-verify") == 0;
+        ok = ok && proof_items && json_size(proof_items) == 8;
+        ok = ok && cold_start &&
+            strcmp(json_get_str(json_get(cold_start, "proof_command")),
+                   "make mvp-coldstart-to-tip-local") == 0;
+        ok = ok && cold_start &&
+            strcmp(json_get_str(json_get(cold_start, "primary_blocker")),
+                   "full_zclassic23_to_zclassic23_sync_to_tip_not_run_passed")
+                == 0;
+        ok = ok && soak &&
+            strcmp(json_get_str(json_get(soak, "proof_scope")),
+                   "live_window") == 0;
+        ok = ok && soak &&
+            strcmp(json_get_str(json_get(soak, "proof_command")),
+                   "make soak-evidence-report") == 0;
+        ok = ok && soak &&
+            strcmp(json_get_str(json_get(soak, "primary_blocker")),
+                   "clean_168h_soak_window_pending") == 0;
+        ok = ok && soak &&
+            json_get_bool(json_get(soak, "local_dependency_required"));
         bool live_full_agent = live_source &&
             strcmp(live_source, "agent_cached_summary") == 0;
         bool live_agent_fallback = live_source &&

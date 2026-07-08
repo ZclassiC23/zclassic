@@ -79,9 +79,13 @@ debt does not block a working sovereign node and must not jump the queue.
       Regression-armor landed 2026-06-17 (raises the floor, NOT a ✅ promotion):
       C8 `test_parity_slice.c` now also covers the COARSE `exact=false` production
       branch the live `zclassicd` oracle hits (C1 match / C2 skip-on-skew / C3
-      clears a stale exact drift); the real snapshot cold-boot proof (C3
-      `ci-coldstart`) and the full Groth16 send+receive (C4 `test-shielded-payment`)
-      are de-orphaned into `make mvp-verify`. C1's portability floor is enforced
+      clears a stale exact drift); the C3 seed-authority proof
+      (`mvp-coldstart-local`, preferring the `block_index.bin` +
+      `utxo-seed-*.snapshot` operator bundle through
+      `-load-snapshot-at-own-height`) is green locally, while the full C3
+      bundle-to-peer-tip command is `make mvp-coldstart-to-tip-local`. The full
+      Groth16 send+receive proof (C4 `test-shielded-payment`) is de-orphaned into
+      `make mvp-verify`. C1's portability floor is enforced
       WITHOUT docker (docker is never used in this project) by the hermetic
       `make ci-symbol-floor` (`tools/scripts/ci_symbol_floor_gate.sh`, in
       `make ci`): max GLIBC/GLIBCXX/CXXABI symbol ≤ the documented triple floor.

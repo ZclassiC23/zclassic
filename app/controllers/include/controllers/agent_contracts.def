@@ -52,6 +52,13 @@ AGENT_CONTRACT("agentbuild", "build_loop", "zcl.agent_build.v1",
                "drilldown", 4, "build_loop",
                "fast-ci, background quality lanes, reproducibility",
                "cache-aware compile, test, background quality, and reproducibility contract")
+AGENT_CONTRACT("agentdevstatus", "dev_lane_status",
+               "zcl.agent_dev_status.v1",
+               "zclassic23 agentdevstatus", "zcl_agent_dev_status", "",
+               "dev_status_command", "dev_status_tool",
+               "direct", 5, "dev_lane_status",
+               "read-only staged binary, linger service, RPC, and recovery status",
+               "typed read-only dev-lane status contract with next safe action")
 AGENT_CONTRACT("anchorstatus", "sovereign_anchor_status",
                "zcl.anchor_mint_status.v1",
                "zclassic23 anchorstatus [-datadir=<anchor-datadir>]",

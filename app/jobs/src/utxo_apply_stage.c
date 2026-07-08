@@ -683,15 +683,12 @@ job_result_t utxo_apply_stage_step_once(void)
      * coins_kv rows apply_coins_kv writes IN this stage's BEGIN IMMEDIATE
      * (see its FRESHNESS CONTRACT). */
 
-    /* Bulk-fold in-RAM hot store (flag-gated): after the stage txn COMMITS, the
-     * just-applied height's coins live in the RAM overlay (apply_coins_kv routed
-     * through coins_kv_*_many → coins_ram_*). coins_ram_note_applied bumps the
-     * since-flush counter and, every K blocks, drains the overlay into coins_kv
-     * in its OWN BEGIN IMMEDIATE (which is why it CANNOT run inside the stage
-     * txn). A no-op (returns true) when the flag is off / store inactive. The
-     * flush co-writes the cursor + frontier + watermark so the durable state
-     * stays self-consistent; a crash between flushes is rewound by
-     * coins_ram_reconcile_boot at the next boot. */
+    /* Bulk-fold in-RAM hot store (flag-gated): after the per-block stage
+     * savepoint releases, the just-applied height's coins live in the RAM
+     * overlay. coins_ram_note_applied bumps the since-flush counter. If a
+     * drain batch is still open, the actual flush is deferred until
+     * utxo_apply_stage_drain() commits that outer batch; otherwise the flush
+     * runs immediately in its own BEGIN IMMEDIATE. */
     if (r == JOB_ADVANCED && coins_ram_active()) {
         int64_t applied = atomic_load(&g_ua_last_advance_height);
         if (applied >= 0 && !coins_ram_note_applied((int32_t)applied)) {
@@ -703,7 +700,39 @@ job_result_t utxo_apply_stage_step_once(void)
     return r;
 }
 
-STAGE_DRAIN_IMPL(utxo_apply)
+int utxo_apply_stage_drain(int max_steps)
+{
+    if (max_steps <= 0) return 0;
+    sqlite3 *batch_db = progress_store_db();
+    bool batched = false;
+    if (batch_db) {
+        progress_store_tx_lock();
+        batched = stage_batch_begin(batch_db);
+        if (!batched) progress_store_tx_unlock();
+    }
+
+    int advanced = 0;
+    for (int i = 0; i < max_steps; i++) {
+        job_result_t r = utxo_apply_stage_step_once();
+        if (r != JOB_ADVANCED) break;
+        advanced++;
+    }
+
+    bool committed = false;
+    if (batched) {
+        committed = advanced > 0 || stage_batch_dirty();
+        if (!stage_batch_end(batch_db, committed)) {
+            (void)stage_record_fatal(STAGE_NAME, "batch COMMIT/ROLLBACK failed");
+            committed = false;
+        }
+        progress_store_tx_unlock();
+    }
+
+    if (committed && !coins_ram_flush_due())
+        (void)stage_record_fatal(STAGE_NAME, "coins_ram deferred flush failed");
+
+    return advanced;
+}
 
 void utxo_apply_stage_shutdown(void)
 {

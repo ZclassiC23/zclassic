@@ -48,7 +48,7 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL     125  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
+#define EXPECTED_TOTAL     126  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
                                  * +3 power-user tools: chain_tip,
                                  * reorg_history, mempool_inspect;
                                  * +1 Round 6 C5: zcl_blockers;
@@ -59,9 +59,9 @@
                                  *   zcl_waitforhalt, zcl_waitforblocker
                                  * +1 native milestone status: zcl_milestone
                                  * +1 native refold readiness: zcl_refold_status
-                                 * +10 agent API tools: map, lanes, impact,
-                                 *   contracts, build, interface, ops,
-                                 *   diagnose, liveness, deploy_guard
+                                 * +11 agent API tools: map, lanes, impact,
+                                 *   contracts, build, dev_status, interface,
+                                 *   ops, diagnose, liveness, deploy_guard
                                  * +1 net bootstrapstatus
                                  * +1 net peer incident view
                                  * +1 state catalog: zcl_state_catalog
@@ -72,7 +72,7 @@
                                  * +2 wallet backup tools: zcl_wallet_backup_status,
                                  *   zcl_wallet_backup_now
                                  * +1 wallet receive intent */
-#define EXPECTED_OPS        56  /* + zcl_rebuild_recent (bounded recovery);
+#define EXPECTED_OPS        57  /* + zcl_rebuild_recent (bounded recovery);
                                  * status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, state + node_log + sql (round 6.5 MCP primitives),
@@ -90,7 +90,7 @@
                                  * + zcl_operator_summary + zcl_agent
                                  *   (simple MCP status)
                                  * + zcl_refold_status
-                                 * +8 zcl_agent_* development tools
+                                 * +9 zcl_agent_* development tools
                                  * + zcl_app_protocols
                                  * + zcl_service_catalog
                                  * + zcl_service_operations
@@ -444,8 +444,9 @@ static int test_specific_flagship_tools_registered(void)
         const char *k[] = {
             "zcl_agent", "zcl_status", "zcl_operator_summary",
             "zcl_agent_map", "zcl_agent_lanes", "zcl_agent_impact",
-            "zcl_agent_contracts", "zcl_agent_build", "zcl_agent_interface",
-            "zcl_agent_ops", "zcl_agent_diagnose", "zcl_agent_liveness",
+            "zcl_agent_contracts", "zcl_agent_build",
+            "zcl_agent_dev_status", "zcl_agent_interface", "zcl_agent_ops",
+            "zcl_agent_diagnose", "zcl_agent_liveness",
             "zcl_agent_deploy_guard", "zcl_app_protocols",
             "zcl_service_catalog",
             "zcl_milestone", "zcl_refold_status", "zcl_kpi", "zcl_health",
@@ -1100,7 +1101,14 @@ static char *mock_operator_healthy_rpc(const char *method,
                       "\"target_score\":8,"
                       "\"ascii\":{\"goals\":\"goals [#####-----] 4/8 strict MVP MRS\"},"
                       "\"bars\":{\"subgoals\":{\"bar\":\"[########--]\"}},"
-                      "\"criteria\":[1,2,3,4,5,6,7,8]}");
+                      "\"criteria\":[1,2,3,4,5,6,7,8],"
+                      "\"operator_proofs\":{"
+                      "\"schema\":\"zcl.mvp_operator_proofs.v1\","
+                      "\"accepted_count\":4,"
+                      "\"pending_count\":4,"
+                      "\"items\":[{\"key\":\"seven_day_soak\","
+                      "\"proof_scope\":\"live_window\","
+                      "\"proof_command\":\"make soak-evidence-report\"}]}}");
     if (strcmp(method, "refold") == 0)
         return strdup("{\"schema\":\"zcl.refold_status.v1\","
                       "\"api_version\":\"v1\","
@@ -1278,7 +1286,11 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
                       "\"native_command\":\"zclassic23 agentops\","
                       "\"mcp_tool\":\"zcl_agent_ops\","
                       "\"contract_source\":\"agent_contracts.def\","
+                      "\"api_style\":\"one compact first call, then registry-owned primitive drilldowns\","
+                      "\"api_ux\":{\"start_here\":\"zclassic23 agentops / zcl_agent_ops\"},"
                       "\"no_jq_required\":true,"
+                      "\"workflow\":[{\"rank\":1,"
+                      "\"name\":\"first_call\"}],"
                       "\"top_next_work\":[{\"rank\":1,"
                       "\"name\":\"finish_self_verified_utxo_anchor_rebuild\"}],"
                       "\"direct_commands\":[{\"name\":\"live_status\"}]}");
@@ -1796,6 +1808,54 @@ static int test_zcl_agent_dev_tools_dispatch(void)
         ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
                       "zcl.agent_build.v1");
         ASSERT(json_get(&root, "reproducible_release") != NULL);
+        const struct json_value *loop = json_get(&root, "recommended_loop");
+        ASSERT(loop != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(loop, "read_only_fast_plan")),
+                      "make agent-plan");
+        ASSERT_STR_EQ(json_get_str(json_get(loop, "dev_lane_status")),
+                      "make agent-dev-status");
+        ASSERT_STR_EQ(json_get_str(json_get(loop,
+                                            "optional_dev_stage_no_restart")),
+                      "ZCL_AGENT_LOOP_DEPLOY=stage make agent-loop");
+        ASSERT_STR_EQ(json_get_str(json_get(loop,
+                                            "immutable_history_canaries")),
+                      "make immutable-history-canaries");
+        ASSERT_STR_EQ(json_get_str(json_get(loop, "hot_mcp")),
+                      "make agent-mcp-call-hot TOOL=<tool> [ARGS='{}']");
+        const struct json_value *history =
+            json_get(&root, "immutable_history_canaries");
+        ASSERT(history != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(history, "fast_command")),
+                      "make immutable-history-canaries");
+        ASSERT(contains(json_get_str(json_get(history, "pinned_fixture")),
+                        "h=478544"));
+        const struct json_value *dev_bin =
+            json_get(&root, "dev_node_binary");
+        ASSERT(dev_bin != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(dev_bin, "status_command")),
+                      "make agent-dev-status");
+        json_free(&root);
+        free(body);
+
+        ASSERT(setenv("ZCL_AGENT_DEV_STATUS_CMD",
+                      "printf '%s\\n' '{\"schema\":\"zcl.agent_dev_status.v1\","
+                      "\"next_action\":\"unit-test\","
+                      "\"service\":{\"active_state\":\"active\"},"
+                      "\"rpc\":{\"status\":\"ok\"}}'",
+                      1) == 0);
+        body = mcp_router_dispatch("zcl_agent_dev_status", &args);
+        unsetenv("ZCL_AGENT_DEV_STATUS_CMD");
+        ASSERT(body != NULL);
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.agent_dev_status.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "ok");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "native_command")),
+                      "zclassic23 agentdevstatus");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "mcp_tool")),
+                      "zcl_agent_dev_status");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "next_action")),
+                      "unit-test");
         json_free(&root);
         free(body);
 
@@ -1834,6 +1894,10 @@ static int test_zcl_agent_dev_tools_dispatch(void)
                       "zcl_agent_ops");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "contract_source")),
                       "agent_contracts.def");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "api_style")),
+                      "one compact first call, then registry-owned primitive drilldowns");
+        ASSERT(json_get(&root, "api_ux") != NULL);
+        ASSERT(json_get(&root, "workflow") != NULL);
         ASSERT(json_get(&root, "top_next_work") != NULL);
         json_free(&root);
         free(body);
@@ -2179,6 +2243,13 @@ static int test_zcl_milestone_shape(void)
         ASSERT(strstr(json_get_str(json_get(json_get(&root, "ascii"),
                                             "goals")),
                       "goals [#####-----] 4/8") != NULL);
+        const struct json_value *operator_proofs =
+            json_get(&root, "operator_proofs");
+        ASSERT(operator_proofs != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(operator_proofs, "schema")),
+                      "zcl.mvp_operator_proofs.v1");
+        ASSERT(json_get_int(json_get(operator_proofs, "accepted_count")) == 4);
+        ASSERT(json_get_int(json_get(operator_proofs, "pending_count")) == 4);
 
         json_free(&root);
         json_free(&args);

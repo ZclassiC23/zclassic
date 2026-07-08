@@ -11,9 +11,12 @@
 
 #include "json/json.h"
 #include "rpc/server.h"
+#include "util/clientversion.h"
 
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static void agent_push_str(struct json_value *arr, const char *s)
@@ -51,6 +54,101 @@ static void agent_push_build_knob(struct json_value *arr, const char *name,
     json_push_kv_str(&knob, "purpose", purpose);
     json_push_back(arr, &knob);
     json_free(&knob);
+}
+
+static void agent_dev_status_error(struct json_value *result,
+                                   const char *error,
+                                   const char *detail,
+                                   int collector_status)
+{
+    json_set_object(result);
+    json_push_kv_str(result, "schema", "zcl.agent_dev_status.v1");
+    json_push_kv_str(result, "api_version", "v1");
+    json_push_kv_str(result, "status", "error");
+    json_push_kv_str(result, "error", error ? error : "agent_dev_status_failed");
+    json_push_kv_str(result, "detail", detail ? detail : "");
+    json_push_kv_int(result, "collector_status", collector_status);
+    json_push_kv_str(result, "collector_command",
+                     "tools/dev/agent-dev-status.sh --json");
+    json_push_kv_str(result, "native_command", "zclassic23 agentdevstatus");
+    json_push_kv_str(result, "mcp_tool", "zcl_agent_dev_status");
+    json_push_kv_str(result, "safe_next_action",
+                     "run make agent-dev-status from the repository");
+}
+
+bool rpc_agent_dev_status(const struct json_value *params, bool help,
+                          struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "agentdevstatus\n"
+        "\nReturn the read-only development-lane status contract used by\n"
+        "`make agent-dev-status`, including staged binary freshness,\n"
+        "systemd user service state, RPC/pre-RPC recovery, deploy state,\n"
+        "auto-reindex marker, and next safe action.\n"
+        "\nResult:\n"
+        "  { \"schema\":\"zcl.agent_dev_status.v1\", ... }\n");
+
+    const char *cmd_env = getenv("ZCL_AGENT_DEV_STATUS_CMD");
+    const char *cmd = (cmd_env && cmd_env[0])
+        ? cmd_env : "tools/dev/agent-dev-status.sh --json";
+    FILE *pipe = popen(cmd, "r");
+    if (!pipe) {
+        agent_dev_status_error(result, "collector_start_failed",
+                               strerror(errno), -1);
+        return true;
+    }
+
+    char buf[65536];
+    size_t used = 0;
+    while (used + 1 < sizeof(buf)) {
+        size_t n = fread(buf + used, 1, sizeof(buf) - used - 1, pipe);
+        used += n;
+        if (n == 0)
+            break;
+    }
+    buf[used] = '\0';
+    int collector_status = pclose(pipe);
+    if (used + 1 >= sizeof(buf)) {
+        agent_dev_status_error(result, "collector_output_too_large",
+                               "agent-dev-status JSON exceeded 64 KiB",
+                               collector_status);
+        return true;
+    }
+    if (collector_status != 0 && used == 0) {
+        agent_dev_status_error(result, "collector_failed",
+                               "agent-dev-status exited without JSON",
+                               collector_status);
+        return true;
+    }
+
+    struct json_value parsed;
+    json_init(&parsed);
+    if (!json_read(&parsed, buf, used) || parsed.type != JSON_OBJ) {
+        json_free(&parsed);
+        agent_dev_status_error(result, "collector_invalid_json",
+                               "agent-dev-status did not return a JSON object",
+                               collector_status);
+        return true;
+    }
+
+    const char *schema = json_get_str(json_get(&parsed, "schema"));
+    if (strcmp(schema, "zcl.agent_dev_status.v1") != 0) {
+        json_free(&parsed);
+        agent_dev_status_error(result, "collector_schema_mismatch",
+                               schema && schema[0] ? schema : "missing schema",
+                               collector_status);
+        return true;
+    }
+
+    *result = parsed;
+    json_push_kv_str(result, "api_version", "v1");
+    json_push_kv_str(result, "status", "ok");
+    json_push_kv_int(result, "collector_status", collector_status);
+    json_push_kv_str(result, "collector_command", cmd);
+    json_push_kv_str(result, "native_command", "zclassic23 agentdevstatus");
+    json_push_kv_str(result, "mcp_tool", "zcl_agent_dev_status");
+    return true;
 }
 
 static void agent_push_subsystem(struct json_value *arr, const char *name,
@@ -444,28 +542,55 @@ bool rpc_agent_build(const struct json_value *params, bool help,
         "  { \"schema\":\"zcl.agent_build.v1\", "
         "\"commands\":[...], \"reproducible_release\":{...} }\n");
 
-    struct json_value loop, incremental, dev, cache, knobs, commands, repro,
-                      background, quality_status, lanes, remote, gates;
+    struct json_value loop, incremental, dev, cache, knobs, history, commands,
+                      repro, background, quality_status, lanes, remote, gates;
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.agent_build.v1");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "status", "ok");
+    json_push_kv_str(result, "build_commit", zcl_build_commit());
     json_push_kv_str(result, "language", "c23");
     json_push_kv_str(result, "summary",
-                     "Use make fast-ci or make fast-changed-compile for the cheapest guarded edit loop, make fast-rebuild when a runnable non-LTO dev node is needed, compiler caches when available, and make ci-reproducible for byte identity.");
+                     "Use make agent-plan to inspect the exact fast-lane decision without building, make agent-loop or make fast-ci for the cheapest guarded edit loop, make immutable-history-canaries for fast real-chain consensus KATs, make agent-doctor for the combined next-command check, make agent-dev-status before touching the dev lane, make fast-rebuild when a runnable non-LTO dev node is needed, make agent-mcp-call-hot or make agent-mcp-call-dev for no-build API reads, compiler caches when available, and make ci-reproducible for byte identity.");
 
     json_init(&loop);
     json_set_object(&loop);
     json_push_kv_str(&loop, "schema", "zcl.agent_build_loop.v1");
     json_push_kv_int(&loop, "schema_version", 1);
-    json_push_kv_str(&loop, "default_edit_gate", "make fast-ci");
+    json_push_kv_str(&loop, "default_edit_gate", "make agent-loop");
+    json_push_kv_str(&loop, "default_underlying_gate", "make fast-ci");
+    json_push_kv_str(&loop, "read_only_fast_plan", "make agent-plan");
+    json_push_kv_str(&loop, "doctor", "make agent-doctor");
+    json_push_kv_str(&loop, "dev_lane_status", "make agent-dev-status");
+    json_push_kv_str(&loop, "native_dev_lane_status",
+                     "zclassic23 agentdevstatus");
+    json_push_kv_str(&loop, "mcp_dev_lane_status",
+                     "zcl_agent_dev_status");
     json_push_kv_str(&loop, "direct_changed_compile",
                      "make fast-changed-compile");
     json_push_kv_str(&loop, "fast_no_link_compile", "make fast-compile");
     json_push_kv_str(&loop, "strict_no_link_compile", "make build-only");
     json_push_kv_str(&loop, "runnable_dev_binary", "make fast-rebuild");
     json_push_kv_str(&loop, "focused_fast_test", "make t-fast ONLY=<group>");
+    json_push_kv_str(&loop, "immutable_history_canaries",
+                     "make immutable-history-canaries");
     json_push_kv_str(&loop, "pre_push_gate", "make pre-push-ci");
+    json_push_kv_str(&loop, "optional_dev_binary",
+                     "ZCL_AGENT_LOOP_BIN=1 make agent-loop");
+    json_push_kv_str(&loop, "optional_dev_stage_no_restart",
+                     "ZCL_AGENT_LOOP_DEPLOY=stage make agent-loop");
+    json_push_kv_str(&loop, "optional_dev_deploy",
+                     "ZCL_AGENT_LOOP_DEPLOY=dev make agent-loop");
+    json_push_kv_str(&loop, "stage_dev_binary_no_restart",
+                     "make agent-stage-dev");
+    json_push_kv_str(&loop, "one_binary_mcp",
+                     "make agent-mcp-call TOOL=<tool> [ARGS='{}']");
+    json_push_kv_str(&loop, "hot_mcp",
+                     "make agent-mcp-call-hot TOOL=<tool> [ARGS='{}']");
+    json_push_kv_str(&loop, "dev_lane_mcp",
+                     "make agent-mcp-call-dev TOOL=<tool> [ARGS='{}']");
+    json_push_kv_str(&loop, "direct_binary_mcp",
+                     "build/bin/zclassic23 mcpcall <tool> [json] after make zclassic23");
     json_push_kv_str(&loop, "fast_ci_compile_default",
                      "ZCL_FAST_COMPILE=changed -> make fast-changed-compile with safe fallback");
     json_push_kv_str(&loop, "pre_push_compile_default",
@@ -506,7 +631,25 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_push_kv_bool(&dev, "enabled", true);
     json_push_kv_str(&dev, "command", "make fast-rebuild");
     json_push_kv_str(&dev, "alias", "make dev-bin; make zclassic23-dev");
+    json_push_kv_str(&dev, "agent_loop_binary",
+                     "ZCL_AGENT_LOOP_BIN=1 make agent-loop");
+    json_push_kv_str(&dev, "agent_loop_stage_no_restart",
+                     "ZCL_AGENT_LOOP_DEPLOY=stage make agent-loop");
+    json_push_kv_str(&dev, "fast_dev_deploy",
+                     "make agent-deploy-fast or ZCL_AGENT_LOOP_DEPLOY=dev make agent-loop");
+    json_push_kv_str(&dev, "stage_for_next_restart",
+                     "make agent-stage-dev");
+    json_push_kv_str(&dev, "status_command", "make agent-dev-status");
+    json_push_kv_str(&dev, "native_status_command",
+                     "zclassic23 agentdevstatus");
+    json_push_kv_str(&dev, "mcp_status_tool", "zcl_agent_dev_status");
+    json_push_kv_str(&dev, "status_json_command",
+                     "make agent-dev-status ARGS=--json");
     json_push_kv_str(&dev, "binary", "build/bin/zclassic23-dev");
+    json_push_kv_str(&dev, "installed_linger_binary",
+                     "$HOME/.local/bin/zclassic23-dev");
+    json_push_kv_str(&dev, "dev_lane_mcp",
+                     "make agent-mcp-call-dev TOOL=zcl_status");
     json_push_kv_str(&dev, "object_dir", "build/dev-obj");
     json_push_kv_bool(&dev, "lto", false);
     json_push_kv_bool(&dev, "stripped", false);
@@ -527,7 +670,10 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_push_kv_str(&cache, "makefile_auto_wrapper",
                      "sccache cc when available, else ccache cc; set ZCL_USE_CCACHE=0 to disable");
     json_push_kv_str(&cache, "script", "tools/agent_fast_ci.sh");
-    json_push_kv_str(&cache, "default_loop", "make fast-ci");
+    json_push_kv_str(&cache, "plan_command", "make agent-plan");
+    json_push_kv_str(&cache, "plan_schema", "zcl.agent_fast_plan.v1");
+    json_push_kv_str(&cache, "default_loop", "make agent-loop");
+    json_push_kv_str(&cache, "underlying_gate", "make fast-ci");
     json_push_kv_str(&cache, "success_fingerprint_dir",
                      ".cache/zcl-agent-fast-ci");
     json_push_kv_bool(&cache, "cache_hit_refreshes_live_probe", true);
@@ -559,6 +705,13 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     agent_push_build_knob(&knobs, "ZCL_FAST_CACHE_DIR",
                           ".cache/zcl-agent-fast-ci",
                           "override green-input cache directory");
+    agent_push_build_knob(&knobs, "ZCL_AGENT_MCP_BUILD", "1",
+                          "set to 0 for no-build native MCP calls when the chosen binary already exists");
+    agent_push_build_knob(&knobs, "ZCL_AGENT_BIN",
+                          "build/bin/zclassic23-dev",
+                          "binary used by make agent-mcp-call");
+    agent_push_build_knob(&knobs, "ZCL_AGENT_MCP_ARGS", "",
+                          "extra binary flags before mcpcall, for example -datadir=... -rpcport=...");
     agent_push_build_knob(&knobs, "ZCL_USE_CCACHE", "1",
                           "Makefile auto-wraps CC with sccache/ccache when available; set 0 to disable");
     agent_push_build_knob(&knobs, "ZCL_DEV_OPT", "-Og",
@@ -572,11 +725,39 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_push_kv(result, "cache", &cache);
     json_free(&cache);
 
+    json_init(&history);
+    json_set_object(&history);
+    json_push_kv_str(&history, "schema",
+                     "zcl.immutable_history_canaries.v1");
+    json_push_kv_bool(&history, "enabled", true);
+    json_push_kv_str(&history, "principle",
+                     "ZClassic mainnet history is immutable; consensus-risk tests should pin real historic blocks/transactions before synthetic edge cases.");
+    json_push_kv_str(&history, "fast_command",
+                     "make immutable-history-canaries");
+    json_push_kv_str(&history, "fast_groups",
+                     "domain_consensus_tx_structural consensus_parity");
+    json_push_kv_str(&history, "pinned_fixture",
+                     "h=478544 tx=e3eeb123a79945cc74e6107422b124dc130ddd4b61fe5c74087317c256c79700 size=125811");
+    json_push_kv_str(&history, "provenance",
+                     "canonical mainnet transaction fetched from zclassicd getrawtransaction; see lib/test/src/fixture_tx_oversize_478544.c and docs/CONSENSUS_PARITY_DOCTRINE.md");
+    json_push_kv_str(&history, "full_replay_anchor",
+                     "make replay-canary-anchor");
+    json_push_kv_str(&history, "full_replay_genesis",
+                     "make replay-canary-genesis");
+    json_push_kv_str(&history, "tightening_rule",
+                     "Any bounded consensus predicate tightening must pass the fast historic KATs and a real-chain replay gate before it can ship.");
+    json_push_kv(result, "immutable_history_canaries", &history);
+    json_free(&history);
+
     json_init(&commands);
     json_set_array(&commands);
+    agent_push_build_command(&commands, "agent_plan", "make agent-plan",
+                             "read-only fast-lane decision packet: changed files, selected tests, compile plan, cache hit/miss, and MCP shortcuts");
     agent_push_build_command(&commands, "fast_changed_compile",
                              "make fast-changed-compile",
                              "direct changed-.c or narrow .h/.def dependent dev-object compile with safe fallback");
+    agent_push_build_command(&commands, "agent_loop", "make agent-loop",
+                             "default one-command agent loop: fast-ci checks, optional dev binary/deploy knobs");
     agent_push_build_command(&commands, "fast_compile", "make fast-compile",
                              "fastest non-LTO no-link dev compile check");
     agent_push_build_command(&commands, "compile_check", "make build-only",
@@ -590,6 +771,39 @@ bool rpc_agent_build(const struct json_value *params, bool help,
                              "cached non-LTO per-file test harness");
     agent_push_build_command(&commands, "agent_fast_ci", "make fast-ci",
                              "lint-fast, changed compile gate, focused tests, live probe");
+    agent_push_build_command(&commands, "immutable_history_canaries",
+                             "make immutable-history-canaries",
+                             "fast real-mainnet historical KATs: h=478544 oversize tx plus consensus parity pins");
+    agent_push_build_command(&commands, "agent_dev_status",
+                             "make agent-dev-status",
+                             "no-build dev-lane status: service, staged binary, RPC, deploy state, recovery hint");
+    agent_push_build_command(&commands, "agent_clear_stale_dev_reindex",
+                             "make agent-clear-stale-dev-reindex",
+                             "clear a proven-stale dev-lane auto_reindex_request without restarting the service");
+    agent_push_build_command(&commands, "agent_doctor",
+                             "make agent-doctor",
+                             "read-only combined build, dev-lane, recent focused-test failure, and next-action check");
+    agent_push_build_command(&commands, "agent_dev_status_native",
+                             "zclassic23 agentdevstatus",
+                             "native typed dev-lane status contract");
+    agent_push_build_command(&commands, "agent_dev_status_mcp",
+                             "zcl_agent_dev_status",
+                             "MCP typed dev-lane status contract");
+    agent_push_build_command(&commands, "agent_mcp_call",
+                             "make agent-mcp-call TOOL=zcl_status",
+                             "fresh source-tree one-binary typed MCP call through zclassic23 mcpcall");
+    agent_push_build_command(&commands, "agent_mcp_call_hot",
+                             "make agent-mcp-call-hot TOOL=zcl_status",
+                             "no-build typed MCP call through the existing source-tree dev binary");
+    agent_push_build_command(&commands, "agent_dev_lane_mcp_call",
+                             "make agent-mcp-call-dev TOOL=zcl_status",
+                             "no-build typed MCP call against the installed zcl23-dev linger lane");
+    agent_push_build_command(&commands, "stage_dev_binary",
+                             "make agent-stage-dev",
+                             "build and atomically stage the dev binary for the next zcl23-dev restart without stopping the service");
+    agent_push_build_command(&commands, "fast_dev_deploy",
+                             "make agent-deploy-fast",
+                             "fast dev-lane hot-swap using build/bin/zclassic23-dev");
     agent_push_build_command(&commands, "strict_focused_test",
                              "make t ONLY=<group>",
                              "strict rebuilt harness for relevant tests");

@@ -11,6 +11,21 @@ intentional consensus-parity decisions.
 
 ---
 
+## (00) MANTRA — code fearlessly; immutable history is the oracle
+
+ZClassic history is immutable. We cannot lose or rewrite canonical historic
+data by breaking a local build, a throwaway datadir, a generated snapshot, or a
+test fixture. Use that aggressively: make copies, replay real blocks, pin
+historical fixtures, and delete/recreate derived artifacts when that is faster
+than nursing them. Prefer real-chain canaries over imagined edge cases whenever
+the chain already contains the answer.
+
+The boundary is live-first surgery: do not mutate the operator's serving
+datadir to test a repair. Copy it, reproduce there, prove H* climbs or the
+historical fixture passes, then deploy/restart intentionally.
+
+---
+
 ## (0) LIVE OPS TRAPS — public service vs private candidates
 
 - **Public connected-node tables can lag or cache old peer identity.** Verify

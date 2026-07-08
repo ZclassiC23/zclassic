@@ -36,33 +36,59 @@ struct milestone_criterion {
     bool strict_pass;
     int units;
     const char *next;
+    const char *proof_scope;
+    const char *proof_command;
+    const char *ci_gate;
+    const char *primary_blocker;
+    bool local_dependency_required;
+    bool ci_regression_protected;
 };
 
 static const struct milestone_criterion k_mvp_criteria[] = {
     { 1, "single_binary_install",
       "Single-binary install on clean Ubuntu/Debian",
-      "pass", true, 2, "keep ci-install-linger green" },
+      "pass", true, 2, "keep ci-install-linger green",
+      "full_operator", "make ci-install-linger", "make ci-symbol-floor",
+      "none", true, true },
     { 2, "tor_onion_bootstrap",
       "Tor onion bootstrap in <60s",
-      "pass", true, 2, "keep mvp-onion-local green" },
+      "pass", true, 2, "keep mvp-onion-local green",
+      "full_operator", "make mvp-onion-local", "make mvp-onion-slice",
+      "none", true, true },
     { 3, "cold_start_sync",
       "Cold-start sync to tip in <10 min",
-      "partial", false, 1, "seed coins frontier on snapshot cold path" },
+      "partial", false, 1, "run full bundle-to-tip cold-start proof",
+      "local_operator_pending", "make mvp-coldstart-to-tip-local",
+      "make ci-mvp-gates",
+      "full_zclassic23_to_zclassic23_sync_to_tip_not_run_passed",
+      true, true },
     { 4, "shielded_receive",
       "Receive shielded payment end-to-end",
-      "pass", true, 2, "keep shielded payment proof green" },
+      "pass", true, 2, "keep shielded payment proof green",
+      "full_operator", "make test-shielded-payment",
+      "make mvp-shielded-receive-persist", "none", true, true },
     { 5, "store_flow",
       "List and sell file via store",
-      "partial", false, 1, "prove live buyer over onion/file transfer" },
+      "partial", false, 1, "prove live buyer over onion/file transfer",
+      "hermetic_slice", "make ci-mvp-gates", "make ci-mvp-gates",
+      "full_live_buyer_onion_file_transfer_not_proven", false, true },
     { 6, "seven_day_soak",
       "7-day soak with zero operator intervention",
-      "partial", false, 1, "complete clean 168h soak window" },
+      "partial", false, 1, "complete clean 168h soak window",
+      "live_window", "make soak-evidence-report",
+      "make soak-evidence-selftest", "clean_168h_soak_window_pending",
+      true, true },
     { 7, "kill9_recovery",
       "Recover from kill -9 in <2 min",
-      "pass", true, 2, "keep crash bootstrap and peer-tip proofs green" },
+      "pass", true, 2, "keep crash bootstrap and peer-tip proofs green",
+      "full_operator",
+      "make test-crash-bootstrap && make test-two-node-peer-tip",
+      "make ci-mvp-gates", "none", true, true },
     { 8, "consensus_parity",
       "Consensus parity with zclassicd",
-      "partial", false, 1, "prove exact parity over the soak window" },
+      "partial", false, 1, "prove exact parity over the soak window",
+      "live_window", "make mvp-parity-slice", "make mvp-parity-slice",
+      "exact_reference_or_zero_mismatch_soak_window_pending", true, true },
 };
 
 static void api_ascii_bar(char out[13], int done, int total)
@@ -193,6 +219,96 @@ static void api_milestone_require_field(bool *complete, bool present)
 {
     if (complete && !present)
         *complete = false;
+}
+
+static void api_push_mvp_proof_item(struct json_value *arr,
+                                    const struct milestone_criterion *c)
+{
+    if (!arr || !c)
+        return;
+
+    struct json_value item;
+    json_init(&item);
+    json_set_object(&item);
+    json_push_kv_int(&item, "criterion", c->id);
+    json_push_kv_str(&item, "key", c->key);
+    json_push_kv_str(&item, "status", c->status);
+    json_push_kv_bool(&item, "strict_pass", c->strict_pass);
+    json_push_kv_str(&item, "proof_state",
+                     c->strict_pass ? "accepted" : "pending");
+    json_push_kv_str(&item, "proof_scope", c->proof_scope);
+    json_push_kv_str(&item, "proof_command", c->proof_command);
+    json_push_kv_str(&item, "ci_gate", c->ci_gate);
+    json_push_kv_bool(&item, "ci_regression_protected",
+                      c->ci_regression_protected);
+    json_push_kv_bool(&item, "local_dependency_required",
+                      c->local_dependency_required);
+    json_push_kv_str(&item, "primary_blocker", c->primary_blocker);
+    json_push_kv_str(&item, "next_action", c->next);
+    json_push_back(arr, &item);
+    json_free(&item);
+}
+
+static void api_push_mvp_operator_proofs(
+    struct json_value *result,
+    const struct milestone_criterion *criteria,
+    size_t criteria_count,
+    int strict_pass,
+    int partial_units,
+    int max_units)
+{
+    if (!result || !criteria)
+        return;
+
+    int pending = 0;
+    int live_window = 0;
+    int ci_protected = 0;
+    int local_dependencies = 0;
+    for (size_t i = 0; i < criteria_count; i++) {
+        if (!criteria[i].strict_pass)
+            pending++;
+        if (criteria[i].proof_scope &&
+            strcmp(criteria[i].proof_scope, "live_window") == 0)
+            live_window++;
+        if (criteria[i].ci_regression_protected)
+            ci_protected++;
+        if (criteria[i].local_dependency_required)
+            local_dependencies++;
+    }
+
+    struct json_value proofs;
+    struct json_value items;
+    json_init(&proofs);
+    json_init(&items);
+    json_set_object(&proofs);
+    json_set_array(&items);
+
+    json_push_kv_str(&proofs, "schema", "zcl.mvp_operator_proofs.v1");
+    json_push_kv_str(&proofs, "api_version", ZCL_REST_API_VERSION);
+    json_push_kv_str(&proofs, "source", "docs/MVP.md");
+    json_push_kv_str(&proofs, "native_command", "zclassic23 milestone");
+    json_push_kv_str(&proofs, "alias_command", "zclassic23 mvpstatus");
+    json_push_kv_str(&proofs, "mcp_tool", "zcl_milestone");
+    json_push_kv_int(&proofs, "accepted_count", strict_pass);
+    json_push_kv_int(&proofs, "target_count", (int64_t)criteria_count);
+    json_push_kv_int(&proofs, "pending_count", pending);
+    json_push_kv_int(&proofs, "live_window_count", live_window);
+    json_push_kv_int(&proofs, "ci_protected_count", ci_protected);
+    json_push_kv_int(&proofs, "local_dependency_count",
+                     local_dependencies);
+    json_push_kv_int(&proofs, "partial_progress_units", partial_units);
+    json_push_kv_int(&proofs, "partial_progress_units_total", max_units);
+    json_push_kv_str(&proofs, "rule",
+                     "MRS increments only when a full operator proof run-passes; slice and judge gates are regression floors.");
+    json_push_kv_str(&proofs, "next_command", "make mvp-verify");
+
+    for (size_t i = 0; i < criteria_count; i++)
+        api_push_mvp_proof_item(&items, &criteria[i]);
+    json_push_kv(&proofs, "items", &items);
+    json_free(&items);
+
+    json_push_kv(result, "operator_proofs", &proofs);
+    json_free(&proofs);
 }
 
 int64_t api_served_tip_height(void)
@@ -445,6 +561,9 @@ void api_milestone_status_json(struct json_value *result)
     }
     json_push_kv(result, "criteria", &criteria);
     json_free(&criteria);
+
+    api_push_mvp_operator_proofs(result, k_mvp_criteria, criteria_count,
+                                 strict_pass, partial_units, max_units);
 
     struct json_value next;
     json_init(&next);

@@ -2309,23 +2309,33 @@ static int t_dev_lane_deploy_contract(void)
     char *guard = NULL;
     char *lane_health = NULL;
     char *lane_recover = NULL;
+    char *agent_status = NULL;
+    char *clear_script = NULL;
+    char *agent_doctor = NULL;
     char *handoff = NULL;
     char *makefile = NULL;
     char *live_unit = NULL;
     char *soak_unit = NULL;
     char *dev_unit = NULL;
     char *boot_index = NULL;
+    char *coldstart = NULL;
+    char *coldstart_tip = NULL;
     TEST("dev lane deploy self-cleans stale reindex override") {
         char script_path[PATH_MAX];
         char guard_path[PATH_MAX];
         char lane_health_path[PATH_MAX];
         char lane_recover_path[PATH_MAX];
+        char agent_status_path[PATH_MAX];
+        char clear_script_path[PATH_MAX];
+        char agent_doctor_path[PATH_MAX];
         char handoff_path[PATH_MAX];
         char makefile_path[PATH_MAX];
         char live_unit_path[PATH_MAX];
         char soak_unit_path[PATH_MAX];
         char dev_unit_path[PATH_MAX];
         char boot_index_path[PATH_MAX];
+        char coldstart_path[PATH_MAX];
+        char coldstart_tip_path[PATH_MAX];
         ASSERT(repo_path(script_path, sizeof(script_path),
                          "tools/dev/deploy-dev-lane.sh") == 0);
         ASSERT(repo_path(guard_path, sizeof(guard_path),
@@ -2334,6 +2344,12 @@ static int t_dev_lane_deploy_contract(void)
                          "tools/scripts/lane_health.sh") == 0);
         ASSERT(repo_path(lane_recover_path, sizeof(lane_recover_path),
                          "tools/scripts/lane_recover.sh") == 0);
+        ASSERT(repo_path(agent_status_path, sizeof(agent_status_path),
+                         "tools/dev/agent-dev-status.sh") == 0);
+        ASSERT(repo_path(clear_script_path, sizeof(clear_script_path),
+                         "tools/dev/agent-clear-stale-reindex.sh") == 0);
+        ASSERT(repo_path(agent_doctor_path, sizeof(agent_doctor_path),
+                         "tools/dev/agent-doctor.sh") == 0);
         ASSERT(repo_path(handoff_path, sizeof(handoff_path),
                          "docs/HANDOFF.md") == 0);
         ASSERT(repo_path(makefile_path, sizeof(makefile_path),
@@ -2346,16 +2362,25 @@ static int t_dev_lane_deploy_contract(void)
                          "deploy/zcl23-dev.service") == 0);
         ASSERT(repo_path(boot_index_path, sizeof(boot_index_path),
                          "config/src/boot_index.c") == 0);
+        ASSERT(repo_path(coldstart_path, sizeof(coldstart_path),
+                         "tools/scripts/cold_start_test.sh") == 0);
+        ASSERT(repo_path(coldstart_tip_path, sizeof(coldstart_tip_path),
+                         "tools/scripts/cold_start_to_tip_probe.sh") == 0);
         ASSERT(read_entire_file(script_path, &script) == 0);
         ASSERT(read_entire_file(guard_path, &guard) == 0);
         ASSERT(read_entire_file(lane_health_path, &lane_health) == 0);
         ASSERT(read_entire_file(lane_recover_path, &lane_recover) == 0);
+        ASSERT(read_entire_file(agent_status_path, &agent_status) == 0);
+        ASSERT(read_entire_file(clear_script_path, &clear_script) == 0);
+        ASSERT(read_entire_file(agent_doctor_path, &agent_doctor) == 0);
         ASSERT(read_entire_file(handoff_path, &handoff) == 0);
         ASSERT(read_entire_file(makefile_path, &makefile) == 0);
         ASSERT(read_entire_file(live_unit_path, &live_unit) == 0);
         ASSERT(read_entire_file(soak_unit_path, &soak_unit) == 0);
         ASSERT(read_entire_file(dev_unit_path, &dev_unit) == 0);
         ASSERT(read_entire_file(boot_index_path, &boot_index) == 0);
+        ASSERT(read_entire_file(coldstart_path, &coldstart) == 0);
+        ASSERT(read_entire_file(coldstart_tip_path, &coldstart_tip) == 0);
 
         ASSERT(strstr(script, "STALE_REINDEX_DROPIN=") != NULL);
         ASSERT(strstr(script, "zcl23-dev.service.d/reindex.conf") != NULL);
@@ -2383,10 +2408,22 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(script, "pre-RPC recovery: reindex-chainstate")
                != NULL);
         ASSERT(strstr(script, "boot diagnostic: $diag") != NULL);
+        ASSERT(strstr(script, "DEPLOY_STATE=") != NULL);
+        ASSERT(strstr(script, "agent-deploy.json") != NULL);
+        ASSERT(strstr(script, "write_deploy_state") != NULL);
+        ASSERT(strstr(script, "zcl.agent_dev_deploy.v1") != NULL);
+        ASSERT(strstr(script, "\"verify_status\"") != NULL);
+        ASSERT(strstr(script, "\"auto_reindex_pending\"") != NULL);
+        ASSERT(strstr(script, "deploy state: $DEPLOY_STATE") != NULL);
         ASSERT(strstr(script, "BUILD_ID_DROPIN=") != NULL);
         ASSERT(strstr(script, "zcl23-dev.service.d/90-build-identity.conf") != NULL);
         ASSERT(strstr(script, "ZCL_AGENT_EXPECT_BUILD_COMMIT") != NULL);
         ASSERT(strstr(script, "ZCL_AGENT_EXPECT_BUILD_SOURCE=deploy-dev") != NULL);
+        ASSERT(strstr(script, "ZCL_DEV_DEPLOY_BUILD") != NULL);
+        ASSERT(strstr(script, "make fast-rebuild") != NULL);
+        ASSERT(strstr(script, "build/bin/zclassic23-dev") != NULL);
+        ASSERT(strstr(script, "ZCL_DEV_DEPLOY_BUILD=strict") != NULL);
+        ASSERT(strstr(makefile, "deploy-dev-fast agent-deploy-fast") != NULL);
         ASSERT(strstr(script, "probe_agent_contract") != NULL);
         ASSERT(strstr(script, "ZCL_DEV_AGENT_TIMEOUT") != NULL);
         ASSERT(strstr(script, "agent_work_ready") != NULL);
@@ -2395,6 +2432,28 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(script, "BLOCKED: agent status=") != NULL);
         ASSERT(strstr(script, "SYNC OK") != NULL);
         ASSERT(strstr(script, "HEALTHY:") == NULL);
+        ASSERT(strstr(agent_status, "\"deploy_blocker\"") != NULL);
+        ASSERT(strstr(agent_status,
+                      "pending_auto_reindex_requires_explicit_recovery_boot")
+               != NULL);
+        ASSERT(strstr(agent_status,
+                      "auto_reindex_stale_candidate") != NULL);
+        ASSERT(strstr(agent_status,
+                      "make agent-clear-stale-dev-reindex") != NULL);
+        ASSERT(strstr(agent_status,
+                      "ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY=1") != NULL);
+        ASSERT(strstr(clear_script, "zcl.agent_dev_reindex_clear.v1") != NULL);
+        ASSERT(strstr(clear_script, "stale_marker_proven") != NULL);
+        ASSERT(strstr(clear_script, "marker_anchor_above_served_height")
+               != NULL);
+        ASSERT(strstr(clear_script, "mv \"$MARKER\" \"$archive\"") != NULL);
+        ASSERT(strstr(clear_script, "systemctl --user show") != NULL);
+        ASSERT(strstr(clear_script, "getblockcount") != NULL);
+        ASSERT(strstr(clear_script, "python") == NULL);
+        ASSERT(strstr(agent_doctor, "deploy_blocker=") != NULL);
+        ASSERT(strstr(makefile, "agent-clear-stale-dev-reindex:") != NULL);
+        ASSERT(strstr(makefile,
+                      "tools/dev/agent-clear-stale-reindex.sh") != NULL);
         ASSERT(strstr(script, "systemctl --user daemon-reload") != NULL);
         ASSERT(strstr(makefile,
                       "./tools/deploy_guard.sh canonical-deploy") != NULL);
@@ -2402,6 +2461,30 @@ static int t_dev_lane_deploy_contract(void)
                       "zclassic23.service.d/90-build-identity.conf") != NULL);
         ASSERT(strstr(makefile,
                       "ZCL_AGENT_EXPECT_BUILD_SOURCE=make-deploy") != NULL);
+        ASSERT(strstr(makefile,
+                      "bash tools/scripts/cold_start_test.sh; rc=$$?")
+               != NULL);
+        ASSERT(strstr(makefile,
+                      "$(MAKE) --no-print-directory ci-coldstart; rc=$$?")
+               == NULL);
+        ASSERT(strstr(makefile,
+                      "GNU make returns 2 for a failed recipe") != NULL);
+        ASSERT(strstr(coldstart, "SRC_BUNDLE_SNAP_CANDIDATES") != NULL);
+        ASSERT(strstr(coldstart, "-load-snapshot-at-own-height") != NULL);
+        ASSERT(strstr(coldstart, "grep -m1 -F -- \"$BUNDLE_SUCCESS_PATTERN\"")
+               != NULL);
+        ASSERT(strstr(coldstart, "fast_rebuild_authority_ready") != NULL);
+        ASSERT(strstr(coldstart, "consensus_snapshot.db above the compiled checkpoint")
+               != NULL);
+        ASSERT(strstr(coldstart, "python") == NULL);
+        ASSERT(strstr(coldstart_tip, "BUNDLE_SNAP_CANDIDATES") != NULL);
+        ASSERT(strstr(coldstart_tip, "127.0.0.1:8033") != NULL);
+        ASSERT(strstr(coldstart_tip, "-load-snapshot-at-own-height") != NULL);
+        ASSERT(strstr(coldstart_tip, "BUNDLE_SUCCESS_PATTERN") != NULL);
+        ASSERT(strstr(coldstart_tip, "python") == NULL);
+        ASSERT(strstr(makefile, "mvp-coldstart-to-tip-local:") != NULL);
+        ASSERT(strstr(makefile, "tools/scripts/cold_start_to_tip_probe.sh")
+               != NULL);
         ASSERT(strstr(makefile, "lane-recover:") != NULL);
         ASSERT(strstr(makefile, "tools/scripts/lane_recover.sh") != NULL);
         ASSERT(strstr(guard, "ZCL_DEPLOY_ALLOW_CANONICAL") != NULL);
@@ -2552,12 +2635,17 @@ static int t_dev_lane_deploy_contract(void)
     free(guard);
     free(lane_health);
     free(lane_recover);
+    free(agent_status);
+    free(clear_script);
+    free(agent_doctor);
     free(handoff);
     free(makefile);
     free(live_unit);
     free(soak_unit);
     free(dev_unit);
     free(boot_index);
+    free(coldstart);
+    free(coldstart_tip);
     return failures;
 }
 
@@ -2566,6 +2654,8 @@ static int t_agent_fast_ci_contract(void)
     int failures = 0;
     char *buf = NULL;
     char *rules = NULL;
+    char *main_src = NULL;
+    char *arch_doc = NULL;
     TEST("agent fast CI stays cache-aware and native-service first") {
         char path[PATH_MAX];
         ASSERT(repo_path(path, sizeof(path), "Makefile") == 0);
@@ -2579,6 +2669,12 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf,
                       "fast-rebuild rebuild-fast dev-rebuild "
                       "hot-rebuild super-rebuild") != NULL);
+        ASSERT(strstr(buf, "agent-loop agent-dev-loop") != NULL);
+        ASSERT(strstr(buf, "ZCL_AGENT_LOOP_BIN") != NULL);
+        ASSERT(strstr(buf, "ZCL_AGENT_LOOP_DEPLOY") != NULL);
+        ASSERT(strstr(buf, "ZCL_AGENT_LOOP_DEPLOY=stage") != NULL);
+        ASSERT(strstr(buf, "$(MAKE) agent-stage-dev") != NULL);
+        ASSERT(strstr(buf, "$(MAKE) agent-deploy-fast") != NULL);
         ASSERT(strstr(buf, "tools/agent_fast_ci.sh rebuild-dev") != NULL);
         ASSERT(strstr(buf, "ZCLASSIC23_DEV_BIN") != NULL);
         ASSERT(strstr(buf, "DEV_OBJ_DIR") != NULL);
@@ -2601,6 +2697,14 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_CHANGED_FILES_ONLY") != NULL);
         ASSERT(strstr(buf, "pre-push-ci") != NULL);
+        ASSERT(strstr(buf, "agent-plan") != NULL);
+        ASSERT(strstr(buf, "tools/agent_fast_ci.sh plan-json") != NULL);
+        ASSERT(strstr(buf,
+                      "immutable-history-canaries historical-canaries")
+               != NULL);
+        ASSERT(strstr(buf, "domain_consensus_tx_structural") != NULL);
+        ASSERT(strstr(buf, "consensus_parity") != NULL);
+        ASSERT(strstr(buf, "replay-canary-anchor") != NULL);
         ASSERT(strstr(buf,
                       "ZCL_FAST_LIVE=0 ZCL_FAST_COMPILE=strict $(MAKE) fast-ci")
                != NULL);
@@ -2613,13 +2717,76 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "tools/scripts/background_quality_lane.sh") != NULL);
         ASSERT(strstr(buf, "background-tests") != NULL);
         ASSERT(strstr(buf, "zclassic23-test-suite.timer") != NULL);
+        ASSERT(strstr(buf, "agent-mcp-call") != NULL);
+        ASSERT(strstr(buf, "agent-mcp-call-hot") != NULL);
+        ASSERT(strstr(buf, "agent-mcp-call-dev") != NULL);
+        ASSERT(strstr(buf, "agent-dev-status") != NULL);
+        ASSERT(strstr(buf, "agent-doctor") != NULL);
+        ASSERT(strstr(buf, "tools/dev/agent-dev-status.sh") != NULL);
+        ASSERT(strstr(buf, "tools/dev/agent-doctor.sh") != NULL);
+        ASSERT(strstr(buf, "stage-dev-bin agent-stage-dev") != NULL);
+        ASSERT(strstr(buf, "mktemp \"$(ZCL_AGENT_DEV_BIN).next.XXXXXX\"")
+               != NULL);
+        ASSERT(strstr(buf, "mcpcall") != NULL);
+        ASSERT(strstr(buf, "ZCL_AGENT_BIN") != NULL);
+        ASSERT(strstr(buf, "ZCL_AGENT_DEV_BIN") != NULL);
+        ASSERT(strstr(buf, "ZCL_AGENT_MCP_BUILD") != NULL);
+        ASSERT(strstr(buf, "ZCL_AGENT_MCP_ARGS") != NULL);
+        ASSERT(strstr(buf, "MCP_CALL_BIN") == NULL);
+        ASSERT(strstr(buf, "mcp_call.c") == NULL);
         free(buf);
         buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "tools/dev/agent-doctor.sh") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "zcl.agent_doctor.v1") != NULL);
+        ASSERT(strstr(buf, "latest_test_artifact_mtime") != NULL);
+        ASSERT(strstr(buf, "build/bin/test_parallel_fast") != NULL);
+        ASSERT(strstr(buf, "build/bin/test_parallel") != NULL);
+        ASSERT(strstr(buf, "build/bin/test_zcl") != NULL);
+        ASSERT(strstr(buf, "latest_failure_log") != NULL);
+        ASSERT(strstr(buf, "cutoff_mtime") != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "src/main.c") == 0);
+        ASSERT(read_entire_file(path, &main_src) == 0);
+        ASSERT(strstr(main_src, "cli_run_mcp_call") != NULL);
+        ASSERT(strstr(main_src, "mcp_register_ops") != NULL);
+        ASSERT(strstr(main_src, "mcp_middleware_dispatch") != NULL);
+        ASSERT(strstr(main_src, "mw.default_timeout_ms = 0") != NULL);
+        ASSERT(strstr(main_src, "ZCL_MCP_CALL_BEARER_TOKEN") != NULL);
+
+        ASSERT(repo_path(path, sizeof(path),
+                         "docs/AGENT_ARCHITECTURE.md") == 0);
+        ASSERT(read_entire_file(path, &arch_doc) == 0);
+        ASSERT(strstr(arch_doc, "REST resource first") != NULL);
+        ASSERT(strstr(arch_doc, "ActiveRecord lifecycle") != NULL);
+        ASSERT(strstr(arch_doc, "validates_*") != NULL);
+        ASSERT(strstr(arch_doc, "Make relationships explicit C APIs")
+               != NULL);
+        ASSERT(strstr(arch_doc, "database_schema.c") != NULL);
+        ASSERT(strstr(arch_doc, "api_controller_routes.c") != NULL);
+        ASSERT(strstr(arch_doc, "make agent-mcp-call TOOL=<tool>")
+               != NULL);
+        ASSERT(strstr(arch_doc, "make agent-mcp-call-hot TOOL=<tool>")
+               != NULL);
+        ASSERT(strstr(arch_doc, "make agent-mcp-call-dev TOOL=<tool>")
+               != NULL);
+        ASSERT(strstr(arch_doc, "make agent-dev-status") != NULL);
+        ASSERT(strstr(arch_doc, "zclassic23 mcpcall <tool> [json]")
+               != NULL);
 
         ASSERT(repo_path(path, sizeof(path), "tools/agent_fast_ci.sh") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "zcl.agent_fast_ci.v1") != NULL);
+        ASSERT(strstr(buf, "zcl.agent_fast_plan.v1") != NULL);
+        ASSERT(strstr(buf, "zcl.agent_changed_compile_plan.v1") != NULL);
         ASSERT(strstr(buf, "zcl.agent_fast_ci.cache.v1") != NULL);
+        ASSERT(strstr(buf, "emit_plan_json") != NULL);
+        ASSERT(strstr(buf, "recommended_command") != NULL);
+        ASSERT(strstr(buf, "mcp_shortcuts") != NULL);
+        ASSERT(strstr(buf, "green_input_cache") != NULL);
         ASSERT(strstr(buf, "sccache cc") != NULL);
         ASSERT(strstr(buf, "ccache cc") != NULL);
         ASSERT(strstr(buf, "git diff --check") != NULL);
@@ -2633,6 +2800,8 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "impact_rules_file") != NULL);
         ASSERT(strstr(buf, "bash -n \"$script\"") != NULL);
         ASSERT(strstr(buf, "tools/deploy_guard.sh") != NULL);
+        ASSERT(strstr(buf, "tools/dev/deploy-dev-lane.sh") != NULL);
+        ASSERT(strstr(buf, "tools/dev/agent-dev-status.sh") != NULL);
         ASSERT(strstr(buf,
                       "tools/scripts/check_agentdeployguard_cli_exit.sh")
                != NULL);
@@ -2643,6 +2812,7 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "FAST_COMPILE=\"${ZCL_FAST_COMPILE:-changed}\"")
                != NULL);
         ASSERT(strstr(buf, "compile_changed_gate") != NULL);
+        ASSERT(strstr(buf, "compute_changed_compile_plan") != NULL);
         ASSERT(strstr(buf, "is_graph_wide_compile_change") != NULL);
         ASSERT(strstr(buf, "is_direct_dependency_compile_change") != NULL);
         ASSERT(strstr(buf, "dev_depfiles_available") != NULL);
@@ -2752,6 +2922,11 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(rules, "app/models/include/models/*.h") != NULL);
         ASSERT(strstr(rules, "lib/test/src/test_models*.c") != NULL);
         ASSERT(strstr(rules, "\"models make_lint_gates\"") != NULL);
+        ASSERT(strstr(rules, "domain/consensus/*") != NULL);
+        ASSERT(strstr(rules, "lib/consensus/*") != NULL);
+        ASSERT(strstr(rules,
+                      "\"consensus_parity domain_consensus_tx_structural chain\"")
+               != NULL);
         ASSERT(strstr(rules, "lib/net/src/connman.c") != NULL);
         ASSERT(strstr(rules, "docs/AGENT_API.md") != NULL);
         ASSERT(strstr(rules, "deploy/*.service") != NULL);
@@ -2862,6 +3037,9 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "There is no `tools/z` fallback") != NULL);
         ASSERT(strstr(buf, "zclassic23 agentbuild") != NULL);
         ASSERT(strstr(buf, "zcl_agent_build") != NULL);
+        ASSERT(strstr(buf, "`make immutable-history-canaries`") != NULL);
+        ASSERT(strstr(buf, "h=478544") != NULL);
+        ASSERT(strstr(buf, "replay-canary-anchor") != NULL);
         ASSERT(strstr(buf, "MCP tools") != NULL);
         ASSERT(strstr(buf, "`tools/z`") != NULL);
         ASSERT(strstr(buf, "not an agent interface") != NULL);
@@ -2932,6 +3110,8 @@ static int t_agent_fast_ci_contract(void)
     } _test_next:;
     free(buf);
     free(rules);
+    free(main_src);
+    free(arch_doc);
     return failures;
 }
 
@@ -3431,6 +3611,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(main_buf, "\"agentcontracts\", rpc_agent_contracts")
                != NULL);
         ASSERT(strstr(main_buf, "\"agentbuild\", rpc_agent_build") != NULL);
+        ASSERT(strstr(main_buf, "\"agentdevstatus\", rpc_agent_dev_status")
+               != NULL);
         ASSERT(strstr(main_buf, "\"anchorstatus\", rpc_agent_anchor_status")
                != NULL);
         ASSERT(strstr(main_buf, "\"appprotocols\", rpc_app_protocols")
@@ -3693,6 +3875,10 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "zcl_agent_liveness")
                != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl.agent_dev_status.v1")
+               != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl_agent_dev_status")
+               != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "zcl.timeline.v1") != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "zcl_timeline") != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "zcl.state_catalog.v1")
@@ -3705,11 +3891,30 @@ static int t_native_agent_api_contract(void)
                       "zcl.anchor_mint_status.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_build.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "dev_node_binary") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "make agent-loop") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "ZCL_AGENT_LOOP_BIN=1 make agent-loop")
+               != NULL);
+        ASSERT(strstr(agent_ctrl_buf,
+                      "ZCL_AGENT_LOOP_DEPLOY=dev make agent-loop") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "make agent-deploy-fast") != NULL);
+        ASSERT(strstr(agent_ctrl_buf,
+                      "build/bin/zclassic23 mcpcall <tool> [json]")
+               != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "make agent-mcp-call-hot") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "make agent-mcp-call-dev") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "ZCL_AGENT_MCP_BUILD") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "make agent-dev-status") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "make agent-doctor") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zclassic23 agentdevstatus") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "zcl_agent_dev_status") != NULL);
+        ASSERT(strstr(agent_ctrl_buf, "make agent-stage-dev") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "make dev-bin") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "build/bin/zclassic23-dev") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "ZCL_DEV_HOT_OPT=-O2") != NULL);
         ASSERT(strstr(agent_schema_registry_buf,
                       "zcl.background_quality_runtime.v1") != NULL);
+        ASSERT(strstr(agent_schema_registry_buf,
+                      "zcl.agent_dev_status.v1") != NULL);
         ASSERT(strstr(agent_schema_registry_buf, "zcl.first_call_contract.v1")
                != NULL);
         ASSERT(strstr(agent_schema_registry_buf,
@@ -3762,11 +3967,17 @@ static int t_native_agent_api_contract(void)
                == NULL);
         ASSERT(strstr(agent_ops_buf, "no_jq_required") != NULL);
         ASSERT(strstr(agent_ops_buf, "diagnose_command") == NULL);
+        ASSERT(strstr(agent_ops_buf, "deploy_guard_command") == NULL);
         ASSERT(strstr(agent_ops_buf, "agentdiagnose") == NULL);
         ASSERT(strstr(agent_ops_buf, "top_next_work") != NULL);
         ASSERT(strstr(agent_ops_buf, "api_gaps") != NULL);
+        ASSERT(strstr(agent_ops_buf, "api_ux") != NULL);
+        ASSERT(strstr(agent_ops_buf, "agentops.workflow") != NULL);
         ASSERT(strstr(agent_ops_buf,
                       "agent_push_contract_work_surface_json(&gaps")
+               != NULL);
+        ASSERT(strstr(agent_ops_buf,
+                      "agent_push_contract_work_surface_json(&workflow")
                != NULL);
         ASSERT(strstr(agent_ops_buf,
                       "agent_push_contract_work_surface_json(&work")
@@ -3828,6 +4039,8 @@ static int t_native_agent_api_contract(void)
                       "zcl.operator_deployment_safety.v1") != NULL);
         ASSERT(strstr(agent_schema_registry_buf,
                       "zcl.agent_runtime_services.v1") != NULL);
+        ASSERT(strstr(agent_schema_registry_buf,
+                      "zcl.mvp_operator_proofs.v1") != NULL);
         ASSERT(strstr(agent_lanes_buf, "agent_push_lane_topology") != NULL);
         ASSERT(strstr(agent_lanes_buf,
                       "agent_push_runtime_services_json") != NULL);
@@ -3854,9 +4067,13 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_registry_buf,
                       "agent_push_contract_field_surface_json") != NULL);
         ASSERT(strstr(agent_registry_buf, "agentops.first_call") != NULL);
+        ASSERT(strstr(agent_registry_buf, "agentops.workflow") != NULL);
+        ASSERT(strstr(agent_registry_buf,
+                      "drill_down_only_when_needed") != NULL);
         ASSERT(strstr(agent_registry_buf, "anchor_status_command") != NULL);
         ASSERT(strstr(agent_registry_buf,
                       "diagnostics_drilldown_command") != NULL);
+        ASSERT(strstr(agent_registry_buf, "deploy_guard_command") != NULL);
         ASSERT(strstr(agent_registry_buf, "diagnose_command") != NULL);
         ASSERT(strstr(agent_registry_buf, "agentdiagnose") != NULL);
         ASSERT(strstr(agent_registry_buf, "DIRECT_COMMAND") != NULL);
@@ -4209,6 +4426,25 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_deploy_guard") != NULL);
         ASSERT(strstr(agent_doc_buf, "No Python is required") != NULL);
+        ASSERT(strstr(agent_doc_buf, "docs/AGENT_ARCHITECTURE.md") != NULL);
+        ASSERT(strstr(agent_doc_buf, "make agent-mcp-call TOOL=zcl_status")
+               != NULL);
+        ASSERT(strstr(agent_doc_buf, "make agent-mcp-call-hot") != NULL);
+        ASSERT(strstr(agent_doc_buf, "make agent-mcp-call-dev") != NULL);
+        ASSERT(strstr(agent_doc_buf, "make agent-dev-status") != NULL);
+        ASSERT(strstr(agent_doc_buf, "make agent-doctor") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zclassic23 agentdevstatus") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl_agent_dev_status") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.agent_dev_status.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "deploy_blocker") != NULL);
+        ASSERT(strstr(agent_doc_buf, "auto_reindex_stale_candidate")
+               != NULL);
+        ASSERT(strstr(agent_doc_buf, "make agent-stage-dev") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zclassic23 mcpcall zcl_status")
+               != NULL);
+        ASSERT(strstr(agent_doc_buf, "make agent-loop") != NULL);
+        ASSERT(strstr(agent_doc_buf, "ZCL_AGENT_LOOP_BIN=1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "ZCL_AGENT_LOOP_DEPLOY=dev") != NULL);
         ASSERT(strstr(agent_doc_buf, "make build-only") != NULL);
         ASSERT(strstr(agent_doc_buf, "make fast-rebuild") != NULL);
         ASSERT(strstr(agent_doc_buf, "make dev-bin") != NULL);
@@ -4225,6 +4461,8 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "automation_deploy_ok") != NULL);
         ASSERT(strstr(agent_doc_buf, "operator_lane_name") != NULL);
         ASSERT(strstr(agent_doc_buf, "preferred_deploy_target") != NULL);
+        ASSERT(strstr(agent_doc_buf, "agent-deploy.json") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.agent_dev_deploy.v1") != NULL);
         ASSERT(strstr(agent_doc_buf,
                       "requires_operator_confirmation") != NULL);
         ASSERT(strstr(agent_doc_buf, "safe_default_action") != NULL);
@@ -5527,8 +5765,10 @@ static int t_make_ignores_ephemeral_lint_fixture_sources(void)
         char path[PATH_MAX];
         ASSERT(repo_path(path, sizeof(path), "Makefile") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf, "ZCL_EPHEMERAL_SOURCE_PATTERNS") != NULL);
-        ASSERT(strstr(buf, "%/_%fixture%.c") != NULL);
+        ASSERT(strstr(buf, "ZCL_EPHEMERAL_SOURCE_PATTERNS") == NULL);
+        ASSERT(strstr(buf, "%/_%fixture%.c") == NULL);
+        ASSERT(strstr(buf, "zcl_ephemeral_sources") != NULL);
+        ASSERT(strstr(buf, "$(findstring /_,$(s))") != NULL);
         ASSERT(strstr(buf, "zcl_filter_ephemeral_sources") != NULL);
         ASSERT(count_occurrences(buf,
                    "$(call zcl_filter_ephemeral_sources,") >= 8);
@@ -6118,9 +6358,16 @@ static int t_msg_process_yields_to_send_phase_contract(void)
         ASSERT(repo_path(path, sizeof(path),
                          "lib/net/include/net/msgprocessor.h") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf, "#define ZCL_MSG_PROCESS_MAX_PER_CYCLE 32")
+        ASSERT(strstr(buf, "#define ZCL_MSG_PROCESS_MAX_PER_CYCLE 128")
                != NULL);
         ASSERT(strstr(buf, "send phase regularly") != NULL);
+        free(buf);
+        buf = NULL;
+
+        ASSERT(repo_path(path, sizeof(path), "lib/net/src/connman.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "connman_recv_cap_for_queue") != NULL);
+        ASSERT(strstr(buf, "CONNMAN_RECV_LOW_WATER_SLOTS") != NULL);
         PASS();
     } _test_next:;
     free(buf);

@@ -60,6 +60,9 @@
 #include "event/event.h"
 #include "config/runtime.h"
 #include "jobs/refold_progress.h"
+#include "services/invariant_sentinel.h"
+#include "storage/coins_kv.h"
+#include "storage/progress_store.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -78,6 +81,9 @@
 #include <errno.h>
 
 extern volatile sig_atomic_t g_shutdown_requested;
+
+#define SYNC_PROJECTION_TIP_HASH_KEY   "sync_projection_tip_hash"
+#define SYNC_PROJECTION_TIP_HEIGHT_KEY "sync_projection_tip_height"
 
 /* ── Sync-controller helpers reached by forward declaration ──
  * These are defined in the sync_controller_*.c siblings and declared in
@@ -222,6 +228,69 @@ static bool catchup_read_prev_receipt(struct node_db *ndb, int h,
     }
     sqlite3_finalize(s);
     return found;
+}
+
+static bool catchup_sparse_prefix_can_advance(int indexed,
+                                              int total,
+                                              int lean_holes,
+                                              int first_hole_h,
+                                              int start,
+                                              int chain_tip,
+                                              int suspicious_holes,
+                                              int missing_file_holes,
+                                              int missing_index_holes,
+                                              bool proven_authority,
+                                              int32_t proven_applied)
+{
+    (void)missing_file_holes; /* Quiet ENOENT/ENOTDIR files are sparse-bundle holes. */
+    return total > 0 &&
+           indexed == 0 &&
+           lean_holes == total &&
+           first_hole_h == start &&
+           start <= chain_tip &&
+           suspicious_holes == 0 &&
+           missing_index_holes == 0 &&
+           proven_authority &&
+           proven_applied >= chain_tip;
+}
+
+#ifdef ZCL_TESTING
+bool node_db_catchup_test_sparse_prefix_can_advance(int indexed,
+                                                    int total,
+                                                    int lean_holes,
+                                                    int first_hole_h,
+                                                    int start,
+                                                    int chain_tip,
+                                                    int suspicious_holes,
+                                                    int missing_file_holes,
+                                                    int missing_index_holes,
+                                                    bool proven_authority,
+                                                    int32_t proven_applied)
+{
+    return catchup_sparse_prefix_can_advance(indexed, total, lean_holes,
+                                             first_hole_h, start, chain_tip,
+                                             suspicious_holes,
+                                             missing_file_holes,
+                                             missing_index_holes,
+                                             proven_authority,
+                                             proven_applied);
+}
+#endif
+
+static bool catchup_set_sparse_projection_tip(struct node_db *ndb,
+                                              const uint8_t hash[32],
+                                              int height)
+{
+    if (!ndb || !ndb->open || !hash)
+        LOG_FAIL("catchup",
+                 "sparse projection tip: invalid args (ndb=%p, hash=%p)",
+                 (void *)ndb, (const void *)hash);
+    if (!invariant_sentinel_check_pair(ndb, hash, height,
+                                       "sparse_projection_tip"))
+        return false;
+    return node_db_state_set(ndb, SYNC_PROJECTION_TIP_HASH_KEY, hash, 32) &&
+           node_db_state_set_int(ndb, SYNC_PROJECTION_TIP_HEIGHT_KEY,
+                                 (int64_t)height);
 }
 
 /* Try-decrypt Sapling outputs in a transaction and save to SQLite.
@@ -381,6 +450,16 @@ int node_db_catchup_service_run(struct node_db *ndb,
     if (start < 0) start = 0;
     int total = chain_tip - start + 1;
     sync_job_catchup_begin(start, chain_tip);
+
+    bool proven_authority = false;
+    int32_t proven_applied = -1;
+    sqlite3 *progress_db = progress_store_db();
+    if (progress_db) {
+        progress_store_tx_lock();
+        proven_authority =
+            coins_kv_is_proven_authority(progress_db, &proven_applied);
+        progress_store_tx_unlock();
+    }
 
     int wallet_keys = 0;
     if (w) {
@@ -703,8 +782,34 @@ int node_db_catchup_service_run(struct node_db *ndb,
                 failed = true;
             }
         } else {
-            LOG_WARN("catchup", "catchup: final commit missing tip hash");
-            failed = true;
+            const struct block_index *tip = active_chain_at(chain, chain_tip);
+            bool sparse_prefix =
+                catchup_sparse_prefix_can_advance(indexed, total, lean_holes,
+                                                  first_hole_h, start,
+                                                  chain_tip,
+                                                  suspicious_lean_holes,
+                                                  missing_file_holes,
+                                                  missing_index_holes,
+                                                  proven_authority,
+                                                  proven_applied);
+            if (sparse_prefix && tip && tip->phashBlock &&
+                catchup_set_sparse_projection_tip(ndb, tip->phashBlock->data,
+                                                  chain_tip)) {
+                last_indexed_height = chain_tip;
+                last_committed_height = chain_tip;
+                LOG_INFO("catchup",
+                         "catchup: sparse proven prefix %d..%d has no block "
+                         "bodies; advanced SQLite projection cursor to h=%d "
+                         "without writing block rows",
+                         start, chain_tip, chain_tip);
+                event_emitf(EV_RECOVERY_ACTION, 0,
+                            "action=sparse_projection_tip_advance "
+                            "start=%d height=%d holes=%d",
+                            start, chain_tip, lean_holes);
+            } else {
+                LOG_WARN("catchup", "catchup: final commit missing tip hash");
+                failed = true;
+            }
         }
         if (!failed) {
             if (!node_db_commit(ndb)) {

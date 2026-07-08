@@ -2,6 +2,9 @@
 
 ZClassic23's agent API is the native binary and the MCP tools backed by the
 same native RPC methods. Shell wrappers are compatibility shims only.
+Future feature work should follow `docs/AGENT_ARCHITECTURE.md`: REST resource
+first, database schema, ActiveRecord model, validations, relationships, service
+workflow, REST route contract, then typed MCP/native surface.
 
 ## First calls
 
@@ -16,6 +19,11 @@ same native RPC methods. Shell wrappers are compatibility shims only.
 | Changed files to tests/risk | `zclassic23 agentimpact <files...>` | `zcl_agent_impact` |
 | Versioned contracts | `zclassic23 agentcontracts` | `zcl_agent_contracts` |
 | Fast build contract | `zclassic23 agentbuild` | `zcl_agent_build` |
+| Read-only fast-lane plan | `make agent-plan` | `zcl_agent_build` advertises it |
+| Combined dev doctor | `make agent-doctor` | `zcl_agent_build` advertises it |
+| Fresh typed MCP one-shot | `make agent-mcp-call TOOL=zcl_status` | `zcl_status` |
+| No-build dev-lane MCP one-shot | `make agent-mcp-call-dev TOOL=zcl_status` | `zcl_status` |
+| Dev-lane status | `zclassic23 agentdevstatus` (`make agent-dev-status`) | `zcl_agent_dev_status` |
 | Anchor producer status | `zclassic23 anchorstatus` | `zcl_rpc(method="anchorstatus")` |
 | Application protocol catalog | `zclassic23 appprotocols` | `zcl_app_protocols` |
 | Sovereign service catalog | `zclassic23 servicecatalog [name]` | `zcl_service_catalog(name?)` |
@@ -245,9 +253,24 @@ needed. The native binary commands (`zclassic23 agentinterface`,
 `zclassic23 status` / `zclassic23 agent`, etc.) are the second-best interface for terminal work and
 scripts. REST is the public read-only mirror.
 
-For direct RPC checks from a terminal, prefer `build/bin/zcl-rpc getblockcount`
-or an explicit `build/bin/zclassic-cli -rpcport=18232 getblockcount` when you
-mean the canonical zclassic23 lane. Do not use bare `build/bin/zclassic-cli` as
+For terminal work, keep the operator path inside the same binary: use native
+commands such as `build/bin/zclassic23 agent` or, inside this worktree, typed
+MCP one-shots through `make agent-mcp-call TOOL=zcl_status` and
+`make agent-mcp-call TOOL=zcl_state ARGS='{"subsystem":"supervisor"}'`. That
+fresh path refreshes `build/bin/zclassic23-dev` before dispatch so source-tree
+API checks do not accidentally use a stale release binary. For read-only status
+and schema checks, use `make agent-mcp-call-hot TOOL=<tool>` to reuse the
+existing source-tree dev binary, or `make agent-mcp-call-dev TOOL=<tool>` to
+reuse the installed `~/.local/bin/zclassic23-dev` binary against
+`~/.zclassic-c23-dev` on RPC port `18252`. Direct
+`build/bin/zclassic23 mcpcall zcl_status` remains the underlying one-binary
+path after `make zclassic23` or a deploy.
+Use `make agent-plan` before a build when you need the exact no-build fast-lane
+decision: changed files, selected focused tests, changed-compile plan, cache
+hit/miss, dev-lane stage/deploy commands, and MCP shortcuts.
+`build/bin/zcl-rpc getblockcount` and an explicit
+`build/bin/zclassic-cli -rpcport=18232 getblockcount` are legacy/debug checks,
+not the preferred agent interface. Do not use bare `build/bin/zclassic-cli` as
 a zclassic23 status oracle: local defaults, cookies, datadirs, or environment
 can point it at another RPC target and create a false "zclassic23 is behind"
 diagnosis. If a height/peer answer matters, the target lane must be explicit in
@@ -489,9 +512,13 @@ through MCP, or `zclassic23 agentops` from the native binary. It returns
 `zcl.agent_ops.v1`: direct decision fields, `no_jq_required=true`, current lane
 and runtime build contracts, background quality summary fields, named
 drill-down commands, direct scalar pointers such as `peer_incidents_command` /
-`peer_incidents_tool`, API gaps, and the top next architecture work list. Do
-not pipe larger discovery payloads through `jq` to build this answer by hand;
-add a field to `agentops` when an agent repeatedly needs the same decision.
+`peer_incidents_tool`, API gaps, the registry-owned `workflow` for the expected
+agent loop, and the top next architecture work list. `api_ux` names the
+preferred drill-down primitives (`zcl_state`, `zcl_node_log`, `zcl_sql`, and
+`zcl_timeline`) so agents can keep one-off diagnostics simple before adding new
+typed routes. Do not pipe larger discovery payloads through `jq` to build this
+answer by hand; add a field to `agentops` when an agent repeatedly needs the
+same decision.
 
 The first-call operator status view is `zcl_agent` through MCP, or
 `zclassic23 status` / `zclassic23 agent` through the native binary. It returns the stable status,
@@ -577,6 +604,14 @@ missing, milestone sets `live.source="agent_cached_summary_with_fallbacks"`,
 `live.agent_fields_complete=false`, and names `live.fallback_source`; if the
 agent contract is unavailable entirely, it falls back to the older node-health
 snapshot and says so in `live.source`.
+The same response embeds `operator_proofs`
+(`zcl.mvp_operator_proofs.v1`): one row per MVP criterion with
+`proof_command`, `ci_gate`, `proof_scope`, `primary_blocker`,
+`local_dependency_required`, and `ci_regression_protected`. This is the
+machine-readable version of the `docs/MVP.md` proof table: agents use it to
+choose the next MRS-moving command without scraping docs. It does not change
+the score; `mvp_readiness_score` still counts only accepted full operator
+proofs.
 
 The bounded agent packet may read a cached chain-advance decision for speed, but
 it must reject internally inconsistent projection cache data. A stale decision
@@ -904,7 +939,19 @@ validation-pack hold.
 sample (`SYNC OK`); the script prints `AGENT READY` only after the dev lane's
 native `agent` contract reports healthy and serving. A blocked, operator-needed,
 or failed validation-pack contract makes the deploy fail with the named blocker
-instead of falsely declaring the new binary healthy.
+instead of falsely declaring the new binary healthy. Every dev-lane deploy also
+saves `~/.zclassic-c23-dev/agent-deploy.json` (`zcl.agent_dev_deploy.v1`) with
+the build commit, build type, installed binary, service name, verification
+status, and any pending auto-reindex marker, so pre-RPC recovery still has a
+cheap machine-readable breadcrumb.
+`make agent-dev-status` / `zclassic23 agentdevstatus` /
+`zcl_agent_dev_status` expose the same restart hazard before deploy as
+`deploy_blocker`, `deploy_blocker_reason`, `explicit_recovery_env`, and
+`auto_reindex_stale_candidate`, so a healthy dev RPC cannot hide an
+`auto_reindex_request` that would be consumed on the next restart.
+For a stale candidate, `make agent-clear-stale-dev-reindex` archives the marker
+only after the dev RPC is serving at or above the marker anchor and the dev
+agent contract is not blocked; it does not restart or mutate canonical/soak.
 
 ## Bootstrap Service Status
 
@@ -962,6 +1009,20 @@ systemd command lines whenever the node RPC is reachable.
 
 This is a C23 project, so the edit loop should compile only what changed.
 
+- `make agent-loop` is the default AI/operator edit loop. It runs the
+  cache-aware `make fast-ci` checks; set `ZCL_AGENT_LOOP_BIN=1` to also link
+  `build/bin/zclassic23-dev`, `ZCL_AGENT_LOOP_DEPLOY=stage` to stage the
+  dev-lane binary for the next restart without stopping the service, or
+  `ZCL_AGENT_LOOP_DEPLOY=dev` to run the fast dev-lane hot-swap.
+- `make agent-plan` is the read-only fast-lane decision packet
+  (`zcl.agent_fast_plan.v1`). It reports changed files, selected focused tests,
+  unmapped code changes, the changed-compile plan, green-input cache hit/miss,
+  dev-lane stage/deploy commands, and the MCP one-shot shortcuts.
+- `make immutable-history-canaries` runs the fast real-chain consensus KATs:
+  the h=478544 125,811-byte canonical transaction fixture
+  (`domain_consensus_tx_structural`) plus `consensus_parity`. Use it whenever a
+  bounded consensus predicate changes before paying the heavier
+  `make replay-canary-anchor` / `make replay-canary-genesis` gates.
 - `make build-only` compiles all node objects without linking. It uses
   `build/obj` plus header depfiles (`-MMD -MP` and included `.d` files), so
   unchanged translation units keep their existing `.o` files and changed
@@ -983,6 +1044,33 @@ This is a C23 project, so the edit loop should compile only what changed.
   at `ZCL_DEV_HOT_OPT=-O2`. `ZCL_DEV_LINKER` auto-selects `mold` or `ld.lld`
   when present and can be set empty to force the platform linker. This binary
   is for local agent/API iteration, not deploy or release.
+- `make agent-dev-status` is the no-build dev-lane status command. It reports
+  the source and installed dev binaries, whether the staged binary matches the
+  source-tree binary, `zcl23-dev` linger service state, RPC readiness or
+  pre-RPC recovery progress, saved `agent-deploy.json`, auto-reindex marker
+  state, deploy blocker/reason, stale-marker candidate, and the next safe
+  action. Use `make agent-dev-status ARGS=--json` for `zcl.agent_dev_status.v1`;
+  use `zclassic23 agentdevstatus` or MCP `zcl_agent_dev_status` for the
+  first-class native/MCP contract.
+- `make agent-clear-stale-dev-reindex` archives a proven-stale dev-lane
+  `auto_reindex_request` after the dev RPC serves at or above the marker anchor.
+  It does not restart the lane and never touches canonical or soak.
+- `make agent-doctor` is the no-build combined development check. It reports
+  build binary identity, dev-lane status, the embedded `zcl.agent_fast_plan.v1`
+  fast-lane decision, recent focused-test failure hints, dirty-file count, MCP
+  shortcuts, and a single next safe command. Use `ARGS=--json` for
+  `zcl.agent_doctor.v1`.
+- `make agent-stage-dev` runs the fast dev rebuild and atomically replaces
+  `~/.local/bin/zclassic23-dev` for the next `zcl23-dev` restart without
+  stopping the current service. Use it when the dev lane is in pre-RPC recovery
+  or otherwise should not be interrupted.
+- `make agent-mcp-call TOOL=<tool>` is the fresh source-tree MCP smoke path.
+  It refreshes `build/bin/zclassic23-dev` before dispatch. Use
+  `make agent-mcp-call-hot TOOL=<tool>` when the existing source-tree dev
+  binary is good enough, and `make agent-mcp-call-dev TOOL=<tool>` for the
+  installed `zcl23-dev` linger lane. Set `ZCL_AGENT_MCP_BUILD=0`,
+  `ZCL_AGENT_BIN=...`, or `ZCL_AGENT_MCP_ARGS='-datadir=... -rpcport=...'`
+  for custom no-build terminal probes.
 - `make t-fast ONLY=<group>` uses `build/test-obj` and
   `build/bin/test_parallel_fast`, a cached non-LTO test harness for hot-path
   focused tests.
@@ -1026,10 +1114,13 @@ tests. Full-suite, fuzz, and coverage evidence belongs to the background quality
 Status JSON is written under `~/.local/state/zclassic23-quality`. The native
 `zclassic23 agentbuild` / `zcl_agent_build` response also embeds
 `recommended_loop` (`zcl.agent_build_loop.v1`) with the cheapest command for
-each intent (`fast-changed-compile`, `fast-compile`, `fast-rebuild`, focused `t-fast`, and
+each intent (`agent-plan`, `agent-loop`, `fast-changed-compile`, `fast-compile`,
+`fast-rebuild`, `immutable-history-canaries`, focused `t-fast`, and
 `pre-push-ci`),
 `dev_node_binary` (`make dev-bin`, `build/bin/zclassic23-dev`, hot-path
 optimization buckets, and release/deploy boundary) plus
+`immutable_history_canaries` (`zcl.immutable_history_canaries.v1`, the pinned
+h=478544 fixture, fast command, and replay gate commands) plus
 `background_quality_status` (`zcl.background_quality_runtime.v1`), a C-native
 reader for those status files. It reports the resolved state/status directory,
 one entry each for `fuzz`, `coverage`, and `tests`, whether each lane verdict

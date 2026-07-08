@@ -17,6 +17,12 @@ This doc describes the **destination and the laws**; the checklist tracks the
 **work**. Where the two disagree, the checklist is the honest present and this
 doc is where we are going.
 
+For the concrete future-agent feature slice — REST resource first, database
+schema, ActiveRecord model, validations, relationships, service workflow,
+route contract, typed MCP/native surface, and tests — use
+[`docs/AGENT_ARCHITECTURE.md`](./AGENT_ARCHITECTURE.md). This file is the law;
+that file is the build recipe.
+
 ---
 
 ## 0. The Prime Directive

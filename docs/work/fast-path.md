@@ -1,5 +1,12 @@
 # The Fast Path — our information algorithm for getting to correct C
 
+Mantra: **code fearlessly; immutable history is the oracle.** ZClassic's
+canonical history is not at risk from local experiments. Spend that advantage:
+test against real historic blocks and throwaway datadir copies, rebuild derived
+state instead of preserving bad local artifacts, and let real-chain canaries
+answer consensus questions quickly. The hard line remains: never prove a repair
+by mutating the live serving datadir first.
+
 The C diff that fixes a problem is usually small (the reducer un-wedge was ~40
 lines; the service_state driver ~180) — the **information algorithm** is the
 work: turning a vague live symptom into the one correct small change, with
@@ -60,17 +67,43 @@ that deleted tip_finalize_log rows, shipped without a reset-safe test).
 | `make fast-compile` | fastest no-link dev compile check using cached non-LTO `build/dev-obj` objects |
 | `make build-only` | strict release-flag incremental compile-check of the whole node (no link) |
 | `make dev-bin` | incremental non-LTO node executable at `build/bin/zclassic23-dev`; local AI/operator iteration only, not for release/deploy |
+| `make agent-doctor` | no-build combined build/dev-lane/recent-test-failure status with one next safe command |
+| `make agent-dev-status` / `zclassic23 agentdevstatus` / `zcl_agent_dev_status` | no-build read-only dev-lane status: service, RPC/pre-RPC recovery, staged binary, saved deploy state, auto-reindex marker, deploy blocker/reason, stale-marker candidate, next action |
+| `make agent-clear-stale-dev-reindex` | archive a proven-stale dev-lane `auto_reindex_request` after RPC height is at/above the marker anchor; no restart, no canonical/soak mutation |
+| `make agent-stage-dev` | build and atomically stage `~/.local/bin/zclassic23-dev` for the next dev-lane restart without stopping the running service |
 | `make syntax-check` | full no-link syntax check across every TU |
 | `make lint-fast` | the 5 highest-signal lint gates (full `make lint` before commit) |
+| `make agent-plan` | no-build JSON decision packet: changed files, selected focused tests, changed-compile plan, fast-cache hit/miss, dev-lane stage/deploy commands, and MCP shortcuts |
+| `make agent-loop` | one-command agent loop: fast-ci checks by default; `ZCL_AGENT_LOOP_BIN=1` also links the dev binary; `ZCL_AGENT_LOOP_DEPLOY=dev` hot-swaps the dev lane |
 | `make fast-ci` | cache-aware agent loop: `lint-fast` + changed compile gate + focused tests inferred from changed files + native linger-service probe; identical green inputs skip repeated lint/build/focused tests |
+| `make immutable-history-canaries` | fast real-chain consensus KATs: h=478544 oversized canonical transaction plus consensus parity pins |
+| `make agent-mcp-call-hot TOOL=<tool>` | no-build typed MCP read through the existing source-tree dev binary |
+| `make agent-mcp-call-dev TOOL=<tool>` | no-build typed MCP read through the installed `zcl23-dev` linger-lane binary |
 | `make pre-push-ci` | bounded push gate: cached focused fast-ci for changed files with `ZCL_FAST_COMPILE=strict` |
 | `make install-quality-linger` | install background full-test, fuzz, and coverage user timers |
 | `make quality-linger-status` | show latest background tests/fuzz/coverage JSON verdicts |
 | `make test` | the fast fork-based parallel suite (~1 min); `make test-full` is the slow single-process binary |
 | `make ci-reproducible` | build-twice byte-identity proof in isolated build dirs |
 
-`make fast-ci` is the default edit-loop command for agents and operators. It
-auto-selects `sccache cc` or `ccache cc` when present; override with
+`make agent-plan` is the read-only preview of the loop: it emits
+`zcl.agent_fast_plan.v1` with the changed-file set, focused test groups,
+changed-compile decision, green-input cache verdict, dev-lane stage/deploy
+commands, and the no-build MCP shortcuts. `make agent-doctor` embeds that same
+plan alongside dev-lane health and recent focused-test failures.
+
+`make immutable-history-canaries` is the fast consensus-risk lane for the
+immutable ZClassic chain. It runs the pinned h=478544 125,811-byte transaction
+fixture in `domain_consensus_tx_structural` and the golden
+`consensus_parity` group. It is the first gate for bounded consensus predicate
+changes; the heavier real-chain replay gates remain `make replay-canary-anchor`
+and `make replay-canary-genesis`.
+
+`make agent-loop` is the default edit-loop command for agents and operators. It
+delegates to `make fast-ci` for the safe checks, then optionally links the
+runnable dev binary with `ZCL_AGENT_LOOP_BIN=1`, stages the dev-lane binary
+without restarting with `ZCL_AGENT_LOOP_DEPLOY=stage`, or hot-swaps the dev lane
+with `ZCL_AGENT_LOOP_DEPLOY=dev`. `make fast-ci` remains the underlying cache-aware
+gate and auto-selects `sccache cc` or `ccache cc` when present; override with
 `ZCL_FAST_CC='ccache cc'`. It runs focused tests through `make t-fast`, which
 uses `build/bin/test_parallel_fast`: a cached per-file, non-LTO test harness
 that rebuilds only changed test/node objects after the first warm-up. It is
@@ -125,13 +158,26 @@ local `agentbuild`, `agentimpact`, parser, API, and diagnostics iteration; it is
 not a deploy or release artifact.
 
 The native build contract is discoverable with `build/bin/zclassic23 agentbuild`
-or MCP `zcl_agent_build`.
+or MCP `zcl_agent_build`; it advertises `make agent-plan`, the stage-without-restart
+path, and the same MCP shortcuts.
+
+Typed MCP tools are also callable through the same binary for terminal agents.
+In the source tree, prefer `make agent-mcp-call TOOL=zcl_status` and
+`make agent-mcp-call TOOL=zcl_state ARGS='{"subsystem":"supervisor"}'` for
+fresh-code smoke checks; the target refreshes `build/bin/zclassic23-dev` before
+dispatch. For routine read-only status/API checks, use
+`make agent-mcp-call-hot TOOL=<tool>` to skip rebuilding and reuse the existing
+source-tree dev binary, or `make agent-mcp-call-dev TOOL=<tool>` to query the
+installed `zcl23-dev` linger lane with its dev datadir and RPC port. Direct
+`build/bin/zclassic23 mcpcall zcl_status` is the underlying release-binary path
+after `make zclassic23` or deploy. Do not add Python, shell, or helper-binary
+wrappers for new agent workflows.
 
 Canonical operator APIs, in priority order:
 
 1. `build/bin/zclassic23 agentmap`, `agentlanes`, `agentliveness`, `agentimpact`,
-   `agentbuild`, `agent`, `healthcheck`, and raw RPC methods — native C binary
-   client to the running linger service.
+   `agentbuild`, `agent`, `healthcheck`, `mcpcall <tool> [json]`, and raw RPC
+   methods — native C binary client to the running linger service.
 2. MCP tools (`zcl_agent_map`, `zcl_agent_lanes`, `zcl_agent_liveness`,
    `zcl_agent_impact`, `zcl_agent_build`, `zcl_agent`, `zcl_status`,
    `zcl_state`, `zcl_node_log`, `zcl_sql`) — typed agent interface over the
@@ -140,7 +186,7 @@ Canonical operator APIs, in priority order:
 4. `tools/z` — deprecated shell compatibility for older terminals and scripts,
    not an agent interface. Keep it working; do not add new operator logic there.
 
-`make fast-ci` is the normal AI/operator edit gate. Before pushing `main`, the
+`make agent-loop` is the normal AI/operator edit gate. Before pushing `main`, the
 tracked pre-push hook computes the exact `origin/main..HEAD` changed-file set,
 passes it to `make pre-push-ci`, and rejects remote refs other than
 `refs/heads/main`. `make pre-push-ci` runs cached focused fast-ci for that file

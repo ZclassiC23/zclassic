@@ -58,6 +58,28 @@ int test_node_db_catchup_service(void)
     if (data) munmap(data, sz);
     NDC_CHECK("valid block file maps", mapped);
 
+    NDC_CHECK("sparse proven prefix may advance projection cursor",
+              node_db_catchup_test_sparse_prefix_can_advance(
+                  0, 3, 3, 0, 0, 2, 0, 0, 0, true, 2));
+    NDC_CHECK("sparse prefix requires proven coins authority",
+              !node_db_catchup_test_sparse_prefix_can_advance(
+                  0, 3, 3, 0, 0, 2, 0, 0, 0, false, 2));
+    NDC_CHECK("sparse prefix requires authority covering tip",
+              !node_db_catchup_test_sparse_prefix_can_advance(
+                  0, 3, 3, 0, 0, 2, 0, 0, 0, true, 1));
+    NDC_CHECK("sparse prefix allows quiet missing files",
+              node_db_catchup_test_sparse_prefix_can_advance(
+                  0, 3, 3, 0, 0, 2, 0, 1, 0, true, 2));
+    NDC_CHECK("sparse prefix refuses suspicious holes",
+              !node_db_catchup_test_sparse_prefix_can_advance(
+                  0, 3, 3, 0, 0, 2, 1, 1, 0, true, 2));
+    NDC_CHECK("sparse prefix refuses missing active-chain indexes",
+              !node_db_catchup_test_sparse_prefix_can_advance(
+                  0, 3, 3, 0, 0, 2, 0, 0, 1, true, 2));
+    NDC_CHECK("sparse prefix must cover the whole range",
+              !node_db_catchup_test_sparse_prefix_can_advance(
+                  0, 3, 2, 0, 0, 2, 0, 0, 0, true, 2));
+
     test_cleanup_tmpdir(dir);
     printf("node_db_catchup_service: %d failures\n", failures);
     return failures;

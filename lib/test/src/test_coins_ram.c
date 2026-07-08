@@ -30,6 +30,7 @@
 #include "storage/coins_kv.h"
 #include "storage/coins_ram.h"
 #include "storage/progress_store.h"
+#include "util/stage.h"
 
 #include <sqlite3.h>
 #include <stdint.h>
@@ -338,11 +339,148 @@ int test_coins_ram(void)
         /* watermark was 20 -> cursor rewound to 21 (watermark+1). */
         CR_CHECK("reconcile: cursor rewound to watermark+1 (21)", cur == 21);
     }
+    /* If a mint/refold run crashes before the first RAM flush, no watermark
+     * exists yet. The boot replay point must be genesis, not the stale cursor. */
+    {
+        progress_store_tx_lock();
+        sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL);
+        sqlite3_exec(db,
+            "DELETE FROM progress_meta "
+            "WHERE key='coins_ram_flushed_height';"
+            "INSERT OR REPLACE INTO progress_meta(key,value) "
+            "VALUES('refold_in_progress',x'01');"
+            "INSERT INTO stage_cursor(name,cursor,updated_at) "
+            "VALUES('utxo_apply', 99, 0) "
+            "ON CONFLICT(name) DO UPDATE SET cursor=99",
+            NULL, NULL, NULL);
+        sqlite3_exec(db, "COMMIT", NULL, NULL, NULL);
+        progress_store_tx_unlock();
+        CR_CHECK("reconcile: absent watermark + refold marker ok",
+                 coins_ram_reconcile_boot(db));
+        progress_store_tx_lock();
+        sqlite3_stmt *s = NULL;
+        int64_t cur = -1;
+        if (sqlite3_prepare_v2(db,
+                "SELECT cursor FROM stage_cursor WHERE name='utxo_apply'",
+                -1, &s, NULL) == SQLITE_OK) {
+            if (sqlite3_step(s) == SQLITE_ROW) cur = sqlite3_column_int64(s, 0);
+            sqlite3_finalize(s);
+        }
+        progress_store_tx_unlock();
+        CR_CHECK("reconcile: absent watermark rewinds mint/refold to 0",
+                 cur == 0);
+        int32_t zero_applied = -1; bool zero_found = false;
+        CR_CHECK("reconcile: absent watermark applied read",
+                 coins_kv_get_applied_height(db, &zero_applied, &zero_found));
+        CR_CHECK("reconcile: absent watermark applied == 0",
+                 zero_found && zero_applied == 0);
+    }
 
     coins_ram_writer_exit();
     coins_ram_shutdown();
     progress_store_close();
     test_rm_rf_recursive(dir);
+
+    /* ── stage-batch deferred flush: the live mint drains utxo_apply under an
+     *    outer stage batch. Crossing the flush cadence inside that batch must
+     *    NOT try a nested BEGIN; it should defer until after stage_batch_end. */
+    {
+        char dirD[256];
+        test_make_tmpdir(dirD, sizeof(dirD), "coins_ram_deferred", "d");
+        CR_CHECK("defer: open", progress_store_open(dirD));
+        sqlite3 *dbD = progress_store_db();
+        CR_CHECK("defer: schema", coins_kv_ensure_schema(dbD));
+        CR_CHECK("defer: stage schema", stage_table_ensure(dbD));
+        CR_CHECK("defer: init flush_every=1", coins_ram_init(dbD, 1));
+        coins_ram_writer_enter();
+
+        struct uint256 dt = cr_txid(0x77);
+        CR_CHECK("defer: add overlay coin",
+                 coins_kv_add(dbD, dt.data, 0, 7777, 40, false,
+                              (const uint8_t *)"d", 1));
+
+        progress_store_tx_lock();
+        CR_CHECK("defer: batch begin", stage_batch_begin(dbD));
+        CR_CHECK("defer: note_applied defers inside batch",
+                 coins_ram_note_applied(40));
+        CR_CHECK("defer: batch still active", stage_batch_active());
+        CR_CHECK("defer: batch end", stage_batch_end(dbD, true));
+        progress_store_tx_unlock();
+
+        CR_CHECK("defer: flush due after batch", coins_ram_flush_due());
+        CR_CHECK("defer: durable count after flush", coins_kv_count(dbD) == 1);
+        int32_t dapplied = -1; bool dfound = false;
+        CR_CHECK("defer: applied frontier read",
+                 coins_kv_get_applied_height(dbD, &dapplied, &dfound));
+        CR_CHECK("defer: applied frontier == 41",
+                 dfound && dapplied == 41);
+
+        coins_ram_writer_exit();
+        coins_ram_shutdown();
+        progress_store_close();
+        test_rm_rf_recursive(dirD);
+    }
+
+    /* ── flush witness guard: when reducer witness tables exist, a RAM flush
+     *    may not stamp the durable cursor/frontier unless the same height has
+     *    an ok=1 utxo_apply_log row and an inverse-delta row. This is the
+     *    guard against a rowless coins_applied_height span. ── */
+    {
+        char dirW[256];
+        test_make_tmpdir(dirW, sizeof(dirW), "coins_ram_witness", "w");
+        CR_CHECK("witness: open", progress_store_open(dirW));
+        sqlite3 *dbW = progress_store_db();
+        CR_CHECK("witness: schema", coins_kv_ensure_schema(dbW));
+        CR_CHECK("witness: init", coins_ram_init(dbW, 1000000));
+        coins_ram_writer_enter();
+
+        struct uint256 wt = cr_txid(0x88);
+        CR_CHECK("witness: add overlay coin",
+                 coins_kv_add(dbW, wt.data, 0, 8888, 30, false,
+                              (const uint8_t *)"w", 1));
+        CR_CHECK("witness: create reducer tables",
+                 sqlite3_exec(dbW,
+                     "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
+                     "height INTEGER PRIMARY KEY, status TEXT NOT NULL, "
+                     "ok INTEGER NOT NULL, spent_count INTEGER NOT NULL, "
+                     "added_count INTEGER NOT NULL, "
+                     "total_value_delta INTEGER NOT NULL, "
+                     "first_failure_kind TEXT, first_failure_detail BLOB, "
+                     "applied_at INTEGER NOT NULL);"
+                     "CREATE TABLE IF NOT EXISTS utxo_apply_delta ("
+                     "height INTEGER PRIMARY KEY, branch_hash BLOB NOT NULL, "
+                     "spent_blob BLOB NOT NULL, added_blob BLOB NOT NULL);",
+                     NULL, NULL, NULL) == SQLITE_OK);
+        CR_CHECK("witness: missing log refuses flush",
+                 !coins_ram_flush(30));
+        CR_CHECK("witness: insert log only",
+                 sqlite3_exec(dbW,
+                     "INSERT OR REPLACE INTO utxo_apply_log"
+                     "(height,status,ok,spent_count,added_count,"
+                     "total_value_delta,applied_at) "
+                     "VALUES(30,'verified',1,0,1,8888,1)",
+                     NULL, NULL, NULL) == SQLITE_OK);
+        CR_CHECK("witness: missing delta refuses flush",
+                 !coins_ram_flush(30));
+        CR_CHECK("witness: insert delta",
+                 sqlite3_exec(dbW,
+                     "INSERT OR REPLACE INTO utxo_apply_delta"
+                     "(height,branch_hash,spent_blob,added_blob) "
+                     "VALUES(30,zeroblob(32),x'',x'')",
+                     NULL, NULL, NULL) == SQLITE_OK);
+        CR_CHECK("witness: complete witness permits flush",
+                 coins_ram_flush(30));
+        int32_t wapplied = -1; bool wfound = false;
+        CR_CHECK("witness: applied frontier read",
+                 coins_kv_get_applied_height(dbW, &wapplied, &wfound));
+        CR_CHECK("witness: applied frontier == 31",
+                 wfound && wapplied == 31);
+
+        coins_ram_writer_exit();
+        coins_ram_shutdown();
+        progress_store_close();
+        test_rm_rf_recursive(dirW);
+    }
 
     /* ──────────────────────────────────────────────────────────────────────
      * (a) TRUE A/B: identical op script, pure-SQLite leg vs overlay leg.

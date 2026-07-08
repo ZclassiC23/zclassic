@@ -17,16 +17,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <unistd.h>
 
 #include "net/net_fault.h"
 #include "platform/time_compat.h"
 #include "sim/sim_peer.h"
+#include "storage/boot_auto_reindex.h"
 #include "util/parse_num.h"
 #include "util/safe_alloc.h"
 
 #define CHAOS_MAX_LINE 512
 #define CHAOS_MAX_ARGS 16
 #define CHAOS_MAX_EXPECTS 64
+#define CHAOS_TMP_PATH 256
 
 struct chaos_ctx {
     const char *scenario_path;
@@ -62,6 +65,14 @@ struct chaos_ctx {
     int64_t net_partition_until;
     bool net_partition_triggered;
     int64_t net_partition_drops;
+    bool auto_reindex_datadir_ready;
+    char auto_reindex_datadir[CHAOS_TMP_PATH];
+    int64_t auto_reindex_anchor;
+    int64_t auto_reindex_count;
+    int64_t auto_reindex_requests;
+    int64_t auto_reindex_clears;
+    int64_t auto_reindex_pending;
+    int64_t auto_reindex_terminal;
 };
 
 typedef int (*chaos_handler_fn)(struct chaos_ctx *ctx, int argc, char **argv,
@@ -258,6 +269,72 @@ static int copy_file_bytes(const char *src_path, const char *dst_path)
     return rc;
 }
 
+static void chaos_auto_reindex_refresh(struct chaos_ctx *ctx)
+{
+    int32_t anchor = 0;
+    int count = 0;
+
+    ctx->auto_reindex_anchor = 0;
+    ctx->auto_reindex_count = 0;
+    ctx->auto_reindex_pending = 0;
+    ctx->auto_reindex_terminal = 0;
+
+    if (!ctx->auto_reindex_datadir_ready)
+        return;
+
+    if (boot_auto_reindex_status(ctx->auto_reindex_datadir, &anchor, &count)) {
+        ctx->auto_reindex_anchor = anchor;
+        ctx->auto_reindex_count = count;
+    }
+    ctx->auto_reindex_pending =
+        boot_auto_reindex_pending(ctx->auto_reindex_datadir) ? 1 : 0;
+    ctx->auto_reindex_terminal =
+        boot_auto_reindex_is_terminal(ctx->auto_reindex_datadir) ? 1 : 0;
+}
+
+static int chaos_auto_reindex_ensure_datadir(struct chaos_ctx *ctx,
+                                             int line_no)
+{
+    if (ctx->auto_reindex_datadir_ready)
+        return 0;
+
+    char tmpl[CHAOS_TMP_PATH];
+    int n = snprintf(tmpl, sizeof(tmpl),
+                     "/tmp/zcl_chaos_auto_reindex_%ld_XXXXXX",
+                     (long)getpid());
+    if (n < 0 || (size_t)n >= sizeof(tmpl))
+        return fail_line(line_no, "auto_reindex temp path is too long");
+
+    char *made = mkdtemp(tmpl);
+    if (!made)
+        return fail_line(line_no, "auto_reindex temp datadir failed");
+    n = snprintf(ctx->auto_reindex_datadir,
+                 sizeof(ctx->auto_reindex_datadir), "%s", made);
+    if (n < 0 || (size_t)n >= sizeof(ctx->auto_reindex_datadir)) {
+        (void)rmdir(made);
+        return fail_line(line_no, "auto_reindex temp datadir path too long");
+    }
+
+    ctx->auto_reindex_datadir_ready = true;
+    chaos_auto_reindex_refresh(ctx);
+    return 0;
+}
+
+static void chaos_auto_reindex_cleanup(struct chaos_ctx *ctx)
+{
+    if (!ctx || !ctx->auto_reindex_datadir_ready)
+        return;
+
+    char marker[CHAOS_TMP_PATH + 32];
+    int n = snprintf(marker, sizeof(marker), "%s/auto_reindex_request",
+                     ctx->auto_reindex_datadir);
+    if (n > 0 && (size_t)n < sizeof(marker))
+        (void)remove(marker);
+    (void)rmdir(ctx->auto_reindex_datadir);
+    ctx->auto_reindex_datadir_ready = false;
+    ctx->auto_reindex_datadir[0] = '\0';
+}
+
 static int write_failure_artifacts(const struct chaos_ctx *ctx)
 {
     const char *dir = ctx && ctx->artifact_dir ? ctx->artifact_dir
@@ -315,6 +392,18 @@ static int write_failure_artifacts(const struct chaos_ctx *ctx)
             ctx->net_partition_until);
     fprintf(summary, "partition_drops=%" PRId64 "\n",
             ctx->net_partition_drops);
+    fprintf(summary, "auto_reindex_anchor=%" PRId64 "\n",
+            ctx->auto_reindex_anchor);
+    fprintf(summary, "auto_reindex_count=%" PRId64 "\n",
+            ctx->auto_reindex_count);
+    fprintf(summary, "auto_reindex_pending=%" PRId64 "\n",
+            ctx->auto_reindex_pending);
+    fprintf(summary, "auto_reindex_terminal=%" PRId64 "\n",
+            ctx->auto_reindex_terminal);
+    fprintf(summary, "auto_reindex_requests=%" PRId64 "\n",
+            ctx->auto_reindex_requests);
+    fprintf(summary, "auto_reindex_clears=%" PRId64 "\n",
+            ctx->auto_reindex_clears);
     fprintf(summary, "artifact_scenario=%s\n", scenario_path);
     fprintf(summary, "replay_command=build/bin/zclassic23-chaos --scenario=%s --verbose\n",
             scenario_path);
@@ -441,6 +530,30 @@ static bool metric_value(const struct chaos_ctx *ctx, const char *name,
     }
     if (strcmp(name, "sim_time") == 0) {
         *out = ctx->sim_wall_unix;
+        return true;
+    }
+    if (strcmp(name, "auto_reindex_anchor") == 0) {
+        *out = ctx->auto_reindex_anchor;
+        return true;
+    }
+    if (strcmp(name, "auto_reindex_count") == 0) {
+        *out = ctx->auto_reindex_count;
+        return true;
+    }
+    if (strcmp(name, "auto_reindex_pending") == 0) {
+        *out = ctx->auto_reindex_pending;
+        return true;
+    }
+    if (strcmp(name, "auto_reindex_terminal") == 0) {
+        *out = ctx->auto_reindex_terminal;
+        return true;
+    }
+    if (strcmp(name, "auto_reindex_requests") == 0) {
+        *out = ctx->auto_reindex_requests;
+        return true;
+    }
+    if (strcmp(name, "auto_reindex_clears") == 0) {
+        *out = ctx->auto_reindex_clears;
         return true;
     }
     return false;
@@ -738,6 +851,85 @@ static int handle_partition_network(struct chaos_ctx *ctx, int argc,
     return 0;
 }
 
+static int parse_anchor_arg(int argc, char **argv, const char *key,
+                            int32_t *out, int line_no)
+{
+    const char *value = arg_value(argc, argv, key);
+    int64_t parsed = 0;
+    if (!value || !zcl_parse_i64(value, &parsed) ||
+        parsed < 0 || parsed > INT32_MAX) {
+        return fail_line(line_no,
+                         "auto_reindex anchor/height must be 0..INT32_MAX");
+    }
+    *out = (int32_t)parsed;
+    return 0;
+}
+
+static int handle_auto_reindex_request(struct chaos_ctx *ctx, int argc,
+                                       char **argv, int line_no)
+{
+    if (argc != 2)
+        return fail_line(line_no, "auto_reindex_request requires anchor=N");
+    if (chaos_auto_reindex_ensure_datadir(ctx, line_no) != 0)
+        return -EINVAL;
+
+    int32_t anchor = 0;
+    if (parse_anchor_arg(argc, argv, "anchor", &anchor, line_no) != 0)
+        return -EINVAL;
+
+    int count = boot_auto_reindex_request(ctx->auto_reindex_datadir, anchor);
+    if (count == 0)
+        return fail_line(line_no, "auto_reindex_request write failed");
+    ctx->auto_reindex_requests++;
+    chaos_auto_reindex_refresh(ctx);
+    return 0;
+}
+
+static int handle_auto_reindex_mark_terminal(struct chaos_ctx *ctx, int argc,
+                                             char **argv, int line_no)
+{
+    if (argc != 2)
+        return fail_line(line_no,
+                         "auto_reindex_mark_terminal requires anchor=N");
+    if (chaos_auto_reindex_ensure_datadir(ctx, line_no) != 0)
+        return -EINVAL;
+
+    int32_t anchor = 0;
+    if (parse_anchor_arg(argc, argv, "anchor", &anchor, line_no) != 0)
+        return -EINVAL;
+    if (!boot_auto_reindex_mark_terminal(ctx->auto_reindex_datadir, anchor))
+        return fail_line(line_no, "auto_reindex terminal write failed");
+
+    chaos_auto_reindex_refresh(ctx);
+    return 0;
+}
+
+static int handle_auto_reindex_clear_if_covered(struct chaos_ctx *ctx,
+                                                int argc, char **argv,
+                                                int line_no)
+{
+    if (argc != 2)
+        return fail_line(line_no,
+                         "auto_reindex_clear_if_covered requires coins_best=N");
+    if (chaos_auto_reindex_ensure_datadir(ctx, line_no) != 0)
+        return -EINVAL;
+
+    int32_t coins_best = 0;
+    if (parse_anchor_arg(argc, argv, "coins_best", &coins_best, line_no) != 0)
+        return -EINVAL;
+
+    int32_t anchor = 0;
+    int count = 0;
+    if (boot_auto_reindex_status(ctx->auto_reindex_datadir, &anchor, &count) &&
+        count > 0 && anchor > 0 && coins_best > anchor) {
+        boot_auto_reindex_clear(ctx->auto_reindex_datadir);
+        ctx->auto_reindex_clears++;
+    }
+
+    chaos_auto_reindex_refresh(ctx);
+    return 0;
+}
+
 static const struct chaos_command COMMANDS[] = {
     { "seed", handle_seed },
     { "boot_phase", handle_boot_phase },
@@ -751,6 +943,10 @@ static const struct chaos_command COMMANDS[] = {
     { "advance_clock", handle_advance_clock },
     { "trigger_oom_at", handle_trigger_oom_at },
     { "partition_network", handle_partition_network },
+    { "auto_reindex_request", handle_auto_reindex_request },
+    { "auto_reindex_mark_terminal", handle_auto_reindex_mark_terminal },
+    { "auto_reindex_clear_if_covered",
+      handle_auto_reindex_clear_if_covered },
 };
 
 static const struct chaos_command *find_command(const char *name)
@@ -773,6 +969,7 @@ static int run_scenario(struct chaos_ctx *ctx)
         fprintf(stderr, "chaos: failed to open %s: %s\n",
                 ctx->scenario_path, strerror(errno));
         platform_clock_clear_source();
+        chaos_auto_reindex_cleanup(ctx);
         return 1;
     }
 
@@ -787,6 +984,7 @@ static int run_scenario(struct chaos_ctx *ctx)
             fprintf(stderr, "chaos:%d: line too long\n", line_no);
             fclose(fp);
             platform_clock_clear_source();
+            chaos_auto_reindex_cleanup(ctx);
             return 1;
         }
 
@@ -801,6 +999,7 @@ static int run_scenario(struct chaos_ctx *ctx)
             fprintf(stderr, "chaos:%d: too many arguments\n", line_no);
             fclose(fp);
             platform_clock_clear_source();
+            chaos_auto_reindex_cleanup(ctx);
             return 1;
         }
 
@@ -810,12 +1009,14 @@ static int run_scenario(struct chaos_ctx *ctx)
                     line_no, argv[0]);
             fclose(fp);
             platform_clock_clear_source();
+            chaos_auto_reindex_cleanup(ctx);
             return 1;
         }
         int rc = cmd->handler(ctx, argc, argv, line_no);
         if (rc != 0) {
             fclose(fp);
             platform_clock_clear_source();
+            chaos_auto_reindex_cleanup(ctx);
             return 1;
         }
         if (ctx->verbose)
@@ -826,9 +1027,11 @@ static int run_scenario(struct chaos_ctx *ctx)
     if (ctx->expect_count == 0) {
         fprintf(stderr, "chaos: scenario has no expect assertions\n");
         platform_clock_clear_source();
+        chaos_auto_reindex_cleanup(ctx);
         return 1;
     }
     platform_clock_clear_source();
+    chaos_auto_reindex_cleanup(ctx);
     return 0;
 }
 

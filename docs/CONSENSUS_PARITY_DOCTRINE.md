@@ -124,6 +124,10 @@ Mechanics:
   violations, size-exact semantics) + the 478,544 KATs in
   `test_domain_consensus_tx_structural` (real canonical tx accepted in-block,
   rejected as new, tamper-rejected).
+- Fast lane: `make immutable-history-canaries` runs those real-history pins
+  without a chain download. Treat it as the first check for any bounded
+  consensus predicate change; the full real-history gates are still
+  `make replay-canary-anchor` and `make replay-canary-genesis`.
 
 This is **not** a consensus change ahead of zclassicd — it *restores* parity
 with what every running zclassicd node actually does, and is exactly the static,

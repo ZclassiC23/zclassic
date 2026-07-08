@@ -41,6 +41,8 @@
 #include "validation/process_block.h"
 #include "rpc/legacy_chain_oracle.h"
 #include "storage/disk_block_io.h"
+#include "storage/coins_kv.h"
+#include "storage/progress_store.h"
 #include "models/block.h"
 #include "event/event.h"
 #include "supervisors/domains.h"
@@ -68,6 +70,21 @@ extern void *backfill_addresses_thread(void *arg);
 static void *payment_processor_thread(void *arg);
 static void *background_utxo_replay(void *arg);
 static void *address_backfill_service_thread(void *arg);
+
+static bool projection_sparse_prefix_is_expected(int projection_tip,
+                                                 int chain_tip)
+{
+    if (projection_tip <= 0 || chain_tip < 0 || projection_tip > chain_tip)
+        return false;
+    sqlite3 *pdb = progress_store_db();
+    if (!pdb)
+        return false;
+    int32_t applied = -1;
+    progress_store_tx_lock();
+    bool ok = coins_kv_is_proven_authority(pdb, &applied);
+    progress_store_tx_unlock();
+    return ok && applied > projection_tip;
+}
 
 /* ── Supervisor liveness (Model A — MONITOR; disk_monitor.c exemplar) ─
  *
@@ -382,9 +399,13 @@ static void *projection_backfill_service_thread(void *arg)
             !node_db_sync_catchup_job_is_started(&svc->catchup_job)) {
             projection_tip = node_db_sync_get_tip_height(ndb);
             projection_block_tip = db_block_max_height(ndb);
+            bool sparse_prefix =
+                projection_sparse_prefix_is_expected(projection_tip,
+                                                     chain_tip);
             if (projection_block_tip >= 0 &&
                 projection_tip > projection_block_tip &&
-                projection_block_tip < chain_tip) {
+                projection_block_tip < chain_tip &&
+                !sparse_prefix) {
                 struct block_index *rewind_tip =
                     active_chain_at(&svc->state->chain_active,
                                     projection_block_tip);
@@ -402,7 +423,8 @@ static void *projection_backfill_service_thread(void *arg)
                 db_block_first_missing_connected_height(ndb, repair_cap,
                                                         &first_missing_height) &&
                 first_missing_height >= 0 &&
-                first_missing_height <= repair_cap) {
+                first_missing_height <= repair_cap &&
+                !sparse_prefix) {
                 if (first_missing_height != last_hole_rewind_height) {
                     last_hole_rewind_height = first_missing_height;
                     hole_rewind_attempts = 0;
@@ -445,7 +467,7 @@ static void *projection_backfill_service_thread(void *arg)
                                 repair_cap);
                     hole_rewind_gave_up_reported = true;
                 }
-            } else if (first_missing_height < 0) {
+            } else if (first_missing_height < 0 || sparse_prefix) {
                 last_hole_rewind_height = -1;
                 hole_rewind_attempts = 0;
                 hole_rewind_gave_up_reported = false;

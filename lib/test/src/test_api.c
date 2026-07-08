@@ -3843,6 +3843,14 @@ int test_api(void)
         const struct json_value *ascii = json_get(&root, "ascii");
         const struct json_value *bars = json_get(&root, "bars");
         const struct json_value *criteria = json_get(&root, "criteria");
+        const struct json_value *operator_proofs =
+            json_get(&root, "operator_proofs");
+        const struct json_value *proof_items =
+            operator_proofs ? json_get(operator_proofs, "items") : NULL;
+        const struct json_value *cold_start =
+            proof_items ? json_at(proof_items, 2) : NULL;
+        const struct json_value *soak =
+            proof_items ? json_at(proof_items, 5) : NULL;
         const struct json_value *live = json_get(&root, "live");
         const char *live_source = json_get_str(json_get(live, "source"));
         ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
@@ -3857,6 +3865,29 @@ int test_api(void)
         ok = ok && bars && strcmp(json_get_str(json_get(json_get(bars,
                           "subgoals"), "bar")), "[########--]") == 0;
         ok = ok && criteria && json_size(criteria) == 8;
+        ok = ok && operator_proofs &&
+            strcmp(json_get_str(json_get(operator_proofs, "schema")),
+                   "zcl.mvp_operator_proofs.v1") == 0;
+        ok = ok && json_get_int(json_get(operator_proofs,
+                                         "accepted_count")) == 4;
+        ok = ok && json_get_int(json_get(operator_proofs,
+                                         "pending_count")) == 4;
+        ok = ok && proof_items && json_size(proof_items) == 8;
+        ok = ok && cold_start &&
+            strcmp(json_get_str(json_get(cold_start, "key")),
+                   "cold_start_sync") == 0;
+        ok = ok && cold_start &&
+            strcmp(json_get_str(json_get(cold_start, "proof_command")),
+                   "make mvp-coldstart-to-tip-local") == 0;
+        ok = ok && soak &&
+            strcmp(json_get_str(json_get(soak, "key")),
+                   "seven_day_soak") == 0;
+        ok = ok && soak &&
+            strcmp(json_get_str(json_get(soak, "proof_scope")),
+                   "live_window") == 0;
+        ok = ok && soak &&
+            strcmp(json_get_str(json_get(soak, "primary_blocker")),
+                   "clean_168h_soak_window_pending") == 0;
         bool live_full_agent = live_source &&
             strcmp(live_source, "agent_cached_summary") == 0;
         bool live_agent_fallback = live_source &&

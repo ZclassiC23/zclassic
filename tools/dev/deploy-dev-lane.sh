@@ -11,7 +11,9 @@
 # This script NEVER touches the live node, its datadir, or its service.
 # First run bootstraps via the proven two-step cold import (header import, then
 # the service boot auto-imports UTXOs + syncs forward); later runs just rebuild
-# and hot-swap the binary.
+# and hot-swap the binary. The default build is the cached non-LTO dev binary
+# for fast agent iteration; set ZCL_DEV_DEPLOY_BUILD=strict to pay the
+# production-style build/bin/zclassic23 link for a stricter dev-lane run.
 #
 # Usage: tools/dev/deploy-dev-lane.sh
 set -euo pipefail
@@ -28,6 +30,10 @@ AUTO_REINDEX_SENTINEL="$DEV_DATADIR/auto_reindex_request"
 STALE_REINDEX_DROPIN="$HOME/.config/systemd/user/zcl23-dev.service.d/reindex.conf"
 STALE_OOM_BUDGET_DROPIN="$HOME/.config/systemd/user/zcl23-dev.service.d/zz-oom-budget.conf"
 BUILD_ID_DROPIN="$HOME/.config/systemd/user/zcl23-dev.service.d/90-build-identity.conf"
+DEPLOY_STATE="$DEV_DATADIR/agent-deploy.json"
+DEV_DEPLOY_BUILD="${ZCL_DEV_DEPLOY_BUILD:-fast}"
+VERIFY_STATUS="started"
+VERIFY_DETAIL=""
 
 auto_reindex_status() {
     local anchor="" count=""
@@ -59,6 +65,51 @@ pre_rpc_boot_diagnostic() {
                 print "pre-RPC recovery: " recovery
             }
         }'
+}
+
+json_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+write_deploy_state() {
+    local verify_status="$1" verify_detail="$2" tmp now status anchor count
+    local auto_reindex_pending="false"
+    local auto_reindex_anchor=""
+    local auto_reindex_count=""
+
+    mkdir -p "$DEV_DATADIR"
+    now="$(date -u +%FT%TZ)"
+    status="$(auto_reindex_status || true)"
+    if [ -n "$status" ]; then
+        anchor="${status%% *}"
+        count="${status##* }"
+        auto_reindex_anchor="$anchor"
+        auto_reindex_count="$count"
+        if [[ "$count" =~ ^[0-9]+$ ]] && [ "$count" -gt 0 ]; then
+            auto_reindex_pending="true"
+        fi
+    fi
+
+    tmp="$(mktemp "$DEV_DATADIR/agent-deploy.json.XXXXXX")" || return 0
+    {
+        printf '{\n'
+        printf '  "schema": "zcl.agent_dev_deploy.v1",\n'
+        printf '  "deployed_at_utc": "%s",\n' "$(json_escape "$now")"
+        printf '  "build_commit": "%s",\n' "$(json_escape "$BUILD_COMMIT")"
+        printf '  "build_type": "%s",\n' "$(json_escape "$DEV_DEPLOY_BUILD")"
+        printf '  "build_artifact": "%s",\n' "$(json_escape "${BUILD_ARTIFACT:-}")"
+        printf '  "installed_binary": "%s",\n' "$(json_escape "$DEV_BIN")"
+        printf '  "service": "%s",\n' "$(json_escape "$UNIT")"
+        printf '  "datadir": "%s",\n' "$(json_escape "$DEV_DATADIR")"
+        printf '  "rpcport": 18252,\n'
+        printf '  "verify_status": "%s",\n' "$(json_escape "$verify_status")"
+        printf '  "verify_detail": "%s",\n' "$(json_escape "$verify_detail")"
+        printf '  "auto_reindex_pending": %s,\n' "$auto_reindex_pending"
+        printf '  "auto_reindex_anchor": "%s",\n' "$(json_escape "$auto_reindex_anchor")"
+        printf '  "auto_reindex_count": "%s"\n' "$(json_escape "$auto_reindex_count")"
+        printf '}\n'
+    } > "$tmp"
+    mv "$tmp" "$DEPLOY_STATE"
 }
 
 guard_pending_auto_reindex() {
@@ -100,8 +151,22 @@ fi
 
 guard_pending_auto_reindex
 
-echo "[dev-lane] building fresh binary (stamp = $BUILD_COMMIT)..."
-make build/bin/zclassic23 -j"$(nproc)" >/dev/null
+case "$DEV_DEPLOY_BUILD" in
+    fast)
+        echo "[dev-lane] building fast dev binary (stamp = $BUILD_COMMIT)..."
+        make fast-rebuild >/dev/null
+        BUILD_ARTIFACT="build/bin/zclassic23-dev"
+        ;;
+    strict)
+        echo "[dev-lane] building strict node binary (stamp = $BUILD_COMMIT)..."
+        make build/bin/zclassic23 -j"$(nproc)" >/dev/null
+        BUILD_ARTIFACT="build/bin/zclassic23"
+        ;;
+    *)
+        echo "[dev-lane] FATAL: unknown ZCL_DEV_DEPLOY_BUILD=$DEV_DEPLOY_BUILD (want fast or strict)" >&2
+        exit 2
+        ;;
+esac
 
 mkdir -p "$(dirname "$DEV_BIN")" "$DEV_DATADIR"
 install -m 644 "$REPO/deploy/$UNIT" "$HOME/.config/systemd/user/$UNIT"
@@ -134,7 +199,7 @@ systemctl --user daemon-reload
 
 # Stop before swapping the binary file (avoids ETXTBSY on a running text file).
 systemctl --user stop "$UNIT" 2>/dev/null || true
-cp -f build/bin/zclassic23 "$DEV_BIN"
+cp -f "$BUILD_ARTIFACT" "$DEV_BIN"
 
 if [ ! -f "$DEV_DATADIR/node.db" ]; then
     echo "[dev-lane] fresh datadir — two-step cold-import bootstrap"
@@ -146,6 +211,7 @@ else
     echo "[dev-lane] redeploy: starting lane on the new binary"
     systemctl --user start "$UNIT"
 fi
+write_deploy_state "service_started" "systemd start issued"
 
 # Verify the lane reaches a healthy, advancing tip — "is-active" alone is true
 # even mid-boot. The first cold-import boot has a reconcile phase (coins seeded
@@ -237,7 +303,7 @@ probe_agent_contract() {
     fi
 }
 
-echo "[dev-lane] deployed $BUILD_COMMIT; verifying sync health..."
+echo "[dev-lane] deployed $BUILD_COMMIT ($DEV_DEPLOY_BUILD); verifying sync health..."
 h0=""; for i in $(seq 1 40); do
     h0="$("${CLI[@]}" getblockcount 2>/dev/null || true)"
     [ -n "$h0" ] && [[ "$h0" =~ ^[0-9]+$ ]] && break
@@ -247,18 +313,28 @@ if [ -z "$h0" ] || ! [[ "$h0" =~ ^[0-9]+$ ]]; then
     echo "[dev-lane] WARN: RPC not up after ~4 min — still booting/reconciling. Check: tail $DEV_DATADIR/node.log"
     diag="$(pre_rpc_boot_diagnostic || true)"
     [ -n "$diag" ] && echo "[dev-lane] boot diagnostic: $diag"
+    VERIFY_STATUS="pre_rpc"
+    VERIFY_DETAIL="${diag:-rpc not up after readiness window}"
 else
     sleep 20
     h1="$("${CLI[@]}" getblockcount 2>/dev/null || echo "$h0")"
     peer="$("${CLI[@]}" getpeerinfo 2>/dev/null | grep -oE '"(startingheight|synced_headers)": *[0-9]+' | grep -oE '[0-9]+' | sort -rn | head -1 || true)"
     if [ "${h1:-0}" -gt "${h0:-0}" ]; then
         echo "[dev-lane] SYNC OK: height advancing ${h0} -> ${h1} (peer tip ~${peer:-?})"
+        VERIFY_STATUS="sync_ok"
+        VERIFY_DETAIL="height advancing ${h0} -> ${h1} (peer tip ~${peer:-?})"
     elif [ -n "$peer" ] && [ "${h1:-0}" -ge $(( peer - 3 )) ]; then
         echo "[dev-lane] SYNC OK: at tip ${h1} (peer tip ~${peer})"
+        VERIFY_STATUS="sync_ok"
+        VERIFY_DETAIL="at tip ${h1} (peer tip ~${peer})"
     else
         echo "[dev-lane] NOTE: height ${h1} not advancing yet (peer tip ~${peer:-?}) — likely the cold-import reconcile; Restart=always will retry. Re-check: ${CLI[*]} getblockcount"
+        VERIFY_STATUS="not_advancing_yet"
+        VERIFY_DETAIL="height ${h1} not advancing yet (peer tip ~${peer:-?})"
     fi
     probe_agent_contract
 fi
+write_deploy_state "$VERIFY_STATUS" "$VERIFY_DETAIL"
+echo "[dev-lane] deploy state: $DEPLOY_STATE"
 echo "[dev-lane] query it:  build/bin/zclassic-cli -datadir=$DEV_DATADIR -rpcport=18252 getblockcount"
 echo "[dev-lane] tail log:  tail -f $DEV_DATADIR/node.log"

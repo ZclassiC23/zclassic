@@ -46,12 +46,79 @@ DEFINE_PT(h_zcl_agent,          "agent",          "mcp.ops")
 DEFINE_PT(h_zcl_agent_map,      "agentmap",       "mcp.ops")
 DEFINE_PT(h_zcl_agent_lanes,    "agentlanes",     "mcp.ops")
 DEFINE_PT(h_zcl_agent_contracts,"agentcontracts", "mcp.ops")
-DEFINE_PT(h_zcl_agent_build,    "agentbuild",     "mcp.ops")
 DEFINE_PT(h_zcl_agent_interface,"agentinterface", "mcp.ops")
 DEFINE_PT(h_zcl_agent_ops,      "agentops",       "mcp.ops")
 DEFINE_PT(h_zcl_app_protocols,  "appprotocols",   "mcp.ops")
 
 static char *json_value_to_body(struct json_value *v, const char *label);
+
+static int h_zcl_agent_build(const struct mcp_request *req,
+                             struct mcp_response *res)
+{
+    (void)req;
+
+    struct json_value params;
+    struct json_value result;
+    json_init(&params);
+    json_set_array(&params);
+    json_init(&result);
+
+    if (!rpc_agent_build(&params, false, &result)) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "agentbuild contract generation failed");
+        LOG_ERR("mcp.ops", "agentbuild contract generation failed");
+        json_free(&result);
+        json_free(&params);
+        return 0;
+    }
+
+    res->body = json_value_to_body(&result, "mcp.agentbuild.body");
+    if (!res->body) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "agentbuild response allocation failed");
+        LOG_ERR("mcp.ops", "agentbuild response allocation failed");
+    }
+
+    json_free(&result);
+    json_free(&params);
+    return 0;
+}
+
+static int h_zcl_agent_dev_status(const struct mcp_request *req,
+                                  struct mcp_response *res)
+{
+    (void)req;
+
+    struct json_value params;
+    struct json_value result;
+    json_init(&params);
+    json_set_array(&params);
+    json_init(&result);
+
+    if (!rpc_agent_dev_status(&params, false, &result)) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "agentdevstatus contract generation failed");
+        LOG_ERR("mcp.ops", "agentdevstatus contract generation failed");
+        json_free(&result);
+        json_free(&params);
+        return 0;
+    }
+
+    res->body = json_value_to_body(&result, "mcp.agentdevstatus.body");
+    if (!res->body) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "agentdevstatus response allocation failed");
+        LOG_ERR("mcp.ops", "agentdevstatus response allocation failed");
+    }
+
+    json_free(&result);
+    json_free(&params);
+    return 0;
+}
 
 static void status_push_raw_json(struct json_value *obj, const char *key,
                                  const char *raw)
@@ -1659,6 +1726,7 @@ static const struct agent_mcp_binding k_agent_mcp_bindings[] = {
       "\"tools/mcp/controllers/ops_controller.c\"]}" },
     { "agentcontracts", NULL, 0, h_zcl_agent_contracts, 0, NULL },
     { "agentbuild", NULL, 0, h_zcl_agent_build, 0, NULL },
+    { "agentdevstatus", NULL, 0, h_zcl_agent_dev_status, 0, NULL },
     { "agentinterface", NULL, 0, h_zcl_agent_interface, 0, NULL },
     { "agentops", NULL, 0, h_zcl_agent_ops, 0, NULL },
     { "appprotocols", NULL, 0, h_zcl_app_protocols, 0, NULL },

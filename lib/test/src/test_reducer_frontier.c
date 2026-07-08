@@ -410,6 +410,72 @@ static int case_sparse_seed_anchor(void)
     return failures;
 }
 
+static bool put_int64_le_meta(sqlite3 *db, const char *key, int64_t v);
+
+/* (b2.1) Blocks-less verified bundle base: the loader writes BOTH the
+ * tip_finalize anchor row and the durable trusted-base declaration at `base`,
+ * then sets reducer cursors to at least base+1. On a fresh bundle datadir the
+ * first post-base reducer rows may be ABSENT until P2P body fetch catches up.
+ * That rowless state must keep H* at the trusted base, not collapse to the
+ * compiled checkpoint. A real ok=0 row remains covered by the collapse case
+ * below. */
+static int case_durable_base_accepts_rowless_first(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) { return 1; }
+    RF_CHECK("rowless-base: schema", build_schema(db));
+
+    const int32_t base = A + 100;
+    RF_CHECK("rowless-base: proven authority",
+             stamp_proven_authority(db, base + 1));
+    RF_CHECK("rowless-base: seed anchor row", put_tip_anchor(db, base));
+    RF_CHECK("rowless-base: durable trusted base key",
+             put_int64_le_meta(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY, base));
+
+    /* No rows at base+1 in any reducer log. Cursors past base+1 model the
+     * loader's block-index-derived stage cursors before those rows are
+     * re-derived. */
+    RF_CHECK("rowless-base: cursors", set_all_cursors(db, base + 2));
+
+    int32_t hstar = -1, served = -1;
+    bool ok = reducer_frontier_compute_hstar(db, &hstar, &served);
+    RF_CHECK("rowless-base: returns true", ok);
+    RF_CHECK("rowless-base: hstar == durable base", hstar == base);
+    RF_CHECK("rowless-base: served_floor == seed anchor", served == base);
+
+    sqlite3_close(db);
+    return failures;
+}
+
+static int case_durable_base_survives_header_failure(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) { return 1; }
+    RF_CHECK("header-fail-base: schema", build_schema(db));
+
+    const int32_t base = A + 100;
+    RF_CHECK("header-fail-base: proven authority",
+             stamp_proven_authority(db, base + 1));
+    RF_CHECK("header-fail-base: seed anchor row", put_tip_anchor(db, base));
+    RF_CHECK("header-fail-base: durable trusted base key",
+             put_int64_le_meta(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY, base));
+    RF_CHECK("header-fail-base: validate failure row",
+             put_validate_failure(db, base + 1,
+                                  "no-header-solution-backfill-required"));
+    RF_CHECK("header-fail-base: cursors", set_all_cursors(db, base + 2));
+
+    int32_t hstar = -1, served = -1;
+    bool ok = reducer_frontier_compute_hstar(db, &hstar, &served);
+    RF_CHECK("header-fail-base: returns true", ok);
+    RF_CHECK("header-fail-base: hstar stays at durable base", hstar == base);
+    RF_CHECK("header-fail-base: served_floor == seed anchor", served == base);
+
+    sqlite3_close(db);
+    return failures;
+}
+
 /* (b3) RECURRING POST-COLD-IMPORT WEDGE GUARD — the 2026-06-13 anchor-collapse.
  *
  * Models the live tear class exactly: a cold import seeded a trusted base at
@@ -1177,6 +1243,8 @@ int test_reducer_frontier(void)
     failures += case_consistent();
     failures += case_torn();
     failures += case_sparse_seed_anchor();
+    failures += case_durable_base_accepts_rowless_first();
+    failures += case_durable_base_survives_header_failure();
     failures += case_anchor_collapse_after_forward_ok0();
     failures += case_clamp_up();
     failures += case_hash_split();

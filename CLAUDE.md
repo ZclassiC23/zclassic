@@ -4,7 +4,7 @@
 
 ZClassic23 is one ~15 MB self-contained C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, P2P messaging (plaintext in-memory and P2P channels; on-chain Sapling-memo channel: in progress), cross-chain atomic swaps (BTC/LTC/DOGE; redeem/refund/settlement: in progress), a P2P game framework, and an MCP server. **Claude is a first-class operator via 100+ typed MCP tools** — not just an observer. Cold sync to tip in ~60 seconds via FlyClient + SHA3 UTXO snapshots (design target — see `docs/HANDOFF.md`; today's proven recovery is the two-step header-import + boot, ~25 min). Silent halts are unreachable by construction — a stall is always a named blocker or a growing tip gap, never a quiet stop (chain progress is a stage cursor on disk); the node can still halt, it just cannot do so without saying so. Bugs become 64-bit seeds in a deterministic simulator. Build flags for reproducibility are in place (pinned `-march`, `SOURCE_DATE_EPOCH`, dropped build-id, deterministic tarball) with optional GPG signing (sign optional, can be waived with --unsigned) — byte-identity is not yet proven by a build-twice-and-compare gate. **One binary, one onion, one stack — your sovereign personal computing surface.**
 
-See [`docs/HOW_THE_NODE_WORKS.md`](./docs/HOW_THE_NODE_WORKS.md) for the plain-language mental model (the node as a state machine), [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) for the canonical architecture (the Prime Directive, the Ten Laws of Beauty, and the eight shapes), [`docs/ARCHITECTURE_DIAGRAMS.md`](./docs/ARCHITECTURE_DIAGRAMS.md) for current subsystem/boot topology, and [`docs/adr/0001-personal-sovereignty-stack.md`](./docs/adr/0001-personal-sovereignty-stack.md) for the 2026-05-22 pivot rationale.
+See [`docs/HOW_THE_NODE_WORKS.md`](./docs/HOW_THE_NODE_WORKS.md) for the plain-language mental model (the node as a state machine), [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) for the canonical architecture (the Prime Directive, the Ten Laws of Beauty, and the eight shapes), [`docs/AGENT_ARCHITECTURE.md`](./docs/AGENT_ARCHITECTURE.md) for the concrete future-agent feature slice (REST resources, ActiveRecord, validations, relationships, schema, services, MCP/native), [`docs/ARCHITECTURE_DIAGRAMS.md`](./docs/ARCHITECTURE_DIAGRAMS.md) for current subsystem/boot topology, and [`docs/adr/0001-personal-sovereignty-stack.md`](./docs/adr/0001-personal-sovereignty-stack.md) for the 2026-05-22 pivot rationale.
 
 ## Security model for AI agents
 
@@ -93,7 +93,7 @@ is a regression floor, not a liveness proof.
 
 Type **`continue zclassic23 development`**. The agent will:
 1. Run `pwd` to detect worktree ID (`main`, `wt2`, `wt3`, ...).
-2. For the one-page mental model, skim **[`docs/HOW_THE_NODE_WORKS.md`](./docs/HOW_THE_NODE_WORKS.md)** (append-only `progress.kv` log → eight reducer stages, each advance-cursor-or-name-a-blocker → projections → health = `network_tip − log_head`). **[`docs/CODEBASE_MAP.md`](./docs/CODEBASE_MAP.md)** is where-things-live + how-to-do-each-thing; **[`docs/AGENT_TRAPS.md`](./docs/AGENT_TRAPS.md)** lists things that look broken but are intentional or already-done — read it before "fixing" or re-proposing anything.
+2. For the one-page mental model, skim **[`docs/HOW_THE_NODE_WORKS.md`](./docs/HOW_THE_NODE_WORKS.md)** (append-only `progress.kv` log → eight reducer stages, each advance-cursor-or-name-a-blocker → projections → health = `network_tip − log_head`). **[`docs/CODEBASE_MAP.md`](./docs/CODEBASE_MAP.md)** is where-things-live + how-to-do-each-thing; **[`docs/AGENT_ARCHITECTURE.md`](./docs/AGENT_ARCHITECTURE.md)** is the required feature-slice recipe for REST resources, ActiveRecord models, validations, relationships, database schema, services, and MCP/native surfaces; **[`docs/AGENT_TRAPS.md`](./docs/AGENT_TRAPS.md)** lists things that look broken but are intentional or already-done — read it before "fixing" or re-proposing anything.
 3. `cat docs/HANDOFF.md` FIRST (the current entry point / live state), then `docs/MVP.md` (the v1 contract) and `docs/work/FORWARD_PLAN.md` (THE plan; the sovereign-cure spine is `docs/work/self-verified-tip-plan.md`). `docs/FRAMEWORK.md` + `docs/REFACTOR_STATUS.md` are architecture reference, off the v1 path.
 4. Check the live node before trusting any doc: `zcl_status`, then `zcl_state subsystem=reducer_frontier`. A doc can be stale; the node cannot.
 5. If worker → read `docs/work/wt<N>-*.md` and follow `docs/work/agent-protocol.md`. If orchestrator → review in-flight work in the status board, merge pushed branches, dispatch next assignments.
@@ -136,6 +136,18 @@ claude mcp add zcl23 -- build/bin/zclassic23 -mcp -datadir=/path/to/data -rpcpor
 ```
 
 Restart Claude Code after adding. The tools appear automatically.
+
+For one-shot terminal use without adding any helper binary, call the same typed
+tool surface through zclassic23 itself:
+
+```bash
+build/bin/zclassic23 mcpcall zcl_status
+build/bin/zclassic23 mcpcall zcl_state '{"subsystem":"supervisor"}'
+```
+
+`ZCL_MCP_CALL_BEARER_TOKEN` may be set for a one-shot call; otherwise the
+command falls back to `ZCL_MCP_BEARER_TOKEN` or, for destructive tools,
+`ZCL_MCP_DESTRUCTIVE_BEARER_TOKEN` when configured.
 
 ### Auth (two-tier, opt-in)
 

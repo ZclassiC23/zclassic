@@ -179,6 +179,11 @@ bool coins_ram_snapshot_write_v2(const char *out_path, int32_t height,
  * Returns false (and rolls back) on any error. */
 bool coins_ram_flush(int32_t flushed_height);
 
+/* Flush only when the note_applied cadence is due. Used by the utxo_apply
+ * drain after its outer stage batch COMMITs, so the overlay can preserve its
+ * own BEGIN/COMMIT/clear contract instead of nesting inside a stage batch. */
+bool coins_ram_flush_due(void);
+
 /* Clean-stop flush: drain the overlay through the highest height noted via
  * coins_ram_note_applied. No-op (true) when inactive or the overlay is empty
  * (nothing applied since the last flush). Call from shutdown BEFORE
@@ -194,8 +199,10 @@ bool coins_ram_note_applied(int32_t height);
 /* Boot crash-replay reconcile: if the store is enabled and the durable flush
  * watermark is BELOW the persisted utxo_apply cursor, rewind the cursor +
  * coins_applied_height to the watermark so the fold re-applies the un-flushed
- * tail. One BEGIN IMMEDIATE. No-op (true) when the flag is off, the watermark
- * is absent (virgin / never bulk-folded), or the cursor is already <= it. */
+ * tail. For an in-progress mint/refold, an absent watermark means no RAM flush
+ * has landed yet, so the safe replay point is genesis (cursor 0). One BEGIN
+ * IMMEDIATE. No-op (true) when the flag is off, the watermark is absent on a
+ * non-mint/refold datadir, or the cursor is already <= it. */
 bool coins_ram_reconcile_boot(struct sqlite3 *db);
 
 /* Free the map. Does NOT flush (caller flushes first on a clean stop). */

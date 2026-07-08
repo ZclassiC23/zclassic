@@ -316,13 +316,24 @@ static bool cursor_at(sqlite3 *db, const char *name, int64_t *out)
 }
 
 /* A tip_finalize status="anchor" row written by tip_finalize_stage_seed_anchor()
- * is the durable marker for a logless trusted reducer base. Generic active-tip
- * reanchors use the same row shape, so a candidate is trusted only when every
- * reducer stage cursor has reached at least H+1 and, if it has advanced beyond
- * H+1, the first row above the anchor is ok=1. That accepts fresh seed anchors
- * with no rows yet while rejecting stale served-tip anchors above the upstream
- * reducer frontier. */
-static bool reducer_anchor_candidate_ok(sqlite3 *db, int32_t height)
+ * is the row marker for a logless trusted reducer base, but generic active-tip
+ * reanchors use the same row shape. Row candidates stay strict: every reducer
+ * stage cursor must have reached at least H+1 and, if it has advanced beyond
+ * H+1, the first row above the anchor must be ok=1. Durable trusted-base meta
+ * is stronger than a row marker: it is written raise-only by the verified seed
+ * path and outlives the pipeline-owned row. For that declaration, an ABSENT
+ * first row is allowed (blocks-less bundle, not yet re-derived), but an
+ * explicit script/UTXO ok=0 still rejects the base as a torn seed. Header,
+ * body, proof, and finalization failures at H+1 block advancement above H;
+ * they do not disprove the UTXO seed itself. */
+static bool trusted_base_fail_disproves_seed(const char *log_table)
+{
+    return strcmp(log_table, "script_validate_log") == 0 ||
+           strcmp(log_table, "utxo_apply_log") == 0;
+}
+
+static bool reducer_anchor_candidate_ok(sqlite3 *db, int32_t height,
+                                        bool allow_rowless_first)
 {
     int64_t first = (int64_t)height + 1;
     if (first > INT32_MAX)
@@ -345,7 +356,11 @@ static bool reducer_anchor_candidate_ok(sqlite3 *db, int32_t height)
         enum log_row_state row;
         if (!log_ok_at(db, k_logs[i].log_table, (int32_t)first, &row))
             return false;
-        if (row != LOG_ROW_OK)
+        if (row == LOG_ROW_FAIL &&
+            (!allow_rowless_first ||
+             trusted_base_fail_disproves_seed(k_logs[i].log_table)))
+            return false;
+        if (row == LOG_ROW_ABSENT && !allow_rowless_first)
             return false;
     }
     return true;
@@ -399,7 +414,7 @@ static bool reducer_trusted_anchor(sqlite3 *db, int32_t compiled_anchor,
         int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
         if (rc == SQLITE_ROW) {
             int32_t h = (int32_t)sqlite3_column_int64(st, 0);
-            if (reducer_anchor_candidate_ok(db, h)) {
+            if (reducer_anchor_candidate_ok(db, h, false)) {
                 *out = h;
                 break;
             }
@@ -424,7 +439,7 @@ static bool reducer_trusted_anchor(sqlite3 *db, int32_t compiled_anchor,
     if (!reducer_trusted_base_height(db, &base_h, &base_found))
         return false;
     if (base_found && base_h >= compiled_anchor && base_h > *out &&
-        reducer_anchor_candidate_ok(db, base_h))
+        reducer_anchor_candidate_ok(db, base_h, true))
         *out = base_h;
     return true;
 }

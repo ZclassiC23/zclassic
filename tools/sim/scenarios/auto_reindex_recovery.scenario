@@ -1,0 +1,26 @@
+# Auto-reindex recovery marker: equality is not enough to clear a stale marker;
+# the derived coins frontier must advance beyond the marker anchor.
+
+seed 0x0000000000306bbb
+
+auto_reindex_request anchor=3173739
+expect auto_reindex_pending == 1
+expect auto_reindex_terminal == 0
+expect auto_reindex_anchor == 3173739
+expect auto_reindex_count == 1
+expect auto_reindex_requests == 1
+
+auto_reindex_clear_if_covered coins_best=3173739
+expect auto_reindex_pending == 1
+expect auto_reindex_clears == 0
+
+auto_reindex_clear_if_covered coins_best=3173740
+expect auto_reindex_pending == 0
+expect auto_reindex_clears == 1
+
+auto_reindex_request anchor=100
+auto_reindex_mark_terminal anchor=100
+auto_reindex_clear_if_covered coins_best=999
+expect auto_reindex_pending == 0
+expect auto_reindex_terminal == 1
+expect auto_reindex_count == -1
