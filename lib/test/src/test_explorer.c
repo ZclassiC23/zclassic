@@ -196,6 +196,13 @@ int test_explorer(void)
             scan++;
         }
         ok = ok && n > 0 &&
+             strstr((char *)out, "<main class='hodl-page'>") != NULL &&
+             strstr((char *)out, "<h1 class='hodl-title'>") != NULL &&
+             strstr((char *)out, ".hodl-stats{display:grid") != NULL &&
+             strstr((char *)out, "class='stats-row hodl-stats'") != NULL &&
+             strstr((char *)out, "class='hodl-table-wrap'") != NULL &&
+             strstr((char *)out, "class='txlist hodl-table'") != NULL &&
+             strstr((char *)out, "{{") == NULL &&
              strstr((char *)out, "Historical transparent UTXO value") != NULL &&
              strstr((char *)out, "[4320,1000,400,50,12500]") != NULL &&
              strstr((char *)out, "[8640,2000,800,200,25000]") != NULL &&
@@ -204,7 +211,11 @@ int test_explorer(void)
              strstr((char *)out, "4 samples · 1 gap") != NULL &&
              strstr((char *)out, "backfilling") != NULL &&
              green_segments == 2 &&
-             strstr((char *)out, "surviving") == NULL;
+             strstr((char *)out, "surviving") == NULL &&
+             strstr((char *)out,
+                    "style='max-width:1000px;margin:20px auto'") == NULL &&
+             strstr((char *)out,
+                    "style='max-width:1000px;margin:18px auto'") == NULL;
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
@@ -245,10 +256,17 @@ int test_explorer(void)
 
         ok = ok && n > 0 &&
              strstr((char *)out, "Latest measurement") != NULL &&
+             strstr((char *)out, "Unspent transparent value by age") != NULL &&
+             strstr((char *)out, "class='hodl-mini-grid'") != NULL &&
+             strstr((char *)out, "class='hodl-mini-value'") != NULL &&
+             strstr((char *)out, ".hodl-mini-grid{grid-template-columns:1fr") != NULL &&
+             strstr((char *)out, "{{") == NULL &&
              strstr((char *)out,
                     "current verified transparent UTXO distribution") != NULL &&
              strstr((char *)out, "Refresh in a minute") == NULL &&
              strstr((char *)out, "still being indexed") == NULL;
+        ok = ok && strstr((char *)out, "Unspent transparent value by age") <
+                   strstr((char *)out, "Latest measurement");
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
@@ -262,11 +280,14 @@ int test_explorer(void)
     {
         char dbdir[256];
         char dbpath[320];
+        char cachepath[384];
         sqlite3 *db = NULL;
         snprintf(dbdir, sizeof(dbdir), ".zcl_test_explorer_hodl_cache_%d",
                  (int)getpid());
         mkdir(dbdir, 0755);
         snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+        snprintf(cachepath, sizeof(cachepath),
+                 "%s/explorer/hodl-current-v1.cache", dbdir);
 
         bool ok = sqlite3_open(dbpath, &db) == SQLITE_OK;
         ok = ok && sqlite3_exec(db,
@@ -285,8 +306,10 @@ int test_explorer(void)
         uint8_t out1[65536];
         uint8_t out2[65536];
         uint8_t out3[65536];
+        uint8_t out4[65536];
         size_t n1 = explorer_view_hodl(dbdir, out1, sizeof(out1) - 1);
         out1[n1 < sizeof(out1) ? n1 : sizeof(out1) - 1] = '\0';
+        explorer_test_reset_hodl_view_cache();
 
         ok = ok && sqlite3_open(dbpath, &db) == SQLITE_OK;
         ok = ok && sqlite3_exec(db,
@@ -300,6 +323,7 @@ int test_explorer(void)
 
         size_t n2 = explorer_view_hodl(dbdir, out2, sizeof(out2) - 1);
         out2[n2 < sizeof(out2) ? n2 : sizeof(out2) - 1] = '\0';
+        explorer_test_reset_hodl_view_cache();
 
         ok = ok && sqlite3_open(dbpath, &db) == SQLITE_OK;
         ok = ok && sqlite3_exec(db,
@@ -311,14 +335,43 @@ int test_explorer(void)
             sqlite3_close(db);
 
         size_t n3 = explorer_view_hodl(dbdir, out3, sizeof(out3) - 1);
-        reducer_frontier_provable_tip_reset();
         out3[n3 < sizeof(out3) ? n3 : sizeof(out3) - 1] = '\0';
+        explorer_test_reset_hodl_view_cache();
 
-        ok = ok && n1 > 0 && n2 > 0 && n3 > 0 &&
+        ok = ok && sqlite3_open(dbpath, &db) == SQLITE_OK;
+        ok = ok && sqlite3_exec(db,
+            "INSERT INTO blocks(height,hash,time) VALUES"
+            "(11,x'3333333333333333333333333333333333333333333333333333333333333333',1100);"
+            "DELETE FROM utxos;"
+            "INSERT INTO utxos(height,value) VALUES(11,300000000);",
+            NULL, NULL, NULL) == SQLITE_OK;
+        if (db) {
+            sqlite3_close(db);
+            db = NULL;
+        }
+
+        reducer_frontier_provable_tip_set(11);
+        size_t n4 = explorer_view_hodl(dbdir, out4, sizeof(out4) - 1);
+        out4[n4 < sizeof(out4) ? n4 : sizeof(out4) - 1] = '\0';
+        for (int spin = 0;
+             spin < 200 && explorer_test_hodl_view_refresh_active();
+             spin++) {
+            struct timespec ts = { .tv_sec = 0, .tv_nsec = 10000000L };
+            nanosleep(&ts, NULL);
+        }
+        reducer_frontier_provable_tip_reset();
+
+        ok = ok && n1 > 0 && n2 > 0 && n3 > 0 && n4 > 0 &&
+             access(cachepath, F_OK) == 0 &&
              strstr((char *)out1, "1.00000000") != NULL &&
              strstr((char *)out2, "1.00000000") != NULL &&
              strstr((char *)out2, "2.00000000") == NULL &&
-             strstr((char *)out3, "2.00000000") != NULL;
+             strstr((char *)out3, "2.00000000") != NULL &&
+             strstr((char *)out4, "Verified Cached Transparent UTXO Value") != NULL &&
+             strstr((char *)out4, "2.00000000") != NULL &&
+             strstr((char *)out4, "3.00000000") == NULL &&
+             strstr((char *)out4,
+                    "verified cached transparent UTXO set") != NULL;
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);

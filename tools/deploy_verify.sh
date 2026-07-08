@@ -131,26 +131,39 @@ json_key_is_string() {
         grep -q "\"$2\"[[:space:]]*:[[:space:]]*\"$3\""
 }
 
+json_python_enabled() {
+    [ "${ZCL_NO_PYTHON:-0}" != "1" ] && command -v python3 >/dev/null 2>&1
+}
+
 json_top_key_is_true() {
-    command -v python3 >/dev/null 2>&1 || return 1
+    if ! json_python_enabled; then
+        json_key_is_true "$1" "$2"
+        return $?
+    fi
     printf '%s\n' "$1" |
         python3 -c 'import json, sys; d=json.load(sys.stdin); sys.exit(0 if d.get(sys.argv[1]) is True else 1)' "$2" 2>/dev/null
 }
 
 json_top_has_key() {
-    command -v python3 >/dev/null 2>&1 || return 1
+    if ! json_python_enabled; then
+        json_has_key "$1" "$2"
+        return $?
+    fi
     printf '%s\n' "$1" |
         python3 -c 'import json, sys; d=json.load(sys.stdin); sys.exit(0 if sys.argv[1] in d else 1)' "$2" 2>/dev/null
 }
 
 json_top_key_is_string() {
-    command -v python3 >/dev/null 2>&1 || return 1
+    if ! json_python_enabled; then
+        json_key_is_string "$1" "$2" "$3"
+        return $?
+    fi
     printf '%s\n' "$1" |
         python3 -c 'import json, sys; d=json.load(sys.stdin); sys.exit(0 if d.get(sys.argv[1]) == sys.argv[2] else 1)' "$2" "$3" 2>/dev/null
 }
 
 json_rpc_result() {
-    command -v python3 >/dev/null 2>&1 || { printf '%s\n' "$1"; return 0; }
+    json_python_enabled || { printf '%s\n' "$1"; return 0; }
     printf '%s\n' "$1" | python3 -c '
 import json
 import sys
@@ -172,7 +185,15 @@ else:
 }
 
 extract_health_height() {
-    command -v python3 >/dev/null 2>&1 || return 1
+    if ! json_python_enabled; then
+        printf '%s\n' "$1" |
+            tr ',' '\n' |
+            grep -E '"(log_head|projection_height|local_height)"[[:space:]]*:' |
+            grep -oE ':[[:space:]]*[0-9]+' |
+            grep -oE '[0-9]+' |
+            awk '$1 > 0 { print; exit }'
+        return 0
+    fi
     printf '%s\n' "$1" | python3 -c '
 import json
 import sys

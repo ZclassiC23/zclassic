@@ -8,6 +8,7 @@
 #ifndef ZCL_VIEWS_EXPLORER_PAGES_VIEW_H
 #define ZCL_VIEWS_EXPLORER_PAGES_VIEW_H
 
+#include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
 
@@ -30,6 +31,10 @@ size_t explorer_view_token_detail(const char *token_id_hex,
 
 /* HODL wave page (UTXO age distribution + time series). */
 size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max);
+#ifdef ZCL_TESTING
+void explorer_test_reset_hodl_view_cache(void);
+bool explorer_test_hodl_view_refresh_active(void);
+#endif
 
 /* Static client-rendered pages (data fetched via the JSON API by inline JS). */
 size_t explorer_view_events(uint8_t *r, size_t max);
