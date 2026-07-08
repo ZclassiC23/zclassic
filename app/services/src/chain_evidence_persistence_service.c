@@ -2,6 +2,7 @@
 
 #include "services/chain_evidence_persistence_service.h"
 
+#include "config/runtime.h"
 #include "models/database.h"
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
@@ -70,7 +71,7 @@ bool chain_evidence_state_set_retry(struct node_db *ndb,
     }
 
     for (int i = 0; i < CEC_STATE_SET_RETRY_ATTEMPTS; i++) {
-        if (node_db_state_set(ndb, key, value, len))
+        if (app_runtime_node_db_state_set(ndb, key, value, len))
             return true;
 
         struct node_db_status st;

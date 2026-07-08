@@ -317,6 +317,35 @@ int test_sqlite(void) {
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* Runtime state writes use DB service + flush open batches */
+    {
+        printf("SQLite runtime state_set flushes batch through DB service... ");
+        struct node_db ndb;
+        struct db_service svc;
+        struct app_runtime_context runtime;
+        uint8_t value = 0x5a;
+        uint8_t got[8] = {0};
+        size_t got_len = 0;
+        bool ok = node_db_open(&ndb, ":memory:");
+        db_service_init(&svc);
+        ok = ok && db_service_attach(&svc, &ndb);
+        ok = ok && db_service_start(&svc);
+        runtime_set_db_service(&runtime, &svc);
+        ok = ok && node_db_begin(&ndb);
+        ndb.sync_in_batch = true;
+        ok = ok && app_runtime_node_db_state_set(
+            &ndb, "runtime_state_set", &value, sizeof(value));
+        ok = ok && !ndb.sync_in_batch && !ndb.tx_open;
+        ok = ok && node_db_state_get(&ndb, "runtime_state_set",
+                                     got, sizeof(got), &got_len);
+        ok = ok && got_len == 1 && got[0] == value;
+        app_runtime_set_current(NULL);
+        db_service_stop(&svc);
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     /* DB service callback writes */
     {
         printf("SQLite DB service callback runs whole write on worker... ");

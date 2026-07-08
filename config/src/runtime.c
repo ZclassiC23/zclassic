@@ -40,6 +40,25 @@ bool app_runtime_node_db_handle_open(const struct node_db *ndb)
     return ndb && ndb->open;
 }
 
+struct app_runtime_state_set_ctx {
+    const char *key;
+    const void *value;
+    size_t len;
+    bool ok;
+};
+
+static bool app_runtime_node_db_state_set_write(struct node_db *ndb,
+                                                void *ctx)
+{
+    struct app_runtime_state_set_ctx *s = ctx;
+    if (!app_runtime_node_db_handle_open(ndb) || !s || !s->key || !s->value)
+        return false;
+    if (ndb->sync_in_batch && !node_db_sync_flush(ndb))
+        return false;
+    s->ok = node_db_state_set(ndb, s->key, s->value, s->len);
+    return s->ok;
+}
+
 bool app_runtime_node_db_state_set(struct node_db *ndb,
                                    const char *key,
                                    const void *value,
@@ -47,7 +66,19 @@ bool app_runtime_node_db_state_set(struct node_db *ndb,
 {
     if (!app_runtime_node_db_handle_open(ndb))
         return false;
-    return node_db_state_set(ndb, key, value, len);
+
+    struct app_runtime_state_set_ctx ctx = {
+        .key = key,
+        .value = value,
+        .len = len,
+        .ok = false,
+    };
+    struct db_service *svc = app_runtime_db_service();
+    if (svc && db_service_is_started(svc) &&
+        db_service_node_db(svc) == ndb)
+        return db_service_run_write(
+            svc, app_runtime_node_db_state_set_write, &ctx) && ctx.ok;
+    return app_runtime_node_db_state_set_write(ndb, &ctx);
 }
 
 void app_runtime_node_db_sync_flush_if_needed(struct node_db *ndb)
