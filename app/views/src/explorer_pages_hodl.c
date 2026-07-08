@@ -38,7 +38,7 @@ static const char HODL_VIEW_CSS_BASE[] =
     ".hodl-page{max-width:1160px;margin:0 auto 10px;padding-bottom:4px;}"
     ".hodl-hero{display:flex;justify-content:space-between;gap:22px;"
     "align-items:flex-end;text-align:left;margin:14px auto 18px;"
-    "padding:20px 0 18px;border-bottom:1px solid #25323d;}"
+    "padding:22px 0 18px;border-bottom:1px solid #26313a;}"
     ".hodl-kicker{color:#9bddff;font-size:13px;font-weight:760;"
     "text-transform:uppercase;letter-spacing:0;margin:0 0 8px;}"
     ".hodl-title{color:#f5f7fa;font-family:-apple-system,'Segoe UI',Roboto,"
@@ -55,10 +55,10 @@ static const char HODL_VIEW_CSS_BASE[] =
     "box-shadow:0 18px 42px rgba(0,0,0,.20);}"
     ".hodl-panel h2{color:#e1e8ee;margin-top:0;border-bottom-color:#242e37;}"
     ".hodl-chart-wrap{max-width:1160px;margin:18px auto;padding:16px;"
-    "background:linear-gradient(180deg,#0d141a 0,#080d12 100%);"
-    "border:1px solid #263541;border-radius:8px;"
-    "box-shadow:0 18px 44px rgba(0,0,0,.24);position:relative;"
-    "contain:layout paint;}"
+    "background:linear-gradient(180deg,#0f1519 0,#090d11 100%);"
+    "border:1px solid #2a3741;border-radius:8px;"
+    "box-shadow:0 14px 34px rgba(0,0,0,.20);position:relative;"
+    "contain:layout paint;isolation:isolate;}"
     ".hodl-chart-head{display:flex;justify-content:space-between;gap:16px;"
     "align-items:flex-start;margin:2px 2px 10px;}"
     ".hodl-chart-title{color:#e1e8ee;margin:0 0 6px;font-size:25px;"
@@ -72,6 +72,14 @@ static const char HODL_VIEW_CSS_BASE[] =
     ".hodl-legend-item{display:inline-flex;align-items:center;gap:8px;}"
     ".hodl-legend-swatch{display:inline-block;width:26px;height:4px;"
     "border-radius:999px;}"
+    ".hodl-current-strip{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));"
+    "gap:10px;margin:0 2px 14px;}"
+    ".hodl-current-chip{min-width:0;background:#0b1014;border:1px solid #26343f;"
+    "border-left:3px solid var(--c);border-radius:8px;padding:9px 10px;}"
+    ".hodl-current-chip span{display:block;color:#9aa8b5;font-size:12px;"
+    "line-height:1.2;}"
+    ".hodl-current-chip strong{display:block;color:#f2f7f4;font-size:18px;"
+    "line-height:1.2;margin-top:3px;font-variant-numeric:tabular-nums;}"
     ".hodl-chart-canvas{overflow-x:auto;-webkit-overflow-scrolling:touch;"
     "touch-action:pan-x pan-y;scrollbar-color:#33414d #0b0f13;"
     "padding-bottom:4px;}"
@@ -84,8 +92,11 @@ static const char HODL_VIEW_CSS_BASE[] =
 
 static const char HODL_VIEW_CSS_DETAIL[] =
     ".hodl-wave-interactive{position:relative;}"
-    ".hodl-svg{width:100%;min-width:900px;height:auto;background:transparent;"
+    ".hodl-svg{width:100%;min-width:0;height:auto;background:transparent;"
     "border:0;border-radius:0;display:block;}"
+    ".hodl-survival-svg{min-width:820px;}.hodl-age-svg{min-width:720px;}"
+    ".hodl-axis-title{fill:#758290;font-size:11px;font-weight:680;"
+    "letter-spacing:0;text-transform:uppercase;}"
     ".hodl-end-label{font-family:-apple-system,'Segoe UI',Roboto,sans-serif;"
     "font-weight:760;paint-order:stroke;stroke:#071016;stroke-width:3px;"
     "stroke-linejoin:round;}"
@@ -121,10 +132,14 @@ static const char HODL_VIEW_CSS_DETAIL[] =
     ".hodl-chart-head{display:block;margin:0 0 10px;}"
     ".hodl-chart-title{font-size:22px;}.hodl-chart-meta{margin-top:6px;}"
     ".hodl-legend{gap:10px 14px;margin:10px 0 12px;font-size:12px;}"
+    ".hodl-current-strip{grid-template-columns:repeat(2,minmax(0,1fr));"
+    "gap:8px;margin:0 0 12px;}"
+    ".hodl-current-chip{padding:8px 9px;}.hodl-current-chip strong{font-size:16px;}"
     ".hodl-x-tick{display:none;}"
-    ".hodl-svg{min-width:760px;}.hodl-table{min-width:620px;}}"
+    ".hodl-survival-svg{min-width:660px;}.hodl-age-svg{min-width:620px;}"
+    ".hodl-table{min-width:620px;}}"
     "@media (max-width:420px){.hodl-title{font-size:27px;}"
-    ".hodl-svg{min-width:720px;}}";
+    ".hodl-survival-svg{min-width:620px;}.hodl-age-svg{min-width:590px;}}";
 
 static const char HODL_PAGE_OPEN_TEMPLATE[] =
     "HTTP/1.1 200 OK\r\n"
@@ -1205,10 +1220,19 @@ static void hodl_emit_survival_chart(size_t *off, uint8_t *r, size_t max,
             HODL_THRESHOLDS[t].color, HODL_THRESHOLDS[t].label);
     }
 
+    APPEND(*off, r, max, "</div><div class='hodl-current-strip'>");
+    for (int t = 0; t < HODL_SURVIVAL_THRESHOLDS; t++) {
+        double pct = (double)rows[n - 1].pct_x1000[t] / 1000.0;
+        APPEND(*off, r, max,
+            "<div class='hodl-current-chip' style='--c:%s'>"
+            "<span>%s current</span><strong>%.1f%%</strong></div>",
+            HODL_THRESHOLDS[t].color, HODL_THRESHOLDS[t].label, pct);
+    }
+
     APPEND(*off, r, max,
         "</div><div id='hodl-survival-canvas' class='hodl-chart-canvas'>"
         "<svg id='hodl-survival-wave' viewBox='0 0 %d %d' "
-        "class='hodl-svg' tabindex='0' role='img' "
+        "class='hodl-svg hodl-survival-svg' tabindex='0' role='img' "
         "aria-label='HODL Wave over time for 6 month, 1 year, 2 year, "
         "and 5 year holding thresholds.' style='outline:none'>"
         "<defs>"
@@ -1232,6 +1256,12 @@ static void hodl_emit_survival_chart(size_t *off, uint8_t *r, size_t max,
         "<rect x='%d' y='%d' width='%d' height='%d' rx='7' "
         "fill='url(#hodl-survival-bg)' stroke='#314655'/>",
         pl, pt, pw, ph);
+    APPEND(*off, r, max,
+        "<text class='hodl-axis-title' x='%d' y='%d' "
+        "text-anchor='middle'>Share of transparent value</text>"
+        "<text class='hodl-axis-title' x='%d' y='%d' "
+        "text-anchor='middle'>Block height</text>",
+        pl + pw / 2, pt - 9, pl + pw / 2, pt + ph + 48);
 
     for (int g = 0; g <= 4; g++) {
         int pct = g * 25;
@@ -1476,7 +1506,7 @@ static void hodl_emit_age_distribution_chart(size_t *off, uint8_t *r,
     }
 
     int W = 1000;
-    int H = 382;
+    int H = 408;
     APPEND(*off, r, max,
         "<section id='hodl-age-wrap' class='hodl-chart-wrap hodl-wave-interactive'>"
         "<div class='hodl-chart-head'><div>"
@@ -1484,7 +1514,7 @@ static void hodl_emit_age_distribution_chart(size_t *off, uint8_t *r,
         "<p class='hodl-chart-subtitle'>Current transparent UTXO value distribution.</p>"
         "</div></div>"
         "<div id='hodl-age-canvas' class='hodl-chart-canvas'>"
-        "<svg id='hodl-age-wave' viewBox='0 0 %d %d' class='hodl-svg' "
+        "<svg id='hodl-age-wave' viewBox='0 0 %d %d' class='hodl-svg hodl-age-svg' "
         "tabindex='0' role='img' "
         "aria-label='Interactive unspent transparent value by age. "
         "Use mouse, touch, or arrow keys to inspect each age band.'>"
@@ -1500,11 +1530,15 @@ static void hodl_emit_age_distribution_chart(size_t *off, uint8_t *r,
         "</defs>",
         W, H);
 
-    int x0 = 70, y0 = 286, chart_w = 860, chart_h = 216;
+    int x0 = 76, y0 = 304, chart_w = 850, chart_h = 230;
     APPEND(*off, r, max,
         "<rect x='%d' y='%d' width='%d' height='%d' rx='7' "
         "fill='url(#hodl-age-bg)' stroke='#314655'/>",
         x0, y0 - chart_h, chart_w, chart_h);
+    APPEND(*off, r, max,
+        "<text class='hodl-axis-title' x='%d' y='%d' "
+        "text-anchor='middle'>Share of transparent value</text>",
+        x0 + chart_w / 2, y0 - chart_h - 31);
     for (int g = 0; g <= 4; g++) {
         int y = y0 - chart_h * g / 4;
         APPEND(*off, r, max,
@@ -1551,8 +1585,9 @@ static void hodl_emit_age_distribution_chart(size_t *off, uint8_t *r,
             ? (double)h->buckets[b].value / (double)h->total_value * 100.0
             : 0.0;
         int bh = (int)(pct / 100.0 * chart_h);
+        int draw_h = bh > 3 ? bh : 3;
         int x = x0 + b * (bar_w + bar_gap);
-        int y = y0 - bh;
+        int y = y0 - draw_h;
         char val_fmt[64];
         zcl_format_zcl(val_fmt, sizeof(val_fmt), h->buckets[b].value);
         APPEND(*off, r, max,
@@ -1566,7 +1601,7 @@ static void hodl_emit_age_distribution_chart(size_t *off, uint8_t *r,
             "</rect>"
             "<text x='%d' y='%d' fill='#aaa' font-size='11' "
             "text-anchor='middle' transform='rotate(-35,%d,%d)'>%s</text>",
-            b, x, y, bar_w, bh > 1 ? bh : 1, h->buckets[b].color,
+            b, x, y, bar_w, draw_h, h->buckets[b].color,
             b == selected ? "1" : "0.82",
             b == selected ? "#fff" : h->buckets[b].color,
             b == selected ? 2 : 1,
