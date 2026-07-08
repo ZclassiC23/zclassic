@@ -222,6 +222,10 @@ int test_explorer(void)
              strstr((char *)out, "class='hodl-end-label'") != NULL &&
              strstr((char *)out, "class='hodl-x-tick'") != NULL &&
              strstr((char *)out, ".hodl-x-tick{display:none;}") != NULL &&
+             strstr((char *)out, "touch-action:pan-x pan-y") != NULL &&
+             strstr((char *)out, "touchstart',onTouch,{passive:true}") != NULL &&
+             strstr((char *)out, "touchmove',onTouch,{passive:true}") != NULL &&
+             strstr((char *)out, "passive:false") == NULL &&
              strstr((char *)out, "Timeline by block height") == NULL &&
              strstr((char *)out, "id='hodl-survival-wrap'") != NULL &&
              strstr((char *)out, "requestAnimationFrame(maybeScrollLatest)") != NULL &&
@@ -360,6 +364,10 @@ int test_explorer(void)
              strstr((char *)out, "class='hodl-age-hit'") != NULL &&
              strstr((char *)out, "aria-label='") != NULL &&
              strstr((char *)out, "requestAnimationFrame(maybeScrollSelected)") != NULL &&
+             strstr((char *)out,
+                    "touchstart',function(e){render(+el.dataset.i);},{passive:true}") != NULL &&
+             strstr((char *)out,
+                    "touchmove',function(e){render(+el.dataset.i);},{passive:true}") != NULL &&
              strstr((char *)out, "stroke-width='1'><title>") == NULL &&
              strstr((char *)out, "stroke-width='2'><title>") == NULL &&
              strstr((char *)out, "svg.addEventListener('keydown'") != NULL &&
