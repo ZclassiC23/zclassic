@@ -112,7 +112,7 @@ static bool projection_sparse_prefix_is_expected(int projection_tip,
 #define ADDRESS_BACKFILL_SUPERVISOR_DEADLINE_SEC    600
 #define HODL_HISTORY_FILL_BATCH                     1
 #define HODL_HISTORY_BACKLOG_SLEEP_SEC              1
-#define HODL_HISTORY_IDLE_SLEEP_SEC                 60
+#define HODL_HISTORY_IDLE_SLEEP_SEC                 15
 
 struct hodl_history_fill_ctx {
     int chain_tip;

@@ -13,12 +13,81 @@
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 
+#include <errno.h>
 #include <string.h>
+#include <time.h>
 
 /* `self` aliases the sqlite3* directly — there is no wrapper struct. */
 static inline sqlite3 *db_of(void *self) { return (sqlite3 *)self; }
 
 #define HODL_HISTORY_SOURCE_TIP_KEY "sync_projection_tip_height"
+#define HODL_HISTORY_UPSERT_LOCK_RETRIES 3
+#define HODL_HISTORY_UPSERT_LOCK_SLEEP_MS 100
+
+static bool hh_lock_rc(int rc)
+{
+    return rc == SQLITE_BUSY || rc == SQLITE_LOCKED;
+}
+
+static void hh_sleep_ms(long ms)
+{
+    if (ms <= 0)
+        return;
+    struct timespec ts = {
+        .tv_sec = ms / 1000,
+        .tv_nsec = (ms % 1000) * 1000000L,
+    };
+    while (nanosleep(&ts, &ts) == -1 && errno == EINTR) {
+    }
+}
+
+static sqlite3 *hh_open_file_handle(sqlite3 *db,
+                                    int flags,
+                                    const char *label,
+                                    bool *owned)
+{
+    if (owned)
+        *owned = false;
+    if (!db)
+        return NULL;
+
+    const char *path = sqlite3_db_filename(db, "main");
+    if (!path || !path[0] || strcmp(path, ":memory:") == 0)
+        return db;
+
+    sqlite3 *handle = NULL;
+    int rc = sqlite3_open_v2(path, &handle,
+                             flags | SQLITE_OPEN_FULLMUTEX,
+                             NULL);
+    if (rc != SQLITE_OK || !handle) {
+        LOG_WARN("hodl_history",
+                 "open private %s failed: %s",
+                 label ? label : "handle",
+                 handle ? sqlite3_errmsg(handle) : "(null)");
+        if (handle)
+            sqlite3_close(handle);
+        return db;
+    }
+
+    sqlite3_busy_timeout(handle, 5000);
+    sqlite3_exec(handle,
+                 "PRAGMA mmap_size=0;"
+                 "PRAGMA foreign_keys=ON",
+                 NULL, NULL, NULL);
+    if (owned)
+        *owned = true;
+    return handle;
+}
+
+static sqlite3 *hh_open_reader(sqlite3 *db, bool *owned)
+{
+    return hh_open_file_handle(db, SQLITE_OPEN_READONLY, "reader", owned);
+}
+
+static sqlite3 *hh_open_writer(sqlite3 *db, bool *owned)
+{
+    return hh_open_file_handle(db, SQLITE_OPEN_READWRITE, "writer", owned);
+}
 
 static int64_t hh_projection_tip_height(sqlite3 *db, int64_t tableless_fallback)
 {
@@ -142,6 +211,10 @@ static bool hh_upsert_snapshot(void *self,
         return false;
     sqlite3_stmt *ins = NULL;
     int64_t source_tip = hh_projection_tip_height(db, row->height);
+    bool owned_writer = false;
+    sqlite3 *writer = hh_open_writer(db, &owned_writer);
+    if (!writer)
+        return false;
     const char *ins_sql =
         "INSERT OR REPLACE INTO hodl_history "
         "(height, time, total_zat, "
@@ -149,9 +222,12 @@ static bool hh_upsert_snapshot(void *self,
         " older_6m_pct, older_1y_pct, older_2y_pct, older_5y_pct, "
         " calc_version, source_tip_height) "
         "VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)";
-    if (sqlite3_prepare_v2(db, ins_sql, -1, &ins, NULL) != SQLITE_OK || !ins) {
+    if (sqlite3_prepare_v2(writer, ins_sql, -1, &ins, NULL) != SQLITE_OK ||
+        !ins) {
         LOG_FAIL("hodl_history",
-                 "prepare INSERT failed: %s", sqlite3_errmsg(db));
+                 "prepare INSERT failed: %s", sqlite3_errmsg(writer));
+        if (owned_writer)
+            sqlite3_close(writer);
         return false;
     }
     sqlite3_bind_int64(ins, 1, row->height);
@@ -167,13 +243,25 @@ static bool hh_upsert_snapshot(void *self,
     sqlite3_bind_double(ins, 11, row->older_5y_pct);
     sqlite3_bind_int(ins, 12, HODL_HISTORY_SNAPSHOT_CALC_VERSION);
     sqlite3_bind_int64(ins, 13, source_tip);
-    int rc = AR_STEP_WRITE(ins);
+    int rc = SQLITE_OK;
+    for (int attempt = 0;
+         attempt <= HODL_HISTORY_UPSERT_LOCK_RETRIES;
+         attempt++) {
+        rc = AR_STEP_WRITE(ins);
+        if (!hh_lock_rc(rc))
+            break;
+        hh_sleep_ms(HODL_HISTORY_UPSERT_LOCK_SLEEP_MS);
+    }
     sqlite3_finalize(ins);
     if (rc != SQLITE_DONE && rc != SQLITE_ROW) {
         LOG_FAIL("hodl_history",
-                 "INSERT step rc=%d: %s", rc, sqlite3_errmsg(db));
+                 "INSERT step rc=%d: %s", rc, sqlite3_errmsg(writer));
+        if (owned_writer)
+            sqlite3_close(writer);
         return false;
     }
+    if (owned_writer)
+        sqlite3_close(writer);
     return true;
 }
 
@@ -182,15 +270,21 @@ static int64_t hh_max_filled_height(void *self)
     sqlite3 *db = db_of(self);
     if (!db)
         return 0;
+    bool owned_reader = false;
+    sqlite3 *reader = hh_open_reader(db, &owned_reader);
+    if (!reader)
+        return 0;
     sqlite3_stmt *s = NULL;
     int64_t v = 0;
-    if (sqlite3_prepare_v2(db,
+    if (sqlite3_prepare_v2(reader,
             "SELECT COALESCE(MAX(height), 0) FROM hodl_history",
             -1, &s, NULL) == SQLITE_OK && s) {
         if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
             v = sqlite3_column_int64(s, 0);
         sqlite3_finalize(s);
     }
+    if (owned_reader)
+        sqlite3_close(reader);
     return v;
 }
 
@@ -238,15 +332,25 @@ static bool hh_next_fill_height(void *self,
         return false;
 
     *out_height = 0;
-    int64_t source_tip = hh_projection_tip_height(db, target);
+    bool owned_reader = false;
+    sqlite3 *reader = hh_open_reader(db, &owned_reader);
+    if (!reader)
+        return false;
+    int64_t source_tip = hh_projection_tip_height(reader, target);
     if (source_tip > target)
         source_tip = target;
-    if (source_tip < stride)
+    if (source_tip < stride) {
+        if (owned_reader)
+            sqlite3_close(reader);
         return true;
+    }
 
-    int64_t start = hh_first_indexed_sample_height(db, stride, source_tip);
-    if (start > source_tip)
+    int64_t start = hh_first_indexed_sample_height(reader, stride, source_tip);
+    if (start > source_tip) {
+        if (owned_reader)
+            sqlite3_close(reader);
         return true;
+    }
 
     sqlite3_stmt *s = NULL;
     const char *sql =
@@ -263,9 +367,11 @@ static bool hh_next_fill_height(void *self,
         "   OR hh.source_tip_height < e.h"
         ") "
         "ORDER BY e.h LIMIT 1";
-    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK || !s) {
+    if (sqlite3_prepare_v2(reader, sql, -1, &s, NULL) != SQLITE_OK || !s) {
         LOG_FAIL("hodl_history",
-                 "prepare next-fill SQL failed: %s", sqlite3_errmsg(db));
+                 "prepare next-fill SQL failed: %s", sqlite3_errmsg(reader));
+        if (owned_reader)
+            sqlite3_close(reader);
         return false;
     }
     sqlite3_bind_int64(s, 1, start);
@@ -278,9 +384,13 @@ static bool hh_next_fill_height(void *self,
     sqlite3_finalize(s);
     if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
         LOG_FAIL("hodl_history",
-                 "next-fill step rc=%d: %s", rc, sqlite3_errmsg(db));
+                 "next-fill step rc=%d: %s", rc, sqlite3_errmsg(reader));
+        if (owned_reader)
+            sqlite3_close(reader);
         return false;
     }
+    if (owned_reader)
+        sqlite3_close(reader);
     return true;
 }
 
@@ -290,6 +400,10 @@ static int hh_load_all(void *self,
 {
     sqlite3 *db = db_of(self);
     if (!db || !out || max_rows <= 0)
+        return 0;
+    bool owned_reader = false;
+    sqlite3 *reader = hh_open_reader(db, &owned_reader);
+    if (!reader)
         return 0;
     const char *sql =
         "SELECT height, time, total_zat, "
@@ -304,8 +418,11 @@ static int hh_load_all(void *self,
         "  ORDER BY height DESC LIMIT ?1"
         ") ORDER BY height ASC";
     sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK || !s)
+    if (sqlite3_prepare_v2(reader, sql, -1, &s, NULL) != SQLITE_OK || !s) {
+        if (owned_reader)
+            sqlite3_close(reader);
         return 0;
+    }
     sqlite3_bind_int(s, 1, max_rows);
     sqlite3_bind_int(s, 2, HODL_HISTORY_SNAPSHOT_CALC_VERSION);
     int n = 0;
@@ -324,6 +441,8 @@ static int hh_load_all(void *self,
         n++;
     }
     sqlite3_finalize(s);
+    if (owned_reader)
+        sqlite3_close(reader);
     return n;
 }
 
