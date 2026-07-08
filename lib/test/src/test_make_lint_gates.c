@@ -4876,6 +4876,8 @@ static int t_fast_sync_uses_lib_sqlite_helpers(void)
         buf = NULL;
         ASSERT(repo_path(path, sizeof(path), "config/src/boot_snapshot_offer.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "ZCL_PUBLISH_FASTSYNC_ON_BOOT") != NULL);
+        ASSERT(strstr(buf, "Fast sync snapshot publish skipped on boot") != NULL);
         ASSERT(strstr(buf, "boot_serialize_utxo_snapshot") != NULL);
         ASSERT(strstr(buf, "fast_sync_prebuild_snapshot") != NULL);
         PASS();

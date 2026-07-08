@@ -5,9 +5,10 @@
  * the E1 800-line ceiling. PURE relocation: the worker body is byte-identical
  * to its prior home; only its surrounding TU changed.
  *
- * The worker exports the consensus snapshot, embeds the MMR + MMB roots, and
- * publishes the snapshot / chunk / block-piece manifests for fast-sync peers.
- * It is a supervised background worker (Shape 5 — MONITOR): it shares the
+ * When explicitly enabled, the worker exports the consensus snapshot, embeds
+ * the MMR + MMB roots, and publishes the snapshot / chunk / block-piece
+ * manifests for fast-sync peers. It is a supervised background worker
+ * (Shape 5 — MONITOR): it shares the
  * worker_on_stall handler + boot_register_worker_supervisor helper exposed by
  * boot_background_workers.h and implemented in boot_worker_supervisor.c
  * (single source, not duplicated here), reaches the boot context through the
@@ -94,6 +95,17 @@ static void offer_checkpoint(int64_t *checkpoint)
     supervisor_progress(sup_id, ++(*checkpoint));
 }
 
+static bool env_flag_enabled(const char *name)
+{
+    const char *value = getenv(name);
+    if (!value)
+        return false;
+    return strcmp(value, "1") == 0 ||
+           strcmp(value, "true") == 0 ||
+           strcmp(value, "yes") == 0 ||
+           strcmp(value, "on") == 0;
+}
+
 static void *build_snapshot_offer_thread(void *arg)
 {
     struct boot_svc_ctx *svc = arg;
@@ -105,22 +117,35 @@ static void *build_snapshot_offer_thread(void *arg)
 
     offer_checkpoint(&checkpoint);
 
-    /* Sticky/global-sync (Lane F #9c): ANY at-tip zclassic23 node builds
-     * and offers a snapshot, not only file_service-profile nodes. The more
-     * nodes that contribute a shareable consensus_snapshot.db, the more
-     * reliably a recovering/behind node finds a supplier from the P2P
-     * network alone — no central download host, no co-located oracle. The
-     * offer is still only PUBLISHED once a disk-backed serving buffer is
-     * ready (see snapshot_serving_ready below), so this only widens who
-     * BUILDS, never who falsely advertises.
-     *
-     * Cost: SQLite vacuum allocates transiently — typically a few GB
-     * on archival nodes, sub-second to a few seconds on healthy hosts.
-     * Operators on memory-constrained boxes can opt out by setting
-     * ZCL_EXPORT_CONSENSUS_SNAPSHOT_ON_BOOT=0.
-     */
     bool file_service_enabled =
         svc && boot_profile_has_file_service(svc->app_ctx);
+
+    /* Fast-sync publishing is peer service work, not node liveness work.
+     * The exporter, offer builder, pre-serialized snapshot, and manifests all
+     * walk large live tables. During boot that competes with chain-evidence,
+     * UTXO-mirror, and wallet durability writes, so the daily-driver default is
+     * to skip it. Operators that intentionally run a snapshot supplier can opt
+     * in after they are willing to spend those DB read locks on peer service. */
+    if (!env_flag_enabled("ZCL_PUBLISH_FASTSYNC_ON_BOOT")) {
+        printf("Fast sync snapshot publish skipped on boot "
+               "(set ZCL_PUBLISH_FASTSYNC_ON_BOOT=1 to build offers)\n");
+        (void)file_service_enabled;
+        return NULL;
+    }
+
+    /* Sticky/global-sync (Lane F #9c): when enabled, ANY at-tip zclassic23
+     * node builds and offers a snapshot, not only file_service-profile nodes.
+     * The more nodes that contribute a shareable consensus_snapshot.db, the
+     * more reliably a recovering/behind node finds a supplier from the P2P
+     * network alone -- no central download host, no co-located oracle. The
+     * offer is still only PUBLISHED once a disk-backed serving buffer is ready
+     * (see snapshot_serving_ready below), so this only widens who BUILDS,
+     * never who falsely advertises.
+     *
+     * Cost: SQLite vacuum allocates transiently -- typically a few GB on
+     * archival nodes, sub-second to a few seconds on healthy hosts. Operators
+     * running a supplier can still opt out of the export phase by setting
+     * ZCL_EXPORT_CONSENSUS_SNAPSHOT_ON_BOOT=0. */
     const char *export_snapshot =
         getenv("ZCL_EXPORT_CONSENSUS_SNAPSHOT_ON_BOOT");
     bool export_opt_out = export_snapshot &&
