@@ -10,6 +10,7 @@
 #include "net/netaddr.h"
 #include "net/netbase.h"
 #include "net/protocol.h"
+#include "net/fast_sync.h"
 #include "net/addrman.h"
 #include "bloom/bloom.h"
 #include "core/uint256.h"
@@ -293,7 +294,7 @@ struct p2p_node {
     struct {
         int32_t piece_index;      /* -1 = empty slot */
         int64_t request_time;
-    } blk_pipeline[4];            /* pipeline: up to 4 inflight pieces */
+    } blk_pipeline[PIECE_PIPELINE_DEPTH];
     uint8_t *blk_bitmap;          /* peer's piece availability bitmap (heap) */
     uint32_t blk_bitmap_len;      /* bytes in bitmap */
     int32_t blk_peer_height;      /* peer's manifest end_height */

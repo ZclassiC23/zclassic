@@ -74,6 +74,12 @@ bool boot_submit_compact_block(struct block *block,
                                 REDUCER_SRC_COMPACT, false, state);
 }
 
+int boot_drain_catchup_reducer(void *ctx)
+{
+    (void)ctx;
+    return reducer_kick_unbudgeted(boot_activation_controller());
+}
+
 bool boot_snapshot_active(void *ctx)
 {
     (void)ctx;

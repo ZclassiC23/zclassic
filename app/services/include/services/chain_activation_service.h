@@ -221,12 +221,14 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
 
 /* reducer_stage_p2p_block_for_catchup — fast P2P catch-up intake.
  *
- * During IBD/catch-up this validates the block body statelessly, stages the
- * header/solution/body for the reducer, extends the in-memory have-data
+ * During IBD/catch-up this runs the non-header structural body checks, stages
+ * the header/solution/body for the reducer, extends the in-memory have-data
  * window, and returns a retryable "pending reducer" verdict in `out` instead
- * of synchronously draining all reducer stages. At-tip delivery must still use
- * reducer_ingest_block() so submit/relay callers get an immediate final
- * accept/reject verdict.
+ * of synchronously draining all reducer stages. Header PoW/Equihash and body
+ * merkle validation are owned by the staged reducer (validate_headers and
+ * body_persist), so catch-up intake does not duplicate them. At-tip delivery
+ * must still use reducer_ingest_block() so submit/relay callers get an
+ * immediate final accept/reject verdict.
  *
  * Returns false by design when staging succeeds: the block is not final until
  * the reducer stages fold it and publish the tip. */

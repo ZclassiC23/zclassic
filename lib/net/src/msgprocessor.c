@@ -200,6 +200,7 @@ void msgprocessor_test_tx_mark_seen(const struct uint256 *hash) {
  * remain unchanged; only historical catch-up block bodies are deep-cloned into
  * this bounded worker queue. */
 #define MSG_BLOCK_INTAKE_CAP 128
+#define MSG_BLOCK_INTAKE_DRAIN_BATCH 128
 #define MSG_BLOCK_INTAKE_LOG_KEEPALIVE_SECS 15
 
 struct msg_block_intake_item {
@@ -344,6 +345,28 @@ static void msg_block_intake_process_one(struct msg_block_intake *in,
     }
 }
 
+static void msg_block_intake_maybe_drain_catchup(
+    struct msg_block_intake *in,
+    unsigned *processed_since_drain)
+{
+    if (!in || !processed_since_drain)
+        return;
+
+    struct msg_processor *mp = in->mp;
+    if (!mp || !mp->catchup_drain || sync_get_state() == SYNC_AT_TIP)
+        return;
+
+    pthread_mutex_lock(&in->mu);
+    size_t queued = in->depth;
+    pthread_mutex_unlock(&in->mu);
+
+    if (*processed_since_drain < MSG_BLOCK_INTAKE_DRAIN_BATCH && queued > 0)
+        return;
+
+    *processed_since_drain = 0;
+    (void)mp->catchup_drain(mp->catchup_drain_ctx);
+}
+
 static void msg_block_intake_drain_locked(struct msg_block_intake *in)
 {
     while (in && in->depth > 0) {
@@ -360,6 +383,7 @@ static void msg_block_intake_drain_locked(struct msg_block_intake *in)
 static void *msg_block_intake_worker(void *arg)
 {
     struct msg_block_intake *in = arg;
+    unsigned processed_since_drain = 0;
     if (!in)
         return NULL;
 
@@ -386,6 +410,8 @@ static void *msg_block_intake_worker(void *arg)
 
         msg_block_intake_process_one(in, &item);
         msg_block_intake_item_free(&item);
+        processed_since_drain++;
+        msg_block_intake_maybe_drain_catchup(in, &processed_since_drain);
     }
 
     return NULL;
@@ -1223,6 +1249,16 @@ void msg_processor_set_block_submit(struct msg_processor *mp,
     mp->block_submit_ctx = ctx;
 }
 
+void msg_processor_set_catchup_drain(struct msg_processor *mp,
+                                     msg_catchup_drain_fn drain,
+                                     void *ctx)
+{
+    if (!mp)
+        return;
+    mp->catchup_drain = drain;
+    mp->catchup_drain_ctx = ctx;
+}
+
 void msg_processor_set_peer_save(struct msg_processor *mp,
                                  msg_peer_save_fn save,
                                  void *ctx)
@@ -1972,17 +2008,24 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
     {
         struct download_manager *dm = get_download_mgr();
         int64_t now_dl = (int64_t)platform_time_wall_time_t();
+        bool block_swarm_active = mp_block_swarm_is_active();
 
-        /* Check timeouts (cheap — linear scan of active slots) */
-        size_t timed_out = dl_check_timeouts(dm, now_dl);
-        if (timed_out > 0)
-            event_emitf(EV_BLOCK_REQUESTED, 0,
-                        "timeouts=%zu reassigned to queue", timed_out);
+        /* During ZCL23 block-swarm catch-up, zblkreq/zblkdata owns body
+         * transfer. Letting legacy getdata run at the same time fills the
+         * peer window with duplicate requests and timeout churn, slowing the
+         * fast path. Leave queued legacy work untouched; it resumes if the
+         * swarm finishes or never starts. */
+        if (!block_swarm_active) {
+            size_t timed_out = dl_check_timeouts(dm, now_dl);
+            if (timed_out > 0)
+                event_emitf(EV_BLOCK_REQUESTED, 0,
+                            "timeouts=%zu reassigned to queue", timed_out);
+        }
 
         /* Snapshot receive owns catch-up while active. Normal block assignment,
          * stall recovery, and recovery getheaders only add churn until the
          * verified snapshot handoff is complete. */
-        if (!snapshot_active) {
+        if (!snapshot_active && !block_swarm_active) {
             struct uint256 assign_hashes[DL_WINDOW_SIZE];
             struct sync_block_batch batch;
             /* our_height for the behind-peer gate (sibling scope; recompute

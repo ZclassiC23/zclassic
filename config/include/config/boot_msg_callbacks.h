@@ -22,6 +22,7 @@ bool boot_submit_p2p_block(struct block *block,
 bool boot_submit_compact_block(struct block *block,
                                struct validation_state *state,
                                void *ctx);
+int boot_drain_catchup_reducer(void *ctx);
 
 /* Snapshot-sync state + anchor accessors. */
 bool boot_snapshot_active(void *ctx);

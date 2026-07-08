@@ -14,13 +14,16 @@
 #include "net/fast_sync.h"
 #include "sync/sync_planner.h"
 #include "storage/disk_block_io.h"
+#include "validation/check_block.h"
 #include "validation/process_block.h"
 #include "net/download.h"
 #include "event/event.h"
 #include "sync/sync_state.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/timedata.h"
 #include "coins/coins_view.h"
+#include "chain/equihash.h"
 #include "chain/pow.h"
 #include "core/arith_uint256.h"
 #include <signal.h>
@@ -83,6 +86,239 @@ static size_t collect_active_tip_successors(struct main_state *ms,
     }
 
     return count;
+}
+
+static bool headers_fill_header_from_index(struct msg_processor *mp,
+                                           struct block_index *iter,
+                                           struct block_header *hdr)
+{
+    if (!mp || !iter || !hdr)
+        return false;
+
+    block_header_init(hdr);
+    hdr->nVersion = iter->nVersion;
+    if (iter->pprev && iter->pprev->phashBlock)
+        hdr->hashPrevBlock = *iter->pprev->phashBlock;
+    else
+        memset(&hdr->hashPrevBlock, 0, sizeof(hdr->hashPrevBlock));
+    hdr->hashMerkleRoot = iter->hashMerkleRoot;
+    hdr->hashFinalSaplingRoot = iter->hashFinalSaplingRoot;
+    hdr->nTime = iter->nTime;
+    hdr->nBits = iter->nBits;
+    hdr->nNonce = iter->nNonce;
+    if (iter->nSolution && iter->nSolutionSize > 0) {
+        if (iter->nSolutionSize > sizeof(hdr->nSolution)) {
+            LOG_WARN("headers",
+                     "getheaders: oversized in-memory solution h=%d size=%zu",
+                     iter->nHeight, iter->nSolutionSize);
+            return false;
+        }
+        memcpy(hdr->nSolution, iter->nSolution, iter->nSolutionSize);
+        hdr->nSolutionSize = iter->nSolutionSize;
+        return true;
+    }
+
+    struct block blk_tmp;
+    block_init(&blk_tmp);
+    if (read_block_from_disk_index(&blk_tmp, iter, mp->datadir)) {
+        if (blk_tmp.header.nSolutionSize > sizeof(hdr->nSolution)) {
+            LOG_WARN("headers",
+                     "getheaders: oversized on-disk solution h=%d size=%zu",
+                     iter->nHeight, blk_tmp.header.nSolutionSize);
+            block_free(&blk_tmp);
+            return false;
+        }
+        memcpy(hdr->nSolution, blk_tmp.header.nSolution,
+               blk_tmp.header.nSolutionSize);
+        hdr->nSolutionSize = blk_tmp.header.nSolutionSize;
+        block_free(&blk_tmp);
+        return true;
+    }
+    block_free(&blk_tmp);
+    return true;
+}
+
+static bool headers_reject_reason_permanent(const char *reason)
+{
+    return reason &&
+        (strcmp(reason, "invalid-solution") == 0 ||
+         strcmp(reason, "high-hash") == 0 ||
+         strcmp(reason, "bad-equihash-solution-size") == 0 ||
+         strcmp(reason, "version-too-low") == 0);
+}
+
+static const char *headers_servable_reject_reason(
+    struct msg_processor *mp,
+    const struct block_index *iter,
+    const struct block_header *hdr)
+{
+    if (!mp || !iter || !hdr)
+        return "invalid-args";
+
+    if (hdr->nVersion < MIN_BLOCK_VERSION)
+        return "version-too-low";
+
+    if (hdr->nSolutionSize > 0 && iter->nHeight >= 0) {
+        unsigned int eh_n = chain_params_equihash_n(mp->params,
+                                                    iter->nHeight);
+        unsigned int eh_k = chain_params_equihash_k(mp->params,
+                                                    iter->nHeight);
+        size_t expected = ((size_t)1 << eh_k) *
+            (eh_n / (eh_k + 1) + 1) / 8;
+        if (hdr->nSolutionSize != expected)
+            return "bad-equihash-solution-size";
+    }
+
+    if (!check_equihash_solution(hdr, mp->params))
+        return "invalid-solution";
+
+    struct uint256 hash;
+    block_header_get_hash(hdr, &hash);
+    if (!CheckProofOfWork(hash, hdr->nBits, &mp->params->consensus))
+        return "high-hash";
+
+    if (block_header_get_time(hdr) > GetAdjustedTime() + 2 * 60 * 60)
+        return "time-too-new";
+
+    return NULL;
+}
+
+static bool headers_reject_reason_can_retry_disk(const char *reason)
+{
+    return reason &&
+        (strcmp(reason, "invalid-solution") == 0 ||
+         strcmp(reason, "bad-equihash-solution-size") == 0 ||
+         strcmp(reason, "high-hash") == 0);
+}
+
+static void headers_refresh_index_from_header(struct block_index *iter,
+                                              const struct block_header *hdr)
+{
+    if (!iter || !hdr)
+        return;
+
+    iter->nVersion = hdr->nVersion;
+    iter->hashMerkleRoot = hdr->hashMerkleRoot;
+    iter->hashFinalSaplingRoot = hdr->hashFinalSaplingRoot;
+    iter->nTime = hdr->nTime;
+    iter->nBits = hdr->nBits;
+    iter->nNonce = hdr->nNonce;
+
+    if (hdr->nSolutionSize > 0) {
+        uint8_t *sol = zcl_malloc(hdr->nSolutionSize,
+                                  "headers_refresh_solution");
+        if (!sol) {
+            LOG_WARN("headers",
+                     "getheaders: solution refresh alloc failed h=%d size=%zu",
+                     iter->nHeight, hdr->nSolutionSize);
+            return;
+        }
+        memcpy(sol, hdr->nSolution, hdr->nSolutionSize);
+        free(iter->nSolution);
+        iter->nSolution = sol;
+        iter->nSolutionSize = hdr->nSolutionSize;
+    }
+}
+
+static bool headers_try_disk_header(struct msg_processor *mp,
+                                    struct block_index *iter,
+                                    struct block_header *hdr_out)
+{
+    if (!mp || !iter || !hdr_out)
+        return false;
+
+    struct block blk;
+    block_init(&blk);
+    if (!read_block_from_disk_index(&blk, iter, mp->datadir)) {
+        block_free(&blk);
+        return false;
+    }
+
+    struct uint256 disk_hash;
+    block_header_get_hash(&blk.header, &disk_hash);
+    bool same_hash = iter->phashBlock &&
+        uint256_eq(&disk_hash, iter->phashBlock);
+    if (!same_hash) {
+        char disk_hex[65], index_hex[65];
+        uint256_get_hex(&disk_hash, disk_hex);
+        if (iter->phashBlock)
+            uint256_get_hex(iter->phashBlock, index_hex);
+        else
+            strcpy(index_hex, "(missing)");
+        LOG_WARN("headers",
+                 "getheaders: disk header hash mismatch h=%d index=%s disk=%s",
+                 iter->nHeight, index_hex, disk_hex);
+        block_free(&blk);
+        return false;
+    }
+
+    *hdr_out = blk.header;
+    headers_refresh_index_from_header(iter, hdr_out);
+    block_free(&blk);
+    return true;
+}
+
+static bool headers_index_header_servable(struct msg_processor *mp,
+                                          struct block_index *iter,
+                                          struct block_header *hdr_out)
+{
+    struct block_header hdr;
+    if (!headers_fill_header_from_index(mp, iter, &hdr))
+        return false;
+
+    const char *reason = headers_servable_reject_reason(mp, iter, &hdr);
+    if (reason && headers_reject_reason_can_retry_disk(reason)) {
+        struct block_header disk_hdr;
+        if (headers_try_disk_header(mp, iter, &disk_hdr)) {
+            const char *disk_reason =
+                headers_servable_reject_reason(mp, iter, &disk_hdr);
+            if (!disk_reason) {
+                if (hdr_out)
+                    *hdr_out = disk_hdr;
+                return true;
+            }
+            reason = disk_reason;
+        }
+    }
+    if (reason) {
+        char hex[65] = {0};
+        if (iter && iter->phashBlock)
+            uint256_get_hex(iter->phashBlock, hex);
+        LOG_WARN("headers",
+                 "getheaders: refusing to serve header %s h=%d reason=%s",
+                 hex[0] ? hex : "(unknown)", iter ? iter->nHeight : -1,
+                 reason);
+        if (iter && headers_reject_reason_permanent(reason))
+            iter->nStatus |= BLOCK_FAILED_VALID;
+        return false;
+    }
+
+    if (hdr_out)
+        *hdr_out = hdr;
+    return true;
+}
+
+static struct block_index *headers_next_servable_successor(
+    struct msg_processor *mp,
+    struct block_index *parent)
+{
+    if (!mp || !parent)
+        return NULL;
+
+    for (int guard = 0; guard < 64; guard++) {
+        struct block_index *next =
+            main_state_best_known_successor(mp->main_state, parent);
+        if (!next)
+            return NULL;
+        if (headers_index_header_servable(mp, next, NULL))
+            return next;
+        if (!(next->nStatus & BLOCK_FAILED_MASK))
+            return NULL;
+    }
+    LOG_WARN("headers",
+             "getheaders: successor guard exhausted at parent h=%d",
+             parent->nHeight);
+    return NULL;
 }
 
 static struct block_index *headers_start_from_locator(
@@ -183,48 +419,36 @@ bool process_getheaders(struct msg_processor *mp, struct p2p_node *node,
     struct block_index *count_iter = iter;
 
     while (count_iter && count < max_headers) {
+        if (!headers_index_header_servable(mp, count_iter, NULL)) {
+            struct block_index *parent = count_iter->pprev;
+            count_iter = parent ?
+                headers_next_servable_successor(mp, parent) : NULL;
+            continue;
+        }
         count++;
         if (!uint256_is_null(&hash_stop) && count_iter->phashBlock &&
             uint256_eq(count_iter->phashBlock, &hash_stop))
             break;
-        count_iter = main_state_best_known_successor(mp->main_state, count_iter);
+        count_iter = headers_next_servable_successor(mp, count_iter);
     }
 
     struct byte_stream headers;
     stream_init(&headers, 4096);
     stream_write_compact_size(&headers, (uint64_t)count);
 
-    for (int i = 0; i < count && iter; i++) {
+    for (int i = 0; i < count && iter; ) {
         struct block_header hdr;
-        block_header_init(&hdr);
-        hdr.nVersion = iter->nVersion;
-        if (iter->pprev && iter->pprev->phashBlock)
-            hdr.hashPrevBlock = *iter->pprev->phashBlock;
-        else
-            memset(&hdr.hashPrevBlock, 0, sizeof(hdr.hashPrevBlock));
-        hdr.hashMerkleRoot = iter->hashMerkleRoot;
-        hdr.hashFinalSaplingRoot = iter->hashFinalSaplingRoot;
-        hdr.nTime = iter->nTime;
-        hdr.nBits = iter->nBits;
-        hdr.nNonce = iter->nNonce;
-        if (iter->nSolution && iter->nSolutionSize > 0) {
-            memcpy(hdr.nSolution, iter->nSolution, iter->nSolutionSize);
-            hdr.nSolutionSize = iter->nSolutionSize;
-        } else {
-            /* Solution not in memory — read from disk */
-            struct block blk_tmp;
-            if (read_block_from_disk_index(&blk_tmp, iter, mp->datadir)) {
-                memcpy(hdr.nSolution, blk_tmp.header.nSolution, blk_tmp.header.nSolutionSize);
-                hdr.nSolutionSize = blk_tmp.header.nSolutionSize;
-                block_free(&blk_tmp);
-            } else {
-                hdr.nSolutionSize = 0;
-            }
+        if (!headers_index_header_servable(mp, iter, &hdr)) {
+            struct block_index *parent = iter->pprev;
+            iter = parent ? headers_next_servable_successor(mp, parent)
+                          : NULL;
+            continue;
         }
 
         block_header_serialize(&hdr, &headers);
         stream_write_compact_size(&headers, 0);
-        iter = main_state_best_known_successor(mp->main_state, iter);
+        i++;
+        iter = headers_next_servable_successor(mp, iter);
     }
 
     p2p_node_begin_message(node, "headers", mp->params->pchMessageStart);

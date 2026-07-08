@@ -26,11 +26,13 @@
 #include "msgprocessor_internal.h"
 
 #include "net/addrman.h"
+#include "net/download.h"
 #include "net/fast_sync.h"
 #include "net/flyclient.h"
 #include "net/peer_scoring.h"
 #include "net/peer_lifecycle.h"
 #include "net/file_service.h"
+#include "storage/disk_block_io.h"
 #include "coins/coins_view.h"
 #include "net/snapshot_sync_contract.h"
 #include "validation/main_state.h"
@@ -39,6 +41,7 @@
 #include "util/sync.h"
 #include "event/event.h"
 #include "sync/sync_state.h"
+#include "consensus/validation.h"
 #include "core/uint256.h"
 #include <pthread.h>
 #include <stdio.h>
@@ -77,6 +80,185 @@ static int64_t g_swarm_last_progress_time = 0;
 
 /* Progress display interval (5 seconds). */
 #define SWARM_PROGRESS_INTERVAL_SECS 5
+#define BLOCK_PIECE_MAX_BLOCK_BYTES 2000000u
+#define BLOCK_PAYLOAD_SUBMIT_RETRIES 3
+#define BLOCK_PIECE_TIMEOUT_SECS 8
+#define BLOCK_PIECE_CONTIGUOUS_WINDOW 4u
+
+struct block_piece_payload_ref {
+    const unsigned char *data;
+    size_t len;
+};
+
+static size_t block_payload_compact_size_len(uint64_t n)
+{
+    if (n < 253u)
+        return 1u;
+    if (n <= 0xffffu)
+        return 3u;
+    if (n <= 0xffffffffu)
+        return 5u;
+    return 9u;
+}
+
+static int block_payload_drain_catchup(struct msg_processor *mp)
+{
+    if (!mp || !mp->catchup_drain)
+        return 0;
+    return mp->catchup_drain(mp->catchup_drain_ctx);
+}
+
+static bool block_payload_retry_after_drain(const char *reason)
+{
+    return reason &&
+        (strcmp(reason, "header-admit-inbox-full") == 0 ||
+         strcmp(reason, "p2p-block-header-missing") == 0);
+}
+
+static bool block_payload_submit_accepted(
+        const struct validation_state *state)
+{
+    if (!state)
+        return false;
+    if (validation_state_is_valid(state))
+        return true;
+    return strcmp(state->reject_reason, "p2p-block-queued-for-reducer") == 0 ||
+           strcmp(state->reject_reason, "p2p-block-staged-for-reducer") == 0;
+}
+
+static bool block_payload_submit_all(struct msg_processor *mp,
+                                     struct p2p_node *node,
+                                     const struct block_piece_payload_ref *refs,
+                                     uint32_t count)
+{
+    if (!refs)
+        return true;
+    if (!mp || !node)
+        return false;
+
+    for (uint32_t i = 0; i < count; i++) {
+        struct byte_stream block_stream;
+        stream_init_from_data(&block_stream, refs[i].data, refs[i].len);
+
+        struct block blk;
+        block_init(&blk);
+        if (!block_deserialize(&blk, &block_stream)) {
+            block_free(&blk);
+            stream_free(&block_stream);
+            LOG_WARN("net", "zblkdata payload deserialize failed index=%u", i);
+            return false;
+        }
+
+        struct uint256 hash;
+        block_get_hash(&blk, &hash);
+        dl_mark_received(get_download_mgr(), &hash);
+        dl_add_bytes_received(get_download_mgr(), refs[i].len);
+
+        if (!msg_processor_snapshot_active(mp) && !block_already_seen(&hash)) {
+            bool accepted = false;
+            char last_reason[MAX_REJECT_REASON] = {0};
+            if (!mp->block_submit) {
+                snprintf(last_reason, sizeof(last_reason), "not-enqueued");
+            } else {
+                for (int attempt = 0;
+                     attempt < BLOCK_PAYLOAD_SUBMIT_RETRIES && !accepted;
+                     attempt++) {
+                    struct validation_state state;
+                    validation_state_init(&state);
+                    bool ok = mp->block_submit(
+                        &blk, &state, mp->block_submit_ctx);
+                    accepted = ok || block_payload_submit_accepted(&state);
+                    if (accepted)
+                        break;
+
+                    snprintf(last_reason, sizeof(last_reason), "%s",
+                             state.reject_reason[0]
+                                 ? state.reject_reason : "not-enqueued");
+                    if (!block_payload_retry_after_drain(last_reason))
+                        break;
+                    if (block_payload_drain_catchup(mp) <= 0)
+                        break;
+                }
+            }
+
+            if (!accepted) {
+                LOG_INFO("net",
+                         "zblkdata payload deferred by reducer submit "
+                         "(index=%u reason=%s)",
+                         i, last_reason[0] ? last_reason : "not-enqueued");
+                block_free(&blk);
+                stream_free(&block_stream);
+                return false;
+            }
+        }
+
+        block_free(&blk);
+        stream_free(&block_stream);
+    }
+
+    (void)block_payload_drain_catchup(mp);
+    return true;
+}
+
+static void block_pipeline_clear_piece(struct p2p_node *node,
+                                       uint32_t piece_index)
+{
+    if (!node)
+        return;
+    for (int pi = 0; pi < PIECE_PIPELINE_DEPTH; pi++) {
+        if (node->blk_pipeline[pi].piece_index == (int32_t)piece_index) {
+            node->blk_pipeline[pi].piece_index = -1;
+            break;
+        }
+    }
+}
+
+static int32_t block_swarm_local_header_cap(const struct msg_processor *mp)
+{
+    int32_t cap = 0;
+    if (!mp || !mp->main_state)
+        return cap;
+
+    int active_h = active_chain_height(&mp->main_state->chain_active);
+    if (active_h > cap)
+        cap = active_h;
+
+    struct block_index *best_header = mp->main_state->pindex_best_header;
+    if (best_header && best_header->nHeight > cap)
+        cap = best_header->nHeight;
+
+    return cap;
+}
+
+static int32_t block_swarm_contiguous_window_cap(
+    const struct block_swarm *bs,
+    int32_t header_cap)
+{
+    if (!bs || !bs->piece_states || bs->manifest.num_pieces == 0)
+        return header_cap;
+
+    uint32_t first_open = bs->manifest.num_pieces;
+    for (uint32_t i = 0; i < bs->manifest.num_pieces; i++) {
+        if (bs->piece_states[i] != CHUNK_COMPLETE) {
+            first_open = i;
+            break;
+        }
+    }
+    if (first_open >= bs->manifest.num_pieces)
+        return header_cap;
+
+    uint32_t window_cap = first_open + BLOCK_PIECE_CONTIGUOUS_WINDOW - 1;
+    if (window_cap >= bs->manifest.num_pieces)
+        window_cap = bs->manifest.num_pieces - 1;
+
+    int64_t piece_end = (int64_t)bs->manifest.start_height +
+        ((int64_t)window_cap + 1) * BLOCKS_PER_PIECE - 1;
+    if (piece_end > bs->manifest.end_height)
+        piece_end = bs->manifest.end_height;
+    if (piece_end < header_cap)
+        return (int32_t)piece_end;
+    return header_cap;
+}
 
 struct snapshot_sync_service *msg_snapshot_sync(
     const struct msg_processor *mp)
@@ -519,6 +701,38 @@ bool msg_processor_get_block_manifest_header(struct block_piece_manifest *out,
     return ok;
 }
 
+static bool msg_processor_copy_block_manifest(struct block_piece_manifest *out,
+                                              int32_t *built_at_height)
+{
+    if (!out)
+        LOG_FAIL("net", "block manifest copy output pointer is NULL");
+    memset(out, 0, sizeof(*out));
+
+    pthread_mutex_lock(&g_block_manifest_mutex);
+    bool ok = atomic_load(&g_cached_block_manifest_valid) &&
+              g_cached_block_manifest.piece_hashes &&
+              g_cached_block_manifest.num_pieces > 0;
+    if (ok) {
+        uint32_t n = g_cached_block_manifest.num_pieces;
+        uint8_t (*copy)[32] = zcl_calloc(n, 32, "block_manifest_hashes_copy");
+        if (copy) {
+            *out = g_cached_block_manifest;
+            memcpy(copy, g_cached_block_manifest.piece_hashes, (size_t)n * 32);
+            out->piece_hashes = copy;
+            if (built_at_height)
+                *built_at_height = g_manifest_built_at_height;
+        } else {
+            ok = false;
+            if (built_at_height)
+                *built_at_height = 0;
+        }
+    } else if (built_at_height) {
+        *built_at_height = 0;
+    }
+    pthread_mutex_unlock(&g_block_manifest_mutex);
+    return ok;
+}
+
 /* Serialize and send a snapshot offer to a peer.
  * Wire prefix: height(4) + block_hash(32) + utxo_root(32) + mmr_root(32) +
  *       num_utxos(8) + total_bytes(8) + mmb_root(32) = 148 bytes.
@@ -662,24 +876,31 @@ void push_block_manifest(struct msg_processor *mp,
 {
     struct block_piece_manifest m;
 
-    if (node->blk_manifest_sent ||
-        !msg_processor_get_block_manifest_header(&m, NULL))
+    if (node->blk_manifest_sent)
         return;
     if (!peer_supports_fast_sync(node->services))
         return; /* guard: only send to ZCL23 peers */
+
+    if (!msg_processor_copy_block_manifest(&m, NULL))
+        return;
+
     struct byte_stream s;
-    stream_init(&s, 80);
+    size_t hashes_len = (size_t)m.num_pieces * 32;
+    stream_init(&s, 4 + 4 + 4 + 32 + 32 + hashes_len);
     stream_write_i32_le(&s, m.start_height);
     stream_write_i32_le(&s, m.end_height);
     stream_write_u32_le(&s, m.num_pieces);
     stream_write_bytes(&s, m.tip_hash, 32);
     stream_write_bytes(&s, m.merkle_root, 32);
+    for (uint32_t i = 0; i < m.num_pieces; i++)
+        stream_write_bytes(&s, m.piece_hashes[i], 32);
 
     p2p_node_begin_message(node, MSG_BLOCK_MANIFEST,
                             mp->params->pchMessageStart);
     p2p_node_write_message_data(node, s.data, s.size);
     p2p_node_end_message(node);
     stream_free(&s);
+    block_piece_manifest_free(&m);
 
     node->blk_manifest_sent = true;
     printf("Peer %s: sent block manifest (h=%d..%d, %u pieces)\n",
@@ -702,6 +923,153 @@ static void push_block_piece_request(struct msg_processor *mp,
     stream_free(&s);
 }
 
+static bool build_block_piece_payloads(struct msg_processor *mp,
+                                       int32_t start_height,
+                                       const uint8_t (*hashes)[32],
+                                       uint32_t block_count,
+                                       size_t max_payload_bytes,
+                                       struct byte_stream *payloads)
+{
+    if (!mp || !mp->main_state || !hashes || !payloads || block_count == 0 ||
+        max_payload_bytes == 0)
+        return false;
+
+    stream_init(payloads, (size_t)block_count * 4096);
+    for (uint32_t i = 0; i < block_count; i++) {
+        int32_t h = start_height + (int32_t)i;
+        struct block_index *bi =
+            active_chain_at(&mp->main_state->chain_active, h);
+        if (!bi || !bi->phashBlock || !(bi->nStatus & BLOCK_HAVE_DATA)) {
+            stream_free(payloads);
+            return false;
+        }
+
+        struct block blk;
+        block_init(&blk);
+        if (!read_block_from_disk_index(&blk, bi, mp->datadir)) {
+            block_free(&blk);
+            stream_free(payloads);
+            return false;
+        }
+
+        struct uint256 disk_hash;
+        block_get_hash(&blk, &disk_hash);
+        if (memcmp(disk_hash.data, hashes[i], 32) != 0) {
+            block_free(&blk);
+            stream_free(payloads);
+            return false;
+        }
+
+        struct byte_stream raw;
+        stream_init(&raw, 4096);
+        bool ok = block_serialize(&blk, &raw) &&
+                  raw.size <= BLOCK_PIECE_MAX_BLOCK_BYTES;
+        if (ok) {
+            size_t len_prefix = block_payload_compact_size_len(raw.size);
+            if (payloads->size > max_payload_bytes ||
+                len_prefix > max_payload_bytes - payloads->size ||
+                raw.size > max_payload_bytes - payloads->size - len_prefix)
+                ok = false;
+        }
+        ok = ok &&
+                  stream_write_compact_size(payloads, raw.size) &&
+                  stream_write_bytes(payloads, raw.data, raw.size);
+        stream_free(&raw);
+        block_free(&blk);
+        if (!ok) {
+            stream_free(payloads);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool parse_block_piece_payload_refs(
+    struct byte_stream *s,
+    const uint8_t (*hashes)[32],
+    uint32_t block_count,
+    struct block_piece_payload_ref **out_refs)
+{
+    if (!s || !hashes || !out_refs)
+        return false;
+    *out_refs = NULL;
+    if (stream_remaining(s) == 0)
+        return true;
+
+    struct block_piece_payload_ref *refs =
+        zcl_calloc(block_count, sizeof(*refs), "block_piece_payload_refs");
+    if (!refs)
+        return false;
+
+    for (uint32_t i = 0; i < block_count; i++) {
+        uint64_t len64 = 0;
+        if (!stream_read_compact_size(s, &len64) ||
+            len64 == 0 ||
+            len64 > BLOCK_PIECE_MAX_BLOCK_BYTES ||
+            len64 > stream_remaining(s)) {
+            free(refs);
+            return false;
+        }
+
+        refs[i].data = s->data + s->read_pos;
+        refs[i].len = (size_t)len64;
+
+        struct byte_stream bs;
+        stream_init_from_data(&bs, refs[i].data, refs[i].len);
+        struct block blk;
+        block_init(&blk);
+        bool parsed = block_deserialize(&blk, &bs) &&
+                      stream_remaining(&bs) == 0;
+        if (parsed) {
+            struct uint256 hash;
+            block_get_hash(&blk, &hash);
+            parsed = memcmp(hash.data, hashes[i], 32) == 0;
+        }
+        block_free(&blk);
+        stream_free(&bs);
+        if (!parsed) {
+            free(refs);
+            return false;
+        }
+
+        s->read_pos += refs[i].len;
+    }
+
+    if (stream_remaining(s) != 0) {
+        free(refs);
+        return false;
+    }
+
+    *out_refs = refs;
+    return true;
+}
+
+static void block_swarm_mark_complete_through_height(struct block_swarm *bs,
+                                                     int32_t have_height)
+{
+    if (!bs || !bs->piece_states || have_height < bs->manifest.start_height)
+        return;
+
+    int64_t complete_blocks =
+        (int64_t)have_height - (int64_t)bs->manifest.start_height + 1;
+    if (complete_blocks <= 0)
+        return;
+
+    uint32_t full_pieces =
+        (uint32_t)(complete_blocks / BLOCKS_PER_PIECE);
+    if (full_pieces > bs->manifest.num_pieces)
+        full_pieces = bs->manifest.num_pieces;
+
+    for (uint32_t i = 0; i < full_pieces; i++) {
+        if (bs->piece_states[i] == CHUNK_COMPLETE)
+            continue;
+        bs->piece_states[i] = CHUNK_COMPLETE;
+        bs->piece_peer[i] = -1;
+        bs->piece_request_time[i] = 0;
+        bs->pieces_complete++;
+    }
+}
+
 bool mp_snapshot_is_active(void)
 {
     return snapsync_is_active();
@@ -710,6 +1078,11 @@ bool mp_snapshot_is_active(void)
 bool mp_swarm_is_active(void)
 {
     return atomic_load(&g_swarm_active);
+}
+
+bool mp_block_swarm_is_active(void)
+{
+    return atomic_load(&g_block_swarm_active);
 }
 
 bool mp_snapshot_check_stall(void)
@@ -1438,6 +1811,8 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
             int32_t start_h = 0, end_h = 0;
             uint32_t num_pieces = 0;
             uint8_t tip_hash[32], merkle_root[32];
+            uint8_t (*piece_hashes)[32] = NULL;
+            bool piece_hashes_valid = false;
 
             if (stream_read_i32_le(s, &start_h) &&
                 stream_read_i32_le(s, &end_h) &&
@@ -1465,8 +1840,45 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                         peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_MESSAGE,
                                             "block manifest piece count wrong");
                     } else {
-                        node->blk_manifest_received = true;
-                        node->blk_peer_height = end_h;
+                        size_t expected_hash_bytes = (size_t)num_pieces * 32;
+                        if (stream_remaining(s) >= expected_hash_bytes) {
+                            piece_hashes = zcl_calloc(num_pieces, 32,
+                                                       "peer_block_piece_hashes");
+                            if (piece_hashes) {
+                                bool hashes_read = true;
+                                for (uint32_t i = 0; i < num_pieces &&
+                                     hashes_read; i++) {
+                                    hashes_read = stream_read_bytes(
+                                        s, piece_hashes[i], 32);
+                                }
+                                if (hashes_read) {
+                                    uint8_t computed_root[32];
+                                    fast_sync_merkle_root(
+                                        (const uint8_t (*)[32])piece_hashes,
+                                        num_pieces, computed_root);
+                                    piece_hashes_valid =
+                                        memcmp(computed_root, merkle_root,
+                                               32) == 0;
+                                }
+                            }
+                        }
+
+                        if (!piece_hashes_valid) {
+                            fprintf(stderr,  // obs-ok:peer-scored
+                                    "Peer %s: block manifest missing or bad "
+                                    "piece hashes (h=%d..%d pieces=%u)\n",
+                                    node->addr_name, start_h, end_h,
+                                    num_pieces);
+                            peer_scoring_record(
+                                mp->net_mgr, node,
+                                PEER_OFFENCE_INVALID_MESSAGE,
+                                "block manifest piece hashes missing/bad");
+                            free(piece_hashes);
+                            piece_hashes = NULL;
+                        } else {
+                            node->blk_manifest_received = true;
+                            node->blk_peer_height = end_h;
+                        }
                     }
                 }
 
@@ -1483,20 +1895,25 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                         .start_height = start_h,
                         .end_height = end_h,
                         .num_pieces = num_pieces,
-                        .piece_hashes = NULL
+                        .piece_hashes = piece_hashes
                     };
                     memcpy(pm.tip_hash, tip_hash, 32);
                     memcpy(pm.merkle_root, merkle_root, 32);
 
                     pthread_mutex_lock(&g_block_swarm_mutex);
                     if (block_swarm_init(&g_block_swarm, &pm, mp->datadir)) {
+                        block_swarm_mark_complete_through_height(
+                            &g_block_swarm, our_h);
                         g_block_swarm_active = true;
                         g_block_swarm_last_progress = (int64_t)platform_time_wall_time_t();
-                        printf("Block swarm started: %u pieces, h=%d..%d\n",
-                               num_pieces, start_h, end_h);
+                        printf("Block swarm started: %u pieces, h=%d..%d "
+                               "(already_complete=%u at h=%d)\n",
+                               num_pieces, start_h, end_h,
+                               g_block_swarm.pieces_complete, our_h);
                     }
                     pthread_mutex_unlock(&g_block_swarm_mutex);
                 }
+                free(piece_hashes);
             }
 
         } else if (strcmp(cmd, MSG_BLOCK_REQ) == 0) {
@@ -1536,17 +1953,36 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                                              mp->block_hashes_range_ctx)
                     : 0;
                 if (block_count > 0) {
+                    struct byte_stream payloads;
+                    size_t fixed_len = 4u + 4u + 32u * (size_t)block_count;
+                    size_t max_payload_bytes =
+                        fixed_len < MAX_PROTOCOL_MESSAGE_LENGTH
+                            ? MAX_PROTOCOL_MESSAGE_LENGTH - fixed_len
+                            : 0u;
+                    bool have_payloads =
+                        max_payload_bytes > 0 &&
+                        build_block_piece_payloads(
+                            mp, piece_start,
+                            (const uint8_t (*)[32])piece_hashes,
+                            (uint32_t)block_count, max_payload_bytes,
+                            &payloads);
                     struct byte_stream bs_msg;
-                    stream_init(&bs_msg, 4 + 4 + 32 * (size_t)block_count);
+                    stream_init(&bs_msg, fixed_len +
+                                (have_payloads ? payloads.size : 0));
                     stream_write_u32_le(&bs_msg, piece_index);
                     stream_write_u32_le(&bs_msg, (uint32_t)block_count);
                     for (int bi = 0; bi < block_count; bi++)
                         stream_write_bytes(&bs_msg, piece_hashes[bi], 32);
+                    if (have_payloads)
+                        stream_write_bytes(&bs_msg, payloads.data,
+                                           payloads.size);
                     p2p_node_begin_message(node, MSG_BLOCK_DATA,
                                             mp->params->pchMessageStart);
                     p2p_node_write_message_data(node, bs_msg.data, bs_msg.size);
                     p2p_node_end_message(node);
                     stream_free(&bs_msg);
+                    if (have_payloads)
+                        stream_free(&payloads);
                 }
             }
 
@@ -1576,6 +2012,19 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                 }
 
                 if (parse_ok && blk_hashes) {
+                    struct block_piece_payload_ref *block_refs = NULL;
+                    if (!parse_block_piece_payload_refs(
+                            s, (const uint8_t (*)[32])blk_hashes,
+                            block_count, &block_refs)) {
+                        printf("Peer %s: bad zblkdata block payloads\n",
+                               node->addr_name);
+                        peer_scoring_record(mp->net_mgr, node,
+                                            PEER_OFFENCE_INVALID_PAYLOAD,
+                                            "bad zblkdata block payloads");
+                        free(blk_hashes);
+                        goto _blkdata_done;
+                    }
+
                     /* DEFENSIVE: bounds check before touching swarm */
                     pthread_mutex_lock(&g_block_swarm_mutex);
                     if (piece_index >= g_block_swarm.manifest.num_pieces) {
@@ -1585,6 +2034,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                                g_block_swarm.manifest.num_pieces);
                         peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD,
                                             "zblkdata piece out of range");
+                        free(block_refs);
                         free(blk_hashes);
                         goto _blkdata_done;
                     }
@@ -1605,17 +2055,18 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                             32) == 0;
                     }
 
-                    if (verified) {
+                    bool payloads_accepted = block_refs != NULL;
+                    if (verified && block_refs) {
+                        pthread_mutex_unlock(&g_block_swarm_mutex);
+                        payloads_accepted = block_payload_submit_all(
+                            mp, node, block_refs, block_count);
+                        pthread_mutex_lock(&g_block_swarm_mutex);
+                    }
+
+                    if (verified && payloads_accepted) {
                         block_swarm_receive_piece(&g_block_swarm,
-                                                   piece_index, node->id);
-                        /* Clear pipeline slot */
-                        for (int pi = 0; pi < 4; pi++) {
-                            if (node->blk_pipeline[pi].piece_index ==
-                                (int32_t)piece_index) {
-                                node->blk_pipeline[pi].piece_index = -1;
-                                break;
-                            }
-                        }
+                                                  piece_index, node->id);
+                        block_pipeline_clear_piece(node, piece_index);
 
                         if (block_swarm_is_complete(&g_block_swarm)) {
                             printf("Block swarm complete: %u/%u pieces\n",
@@ -1624,6 +2075,11 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                             block_swarm_free(&g_block_swarm);
                             g_block_swarm_active = false;
                         }
+                    } else if (verified) {
+                        LOG_INFO("net",
+                                 "zblkdata piece %u waiting for timeout retry "
+                                 "after local payload intake backpressure",
+                                 piece_index);
                     } else {
                         block_swarm_fail_piece(&g_block_swarm, piece_index);
                         fprintf(stderr, "Peer %s: block piece %u failed verification\n",  // obs-ok:helper-context-logged
@@ -1632,6 +2088,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                                             "bad block piece hash");
                     }
                     pthread_mutex_unlock(&g_block_swarm_mutex);
+                    free(block_refs);
                 } else {
                     printf("Peer %s: truncated zblkdata\n", node->addr_name);
                     peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_PAYLOAD,
@@ -1905,11 +2362,13 @@ void mp_snapshot_send_tick(struct msg_processor *mp,
 
         /* Handle timeouts on this peer's pipeline */
         int64_t now_bs = (int64_t)platform_time_wall_time_t();
+        block_swarm_handle_timeouts(&g_block_swarm,
+                                    BLOCK_PIECE_TIMEOUT_SECS);
         for (int pi = 0; pi < PIECE_PIPELINE_DEPTH; pi++) {
             int32_t pidx = node->blk_pipeline[pi].piece_index;
             if (pidx >= 0 &&
                 now_bs - node->blk_pipeline[pi].request_time >
-                    SWARM_CHUNK_TIMEOUT_SECS) {
+                    BLOCK_PIECE_TIMEOUT_SECS) {
                 if ((uint32_t)pidx < g_block_swarm.manifest.num_pieces &&
                     g_block_swarm.piece_states[pidx] == CHUNK_INFLIGHT) {
                     g_block_swarm.piece_states[pidx] = CHUNK_NEEDED;
@@ -1926,8 +2385,11 @@ void mp_snapshot_send_tick(struct msg_processor *mp,
             if (node->blk_pipeline[pi].piece_index >= 0)
                 continue; /* slot occupied */
 
-            int32_t pidx = block_swarm_assign_piece(
-                &g_block_swarm, node->id, node->blk_bitmap);
+            int32_t header_cap = block_swarm_local_header_cap(mp);
+            int32_t assignment_cap =
+                block_swarm_contiguous_window_cap(&g_block_swarm, header_cap);
+            int32_t pidx = block_swarm_assign_piece_through_height(
+                &g_block_swarm, node->id, node->blk_bitmap, assignment_cap);
             if (pidx < 0)
                 break; /* no more pieces to assign */
 

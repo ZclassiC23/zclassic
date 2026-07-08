@@ -58,6 +58,26 @@ int boot_load_block_hashes_range(int32_t start_height,
         return 0;
     }
 
+    if (end_height >= start_height && svc->state) {
+        int32_t needed_i32 = end_height - start_height + 1;
+        if (needed_i32 > 0 && (size_t)needed_i32 <= max) {
+            size_t count = 0;
+            for (int32_t h = start_height; h <= end_height; h++) {
+                const struct block_index *bi =
+                    active_chain_at(&svc->state->chain_active, h);
+                if (!bi || !bi->phashBlock ||
+                    !(bi->nStatus & BLOCK_HAVE_DATA)) {
+                    count = 0;
+                    break;
+                }
+                memcpy(hashes_out[count], bi->phashBlock->data, 32);
+                count++;
+            }
+            if (count == (size_t)needed_i32)
+                return (int)count;
+        }
+    }
+
     return db_block_hashes_in_range(svc->node_db, start_height, end_height,
                                     hashes_out, max);
 }

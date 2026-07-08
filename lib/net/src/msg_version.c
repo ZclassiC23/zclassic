@@ -421,7 +421,7 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
     if (is_zcl23) {
         node->services |= NODE_ZCL23; /* mark for fast sync */
         node->swarm_inflight_chunk = -1;
-        for (int pi = 0; pi < 4; pi++)
+        for (int pi = 0; pi < PIECE_PIPELINE_DEPTH; pi++)
             node->blk_pipeline[pi].piece_index = -1;
         printf("Peer %s: supports zclassic23 fast sync [ZCL23]\n",
                node->addr_name);

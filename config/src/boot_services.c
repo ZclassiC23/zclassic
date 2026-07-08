@@ -713,6 +713,8 @@ bool app_init_services(struct app_context *ctx,
     rpc_net_set_msg_processor(svc->msg_processor);
     msg_processor_set_block_submit(svc->msg_processor,
                                    boot_submit_p2p_block, svc);
+    msg_processor_set_catchup_drain(svc->msg_processor,
+                                    boot_drain_catchup_reducer, svc);
     msg_processor_set_compact_block_submit(svc->msg_processor,
                                            boot_submit_compact_block, svc);
     msg_processor_set_peer_save(svc->msg_processor, boot_save_peer_advisory,

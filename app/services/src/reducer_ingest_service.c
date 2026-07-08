@@ -24,6 +24,7 @@
 #include "event/event.h"
 #include "core/utiltime.h"
 #include <stdio.h>
+#include <stdatomic.h>
 #include <string.h>
 
 #include "util/log_macros.h"
@@ -55,6 +56,20 @@
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/stage_helpers.h"
 #include "jobs/stage_repair.h"  /* header-solution repair-table backfill */
+
+static _Atomic int g_last_body_persist_log_height = -1;
+
+static bool reducer_should_log_body_persist(int height)
+{
+    int last = atomic_load_explicit(&g_last_body_persist_log_height,
+                                    memory_order_relaxed);
+    if (height <= 10 || height % 512 == 0 || height - last >= 512) {
+        atomic_store_explicit(&g_last_body_persist_log_height, height,
+                              memory_order_relaxed);
+        return true;
+    }
+    return false;
+}
 
 /* ── Reducer-as-ingest: synchronous wrapper driving the staged Job pipeline.
  * Drain the eight stage step bodies once, in pipeline order — the SAME
@@ -418,8 +433,9 @@ static bool reducer_persist_ingested_body_locked(
     }
 
     block_index_emit_header_event(bi, "reducer_ingest", NULL, NULL);
-    LOG_INFO("reducer", "persisted ingested block body h=%d file=%d pos=%u",
-             bi->nHeight, pos.nFile, pos.nPos);
+    if (reducer_should_log_body_persist(bi->nHeight))
+        LOG_INFO("reducer", "persisted ingested block bodies through h=%d "
+                 "file=%d pos=%u", bi->nHeight, pos.nFile, pos.nPos);
     return true;
 }
 
@@ -483,8 +499,13 @@ bool reducer_stage_p2p_block_for_catchup(
     if (!ctl->ms)
         return validation_state_error(out, "reducer-main-state-unwired");
 
-    if (!check_block(pblock, out, ctl->params, true, true, true)) {
-        LOG_FAIL("reducer", "check_block failed: %s",
+    /* Catch-up body intake is not the consensus verdict. It is a pre-staging
+     * body-shape gate: keep size/coinbase/tx-structural/sigops checks here,
+     * but leave header PoW/Equihash to validate_headers and merkle
+     * reconstruction to body_persist. That avoids doing the expensive header
+     * proof work twice for every post-snapshot block. */
+    if (!check_block(pblock, out, ctl->params, false, false, true)) {
+        LOG_FAIL("reducer", "catchup body preflight failed: %s",
                  out->reject_reason[0] ? out->reject_reason : "unknown");
         return false;
     }
@@ -501,6 +522,13 @@ bool reducer_stage_p2p_block_for_catchup(
 
     struct block_index *bi = block_map_find(&ctl->ms->map_block_index,
                                             &block_hash);
+    for (int round = 0; !bi && round < 16; round++) {
+        int advanced = header_admit_stage_drain(100) +
+                       validate_headers_stage_drain(100);
+        bi = block_map_find(&ctl->ms->map_block_index, &block_hash);
+        if (advanced == 0)
+            break;
+    }
     if (!bi) {
         reducer_drive_exit();
         zcl_mutex_unlock(&ctl->mutex);

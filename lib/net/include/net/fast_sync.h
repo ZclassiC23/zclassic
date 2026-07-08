@@ -323,7 +323,7 @@ int swarm_sync_progress(const struct swarm_sync *ss);
 void swarm_sync_handle_timeouts(struct swarm_sync *ss, int timeout_secs);
 
 /* ── Block swarm: BitTorrent-style parallel block download ──── */
-/* Groups blocks into "pieces" (128 blocks each). Each piece is
+/* Groups blocks into "pieces" (512 blocks each). Each piece is
  * independently hashable and verifiable. Legacy peers contribute
  * via normal getdata/block; ZCL23 peers use the swarm protocol.
  *
@@ -339,12 +339,16 @@ void swarm_sync_handle_timeouts(struct swarm_sync *ss, int timeout_secs);
 #define MSG_BLOCK_DATA      "zblkdata"
 #define MSG_BLOCK_BITMAP    "zblkbitmap"
 
-/* Blocks per piece. 128 blocks × ~2KB avg = ~256KB per piece.
- * Small enough for fast verification, large enough to reduce overhead. */
-#define BLOCKS_PER_PIECE 128
+/* Blocks per piece. Empty/near-empty historic ZCL blocks dominate the
+ * post-snapshot delta, so 512-block pieces cut request/response churn while
+ * staying below the 2 MiB P2P message cap in the normal case. The sender still
+ * enforces MAX_PROTOCOL_MESSAGE_LENGTH before writing zblkdata. */
+#define BLOCKS_PER_PIECE 512
 
-/* Max inflight pieces per peer (pipeline depth) */
-#define PIECE_PIPELINE_DEPTH 4
+/* Max inflight block pieces per peer. Each piece is independently hashed
+ * against the manifest before payload blocks are submitted, so this only
+ * controls bandwidth-delay utilization, not trust. */
+#define PIECE_PIPELINE_DEPTH 16
 
 /* Endgame threshold: when fewer than this many pieces remain,
  * request all remaining from every available peer. */
@@ -396,6 +400,14 @@ void block_swarm_free(struct block_swarm *bs);
  * peer_bitmap: which pieces this peer has (NULL = assume all). */
 int32_t block_swarm_assign_piece(struct block_swarm *bs, int peer_id,
                                   const uint8_t *peer_bitmap);
+
+/* Same selection, but only assigns pieces whose ending block height is at or
+ * below max_height. Use this when body transfer must not outrun local header
+ * admission. */
+int32_t block_swarm_assign_piece_through_height(struct block_swarm *bs,
+                                                 int peer_id,
+                                                 const uint8_t *peer_bitmap,
+                                                 int32_t max_height);
 
 /* Mark a piece as received. Caller must verify hash before calling.
  * Returns true on success. */

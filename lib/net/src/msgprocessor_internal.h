@@ -105,5 +105,6 @@ bool mp_snapshot_is_active(void);
  * used by the header-stall logic in msg_send_messages to suppress
  * disconnect actions while a swarm is in progress. */
 bool mp_swarm_is_active(void);
+bool mp_block_swarm_is_active(void);
 
 #endif /* ZCL_NET_MSGPROCESSOR_INTERNAL_H */
