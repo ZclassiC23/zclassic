@@ -44,8 +44,12 @@ static const char HODL_VIEW_CSS[] =
     "border:1px solid #1a1a1a;border-radius:8px;color:#888;}"
     ".hodl-panel h2{color:#bbb;margin-top:0;}"
     ".hodl-chart-wrap{max-width:1000px;margin:20px auto;overflow-x:auto;}"
+    ".hodl-wave-interactive{position:relative;}"
     ".hodl-svg{width:100%;height:auto;background:#0c0c0c;"
     "border:1px solid #1a1a1a;border-radius:8px;display:block;}"
+    ".hodl-age-bar{transition:opacity .12s ease,stroke-width .12s ease;}"
+    ".hodl-age-hit{cursor:crosshair;}"
+    ".hodl-age-hit:focus{outline:none;}"
     ".hodl-mini-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));"
     "gap:14px;margin-top:14px;}"
     ".hodl-mini-stat{border-top:1px solid #202020;padding-top:10px;"
@@ -715,14 +719,31 @@ static void hodl_emit_age_distribution_chart(size_t *off, uint8_t *r,
     if (!off || !r || !h)
         return;
 
-    APPEND(*off, r, max,
-        "<section class='hodl-chart-wrap'>"
-        "<svg viewBox='0 0 1000 360' class='hodl-svg' role='img' "
-        "aria-label='Unspent transparent value by age'>"
-        "<text x='30' y='35' fill='#bbb' font-size='18' "
-        "font-family='Georgia,serif'>Unspent transparent value by age</text>");
+    int selected = 0;
+    for (int i = 1; i < HODL_WAVE_BUCKETS; i++) {
+        if (h->buckets[i].value > h->buckets[selected].value)
+            selected = i;
+    }
 
-    int x0 = 70, y0 = 285, chart_w = 860, chart_h = 220;
+    APPEND(*off, r, max,
+        "<section class='hodl-chart-wrap hodl-wave-interactive'>"
+        "<svg id='hodl-age-wave' viewBox='0 0 1000 430' class='hodl-svg' "
+        "tabindex='0' role='img' "
+        "aria-label='Interactive unspent transparent value by age. "
+        "Use mouse, touch, or arrow keys to inspect each age band.'>"
+        "<defs>"
+        "<linearGradient id='hodl-age-glow' x1='0' y1='0' x2='0' y2='1'>"
+        "<stop offset='0%%' stop-color='#33ff99' stop-opacity='0.24'/>"
+        "<stop offset='100%%' stop-color='#33ff99' stop-opacity='0.02'/>"
+        "</linearGradient>"
+        "</defs>"
+        "<text x='30' y='35' fill='#ddd' font-size='20' "
+        "font-family='Georgia,serif'>Unspent transparent value by age</text>"
+        "<text x='30' y='58' fill='#777' font-size='12' "
+        "font-family='Georgia,serif'>Use mouse, touch, or arrow keys to inspect "
+        "current transparent UTXO value distribution.</text>");
+
+    int x0 = 70, y0 = 300, chart_w = 860, chart_h = 225;
     for (int g = 0; g <= 4; g++) {
         int y = y0 - chart_h * g / 4;
         APPEND(*off, r, max,
@@ -735,6 +756,23 @@ static void hodl_emit_age_distribution_chart(size_t *off, uint8_t *r,
     int bar_gap = 10;
     int bar_w = (chart_w - bar_gap * (HODL_WAVE_BUCKETS - 1)) /
                 HODL_WAVE_BUCKETS;
+
+    APPEND(*off, r, max,
+        "<path d='M%d,%d", x0, y0);
+    for (int b = 0; b < HODL_WAVE_BUCKETS; b++) {
+        double pct = h->total_value > 0
+            ? (double)h->buckets[b].value / (double)h->total_value * 100.0
+            : 0.0;
+        int bh = (int)(pct / 100.0 * chart_h);
+        int x = x0 + b * (bar_w + bar_gap) + bar_w / 2;
+        int y = y0 - bh;
+        APPEND(*off, r, max, " L%d,%d", x, y);
+    }
+    APPEND(*off, r, max,
+        " L%d,%d Z' fill='url(#hodl-age-glow)' stroke='#33ff99' "
+        "stroke-width='1' opacity='0.72'/>",
+        x0 + chart_w, y0);
+
     for (int b = 0; b < HODL_WAVE_BUCKETS; b++) {
         double pct = h->total_value > 0
             ? (double)h->buckets[b].value / (double)h->total_value * 100.0
@@ -742,25 +780,106 @@ static void hodl_emit_age_distribution_chart(size_t *off, uint8_t *r,
         int bh = (int)(pct / 100.0 * chart_h);
         int x = x0 + b * (bar_w + bar_gap);
         int y = y0 - bh;
+        char val_fmt[64];
+        zcl_format_zcl(val_fmt, sizeof(val_fmt), h->buckets[b].value);
         APPEND(*off, r, max,
-            "<rect x='%d' y='%d' width='%d' height='%d' fill='%s' rx='3'>"
-            "<title>%s: %.3f%%, %" PRId64 " UTXOs</title></rect>"
+            "<rect id='hodl-age-bar-%d' class='hodl-age-bar' "
+            "x='%d' y='%d' width='%d' height='%d' fill='%s' rx='4' "
+            "opacity='%s' stroke='%s' stroke-width='%d'>"
+            "<title>%s: %.3f%%, %s ZCL, %" PRId64 " UTXOs</title>"
+            "</rect>"
+            "<rect class='hodl-age-hit' data-i='%d' tabindex='-1' "
+            "x='%d' y='%d' width='%d' height='%d' fill='transparent'>"
+            "<title>%s: %.3f%%, %s ZCL, %" PRId64 " UTXOs</title>"
+            "</rect>"
             "<text x='%d' y='%d' fill='#aaa' font-size='11' "
             "text-anchor='middle' transform='rotate(-35,%d,%d)'>%s</text>"
             "<text x='%d' y='%d' fill='#eee' font-size='12' "
             "text-anchor='middle'>%.2f%%</text>",
-            x, y, bar_w, bh > 1 ? bh : 1, h->buckets[b].color,
-            h->buckets[b].html_label, pct, h->buckets[b].count,
+            b, x, y, bar_w, bh > 1 ? bh : 1, h->buckets[b].color,
+            b == selected ? "1" : "0.82",
+            b == selected ? "#fff" : h->buckets[b].color,
+            b == selected ? 2 : 1,
+            h->buckets[b].html_label, pct, val_fmt, h->buckets[b].count,
+            b, x, y0 - chart_h, bar_w, chart_h,
+            h->buckets[b].html_label, pct, val_fmt, h->buckets[b].count,
             x + bar_w / 2, y0 + 26, x + bar_w / 2, y0 + 26,
             h->buckets[b].html_label,
             x + bar_w / 2, y - 6, pct);
     }
+
     APPEND(*off, r, max,
-        "<text x='970' y='345' fill='#444' font-size='11' "
+        "<g id='hodl-age-tip' pointer-events='none'>"
+        "<rect id='hodl-age-tip-bg' x='655' y='76' width='300' height='102' "
+        "rx='7' fill='#000' stroke='#33ff99' opacity='0.94'/>"
+        "<text id='hodl-age-tip-title' x='675' y='105' fill='#fff' "
+        "font-size='18' font-family='Georgia,serif'>-</text>"
+        "<text id='hodl-age-tip-pct' x='675' y='130' fill='#33ff99' "
+        "font-size='18' font-weight='700'>-</text>"
+        "<text id='hodl-age-tip-value' x='675' y='151' fill='#bbb' "
+        "font-size='13'>-</text>"
+        "<text id='hodl-age-tip-count' x='675' y='169' fill='#777' "
+        "font-size='12'>-</text>"
+        "</g>"
+        "<text x='970' y='404' fill='#555' font-size='11' "
         "font-family='Georgia,serif' text-anchor='end'>"
-        "Source: %s</text></svg></section>",
+        "Hover, touch, or focus the chart for exact values</text>"
+        "<text x='970' y='420' fill='#444' font-size='11' "
+        "font-family='Georgia,serif' text-anchor='end'>"
+        "Source: %s</text></svg></section>"
+        "<script>(function(){"
+        "var svg=document.getElementById('hodl-age-wave');"
+        "if(!svg)return;"
+        "var data=[",
         cached_snapshot ? "verified cached transparent UTXO set" :
                           "current transparent UTXO set");
+    for (int b = 0; b < HODL_WAVE_BUCKETS; b++) {
+        double pct = h->total_value > 0
+            ? (double)h->buckets[b].value / (double)h->total_value * 100.0
+            : 0.0;
+        APPEND(*off, r, max,
+            "%s{label:'%s',pct:%d,value:%" PRId64 ",count:%" PRId64 "}",
+            b ? "," : "", h->buckets[b].label, (int)(pct * 1000.0),
+            h->buckets[b].value, h->buckets[b].count);
+    }
+    APPEND(*off, r, max,
+        "];"
+        "var selected=%d;"
+        "var title=document.getElementById('hodl-age-tip-title');"
+        "var pct=document.getElementById('hodl-age-tip-pct');"
+        "var value=document.getElementById('hodl-age-tip-value');"
+        "var count=document.getElementById('hodl-age-tip-count');"
+        "function fmtZcl(z){var v=z/1e8;"
+        "if(v>=1e6)return(v/1e6).toFixed(3)+'M ZCL';"
+        "if(v>=1e3)return(v/1e3).toFixed(3)+'k ZCL';"
+        "return v.toFixed(8)+' ZCL';}"
+        "function fmtCount(n){return n.toLocaleString()+' UTXOs';}"
+        "function setBar(i,on){var b=document.getElementById('hodl-age-bar-'+i);"
+        "if(!b)return;b.setAttribute('opacity',on?'1':'0.82');"
+        "b.setAttribute('stroke',on?'#fff':b.getAttribute('fill'));"
+        "b.setAttribute('stroke-width',on?'2':'1');}"
+        "function render(i){if(i<0)i=0;if(i>=data.length)i=data.length-1;"
+        "setBar(selected,false);selected=i;setBar(selected,true);"
+        "var d=data[i];title.textContent=d.label;"
+        "pct.textContent=(d.pct/1000).toFixed(3)+'%% of transparent value';"
+        "value.textContent=fmtZcl(d.value);"
+        "count.textContent=fmtCount(d.count);}"
+        "svg.querySelectorAll('.hodl-age-hit').forEach(function(el){"
+        "el.addEventListener('mouseenter',function(){render(+el.dataset.i);});"
+        "el.addEventListener('mousemove',function(){render(+el.dataset.i);});"
+        "el.addEventListener('touchstart',function(e){render(+el.dataset.i);"
+        "e.preventDefault();},{passive:false});"
+        "el.addEventListener('touchmove',function(e){render(+el.dataset.i);"
+        "e.preventDefault();},{passive:false});"
+        "});"
+        "svg.addEventListener('keydown',function(e){"
+        "var k=e.key,i=selected;"
+        "if(k==='ArrowLeft')i--;else if(k==='ArrowRight')i++;"
+        "else if(k==='Home')i=0;else if(k==='End')i=data.length-1;"
+        "else return;e.preventDefault();render(i);});"
+        "render(selected);"
+        "})();</script>",
+        selected);
 }
 
 size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)

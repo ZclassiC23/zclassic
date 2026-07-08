@@ -257,6 +257,10 @@ int test_explorer(void)
         ok = ok && n > 0 &&
              strstr((char *)out, "Latest measurement") != NULL &&
              strstr((char *)out, "Unspent transparent value by age") != NULL &&
+             strstr((char *)out, "id='hodl-age-wave'") != NULL &&
+             strstr((char *)out, "class='hodl-age-hit'") != NULL &&
+             strstr((char *)out, "Hover, touch, or focus the chart") != NULL &&
+             strstr((char *)out, "svg.addEventListener('keydown'") != NULL &&
              strstr((char *)out, "class='hodl-mini-grid'") != NULL &&
              strstr((char *)out, "class='hodl-mini-value'") != NULL &&
              strstr((char *)out, ".hodl-mini-grid{grid-template-columns:1fr") != NULL &&
