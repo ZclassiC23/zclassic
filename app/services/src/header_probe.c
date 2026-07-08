@@ -28,6 +28,7 @@
 #include "json/json.h"
 #include "rpc/legacy_header_client.h"
 #include "rpc/legacy_rpc_client.h"
+#include "rpc/zclassicd_port.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "util/result.h"
@@ -45,7 +46,6 @@
 /* ── Constants ─────────────────────────────────────────────────── */
 
 #define HP_DEFAULT_HOST          "127.0.0.1"
-#define HP_DEFAULT_PORT          8232
 #define HP_DEFAULT_BATCH         2000
 #define HP_DEFAULT_LAG           100
 #define HP_MAX_BATCH             5000
@@ -141,7 +141,7 @@ struct zcl_result header_probe_pull_range(int start_height, int max_headers,
     int port;
     snprintf(host, sizeof(host), "%s",
              g_hp.rpc_host[0] ? g_hp.rpc_host : HP_DEFAULT_HOST);
-    port = g_hp.rpc_port ? g_hp.rpc_port : HP_DEFAULT_PORT;
+    port = g_hp.rpc_port ? g_hp.rpc_port : ZCLASSICD_RPC_DEFAULT_PORT;
     snprintf(user, sizeof(user), "%s", g_hp.rpc_user);
     snprintf(pass, sizeof(pass), "%s", g_hp.rpc_password);
     struct main_state *ms = g_hp.ms;
@@ -288,7 +288,7 @@ void header_probe_tick_once(void)
     int port;
     snprintf(host, sizeof(host), "%s",
              g_hp.rpc_host[0] ? g_hp.rpc_host : HP_DEFAULT_HOST);
-    port = g_hp.rpc_port ? g_hp.rpc_port : HP_DEFAULT_PORT;
+    port = g_hp.rpc_port ? g_hp.rpc_port : ZCLASSICD_RPC_DEFAULT_PORT;
     snprintf(user, sizeof(user), "%s", g_hp.rpc_user);
     snprintf(pass, sizeof(pass), "%s", g_hp.rpc_password);
     pthread_mutex_unlock(&g_hp.lock);
@@ -329,7 +329,7 @@ struct zcl_result header_probe_init(const struct header_probe_config *cfg,
     snprintf(g_hp.rpc_host, sizeof(g_hp.rpc_host), "%s",
              (cfg && cfg->rpc_host) ? cfg->rpc_host : HP_DEFAULT_HOST);
     g_hp.rpc_port = (cfg && cfg->rpc_port > 0)
-                        ? cfg->rpc_port : HP_DEFAULT_PORT;
+                        ? cfg->rpc_port : ZCLASSICD_RPC_DEFAULT_PORT;
     g_hp.batch_size = (cfg && cfg->batch_size > 0)
                         ? cfg->batch_size : HP_DEFAULT_BATCH;
     if (g_hp.batch_size > HP_MAX_BATCH) g_hp.batch_size = HP_MAX_BATCH;

@@ -367,7 +367,8 @@ size_t serve_send_confirm(uint8_t *r, size_t max,
                 }
             } else {
                 snprintf(error_msg, sizeof(error_msg),
-                    "Could not connect to zclassicd (port %d)", ZCLASSICD_PORT);
+                    "Could not connect to zclassicd (port %d)",
+                    ZCLASSICD_RPC_DEFAULT_PORT);
             }
         } else {
             snprintf(error_msg, sizeof(error_msg),

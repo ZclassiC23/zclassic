@@ -51,6 +51,7 @@
 #include "event/event.h"
 #include "models/database.h"
 #include "rpc/legacy_rpc_client.h"
+#include "rpc/zclassicd_port.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "controllers/wallet_helpers.h"
@@ -70,7 +71,6 @@
 #define PARITY_DEFAULT_FINALITY_DEPTH  100  /* matches ORACLE_TIP_SAFETY_MARGIN */
 #define PARITY_DEFAULT_MAX_PER_TICK     1
 #define PARITY_RPC_DEFAULT_HOST        "127.0.0.1"
-#define PARITY_RPC_DEFAULT_PORT        8232
 
 /* ── Global state ──────────────────────────────────────────────── */
 
@@ -259,7 +259,7 @@ static bool parity_ref_hash_at(int32_t height,
                                     out_hex, ref_height_out, err);
 
     const char *host = rpc->host[0] ? rpc->host : PARITY_RPC_DEFAULT_HOST;
-    int port         = rpc->port > 0 ? rpc->port : PARITY_RPC_DEFAULT_PORT;
+    int port         = rpc->port > 0 ? rpc->port : ZCLASSICD_RPC_DEFAULT_PORT;
 
     char body[256];
     snprintf(body, sizeof(body),

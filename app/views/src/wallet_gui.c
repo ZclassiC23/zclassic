@@ -22,6 +22,7 @@
 #include "chain/chainparams.h"
 #include "keys/key.h"
 #include "keys/pubkey.h"
+#include "rpc/zclassicd_port.h"
 
 extern size_t explorer_handle_request(const char *, const char *,
     const uint8_t *, size_t, uint8_t *, size_t);
@@ -392,7 +393,11 @@ static void init_controllers(const char *datadir) {
             if (fgets(cookie, sizeof(cookie), f)) {
                 char *nl = strchr(cookie, '\n'); if (nl) *nl = '\0';
                 char *col = strchr(cookie, ':');
-                if (col) { *col = '\0'; explorer_set_rpc(cookie, col+1, 8232); }
+                if (col) {
+                    *col = '\0';
+                    explorer_set_rpc(cookie, col + 1,
+                                     ZCLASSICD_RPC_DEFAULT_PORT);
+                }
             }
             fclose(f);
         }

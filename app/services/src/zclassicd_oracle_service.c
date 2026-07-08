@@ -26,6 +26,7 @@
 #include "event/event.h"
 #include "platform/time_compat.h"
 #include "rpc/legacy_rpc_client.h"
+#include "rpc/zclassicd_port.h"
 #include "util/log_macros.h"
 #include "util/supervisor.h"
 
@@ -40,7 +41,6 @@
 /* ── Constants ─────────────────────────────────────────────────── */
 
 #define ORACLE_DEFAULT_HOST          "127.0.0.1"
-#define ORACLE_DEFAULT_PORT          8232
 #define ORACLE_DEFAULT_CADENCE       60
 #define ORACLE_DEFAULT_HEIGHTS_TICK  3
 #define ORACLE_TIP_SAFETY_MARGIN     100  /* avoid races at the tip */
@@ -211,7 +211,7 @@ struct zcl_result zclassicd_oracle_probe(int height,
     pthread_mutex_lock(&g_oracle.lock);
     snprintf(host, sizeof(host), "%s",
              g_oracle.rpc_host[0] ? g_oracle.rpc_host : ORACLE_DEFAULT_HOST);
-    port = g_oracle.rpc_port ? g_oracle.rpc_port : ORACLE_DEFAULT_PORT;
+    port = g_oracle.rpc_port ? g_oracle.rpc_port : ZCLASSICD_RPC_DEFAULT_PORT;
     snprintf(user, sizeof(user), "%s", g_oracle.rpc_user);
     snprintf(pass, sizeof(pass), "%s", g_oracle.rpc_password);
     pthread_mutex_unlock(&g_oracle.lock);
@@ -339,7 +339,7 @@ struct zcl_result zclassicd_oracle_init(const struct zclassicd_oracle_config *cf
     snprintf(g_oracle.rpc_host, sizeof(g_oracle.rpc_host), "%s",
              (cfg && cfg->rpc_host) ? cfg->rpc_host : ORACLE_DEFAULT_HOST);
     g_oracle.rpc_port = (cfg && cfg->rpc_port > 0)
-                            ? cfg->rpc_port : ORACLE_DEFAULT_PORT;
+                            ? cfg->rpc_port : ZCLASSICD_RPC_DEFAULT_PORT;
     g_oracle.cadence_secs = (cfg && cfg->cadence_secs > 0)
                             ? cfg->cadence_secs : ORACLE_DEFAULT_CADENCE;
     g_oracle.heights_per_tick = (cfg && cfg->heights_per_tick > 0)

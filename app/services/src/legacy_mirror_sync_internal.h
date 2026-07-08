@@ -2,6 +2,7 @@
 #define ZCL_LEGACY_MIRROR_SYNC_INTERNAL_H
 
 #include "services/legacy_mirror_sync_service.h"
+#include "rpc/zclassicd_port.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -9,7 +10,6 @@
 #include <stdint.h>
 
 #define LMS_DEFAULT_HOST       "127.0.0.1"
-#define LMS_DEFAULT_PORT       8232
 #define LMS_DEFAULT_CADENCE    3
 #define LMS_DEFAULT_MAX_BLOCKS 64
 #define LMS_DEFAULT_LAG_SLA    1

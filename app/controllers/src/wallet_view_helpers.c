@@ -149,7 +149,7 @@ int wv_rpc_call(const char *method, const char *params_json,
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-    addr.sin_port = htons(ZCLASSICD_PORT);
+    addr.sin_port = htons(ZCLASSICD_RPC_DEFAULT_PORT);
 
     struct timeval tv = { .tv_sec = 3, .tv_usec = 0 };
     setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
@@ -157,7 +157,8 @@ int wv_rpc_call(const char *method, const char *params_json,
 
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         close(fd);
-        LOG_ERR("wallet_view", "rpc_call(%s): connect to port %d failed", method, ZCLASSICD_PORT);
+        LOG_ERR("wallet_view", "rpc_call(%s): connect to port %d failed",
+                method, ZCLASSICD_RPC_DEFAULT_PORT);
     }
 
     char body[1024];

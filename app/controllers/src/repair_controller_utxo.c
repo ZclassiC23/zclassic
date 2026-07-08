@@ -245,7 +245,7 @@ bool rpc_repairutxos(const struct json_value *params, bool help,
     rpc_params_expect(&p, 0, 3);
 
     int port = (int)rpc_permit_int(&p, 0, "port",
-                                   REPAIRUTXOS_DEFAULT_PORT);
+                                   ZCLASSICD_RPC_DEFAULT_PORT);
     const char *creds = rpc_permit_str(&p, 1, "creds", "zcluser:zclpass");
     int num_blocks = (int)rpc_permit_int(&p, 2, "num_blocks",
                                          REPAIRUTXOS_DEFAULT_SCAN_BLOCKS);

@@ -98,13 +98,16 @@ ON, with the replay result recorded in the commit message.
 ### P2 — DRY (Law 8) — the architect-acknowledged weak law
 Concrete, bounded duplications to consolidate (these are boilerplate, not hot loops;
 Law 8 permits duplicating hot-loop straight-line code, which these are not):
-- **Port `8232` #defined 8× under 7+ names** across 8 files (`lib/rpc/src/legacy_chain_oracle.c:20`,
+- **Port `8232` #defined 8× under 7+ names** — LANDED 2026-07-08:
+  production C now uses one shared `ZCLASSICD_RPC_DEFAULT_PORT` constant in
+  `lib/rpc/include/rpc/zclassicd_port.h`; scripts/tests/docs may still mention
+  the literal live port intentionally.
+  Previous state: across 8 files (`lib/rpc/src/legacy_chain_oracle.c:20`,
   `app/services/src/header_probe.c:48`, `app/services/src/utxo_parity_service.c:73`,
   `app/services/src/utxo_reference_source_zclassicd.c:26`,
   `app/controllers/include/controllers/wallet_view_internal.h:34`,
   `app/controllers/include/controllers/repair_controller_internal.h:61`,
-  `app/services/src/legacy_mirror_sync_state.c:159`). Consolidate to one constant
-  in a shared header (e.g. `lib/rpc/include/rpc/zclassicd_port.h`).
+  `app/services/src/legacy_mirror_sync_state.c:159`).
 - **The `sqlite3_prepare_v2`/`bind_int(height)`/step/row-or-done/finalize pattern
   repeats ~98× across `app/jobs/src/`** (35 files). Add a
   `progress_kv_step_row(db, sql, height, …)` helper (or widen use of the existing
@@ -128,10 +131,10 @@ do not "fix" it).
   diffing was dark. Confirm the oracle self-recovers or pages.
 
 ### P4 — Doc system hardening (the gate exists; extend it)
-- The new `check_doc_counts.sh` checks test_groups / port_interfaces /
-  persistence_adapters. **`docs/FRAMEWORK.md` row 6 still says "28 conditions live"**
-  (real count: 32 `.c` files / 30 `condition_register` sites) — out of the gate's
-  scope. Either extend the gate to check conditions/models counts or fix the prose.
+- **Condition-count drift gate — LANDED 2026-07-08.** `check_doc_counts.sh` now
+  checks `condition_registrations` from live `condition_register()` calls, and
+  `docs/FRAMEWORK.md` row 6 / `docs/CODEBASE_MAP.md` were corrected to the
+  current 30 registered conditions.
 - **`docs/work/` has grown back to ~55 files.** The owner purged 55 story files on
   2026-06-18 ("recycling old narratives re-halted forward sync ~103×"). Add a
   doom-archive policy: dated `docs/work/*-2026-0N-*.md` narratives with no live

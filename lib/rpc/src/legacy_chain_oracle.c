@@ -7,6 +7,7 @@
 #include "core/uint256.h"
 #include "json/json.h"
 #include "rpc/legacy_rpc_client.h"
+#include "rpc/zclassicd_port.h"
 #include "storage/coins_kv.h"           /* boundary utxo_root read */
 #include "storage/progress_store.h"     /* progress_store_db() handle */
 #include "validation/sync_evidence_policy.h"
@@ -15,14 +16,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Default zclassicd JSON-RPC port (matches ORACLE_DEFAULT_PORT,
- * LMS_DEFAULT_PORT, HP_DEFAULT_PORT, ZCLASSICD_PORT elsewhere). */
-#define LCO_LEGACY_DEFAULT_PORT 8232
-
 static bool lco_rpc_creds(char *user, size_t user_sz,
                           char *pass, size_t pass_sz, int *port)
 {
-    int p = (port && *port > 0) ? *port : LCO_LEGACY_DEFAULT_PORT;
+    int p = (port && *port > 0) ? *port : ZCLASSICD_RPC_DEFAULT_PORT;
 
     if (!legacy_rpc_parse_conf(user, user_sz, pass, pass_sz, &p))
         return false;
@@ -51,7 +48,7 @@ bool legacy_chain_rpc_get_block_hash_hex(int height, char out_hex[65])
     char user[128], pass[256], err[256];
     char req[256];
     char *resp = NULL;
-    int port = LCO_LEGACY_DEFAULT_PORT;
+    int port = ZCLASSICD_RPC_DEFAULT_PORT;
     bool ok;
 
     if (!out_hex || height < 0)
@@ -77,7 +74,7 @@ bool legacy_chain_rpc_get_mmb_leaf(int height, struct mmb_leaf *leaf)
     char user[128], pass[256], err[256];
     char req[512], hash_hex[65];
     char *resp = NULL;
-    int port = LCO_LEGACY_DEFAULT_PORT;
+    int port = ZCLASSICD_RPC_DEFAULT_PORT;
     bool ok;
 
     if (!leaf || height < 0)
@@ -151,7 +148,7 @@ bool legacy_chain_rpc_get_chainwork(const uint8_t block_hash[32],
     char user[128], pass[256], err[256];
     char req[512], hash_hex[65];
     char *resp = NULL;
-    int port = LCO_LEGACY_DEFAULT_PORT;
+    int port = ZCLASSICD_RPC_DEFAULT_PORT;
     bool ok;
 
     if (!block_hash || !chain_work)
@@ -191,7 +188,7 @@ bool legacy_chain_rpc_get_block_count(int *out_height)
     char user[128], pass[256], err[256];
     char req[256];
     char *resp = NULL;
-    int port = LCO_LEGACY_DEFAULT_PORT;
+    int port = ZCLASSICD_RPC_DEFAULT_PORT;
     int64_t h = 0;
     bool ok;
 
@@ -222,7 +219,7 @@ bool legacy_chain_rpc_get_block_hex(int height, char *out_hex,
     char user[128], pass[256], err[256];
     char req[256], hash_hex[65];
     char *resp = NULL;
-    int port = LCO_LEGACY_DEFAULT_PORT;
+    int port = ZCLASSICD_RPC_DEFAULT_PORT;
     bool ok;
 
     if (!out_hex || out_hex_sz == 0 || height < 0)

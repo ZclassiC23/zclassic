@@ -14,6 +14,7 @@
 #include "services/utxo_reference_source.h"
 
 #include "rpc/legacy_rpc_client.h"
+#include "rpc/zclassicd_port.h"
 #include "json/json.h"
 #include "util/log_macros.h"
 
@@ -23,7 +24,6 @@
 #include <string.h>
 
 #define PARITY_RPC_DEFAULT_HOST "127.0.0.1"
-#define PARITY_RPC_DEFAULT_PORT 8232
 
 /* Extract an integer field from the `.result` OBJECT of a JSON-RPC response.
  * gettxoutsetinfo returns {"result":{"height":H,"transactions":N,...}}, which
@@ -86,7 +86,7 @@ static struct zcl_result zclassicd_commitment_at(void *self, int32_t height,
     *ref_height = 0;
 
     const char *host = z->rpc.host[0] ? z->rpc.host : PARITY_RPC_DEFAULT_HOST;
-    int port = z->rpc.port > 0 ? z->rpc.port : PARITY_RPC_DEFAULT_PORT;
+    int port = z->rpc.port > 0 ? z->rpc.port : ZCLASSICD_RPC_DEFAULT_PORT;
 
     char *resp = NULL;
     char err[160] = {0};
@@ -127,7 +127,7 @@ struct zcl_result utxo_reference_source_zclassicd_init(
     if (!z->rpc.host[0])
         snprintf(z->rpc.host, sizeof(z->rpc.host), "%s", PARITY_RPC_DEFAULT_HOST);
     if (z->rpc.port <= 0)
-        z->rpc.port = PARITY_RPC_DEFAULT_PORT;
+        z->rpc.port = ZCLASSICD_RPC_DEFAULT_PORT;
 
     /* Resolve credentials from the conf file when not supplied so the source
      * is usable on a stock layout; refuse (dormant) when none are found. */

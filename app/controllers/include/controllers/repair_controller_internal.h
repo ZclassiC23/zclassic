@@ -17,6 +17,7 @@
 #include "json/json.h"
 #include "models/utxo.h"
 #include "rpc/client.h"
+#include "rpc/zclassicd_port.h"
 #include "script/script.h"
 #include "validation/main_state.h"
 #include "validation/process_block.h"
@@ -58,7 +59,6 @@ static inline int64_t repair_json_int(const char *json, const char *key)
     return strtoll(p, NULL, 10);
 }
 
-#define REPAIRUTXOS_DEFAULT_PORT 8232
 #define REPAIRUTXOS_DEFAULT_SCAN_BLOCKS 10000
 #define REPAIRUTXOS_MAX_SCAN_BLOCKS 50000
 #define REPAIRUTXOS_MAX_CREDS_LEN 256

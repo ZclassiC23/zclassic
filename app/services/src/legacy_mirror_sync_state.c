@@ -218,7 +218,7 @@ legacy_mirror_sync_init(const struct legacy_mirror_sync_config *cfg,
     snprintf(g_lms.rpc_host, sizeof(g_lms.rpc_host), "%s",
              (cfg && cfg->rpc_host) ? cfg->rpc_host : LMS_DEFAULT_HOST);
     g_lms.rpc_port = (cfg && cfg->rpc_port > 0)
-                         ? cfg->rpc_port : LMS_DEFAULT_PORT;
+                         ? cfg->rpc_port : ZCLASSICD_RPC_DEFAULT_PORT;
     g_lms.cadence_secs = (cfg && cfg->cadence_secs > 0)
                          ? cfg->cadence_secs : LMS_DEFAULT_CADENCE;
     g_lms.max_blocks_tick = (cfg && cfg->max_blocks_tick > 0)

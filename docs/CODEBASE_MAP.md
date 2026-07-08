@@ -28,7 +28,7 @@ Every `.c` under `app/` lives in exactly one shape folder, lint-enforced
 | Models | `app/models/` | 71 | ActiveRecord rows; own all reads (Law 5); save via `AR_*_SAVE` | `app/models/src/block.c` + `include/models/block.h` |
 | Jobs | `app/jobs/` | 94 | cursor-stamped idempotent stages; the 8 reducer stages live here; advance-or-block | `app/jobs/src/*_stage.c` |
 | Supervisors | `app/supervisors/` | 13 | liveness tree; children with `last_tick_age_us`, `progress_marker`, `deadline` | `app/supervisors/src/staged_sync_supervisor.c` |
-| Conditions | `app/conditions/` | 47 | (detect, remedy, witness) healers; poll/backoff/page-on-exhaustion | `app/conditions/src/block_failed_mask_at_tip.c` |
+| Conditions | `app/conditions/` | 53 | (detect, remedy, witness) healers; poll/backoff/page-on-exhaustion | `app/conditions/src/block_failed_mask_at_tip.c` |
 | Events | `app/events/` | 1 | reserved-empty by design; impl lives in `lib/event/` + `lib/storage/event_log.c` | `app/events/README.md` |
 | Views | `app/views/` | 98 | read-only explorer templates; no persistence writes; served over HTTPS + onion | `app/views/src/explorer_dashboard_view.c` |
 
@@ -59,9 +59,11 @@ repository ports are reserved-empty.
 <!--   test_groups          = parallel test groups in lib/test/src/test_parallel.c   -->
 <!--   port_interfaces      = ports/include/ports/*.h                                -->
 <!--   persistence_adapters = adapters/outbound/persistence/src/*.c                  -->
+<!--   condition_registrations = condition_register() calls in app/conditions/src    -->
 test_groups: 488
 port_interfaces: 12
 persistence_adapters: 13
+condition_registrations: 30
 <!-- DOC-COUNTS-END -->
 
 ### Composition root — `config/src/` (26 files)

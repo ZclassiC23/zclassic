@@ -17,6 +17,7 @@
 #include "domain/encoding/base58.h"
 #include "domain/encoding/bech32.h"
 #include "chain/chainparams.h"
+#include "rpc/zclassicd_port.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -31,7 +32,6 @@
 
 #define PRIMARY_ADDR "t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn"
 #define FEE_ZCL 0.0001
-#define ZCLASSICD_PORT 8232
 
 /* ── Shared global state ──────────────────────────────────── */
 

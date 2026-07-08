@@ -208,7 +208,7 @@ size_t serve_shield_confirm(uint8_t *r, size_t max,
         } else if (!shield_err[0]) {
             snprintf(shield_err, sizeof(shield_err),
                 "Could not connect to zclassicd (port %d). "
-                "Start it with: zclassicd -daemon", ZCLASSICD_PORT);
+                "Start it with: zclassicd -daemon", ZCLASSICD_RPC_DEFAULT_PORT);
         }
     }
 

@@ -210,7 +210,7 @@ know the shape.
 | 3 | **Model** | `app/models/` | `DEFINE_MODEL_CALLBACKS` + `validates_*` + AR save | **real, enforced** (19 models, E3+E4+model-validation HARD) | `block.c` |
 | 4 | **Job** | `app/jobs/` | cursor-stamped stage: advance-or-blocker | **real** — eight reducer stages live in `app/jobs/`; E5 HARD (advance-or-block) | `*_stage.c` |
 | 5 | **Supervisor** | `app/supervisors/` | declared liveness tree, restart policy | partial — `net`/`chain`/`staged_sync` declared; `boot_services.c` still owns lifecycle wiring | `app/supervisors/src/staged_sync_supervisor.c` |
-| 6 | **Condition** | `app/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** (28 conditions live) | `block_failed_mask_at_tip.c` |
+| 6 | **Condition** | `app/conditions/` | `{detect, remedy, witness}` struct + `register()` | **real, the model citizen** (30 conditions live) | `block_failed_mask_at_tip.c` |
 | 7 | **Event** | `app/events/` | typed append-only emit + subscribers | reserved-empty **by design** — owned by `lib/event/` + `lib/storage/event_log.c` + `lib/storage/*_projection.c`; see `app/events/README.md` | `lib/storage/event_log.c` |
 | 8 | **Storage Adapter** | `adapters/` + `ports/` | port interface + swappable impl | **real — outbound-only by design** (§6): 12 port interfaces + 13 sqlite/file write impls; `check_raw_sqlite.sh` CLEAN | `adapters/outbound/persistence/` |
 
