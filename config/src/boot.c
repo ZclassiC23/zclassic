@@ -851,6 +851,12 @@ static bool boot_db_maintenance_service_start(void *ctx)
     if (!db || !db->open)
         return true;
 
+    const char *enabled = getenv("ZCL_ENABLE_BOOT_DB_MAINT");
+    if (!enabled || strcmp(enabled, "1") != 0) {
+        printf("DB maintenance deferred (set ZCL_ENABLE_BOOT_DB_MAINT=1 to enable boot scheduler)\n");
+        return true;
+    }
+
     struct db_maintenance_schedule dbm_sched;
     db_maintenance_schedule_defaults(&dbm_sched);
     dbm_sched.wal_checkpoint_minutes = 5;
