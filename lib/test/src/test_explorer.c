@@ -220,7 +220,7 @@ int test_explorer(void)
              strstr((char *)out, "4 verified samples") != NULL &&
              strstr((char *)out, "Source: historical UTXO snapshots") != NULL &&
              strstr((char *)out, "class='hodl-end-label'") != NULL &&
-             strstr((char *)out, "Timeline by block height") != NULL &&
+             strstr((char *)out, "Timeline by block height") == NULL &&
              strstr((char *)out, "id='hodl-survival-wrap'") != NULL &&
              strstr((char *)out, "requestAnimationFrame(maybeScrollLatest)") != NULL &&
              strstr((char *)out, "var hmin=") != NULL &&

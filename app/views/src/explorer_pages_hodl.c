@@ -88,8 +88,6 @@ static const char HODL_VIEW_CSS_DETAIL[] =
     ".hodl-end-label{font-family:-apple-system,'Segoe UI',Roboto,sans-serif;"
     "font-weight:760;paint-order:stroke;stroke:#071016;stroke-width:3px;"
     "stroke-linejoin:round;}"
-    ".hodl-axis-note{font-family:-apple-system,'Segoe UI',Roboto,sans-serif;"
-    "font-weight:680;letter-spacing:0;}"
     ".hodl-series-line{mix-blend-mode:screen;}"
     ".hodl-hover-dot{filter:drop-shadow(0 0 4px rgba(255,255,255,.28));}"
     ".hodl-age-bar{transition:opacity .12s ease,stroke-width .12s ease,"
@@ -1259,11 +1257,6 @@ static void hodl_emit_survival_chart(size_t *off, uint8_t *r, size_t max,
             "text-anchor='middle'>%s</text>",
             x, pt, x, pt + ph, x, pt + ph + 20, dbuf);
     }
-
-    APPEND(*off, r, max,
-        "<text class='hodl-axis-note' x='%d' y='%d' fill='#788592' "
-        "font-size='11' text-anchor='middle'>Timeline by block height</text>",
-        pl + pw / 2, pt + ph + 43);
 
     APPEND(*off, r, max,
         "<path d='M%d,%d", hodl_survival_x(&rows[0], pl, pw, h_min, h_max),
