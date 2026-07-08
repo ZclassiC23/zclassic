@@ -4545,6 +4545,23 @@ static int t_hodl_history_uses_runtime_db_service(void)
     return failures;
 }
 
+static int t_db_service_query_handle_is_canonical(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("DB service query handle aliases canonical node DB") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path), "config/src/db_service.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "svc->query_db = svc->node_db->db") != NULL);
+        ASSERT(strstr(buf, "sqlite3_open_v2(db_path, &svc->query_db") == NULL);
+        ASSERT(strstr(buf, "SQLITE_OPEN_READONLY") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_peer_save_busy_reports_db_error(void)
 {
     int failures = 0;
@@ -5354,6 +5371,25 @@ static int t_boot_repaired_index_persistence_contract(void)
     return failures;
 }
 
+static int t_chain_evidence_reconstruct_uses_retry_persistence(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("chain evidence reconstruct uses retry persistence") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path),
+                         "app/services/src/chain_evidence_reconstruct.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "chain_evidence_state_set_retry") != NULL);
+        ASSERT(strstr(buf, "chain_evidence_state_set_int_retry") != NULL);
+        ASSERT(strstr(buf, "node_db_state_set(") == NULL);
+        ASSERT(strstr(buf, "node_db_state_set_int(") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_boot_genesis_init_preserves_restored_authority_contract(void)
 {
     int failures = 0;
@@ -6105,6 +6141,7 @@ int test_make_lint_gates(void)
     failures += t_lib_runtime_gauges_are_callback_injected();
     failures += t_boot_shutdown_persistence_order_contract();
     failures += t_hodl_history_uses_runtime_db_service();
+    failures += t_db_service_query_handle_is_canonical();
     failures += t_peer_save_busy_reports_db_error();
     failures += t_handshake_peer_save_is_async();
     failures += t_p2p_app_persistence_is_callback_injected();
@@ -6122,6 +6159,7 @@ int test_make_lint_gates(void)
     failures += t_deleted_engine_names_absent_from_production_sources();
     failures += t_build_commit_macro_stays_behind_getter();
     failures += t_boot_repaired_index_persistence_contract();
+    failures += t_chain_evidence_reconstruct_uses_retry_persistence();
     failures += t_boot_genesis_init_preserves_restored_authority_contract();
     failures += t_refold_from_anchor_explicit_span_gate_contract();
     failures += t_sha3_window_tool_check_contract();

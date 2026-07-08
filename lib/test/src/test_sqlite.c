@@ -249,6 +249,7 @@ int test_sqlite(void) {
         ok = ok && db_service_is_started(&svc);
         ok = ok && db_service_node_db(&svc) == &ndb;
         ok = ok && db_service_query_db(&svc) != NULL;
+        ok = ok && db_service_query_db(&svc) == ndb.db;
         {
             struct db_service_status svc_status = {0};
             db_service_get_status(&svc, &svc_status);

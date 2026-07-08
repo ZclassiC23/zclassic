@@ -214,34 +214,16 @@ static bool db_service_submit_simple_job(struct db_service *svc,
 
 static bool db_service_open_query_db(struct db_service *svc)
 {
-    const char *db_path;
-    int rc;
-
     if (!svc || !svc->node_db || !svc->node_db->db)
         return false;
 
-    db_path = sqlite3_db_filename(svc->node_db->db, "main");
-    if (!db_path || !db_path[0] || strcmp(db_path, ":memory:") == 0) {
-        svc->query_db = svc->node_db->db;
-        svc->query_db_owned = false;
-        return true;
-    }
-
-    rc = sqlite3_open_v2(db_path, &svc->query_db, SQLITE_OPEN_READONLY, NULL);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr, "db_service: query open failed for %s: %s\n",
-                db_path, svc->query_db ? sqlite3_errmsg(svc->query_db)
-                                       : "unknown");
-        if (svc->query_db) {
-            sqlite3_close(svc->query_db);
-            svc->query_db = NULL;
-        }
-        return false;
-    }
-
-    sqlite3_busy_timeout(svc->query_db, 5000);
-    sqlite3_exec(svc->query_db, "PRAGMA mmap_size=268435456", NULL, NULL, NULL);
-    svc->query_db_owned = true;
+    /* Keep one SQLite handle for node.db. A lifetime secondary read-only
+     * connection can hold WAL read locks across the process lifetime and
+     * starve the serialized write worker on live nodes. The main handle is
+     * opened FULLMUTEX and all hot statements are per-call or DB-service
+     * serialized, so bounded health reads can safely share it. */
+    svc->query_db = svc->node_db->db;
+    svc->query_db_owned = false;
     return true;
 }
 

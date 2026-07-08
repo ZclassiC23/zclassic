@@ -39,13 +39,17 @@ static bool cer_u256_equal(const struct uint256 *a, const struct uint256 *b)
 static bool cer_persist_i64(struct chain_evidence_controller *a,
                             const char *key, int64_t v)
 {
-    return a && a->ndb && node_db_state_set_int(a->ndb, key, v);
+    return a && a->ndb &&
+           chain_evidence_state_set_int_retry(a->ndb, key, v,
+                                              "cec_reconstruct");
 }
 
 static bool cer_persist_blob(struct chain_evidence_controller *a,
                              const char *key, const void *value, size_t len)
 {
-    return a && a->ndb && node_db_state_set(a->ndb, key, value, len);
+    return a && a->ndb &&
+           chain_evidence_state_set_retry(a->ndb, key, value, len,
+                                          "cec_reconstruct");
 }
 
 static bool cer_load_u256(struct node_db *ndb, const char *key,
@@ -516,10 +520,13 @@ void cec_reconcile_startup(struct chain_evidence_controller *authority)
         authority->state = CEC_EMPTY;
         memset(authority->contradiction_reason, 0,
                sizeof(authority->contradiction_reason));
-        (void)node_db_state_set(authority->ndb, "cec.sync_state",
-                                "empty", strlen("empty") + 1);
-        (void)node_db_state_set(authority->ndb,
-                                "cec.contradiction_reason", "", 1);
+        (void)chain_evidence_state_set_retry(
+            authority->ndb, "cec.sync_state",
+            "empty", strlen("empty") + 1,
+            "cec_reconcile_startup");
+        (void)chain_evidence_state_set_retry(
+            authority->ndb, "cec.contradiction_reason", "", 1,
+            "cec_reconcile_startup");
         (void)cer_persist_i64(authority, "cec.publish_state",
                               CEC_PUBLISH_LOCAL_EVIDENCE);
     }

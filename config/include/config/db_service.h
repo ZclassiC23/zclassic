@@ -49,6 +49,8 @@ struct db_service_job {
 
 struct db_service {
     struct node_db *node_db;
+    /* Alias of node_db->db for bounded runtime reads; not an owned
+     * secondary connection. */
     sqlite3 *query_db;
     bool query_db_owned;
     zcl_mutex_t queue_mutex;
