@@ -318,13 +318,15 @@ static void *build_tx_index_thread(void *arg)
     }
 
     /* Check how many transactions already indexed. A nonzero count is not
-     * proof that the index is complete; older boots skipped after 100k rows,
-     * which left historical spends unrecoverable during replay. Only skip
-     * when a previous additive build explicitly marked completion. */
+     * proof that the index is complete; older boots skipped on a count
+     * heuristic, which left historical spends unrecoverable during replay.
+     * The explicit completion marker is the authority; ZClassic's historical
+     * transaction count can legitimately be far below arbitrary large
+     * thresholds. */
     int existing = db_tx_count(&ndb);
     int64_t complete = 0;
     node_db_state_get_int(&ndb, "tx_index_complete", &complete);
-    if (complete >= 3 && existing > 100000) {
+    if (complete >= 3) {
         printf("tx_index: complete marker v%lld present (%d transactions), skipping\n",
                (long long)complete, existing);
         node_db_close(&ndb);

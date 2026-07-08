@@ -4573,6 +4573,8 @@ static int t_txindex_releases_node_db_between_batches(void)
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "#define TX_INDEX_BATCH_TXS 1000") != NULL);
         ASSERT(strstr(buf, "#define TX_INDEX_BATCH_YIELD_MS 100") != NULL);
+        ASSERT(strstr(buf, "if (complete >= 3)") != NULL);
+        ASSERT(strstr(buf, "existing > 100000") == NULL);
         ASSERT(strstr(buf, "platform_sleep_ms(TX_INDEX_BATCH_YIELD_MS)") != NULL);
         char *fail_begin = strstr(buf, "tx_index begin bulk load transaction");
         char *finalize = fail_begin ? strstr(fail_begin, "sqlite3_finalize(query)") : NULL;
