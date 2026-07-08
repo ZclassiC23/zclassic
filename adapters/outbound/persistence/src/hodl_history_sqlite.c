@@ -194,6 +194,40 @@ static int64_t hh_max_filled_height(void *self)
     return v;
 }
 
+static int64_t hh_first_indexed_sample_height(sqlite3 *db,
+                                              int64_t stride,
+                                              int64_t source_tip)
+{
+    if (!db || stride <= 0 || source_tip <= 0)
+        return stride;
+
+    sqlite3_stmt *s = NULL;
+    int64_t min_height = 0;
+    if (sqlite3_prepare_v2(db,
+            "SELECT COALESCE(MIN(height), 0) FROM blocks "
+            "WHERE height > 0 AND height <= ?1",
+            -1, &s, NULL) != SQLITE_OK || !s) {
+        LOG_WARN("hodl_history",
+                 "prepare first indexed sample SQL failed: %s",
+                 sqlite3_errmsg(db));
+        return stride;
+    }
+    sqlite3_bind_int64(s, 1, source_tip);
+    int rc = AR_STEP_ROW_READONLY(s);
+    if (rc == SQLITE_ROW)
+        min_height = sqlite3_column_int64(s, 0);
+    sqlite3_finalize(s);
+    if (rc != SQLITE_ROW && rc != SQLITE_DONE) {
+        LOG_WARN("hodl_history",
+                 "first indexed sample step rc=%d: %s",
+                 rc, sqlite3_errmsg(db));
+        return stride;
+    }
+    if (min_height <= stride)
+        return stride;
+    return ((min_height + stride - 1) / stride) * stride;
+}
+
 static bool hh_next_fill_height(void *self,
                                 int64_t stride,
                                 int64_t target,
@@ -210,11 +244,15 @@ static bool hh_next_fill_height(void *self,
     if (source_tip < stride)
         return true;
 
+    int64_t start = hh_first_indexed_sample_height(db, stride, source_tip);
+    if (start > source_tip)
+        return true;
+
     sqlite3_stmt *s = NULL;
     const char *sql =
         "WITH RECURSIVE expected(h) AS ("
         "  SELECT ?1"
-        "  UNION ALL SELECT h + ?1 FROM expected WHERE h + ?1 <= ?2"
+        "  UNION ALL SELECT h + ?2 FROM expected WHERE h + ?2 <= ?3"
         ") "
         "SELECT e.h "
         "FROM expected e "
@@ -230,8 +268,8 @@ static bool hh_next_fill_height(void *self,
                  "prepare next-fill SQL failed: %s", sqlite3_errmsg(db));
         return false;
     }
-    sqlite3_bind_int64(s, 1, stride);
-    sqlite3_bind_int64(s, 2, target);
+    sqlite3_bind_int64(s, 1, start);
+    sqlite3_bind_int64(s, 2, stride);
     sqlite3_bind_int64(s, 3, source_tip);
     sqlite3_bind_int(s, 4, HODL_HISTORY_SNAPSHOT_CALC_VERSION);
     int rc = AR_STEP_ROW_READONLY(s);

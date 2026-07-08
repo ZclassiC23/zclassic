@@ -381,6 +381,38 @@ int test_hodl_history_port(void)
         sqlite3_close(db);
     }
 
+    /* ---- fill_pending starts at the first indexed sample after an anchor ---- */
+    {
+        sqlite3 *db = NULL;
+        if (!make_fixture_db(&db)) {
+            HH_CHECK("anchor fixture builds", false);
+            return failures;
+        }
+
+        const int64_t S = HODL_HISTORY_SAMPLE_STRIDE;
+        char sql[1024];
+        snprintf(sql, sizeof sql,
+            "INSERT INTO blocks(hash,height,time) VALUES"
+            " (x'30',%lld,%lld),(x'31',%lld,%lld);"
+            "INSERT INTO tx_outputs(txid,vout,value,block_height) VALUES"
+            " (x'FA',0,100,%lld);",
+            (long long)(10 * S), (long long)YEAR,
+            (long long)(11 * S), (long long)(YEAR + 100),
+            (long long)(10 * S));
+        HH_CHECK("anchor scenario seeds", exec_sql(db, sql));
+        HH_CHECK("anchor source tip covers samples",
+                 set_projection_tip(db, 11 * S));
+
+        HH_CHECK("anchor skips unavailable early samples",
+                 hodl_history_fill_pending(db, 11 * S, 1) == 1);
+        HH_CHECK("anchor first indexed sample inserted",
+                 query_total_at_height(db, 10 * S, -1) == 100);
+        HH_CHECK("anchor did not insert pre-anchor sample",
+                 query_total_at_height(db, S, -1) == -1);
+
+        sqlite3_close(db);
+    }
+
     /* ---- Chart loader keeps the most recent capped samples, displayed ASC ---- */
     {
         sqlite3 *db = NULL;
