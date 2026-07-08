@@ -34,7 +34,7 @@
 
 /* ── HODL Wave Page ────────────────────────────────────────── */
 
-static const char HODL_VIEW_CSS[] =
+static const char HODL_VIEW_CSS_BASE[] =
     ".hodl-page{max-width:1160px;margin:0 auto 10px;padding-bottom:4px;}"
     ".hodl-hero{display:flex;justify-content:space-between;gap:22px;"
     "align-items:flex-end;text-align:left;margin:14px auto 18px;"
@@ -55,22 +55,36 @@ static const char HODL_VIEW_CSS[] =
     "box-shadow:0 18px 42px rgba(0,0,0,.20);}"
     ".hodl-panel h2{color:#e1e8ee;margin-top:0;border-bottom-color:#242e37;}"
     ".hodl-chart-wrap{max-width:1160px;margin:18px auto;padding:16px;"
-    "overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-color:#33414d #0b0f13;"
     "background:linear-gradient(180deg,#0d141a 0,#080d12 100%);"
     "border:1px solid #263541;border-radius:8px;"
     "box-shadow:0 18px 44px rgba(0,0,0,.24);position:relative;"
     "contain:layout paint;}"
-    ".hodl-chart-wrap::-webkit-scrollbar{height:10px;}"
-    ".hodl-chart-wrap::-webkit-scrollbar-track{background:#0b0f13;}"
-    ".hodl-chart-wrap::-webkit-scrollbar-thumb{background:#30414e;"
+    ".hodl-chart-head{display:flex;justify-content:space-between;gap:16px;"
+    "align-items:flex-start;margin:2px 2px 10px;}"
+    ".hodl-chart-title{color:#e1e8ee;margin:0 0 6px;font-size:25px;"
+    "line-height:1.2;font-weight:780;letter-spacing:0;}"
+    ".hodl-chart-subtitle{margin:0;color:#9aa8b5;font-size:14px;"
+    "line-height:1.45;}"
+    ".hodl-chart-meta{color:#68717d;font-size:13px;white-space:nowrap;"
+    "padding-top:4px;}"
+    ".hodl-legend{display:flex;flex-wrap:wrap;gap:12px 22px;"
+    "margin:12px 2px 14px;color:#d5dbe3;font-size:13px;}"
+    ".hodl-legend-item{display:inline-flex;align-items:center;gap:8px;}"
+    ".hodl-legend-swatch{display:inline-block;width:26px;height:4px;"
+    "border-radius:999px;}"
+    ".hodl-chart-canvas{overflow-x:auto;-webkit-overflow-scrolling:touch;"
+    "scrollbar-color:#33414d #0b0f13;padding-bottom:4px;}"
+    ".hodl-chart-canvas::-webkit-scrollbar{height:10px;}"
+    ".hodl-chart-canvas::-webkit-scrollbar-track{background:#0b0f13;}"
+    ".hodl-chart-canvas::-webkit-scrollbar-thumb{background:#30414e;"
     "border-radius:999px;border:2px solid #0b0f13;}"
     ".hodl-chart-wrap:focus-within{border-color:#365365;"
-    "box-shadow:0 18px 46px rgba(0,0,0,.28),0 0 0 1px rgba(98,199,255,.16);}"
+    "box-shadow:0 18px 46px rgba(0,0,0,.28),0 0 0 1px rgba(98,199,255,.16);}";
+
+static const char HODL_VIEW_CSS_DETAIL[] =
     ".hodl-wave-interactive{position:relative;}"
     ".hodl-svg{width:100%;min-width:900px;height:auto;background:transparent;"
     "border:0;border-radius:0;display:block;}"
-    ".hodl-svg-title{font-family:-apple-system,'Segoe UI',Roboto,sans-serif;"
-    "font-weight:780;letter-spacing:0;}"
     ".hodl-end-label{font-family:-apple-system,'Segoe UI',Roboto,sans-serif;"
     "font-weight:760;paint-order:stroke;stroke:#071016;stroke-width:3px;"
     "stroke-linejoin:round;}"
@@ -105,6 +119,9 @@ static const char HODL_VIEW_CSS[] =
     ".hodl-stats{grid-template-columns:1fr;gap:10px;}"
     ".hodl-stats .num{font-size:26px;}.hodl-chart-wrap{margin:14px -10px;"
     "padding:10px;border-left:0;border-right:0;border-radius:0;}"
+    ".hodl-chart-head{display:block;margin:0 0 10px;}"
+    ".hodl-chart-title{font-size:22px;}.hodl-chart-meta{margin-top:6px;}"
+    ".hodl-legend{gap:10px 14px;margin:10px 0 12px;font-size:12px;}"
     ".hodl-svg{min-width:760px;}.hodl-table{min-width:620px;}}"
     "@media (max-width:420px){.hodl-title{font-size:27px;}"
     ".hodl-svg{min-width:720px;}}";
@@ -119,7 +136,7 @@ static const char HODL_PAGE_OPEN_TEMPLATE[] =
     "<title>HODL Wave</title>"
     "<link rel='icon' type='image/png' href='/explorer/favicon.png'>"
     "<link rel='stylesheet' href='/explorer/style.css'>"
-    "<style>{{{css}}}</style>"
+    "<style>{{{css_base}}}{{{css_detail}}}</style>"
     "</head><body>";
 
 static const char HODL_DEGRADED_TEMPLATE[] =
@@ -1146,11 +1163,11 @@ static void hodl_emit_survival_chart(size_t *off, uint8_t *r, size_t max,
     }
 
     int W = 1000;
-    int H = 486;
+    int H = 410;
     int pl = 72;
     int pr = 134;
-    int pt = 118;
-    int pb = 72;
+    int pt = 26;
+    int pb = 74;
     int pw = W - pl - pr;
     int ph = H - pt - pb;
     int64_t h_min = rows[0].height;
@@ -1174,6 +1191,22 @@ static void hodl_emit_survival_chart(size_t *off, uint8_t *r, size_t max,
     APPEND(*off, r, max,
         "<section id='hodl-survival-wrap' "
         "class='hodl-chart-wrap hodl-wave-interactive'>"
+        "<div class='hodl-chart-head'><div>"
+        "<h2 class='hodl-chart-title'>%s</h2>"
+        "<p class='hodl-chart-subtitle'>%s</p></div>"
+        "<div class='hodl-chart-meta'>%s</div></div>"
+        "<div class='hodl-legend' aria-label='Holding thresholds'>",
+        chart_title, chart_subtitle, sample_meta);
+
+    for (int t = 0; t < HODL_SURVIVAL_THRESHOLDS; t++) {
+        APPEND(*off, r, max,
+            "<span class='hodl-legend-item'><span class='hodl-legend-swatch' "
+            "style='background:%s'></span>%s</span>",
+            HODL_THRESHOLDS[t].color, HODL_THRESHOLDS[t].label);
+    }
+
+    APPEND(*off, r, max,
+        "</div><div id='hodl-survival-canvas' class='hodl-chart-canvas'>"
         "<svg id='hodl-survival-wave' viewBox='0 0 %d %d' "
         "class='hodl-svg' tabindex='0' role='img' "
         "aria-label='HODL Wave over time for 6 month, 1 year, 2 year, "
@@ -1192,25 +1225,8 @@ static void hodl_emit_survival_chart(size_t *off, uint8_t *r, size_t max,
         "<feGaussianBlur stdDeviation='0.75' result='blur'/>"
         "<feMerge><feMergeNode in='blur'/><feMergeNode in='SourceGraphic'/></feMerge>"
         "</filter>"
-        "</defs>"
-        "<text class='hodl-svg-title' x='30' y='34' fill='#f5f7fa' "
-        "font-size='21'>%s</text>"
-        "<text x='30' y='58' fill='#9aa8b5' font-size='12'>"
-        "%s</text>"
-        "<text x='%d' y='34' fill='#68717d' font-size='12' text-anchor='end'>"
-        "%s</text>",
-        W, H, chart_title, chart_subtitle, W - pr, sample_meta);
-
-    int legend_x = 30;
-    for (int t = 0; t < HODL_SURVIVAL_THRESHOLDS; t++) {
-        APPEND(*off, r, max,
-            "<line x1='%d' y1='82' x2='%d' y2='82' stroke='%s' "
-            "stroke-width='4' stroke-linecap='round'/>"
-            "<text x='%d' y='86' fill='#d5dbe3' font-size='12'>%s</text>",
-            legend_x, legend_x + 24, HODL_THRESHOLDS[t].color,
-            legend_x + 32, HODL_THRESHOLDS[t].label);
-        legend_x += 95;
-    }
+        "</defs>",
+        W, H);
 
     APPEND(*off, r, max,
         "<rect x='%d' y='%d' width='%d' height='%d' rx='7' "
@@ -1355,7 +1371,7 @@ static void hodl_emit_survival_chart(size_t *off, uint8_t *r, size_t max,
         "<text x='%d' y='%d' fill='#566371' font-size='11' "
         "text-anchor='end'>"
         "Source: %s</text>"
-        "</svg></section>"
+        "</svg></div></section>"
         "<script>(function(){"
         "var data=[",
         W - 30, H - 21, chart_source);
@@ -1379,7 +1395,7 @@ static void hodl_emit_survival_chart(size_t *off, uint8_t *r, size_t max,
         "];var W=%d,pl=%d,pr=%d,pt=%d,pb=%d,ph=%d,pw=W-pl-pr;"
         "var hmin=%" PRId64 ",hmax=%" PRId64 ";"
         "var svg=document.getElementById('hodl-survival-wave');"
-        "var wrap=svg?svg.parentElement:null;"
+        "var wrap=document.getElementById('hodl-survival-canvas');"
         "var xhair=document.getElementById('hodl-survival-xhair');"
         "var tip=document.getElementById('hodl-survival-tip');"
         "var tipBg=document.getElementById('hodl-survival-tip-bg');"
@@ -1464,9 +1480,16 @@ static void hodl_emit_age_distribution_chart(size_t *off, uint8_t *r,
             selected = i;
     }
 
+    int W = 1000;
+    int H = 382;
     APPEND(*off, r, max,
         "<section id='hodl-age-wrap' class='hodl-chart-wrap hodl-wave-interactive'>"
-        "<svg id='hodl-age-wave' viewBox='0 0 1000 455' class='hodl-svg' "
+        "<div class='hodl-chart-head'><div>"
+        "<h2 class='hodl-chart-title'>Unspent transparent value by age</h2>"
+        "<p class='hodl-chart-subtitle'>Current transparent UTXO value distribution.</p>"
+        "</div></div>"
+        "<div id='hodl-age-canvas' class='hodl-chart-canvas'>"
+        "<svg id='hodl-age-wave' viewBox='0 0 %d %d' class='hodl-svg' "
         "tabindex='0' role='img' "
         "aria-label='Interactive unspent transparent value by age. "
         "Use mouse, touch, or arrow keys to inspect each age band.'>"
@@ -1479,13 +1502,10 @@ static void hodl_emit_age_distribution_chart(size_t *off, uint8_t *r,
         "<stop offset='0%%' stop-color='#35d07f' stop-opacity='0.18'/>"
         "<stop offset='100%%' stop-color='#35d07f' stop-opacity='0.02'/>"
         "</linearGradient>"
-        "</defs>"
-        "<text class='hodl-svg-title' x='30' y='34' fill='#f5f7fa' "
-        "font-size='20'>Unspent transparent value by age</text>"
-        "<text x='30' y='58' fill='#9aa8b5' font-size='12'>"
-        "Current transparent UTXO value distribution.</text>");
+        "</defs>",
+        W, H);
 
-    int x0 = 70, y0 = 326, chart_w = 860, chart_h = 216;
+    int x0 = 70, y0 = 286, chart_w = 860, chart_h = 216;
     APPEND(*off, r, max,
         "<rect x='%d' y='%d' width='%d' height='%d' rx='7' "
         "fill='url(#hodl-age-bg)' stroke='#314655'/>",
@@ -1581,13 +1601,14 @@ static void hodl_emit_age_distribution_chart(size_t *off, uint8_t *r,
         "<text id='hodl-age-tip-count' x='20' y='93' fill='#8d96a0' "
         "font-size='12'>-</text>"
         "</g>"
-        "<text x='970' y='447' fill='#4d5662' font-size='11' text-anchor='end'>"
-        "Source: %s</text></svg></section>"
+        "<text x='%d' y='%d' fill='#4d5662' font-size='11' text-anchor='end'>"
+        "Source: %s</text></svg></div></section>"
         "<script>(function(){"
         "var svg=document.getElementById('hodl-age-wave');"
         "if(!svg)return;"
-        "var wrap=svg.parentElement;"
+        "var wrap=document.getElementById('hodl-age-canvas');"
         "var data=[",
+        W - 30, H - 17,
         cached_snapshot ? "verified cached transparent UTXO set" :
                           "current transparent UTXO set");
     for (int b = 0; b < HODL_WAVE_BUCKETS; b++) {
@@ -1716,7 +1737,8 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
     sqlite3_close(db);
 
     struct template_var open_vars[] = {
-        { "css", HODL_VIEW_CSS },
+        { "css_base", HODL_VIEW_CSS_BASE },
+        { "css_detail", HODL_VIEW_CSS_DETAIL },
     };
     hodl_append_template(&off, r, max, HODL_PAGE_OPEN_TEMPLATE,
                          open_vars, sizeof(open_vars) / sizeof(open_vars[0]));

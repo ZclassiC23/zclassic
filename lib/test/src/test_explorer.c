@@ -211,6 +211,11 @@ int test_explorer(void)
              strstr((char *)out, "class='hodl-table-wrap'") != NULL &&
              strstr((char *)out, "class='txlist hodl-table'") != NULL &&
              strstr((char *)out, "id='hodl-survival-wave'") != NULL &&
+             strstr((char *)out, "id='hodl-survival-canvas'") != NULL &&
+             strstr((char *)out,
+                    "class='hodl-chart-canvas'><svg id='hodl-survival-wave'") != NULL &&
+             strstr((char *)out,
+                    "var wrap=document.getElementById('hodl-survival-canvas')") != NULL &&
              strstr((char *)out, "Historical HODL wave") != NULL &&
              strstr((char *)out, "4 verified samples") != NULL &&
              strstr((char *)out, "Source: historical UTXO snapshots") != NULL &&
@@ -225,6 +230,7 @@ int test_explorer(void)
              strstr((char *)out, "5 years") != NULL &&
              strstr((char *)out, "214748") == NULL &&
              strstr((char *)out, "id='hodl-survival-dot-0'") != NULL &&
+             strstr((char *)out, "class='hodl-svg-title'") == NULL &&
              strstr((char *)out, "{{") == NULL &&
              strstr((char *)out, "[4320,1000,400,20000,12500,6250,0,80,50,25,0]") != NULL &&
              strstr((char *)out, "[8640,2000,800,37500,25000,12500,6250,300,200,100,50]") != NULL &&
@@ -344,6 +350,11 @@ int test_explorer(void)
                     "Current transparent UTXO value distribution") != NULL &&
              strstr((char *)out, "id='hodl-age-wave'") != NULL &&
              strstr((char *)out, "id='hodl-age-wrap'") != NULL &&
+             strstr((char *)out, "id='hodl-age-canvas'") != NULL &&
+             strstr((char *)out,
+                    "class='hodl-chart-canvas'><svg id='hodl-age-wave'") != NULL &&
+             strstr((char *)out,
+                    "var wrap=document.getElementById('hodl-age-canvas')") != NULL &&
              strstr((char *)out, "class='hodl-age-hit'") != NULL &&
              strstr((char *)out, "aria-label='") != NULL &&
              strstr((char *)out, "requestAnimationFrame(maybeScrollSelected)") != NULL &&
