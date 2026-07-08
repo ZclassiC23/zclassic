@@ -15,6 +15,7 @@
 #include "jobs/reducer_frontier.h"
 #include "models/hodl_wave.h"
 #include "services/hodl_history_service.h"
+#include "util/ar_step_readonly.h"
 #include "util/safe_alloc.h"
 #include "util/template.h"
 #include "util/thread_registry.h"
@@ -25,6 +26,7 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -273,12 +275,61 @@ struct hodl_chart_row {
     double  older_1y_pct;
 };
 
+enum {
+    HODL_SURVIVAL_THRESHOLDS = 4,
+    HODL_SURVIVAL_MAX_ROWS = 2048,
+    HODL_CUM_MAX_ROWS = 2000000,
+    HODL_GENESIS_TIME = 1478403829LL,
+    HODL_BUTTERCUP_HEIGHT = 707000LL,
+    HODL_PRE_BUTTERCUP_SPACING = 150LL,
+    HODL_POST_BUTTERCUP_SPACING = 75LL,
+    HODL_HALF_YEAR_SECONDS = 15778800LL,
+    HODL_ONE_YEAR_SECONDS = 31557600LL,
+    HODL_TWO_YEAR_SECONDS = 63115200LL,
+    HODL_FIVE_YEAR_SECONDS = 157788000LL
+};
+
+struct hodl_cum_row {
+    int64_t height;
+    int64_t cumulative_zat;
+};
+
+struct hodl_threshold_def {
+    const char *label;
+    const char *color;
+    int64_t age_seconds;
+};
+
+static const struct hodl_threshold_def HODL_THRESHOLDS[HODL_SURVIVAL_THRESHOLDS] = {
+    { "6 months", "#2fc6a3", HODL_HALF_YEAR_SECONDS },
+    { "1 year",   "#33ff99", HODL_ONE_YEAR_SECONDS },
+    { "2 years",  "#3399dd", HODL_TWO_YEAR_SECONDS },
+    { "5 years",  "#7646c8", HODL_FIVE_YEAR_SECONDS },
+};
+
+struct hodl_survival_row {
+    int64_t height;
+    int64_t time;
+    int64_t total_zat;
+    int64_t older_zat[HODL_SURVIVAL_THRESHOLDS];
+    int pct_x1000[HODL_SURVIVAL_THRESHOLDS];
+};
+
 #define HODL_VIEW_CACHE_DATADIR_MAX 1024
 #define HODL_VIEW_CACHE_HASH_MAX 80
 #define HODL_VIEW_DISK_CACHE_PATH_MAX 1200
 #define HODL_VIEW_DISK_CACHE_MAGIC "zcl_hodl_snapshot_v1"
 #define HODL_VIEW_DISK_CACHE_FILE "hodl-current-v1.cache"
 #define HODL_VIEW_SYNC_SCAN_DB_BYTES_MAX (128LL * 1024LL * 1024LL)
+
+struct hodl_survival_cache_entry {
+    bool valid;
+    char datadir[HODL_VIEW_CACHE_DATADIR_MAX];
+    int64_t tip_height;
+    char tip_hash[HODL_VIEW_CACHE_HASH_MAX];
+    int row_count;
+    struct hodl_survival_row rows[HODL_SURVIVAL_MAX_ROWS];
+};
 
 struct hodl_view_cache_entry {
     bool valid;
@@ -299,6 +350,8 @@ static pthread_mutex_t g_hodl_view_cache_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct hodl_view_cache_entry g_hodl_view_cache;
 static pthread_mutex_t g_hodl_view_refresh_lock = PTHREAD_MUTEX_INITIALIZER;
 static bool g_hodl_view_refresh_active;
+static pthread_mutex_t g_hodl_survival_cache_lock = PTHREAD_MUTEX_INITIALIZER;
+static struct hodl_survival_cache_entry g_hodl_survival_cache;
 
 static bool hodl_view_datadir_key(const char *datadir, char out[HODL_VIEW_CACHE_DATADIR_MAX])
 {
@@ -711,6 +764,499 @@ static int hodl_chart_y(const struct hodl_chart_row *row,
                            (y_max - y_min) * ph);
 }
 
+static int64_t hodl_cum_at(const struct hodl_cum_row *cum, int n,
+                           int64_t target_height)
+{
+    int lo = 0;
+    int hi = n - 1;
+    int found = -1;
+
+    while (lo <= hi) {
+        int mid = lo + (hi - lo) / 2;
+        if (cum[mid].height <= target_height) {
+            found = mid;
+            lo = mid + 1;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    return found >= 0 ? cum[found].cumulative_zat : 0;
+}
+
+static int64_t hodl_height_for_age(int64_t sample_height,
+                                   int64_t age_seconds)
+{
+    if (age_seconds <= 0)
+        return sample_height;
+    if (sample_height >= HODL_BUTTERCUP_HEIGHT) {
+        int64_t post_span =
+            (sample_height - HODL_BUTTERCUP_HEIGHT) *
+            HODL_POST_BUTTERCUP_SPACING;
+        if (age_seconds <= post_span)
+            return sample_height - age_seconds / HODL_POST_BUTTERCUP_SPACING;
+        return HODL_BUTTERCUP_HEIGHT -
+               (age_seconds - post_span) / HODL_PRE_BUTTERCUP_SPACING;
+    }
+    return sample_height - age_seconds / HODL_PRE_BUTTERCUP_SPACING;
+}
+
+static int64_t hodl_estimated_block_time(int64_t height)
+{
+    int64_t pre = height < HODL_BUTTERCUP_HEIGHT
+        ? height : HODL_BUTTERCUP_HEIGHT;
+    int64_t post = height < HODL_BUTTERCUP_HEIGHT
+        ? 0 : height - HODL_BUTTERCUP_HEIGHT;
+    return HODL_GENESIS_TIME +
+           pre * HODL_PRE_BUTTERCUP_SPACING +
+           post * HODL_POST_BUTTERCUP_SPACING;
+}
+
+static int64_t hodl_block_time_lookup(sqlite3_stmt *stmt, int64_t height)
+{
+    int64_t out = 0;
+
+    if (!stmt)
+        return hodl_estimated_block_time(height);
+    sqlite3_reset(stmt);
+    sqlite3_clear_bindings(stmt);
+    sqlite3_bind_int64(stmt, 1, height);
+    if (AR_STEP_ROW_READONLY(stmt) == SQLITE_ROW)
+        out = sqlite3_column_int64(stmt, 0);
+    if (out <= 0)
+        out = hodl_estimated_block_time(height);
+    return out;
+}
+
+static bool hodl_survival_cache_get(const char *datadir_key,
+                                    int64_t tip_height,
+                                    const char *tip_hash,
+                                    struct hodl_survival_row *rows,
+                                    int *row_count)
+{
+    bool hit = false;
+
+    if (!datadir_key || !tip_hash || !rows || !row_count)
+        return false;
+    pthread_mutex_lock(&g_hodl_survival_cache_lock);
+    if (g_hodl_survival_cache.valid &&
+        g_hodl_survival_cache.tip_height == tip_height &&
+        strcmp(g_hodl_survival_cache.datadir, datadir_key) == 0 &&
+        strcmp(g_hodl_survival_cache.tip_hash, tip_hash) == 0 &&
+        g_hodl_survival_cache.row_count > 0 &&
+        g_hodl_survival_cache.row_count <= HODL_SURVIVAL_MAX_ROWS) {
+        *row_count = g_hodl_survival_cache.row_count;
+        memcpy(rows, g_hodl_survival_cache.rows,
+               (size_t)*row_count * sizeof(*rows));
+        hit = true;
+    }
+    pthread_mutex_unlock(&g_hodl_survival_cache_lock);
+    return hit;
+}
+
+static void hodl_survival_cache_put(const char *datadir_key,
+                                    int64_t tip_height,
+                                    const char *tip_hash,
+                                    const struct hodl_survival_row *rows,
+                                    int row_count)
+{
+    if (!datadir_key || !tip_hash || !rows || row_count <= 0 ||
+        row_count > HODL_SURVIVAL_MAX_ROWS)
+        return;
+    pthread_mutex_lock(&g_hodl_survival_cache_lock);
+    snprintf(g_hodl_survival_cache.datadir,
+             sizeof(g_hodl_survival_cache.datadir), "%s", datadir_key);
+    snprintf(g_hodl_survival_cache.tip_hash,
+             sizeof(g_hodl_survival_cache.tip_hash), "%s", tip_hash);
+    g_hodl_survival_cache.tip_height = tip_height;
+    g_hodl_survival_cache.row_count = row_count;
+    memcpy(g_hodl_survival_cache.rows, rows,
+           (size_t)row_count * sizeof(*rows));
+    g_hodl_survival_cache.valid = true;
+    pthread_mutex_unlock(&g_hodl_survival_cache_lock);
+}
+
+static int hodl_pct_x1000(int64_t older_zat, int64_t total_zat)
+{
+    int pct = 0;
+    if (older_zat < 0)
+        older_zat = 0;
+    if (older_zat > total_zat)
+        older_zat = total_zat;
+    if (total_zat > 0)
+        pct = (int)((double)older_zat / (double)total_zat * 100000.0 + 0.5);
+    if (pct < 0)
+        pct = 0;
+    if (pct > 100000)
+        pct = 100000;
+    return pct;
+}
+
+static bool hodl_build_survival_rows(sqlite3 *db,
+                                     const struct hodl_wave_snapshot *hodl,
+                                     struct hodl_survival_row *rows,
+                                     int *row_count)
+{
+    struct hodl_cum_row *cum = NULL;
+    sqlite3_stmt *scan = NULL;
+    sqlite3_stmt *time_lookup = NULL;
+    int n_cum = 0;
+    int n_rows = 0;
+    int64_t running = 0;
+    int64_t stride = HODL_HISTORY_SAMPLE_STRIDE;
+
+    if (!db || !hodl || !rows || !row_count || hodl->tip_height < 1)
+        return false;
+
+    cum = zcl_calloc(HODL_CUM_MAX_ROWS, sizeof(*cum), "hodl_survival_cum");
+    if (!cum)
+        return false;
+
+    if (sqlite3_prepare_v2(db,
+            "SELECT height, SUM(value) FROM utxos "
+            "WHERE value > 0 AND height >= 0 AND height <= ?1 "
+            "GROUP BY height ORDER BY height ASC",
+            -1, &scan, NULL) != SQLITE_OK || !scan) {
+        free(cum);
+        return false;
+    }
+    sqlite3_bind_int64(scan, 1, hodl->tip_height);
+    while (AR_STEP_ROW_READONLY(scan) == SQLITE_ROW) {
+        if (n_cum >= HODL_CUM_MAX_ROWS) {
+            sqlite3_finalize(scan);
+            free(cum);
+            return false;
+        }
+        int64_t h = sqlite3_column_int64(scan, 0);
+        int64_t v = sqlite3_column_int64(scan, 1);
+        if (h < 0 || v <= 0)
+            continue;
+        running += v;
+        cum[n_cum].height = h;
+        cum[n_cum].cumulative_zat = running;
+        n_cum++;
+    }
+    sqlite3_finalize(scan);
+    if (n_cum < 2 || running <= 0) {
+        free(cum);
+        return false;
+    }
+
+    int64_t estimated_rows = hodl->tip_height / stride + 2;
+    if (estimated_rows > HODL_SURVIVAL_MAX_ROWS - 1) {
+        int64_t mul = (estimated_rows + HODL_SURVIVAL_MAX_ROWS - 2) /
+                      (HODL_SURVIVAL_MAX_ROWS - 1);
+        if (mul > 1)
+            stride *= mul;
+    }
+
+    if (sqlite3_prepare_v2(db,
+            "SELECT time FROM blocks WHERE height=?1 LIMIT 1",
+            -1, &time_lookup, NULL) != SQLITE_OK) {
+        time_lookup = NULL;
+    }
+
+    for (int64_t h = stride;
+         h <= hodl->tip_height && n_rows < HODL_SURVIVAL_MAX_ROWS - 1;
+         h += stride) {
+        int64_t total = hodl_cum_at(cum, n_cum, h);
+        if (total <= 0)
+            continue;
+        rows[n_rows].height = h;
+        rows[n_rows].time = hodl_block_time_lookup(time_lookup, h);
+        rows[n_rows].total_zat = total;
+        for (int t = 0; t < HODL_SURVIVAL_THRESHOLDS; t++) {
+            int64_t boundary =
+                hodl_height_for_age(h, HODL_THRESHOLDS[t].age_seconds);
+            int64_t older = hodl_cum_at(cum, n_cum, boundary);
+            rows[n_rows].older_zat[t] = older;
+            rows[n_rows].pct_x1000[t] = hodl_pct_x1000(older, total);
+        }
+        n_rows++;
+    }
+
+    if (n_rows == 0 || rows[n_rows - 1].height < hodl->tip_height) {
+        int idx = n_rows;
+        if (idx < HODL_SURVIVAL_MAX_ROWS) {
+            int64_t total = hodl->total_value > 0
+                ? hodl->total_value : hodl_cum_at(cum, n_cum, hodl->tip_height);
+            rows[idx].height = hodl->tip_height;
+            rows[idx].time = hodl_block_time_lookup(time_lookup,
+                                                    hodl->tip_height);
+            rows[idx].total_zat = total;
+            for (int t = 0; t < HODL_SURVIVAL_THRESHOLDS; t++) {
+                int64_t boundary = hodl_height_for_age(
+                    hodl->tip_height, HODL_THRESHOLDS[t].age_seconds);
+                int64_t older = hodl_cum_at(cum, n_cum, boundary);
+                rows[idx].older_zat[t] = older;
+                rows[idx].pct_x1000[t] = hodl_pct_x1000(older, total);
+            }
+            n_rows++;
+        }
+    }
+
+    if (time_lookup)
+        sqlite3_finalize(time_lookup);
+    free(cum);
+    *row_count = n_rows;
+    return n_rows >= 2;
+}
+
+static int hodl_survival_x(const struct hodl_survival_row *row,
+                           int pl, int pw, int64_t t_min, int64_t t_max)
+{
+    if (!row || t_max <= t_min)
+        return pl;
+    return pl + (int)((double)(row->time - t_min) /
+                      (double)(t_max - t_min) * pw);
+}
+
+static int hodl_survival_y(const struct hodl_survival_row *row,
+                           int threshold, int pt, int ph)
+{
+    int pct = row ? row->pct_x1000[threshold] : 0;
+    if (pct < 0)
+        pct = 0;
+    if (pct > 100000)
+        pct = 100000;
+    return pt + ph - (int)((double)pct / 100000.0 * ph);
+}
+
+static void hodl_emit_survival_chart(size_t *off, uint8_t *r, size_t max,
+                                     const char *datadir,
+                                     const char *datadir_key,
+                                     const struct hodl_wave_snapshot *hodl)
+{
+    sqlite3 *db = NULL;
+    struct hodl_survival_row *rows = NULL;
+    int n = 0;
+    char tip_hash[HODL_VIEW_CACHE_HASH_MAX];
+
+    if (!off || !r || !datadir || !datadir_key || !hodl)
+        return;
+    rows = zcl_calloc(HODL_SURVIVAL_MAX_ROWS, sizeof(*rows),
+                      "hodl_survival_rows");
+    if (!rows)
+        return;
+    if (!explorer_open_readonly_db(datadir, &db)) {
+        free(rows);
+        return;
+    }
+    hodl_view_tip_hash(db, hodl->tip_height, tip_hash);
+    if (!hodl_survival_cache_get(datadir_key, hodl->tip_height, tip_hash,
+                                 rows, &n)) {
+        if (hodl_build_survival_rows(db, hodl, rows, &n))
+            hodl_survival_cache_put(datadir_key, hodl->tip_height, tip_hash,
+                                    rows, n);
+    }
+    sqlite3_close(db);
+
+    if (n < 2) {
+        free(rows);
+        return;
+    }
+
+    int W = 1000;
+    int H = 430;
+    int pl = 70;
+    int pr = 35;
+    int pt = 72;
+    int pb = 64;
+    int pw = W - pl - pr;
+    int ph = H - pt - pb;
+    int64_t t_min = rows[0].time;
+    int64_t t_max = rows[n - 1].time;
+    if (t_max <= t_min)
+        t_max = t_min + 1;
+
+    char sample_meta[96];
+    snprintf(sample_meta, sizeof(sample_meta), "%d samples", n);
+
+    APPEND(*off, r, max,
+        "<section class='hodl-chart-wrap hodl-wave-interactive'>"
+        "<svg id='hodl-survival-wave' viewBox='0 0 %d %d' "
+        "class='hodl-svg' tabindex='0' role='img' "
+        "aria-label='HODL Wave over time for 6 month, 1 year, 2 year, "
+        "and 5 year holding thresholds.' style='outline:none'>"
+        "<text x='30' y='31' fill='#ddd' font-size='21' "
+        "font-family='Georgia,serif'>HODL Wave over time</text>"
+        "<text x='30' y='53' fill='#777' font-size='12' "
+        "font-family='Georgia,serif'>Current surviving transparent supply: "
+        "share already older than each threshold at historical blocks</text>"
+        "<text x='%d' y='31' fill='#666' font-size='12' text-anchor='end' "
+        "font-family='Georgia,serif'>%s</text>",
+        W, H, W - pr, sample_meta);
+
+    int legend_x = 70;
+    for (int t = 0; t < HODL_SURVIVAL_THRESHOLDS; t++) {
+        APPEND(*off, r, max,
+            "<line x1='%d' y1='58' x2='%d' y2='58' stroke='%s' "
+            "stroke-width='3'/>"
+            "<text x='%d' y='62' fill='#bbb' font-size='12' "
+            "font-family='Georgia,serif'>%s</text>",
+            legend_x, legend_x + 24, HODL_THRESHOLDS[t].color,
+            legend_x + 32, HODL_THRESHOLDS[t].label);
+        legend_x += 130;
+    }
+
+    for (int g = 0; g <= 4; g++) {
+        int pct = g * 25;
+        int y = pt + ph - ph * g / 4;
+        APPEND(*off, r, max,
+            "<line x1='%d' y1='%d' x2='%d' y2='%d' stroke='#1a1a1a'/>"
+            "<text x='%d' y='%d' fill='#777' font-size='12' "
+            "text-anchor='end'>%d%%</text>",
+            pl, y, pl + pw, y, pl - 8, y + 4, pct);
+    }
+
+    for (int g = 0; g <= 4; g++) {
+        int64_t tval = t_min + (t_max - t_min) * g / 4;
+        int x = pl + pw * g / 4;
+        time_t tt = (time_t)tval;
+        struct tm tm_;
+        char dbuf[16];
+        gmtime_r(&tt, &tm_);
+        strftime(dbuf, sizeof(dbuf), "%Y-%m", &tm_);
+        APPEND(*off, r, max,
+            "<line x1='%d' y1='%d' x2='%d' y2='%d' stroke='#151515'/>"
+            "<text x='%d' y='%d' fill='#777' font-size='12' "
+            "text-anchor='middle' font-family='Georgia,serif'>%s</text>",
+            x, pt, x, pt + ph, x, pt + ph + 20, dbuf);
+    }
+
+    for (int t = 0; t < HODL_SURVIVAL_THRESHOLDS; t++) {
+        APPEND(*off, r, max,
+            "<polyline fill='none' stroke='%s' stroke-width='%d' "
+            "stroke-linejoin='round' stroke-linecap='round' points='",
+            HODL_THRESHOLDS[t].color, t == 1 ? 3 : 2);
+        for (int i = 0; i < n; i++) {
+            int x = hodl_survival_x(&rows[i], pl, pw, t_min, t_max);
+            int y = hodl_survival_y(&rows[i], t, pt, ph);
+            APPEND(*off, r, max, "%s%d,%d", i ? " " : "", x, y);
+        }
+        APPEND(*off, r, max, "'/>");
+    }
+
+    APPEND(*off, r, max,
+        "<line id='hodl-survival-xhair' x1='0' y1='%d' x2='0' y2='%d' "
+        "stroke='#ffffff' stroke-dasharray='2,3' stroke-width='1' "
+        "opacity='0.55' style='display:none;pointer-events:none'/>",
+        pt, pt + ph);
+    for (int t = 0; t < HODL_SURVIVAL_THRESHOLDS; t++) {
+        APPEND(*off, r, max,
+            "<circle id='hodl-survival-dot-%d' cx='0' cy='0' r='4' "
+            "fill='%s' stroke='#050505' stroke-width='1' "
+            "style='display:none;pointer-events:none'/>",
+            t, HODL_THRESHOLDS[t].color);
+    }
+    APPEND(*off, r, max,
+        "<g id='hodl-survival-tip' style='display:none;pointer-events:none'>"
+        "<rect id='hodl-survival-tip-bg' x='0' y='0' width='330' "
+        "height='150' rx='7' fill='#000' stroke='#33ff99' opacity='0.95'/>"
+        "<text id='hodl-survival-date' x='12' y='22' fill='#fff' "
+        "font-size='13' font-family='Georgia,serif'>-</text>"
+        "<text id='hodl-survival-total' x='12' y='43' fill='#aaa' "
+        "font-size='12'>-</text>"
+        "<text id='hodl-survival-h' x='12' y='62' fill='#666' "
+        "font-size='11'>-</text>");
+    for (int t = 0; t < HODL_SURVIVAL_THRESHOLDS; t++) {
+        int y = 86 + t * 17;
+        APPEND(*off, r, max,
+            "<rect x='12' y='%d' width='10' height='10' rx='2' fill='%s'/>"
+            "<text id='hodl-survival-row-%d' x='30' y='%d' fill='#ddd' "
+            "font-size='12'>-</text>",
+            y - 9, HODL_THRESHOLDS[t].color, t, y);
+    }
+    APPEND(*off, r, max,
+        "</g>"
+        "<text x='970' y='412' fill='#444' font-size='11' "
+        "font-family='Georgia,serif' text-anchor='end'>"
+        "Source: current surviving transparent UTXO set</text>"
+        "</svg></section>"
+        "<script>(function(){"
+        "var data=[");
+    for (int i = 0; i < n; i++) {
+        APPEND(*off, r, max,
+            "%s[%" PRId64 ",%" PRId64 ",%" PRId64,
+            i ? "," : "", rows[i].height, rows[i].time, rows[i].total_zat);
+        for (int t = 0; t < HODL_SURVIVAL_THRESHOLDS; t++)
+            APPEND(*off, r, max, ",%d", rows[i].pct_x1000[t]);
+        for (int t = 0; t < HODL_SURVIVAL_THRESHOLDS; t++)
+            APPEND(*off, r, max, ",%" PRId64, rows[i].older_zat[t]);
+        APPEND(*off, r, max, "]");
+    }
+    APPEND(*off, r, max, "];var series=[");
+    for (int t = 0; t < HODL_SURVIVAL_THRESHOLDS; t++) {
+        APPEND(*off, r, max, "%s['%s','%s']",
+               t ? "," : "", HODL_THRESHOLDS[t].label,
+               HODL_THRESHOLDS[t].color);
+    }
+    APPEND(*off, r, max,
+        "];var W=%d,pl=%d,pr=%d,pt=%d,pb=%d,ph=%d,pw=W-pl-pr;"
+        "var tmin=%" PRId64 ",tmax=%" PRId64 ";"
+        "var svg=document.getElementById('hodl-survival-wave');"
+        "var xhair=document.getElementById('hodl-survival-xhair');"
+        "var tip=document.getElementById('hodl-survival-tip');"
+        "var tipBg=document.getElementById('hodl-survival-tip-bg');"
+        "var td=document.getElementById('hodl-survival-date');"
+        "var tt=document.getElementById('hodl-survival-total');"
+        "var th=document.getElementById('hodl-survival-h');"
+        "var dots=series.map(function(_,i){return document.getElementById('hodl-survival-dot-'+i);});"
+        "var rows=series.map(function(_,i){return document.getElementById('hodl-survival-row-'+i);});"
+        "var TIPW=330,TIPH=150,cur=-1;"
+        "tipBg.setAttribute('width',TIPW);tipBg.setAttribute('height',TIPH);"
+        "function fmtZcl(z){var v=z/1e8;if(v>=1e6)return(v/1e6).toFixed(2)+'M';"
+        "if(v>=1e3)return(v/1e3).toFixed(2)+'k';return v.toFixed(2);}"
+        "function fmtDate(t){return new Date(t*1000).toISOString().slice(0,10);}"
+        "function hide(){xhair.style.display='none';tip.style.display='none';"
+        "dots.forEach(function(d){if(d)d.style.display='none';});}"
+        "function pickNearest(svgX){var frac=(svgX-pl)/pw;"
+        "var target=tmin+frac*(tmax-tmin);var lo=0,hi=data.length-1;"
+        "while(lo<hi){var m=(lo+hi)>>1;if(data[m][1]<target)lo=m+1;else hi=m;}"
+        "if(lo>0&&Math.abs(data[lo-1][1]-target)<Math.abs(data[lo][1]-target))lo--;"
+        "return lo;}"
+        "function yFor(p){return Math.round(pt+ph-(p/100000)*ph);}"
+        "function render(svgX){if(svgX<pl)svgX=pl;if(svgX>W-pr)svgX=W-pr;"
+        "var i=pickNearest(svgX);cur=i;var row=data[i];"
+        "var x=Math.round(pl+(row[1]-tmin)/(tmax-tmin)*pw);"
+        "xhair.setAttribute('x1',x);xhair.setAttribute('x2',x);"
+        "xhair.style.display='';"
+        "for(var s=0;s<series.length;s++){var y=yFor(row[3+s]);"
+        "if(dots[s]){dots[s].setAttribute('cx',x);dots[s].setAttribute('cy',y);"
+        "dots[s].style.display='';}}"
+        "var tx=x+14;if(tx+TIPW>W-pr)tx=x-TIPW-14;if(tx<pl)tx=pl;"
+        "var ty=pt+12;if(ty+TIPH>pt+ph)ty=pt+ph-TIPH;"
+        "tip.setAttribute('transform','translate('+tx+','+ty+')');"
+        "tip.style.display='';td.textContent=fmtDate(row[1]);"
+        "tt.textContent='Current surviving total then: '+fmtZcl(row[2])+' ZCL';"
+        "th.textContent='Block '+row[0].toLocaleString();"
+        "for(var s=0;s<series.length;s++){var p=row[3+s]/1000;"
+        "var z=row[3+series.length+s];"
+        "rows[s].textContent=series[s][0]+': '+p.toFixed(2)+'%%, '+fmtZcl(z)+' ZCL';}"
+        "}"
+        "var pend=null,raf=0;"
+        "function sched(x){pend=x;if(!raf)raf=requestAnimationFrame(function(){"
+        "raf=0;if(pend!=null)render(pend);});}"
+        "function pt2svg(clientX){var rc=svg.getBoundingClientRect();"
+        "return (clientX-rc.left)*(W/rc.width);}"
+        "svg.addEventListener('mousemove',function(e){var sx=pt2svg(e.clientX);"
+        "if(sx<pl||sx>W-pr){hide();return;}sched(sx);});"
+        "svg.addEventListener('mouseleave',hide);"
+        "function onTouch(e){if(!e.touches[0])return;var sx=pt2svg(e.touches[0].clientX);"
+        "if(sx>=pl&&sx<=W-pr)sched(sx);e.preventDefault();}"
+        "svg.addEventListener('touchstart',onTouch,{passive:false});"
+        "svg.addEventListener('touchmove',onTouch,{passive:false});"
+        "svg.addEventListener('touchend',hide);svg.addEventListener('touchcancel',hide);"
+        "svg.addEventListener('keydown',function(e){var k=e.key,i=cur<0?data.length-1:cur;"
+        "if(k==='ArrowLeft')i=Math.max(0,i-1);else if(k==='ArrowRight')i=Math.min(data.length-1,i+1);"
+        "else if(k==='Home')i=0;else if(k==='End')i=data.length-1;"
+        "else if(k==='Escape'){hide();return;}else return;e.preventDefault();"
+        "render(pl+(data[i][1]-tmin)/(tmax-tmin)*pw);});"
+        "render(W-pr);})();</script>",
+        W, pl, pr, pt, pb, ph, t_min, t_max);
+
+    free(rows);
+}
+
 static void hodl_emit_age_distribution_chart(size_t *off, uint8_t *r,
                                              size_t max,
                                              const struct hodl_wave_snapshot *h,
@@ -979,6 +1525,8 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
     };
     hodl_append_template(&off, r, max, HODL_HERO_TEMPLATE,
                          hero_vars, sizeof(hero_vars) / sizeof(hero_vars[0]));
+    if (cacheable)
+        hodl_emit_survival_chart(&off, r, max, datadir, datadir_key, &hodl);
     hodl_emit_age_distribution_chart(&off, r, max, &hodl, cached_snapshot);
 
     /* ── Time-series chart: % held > 1y over time ────────────────

@@ -171,7 +171,7 @@ int test_explorer(void)
             "INSERT INTO blocks(height,time) VALUES"
             "(4320,1000),(8640,2000),(21600,5000),(25920,6000);"
             "INSERT INTO utxos(height,value) VALUES"
-            "(25920,1000);"
+            "(4320,400),(8640,400),(21600,100),(25920,100);"
             "INSERT INTO hodl_history(height,time,total_zat,older_1y_zat,"
             "older_1y_pct) VALUES"
             "(4320,1000,400,50,12.5),"
@@ -202,6 +202,12 @@ int test_explorer(void)
              strstr((char *)out, "class='stats-row hodl-stats'") != NULL &&
              strstr((char *)out, "class='hodl-table-wrap'") != NULL &&
              strstr((char *)out, "class='txlist hodl-table'") != NULL &&
+             strstr((char *)out, "id='hodl-survival-wave'") != NULL &&
+             strstr((char *)out, "HODL Wave over time") != NULL &&
+             strstr((char *)out, "6 months") != NULL &&
+             strstr((char *)out, "2 years") != NULL &&
+             strstr((char *)out, "5 years") != NULL &&
+             strstr((char *)out, "id='hodl-survival-dot-0'") != NULL &&
              strstr((char *)out, "{{") == NULL &&
              strstr((char *)out, "Historical transparent UTXO value") != NULL &&
              strstr((char *)out, "[4320,1000,400,50,12500]") != NULL &&
@@ -210,8 +216,8 @@ int test_explorer(void)
              strstr((char *)out, "[25920,6000,1000,800,80000]") != NULL &&
              strstr((char *)out, "4 samples · 1 gap") != NULL &&
              strstr((char *)out, "backfilling") != NULL &&
-             green_segments == 2 &&
-             strstr((char *)out, "surviving") == NULL &&
+             green_segments == 3 &&
+             strstr((char *)out, "surviving creation") == NULL &&
              strstr((char *)out,
                     "style='max-width:1000px;margin:20px auto'") == NULL &&
              strstr((char *)out,
