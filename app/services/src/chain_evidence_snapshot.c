@@ -147,9 +147,14 @@ void chain_evidence_controller_snapshot(
     out->publish_state_not_local =
         out->active_tip_height >= 0 &&
         out->publish_state != CEC_PUBLISH_LOCAL_EVIDENCE;
+    bool durable_frontier_lag =
+        out->sqlite_max_height >= 0 &&
+        out->persisted_active_tip_height == out->sqlite_max_height &&
+        out->sqlite_max_height < out->active_tip_height;
     out->active_tip_hash_mismatch =
         out->has_active_tip_hash &&
         out->has_persisted_active_tip_hash &&
+        !durable_frontier_lag &&
         !u256_equal(&out->active_tip_hash, &out->persisted_active_tip_hash);
     out->csr_cursor_mismatch =
         out->has_active_tip_hash &&

@@ -3904,6 +3904,9 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(agent_contracts_def_buf,
                       "zcl.anchor_mint_status.v1") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf,
+                      "zcl.operator_proof_bundle.v1") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl_proof_bundle") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "zcl.agent_build.v1") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "dev_node_binary") != NULL);
         ASSERT(strstr(agent_ctrl_buf, "make agent-loop") != NULL);
@@ -4334,13 +4337,19 @@ static int t_native_agent_api_contract(void)
                       "zcl.milestone_status.v1") != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "zcl.refold_status.v1")
                != NULL);
+        ASSERT(strstr(agent_contracts_def_buf,
+                      "zcl.operator_proof_bundle.v1") != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "zcl_milestone") != NULL);
         ASSERT(strstr(agent_contracts_def_buf, "zcl_refold_status") != NULL);
+        ASSERT(strstr(agent_contracts_def_buf, "zcl_proof_bundle") != NULL);
         ASSERT(strstr(api_buf, "\"compat_command\"") == NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 agentbuild") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_agent_build") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 anchorstatus") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.anchor_mint_status.v1") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zclassic23 proofbundle") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl_proof_bundle") != NULL);
+        ASSERT(strstr(agent_doc_buf, "zcl.operator_proof_bundle.v1") != NULL);
         ASSERT(strstr(agent_doc_buf, "zclassic23 appprotocols") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl_app_protocols") != NULL);
         ASSERT(strstr(agent_doc_buf,

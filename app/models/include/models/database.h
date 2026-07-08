@@ -27,6 +27,7 @@ struct node_db_status {
 struct node_db {
     sqlite3 *db;
     bool open;
+    char path[1024];
 
     /* Prepared statements cached for hot paths */
     sqlite3_stmt *stmt_utxo_insert;
@@ -112,6 +113,8 @@ void node_db_get_status(struct node_db *ndb, struct node_db_status *out);
 /* Key-value state store (replaces misc flags). */
 bool node_db_state_set(struct node_db *ndb, const char *key,
                        const void *value, size_t len);
+bool node_db_state_set_detached(struct node_db *ndb, const char *key,
+                                const void *value, size_t len);
 bool node_db_state_get(struct node_db *ndb, const char *key,
                        void *value, size_t max_len, size_t *out_len);
 bool node_db_state_set_int(struct node_db *ndb, const char *key, int64_t val);

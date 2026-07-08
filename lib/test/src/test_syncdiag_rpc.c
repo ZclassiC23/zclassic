@@ -4612,12 +4612,12 @@ syncdiag_net_split_done:
                           "zcl.agent_map.v1") == 0;
         ok = ok &&
             agent_contract_command_surface_count("agentmap.commands.core") ==
-                13;
+                14;
         ok = ok &&
             agent_contract_command_surface_count(
                 "agentmap.commands.drilldown") == 6;
         ok = ok &&
-            agent_contract_command_surface_count("agentmap.telemetry") == 11;
+            agent_contract_command_surface_count("agentmap.telemetry") == 12;
         ok = ok &&
             agent_contract_command_surface_count("missing.surface") == 0;
         ok = ok && commands && commands->type == JSON_ARR;
@@ -4634,6 +4634,14 @@ syncdiag_net_split_done:
         ok = ok && map_dev_status &&
             strcmp(json_get_str(json_get(map_dev_status, "mcp")),
                    "zcl_agent_dev_status") == 0;
+        const struct json_value *map_proof_bundle =
+            find_object_with_str(commands, "name", "proof_bundle");
+        ok = ok && map_proof_bundle &&
+            strcmp(json_get_str(json_get(map_proof_bundle, "native")),
+                   "zclassic23 proofbundle [anchor_datadir]") == 0;
+        ok = ok && map_proof_bundle &&
+            strcmp(json_get_str(json_get(map_proof_bundle, "mcp")),
+                   "zcl_proof_bundle") == 0;
         ok = ok && find_object_with_str(commands, "method", "healthcheck")
                          != NULL;
         ok = ok && find_object_with_str(commands, "method", "statecatalog")
@@ -4689,6 +4697,11 @@ syncdiag_net_split_done:
             find_object_with_str(telemetry, "name", "node_log") != NULL;
         ok = ok &&
             find_object_with_str(telemetry, "method", "anchorstatus") != NULL;
+        const struct json_value *map_proof_telemetry =
+            find_object_with_str(telemetry, "method", "proofbundle");
+        ok = ok && map_proof_telemetry &&
+            strcmp(json_get_str(json_get(map_proof_telemetry, "schema")),
+                   "zcl.operator_proof_bundle.v1") == 0;
         const struct json_value *map_db =
             find_object_with_str(telemetry, "method", "dbquery");
         ok = ok && map_db &&
@@ -4858,6 +4871,8 @@ syncdiag_net_split_done:
             find_object_with_str(contract_list, "method", "milestone");
         const struct json_value *contract_refold =
             find_object_with_str(contract_list, "method", "refold");
+        const struct json_value *contract_proof_bundle =
+            find_object_with_str(contract_list, "method", "proofbundle");
         const struct json_value *contract_peerincidents =
             find_object_with_str(contract_list, "method", "peerincidents");
         ok = ok && contracts.type == JSON_OBJ;
@@ -5103,6 +5118,23 @@ syncdiag_net_split_done:
         ok = ok && contract_refold &&
             strcmp(json_get_str(json_get(contract_refold, "mcp")),
                    "zcl_refold_status") == 0;
+        ok = ok && contract_proof_bundle &&
+            strcmp(json_get_str(json_get(contract_proof_bundle, "schema")),
+                   "zcl.operator_proof_bundle.v1") == 0;
+        ok = ok && contract_proof_bundle &&
+            strcmp(json_get_str(json_get(contract_proof_bundle, "native")),
+                   "zclassic23 proofbundle [anchor_datadir]") == 0;
+        ok = ok && contract_proof_bundle &&
+            strcmp(json_get_str(json_get(contract_proof_bundle, "mcp")),
+                   "zcl_proof_bundle") == 0;
+        ok = ok && contract_proof_bundle &&
+            strcmp(json_get_str(json_get(contract_proof_bundle,
+                                         "api_cli_field")),
+                   "proof_bundle_command") == 0;
+        ok = ok && contract_proof_bundle &&
+            strcmp(json_get_str(json_get(contract_proof_bundle,
+                                         "api_mcp_field")),
+                   "proof_bundle_tool") == 0;
         ok = ok && contract_peerincidents &&
             strcmp(json_get_str(json_get(contract_peerincidents, "schema")),
                    "zcl.peer_incidents.v1") == 0;
@@ -5183,6 +5215,9 @@ syncdiag_net_split_done:
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.refold_status.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
+                                        "zcl.operator_proof_bundle.v1")
+            != NULL;
+        ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_lanes.v1") != NULL;
         ok = ok && find_object_with_str(schemas, "schema",
                                         "zcl.agent_liveness.v1") != NULL;
@@ -5220,6 +5255,7 @@ syncdiag_net_split_done:
         ok = ok && json_array_has_substr(transports, "zcl_health");
         ok = ok && json_array_has_substr(transports, "zcl_milestone");
         ok = ok && json_array_has_substr(transports, "zcl_refold_status");
+        ok = ok && json_array_has_substr(transports, "zcl_proof_bundle");
         ok = ok && json_array_has_substr(transports, "zclassic23 status");
 
         struct json_value ops;
@@ -5281,6 +5317,12 @@ syncdiag_net_split_done:
                           "zclassic23 anchorstatus [-datadir=<anchor-datadir>]")
             == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops,
+                                                "proof_bundle_command")),
+                          "zclassic23 proofbundle [anchor_datadir]") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&ops,
+                                                "proof_bundle_tool")),
+                          "zcl_proof_bundle") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&ops,
                                                 "peer_incidents_command")),
                           "zclassic23 peerincidents") == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops,
@@ -5340,6 +5382,9 @@ syncdiag_net_split_done:
         const struct json_value *ops_direct_dev_status =
             find_object_with_str(ops_direct_commands, "method",
                                  "agentdevstatus");
+        const struct json_value *ops_direct_proof_bundle =
+            find_object_with_str(ops_direct_commands, "method",
+                                 "proofbundle");
         ok = ok && ops_direct_diagnose &&
             strcmp(json_get_str(json_get(ops_direct_diagnose, "schema")),
                    "zcl.agent_diagnose.v1") == 0;
@@ -5386,6 +5431,15 @@ syncdiag_net_split_done:
         ok = ok && ops_direct_dev_status &&
             strcmp(json_get_str(json_get(ops_direct_dev_status, "mcp")),
                    "zcl_agent_dev_status") == 0;
+        ok = ok && ops_direct_proof_bundle &&
+            strcmp(json_get_str(json_get(ops_direct_proof_bundle, "schema")),
+                   "zcl.operator_proof_bundle.v1") == 0;
+        ok = ok && ops_direct_proof_bundle &&
+            strcmp(json_get_str(json_get(ops_direct_proof_bundle, "native")),
+                   "zclassic23 proofbundle [anchor_datadir]") == 0;
+        ok = ok && ops_direct_proof_bundle &&
+            strcmp(json_get_str(json_get(ops_direct_proof_bundle, "mcp")),
+                   "zcl_proof_bundle") == 0;
         ok = ok && strstr(json_get_str(json_get(&ops,
                                                 "refold_plain_english")),
                           "borrowed snapshot seed") != NULL;
@@ -5398,7 +5452,7 @@ syncdiag_net_split_done:
         ok = ok &&
             agent_contract_work_surface_count("missing.surface") == 0;
         ok = ok &&
-            agent_contract_field_surface_count("agentops.first_call") == 13;
+            agent_contract_field_surface_count("agentops.first_call") == 14;
         ok = ok &&
             agent_contract_field_surface_count("missing.surface") == 0;
         ok = ok &&
@@ -7627,6 +7681,83 @@ syncdiag_net_split_done:
                    "zcl.refold_status.v1") == 0;
 
         json_free(&alias);
+        json_free(&params);
+        json_free(&result);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: native RPC returns operator proof bundle... ");
+    {
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        register_event_rpc_commands(&tbl);
+        if (rpc_is_in_warmup(NULL, 0))
+            set_rpc_warmup_finished();
+
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+        struct json_value anchor_dir;
+        json_init(&anchor_dir);
+        json_set_str(&anchor_dir, "/tmp");
+        json_push_back(&params, &anchor_dir);
+        json_free(&anchor_dir);
+
+        bool env_ok = setenv(
+            "ZCL_AGENT_DEV_STATUS_CMD",
+            "printf '%s\\n' '{\"schema\":\"zcl.agent_dev_status.v1\","
+            "\"worker_lane\":{\"name\":\"dev\",\"role\":\"worker\","
+            "\"mutation_policy\":\"noncanonical_dev_only\","
+            "\"canonical_guard\":\"never_touches_live_or_soak\"},"
+            "\"next_action\":\"unit-test\","
+            "\"service\":{\"active_state\":\"active\"},"
+            "\"rpc\":{\"status\":\"ok\"}}'",
+            1) == 0;
+
+        struct json_value result;
+        json_init(&result);
+
+        bool executed = rpc_table_execute(&tbl, "proofbundle",
+                                          &params, &result);
+        unsetenv("ZCL_AGENT_DEV_STATUS_CMD");
+        const struct json_value *commands = json_get(&result, "commands");
+        const struct json_value *agent = json_get(&result, "agent");
+        const struct json_value *milestone = json_get(&result, "milestone");
+        const struct json_value *refold = json_get(&result, "refold");
+        const struct json_value *anchor = json_get(&result, "anchor_status");
+        const struct json_value *lanes = json_get(&result, "lanes");
+        const struct json_value *dev = json_get(&result, "dev_status");
+        bool ok = env_ok && executed && result.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
+                          "zcl.operator_proof_bundle.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "anchor_datadir")),
+                          "/tmp") == 0;
+        ok = ok && commands &&
+            strcmp(json_get_str(json_get(commands, "mcp")),
+                   "zcl_proof_bundle") == 0;
+        ok = ok && agent &&
+            strcmp(json_get_str(json_get(agent, "schema")),
+                   "zcl.public_status.v1") == 0;
+        ok = ok && milestone &&
+            strcmp(json_get_str(json_get(milestone, "schema")),
+                   "zcl.milestone_status.v1") == 0;
+        ok = ok && refold &&
+            strcmp(json_get_str(json_get(refold, "schema")),
+                   "zcl.refold_status.v1") == 0;
+        ok = ok && anchor &&
+            strcmp(json_get_str(json_get(anchor, "schema")),
+                   "zcl.anchor_mint_status.v1") == 0;
+        ok = ok && lanes &&
+            strcmp(json_get_str(json_get(lanes, "schema")),
+                   "zcl.agent_lanes.v1") == 0;
+        ok = ok && dev &&
+            strcmp(json_get_str(json_get(dev, "schema")),
+                   "zcl.agent_dev_status.v1") == 0;
+        ok = ok && strcmp(json_get_str(json_get(dev, "next_action")),
+                          "unit-test") == 0;
+
         json_free(&params);
         json_free(&result);
 

@@ -48,7 +48,7 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL     126  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
+#define EXPECTED_TOTAL     127  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
                                  * +3 power-user tools: chain_tip,
                                  * reorg_history, mempool_inspect;
                                  * +1 Round 6 C5: zcl_blockers;
@@ -59,9 +59,10 @@
                                  *   zcl_waitforhalt, zcl_waitforblocker
                                  * +1 native milestone status: zcl_milestone
                                  * +1 native refold readiness: zcl_refold_status
-                                 * +11 agent API tools: map, lanes, impact,
+                                 * +12 agent API tools: map, lanes, impact,
                                  *   contracts, build, dev_status, interface,
-                                 *   ops, diagnose, liveness, deploy_guard
+                                 *   ops, diagnose, liveness, deploy_guard,
+                                 *   proof_bundle
                                  * +1 net bootstrapstatus
                                  * +1 net peer incident view
                                  * +1 state catalog: zcl_state_catalog
@@ -72,7 +73,7 @@
                                  * +2 wallet backup tools: zcl_wallet_backup_status,
                                  *   zcl_wallet_backup_now
                                  * +1 wallet receive intent */
-#define EXPECTED_OPS        57  /* + zcl_rebuild_recent (bounded recovery);
+#define EXPECTED_OPS        58  /* + zcl_rebuild_recent (bounded recovery);
                                  * status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, state + node_log + sql (round 6.5 MCP primitives),
@@ -90,7 +91,7 @@
                                  * + zcl_operator_summary + zcl_agent
                                  *   (simple MCP status)
                                  * + zcl_refold_status
-                                 * +9 zcl_agent_* development tools
+                                 * +10 zcl_agent_* development/proof tools
                                  * + zcl_app_protocols
                                  * + zcl_service_catalog
                                  * + zcl_service_operations
@@ -447,7 +448,8 @@ static int test_specific_flagship_tools_registered(void)
             "zcl_agent_contracts", "zcl_agent_build",
             "zcl_agent_dev_status", "zcl_agent_interface", "zcl_agent_ops",
             "zcl_agent_diagnose", "zcl_agent_liveness",
-            "zcl_agent_deploy_guard", "zcl_app_protocols",
+            "zcl_agent_deploy_guard", "zcl_proof_bundle",
+            "zcl_app_protocols",
             "zcl_service_catalog",
             "zcl_milestone", "zcl_refold_status", "zcl_kpi", "zcl_health",
             "zcl_getblockcount", "zcl_getblock", "zcl_getblockchaininfo",
@@ -615,6 +617,8 @@ static int test_zcl_agent_dev_tools_shape(void)
             mcp_router_find("zcl_agent_liveness");
         const struct mcp_tool_route *deploy_guard =
             mcp_router_find("zcl_agent_deploy_guard");
+        const struct mcp_tool_route *proof_bundle =
+            mcp_router_find("zcl_proof_bundle");
         const struct mcp_tool_route *app_protocols =
             mcp_router_find("zcl_app_protocols");
         const struct mcp_tool_route *service_catalog =
@@ -631,6 +635,7 @@ static int test_zcl_agent_dev_tools_shape(void)
         ASSERT(ops != NULL);
         ASSERT(liveness != NULL);
         ASSERT(deploy_guard != NULL);
+        ASSERT(proof_bundle != NULL);
         ASSERT(app_protocols != NULL);
         ASSERT(service_catalog != NULL);
         ASSERT(service_operations != NULL);
@@ -644,6 +649,7 @@ static int test_zcl_agent_dev_tools_shape(void)
         ASSERT(strcmp(ops->domain, "ops") == 0);
         ASSERT(strcmp(liveness->domain, "ops") == 0);
         ASSERT(strcmp(deploy_guard->domain, "ops") == 0);
+        ASSERT(strcmp(proof_bundle->domain, "ops") == 0);
         ASSERT(strcmp(app_protocols->domain, "ops") == 0);
         ASSERT(strcmp(service_catalog->domain, "ops") == 0);
         ASSERT(strcmp(service_operations->domain, "ops") == 0);
@@ -652,6 +658,11 @@ static int test_zcl_agent_dev_tools_shape(void)
         ASSERT(contracts->num_params == 0);
         ASSERT(build->num_params == 0);
         ASSERT(interface->num_params == 0);
+        ASSERT(proof_bundle->num_params == 1);
+        ASSERT(strcmp(proof_bundle->params[0].name,
+                      "anchor_datadir") == 0);
+        ASSERT(proof_bundle->params[0].type == MCP_PARAM_STR);
+        ASSERT(proof_bundle->params[0].required == false);
         ASSERT(service_catalog->num_params == 1);
         ASSERT(strcmp(service_catalog->params[0].name, "name") == 0);
         ASSERT(service_catalog->params[0].type == MCP_PARAM_STR);
@@ -1259,6 +1270,17 @@ static char *mock_agent_dev_rpc(const char *method, const char *params_json)
                       "\"incremental_compile\":{\"header_depfiles\":true},"
                       "\"commands\":[{\"name\":\"compile_check\"}],"
                       "\"reproducible_release\":{\"command\":\"make ci-reproducible\"}}");
+    if (strcmp(method, "proofbundle") == 0)
+        return strdup("{\"schema\":\"zcl.operator_proof_bundle.v1\","
+                      "\"api_version\":\"v1\","
+                      "\"build_commit\":\"nodecafe123\","
+                      "\"anchor_datadir\":\"/tmp\","
+                      "\"agent\":{\"schema\":\"zcl.public_status.v1\"},"
+                      "\"milestone\":{\"schema\":\"zcl.milestone_status.v1\"},"
+                      "\"refold\":{\"schema\":\"zcl.refold_status.v1\"},"
+                      "\"anchor_status\":{\"schema\":\"zcl.anchor_mint_status.v1\"},"
+                      "\"lanes\":{\"schema\":\"zcl.agent_lanes.v1\"},"
+                      "\"dev_status\":{\"schema\":\"zcl.agent_dev_status.v1\"}}");
     if (strcmp(method, "agentinterface") == 0)
         return strdup("{\"schema\":\"zcl.agent_interface.v1\","
                       "\"build_commit\":\"nodecafe123\","
@@ -1873,6 +1895,18 @@ static int test_zcl_agent_dev_tools_dispatch(void)
                       "make agent-stage-dev");
         ASSERT_STR_EQ(json_get_str(json_get(worker, "recover_command")),
                       "make lane-recover LANE=dev");
+        json_free(&root);
+        free(body);
+
+        body = mcp_router_dispatch("zcl_proof_bundle", &args);
+        ASSERT(body != NULL);
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.operator_proof_bundle.v1");
+        ASSERT(json_get(&root, "agent") != NULL);
+        ASSERT(json_get(&root, "milestone") != NULL);
+        ASSERT(json_get(&root, "anchor_status") != NULL);
+        ASSERT(json_get(&root, "dev_status") != NULL);
         json_free(&root);
         free(body);
 

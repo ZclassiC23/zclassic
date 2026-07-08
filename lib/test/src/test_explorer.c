@@ -215,9 +215,13 @@ int test_explorer(void)
              strstr((char *)out, "4 verified samples") != NULL &&
              strstr((char *)out, "Source: historical UTXO snapshots") != NULL &&
              strstr((char *)out, "class='hodl-end-label'") != NULL &&
+             strstr((char *)out, "Block height axis") != NULL &&
+             strstr((char *)out, "var hmin=") != NULL &&
+             strstr((char *)out, "var tmin=") == NULL &&
              strstr((char *)out, "6 months") != NULL &&
              strstr((char *)out, "2 years") != NULL &&
              strstr((char *)out, "5 years") != NULL &&
+             strstr((char *)out, "214748") == NULL &&
              strstr((char *)out, "id='hodl-survival-dot-0'") != NULL &&
              strstr((char *)out, "{{") == NULL &&
              strstr((char *)out, "[4320,1000,400,20000,12500,6250,0,80,50,25,0]") != NULL &&
@@ -230,6 +234,65 @@ int test_explorer(void)
                     "style='max-width:1000px;margin:20px auto'") == NULL &&
              strstr((char *)out,
                     "style='max-width:1000px;margin:18px auto'") == NULL;
+
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("explorer: HODL sparse history falls back to cohort wave... ");
+    {
+        char dbdir[256];
+        char dbpath[320];
+        sqlite3 *db = NULL;
+        snprintf(dbdir, sizeof(dbdir), ".zcl_test_explorer_hodl_sparse_%d",
+                 (int)getpid());
+        mkdir(dbdir, 0755);
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
+
+        bool ok = sqlite3_open(dbpath, &db) == SQLITE_OK;
+        ok = ok && sqlite3_exec(db,
+            "CREATE TABLE blocks(height INTEGER, hash BLOB, time INTEGER);"
+            "CREATE TABLE utxos(height INTEGER, value INTEGER);"
+            "CREATE TABLE hodl_history(height INTEGER, time INTEGER,"
+            "total_zat INTEGER,"
+            "older_6m_zat INTEGER, older_1y_zat INTEGER,"
+            "older_2y_zat INTEGER, older_5y_zat INTEGER,"
+            "older_6m_pct REAL, older_1y_pct REAL,"
+            "older_2y_pct REAL, older_5y_pct REAL,"
+            "calc_version INTEGER, source_tip_height INTEGER);"
+            "INSERT INTO blocks(height,hash,time) VALUES"
+            "(4320,x'1111111111111111111111111111111111111111111111111111111111111111',3000),"
+            "(8640,x'2222222222222222222222222222222222222222222222222222222222222222',2000),"
+            "(12960,x'3333333333333333333333333333333333333333333333333333333333333333',1000);"
+            "INSERT INTO utxos(height,value) VALUES(1,700),(4000,300);"
+            "INSERT INTO hodl_history(height,time,total_zat,"
+            "older_6m_zat,older_1y_zat,older_2y_zat,older_5y_zat,"
+            "older_6m_pct,older_1y_pct,older_2y_pct,older_5y_pct,"
+            "calc_version,source_tip_height) VALUES"
+            "(4320,3000,700,0,0,0,0,0.0,0.0,0.0,0.0,2,4320),"
+            "(12960,1000,1000,100,50,0,0,10.0,5.0,0.0,0.0,2,12960);",
+            NULL, NULL, NULL) == SQLITE_OK;
+        if (db)
+            sqlite3_close(db);
+
+        reducer_frontier_provable_tip_set(12960);
+        uint8_t out[65536];
+        size_t n = explorer_view_hodl(dbdir, out, sizeof(out) - 1);
+        reducer_frontier_provable_tip_reset();
+        out[n < sizeof(out) ? n : sizeof(out) - 1] = '\0';
+
+        ok = ok && n > 0 &&
+             strstr((char *)out, "HODL wave over time") != NULL &&
+             strstr((char *)out, "cohort samples") != NULL &&
+             strstr((char *)out, "Source: current surviving transparent UTXO set") != NULL &&
+             strstr((char *)out, "Historical HODL wave") == NULL &&
+             strstr((char *)out, "var hmin=") != NULL &&
+             strstr((char *)out, "var tmin=") == NULL &&
+             strstr((char *)out, "214748") == NULL;
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);

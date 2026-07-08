@@ -1628,6 +1628,11 @@ static const struct mcp_param_spec p_service_operations[] = {
       "Optional callable surface filter",
       0, 0, 0, 16, "rest,mcp,rpc", "\"\"" },
 };
+static const struct mcp_param_spec p_proof_bundle[] = {
+    { "anchor_datadir", MCP_PARAM_STR, false,
+      "Optional anchor mint datadir; defaults to ZCL_ANCHOR_MINT_DATADIR or ~/.zclassic-c23-anchor-mint",
+      0, 0, 0, 512, NULL, "\"\"" },
+};
 
 static int h_zcl_service_catalog(const struct mcp_request *req,
                                  struct mcp_response *res)
@@ -1705,6 +1710,25 @@ static int h_zcl_service_operations(const struct mcp_request *req,
                                    "operation_id=%s", operation_id);
 }
 
+static int h_zcl_proof_bundle_mcp(const struct mcp_request *req,
+                                  struct mcp_response *res)
+{
+    const char *anchor_datadir =
+        json_get_str_or(req ? req->args : NULL, "anchor_datadir", "");
+    if (!anchor_datadir || !anchor_datadir[0])
+        return mcp_return_rpc_body(res, mcp_node_rpc("proofbundle", NULL),
+                                   "proofbundle", "mcp.ops");
+
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, anchor_datadir);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("proofbundle", params) : NULL;
+    free(params);
+    return mcp_return_rpc_body_ctx(res, out, "proofbundle", "mcp.ops",
+                                   "anchor_datadir=%s", anchor_datadir);
+}
+
 struct agent_mcp_binding {
     const char *method;
     const struct mcp_param_spec *params;
@@ -1727,6 +1751,8 @@ static const struct agent_mcp_binding k_agent_mcp_bindings[] = {
     { "agentcontracts", NULL, 0, h_zcl_agent_contracts, 0, NULL },
     { "agentbuild", NULL, 0, h_zcl_agent_build, 0, NULL },
     { "agentdevstatus", NULL, 0, h_zcl_agent_dev_status, 0, NULL },
+    { "proofbundle", p_proof_bundle, PARAM_COUNT(p_proof_bundle),
+      h_zcl_proof_bundle_mcp, 0, "{\"anchor_datadir\":\"/tmp\"}" },
     { "agentinterface", NULL, 0, h_zcl_agent_interface, 0, NULL },
     { "agentops", NULL, 0, h_zcl_agent_ops, 0, NULL },
     { "appprotocols", NULL, 0, h_zcl_app_protocols, 0, NULL },

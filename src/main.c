@@ -11,6 +11,7 @@
  *   zclassic23 mcpcall <tool> [json]  — typed MCP tool call from this binary
  *   zclassic23 agent                  — compact status from running node
  *   zclassic23 status                 — compatibility alias for agent
+ *   zclassic23 proofbundle            — single read-only proof artifact
  *   zclassic23 statecatalog           — zcl_state subsystem catalog
  *   zclassic23 agentlanes             — canonical/soak/dev lane topology
  *   zclassic23 agentliveness          — unified liveness rollup
@@ -957,6 +958,7 @@ static const struct cli_static_agent_route g_cli_static_agent_routes[] = {
     { "agentbuild", rpc_agent_build },
     { "agentdevstatus", rpc_agent_dev_status },
     { "anchorstatus", rpc_agent_anchor_status },
+    { "proofbundle", rpc_agent_proof_bundle },
     { "appprotocols", rpc_app_protocols },
     { "servicecatalog", rpc_service_catalog },
     { "serviceoperations", rpc_service_operations },

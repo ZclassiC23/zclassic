@@ -84,6 +84,9 @@ static const struct agent_contract_schema_surface g_agent_schema_surfaces[] = {
     { 24, "zcl.mvp_operator_proofs.v1",
       "nested in zcl.milestone_status.v1",
       "MVP criterion proof commands, local dependencies, CI regression floors, and pending blockers" },
+    { 25, "zcl.operator_proof_bundle.v1",
+      "zclassic23 proofbundle / zcl_proof_bundle",
+      "one read-only evidence artifact tying live status, MVP proofs, sovereign anchor status, refold readiness, lanes, and dev status together" },
 };
 
 static const size_t g_agent_schema_surface_count =

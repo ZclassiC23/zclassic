@@ -18,8 +18,10 @@
 #include "jobs/reducer_frontier.h"
 #include "sync/sync_state.h"
 #include "json/json.h"
+#include "platform/time_compat.h"
 #include "rpc/server.h"
 #include "config/runtime.h"
+#include "util/clientversion.h"
 #include <stdlib.h>
 #include <string.h>
 #include "util/log_macros.h"
@@ -415,6 +417,150 @@ static bool rpc_refold_status(const struct json_value *params, bool help,
     return true;
 }
 
+static const char *rpc_proof_bundle_param(const struct json_value *params,
+                                          const char *key)
+{
+    if (!params || !key)
+        return "";
+    if (params->type == JSON_OBJ)
+        return json_get_str(json_get(params, key));
+    if (params->type == JSON_ARR && params->num_children > 0 &&
+        (strcmp(key, "anchor_datadir") == 0 ||
+         strcmp(key, "datadir") == 0))
+        return json_get_str(&params->children[0]);
+    return "";
+}
+
+static const char *rpc_proof_bundle_anchor_datadir(
+    const struct json_value *params, char *buf, size_t buf_len)
+{
+    const char *p = rpc_proof_bundle_param(params, "anchor_datadir");
+    if (!p || !p[0])
+        p = rpc_proof_bundle_param(params, "datadir");
+    if (!p || !p[0])
+        p = getenv("ZCL_ANCHOR_MINT_DATADIR");
+    if (p && p[0])
+        return p;
+
+    const char *home = getenv("HOME");
+    if (home && home[0])
+        snprintf(buf, buf_len, "%s/.zclassic-c23-anchor-mint", home);
+    else
+        snprintf(buf, buf_len, ".zclassic-c23-anchor-mint");
+    return buf;
+}
+
+static void rpc_proof_bundle_push_json(
+    struct json_value *result, const char *key,
+    bool (*producer)(const struct json_value *, bool, struct json_value *),
+    const struct json_value *params)
+{
+    struct json_value child;
+    json_init(&child);
+    if (producer && producer(params, false, &child))
+        json_push_kv(result, key, &child);
+    else {
+        json_set_object(&child);
+        json_push_kv_str(&child, "status", "error");
+        json_push_kv_str(&child, "error", "proof_bundle_producer_failed");
+        json_push_kv_str(&child, "producer", key ? key : "");
+        json_push_kv(result, key, &child);
+    }
+    json_free(&child);
+}
+
+bool rpc_agent_proof_bundle(const struct json_value *params, bool help,
+                            struct json_value *result)
+{
+    RPC_HELP(help, result,
+        "proofbundle [anchor_datadir]\n"
+        "\nReturn one read-only operator evidence artifact. The bundle\n"
+        "composes live agent status, MVP proof metadata, refold readiness,\n"
+        "offline anchor mint status, lane topology, and dev-lane status.\n"
+        "\nArguments:\n"
+        "1. anchor_datadir (string, optional) Anchor mint datadir. Defaults\n"
+        "   to ZCL_ANCHOR_MINT_DATADIR or ~/.zclassic-c23-anchor-mint.\n"
+        "\nResult:\n"
+        "  { \"schema\":\"zcl.operator_proof_bundle.v1\", "
+        "\"proofs\":{...}, \"anchor_status\":{...} }\n");
+
+    char anchor_default[600];
+    const char *anchor_datadir =
+        rpc_proof_bundle_anchor_datadir(params, anchor_default,
+                                        sizeof(anchor_default));
+
+    struct json_value no_params;
+    struct json_value anchor_params;
+    struct json_value anchor_value;
+    json_init(&no_params);
+    json_set_array(&no_params);
+    json_init(&anchor_params);
+    json_set_array(&anchor_params);
+    json_init(&anchor_value);
+    json_set_str(&anchor_value, anchor_datadir);
+    json_push_back(&anchor_params, &anchor_value);
+    json_free(&anchor_value);
+
+    json_set_object(result);
+    json_push_kv_str(result, "schema", "zcl.operator_proof_bundle.v1");
+    json_push_kv_str(result, "api_version", "v1");
+    json_push_kv_int(result, "captured_at_unix", platform_time_wall_unix());
+    json_push_kv_str(result, "build_commit", zcl_build_commit());
+    json_push_kv_str(result, "artifact_contract",
+                     "read-only JSON body; redirect stdout to save it");
+    json_push_kv_str(result, "anchor_datadir", anchor_datadir);
+
+    struct json_value commands;
+    json_init(&commands);
+    json_set_object(&commands);
+    json_push_kv_str(&commands, "native",
+                     "zclassic23 proofbundle [anchor_datadir]");
+    json_push_kv_str(&commands, "mcp", "zcl_proof_bundle");
+    json_push_kv_str(&commands, "save_example",
+                     "build/bin/zclassic23 proofbundle > build/proofs/operator-proof.json");
+    json_push_kv_str(&commands, "anchor_status",
+                     "zclassic23 anchorstatus [anchor_datadir]");
+    json_push_kv_str(&commands, "mvp_status", "zclassic23 milestone");
+    json_push_kv_str(&commands, "refold_status", "zclassic23 refold");
+    json_push_kv(result, "commands", &commands);
+    json_free(&commands);
+
+    rpc_proof_bundle_push_json(result, "agent", rpc_agent_summary,
+                               &no_params);
+    rpc_proof_bundle_push_json(result, "milestone",
+                               rpc_milestone_status, &no_params);
+    rpc_proof_bundle_push_json(result, "refold",
+                               rpc_refold_status, &no_params);
+    rpc_proof_bundle_push_json(result, "anchor_status",
+                               rpc_agent_anchor_status, &anchor_params);
+    rpc_proof_bundle_push_json(result, "lanes",
+                               rpc_agent_lanes, &no_params);
+    rpc_proof_bundle_push_json(result, "dev_status",
+                               rpc_agent_dev_status, &no_params);
+
+    struct json_value next;
+    json_init(&next);
+    json_set_array(&next);
+    struct json_value item;
+    json_init(&item);
+    json_set_str(&item,
+                 "when anchor_status.summary becomes anchor_snapshot_present, run the copy-prove refold cutover gates");
+    json_push_back(&next, &item);
+    json_set_str(&item,
+                 "use milestone.operator_proofs.items for remaining MRS 4/8 -> 8/8 evidence");
+    json_push_back(&next, &item);
+    json_set_str(&item,
+                 "deploy fresh development builds to the dev lane before canonical");
+    json_push_back(&next, &item);
+    json_free(&item);
+    json_push_kv(result, "next", &next);
+    json_free(&next);
+
+    json_free(&anchor_params);
+    json_free(&no_params);
+    return true;
+}
+
 static bool rpc_validationstatus(const struct json_value *params, bool help,
                                  struct json_value *result)
 {
@@ -503,6 +649,7 @@ void register_event_rpc_commands(struct rpc_table *t)
         { "control", "agentbuild",        rpc_agent_build,       true },
         { "control", "agentdevstatus",    rpc_agent_dev_status,  true },
         { "control", "anchorstatus",      rpc_agent_anchor_status, true },
+        { "control", "proofbundle",       rpc_agent_proof_bundle, true },
         { "control", "agentinterface",    rpc_agent_interface,   true },
         { "control", "agentops",          rpc_agent_ops,         true },
         { "control", "agentdiagnose",     rpc_agent_diagnose,    true },

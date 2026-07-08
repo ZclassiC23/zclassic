@@ -25,6 +25,7 @@ workflow, REST route contract, then typed MCP/native surface.
 | No-build dev-lane MCP one-shot | `make agent-mcp-call-dev TOOL=zcl_status` | `zcl_status` |
 | Dev-lane status | `zclassic23 agentdevstatus` (`make agent-dev-status`) | `zcl_agent_dev_status` |
 | Anchor producer status | `zclassic23 anchorstatus` | `zcl_rpc(method="anchorstatus")` |
+| Operator proof bundle | `zclassic23 proofbundle [anchor_datadir]` | `zcl_proof_bundle(anchor_datadir?)` |
 | Application protocol catalog | `zclassic23 appprotocols` | `zcl_app_protocols` |
 | Sovereign service catalog | `zclassic23 servicecatalog [name]` | `zcl_service_catalog(name?)` |
 | Sovereign operation catalog | `zclassic23 serviceoperations [operation_id|key=value...]` | `zcl_service_operations(operation_id?, service?, write_safety?, preferred_interface?, status?, surface?)` |
@@ -433,6 +434,15 @@ anchor-mint datadir to read `progress.kv` directly without cookies, jq, Python,
 or a running service RPC. It reports the anchor checkpoint, stage cursors,
 durable coins frontier, validated backlog, stale header rows above the anchor,
 snapshot presence, a compact `summary`, and `agent_next_action`.
+
+`proofbundle` (`zcl.operator_proof_bundle.v1`) is the read-only evidence
+artifact command for agents. Run
+`zclassic23 proofbundle /path/to/anchor-datadir` or
+`zcl_proof_bundle(anchor_datadir="/path/to/anchor-datadir")` to collect live
+`agent`, `milestone` / `zcl.mvp_operator_proofs.v1`, `refold`,
+`anchorstatus`, `agentlanes`, and `agentdevstatus` payloads into one JSON
+object. Redirect stdout when a durable artifact is needed; the command itself
+does not mutate services or write files.
 
 `zclassic23 agentinterface` / `zcl_agent_interface` is the machine-readable
 entry point for that rule. In addition to the human summary, it emits a

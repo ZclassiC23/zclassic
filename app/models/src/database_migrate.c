@@ -21,6 +21,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+#define NODE_DB_DETACHED_BUSY_TIMEOUT_MS 30000
+
 bool node_db_state_set(struct node_db *ndb, const char *key,
                        const void *value, size_t len)
 {
@@ -48,6 +50,63 @@ bool node_db_state_set(struct node_db *ndb, const char *key,
     if (rc != SQLITE_DONE)
         LOG_WARN("node_db", "state_set step failed key=%s rc=%d: %s",
                  key ? key : "(null)", rc, sqlite3_errmsg(ndb->db));
+    return rc == SQLITE_DONE;
+}
+
+bool node_db_state_set_detached(struct node_db *ndb, const char *key,
+                                const void *value, size_t len)
+{
+    if (!ndb || !ndb->open || !key || !value) {
+        LOG_WARN("node_db",
+                 "detached state_set skipped invalid args ndb=%d open=%d "
+                 "key=%d value=%d",
+                 ndb != NULL, ndb && ndb->open, key != NULL, value != NULL);
+        if (ndb)
+            node_db_note_activity(ndb, "state_set_detached_invalid",
+                                  SQLITE_MISUSE);
+        return false;
+    }
+    if (!ndb->path[0] || strcmp(ndb->path, ":memory:") == 0) {
+        LOG_WARN("node_db",
+                 "detached state_set skipped unsupported path key=%s path=%s",
+                 key, ndb->path[0] ? ndb->path : "(empty)");
+        node_db_note_activity(ndb, "state_set_detached_path", SQLITE_MISUSE);
+        return false;
+    }
+
+    sqlite3 *db = NULL;
+    int rc = sqlite3_open_v2(ndb->path, &db,
+                             SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX,
+                             NULL);
+    if (rc != SQLITE_OK || !db) {
+        LOG_WARN("node_db",
+                 "detached state_set open failed key=%s path=%s rc=%d: %s",
+                 key, ndb->path, rc, db ? sqlite3_errmsg(db) : "no handle");
+        if (db)
+            sqlite3_close(db);
+        node_db_note_activity(ndb, "state_set_detached_open", rc);
+        return false;
+    }
+    sqlite3_busy_timeout(db, NODE_DB_DETACHED_BUSY_TIMEOUT_MS);
+
+    sqlite3_stmt *s = NULL;
+    rc = sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO node_state(key,value) VALUES(?,?)",
+            -1, &s, NULL);
+    if (rc == SQLITE_OK && s) {
+        sqlite3_bind_text(s, 1, key, -1, SQLITE_STATIC);
+        sqlite3_bind_blob(s, 2, value, (int)len, SQLITE_STATIC);
+        rc = sqlite3_step(s);  // raw-sql-ok:kv-state-detached-fallback
+    }
+    if (s)
+        sqlite3_finalize(s);
+    if (rc != SQLITE_DONE) {
+        LOG_WARN("node_db",
+                 "detached state_set failed key=%s path=%s rc=%d: %s",
+                 key, ndb->path, rc, sqlite3_errmsg(db));
+    }
+    sqlite3_close(db);
+    node_db_note_activity(ndb, "state_set_detached", rc);
     return rc == SQLITE_DONE;
 }
 

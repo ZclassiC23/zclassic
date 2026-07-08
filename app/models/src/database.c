@@ -552,6 +552,8 @@ static void finalize_statements(struct node_db *ndb)
 bool node_db_open(struct node_db *ndb, const char *path)
 {
     memset(ndb, 0, sizeof(*ndb));
+    if (path)
+        snprintf(ndb->path, sizeof(ndb->path), "%s", path);
     node_db_state_init(ndb);
     if (!db_open_raw(&ndb->db, path)) {
         node_db_state_destroy(ndb);

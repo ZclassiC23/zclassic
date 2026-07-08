@@ -45,9 +45,10 @@ struct persisted_evidence_record_v1 {
     uint8_t full_validation_complete;
 };
 
-static bool cec_sqlite_busy_or_locked(int rc)
+static bool cec_retryable_sqlite_rc(int rc)
 {
-    return rc == SQLITE_BUSY || rc == SQLITE_LOCKED;
+    return rc == SQLITE_BUSY || rc == SQLITE_LOCKED ||
+           rc == SQLITE_ERROR || rc == SQLITE_MISUSE;
 }
 
 bool chain_evidence_state_set_retry(struct node_db *ndb,
@@ -77,7 +78,11 @@ bool chain_evidence_state_set_retry(struct node_db *ndb,
         struct node_db_status st;
         node_db_get_status(ndb, &st);
         int rc = st.last_sqlite_rc;
-        if (!cec_sqlite_busy_or_locked(rc) ||
+        if (node_db_state_set_detached(ndb, key, value, len))
+            return true;
+        node_db_get_status(ndb, &st);
+        rc = st.last_sqlite_rc;
+        if (!cec_retryable_sqlite_rc(rc) ||
             i + 1 >= CEC_STATE_SET_RETRY_ATTEMPTS) {
             LOG_WARN("cec.store",
                      "state_set_retry: failed owner=%s key=%s "

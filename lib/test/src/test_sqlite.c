@@ -7,6 +7,7 @@
 #include "controllers/sync_controller.h"
 #include "config/db_service.h"
 #include "config/runtime.h"
+#include "services/chain_evidence_persistence_service.h"
 #include "wallet/wallet.h"
 #include "script/standard.h"
 #include "validation/chainstate.h"
@@ -1715,6 +1716,81 @@ int test_sqlite(void) {
                        (long long)cache_pages, (long long)mmap_bytes);
         else { printf("FAIL (cache=%lld mmap=%lld)\n",
                       (long long)cache_pages, (long long)mmap_bytes);
+               failures++; }
+    }
+
+    /* Chain-evidence state writes have to survive transient node.db writer
+     * locks during live health/deploy checks. The normal handle has a zero
+     * busy timeout here so it fails immediately with SQLITE_BUSY; the CEC retry
+     * path must fall back to a short-lived detached writer, wait out the
+     * transient lock, and persist the value anyway. */
+    {
+        printf("SQLite node_state detached fallback waits out writer lock... ");
+        char dir[256];
+        char dbpath[512];
+        test_make_tmpdir(dir, sizeof(dir), "sqlite", "detached_state");
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+        struct node_db locker;
+        struct node_db writer;
+        pthread_t thread;
+        bool thread_started = false;
+        memset(&locker, 0, sizeof(locker));
+        memset(&writer, 0, sizeof(writer));
+        app_runtime_set_current(NULL);
+        bool ok = node_db_open(&locker, dbpath);
+        ok = ok && node_db_open(&writer, dbpath);
+
+        if (ok)
+            sqlite3_busy_timeout(writer.db, 0);
+        if (ok)
+            ok = node_db_exec(&locker, "BEGIN IMMEDIATE");
+        if (ok)
+            ok = node_db_exec(&locker,
+                "INSERT OR REPLACE INTO node_state(key,value) "
+                "VALUES('cec_detached_lock_holder', X'01')");
+
+        struct sqlite_lock_release_ctx ctx = {
+            .ndb = &locker,
+            .sleep_us = 250000,
+        };
+        if (ok) {
+            ok = pthread_create(&thread, NULL,
+                                release_sqlite_write_lock_after_delay,
+                                &ctx) == 0;
+            thread_started = ok;
+        }
+
+        const char fallback[] = "fallback";
+        bool fallback_ok = false;
+        if (ok) {
+            fallback_ok = chain_evidence_state_set_retry(
+                &writer, "cec.detached.locked",
+                fallback, sizeof(fallback), "unit.detached_state");
+        }
+        if (thread_started)
+            pthread_join(thread, NULL);
+
+        struct node_db_status final_status;
+        node_db_get_status(&writer, &final_status);
+        char got[32];
+        size_t got_len = 0;
+        memset(got, 0, sizeof(got));
+        ok = ok && fallback_ok &&
+             node_db_state_get(&writer, "cec.detached.locked",
+                               got, sizeof(got), &got_len) &&
+             got_len == sizeof(fallback) &&
+             memcmp(got, fallback, sizeof(fallback)) == 0;
+
+        node_db_close(&writer);
+        node_db_close(&locker);
+        test_cleanup_tmpdir(dir);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (fallback_ok=%d got_len=%zu "
+                       "last_rc=%d last_op=%s)\n",
+                      fallback_ok, got_len,
+                      final_status.last_sqlite_rc,
+                      final_status.last_op[0] ? final_status.last_op : "");
                failures++; }
     }
 

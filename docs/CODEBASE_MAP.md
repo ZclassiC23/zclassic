@@ -278,6 +278,11 @@ controller `k_routes[]` arrays.
   methods, supervisor domains, and quality lane arrays are needed.
   Top-level schema/method/native/MCP identity fields are registry-owned by
   `agent_contracts.def`.
+- `zclassic23 proofbundle [anchor_datadir]` / `zcl_proof_bundle` — read-only
+  `zcl.operator_proof_bundle.v1` evidence artifact. It embeds the current
+  `agent`, `milestone`/`operator_proofs`, `refold`, `anchorstatus`,
+  `agentlanes`, and `agentdevstatus` contracts so agents can capture the
+  current MVP/sovereign/dev-lane proof state with one native C command.
 - `zclassic23 agentdiagnose` / `zcl_agent_diagnose` — bounded no-jq
   diagnosis packet for first-call work: compact status, peer lifecycle incident
   counts/primary host issue, mirror status, drill-down pointers, and a safe
