@@ -7,6 +7,20 @@
 #include "util/result.h"
 
 #include <stdbool.h>
+#include <stdint.h>
+
+/* Persist a node_state value for chain-evidence callers with a bounded retry
+ * on SQLITE_BUSY / SQLITE_LOCKED. This is intentionally scoped to CEC: the
+ * generic node_db_state_set primitive keeps its immediate-fail contract. */
+bool chain_evidence_state_set_retry(struct node_db *ndb,
+                                    const char *key,
+                                    const void *value,
+                                    size_t len,
+                                    const char *owner);
+bool chain_evidence_state_set_int_retry(struct node_db *ndb,
+                                        const char *key,
+                                        int64_t value,
+                                        const char *owner);
 
 /* Persist a chain-evidence record under `key`. Returns ZCL_OK on success;
  * a non-ok zcl_result carrying the failing input or the node_db error

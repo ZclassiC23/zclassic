@@ -229,10 +229,13 @@ static void cec_lift_boot_tip_divergence_freeze(
     memset(authority->contradiction_reason, 0,
            sizeof(authority->contradiction_reason));
     if (authority->ndb) {
-        (void)node_db_state_set(authority->ndb, "cec.sync_state",
-                                "empty", strlen("empty") + 1);
-        (void)node_db_state_set(authority->ndb, "cec.contradiction_reason",
-                                "", 1);
+        (void)chain_evidence_state_set_retry(
+            authority->ndb, "cec.sync_state",
+            "empty", strlen("empty") + 1,
+            "cec_lift_boot_tip_divergence_freeze");
+        (void)chain_evidence_state_set_retry(
+            authority->ndb, "cec.contradiction_reason",
+            "", 1, "cec_lift_boot_tip_divergence_freeze");
         /* freeze() left cec.publish_state at FROZEN_CONTRADICTION. Clear it to
          * the truthful post-lift value: this tip is the live active tip,
          * finalized by the reducer, so it IS locally publishable. Required
@@ -242,8 +245,10 @@ static void cec_lift_boot_tip_divergence_freeze(
          * on that one path. NOTE: snapshot keys
          * publish_state_not_local on (state != LOCAL_EVIDENCE), so 0/empty would
          * NOT clear it — LOCAL_EVIDENCE is the only value that does + is honest. */
-        (void)node_db_state_set_int(authority->ndb, "cec.publish_state",
-                                    CEC_PUBLISH_LOCAL_EVIDENCE);
+        (void)chain_evidence_state_set_int_retry(
+            authority->ndb, "cec.publish_state",
+            CEC_PUBLISH_LOCAL_EVIDENCE,
+            "cec_lift_boot_tip_divergence_freeze");
     }
     LOG_WARN("cec", "[cec] lifting stale boot-transient freeze: live tip "
              "h=%d hash-consistent (csr==finalized) — clearing '"
@@ -332,20 +337,32 @@ bool chain_evidence_controller_record_finalized_tip(
     bool persisted =
         chain_evidence_controller_mark_block_evidence(
             authority, finalized_tip->phashBlock, &forward).ok &&
-        node_db_state_set(authority->ndb, "cec.active_tip_hash",
-                          finalized_tip->phashBlock->data, 32) &&
-        node_db_state_set_int(authority->ndb, "cec.active_tip_height",
-                              finalized_tip->nHeight) &&
-        node_db_state_set_int(authority->ndb, "cec.coins_best_block_height",
-                              coins_height) &&
-        node_db_state_set_int(authority->ndb, "cec.utxo_max_height",
-                              finalized_tip->nHeight) &&
-        node_db_state_set_int(authority->ndb, "cec.publish_state",
-                              CEC_PUBLISH_LOCAL_EVIDENCE) &&
-        node_db_state_set_int(authority->ndb, "cec.active_tip_source_class",
-                              CEC_SOURCE_CLASS_LOCAL_IMPORT) &&
-        node_db_state_set_int(authority->ndb,
-                              "cec.repaired_active_tip_evidence", 1) &&
+        chain_evidence_state_set_retry(
+            authority->ndb, "cec.active_tip_hash",
+            finalized_tip->phashBlock->data, 32,
+            "chain_evidence_record_finalized_tip") &&
+        chain_evidence_state_set_int_retry(
+            authority->ndb, "cec.active_tip_height",
+            finalized_tip->nHeight,
+            "chain_evidence_record_finalized_tip") &&
+        chain_evidence_state_set_int_retry(
+            authority->ndb, "cec.coins_best_block_height",
+            coins_height, "chain_evidence_record_finalized_tip") &&
+        chain_evidence_state_set_int_retry(
+            authority->ndb, "cec.utxo_max_height",
+            finalized_tip->nHeight,
+            "chain_evidence_record_finalized_tip") &&
+        chain_evidence_state_set_int_retry(
+            authority->ndb, "cec.publish_state",
+            CEC_PUBLISH_LOCAL_EVIDENCE,
+            "chain_evidence_record_finalized_tip") &&
+        chain_evidence_state_set_int_retry(
+            authority->ndb, "cec.active_tip_source_class",
+            CEC_SOURCE_CLASS_LOCAL_IMPORT,
+            "chain_evidence_record_finalized_tip") &&
+        chain_evidence_state_set_int_retry(
+            authority->ndb, "cec.repaired_active_tip_evidence", 1,
+            "chain_evidence_record_finalized_tip") &&
         chain_evidence_store_persist(authority,
                                      "cec.block_index_evidence_state",
                                      &forward).ok &&
