@@ -1083,8 +1083,6 @@ bool app_init(struct app_context *ctx)
     printf("[boot] %-30s %lldms\n", "sqlite_open_migrate",
            (long long)(boot_clock_ms() - t_phase));
 
-    boot_step_start_maintenance_services();
-
     /* Initialize wallet. MUST run AFTER node.db is opened above
      * (node_db_sync_init → create_schema → g_node_db.open=true) and
      * BEFORE the block index load below — the latter is the only
@@ -3651,8 +3649,10 @@ sapling_tree_boot_check_done:
            (long long)(boot_clock_ms() - t_phase));
     printf("[boot] %-30s %lldms\n", "total",
            (long long)(boot_clock_ms() - t_boot_start));
-    if (svc_ok)
+    if (svc_ok) {
         boot_stage_advance_to(BOOT_STAGE_READY);
+        boot_step_start_maintenance_services();
+    }
     return svc_ok;
 }
 
