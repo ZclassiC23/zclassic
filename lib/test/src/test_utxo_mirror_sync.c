@@ -17,6 +17,8 @@
 
 #include "test/test_helpers.h"
 
+#include "config/db_service.h"
+#include "config/runtime.h"
 #include "models/database.h"
 #include "models/utxo.h"
 #include "script/standard.h"
@@ -124,15 +126,28 @@ int test_utxo_mirror_sync(void)
     UMS_CHECK("set frontier 105", ums_set_frontier(pdb, 105));
 
     /* ── The feeder. */
+    struct db_service dbsvc;
+    struct app_runtime_context runtime;
     struct utxo_mirror_sync_service svc;
+    memset(&runtime, 0, sizeof(runtime));
+    db_service_init(&dbsvc);
+    UMS_CHECK("db service attaches", db_service_attach(&dbsvc, &ndb));
+    UMS_CHECK("db service starts", db_service_start(&dbsvc));
+    runtime.db_service = &dbsvc;
+    app_runtime_set_current(&runtime);
     utxo_mirror_sync_init(&svc, &ndb);
 
     /* NULL/closed-db guard. */
     UMS_CHECK("run_once(NULL) -> -1", utxo_mirror_sync_run_once(NULL) == -1);
 
+    UMS_CHECK("open sync batch before mirror pass", db_service_begin_write(&dbsvc));
+    ndb.sync_in_batch = true;
+
     /* Pass 1: drift detected, mirror rebuilt to match coins_kv (4 rows). */
     int64_t written = utxo_mirror_sync_run_once(&svc);
     UMS_CHECK("pass1 wrote 4 rows", written == 4);
+    UMS_CHECK("mirror pass flushed open sync batch",
+              !ndb.sync_in_batch && !ndb.tx_open);
     UMS_CHECK("mirror count == 4 after rebuild", db_utxo_count(&ndb) == 4);
     UMS_CHECK("mirror max height == 104", db_utxo_max_height(&ndb) == 104);
 
@@ -180,6 +195,8 @@ int test_utxo_mirror_sync(void)
     UMS_CHECK("coins_kv count untouched by feeder (== 3)",
               coins_kv_count(pdb) == 3);
 
+    app_runtime_set_current(NULL);
+    db_service_stop(&dbsvc);
     progress_store_close();
     node_db_close(&ndb);
     test_cleanup_tmpdir(dir);

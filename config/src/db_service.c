@@ -298,7 +298,7 @@ static void *db_service_ckpt_main(void *arg)
 
         struct node_db *ndb = svc->node_db;
         if (!ndb || !ndb->open) continue;
-        if (!node_db_wal_checkpoint(ndb)) {
+        if (!db_service_wal_checkpoint(svc)) {
             fprintf(stderr,
                 "[wal-checkpoint] periodic checkpoint failed (db busy?)\n");
         }

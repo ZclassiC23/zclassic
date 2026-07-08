@@ -473,6 +473,14 @@ int main(void)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "utxo_mirror_sync") == 0) {
+        printf("[test] ZCL_TEST_ONLY=utxo_mirror_sync — running only\n");
+        { extern int test_utxo_mirror_sync(void);
+          failures += test_utxo_mirror_sync(); }
+        printf("\n=== utxo_mirror_sync subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "utxo_parity") == 0) {
         printf("[test] ZCL_TEST_ONLY=utxo_parity — running only\n");
         failures += test_utxo_parity_service();

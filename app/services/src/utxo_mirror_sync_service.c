@@ -13,6 +13,8 @@
 #include "platform/time_compat.h"
 #include "services/utxo_mirror_sync_service.h"
 
+#include "config/db_service.h"
+#include "config/runtime.h"
 #include "controllers/chain_projection.h"
 #include "models/database.h"
 #include "models/utxo.h"
@@ -164,14 +166,55 @@ static bool read_coins_kv_state(int32_t *frontier_out, int64_t *count_out)
     return true;
 }
 
+static struct db_service *mirror_db_service_for(struct node_db *ndb)
+{
+    struct db_service *dbsvc = app_runtime_db_service();
+
+    if (!ndb || !dbsvc || !db_service_is_started(dbsvc))
+        return NULL;
+    return db_service_node_db(dbsvc) == ndb ? dbsvc : NULL;
+}
+
+static bool mirror_run_db_lane(struct node_db *ndb,
+                               db_service_write_fn fn,
+                               void *ctx)
+{
+    struct db_service *dbsvc = mirror_db_service_for(ndb);
+
+    if (!ndb || !fn)
+        return false;
+    if (dbsvc)
+        return db_service_run_write(dbsvc, fn, ctx);
+    return fn(ndb, ctx);
+}
+
+struct mirror_node_state_ctx {
+    int64_t cursor;
+    int64_t mirror_count;
+    bool ok;
+};
+
+static bool mirror_read_node_state_lane(struct node_db *ndb, void *ctx)
+{
+    struct mirror_node_state_ctx *s = ctx;
+
+    if (!ndb || !ndb->open || !s)
+        return false;
+    s->cursor = 0;
+    (void)node_db_state_get_int(ndb, UTXO_MIRROR_SYNC_CURSOR_KEY, &s->cursor);
+    s->mirror_count = db_utxo_count(ndb);
+    s->ok = true;
+    return true;
+}
+
 /* ── Wholesale rebuild: coins_kv → node.db utxos ───────────── */
 
 /* Copy every live coins_kv row into the mirror under ONE node.db txn.
  * Returns the number of rows written, or -1 on a (logged) error. The whole
  * write is atomic: on failure node.db rolls back and the cursor stays put. */
-static int64_t mirror_rebuild_from_coins_kv(struct utxo_mirror_sync_service *svc)
+static int64_t mirror_rebuild_from_coins_kv(struct node_db *ndb)
 {
-    if (!svc || !svc->ndb || !svc->ndb->open)
+    if (!ndb || !ndb->open)
         LOG_RETURN(-1, "utxo_mirror", "rebuild: node.db unavailable");
 
     /* Read coins_kv through our OWN read-only connection to progress.kv — NOT
@@ -205,8 +248,6 @@ static int64_t mirror_rebuild_from_coins_kv(struct utxo_mirror_sync_service *svc
         LOG_RETURN(-1, "utxo_mirror", "rebuild: coins SELECT prepare failed: %s",
                    msg);
     }
-
-    struct node_db *ndb = svc->ndb;
 
     /* Plain transaction — NO ibd_turbo_mode here: turbo DROPS the utxos
      * secondary indexes (idx_utxo_address/value/height) the explorer relies
@@ -304,6 +345,37 @@ static int64_t mirror_rebuild_from_coins_kv(struct utxo_mirror_sync_service *svc
     return written;
 }
 
+struct mirror_rebuild_ctx {
+    struct utxo_mirror_sync_service *svc;
+    int32_t frontier;
+    int64_t written;
+    bool cursor_persisted;
+};
+
+static bool mirror_rebuild_and_advance_lane(struct node_db *ndb, void *ctx)
+{
+    struct mirror_rebuild_ctx *r = ctx;
+    int64_t frontier64;
+
+    if (!ndb || !ndb->open || !r || !r->svc)
+        return false;
+
+    app_runtime_node_db_sync_flush_if_needed(ndb);
+    r->written = mirror_rebuild_from_coins_kv(ndb);
+    if (r->written < 0)
+        return false;
+
+    frontier64 = (int64_t)r->frontier;
+    r->cursor_persisted = app_runtime_node_db_state_set(
+        ndb, UTXO_MIRROR_SYNC_CURSOR_KEY, &frontier64, sizeof(frontier64));
+    if (!r->cursor_persisted)
+        LOG_WARN("utxo_mirror",
+                 "[utxo_mirror] cursor persist failed at frontier=%d "
+                 "(mirror data is correct; next pass re-detects drift)",
+                 r->frontier);
+    return true;
+}
+
 /* ── One sync pass ─────────────────────────────────────────── */
 
 int64_t utxo_mirror_sync_run_once(struct utxo_mirror_sync_service *svc)
@@ -360,19 +432,22 @@ int64_t utxo_mirror_sync_run_once(struct utxo_mirror_sync_service *svc)
         return 0;
     }
 
-    int64_t cursor = 0;
-    (void)node_db_state_get_int(svc->ndb, UTXO_MIRROR_SYNC_CURSOR_KEY, &cursor);
-    int64_t mirror_count = db_utxo_count(svc->ndb);
+    struct mirror_node_state_ctx state = {0};
+    if (!mirror_run_db_lane(svc->ndb, mirror_read_node_state_lane, &state) ||
+        !state.ok) {
+        atomic_store(&svc->last_error_unix, platform_time_wall_unix());
+        LOG_RETURN(-1, "utxo_mirror", "run_once: node.db state read failed");
+    }
 
     /* Drift = the mirror cursor lags the frontier, OR the row counts diverge
      * (a count mismatch at the same height means an earlier pass tore, or the
      * cold-import seed differs from the live set). Either triggers a rebuild;
      * an exact in-step mirror does no work. */
-    bool drift = (cursor != (int64_t)frontier) ||
-                 (coins_count >= 0 && mirror_count >= 0 &&
-                  coins_count != mirror_count);
+    bool drift = (state.cursor != (int64_t)frontier) ||
+                 (coins_count >= 0 && state.mirror_count >= 0 &&
+                  coins_count != state.mirror_count);
     if (!drift) {
-        atomic_store(&svc->last_mirror_height, cursor);
+        atomic_store(&svc->last_mirror_height, state.cursor);
         atomic_store(&svc->last_pass_unix, platform_time_wall_unix());
         return 0;
     }
@@ -380,34 +455,30 @@ int64_t utxo_mirror_sync_run_once(struct utxo_mirror_sync_service *svc)
     LOG_INFO("utxo_mirror",
              "[utxo_mirror] drift: mirror_height=%lld count=%lld -> "
              "frontier=%d coins_kv_count=%lld; rebuilding mirror",
-             (long long)cursor, (long long)mirror_count,
+             (long long)state.cursor, (long long)state.mirror_count,
              frontier, (long long)coins_count);
 
-    int64_t written = mirror_rebuild_from_coins_kv(svc);
-    if (written < 0) {
+    struct mirror_rebuild_ctx rebuild = {
+        .svc = svc,
+        .frontier = frontier,
+        .written = -1,
+        .cursor_persisted = false,
+    };
+    if (!mirror_run_db_lane(svc->ndb, mirror_rebuild_and_advance_lane,
+                            &rebuild) || rebuild.written < 0) {
         atomic_store(&svc->last_error_unix, platform_time_wall_unix());
         return -1;  // raw-return-ok:logged-in-mirror_rebuild_from_coins_kv
     }
 
-    /* Advance the durable cursor to the frontier the rebuild reflects, AFTER
-     * the mirror commit, so a crash between commit and this write merely
-     * re-runs an idempotent (REPLACE) rebuild next boot — never a stale cursor
-     * ahead of the data. */
-    if (!node_db_state_set_int(svc->ndb, UTXO_MIRROR_SYNC_CURSOR_KEY,
-                               (int64_t)frontier))
-        LOG_WARN("utxo_mirror",
-                 "[utxo_mirror] cursor persist failed at frontier=%d "
-                 "(mirror data is correct; next pass re-detects drift)", frontier);
-
     atomic_fetch_add(&svc->rebuilds_run, 1);
-    atomic_fetch_add(&svc->rows_written, written);
+    atomic_fetch_add(&svc->rows_written, rebuild.written);
     atomic_store(&svc->last_mirror_height, (int64_t)frontier);
     atomic_store(&svc->last_pass_unix, platform_time_wall_unix());
 
     LOG_INFO("utxo_mirror",
              "[utxo_mirror] rebuilt mirror: %lld rows synced to height %d",
-             (long long)written, frontier);
-    return written;
+             (long long)rebuild.written, frontier);
+    return rebuild.written;
 }
 
 /* ── Background thread ─────────────────────────────────────── */
