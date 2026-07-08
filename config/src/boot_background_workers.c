@@ -97,6 +97,23 @@ static void *address_backfill_service_thread(void *arg);
 #define HODL_HISTORY_BACKLOG_SLEEP_SEC              1
 #define HODL_HISTORY_IDLE_SLEEP_SEC                 60
 
+struct hodl_history_fill_ctx {
+    int chain_tip;
+    int filled;
+};
+
+static bool hodl_history_fill_pending_write(struct node_db *ndb, void *ctx)
+{
+    struct hodl_history_fill_ctx *fill = ctx;
+
+    if (!ndb || !ndb->open || !ndb->db || !fill)
+        return false;
+    app_runtime_node_db_sync_flush_if_needed(ndb);
+    fill->filled = hodl_history_fill_pending(
+        ndb->db, fill->chain_tip, HODL_HISTORY_FILL_BATCH);
+    return true;
+}
+
 static struct liveness_contract g_payment_contract;
 static struct liveness_contract g_projection_backfill_contract;
 static struct liveness_contract g_hodl_history_contract;
@@ -265,38 +282,36 @@ bool boot_start_tx_index_service(struct boot_svc_ctx *svc)
 static void *hodl_history_worker_thread(void *arg)
 {
     struct boot_svc_ctx *svc = arg;
-    struct node_db hdb = {0};
-    bool hdb_open = false;
-    char db_path[PATH_MAX];
     int64_t loop_iterations = 0;
     if (!svc)
         return NULL;
     /* Initial settle: wait for boot to complete + first chain advance. */
     sleep(15);
-    if (svc->datadir &&
-        zcl_node_db_path(db_path, sizeof(db_path), svc->datadir)[0] &&
-        node_db_open(&hdb, db_path)) {
-        hdb_open = true;
-    } else {
-        LOG_WARN("service",
-                 "HODL history: private node.db open failed; will retry");
-    }
     while (!svc->hodl_history_thread_stop) {
         supervisor_child_id sup_id = atomic_load(&g_hodl_history_sup_id);
         if (sup_id != SUPERVISOR_INVALID_ID) {
             supervisor_tick(sup_id);
             supervisor_progress(sup_id, ++loop_iterations);
         }
-        if (!hdb_open && svc->datadir &&
-            zcl_node_db_path(db_path, sizeof(db_path), svc->datadir)[0] &&
-            node_db_open(&hdb, db_path)) {
-            hdb_open = true;
-        }
-        if (hdb_open && hdb.open && svc->state) {
+        if (svc->state) {
             int tip = active_chain_height(&svc->state->chain_active);
             if (tip > 0) {
-                int filled = hodl_history_fill_pending(
-                    hdb.db, tip, HODL_HISTORY_FILL_BATCH);
+                struct db_service *dbsvc = boot_db_service(svc);
+                struct node_db *ndb = boot_node_db(svc);
+                struct hodl_history_fill_ctx fill = {
+                    .chain_tip = tip,
+                    .filled = 0,
+                };
+                int filled = 0;
+                if (dbsvc && ndb && ndb->open &&
+                    db_service_run_write(
+                        dbsvc, hodl_history_fill_pending_write, &fill)) {
+                    filled = fill.filled;
+                } else {
+                    LOG_WARN("service",
+                             "HODL history: db service unavailable; "
+                             "will retry");
+                }
                 int sleep_secs = filled >= HODL_HISTORY_FILL_BATCH
                     ? HODL_HISTORY_BACKLOG_SLEEP_SEC
                     : HODL_HISTORY_IDLE_SLEEP_SEC;
@@ -310,8 +325,6 @@ static void *hodl_history_worker_thread(void *arg)
                         !svc->hodl_history_thread_stop; i++)
             sleep(1);
     }
-    if (hdb_open)
-        node_db_close(&hdb);
     return NULL;
 }
 

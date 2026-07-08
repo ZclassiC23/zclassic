@@ -4524,6 +4524,27 @@ static int t_boot_shutdown_persistence_order_contract(void)
     return failures;
 }
 
+static int t_hodl_history_uses_runtime_db_service(void)
+{
+    int failures = 0;
+    char *buf = NULL;
+    TEST("HODL history worker uses runtime DB service") {
+        char path[PATH_MAX];
+        ASSERT(repo_path(path, sizeof(path),
+                         "config/src/boot_background_workers.c") == 0);
+        ASSERT(read_entire_file(path, &buf) == 0);
+        ASSERT(strstr(buf, "hodl_history_fill_pending_write") != NULL);
+        ASSERT(strstr(buf, "db_service_run_write(\n"
+                           "                        dbsvc, "
+                           "hodl_history_fill_pending_write") != NULL);
+        ASSERT(strstr(buf, "node_db_open(&hdb") == NULL);
+        ASSERT(strstr(buf, "private node.db open") == NULL);
+        PASS();
+    } _test_next:;
+    free(buf);
+    return failures;
+}
+
 static int t_peer_save_busy_reports_db_error(void)
 {
     int failures = 0;
@@ -6083,6 +6104,7 @@ int test_make_lint_gates(void)
     failures += t_boot_addrman_persistence_contract();
     failures += t_lib_runtime_gauges_are_callback_injected();
     failures += t_boot_shutdown_persistence_order_contract();
+    failures += t_hodl_history_uses_runtime_db_service();
     failures += t_peer_save_busy_reports_db_error();
     failures += t_handshake_peer_save_is_async();
     failures += t_p2p_app_persistence_is_callback_injected();
