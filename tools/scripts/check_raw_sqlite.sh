@@ -98,79 +98,46 @@ while IFS= read -r hit; do
     violations="${violations}${hit}"$'\n'
 done <<< "$raw_hits"
 
-exec_scan=$(python3 - <<'PY'
-import os
-import re
-import sys
+exec_scan=$(
+    find app tools lib config src \
+        \( -path '*/vendor/*' -o -path '*/build/*' -o -path '*/test/*' \) -prune \
+        -o \( -name '*.c' -o -name '*.h' \) -type f -print |
+    while IFS= read -r path; do
+        [[ "$path" == "app/models/include/models/activerecord.h" ]] && continue
+        awk -v path="$path" '
+            {
+                lines[NR] = $0
+            }
+            END {
+                call_re = "sqlite3_exec[[:space:]]*\\([[:space:]]*(&[[:space:]]*)?ndb(->|\\.)db[[:space:]]*,"
+                for (i = 1; i <= NR; i++) {
+                    if (lines[i] !~ /sqlite3_exec[[:space:]]*\(/)
+                        continue
+                    if (lines[i] ~ /\/\/[[:space:]]*raw-sql-ok:[A-Za-z][A-Za-z0-9_-]+/)
+                        continue
+                    chunk = lines[i]
+                    for (j = i + 1; j <= NR && length(chunk) < 900; j++)
+                        chunk = chunk "\n" lines[j]
+                    if (chunk !~ call_re)
+                        continue
 
-roots = ("app", "tools", "lib", "config", "src")
-skip_parts = {"vendor", "build", "test"}
-verbs = ("INSERT", "DELETE", "UPDATE", "REPLACE")
-call_re = re.compile(
-    r"sqlite3_exec\s*\(\s*(?:&\s*)?ndb(?:->|\.)db\s*,(?P<tail>.{0,900})",
-    re.DOTALL,
-)
-str_re = re.compile(r'"((?:\\.|[^"\\])*)"')
-
-def iter_files():
-    for root in roots:
-        if not os.path.isdir(root):
-            continue
-        for dirpath, dirnames, filenames in os.walk(root):
-            dirnames[:] = [
-                d for d in dirnames
-                if d not in skip_parts and not d.startswith(".")
-            ]
-            parts = set(dirpath.split(os.sep))
-            if parts & skip_parts:
-                continue
-            for name in filenames:
-                if name.endswith((".c", ".h")):
-                    yield os.path.join(dirpath, name)
-
-def first_sql_literal(tail):
-    m = str_re.search(tail)
-    if not m:
-        return None
-    # Adjacent C string literals are enough for leading verb classification;
-    # no escape decoding is needed for INSERT/DELETE/UPDATE/REPLACE.
-    return m.group(1).lstrip()
-
-violations = []
-for path in iter_files():
-    if path == "app/models/include/models/activerecord.h":
-        continue
-    try:
-        with open(path, "r", encoding="utf-8", errors="ignore") as f:
-            text = f.read()
-    except OSError as exc:
-        print(f"check_raw_sqlite: FATAL — cannot read {path}: {exc}", file=sys.stderr)
-        sys.exit(2)
-
-    for m in call_re.finditer(text):
-        line_start = text.rfind("\n", 0, m.start()) + 1
-        line_end = text.find("\n", m.start())
-        if line_end < 0:
-            line_end = len(text)
-        if re.search(r"//\s*raw-sql-ok:[A-Za-z][A-Za-z0-9_-]+",
-                     text[line_start:line_end]):
-            continue
-        sql = first_sql_literal(m.group("tail"))
-        if not sql:
-            continue
-        upper = re.sub(r"\s+", " ", sql).upper()
-        if any(upper.startswith(v + " ") for v in verbs):
-            line_no = text.count("\n", 0, m.start()) + 1
-            verb = upper.split(" ", 1)[0]
-            violations.append(
-                f"{path}:{line_no}: raw node.db sqlite3_exec {verb}; "
-                "use ar_exec_write_sql()/AR_STEP_WRITE or a reviewed helper"
-            )
-
-if violations:
-    print("\n".join(violations))
-    sys.exit(1)
-PY
+                    tail = chunk
+                    sub(".*" call_re, "", tail)
+                    if (!match(tail, /"([^"\\]|\\.)*"/))
+                        continue
+                    sql = substr(tail, RSTART + 1, RLENGTH - 2)
+                    sub(/^[[:space:]]+/, "", sql)
+                    upper = toupper(sql)
+                    gsub(/[[:space:]]+/, " ", upper)
+                    if (upper ~ /^(INSERT|DELETE|UPDATE|REPLACE) /) {
+                        split(upper, parts, " ")
+                        printf "%s:%d: raw node.db sqlite3_exec %s; use ar_exec_write_sql()/AR_STEP_WRITE or a reviewed helper\n",
+                               path, i, parts[1]
+                    }
+                }
+            }
+        ' "$path" || exit 2
+    done
 )
 exec_scan_rc=$?
 if [[ $exec_scan_rc -ge 2 ]]; then

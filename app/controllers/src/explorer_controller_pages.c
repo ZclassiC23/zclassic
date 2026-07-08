@@ -545,7 +545,7 @@ size_t serve_hodl(uint8_t *r, size_t max)
 size_t serve_css(uint8_t *r, size_t max)
 {
     struct explorer_assets *assets = explorer_assets();
-    /* Reload CSS from disk each time (allows live editing) */
+    /* Reload each request so explicit CSS overrides are live-editable. */
     load_css();
     size_t off = 0;
     int n = snprintf((char *)r, max,
@@ -554,9 +554,11 @@ size_t serve_css(uint8_t *r, size_t max)
         "Cache-Control: public, max-age=60\r\n"
         "Connection: close\r\n\r\n");
     if (n > 0) off = (size_t)n;
-    if (off + assets->css_len < max) {
-        memcpy(r + off, assets->css_cache, assets->css_len);
-        off += assets->css_len;
+    if (off < max) {
+        size_t room = max - off;
+        size_t copy_len = assets->css_len < room ? assets->css_len : room;
+        memcpy(r + off, assets->css_cache, copy_len);
+        off += copy_len;
     }
     return off;
 }

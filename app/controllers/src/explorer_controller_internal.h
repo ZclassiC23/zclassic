@@ -79,7 +79,7 @@ size_t cache_load(const char *name, char *buf, size_t max);
 
 struct explorer_assets {
     char explorer_dir[1024];
-    char css_cache[8192];
+    char css_cache[32768];
     size_t css_len;
 };
 

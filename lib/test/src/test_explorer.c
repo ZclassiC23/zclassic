@@ -10,6 +10,7 @@
 #include "views/explorer_factoids_internal.h"
 #include "views/explorer_factoids_view.h"
 #include "views/explorer_dashboard_view.h"
+#include "views/explorer_css.h"
 #include "views/explorer_pages_loading_view.h"
 #include "views/explorer_pages_view.h"
 #include "views/explorer_stats_internal.h"
@@ -261,7 +262,7 @@ int test_explorer(void)
         out[n < sizeof(out) ? n : sizeof(out) - 1] = '\0';
 
         ok = ok && n > 0 &&
-             strstr((char *)out, "Latest measurement") != NULL &&
+             strstr((char *)out, "Current tip") != NULL &&
              strstr((char *)out, "Unspent transparent value by age") != NULL &&
              strstr((char *)out, "id='hodl-age-wave'") != NULL &&
              strstr((char *)out, "class='hodl-age-hit'") != NULL &&
@@ -276,7 +277,7 @@ int test_explorer(void)
              strstr((char *)out, "Refresh in a minute") == NULL &&
              strstr((char *)out, "still being indexed") == NULL;
         ok = ok && strstr((char *)out, "Unspent transparent value by age") <
-                   strstr((char *)out, "Latest measurement");
+                   strstr((char *)out, "Current tip");
 
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
@@ -377,7 +378,7 @@ int test_explorer(void)
              strstr((char *)out2, "1.00000000") != NULL &&
              strstr((char *)out2, "2.00000000") == NULL &&
              strstr((char *)out3, "2.00000000") != NULL &&
-             strstr((char *)out4, "Verified Cached Transparent UTXO Value") != NULL &&
+             strstr((char *)out4, "verified cached snapshot") != NULL &&
              strstr((char *)out4, "2.00000000") != NULL &&
              strstr((char *)out4, "3.00000000") == NULL &&
              strstr((char *)out4,
@@ -558,6 +559,53 @@ int test_explorer(void)
         bool ok = (n > 0 && strstr((char *)resp, "text/css") != NULL);
         if (ok) printf("OK\n");
         else { printf("FAIL (n=%zu)\n", n); failures++; }
+    }
+
+    printf("explorer: compiled CSS includes full explorer stylesheet... ");
+    {
+        const char *css = explorer_css;
+        bool ok = css &&
+             strstr(css, "color-scheme:dark") != NULL &&
+             strstr(css, ".table-wrap") != NULL &&
+             strstr(css, ".back-to-top") != NULL;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("explorer: compiled CSS wins over stale datadir stylesheet... ");
+    {
+        char dbdir[256];
+        char csspath[320];
+        uint8_t css_resp[20000];
+        snprintf(dbdir, sizeof(dbdir), ".zcl_test_explorer_css_%d",
+                 (int)getpid());
+        mkdir(dbdir, 0755);
+        explorer_set_state(NULL, NULL, NULL, NULL, dbdir);
+        snprintf(csspath, sizeof(csspath), "%s/explorer/style.css", dbdir);
+        FILE *f = fopen(csspath, "w");
+        bool ok = f != NULL;
+        if (f) {
+            ok = fputs("body{background:#badbad}.stale-css-marker{}", f) >= 0;
+            fclose(f);
+        }
+        unsetenv("ZCL_EXPLORER_CSS_FILE");
+        unsetenv("ZCL_EXPLORER_CSS_LIVE");
+        size_t n = explorer_handle_request("GET", "/explorer/style.css",
+                                            NULL, 0, css_resp,
+                                            sizeof(css_resp) - 1);
+        css_resp[n < sizeof(css_resp) ? n : sizeof(css_resp) - 1] = '\0';
+        ok = ok && n > 0 &&
+             strstr((char *)css_resp, "text/css") != NULL &&
+             strstr((char *)css_resp, ".back-to-top") != NULL &&
+             strstr((char *)css_resp, "stale-css-marker") == NULL;
+        explorer_test_set_datadir(NULL);
+
+        char cmd[384];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
+        system(cmd);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
     }
 
     /* ── Supply calculation edge cases ───────────────────── */

@@ -123,20 +123,35 @@ void load_css(void)
 {
     struct explorer_assets *assets = explorer_assets();
     char path[1200];
+    const char *override_path = getenv("ZCL_EXPLORER_CSS_FILE");
     snprintf(path, sizeof(path), "%s/style.css", assets->explorer_dir);
-    FILE *f = fopen(path, "r");
-    if (f) {
-        assets->css_len = fread(assets->css_cache, 1, sizeof(assets->css_cache) - 1, f);
-        assets->css_cache[assets->css_len] = '\0';
-        fclose(f);
-    } else {
-        /* Fallback to compiled-in CSS */
-        assets->css_len = strlen(explorer_css);
-        if (assets->css_len >= sizeof(assets->css_cache))
-            assets->css_len = sizeof(assets->css_cache) - 1;
-        memcpy(assets->css_cache, explorer_css, assets->css_len);
-        assets->css_cache[assets->css_len] = '\0';
+
+    if (override_path && override_path[0]) {
+        FILE *f = fopen(override_path, "r");
+        if (f) {
+            assets->css_len = fread(assets->css_cache, 1,
+                                    sizeof(assets->css_cache) - 1, f);
+            assets->css_cache[assets->css_len] = '\0';
+            fclose(f);
+            return;
+        }
+        LOG_WARN("explorer", "CSS override unavailable: %s", override_path);
+    } else if (getenv("ZCL_EXPLORER_CSS_LIVE")) {
+        FILE *f = fopen(path, "r");
+        if (f) {
+            assets->css_len = fread(assets->css_cache, 1,
+                                    sizeof(assets->css_cache) - 1, f);
+            assets->css_cache[assets->css_len] = '\0';
+            fclose(f);
+            return;
+        }
     }
+
+    assets->css_len = strlen(explorer_css);
+    if (assets->css_len >= sizeof(assets->css_cache))
+        assets->css_len = sizeof(assets->css_cache) - 1;
+    memcpy(assets->css_cache, explorer_css, assets->css_len);
+    assets->css_cache[assets->css_len] = '\0';
 }
 
 static void init_default_templates(void)

@@ -35,24 +35,35 @@
 /* ── HODL Wave Page ────────────────────────────────────────── */
 
 static const char HODL_VIEW_CSS[] =
-    ".hodl-page{max-width:1080px;margin:0 auto;}"
-    ".hodl-hero{text-align:left;margin:24px auto 18px;max-width:1080px;}"
+    ".hodl-page{max-width:1120px;margin:0 auto 10px;}"
+    ".hodl-hero{display:flex;justify-content:space-between;gap:22px;"
+    "align-items:flex-end;text-align:left;margin:22px auto 18px;"
+    "padding:22px 0 16px;border-bottom:1px solid #202936;}"
+    ".hodl-kicker{color:#8fffc3;font-size:13px;font-weight:760;"
+    "text-transform:uppercase;letter-spacing:0;margin:0 0 8px;}"
     ".hodl-title{color:#f5f7fa;font-family:-apple-system,'Segoe UI',Roboto,"
-    "Helvetica,Arial,sans-serif;font-size:38px;font-weight:800;line-height:1.12;"
-    "letter-spacing:0;margin:0;max-width:920px;"
-    "overflow-wrap:break-word;}"
-    ".hodl-subtitle{font-size:16px;color:#9aa3ad;margin:10px 0 0;}"
-    ".hodl-panel{margin:20px auto;padding:16px;background:#101214;"
-    "border:1px solid #242832;border-radius:8px;color:#9aa3ad;}"
-    ".hodl-panel h2{color:#bbb;margin-top:0;}"
-    ".hodl-chart-wrap{max-width:1080px;margin:18px auto;overflow-x:auto;"
-    "-webkit-overflow-scrolling:touch;scrollbar-color:#333 #101010;}"
+    "Helvetica,Arial,sans-serif;font-size:44px;font-weight:820;line-height:1.08;"
+    "letter-spacing:0;margin:0;max-width:920px;overflow-wrap:break-word;}"
+    ".hodl-subtitle{font-size:16px;color:#9aa6b2;margin:10px 0 0;"
+    "max-width:760px;}"
+    ".hodl-hero-badge{flex:0 0 auto;color:#ffd166;background:#18150d;"
+    "border:1px solid #3a2f14;border-radius:8px;padding:9px 12px;"
+    "font-size:13px;font-weight:720;white-space:nowrap;}"
+    ".hodl-panel{margin:20px auto;padding:18px;background:#10151a;"
+    "border:1px solid #24303a;border-radius:8px;color:#a3adb8;"
+    "box-shadow:0 18px 42px rgba(0,0,0,.20);}"
+    ".hodl-panel h2{color:#e1e8ee;margin-top:0;border-bottom-color:#242e37;}"
+    ".hodl-chart-wrap{max-width:1120px;margin:18px auto;padding:12px;"
+    "overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-color:#33414d #0b0f13;"
+    "background:#0c1116;border:1px solid #22303a;border-radius:8px;"
+    "box-shadow:0 18px 42px rgba(0,0,0,.22);}"
     ".hodl-wave-interactive{position:relative;}"
-    ".hodl-svg{width:100%;min-width:860px;height:auto;background:#0b0d0f;"
-    "border:1px solid #242832;border-radius:8px;display:block;}"
+    ".hodl-svg{width:100%;min-width:860px;height:auto;background:#080b0f;"
+    "border:1px solid #17232c;border-radius:6px;display:block;}"
     ".hodl-svg-title{font-family:-apple-system,'Segoe UI',Roboto,sans-serif;"
-    "font-weight:750;letter-spacing:0;}"
-    ".hodl-age-bar{transition:opacity .12s ease,stroke-width .12s ease;}"
+    "font-weight:780;letter-spacing:0;}"
+    ".hodl-age-bar{transition:opacity .12s ease,stroke-width .12s ease,"
+    "filter .12s ease;}"
     ".hodl-age-hit{cursor:crosshair;}"
     ".hodl-age-hit:focus{outline:none;}"
     ".hodl-mini-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));"
@@ -75,14 +86,18 @@ static const char HODL_VIEW_CSS[] =
     "border-radius:2px;margin-right:8px;}"
     ".hodl-source{max-width:900px;margin:18px auto;color:#9aa3ad;"
     "font-size:16px;line-height:1.7;}"
-    "@media (max-width:900px){.hodl-stats{grid-template-columns:"
-    "repeat(2,minmax(0,1fr));}.hodl-mini-grid{grid-template-columns:1fr;}}"
+    "@media (max-width:900px){.hodl-hero{display:block;}.hodl-hero-badge{"
+    "display:inline-block;margin-top:14px;}.hodl-title{font-size:38px;}"
+    ".hodl-stats{grid-template-columns:repeat(2,minmax(0,1fr));}"
+    ".hodl-mini-grid{grid-template-columns:1fr;}}"
     "@media (max-width:560px){.hodl-page{max-width:none;}.hodl-hero{"
-    "margin:22px auto 14px;}.hodl-title{font-size:30px;line-height:1.16;}"
+    "margin:18px auto 12px;padding:16px 0 12px;}.hodl-title{font-size:31px;"
+    "line-height:1.14;}"
     ".hodl-subtitle{font-size:15px;}.hodl-panel{padding:12px;}"
     ".hodl-stats{grid-template-columns:1fr;gap:10px;}"
     ".hodl-stats .num{font-size:26px;}.hodl-chart-wrap{margin:14px -10px;"
-    "padding:0 10px;}.hodl-svg{min-width:920px;}.hodl-table{min-width:620px;}}"
+    "padding:8px 10px;border-left:0;border-right:0;border-radius:0;}"
+    ".hodl-svg{min-width:820px;}.hodl-table{min-width:620px;}}"
     "@media (max-width:420px){.hodl-title{font-size:28px;}}";
 
 static const char HODL_PAGE_OPEN_TEMPLATE[] =
@@ -111,11 +126,15 @@ static const char HODL_WARMING_TEMPLATE[] =
 
 static const char HODL_HERO_TEMPLATE[] =
     "<section class='hodl-hero'>"
+    "<div>"
+    "<div class='hodl-kicker'>HODL Wave</div>"
     "<h1 class='hodl-title'>"
-    "{{older_pct}}% Older Than 1 Year"
+    "{{older_pct}}% held over 1 year"
     "</h1>"
     "<p class='hodl-subtitle'>{{hero_subject}} - {{snapshot_label}} at "
     "block {{tip_height}}</p>"
+    "</div>"
+    "<div class='hodl-hero-badge'>Transparent UTXO age</div>"
     "</section>";
 
 static const char HODL_PANEL_UNAVAILABLE_TEMPLATE[] =
@@ -131,13 +150,13 @@ static const char HODL_LATEST_PANEL_TEMPLATE[] =
     "aria-label='{{measurement_label}} at block {{latest_height}}' "
     "class='hodl-svg'>"
     "<text x='30' y='34' fill='#bbb' font-size='18' "
-    "font-family='Georgia,serif'>{{measurement_label}}</text>"
+    ">{{measurement_label}}</text>"
     "<line x1='70' y1='104' x2='930' y2='104' stroke='#1f1f1f'/>"
     "<circle cx='500' cy='92' r='6' fill='#33ff99'/>"
     "<text x='500' y='74' fill='#33ff99' font-size='26' "
     "font-weight='700' text-anchor='middle'>{{latest_pct}}%</text>"
     "<text x='500' y='128' fill='#999' font-size='14' "
-    "text-anchor='middle' font-family='Georgia,serif'>"
+    "text-anchor='middle'>"
     "block {{latest_height}} - {{latest_date}}</text>"
     "</svg>"
     "<div class='hodl-mini-grid'>"
@@ -222,15 +241,15 @@ static void hodl_page_model_init(struct hodl_page_model *m,
              hodl->skipped_rows);
     if (cached_snapshot) {
         snprintf(m->hero_subject, sizeof(m->hero_subject),
-                 "Verified Cached Transparent UTXO Value");
+                 "Transparent UTXO value");
         snprintf(m->snapshot_label, sizeof(m->snapshot_label),
-                 "Verified cached UTXO age distribution");
+                 "verified cached snapshot");
         snprintf(m->value_label, sizeof(m->value_label),
-                 "Transparent UTXO value at snapshot");
+                 "Transparent UTXO value");
         snprintf(m->latest_panel_title, sizeof(m->latest_panel_title),
-                 "Verified cached transparent UTXO value: %% held > 1 year");
+                 "1-year HODL share at cached snapshot");
         snprintf(m->measurement_label, sizeof(m->measurement_label),
-                 "Cached measurement");
+                 "Cached snapshot");
         snprintf(m->sample_label, sizeof(m->sample_label),
                  "1 verified cached anchor");
         snprintf(m->latest_note, sizeof(m->latest_note),
@@ -238,15 +257,15 @@ static void hodl_page_model_init(struct hodl_page_model *m,
                  "HODL snapshot while the current-tip cache is prepared.");
     } else {
         snprintf(m->hero_subject, sizeof(m->hero_subject),
-                 "Current Transparent UTXO Value");
+                 "Transparent UTXO value");
         snprintf(m->snapshot_label, sizeof(m->snapshot_label),
-                 "Current UTXO age distribution");
+                 "current verified snapshot");
         snprintf(m->value_label, sizeof(m->value_label),
                  "Current transparent UTXO value");
         snprintf(m->latest_panel_title, sizeof(m->latest_panel_title),
-                 "Historical transparent UTXO value: %% held > 1 year");
+                 "1-year HODL share at current tip");
         snprintf(m->measurement_label, sizeof(m->measurement_label),
-                 "Latest measurement");
+                 "Current tip");
         snprintf(m->sample_label, sizeof(m->sample_label),
                  "1 current tip anchor");
         snprintf(m->latest_note, sizeof(m->latest_note),
@@ -1082,11 +1101,15 @@ static void hodl_emit_survival_chart(size_t *off, uint8_t *r, size_t max,
         "and 5 year holding thresholds.' style='outline:none'>"
         "<defs>"
         "<linearGradient id='hodl-survival-bg' x1='0' y1='0' x2='0' y2='1'>"
-        "<stop offset='0%%' stop-color='#10151a'/>"
-        "<stop offset='100%%' stop-color='#090b0d'/>"
+        "<stop offset='0%%' stop-color='#101821'/>"
+        "<stop offset='100%%' stop-color='#090d11'/>"
+        "</linearGradient>"
+        "<linearGradient id='hodl-survival-area' x1='0' y1='0' x2='0' y2='1'>"
+        "<stop offset='0%%' stop-color='#33ff99' stop-opacity='0.18'/>"
+        "<stop offset='100%%' stop-color='#33ff99' stop-opacity='0.01'/>"
         "</linearGradient>"
         "<filter id='hodl-line-glow' x='-4%%' y='-8%%' width='108%%' height='116%%'>"
-        "<feGaussianBlur stdDeviation='1.25' result='blur'/>"
+        "<feGaussianBlur stdDeviation='1.05' result='blur'/>"
         "<feMerge><feMergeNode in='blur'/><feMergeNode in='SourceGraphic'/></feMerge>"
         "</filter>"
         "</defs>"
@@ -1111,7 +1134,7 @@ static void hodl_emit_survival_chart(size_t *off, uint8_t *r, size_t max,
 
     APPEND(*off, r, max,
         "<rect x='%d' y='%d' width='%d' height='%d' rx='5' "
-        "fill='url(#hodl-survival-bg)' stroke='#1d2530'/>",
+        "fill='url(#hodl-survival-bg)' stroke='#26333f'/>",
         pl, pt, pw, ph);
 
     for (int g = 0; g <= 4; g++) {
@@ -1139,10 +1162,21 @@ static void hodl_emit_survival_chart(size_t *off, uint8_t *r, size_t max,
             x, pt, x, pt + ph, x, pt + ph + 20, dbuf);
     }
 
+    APPEND(*off, r, max,
+        "<path d='M%d,%d", hodl_survival_x(&rows[0], pl, pw, t_min, t_max),
+        pt + ph);
+    for (int i = 0; i < n; i++) {
+        int x = hodl_survival_x(&rows[i], pl, pw, t_min, t_max);
+        int y = hodl_survival_y(&rows[i], 1, pt, ph);
+        APPEND(*off, r, max, " L%d,%d", x, y);
+    }
+    APPEND(*off, r, max, " L%d,%d Z' fill='url(#hodl-survival-area)'/>",
+           hodl_survival_x(&rows[n - 1], pl, pw, t_min, t_max), pt + ph);
+
     for (int t = 0; t < HODL_SURVIVAL_THRESHOLDS; t++) {
         APPEND(*off, r, max,
             "<polyline fill='none' stroke='%s' stroke-width='%d' "
-            "stroke-linejoin='round' stroke-linecap='round' opacity='0.94' "
+            "stroke-linejoin='round' stroke-linecap='round' opacity='0.96' "
             "filter='url(#hodl-line-glow)' points='",
             HODL_THRESHOLDS[t].color, t == 1 ? 4 : 3);
         for (int i = 0; i < n; i++) {
@@ -1151,6 +1185,15 @@ static void hodl_emit_survival_chart(size_t *off, uint8_t *r, size_t max,
             APPEND(*off, r, max, "%s%d,%d", i ? " " : "", x, y);
         }
         APPEND(*off, r, max, "'/>");
+    }
+
+    for (int t = 0; t < HODL_SURVIVAL_THRESHOLDS; t++) {
+        int x = hodl_survival_x(&rows[n - 1], pl, pw, t_min, t_max);
+        int y = hodl_survival_y(&rows[n - 1], t, pt, ph);
+        APPEND(*off, r, max,
+            "<circle cx='%d' cy='%d' r='%d' fill='%s' stroke='#071015' "
+            "stroke-width='2'/>",
+            x, y, t == 1 ? 5 : 4, HODL_THRESHOLDS[t].color);
     }
 
     APPEND(*off, r, max,
@@ -1168,7 +1211,7 @@ static void hodl_emit_survival_chart(size_t *off, uint8_t *r, size_t max,
     APPEND(*off, r, max,
         "<g id='hodl-survival-tip' style='display:none;pointer-events:none'>"
         "<rect id='hodl-survival-tip-bg' x='0' y='0' width='330' "
-        "height='150' rx='7' fill='#050708' stroke='#33ff99' opacity='0.96'/>"
+        "height='150' rx='7' fill='#05090d' stroke='#33ff99' opacity='0.97'/>"
         "<text id='hodl-survival-date' x='12' y='22' fill='#fff' "
         "font-size='13'>-</text>"
         "<text id='hodl-survival-total' x='12' y='43' fill='#aaa' "
@@ -1724,12 +1767,27 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
                     "transparent UTXO value held longer than one year at each "
                     "sampled block. Use left/right arrows to inspect samples.' "
                     "class='hodl-svg' style='outline:none'>"
-                    "<text x='30' y='30' fill='#bbb' font-size='18' "
-                    "font-family='Georgia,serif'>Historical transparent UTXO value: %% held &gt; 1 year</text>"
-                    "<text x='%d' y='30' fill='#666' font-size='12' "
-                    "text-anchor='end' font-family='Georgia,serif'>"
-                    "%s</text>",
-                    W, H, W - pr, sample_meta);
+                    "<defs>"
+                    "<linearGradient id='hodl-ts-bg' x1='0' y1='0' x2='0' y2='1'>"
+                    "<stop offset='0%%' stop-color='#101821'/>"
+                    "<stop offset='100%%' stop-color='#090d11'/>"
+                    "</linearGradient>"
+                    "<linearGradient id='hodl-ts-area' x1='0' y1='0' x2='0' y2='1'>"
+                    "<stop offset='0%%' stop-color='#33ff99' stop-opacity='0.18'/>"
+                    "<stop offset='100%%' stop-color='#33ff99' stop-opacity='0.02'/>"
+                    "</linearGradient>"
+                    "<filter id='hodl-ts-glow' x='-4%%' y='-8%%' width='108%%' height='116%%'>"
+                    "<feGaussianBlur stdDeviation='1.05' result='blur'/>"
+                    "<feMerge><feMergeNode in='blur'/><feMergeNode in='SourceGraphic'/></feMerge>"
+                    "</filter>"
+                    "</defs>"
+                    "<text class='hodl-svg-title' x='30' y='30' fill='#f5f7fa' "
+                    "font-size='18'>Historical transparent UTXO value: %% held &gt; 1 year</text>"
+                    "<text x='%d' y='30' fill='#71808e' font-size='12' "
+                    "text-anchor='end'>%s</text>"
+                    "<rect x='%d' y='%d' width='%d' height='%d' rx='5' "
+                    "fill='url(#hodl-ts-bg)' stroke='#26333f'/>",
+                    W, H, W - pr, sample_meta, pl, pt, pw, ph);
 
                 /* Y-axis gridlines + labels */
                 for (int g = 0; g <= 4; g++) {
@@ -1737,8 +1795,8 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
                     int y = pt + ph - (int)((yv - y_min) / (y_max - y_min) * ph);
                     APPEND(off, r, max,
                         "<line x1='%d' y1='%d' x2='%d' y2='%d' "
-                        "stroke='#1a1a1a'/>"
-                        "<text x='%d' y='%d' fill='#777' font-size='12' "
+                        "stroke='#1b222b'/>"
+                        "<text x='%d' y='%d' fill='#8d96a0' font-size='12' "
                         "text-anchor='end'>%.1f%%</text>",
                         pl, y, pl + pw, y, pl - 8, y + 4, yv);
                 }
@@ -1754,9 +1812,9 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
                     strftime(dbuf, sizeof(dbuf), "%Y-%m", &tm_);
                     APPEND(off, r, max,
                         "<line x1='%d' y1='%d' x2='%d' y2='%d' "
-                        "stroke='#1a1a1a'/>"
-                        "<text x='%d' y='%d' fill='#777' font-size='12' "
-                        "text-anchor='middle' font-family='Georgia,serif'>%s</text>",
+                        "stroke='#151c23'/>"
+                        "<text x='%d' y='%d' fill='#8d96a0' font-size='12' "
+                        "text-anchor='middle'>%s</text>",
                         x, pt, x, pt + ph, x, pt + ph + 18, dbuf);
                 }
 
@@ -1775,7 +1833,7 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
                         continue;
                     APPEND(off, r, max,
                         "<rect x='%d' y='%d' width='%d' height='%d' "
-                        "fill='#151515' opacity='0.55'/>"
+                        "fill='#111820' opacity='0.68'/>"
                         "<line x1='%d' y1='%d' x2='%d' y2='%d' "
                         "stroke='#333' stroke-dasharray='3,4'/>"
                         "<line x1='%d' y1='%d' x2='%d' y2='%d' "
@@ -1785,8 +1843,7 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
                     if (gw >= 120) {
                         APPEND(off, r, max,
                             "<text x='%d' y='%d' fill='#555' "
-                            "font-size='12' text-anchor='middle' "
-                            "font-family='Georgia,serif'>backfilling</text>",
+                            "font-size='12' text-anchor='middle'>backfilling</text>",
                             gx + gw / 2, pt + ph / 2);
                     }
                 }
@@ -1801,8 +1858,27 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
                     }
                     if (seg_end > seg_start) {
                         APPEND(off, r, max,
+                            "<path d='M%d,%d",
+                            hodl_chart_x(&rows[seg_start], pl, pw,
+                                         t_min, t_max),
+                            pt + ph);
+                        for (int i = seg_start; i <= seg_end; i++) {
+                            int x = hodl_chart_x(&rows[i], pl, pw,
+                                                 t_min, t_max);
+                            int y = hodl_chart_y(&rows[i], pt, ph,
+                                                 y_min, y_max);
+                            APPEND(off, r, max, " L%d,%d", x, y);
+                        }
+                        APPEND(off, r, max,
+                            " L%d,%d Z' fill='url(#hodl-ts-area)'/>",
+                            hodl_chart_x(&rows[seg_end], pl, pw,
+                                         t_min, t_max),
+                            pt + ph);
+                        APPEND(off, r, max,
                             "<polyline fill='none' stroke='#33ff99' "
-                            "stroke-width='2' points='");
+                            "stroke-width='3' stroke-linejoin='round' "
+                            "stroke-linecap='round' filter='url(#hodl-ts-glow)' "
+                            "points='");
                         for (int i = seg_start; i <= seg_end; i++) {
                             int x = hodl_chart_x(&rows[i], pl, pw,
                                                  t_min, t_max);
@@ -1835,21 +1911,22 @@ size_t explorer_view_hodl(const char *datadir, uint8_t *r, size_t max)
                     "stroke='#33ff99' stroke-dasharray='2,3' stroke-width='1' "
                     "style='display:none;pointer-events:none'/>"
                     "<circle id='hodl-dot' cx='0' cy='0' r='4' "
-                    "fill='#33ff99' style='display:none;pointer-events:none'/>"
+                    "fill='#33ff99' stroke='#071015' stroke-width='2' "
+                    "style='display:none;pointer-events:none'/>"
                     "<g id='hodl-tip' style='display:none;pointer-events:none'>"
                     "<rect id='hodl-tip-bg' x='0' y='0' width='290' "
-                    "height='104' rx='6' fill='#000' stroke='#33ff99' "
-                    "opacity='0.95'/>"
+                    "height='104' rx='7' fill='#05090d' stroke='#33ff99' "
+                    "opacity='0.97'/>"
                     "<text id='hodl-tip-date' x='10' y='20' fill='#fff' "
-                    "font-size='13' font-family='Georgia,serif'>—</text>"
+                    "font-size='13'>-</text>"
                     "<text id='hodl-tip-pct' x='10' y='40' fill='#33ff99' "
-                    "font-size='15' font-weight='600'>—</text>"
+                    "font-size='15' font-weight='600'>-</text>"
                     "<text id='hodl-tip-amt' x='10' y='58' fill='#bbb' "
-                    "font-size='12'>—</text>"
+                    "font-size='12'>-</text>"
                     "<text id='hodl-tip-mv' x='10' y='74' fill='#ffcc66' "
-                    "font-size='12'>—</text>"
+                    "font-size='12'>-</text>"
                     "<text id='hodl-tip-h' x='10' y='90' fill='#666' "
-                    "font-size='11'>—</text>"
+                    "font-size='11'>-</text>"
                     "</g>",
                     pt, pt + ph);
 

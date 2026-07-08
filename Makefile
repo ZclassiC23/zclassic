@@ -262,6 +262,9 @@ TEST_FAST_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS))
 TMPL_GEN = app/views/include/views/wallet_templates_gen.h
 TMPL_SRC = $(wildcard app/views/templates/*.chtml) $(wildcard app/views/css/*.ccss)
 TMPL_TOOL = $(BIN_DIR)/gen_templates
+EXPLORER_CSS_GEN = app/views/include/views/explorer_css.h
+EXPLORER_CSS_SRC = app/views/src/explorer_css.css
+VIEW_GEN_HEADERS = $(TMPL_GEN) $(EXPLORER_CSS_GEN)
 
 $(TMPL_TOOL): tools/gen_templates.c lib/util/src/safe_alloc.c
 	@mkdir -p $(dir $@)
@@ -274,8 +277,14 @@ $(BIN_DIR)/inspect_html: tools/inspect_html.c
 $(TMPL_GEN): $(TMPL_SRC) $(TMPL_TOOL)
 	$(TMPL_TOOL) app/views/templates $@ app/views/css
 
+$(EXPLORER_CSS_GEN): $(EXPLORER_CSS_SRC) $(TMPL_TOOL)
+	$(TMPL_TOOL) --single-css $< $@ explorer_css EXPLORER_CSS_H
+
 .PHONY: templates
-templates: $(TMPL_GEN)
+templates: $(VIEW_GEN_HEADERS)
+
+.PHONY: explorer-css
+explorer-css: $(EXPLORER_CSS_GEN)
 
 .PHONY: tools/gen_templates tools/inspect_html
 tools/gen_templates: $(TMPL_TOOL)
@@ -292,9 +301,9 @@ tools/inspect_html: $(BIN_DIR)/inspect_html
 define BUILD_NODE_TOOL
 .PHONY: $(1)
 $(1): $$(BIN_DIR)/$(1)
-$$(BIN_DIR)/$(1): $$(TMPL_GEN) $$(BUILD_COMMIT_STAMP) $(2) $$(ALL_SRCS)
+$$(BIN_DIR)/$(1): $$(VIEW_GEN_HEADERS) $$(BUILD_COMMIT_STAMP) $(2) $$(ALL_SRCS)
 	@mkdir -p $$(dir $$@)
-	$$(CC) $$(CFLAGS) $(4) -Wno-deprecated-declarations $$(LDFLAGS) -o $$@ $$(filter-out $$(TMPL_GEN) $$(BUILD_COMMIT_STAMP),$$^) $$(TOR_LIBS) $$(LIBS) $$(GTK_LIBS) $$(WEBKIT_LIBS) $(3)
+	$$(CC) $$(CFLAGS) $(4) -Wno-deprecated-declarations $$(LDFLAGS) -o $$@ $$(filter-out $$(VIEW_GEN_HEADERS) $$(BUILD_COMMIT_STAMP),$$^) $$(TOR_LIBS) $$(LIBS) $$(GTK_LIBS) $$(WEBKIT_LIBS) $(3)
 endef
 
 $(eval $(call BUILD_NODE_TOOL,test_zcl,$(TEST_SRCS_NO_MAIN) lib/test/src/test.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS),,-DZCL_TESTING))
@@ -303,7 +312,7 @@ $(eval $(call BUILD_NODE_TOOL,test_parallel,$(TEST_SRCS_NO_MAIN) lib/test/src/te
 .PHONY: test_parallel_fast
 test_parallel_fast: $(TEST_PARALLEL_FAST_BIN)
 
-$(TEST_PARALLEL_FAST_BIN): $(TMPL_GEN) $(TEST_PARALLEL_FAST_OBJS)
+$(TEST_PARALLEL_FAST_BIN): $(VIEW_GEN_HEADERS) $(TEST_PARALLEL_FAST_OBJS)
 	@mkdir -p $(dir $@)
 	$(CC) $(TEST_FAST_CFLAGS) $(TEST_FAST_LDFLAGS) -o $@ $(TEST_PARALLEL_FAST_OBJS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
 
@@ -343,7 +352,7 @@ t-fast: test_parallel_fast
 # -Wno-deprecated-declarations matches the real node/test build (zclassic23,
 # test_parallel) so these targets don't false-fail on pre-existing deprecations.
 build-only: CFLAGS += -Wno-deprecated-declarations
-build-only: $(TMPL_GEN) $(ALL_OBJS)
+build-only: $(VIEW_GEN_HEADERS) $(ALL_OBJS)
 	@echo "build-only: all node objects compiled"
 
 # Fastest no-link compile-check for local edit loops. This uses the same
@@ -352,7 +361,7 @@ build-only: $(TMPL_GEN) $(ALL_OBJS)
 fast-compile dev-build-only: $(DEV_OBJ_COMPLETE)
 	@echo "fast-compile: all dev node objects compiled (non-LTO, no link)"
 
-$(DEV_OBJ_COMPLETE): $(TMPL_GEN) $(DEV_OBJS)
+$(DEV_OBJ_COMPLETE): $(VIEW_GEN_HEADERS) $(DEV_OBJS)
 	@mkdir -p $(dir $@)
 	@touch $@
 
@@ -372,14 +381,14 @@ dev-bin zclassic23-dev: $(ZCLASSIC23_DEV_BIN)
 fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild:
 	@ZCL_FAST_CC="$${ZCL_FAST_CC:-$(CC)}" tools/agent_fast_ci.sh rebuild-dev
 
-$(ZCLASSIC23_DEV_BIN): $(TMPL_GEN) $(BUILD_COMMIT_STAMP) $(DEV_OBJS) | $(VENDOR_LIBS)
+$(ZCLASSIC23_DEV_BIN): $(VIEW_GEN_HEADERS) $(BUILD_COMMIT_STAMP) $(DEV_OBJS) | $(VENDOR_LIBS)
 	@mkdir -p $(dir $@)
 	$(CC) $(DEV_CFLAGS) $(DEV_LDFLAGS) -o $@ $(DEV_OBJS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
 	@touch $(DEV_OBJ_COMPLETE)
 	@echo "dev-bin: $@ (non-LTO, unstripped; not for release/deploy)"
 
 # Full no-link syntax check across every TU in one shot (no incremental state).
-syntax-check: $(TMPL_GEN)
+syntax-check: $(VIEW_GEN_HEADERS)
 	@$(CC) $(CFLAGS) -Wno-deprecated-declarations -fsyntax-only $(ALL_SRCS) $(NODE_ENTRY_SRCS) && echo "syntax-check: OK"
 
 # The highest-signal lint gates for the inner loop. Run full `make lint` at
@@ -664,9 +673,9 @@ spec: spec_zcl
 
 .PHONY: zclassic23
 zclassic23: $(ZCLASSIC23_BIN)
-$(ZCLASSIC23_BIN): $(TMPL_GEN) $(BUILD_COMMIT_STAMP) $(NODE_ENTRY_SRCS) $(ALL_SRCS) | $(VENDOR_LIBS)
+$(ZCLASSIC23_BIN): $(VIEW_GEN_HEADERS) $(BUILD_COMMIT_STAMP) $(NODE_ENTRY_SRCS) $(ALL_SRCS) | $(VENDOR_LIBS)
 	@mkdir -p $(dir $@)
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(TMPL_GEN) $(BUILD_COMMIT_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
+	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o $@ $(filter-out $(VIEW_GEN_HEADERS) $(BUILD_COMMIT_STAMP),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
 	strip -s $@
 
 .PHONY: zclassic-cli
@@ -750,19 +759,6 @@ zcl-blog: $(BIN_DIR)/zcl-blog
 $(BIN_DIR)/zcl-blog: tools/zcl-blog
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -x c $$(pkg-config --cflags webkit2gtk-4.1) -o $@ $< $$(pkg-config --libs webkit2gtk-4.1)
-
-explorer-css: app/views/src/explorer_css.css
-	python3 -c "\
-	import re; f=open('app/views/src/explorer_css.css'); css=f.read(); f.close(); \
-	css=re.sub(r'/\*.*?\*/', '', css, flags=re.DOTALL); \
-	css=re.sub(r'\s+', ' ', css).strip(); css=re.sub(r'\s*([{}:;,])\s*', r'\1', css); \
-	css=css.replace('\\\\','\\\\\\\\').replace('\"','\\\\\"'); \
-	lines=[]; i=0; \
-	exec('while i<len(css): lines.append(chr(32)*4+chr(34)+css[i:min(i+100,len(css))]+chr(34)); i+=100'); \
-	o=open('app/views/include/views/explorer_css.h','w'); \
-	o.write('/* Auto-generated from app/views/src/explorer_css.css */\n'); \
-	o.write('#ifndef EXPLORER_CSS_H\n#define EXPLORER_CSS_H\n\n'); \
-	o.write('static const char explorer_css[] =\n'+'\n'.join(lines)+';\n\n#endif\n'); o.close()"
 
 # Default `make test` = the fast fork-based parallel suite (~1min, 282 groups).
 # The slow single-process binary is still available as `make test-full`.
@@ -1756,7 +1752,7 @@ ci-sync-smoke: zclassic23
 	@$(ZCLASSIC23_BIN) -bench-mtbf
 	@echo "[ci-sync-smoke] OK"
 
-$(OBJ_DIR)/%.o: %.c $(TMPL_GEN)
+$(OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -MMD -MP -c -o $@ $<
 
@@ -1776,14 +1772,14 @@ $(DEV_OBJ_DIR)/lib/sapling/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
 $(DEV_OBJ_DIR)/lib/script/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
 $(DEV_OBJ_DIR)/lib/validation/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
 
-$(DEV_OBJ_DIR)/%.o: %.c $(TMPL_GEN)
+$(DEV_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) $(DEV_COMPILE_CFLAGS) -MMD -MP -c -o $@ $<
 
 # The dev object tree also needs the commit TU refreshed when HEAD changes.
 $(DEV_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_COMMIT_STAMP)
 
-$(TEST_FAST_OBJ_DIR)/%.o: %.c $(TMPL_GEN)
+$(TEST_FAST_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS)
 	@mkdir -p $(dir $@)
 	$(CC) $(TEST_FAST_CFLAGS) -MMD -MP -c -o $@ $<
 

@@ -165,6 +165,93 @@ static int tmpl_name_count = 0;
  * prefix: "TMPL" for .chtml, "CSS" for .css
  * minify: true for .css files
  * track: true to add to partial registry */
+static bool valid_c_identifier(const char *s) {
+    if (!s || (!isalpha((unsigned char)s[0]) && s[0] != '_'))
+        return false;
+    for (size_t i = 1; s[i]; i++) {
+        if (!isalnum((unsigned char)s[i]) && s[i] != '_')
+            return false;
+    }
+    return true;
+}
+
+static int write_single_css_header(const char *src_path, const char *out_path,
+                                   const char *symbol, const char *guard)
+{
+    size_t src_len = 0;
+    size_t min_len = 0;
+    char *src = NULL;
+    char *minified = NULL;
+    FILE *out = NULL;
+    int chunks = 0;
+    size_t chunk_size = 3000;
+
+    if (!valid_c_identifier(symbol) || !valid_c_identifier(guard)) {
+        fprintf(stderr, "gen_templates: invalid C identifier\n");
+        return 1;
+    }
+
+    src = read_file(src_path, &src_len);
+    if (!src) {
+        fprintf(stderr, "gen_templates: cannot read CSS: %s\n", src_path);
+        return 1;
+    }
+    minified = minify_css(src, src_len, &min_len);
+    free(src);
+    if (!minified)
+        return 1;
+
+    out = fopen(out_path, "w");
+    if (!out) {
+        fprintf(stderr, "gen_templates: cannot write: %s\n", out_path);
+        free(minified);
+        return 1;
+    }
+
+    fprintf(out,
+        "/* Auto-generated from %s -- do not edit.\n"
+        " * Regenerate: make explorer-css */\n\n"
+        "#ifndef %s\n"
+        "#define %s\n\n",
+        src_path, guard, guard);
+
+    for (size_t off = 0; off < min_len; off += chunk_size) {
+        size_t clen = min_len - off;
+        if (clen > chunk_size)
+            clen = chunk_size;
+        fprintf(out, "static const char %s_%d[] =\n", symbol, chunks);
+        write_c_string(out, minified + off, clen);
+        fprintf(out, ";\n");
+        chunks++;
+    }
+
+    fprintf(out, "\nstatic char _%s_buf[%zu];\n", symbol, min_len + 1);
+    fprintf(out,
+        "__attribute__((unused))\n"
+        "static const char *%s_get(void) {\n"
+        "    size_t off = 0;\n",
+        symbol);
+    for (int c = 0; c < chunks; c++) {
+        fprintf(out,
+            "    size_t l%d = __builtin_strlen(%s_%d);\n"
+            "    __builtin_memcpy(_%s_buf + off, %s_%d, l%d); off += l%d;\n",
+            c, symbol, c, symbol, symbol, c, c, c);
+    }
+    fprintf(out,
+        "    _%s_buf[off] = 0;\n"
+        "    return _%s_buf;\n"
+        "}\n"
+        "#define %s (%s_get())\n\n"
+        "#endif\n",
+        symbol, symbol, symbol, symbol);
+
+    fclose(out);
+    free(minified);
+    fprintf(stderr, "gen_templates: CSS %s -> %s (%zu bytes)\n",
+            src_path, out_path, min_len);
+    return 0;
+}
+
 static int process_dir(const char *dir, const char *ext, const char *prefix,
                        bool minify, FILE *out) {
     DIR *d = opendir(dir);
@@ -205,8 +292,16 @@ static int process_dir(const char *dir, const char *ext, const char *prefix,
 
         /* Track for partial registry (templates only, not CSS) */
         if (!minify && tmpl_name_count < MAX_TEMPLATES) {
-            snprintf(tmpl_names[tmpl_name_count].base, 128, "%s", name_base);
-            snprintf(tmpl_names[tmpl_name_count].upper, 128, "%s", name_upper);
+            size_t base_copy = strlen(name_base);
+            size_t upper_copy = strlen(name_upper);
+            if (base_copy >= sizeof(tmpl_names[tmpl_name_count].base))
+                base_copy = sizeof(tmpl_names[tmpl_name_count].base) - 1;
+            if (upper_copy >= sizeof(tmpl_names[tmpl_name_count].upper))
+                upper_copy = sizeof(tmpl_names[tmpl_name_count].upper) - 1;
+            memcpy(tmpl_names[tmpl_name_count].base, name_base, base_copy);
+            tmpl_names[tmpl_name_count].base[base_copy] = '\0';
+            memcpy(tmpl_names[tmpl_name_count].upper, name_upper, upper_copy);
+            tmpl_names[tmpl_name_count].upper[upper_copy] = '\0';
             tmpl_name_count++;
         }
 
@@ -263,6 +358,16 @@ static int process_dir(const char *dir, const char *ext, const char *prefix,
 }
 
 int main(int argc, char **argv) {
+    if (argc >= 2 && strcmp(argv[1], "--single-css") == 0) {
+        if (argc != 6) {
+            fprintf(stderr,
+                "Usage: %s --single-css <input.css> <output.h> <symbol> <guard>\n",
+                argv[0]);
+            return 1;
+        }
+        return write_single_css_header(argv[2], argv[3], argv[4], argv[5]);
+    }
+
     if (argc < 3 || argc > 4) {
         fprintf(stderr, "Usage: %s <template_dir> <output.h> [css_dir]\n",
             argv[0]);
