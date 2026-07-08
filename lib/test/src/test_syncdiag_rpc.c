@@ -57,6 +57,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
+#include <utime.h>
 #include <unistd.h>
 
 /* Push a 64 KiB frame filled with 0xCC onto the stack, then return.
@@ -107,6 +108,24 @@ static bool syncdiag_touch_file(const char *path)
         return false;
     fclose(f);
     return true;
+}
+
+static bool syncdiag_set_progress_mtime_seconds_ago(const char *dir,
+                                                    int64_t seconds_ago)
+{
+    char path[512];
+    if (!dir || seconds_ago < 0 ||
+        snprintf(path, sizeof(path), "%s/progress.kv", dir) >=
+            (int)sizeof(path))
+        return false;
+
+    int64_t now = platform_time_wall_unix();
+    if (now <= seconds_ago)
+        return false;
+    struct utimbuf tb;
+    tb.actime = (time_t)(now - seconds_ago);
+    tb.modtime = (time_t)(now - seconds_ago);
+    return utime(path, &tb) == 0;
 }
 
 static bool syncdiag_set_coins_applied(sqlite3 *db, int32_t height)
@@ -638,7 +657,7 @@ int test_syncdiag_rpc(void)
         else    { printf("FAIL\n"); failures++; }
     }
 
-    printf("anchorstatus: names anchor mint UTXO backlog blocker "
+    printf("anchorstatus: names stale anchor mint UTXO backlog blocker "
            "(RED)... ");
     {
         checkpoints_reset_sha3_override_for_test();
@@ -646,6 +665,7 @@ int test_syncdiag_rpc(void)
         test_make_tmpdir(dir, sizeof(dir), "syncdiag_anchorstatus",
                          "backlog");
         bool ok = syncdiag_seed_anchorstatus_progress(dir);
+        ok = ok && syncdiag_set_progress_mtime_seconds_ago(dir, 3600);
 
         struct json_value params;
         json_init(&params);
@@ -665,6 +685,14 @@ int test_syncdiag_rpc(void)
                    "zcl.anchor_mint_status.v1") == 0;
         ok = ok && json_get(&result, "status") != NULL &&
             strcmp(json_get_str(json_get(&result, "status")), "ok") == 0;
+        ok = ok && json_get(&result, "captured_at_unix") != NULL &&
+            json_get_int(json_get(&result, "captured_at_unix")) > 0;
+        ok = ok && json_get(&result, "progress_age_seconds") != NULL &&
+            json_get_int(json_get(&result, "progress_age_seconds")) > 300;
+        ok = ok && json_get(&result, "progress_recent") != NULL &&
+            !json_get_bool(json_get(&result, "progress_recent"));
+        ok = ok && json_get(&result, "fold_recently_active") != NULL &&
+            !json_get_bool(json_get(&result, "fold_recently_active"));
         ok = ok && json_get(&result, "summary") != NULL &&
             strcmp(json_get_str(json_get(&result, "summary")),
                    "mint_utxo_apply_far_behind_validated_backlog") == 0;
@@ -737,6 +765,66 @@ int test_syncdiag_rpc(void)
             json_get_int(json_get(utxo, "cursor")) == 164000;
         ok = ok && json_get(utxo, "log_max_height") != NULL &&
             json_get_int(json_get(utxo, "log_max_height")) == 163999;
+
+        json_free(&params);
+        json_free(&result);
+        test_cleanup_tmpdir(dir);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("anchorstatus: treats recent anchor mint backlog as active "
+           "(RED)... ");
+    {
+        checkpoints_reset_sha3_override_for_test();
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "syncdiag_anchorstatus",
+                         "active");
+        bool ok = syncdiag_seed_anchorstatus_progress(dir);
+
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+        struct json_value arg;
+        json_init(&arg);
+        json_set_str(&arg, dir);
+        json_push_back(&params, &arg);
+        json_free(&arg);
+
+        struct json_value result;
+        json_init(&result);
+        ok = ok && rpc_agent_anchor_status(&params, false, &result);
+        ok = ok && result.type == JSON_OBJ;
+        ok = ok && json_get(&result, "status") != NULL &&
+            strcmp(json_get_str(json_get(&result, "status")), "ok") == 0;
+        ok = ok && json_get(&result, "progress_age_seconds") != NULL &&
+            json_get_int(json_get(&result, "progress_age_seconds")) >= 0 &&
+            json_get_int(json_get(&result, "progress_age_seconds")) <= 300;
+        ok = ok && json_get(&result, "progress_recent") != NULL &&
+            json_get_bool(json_get(&result, "progress_recent"));
+        ok = ok && json_get(&result, "fold_recently_active") != NULL &&
+            json_get_bool(json_get(&result, "fold_recently_active"));
+        ok = ok && json_get(&result, "summary") != NULL &&
+            strcmp(json_get_str(json_get(&result, "summary")),
+                   "mint_in_progress_recent") == 0;
+        ok = ok && json_get(&result, "agent_next_action") != NULL &&
+            strcmp(json_get_str(json_get(&result, "agent_next_action")),
+                   "observe_anchor_mint_progress") == 0;
+        ok = ok && json_get(&result, "utxo_apply_probe_next_action") != NULL &&
+            strcmp(json_get_str(json_get(&result,
+                                         "utxo_apply_probe_next_action")),
+                   "observe_anchor_mint_progress") == 0;
+
+        const struct json_value *probe =
+            json_get(&result, "utxo_apply_probe");
+        ok = ok && probe != NULL && probe->type == JSON_OBJ;
+        ok = ok && json_get(probe, "next_diagnosis") != NULL &&
+            strcmp(json_get_str(json_get(probe, "next_diagnosis")),
+                   "utxo_apply_idle_after_validated_row") == 0;
+        ok = ok && json_get(probe, "next_action") != NULL &&
+            strcmp(json_get_str(json_get(probe, "next_action")),
+                   "observe_anchor_mint_progress") == 0;
 
         json_free(&params);
         json_free(&result);

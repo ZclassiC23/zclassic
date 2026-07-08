@@ -1,5 +1,44 @@
 ## CURRENT STATE (2026-07-08, P0 anchor mint restarted from clean copy)
 
+**2026-07-08 14:45 UTC - the crash-replay tail blocker is fixed and the
+sovereign anchor producer is advancing again.** Commit `91f0d0ca7` was built,
+pushed to `main`, and deployed to the transient `zclassic23-anchor-mint`
+service. On restart the journal confirmed the intended recovery path:
+`[coins_ram] crash-replay: purged stale replay tail at utxo_apply cursor 1
+(durable flush watermark=0)`, then the unit resumed from genesis with the
+checkpoint-bound mint marker.
+
+Current live sample from
+`zclassic23 anchorstatus -datadir=/home/rhett/.zclassic-c23-anchor-mint`:
+
+- service active as PID `1778337`, running
+  `/home/rhett/github/zclassic23/build/bin/zclassic23 -datadir=/home/rhett/.zclassic-c23-anchor-mint -nolegacyimport -mint-anchor -mint-anchor-fast -fold-inram -nobgvalidation`
+- `progress_age_seconds=54`, `progress_recent=true`,
+  `fold_recently_active=true`
+- `utxo_apply.cursor=7001`, `tip_finalize.cursor=6000`,
+  `proof_validate.cursor=236000`
+- `coins_applied_height=7001`, `durable_applied_through_height=7000`,
+  `coins_ram_flushed_height=0`
+- `snapshot_present=false`; no `utxo-anchor.snapshot` exists yet
+- `summary=mint_in_progress_recent`,
+  `agent_next_action=observe_anchor_mint_progress`
+
+The earlier `utxo_apply` cursor-1 replay-tail blocker is no longer current.
+The old `anchorstatus` binary still summarized the active backlog as
+`mint_utxo_apply_far_behind_validated_backlog`, which was misleading while the
+progress store mtime and cursors were fresh. The current tree adds
+`captured_at_unix`, `progress_age_seconds`, `progress_recent`, and
+`fold_recently_active`; when the producer is moving, `summary` becomes
+`mint_in_progress_recent` and both top-level/probe next actions are
+`observe_anchor_mint_progress`. Focused proof:
+`ZCL_NO_PYTHON=1 make fast-changed-compile`,
+`ZCL_NO_PYTHON=1 make t-fast ONLY=syncdiag_rpc`, and
+`ZCL_NO_PYTHON=1 make lint`.
+
+Next gate: keep observing until the first post-restart 50k RAM flush lands,
+then continue to the final SHA3 snapshot assertion and copy-prove cutover gates
+in `docs/work/sovereign-cutover-runbook.md`.
+
 **2026-07-08 08:50 UTC - P0 sovereign trust-root producer is running again,
 but the durable anchor artifact is still pending.** The 2026-07-03 resumed
 producer never published `utxo-anchor.snapshot`. Offline inspection found a
@@ -59,8 +98,9 @@ but the producer has a new named blocker: `utxo_apply` cursor `1`,
 `coins_applied_height=1`, `coins_ram_flushed_height=-1`, no snapshot artifact,
 and `utxo_apply_probe.next_diagnosis=utxo_apply_row_exists_but_cursor_not_advanced`.
 `agent_next_action=inspect_utxo_apply_idle_reason_before_waiting_more`. Treat
-that as the current anchor-producer blocker, not as the earlier nested-BEGIN
-bug.
+that as the historical replay-tail blocker after the nested-BEGIN bug; it is
+superseded by the 14:45 UTC crash-replay-tail fix and active producer state
+above.
 
 Focused proof is green: `git diff --check`, `bash -n tools/dev/*.sh`,
 `make t-fast ONLY=syncdiag_rpc`, `make t-fast ONLY=coins_ram`, and

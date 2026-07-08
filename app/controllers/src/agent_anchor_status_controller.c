@@ -5,6 +5,7 @@
 #include "chain/checkpoints.h"
 #include "controllers/strong_params.h"
 #include "json/json.h"
+#include "platform/time_compat.h"
 #include "util/clientversion.h"
 
 #include <sqlite3.h>
@@ -15,6 +16,7 @@
 #include <sys/stat.h>
 
 #define ANCHOR_MARKER_LEN 48
+#define ANCHOR_PROGRESS_RECENT_SECS 300
 
 struct anchor_stage_view {
     const char *name;
@@ -254,7 +256,8 @@ static const char *anchor_history_diagnosis(
 }
 
 static const char *anchor_probe_next_action(
-        const struct anchor_utxo_probe *p)
+        const struct anchor_utxo_probe *p,
+        bool fold_recently_active)
 {
     if (!p)
         return "inspect_anchorstatus";
@@ -279,6 +282,10 @@ static const char *anchor_probe_next_action(
     if (strcmp(p->next_diagnosis,
                "script_validate_failed_at_utxo_cursor") == 0)
         return "inspect_script_validate_failure_at_utxo_cursor";
+    if (fold_recently_active &&
+        strcmp(p->next_diagnosis,
+               "utxo_apply_idle_after_validated_row") == 0)
+        return "observe_anchor_mint_progress";
     if (strcmp(p->next_diagnosis,
                "utxo_apply_idle_after_validated_row") == 0)
         return "restart_anchor_mint_with_stdout_capture_and_check_window_miss";
@@ -289,6 +296,7 @@ static bool anchor_utxo_probe_build(sqlite3 *db,
                                     const struct anchor_stage_view *proof,
                                     const struct anchor_stage_view *utxo,
                                     int64_t durable_frontier,
+                                    bool fold_recently_active,
                                     struct anchor_utxo_probe *out)
 {
     if (!out)
@@ -342,7 +350,7 @@ static bool anchor_utxo_probe_build(sqlite3 *db,
         strcmp(out->history_diagnosis,
                "utxo_apply_prior_delta_missing_below_coin_frontier") == 0 ||
         (out->delta_previous.table_present && !out->delta_previous.row_present);
-    out->next_action = anchor_probe_next_action(out);
+    out->next_action = anchor_probe_next_action(out, fold_recently_active);
     return true;
 }
 
@@ -532,8 +540,46 @@ static void anchor_push_utxo_probe_json(struct json_value *result,
     json_free(&obj);
 }
 
+static int64_t anchor_progress_age_seconds(bool progress_present,
+                                           int64_t captured_at_unix,
+                                           int64_t progress_mtime)
+{
+    if (!progress_present || captured_at_unix <= 0 || progress_mtime <= 0)
+        return -1; // raw-return-ok:anchorstatus-progress-age-missing-sentinel
+    if (progress_mtime > captured_at_unix)
+        return 0;
+    return captured_at_unix - progress_mtime;
+}
+
+static bool anchor_progress_recent(int64_t age_seconds)
+{
+    return age_seconds >= 0 &&
+        age_seconds <= ANCHOR_PROGRESS_RECENT_SECS;
+}
+
+static bool anchor_fold_recently_active(
+        bool progress_present,
+        bool progress_recent,
+        bool marker_matches,
+        int64_t anchor_height,
+        int64_t durable_frontier,
+        const struct anchor_stage_view *utxo,
+        const struct anchor_stage_view *tip)
+{
+    if (!progress_present || !progress_recent || !marker_matches)
+        return false;
+    if (anchor_height < 0 || durable_frontier >= anchor_height)
+        return false;
+    if (!utxo || !utxo->cursor_present)
+        return false;
+    if (utxo->cursor > 1 || durable_frontier > 0)
+        return true;
+    return tip && tip->cursor_present && tip->cursor > 0;
+}
+
 static const char *anchor_summary(bool progress_present, bool snapshot_present,
                                   bool marker_present, bool marker_matches,
+                                  bool fold_recently_active,
                                   int64_t durable_frontier,
                                   int64_t anchor_height,
                                   int64_t validated_backlog,
@@ -549,6 +595,8 @@ static const char *anchor_summary(bool progress_present, bool snapshot_present,
         return "mint_marker_checkpoint_mismatch";
     if (durable_frontier >= anchor_height)
         return "anchor_reached_snapshot_pending";
+    if (fold_recently_active)
+        return "mint_in_progress_recent";
     if (validated_backlog > 100000)
         return "mint_utxo_apply_far_behind_validated_backlog";
     if (stale_above_anchor > 0 && !marker_matches)
@@ -570,6 +618,8 @@ static const char *anchor_next_action(const char *summary)
         return "stop_and_reseed_anchor_mint_on_a_copy_before_resume";
     if (strcmp(summary, "anchor_reached_snapshot_pending") == 0)
         return "check_snapshot_write_and_sha3_assert_logs";
+    if (strcmp(summary, "mint_in_progress_recent") == 0)
+        return "observe_anchor_mint_progress";
     if (strcmp(summary, "mint_utxo_apply_far_behind_validated_backlog") == 0)
         return "inspect_utxo_apply_idle_reason_before_waiting_more";
     if (strcmp(summary, "mint_has_stale_rows_above_anchor") == 0)
@@ -611,16 +661,24 @@ bool rpc_agent_anchor_status(const struct json_value *params, bool help,
                                              &progress_mtime);
     bool snapshot_present = anchor_stat_file(snapshot_path, &snapshot_size,
                                              &snapshot_mtime);
+    int64_t captured_at_unix = platform_time_wall_unix();
+    int64_t progress_age_seconds = anchor_progress_age_seconds(
+        progress_present, captured_at_unix, progress_mtime);
+    bool progress_recent = anchor_progress_recent(progress_age_seconds);
 
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.anchor_mint_status.v1");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "build_commit", zcl_build_commit());
+    json_push_kv_int(result, "captured_at_unix", captured_at_unix);
     json_push_kv_str(result, "datadir", datadir);
     json_push_kv_str(result, "progress_path", progress_path);
     json_push_kv_bool(result, "progress_present", progress_present);
     json_push_kv_int(result, "progress_size_bytes", progress_size);
     json_push_kv_int(result, "progress_mtime_unix", progress_mtime);
+    json_push_kv_int(result, "progress_age_seconds",
+                     progress_age_seconds);
+    json_push_kv_bool(result, "progress_recent", progress_recent);
     json_push_kv_str(result, "snapshot_path", snapshot_path);
     json_push_kv_bool(result, "snapshot_present", snapshot_present);
     json_push_kv_int(result, "snapshot_size_bytes", snapshot_size);
@@ -634,8 +692,10 @@ bool rpc_agent_anchor_status(const struct json_value *params, bool help,
 
     if (!progress_present) {
         json_push_kv_str(result, "status", "missing");
+        json_push_kv_bool(result, "fold_recently_active", false);
         const char *summary = anchor_summary(false, snapshot_present, false,
-                                             false, -1, anchor_height, 0, 0);
+                                             false, false, -1,
+                                             anchor_height, 0, 0);
         json_push_kv_str(result, "summary", summary);
         json_push_kv_str(result, "agent_next_action",
                          anchor_next_action(summary));
@@ -646,6 +706,7 @@ bool rpc_agent_anchor_status(const struct json_value *params, bool help,
     if (sqlite3_open_v2(progress_path, &db, SQLITE_OPEN_READONLY, NULL) !=
         SQLITE_OK) {
         json_push_kv_str(result, "status", "error");
+        json_push_kv_bool(result, "fold_recently_active", false);
         json_push_kv_str(result, "summary", "progress_store_open_failed");
         json_push_kv_str(result, "agent_next_action",
                          "inspect_progress_store_permissions_or_locking");
@@ -725,12 +786,6 @@ bool rpc_agent_anchor_status(const struct json_value *params, bool help,
         "SELECT count(*) FROM header_admit_log WHERE height>?1",
         anchor_height, true, &stale_above_anchor, &stale_found);
 
-    struct anchor_utxo_probe utxo_probe;
-    (void)anchor_utxo_probe_build(db, &stages[5], &stages[6],
-                                  durable_frontier, &utxo_probe);
-
-    sqlite3_close(db);
-
     int64_t proof_cursor = stages[5].cursor;
     int64_t utxo_cursor = stages[6].cursor;
     int64_t tip_cursor = stages[7].cursor;
@@ -744,6 +799,16 @@ bool rpc_agent_anchor_status(const struct json_value *params, bool help,
         ? anchor_height - durable_frontier : -1;
     if (anchor_gap < 0 && durable_frontier >= anchor_height)
         anchor_gap = 0;
+    bool fold_recently_active = anchor_fold_recently_active(
+        progress_present, progress_recent, marker_matches, anchor_height,
+        durable_frontier, &stages[6], &stages[7]);
+
+    struct anchor_utxo_probe utxo_probe;
+    (void)anchor_utxo_probe_build(db, &stages[5], &stages[6],
+                                  durable_frontier, fold_recently_active,
+                                  &utxo_probe);
+
+    sqlite3_close(db);
 
     struct json_value stage_arr;
     json_init(&stage_arr);
@@ -764,6 +829,8 @@ bool rpc_agent_anchor_status(const struct json_value *params, bool help,
                      durable_frontier);
     json_push_kv_int(result, "coins_ram_flushed_height",
                      coins_ram_flushed_height);
+    json_push_kv_bool(result, "fold_recently_active",
+                      fold_recently_active);
     json_push_kv_int(result, "anchor_gap_blocks", anchor_gap);
     json_push_kv_int(result, "min_stage_cursor", min_cursor);
     json_push_kv_int(result, "max_stage_cursor", max_cursor);
@@ -783,6 +850,7 @@ bool rpc_agent_anchor_status(const struct json_value *params, bool help,
 
     const char *summary = anchor_summary(progress_present, snapshot_present,
                                          marker_present, marker_matches,
+                                         fold_recently_active,
                                          durable_frontier, anchor_height,
                                          validated_backlog,
                                          stale_above_anchor);
