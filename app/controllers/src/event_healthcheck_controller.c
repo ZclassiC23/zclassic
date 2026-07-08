@@ -36,6 +36,7 @@ static void push_chain_evidence_health_json(struct json_value *checks)
 
     chain_evidence_controller_init(&cec, app_runtime_node_db(),
                                    csr_instance());
+    (void)chain_evidence_drain_pending_tip(&cec);
     chain_evidence_controller_snapshot(&cec, &view);
 
     json_set_object(&ce);

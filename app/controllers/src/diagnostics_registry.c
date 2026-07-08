@@ -192,8 +192,8 @@ bool diag_chain_evidence_dump_state_json(struct json_value *out,
 
     json_set_object(out);
     chain_evidence_controller_init(&authority, app_runtime_node_db(), csr_instance());
+    (void)chain_evidence_drain_pending_tip(&authority);
     chain_evidence_controller_snapshot(&authority, &view);
-
     json_push_kv_str(out, "sync_state",
                      chain_evidence_controller_state_name(view.state));
     json_push_kv_str(out, "publish_state",
