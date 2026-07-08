@@ -41,9 +41,47 @@ PEER_RPC="${ZCL_C3_PEER_RPC:-18232}"         # live zclassic23 RPC (read tip onl
 BUDGET="${ZCL_C3_BUDGET_SECS:-600}"          # 10-minute MVP target
 P2P=39070; RPC=39071; FS=39072; HTTPS=39073
 BUNDLE_SUCCESS_PATTERN='-load-snapshot-at-own-height: coin set RE-SEEDED'
+ARTIFACT_ROOT="${ZCL_C3_ARTIFACT_ROOT:-$REPO_ROOT/build/c3-probe}"
+ARTIFACT_DIR=""
+DATADIR=""
+PID=""
+start=0
+seeded=0
+last_h=-1
+last_hdr=-1
+
+write_artifact() {
+    verdict="$1"
+    rc="$2"
+    [ -n "${ARTIFACT_DIR:-}" ] || return 0
+    mkdir -p "$ARTIFACT_DIR" "$ARTIFACT_ROOT" 2>/dev/null || return 0
+    {
+        echo "schema=zcl.c3_probe_artifact.v1"
+        echo "verdict=$verdict"
+        echo "exit_code=$rc"
+        echo "captured_at_unix=$(date +%s)"
+        echo "peer=$PEER"
+        echo "peer_tip=${PEER_TIP:-}"
+        echo "budget_seconds=$BUDGET"
+        echo "mode=${MODE:-unknown}"
+        echo "seeded=$seeded"
+        echo "last_height=$last_h"
+        echo "last_headers=$last_hdr"
+        echo "bundle_snapshot=${BUNDLE_SNAP:-}"
+        echo "bundle_index=${BUNDLE_INDEX:-}"
+        echo "scratch_datadir=${DATADIR:-}"
+        echo "scratch_datadir_removed=true"
+    } >"$ARTIFACT_DIR/summary.txt"
+    if [ -n "${DATADIR:-}" ] && [ -f "$DATADIR/probe.log" ]; then
+        cp "$DATADIR/probe.log" "$ARTIFACT_DIR/probe.log" 2>/dev/null || true
+        tail -80 "$DATADIR/probe.log" >"$ARTIFACT_DIR/probe.tail.log" 2>/dev/null || true
+    fi
+    printf '%s\n' "$ARTIFACT_DIR" >"$ARTIFACT_ROOT/latest.txt" 2>/dev/null || true
+    echo "c3-probe: artifact=$ARTIFACT_DIR"
+}
 
 skip() { echo "c3-probe: SKIP ($*)"; exit 2; }
-die()  { echo "c3-probe: FAIL: $*" >&2; exit 1; }
+die()  { echo "c3-probe: FAIL: $*" >&2; write_artifact "fail" 1; exit 1; }
 
 [ -x "$NODE_BIN" ] || skip "node binary absent: $NODE_BIN"
 [ -x "$RPC_BIN" ]  || skip "zcl-rpc absent: $RPC_BIN"
@@ -85,7 +123,9 @@ printf '%s' "$PEER_TIP" | grep -qE '^[0-9]+$' || skip "tip source ($PEER_RPC) no
 [ "$PEER_TIP" -gt 1000000 ] || skip "reference peer tip implausibly low ($PEER_TIP)"
 
 DATADIR="$(mktemp -d /tmp/zcl-c3-probe.XXXXXX)" || die "mktemp datadir failed"
-PID=""
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+ARTIFACT_DIR="$ARTIFACT_ROOT/$RUN_ID"
+mkdir -p "$ARTIFACT_DIR" || die "artifact dir create failed: $ARTIFACT_DIR"
 cleanup() {
     [ -n "$PID" ] && kill -KILL -- "-$PID" 2>/dev/null || true
     case "$DATADIR" in /tmp/zcl-c3-probe.*) rm -rf "$DATADIR" 2>/dev/null || true ;; esac
@@ -142,7 +182,7 @@ setsid "$NODE_BIN" \
 PID=$!
 
 start=$(date +%s)
-seeded=0; reached=0; last_h=-1
+reached=0
 while :; do
     now=$(date +%s); elapsed=$((now - start))
     [ "$elapsed" -ge "$BUDGET" ] && break
@@ -164,6 +204,7 @@ while :; do
     h="$(printf '%s' "$bci"   | sed -E 's/.*"blocks":(-?[0-9]+).*/\1/')"
     hdr="$(printf '%s' "$bci" | sed -E 's/.*"headers":(-?[0-9]+).*/\1/')"
     if printf '%s' "$h" | grep -qE '^[0-9]+$'; then
+        last_hdr="${hdr:-?}"
         [ "$h" != "$last_h" ] && { echo "c3-probe: t=${elapsed}s blocks=$h headers=${hdr:-?}"; last_h="$h"; }
         [ "$h" -ge 1000000 ] && seeded=1
         if [ "$h" -ge "$PEER_TIP" ] && printf '%s' "$hdr" | grep -qE '^[0-9]+$' \
@@ -176,12 +217,14 @@ done
 
 if [ "$reached" = 1 ]; then
     echo "=== c3-probe: PASS — fresh datadir -> snapshot import -> delta sync -> at_tip@$PEER_TIP within budget ==="
+    write_artifact "pass" 0
     exit 0
 fi
 echo "c3-probe: did NOT reach at_tip in ${BUDGET}s (seeded=$seeded last_height=$last_h). Log tail:"
 tail -20 "$DATADIR/probe.log" | sed 's/^/  /'
 if [ "$seeded" = 1 ]; then
     echo "=== c3-probe: SEAM — seed authority loaded but forward-sync to at_tip did NOT complete within budget ==="
+    write_artifact "seam" 3
     exit 3
 fi
 die "seed authority itself did not complete (<1M height/UTXOs) in budget"
