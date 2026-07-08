@@ -120,6 +120,7 @@ static const char HODL_VIEW_CSS_DETAIL[] =
     ".hodl-chart-head{display:block;margin:0 0 10px;}"
     ".hodl-chart-title{font-size:22px;}.hodl-chart-meta{margin-top:6px;}"
     ".hodl-legend{gap:10px 14px;margin:10px 0 12px;font-size:12px;}"
+    ".hodl-x-tick{display:none;}"
     ".hodl-svg{min-width:760px;}.hodl-table{min-width:620px;}}"
     "@media (max-width:420px){.hodl-title{font-size:27px;}"
     ".hodl-svg{min-width:720px;}}";
@@ -1253,7 +1254,7 @@ static void hodl_emit_survival_chart(size_t *off, uint8_t *r, size_t max,
         APPEND(*off, r, max,
             "<line x1='%d' y1='%d' x2='%d' y2='%d' stroke='#1b2b35' "
             "opacity='0.46'/>"
-            "<text x='%d' y='%d' fill='#8d96a0' font-size='12' "
+            "<text class='hodl-x-tick' x='%d' y='%d' fill='#8d96a0' font-size='12' "
             "text-anchor='middle'>%s</text>",
             x, pt, x, pt + ph, x, pt + ph + 20, dbuf);
     }
