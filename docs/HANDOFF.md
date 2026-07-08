@@ -1,5 +1,33 @@
 ## CURRENT STATE (2026-07-08, P0 anchor mint restarted from clean copy)
 
+**2026-07-08 18:45 UTC - the post-restart RAM-flush gate has passed twice;
+anchor mint remains active.** Current
+`zclassic23 anchorstatus -datadir=/home/rhett/.zclassic-c23-anchor-mint`
+reports `summary=mint_in_progress_recent`,
+`agent_next_action=observe_anchor_mint_progress`, `progress_age_seconds=92`,
+and `fold_recently_active=true`. The service is still PID `1778337`, active for
+~4h17m, using ~6.1 GiB RSS in the transient `zclassic23-anchor-mint` unit.
+Important counters from the sample:
+
+- `utxo_apply.cursor=122001`, `tip_finalize.cursor=121000`,
+  `proof_validate.cursor=351000`
+- `coins_applied_height=122001`, `durable_applied_through_height=122000`,
+  `coins_ram_flushed_height=100000`
+- journal shows clean `[coins_ram] flushed through height=50000` and
+  `[coins_ram] flushed through height=100000` events after the crash-tail fix
+- `snapshot_present=false`; no `utxo-anchor.snapshot` exists yet
+- `utxo_apply_probe.next_diagnosis=utxo_apply_idle_after_validated_row`,
+  `utxo_apply_probe.history_diagnosis=utxo_apply_history_consistent`,
+  `utxo_apply_probe_next_action=observe_anchor_mint_progress`
+
+Canonical live node check at the same time via `zclassic23 mcpcall zcl_status`
+shows the public node healthy: served height `3174558`, header height
+`3174559`, 24 peers, mirror healthy / same-height hashes agree, no active
+operator latch, and `zcl_state subsystem=reducer_frontier` shows H* `3174558`
+with only the normal tip-finalize edge pending. Next gate remains unchanged:
+keep observing the producer through the final SHA3 snapshot assertion, then run
+the copy-prove cutover gates in `docs/work/sovereign-cutover-runbook.md`.
+
 **2026-07-08 14:45 UTC - the crash-replay tail blocker is fixed and the
 sovereign anchor producer is advancing again.** Commit `91f0d0ca7` was built,
 pushed to `main`, and deployed to the transient `zclassic23-anchor-mint`
@@ -35,9 +63,9 @@ progress store mtime and cursors were fresh. The current tree adds
 `ZCL_NO_PYTHON=1 make t-fast ONLY=syncdiag_rpc`, and
 `ZCL_NO_PYTHON=1 make lint`.
 
-Next gate: keep observing until the first post-restart 50k RAM flush lands,
-then continue to the final SHA3 snapshot assertion and copy-prove cutover gates
-in `docs/work/sovereign-cutover-runbook.md`.
+The first post-restart 50k RAM flush has now landed twice; continue to the
+final SHA3 snapshot assertion and copy-prove cutover gates in
+`docs/work/sovereign-cutover-runbook.md`.
 
 **2026-07-08 08:50 UTC - P0 sovereign trust-root producer is running again,
 but the durable anchor artifact is still pending.** The 2026-07-03 resumed
