@@ -53,6 +53,8 @@
 extern "C" {
 #endif
 
+typedef struct seed_tape seed_tape_t;
+
 struct simnet {
     struct coins_view_cache view;       /* the live in-RAM UTXO set    */
     struct coins_view       null_view;  /* zeroed backing (no disk)    */
@@ -64,6 +66,7 @@ struct simnet {
     size_t mempool_cap;
     uint32_t next_block_time;           /* deterministic virtual nTime for next mint */
     uint32_t last_block_time;           /* nTime of the current tip, 0 before first mint */
+    seed_tape_t *clock_tape;            /* optional deterministic clock owner */
     int mempool_last_reject;            /* enum simnet_mempool_reject, kept int to avoid a header cycle */
     char mempool_last_detail[128];
     int  tip_height;
@@ -78,6 +81,11 @@ bool simnet_init(struct simnet *s);
 
 /* Release the harness's in-memory state (coins view). Idempotent. */
 void simnet_free(struct simnet *s);
+
+/* Bind an installed seed tape as the simulator clock owner. Successful mints
+ * advance the tape by the target spacing so block nTime, GetAdjustedTime(),
+ * and CLTV finality share one deterministic virtual clock. */
+void simnet_use_seed_tape(struct simnet *s, seed_tape_t *tape);
 
 /* Mint a new block whose only transaction is a coinbase, driving it through
  * connect_block(). On success the tip advances by one and the coinbase's

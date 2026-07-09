@@ -11,6 +11,7 @@
 
 #include "sim/simnet.h"
 
+#include "sim/seed_tape.h"
 #include "validation/connect_block.h"
 #include "validation/contextual_check_tx.h"
 #include "consensus/validation.h"
@@ -23,6 +24,7 @@
 #include "core/uint256.h"
 #include "core/arith_uint256.h"
 #include "script/script.h"
+#include "util/timedata.h"
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
 
@@ -195,6 +197,13 @@ static bool sim_mint_block(struct simnet *s, struct transaction *txs,
     s->tip_height = height;
     s->last_block_time = blk.header.nTime;
     s->next_block_time += PRE_BUTTERCUP_POW_TARGET_SPACING;
+    if (s->clock_tape) {
+        int rc = seed_tape_advance(
+                s->clock_tape,
+                (int64_t)PRE_BUTTERCUP_POW_TARGET_SPACING * 1000000LL);
+        if (rc < 0)
+            LOG_WARN("simnet", "seed_tape advance failed rc=%d", rc);
+    }
     return true;
 }
 
@@ -235,6 +244,7 @@ bool simnet_init(struct simnet *s)
     s->mempool_cap = 0;
     s->mempool_last_reject = 0;
     s->mempool_last_detail[0] = '\0';
+    s->clock_tape = NULL;
 
     /* The live UTXO set: an empty coins cache over a zeroed backing view.
      * Its best block is the synthetic base tip (view/prevblock invariant). */
@@ -258,6 +268,20 @@ void simnet_free(struct simnet *s)
     s->mempool_cap = 0;
     coins_view_cache_free(&s->view);
     s->initialized = false;
+}
+
+void simnet_use_seed_tape(struct simnet *s, seed_tape_t *tape)
+{
+    if (!s || !s->initialized) {
+        LOG_WARN("simnet", "cannot bind seed tape to uninitialized simnet");
+        return;
+    }
+    s->clock_tape = tape;
+    if (tape) {
+        int64_t now = GetAdjustedTime();
+        if (now > 0 && now <= UINT32_MAX)
+            s->next_block_time = (uint32_t)now;
+    }
 }
 
 bool simnet_mint_coinbase(struct simnet *s, struct uint256 *out_cb_txid)
