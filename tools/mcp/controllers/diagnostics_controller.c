@@ -287,8 +287,13 @@ static int h_zcl_profile(const struct mcp_request *req,
     if (top_n < 1)           top_n = 1;
     if (top_n > 64)          top_n = 64;
 
-    static struct profile_sample s1[PROFILE_MAX_THREADS];
-    static struct profile_sample s2[PROFILE_MAX_THREADS];
+    /* Stack-local scratch, NOT static: the middleware runs each handler on
+     * a detached worker thread and abandons it on timeout, so a retried
+     * profile call can run concurrently with the abandoned one. Sharing a
+     * function-static buffer would race both invocations over the same
+     * memory. ~10 KB each (256 * ~40 B) — safe on the worker thread stack. */
+    struct profile_sample s1[PROFILE_MAX_THREADS];
+    struct profile_sample s2[PROFILE_MAX_THREADS];
     size_t n1 = read_task_snapshot(s1, PROFILE_MAX_THREADS);
     if (n1 == 0) {
         res->error = MCP_ERR_HANDLER_FAILED;
@@ -313,7 +318,8 @@ static int h_zcl_profile(const struct mcp_request *req,
         return 0;
     }
 
-    static struct profile_delta deltas[PROFILE_MAX_THREADS];
+    /* Stack-local (see s1/s2 above): ~12 KB, no shared mutable static. */
+    struct profile_delta deltas[PROFILE_MAX_THREADS];
     size_t nd = 0;
     for (size_t i = 0; i < n2; i++) {
         const struct profile_sample *a = NULL;
@@ -603,7 +609,9 @@ static const struct mcp_tool_route k_routes[] = {
       "nodes without attaching gdb.",
       p_profile, PARAM_COUNT(p_profile), h_zcl_profile,
       /* duration_ms sleeps that long per call — clamp to 100ms so
-       * the full self_test sweep doesn't balloon by a second. */
+       * the full self_test sweep doesn't balloon by a second.
+       * Its longer dispatch budget lives in middleware's
+       * k_long_running_tools table, not a per-route field. */
       .self_test_args = "{\"duration_ms\":100,\"top_n\":3}" },
     { "zcl_replay_dump", "ops",
       "Dump the MCP request/response replay buffer (last 100 calls). "

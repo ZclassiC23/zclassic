@@ -3824,6 +3824,69 @@ static int test_zcl_profile_clamps(void)
     return failures;
 }
 
+/* Fix A: the long-running tools (zcl_profile, zcl_waitfor*) resolve to a
+ * dispatch budget above their own internal cap so the middleware's global 5s
+ * guard cannot kill a legal call, while ordinary tools fall back to it. The
+ * budgets live in middleware's k_long_running_tools table; this asserts both
+ * the resolution and the drift guard that every named tool is a real route. */
+static int test_longrunning_routes_carry_timeout(void)
+{
+    int failures = 0;
+    TEST("controllers: profile/waitfor* resolve to a budget >= their cap") {
+        register_all();
+
+        struct mcp_middleware mw;
+        mcp_middleware_init(&mw);
+        mw.default_timeout_ms = 5000;
+
+        /* zcl_profile: duration_ms schema-clamped to <=10000. */
+        ASSERT(mcp_middleware_resolve_timeout_ms(&mw, "zcl_profile") >= 10000);
+
+        /* zcl_waitfor*: internally capped at WAIT_RPC_MAX_MS=9000. */
+        const char *waiters[] = {
+            "zcl_waitforheight", "zcl_waitforhalt", "zcl_waitforblocker",
+        };
+        for (size_t i = 0; i < sizeof(waiters) / sizeof(waiters[0]); i++)
+            ASSERT(mcp_middleware_resolve_timeout_ms(&mw, waiters[i]) >= 9000);
+
+        /* An ordinary tool → the global default. */
+        ASSERT(mcp_middleware_resolve_timeout_ms(&mw, "zcl_status") == 5000);
+
+        /* Drift guard: every long-running name is a registered route, so a
+         * rename can't silently revert a tool to the 5s default. */
+        ASSERT(mcp_long_running_tools_all_registered());
+
+        mcp_middleware_destroy(&mw);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Fix B: h_zcl_onion_health no longer relies on a shared function-static
+ * scratch buffer; a functional dispatch returns a well-formed body. In the
+ * test env no onion is started, so this exercises the not_started path (the
+ * error envelope must NOT appear — that would be a router/handler failure). */
+static int test_zcl_onion_health_wellformed(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_onion_health returns a well-formed body") {
+        register_all();
+        char *body = mcp_router_dispatch("zcl_onion_health", NULL);
+        ASSERT(body != NULL);
+        /* Not a router/handler error envelope. */
+        ASSERT(strstr(body, "\"error\":{") == NULL);
+        ASSERT(contains(body, "\"ok\":"));
+        /* Parseable JSON with an ok field. */
+        struct json_value root = {0};
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT(json_get(&root, "ok") != NULL);
+        json_free(&root);
+        free(body);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── JSON injection in wallet RPC payloads ────── */
 
 /* Before the fix, both handlers snprintf'd user-controlled strings
@@ -4106,6 +4169,8 @@ int test_mcp_controllers(void)
     failures += test_zcl_admin_graceful_never_propagates_error();
     failures += test_zcl_profile_shape();
     failures += test_zcl_profile_clamps();
+    failures += test_longrunning_routes_carry_timeout();
+    failures += test_zcl_onion_health_wellformed();
     failures += test_zcl_send_escapes_json_injection();
     failures += test_zcl_sendtoaddress_escapes_json_injection();
     failures += test_mcp_params_escapes_backslash_and_control();

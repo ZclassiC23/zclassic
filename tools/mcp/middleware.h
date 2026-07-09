@@ -121,6 +121,19 @@ struct mcp_middleware *mcp_middleware_get_global(void);
 bool mcp_middleware_is_destructive(const struct mcp_middleware *mw,
                                     const char *tool_name);
 
+/* Resolve the wallclock timeout budget for a tool: a longer per-tool budget
+ * for the few handlers that legitimately run past the global default
+ * (zcl_profile, zcl_waitfor*), otherwise mw->default_timeout_ms. `tool_name`
+ * may be NULL → the global default. Pure; used by the dispatch path and
+ * directly testable. */
+int64_t mcp_middleware_resolve_timeout_ms(const struct mcp_middleware *mw,
+                                          const char *tool_name);
+
+/* True iff every tool named in the long-running timeout table resolves to a
+ * registered route. A test asserts this so renaming a tool without updating
+ * the table (which would silently revert it to the 5s default) fails loudly. */
+bool mcp_long_running_tools_all_registered(void);
+
 /* Wraps `mcp_router_dispatch` with the full policy chain.  bearer_token
  * is the value of the caller's `authorization` header / request metadata
  * (may be NULL if no token was provided).  Returns a malloc'd JSON

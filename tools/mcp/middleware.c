@@ -175,6 +175,48 @@ bool mcp_middleware_is_destructive(const struct mcp_middleware *mw,
     return false;
 }
 
+/* Tools whose handler legitimately runs longer than the global 5s dispatch
+ * deadline, with the budget each needs. zcl_profile nanosleeps its
+ * schema-clamped duration_ms (up to 10000); the zcl_waitfor* long-polls are
+ * internally capped at WAIT_RPC_MAX_MS=9000. Without headroom over the global
+ * default, a legal call is killed with a spurious MCP_ERR_TOOL_TIMEOUT while
+ * its detached worker keeps running and its result is discarded. Kept as a
+ * name-keyed table (a sibling of k_default_destructive) so no per-route struct
+ * field is needed; mcp_long_running_tools_all_registered() guards against a
+ * rename silently reverting a tool to the 5s default. */
+static const struct {
+    const char *tool;
+    int64_t     timeout_ms;
+} k_long_running_tools[] = {
+    { "zcl_profile",       12000 },
+    { "zcl_waitforheight", 12000 },
+    { "zcl_waitforhalt",   12000 },
+    { "zcl_waitforblocker", 12000 },
+};
+
+int64_t mcp_middleware_resolve_timeout_ms(const struct mcp_middleware *mw,
+                                          const char *tool_name)
+{
+    int64_t base = mw ? mw->default_timeout_ms : 0;
+    if (tool_name) {
+        size_t n = sizeof(k_long_running_tools) /
+                   sizeof(k_long_running_tools[0]);
+        for (size_t i = 0; i < n; i++)
+            if (strcmp(tool_name, k_long_running_tools[i].tool) == 0)
+                return k_long_running_tools[i].timeout_ms;
+    }
+    return base;
+}
+
+bool mcp_long_running_tools_all_registered(void)
+{
+    size_t n = sizeof(k_long_running_tools) / sizeof(k_long_running_tools[0]);
+    for (size_t i = 0; i < n; i++)
+        if (!mcp_router_find(k_long_running_tools[i].tool))
+            return false;
+    return true;
+}
+
 /* ── Auth ────────────────────────────────────────────────────── */
 
 static int constant_time_memcmp(const void *a, const void *b, size_t n)
@@ -462,15 +504,19 @@ char *mcp_middleware_dispatch(struct mcp_middleware *mw,
                               "destructive rate limit exceeded");
     }
 
-    /* 4. Timeout-guarded dispatch */
+    /* 4. Timeout-guarded dispatch. A few tools legitimately run longer than
+     * the global default (zcl_profile, zcl_waitfor*); resolve their budget
+     * from the long-running table, else fall back to the global default. */
+    int64_t timeout_ms = mcp_middleware_resolve_timeout_ms(mw, tool_name);
+
     bool timed_out = false;
     char *body = dispatch_with_timeout(tool_name, args,
-                                        mw->default_timeout_ms, &timed_out);
+                                        timeout_ms, &timed_out);
     if (timed_out) {
         mw->stat_timeout++;
         event_emitf(EV_MCP_REQUEST, 0,
                     "tool=%s code=TOOL_TIMEOUT deadline_ms=%lld",
-                    tool_name, (long long)mw->default_timeout_ms);
+                    tool_name, (long long)timeout_ms);
         return mcp_router_error_envelope_strdup(MCP_ERR_TOOL_TIMEOUT,
                               tool_name, NULL, "handler exceeded timeout");
     }

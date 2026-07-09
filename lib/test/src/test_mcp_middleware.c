@@ -106,6 +106,14 @@ static const struct mcp_tool_route r_slow = {
 static const struct mcp_tool_route r_gated = {
     "t_gated", "test", "gated handler", NULL, 0, h_gated, 0, NULL
 };
+/* Same slow (500 ms) handler, but registered under the name of a
+ * long-running tool (zcl_profile is in middleware's k_long_running_tools
+ * table), so the dispatch path resolves it to the 12s budget instead of the
+ * tiny global default the timeout tests set. Exercises Fix A end-to-end. */
+static const struct mcp_tool_route r_slow_longtimeout = {
+    "zcl_profile", "test", "slow handler under a long-running tool name",
+    NULL, 0, h_slow, 0, NULL
+};
 
 static void register_routes(void)
 {
@@ -114,6 +122,7 @@ static void register_routes(void)
     mcp_router_register(&r_send);
     mcp_router_register(&r_slow);
     mcp_router_register(&r_gated);
+    mcp_router_register(&r_slow_longtimeout);
 }
 
 /* ── Helpers ───────────────────────────────────────────────── */
@@ -610,6 +619,69 @@ static int test_timeout_pass(void)
     return failures;
 }
 
+/* Fix A — the pure timeout-resolution helper: a long-running tool resolves
+ * to its dedicated budget, every other tool (and a NULL name) to the global
+ * default. Plus the drift guard that every long-running name is a real route. */
+static int test_resolve_timeout_logic(void)
+{
+    int failures = 0;
+    TEST("resolve_timeout_ms: long-running tools get budget, others fall back") {
+        struct mcp_middleware mw;
+        mcp_middleware_init(&mw);
+        mw.default_timeout_ms = 5000;
+
+        /* Long-running tools resolve to their own budget (above their own
+         * internal caps: profile 10s, waitfor* 9s). */
+        ASSERT(mcp_middleware_resolve_timeout_ms(&mw, "zcl_profile") >= 10000);
+        ASSERT(mcp_middleware_resolve_timeout_ms(&mw, "zcl_waitforheight")
+               >= 9000);
+        ASSERT(mcp_middleware_resolve_timeout_ms(&mw, "zcl_waitforhalt")
+               >= 9000);
+        ASSERT(mcp_middleware_resolve_timeout_ms(&mw, "zcl_waitforblocker")
+               >= 9000);
+        /* Ordinary tool → global default. */
+        ASSERT(mcp_middleware_resolve_timeout_ms(&mw, "zcl_status") == 5000);
+        /* NULL tool name → global default. */
+        ASSERT(mcp_middleware_resolve_timeout_ms(&mw, NULL) == 5000);
+
+        mcp_middleware_destroy(&mw);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Fix A end-to-end: a route with a per-route timeout_ms above the global
+ * default must NOT be killed by the global guard, while an otherwise
+ * identical slow handler with timeout_ms==0 DOES time out. This is the
+ * exact class the profile/waitfor* 5s-vs-longer mismatch caused. */
+static int test_per_route_timeout_override(void)
+{
+    int failures = 0;
+    TEST("per-route timeout_ms overrides the tiny global deadline") {
+        struct mcp_middleware mw;
+        mcp_middleware_init(&mw);
+        mw.default_timeout_ms = 50;  /* far below the 500 ms handler */
+        register_routes();
+
+        /* Baseline: no per-route override → the global 50 ms guard fires. */
+        char *slow = run(&mw, "t_slow", NULL);
+        ASSERT(contains(slow, "TOOL_TIMEOUT"));
+        free(slow);
+
+        /* Same slow handler registered under a long-running tool name
+         * (zcl_profile) → resolves to the 12s budget, the 500 ms handler
+         * completes, the real body is returned, no spurious timeout. */
+        char *ok = run(&mw, "zcl_profile", NULL);
+        ASSERT(contains(ok, "\"ok\":true"));
+        ASSERT(!contains(ok, "TOOL_TIMEOUT"));
+        free(ok);
+
+        mcp_middleware_destroy(&mw);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_destructive_detection(void)
 {
     int failures = 0;
@@ -763,6 +835,8 @@ int test_mcp_middleware(void)
     failures += test_timeout_fires();
     failures += test_timeout_worker_outlives_caller();
     failures += test_timeout_pass();
+    failures += test_resolve_timeout_logic();
+    failures += test_per_route_timeout_override();
     failures += test_destructive_detection();
     failures += test_uninitialized_passthrough();
     failures += test_stats_counters();

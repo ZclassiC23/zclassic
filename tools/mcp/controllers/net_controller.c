@@ -191,11 +191,26 @@ static int h_zcl_onion_health(const struct mcp_request *req,
     struct timespec t0, t1;
     platform_time_monotonic_timespec(&t0);
 
-    static uint8_t resp[65536];
+    /* Heap, NOT a function-static buffer: the middleware runs handlers on a
+     * detached worker thread and abandons it on timeout, so two invocations
+     * could race a shared static. 64 KB is also borderline for the stack —
+     * allocate per call and free before return. */
+    const size_t resp_cap = 65536;
+    uint8_t *resp = zcl_malloc(resp_cap, "onion_health_resp");
+    if (!resp) {
+        free(body);
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "malloc failed for onion health probe buffer");
+        LOG_ERR("mcp.net", "malloc failed for onion_health resp (%zu bytes)",
+                resp_cap);
+        return 0;
+    }
     size_t n = onion_service_handle_request("GET", probe_path, NULL, 0,
-                                              resp, sizeof(resp));
+                                              resp, resp_cap);
 
     platform_time_monotonic_timespec(&t1);
+    free(resp);  /* only the byte count `n` is needed past this point */
     int64_t latency_us =
         (t1.tv_sec - t0.tv_sec) * 1000000LL +
         (t1.tv_nsec - t0.tv_nsec) / 1000LL;

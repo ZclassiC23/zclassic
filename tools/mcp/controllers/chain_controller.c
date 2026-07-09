@@ -393,6 +393,9 @@ static const struct mcp_tool_route k_routes[] = {
       "(the tip getblockcount serves). Shutdown-aware and bounded (internal "
       "9000ms cap); always returns current state.",
       p_waitforheight, PARAM_COUNT(p_waitforheight), h_zcl_waitforheight, 0,
+      /* long-poll internally capped at WAIT_RPC_MAX_MS=9000; its middleware
+       * dispatch budget lives in k_long_running_tools so a full-budget wait
+       * is not killed by the 5s default guard. */
       .self_test_args = "{\"height\":0,\"timeout_ms\":0}" },
     { "zcl_waitforhalt", "chain",
       "Long-poll: block until an operator-needed / halt latch is set, the "
@@ -401,6 +404,7 @@ static const struct mcp_tool_route k_routes[] = {
       "\"A halt can never be silent\" — surfaces the latch the moment it "
       "fires. Shutdown-aware and bounded (internal 9000ms cap).",
       p_waitfor_timeout, PARAM_COUNT(p_waitfor_timeout), h_zcl_waitforhalt, 0,
+      /* long-poll capped at 9000ms; dispatch budget in k_long_running_tools. */
       .self_test_args = "{\"timeout_ms\":0}" },
     { "zcl_waitforblocker", "chain",
       "Long-poll: block until at least one typed blocker is present, the "
@@ -408,6 +412,7 @@ static const struct mcp_tool_route k_routes[] = {
       "{active, blockers:[...], timed_out, shutdown}. Shutdown-aware and "
       "bounded (internal 9000ms cap); always returns current state.",
       p_waitfor_timeout, PARAM_COUNT(p_waitfor_timeout), h_zcl_waitforblocker, 0,
+      /* long-poll capped at 9000ms; dispatch budget in k_long_running_tools. */
       .self_test_args = "{\"timeout_ms\":0}" },
     { "zcl_invalidateblock", "chain",
       "Recovery lever: permanently mark a block invalid by hash. The "
