@@ -51,12 +51,25 @@ struct wire_scenario_peer {
     size_t count;
 };
 
+/* Tick-keyed (NOT wall-clock) per-link partition timeline entry. peer_id
+ * is closed once simnet_wire's tick counter reaches at_tick, and reopened
+ * once it reaches at_tick + duration_ticks. duration_ticks == 0 means the
+ * link stays closed for the rest of the run (no scripted reopen — a test
+ * can still call simnet_wire_partition_peer() directly to reopen it). */
+struct wire_scenario_partition {
+    size_t peer_id;
+    uint64_t at_tick;
+    uint64_t duration_ticks;
+};
+
 struct wire_scenario {
     uint64_t master_seed;
     const struct wire_scenario_peer *peers;
     size_t peer_kind_count;
     size_t honest_peer_count;
     uint64_t duration_us;
+    const struct wire_scenario_partition *partitions;
+    size_t partition_count;
 };
 
 struct simnet_wire_stats {
@@ -77,6 +90,7 @@ struct simnet_wire_stats {
     size_t pending_events;
     size_t to_nut_bytes;
     size_t to_peer_bytes;
+    size_t peers_open;
     bool nut_disconnected;
     bool nut_banned;
     bool handshake_complete;
@@ -108,6 +122,15 @@ bool simnet_wire_peer_send_ping(struct simnet_wire *wire, size_t peer_id,
                                 uint64_t nonce);
 bool simnet_wire_peer_stop_adversary(struct simnet_wire *wire,
                                      size_t peer_id);
+
+/* Per-link partition/recovery (Step D1). Enqueues WIRE_EVENT_CLOSE
+ * (closed=true) or WIRE_EVENT_OPEN (closed=false) for peer_id — models
+ * "the NUT loses its connection to one of its peers" without touching
+ * any other link. Egress is pinned to peer slot 0 (see simnet_wire.c),
+ * so closing peer 0 cuts the only egress-visible connection; closing any
+ * other slot cuts an ingress-only byte source while peer 0 stays live. */
+bool simnet_wire_partition_peer(struct simnet_wire *wire, size_t peer_id,
+                                bool closed);
 
 bool simnet_wire_run(struct simnet_wire *wire, uint64_t max_ticks,
                      uint64_t stuck_guard);

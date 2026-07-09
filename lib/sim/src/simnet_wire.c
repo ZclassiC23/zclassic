@@ -429,6 +429,16 @@ bool simnet_wire_enqueue_raw(struct simnet_wire *wire, size_t peer_id,
                                bytes, len);
 }
 
+bool simnet_wire_partition_peer(struct simnet_wire *wire, size_t peer_id,
+                                bool closed)
+{
+    if (!wire || peer_id >= wire->peer_count)
+        LOG_FAIL("simnet.wire", "invalid partition peer=%zu", peer_id);
+    return simnet_wire_enqueue(
+        wire, peer_id, closed ? WIRE_EVENT_CLOSE : WIRE_EVENT_OPEN,
+        NULL, 0);
+}
+
 bool simnet_wire_deliver_raw_now(struct simnet_wire *wire, size_t peer_id,
                                  const uint8_t *bytes, size_t len)
 {
@@ -980,12 +990,57 @@ bool simnet_wire_monitor_finish(struct simnet_wire *wire)
     return simnet_wire_monitor_after_tick(wire);
 }
 
+bool simnet_wire_scenario_partitions_pending(const struct simnet_wire *wire)
+{
+    if (!wire)
+        return false;
+    for (size_t i = 0; i < wire->partition_count; i++) {
+        const struct wire_scenario_partition_state *p = &wire->partitions[i];
+        if (!p->closed_fired)
+            return true;
+        if (p->duration_ticks > 0 && !p->reopened_fired)
+            return true;
+    }
+    return false;
+}
+
+/* Fires scripted CLOSE/OPEN events (Step D1's wire_scenario.partitions[])
+ * once the tick counter reaches each entry's at_tick /
+ * at_tick+duration_ticks. Tick-keyed, not wall-clock, so replay stays
+ * deterministic for a given seed. Routed through simnet_wire_partition_peer
+ * so scripted and manually-triggered partitions share one code path. */
+bool simnet_wire_apply_scenario_partitions(struct simnet_wire *wire,
+                                           bool *progress)
+{
+    if (!wire || !progress)
+        LOG_FAIL("simnet.wire", "invalid partition timeline args");
+    for (size_t i = 0; i < wire->partition_count; i++) {
+        struct wire_scenario_partition_state *p = &wire->partitions[i];
+        if (!p->closed_fired && wire->ticks >= p->at_tick) {
+            if (!simnet_wire_partition_peer(wire, p->peer_id, true))
+                return false;
+            p->closed_fired = true;
+            *progress = true;
+        }
+        if (p->closed_fired && !p->reopened_fired && p->duration_ticks > 0 &&
+            wire->ticks >= p->at_tick + p->duration_ticks) {
+            if (!simnet_wire_partition_peer(wire, p->peer_id, false))
+                return false;
+            p->reopened_fired = true;
+            *progress = true;
+        }
+    }
+    return true;
+}
+
 static bool simnet_wire_idle(const struct simnet_wire *wire)
 {
     if (!wire || wire->queue_count > 0)
         return false;
     if (wire->nut &&
         (wire->nut->recv_msg_count > 0 || wire->nut->send_size > 0))
+        return false;
+    if (simnet_wire_scenario_partitions_pending(wire))
         return false;
     for (size_t i = 0; i < wire->peer_count; i++) {
         if (wire->peers[i].kind == SIMNET_WIRE_PEER_FLOOD &&
@@ -1007,6 +1062,8 @@ static bool simnet_wire_tick(struct simnet_wire *wire, bool *progress)
         LOG_FAIL("simnet.wire", "invalid tick args");
     *progress = false;
 
+    if (!simnet_wire_apply_scenario_partitions(wire, progress))
+        return false;
     if (!simnet_wire_deliver_one_event(wire, progress))
         return false;
     for (size_t i = 0; i < wire->peer_count; i++) {
@@ -1118,6 +1175,7 @@ void simnet_wire_free(struct simnet_wire *wire)
         seed_tape_uninstall();
         seed_tape_close(wire->tape);
     }
+    free(wire->partitions);
     free(wire);
 }
 
@@ -1248,6 +1306,8 @@ bool simnet_wire_get_stats(const struct simnet_wire *wire,
     for (size_t i = 0; i < wire->peer_count; i++) {
         out->to_nut_bytes += ring_available(&wire->peers[i].link.to_nut);
         out->to_peer_bytes += ring_available(&wire->peers[i].link.to_peer);
+        if (wire->peers[i].link.open)
+            out->peers_open++;
     }
     if (wire->peer_count > 0) {
         out->handshake_complete =

@@ -116,6 +116,18 @@ struct simnet_wire_event_counts {
     uint64_t peer_banned;
 };
 
+/* Runtime tracking for a scripted wire_scenario_partition entry — the
+ * scenario struct itself is caller-owned and may not outlive
+ * simnet_wire_create_scenario(), so the wire keeps its own copy plus the
+ * fired-once bookkeeping the tick loop needs. */
+struct wire_scenario_partition_state {
+    size_t peer_id;
+    uint64_t at_tick;
+    uint64_t duration_ticks;
+    bool closed_fired;
+    bool reopened_fired;
+};
+
 struct simnet_wire {
     size_t peer_count;
     struct wire_peer *peers;
@@ -147,6 +159,9 @@ struct simnet_wire {
     uint64_t not_implemented_peers;
     struct simnet_wire_monitor monitor;
     struct simnet_wire_event_counts events;
+
+    struct wire_scenario_partition_state *partitions;
+    size_t partition_count;
 };
 
 struct wire_event_record {
@@ -181,5 +196,8 @@ void simnet_wire_mark_monitor_failed(struct simnet_wire *wire,
                                      const char *reason);
 bool simnet_wire_monitor_after_tick(struct simnet_wire *wire);
 bool simnet_wire_monitor_finish(struct simnet_wire *wire);
+bool simnet_wire_apply_scenario_partitions(struct simnet_wire *wire,
+                                           bool *progress);
+bool simnet_wire_scenario_partitions_pending(const struct simnet_wire *wire);
 
 #endif /* ZCL_SIMNET_WIRE_INTERNAL_H */
