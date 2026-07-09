@@ -5,10 +5,29 @@ state with `zcl_status` / `zcl_agent` before trusting any claim below.
 
 ## TL;DR
 
-`main` is clean and pushed. A big multi-agent session shipped ~15 fixes plus
-the **in-memory simulation-network foundation** (`lib/sim/simnet`). Three WIP
+`main` is clean and pushed (`0b8cb4ec8`); canonical is deployed to it and
+healthy/serving. A big multi-agent session shipped ~15 fixes plus the
+**in-memory simulation-network foundation** (`lib/sim/simnet`). Four WIP
 efforts are preserved on `handoff/*` branches, each one small step from done.
-The live wallet P0 that blocked receiving funds is **fixed and on main**.
+
+## ⛔ #1 LIVE P0 — wallet key persistence is BROKEN on canonical (not fixed)
+
+`getnewaddress` fails ("New address NOT saved"); `getwalletinfo.persistence`
+shows `healthy:false, mismatch:true` (~201 persisted vs ~304 in keystore). A
+wallet BEGIN-IMMEDIATE+retry fix WAS shipped and deployed, but **it did not
+resolve the symptom** — it only handles transient contention. The real cause,
+verified live: `utxo_mirror_sync` is stuck ~1300 blocks behind
+(`mirror_height` << `frontier`) and `mirror_rebuild_from_coins_kv`
+(`utxo_mirror_sync_service.c:329`) retries a FULL ~1.3M-row rebuild every ~5s,
+each `rebuild: aborted after 0 rows` + `node_db_exec: database is locked`
+(node-WIDE). A persistent writer holds the node.db WAL write lock
+near-continuously; the wallet flush and the mirror both starve. **This is the
+S2 utxo_mirror defect (`handoff/s2-utxo-mirror-wip`, roadmap §2 S2) with
+live consequences beyond performance.** Real fix = S2 delta-apply mirror (stop
+the huge repeated write txns) AND identify/resolve the persistent lock holder
+(the key un-answered question — who holds it? candidates: a coins_view/reducer
+flush, a stuck txn). The node otherwise serves fine. **DO NOT send real ZCL
+until this is fixed** — receiving also writes to the starved DB.
 
 ## What shipped to `main` this session (origin is current)
 
@@ -18,11 +37,12 @@ Correctness / robustness / security:
 - `zcl_replay_exec` can no longer launder destructive MCP tools past the auth
   tier; the tool is itself destructive-flagged.
 - `snapshot_negotiation_stalled` re-arms instead of latching forever (cooldown).
-- **Wallet key persistence survives node.db WAL write-lock contention** —
-  `wallet_sqlite_flush_r` now `BEGIN IMMEDIATE` + bounded retry. This was the
-  live P0: `getnewaddress` was failing with "New address NOT saved" because a
-  deferred BEGIN with no retry lost the write-lock race during catch-up.
-  Fixed, unit-tested, deployed to dev.
+- Wallet `wallet_sqlite_flush_r` now uses `BEGIN IMMEDIATE` + bounded retry
+  (correct for TRANSIENT node.db WAL contention; unit-tested). **NOTE: this did
+  NOT fix the live wallet P0 — see the #1 LIVE P0 section above. The real cause
+  is the S2 mirror thrash + a persistent lock holder, not transient
+  contention.** Fix stays (it's correct as far as it goes) but is insufficient
+  alone.
 
 Performance / strength:
 - `addrman` duplicate lookup is now O(1) (hash index), was O(n) per gossiped
@@ -101,15 +121,22 @@ State is a RAM-only `coins_view_cache`.
 
 ## Live node state
 
-Healthy at last check — `primary_blocker: none`. Wallet fix is on dev
-(`e71261dd9`+); the canonical deploy to pick it up is **operator-gated** (brief
-public-node interruption) — that decision is the owner's. Verify with
-`build/bin/zclassic23 mcpcall zcl_agent`.
+Canonical is deployed to `main` (`0b8cb4ec8`) and healthy/serving at tip —
+`primary_blocker: none`. BUT the wallet-persistence + utxo_mirror degradation
+(the #1 LIVE P0 above) is live and node-wide. Verify with
+`build/bin/zclassic23 mcpcall zcl_agent` and
+`... zcl_node_log '{"pattern":"utxo_mirror|database is locked","since_secs":120,"max_lines":20}'`.
 
 ## Recommended next steps (priority order)
 
-1. Finish `handoff/zname-correctness-wip` (diagnosed above) — security fix.
-2. Finish `handoff/dry-mcp-consolidation-wip` (just needs lint) — quick win.
-3. Chain the ZSLP + ZName sim slices onto `simnet` (recipe above).
-4. Investigate the recurring dev auto-reindex.
-5. Roadmap strength items S1 (incremental H*) and S2 (delta mirror).
+1. **Fix the #1 LIVE P0**: S2 delta-apply the utxo_mirror (stop the full ~1.3M
+   row rebuild every 5s) AND find/resolve the persistent node.db write-lock
+   holder. This unblocks wallet persistence + receiving funds. Start from
+   `handoff/s2-utxo-mirror-wip` + roadmap §2 S2. Copy-prove before redeploying
+   canonical.
+2. Finish `handoff/zname-correctness-wip` (diagnosed: bump `NODE_DB_MAX_SCHEMA`
+   24→25 + fix the seeded-test fixture) — security fix.
+3. Finish `handoff/dry-mcp-consolidation-wip` (just needs lint) — quick win.
+4. Chain the ZSLP + ZName sim slices onto `simnet` (recipe above).
+5. Investigate the recurring dev auto-reindex.
+6. Roadmap strength item S1 (incremental H*).
