@@ -55,6 +55,11 @@ extern "C" {
 
 typedef struct seed_tape seed_tape_t;
 
+/* Forward decl — the optional in-sim Sapling note-commitment tree
+ * (Sapling Lane C). Full type in sapling/incremental_merkle_tree.h; kept a
+ * pointer here so transparent-only sims pull in nothing extra. */
+struct incremental_merkle_tree;
+
 struct simnet {
     struct coins_view_cache view;       /* the live in-RAM UTXO set    */
     struct coins_view       null_view;  /* zeroed backing (no disk)    */
@@ -71,6 +76,21 @@ struct simnet {
     char mempool_last_detail[128];
     int  tip_height;
     bool initialized;
+
+    /* ── Sapling Lane C (all default-off; NULL/false = today's behavior) ── */
+    struct incremental_merkle_tree *sapling_tree; /* optional, owned; the live
+                                                   * note-commitment tree. When
+                                                   * set, every mint appends this
+                                                   * block's shielded-output note
+                                                   * commitments and stamps the
+                                                   * header root from the REAL
+                                                   * current tree root. NULL =
+                                                   * Lane A empty-root stamp. */
+    bool run_contextual_check;          /* when true, each mint also drives the
+                                         * REAL contextual_check_block(is_ibd=
+                                         * false) so Sapling Groth16 spend/output
+                                         * proofs + binding sig are verified
+                                         * through the production consensus path. */
 };
 
 /* Initialize a fresh, empty single-node harness. Places the synthetic base

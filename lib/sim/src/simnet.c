@@ -13,12 +13,12 @@
 
 #include "sim/seed_tape.h"
 #include "validation/connect_block.h"
-#include "validation/contextual_check_tx.h"
+#include "validation/contextual_check_tx.h" /* contextual_check_transaction (Lane C) */
 #include "consensus/validation.h"
 #include "consensus/consensus.h"          /* COINBASE_MATURITY */
 #include "consensus/params.h"             /* PRE_BUTTERCUP_POW_TARGET_SPACING */
 #include "consensus/upgrades.h"           /* UPGRADE_OVERWINTER / UPGRADE_SAPLING */
-#include "sapling/incremental_merkle_tree.h" /* empty Sapling tree root */
+#include "sapling/incremental_merkle_tree.h" /* Sapling note-commitment tree */
 #include "coins/coins.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
@@ -126,6 +126,18 @@ static void sim_free_tx(struct transaction *tx)
     free(tx->vout);
     tx->vin = NULL;
     tx->vout = NULL;
+    /* Lane C: shielded/joinsplit description arrays are flat zcl_calloc
+     * blocks (no nested heap), owned by the tx handed to the mint helper.
+     * Free them here so shielded sims don't leak per block. */
+    free(tx->v_shielded_spend);
+    tx->v_shielded_spend = NULL;
+    tx->num_shielded_spend = 0;
+    free(tx->v_shielded_output);
+    tx->v_shielded_output = NULL;
+    tx->num_shielded_output = 0;
+    free(tx->v_joinsplit);
+    tx->v_joinsplit = NULL;
+    tx->num_joinsplit = 0;
 }
 
 /* Assemble `txs[0..ntx)` into a block at `height`, drive it through the
@@ -165,18 +177,35 @@ static bool sim_mint_block(struct simnet *s, struct transaction *txs,
     free(txids);
 
     /* Post-Sapling activation, connect_block (connect_block.c:704-736)
-     * rejects an all-zero hashFinalSaplingRoot. The sim mints only
-     * transparent txs, so the Sapling note-commitment tree is never
-     * appended to and stays empty; its root is exactly the empty-tree
-     * root. Filling it here keeps every mint helper usable once a sim
-     * lowers the Sapling activation height via simnet_activate_sapling_at().
-     * A later lane that adds real shielded outputs must instead thread the
-     * evolving tree root through here. */
+     * rejects an all-zero hashFinalSaplingRoot.
+     *
+     * Lane A (transparent-only sims, s->sapling_tree == NULL): the tree is
+     * never appended to and stays empty, so its root is exactly the empty-tree
+     * root — stamp that.
+     *
+     * Lane C (s->sapling_tree enabled): append THIS block's shielded-output
+     * note commitments (in tx, then output order) to a value-copy of the live
+     * tree and stamp the REAL resulting root. The copy `tree_after` is
+     * committed to s->sapling_tree only after connect_block accepts the block,
+     * so a rejected block leaves the tree unchanged (rollback-safe). */
+    struct incremental_merkle_tree tree_after;
+    bool have_tree_after = false;
     if (consensus_network_upgrade_active(&s->params.consensus, height,
                                          UPGRADE_SAPLING)) {
-        struct incremental_merkle_tree stree;
-        sapling_tree_init(&stree);
-        incremental_tree_empty_root(&stree, &blk.header.hashFinalSaplingRoot);
+        if (s->sapling_tree) {
+            tree_after = *s->sapling_tree;
+            for (size_t i = 0; i < ntx; i++)
+                for (size_t j = 0; j < txs[i].num_shielded_output; j++)
+                    incremental_tree_append(&tree_after,
+                                            &txs[i].v_shielded_output[j].cm);
+            incremental_tree_root(&tree_after,
+                                  &blk.header.hashFinalSaplingRoot);
+            have_tree_after = true;
+        } else {
+            struct incremental_merkle_tree stree;
+            sapling_tree_init(&stree);
+            incremental_tree_empty_root(&stree, &blk.header.hashFinalSaplingRoot);
+        }
     }
 
     struct uint256 block_hash;
@@ -191,6 +220,39 @@ static bool sim_mint_block(struct simnet *s, struct transaction *txs,
     struct validation_state vs;
     validation_state_init(&vs);
 
+    /* Lane C: drive the REAL shielded consensus verifier on each shielded tx.
+     * contextual_check_transaction (validation/contextual_check_tx.c) is the
+     * exact function contextual_check_block invokes per tx (and that the live
+     * node reaches via app/jobs/src/script_validate_contextual.c). It runs
+     * check_spend/check_output/final_check on the Sapling descriptions plus the
+     * JoinSplit Ed25519 sig — the full Groth16 verification path — with the
+     * deferral gate off (g_deferred_proof_validation_below_height == -1, set in
+     * simnet_init) so no proof is skipped. We invoke it per shielded tx (not
+     * the whole block) so the harness's plain v1 coinbase does not have to
+     * satisfy the block-level BIP34 / Overwinter-version rules, which are
+     * orthogonal to the shielded-proof verification this lane exercises.
+     * The transparent value balance is still enforced by connect_block below. */
+    if (s->run_contextual_check) {
+        for (size_t i = 0; i < ntx; i++) {
+            if (txs[i].num_shielded_spend == 0 &&
+                txs[i].num_shielded_output == 0 &&
+                txs[i].num_joinsplit == 0)
+                continue;
+            struct validation_state cvs;
+            validation_state_init(&cvs);
+            if (!contextual_check_transaction(&txs[i], &cvs,
+                                              &s->params.consensus,
+                                              height, 100 /* dosLevel */)) {
+                free(blk.vtx);
+                for (size_t k = 0; k < ntx; k++)
+                    sim_free_tx(&txs[k]);
+                LOG_FAIL("simnet",
+                         "contextual_check_transaction rejected tx %zu "
+                         "at height %d: %s", i, height, cvs.reject_reason);
+            }
+        }
+    }
+
     bool ok = connect_block(&blk, &vs, &pindex, &s->view, &s->params,
                             false /* just_check */);
 
@@ -201,6 +263,10 @@ static bool sim_mint_block(struct simnet *s, struct transaction *txs,
     if (!ok)
         LOG_FAIL("simnet", "connect_block rejected height %d: %s",
                  height, vs.reject_reason);
+
+    /* Block accepted — commit the appended Sapling tree (Lane C). */
+    if (have_tree_after && s->sapling_tree)
+        *s->sapling_tree = tree_after;
 
     /* Advance the tip in RAM. tip.phashBlock keeps pointing at
      * tip.hashBlock (a fixed address), so links stay valid across mints. */
@@ -283,6 +349,8 @@ void simnet_free(struct simnet *s)
     s->mempool_txs = NULL;
     s->mempool_count = 0;
     s->mempool_cap = 0;
+    free(s->sapling_tree);            /* Lane C: owned note-commitment tree */
+    s->sapling_tree = NULL;
     coins_view_cache_free(&s->view);
     s->initialized = false;
 }

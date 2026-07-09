@@ -198,4 +198,31 @@ bool groth16_prove(const struct groth16_pk *pk,
                    const struct constraint_system *cs,
                    struct groth16_proof *proof_out);
 
+#ifdef ZCL_TESTING
+/* ── Test-ONLY deterministic RNG injection for the Groth16 blinding
+ *    factors r, s (Sapling Lane C) ──────────────────────────────────
+ *
+ * groth16_prove draws two 32-byte blinding scalars r, s from
+ * `zcl_random_secret_bytes` (kernel CSPRNG). Those bytes flow into the
+ * 192-byte zk-proof, so with real entropy the proof (and therefore the
+ * enclosing shielded transaction's txid) is NON-reproducible run-to-run —
+ * exactly the gap Lane B (`sapling_set_test_rng_hook`) left open for the
+ * proof itself (its scope note: "the 192-byte zk-proof stays
+ * non-deterministic under THIS hook alone").
+ *
+ * This seam is compiled ONLY under `-DZCL_TESTING`. It does not exist in
+ * the production node binary — there `groth16_prove` ALWAYS draws r, s from
+ * `zcl_random_secret_bytes`, with no runtime flag or symbol to divert it.
+ *
+ * When `fn` is NULL (the default, even in a ZCL_TESTING build) the prover is
+ * byte-identical to today. When `fn` is set, each r/s draw is filled via
+ * `fn(user, buf, 32)` instead. `fn` returns true on success (buffer filled)
+ * or false to signal RNG failure (handled exactly like a
+ * `zcl_random_secret_bytes` failure — the prove aborts, returns false). Pass
+ * NULL to restore the default. Set it around a single-threaded deterministic
+ * build, then clear it. Mirrors `sapling_set_test_rng_hook`. */
+typedef bool (*groth16_test_rng_fn)(void *user, uint8_t *out, size_t n);
+void groth16_set_test_rng_hook(groth16_test_rng_fn fn, void *user);
+#endif /* ZCL_TESTING */
+
 #endif
