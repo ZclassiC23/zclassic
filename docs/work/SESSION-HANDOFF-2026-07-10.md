@@ -75,18 +75,45 @@ make -j$(nproc) build-only && make t ONLY=<group> && make check-doc-counts
 git commit --no-edit && git push origin main   # pre-push CI is the gate
 ```
 
-## In-flight Opus lanes (may leave branches after this handoff)
+## Groth16 prover — ROOT-CAUSED + isolation test LANDED
 
-- **Groth16 root-cause** (agent `a26e5003b9494fe3b`) — see critical finding.
-- **Sapling Lane C test-fix** (agent `ad09d42f2b8ce3aab`, branch
-  `sapling-lane-c-shielded-send`) — the branch's `test_simnet_sapling_shielded_send`
-  is currently **RED on main** (the `verdict == probe` assertion is
-  non-deterministic: proof-deferral/`is_ibd` globals leak between test groups so
-  the sim's `connect_block` sometimes skips the proof check). The agent was told
-  to make the assertion deterministic (save/set/restore those globals) and prove
-  green in BOTH standalone and full-`test_parallel` contexts. **Do not merge this
-  branch until its test is green in both contexts.** It carries the valuable
-  Lane C infrastructure + the Groth16 r,s hook.
+The Groth16 lane definitively root-caused the prover↔verifier gap (memory
+`project_groth16_prover_verifier_gap_2026-07-10` has the full evidence):
+1. Output circuit R1CS mismatches the trusted setup — `sapling_output_synthesize`
+   (`lib/sapling/src/sapling_circuit.c` ~266) emits 7571 constraints / num_aux
+   7567 vs the required 7827 / 7821 → witness off the QAP → pairing can't hold.
+2. Dense positional MSM vs bellman's density-filtered A/B queries
+   (`lib/sapling/src/groth16_prover.c` :903/:917/:931) — needs density-aware multiexp.
+3. Spend circuit (`sapling_spend_synthesize` ~77) is a STUB (~dozens of
+   constraints vs ~100K) → spend proofs non-verifying AND non-deterministic.
+A self-verify isolation test (`lib/test/src/test_groth16_selfverify.c`, run
+`ZCL_TEST_ONLY=groth16_selfverify`) is **merged to main** (opt-in, not in the
+default pool). Fixing the prover is a multi-week circuit reimplementation, not a
+patch — pairing is all-or-nothing.
+
+## Sapling Lane C — NOT merged (branch `sapling-lane-c-shielded-send`)
+
+The Lane-C test-fix lane made the shielded-send test's txid-determinism robust
+(3 dedicated test-only RNG hooks: sapling r, Groth16 r/s, RedJubjub nonce — all
+`#ifdef ZCL_TESTING`, nm-verified production-safe; asserts txid-determinism IFF
+spend-proof-determinism, auto-tightening when the prover is fixed). That test is
+green standalone AND in full `test_parallel`.
+
+**BUT merging Lane C onto main is BLOCKED by a real regression:** Lane C's
+`simnet.c` change adds a **per-tx contextual-verifier drive** to the mint path,
+and `test_simnet_input_value_range`'s `value_in == MAX_MONEY` block then
+**SIGABRTs deterministically under `test_parallel`** (aborts right after "build
+value_in == MAX_MONEY spend"; each `test_parallel` group is a separate forked
+process, so this is the shared `simnet.c` code path, not cross-group state). The
+Lane C merge was made + reverted this session (main restored to green 507).
+**To land Lane C, the next agent must:** (a) fix the contextual-drive so a
+MAX_MONEY input doesn't abort (guard/handle the boundary), AND (b) move the
+params-heavy `simnet_sapling_shielded_send` (and consider `snark_kat` /
+`sapling_prover_rng_determinism`) OUT of the default fast `test_parallel` pool
+into an opt-in params gate, per `docs/work/sapling-sim-spike.md` (real Groth16
+proving is seconds and memory-heavy — it doesn't belong in the fast pool). Then
+re-merge, resolve the additive registration/doc-count conflicts, verify green in
+BOTH contexts, push.
 
 ## Architectural note for future simnet coverage lanes
 
