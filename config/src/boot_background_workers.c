@@ -300,8 +300,10 @@ static void *hodl_history_worker_thread(void *arg)
 {
     struct boot_svc_ctx *svc = arg;
     int64_t loop_iterations = 0;
-    if (!svc)
+    if (!svc) {
+        boot_complete_worker_supervisor(&g_hodl_history_sup_id);
         return NULL;
+    }
     /* Initial settle: wait for boot to complete + first chain advance. */
     sleep(15);
     while (!svc->hodl_history_thread_stop) {
@@ -342,6 +344,7 @@ static void *hodl_history_worker_thread(void *arg)
                         !svc->hodl_history_thread_stop; i++)
             sleep(1);
     }
+    boot_complete_worker_supervisor(&g_hodl_history_sup_id);
     return NULL;
 }
 
@@ -354,8 +357,10 @@ static void *projection_backfill_service_thread(void *arg)
     bool hole_rewind_gave_up_reported = false;
     int64_t loop_iterations = 0;
 
-    if (!svc)
+    if (!svc) {
+        boot_complete_worker_supervisor(&g_projection_backfill_sup_id);
         return NULL;
+    }
 
     while (!svc->projection_backfill_thread_stop && boot_running(svc)) {
         supervisor_child_id sup_id =
@@ -496,6 +501,7 @@ static void *projection_backfill_service_thread(void *arg)
     }
 
     boot_reap_catchup_service(svc);
+    boot_complete_worker_supervisor(&g_projection_backfill_sup_id);
     return NULL;
 }
 
@@ -654,35 +660,38 @@ static void *payment_processor_thread(void *arg)
         store_process_payments(svc->datadir);
         watchdog_check_stuck(svc);
     }
+    boot_complete_worker_supervisor(&g_payment_sup_id);
     return NULL;
 }
 
 static void *address_backfill_service_thread(void *arg)
 {
     struct boot_svc_ctx *svc = arg;
-    char *db_path;
-    supervisor_child_id sup_id;
+    char *db_path = NULL;
+    supervisor_child_id sup_id = atomic_load(&g_address_backfill_sup_id);
 
     if (!svc || !svc->datadir)
-        return NULL;
+        goto done;
 
     /* Single blocking call: heartbeat at entry and exit only. The
      * generous deadline (600 s) tolerates a legitimately long backfill;
      * progress_max_quiet_us == 0 disables the NO_PROGRESS gate so the
      * silence between entry and exit is not mistaken for a wedge. */
-    sup_id = atomic_load(&g_address_backfill_sup_id);
     if (sup_id != SUPERVISOR_INVALID_ID)
         supervisor_tick(sup_id);
 
     db_path = zcl_malloc(1024, "address_backfill_db_path");
     if (!db_path)
-        return NULL;
+        goto done;
     snprintf(db_path, 1024, "%s/node.db", svc->datadir);
     backfill_addresses_thread(db_path);
     free(db_path);
+    db_path = NULL;
 
+done:
     if (sup_id != SUPERVISOR_INVALID_ID)
         supervisor_tick(sup_id);
+    boot_complete_worker_supervisor(&g_address_backfill_sup_id);
     return NULL;
 }
 
@@ -701,15 +710,15 @@ static void *background_utxo_replay(void *arg)
 {
     struct boot_svc_ctx *svc = arg;
     const struct chain_params *params = chain_params_get();
+    supervisor_child_id sup_id = atomic_load(&g_utxo_replay_sup_id);
 
     if (!svc || !svc->state || !svc->coins_tip || !params || !svc->datadir)
-        return NULL;
+        goto done;
 
     /* Single blocking activation call: heartbeat at entry and exit only.
      * Deep replay is slow sequential I/O, so the deadline is generous
      * (3600 s) and progress_max_quiet_us == 0 keeps the long silent run
      * from false-firing NO_PROGRESS. */
-    supervisor_child_id sup_id = atomic_load(&g_utxo_replay_sup_id);
     if (sup_id != SUPERVISOR_INVALID_ID)
         supervisor_tick(sup_id);
 
@@ -845,7 +854,9 @@ static void *background_utxo_replay(void *arg)
     event_emitf(EV_NODE_READY, 0, "utxo_replay_done height=%d secs=%lld",
                 tip, (long long)elapsed);
 
+done:
     if (sup_id != SUPERVISOR_INVALID_ID)
         supervisor_tick(sup_id);
+    boot_complete_worker_supervisor(&g_utxo_replay_sup_id);
     return NULL;
 }

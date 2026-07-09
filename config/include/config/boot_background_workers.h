@@ -76,6 +76,11 @@ void boot_register_worker_supervisor(
     int64_t deadline_secs,
     int64_t progress_max_quiet_us);
 
+/* Mark a registered worker complete after its thread exits. This does not clear
+ * the slot or unregister the child, so sibling cached child ids remain stable
+ * and the register helper remains idempotent. */
+void boot_complete_worker_supervisor(_Atomic supervisor_child_id *slot);
+
 /* Store payment processor (store profile). Start is gated by
  * boot_store_payment_start in boot_frontend_services.c. */
 bool boot_start_payment_service(struct boot_svc_ctx *svc);

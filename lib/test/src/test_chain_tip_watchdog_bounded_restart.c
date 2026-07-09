@@ -25,9 +25,12 @@
 
 #include "test/test_helpers.h"
 
+#include "config/boot_background_workers.h"
 #include "services/chain_tip_watchdog.h"
+#include "services/sticky_escalator.h"
 #include "storage/progress_store.h"
 #include "event/event.h"
+#include "util/blocker.h"
 
 #include <errno.h>
 #include <stdatomic.h>
@@ -83,6 +86,25 @@ int test_chain_tip_watchdog_bounded_restart(void)
     event_clear_all_observers();
     atomic_store(&g_operator_events, 0);
     event_observe(EV_OPERATOR_NEEDED, wd_operator_observer, NULL);
+
+    /* Worker stalls are worker-scoped blockers, not chain-tip wedge causes. */
+    {
+        sticky_escalator_test_reset();
+        blocker_reset_for_testing();
+
+        struct liveness_contract c;
+        liveness_contract_init(&c, "op.test_worker");
+        atomic_store(&c.stall_reason, SUPERVISOR_STALL_TIME_DEADLINE);
+        worker_on_stall(&c);
+
+        WD_CHECK("worker stall records a typed blocker",
+                 blocker_exists("worker.stall.op.test_worker"));
+        WD_CHECK("worker stall does NOT arm sticky escalator",
+                 !sticky_escalator_test_armed());
+
+        blocker_reset_for_testing();
+        sticky_escalator_test_reset();
+    }
 
     /* ── (a) deterministic wedge: K restarts then STOP + page ───────── */
     {
@@ -355,6 +377,7 @@ int test_chain_tip_watchdog_bounded_restart(void)
         wd_mkdir_p(dir);
         WD_CHECK("open progress.kv (deterministic)", progress_store_open(dir));
         atomic_store(&g_operator_events, 0);
+        sticky_escalator_test_reset();
 
         const int64_t STUCK_H = 3151411;  /* the live deterministic wedge */
         wd_sim_boot();
@@ -371,6 +394,8 @@ int test_chain_tip_watchdog_bounded_restart(void)
                  s.fires_operator_needed == 1);
         WD_CHECK("deterministic stall requested no shutdown (0 restart fires)",
                  s.fires_restart == 0);
+        WD_CHECK("deterministic chain-tip stall arms sticky escalator",
+                 sticky_escalator_test_armed());
         /* sticky-node-plan #1: a deterministic stall is now HANDED to the
          * always-terminating remedy escalator (no terminal EV_OPERATOR_NEEDED
          * emitted by the watchdog — that was the human dead-end S2 forbids).
@@ -382,6 +407,7 @@ int test_chain_tip_watchdog_bounded_restart(void)
 
         progress_store_close();
         test_cleanup_tmpdir(dir);
+        sticky_escalator_test_reset();
     }
 
     /* ── (f) escalation LADDER over the supervisor tick: 1 -> 3, reserved inert
@@ -526,6 +552,8 @@ int test_chain_tip_watchdog_bounded_restart(void)
 
     /* Leave global state clean for the next test. */
     chain_tip_watchdog_test_reset_runtime();
+    sticky_escalator_test_reset();
+    blocker_reset_for_testing();
     event_clear_all_observers();
 
     printf("chain_tip_wd_bounded: %d failures\n", failures);
