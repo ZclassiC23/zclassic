@@ -211,6 +211,34 @@ make lint
 make check-doc-accuracy
 ```
 
+## Reproducing a failure
+
+`tools/sim/wire_sweep.c` (`make wire-sweep SEEDS=N`) sweeps `simnet_wire`
+seeds and, on any monitor failure, prints `FAIL seed=0x...` and saves that
+seed's replay capsule as `<artifact-dir>/seed_0x<HEX>.tape`. Two make
+targets turn that failing seed (or a saved capsule) back into a live
+repro, reusing `wire_sweep` itself — no separate harness or binary:
+
+```bash
+# Replay one exact seed deterministically (rebuilds wire_sweep if needed):
+make simnet-repro SEED=0x2a
+
+# Replay every seed_0x*.tape capsule saved under a directory (or a
+# single .tape file) from a prior failing sweep:
+make simnet-replay CAP=build/wire-sweep-output
+```
+
+`simnet-repro` is `wire_sweep --start=SEED --count=1 --verbose` — the
+single-seed slice of the same sweep loop `make wire-sweep` runs.
+`simnet-replay` (`tools/scripts/simnet_replay_capsule.sh`) recovers the
+seed from each capsule's filename and calls `wire_sweep` the same way;
+it does not need to parse the `.tape` file's contents because
+`wire_sweep_run_one(seed)` is a pure function of the scalar seed (the
+"bugs become 64-bit seeds" property, `docs/work/sim-phase2-plan.md`) —
+the same seed always rebuilds the identical adversary archetype,
+sub-case, and event stream. Both targets exit non-zero if the replayed
+seed still reports a monitor failure.
+
 ## Phase 2
 
 The phase-2 roadmap is `docs/work/sim-phase2-plan.md` on the follow-up branch.
