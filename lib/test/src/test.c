@@ -1205,6 +1205,7 @@ int main(int argc, char **argv)
     failures += test_simnet_doublespend();
     failures += test_simnet_chained_tx();
     failures += test_simnet_block_sigops();
+    failures += test_simnet_duplicate_input();
     failures += test_simnet_sapling_activation();
     failures += test_connect_block_sapling_root();
     failures += test_connect_block_checkdatasig_sigops();
