@@ -117,12 +117,8 @@ static int h_zcl_wallet_receive_intent(const struct mcp_request *req,
     if (!body) {
         json_free(&backup);
         json_free(&root);
-        res->error = MCP_ERR_INTERNAL;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for wallet receive intent response");
-        LOG_ERR("mcp.wallet", "wallet_receive_intent: malloc failed (%zu bytes)",
-                need);
-        return 0;
+        return mcp_res_set_oom(res, need, "mcp.wallet",
+                               "wallet receive intent response");
     }
     json_write(&root, body, need);
     json_free(&backup);
@@ -226,11 +222,7 @@ static int h_zcl_listaddresses(const struct mcp_request *req,
     char *out = zcl_malloc(cap, "listaddresses_body");
     if (!out) {
         json_free(&root);
-        res->error = MCP_ERR_INTERNAL;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for listaddresses response");
-        LOG_ERR("mcp.wallet", "malloc failed for listaddresses (%zu bytes)", cap);
-        return 0;
+        return mcp_res_set_oom(res, cap, "mcp.wallet", "listaddresses response");
     }
     size_t pos = 0;
     pos += (size_t)snprintf(out + pos, cap - pos, "{\"t_addresses\":[");
