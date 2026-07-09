@@ -49,10 +49,9 @@ static bool params_sha512_matches(const uint8_t *data, size_t len,
 
     uint8_t want[64];
     if (ParseHex(expected_hex, want, 64) != 64) {
-        fprintf(stderr, "[sapling] %s:%d %s(): "
-                "internal: malformed expected SHA-512 literal for %s\n",
-                __FILE__, __LINE__, __func__, path);
-        return false;
+        LOG_FAIL("sapling",
+                 "internal: malformed expected SHA-512 literal for %s",
+                 path);
     }
 
     /* Constant-time comparison — not strictly needed here (no timing
@@ -65,11 +64,10 @@ static bool params_sha512_matches(const uint8_t *data, size_t len,
             snprintf(got_hex + 2 * i, 3, "%02x", got[i]);
             snprintf(want_hex + 2 * i, 3, "%02x", want[i]);
         }
-        fprintf(stderr, "[sapling] %s:%d %s(): "
-                "params file SHA-512 mismatch: path=%s\n"
-                "  expected=%s\n  actual  =%s\n",
-                __FILE__, __LINE__, __func__, path, want_hex, got_hex);
-        return false;
+        LOG_FAIL("sapling",
+                 "params file SHA-512 mismatch: path=%s\n"
+                 "  expected=%s\n  actual  =%s",
+                 path, want_hex, got_hex);
     }
     return true;
 }
@@ -193,17 +191,19 @@ bool sapling_init_params(const char *params_dir)
         if (phgr_data) {
             if (ppzksnark_vk_read(&phgr_vk, phgr_data, len)) {
                 sprout_phgr_set_vk(&phgr_vk);
-                printf("Loaded Sprout PHGR13 verification key: %zu bytes "
-                       "(%zu IC points)\n", len, phgr_vk.ic_len);
+                LOG_INFO("sapling_params",
+                         "Loaded Sprout PHGR13 verification key: %zu bytes "
+                         "(%zu IC points)", len, phgr_vk.ic_len);
                 phgr_ok = true;
             } else {
-                fprintf(stderr,  // obs-ok:params-load-operator-diagnostic
-                    "ERROR: Failed to parse sprout-verifying.key\n");
+                LOG_WARN("sapling_params",
+                         "ERROR: Failed to parse sprout-verifying.key");
             }
             free(phgr_data);
         } else {
-            fprintf(stderr,  // obs-ok:params-load-operator-diagnostic
-                "ERROR: sprout-verifying.key not found at %s\n", phgr_path);
+            LOG_WARN("sapling_params",
+                     "ERROR: sprout-verifying.key not found at %s",
+                     phgr_path);
         }
 
         /* Hard-fail on mainnet — PHGR13 proofs are consensus-critical for
@@ -212,16 +212,16 @@ bool sapling_init_params(const char *params_dir)
         if (!phgr_ok) {
             const struct chain_params *cp = chain_params_get();
             if (cp && strcmp(cp->strNetworkID, "main") == 0) {
-                fprintf(stderr,  // obs-ok:params-load-fatal-return
-                    "FATAL: Sprout PHGR13 verification key failed to load.\n"
-                    "Mainnet requires this key to validate pre-Sapling blocks.\n"
-                    "Ensure sprout-verifying.key exists in: %s\n", params_dir);
                 free(spend_vk.ic); free(output_vk.ic);
                 free(sprout_groth16_vk.ic);
-                return false;
+                LOG_FAIL("sapling_params",
+                         "FATAL: Sprout PHGR13 verification key failed to load.\n"
+                         "Mainnet requires this key to validate pre-Sapling blocks.\n"
+                         "Ensure sprout-verifying.key exists in: %s",
+                         params_dir);
             }
-            fprintf(stderr,  // obs-ok:params-load-nonmainnet-warning
-                "WARNING: PHGR13 VK not loaded (non-mainnet, continuing)\n");
+            LOG_WARN("sapling_params",
+                     "WARNING: PHGR13 VK not loaded (non-mainnet, continuing)");
         }
     }
 
@@ -233,9 +233,13 @@ bool sapling_init_params(const char *params_dir)
     output_pk_data = read_file(path, &output_pk_len);
 
     if (output_pk_data)
-        printf("Loaded sapling-output proving key: %zu bytes\n", output_pk_len);
+        LOG_INFO("sapling_params",
+                 "Loaded sapling-output proving key: %zu bytes",
+                 output_pk_len);
     if (spend_pk_data)
-        printf("Loaded sapling-spend proving key: %zu bytes\n", spend_pk_len);
+        LOG_INFO("sapling_params",
+                 "Loaded sapling-spend proving key: %zu bytes",
+                 spend_pk_len);
 
     /* Initialize native C23 prover with params paths for Groth16 proving */
     {
@@ -262,7 +266,8 @@ bool sapling_init_params(const char *params_dir)
             SAPLING_OUTPUT_PARAMS_SHA512,
             (const uint8_t *)sprout_path, strlen(sprout_path),
             SPROUT_GROTH16_PARAMS_SHA512);
-        printf("native C23 prover zkSNARK params initialized.\n");
+        LOG_INFO("sapling_params",
+                 "native C23 prover zkSNARK params initialized.");
     }
 
     atomic_store(&params_loaded, true);

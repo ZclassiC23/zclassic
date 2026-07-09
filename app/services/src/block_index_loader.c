@@ -141,8 +141,8 @@ static bool bif_emit_payload(FILE *f, void *vctx,
     uint32_t count32 = (uint32_t)c->count;
     if (fwrite(&magic, 4, 1, f) != 1 || // disk-io-lock: private-fd (block index flat file)
         fwrite(&count32, 4, 1, f) != 1) {
-        fprintf(stderr, "save_block_index_flat: payload header write failed\n");
-        return false;
+        LOG_FAIL("block_index_flat",
+                 "save_block_index_flat: payload header write failed");
     }
     sha3_256_write(&hctx, (const uint8_t *)&magic, 4);
     sha3_256_write(&hctx, (const uint8_t *)&count32, 4);
@@ -169,9 +169,9 @@ static bool bif_emit_payload(FILE *f, void *vctx,
         entry.n_cached_branch_id = (uint32_t)c->sorted[i]->nCachedBranchId;
         memcpy(entry.sapling_root, c->sorted[i]->hashFinalSaplingRoot.data, 32);
         if (fwrite(&entry, sizeof(entry), 1, f) != 1) { // disk-io-lock: private-fd
-            fprintf(stderr, "save_block_index_flat: write failed at entry "
-                    "%zu/%zu: %s\n", i, c->count, strerror(errno));
-            return false;
+            LOG_FAIL("block_index_flat",
+                     "save_block_index_flat: write failed at entry "
+                     "%zu/%zu: %s", i, c->count, strerror(errno));
         }
         sha3_256_write(&hctx, (const uint8_t *)&entry, sizeof(entry));
         bytes += sizeof(entry);
@@ -187,8 +187,9 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
     size_t count = ms->map_block_index.size;
     struct block_index **sorted = zcl_malloc(count * sizeof(void *), "block_index sorted save");
     if (!sorted) {
-        fprintf(stderr, "save_block_index_flat: malloc failed for %zu entries\n",
-                count);
+        LOG_WARN("block_index_flat",
+                 "save_block_index_flat: malloc failed for %zu entries",
+                 count);
         return;
     }
 
@@ -222,9 +223,10 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
     }
 
     int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
-    printf("Block index flat file: %zu entries, %zuMB (%llds)\n",
-           count, count * sizeof(struct block_index_flat) / (1024*1024),
-           (long long)elapsed);
+    LOG_INFO("block_index_flat",
+             "Block index flat file: %zu entries, %zuMB (%llds)",
+             count, count * sizeof(struct block_index_flat) / (1024*1024),
+             (long long)elapsed);
 }
 
 /* ── load_block_index_flat ───────────────────────────────── */
@@ -236,28 +238,30 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
 
     int fd = open(path, O_RDONLY);
     if (fd < 0) {
-        fprintf(stderr, "block_index_flat: cannot open %s: %s\n",
-                path, strerror(errno));
-        return false;
+        LOG_FAIL("block_index_flat", "block_index_flat: cannot open %s: %s",
+                 path, strerror(errno));
     }
 
     struct stat st;
     if (fstat(fd, &st) != 0) {
-        fprintf(stderr, "block_index_flat: fstat failed: %s\n", strerror(errno));
-        close(fd); return false;
+        int saved_errno = errno;
+        close(fd);
+        LOG_FAIL("block_index_flat", "block_index_flat: fstat failed: %s",
+                 strerror(saved_errno));
     }
     size_t file_size = (size_t)st.st_size;
     if (file_size < 8) {
-        fprintf(stderr, "block_index_flat: file too small (%zu bytes)\n", file_size);
-        close(fd); return false;
+        close(fd);
+        LOG_FAIL("block_index_flat", "block_index_flat: file too small (%zu bytes)",
+                 file_size);
     }
 
     uint8_t *data = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
     close(fd);
     if (data == MAP_FAILED) {
-        fprintf(stderr, "block_index_flat: mmap failed (%zu bytes): %s\n",
-                file_size, strerror(errno));
-        return false;
+        LOG_FAIL("block_index_flat",
+                 "block_index_flat: mmap failed (%zu bytes): %s",
+                 file_size, strerror(errno));
     }
 
     /* Format detection: the embedded single-file format prefixes the
@@ -281,10 +285,10 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
             struct ssio_sidecar_header ehdr;
             int ev = bii_verify_embedded(datadir, &ehdr, &payload_off);
             if (ev != 0) {
-                fprintf(stderr,
-                        "block_index_flat: embedded integrity check FAILED "
-                        "(verdict=%d) — refusing the body\n", ev);
-                munmap(data, file_size); return false;
+                munmap(data, file_size);
+                LOG_FAIL("block_index_flat",
+                         "block_index_flat: embedded integrity check FAILED "
+                         "(verdict=%d) — refusing the body", ev);
             }
         }
         /* else: legacy "ZCLI"-magic body — payload_off stays 0; the
@@ -295,26 +299,29 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
     memcpy(&magic, data + payload_off, 4);
     memcpy(&count, data + payload_off + 4, 4);
     if (magic != 0x5A434C49) {
-        fprintf(stderr, "block_index_flat: bad payload magic 0x%08x (expected 0x5A434C49)\n",
-                magic);
-        munmap(data, file_size); return false;
+        munmap(data, file_size);
+        LOG_FAIL("block_index_flat",
+                 "block_index_flat: bad payload magic 0x%08x (expected 0x5A434C49)",
+                 magic);
     }
     if (count > 10000000) {
-        fprintf(stderr, "block_index_flat: count %u too large (max 10M)\n", count);
-        munmap(data, file_size); return false;
+        munmap(data, file_size);
+        LOG_FAIL("block_index_flat",
+                 "block_index_flat: count %u too large (max 10M)", count);
     }
     if (count == 0) {
         /* An empty index is useless and would make entries[count-1] below an
          * out-of-bounds read (entries[-1]); reject so the caller re-derives. */
-        fprintf(stderr, "block_index_flat: empty index (count 0)\n");
-        munmap(data, file_size); return false;
+        munmap(data, file_size);
+        LOG_FAIL("block_index_flat", "block_index_flat: empty index (count 0)");
     }
 
     size_t expected = payload_off + 8 + (size_t)count * sizeof(struct block_index_flat);
     if (file_size < expected) {
-        fprintf(stderr, "block_index_flat: truncated — %zu bytes < %zu expected "
-                "(%u entries)\n", file_size, expected, count);
-        munmap(data, file_size); return false;
+        munmap(data, file_size);
+        LOG_FAIL("block_index_flat",
+                 "block_index_flat: truncated — %zu bytes < %zu expected "
+                 "(%u entries)", file_size, expected, count);
     }
 
     int64_t t0 = (int64_t)platform_time_wall_time_t();
@@ -325,9 +332,11 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
     block_map_reserve(&ms->map_block_index, count);
     struct block_index *arena = zcl_calloc(count, sizeof(struct block_index), "block_index arena");
     if (!arena) {
-        fprintf(stderr, "block_index_flat: calloc failed for %u entries "
-                "(%zu bytes)\n", count, (size_t)count * sizeof(struct block_index));
-        munmap(data, file_size); return false;
+        munmap(data, file_size);
+        LOG_FAIL("block_index_flat",
+                 "block_index_flat: calloc failed for %u entries "
+                 "(%zu bytes)", count,
+                 (size_t)count * sizeof(struct block_index));
     }
     memset(arena, 0, count * sizeof(struct block_index)); /* pre-fault */
 
@@ -412,8 +421,10 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
             else if (by_height && pindex->nHeight - 1 >= 0 &&
                      pindex->nHeight - 1 <= max_h) {
                 pindex->pprev = by_height[pindex->nHeight - 1]; /* fallback */
-                printf("WARNING: pprev for height %d resolved via height fallback "
-                       "(prev_hash not found in block_map)\n", pindex->nHeight);
+                LOG_WARN("block_index_flat",
+                         "WARNING: pprev for height %d resolved via height fallback "
+                         "(prev_hash not found in block_map)",
+                         pindex->nHeight);
                 /* Validation pack: a by-height fallback is exactly the
                  * ambiguity a label splice exploits — counted so it
                  * surfaces in zcl_state subsystem=validation_pack. */
@@ -456,8 +467,9 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
     munmap(data, file_size);
 
     int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
-    printf("Block index flat: loaded %u entries in %llds\n",
-           count, (long long)elapsed);
+    LOG_INFO("block_index_flat",
+             "Block index flat: loaded %u entries in %llds",
+             count, (long long)elapsed);
 
     return count > 0;
 }
@@ -475,14 +487,16 @@ void save_block_index_recent(struct node_db *ndb, struct main_state *ms)
     bool tx_open = false;
     int exec_rc = ar_exec_write_sql(ndb->db, "DELETE FROM block_index_cache");
     if (exec_rc != SQLITE_OK) {
-        fprintf(stderr, "boot-index: failed to clear block_index_cache: %s\n",
-                sqlite3_errmsg(ndb->db));
+        LOG_WARN("boot_index",
+                 "boot-index: failed to clear block_index_cache: %s",
+                 sqlite3_errmsg(ndb->db));
         return;
     }
     exec_rc = sqlite3_exec(ndb->db, "BEGIN", NULL, NULL, NULL);
     if (exec_rc != SQLITE_OK) {
-        fprintf(stderr, "boot-index: failed to begin block_index_cache save: %s\n",
-                sqlite3_errmsg(ndb->db));
+        LOG_WARN("boot_index",
+                 "boot-index: failed to begin block_index_cache save: %s",
+                 sqlite3_errmsg(ndb->db));
         return;
     }
     tx_open = true;
@@ -495,8 +509,9 @@ void save_block_index_recent(struct node_db *ndb, struct main_state *ms)
         "n_cached_branch_id,n_chain_tx) "
         "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         -1, &ins, NULL) != SQLITE_OK || !ins) {
-        fprintf(stderr, "boot-index: failed to prepare block_index_cache insert: %s\n",
-                sqlite3_errmsg(ndb->db));
+        LOG_WARN("boot_index",
+                 "boot-index: failed to prepare block_index_cache insert: %s",
+                 sqlite3_errmsg(ndb->db));
         sqlite3_exec(ndb->db, "ROLLBACK", NULL, NULL, NULL);
         return;
     }
@@ -541,15 +556,17 @@ void save_block_index_recent(struct node_db *ndb, struct main_state *ms)
     sqlite3_finalize(ins);
     ins = NULL;
     if (sqlite3_exec(ndb->db, "COMMIT", NULL, NULL, NULL) != SQLITE_OK) {
-        fprintf(stderr, "boot-index: failed to commit block_index_cache save: %s\n",
-                sqlite3_errmsg(ndb->db));
+        LOG_WARN("boot_index",
+                 "boot-index: failed to commit block_index_cache save: %s",
+                 sqlite3_errmsg(ndb->db));
         sqlite3_exec(ndb->db, "ROLLBACK", NULL, NULL, NULL);
         return;
     }
 
     int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
-    printf("Block index: cached %zu/%zu entries in SQLite (%llds)\n",
-           count, total, (long long)elapsed);
+    LOG_INFO("boot_index",
+             "Block index: cached %zu/%zu entries in SQLite (%llds)",
+             count, total, (long long)elapsed);
     return;
 
 fail:
@@ -577,8 +594,9 @@ bool load_block_index_sqlite(struct node_db *ndb, struct main_state *ms)
     if (cached_count < 1000) LOG_FAIL("block_index", "SQLite block_index_cache too small: %lld entries", (long long)cached_count);
 
     int64_t t0 = (int64_t)platform_time_wall_time_t();
-    printf("Loading block index from SQLite (%lld entries)...\n",
-           (long long)cached_count);
+    LOG_INFO("block_index",
+             "Loading block index from SQLite (%lld entries)...",
+             (long long)cached_count);
 
     sqlite3_stmt *sel = NULL;
     if (sqlite3_prepare_v2(ndb->db,
@@ -646,8 +664,9 @@ bool load_block_index_sqlite(struct node_db *ndb, struct main_state *ms)
     }
 
     int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
-    printf("Block index SQLite: loaded %zu entries in %llds\n",
-           loaded, (long long)elapsed);
+    LOG_INFO("block_index",
+             "Block index SQLite: loaded %zu entries in %llds",
+             loaded, (long long)elapsed);
 
     return loaded > 0;
 }
