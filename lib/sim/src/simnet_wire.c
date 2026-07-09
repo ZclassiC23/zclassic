@@ -451,6 +451,22 @@ bool simnet_wire_partition_peer(struct simnet_wire *wire, size_t peer_id,
         NULL, 0);
 }
 
+bool simnet_wire_set_link_bandwidth(struct simnet_wire *wire, size_t peer_id,
+                                    size_t down_cap, size_t up_cap)
+{
+    if (!wire || peer_id >= wire->peer_count)
+        LOG_FAIL("simnet.wire", "invalid bandwidth peer=%zu", peer_id);
+    struct wire_link *link = &wire->peers[peer_id].link;
+    link->down_cap = down_cap;
+    link->up_cap = up_cap;
+    /* Seed the running budget immediately so a cap set before the first
+     * tick binds that tick too (the per-tick refill in simnet_wire_tick
+     * keeps it topped up thereafter). */
+    link->down_tokens = down_cap;
+    link->up_tokens = up_cap;
+    return true;
+}
+
 bool simnet_wire_deliver_raw_now(struct simnet_wire *wire, size_t peer_id,
                                  const uint8_t *bytes, size_t len)
 {
@@ -1053,9 +1069,25 @@ static bool simnet_wire_idle(const struct simnet_wire *wire)
 {
     if (!wire || wire->queue_count > 0)
         return false;
-    if (wire->nut &&
-        (wire->nut->recv_msg_count > 0 || wire->nut->send_size > 0))
-        return false;
+    if (wire->nut) {
+        if (wire->nut->send_size > 0)
+            return false;
+        /* Only a COMPLETE queued message is real pending work: it will be
+         * drained by msg_process_messages() next tick (progress). An
+         * INCOMPLETE head-of-queue message with no inbound bytes left to
+         * finish it (the queue + every peer ring are checked below, so if
+         * we reach here none are available) is a quiescent state, not
+         * activity — msg_process_messages() gates on net_message_complete()
+         * and cannot advance it, and no further bytes will arrive. Treating
+         * such a partial as "busy" spins the run to max_ticks. The
+         * GARBAGE_AFTER_VERACK bad-handshake sub-case is exactly this: the
+         * peer completes its own handshake then emits a 4-byte fragment
+         * that lands as an incomplete 24-byte header the node harmlessly
+         * parks in recv_msgs[0] before going silent (seeds 0xf/0x69/0x8e). */
+        if (wire->nut->recv_msg_count > 0 &&
+            net_message_complete(&wire->nut->recv_msgs[0]))
+            return false;
+    }
     if (simnet_wire_scenario_partitions_pending(wire))
         return false;
     for (size_t i = 0; i < wire->peer_count; i++) {
@@ -1064,6 +1096,12 @@ static bool simnet_wire_idle(const struct simnet_wire *wire)
             return false;
         if (wire->peers[i].kind == SIMNET_WIRE_PEER_SLOWLORIS &&
             !wire->peers[i].adversary_done)
+            return false;
+        if (wire->peers[i].kind == SIMNET_WIRE_PEER_REPLAY &&
+            !wire->peers[i].replay_done)
+            return false;
+        if (wire->peers[i].kind == SIMNET_WIRE_PEER_REORDER &&
+            !wire->peers[i].reorder_done)
             return false;
         if ((wire->peers[i].kind == SIMNET_WIRE_PEER_INVALID_BLOCK ||
              wire->peers[i].kind == SIMNET_WIRE_PEER_INVALID_HEADER) &&
@@ -1083,6 +1121,14 @@ static bool simnet_wire_tick(struct simnet_wire *wire, bool *progress)
     if (!wire || !progress)
         LOG_FAIL("simnet.wire", "invalid tick args");
     *progress = false;
+
+    /* Refill each link's per-tick bandwidth budget. SIZE_MAX caps stay
+     * unbounded (unchanged behavior); a finite cap set via
+     * simnet_wire_set_link_bandwidth() bounds this tick's throughput. */
+    for (size_t i = 0; i < wire->peer_count; i++) {
+        wire->peers[i].link.down_tokens = wire->peers[i].link.down_cap;
+        wire->peers[i].link.up_tokens = wire->peers[i].link.up_cap;
+    }
 
     if (!simnet_wire_apply_scenario_partitions(wire, progress))
         return false;
@@ -1105,6 +1151,13 @@ static bool simnet_wire_tick(struct simnet_wire *wire, bool *progress)
             return false;
     }
     wire->ticks++;
+    /* Track the largest single-tick delivery INTO the NUT — the bandwidth
+     * monitor for capped links (a capped tick can deliver at most down_cap
+     * bytes). */
+    uint64_t delta = wire->delivered_to_nut_bytes - wire->last_delivered_to_nut;
+    if (delta > wire->max_deliver_to_nut_per_tick)
+        wire->max_deliver_to_nut_per_tick = delta;
+    wire->last_delivered_to_nut = wire->delivered_to_nut_bytes;
     return simnet_wire_monitor_after_tick(wire);
 }
 
@@ -1146,6 +1199,8 @@ struct simnet_wire *simnet_wire_create(size_t peer_count, uint64_t seed)
         peer->link.open = false;
         peer->link.down_tokens = SIZE_MAX;
         peer->link.up_tokens = SIZE_MAX;
+        peer->link.down_cap = SIZE_MAX;
+        peer->link.up_cap = SIZE_MAX;
         simnet_wire_init_peer_addr(&peer->addr, i, wire->params);
         if (!ring_init(&peer->link.to_nut, SIMNET_WIRE_DEFAULT_RING_CAP) ||
             !ring_init(&peer->link.to_peer, SIMNET_WIRE_DEFAULT_RING_CAP)) {
@@ -1186,6 +1241,7 @@ void simnet_wire_free(struct simnet_wire *wire)
             ring_free(&wire->peers[i].link.to_nut);
             ring_free(&wire->peers[i].link.to_peer);
             free(wire->peers[i].slowloris_frame);
+            free(wire->peers[i].replay_frame);
         }
         free(wire->peers);
     }
@@ -1304,6 +1360,7 @@ bool simnet_wire_get_stats(const struct simnet_wire *wire,
     out->ticks = wire->ticks;
     out->delivered_to_nut_bytes = wire->delivered_to_nut_bytes;
     out->delivered_to_peer_bytes = wire->delivered_to_peer_bytes;
+    out->max_deliver_to_nut_per_tick = wire->max_deliver_to_nut_per_tick;
     out->fingerprint = wire->fingerprint;
     out->rng_count = seed_tape_rng_count(wire->tape);
     out->checksum_fail_events = wire->events.checksum_fail;

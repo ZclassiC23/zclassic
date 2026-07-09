@@ -24,32 +24,22 @@
  *
  * `make wire-sweep SEEDS=200` is the short local smoke run.
  *
- * KNOWN FINDING (not fixed here — lib/sim/src/simnet_wire_peer.c is owned
- * by another lane, see the Step F assignment's file boundary): the
+ * KNOWN FINDING (FIXED — Step E, lib/sim/src/simnet_wire.c): the
  * BAD_HANDSHAKE archetype's GARBAGE_AFTER_VERACK sub-case
  * (SIMNET_WIRE_BAD_HANDSHAKE_GARBAGE_AFTER_VERACK,
- * wire_start_garbage_after_verack() in simnet_wire_peer.c) can hang for
- * certain seeds: reproduced standalone with
- * simnet_wire_start_bad_handshake_peer(wire, 0,
- * SIMNET_WIRE_BAD_HANDSHAKE_GARBAGE_AFTER_VERACK) at seeds 0xf, 0x69, 0x8e
- * — simnet_wire_run() exhausts WIRE_SWEEP_MAX_TICKS with
- * stats.nut_disconnected still false (never reaches idle), where most
- * other seeds for the same sub-case disconnect cleanly within 1-2 ticks.
- * The adversary completes its OWN outbound handshake (as "peer") before
- * sending 4 garbage bytes, so the NUT's own version+verack reply is
- * queued to peer slot 0's egress; for the hanging seeds the trailing
- * garbage bytes apparently don't fail net_message_read_header() outright
- * (no LOG_FAIL disconnect), and nothing ever drains that egress traffic
- * for a BAD_HANDSHAKE peer (unlike FLOOD/SLOWLORIS, which have an
- * ongoing per-tick pump), so simnet_wire_idle() never returns true. This
- * sweep works around the finding by using the case-pinned
- * simnet_wire_start_bad_handshake_peer() API restricted to the two
- * sub-cases proven not to hang (DATA_BEFORE_VERSION, VERACK_FIRST)
- * instead of the generic random-case entry point — see
- * wire_sweep_run_bad_handshake() below. Follow-up: the harness-owning
- * lane should decide whether GARBAGE_AFTER_VERACK needs an egress-drain
- * fix or a documented "this case's non-idle outcome is a disconnect
- * timeout, not a hang" contract.
+ * wire_start_garbage_after_verack() in simnet_wire_peer.c) used to hang for
+ * seeds 0xf, 0x69, 0x8e: the adversary completes its own outbound
+ * handshake then emits a 4-byte fragment that lands as an INCOMPLETE
+ * 24-byte message header the node harmlessly parks in recv_msgs[0].
+ * simnet_wire_idle() treated any recv_msg_count > 0 as "busy", so the run
+ * spun to WIRE_SWEEP_MAX_TICKS even though no further bytes would ever
+ * arrive to complete that header. The fix refines the idle predicate: only
+ * a COMPLETE queued message (one msg_process_messages() can actually
+ * drain) counts as pending work; an incomplete head-of-queue message with
+ * no inbound bytes left is a quiescent state. The sweep now exercises all
+ * three BAD_HANDSHAKE sub-cases (see wire_sweep_run_bad_handshake()); the
+ * GARBAGE_AFTER_VERACK case reaches idle cleanly with the node still
+ * connected (a valid "no halt, no crash" outcome — not a disconnect).
  */
 
 #include "chain/chainparams.h"
@@ -246,20 +236,21 @@ static void wire_sweep_run_malformed(uint64_t seed, const char *artifact_dir,
 }
 
 /* BAD_HANDSHAKE solo, same no-honest-peer shape as sw_run_bad_handshake.
- * Deliberately restricted to the two sub-cases proven not to hang
- * (DATA_BEFORE_VERSION, VERACK_FIRST) — see the KNOWN FINDING at the top
- * of this file for why GARBAGE_AFTER_VERACK is excluded. */
+ * Covers all three sub-cases including GARBAGE_AFTER_VERACK, which no longer
+ * hangs (the incomplete-recv-message idle fix in simnet_wire.c — see the
+ * KNOWN FINDING note at the top of this file). */
 static void wire_sweep_run_bad_handshake(uint64_t seed,
                                          const char *artifact_dir,
                                          struct wire_sweep_result *res)
 {
-    static const enum simnet_wire_bad_handshake_case safe_cases[2] = {
+    static const enum simnet_wire_bad_handshake_case cases[3] = {
         SIMNET_WIRE_BAD_HANDSHAKE_DATA_BEFORE_VERSION,
         SIMNET_WIRE_BAD_HANDSHAKE_VERACK_FIRST,
+        SIMNET_WIRE_BAD_HANDSHAKE_GARBAGE_AFTER_VERACK,
     };
     uint64_t rng_state = seed ^ 0xB4D0u;
     enum simnet_wire_bad_handshake_case c =
-        safe_cases[wire_sweep_splitmix64(&rng_state) % 2u];
+        cases[wire_sweep_splitmix64(&rng_state) % 3u];
 
     struct simnet_wire *wire = simnet_wire_create(1, seed);
     if (!wire) {
