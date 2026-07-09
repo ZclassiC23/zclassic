@@ -1208,6 +1208,7 @@ int main(int argc, char **argv)
     failures += test_simnet_duplicate_input();
     failures += test_simnet_value_inflation();
     failures += test_simnet_fee_range();
+    failures += test_simnet_empty_vin_vout();
     failures += test_simnet_sapling_activation();
     failures += test_connect_block_sapling_root();
     failures += test_connect_block_checkdatasig_sigops();
