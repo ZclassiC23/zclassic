@@ -136,6 +136,29 @@ static void sim_free_tx(struct transaction *tx)
     tx->vout = NULL;
 }
 
+/* get_anchor vtable hook for s->null_view (see simnet.h's
+ * sapling_anchor_history doc comment). Linear scan is fine — sim runs mint a
+ * handful of blocks, never a real chain's worth. Sprout is never queried by
+ * any sim caller today; report it as HISTORY_INCOMPLETE rather than silently
+ * accepting an un-registered Sprout anchor. */
+static enum coins_anchor_lookup_result sim_anchor_lookup(
+    void *self, enum coins_anchor_pool pool, const struct uint256 *root,
+    struct incremental_merkle_tree *tree_out)
+{
+    (void)tree_out;
+    struct simnet *s = self;
+    if (!s || pool != COINS_ANCHOR_SAPLING)
+        return COINS_ANCHOR_HISTORY_INCOMPLETE;
+    for (size_t i = 0; i < s->sapling_anchor_count; i++)
+        if (uint256_eq(&s->sapling_anchor_history[i], root))
+            return COINS_ANCHOR_FOUND;
+    return COINS_ANCHOR_MISSING;
+}
+
+static struct coins_view_vtable g_sim_anchor_vtable = {
+    .get_anchor = sim_anchor_lookup,
+};
+
 /* Assemble `txs[0..ntx)` into a block at `height`, drive it through the
  * REAL connect_block, and on success advance the in-RAM tip. Frees each
  * tx's vin/vout (and the block's vtx copy array) on every path — the caller
@@ -261,8 +284,30 @@ static bool sim_mint_block(struct simnet *s, struct transaction *txs,
                  height, vs.reject_reason);
 
     /* Block accepted — commit the appended Sapling tree (Lane C). */
-    if (have_tree_after && s->sapling_tree)
+    if (have_tree_after && s->sapling_tree) {
         *s->sapling_tree = tree_after;
+
+        /* Register this block's resulting root as a recognized anchor for
+         * LATER blocks' spends (sim_anchor_lookup above). Without this, any
+         * cross-block Sapling spend (mint the note in block N, spend it in
+         * block N+1+) fails connect_block's
+         * coins_view_cache_have_joinsplit_requirements check — the sim's
+         * null_view has no other source of historical anchors. */
+        if (s->sapling_anchor_count == s->sapling_anchor_cap) {
+            size_t new_cap = s->sapling_anchor_cap ? s->sapling_anchor_cap * 2 : 4;
+            struct uint256 *grown = zcl_realloc(s->sapling_anchor_history,
+                                                new_cap * sizeof(*grown),
+                                                "simnet_sapling_anchor_history");
+            if (!grown)
+                LOG_FAIL("simnet",
+                         "OOM growing sapling anchor history to %zu entries",
+                         new_cap);
+            s->sapling_anchor_history = grown;
+            s->sapling_anchor_cap = new_cap;
+        }
+        incremental_tree_root(s->sapling_tree,
+                              &s->sapling_anchor_history[s->sapling_anchor_count++]);
+    }
 
     /* Advance the tip in RAM. tip.phashBlock keeps pointing at
      * tip.hashBlock (a fixed address), so links stay valid across mints. */
@@ -328,6 +373,8 @@ bool simnet_init(struct simnet *s)
     /* The live UTXO set: an empty coins cache over a zeroed backing view.
      * Its best block is the synthetic base tip (view/prevblock invariant). */
     memset(&s->null_view, 0, sizeof(s->null_view));
+    s->null_view.vtable = &g_sim_anchor_vtable;
+    s->null_view.impl = s;
     coins_view_cache_init(&s->view, &s->null_view);
     coins_view_cache_set_best_block(&s->view, &s->tip.hashBlock);
 
@@ -347,6 +394,10 @@ void simnet_free(struct simnet *s)
     s->mempool_cap = 0;
     free(s->sapling_tree);            /* Lane C: owned note-commitment tree */
     s->sapling_tree = NULL;
+    free(s->sapling_anchor_history);  /* Lane C: owned anchor registry */
+    s->sapling_anchor_history = NULL;
+    s->sapling_anchor_count = 0;
+    s->sapling_anchor_cap = 0;
     coins_view_cache_free(&s->view);
     s->initialized = false;
 }

@@ -91,6 +91,19 @@ struct simnet {
                                          * false) so Sapling Groth16 spend/output
                                          * proofs + binding sig are verified
                                          * through the production consensus path. */
+
+    /* A minimal in-memory registry of every Sapling tree root this sim has
+     * committed via a successful mint (simnet.c:sim_mint_block). Wired as
+     * null_view's get_anchor vtable hook so connect_block's cross-block
+     * "JoinSplit anchor requirements" check
+     * (coins_view_cache_have_joinsplit_requirements) can resolve a LATER
+     * block's spend anchor to an EARLIER block's committed root — a RAM-only,
+     * this-sim-only analog of the real node's durable anchor_kv
+     * (app/jobs/utxo_apply_anchors.c). Grows by doubling; freed in
+     * simnet_free. NULL/0 until the first Sapling-tree mint commits a root. */
+    struct uint256 *sapling_anchor_history;
+    size_t sapling_anchor_count;
+    size_t sapling_anchor_cap;
 };
 
 /* Initialize a fresh, empty single-node harness. Places the synthetic base

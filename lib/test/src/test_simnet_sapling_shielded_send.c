@@ -66,8 +66,10 @@
 #include "sapling/zip32.h"
 #include "sapling/fr.h"
 #include "sapling/groth16_prover.h"
+#include "sapling/sapling_circuit.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "sapling/note_encryption.h"
+#include "support/cleanse.h"
 
 #include "primitives/transaction.h"
 #include "validation/sighash.h"
@@ -95,17 +97,127 @@
 #include <stdlib.h>
 #include <string.h>
 
-/* Native C23 prover FFI (declared inline in the prover TUs; re-declared here
- * exactly as the wallet build paths do). */
-extern void *zclassic_sapling_proving_ctx_init(void);
-extern void  zclassic_sapling_proving_ctx_free(void *);
-extern bool  zclassic_sapling_output_proof(
-    void *ctx, const unsigned char *esk, const unsigned char *diversifier,
-    const unsigned char *pk_d, const unsigned char *rcm, const uint64_t value,
-    unsigned char *cv, unsigned char *zkproof);
-extern bool  zclassic_sapling_binding_sig(
-    const void *ctx, int64_t value_balance,
-    const unsigned char *sighash, unsigned char *result);
+/* ── Direct C23 circuit prover (test-local) ──────────────────────────────
+ * This test pins the in-tree pure-C23 Sapling/Groth16 prover and its
+ * ZCL_TESTING RNG hooks, NOT the wallet-facing proving facade
+ * (zclassic_sapling_*  in lib/sapling/src/sapling_prover_c23.c). As of
+ * commit f70b368dd that facade delegates wallet-side proving to the
+ * vendored librustzcash: correct and consensus-verified, but it draws its
+ * own internal randomness and ignores sapling_set_test_rng_hook /
+ * groth16_set_test_rng_hook / redjubjub_set_test_rng_hook entirely, which
+ * breaks every determinism assertion this test makes, and it is
+ * fail-closed on a self-test the sim doesn't run. Routing through
+ * sapling_build_output_description() (existing production helper) and the
+ * direct_build_spend_description() helper below — both built on
+ * sapling_create_output_proof/sapling_create_spend_proof from
+ * sapling_circuit.h — keeps this test on the exact pure-C23 path the test
+ * banner documents, independent of which backend the wallet facade uses.
+ * The librustzcash facade has its own coverage (snark_kat,
+ * groth16_selfverify, shielded_payment_gate). */
+
+/* Build one Sapling SpendDescription with the pure C23 spend circuit
+ * prover — the direct-circuit analog of sapling_build_output_description(),
+ * mirroring the pre-f70b368dd zclassic_sapling_spend_proof implementation
+ * but self-contained (no opaque ctx: returns rcv_out for the caller to fold
+ * into the binding-sig bsk accumulator itself, same convention
+ * sapling_build_output_description already uses for outputs). */
+static bool direct_build_spend_description(
+    const uint8_t ask[32], const uint8_t nsk[32],
+    const uint8_t diversifier[11], const uint8_t pk_d[32],
+    const uint8_t rcm[32], uint64_t value, uint64_t position,
+    const uint8_t anchor[32],
+    const uint8_t *witness_path, size_t witness_len,
+    uint8_t sd_cv[32], uint8_t sd_nullifier[32],
+    uint8_t sd_rk[32], uint8_t sd_zkproof[192],
+    uint8_t ar_out[32], uint8_t rcv_out[32])
+{
+    uint8_t rcv[32];
+    bool ok = false;
+
+    if (!sapling_generate_r(ar_out) || !sapling_generate_r(rcv))
+        goto cleanup;
+
+    uint8_t ak[32], nk[32];
+    sapling_ask_to_ak(ask, ak);
+    sapling_nsk_to_nk(nsk, nk);
+
+    if (!sapling_value_commit(value, rcv, sd_cv) ||
+        !sapling_compute_rk(ak, ar_out, sd_rk) ||
+        !sapling_compute_nf(diversifier, pk_d, value, rcm, ak, nk,
+                            position, sd_nullifier)) {
+        memory_cleanse(ak, sizeof(ak));
+        memory_cleanse(nk, sizeof(nk));
+        goto cleanup;
+    }
+
+    {
+        struct sapling_spend_witness wit;
+        memset(&wit, 0, sizeof(wit));
+        memcpy(wit.ak, ak, 32);
+        memcpy(wit.nsk, nsk, 32);
+        memcpy(wit.ar, ar_out, 32);
+        wit.value = value;
+        memcpy(wit.diversifier, diversifier, 11);
+        memcpy(wit.pk_d, pk_d, 32);
+        memcpy(wit.rcm, rcm, 32);
+        memcpy(wit.rcv, rcv, 32);
+        memory_cleanse(ak, sizeof(ak));
+        memory_cleanse(nk, sizeof(nk));
+
+        if (!sapling_spend_parse_witness(witness_path, witness_len, &wit)) {
+            memory_cleanse(&wit, sizeof(wit));
+            goto cleanup;
+        }
+
+        struct sapling_spend_inputs pub;
+        memcpy(pub.rk, sd_rk, 32);
+        memcpy(pub.cv, sd_cv, 32);
+        memcpy(pub.anchor, anchor, 32);
+        memcpy(pub.nullifier, sd_nullifier, 32);
+
+        size_t pk_len = 0;
+        const uint8_t *pk_data = sapling_get_spend_pk(&pk_len);
+        ok = pk_data && pk_len > 0 &&
+             sapling_create_spend_proof(pk_data, pk_len, &wit, &pub, sd_zkproof);
+        memory_cleanse(&wit, sizeof(wit));
+    }
+
+cleanup:
+    if (ok && rcv_out)
+        memcpy(rcv_out, rcv, 32);
+    memory_cleanse(rcv, sizeof(rcv));
+    return ok;
+}
+
+/* Fold one description's rcv into the binding-signature secret key bsk
+ * (bsk = sum(rcv_spends) - sum(rcv_outputs), Zcash protocol spec §4.13) and
+ * produce the binding signature via the production
+ * sapling_create_binding_sig(). `is_output` negates rcv before folding. */
+static bool direct_binding_sig(const uint8_t *rcv_list[], const bool is_output[],
+                               size_t n, const uint8_t sighash[32],
+                               uint8_t binding_sig_out[64])
+{
+    struct fs bsk;
+    fs_zero(&bsk);
+    for (size_t i = 0; i < n; i++) {
+        struct fs term;
+        if (!fs_from_bytes(&term, rcv_list[i]))
+            return false;
+        if (is_output[i]) {
+            struct fs neg;
+            fs_neg(&neg, &term);
+            fs_add(&bsk, &bsk, &neg);
+        } else {
+            fs_add(&bsk, &bsk, &term);
+        }
+    }
+    uint8_t bsk_bytes[32];
+    fs_to_bytes(bsk_bytes, &bsk);
+    bool ok = sapling_create_binding_sig(bsk_bytes, sighash, binding_sig_out);
+    memory_cleanse(bsk_bytes, sizeof(bsk_bytes));
+    memory_cleanse(&bsk, sizeof(bsk));
+    return ok;
+}
 
 #define SS_CHECK(name, expr) do {                    \
     printf("  %s... ", (name));                      \
@@ -213,12 +325,10 @@ static bool prover_verifier_roundtrip_ok(void)
     }
     if (!have) return false;
 
-    void *pctx = zclassic_sapling_proving_ctx_init();
-    if (!pctx) return false;
-    uint8_t cv[32], cm[32], epk[32], enc[580], out[80], proof[192];
-    bool built = sapling_build_output_with_ctx(pctx, ovk, d, pk_d, 12345, NULL,
-                                               cv, cm, epk, enc, out, proof);
-    zclassic_sapling_proving_ctx_free(pctx);
+    uint8_t cv[32], cm[32], epk[32], enc[580], out[80], proof[192], rcv[32];
+    bool built = sapling_build_output_description(ovk, d, pk_d, 12345, NULL,
+                                                  cv, cm, epk, enc, out, proof,
+                                                  rcv);
     if (!built) return false;
 
     struct sapling_verification_ctx vctx;
@@ -348,15 +458,16 @@ static int build_and_verify(uint64_t seed, bool verify_ok,
     int mature_h = SAPLING_H + COINBASE_MATURITY;   /* t->z mines at +1 = 201 */
     int tz_height = mature_h + 1;
 
+    uint8_t tz_out_rcv[32];
+    bool tz_out_built = false;
     if (tz.v_shielded_output) {
-        void *pctx = zclassic_sapling_proving_ctx_init();
-        SS_CHECK("t->z proving ctx", pctx != NULL);
         struct output_description *od = &tz.v_shielded_output[0];
-        SS_CHECK("build t->z output (real prover + memo)",
-                 pctx && sapling_build_output_with_ctx(
-                     pctx, id.ovk, id.d, id.pk_d, (uint64_t)SHIELDED_VALUE,
+        tz_out_built = sapling_build_output_description(
+                     id.ovk, id.d, id.pk_d, (uint64_t)SHIELDED_VALUE,
                      memo, od->cv.data, od->cm.data, od->ephemeral_key.data,
-                     od->enc_ciphertext, od->out_ciphertext, od->zkproof));
+                     od->enc_ciphertext, od->out_ciphertext, od->zkproof,
+                     tz_out_rcv);
+        SS_CHECK("build t->z output (real prover + memo)", tz_out_built);
 
         /* Recipient-side decryption recovers (value, rcm, memo) — the honest
          * receive path. This also gives us rcm to spend the note later. */
@@ -388,10 +499,12 @@ static int build_and_verify(uint64_t seed, bool verify_ok,
         SS_CHECK("t->z binding sighash",
                  signature_hash(&empty, &tz, NOT_AN_INPUT, ht, 0, branch,
                                 &txd, &sighash));
+        const uint8_t *rcv_list[1] = { tz_out_rcv };
+        const bool is_output[1] = { true };
         SS_CHECK("t->z binding sig",
-                 pctx && zclassic_sapling_binding_sig(pctx, tz.value_balance,
-                                                      sighash.data, tz.binding_sig));
-        if (pctx) zclassic_sapling_proving_ctx_free(pctx);
+                 tz_out_built && direct_binding_sig(rcv_list, is_output, 1,
+                                                    sighash.data,
+                                                    tz.binding_sig));
     } else {
         memset(note_rcm, 0, 32);
     }
@@ -452,31 +565,30 @@ static int build_and_verify(uint64_t seed, bool verify_ok,
         struct spend_description  *sd = &zz.v_shielded_spend[0];
         struct output_description *od = &zz.v_shielded_output[0];
 
-        void *pctx = zclassic_sapling_proving_ctx_init();
-        SS_CHECK("z->z proving ctx", pctx != NULL);
-
         uint8_t path[1 + 32 * 33];
         size_t path_len = 0;
         SS_CHECK("extract Merkle path from witness",
                  incremental_witness_merkle_path(&w, path, &path_len));
         uint64_t position = simnet_sapling_tree_size(&s) - 1;   /* == 0 */
 
-        uint8_t ar[32];
-        SS_CHECK("build z->z spend proof (real spend prover)",
-                 pctx && sapling_build_spend_with_ctx(
-                     pctx, id.ask, id.nsk, id.d, id.pk_d, note_rcm,
+        uint8_t ar[32], spend_rcv[32];
+        bool spend_built = direct_build_spend_description(
+                     id.ask, id.nsk, id.d, id.pk_d, note_rcm,
                      (uint64_t)SHIELDED_VALUE, position, anchor.data,
                      path, path_len,
                      sd->cv.data, sd->nullifier.data, sd->rk.data,
-                     sd->zkproof, ar));
+                     sd->zkproof, ar, spend_rcv);
+        SS_CHECK("build z->z spend proof (real spend prover)", spend_built);
         memcpy(sd->anchor.data, anchor.data, 32);
         memcpy(spend_nf, sd->nullifier.data, 32);
 
-        SS_CHECK("build z->z output (real prover)",
-                 pctx && sapling_build_output_with_ctx(
-                     pctx, id.ovk, id.d, id.pk_d, (uint64_t)SHIELDED_VALUE,
+        uint8_t out_rcv[32];
+        bool out_built = sapling_build_output_description(
+                     id.ovk, id.d, id.pk_d, (uint64_t)SHIELDED_VALUE,
                      NULL, od->cv.data, od->cm.data, od->ephemeral_key.data,
-                     od->enc_ciphertext, od->out_ciphertext, od->zkproof));
+                     od->enc_ciphertext, od->out_ciphertext, od->zkproof,
+                     out_rcv);
+        SS_CHECK("build z->z output (real prover)", out_built);
 
         /* Sapling sighash, spend_auth_sig (rsk = ask + ar in Fs), binding sig. */
         transaction_compute_hash(&zz);
@@ -498,10 +610,12 @@ static int build_and_verify(uint64_t seed, bool verify_ok,
         fs_to_bytes(rsk, &rsk_fs);
         SS_CHECK("z->z spend_auth_sig",
                  redjubjub_sign(rsk, sighash.data, 32, sd->spend_auth_sig, 5));
+        const uint8_t *rcv_list[2] = { spend_rcv, out_rcv };
+        const bool is_output[2] = { false, true };
         SS_CHECK("z->z binding sig",
-                 pctx && zclassic_sapling_binding_sig(pctx, zz.value_balance,
-                                                      sighash.data, zz.binding_sig));
-        if (pctx) zclassic_sapling_proving_ctx_free(pctx);
+                 spend_built && out_built &&
+                 direct_binding_sig(rcv_list, is_output, 2, sighash.data,
+                                    zz.binding_sig));
 
         /* Capture the z->z components for the caller's per-field determinism
          * localization. */
@@ -605,6 +719,7 @@ static void groth16_hook_isolation(int *failures)
     if (!have) return;
 
     uint8_t cv[3][32], cm[3][32], epk[3][32], enc[3][580], out[3][80], pr[3][192];
+    uint8_t rcv[3][32];
     bool ok[3] = { false, false, false };
 
     /* Runs 0 and 1: BOTH hooks seeded from SEED -> proofs must match. */
@@ -613,12 +728,8 @@ static void groth16_hook_isolation(int *failures)
         seed_tape_install(t);
         sapling_set_test_rng_hook(fill_from_rng_u64, NULL);
         groth16_set_test_rng_hook(fill_from_rng_u64, NULL);
-        void *pctx = zclassic_sapling_proving_ctx_init();
-        if (pctx) {
-            ok[r] = sapling_build_output_with_ctx(pctx, ovk, to_d, to_pk_d,
-                        VALUE, NULL, cv[r], cm[r], epk[r], enc[r], out[r], pr[r]);
-            zclassic_sapling_proving_ctx_free(pctx);
-        }
+        ok[r] = sapling_build_output_description(ovk, to_d, to_pk_d, VALUE,
+                    NULL, cv[r], cm[r], epk[r], enc[r], out[r], pr[r], rcv[r]);
         groth16_set_test_rng_hook(NULL, NULL);
         sapling_set_test_rng_hook(NULL, NULL);
         seed_tape_uninstall();
@@ -632,12 +743,8 @@ static void groth16_hook_isolation(int *failures)
         seed_tape_install(t);
         sapling_set_test_rng_hook(fill_from_rng_u64, NULL);
         /* groth16 hook intentionally left NULL */
-        void *pctx = zclassic_sapling_proving_ctx_init();
-        if (pctx) {
-            ok[2] = sapling_build_output_with_ctx(pctx, ovk, to_d, to_pk_d,
-                        VALUE, NULL, cv[2], cm[2], epk[2], enc[2], out[2], pr[2]);
-            zclassic_sapling_proving_ctx_free(pctx);
-        }
+        ok[2] = sapling_build_output_description(ovk, to_d, to_pk_d, VALUE,
+                    NULL, cv[2], cm[2], epk[2], enc[2], out[2], pr[2], rcv[2]);
         sapling_set_test_rng_hook(NULL, NULL);
         seed_tape_uninstall();
         seed_tape_close(t);
