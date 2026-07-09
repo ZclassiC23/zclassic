@@ -518,6 +518,7 @@ Confirm the target before acting.
 | `make agent-loop` | Default one-command AI/operator loop. Runs `fast-ci`; set `ZCL_AGENT_LOOP_BIN=1` to also build `build/bin/zclassic23-dev`, or `ZCL_AGENT_LOOP_DEPLOY=dev` to run the fast dev-lane hot-swap. |
 | `make fast-ci` | Cache-aware edit loop: `lint-fast`, changed compile gate, focused mapped tests, and native live probe. Use `ZCL_FAST_TESTS=...`, `ZCL_FAST_LIVE=0`, `ZCL_FAST_CACHE=0`, `ZCL_FAST_CACHE_RESET=1` as needed. |
 | `make test` | Runs `test_parallel` (isolated per-process runner). **Use this**, not test_zcl. Green = regression floor, NOT a liveness proof. |
+| `make t ONLY=simnet` | Runs the deterministic simulator harness and the current action coverage matrix documented in `docs/SIMULATOR.md`. |
 | `make test-full` | Runs the `test_zcl` monolith (sequential). |
 | `make lint` | All 45+ `check-*` gates. Must pass before tests. HARD gates fail the build; RATCHET gates compare to baselines. |
 | `make ci` | lint + bench-regress + build + `test_parallel` (retry-once for flakes) + symbol-floor. Pre-push hook runs this. |
