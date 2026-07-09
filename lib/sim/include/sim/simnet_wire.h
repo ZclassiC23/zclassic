@@ -10,6 +10,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "sim/simnet_byzantine.h"
+#include "util/blocker.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -88,6 +91,29 @@ struct simnet_wire_stats {
     bool monitor_failed;
 };
 
+struct simnet_wire_byzantine_observation {
+    enum simnet_byzantine_class kind;
+    enum simnet_byzantine_tier tier;
+    bool injected;
+    bool rejected;
+    bool expected_reason_observed;
+    bool expected_reject_path_observed;
+    bool expected_blocker_observed;
+    char reject_reason[64];
+    char blocker_id[64];
+    enum blocker_class expected_blocker_class;
+    enum blocker_class observed_blocker_class;
+    bool tip_unchanged;
+    bool coins_unchanged;
+    bool peer_misbehaved;
+    bool peer_banned;
+    bool peer_disconnected;
+    bool honest_after_accepted;
+    int tip_before;
+    int tip_after;
+    int honest_tip_after;
+};
+
 struct simnet_wire *simnet_wire_create(size_t peer_count, uint64_t seed);
 void simnet_wire_free(struct simnet_wire *wire);
 
@@ -102,6 +128,12 @@ bool simnet_wire_start_malformed_peer(
 bool simnet_wire_start_bad_handshake_peer(
     struct simnet_wire *wire, size_t peer_id,
     enum simnet_wire_bad_handshake_case handshake_case);
+bool simnet_wire_start_invalid_block_peer(
+    struct simnet_wire *wire, size_t peer_id,
+    enum simnet_byzantine_class kind);
+bool simnet_wire_start_invalid_header_peer(
+    struct simnet_wire *wire, size_t peer_id,
+    enum simnet_byzantine_class kind);
 struct simnet_wire *simnet_wire_create_scenario(
     const struct wire_scenario *scenario);
 bool simnet_wire_peer_send_ping(struct simnet_wire *wire, size_t peer_id,
@@ -125,6 +157,9 @@ bool simnet_wire_coins_digest(const struct simnet_wire *wire,
                               struct utxo_commitment *out);
 bool simnet_wire_save_capsule(const struct simnet_wire *wire,
                               const char *path);
+bool simnet_wire_get_byzantine_observation(
+    const struct simnet_wire *wire,
+    struct simnet_wire_byzantine_observation *out);
 
 #ifdef __cplusplus
 }

@@ -247,6 +247,37 @@ static bool wire_start_stream_adversary(struct simnet_wire *wire,
     return true;
 }
 
+static enum simnet_byzantine_class wire_select_invalid_block_kind(
+    const struct wire_peer *peer)
+{
+    static const enum simnet_byzantine_class kinds[] = {
+        SIMNET_BYZ_BAD_MERKLE,
+        SIMNET_BYZ_BAD_CB_AMOUNT,
+        SIMNET_BYZ_BIP30_DUP_TXID,
+        SIMNET_BYZ_MISSING_SPEND,
+        SIMNET_BYZ_IMMATURE_SPEND,
+        SIMNET_BYZ_NEGATIVE_OUTPUT,
+        SIMNET_BYZ_OVERFLOW_OUTPUT,
+        SIMNET_BYZ_OVERSIZE_VTX,
+    };
+    size_t idx = peer ? (size_t)(peer->child_seed %
+                                 (sizeof(kinds) / sizeof(kinds[0]))) : 0;
+    return kinds[idx];
+}
+
+static enum simnet_byzantine_class wire_select_invalid_header_kind(
+    const struct wire_peer *peer)
+{
+    static const enum simnet_byzantine_class kinds[] = {
+        SIMNET_BYZ_INVALID_POW,
+        SIMNET_BYZ_BAD_BITS,
+        SIMNET_BYZ_BAD_TIMESTAMP,
+    };
+    size_t idx = peer ? (size_t)(peer->child_seed %
+                                 (sizeof(kinds) / sizeof(kinds[0]))) : 0;
+    return kinds[idx];
+}
+
 static bool wire_mark_not_implemented(struct simnet_wire *wire,
                                       size_t peer_id,
                                       enum simnet_wire_peer_kind kind)
@@ -283,6 +314,30 @@ bool simnet_wire_start_bad_handshake_peer(
         wire, peer_id, SIMNET_WIRE_PEER_BAD_HANDSHAKE);
 }
 
+bool simnet_wire_start_invalid_block_peer(
+    struct simnet_wire *wire, size_t peer_id,
+    enum simnet_byzantine_class kind)
+{
+    if (!wire || peer_id >= wire->peer_count)
+        LOG_FAIL("simnet.wire.peer", "invalid byz block peer=%zu",
+                 peer_id);
+    wire->peers[peer_id].kind = SIMNET_WIRE_PEER_INVALID_BLOCK;
+    return simnet_wire_byzantine_start(
+        wire, peer_id, kind, SIMNET_BYZ_TIER_CONNECT_BLOCK);
+}
+
+bool simnet_wire_start_invalid_header_peer(
+    struct simnet_wire *wire, size_t peer_id,
+    enum simnet_byzantine_class kind)
+{
+    if (!wire || peer_id >= wire->peer_count)
+        LOG_FAIL("simnet.wire.peer", "invalid byz header peer=%zu",
+                 peer_id);
+    wire->peers[peer_id].kind = SIMNET_WIRE_PEER_INVALID_HEADER;
+    return simnet_wire_byzantine_start(
+        wire, peer_id, kind, SIMNET_BYZ_TIER_HEADER_ADMISSION);
+}
+
 bool simnet_wire_start_peer_kind(struct simnet_wire *wire, size_t peer_id,
                                  enum simnet_wire_peer_kind kind)
 {
@@ -300,6 +355,12 @@ bool simnet_wire_start_peer_kind(struct simnet_wire *wire, size_t peer_id,
     if (kind == SIMNET_WIRE_PEER_FLOOD ||
         kind == SIMNET_WIRE_PEER_SLOWLORIS)
         return wire_start_stream_adversary(wire, peer_id, kind);
+    if (kind == SIMNET_WIRE_PEER_INVALID_BLOCK)
+        return simnet_wire_start_invalid_block_peer(
+            wire, peer_id, wire_select_invalid_block_kind(peer));
+    if (kind == SIMNET_WIRE_PEER_INVALID_HEADER)
+        return simnet_wire_start_invalid_header_peer(
+            wire, peer_id, wire_select_invalid_header_kind(peer));
     return wire_mark_not_implemented(wire, peer_id, kind);
 }
 
@@ -439,6 +500,9 @@ bool simnet_wire_peer_tick(struct simnet_wire *wire, size_t peer_id,
         return wire_tick_flood(wire, peer_id, progress);
     if (peer->kind == SIMNET_WIRE_PEER_SLOWLORIS)
         return wire_tick_slowloris(wire, peer_id, progress);
+    if (peer->kind == SIMNET_WIRE_PEER_INVALID_BLOCK ||
+        peer->kind == SIMNET_WIRE_PEER_INVALID_HEADER)
+        return simnet_wire_byzantine_tick(wire, peer_id, progress);
     return true;
 }
 

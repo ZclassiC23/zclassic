@@ -225,6 +225,11 @@ static void simnet_wire_event_observer(enum event_type type, uint32_t peer_id,
         wire->events.backpressure_reject++;
     else if (type == EV_PEER_BANNED)
         wire->events.peer_banned++;
+    else if (type == EV_BLOCK_REJECTED)
+        wire->events.block_rejected++;
+    else if (type == EV_HEADERS_REJECTED)
+        wire->events.headers_rejected++;
+    simnet_wire_byzantine_observe_event(wire, type, payload, payload_len);
 }
 
 static bool simnet_wire_install_event_observers(struct simnet_wire *wire)
@@ -239,7 +244,11 @@ static bool simnet_wire_install_event_observers(struct simnet_wire *wire)
                       wire) &&
         event_observe(EV_BACKPRESSURE_REJECT, simnet_wire_event_observer,
                       wire) &&
-        event_observe(EV_PEER_BANNED, simnet_wire_event_observer, wire);
+        event_observe(EV_PEER_BANNED, simnet_wire_event_observer, wire) &&
+        event_observe(EV_BLOCK_REJECTED, simnet_wire_event_observer,
+                      wire) &&
+        event_observe(EV_HEADERS_REJECTED, simnet_wire_event_observer,
+                      wire);
     if (!ok)
         LOG_FAIL("simnet.wire", "failed to install event observers");
     return true;
@@ -251,6 +260,8 @@ static void simnet_wire_clear_event_observers(void)
     event_clear_observers(EV_PEER_MISBEHAVE);
     event_clear_observers(EV_BACKPRESSURE_REJECT);
     event_clear_observers(EV_PEER_BANNED);
+    event_clear_observers(EV_BLOCK_REJECTED);
+    event_clear_observers(EV_HEADERS_REJECTED);
 }
 
 static bool simnet_wire_install_send_sentinel(struct simnet_wire *wire)
@@ -307,7 +318,8 @@ static bool simnet_wire_init_runtime(struct simnet_wire *wire, uint64_t seed)
     wire->mp.params = wire->params;
     wire->mp.datadir = ".";
     wire->mp.net_mgr = &wire->nm;
-    wire->mp.block_submit = simnet_wire_stub_submit_block;
+    wire->mp.block_submit = simnet_wire_byzantine_submit_block;
+    wire->mp.block_submit_ctx = wire;
     wire->mp.compact_block_submit = simnet_wire_stub_submit_block;
 
     struct net_address addr;
@@ -916,6 +928,9 @@ static bool simnet_wire_monitor_blockers(struct simnet_wire *wire)
     for (int i = 0; i < n; i++) {
         if (snaps[i].class != (int)BLOCKER_PERMANENT)
             continue;
+        if (simnet_wire_byzantine_expected_blocker(
+                wire, snaps[i].id, snaps[i].class))
+            continue;
         wire->monitor.no_unexpected_permanent_blocker = false;
         simnet_wire_mark_monitor_failed(wire,
                                         "unexpected permanent blocker");
@@ -967,6 +982,7 @@ bool simnet_wire_monitor_after_tick(struct simnet_wire *wire)
     if (!wire)
         LOG_FAIL("simnet.wire", "NULL monitor tick");
     simnet_wire_monitor_track_memory(wire);
+    simnet_wire_byzantine_after_tick(wire);
     return simnet_wire_monitor_blockers(wire) &&
            simnet_wire_monitor_consensus(wire) &&
            simnet_wire_monitor_ban_expectations(wire) &&
@@ -1092,6 +1108,7 @@ void simnet_wire_free(struct simnet_wire *wire)
     simnet_wire_clear_event_observers();
     if (wire->nut)
         p2p_node_free(wire->nut);
+    simnet_wire_byzantine_free(wire);
     if (wire->net_ready)
         net_manager_free(&wire->nm);
     if (wire->coins_ready)
@@ -1255,4 +1272,11 @@ bool simnet_wire_get_stats(const struct simnet_wire *wire,
         out->pong_received = wire->peers[0].saw_nut_pong;
     }
     return true;
+}
+
+bool simnet_wire_get_byzantine_observation(
+    const struct simnet_wire *wire,
+    struct simnet_wire_byzantine_observation *out)
+{
+    return simnet_wire_byzantine_get_observation(wire, out);
 }
