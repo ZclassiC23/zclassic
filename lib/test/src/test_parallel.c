@@ -176,7 +176,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(chain_tip_watchdog_bounded_restart) X(blocker) X(service_state) \
     X(service_state_driver) \
     X(storage_coins_utxo) \
-    X(clock) X(rng) X(seed_tape) X(postmortem) X(simnet) X(simnet_cluster) X(simnet_wire) X(simnet_byzantine) X(simnet_txkit) X(simnet_doublespend) X(simnet_chained_tx) X(simnet_block_sigops) X(simnet_duplicate_input) X(simnet_value_inflation) X(simnet_fee_range) X(simnet_empty_vin_vout) X(simnet_sapling_activation) X(util_signal_handler) X(chaos_harness) X(stage) X(stage_anchor) X(mailbox) X(mailbox_adoption) \
+    X(clock) X(rng) X(seed_tape) X(postmortem) X(simnet) X(simnet_cluster) X(simnet_wire) X(simnet_byzantine) X(simnet_txkit) X(simnet_doublespend) X(simnet_chained_tx) X(simnet_block_sigops) X(simnet_duplicate_input) X(simnet_value_inflation) X(simnet_fee_range) X(simnet_empty_vin_vout) X(simnet_input_value_range) X(simnet_sapling_activation) X(util_signal_handler) X(chaos_harness) X(stage) X(stage_anchor) X(mailbox) X(mailbox_adoption) \
     X(projection) X(projection_adoption) X(progress_store) X(event_log) \
     X(mempool_projection) X(peers_projection) X(znam_projection) \
     X(wallet_projection) X(small_projections) \
