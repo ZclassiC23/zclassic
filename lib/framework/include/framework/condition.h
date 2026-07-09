@@ -133,6 +133,13 @@ int condition_engine_get_active_count(void);
  * max-attempt exhaustion and age-budget pages whose attempts remain below max. */
 int condition_engine_get_unresolved_count(void);
 
+/* Same predicate, scoped to COND_CRITICAL severity. Use this (not the
+ * unscoped count above) to gate a broad/heavy remedy — a WARN-severity
+ * condition may legitimately stay "unresolved" for a long time under its own
+ * bounded, self-contained cooldown (e.g. an external peer/bandwidth fault)
+ * without that ever meaning "run the chain-recovery ladder". */
+int condition_engine_get_unresolved_critical_count(void);
+
 /* Re-baseline the engine's wall-keyed cadence anchors (last_poll/last_remedy)
  * to "now" for every registered condition. Called by the clock_skew_reconcile
  * remedy after a wall-clock STEP so a backward jump cannot freeze backoff math

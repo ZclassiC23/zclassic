@@ -27,6 +27,7 @@
 
 #include "core/arith_uint256.h"
 #include "core/uint256.h"
+#include "framework/condition.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/stage_repair.h"
 #include "services/sticky_escalator.h"
@@ -425,6 +426,27 @@ static void teardown_fixture(struct se_fixture *fx)
     test_cleanup_tmpdir(fx->dir);
 }
 
+/* ── T7 fixture: a synthetic never-clearing condition ────────────────────
+ * detect() always fires, witness() never clears — the shape of a condition
+ * that stays "active" forever under its own remedy/cooldown schedule
+ * (e.g. download_queue_starved), used to prove the belt-and-suspenders
+ * auto-arm severity gate below. */
+static bool se_t7_detect(void)
+{
+    return true;
+}
+
+static enum condition_remedy_result se_t7_remedy(void)
+{
+    return COND_REMEDY_OK;
+}
+
+static bool se_t7_witness(int64_t target_at_detect)
+{
+    (void)target_at_detect;
+    return false;
+}
+
 int test_sticky_escalator(void);
 int test_sticky_escalator(void)
 {
@@ -576,6 +598,190 @@ int test_sticky_escalator(void)
 
         sticky_escalator_set_datadir(NULL);
         teardown_fixture(&fx);
+    }
+
+    /* T4 — episode clears via tip progress with a PENDING (non-terminal)
+     * reindex marker whose anchor the tip has progressed PAST:
+     * withdraw_stale_reindex_request() (called from clear_episode) must
+     * remove it so it does not outlive its episode and force a needless
+     * reindex-chainstate rebuild on the next boot (live 2026-07-09: this
+     * exact residue blocked `make deploy-dev` with "pending crash-only
+     * auto-reindex request anchor=3175394" after the stall had already
+     * self-resolved). No progress-store fixture is needed: the cached H*
+     * (reducer_frontier_provable_tip_set) drives observe_tip(), so the clear
+     * fires on the very first drive call, before any rung dispatch. */
+    {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "sticky_escalator", "t4_withdraw");
+        sticky_escalator_test_reset();
+        reducer_frontier_provable_tip_reset();
+        reducer_frontier_provable_tip_set(1000);
+        sticky_escalator_set_datadir(dir);
+
+        SE_CHECK("T4: plant a pending (non-terminal) reindex request",
+                 boot_auto_reindex_request(dir, 900) == 1 &&
+                 boot_auto_reindex_pending(dir));
+
+        sticky_escalator_note_stall("test_t4_withdraw");
+        int64_t t4 = (int64_t)platform_time_wall_time_t();
+        /* tip_at_rung was stamped from the cached H*=1000 at arm time; inject
+         * a tip 2 past it (STICKY_PROGRESS_MARGIN) so THIS drive call clears
+         * the episode. */
+        SE_CHECK("T4: tip progress clears the episode",
+                 sticky_escalator_test_drive(1002, t4 + 1) ==
+                     STICKY_RUNG_RETRY &&
+                 !sticky_escalator_test_armed());
+        SE_CHECK("T4: stale reindex marker withdrawn (tip 1002 > anchor 900)",
+                 !boot_auto_reindex_pending(dir) &&
+                 !boot_auto_reindex_is_terminal(dir));
+
+        sticky_escalator_set_datadir(NULL);
+        sticky_escalator_test_reset();
+        reducer_frontier_provable_tip_reset();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* T5 — episode clears via tip progress, but the tip has NOT progressed
+     * past the pending marker's anchor: the marker must be left alone (the
+     * request may still describe a real anchor the next boot legitimately
+     * needs to consume). */
+    {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "sticky_escalator", "t5_keep");
+        sticky_escalator_test_reset();
+        reducer_frontier_provable_tip_reset();
+        reducer_frontier_provable_tip_set(1000);
+        sticky_escalator_set_datadir(dir);
+
+        SE_CHECK("T5: plant a pending reindex request ABOVE the clearing tip",
+                 boot_auto_reindex_request(dir, 1500) == 1 &&
+                 boot_auto_reindex_pending(dir));
+
+        sticky_escalator_note_stall("test_t5_keep");
+        int64_t t5 = (int64_t)platform_time_wall_time_t();
+        SE_CHECK("T5: tip progress still clears the episode (H* climbed)",
+                 sticky_escalator_test_drive(1002, t5 + 1) ==
+                     STICKY_RUNG_RETRY &&
+                 !sticky_escalator_test_armed());
+        SE_CHECK("T5: marker retained (tip 1002 has not passed anchor 1500)",
+                 boot_auto_reindex_pending(dir));
+
+        sticky_escalator_set_datadir(NULL);
+        sticky_escalator_test_reset();
+        reducer_frontier_provable_tip_reset();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* T6 — a TERMINAL marker (budget exhausted, operator already paged) must
+     * never be touched by episode clearing — only the operator or a fresh,
+     * strictly-higher-anchor episode may replace it (PRESERVE the
+     * cross-boot budget / terminal-state semantics documented on
+     * boot_auto_reindex_request / boot_auto_reindex_mark_terminal). */
+    {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "sticky_escalator", "t6_terminal");
+        sticky_escalator_test_reset();
+        reducer_frontier_provable_tip_reset();
+        reducer_frontier_provable_tip_set(1000);
+        sticky_escalator_set_datadir(dir);
+
+        SE_CHECK("T6: plant a TERMINAL reindex marker",
+                 boot_auto_reindex_mark_terminal(dir, 900) &&
+                 boot_auto_reindex_is_terminal(dir) &&
+                 !boot_auto_reindex_pending(dir));
+
+        sticky_escalator_note_stall("test_t6_terminal");
+        int64_t t6 = (int64_t)platform_time_wall_time_t();
+        SE_CHECK("T6: tip progress clears the episode",
+                 sticky_escalator_test_drive(1002, t6 + 1) ==
+                     STICKY_RUNG_RETRY &&
+                 !sticky_escalator_test_armed());
+        SE_CHECK("T6: terminal marker left untouched",
+                 boot_auto_reindex_is_terminal(dir));
+
+        sticky_escalator_set_datadir(NULL);
+        sticky_escalator_test_reset();
+        reducer_frontier_provable_tip_reset();
+        test_cleanup_tmpdir(dir);
+    }
+
+    /* T7 — belt-and-suspenders auto-arm (apply_drive's own
+     * condition_engine_get_unresolved_critical_count() check, reached with NO
+     * explicit sticky_escalator_note_stall) must only respond to an
+     * unresolved CRITICAL condition, never a WARN-severity one that owns its
+     * own bounded remedy/cooldown. Live 2026-07-09: download_queue_starved
+     * (COND_WARN) stayed active 8+ hours on a healthy, tip-synced node and
+     * kept silently re-arming this exact path every few minutes. */
+    {
+        static struct condition c_t7_warn = {
+            .name = "t7_warn_only",
+            .severity = COND_WARN,
+            .poll_secs = 1,
+            .backoff_secs = 0,
+            .max_attempts = 1,
+            .detect = se_t7_detect,
+            .remedy = se_t7_remedy,
+            .witness = se_t7_witness,
+            .witness_window_secs = 60,
+        };
+        condition_engine_reset_for_testing();
+        sticky_escalator_test_reset();
+        reducer_frontier_provable_tip_reset();
+
+        SE_CHECK("T7: register a WARN-only unresolved condition",
+                 condition_register(&c_t7_warn));
+        condition_engine_tick();
+        condition_engine_tick(); /* attempts reaches max_attempts=1: exhausted */
+        SE_CHECK("T7: plain unresolved count sees the WARN backlog",
+                 condition_engine_get_unresolved_count() == 1);
+        SE_CHECK("T7: CRITICAL-scoped count does not",
+                 condition_engine_get_unresolved_critical_count() == 0);
+
+        int64_t t7 = (int64_t)platform_time_wall_time_t();
+        sticky_escalator_test_drive(0, t7);
+        SE_CHECK("T7: a WARN-only backlog must NOT auto-arm the ladder",
+                 !sticky_escalator_test_armed());
+
+        condition_engine_reset_for_testing();
+        sticky_escalator_test_reset();
+        reducer_frontier_provable_tip_reset();
+    }
+
+    /* T8 — the same belt-and-suspenders path DOES auto-arm for an unresolved
+     * CRITICAL condition (the class it was built for — e.g.
+     * reducer_frontier_reconcile_light). Confirms T7 is a severity filter, not
+     * an accidental full disablement of the auto-arm path. */
+    {
+        static struct condition c_t8_critical = {
+            .name = "t8_critical",
+            .severity = COND_CRITICAL,
+            .poll_secs = 1,
+            .backoff_secs = 0,
+            .max_attempts = 1,
+            .detect = se_t7_detect,
+            .remedy = se_t7_remedy,
+            .witness = se_t7_witness,
+            .witness_window_secs = 60,
+        };
+        condition_engine_reset_for_testing();
+        sticky_escalator_test_reset();
+        reducer_frontier_provable_tip_reset();
+
+        SE_CHECK("T8: register a CRITICAL unresolved condition",
+                 condition_register(&c_t8_critical));
+        condition_engine_tick();
+        condition_engine_tick();
+        SE_CHECK("T8: CRITICAL-scoped count sees it",
+                 condition_engine_get_unresolved_critical_count() == 1);
+
+        int64_t t8 = (int64_t)platform_time_wall_time_t();
+        sticky_escalator_test_drive(0, t8);
+        SE_CHECK("T8: an unresolved CRITICAL backlog DOES auto-arm the ladder",
+                 sticky_escalator_test_armed());
+
+        condition_engine_reset_for_testing();
+        sticky_escalator_test_reset();
+        reducer_frontier_provable_tip_reset();
     }
 
     reducer_frontier_test_set_compiled_anchor(-1); /* restore production floor */
