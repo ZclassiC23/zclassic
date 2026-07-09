@@ -12,6 +12,7 @@
 #include "platform/time_compat.h"
 #include "controllers/sync_controller.h"
 #include "sync_controller_internal.h"
+#include "config/runtime.h"
 #include "chain/chain.h"
 #include "wallet/wallet.h"
 #include "storage/coins_db.h"
@@ -34,58 +35,103 @@ struct catchup_args {
     const char *datadir;
 };
 
+struct catchup_lane_ctx {
+    const struct active_chain *chain;
+    const struct wallet *w;
+    const char *datadir;
+    int result;
+};
+
+#ifdef ZCL_TESTING
+static _Atomic int g_catchup_test_lane_calls = 0;
+static _Atomic int g_catchup_test_worker_lane_calls = 0;
+
+void node_db_sync_catchup_test_reset_lane_stats(void)
+{
+    atomic_store(&g_catchup_test_lane_calls, 0);
+    atomic_store(&g_catchup_test_worker_lane_calls, 0);
+}
+
+int node_db_sync_catchup_test_lane_calls(void)
+{
+    return atomic_load(&g_catchup_test_lane_calls);
+}
+
+int node_db_sync_catchup_test_worker_lane_calls(void)
+{
+    return atomic_load(&g_catchup_test_worker_lane_calls);
+}
+#endif
+
 /* sync_wallet_inmemory removed: it passed height=0 for all wallet
  * transactions, causing INSERT OR REPLACE to overwrite correct heights
  * and clear spent_txid on already-spent UTXOs. The catchup block scan
  * already processes wallet transactions with correct heights. */
 
+static struct db_service *catchup_job_db_service_for(struct node_db *ndb)
+{
+    struct db_service *dbsvc = app_runtime_db_service();
+
+    if (!ndb || !ndb->open || !dbsvc || !db_service_is_started(dbsvc))
+        return NULL;
+    return db_service_node_db(dbsvc) == ndb ? dbsvc : NULL;
+}
+
+static bool node_db_sync_catchup_lane_write(struct node_db *ndb, void *ctx)
+{
+    struct catchup_lane_ctx *catchup = ctx;
+
+    if (!catchup)
+        LOG_FAIL("sync", "catchup_lane_write: ctx is NULL");
+#ifdef ZCL_TESTING
+    atomic_fetch_add(&g_catchup_test_lane_calls, 1);
+    {
+        struct db_service *dbsvc = app_runtime_db_service();
+        if (dbsvc && db_service_is_worker_thread(dbsvc))
+            atomic_fetch_add(&g_catchup_test_worker_lane_calls, 1);
+    }
+#endif
+    catchup->result = node_db_sync_catchup(ndb, catchup->chain,
+                                           catchup->w, catchup->datadir);
+    return catchup->result >= 0;
+}
+
 static void *node_db_sync_catchup_job_thread(void *arg)
 {
     struct node_db_sync_catchup_job *job = arg;
-    struct node_db catchup_db;
-    struct node_db *work_db = NULL;
-    bool private_open = false;
-    bool owns_db = false;
+    struct db_service *dbsvc = NULL;
 
     if (!job) {
         LOG_NULL("sync", "catchup_job_thread: job is NULL");
     }
 
-    memset(&catchup_db, 0, sizeof(catchup_db));
-    private_open = node_db_sync_open_private_db_like(job->args.ndb, &catchup_db);
-    if (private_open) {
-        work_db = &catchup_db;
-        owns_db = true;
-    } else if (job->args.datadir) {
-        char path[1024];
-        if (snprintf(path, sizeof(path), "%s/node.db",
-                     job->args.datadir) >= (int)sizeof(path)) {
-            LOG_INFO("catchup", "catchup: datadir path too long: %s", job->args.datadir);
-        } else {
-            private_open = node_db_open(&catchup_db, path);
-            if (private_open) {
-                work_db = &catchup_db;
-                owns_db = true;
-            }
-        }
-    }
-
-    if (!work_db && job->args.ndb && job->args.ndb->open) {
-        work_db = job->args.ndb;
-    }
-
-    if (!work_db || !work_db->open) {
+    if (!job->args.ndb || !job->args.ndb->open) {
         fprintf(stderr, "catchup: no usable database handle\n");
         job->result = -1;
         atomic_store(&job->finished, true);
         return NULL;
     }
 
-    job->result = node_db_sync_catchup(work_db, job->args.chain,
-                                       job->args.w, job->args.datadir);
+    dbsvc = catchup_job_db_service_for(job->args.ndb);
+    if (dbsvc) {
+        struct catchup_lane_ctx ctx = {
+            .chain = job->args.chain,
+            .w = job->args.w,
+            .datadir = job->args.datadir,
+            .result = -1,
+        };
 
-    if (owns_db)
-        node_db_close(&catchup_db);
+        if (!db_service_run_write(dbsvc, node_db_sync_catchup_lane_write,
+                                  &ctx) && ctx.result >= 0) {
+            LOG_WARN("sync", "catchup write lane failed without detail");
+            ctx.result = -1;
+        }
+        job->result = ctx.result;
+    } else {
+        job->result = node_db_sync_catchup(job->args.ndb, job->args.chain,
+                                           job->args.w, job->args.datadir);
+    }
+
     atomic_store(&job->finished, true);
     return NULL;
 }

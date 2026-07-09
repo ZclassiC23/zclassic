@@ -542,6 +542,41 @@ int test_sqlite(void) {
         node_db_close(&ndb);
     }
 
+    {
+        printf("SQLite catchup job uses runtime DB-service lane... ");
+        struct node_db ndb;
+        struct db_service svc;
+        struct app_runtime_context runtime;
+        struct active_chain ac;
+        struct node_db_sync_catchup_job catch_job;
+        int result = -1;
+        bool ok = node_db_open(&ndb, ":memory:");
+
+        db_service_init(&svc);
+        active_chain_init(&ac);
+        node_db_sync_catchup_job_init(&catch_job);
+        ok = ok && db_service_attach(&svc, &ndb);
+        ok = ok && db_service_start(&svc);
+        runtime_set_db_service(&runtime, &svc);
+        node_db_sync_catchup_test_reset_lane_stats();
+
+        ok = ok && node_db_sync_catchup_job_start(&catch_job, &ndb, &ac,
+                                                  NULL, NULL);
+        ok = ok && node_db_sync_catchup_job_join(&catch_job, &result);
+        ok = ok && result == 0;
+        ok = ok && node_db_sync_catchup_test_lane_calls() == 1;
+        ok = ok && node_db_sync_catchup_test_worker_lane_calls() == 1;
+        ok = ok && !node_db_sync_catchup_job_is_started(&catch_job);
+
+        app_runtime_set_current(NULL);
+        db_service_stop(&svc);
+        active_chain_free(&ac);
+        node_db_close(&ndb);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     /* sync_controller DB-service wrappers */
     {
         printf("SQLite sync_controller wrappers use runtime DB service... ");

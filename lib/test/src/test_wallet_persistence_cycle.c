@@ -16,6 +16,7 @@
 #include "keys/key.h"
 #include "util/result.h"
 #include "support/cleanse.h"
+#include "util/ar_step_readonly.h"
 #include "util/safe_alloc.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -305,6 +306,64 @@ static int test_flush_retries_under_write_lock(void)
     return failures;
 }
 
+static int test_flush_resets_cached_read_cursors(void)
+{
+    int failures = 0;
+    TEST("wallet_persistence: flush resets cached read cursors before BEGIN") {
+        clear_passphrase();
+
+        char path[96];
+        snprintf(path, sizeof(path),
+                 "./test-tmp/wallet_cursor_%d.db", (int)getpid());
+        mkdir("./test-tmp", 0755);
+        unlink(path);
+
+        sqlite3 *db = open_fixture_db(path, true);
+        ASSERT(db);
+        sqlite3_exec(db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
+
+        struct wallet_sqlite ws;
+        ASSERT(wallet_sqlite_open_r(&ws, db).ok);
+
+        struct privkey persisted_key;
+        struct pubkey persisted_pk;
+        make_test_key(&persisted_key, &persisted_pk, 0x41);
+        ASSERT(wallet_sqlite_write_key_r(&ws, &persisted_pk,
+                                         &persisted_key).ok);
+
+        sqlite3_reset(ws.stmt_key_read);
+        ASSERT(AR_STEP_ROW_READONLY(ws.stmt_key_read) == SQLITE_ROW);
+
+        struct wallet *w = alloc_wallet();
+        ASSERT(w);
+        struct privkey new_key;
+        struct pubkey new_pk;
+        make_test_key(&new_key, &new_pk, 0x42);
+        ASSERT(keystore_add_key(&w->keystore, &persisted_key));
+        ASSERT(keystore_add_key(&w->keystore, &new_key));
+
+        struct zcl_result r = wallet_sqlite_flush_r(&ws, w);
+        ASSERT(r.ok);
+
+        struct wallet_sqlite_health h = wallet_sqlite_get_health(&ws, 2);
+        ASSERT(h.row_count == 2);
+        ASSERT(!h.mismatch);
+
+        struct privkey got;
+        privkey_init(&got);
+        ASSERT(wallet_sqlite_read_single_key(&ws, &new_pk, &got).ok);
+        ASSERT(memcmp(got.vch, new_key.vch, 32) == 0);
+        memory_cleanse(got.vch, 32);
+
+        wallet_sqlite_close(&ws);
+        sqlite3_close(db);
+        free_wallet(w);
+        unlink(path);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_read_single_key_not_found(void)
 {
     int failures = 0;
@@ -533,6 +592,7 @@ int test_wallet_persistence_cycle(void)
     failures += test_self_test_passes();
     failures += test_write_then_reopen_preserves_keys();
     failures += test_flush_retries_under_write_lock();
+    failures += test_flush_resets_cached_read_cursors();
     failures += test_read_single_key_not_found();
     failures += test_delete_key_roundtrip();
     failures += test_write_key_invariants();
