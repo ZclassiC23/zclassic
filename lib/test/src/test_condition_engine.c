@@ -200,6 +200,52 @@ int test_condition_engine(void)
     }
 
     {
+        /* An unresolved CRITICAL condition must count toward BOTH the plain
+         * and the severity-scoped accessor (sticky_escalator's belt +
+         * suspenders auto-arm gates on the scoped one). */
+        reset_fixture();
+        bool ok = condition_register(&c_max);
+        atomic_store(&g_detect, true);
+        condition_engine_tick();
+        condition_engine_tick();
+        ok = ok && condition_engine_get_unresolved_count() == 1;
+        ok = ok && condition_engine_get_unresolved_critical_count() == 1;
+        CE_CHECK("unresolved CRITICAL condition counts in the scoped total",
+                 ok);
+    }
+
+    static struct condition c_max_warn = {
+        .name = "ce_max_warn",
+        .severity = COND_WARN,
+        .poll_secs = 1,
+        .backoff_secs = 0,
+        .max_attempts = 2,
+        .detect = ce_detect,
+        .remedy = ce_remedy,
+        .witness = ce_witness,
+        .witness_window_secs = 60,
+    };
+
+    {
+        /* live 2026-07-09 regression: download_queue_starved (COND_WARN) sat
+         * "unresolved" (operator_needed_emitted latched) for 8+ hours on a
+         * healthy, tip-synced node. It must count toward the plain unresolved
+         * total (unchanged behavior for health_controller / event_agent_summary
+         * reporting) but NOT toward the CRITICAL-scoped count sticky_escalator
+         * uses to decide whether to auto-arm its chain-recovery ladder. */
+        reset_fixture();
+        bool ok = condition_register(&c_max_warn);
+        atomic_store(&g_detect, true);
+        condition_engine_tick();
+        condition_engine_tick();
+        ok = ok && atomic_load(&g_remedy_calls) == 2;
+        ok = ok && condition_engine_get_unresolved_count() == 1;
+        ok = ok && condition_engine_get_unresolved_critical_count() == 0;
+        CE_CHECK("unresolved WARN condition excluded from the CRITICAL-scoped "
+                 "count", ok);
+    }
+
+    {
         reset_fixture();
         bool ok = condition_register(&c_basic);
         ok = ok && !condition_register(&c_basic);

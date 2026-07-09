@@ -384,7 +384,43 @@ static void enter_rung(enum sticky_rung r, int64_t now)
     atomic_store(&g_rung_entered_unix, now);
 }
 
-static void clear_episode(int64_t now)
+/* Withdraw a pending (non-terminal) on-disk auto_reindex_request once THIS
+ * episode has genuinely resolved (tip proven past the request's anchor).
+ * The reindex rung (rung_reindex_default) arms boot_auto_reindex_request()
+ * durably so the NEXT boot rebuilds the UTXO set from blocks/; if the stall
+ * self-resolves before that boot happens, the marker outlives its episode and
+ * would force a needless full chainstate rebuild the next time the node
+ * restarts (observed live 2026-07-09: it blocked `make deploy-dev` with
+ * "pending crash-only auto-reindex request anchor=3175394" even though the
+ * symptom had already cleared) — a violation of the auto-terminating-remedy
+ * invariant. boot_auto_reindex_pending() already excludes the TERMINAL marker
+ * (count == BOOT_AUTO_REINDEX_TERMINAL), so this never touches the
+ * budget-exhausted/operator-paged state — only a live, still-armed request
+ * for an anchor the tip has since proven past. `tip > anchor` (not >=) is the
+ * same proof bar the reindex rung itself would need: the request was armed at
+ * `anchor`, so any height strictly above it is forward progress the rebuild
+ * would have re-derived anyway. */
+static void withdraw_stale_reindex_request(int64_t tip)
+{
+    if (!g_datadir || !g_datadir[0])
+        return;
+    if (!boot_auto_reindex_pending(g_datadir))
+        return;
+    int32_t anchor = 0;
+    int count = 0;
+    if (!boot_auto_reindex_status(g_datadir, &anchor, &count))
+        return;
+    if (tip <= (int64_t)anchor)
+        return;
+    boot_auto_reindex_clear(g_datadir);
+    LOG_INFO("sticky_escalator",
+             "[sticky_escalator] withdrew stale auto_reindex_request "
+             "anchor=%d count=%d: tip=%lld progressed past it, the reindex "
+             "would have been needless",
+             anchor, count, (long long)tip);
+}
+
+static void clear_episode(int64_t now, int64_t tip)
 {
     (void)now;
     atomic_store(&g_armed, false);
@@ -393,6 +429,7 @@ static void clear_episode(int64_t now)
     atomic_store(&g_rearm_until_unix, 0);
     atomic_store(&g_rederive_last_repair_unix, 0);
     atomic_fetch_add(&g_episodes_cleared, 1u);
+    withdraw_stale_reindex_request(tip);
     /* Release any operator_needed latch this episode raised: the tip
      * progressed, so the symptom genuinely cleared. note_cycling_page() emits
      * a (terminal=0) page that — depending on the alerts policy — may still
@@ -434,8 +471,16 @@ static void apply_drive(int64_t tip, int64_t now)
 {
     if (!atomic_load(&g_armed)) {
         /* Auto-arm if the condition engine has an unresolved CRITICAL backlog,
-         * even without an explicit note_stall (belt + suspenders). */
-        if (condition_engine_get_unresolved_count() > 0) {
+         * even without an explicit note_stall (belt + suspenders). Scoped to
+         * COND_CRITICAL (condition_engine_get_unresolved_critical_count), NOT
+         * the raw unresolved count: a WARN-severity condition (e.g.
+         * download_queue_starved, a peer/bandwidth fault with its own
+         * unbounded self-contained cooldown re-arm) must never itself arm this
+         * chain-recovery ladder, which can reach the reindex-chainstate rung.
+         * Live 2026-07-09: an unscoped count let a stuck WARN condition
+         * silently re-arm this ladder every few minutes on an otherwise
+         * healthy, tip-synced node. */
+        if (condition_engine_get_unresolved_critical_count() > 0) {
             atomic_store(&g_armed, true);
             enter_rung(STICKY_RUNG_RETRY, now);
         } else {
@@ -455,7 +500,7 @@ static void apply_drive(int64_t tip, int64_t now)
     /* Progress check: any climb past the entry tip clears the whole episode. */
     int64_t entry = atomic_load(&g_tip_at_rung);
     if (entry >= 0 && tip >= entry + STICKY_PROGRESS_MARGIN) {
-        clear_episode(now);
+        clear_episode(now, tip);
         return;
     }
 
@@ -468,7 +513,7 @@ static void apply_drive(int64_t tip, int64_t now)
     atomic_fetch_add(&g_rung_dispatches[cur], 1u);
 
     if (res == STICKY_RUNG_RESOLVED) {
-        clear_episode(now);
+        clear_episode(now, tip);
         return;
     }
     if (res == STICKY_RUNG_PROGRESSING) {
