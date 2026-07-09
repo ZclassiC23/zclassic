@@ -371,6 +371,28 @@ int node_db_migrate_features(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 25) {
+        /* v25: ZNAM registration term. expiry_height records when a name's
+         * registration lapses: set at REGISTER to reg_height +
+         * ZNAM_REGISTRATION_TERM_BLOCKS and extended by each RENEW (which was
+         * previously a silent no-op). Overlay bookkeeping only — resolution
+         * does not reap expired names, so this never affects consensus.
+         * Existing rows default to 0 (pre-term); the ascending reindex
+         * refreshes them from their REGISTER anchor. */
+        if (db_exec_tolerant(ndb->db,
+            "ALTER TABLE znam_names "
+            "ADD COLUMN expiry_height INTEGER NOT NULL DEFAULT 0",
+            "v25: add znam_names.expiry_height",
+            "duplicate column name") != SQLITE_OK)
+            LOG_ERR("db", "v25 migration failed adding znam_names.expiry_height");
+        if (!node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('025')"))
+            LOG_ERR("db", "v25 migration failed stamping schema_migrations");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 25);
+        current_ver = 25;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

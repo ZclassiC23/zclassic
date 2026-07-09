@@ -414,7 +414,9 @@ int test_znam(void)
                 "name TEXT PRIMARY KEY, owner_address TEXT,"
                 "target_type INTEGER, target_value TEXT,"
                 "reg_txid BLOB, reg_height INTEGER,"
-                "last_update_txid BLOB)", NULL, NULL, NULL);
+                "last_update_txid BLOB,"
+                "expiry_height INTEGER NOT NULL DEFAULT 0)",
+                NULL, NULL, NULL);
             sqlite3_exec(db,
                 "CREATE TABLE znam_text_records("
                 "name TEXT, key TEXT, value TEXT,"
@@ -434,6 +436,7 @@ int test_znam(void)
             memset(entry.reg_txid, 0xAA, 32);
             entry.reg_height = 12345;
             memset(entry.last_update_txid, 0xBB, 32);
+            entry.expiry_height = 12345 + ZNAM_REGISTRATION_TERM_BLOCKS;
 
             bool save_ok = db_znam_save(&ndb, &entry);
             struct znam_entry found = {0};
@@ -448,6 +451,7 @@ int test_znam(void)
                 found.target_type == ZNAM_TYPE_TADDR &&
                 strcmp(found.target_value, "t1target") == 0 &&
                 found.reg_height == 12345 &&
+                found.expiry_height == 12345 + ZNAM_REGISTRATION_TERM_BLOCKS &&
                 count == 1) {
                 printf("OK\n");
             } else {

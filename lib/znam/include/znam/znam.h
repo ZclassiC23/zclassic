@@ -49,6 +49,14 @@ enum znam_command {
     ZNAM_CMD_SET_TEXT   = 6,   /* Set text record (key-value, ENS TextResolver) */
 };
 
+/* Registration term, in blocks, granted by REGISTER and extended by each
+ * RENEW (overlay policy, not consensus). ~1 year at the historical 150 s
+ * block spacing (365*24*3600/150 = 210 240). This governs only the
+ * projection's znam_names.expiry_height bookkeeping — resolution does not
+ * (yet) reap expired names, so the value is not consensus-critical and may
+ * be retuned without a fork. */
+#define ZNAM_REGISTRATION_TERM_BLOCKS 210240
+
 /* Max name length */
 #define ZNAM_NAME_MAX 63
 

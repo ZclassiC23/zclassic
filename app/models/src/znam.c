@@ -139,6 +139,7 @@ bool db_znam_entry_validate(const struct znam_entry *entry,
         memcmp(entry->reg_txid, zero32, 32) != 0,
         "reg_txid", "can't be all zero");
     validates_non_negative(errors, entry, reg_height);
+    validates_non_negative(errors, entry, expiry_height);
 
     return !ar_errors_any(errors);
 }
@@ -200,8 +201,8 @@ bool db_znam_save(struct node_db *ndb, const struct znam_entry *entry)
     AR_PREPARE_BOOL(ndb, s,
         "INSERT OR REPLACE INTO znam_names"
         "(name,owner_address,target_type,target_value,"
-        "reg_txid,reg_height,last_update_txid)"
-        " VALUES(?,?,?,?,?,?,?)");
+        "reg_txid,reg_height,last_update_txid,expiry_height)"
+        " VALUES(?,?,?,?,?,?,?,?)");
     AR_BIND_TEXT(s, 1, entry->name);
     AR_BIND_TEXT(s, 2, entry->owner_address);
     AR_BIND_INT(s, 3, entry->target_type);
@@ -209,6 +210,7 @@ bool db_znam_save(struct node_db *ndb, const struct znam_entry *entry)
     AR_BIND_BLOB(s, 5, entry->reg_txid, 32);
     AR_BIND_INT(s, 6, entry->reg_height);
     AR_BIND_BLOB(s, 7, entry->last_update_txid, 32);
+    AR_BIND_INT(s, 8, entry->expiry_height);
 
     bool ok = false;
     AR_FINALIZE_STEP_DONE(s, ok);
@@ -236,6 +238,8 @@ static void row_to_znam(sqlite3_stmt *s, struct znam_entry *out)
     out->reg_height = (int32_t)sqlite3_column_int(s, 5);
 
     AR_READ_BLOB(s, 6, out->last_update_txid, 32);
+
+    out->expiry_height = (int32_t)sqlite3_column_int(s, 7);
 }
 
 bool db_znam_find(struct node_db *ndb, const char *name,
@@ -247,7 +251,7 @@ bool db_znam_find(struct node_db *ndb, const char *name,
     sqlite3_stmt *s = NULL;
     AR_QUERY_ONE_BOOL(ndb, s,
         "SELECT name,owner_address,target_type,target_value,"
-        "reg_txid,reg_height,last_update_txid"
+        "reg_txid,reg_height,last_update_txid,expiry_height"
         " FROM znam_names WHERE name=?",
         AR_BIND_TEXT(s, 1, name),
         row_to_znam(s, out));
@@ -262,7 +266,7 @@ int db_znam_list(struct node_db *ndb, struct znam_entry *out, size_t max)
     sqlite3_stmt *s = NULL;
     AR_QUERY_LIST(ndb, s,
         "SELECT name,owner_address,target_type,target_value,"
-        "reg_txid,reg_height,last_update_txid"
+        "reg_txid,reg_height,last_update_txid,expiry_height"
         " FROM znam_names ORDER BY reg_height DESC LIMIT ?",
         out, max,
         AR_BIND_INT(s, 1, (int)max),
@@ -280,7 +284,7 @@ int db_znam_list_by_owner(struct node_db *ndb, const char *owner,
     sqlite3_stmt *s = NULL;
     AR_QUERY_LIST(ndb, s,
         "SELECT name,owner_address,target_type,target_value,"
-        "reg_txid,reg_height,last_update_txid"
+        "reg_txid,reg_height,last_update_txid,expiry_height"
         " FROM znam_names WHERE owner_address=? ORDER BY name LIMIT ?",
         out, max,
         AR_BIND_TEXT(s, 1, owner);
