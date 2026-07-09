@@ -453,6 +453,7 @@ int test_simnet_chained_tx(void);
 int test_simnet_block_sigops(void);
 int test_simnet_duplicate_input(void);
 int test_simnet_value_inflation(void);
+int test_simnet_fee_range(void);
 int test_simnet_sapling_activation(void);
 int test_connect_block_sapling_root(void);
 int test_connect_block_checkdatasig_sigops(void);
