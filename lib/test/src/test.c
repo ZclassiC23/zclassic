@@ -150,6 +150,21 @@ int main(int argc, char **argv)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "snark_kat") == 0) {
+        printf("[test] ZCL_TEST_ONLY=snark_kat — running SNARK KAT only\n");
+        failures += test_snark_kat();
+        printf("\n=== snark_kat subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "groth16_selfverify") == 0) {
+        extern int test_groth16_selfverify(void);
+        printf("[test] ZCL_TEST_ONLY=groth16_selfverify — running self-verify only\n");
+        failures += test_groth16_selfverify();
+        printf("\n=== groth16_selfverify subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "chain_advance_coordinator") == 0) {
         printf("[test] ZCL_TEST_ONLY=chain_advance_coordinator — running source policy only\n");
         failures += test_chain_advance_coordinator();
@@ -1204,6 +1219,12 @@ int main(int argc, char **argv)
     failures += test_connect_block_self_write();
     failures += test_simnet_doublespend();
     failures += test_simnet_chained_tx();
+    failures += test_simnet_block_sigops();
+    failures += test_simnet_duplicate_input();
+    failures += test_simnet_value_inflation();
+    failures += test_simnet_fee_range();
+    failures += test_simnet_empty_vin_vout();
+    failures += test_simnet_input_value_range();
     failures += test_simnet_sapling_activation();
     failures += test_simnet_sapling_shielded_send();
     failures += test_connect_block_sapling_root();
