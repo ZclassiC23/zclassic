@@ -51,10 +51,26 @@ static void tx_result_clear(struct simnet_tx_result *out)
 
 int64_t simnet_wallet_default_fee_per_k(void)
 {
-    struct wallet w;
-    wallet_init(&w);
-    int64_t fee = w.default_fee;
-    wallet_free(&w);
+    /* struct wallet is ~65 MB (map_wallet[65536] alone is ~26 MB, plus the
+     * inline keystore/spent-set tables), which dwarfs the 8 MB thread stack.
+     * The project builds without -fstack-clash-protection, so materializing
+     * this local subtracts ~65 MB from RSP in one step and skips the stack
+     * guard page entirely; wallet_init() then writes ~65 MB below the stack.
+     * Whether that address is mapped depends on the process memory layout,
+     * so the fault is intermittent: the large monolithic test_zcl process has
+     * enough mapped below its stack to survive, while a freshly forked
+     * test_parallel worker hits unmapped memory and SIGSEGVs at the first
+     * send (the P2PKH check). Instantiate on the heap so the value still
+     * comes from wallet_init (one source of truth) without touching the
+     * stack at all. */
+    struct wallet *w = zcl_malloc(sizeof(*w), "simnet_wallet_fee_probe");
+    if (!w)
+        LOG_RETURN(10000, "simnet.wallet",
+                   "wallet alloc for default-fee probe failed");
+    wallet_init(w);
+    int64_t fee = w->default_fee;
+    wallet_free(w);
+    free(w);
     return fee;
 }
 
