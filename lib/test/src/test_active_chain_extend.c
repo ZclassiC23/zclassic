@@ -23,8 +23,10 @@
 
 #include "test/test_helpers.h"
 
+#include "chain/chain.h"
 #include "core/arith_uint256.h"
 #include "core/uint256.h"
+#include "validation/chain_linkage_check.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
@@ -76,6 +78,80 @@ static bool ace_build(struct main_state *ms, struct block_index **out, int n,
         prev = out[h];
     }
     return active_chain_move_window_tip(&ms->chain_active, out[tip_h]);
+}
+
+/* ── Large-index / reorg equivalence helpers (cases 11-13) ───────────────────
+ *
+ * The perf lever these lock in: active_chain_extend_window_have_data's FAST
+ * path discovers the fill candidate via block_index_get_ancestor (O(log n)
+ * along pskip) instead of the per-block full pprev/map walk. These helpers
+ * build a real skiplist (block_index_build_skip) so the fast path genuinely
+ * hops pskip, and compare the assembled window slot-for-slot against an
+ * independent reference pprev walk — the exact ground truth the optimized
+ * fill must reproduce byte-for-byte. */
+
+/* Unique, non-null hash for (height, branch). Layout is distinct from
+ * ace_insert's (salt in a different byte) so the two families never alias. */
+static void ace_hash2(struct uint256 *hash, int h, int branch)
+{
+    memset(hash, 0, sizeof(*hash));
+    hash->data[0] = (uint8_t)(h & 0xFF);
+    hash->data[1] = (uint8_t)((h >> 8) & 0xFF);
+    hash->data[2] = (uint8_t)((h >> 16) & 0xFF);
+    hash->data[4] = (uint8_t)branch;
+    hash->data[5] = 0xCE; /* salt — keeps the hash non-null at h=0,branch=0 */
+}
+
+/* Insert one block at height h on `prev` in `branch`, and build its skiplist
+ * (the pskip the fast-path ancestor hop follows). The map COPIES the hash, so
+ * the transient stack buffer here is safe. */
+static struct block_index *ace_insert_skip(struct main_state *ms, int h,
+                                           struct block_index *prev, int branch,
+                                           unsigned status)
+{
+    struct uint256 hash;
+    ace_hash2(&hash, h, branch);
+    struct block_index *pi =
+        chainstate_insert_block_index((struct chainstate *)ms, &hash);
+    if (!pi) return NULL;
+    pi->nHeight = h;
+    pi->nBits = 0x1f07ffff;
+    pi->nTime = 1000000 + (uint32_t)h * 150;
+    pi->nVersion = 4;
+    pi->nStatus = status;
+    pi->nTx = 1;
+    pi->nChainTx = (uint32_t)(h + 1);
+    arith_uint256_set_u64(&pi->nChainWork, (uint64_t)(h + 1) + (uint64_t)branch);
+    pi->pprev = prev;
+    block_index_build_skip(pi); /* the O(log n) fast path hops this */
+    return pi;
+}
+
+/* Build the REFERENCE window independently: walk pprev from `tip` to genesis,
+ * recording ref[h] = the block on tip's path at height h. This is the exact
+ * output the optimized fill must reproduce. */
+static void ace_reference_window(struct block_index *tip,
+                                 struct block_index **ref, int cap)
+{
+    for (int i = 0; i < cap; i++) ref[i] = NULL;
+    for (struct block_index *w = tip; w; w = w->pprev)
+        if (w->nHeight >= 0 && w->nHeight < cap)
+            ref[w->nHeight] = w;
+}
+
+/* Every visible window slot [0..tip_h] equals the reference by BLOCK HASH
+ * (byte identity of the 32-byte hash), is non-NULL, and nothing is visible
+ * above tip_h. */
+static bool ace_window_matches_ref(struct active_chain *c,
+                                   struct block_index **ref, int tip_h)
+{
+    for (int h = 0; h <= tip_h; h++) {
+        struct block_index *got = active_chain_at(c, h);
+        if (!got || !ref[h]) return false;
+        if (memcmp(got->hashBlock.data, ref[h]->hashBlock.data, 32) != 0)
+            return false;
+    }
+    return active_chain_at(c, tip_h + 1) == NULL;
 }
 
 int test_active_chain_extend(void)
@@ -336,5 +412,168 @@ int test_active_chain_extend(void)
         main_state_free(&ms);
     }
 
+    /* 11. LARGE-INDEX BYTE-IDENTITY (the perf-lever guard). The O(log n)
+     * best-header/skiplist FAST path and the O(map) pprev-walk SLOW path each
+     * assemble a window slot-for-slot identical to an independent reference
+     * pprev walk, across a multi-thousand-block index. This is what makes
+     * routing the from-genesis refold through block_index_get_ancestor (instead
+     * of the per-block full pprev/map walk — docs/work/refold-fold-rate-
+     * bottlenecks.md #1) verdict-preserving: the window it produces is provably
+     * the same one the reference walk produces. */
+    {
+        enum { BIG = 4000 };
+        static struct block_index *refbuf[BIG + 8];
+
+        /* FAST path: skiplist built + best_header set. */
+        struct main_state msf; main_state_init(&msf);
+        chain_linkage_reset_for_testing();
+        struct block_index *ftip = NULL, *prev = NULL;
+        bool ok = true;
+        for (int h = 0; h < BIG && ok; h++) {
+            struct block_index *pi = ace_insert_skip(
+                &msf, h, prev, 0, BLOCK_HAVE_DATA | BLOCK_VALID_SCRIPTS);
+            ok = ok && pi != NULL; prev = pi; ftip = pi;
+        }
+        ok = ok && ftip &&
+             active_chain_move_window_tip(&msf.chain_active,
+                                          block_index_get_ancestor(ftip, 1));
+        msf.pindex_best_header = ftip;
+        uint64_t f0 = active_chain_extend_window_have_data_fast_count();
+        active_chain_extend_window_have_data(&msf.chain_active,
+                                             &msf.map_block_index, ftip,
+                                             ftip->nHeight);
+        ok = ok && active_chain_extend_window_have_data_fast_count() > f0;
+        ace_reference_window(ftip, refbuf, BIG + 8);
+        ok = ok && ace_window_matches_ref(&msf.chain_active, refbuf, BIG - 1);
+
+        /* SLOW path: best_header NULL -> map scan + pprev-hash contiguity walk.
+         * Hashes are height-derived, so the SAME reference applies. */
+        struct main_state mss; main_state_init(&mss);
+        struct block_index *stip = NULL; prev = NULL;
+        for (int h = 0; h < BIG && ok; h++) {
+            struct block_index *pi = ace_insert_skip(
+                &mss, h, prev, 0, BLOCK_HAVE_DATA | BLOCK_VALID_SCRIPTS);
+            ok = ok && pi != NULL; prev = pi; stip = pi;
+        }
+        ok = ok && stip &&
+             active_chain_move_window_tip(&mss.chain_active,
+                                          block_index_get_ancestor(stip, 1));
+        uint64_t s0 = active_chain_extend_window_have_data_slow_count();
+        active_chain_extend_window_have_data(&mss.chain_active,
+                                             &mss.map_block_index, NULL,
+                                             stip->nHeight);
+        ok = ok && active_chain_extend_window_have_data_slow_count() > s0;
+        ok = ok && ace_window_matches_ref(&mss.chain_active, refbuf, BIG - 1);
+
+        ACE_CHECK("large index: skiplist-fast == pprev-slow == reference window "
+                  "(byte-identical)", ok);
+        main_state_free(&msf);  /* refbuf pointers live until after mss compare */
+        main_state_free(&mss);
+    }
+
+    /* 12. INCREMENTAL GALLOP across the MAX_GAP (8192) bound. A chain longer
+     * than one extend's reach must assemble — over several bounded extends,
+     * each covering at most MAX_GAP heights (NOT the whole chain) — a window
+     * byte-identical to the single reference pprev walk. This proves the
+     * bounded, incrementally-galloping fill is exact, not merely the
+     * single-shot case, and that per-extend cost stays O(chain/gap) bounded. */
+    {
+        enum { BIG2 = 9000 }; /* > ACTIVE_CHAIN_EXTEND_HAVE_DATA_MAX_GAP (8192) */
+        static struct block_index *refbuf2[BIG2 + 8];
+        struct main_state ms; main_state_init(&ms);
+        chain_linkage_reset_for_testing();
+        struct block_index *tip = NULL, *prev = NULL;
+        bool ok = true;
+        for (int h = 0; h < BIG2 && ok; h++) {
+            struct block_index *pi = ace_insert_skip(
+                &ms, h, prev, 0, BLOCK_HAVE_DATA | BLOCK_VALID_SCRIPTS);
+            ok = ok && pi != NULL; prev = pi; tip = pi;
+        }
+        ok = ok && tip &&
+             active_chain_move_window_tip(&ms.chain_active,
+                                          block_index_get_ancestor(tip, 1));
+        ms.pindex_best_header = tip;
+        int iters = 0;
+        while (ok && active_chain_height(&ms.chain_active) < tip->nHeight &&
+               iters < 16) {
+            active_chain_extend_window_have_data(&ms.chain_active,
+                                                 &ms.map_block_index, tip,
+                                                 tip->nHeight);
+            iters++;
+        }
+        ok = ok && active_chain_height(&ms.chain_active) == tip->nHeight;
+        ok = ok && iters >= 2;                  /* took >1 bounded extend */
+        ok = ok && iters <= (BIG2 / 8192) + 2;  /* stayed O(chain/gap) bounded */
+        ace_reference_window(tip, refbuf2, BIG2 + 8);
+        ok = ok && ace_window_matches_ref(&ms.chain_active, refbuf2, BIG2 - 1);
+        ACE_CHECK("incremental gallop across MAX_GAP assembles reference window "
+                  "(bounded per-extend, exact)", ok);
+        main_state_free(&ms);
+    }
+
+    /* 13. REORG / WINDOW-SHRINK then re-extend. After the window is retracted to
+     * a fork point (the shrink half of a reorg) and re-extended along a
+     * DIVERGENT branch that shares the lower chain, the assembled window is
+     * byte-identical to the reference pprev walk of the NEW tip: lower slots
+     * preserved, upper slots replaced by the fork. The overlapping heights hold
+     * two competing block_index objects, which the fill must resolve to the
+     * best-header branch — never leaving a stale main-chain slot visible. */
+    {
+        enum { MAIN_N = 2000, FORK_FROM = 1000, FORK_TIP = 2499 };
+        static struct block_index *refbuf3[FORK_TIP + 8];
+        struct main_state ms; main_state_init(&ms);
+        chain_linkage_reset_for_testing();
+        struct block_index *mtip = NULL, *prev = NULL;
+        bool ok = true;
+        for (int h = 0; h < MAIN_N && ok; h++) {
+            struct block_index *pi = ace_insert_skip(
+                &ms, h, prev, 0, BLOCK_HAVE_DATA | BLOCK_VALID_SCRIPTS);
+            ok = ok && pi != NULL; prev = pi; mtip = pi;
+        }
+        ok = ok && mtip &&
+             active_chain_move_window_tip(&ms.chain_active,
+                                          block_index_get_ancestor(mtip, 1));
+        ms.pindex_best_header = mtip;
+        active_chain_extend_window_have_data(&ms.chain_active,
+                                             &ms.map_block_index, mtip,
+                                             mtip->nHeight);
+        struct block_index *main1500 = active_chain_at(&ms.chain_active, 1500);
+        ok = ok && main1500 != NULL;
+
+        /* Fork branching off the shared block@FORK_FROM (distinct branch=1
+         * hashes -> two objects live at the overlapping heights 1001..1999). */
+        struct block_index *fprev = block_index_get_ancestor(mtip, FORK_FROM);
+        struct block_index *ftip = NULL;
+        for (int h = FORK_FROM + 1; h <= FORK_TIP && ok; h++) {
+            struct block_index *pi = ace_insert_skip(
+                &ms, h, fprev, 1, BLOCK_HAVE_DATA | BLOCK_VALID_SCRIPTS);
+            ok = ok && pi != NULL; fprev = pi; ftip = pi;
+        }
+
+        /* SHRINK: retract the window to the fork point (reorg unwind). */
+        ok = ok &&
+             active_chain_move_window_tip(&ms.chain_active,
+                                          block_index_get_ancestor(mtip, FORK_FROM));
+        ok = ok && active_chain_height(&ms.chain_active) == FORK_FROM;
+
+        /* Re-extend along the fork. */
+        ms.pindex_best_header = ftip;
+        active_chain_extend_window_have_data(&ms.chain_active,
+                                             &ms.map_block_index, ftip,
+                                             ftip->nHeight);
+        ace_reference_window(ftip, refbuf3, FORK_TIP + 8);
+        ok = ok && ace_window_matches_ref(&ms.chain_active, refbuf3, FORK_TIP);
+
+        /* The overlapping height now resolves to the FORK object, not main. */
+        struct block_index *fork1500 = active_chain_at(&ms.chain_active, 1500);
+        ok = ok && fork1500 != NULL && fork1500 != main1500 &&
+             memcmp(fork1500->hashBlock.data, refbuf3[1500]->hashBlock.data,
+                    32) == 0;
+        ACE_CHECK("reorg/window-shrink then re-extend == reference (fork "
+                  "resolved, lower window preserved)", ok);
+        main_state_free(&ms);
+    }
+
+    chain_linkage_reset_for_testing(); /* no HOLD/counter leak to sibling groups */
     return failures;
 }
