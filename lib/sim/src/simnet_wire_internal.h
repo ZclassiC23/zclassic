@@ -14,10 +14,13 @@
 #include "coins/utxo_commitment.h"
 #include "consensus/validation.h"
 #include "core/uint256.h"
+#include "event/event.h"
 #include "net/msgprocessor.h"
 #include "net/net.h"
 #include "net/protocol.h"
 #include "sim/seed_tape.h"
+#include "sim/simnet.h"
+#include "sync/sync_state.h"
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
 
@@ -88,6 +91,9 @@ struct wire_peer {
     uint64_t flood_ticks;
     enum simnet_wire_malformed_case malformed_case;
     enum simnet_wire_bad_handshake_case bad_handshake_case;
+    enum simnet_byzantine_class byz_kind;
+    bool byz_kind_set;
+    bool byz_injected;
     uint8_t *slowloris_frame;
     size_t slowloris_len;
     size_t slowloris_pos;
@@ -114,6 +120,8 @@ struct simnet_wire_event_counts {
     uint64_t peer_misbehave;
     uint64_t backpressure_reject;
     uint64_t peer_banned;
+    uint64_t block_rejected;
+    uint64_t headers_rejected;
 };
 
 struct simnet_wire {
@@ -147,6 +155,27 @@ struct simnet_wire {
     uint64_t not_implemented_peers;
     struct simnet_wire_monitor monitor;
     struct simnet_wire_event_counts events;
+
+    struct simnet byz_sim;
+    bool byz_sim_ready;
+    /* Wire-owned stable copy of the byzantine parent tip. The NUT's active
+     * chain and the injected block's pprev point HERE, never into byz_sim,
+     * so that mutating byz_sim (e.g. the honest-recovery mint in
+     * simnet_wire_byzantine_after_tick) can never change the node-under-
+     * test's observed tip hash — the consensus-unchanged invariant. */
+    struct block_index byz_wire_tip;
+    bool byz_wire_tip_ready;
+    struct simnet_byzantine_block_case byz_block;
+    bool byz_block_ready;
+    struct simnet_byzantine_header_case byz_header;
+    bool byz_header_ready;
+    struct simnet_wire_byzantine_observation byz_obs;
+    bool byz_obs_ready;
+    struct uint256 byz_baseline_tip;
+    struct utxo_commitment byz_baseline_coins;
+    enum sync_state byz_saved_sync_state;
+    bool byz_saved_sync_state_valid;
+    bool byz_honest_after_attempted;
 };
 
 struct wire_event_record {
@@ -181,5 +210,25 @@ void simnet_wire_mark_monitor_failed(struct simnet_wire *wire,
                                      const char *reason);
 bool simnet_wire_monitor_after_tick(struct simnet_wire *wire);
 bool simnet_wire_monitor_finish(struct simnet_wire *wire);
+
+bool simnet_wire_byzantine_start(struct simnet_wire *wire, size_t peer_id,
+                                 enum simnet_byzantine_class kind,
+                                 enum simnet_byzantine_tier tier);
+bool simnet_wire_byzantine_tick(struct simnet_wire *wire, size_t peer_id,
+                                bool *progress);
+bool simnet_wire_byzantine_submit_block(struct block *block,
+                                        struct validation_state *out,
+                                        void *ctx);
+void simnet_wire_byzantine_observe_event(struct simnet_wire *wire,
+                                         enum event_type type,
+                                         const void *payload,
+                                         uint32_t payload_len);
+bool simnet_wire_byzantine_expected_blocker(
+    const struct simnet_wire *wire, const char *id, int cls);
+void simnet_wire_byzantine_after_tick(struct simnet_wire *wire);
+void simnet_wire_byzantine_free(struct simnet_wire *wire);
+bool simnet_wire_byzantine_get_observation(
+    const struct simnet_wire *wire,
+    struct simnet_wire_byzantine_observation *out);
 
 #endif /* ZCL_SIMNET_WIRE_INTERNAL_H */

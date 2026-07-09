@@ -8,6 +8,7 @@
 #include "test/test_helpers.h"
 
 #include "net/net.h"
+#include "sim/simnet_byzantine.h"
 #include "sim/simnet_wire.h"
 #include "util/blocker.h"
 
@@ -242,6 +243,129 @@ static bool sw_run_mixed(uint64_t seed, uint64_t *out_fp,
     return ok;
 }
 
+static bool sw_byz_reason_ok(
+    enum simnet_byzantine_class kind,
+    const struct simnet_wire_byzantine_observation *obs)
+{
+    if (!obs)
+        return false;
+    if (kind == SIMNET_BYZ_OVERSIZE_VTX) {
+        return obs->expected_reject_path_observed &&
+               strcmp(obs->reject_reason, "oversized block msg") == 0;
+    }
+    return obs->expected_reason_observed &&
+           strcmp(obs->reject_reason,
+                  simnet_byzantine_expected_reason(kind)) == 0;
+}
+
+static bool sw_run_invalid_block(
+    uint64_t seed, enum simnet_byzantine_class kind,
+    uint64_t *out_fp, struct simnet_wire_stats *out_stats,
+    struct simnet_wire_byzantine_observation *out_obs)
+{
+    blocker_reset_for_testing();
+    blocker_set_clock_for_testing(2000000 + (int64_t)kind * 100000);
+    struct simnet_wire *wire = simnet_wire_create(1, seed);
+    if (!wire)
+        return false;
+
+    bool ok = simnet_wire_start_invalid_block_peer(wire, 0, kind) &&
+              simnet_wire_run(wire, 8192, 512);
+
+    struct simnet_wire_stats st;
+    memset(&st, 0, sizeof(st));
+    struct simnet_wire_byzantine_observation obs;
+    memset(&obs, 0, sizeof(obs));
+    bool got_stats = simnet_wire_get_stats(wire, &st);
+    bool got_obs = simnet_wire_get_byzantine_observation(wire, &obs);
+    if (got_stats) {
+        if (out_stats)
+            *out_stats = st;
+        if (out_fp)
+            *out_fp = st.fingerprint;
+    }
+    if (got_obs && out_obs)
+        *out_obs = obs;
+
+    ok = ok &&
+         got_stats &&
+         got_obs &&
+         sw_stats_monitors_ok(&st) &&
+         obs.kind == kind &&
+         obs.tier == SIMNET_BYZ_TIER_CONNECT_BLOCK &&
+         obs.injected &&
+         obs.rejected &&
+         sw_byz_reason_ok(kind, &obs) &&
+         obs.expected_blocker_observed &&
+         obs.tip_unchanged &&
+         obs.coins_unchanged &&
+         obs.peer_misbehaved &&
+         obs.peer_banned &&
+         obs.peer_disconnected &&
+         obs.honest_after_accepted &&
+         obs.honest_tip_after > obs.tip_after &&
+         st.peer_misbehave_events > 0 &&
+         st.peer_banned_events > 0 &&
+         st.nut_banned &&
+         st.nut_disconnected &&
+         st.not_implemented_peers == 0;
+
+    simnet_wire_free(wire);
+    return ok;
+}
+
+static bool sw_run_invalid_header(
+    uint64_t seed, enum simnet_byzantine_class kind,
+    uint64_t *out_fp, struct simnet_wire_stats *out_stats,
+    struct simnet_wire_byzantine_observation *out_obs)
+{
+    blocker_reset_for_testing();
+    blocker_set_clock_for_testing(3000000 + (int64_t)kind * 100000);
+    struct simnet_wire *wire = simnet_wire_create(1, seed);
+    if (!wire)
+        return false;
+
+    bool ok = simnet_wire_start_invalid_header_peer(wire, 0, kind) &&
+              simnet_wire_run(wire, 8192, 512);
+
+    struct simnet_wire_stats st;
+    memset(&st, 0, sizeof(st));
+    struct simnet_wire_byzantine_observation obs;
+    memset(&obs, 0, sizeof(obs));
+    bool got_stats = simnet_wire_get_stats(wire, &st);
+    bool got_obs = simnet_wire_get_byzantine_observation(wire, &obs);
+    if (got_stats) {
+        if (out_stats)
+            *out_stats = st;
+        if (out_fp)
+            *out_fp = st.fingerprint;
+    }
+    if (got_obs && out_obs)
+        *out_obs = obs;
+
+    ok = ok &&
+         got_stats &&
+         got_obs &&
+         sw_stats_monitors_ok(&st) &&
+         obs.kind == kind &&
+         obs.tier == SIMNET_BYZ_TIER_HEADER_ADMISSION &&
+         obs.injected &&
+         obs.rejected &&
+         obs.expected_reason_observed &&
+         strcmp(obs.reject_reason,
+                simnet_byzantine_expected_reason(kind)) == 0 &&
+         obs.expected_blocker_observed &&
+         obs.tip_unchanged &&
+         obs.coins_unchanged &&
+         obs.peer_misbehaved &&
+         !obs.peer_banned &&
+         st.peer_misbehave_events > 0 &&
+         st.not_implemented_peers == 0;
+
+    simnet_wire_free(wire);
+    return ok;
+}
+
 int test_simnet_wire_peer_malformed_frame(void)
 {
     printf("\n=== simnet_wire malformed frame peer ===\n");
@@ -347,6 +471,80 @@ int test_simnet_wire_mixed_scenario(void)
     return failures;
 }
 
+int test_simnet_wire_peer_invalid_block(void)
+{
+    printf("\n=== simnet_wire invalid block peer ===\n");
+    int failures = 0;
+    static const enum simnet_byzantine_class kinds[] = {
+        SIMNET_BYZ_BAD_MERKLE,
+        SIMNET_BYZ_BAD_CB_AMOUNT,
+        SIMNET_BYZ_BIP30_DUP_TXID,
+        SIMNET_BYZ_MISSING_SPEND,
+        SIMNET_BYZ_IMMATURE_SPEND,
+        SIMNET_BYZ_NEGATIVE_OUTPUT,
+        SIMNET_BYZ_OVERFLOW_OUTPUT,
+        SIMNET_BYZ_OVERSIZE_VTX,
+    };
+
+    for (size_t i = 0; i < sizeof(kinds) / sizeof(kinds[0]); i++) {
+        enum simnet_byzantine_class kind = kinds[i];
+        uint64_t seed = 0x571A00000000c000ULL + (uint64_t)kind;
+        uint64_t fp_a = 0;
+        uint64_t fp_b = 0;
+        struct simnet_wire_stats st;
+        struct simnet_wire_byzantine_observation obs;
+        memset(&st, 0, sizeof(st));
+        memset(&obs, 0, sizeof(obs));
+
+        bool a = sw_run_invalid_block(seed, kind, &fp_a, &st, &obs);
+        bool b = sw_run_invalid_block(seed, kind, &fp_b, NULL, NULL);
+        char label[128];
+        snprintf(label, sizeof(label),
+                 "wire invalid_block %s: reject/blocker/ban/recover",
+                 simnet_byzantine_class_name(kind));
+        SW_CHECK(label, a);
+        snprintf(label, sizeof(label),
+                 "wire invalid_block %s: same-seed deterministic",
+                 simnet_byzantine_class_name(kind));
+        SW_CHECK(label, a && b && fp_a == fp_b);
+        printf("[wire invalid_block] kind=%s fp=0x%016" PRIx64
+               " reason=%s banned=%d honest_h=%d\n",
+               simnet_byzantine_class_name(kind), fp_a,
+               obs.reject_reason, obs.peer_banned ? 1 : 0,
+               obs.honest_tip_after);
+    }
+
+    blocker_reset_for_testing();
+    return failures;
+}
+
+int test_simnet_wire_peer_invalid_header(void)
+{
+    printf("\n=== simnet_wire invalid header peer ===\n");
+    int failures = 0;
+    uint64_t fp_a = 0;
+    uint64_t fp_b = 0;
+    struct simnet_wire_stats st;
+    struct simnet_wire_byzantine_observation obs;
+    memset(&st, 0, sizeof(st));
+    memset(&obs, 0, sizeof(obs));
+
+    bool a = sw_run_invalid_header(0x571A00000000c100ULL,
+                                   SIMNET_BYZ_INVALID_POW,
+                                   &fp_a, &st, &obs);
+    bool b = sw_run_invalid_header(0x571A00000000c100ULL,
+                                   SIMNET_BYZ_INVALID_POW,
+                                   &fp_b, NULL, NULL);
+    SW_CHECK("wire invalid_header: expected reject/blocker observed", a);
+    SW_CHECK("wire invalid_header: same-seed fingerprint deterministic",
+             a && b && fp_a == fp_b);
+    printf("[wire invalid_header] fp=0x%016" PRIx64
+           " reason=%s misbehave=%" PRIu64 "\n",
+           fp_a, obs.reject_reason, st.peer_misbehave_events);
+    blocker_reset_for_testing();
+    return failures;
+}
+
 int test_simnet_wire(void)
 {
     printf("\n=== simnet_wire honest in-memory transport ===\n");
@@ -403,6 +601,8 @@ int test_simnet_wire(void)
     failures += test_simnet_wire_peer_flood();
     failures += test_simnet_wire_peer_slowloris();
     failures += test_simnet_wire_mixed_scenario();
+    failures += test_simnet_wire_peer_invalid_block();
+    failures += test_simnet_wire_peer_invalid_header();
 
     printf("=== simnet_wire: %d failures ===\n", failures);
     return failures;
