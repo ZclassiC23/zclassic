@@ -67,13 +67,24 @@ isolated before treating it as a regression.
     weaker impl (`feat/onchain-memo-channel`, printable-ASCII, scan-on-demand,
     no e2e test) was superseded and NOT merged — delete that branch.
 
-## In flight when this handoff was written (isolated worktrees, NOT merged)
+## In-flight lanes — exact state (isolated worktrees, NOT merged)
 
-- **MCP-over-onion mesh** (`feat/mcp-over-onion` @ `9b4ff1465`) — impl COMMITTED
-  but its adversarial security verifier **failed on a harness error**
-  (StructuredOutput retry cap), so the security verdict never completed. DO NOT
-  merge until an independent adversarial verify passes (default-deny allowlist,
-  always-auth, off-by-default, no bypass). Re-run the verify stage.
+Merged lanes and their worktrees/branches were cleaned up (work is on
+origin/main): zmsg-onchain, wallet-p0, simnet-fuzz, simnet-repro, lane-c, znam,
+groth16-msm (subsumed), and the superseded printable-ASCII memo lane. The five
+worktrees below remain; the OLD `failsafe/*` and `handoff/*` branches predate
+this session and are not part of it.
+
+| Lane | Branch @ commit | State | Next step |
+|------|-----------------|-------|-----------|
+| MCP-over-onion mesh | `feat/mcp-over-onion` @ `9b4ff1465` | impl COMMITTED; adversarial security verifier **died on a harness error** (StructuredOutput retry cap) — verdict never produced | **DO NOT merge** until an independent adversarial verify passes: default-deny allowlist, always-auth over onion, off-by-default, no fall-through to the full REST/MCP surface. Re-run the verify stage only. |
+| Groth16 C23 prover cure | `fix/groth16-c23-prover` @ `be2d7d5ff` | output circuit (7827/7821) + density-filtered MSM both FIXED, unit-pinned, committed. Positive round-trip NOT yet achieved; spend circuit still a stub | Debug the all-or-nothing round-trip using the scratchpad Rust trace harness (`scratchpad/output_circuit.trace`), then port the spend circuit (`scratchpad/spend_circuit.trace`, ~98777 constraints) reusing the new strict-unpack gadgets. Ship-target that retires the librustzcash bridge. |
+| Proof-bundle service | `feat/proof-bundle-service` @ base | impl agent ACTIVELY building (its worktree holds the only live `make`) — not yet committed | Let it finish; then independent verify (each bundle self-verifiable, tamper-negative rejected) → merge. |
+| Storefront service | `feat/storefront-service` @ `500dd86fe` | impl COMMITTED (23 files, listings + order lifecycle + MCP); verdict not captured | Independent verify (parity-safe, error bodies, AR lifecycle, no consensus touch) before merge. Distinct from the example-12 demo lane below. |
+| Storefront demo (example 12) | `feat/agent-storefront-demo` @ base | example 12 + roadmap doc written + syntax-clean in scratchpad, but the impl paused on the build-collision protocol (never committed to its branch) | Resume: with a quiet tree, copy into `examples/`, `make -C examples run` green, commit, verify, merge. |
+
+Reproduce/continue any lane's workflow via its saved script under
+`.../workflows/scripts/` with `resumeFromRunId` (see each Workflow tool result).
 
 - **Groth16 pure-C23 prover cure** (`fix/groth16-c23-prover` @ `be2d7d5ff`).
   Two of three root-caused defects FIXED + unit-pinned + committed:
