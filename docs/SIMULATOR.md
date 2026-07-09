@@ -20,6 +20,10 @@ Source anchors for this matrix are code, not project prose:
 - `lib/test/src/test_simnet_sapling_shielded_send.c`
 - `lib/sim/include/sim/simnet_sapling.h`
 - `lib/sim/src/simnet_sapling.c`
+- `lib/sim/include/sim/simnet_cluster.h`
+- `lib/sim/src/simnet_cluster.c`
+- `lib/test/src/test_simnet_cluster.c`
+- `lib/test/src/test_simnet_fuzz.c`
 - `lib/zslp/include/zslp/slp.h`
 - `lib/zslp/src/slp.c`
 - `lib/znam/include/znam/znam.h`
@@ -174,6 +178,28 @@ branch moves the matrix to `test_simnet_actions.c`, run:
 
 ```bash
 make t ONLY=simnet_actions
+```
+
+### Multi-node cluster fuzz (`simnet_fuzz`)
+
+`test_simnet_fuzz` is a deterministic seed-fuzzer over the REAL multi-node
+simulator (`simnet_cluster` + `simnet_chain`: real `connect_block()` /
+`disconnect_block()` and real chainwork fork-choice). Per seed it derives a
+scenario — node count (2–4), rounds of random-length branch mints, a
+send-side partition (a random subset relays while the rest withhold a private
+branch), then a final heal — drives the cluster to quiescence, and asserts:
+all nodes converge to one tip hash, `simnet_cluster_coins_digest` is identical
+across every node, replay of the same seed is bit-identical (tip + coins
+digest + delivery fingerprint), and — via the `simnet_byzantine` builders in
+the same loop — every rejected block was rejected with a NAMED reason. On any
+failure it prints the failing 64-bit seed and writes a replay capsule
+(postmortem/seed-tape API).
+
+```bash
+make t ONLY=simnet_fuzz
+# deeper nightly sweep + pinned replay:
+ZCL_SIMNET_FUZZ_SEEDS=2000 make t ONLY=simnet_fuzz
+ZCL_SIMNET_FUZZ_SEED=0x51c0ffee5eed0001 make t ONLY=simnet_fuzz
 ```
 
 Run the normal compile and lint gates before shipping simulator edits:

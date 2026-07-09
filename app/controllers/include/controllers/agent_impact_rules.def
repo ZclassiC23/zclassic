@@ -98,6 +98,7 @@ AGENT_IMPACT_RULE("lib/sim/include/sim/simnet_cluster.h", "simnet_cluster make_l
 AGENT_IMPACT_RULE("lib/sim/src/simnet_cluster.c", "simnet_cluster make_lint_gates")
 AGENT_IMPACT_RULE("lib/sim/src/simnet_chain.c", "simnet_cluster make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_simnet_cluster.c", "simnet_cluster make_lint_gates")
+AGENT_IMPACT_RULE("lib/test/src/test_simnet_fuzz.c", "simnet_fuzz simnet_cluster simnet_byzantine make_lint_gates")
 AGENT_IMPACT_RULE("lib/sim/include/sim/simnet_byzantine.h|lib/sim/src/simnet_byzantine.c|lib/test/src/test_simnet_byzantine.c", "simnet_byzantine simnet simnet_cluster make_lint_gates")
 AGENT_IMPACT_RULE("lib/sim/src/simnet_mempool.c|lib/sim/include/sim/simnet_mempool.h|lib/sim/src/simnet_wallet.c|lib/sim/include/sim/simnet_wallet.h|lib/test/src/test_simnet_txkit.c|docs/SIMULATOR_TXNS.md", "simnet_txkit simnet make_lint_gates")
 AGENT_IMPACT_RULE("lib/sim/src/simnet_wire*|lib/sim/include/sim/simnet_wire.h|lib/test/src/test_simnet_wire.c", "simnet_wire make_lint_gates")
