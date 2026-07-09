@@ -862,6 +862,7 @@ int main(void)
     failures += test_chainstate_legacy_reader();
     failures += test_utxo_import_pipeline();
     failures += test_ccoins_decoder_kat();
+    failures += test_coins_record_codec();
     failures += test_blob_read_bounds();
     { extern int test_ldb_snapshot(void);
       failures += test_ldb_snapshot(); }

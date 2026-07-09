@@ -260,6 +260,8 @@ int test_coins(void);
 int test_chainstate_legacy_reader(void);
 int test_utxo_import_pipeline(void);
 int test_ccoins_decoder_kat(void);
+int test_coins_record_codec(void);
+int test_storage_coins_utxo(void);
 int test_blob_read_bounds(void);
 int test_boot_snapshot_drop_bodiless(void);
 int test_tor(void);

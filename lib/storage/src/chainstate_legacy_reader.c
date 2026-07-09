@@ -28,8 +28,7 @@
 
 #include "storage/chainstate_legacy_reader.h"
 
-#include "coins/compressor.h"
-#include "core/serialize.h"
+#include "coins_record_codec.h"
 #include "script/script.h"
 #include "storage/dbwrapper.h"
 #include "util/log_macros.h"
@@ -48,9 +47,7 @@ struct chainstate_legacy_handle {
     /* Decompressed script storage — each vout points into here. */
     struct script *scripts_buf;
     size_t scripts_cap;
-    /* Per-vout-index availability bitset (dynamic). */
-    bool *avail_buf;
-    size_t avail_cap;
+    struct coins_record_scratch codec_scratch;
 };
 
 /* --- helpers --- */
@@ -75,16 +72,39 @@ static bool ensure_vouts_cap(struct chainstate_legacy_handle *h, size_t n)
     return true;
 }
 
-static bool ensure_avail_cap(struct chainstate_legacy_handle *h, size_t n)
+struct chainstate_decode_ctx {
+    struct chainstate_legacy_handle *h;
+    struct legacy_coins *out;
+    size_t live_idx;
+};
+
+static bool chainstate_decode_begin(const struct coins_record_header *hdr,
+                                    void *ctx)
 {
-    if (n <= h->avail_cap) return true;
-    size_t cap = h->avail_cap ? h->avail_cap : 16;
-    while (cap < n) cap *= 2;
-    bool *p = zcl_realloc(h->avail_buf, cap * sizeof(*p),
-                          "chainstate_legacy_avail");
-    if (!p) return false;
-    h->avail_buf = p;
-    h->avail_cap = cap;
+    struct chainstate_decode_ctx *c = (struct chainstate_decode_ctx *)ctx;
+    if (!hdr || !c || !c->h || !c->out)
+        return false;
+    if (!ensure_vouts_cap(c->h, hdr->live_outputs ? hdr->live_outputs : 1))
+        return false;
+    c->live_idx = 0;
+    return true;
+}
+
+static bool chainstate_decode_output(const struct coins_record_output *out,
+                                     void *ctx)
+{
+    struct chainstate_decode_ctx *c = (struct chainstate_decode_ctx *)ctx;
+    if (!out || !c || !c->h || !c->out || c->live_idx >= c->h->vouts_cap)
+        return false;
+
+    struct script *sc = &c->h->scripts_buf[c->live_idx];
+    script_set(sc, out->script, out->script_len);
+
+    c->h->vouts_buf[c->live_idx].n = out->vout;
+    c->h->vouts_buf[c->live_idx].value = out->value;
+    c->h->vouts_buf[c->live_idx].script = sc->data;
+    c->h->vouts_buf[c->live_idx].script_len = sc->size;
+    c->live_idx++;
     return true;
 }
 
@@ -95,122 +115,32 @@ static bool decode_record(struct chainstate_legacy_handle *h,
                           const uint8_t *val, size_t vlen,
                           struct legacy_coins *out)
 {
-    struct byte_stream s;
-    stream_init_from_data(&s, val, vlen);
+    struct chainstate_decode_ctx ctx = {
+        .h = h,
+        .out = out,
+        .live_idx = 0,
+    };
+    struct coins_record_decode_options opts = {
+        .mode = COINS_RECORD_DECODE_CHAINSTATE_LEGACY,
+        .max_outputs = 0,
+        .scratch = &h->codec_scratch,
+    };
+    struct coins_record_decode_ops ops = {
+        .begin = chainstate_decode_begin,
+        .output = chainstate_decode_output,
+    };
+    struct coins_record_decode_result res;
+    enum coins_record_decode_status st =
+        coins_record_decode(val, vlen, &opts, &ops, &ctx, &res);
+    if (st != COINS_RECORD_DECODE_OK)
+        LOG_FAIL("chainstate_legacy", "CCoins decode failed: %s",
+                 coins_record_decode_status_name(st));
 
-    uint64_t version_u = 0;
-    if (!stream_read_varint(&s, &version_u))
-        LOG_FAIL("chainstate_legacy", "read version varint");
-
-    uint64_t code = 0;
-    if (!stream_read_varint(&s, &code))
-        LOG_FAIL("chainstate_legacy", "read code varint");
-
-    bool coinbase = (code & 1u) != 0u;
-    bool avail0   = (code & 2u) != 0u;
-    bool avail1   = (code & 4u) != 0u;
-    /* nMaskCode = (code/8) + ((avail0 || avail1) ? 0 : 1)
-     * — see Bitcoin Core coins.h. */
-    unsigned int nMaskCode =
-        (unsigned int)(code >> 3) + ((avail0 || avail1) ? 0u : 1u);
-
-    /* Scan mask bytes: vAvail starts with [avail0, avail1].  Each mask
-     * byte contributes 8 more avail bits (LSB-first).  Loop continues
-     * until nMaskCode non-zero mask bytes have been consumed.
-     *
-     * This shares the CCoins mask format with coins_db.c but is deliberately
-     * NOT the same routine: this import path reads a trusted, locally-produced
-     * zclassicd chainstate and grows avail_buf without a fixed cap so it never
-     * truncates a legitimately large record; the live node.db read path in
-     * coins_db.c instead caps at 4096 vouts and rejects nMaskCode > 10000 to
-     * bound untrusted-row memory. Do not merge the two — see the matching note
-     * there. */
-    if (!ensure_avail_cap(h, 2))
-        LOG_FAIL("chainstate_legacy", "alloc avail scratch");
-    size_t num_avail = 0;
-    h->avail_buf[num_avail++] = avail0;
-    h->avail_buf[num_avail++] = avail1;
-
-    while (nMaskCode > 0) {
-        uint8_t mask_byte = 0;
-        if (!stream_read_u8(&s, &mask_byte))
-            LOG_FAIL("chainstate_legacy", "read mask byte (truncated value)");
-        if (!ensure_avail_cap(h, num_avail + 8))
-            LOG_FAIL("chainstate_legacy", "grow avail scratch");
-        for (int b = 0; b < 8; b++)
-            h->avail_buf[num_avail++] = ((mask_byte >> b) & 1u) != 0u;
-        if (mask_byte != 0)
-            nMaskCode--;
-    }
-
-    /* Count available vouts and ensure scratch capacity. */
-    size_t live = 0;
-    for (size_t i = 0; i < num_avail; i++)
-        if (h->avail_buf[i]) live++;
-    if (!ensure_vouts_cap(h, live ? live : 1))
-        LOG_FAIL("chainstate_legacy", "alloc vouts scratch");
-
-    size_t live_idx = 0;
-    for (size_t i = 0; i < num_avail; i++) {
-        if (!h->avail_buf[i]) continue;
-        /* Decompress one CTxOut. */
-        uint64_t namt = 0;
-        if (!stream_read_varint(&s, &namt))
-            LOG_FAIL("chainstate_legacy", "read amount varint");
-        uint64_t nsize = 0;
-        if (!stream_read_varint(&s, &nsize))
-            LOG_FAIL("chainstate_legacy", "read script-size varint");
-
-        struct script *sc = &h->scripts_buf[live_idx];
-        script_init(sc);
-
-        if (nsize < 6) {
-            unsigned int spec = script_compress_special_size((unsigned int)nsize);
-            uint8_t buf[64];
-            if (spec == 0 || spec > sizeof(buf))
-                LOG_FAIL("chainstate_legacy", "bad special script size");
-            if (!stream_read_bytes(&s, buf, spec))
-                LOG_FAIL("chainstate_legacy", "read special script bytes");
-            if (!script_decompress(sc, (unsigned int)nsize, buf, spec))
-                LOG_FAIL("chainstate_legacy", "script_decompress failed");
-        } else {
-            uint64_t raw_len = nsize - 6;
-            if (raw_len > MAX_SCRIPT_SIZE) {
-                /* Bitcoin Core replaces with OP_RETURN and skips.  Do
-                 * the same — preserves byte stream alignment so the
-                 * trailing VARINT(height) still parses. */
-                if (s.read_pos + raw_len > s.size)
-                    LOG_FAIL("chainstate_legacy", "oversize script truncated");
-                sc->data[0] = OP_RETURN;
-                sc->size = 1;
-                s.read_pos += (size_t)raw_len;
-            } else {
-                if (!stream_read_bytes(&s, sc->data, (size_t)raw_len))
-                    LOG_FAIL("chainstate_legacy", "read raw script bytes");
-                sc->size = (size_t)raw_len;
-            }
-        }
-
-        h->vouts_buf[live_idx].n = (unsigned int)i;
-        h->vouts_buf[live_idx].value = (int64_t)decompress_amount(namt);
-        h->vouts_buf[live_idx].script = sc->data;
-        h->vouts_buf[live_idx].script_len = sc->size;
-        live_idx++;
-    }
-
-    uint64_t height_u = 0;
-    if (!stream_read_varint(&s, &height_u))
-        LOG_FAIL("chainstate_legacy", "read height varint");
-
-    /* Trailing bytes are tolerated (compatible with Cleanup() that
-     * drops trailing fully-spent vouts on re-serialize) but not
-     * expected for a clean DB. */
-
-    out->version  = (int)version_u;
-    out->coinbase = coinbase;
-    out->height   = (int)height_u;
+    out->version  = res.version;
+    out->coinbase = res.is_coinbase;
+    out->height   = res.height;
     out->vouts    = h->vouts_buf;
-    out->num_vouts = live;
+    out->num_vouts = ctx.live_idx;
     return true;
 }
 
@@ -251,7 +181,7 @@ void chainstate_legacy_close(void *handle)
     db_wrapper_close(&h->db);
     free(h->vouts_buf);
     free(h->scripts_buf);
-    free(h->avail_buf);
+    coins_record_scratch_free(&h->codec_scratch);
     free(h);
 }
 

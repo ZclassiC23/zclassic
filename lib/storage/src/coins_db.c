@@ -5,7 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "storage/coins_db.h"
-#include "coins/undo.h"
+#include "coins_record_codec.h"
 #include "core/serialize.h"
 #include "util/log_macros.h"
 #include <stdio.h>
@@ -57,6 +57,35 @@ static struct coins_view_vtable cvdb_vtable = {
     .get_stats = NULL,
 };
 
+struct coins_db_decode_ctx {
+    struct coins *out;
+};
+
+static bool coins_db_decode_begin(const struct coins_record_header *hdr,
+                                  void *ctx)
+{
+    struct coins_db_decode_ctx *c = (struct coins_db_decode_ctx *)ctx;
+    if (!hdr || !c || !c->out)
+        return false;
+    c->out->version = hdr->version;
+    c->out->is_coinbase = hdr->is_coinbase;
+    if (!coins_alloc(c->out, hdr->num_avail))
+        return false;
+    return true;
+}
+
+static bool coins_db_decode_output(const struct coins_record_output *out,
+                                   void *ctx)
+{
+    struct coins_db_decode_ctx *c = (struct coins_db_decode_ctx *)ctx;
+    if (!out || !c || !c->out || out->vout >= c->out->num_vout)
+        return false;
+    c->out->vout[out->vout].value = out->value;
+    script_set(&c->out->vout[out->vout].script_pub_key,
+               out->script, out->script_len);
+    return true;
+}
+
 bool coins_view_db_open(struct coins_view_db *cvdb, const char *path,
                         size_t cache_size, bool memory, bool wipe)
 {
@@ -85,82 +114,27 @@ bool coins_view_db_get_coins(struct coins_view_db *cvdb,
     if (!db_read(&cvdb->db, key, keylen, &val, &vallen))
         return false;
 
-    struct byte_stream s;
-    stream_init_from_data(&s, (unsigned char *)val, vallen);
-
-    uint64_t nVersion = 0;
-    if (!stream_read_varint(&s, &nVersion)) {
-        stream_free(&s); free(val);
-        LOG_FAIL("coins_db", "get_coins: read nVersion varint failed");
+    struct coins_db_decode_ctx ctx = { .out = out };
+    struct coins_record_decode_options opts = {
+        .mode = COINS_RECORD_DECODE_COINS_DB,
+        .max_outputs = 0,
+        .scratch = NULL,
+    };
+    struct coins_record_decode_ops ops = {
+        .begin = coins_db_decode_begin,
+        .output = coins_db_decode_output,
+    };
+    struct coins_record_decode_result res;
+    enum coins_record_decode_status st =
+        coins_record_decode((const uint8_t *)val, vallen, &opts, &ops, &ctx,
+                            &res);
+    if (st != COINS_RECORD_DECODE_OK) {
+        free(val);
+        LOG_FAIL("coins_db", "get_coins: CCoins decode failed: %s",
+                 coins_record_decode_status_name(st));
     }
-    out->version = (int)nVersion;
+    out->height = res.height;
 
-    uint64_t nCode = 0;
-    if (!stream_read_varint(&s, &nCode)) {
-        stream_free(&s); free(val);
-        LOG_FAIL("coins_db", "get_coins: read nCode varint failed");
-    }
-    out->is_coinbase = (nCode & 1) != 0;
-    bool vout0_present = (nCode & 2) != 0;
-    bool vout1_present = (nCode & 4) != 0;
-    unsigned int nMaskCode = (unsigned int)(nCode / 8) +
-        ((vout0_present || vout1_present) ? 0 : 1);
-
-    if (nMaskCode > 10000) {
-        stream_free(&s); free(val);
-        LOG_FAIL("coins_db", "get_coins: nMaskCode %u exceeds limit", nMaskCode);
-    }
-
-    /* Build availability vector: vAvail[0..1] from flags, rest from mask bytes.
-     *
-     * This decode shares the CCoins on-disk mask format with
-     * chainstate_legacy_reader.c, but the two MUST NOT be folded into one
-     * helper: this live read path is hardened (nMaskCode > 10000 reject above,
-     * plus the fixed 4096-vout bound below) so a malformed node.db row cannot
-     * amplify memory; the legacy reader grows its buffer unbounded by design
-     * for trusted external-chainstate import. Unifying them would either strip
-     * this DoS bound or impose truncation on the import path. Keep them
-     * separate. */
-    size_t num_avail = 2;
-    bool avail_stack[4096];
-    avail_stack[0] = vout0_present;
-    avail_stack[1] = vout1_present;
-
-    unsigned int mask_remaining = nMaskCode;
-    while (mask_remaining > 0) {
-        unsigned char ch = 0;
-        if (!stream_read_bytes(&s, &ch, 1)) {
-            stream_free(&s); free(val);
-            LOG_FAIL("coins_db", "get_coins: read mask byte failed");
-        }
-        for (unsigned int p = 0; p < 8 && num_avail < 4096; p++)
-            avail_stack[num_avail++] = (ch & (1 << p)) != 0;
-        if (ch != 0)
-            mask_remaining--;
-    }
-
-    if (!coins_alloc(out, num_avail)) {
-        stream_free(&s); free(val);
-        LOG_FAIL("coins_db",
-                 "get_coins: coins_alloc failed for %zu vouts", num_avail);
-    }
-    for (size_t i = 0; i < num_avail; i++) {
-        if (avail_stack[i]) {
-            if (!compressed_txout_deserialize(&out->vout[i], &s)) {
-                stream_free(&s); free(val);
-                LOG_FAIL("coins_db", "get_coins: compressed txout deserialize failed at vout %zu", i);
-            }
-        }
-    }
-
-    uint64_t h = 0;
-    if (!stream_read_varint(&s, &h)) {
-        stream_free(&s); free(val);
-        LOG_FAIL("coins_db", "get_coins: read height varint failed");
-    }
-    out->height = (int)h;
-
-    stream_free(&s);
     free(val);
     coins_cleanup(out);
     return true;
@@ -213,60 +187,7 @@ bool coins_view_db_batch_write(struct coins_view_db *cvdb,
                 struct byte_stream s;
                 stream_init(&s, 256);
                 const struct coins *cc = &e->entry.coins;
-
-                stream_write_varint(&s, (uint64_t)cc->version);
-
-                bool vout0 = cc->num_vout > 0 && !tx_out_is_null(&cc->vout[0]);
-                bool vout1 = cc->num_vout > 1 && !tx_out_is_null(&cc->vout[1]);
-
-                /* Compute mask per C++ CCoins::CalcMaskSize:
-                 * nMaskSize = total bytes up to last non-zero byte
-                 * nMaskCode = count of non-zero bytes (used in nCode) */
-                unsigned int nMaskSize = 0;
-                unsigned int nMaskCode = 0;
-                for (size_t vi = 2; vi < cc->num_vout; vi++) {
-                    if (!tx_out_is_null(&cc->vout[vi])) {
-                        unsigned int byte_pos = (unsigned int)((vi - 2) / 8) + 1;
-                        if (byte_pos > nMaskSize)
-                            nMaskSize = byte_pos;
-                    }
-                }
-                /* Count non-zero mask bytes */
-                for (unsigned int mi = 0; mi < nMaskSize; mi++) {
-                    unsigned char ch = 0;
-                    for (unsigned int p = 0; p < 8; p++) {
-                        size_t idx = 2 + mi * 8 + p;
-                        if (idx < cc->num_vout && !tx_out_is_null(&cc->vout[idx]))
-                            ch |= (1 << p);
-                    }
-                    if (ch != 0)
-                        nMaskCode++;
-                }
-
-                uint64_t nCode = 8 * (nMaskCode - ((vout0 || vout1) ? 0 : 1))
-                                 + (cc->is_coinbase ? 1 : 0)
-                                 + (vout0 ? 2 : 0)
-                                 + (vout1 ? 4 : 0);
-                stream_write_varint(&s, nCode);
-
-                /* Write spentness bitmask */
-                for (unsigned int mi = 0; mi < nMaskSize; mi++) {
-                    unsigned char ch = 0;
-                    for (unsigned int p = 0; p < 8; p++) {
-                        size_t idx = 2 + mi * 8 + p;
-                        if (idx < cc->num_vout && !tx_out_is_null(&cc->vout[idx]))
-                            ch |= (1 << p);
-                    }
-                    stream_write_bytes(&s, &ch, 1);
-                }
-
-                /* Write available outputs */
-                for (size_t vi = 0; vi < cc->num_vout; vi++) {
-                    if (!tx_out_is_null(&cc->vout[vi]))
-                        compressed_txout_serialize(&cc->vout[vi], &s);
-                }
-
-                stream_write_varint(&s, (uint64_t)cc->height);
+                (void)coins_record_encode(cc, &s);
 
                 db_batch_put(&batch, key, keylen, (char *)s.data, s.size);
                 stream_free(&s);
@@ -282,4 +203,3 @@ bool coins_view_db_batch_write(struct coins_view_db *cvdb,
     db_batch_free(&batch);
     return ok;
 }
-
