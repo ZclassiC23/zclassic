@@ -233,6 +233,78 @@ static int test_write_then_reopen_preserves_keys(void)
     return failures;
 }
 
+/* Regression for the SQLITE_BUSY key-persistence failure: when a concurrent
+ * connection holds the node.db WAL write lock, wallet_sqlite_flush_r must
+ * retry BEGIN IMMEDIATE and fail CLEANLY (no partial/corrupt state, no crash)
+ * rather than silently strand keys; once the lock frees, the same flush must
+ * succeed and durably persist. Deterministic: the holder is released between
+ * the two flush calls (no threads, no timing assertions). */
+static int test_flush_retries_under_write_lock(void)
+{
+    int failures = 0;
+    TEST("wallet_persistence: flush retries under a held WAL write lock") {
+        clear_passphrase();
+
+        char path[80];
+        snprintf(path, sizeof(path),
+                 "./test-tmp/wallet_lock_%d.db", (int)getpid());
+        mkdir("./test-tmp", 0755);
+        unlink(path);
+
+        /* Wallet connection: WAL + a short busy_timeout so the four bounded
+         * retries resolve quickly when the lock is genuinely held. */
+        sqlite3 *db = open_fixture_db(path, true);
+        ASSERT(db);
+        sqlite3_exec(db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
+        sqlite3_busy_timeout(db, 100);
+
+        struct wallet_sqlite ws;
+        ASSERT(wallet_sqlite_open_r(&ws, db).ok);
+
+        struct wallet *w = alloc_wallet();
+        ASSERT(w);
+        struct privkey key;
+        struct pubkey pk;
+        make_test_key(&key, &pk, 0x5A);
+        ASSERT(keystore_add_key(&w->keystore, &key));
+
+        /* Second connection holds the WAL write lock. */
+        sqlite3 *holder = NULL;
+        ASSERT(sqlite3_open(path, &holder) == SQLITE_OK);
+        sqlite3_busy_timeout(holder, 0);
+        ASSERT(sqlite3_exec(holder, "BEGIN IMMEDIATE", NULL, NULL, NULL)
+               == SQLITE_OK);
+        ASSERT(sqlite3_exec(holder,
+               "INSERT INTO node_state(key,value) VALUES('lock',x'00')",
+               NULL, NULL, NULL) == SQLITE_OK);
+
+        /* Flush loses the lock race: it must fail cleanly, not corrupt. */
+        struct zcl_result busy = wallet_sqlite_flush_r(&ws, w);
+        ASSERT(!busy.ok);
+
+        /* Release the lock; the retry contract says the next flush wins. */
+        ASSERT(sqlite3_exec(holder, "COMMIT", NULL, NULL, NULL) == SQLITE_OK);
+        sqlite3_close(holder);
+
+        struct zcl_result ok = wallet_sqlite_flush_r(&ws, w);
+        ASSERT(ok.ok);
+
+        /* The key is now durably persisted. */
+        struct privkey got;
+        privkey_init(&got);
+        ASSERT(wallet_sqlite_read_single_key(&ws, &pk, &got).ok);
+        ASSERT(memcmp(got.vch, key.vch, 32) == 0);
+        memory_cleanse(got.vch, 32);
+
+        wallet_sqlite_close(&ws);
+        sqlite3_close(db);
+        free_wallet(w);
+        unlink(path);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_read_single_key_not_found(void)
 {
     int failures = 0;
@@ -460,6 +532,7 @@ int test_wallet_persistence_cycle(void)
     failures += test_open_empty_schema_ok();
     failures += test_self_test_passes();
     failures += test_write_then_reopen_preserves_keys();
+    failures += test_flush_retries_under_write_lock();
     failures += test_read_single_key_not_found();
     failures += test_delete_key_roundtrip();
     failures += test_write_key_invariants();

@@ -34,6 +34,13 @@
  * probes never pass. */
 #define WSQL_CANARY_KEY "wallet_sqlite_canary"
 
+/* Bounded BEGIN IMMEDIATE retries for wallet_sqlite_flush_r under WAL
+ * write-lock contention. Each attempt already blocks up to the connection
+ * busy_timeout via the SQLite busy handler, so this bounds total wait to
+ * ~attempts × busy_timeout — enough to outlast a bulk-catch-up commit window
+ * without hanging a key persist indefinitely. */
+#define WALLET_FLUSH_BEGIN_MAX_ATTEMPTS 4
+
 /* Counts rows dropped by read_keys_r because decode/decrypt failed.
  * Surfaced via wallet_sqlite_read_keys_corrupt_count() and, by
  * extension, the getwalletinfo.persistence JSON block.  Boot is
@@ -1062,11 +1069,42 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
         return wsql_fail(ws, ZCL_ERR(WSQL_DB_NOT_OPEN,
             "flush: wallet_sqlite is not open"));
 
-    char *begin_err = NULL;
-    int rc = sqlite3_exec(ws->db, "BEGIN", NULL, NULL, &begin_err);
-    if (rc != SQLITE_OK) {
+    /* Acquire the write transaction with BEGIN IMMEDIATE + a bounded retry.
+     *
+     * The wallet shares the node.db file with the reducer/coins and projection
+     * writers (separate WAL connections). During bulk catch-up a coins/reducer
+     * commit can hold the single WAL write lock longer than one busy_timeout
+     * window, so a key persist that waits only one window fails with
+     * SQLITE_BUSY and strands keypool keys in RAM (getnewaddress then refuses,
+     * correctly, to hand out an unsaved address). BEGIN IMMEDIATE takes the
+     * write lock atomically at begin (each sqlite3_exec already blocks up to
+     * the connection busy_timeout via the busy handler); retrying the begin a
+     * few times waits out even a long commit window. Key persistence is rare
+     * and not latency-critical, so a slower success beats losing the key.
+     *
+     * The retry runs BEFORE taking w->cs, so a contended flush never blocks
+     * other wallet operations on the wallet mutex, and this path is only ever
+     * reached from RPC handlers — never the reducer drive — so waiting here
+     * cannot violate the reducer lock-order invariant. */
+    int rc = SQLITE_OK;
+    for (int begin_attempt = 0; ; begin_attempt++) {
+        char *begin_err = NULL;
+        rc = sqlite3_exec(ws->db, "BEGIN IMMEDIATE", NULL, NULL, &begin_err);
+        if (rc == SQLITE_OK) {
+            if (begin_err) sqlite3_free(begin_err);
+            break;
+        }
+        bool busy = (rc == SQLITE_BUSY || rc == SQLITE_LOCKED);
+        if (busy && begin_attempt + 1 < WALLET_FLUSH_BEGIN_MAX_ATTEMPTS) {
+            LOG_WARN("wallet_sqlite",
+                     "flush: BEGIN IMMEDIATE busy (rc=%d), retry %d/%d",
+                     rc, begin_attempt + 1, WALLET_FLUSH_BEGIN_MAX_ATTEMPTS);
+            if (begin_err) sqlite3_free(begin_err);
+            continue;
+        }
         struct zcl_result r = ZCL_ERR(WSQL_TXN_BEGIN_FAIL,
-            "flush: BEGIN failed: %s", begin_err ? begin_err : "(unknown)");
+            "flush: BEGIN IMMEDIATE failed after %d attempt(s): %s",
+            begin_attempt + 1, begin_err ? begin_err : "(unknown)");
         if (begin_err) sqlite3_free(begin_err);
         return wsql_fail(ws, r);
     }
