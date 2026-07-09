@@ -1428,6 +1428,7 @@ static void print_usage(const char *prog)
     printf("  -profile=<name>     Service profile: full, zclassic-only, explorer, onion-node, legacy-compat\n");
     printf("  -operator-lane=<name>  Operator lane: canonical, soak, dev, test, copy\n");
     printf("  -nolegacyimport     Do not auto-read/link ~/.zclassic during boot\n");
+    printf("  -backfill-nullifiers  One-shot owner-gated C-3 nullifier history backfill\n");
     printf("  -enforce-sapling-root  Reject ANY hashFinalSaplingRoot mismatch\n");
     printf("                      (default OFF: only all-zeros is rejected).\n");
     printf("                      DO NOT use on the live node until a full-history\n");
@@ -2464,6 +2465,9 @@ int main(int argc, char **argv)
         !app_operator_lane_parse(env_lane, &ctx.operator_lane)) {
         fprintf(stderr, "Ignoring unknown ZCL_OPERATOR_LANE=%s\n", env_lane);
     }
+    const char *env_nf_backfill = getenv("ZCL_NULLIFIER_BACKFILL");
+    if (env_nf_backfill && strcmp(env_nf_backfill, "1") == 0)
+        ctx.backfill_nullifiers = true;
 
     bool show_metrics = true;
 
@@ -2516,6 +2520,7 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-mint-anchor-fast") == 0) ctx.mint_anchor_fast = true;
         else if (strcmp(argv[i], "-reindex-explorer") == 0) ctx.reindex_explorer = true;
         else if (strcmp(argv[i], "-backfill-zslp") == 0) ctx.backfill_zslp = true;
+        else if (strcmp(argv[i], "-backfill-nullifiers") == 0) ctx.backfill_nullifiers = true;
         else if (strcmp(argv[i], "-reimport-utxos") == 0) ctx.reimport_utxos = true;
         else if (strcmp(argv[i], "-allow-degraded") == 0) ctx.allow_degraded = true;
         else if (strncmp(argv[i], "-showmetrics=", 13) == 0) show_metrics = atoi(argv[i]+13) != 0;
@@ -2698,6 +2703,8 @@ int main(int argc, char **argv)
      * below would call app_add_node() against a NULL connman. The backfill
      * committed through SQLite WAL, so the data is durable without a shutdown. */
     if (ctx.backfill_zslp)
+        return 0;
+    if (ctx.backfill_nullifiers)
         return 0;
 
     /* -mint-anchor is a one-shot ceremony: app_init reset the staged reducer to

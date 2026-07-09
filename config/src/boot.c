@@ -22,6 +22,7 @@
 #include "services/chain_restore_integrity.h"
 #include "services/chain_restore_repair.h"
 #include "services/chain_state_service.h"
+#include "services/nullifier_backfill_service.h"
 #include "util/service_state.h"
 #include "services/service_state_driver.h"
 #include "services/chain_tip.h"
@@ -3588,6 +3589,34 @@ sapling_tree_boot_check_done:
      * so the backfill re-walks genesis..tip (node.db only, boot_index.c). */
     if (ctx->reindex_explorer && g_node_db.open)
         boot_reindex_explorer(&g_node_db);
+
+    /* -backfill-nullifiers / ZCL_NULLIFIER_BACKFILL=1: one-shot
+     * populate-only remediation for the nullifier activation gap. Runs
+     * before P2P/RPC/runtime services and exits through main.c. */
+    if (ctx->backfill_nullifiers) {
+        struct nullifier_backfill_config nbc = {
+            .ndb = &g_node_db,
+            .progress_db = progress_store_db(),
+            .datadir = ctx->datadir,
+        };
+        struct nullifier_backfill_report nbr;
+        struct zcl_result r =
+            nullifier_backfill_service_run(&nbc, &nbr);
+        if (!r.ok) {
+            fprintf(stderr, // obs-ok:nullifier-backfill-terminal-fatal
+                    "FATAL: nullifier backfill failed: code=%d %s\n",
+                    r.code, r.message);
+            return false;
+        }
+        printf("Nullifier backfill: complete=%s already_complete=%s "
+               "range=[%lld,%lld) scanned=%lld\n",
+               nbr.completed ? "true" : "false",
+               nbr.already_complete ? "true" : "false",
+               (long long)nbr.start_height,
+               (long long)nbr.target_exclusive,
+               (long long)nbr.blocks_scanned);
+        return true;
+    }
 
     /* -backfill-zslp: one-shot re-derive of zslp_* from op_returns (no full
      * block re-walk), then exit before services. The helper guards db-open. */

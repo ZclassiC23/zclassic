@@ -125,6 +125,15 @@ struct app_context {
                                  * from the existing op_returns(is_slp=1) rows
                                  * (no full reindex), then exit. node.db only;
                                  * never touches coins_kv/progress.kv/consensus. */
+    bool backfill_nullifiers;  /* -backfill-nullifiers or
+                                 * ZCL_NULLIFIER_BACKFILL=1 : owner-gated
+                                 * one-shot remediation for the C-3 activation
+                                 * gap. Re-walks already-applied block bodies
+                                 * below nullifier_kv.activation_cursor and
+                                 * inserts revealed Sprout/Sapling nullifiers
+                                 * through the existing utxo_apply nullifier
+                                 * writer, then exits before services. Populate
+                                 * only: no consensus predicate changes. */
     bool tor;
     const char *defer_proof_validation_below;  /* block hash: defer Groth16 at/below this height */
     bool no_services;          /* skip P2P, RPC, Tor — boot only (speedrun) */
