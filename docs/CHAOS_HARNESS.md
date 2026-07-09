@@ -239,7 +239,89 @@ assertions over broad smoke checks.
   `graceful_shutdowns`, `partition_drops`, `sim_time`,
   `auto_reindex_anchor`, `auto_reindex_count`, `auto_reindex_pending`,
   `auto_reindex_terminal`, `auto_reindex_requests`, and
-  `auto_reindex_clears`.
+  `auto_reindex_clears`. In `mode simnet` (below), two more metrics are
+  available: `simnet_converged` and `simnet_tip_monotonic`.
+
+## Simnet mode: driving a REAL cluster
+
+Every command above is bookkeeping-only: `sim_peer` counts blocks and bytes
+but never calls into consensus. `mode simnet` switches a scenario into a
+different engine that drives an actual `lib/sim/simnet_cluster` — real
+`connect_block`/`disconnect_block`, real nChainWork fork-choice, real
+Sapling-ready coins views. Use it when a scenario needs to prove something
+about *consensus behavior* (a reorg really disconnects and reconnects, a
+partitioned peer really diverges and really re-converges), not just about
+the harness's own counters.
+
+`mode simnet` must be the first simnet-related line in the file (a
+scenario cannot mix legacy `peer_count`/`send_block`/etc with simnet mode).
+Commands:
+
+`mode simnet`
+: Switches the scenario into simnet mode. No other simnet_* command is
+  valid before this line.
+
+`simnet_nodes N`
+: Creates an N-node cluster (2..16) seeded with the scenario's `seed`.
+  Must run exactly once, after `seed` and `mode simnet`.
+
+`simnet_mint node=I`
+: Mints one block on node `I`'s own local view. Mining is independent per
+  node until relayed — build competing branches by minting on different
+  nodes before relaying either.
+
+`simnet_relay node=I`
+: Broadcasts every block node `I` has minted but not yet relayed to every
+  peer NOT currently partitioned from `I`.
+
+`simnet_deliver`
+: Drains the deterministic delivery queue (real accept/connect on each
+  receiving node) and records each node's tip height for the monotonicity
+  check below.
+
+`simnet_partition a=I b=J`
+: Severs the `I<->J` link. Relays from `I` no longer reach `J` (and vice
+  versa) until healed.
+
+`simnet_heal a=I b=J`
+: Restores the `I<->J` link and resyncs both directions — every block `I`
+  has ever minted, targeted at `J` only (and vice versa), so a peer that
+  missed relays sent to OTHERS while partitioned still catches all the way
+  up. Follow with `simnet_deliver` to actually process the resync.
+
+### Invariants
+
+At the end of every simnet-mode run, regardless of what the scenario wrote
+as `expect` assertions, the harness:
+
+1. Drains any still-pending deliveries (`simnet_deliver` is idempotent, so
+   this is a no-op if the scenario already drained explicitly).
+2. Checks **cluster convergence**: every node's tip hash AND coins-view
+   digest must be identical.
+3. Checks **per-node tip monotonicity**: no node's tip height may have
+   regressed between any two `simnet_deliver`/end-of-run observations.
+
+On either violation the harness prints `SIMNET REPRO SEED=0x<hex>` (the
+scenario's seed) to stdout and exits nonzero — the same one-liner shape as
+`wire_sweep`'s `FAIL seed=0x...`, so a failing simnet scenario is
+replayable the same way: rerun with `--seed=0x<hex> --verbose`. A scenario
+can also assert the same two things explicitly and earlier, mid-run, via
+`expect simnet_converged == 1` / `expect simnet_tip_monotonic == 1`.
+
+Checked-in fixtures: `tools/sim/scenarios/simnet_partition_heal.scenario`
+(sever then heal a link, prove the isolated peer catches all the way up)
+and `tools/sim/scenarios/simnet_competing_reorg.scenario` (two isolated
+branches of different work, relayed and delivered together, prove the
+loser really reorgs via real `disconnect_block`/`connect_block`). Both run
+as part of `make chaos` like every other scenario. The in-process
+regression test lives in `test_chaos_harness` (`lib/test/src/test_chaos_harness.c`),
+including a deliberately-unconverged scenario proving the invariant check
+fires instead of silently reporting PASS.
+
+Because `mode simnet` links the real consensus/coins/script/validation
+stack, `zclassic23-chaos` is now built the same whole-program-LTO way as
+`wire_sweep`/`test_parallel` (`$(ALL_SRCS)`), not a hand-picked file list —
+expect a longer first build, same as any other `ALL_SRCS`-linked tool.
 
 ## Adding Fault Injection
 

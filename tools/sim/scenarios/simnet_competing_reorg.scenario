@@ -1,0 +1,27 @@
+# simnet mode: competing-chains reorg over a REAL simnet_cluster. Two nodes
+# mine independent branches in isolation (no relay until both are built);
+# node 1's branch has strictly more work, so once both branches are relayed
+# and delivered, node 0 must really disconnect its own 3 blocks and connect
+# node 1's 4-block branch via the real consensus connect_block/disconnect_block
+# path (not a counter update).
+
+seed 0xBEEF000000000002
+mode simnet
+simnet_nodes 2
+
+simnet_mint node=0
+simnet_mint node=0
+simnet_mint node=0
+
+simnet_mint node=1
+simnet_mint node=1
+simnet_mint node=1
+simnet_mint node=1
+
+simnet_relay node=0
+simnet_relay node=1
+simnet_deliver
+
+expect simnet_converged == 1
+expect simnet_tip_monotonic == 1
+expect no_crash

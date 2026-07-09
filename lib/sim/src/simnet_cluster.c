@@ -296,6 +296,15 @@ bool simnet_cluster_broadcast(struct simnet_cluster *cluster,
                               size_t from_node,
                               const struct uint256 *block_hash)
 {
+    return simnet_cluster_broadcast_except(cluster, from_node, block_hash,
+                                           NULL);
+}
+
+bool simnet_cluster_broadcast_except(struct simnet_cluster *cluster,
+                                     size_t from_node,
+                                     const struct uint256 *block_hash,
+                                     const bool *exclude_to)
+{
     if (!cluster || from_node >= cluster->node_count || !block_hash)
         LOG_FAIL("simnet.cluster", "invalid broadcast request");
     if (!simnet_chain_has_block(cluster->nodes[from_node], block_hash))
@@ -309,6 +318,8 @@ bool simnet_cluster_broadcast(struct simnet_cluster *cluster,
 
     for (size_t to = 0; to < cluster->node_count; to++) {
         if (to == from_node)
+            continue;
+        if (exclude_to && exclude_to[to])
             continue;
         if (!simnet_cluster_enqueue(cluster, from_node, to, block_hash,
                                     first_seen))
@@ -349,6 +360,14 @@ bool simnet_cluster_coins_digest(struct simnet_cluster *cluster,
     if (!cluster || node_id >= cluster->node_count || !out)
         LOG_FAIL("simnet.cluster", "invalid digest node=%zu", node_id);
     return simnet_chain_coins_digest(cluster->nodes[node_id], out);
+}
+
+bool simnet_cluster_tip_height(const struct simnet_cluster *cluster,
+                               size_t node_id, int32_t *out_height)
+{
+    if (!cluster || node_id >= cluster->node_count || !out_height)
+        LOG_FAIL("simnet.cluster", "invalid tip height node=%zu", node_id);
+    return simnet_chain_tip_height(cluster->nodes[node_id], out_height);
 }
 
 uint64_t simnet_cluster_delivery_fingerprint(

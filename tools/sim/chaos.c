@@ -11,6 +11,7 @@
 #include <ctype.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -19,9 +20,13 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include "chain/chainparams.h"
+#include "coins/utxo_commitment.h"
+#include "core/uint256.h"
 #include "net/net_fault.h"
 #include "platform/time_compat.h"
 #include "sim/sim_peer.h"
+#include "sim/simnet_cluster.h"
 #include "storage/boot_auto_reindex.h"
 #include "util/parse_num.h"
 #include "util/safe_alloc.h"
@@ -30,6 +35,21 @@
 #define CHAOS_MAX_ARGS 16
 #define CHAOS_MAX_EXPECTS 64
 #define CHAOS_TMP_PATH 256
+#define CHAOS_SIMNET_MIN_NODES 2
+#define CHAOS_SIMNET_MAX_NODES 16
+
+/* Per-node bookkeeping the chaos DSL keeps ON TOP of simnet_cluster so
+ * `simnet_relay`/`simnet_heal` can target specific peers without the
+ * cluster itself knowing about "partitions" (simnet_cluster only knows
+ * broadcast + deliver). `mints` records every hash minted on this node in
+ * order, so a heal can always do a full resync to the newly-reachable
+ * peer regardless of what had already been relayed elsewhere. */
+struct chaos_simnet_node {
+    struct uint256 *mints;
+    size_t mint_count;
+    size_t mint_cap;
+    size_t relayed_count;
+};
 
 struct chaos_ctx {
     const char *scenario_path;
@@ -73,6 +93,19 @@ struct chaos_ctx {
     int64_t auto_reindex_clears;
     int64_t auto_reindex_pending;
     int64_t auto_reindex_terminal;
+
+    /* Real-cluster ("simnet") mode: a chaos scenario drives an actual
+     * simnet_cluster (real connect_block/disconnect_block, real
+     * fork-choice) instead of the bookkeeping-only sim_peer counters
+     * above. Backward compatible: a scenario that never says
+     * `mode simnet` never touches any field below. */
+    bool simnet_mode;
+    struct simnet_cluster *simnet;
+    size_t simnet_node_count;
+    struct chaos_simnet_node *simnet_nodes;
+    bool *simnet_partitioned;    /* node_count*node_count, row-major */
+    int32_t *simnet_last_height; /* per node; INT32_MIN = unobserved */
+    bool simnet_monotonic_ok;
 };
 
 typedef int (*chaos_handler_fn)(struct chaos_ctx *ctx, int argc, char **argv,
@@ -107,6 +140,27 @@ static void chaos_ctx_init(struct chaos_ctx *ctx)
     ctx->clock_src.monotonic_us = chaos_clock_monotonic_us;
     ctx->clock_src.wall_unix = chaos_clock_wall_unix;
     ctx->clock_src.user = ctx;
+    ctx->simnet_monotonic_ok = true;
+}
+
+static void chaos_simnet_cleanup(struct chaos_ctx *ctx)
+{
+    if (!ctx)
+        return;
+    if (ctx->simnet_nodes) {
+        for (size_t i = 0; i < ctx->simnet_node_count; i++)
+            free(ctx->simnet_nodes[i].mints);
+        free(ctx->simnet_nodes);
+        ctx->simnet_nodes = NULL;
+    }
+    free(ctx->simnet_partitioned);
+    ctx->simnet_partitioned = NULL;
+    free(ctx->simnet_last_height);
+    ctx->simnet_last_height = NULL;
+    if (ctx->simnet) {
+        simnet_cluster_free(ctx->simnet);
+        ctx->simnet = NULL;
+    }
 }
 
 static const char *arg_value(int argc, char **argv, const char *key)
@@ -383,6 +437,12 @@ static int write_failure_artifacts(const struct chaos_ctx *ctx)
             ctx->clock_advance_seconds);
     fprintf(summary, "scheduled_events=%" PRIu64 "\n",
             ctx->scheduled_event_count);
+    fprintf(summary, "simnet_mode=%d\n", ctx->simnet_mode ? 1 : 0);
+    if (ctx->simnet_mode) {
+        fprintf(summary, "simnet_node_count=%zu\n", ctx->simnet_node_count);
+        fprintf(summary, "simnet_tip_monotonic=%d\n",
+                ctx->simnet_monotonic_ok ? 1 : 0);
+    }
     fprintf(summary, "alloc_faults=%" PRIu64 "\n", ctx->alloc_fault_count);
     fprintf(summary, "graceful_shutdowns=%" PRId64 "\n",
             ctx->graceful_shutdowns);
@@ -452,6 +512,11 @@ static int handle_peer_count(struct chaos_ctx *ctx, int argc, char **argv,
     ctx->peer_count = (unsigned)n;
     return 0;
 }
+
+/* Defined further down alongside the rest of the simnet-mode handlers;
+ * forward-declared so metric_value() (which predates simnet mode in this
+ * file) can expose simnet_converged as an `expect` metric. */
+static bool chaos_simnet_converged(const struct chaos_ctx *ctx);
 
 static int compare_metric(int64_t actual, const char *op, int64_t expected)
 {
@@ -554,6 +619,18 @@ static bool metric_value(const struct chaos_ctx *ctx, const char *name,
     }
     if (strcmp(name, "auto_reindex_clears") == 0) {
         *out = ctx->auto_reindex_clears;
+        return true;
+    }
+    if (strcmp(name, "simnet_converged") == 0) {
+        *out = chaos_simnet_converged(ctx) ? 1 : 0;
+        return true;
+    }
+    if (strcmp(name, "simnet_tip_monotonic") == 0) {
+        *out = ctx->simnet_monotonic_ok ? 1 : 0;
+        return true;
+    }
+    if (strcmp(name, "simnet_node_count") == 0) {
+        *out = (int64_t)ctx->simnet_node_count;
         return true;
     }
     return false;
@@ -930,6 +1007,287 @@ static int handle_auto_reindex_clear_if_covered(struct chaos_ctx *ctx,
     return 0;
 }
 
+/* ── simnet mode: drive a real simnet_cluster instead of sim_peer ───────
+ *
+ * `mode simnet` switches a scenario file into this mode. From then on:
+ *   simnet_nodes N              create an N-node cluster (uses `seed`)
+ *   simnet_mint node=I          mint a block on node I
+ *   simnet_relay node=I         broadcast node I's un-relayed mints to
+ *                               every peer not currently partitioned
+ *                               from I
+ *   simnet_deliver               drain the deterministic delivery queue
+ *   simnet_partition a=I b=J    sever the I<->J link
+ *   simnet_heal a=I b=J         restore I<->J and resync both directions
+ * A scenario mixes these with `expect simnet_converged == 1` /
+ * `expect simnet_tip_monotonic == 1`; the harness ALSO re-checks both
+ * automatically at end-of-run regardless of what the scenario wrote,
+ * see run_scenario().
+ */
+
+static int handle_mode(struct chaos_ctx *ctx, int argc, char **argv,
+                       int line_no)
+{
+    if (argc != 2) return fail_line(line_no, "mode requires one value");
+    if (strcmp(argv[1], "simnet") != 0)
+        return fail_line(line_no, "unknown mode (only 'simnet' is defined)");
+    if (ctx->simnet_mode)
+        return fail_line(line_no, "mode simnet is already active");
+    if (ctx->peer_count > 0)
+        return fail_line(line_no,
+                         "mode simnet cannot follow legacy peer_count");
+    ctx->simnet_mode = true;
+    return 0;
+}
+
+static int handle_simnet_nodes(struct chaos_ctx *ctx, int argc, char **argv,
+                               int line_no)
+{
+    if (!ctx->simnet_mode)
+        return fail_line(line_no, "simnet_nodes requires 'mode simnet' first");
+    if (ctx->simnet)
+        return fail_line(line_no, "simnet_nodes already created a cluster");
+    if (argc != 2) return fail_line(line_no, "simnet_nodes requires one value");
+    uint64_t n = 0;
+    if (!parse_u64_auto(argv[1], &n) || n < CHAOS_SIMNET_MIN_NODES ||
+        n > CHAOS_SIMNET_MAX_NODES) {
+        return fail_line(line_no, "simnet_nodes must be 2..16");
+    }
+
+    ctx->simnet = simnet_cluster_init((size_t)n, ctx->seed);
+    if (!ctx->simnet)
+        return fail_line(line_no, "simnet cluster init failed");
+    ctx->simnet_node_count = (size_t)n;
+
+    ctx->simnet_nodes = zcl_calloc((size_t)n, sizeof(*ctx->simnet_nodes),
+                                   "chaos_simnet_nodes");
+    ctx->simnet_partitioned =
+        zcl_calloc((size_t)(n * n), sizeof(*ctx->simnet_partitioned),
+                  "chaos_simnet_partition");
+    ctx->simnet_last_height =
+        zcl_calloc((size_t)n, sizeof(*ctx->simnet_last_height),
+                  "chaos_simnet_height");
+    if (!ctx->simnet_nodes || !ctx->simnet_partitioned ||
+        !ctx->simnet_last_height) {
+        chaos_simnet_cleanup(ctx);
+        return fail_line(line_no, "simnet bookkeeping allocation failed");
+    }
+    for (uint64_t i = 0; i < n; i++)
+        ctx->simnet_last_height[i] = INT32_MIN;
+    ctx->simnet_monotonic_ok = true;
+    return 0;
+}
+
+static int chaos_simnet_parse_node(struct chaos_ctx *ctx, int argc,
+                                   char **argv, const char *key,
+                                   uint64_t *out, int line_no,
+                                   const char *what)
+{
+    const char *value = arg_value(argc, argv, key);
+    if (!value || !parse_u64_auto(value, out) ||
+        *out >= ctx->simnet_node_count) {
+        return fail_line(line_no, what);
+    }
+    return 0;
+}
+
+static int handle_simnet_mint(struct chaos_ctx *ctx, int argc, char **argv,
+                              int line_no)
+{
+    if (!ctx->simnet)
+        return fail_line(line_no, "simnet_mint requires simnet_nodes first");
+    if (argc != 2) return fail_line(line_no, "simnet_mint requires node=I");
+    uint64_t node_id = 0;
+    int rc = chaos_simnet_parse_node(ctx, argc, argv, "node", &node_id,
+                                     line_no,
+                                     "simnet_mint node must be a valid index");
+    if (rc != 0) return rc;
+
+    struct uint256 hash;
+    if (!simnet_cluster_mint_on(ctx->simnet, (size_t)node_id, &hash))
+        return fail_line(line_no, "simnet_mint failed");
+
+    struct chaos_simnet_node *ns = &ctx->simnet_nodes[node_id];
+    if (ns->mint_count == ns->mint_cap) {
+        size_t new_cap = ns->mint_cap ? ns->mint_cap * 2 : 4;
+        struct uint256 *grown = zcl_realloc(ns->mints,
+                                            new_cap * sizeof(*grown),
+                                            "chaos_simnet_mints");
+        if (!grown)
+            return fail_line(line_no, "simnet_mint OOM growing history");
+        ns->mints = grown;
+        ns->mint_cap = new_cap;
+    }
+    ns->mints[ns->mint_count++] = hash;
+    return 0;
+}
+
+static int handle_simnet_relay(struct chaos_ctx *ctx, int argc, char **argv,
+                               int line_no)
+{
+    if (!ctx->simnet)
+        return fail_line(line_no, "simnet_relay requires simnet_nodes first");
+    if (argc != 2) return fail_line(line_no, "simnet_relay requires node=I");
+    uint64_t node_id = 0;
+    int rc = chaos_simnet_parse_node(
+        ctx, argc, argv, "node", &node_id, line_no,
+        "simnet_relay node must be a valid index");
+    if (rc != 0) return rc;
+
+    struct chaos_simnet_node *ns = &ctx->simnet_nodes[node_id];
+    if (ns->relayed_count >= ns->mint_count)
+        return 0;
+
+    bool *exclude = zcl_calloc(ctx->simnet_node_count, sizeof(*exclude),
+                               "chaos_simnet_relay_mask");
+    if (!exclude)
+        return fail_line(line_no, "simnet_relay OOM building link mask");
+    for (size_t to = 0; to < ctx->simnet_node_count; to++)
+        exclude[to] =
+            ctx->simnet_partitioned[node_id * ctx->simnet_node_count + to];
+
+    for (size_t i = ns->relayed_count; i < ns->mint_count; i++) {
+        if (!simnet_cluster_broadcast_except(ctx->simnet, (size_t)node_id,
+                                             &ns->mints[i], exclude)) {
+            free(exclude);
+            return fail_line(line_no, "simnet_relay broadcast failed");
+        }
+    }
+    ns->relayed_count = ns->mint_count;
+    free(exclude);
+    return 0;
+}
+
+static void chaos_simnet_track_heights(struct chaos_ctx *ctx)
+{
+    if (!ctx->simnet) return;
+    for (size_t i = 0; i < ctx->simnet_node_count; i++) {
+        int32_t h = 0;
+        if (!simnet_cluster_tip_height(ctx->simnet, i, &h))
+            continue;
+        if (ctx->simnet_last_height[i] != INT32_MIN &&
+            h < ctx->simnet_last_height[i]) {
+            ctx->simnet_monotonic_ok = false;
+        }
+        ctx->simnet_last_height[i] = h;
+    }
+}
+
+static int handle_simnet_deliver(struct chaos_ctx *ctx, int argc,
+                                 char **argv, int line_no)
+{
+    (void)argv;
+    if (!ctx->simnet)
+        return fail_line(line_no, "simnet_deliver requires simnet_nodes first");
+    if (argc != 1)
+        return fail_line(line_no, "simnet_deliver takes no arguments");
+    if (!simnet_cluster_deliver_pending(ctx->simnet))
+        return fail_line(line_no, "simnet_deliver failed");
+    chaos_simnet_track_heights(ctx);
+    return 0;
+}
+
+static int handle_simnet_partition(struct chaos_ctx *ctx, int argc,
+                                   char **argv, int line_no)
+{
+    if (!ctx->simnet)
+        return fail_line(line_no,
+                         "simnet_partition requires simnet_nodes first");
+    if (argc != 3)
+        return fail_line(line_no, "simnet_partition requires a=I b=J");
+    uint64_t a = 0, b = 0;
+    int rc = chaos_simnet_parse_node(
+        ctx, argc, argv, "a", &a, line_no,
+        "simnet_partition a must be a valid index");
+    if (rc != 0) return rc;
+    rc = chaos_simnet_parse_node(ctx, argc, argv, "b", &b, line_no,
+                                 "simnet_partition b must be a valid index");
+    if (rc != 0) return rc;
+    if (a == b)
+        return fail_line(line_no, "simnet_partition a and b must differ");
+
+    ctx->simnet_partitioned[a * ctx->simnet_node_count + b] = true;
+    ctx->simnet_partitioned[b * ctx->simnet_node_count + a] = true;
+    return 0;
+}
+
+static int chaos_simnet_resync(struct chaos_ctx *ctx, uint64_t from,
+                               uint64_t to, int line_no)
+{
+    bool *exclude = zcl_calloc(ctx->simnet_node_count, sizeof(*exclude),
+                               "chaos_simnet_heal_mask");
+    if (!exclude)
+        return fail_line(line_no, "simnet_heal OOM building resync mask");
+    for (size_t peer = 0; peer < ctx->simnet_node_count; peer++)
+        exclude[peer] = (peer != to);
+
+    struct chaos_simnet_node *ns = &ctx->simnet_nodes[from];
+    for (size_t i = 0; i < ns->mint_count; i++) {
+        if (!simnet_cluster_broadcast_except(ctx->simnet, (size_t)from,
+                                             &ns->mints[i], exclude)) {
+            free(exclude);
+            return fail_line(line_no, "simnet_heal resync broadcast failed");
+        }
+    }
+    free(exclude);
+    return 0;
+}
+
+static int handle_simnet_heal(struct chaos_ctx *ctx, int argc, char **argv,
+                              int line_no)
+{
+    if (!ctx->simnet)
+        return fail_line(line_no, "simnet_heal requires simnet_nodes first");
+    if (argc != 3)
+        return fail_line(line_no, "simnet_heal requires a=I b=J");
+    uint64_t a = 0, b = 0;
+    int rc = chaos_simnet_parse_node(ctx, argc, argv, "a", &a, line_no,
+                                     "simnet_heal a must be a valid index");
+    if (rc != 0) return rc;
+    rc = chaos_simnet_parse_node(ctx, argc, argv, "b", &b, line_no,
+                                 "simnet_heal b must be a valid index");
+    if (rc != 0) return rc;
+    if (a == b)
+        return fail_line(line_no, "simnet_heal a and b must differ");
+
+    ctx->simnet_partitioned[a * ctx->simnet_node_count + b] = false;
+    ctx->simnet_partitioned[b * ctx->simnet_node_count + a] = false;
+
+    /* Full resync in both directions: a healed peer may be missing blocks
+     * relayed to OTHER peers while a<->b was severed, not just blocks
+     * minted since the heal. */
+    rc = chaos_simnet_resync(ctx, a, b, line_no);
+    if (rc != 0) return rc;
+    return chaos_simnet_resync(ctx, b, a, line_no);
+}
+
+static bool chaos_simnet_converged(const struct chaos_ctx *ctx)
+{
+    if (!ctx->simnet)
+        return false;
+    if (ctx->simnet_node_count < 2)
+        return true;
+
+    struct uint256 tip0;
+    struct utxo_commitment digest0;
+    if (!simnet_cluster_tip_hash(ctx->simnet, 0, &tip0) ||
+        !simnet_cluster_coins_digest(ctx->simnet, 0, &digest0)) {
+        return false;
+    }
+    for (size_t i = 1; i < ctx->simnet_node_count; i++) {
+        struct uint256 tip;
+        struct utxo_commitment digest;
+        if (!simnet_cluster_tip_hash(ctx->simnet, i, &tip) ||
+            !simnet_cluster_coins_digest(ctx->simnet, i, &digest)) {
+            return false;
+        }
+        if (!uint256_eq(&tip0, &tip) ||
+            !utxo_commitment_equal(&digest0, &digest)) {
+            return false;
+        }
+    }
+    return true;
+}
+
 static const struct chaos_command COMMANDS[] = {
     { "seed", handle_seed },
     { "boot_phase", handle_boot_phase },
@@ -947,6 +1305,13 @@ static const struct chaos_command COMMANDS[] = {
     { "auto_reindex_mark_terminal", handle_auto_reindex_mark_terminal },
     { "auto_reindex_clear_if_covered",
       handle_auto_reindex_clear_if_covered },
+    { "mode", handle_mode },
+    { "simnet_nodes", handle_simnet_nodes },
+    { "simnet_mint", handle_simnet_mint },
+    { "simnet_relay", handle_simnet_relay },
+    { "simnet_deliver", handle_simnet_deliver },
+    { "simnet_partition", handle_simnet_partition },
+    { "simnet_heal", handle_simnet_heal },
 };
 
 static const struct chaos_command *find_command(const char *name)
@@ -970,6 +1335,7 @@ static int run_scenario(struct chaos_ctx *ctx)
                 ctx->scenario_path, strerror(errno));
         platform_clock_clear_source();
         chaos_auto_reindex_cleanup(ctx);
+        chaos_simnet_cleanup(ctx);
         return 1;
     }
 
@@ -985,6 +1351,7 @@ static int run_scenario(struct chaos_ctx *ctx)
             fclose(fp);
             platform_clock_clear_source();
             chaos_auto_reindex_cleanup(ctx);
+            chaos_simnet_cleanup(ctx);
             return 1;
         }
 
@@ -1000,6 +1367,7 @@ static int run_scenario(struct chaos_ctx *ctx)
             fclose(fp);
             platform_clock_clear_source();
             chaos_auto_reindex_cleanup(ctx);
+            chaos_simnet_cleanup(ctx);
             return 1;
         }
 
@@ -1010,6 +1378,7 @@ static int run_scenario(struct chaos_ctx *ctx)
             fclose(fp);
             platform_clock_clear_source();
             chaos_auto_reindex_cleanup(ctx);
+            chaos_simnet_cleanup(ctx);
             return 1;
         }
         int rc = cmd->handler(ctx, argc, argv, line_no);
@@ -1017,6 +1386,7 @@ static int run_scenario(struct chaos_ctx *ctx)
             fclose(fp);
             platform_clock_clear_source();
             chaos_auto_reindex_cleanup(ctx);
+            chaos_simnet_cleanup(ctx);
             return 1;
         }
         if (ctx->verbose)
@@ -1024,18 +1394,71 @@ static int run_scenario(struct chaos_ctx *ctx)
     }
 
     fclose(fp);
+
+    /* simnet mode: re-check the cluster invariants regardless of what the
+     * scenario explicitly asserted. A drain here is a no-op if the last
+     * command already drained the queue. */
+    if (ctx->simnet_mode) {
+        if (!ctx->simnet) {
+            fprintf(stderr,
+                    "chaos: mode simnet requires a simnet_nodes command\n");
+            platform_clock_clear_source();
+            chaos_auto_reindex_cleanup(ctx);
+            chaos_simnet_cleanup(ctx);
+            return 1;
+        }
+        if (!simnet_cluster_deliver_pending(ctx->simnet)) {
+            fprintf(stderr,
+                    "chaos: simnet final delivery drain failed\n");
+            platform_clock_clear_source();
+            chaos_auto_reindex_cleanup(ctx);
+            chaos_simnet_cleanup(ctx);
+            return 1;
+        }
+        chaos_simnet_track_heights(ctx);
+        bool converged = chaos_simnet_converged(ctx);
+        if (!converged) {
+            fprintf(stderr,
+                    "chaos: simnet invariant violation: cluster did not "
+                    "converge (tip hash / coins digest differ across "
+                    "nodes)\n");
+        }
+        if (!ctx->simnet_monotonic_ok) {
+            fprintf(stderr,
+                    "chaos: simnet invariant violation: a node's tip "
+                    "height regressed\n");
+        }
+        if (!converged || !ctx->simnet_monotonic_ok) {
+            platform_clock_clear_source();
+            chaos_auto_reindex_cleanup(ctx);
+            chaos_simnet_cleanup(ctx);
+            return 1;
+        }
+    }
+
     if (ctx->expect_count == 0) {
         fprintf(stderr, "chaos: scenario has no expect assertions\n");
         platform_clock_clear_source();
         chaos_auto_reindex_cleanup(ctx);
+        chaos_simnet_cleanup(ctx);
         return 1;
     }
     platform_clock_clear_source();
     chaos_auto_reindex_cleanup(ctx);
+    chaos_simnet_cleanup(ctx);
     return 0;
 }
 
 #ifndef CHAOS_NO_MAIN
+/* Standalone-binary-only: chaos.c is also #include-d into
+ * test_chaos_harness.c (under CHAOS_NO_MAIN), whose translation unit is
+ * linked into test_parallel alongside lib/test/src/test_parallel.c, which
+ * already defines this global — defining it unconditionally here would be
+ * a duplicate-definition link error in that build. Every other standalone
+ * ALL_SRCS tool (wire_sweep, wallet_dump, ...) defines its own copy the
+ * same way, since boot_services.c declares it `extern`. */
+volatile sig_atomic_t g_shutdown_requested = 0;
+
 static void usage(const char *argv0)
 {
     fprintf(stderr,
@@ -1074,6 +1497,12 @@ int main(int argc, char **argv)
         return 2;
     }
 
+    /* `mode simnet` runs real connect_block/disconnect_block, which asserts
+     * a chain_params_get() singleton is selected (test_parallel.c and
+     * wire_sweep.c both do this once at process start for the same
+     * reason). Harmless when the scenario never uses simnet mode. */
+    chain_params_select(CHAIN_MAIN);
+
     int rc = run_scenario(&ctx);
     if (rc == 0) {
         printf("PASS %s seed=%s0x%016" PRIx64
@@ -1086,6 +1515,9 @@ int main(int argc, char **argv)
                ctx.expect_count);
     } else {
         printf("FAIL %s\n", ctx.scenario_path);
+        if (ctx.simnet_mode) {
+            printf("SIMNET REPRO SEED=0x%016" PRIx64 "\n", ctx.seed);
+        }
         int artifact_rc = write_failure_artifacts(&ctx);
         if (artifact_rc == 0)
             printf("ARTIFACTS %s\n",
