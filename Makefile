@@ -852,6 +852,36 @@ wire-sweep-clean:
 	rm -f $(BIN_DIR)/wire_sweep
 	rm -rf build/wire-sweep-output/
 
+# ── simnet-repro / simnet-replay: one-command seed/capsule reproduction ──
+# Both targets reuse wire_sweep as-is (its own --start/--count seed
+# selection, its own capsule-writing convention) — no new harness, no new
+# binary. `wire_sweep_run_one(seed)` (tools/sim/wire_sweep.c) is a pure
+# function of the scalar seed, so a single seed fully determines the
+# archetype/sub-case/event stream ("bugs become 64-bit seeds",
+# docs/work/sim-phase2-plan.md); replaying a capsule only needs the seed
+# it was saved under, which is already encoded in the capsule's filename
+# (see tools/scripts/simnet_replay_capsule.sh).
+SIMNET_REPRO_ARTIFACT_DIR ?= build/simnet-repro-output
+
+.PHONY: simnet-repro
+simnet-repro: wire_sweep
+	@if [ -z "$(SEED)" ]; then \
+	    echo "usage: make simnet-repro SEED=0x<hex>  (e.g. SEED=0x2a)"; \
+	    exit 2; \
+	fi
+	@mkdir -p $(SIMNET_REPRO_ARTIFACT_DIR)
+	$(BIN_DIR)/wire_sweep --start=$(SEED) --count=1 --verbose \
+	    --artifact-dir=$(SIMNET_REPRO_ARTIFACT_DIR)
+
+.PHONY: simnet-replay
+simnet-replay: wire_sweep
+	@if [ -z "$(CAP)" ]; then \
+	    echo "usage: make simnet-replay CAP=<capsule-dir-or-.tape-file>"; \
+	    exit 2; \
+	fi
+	@bash tools/scripts/simnet_replay_capsule.sh "$(CAP)" \
+	    $(BIN_DIR)/wire_sweep $(SIMNET_REPRO_ARTIFACT_DIR)
+
 # Gate: the simnet_wire harness must be pure in-memory — no real sockets.
 # See tools/scripts/check_wire_harness_security_gate.sh.
 .PHONY: check-wire-harness-security-gate

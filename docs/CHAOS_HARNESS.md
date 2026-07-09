@@ -266,6 +266,43 @@ smallest scenario that preserves the causal shape:
    plus a specific metric.
 5. Check in the scenario as a permanent regression.
 
+## Reproducing a failure
+
+Two one-command targets turn a failing seed (from a nightly
+`wire_sweep` run) or a saved capsule back into a live, deterministic
+repro. Both reuse the existing `wire_sweep` binary (`tools/sim/
+wire_sweep.c`) and its own `--start`/`--count` seed selection — no new
+harness, no new binary:
+
+```bash
+# Replay one exact failing seed printed by `make wire-sweep`
+# ("FAIL seed=0x..."):
+make simnet-repro SEED=0x2a
+
+# Replay every seed_0x*.tape capsule saved under a directory (or a
+# single .tape file) by a prior `make wire-sweep` failure:
+make simnet-replay CAP=build/wire-sweep-output
+```
+
+`simnet-repro` runs `wire_sweep --start=SEED --count=1 --verbose` — the
+single-seed slice of the same sweep loop `make wire-sweep` drives.
+`simnet-replay` (`tools/scripts/simnet_replay_capsule.sh`) recovers the
+seed from each capsule's `seed_0x<HEX>.tape` filename and calls
+`wire_sweep` the same way. It does not need to load the `.tape` file's
+contents: `wire_sweep_run_one(seed)` is a pure function of the scalar
+seed, so the saved capsule and a bare `--start=<seed>` replay always
+reproduce the identical adversary archetype, sub-case, and event
+stream. Both targets exit non-zero if the replay still reports a
+monitor failure.
+
+For a `.scenario`-file failure (the DSL harness above, not
+`wire_sweep`), the equivalent one-liner is the `--seed=` override
+already documented under "Simulation chaos engine":
+`build/bin/zclassic23-chaos --scenario=PATH --seed=0x... --verbose`.
+See `docs/SIMULATOR.md`'s "Reproducing a failure" section for the
+`wire_sweep` side with the fuller "why no tape parsing is needed"
+rationale.
+
 ## Debugging Failures
 
 Start with `--verbose`; the harness prints each accepted command as it runs.
