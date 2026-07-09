@@ -26,6 +26,21 @@ DEFINE_MODEL_CALLBACKS(znam_entry)
 DEFINE_MODEL_CALLBACKS(znam_text)
 DEFINE_MODEL_CALLBACKS(znam_addr)
 
+static bool read_znam_blob(sqlite3_stmt *s, int col, void *dest,
+                           int expected_len, const char *table,
+                           const char *column)
+{
+    int got = sqlite3_column_bytes(s, col);
+    const void *blob = sqlite3_column_blob(s, col);
+    if (!blob || got != expected_len)
+        LOG_FAIL("znam",
+                 "%s.%s blob length mismatch: got=%d expected=%d",
+                 table, column, got, expected_len);
+
+    AR_READ_BLOB(s, col, dest, expected_len);
+    return true;
+}
+
 static void znam_entry_after_save(void *record, void *ctx)
 {
     const struct znam_entry *entry = record;
@@ -217,7 +232,7 @@ bool db_znam_save(struct node_db *ndb, const struct znam_entry *entry)
     AR_FINISH_SAVE(cbs, entry, ok);
 }
 
-static void row_to_znam(sqlite3_stmt *s, struct znam_entry *out)
+static bool row_to_znam(sqlite3_stmt *s, struct znam_entry *out)
 {
     memset(out, 0, sizeof(*out));
     const char *name = (const char *)sqlite3_column_text(s, 0);
@@ -233,13 +248,17 @@ static void row_to_znam(sqlite3_stmt *s, struct znam_entry *out)
     if (val) snprintf(out->target_value, sizeof(out->target_value),
                       "%s", val);
 
-    AR_READ_BLOB(s, 4, out->reg_txid, 32);
+    if (!read_znam_blob(s, 4, out->reg_txid, 32, "znam_names", "reg_txid"))
+        LOG_FAIL("znam", "znam_names.reg_txid rejected");
 
     out->reg_height = (int32_t)sqlite3_column_int(s, 5);
 
-    AR_READ_BLOB(s, 6, out->last_update_txid, 32);
+    if (!read_znam_blob(s, 6, out->last_update_txid, 32, "znam_names",
+                        "last_update_txid"))
+        LOG_FAIL("znam", "znam_names.last_update_txid rejected");
 
     out->expiry_height = (int32_t)sqlite3_column_int(s, 7);
+    return true;
 }
 
 bool db_znam_find(struct node_db *ndb, const char *name,
@@ -254,7 +273,7 @@ bool db_znam_find(struct node_db *ndb, const char *name,
         "reg_txid,reg_height,last_update_txid,expiry_height"
         " FROM znam_names WHERE name=?",
         AR_BIND_TEXT(s, 1, name),
-        row_to_znam(s, out));
+        if (!row_to_znam(s, out)) { AR_FINALIZE(s); return false; });
 }
 
 int db_znam_list(struct node_db *ndb, struct znam_entry *out, size_t max)
@@ -270,7 +289,7 @@ int db_znam_list(struct node_db *ndb, struct znam_entry *out, size_t max)
         " FROM znam_names ORDER BY reg_height DESC LIMIT ?",
         out, max,
         AR_BIND_INT(s, 1, (int)max),
-        row_to_znam(s, &out[count]));
+        if (!row_to_znam(s, &out[count])) continue);
 }
 
 int db_znam_list_by_owner(struct node_db *ndb, const char *owner,
@@ -289,7 +308,7 @@ int db_znam_list_by_owner(struct node_db *ndb, const char *owner,
         out, max,
         AR_BIND_TEXT(s, 1, owner);
         AR_BIND_INT(s, 2, (int)max),
-        row_to_znam(s, &out[count]));
+        if (!row_to_znam(s, &out[count])) continue);
 }
 
 bool db_znam_text_save(struct node_db *ndb, const char *name,
