@@ -127,10 +127,25 @@ Relaunch these; branches persist in the worktrees / object store:
   reproduced 2×. Almost certainly cross-group global-state pollution in the
   shared worker process. This is exactly the class the simulator exists to catch
   — worth finishing.
-- **`SYNC_AT_TIP` never reached** — branch `fix/sync-at-tip-transition`
-  (diagnosis-first). `sync_get_state()` stays `SYNC_BLOCKS_DOWNLOAD` forever on
-  an at-tip node though `SYNC_AT_TIP` is defined; enumerate consumers before
-  flipping the transition (blast radius).
+- **`SYNC_AT_TIP` never reached** — DIAGNOSED (no code change; correctly an
+  owner decision). Root cause is a self-referential gate: the only production
+  path that flips the FSM to `SYNC_AT_TIP` (`lib/net/src/msg_blocks.c:648-659`)
+  requires the incoming block to validate on the *synchronous* path, but
+  `msgprocessor.c:473` + `boot_msg_callbacks.c:50` only take that path when
+  already `AT_TIP` — otherwise every block goes through the async reducer
+  pipeline (`app/jobs/*`), which advances the real chain but never calls
+  `sync_set_state`. So height reaches tip while the FSM stays
+  `SYNC_BLOCKS_DOWNLOAD`. Longer-lived nodes escape only via a narrow TOCTOU
+  race the busy dev node never wins. **Do NOT just flip the transition** — it
+  turns on dormant behavior across ~8 consumers (notably `block_pruning_service`
+  would start pruning for the first time; the RPC IBD flag flips for external
+  tooling; download in-flight budgets shift). Recommended fix (owner + dev
+  soak): a periodic evaluator in `tip_watchdog_tick()` that drives
+  `SYNC_BLOCKS_DOWNLOAD ⇄ SYNC_AT_TIP` from local-height-vs-`connman_max_peer_height()`
+  — the same gap heuristic `event_agent_summary.c:429-434` already trusts as its
+  own override — decoupling the transition from which wire message landed the
+  block. A separate narrower gap: `msg_compact.c compact_submit_block()` never
+  runs the acceptance/AT_TIP logic at all.
 
 Also `fix/sticky-reindex-residue` is already merged (its content is on main);
 the branch can be deleted.
