@@ -122,22 +122,18 @@ static struct transaction sim_make_spend(const struct uint256 *in_txid,
 
 static void sim_free_tx(struct transaction *tx)
 {
+    /* Per the harness contract (simnet.h simnet_mint_txs): ONLY the tx's
+     * vin/vout arrays are owned by simnet and freed here. The Sapling
+     * spend/output/JoinSplit description arrays are NOT owned by the harness —
+     * a caller may hand a stack-allocated description (e.g.
+     * test_simnet_input_value_range's zeroed value_balance output), and
+     * free()ing a stack pointer aborts. Callers that heap-allocate shielded
+     * arrays (e.g. test_simnet_sapling_shielded_send) free their own after the
+     * mint returns; the pointers survive this call untouched. */
     free(tx->vin);
     free(tx->vout);
     tx->vin = NULL;
     tx->vout = NULL;
-    /* Lane C: shielded/joinsplit description arrays are flat zcl_calloc
-     * blocks (no nested heap), owned by the tx handed to the mint helper.
-     * Free them here so shielded sims don't leak per block. */
-    free(tx->v_shielded_spend);
-    tx->v_shielded_spend = NULL;
-    tx->num_shielded_spend = 0;
-    free(tx->v_shielded_output);
-    tx->v_shielded_output = NULL;
-    tx->num_shielded_output = 0;
-    free(tx->v_joinsplit);
-    tx->v_joinsplit = NULL;
-    tx->num_joinsplit = 0;
 }
 
 /* Assemble `txs[0..ntx)` into a block at `height`, drive it through the
