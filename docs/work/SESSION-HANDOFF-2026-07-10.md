@@ -53,24 +53,25 @@ trusted (consensus parity with zclassicd); the defect is in the prover's proof
 construction. Full detail: memory `project_groth16_prover_verifier_gap_2026-07-10`.
 An Opus deep-crypto lane (agent `a26e5003`) was launched to root-cause it.
 
-## Unmerged READY local branches — COLLECT THESE
+## Workflow-1 branches — ALL 4 MERGED + PUSHED (done)
 
-Workflow-1 (value/structure) results, green in their worktrees, **not yet
-merged**:
-- `sim/value_inflation` — non-coinbase output>input rejected (`bad-txns-in-belowout`).
-- `sim/fee_range` — negative/out-of-range fee.
-- `sim/empty_vin_vout` — empty inputs/outputs.
-- (input_value_range: likely premise-false — check the workflow journal.)
+All four Workflow-1 (value/structure) results are now on origin/main
+(@`3f2367674`, 507 groups green): `sim/value_inflation`
+(`bad-txns-in-belowout`), `sim/fee_range` (negative-fee → `bad-txns-in-belowout`;
+the literal fee-negative/outofrange strings are unreachable via simnet — shadowed
+/ need >MAX_MONEY funding — documented in the test), `sim/empty_vin_vout`
+(`bad-txns-vin-empty`/`bad-txns-vout-empty`), `sim/input_value_range`
+(`bad-txns-inputvalues-outofrange`).
 
-**Merge recipe** (each branch, in turn):
+**Registration-merge recipe (for the Lane C branch below, and future lanes):**
 ```
-git merge --no-ff sim/<branch>
+git merge --no-ff <branch>
 # additive conflicts in: lib/test/src/test_parallel.c (X-macro line — keep ALL
-#   X(simnet_*) tokens on the single line), lib/test/src/test.c (dispatch),
+#   X(simnet_*) tokens on the ONE line), lib/test/src/test.c (dispatch),
 #   lib/test/include/test/test_helpers.h (decl), agent_impact_rules.def (rule),
 #   docs/SIMULATOR.md (row). Resolve as UNION (keep both sides).
 # docs/CODEBASE_MAP.md test_groups: set to `make check-doc-counts` code value.
-make -j$(nproc) build-only && make t ONLY=simnet_<group> && make check-doc-counts
+make -j$(nproc) build-only && make t ONLY=<group> && make check-doc-counts
 git commit --no-edit && git push origin main   # pre-push CI is the gate
 ```
 
