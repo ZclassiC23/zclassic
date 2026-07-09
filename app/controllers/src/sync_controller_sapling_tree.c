@@ -96,27 +96,29 @@ int sapling_tree_rebuild(struct node_db *ndb,
                          "%s/sapling_tree_ckpt.dat", datadir);
         if (n > 0 && (size_t)n < sizeof(ckpt_path)) {
             int64_t flat_h = 0;
+            uint8_t flat_hash[32] = {0};
             struct incremental_merkle_tree ff_tree;
             sapling_tree_init(&ff_tree);
-            if (sapling_tree_load_checkpoint(&ff_tree, &flat_h, ckpt_path)
-                && flat_h > sapling_height && flat_h <= chain_tip) {
+            if (sapling_tree_load_checkpoint(&ff_tree, &flat_h, flat_hash,
+                                             ckpt_path)
+                && flat_h > sapling_height) {
+                /* Fail-closed bind to the header chain at flat_h: height <=
+                 * endpoint, same block hash, and root == hashFinalSaplingRoot.
+                 * A stale/reorged/mismatched checkpoint is refused and the
+                 * replay restarts from Sapling activation. */
                 const struct block_index *ckpt_bi =
                     active_chain_at(chain, (int)flat_h);
-                bool root_match = true;
-                if (sapling_header_root_known(ckpt_bi)) {
-                    struct uint256 ffr;
-                    incremental_tree_root(&ff_tree, &ffr);
-                    root_match = memcmp(ffr.data,
-                        ckpt_bi->hashFinalSaplingRoot.data, 32) == 0;
-                } else {
-                    root_match = false;
-                    LOG_WARN("sapling_tree_rebuild",
-                             "sapling_tree_rebuild: refusing unverified "
-                             "flat-file checkpoint h=%lld (missing "
-                             "hashFinalSaplingRoot)",
-                             (long long)flat_h);
-                }
-                if (root_match) {
+                struct uint256 ffr;
+                incremental_tree_root(&ff_tree, &ffr);
+                bool exp_hash_known = ckpt_bi && ckpt_bi->phashBlock;
+                enum sapling_ckpt_verdict v = sapling_ckpt_verify_binding(
+                    flat_h, &ffr, flat_hash, chain_tip,
+                    exp_hash_known ? ckpt_bi->phashBlock->data : NULL,
+                    exp_hash_known,
+                    sapling_header_root_known(ckpt_bi)
+                        ? &ckpt_bi->hashFinalSaplingRoot : NULL,
+                    sapling_header_root_known(ckpt_bi));
+                if (v == SAPLING_CKPT_OK) {
                     tree = ff_tree;
                     start_height = (int)flat_h + 1;
                     total_commitments =
@@ -124,6 +126,11 @@ int sapling_tree_rebuild(struct node_db *ndb,
                     ckpt_h = flat_h;
                     LOG_INFO("sapling_tree_rebuild", "sapling_tree_rebuild: resuming " "from flat-file checkpoint h=%lld " "(%d commitments,)", (long long)flat_h, total_commitments);
                     fflush(stderr);
+                } else {
+                    LOG_WARN("sapling_tree_rebuild",
+                             "sapling_tree_rebuild: refusing flat-file "
+                             "checkpoint h=%lld (%s)",
+                             (long long)flat_h, sapling_ckpt_verdict_str(v));
                 }
             }
         }

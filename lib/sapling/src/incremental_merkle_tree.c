@@ -394,8 +394,12 @@ bool incremental_tree_deserialize(struct incremental_merkle_tree *t,
  * file format. */
 
 #define SAPLING_CKPT_MAGIC     "SPLT"
-#define SAPLING_CKPT_VERSION   1
-#define SAPLING_CKPT_HEADER_SZ (4 + 4 + 8 + 32 + 4 + 4)
+#define SAPLING_CKPT_VERSION   2
+/* magic + version + height + root + block_hash + tree_size + blob_len */
+#define SAPLING_CKPT_HEADER_SZ (4 + 4 + 8 + 32 + 32 + 4 + 4)
+#define SAPLING_CKPT_OFF_BLOCKHASH 48
+#define SAPLING_CKPT_OFF_TREESIZE  80
+#define SAPLING_CKPT_OFF_BLOBLEN   84
 #define SAPLING_CKPT_TRAILER_SZ 32
 #define SAPLING_CKPT_MAX_BLOB  (64u * 1024u)
 
@@ -431,6 +435,7 @@ static uint64_t ckpt_read_u64_le(const uint8_t *p)
 
 bool sapling_tree_flush_checkpoint(const struct incremental_merkle_tree *t,
                                    int64_t height,
+                                   const uint8_t block_hash[32],
                                    const char *path)
 {
     if (!t || !path)
@@ -470,8 +475,13 @@ bool sapling_tree_flush_checkpoint(const struct incremental_merkle_tree *t,
     ckpt_write_u32_le(body + 4, SAPLING_CKPT_VERSION);
     ckpt_write_u64_le(body + 8, (uint64_t)height);
     memcpy(body + 16, root.data, 32);
-    ckpt_write_u32_le(body + 48, (uint32_t)incremental_tree_size(t));
-    ckpt_write_u32_le(body + 52, (uint32_t)blob.size);
+    if (block_hash)
+        memcpy(body + SAPLING_CKPT_OFF_BLOCKHASH, block_hash, 32);
+    else
+        memset(body + SAPLING_CKPT_OFF_BLOCKHASH, 0, 32);
+    ckpt_write_u32_le(body + SAPLING_CKPT_OFF_TREESIZE,
+                      (uint32_t)incremental_tree_size(t));
+    ckpt_write_u32_le(body + SAPLING_CKPT_OFF_BLOBLEN, (uint32_t)blob.size);
     memcpy(body + SAPLING_CKPT_HEADER_SZ, blob.data, blob.size);
     stream_free(&blob);
 
@@ -533,6 +543,7 @@ bool sapling_tree_flush_checkpoint(const struct incremental_merkle_tree *t,
 
 bool sapling_tree_load_checkpoint(struct incremental_merkle_tree *t,
                                   int64_t *height_out,
+                                  uint8_t block_hash_out[32],
                                   const char *path)
 {
     if (!t || !path)
@@ -589,7 +600,7 @@ bool sapling_tree_load_checkpoint(struct incremental_merkle_tree *t,
         return false;
     }
     int64_t height = (int64_t)ckpt_read_u64_le(buf + 8);
-    uint32_t blob_len = ckpt_read_u32_le(buf + 52);
+    uint32_t blob_len = ckpt_read_u32_le(buf + SAPLING_CKPT_OFF_BLOBLEN);
     if (blob_len > SAPLING_CKPT_MAX_BLOB ||
         SAPLING_CKPT_HEADER_SZ + (size_t)blob_len != body_sz) {
         free(buf);
@@ -619,12 +630,70 @@ bool sapling_tree_load_checkpoint(struct incremental_merkle_tree *t,
         return false;
     }
 
+    if (block_hash_out)
+        memcpy(block_hash_out, buf + SAPLING_CKPT_OFF_BLOCKHASH, 32);
+
     free(buf);
 
     *t = scratch;
     if (height_out)
         *height_out = height;
     return true;
+}
+
+enum sapling_ckpt_verdict sapling_ckpt_verify_binding(
+    int64_t ckpt_height, const struct uint256 *ckpt_root,
+    const uint8_t ckpt_block_hash[32],
+    int64_t tip_height,
+    const uint8_t expected_block_hash[32], bool expected_hash_known,
+    const struct uint256 *expected_root, bool expected_root_known)
+{
+    static const uint8_t zeros32[32] = {0};
+
+    /* A cache above the current tip is stale by definition — a reorg or a
+     * rollback dropped the chain below the checkpointed height. Never
+     * "partially use" it; discard and full-replay. */
+    if (ckpt_height > tip_height)
+        return SAPLING_CKPT_STALE_ABOVE_TIP;
+
+    /* Reorg guard: the block that now occupies `ckpt_height` must be the
+     * same one the checkpoint was taken against. A NULL/absent or all-zero
+     * expected hash means the caller could not resolve the block at H (an
+     * absent body / header-only entry) — treat that as a reorg-class
+     * discard rather than trusting a hash we cannot confirm. The checkpoint
+     * only carries a real block hash from a v2 writer; an all-zero stored
+     * hash skips this gate and relies on the stronger root binding below. */
+    if (ckpt_block_hash &&
+        memcmp(ckpt_block_hash, zeros32, 32) != 0) {
+        if (!expected_hash_known || !expected_block_hash)
+            return SAPLING_CKPT_REORG;
+        if (memcmp(ckpt_block_hash, expected_block_hash, 32) != 0)
+            return SAPLING_CKPT_REORG;
+    }
+
+    /* Consensus binding: the frontier root at H must equal the block
+     * header's hashFinalSaplingRoot at H (the same binding P1-1 enforces).
+     * When the header binding is absent we cannot verify, so we refuse to
+     * trust — the caller falls back to the full, self-verifying replay. */
+    if (!expected_root_known || !expected_root)
+        return SAPLING_CKPT_ROOT_UNKNOWN;
+    if (!ckpt_root ||
+        memcmp(ckpt_root->data, expected_root->data, 32) != 0)
+        return SAPLING_CKPT_ROOT_MISMATCH;
+
+    return SAPLING_CKPT_OK;
+}
+
+const char *sapling_ckpt_verdict_str(enum sapling_ckpt_verdict v)
+{
+    switch (v) {
+    case SAPLING_CKPT_OK:              return "ok";
+    case SAPLING_CKPT_STALE_ABOVE_TIP: return "stale_above_tip";
+    case SAPLING_CKPT_REORG:           return "reorg";
+    case SAPLING_CKPT_ROOT_MISMATCH:   return "root_mismatch";
+    case SAPLING_CKPT_ROOT_UNKNOWN:    return "root_unknown";
+    }
+    return "unknown";
 }
 
 /* --- Incremental Witness --- */

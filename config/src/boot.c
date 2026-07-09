@@ -3002,14 +3002,56 @@ bool app_init(struct app_context *ctx)
                  "%s/sapling_tree_ckpt.dat", g_datadir);
         sapling_tree_init(&g_state.sapling_tree);
         int64_t ckpt_height = 0;
+        uint8_t ckpt_block_hash[32] = {0};
         if (sapling_tree_load_checkpoint(&g_state.sapling_tree,
-                                          &ckpt_height, ckpt_path)) {
-            g_state.sapling_tree_loaded = true;
-            set_sapling_tree_for_flush(&g_state.sapling_tree);
-            printf("Sapling tree loaded from checkpoint: "
-                   "%zu commitments, height=%lld\n",
-                   incremental_tree_size(&g_state.sapling_tree),
-                   (long long)ckpt_height);
+                                          &ckpt_height, ckpt_block_hash,
+                                          ckpt_path)) {
+            /* Verify-then-trust: bind the cached frontier to the
+             * authoritative header chain at ckpt_height (height <= tip,
+             * same block hash, root == hashFinalSaplingRoot). A stale
+             * (above-tip / reorged / mismatched) checkpoint is DELETED and
+             * we fall through to the node_state path + full replay — the
+             * cache is never trusted unverified. */
+            struct uint256 ckpt_root;
+            incremental_tree_root(&g_state.sapling_tree, &ckpt_root);
+            const struct block_index *ctip =
+                active_chain_tip(&g_state.chain_active);
+            const struct block_index *cbi =
+                active_chain_at(&g_state.chain_active, (int)ckpt_height);
+            static const uint8_t zeros32[32] = {0};
+            bool exp_hash_known = cbi && cbi->phashBlock;
+            bool exp_root_known = cbi && memcmp(cbi->hashFinalSaplingRoot.data,
+                                                zeros32, 32) != 0;
+            enum sapling_ckpt_verdict v = sapling_ckpt_verify_binding(
+                ckpt_height, &ckpt_root, ckpt_block_hash,
+                ctip ? ctip->nHeight : -1,
+                exp_hash_known ? cbi->phashBlock->data : NULL, exp_hash_known,
+                exp_root_known ? &cbi->hashFinalSaplingRoot : NULL,
+                exp_root_known);
+            if (v == SAPLING_CKPT_OK) {
+                g_state.sapling_tree_loaded = true;
+                set_sapling_tree_for_flush(&g_state.sapling_tree);
+                sapling_ckpt_record_load(SAPLING_CKPT_LOAD_VERIFIED,
+                                         ckpt_height, "ok");
+                printf("Sapling tree loaded from checkpoint: "
+                       "%zu commitments, height=%lld (verified)\n",
+                       incremental_tree_size(&g_state.sapling_tree),
+                       (long long)ckpt_height);
+            } else {
+                fprintf(stderr,
+                        "WARNING: Sapling checkpoint h=%lld REJECTED (%s) — "
+                        "deleting %s and rebuilding\n",
+                        (long long)ckpt_height, sapling_ckpt_verdict_str(v),
+                        ckpt_path);
+                unlink(ckpt_path);
+                sapling_tree_init(&g_state.sapling_tree);
+                sapling_ckpt_record_load(SAPLING_CKPT_LOAD_DISCARDED,
+                                         ckpt_height,
+                                         sapling_ckpt_verdict_str(v));
+            }
+        } else {
+            sapling_ckpt_record_load(SAPLING_CKPT_LOAD_ABSENT, -1,
+                                     "missing_or_corrupt");
         }
     }
 

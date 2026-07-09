@@ -58,7 +58,7 @@ int test_sapling_tree(void)
         struct incremental_merkle_tree src;
         build_tree_with(137, &src);
 
-        bool ok_flush = sapling_tree_flush_checkpoint(&src, 512345, path);
+        bool ok_flush = sapling_tree_flush_checkpoint(&src, 512345, NULL, path);
         if (!ok_flush) {
             printf("FAIL (flush)\n");
             failures++;
@@ -69,7 +69,7 @@ int test_sapling_tree(void)
         struct incremental_merkle_tree dst;
         sapling_tree_init(&dst);
         int64_t got_h = -1;
-        bool ok_load = sapling_tree_load_checkpoint(&dst, &got_h, path);
+        bool ok_load = sapling_tree_load_checkpoint(&dst, &got_h, NULL, path);
         if (!ok_load) {
             printf("FAIL (load)\n");
             failures++;
@@ -122,7 +122,7 @@ done_round_trip:;
             incremental_tree_append(&at100, &cm);
         }
 
-        if (!sapling_tree_flush_checkpoint(&at100, 100, path)) {
+        if (!sapling_tree_flush_checkpoint(&at100, 100, NULL, path)) {
             printf("FAIL (flush at 100)\n");
             failures++;
             unlink(path);
@@ -142,7 +142,7 @@ done_round_trip:;
         struct incremental_merkle_tree delta;
         sapling_tree_init(&delta);
         int64_t ckpt_h = 0;
-        if (!sapling_tree_load_checkpoint(&delta, &ckpt_h, path)) {
+        if (!sapling_tree_load_checkpoint(&delta, &ckpt_h, NULL, path)) {
             printf("FAIL (load)\n");
             failures++;
             unlink(path);
@@ -192,7 +192,7 @@ done_delta:;
 
         struct incremental_merkle_tree src;
         build_tree_with(50, &src);
-        if (!sapling_tree_flush_checkpoint(&src, 777, path)) {
+        if (!sapling_tree_flush_checkpoint(&src, 777, NULL, path)) {
             printf("FAIL (flush)\n");
             failures++;
             unlink(path);
@@ -226,7 +226,7 @@ done_delta:;
         struct incremental_merkle_tree dst;
         sapling_tree_init(&dst);
         int64_t got_h = -1;
-        bool ok = sapling_tree_load_checkpoint(&dst, &got_h, path);
+        bool ok = sapling_tree_load_checkpoint(&dst, &got_h, NULL, path);
         if (ok) {
             printf("FAIL (tampered file loaded successfully)\n");
             failures++;
@@ -242,7 +242,7 @@ done_corrupt:;
         struct incremental_merkle_tree dst;
         sapling_tree_init(&dst);
         int64_t got_h = -1;
-        bool ok = sapling_tree_load_checkpoint(&dst, &got_h,
+        bool ok = sapling_tree_load_checkpoint(&dst, &got_h, NULL,
             "/tmp/zcl_sapling_definitely_does_not_exist_12345");
         if (ok) {
             printf("FAIL (loaded from missing file)\n");
@@ -271,7 +271,7 @@ done_corrupt:;
 
         struct incremental_merkle_tree big;
         build_tree_with(10000, &big);
-        if (!sapling_tree_flush_checkpoint(&big, 123456, path)) {
+        if (!sapling_tree_flush_checkpoint(&big, 123456, NULL, path)) {
             printf("FAIL (flush)\n");
             failures++;
             unlink(path);
@@ -282,7 +282,7 @@ done_corrupt:;
         sapling_tree_init(&dst);
         int64_t got_h = 0;
         int64_t t0 = GetTimeMillis();
-        bool ok = sapling_tree_load_checkpoint(&dst, &got_h, path);
+        bool ok = sapling_tree_load_checkpoint(&dst, &got_h, NULL, path);
         int64_t elapsed_ms = GetTimeMillis() - t0;
         unlink(path);
 

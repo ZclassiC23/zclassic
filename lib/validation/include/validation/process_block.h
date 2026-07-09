@@ -133,6 +133,47 @@ void set_sapling_tree_for_flush(struct incremental_merkle_tree *tree);
  * checkpoint (used by unit tests). */
 void set_sapling_checkpoint_datadir(const char *datadir);
 
+/* ── Flat-file sapling checkpoint: write + introspection ─────────
+ *
+ * The load/resume path already existed (boot + sapling_tree_rebuild);
+ * these wire the periodic WRITE that was previously unimplemented, so a
+ * clean restart resumes replay from the last checkpoint (≤
+ * SAPLING_CHECKPOINT_BLOCK_INTERVAL blocks) instead of re-folding the
+ * whole Sapling history. `set_sapling_checkpoint_datadir` must have been
+ * called first (a NULL/empty path makes every call a safe no-op).
+ *
+ * `tree` is serialized and written keyed by {height, block_hash, root}.
+ * Rate-limited: an actual on-disk write happens at most once every
+ * SAPLING_CHECKPOINT_BLOCK_INTERVAL calls unless `force` is true (used at
+ * catchup completion / shutdown). Returns true iff a write occurred. */
+struct incremental_merkle_tree;
+bool sapling_tree_flat_checkpoint_note(
+    const struct incremental_merkle_tree *tree, int64_t height,
+    const uint8_t block_hash[32], bool force);
+
+/* Load-side outcome for the flat-file sapling checkpoint, surfaced via the
+ * `sapling_checkpoint` diagnostics subsystem (zcl_state). */
+enum sapling_ckpt_load_result {
+    SAPLING_CKPT_LOAD_NONE = 0,     /* no load attempted yet */
+    SAPLING_CKPT_LOAD_ABSENT,       /* no file / read error → full replay */
+    SAPLING_CKPT_LOAD_VERIFIED,     /* loaded + binding verified → fast resume */
+    SAPLING_CKPT_LOAD_DISCARDED,    /* loaded but binding failed → deleted + replay */
+};
+void sapling_ckpt_record_load(enum sapling_ckpt_load_result result,
+                              int64_t height, const char *detail);
+
+/* Snapshot of flat-file checkpoint activity for diagnostics. */
+struct sapling_ckpt_stats {
+    int64_t last_write_height;   /* -1 if never written this run */
+    int64_t writes;              /* successful on-disk writes */
+    int64_t write_fails;         /* failed write attempts */
+    int64_t last_load_height;    /* height of the last load attempt (-1) */
+    int          last_load_result;   /* enum sapling_ckpt_load_result */
+    char         last_load_detail[32];
+    char         path[512];      /* configured checkpoint path ("" if unset) */
+};
+void sapling_ckpt_get_stats(struct sapling_ckpt_stats *out);
+
 /* test-only surface: drives update_tip directly so a unit test
  * can verify tip-publisher rejection propagates to the caller.
  * Returns false if the publisher refused the commit; returns true if the

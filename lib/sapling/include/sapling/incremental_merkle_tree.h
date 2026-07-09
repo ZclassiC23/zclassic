@@ -106,24 +106,58 @@ bool incremental_tree_deserialize(struct incremental_merkle_tree *t,
  * deserialized tree.
  *
  * File format (little-endian, self-describing):
- *   4  bytes  magic    = "SPLT"
- *   4  bytes  version  = 1
- *   8  bytes  height   (last block included in the tree)
- *  32  bytes  root     (root hash at this height)
- *   4  bytes  tree_size (leaf count — informational)
+ *   4  bytes  magic      = "SPLT"
+ *   4  bytes  version    = 2
+ *   8  bytes  height     (last block included in the tree)
+ *  32  bytes  root       (root hash at this height)
+ *  32  bytes  block_hash (block hash at `height`; all-zero if the writer
+ *                         did not know it — see sapling_ckpt_verify_binding)
+ *   4  bytes  tree_size  (leaf count — informational)
  *   4  bytes  blob_len
- *  blob_len bytes      (incremental_tree_serialize output)
+ *  blob_len bytes        (incremental_tree_serialize output)
  *  32  bytes  sha3_256(everything above)
  *
- * Both entry points return false on any I/O / format / integrity
- * failure; load also restores `*height_out` and the tree state
- * only on success. */
+ * The checkpoint is keyed by {height, block_hash, root}: the caller binds
+ * it to the authoritative header chain at load time via
+ * sapling_ckpt_verify_binding() before trusting it. `block_hash` may be
+ * NULL on flush (written as all-zero) and `block_hash_out` may be NULL on
+ * load. Both entry points return false on any I/O / format / integrity
+ * failure; load also restores `*height_out`, `block_hash_out`, and the
+ * tree state only on success. A prior-version file fails the version
+ * check and is treated as absent (fail-closed → full replay). */
 bool sapling_tree_flush_checkpoint(const struct incremental_merkle_tree *t,
                                    int64_t height,
+                                   const uint8_t block_hash[32],
                                    const char *path);
 bool sapling_tree_load_checkpoint(struct incremental_merkle_tree *t,
                                   int64_t *height_out,
+                                  uint8_t block_hash_out[32],
                                   const char *path);
+
+/* Fail-closed verify-then-trust decision for a loaded flat-file checkpoint.
+ * Pure function (no I/O) so it is unit-testable without a live chain: given
+ * the checkpoint's own {height, root, block_hash} and the authoritative
+ * header-chain values at that height, it decides whether the cached frontier
+ * may be trusted as a replay resume point. Anything but SAPLING_CKPT_OK means
+ * the caller must discard (delete) the checkpoint and fall back to a full
+ * replay — the cache is never trusted unverified. */
+enum sapling_ckpt_verdict {
+    SAPLING_CKPT_OK = 0,          /* trust: resume replay from height+1 */
+    SAPLING_CKPT_STALE_ABOVE_TIP, /* height > current tip (reorg/rollback) */
+    SAPLING_CKPT_REORG,           /* block hash at height no longer matches */
+    SAPLING_CKPT_ROOT_MISMATCH,   /* root != header hashFinalSaplingRoot at H */
+    SAPLING_CKPT_ROOT_UNKNOWN,    /* header binding at H is absent — cannot verify */
+};
+
+enum sapling_ckpt_verdict sapling_ckpt_verify_binding(
+    int64_t ckpt_height, const struct uint256 *ckpt_root,
+    const uint8_t ckpt_block_hash[32],
+    int64_t tip_height,
+    const uint8_t expected_block_hash[32], bool expected_hash_known,
+    const struct uint256 *expected_root, bool expected_root_known);
+
+/* Human-readable verdict label (for logs + diagnostics). Never NULL. */
+const char *sapling_ckpt_verdict_str(enum sapling_ckpt_verdict v);
 
 /* Incremental witness — tracks a path to a specific leaf.
  * filled[] stores roots of completed subtrees in the authentication path.
