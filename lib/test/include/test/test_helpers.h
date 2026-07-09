@@ -458,6 +458,7 @@ int test_simnet_empty_vin_vout(void);
 int test_simnet_input_value_range(void);
 int test_simnet_sapling_activation(void);
 int test_simnet_sapling_shielded_send(void);
+int test_simnet_zmsg_onchain(void);
 int test_connect_block_sapling_root(void);
 int test_connect_block_checkdatasig_sigops(void);
 int test_utxo_apply_coinbase_maturity(void);

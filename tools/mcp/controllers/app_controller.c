@@ -62,17 +62,33 @@ static int h_zcl_msg_send_named(const struct mcp_request *req, struct mcp_respon
 
 static int h_zcl_msg_send(const struct mcp_request *req, struct mcp_response *res)
 {
-    int64_t pid = json_get_int(json_get(req->args, "peer_id"));
-    const char *m = json_get_str(json_get(req->args, "message"));
+    const char *ch = json_get_str(json_get(req->args, "channel"));
+    const char *m  = json_get_str(json_get(req->args, "message"));
+    bool onchain = ch && strcmp(ch, "onchain") == 0;
     struct mcp_params p;
     mcp_params_init(&p);
-    mcp_params_push_int(&p, pid);
-    mcp_params_push_str(&p, m);
+    if (onchain) {
+        /* onchain: recipient z-address, message, channel, funding address,
+         * optional reply-to. Positional order matches the msg_send RPC. */
+        const char *to    = json_get_str(json_get(req->args, "to"));
+        const char *from  = json_get_str(json_get(req->args, "from_address"));
+        const char *reply = json_get_str(json_get(req->args, "reply_to"));
+        mcp_params_push_str(&p, to ? to : "");
+        mcp_params_push_str(&p, m);
+        mcp_params_push_str(&p, "onchain");
+        mcp_params_push_str(&p, from ? from : "");
+        if (reply && reply[0])
+            mcp_params_push_str(&p, reply);
+    } else {
+        int64_t pid = json_get_int(json_get(req->args, "peer_id"));
+        mcp_params_push_int(&p, pid);
+        mcp_params_push_str(&p, m);
+    }
     char *params = mcp_params_to_json(&p);
     char *out = params ? mcp_node_rpc("msg_send", params) : NULL;
     free(params);
     return mcp_return_rpc_body_ctx(res, out, "msg_send", "mcp.app",
-                                   "peer_id=%lld", (long long)pid);
+                                   "channel=%s", onchain ? "onchain" : "p2p");
 }
 
 static int h_zcl_msg_inbox(const struct mcp_request *req, struct mcp_response *res)
@@ -202,10 +218,20 @@ static const struct mcp_param_spec p_msg_send_named[] = {
       0, 0, 1, 4000, NULL, NULL },
 };
 static const struct mcp_param_spec p_msg_send[] = {
-    { "peer_id", MCP_PARAM_INT, true, "Connected peer ID",
-      0, 1000000, 0, 0, NULL, NULL },
-    { "message", MCP_PARAM_STR, true, "Message text",
+    { "message", MCP_PARAM_STR, true, "Message text (onchain max 474 bytes)",
       0, 0, 1, 4000, NULL, NULL },
+    { "channel", MCP_PARAM_STR, false, "Delivery channel",
+      0, 0, 0, 0, "p2p,onchain", "\"p2p\"" },
+    { "peer_id", MCP_PARAM_INT, false, "p2p: connected peer ID",
+      0, 1000000, 0, 0, NULL, NULL },
+    { "to", MCP_PARAM_STR, false, "onchain: recipient shielded (zs1...) address",
+      0, 0, 0, 128, NULL, NULL },
+    { "from_address", MCP_PARAM_STR, false,
+      "onchain: funding z/t address (required for onchain)",
+      0, 0, 0, 128, NULL, NULL },
+    { "reply_to", MCP_PARAM_STR, false,
+      "onchain: 64-hex parent msg_id this message replies to",
+      0, 0, 0, 64, NULL, NULL },
 };
 static const struct mcp_param_spec p_msg_inbox[] = {
     { "unread_only", MCP_PARAM_BOOL, false, "Only unread",
@@ -285,7 +311,8 @@ static const struct mcp_tool_route k_routes[] = {
       PARAM_COUNT(p_msg_send_named),
       h_zcl_msg_send_named, .flags = MCP_TOOL_FLAG_DESTRUCTIVE },
     { "zcl_msg_send", "app",
-      "Send a P2P message to a connected peer.",
+      "Send a message. channel=p2p (default) to a connected peer, or "
+      "channel=onchain as a shielded Sapling-memo transaction.",
       p_msg_send, PARAM_COUNT(p_msg_send), h_zcl_msg_send,
       .flags = MCP_TOOL_FLAG_DESTRUCTIVE },
     { "zcl_msg_inbox", "app",

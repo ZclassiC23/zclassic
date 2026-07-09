@@ -11,6 +11,7 @@
 #include "net/zmsg.h"
 #include "net/net.h"
 #include "net/connman.h"
+#include "sapling/params_init.h"     /* sapling_params_loaded (prover-ready gate) */
 #include "chain/chainparams.h"
 #include "models/znam.h"
 #include "encoding/utilstrencodings.h"
@@ -37,6 +38,13 @@ void rpc_msg_set_state(struct node_db *ndb, struct connman *cm)
     g_msg_connman = cm;
 }
 
+/* z_sendmany RPC handler (app/controllers/src/wallet_shielded_send.c). The
+ * on-chain ZMSG send composes this exact machinery (coin selection, Sapling
+ * output proof, binding sig, relay) rather than duplicating proof construction
+ * — declared here to avoid pulling the heavy wallet-internal header. */
+bool rpc_z_sendmany(const struct json_value *params, bool help,
+                    struct json_value *result);
+
 /* ── Helpers ────────────────────────────────────────────────────── */
 
 static void msg_to_json(const struct zmsg_message *msg, struct json_value *obj)
@@ -56,6 +64,122 @@ static void msg_to_json(const struct zmsg_message *msg, struct json_value *obj)
     json_push_kv_bool(obj, "read", msg->read);
 }
 
+/* ── msg_send (on-chain channel) ────────────────────────────────── */
+
+/* Build + broadcast a shielded tx carrying the message in the Sapling memo,
+ * by composing z_sendmany. Fails CLOSED (clear error body) when the Sapling
+ * prover params are not loaded or the funding address / recipient is bad. */
+static bool msg_send_onchain(const char *to_addr, const char *body,
+                             const char *from_addr, const char *reply_hex,
+                             struct json_value *result)
+{
+    if (!sapling_params_loaded()) {
+        json_set_str(result,
+            "On-chain ZMSG unavailable: Sapling proving params not loaded "
+            "(prover not READY) — cannot build a shielded transaction");
+        LOG_FAIL("zmsg", "msg_send onchain: sapling params not loaded");
+    }
+    if (!to_addr || strncmp(to_addr, "zs1", 3) != 0) {
+        json_set_str(result,
+            "On-chain ZMSG requires a shielded (zs1...) recipient address");
+        LOG_FAIL("zmsg", "msg_send onchain: recipient is not a z-address");
+    }
+    if (!from_addr || !from_addr[0]) {
+        json_set_str(result,
+            "On-chain ZMSG requires a from_address (4th arg) to fund the "
+            "dust output");
+        LOG_FAIL("zmsg", "msg_send onchain: missing from_address");
+    }
+    size_t blen = body ? strlen(body) : 0;
+    if (blen == 0 || blen > ZMSG_MEMO_MAX_PAYLOAD) {
+        json_set_str(result,
+            "Message empty or exceeds on-chain ZMSG payload max (474 bytes)");
+        LOG_FAIL("zmsg", "msg_send onchain: body len=%zu out of range", blen);
+    }
+
+    uint8_t reply_to[32];
+    bool has_reply = false;
+    if (reply_hex && reply_hex[0]) {
+        if (!zcl_is_hex_string(reply_hex, 64)) {
+            json_set_str(result, "Invalid reply_to (64-char hex msg_id)");
+            LOG_FAIL("zmsg", "msg_send onchain: bad reply_to hex");
+        }
+        (void)ParseHex(reply_hex, reply_to, 32);
+        has_reply = true;
+    }
+
+    uint8_t memo[ZMSG_MEMO_LEN];
+    if (!zmsg_memo_encode(memo, (const uint8_t *)body, blen,
+                          has_reply ? reply_to : NULL)) {
+        json_set_str(result, "Failed to encode ZMSG memo");
+        LOG_FAIL("zmsg", "msg_send onchain: memo encode failed");
+    }
+    char memohex[ZMSG_MEMO_LEN * 2 + 1];
+    HexStr(memo, ZMSG_MEMO_LEN, false, memohex, sizeof(memohex));
+
+    /* Compose z_sendmany: ["<from>", [{address,amount,memo_hex}]]. */
+    struct json_value zparams;
+    json_set_array(&zparams);
+    struct json_value jfrom = {0};
+    json_set_str(&jfrom, from_addr);
+    json_push_back(&zparams, &jfrom);
+    json_free(&jfrom);
+    struct json_value jarr = {0};
+    json_set_array(&jarr);
+    struct json_value jrec = {0};
+    json_set_object(&jrec);
+    json_push_kv_str(&jrec, "address", to_addr);
+    json_push_kv_int(&jrec, "amount", ZMSG_ONCHAIN_DUST_ZAT);
+    json_push_kv_str(&jrec, "memo_hex", memohex);
+    json_push_back(&jarr, &jrec);
+    json_free(&jrec);
+    json_push_back(&zparams, &jarr);
+    json_free(&jarr);
+
+    struct json_value sub = {0};
+    bool ok = rpc_z_sendmany(&zparams, false, &sub);
+    json_free(&zparams);
+    if (!ok) {
+        const char *emsg = json_get_str(&sub);
+        char buf[256];
+        snprintf(buf, sizeof(buf), "on-chain ZMSG send failed: %s",
+                 emsg ? emsg : "(no detail)");
+        json_set_str(result, buf);
+        json_free(&sub);
+        LOG_FAIL("zmsg", "msg_send onchain: z_sendmany rejected");
+    }
+    const char *txid_hex = json_get_str(&sub);   /* success => txid string */
+
+    /* Store our outbound copy. */
+    struct zmsg_message m;
+    memset(&m, 0, sizeof(m));
+    m.direction = ZMSG_OUTBOUND;
+    m.channel = ZMSG_CHANNEL_ONCHAIN;
+    m.timestamp = (int64_t)platform_time_wall_time_t();
+    snprintf(m.sender, sizeof(m.sender), "self");
+    snprintf(m.recipient, sizeof(m.recipient), "%s", to_addr);
+    snprintf(m.body, sizeof(m.body), "%s", body);
+    if (txid_hex && zcl_is_hex_string(txid_hex, 64))
+        (void)ParseHex(txid_hex, m.txid, 32);
+    zmsg_compute_id(&m, m.msg_id);
+    zmsg_store_add(&m);
+    if (g_msg_ndb)
+        db_zmsg_save(g_msg_ndb, &m);
+
+    json_set_object(result);
+    char idhex[65];
+    HexStr(m.msg_id, 32, false, idhex, sizeof(idhex));
+    json_push_kv_str(result, "msg_id", idhex);
+    json_push_kv_str(result, "channel", "onchain");
+    json_push_kv_str(result, "recipient", to_addr);
+    if (txid_hex)
+        json_push_kv_str(result, "txid", txid_hex);
+    json_push_kv_str(result, "status", "sent");
+    json_free(&sub);
+    printf("zmsg: sent on-chain message to %s\n", to_addr);
+    return true;
+}
+
 /* ── msg_send ───────────────────────────────────────────────────── */
 
 static bool rpc_msg_send(const struct json_value *params, bool help,
@@ -63,13 +187,35 @@ static bool rpc_msg_send(const struct json_value *params, bool help,
 {
     if (help || !params || json_size(params) < 2) {
         json_set_str(result,
-            "msg_send peer_id \"message\"\n"
-            "\nSend a P2P message to a connected peer.\n"
+            "msg_send recipient \"message\" [channel] [from_address] [reply_to]\n"
+            "\nSend a message. Two channels:\n"
+            "  p2p (default) — instant, free, to a connected peer\n"
+            "  onchain       — permanent, shielded Sapling memo transaction\n"
             "\nArguments:\n"
-            "1. peer_id  (number) Connected peer ID\n"
-            "2. message  (string) Message text\n"
-            "\nResult: message ID and delivery status.\n");
+            "1. recipient    (p2p: number peer ID | onchain: zs1... address)\n"
+            "2. message      (string) Message text (onchain max 474 bytes)\n"
+            "3. channel      (string, optional) \"p2p\" (default) or \"onchain\"\n"
+            "4. from_address (string) onchain only: funding z/t address (required)\n"
+            "5. reply_to     (string, optional) onchain only: 64-hex parent msg_id\n"
+            "\nResult: message ID and delivery/broadcast status.\n");
         return true;
+    }
+
+    /* Channel selection — P2P is the default (backward compatible). */
+    const char *channel_str = json_size(params) >= 3
+                                  ? json_get_str(json_at(params, 2)) : NULL;
+    if (channel_str && strcmp(channel_str, "onchain") == 0) {
+        const char *to_addr = json_get_str(json_at(params, 0));
+        const char *body = json_get_str(json_at(params, 1));
+        const char *from_addr = json_size(params) >= 4
+                                    ? json_get_str(json_at(params, 3)) : NULL;
+        const char *reply_hex = json_size(params) >= 5
+                                    ? json_get_str(json_at(params, 4)) : NULL;
+        return msg_send_onchain(to_addr, body, from_addr, reply_hex, result);
+    }
+    if (channel_str && strcmp(channel_str, "p2p") != 0) {
+        json_set_str(result, "Invalid channel (expected \"p2p\" or \"onchain\")");
+        LOG_FAIL("zmsg", "msg_send: invalid channel '%s'", channel_str);
     }
 
     int64_t peer_id = json_get_int(json_at(params, 0));

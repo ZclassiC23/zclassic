@@ -34,6 +34,7 @@
 #include "validation/process_block.h"   /* g_body_pull_active */
 #include "validation/txmempool.h"
 #include "wallet/wallet.h"
+#include "models/zmsg.h"                /* on-chain ZMSG memo ingest */
 
 #include <stdatomic.h>
 #include <stddef.h>
@@ -148,6 +149,11 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
                                 note->diversifier, note->pk_d,
                                 note->cm, note->nf,
                                 pindex_new->nHeight);
+                            /* If this note's memo is an on-chain ZMSG, land it
+                             * in the message store/inbox (dedup by msg_id).
+                             * Non-ZMSG memos return false quietly. */
+                            zmsg_ingest_onchain_note(ndb, note->memo,
+                                                     note->txid.data);
                         }
                         free(snap);
                     }

@@ -13,6 +13,8 @@
 #include "models/zmsg.h"
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
+#include "crypto/sha3.h"
+#include "platform/time_compat.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
@@ -159,4 +161,44 @@ bool db_zmsg_mark_read(struct node_db *ndb, const uint8_t msg_id[32])
     AR_EXEC_BOOL(ndb, s,
         "UPDATE zmsg_messages SET read=1 WHERE msg_id=?",
         AR_BIND_BLOB(s, 1, msg_id, 32));
+}
+
+bool zmsg_ingest_onchain_note(struct node_db *ndb,
+                              const uint8_t memo[ZMSG_MEMO_LEN],
+                              const uint8_t txid[32])
+{
+    if (!memo || !txid) LOG_FAIL("zmsg", "ingest_onchain_note: NULL arg");
+
+    struct zmsg_memo parsed;
+    if (!zmsg_memo_decode(memo, &parsed))
+        return false;   // raw-return-ok: memo is not a ZMSG (the common, benign case for every non-ZMSG shielded note); logging here would spam every decrypted memo
+
+    struct zmsg_message m;
+    memset(&m, 0, sizeof(m));
+    m.direction = ZMSG_INBOUND;
+    m.channel = ZMSG_CHANNEL_ONCHAIN;
+    m.timestamp = (int64_t)platform_time_wall_time_t();
+    snprintf(m.sender, sizeof(m.sender), "onchain");
+    snprintf(m.recipient, sizeof(m.recipient), "self");
+    memcpy(m.txid, txid, 32);
+
+    size_t blen = parsed.payload_len;
+    if (blen > ZMSG_MAX_BODY - 1) blen = ZMSG_MAX_BODY - 1;
+    memcpy(m.body, parsed.payload, blen);
+    m.body[blen] = '\0';
+
+    /* Deterministic id = SHA3(txid || full 512-byte memo) so a re-scan or
+     * reorg re-ingest of the same note maps to the SAME msg_id (both stores
+     * dedup on it). Independent of the wall-clock timestamp above, which is
+     * display/ordering metadata only. */
+    struct sha3_256_ctx sha3;
+    sha3_256_init(&sha3);
+    sha3_256_write(&sha3, txid, 32);
+    sha3_256_write(&sha3, memo, ZMSG_MEMO_LEN);
+    sha3_256_finalize(&sha3, m.msg_id);
+
+    zmsg_store_add(&m);   /* in-memory store dedups by msg_id */
+    if (ndb)
+        return db_zmsg_save(ndb, &m);   /* SQLite INSERT OR IGNORE on msg_id PK */
+    return true;
 }

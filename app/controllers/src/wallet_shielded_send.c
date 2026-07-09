@@ -104,9 +104,27 @@ bool rpc_z_sendmany(const struct json_value *params, bool help,
                 LOG_FAIL("wallet_shielded", "z_sendmany: cannot decode sapling recipient addr=%s", addr);
             }
             z_amounts[num_z_out] = amount;
-            /* Parse memo if present */
+            /* Parse memo if present. "memo_hex" carries an arbitrary BINARY
+             * memo (hex-encoded, <=1024 hex chars → <=512 bytes) — used by the
+             * on-chain ZMSG channel whose header bytes are not printable text;
+             * "memo" is the plain-UTF-8 form. memo_hex wins if both are given. */
+            const struct json_value *memohex_val = json_get(r, "memo_hex");
+            const char *memohex = memohex_val ? json_get_str(memohex_val) : NULL;
             const struct json_value *memo_val = json_get(r, "memo");
-            if (memo_val && json_get_str(memo_val)) {
+            if (memohex && memohex[0]) {
+                size_t hlen = strlen(memohex);
+                if (hlen % 2 != 0 || hlen > 1024) {
+                    json_set_str(result, "Invalid memo_hex (even-length hex, <=1024 chars)");
+                    LOG_FAIL("wallet_shielded", "z_sendmany: bad memo_hex len=%zu", hlen);
+                }
+                memset(z_memos[num_z_out], 0xF6, 512);
+                size_t got = ParseHex(memohex, z_memos[num_z_out], 512);
+                if (got != hlen / 2) {
+                    json_set_str(result, "Invalid memo_hex (non-hex characters)");
+                    LOG_FAIL("wallet_shielded", "z_sendmany: memo_hex parse got=%zu want=%zu", got, hlen / 2);
+                }
+                z_has_memo[num_z_out] = true;
+            } else if (memo_val && json_get_str(memo_val)) {
                 const char *memo_str = json_get_str(memo_val);
                 size_t memo_len = strlen(memo_str);
                 if (memo_len > 512) memo_len = 512;

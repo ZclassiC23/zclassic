@@ -35,4 +35,17 @@ int db_zmsg_list(struct node_db *ndb, struct zmsg_message *out,
                  size_t max, bool unread_only);
 bool db_zmsg_mark_read(struct node_db *ndb, const uint8_t msg_id[32]);
 
+/* Ingest a decrypted Sapling note memo as an inbound on-chain ZMSG.
+ *
+ * Parses `memo` (512 bytes) with zmsg_memo_decode; if it is a ZMSG, builds an
+ * inbound message (channel = onchain, txid stamped) with a DETERMINISTIC
+ * msg_id = SHA3(txid || memo) so a re-scan / reorg re-ingest maps to the same
+ * id, then persists it to the in-memory store AND (if `ndb` non-NULL) SQLite —
+ * both dedup by msg_id. Returns true when a ZMSG was ingested, false quietly
+ * when the memo is not a ZMSG (the common case) or on a NULL arg. Called from
+ * the note-decrypt path (app/jobs/src/tip_finalize_post_step.c). */
+bool zmsg_ingest_onchain_note(struct node_db *ndb,
+                              const uint8_t memo[ZMSG_MEMO_LEN],
+                              const uint8_t txid[32]);
+
 #endif

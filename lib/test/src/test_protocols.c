@@ -507,6 +507,111 @@ int test_protocols(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    /* ── ZMSG: on-chain memo codec (v1) ───────────────────── */
+
+    printf("zmsg_memo encode/decode round-trip... ");
+    {
+        const char *body = "hello from an autonomous agent \xF0\x9F\xA4\x96";
+        size_t blen = strlen(body);
+        uint8_t reply[32];
+        for (int i = 0; i < 32; i++) reply[i] = (uint8_t)(0xA0 + i);
+
+        uint8_t memo[ZMSG_MEMO_LEN];
+        bool ok = zmsg_memo_encode(memo, (const uint8_t *)body, blen, reply);
+        /* Header bytes */
+        ok = ok && memo[0] == ZMSG_MEMO_MAGIC_0 && memo[1] == ZMSG_MEMO_MAGIC_1;
+        ok = ok && memo[2] == ZMSG_MEMO_VERSION;
+        ok = ok && memo[3] == ZMSG_MEMO_FLAG_HAS_REPLY_TO;
+        /* Trailing padding is 0xF6 */
+        ok = ok && memo[ZMSG_MEMO_LEN - 1] == ZMSG_MEMO_PAD_BYTE;
+
+        struct zmsg_memo dec;
+        ok = ok && zmsg_memo_decode(memo, &dec);
+        ok = ok && dec.version == ZMSG_MEMO_VERSION;
+        ok = ok && dec.has_reply_to;
+        ok = ok && dec.payload_len == blen;
+        ok = ok && memcmp(dec.payload, body, blen) == 0;
+        ok = ok && memcmp(dec.reply_to, reply, 32) == 0;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zmsg_memo encode without reply-to (fresh message)... ");
+    {
+        const char *body = "no parent";
+        uint8_t memo[ZMSG_MEMO_LEN];
+        bool ok = zmsg_memo_encode(memo, (const uint8_t *)body, strlen(body), NULL);
+        ok = ok && memo[3] == 0;                 /* flags clear */
+        struct zmsg_memo dec;
+        ok = ok && zmsg_memo_decode(memo, &dec);
+        ok = ok && !dec.has_reply_to;
+        static const uint8_t zero32[32] = {0};
+        ok = ok && memcmp(dec.reply_to, zero32, 32) == 0;
+        ok = ok && dec.payload_len == strlen(body);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zmsg_memo empty payload round-trip... ");
+    {
+        uint8_t memo[ZMSG_MEMO_LEN];
+        bool ok = zmsg_memo_encode(memo, NULL, 0, NULL);
+        struct zmsg_memo dec;
+        ok = ok && zmsg_memo_decode(memo, &dec);
+        ok = ok && dec.payload_len == 0;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zmsg_memo max-payload (474) round-trip... ");
+    {
+        uint8_t payload[ZMSG_MEMO_MAX_PAYLOAD];
+        for (int i = 0; i < ZMSG_MEMO_MAX_PAYLOAD; i++)
+            payload[i] = (uint8_t)('A' + (i % 26));
+        uint8_t memo[ZMSG_MEMO_LEN];
+        bool ok = zmsg_memo_encode(memo, payload, ZMSG_MEMO_MAX_PAYLOAD, NULL);
+        struct zmsg_memo dec;
+        ok = ok && zmsg_memo_decode(memo, &dec);
+        ok = ok && dec.payload_len == ZMSG_MEMO_MAX_PAYLOAD;
+        ok = ok && memcmp(dec.payload, payload, ZMSG_MEMO_MAX_PAYLOAD) == 0;
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zmsg_memo_encode rejects over-long payload (475)... ");
+    {
+        uint8_t payload[ZMSG_MEMO_MAX_PAYLOAD + 1] = {0};
+        uint8_t memo[ZMSG_MEMO_LEN];
+        bool ok = !zmsg_memo_encode(memo, payload, ZMSG_MEMO_MAX_PAYLOAD + 1, NULL);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("zmsg_memo_decode negatives (bad magic/version/flags/len)... ");
+    {
+        uint8_t memo[ZMSG_MEMO_LEN];
+        struct zmsg_memo dec;
+        bool ok = true;
+
+        /* All-0xF6 (a plain non-ZMSG memo) → reject */
+        memset(memo, ZMSG_MEMO_PAD_BYTE, sizeof(memo));
+        ok = ok && !zmsg_memo_decode(memo, &dec);
+
+        /* Good frame, then corrupt each critical field in turn. */
+        zmsg_memo_encode(memo, (const uint8_t *)"x", 1, NULL);
+        ok = ok && zmsg_memo_decode(memo, &dec);        /* baseline valid */
+
+        uint8_t bad[ZMSG_MEMO_LEN];
+        memcpy(bad, memo, sizeof(bad)); bad[0] = 0x00;   /* bad magic0 */
+        ok = ok && !zmsg_memo_decode(bad, &dec);
+        memcpy(bad, memo, sizeof(bad)); bad[1] = 0x00;   /* bad magic1 */
+        ok = ok && !zmsg_memo_decode(bad, &dec);
+        memcpy(bad, memo, sizeof(bad)); bad[2] = 0x02;   /* unknown version */
+        ok = ok && !zmsg_memo_decode(bad, &dec);
+        memcpy(bad, memo, sizeof(bad)); bad[3] = 0x02;   /* reserved flag bit */
+        ok = ok && !zmsg_memo_decode(bad, &dec);
+        /* payload_len = 475 (> 474): LE 0x01DB */
+        memcpy(bad, memo, sizeof(bad)); bad[4] = 0xDB; bad[5] = 0x01;
+        ok = ok && !zmsg_memo_decode(bad, &dec);
+
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
     int total = 0;
     /* Count from printf lines */
     total = 20; /* approximate */
