@@ -87,6 +87,18 @@ void simnet_free(struct simnet *s);
  * and CLTV finality share one deterministic virtual clock. */
 void simnet_use_seed_tape(struct simnet *s, seed_tape_t *tape);
 
+/* Lower the Overwinter+Sapling activation heights to `height` on the sim's
+ * LOCAL params value-copy ONLY (never chain_params_get() / the mainnet
+ * definition in lib/chain/src/chainparams.c). After this call, blocks minted
+ * at nHeight >= `height` are validated by the REAL connect_block with Sapling
+ * active — the mint helpers set the header's hashFinalSaplingRoot to the empty
+ * Sapling note-commitment tree root (the sim mints only transparent txs, so
+ * the tree stays empty) so the post-activation root check passes unchanged.
+ * Sim-local by construction: it does not touch any global consensus state, so
+ * mainnet parity is preserved. No-op (logs) on an uninitialized sim or a
+ * negative height. */
+void simnet_activate_sapling_at(struct simnet *s, int height);
+
 /* Mint a new block whose only transaction is a coinbase, driving it through
  * connect_block(). On success the tip advances by one and the coinbase's
  * single output is a spendable (maturing) coin in `view`. `out_cb_txid`, if
