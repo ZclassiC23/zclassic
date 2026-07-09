@@ -69,10 +69,10 @@ void sticky_escalator_set_datadir(const char *datadir);
  * escalator. NULL fn restores the stub. Idempotent. */
 void sticky_escalator_register_rung(enum sticky_rung rung, sticky_rung_fn fn);
 
-/* Arm (or keep armed) the ladder from a named stall cause. The chain_tip
- * watchdog calls this on a deterministic stall (REPLACING its old terminal
- * operator-needed latch); worker_on_stall calls it when a background worker
- * stalls. Cheap + reentrant-safe; the actual rung work happens on the tick. */
+/* Arm (or keep armed) the ladder from a named chain-tip stall cause. The
+ * chain_tip watchdog calls this on deterministic stalls or exhausted restart
+ * budgets; worker-scoped stalls raise typed blockers instead. Cheap +
+ * reentrant-safe; the actual rung work happens on the tick. */
 void sticky_escalator_note_stall(const char *cause);
 
 /* Run ONE ladder step: re-evaluate progress, advance/hold/reset the rung, and

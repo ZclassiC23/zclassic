@@ -113,7 +113,7 @@ static void *build_snapshot_offer_thread(void *arg)
     int64_t checkpoint = 0;
 
     if (!datadir || datadir[0] == '\0')
-        return NULL;
+        goto done;
 
     offer_checkpoint(&checkpoint);
 
@@ -130,7 +130,7 @@ static void *build_snapshot_offer_thread(void *arg)
         printf("Fast sync snapshot publish skipped on boot "
                "(set ZCL_PUBLISH_FASTSYNC_ON_BOOT=1 to build offers)\n");
         (void)file_service_enabled;
-        return NULL;
+        goto done;
     }
 
     /* Sticky/global-sync (Lane F #9c): when enabled, ANY at-tip zclassic23
@@ -311,5 +311,7 @@ static void *build_snapshot_offer_thread(void *arg)
     }
 
     offer_checkpoint(&checkpoint);
+done:
+    boot_complete_worker_supervisor(&g_offer_sup_id);
     return NULL;
 }

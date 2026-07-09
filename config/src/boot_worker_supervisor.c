@@ -7,7 +7,6 @@
 
 #include "config/boot_background_workers.h"
 #include "event/event.h"
-#include "services/sticky_escalator.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
 #include "util/supervisor.h"
@@ -29,9 +28,9 @@ void worker_on_stall(struct liveness_contract *c)
     LOG_WARN("boot", "[supervisor] %s stall reason=%s", name, reason);
     event_emitf(EV_RECOVERY_ACTION, 0,
                 "action=worker-stall worker=%s reason=%s", name, reason);
-    /* Raise a TRANSIENT typed blocker for the stalled worker and arm the
-     * always-terminating remedy escalator so the stall enters the ladder
-     * instead of dead-ending. */
+    /* Raise a TRANSIENT typed blocker for the stalled worker. Worker stalls are
+     * worker-scoped faults; the chain-tip escalator is only armed by the
+     * chain_tip_watchdog for chain-progress stalls. */
     {
         struct blocker_record br;
         char id[BLOCKER_ID_MAX];
@@ -42,7 +41,6 @@ void worker_on_stall(struct liveness_contract *c)
             (void)blocker_set(&br);
         }
     }
-    sticky_escalator_note_stall(name);
 }
 
 /* Register a single worker contract. Idempotent: supervisor_start and
@@ -80,4 +78,14 @@ void boot_register_worker_supervisor(
     atomic_store(slot, id);
     supervisor_tick(id);
     supervisor_progress(id, 0);
+}
+
+void boot_complete_worker_supervisor(_Atomic supervisor_child_id *slot)
+{
+    if (!slot)
+        return;
+    supervisor_child_id id = atomic_load(slot);
+    if (id == SUPERVISOR_INVALID_ID)
+        return;
+    supervisor_child_complete(id);
 }

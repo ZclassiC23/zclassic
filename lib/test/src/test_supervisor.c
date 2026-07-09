@@ -331,6 +331,50 @@ int test_supervisor(void)
         supervisor_stop();
     }
 
+    /* ── completed child is no longer stall-monitorable ──────────── */
+    supervisor_reset_for_testing();
+    supervisor_set_tick_ms_for_testing(5);
+    {
+        static struct liveness_contract c;
+        static struct cb_counts cc;
+        memset(&cc, 0, sizeof(cc));
+        liveness_contract_init(&c, "loop.completed");
+        c.ctx = &cc;
+        c.on_stall = inc_stall;
+        atomic_store(&c.deadline_secs, 1);
+        atomic_store(&c.progress_max_quiet_us, 500000);
+        supervisor_child_id id = supervisor_register(&c);
+        SUP_CHECK("completed child register ok", id >= 0);
+
+        supervisor_child_complete(id);
+        atomic_store(&c.last_tick_us,
+            atomic_load(&c.last_tick_us) - 5000000);
+        atomic_store(&c.progress_changed_at_us,
+            atomic_load(&c.progress_changed_at_us) - 2000000);
+
+        SUP_CHECK("complete disables deadline",
+            atomic_load(&c.deadline_secs) == 0);
+        SUP_CHECK("complete marks child completed",
+            atomic_load(&c.completed));
+        SUP_CHECK("supervisor_start succeeds (complete test)",
+            supervisor_start());
+        sleep_ms(80);
+        SUP_CHECK("completed child does not fire on_stall",
+            atomic_load(&cc.stall_calls) == 0);
+        SUP_CHECK("completed child keeps stall_reason NONE",
+            atomic_load(&c.stall_reason) == SUPERVISOR_STALL_NONE);
+        SUP_CHECK("completed child stall_fires stays 0",
+            atomic_load(&c.stall_fires) == 0u);
+
+        struct supervisor_snapshot snaps[SUPERVISOR_CAP];
+        int n = supervisor_snapshot_all(snaps, SUPERVISOR_CAP);
+        SUP_CHECK("completed child remains introspectable", n == 1);
+        SUP_CHECK("snapshot marks child completed",
+            n == 1 && snaps[0].completed);
+
+        supervisor_stop();
+    }
+
     /* ── lifecycle: start idempotency + stop without start ──────── */
     supervisor_reset_for_testing();
     supervisor_set_tick_ms_for_testing(5);

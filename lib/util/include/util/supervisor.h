@@ -102,6 +102,7 @@ struct liveness_contract {
     _Atomic int64_t deadline_secs;     /* >0 ⇒ stall if last_tick lapses */
     _Atomic int64_t progress_max_quiet_us;
                                        /* >0 ⇒ stall if marker frozen */
+    _Atomic bool    completed;         /* true ⇒ no tick or stall checks */
 
     /* status (supervisor-owned, atomic-readable from anywhere) */
     _Atomic int      stall_reason;     /* enum supervisor_stall_reason */
@@ -146,6 +147,11 @@ int supervisor_child_count_total(void);
 
 /* Remove a contract from the registry. Idempotent. */
 void supervisor_unregister(supervisor_child_id id);
+
+/* Mark a child finished without compacting the registry. This preserves cached
+ * child ids held by sibling workers while disabling all liveness gates for the
+ * completed child. */
+void supervisor_child_complete(supervisor_child_id id);
 
 /* ── Child-side helpers (O(1) atomic stores) ───────────────────────── */
 
@@ -203,6 +209,7 @@ struct supervisor_snapshot {
     int64_t  progress_marker;
     int64_t  period_secs;
     int64_t  deadline_secs;
+    bool     completed;
     int      stall_reason;           /* enum supervisor_stall_reason */
     uint32_t ticks_run;
     uint32_t stall_fires;

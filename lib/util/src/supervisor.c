@@ -181,10 +181,24 @@ static struct liveness_contract *contract_for(supervisor_child_id id)
     return c;
 }
 
+void supervisor_child_complete(supervisor_child_id id)
+{
+    struct liveness_contract *c = contract_for(id);
+    if (!c) return;
+
+    atomic_store(&c->period_secs, 0);
+    atomic_store(&c->deadline_secs, 0);
+    atomic_store(&c->progress_max_quiet_us, 0);
+    atomic_store(&c->stall_reason, SUPERVISOR_STALL_NONE);
+    atomic_store(&c->last_tick_us, platform_time_monotonic_us());
+    atomic_store(&c->completed, true);
+}
+
 void supervisor_tick(supervisor_child_id id)
 {
     struct liveness_contract *c = contract_for(id);
     if (!c) return;
+    if (atomic_load(&c->completed)) return;
     atomic_store(&c->last_tick_us, platform_time_monotonic_us());
     atomic_fetch_add(&c->ticks_run, 1u);
     /* Edge-rearm: ticking clears a TIME_DEADLINE stall. NO_PROGRESS
@@ -200,6 +214,7 @@ void supervisor_progress(supervisor_child_id id, int64_t marker)
 {
     struct liveness_contract *c = contract_for(id);
     if (!c) return;
+    if (atomic_load(&c->completed)) return;
     int64_t prev = atomic_load(&c->progress_marker);
     if (marker != prev) {
         atomic_store(&c->progress_marker, marker);
@@ -216,6 +231,7 @@ void supervisor_report_stall(supervisor_child_id id,
 {
     struct liveness_contract *c = contract_for(id);
     if (!c) return;
+    if (atomic_load(&c->completed)) return;
     /* Only fire on the rising edge. */
     int expected = SUPERVISOR_STALL_NONE;
     if (atomic_compare_exchange_strong(&c->stall_reason, &expected, (int)r)) {
@@ -285,6 +301,7 @@ static void sweep_once(void)
         if (thread_registry_shutdown_requested()) return;
         struct liveness_contract *c = snap[i];
         if (!c) continue;
+        if (atomic_load(&c->completed)) continue;
 
         int64_t last_tick = atomic_load(&c->last_tick_us);
         int64_t period_s  = atomic_load(&c->period_secs);
@@ -464,6 +481,7 @@ int supervisor_snapshot_all(struct supervisor_snapshot *out, int max)
         out[i].progress_marker  = atomic_load(&c->progress_marker);
         out[i].period_secs      = atomic_load(&c->period_secs);
         out[i].deadline_secs    = atomic_load(&c->deadline_secs);
+        out[i].completed        = atomic_load(&c->completed);
         out[i].stall_reason     = atomic_load(&c->stall_reason);
         out[i].ticks_run        = atomic_load(&c->ticks_run);
         out[i].stall_fires      = atomic_load(&c->stall_fires);
@@ -549,6 +567,8 @@ static void push_contract_json(struct json_value *arr,
                       atomic_load(&c->period_secs));
     json_push_kv_int (&child, "deadline_secs",
                       atomic_load(&c->deadline_secs));
+    json_push_kv_bool(&child, "completed",
+                      atomic_load(&c->completed));
     json_push_kv_str (&child, "stall_reason",
                       supervisor_stall_reason_name(
                           (enum supervisor_stall_reason)
