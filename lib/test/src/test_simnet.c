@@ -743,15 +743,22 @@ int test_simnet(void)
                           "alice", ZNAM_TYPE_TADDR, "t1updated");
     SN_CHECK("build real ZNAM owner UPDATE script", znam_update_script_len > 0);
 
+    /* Output 1 continues the owner-controlled UTXO chain (unchanged from
+     * before); outputs 2 and 3 are attacker-controlled decoys (seed 0xE1,
+     * NOT alice's owner address) used below to fund the non-owner
+     * SET_RECORD / SET_TEXT rejection tests. */
     struct transaction znam_update;
     struct transaction znam_update_projection;
     transaction_init(&znam_update_projection);
+    int64_t znam_update_values[3] = { 90000, 10000, 10000 };
+    unsigned char znam_update_seeds[3] = { 0xC0, 0xE1, 0xE1 };
     bool built_znam_update =
         znam_update_script_len > 0 &&
-        sim_test_make_opreturn_spend(&znam_update, &znam_owner_fund_txid, 1,
-                                     znam_update_script,
-                                     znam_update_script_len,
-                                     90000, 0xC0);
+        sim_test_make_opreturn_spend_outputs(&znam_update, &znam_owner_fund_txid,
+                                             1, znam_update_script,
+                                             znam_update_script_len,
+                                             znam_update_values,
+                                             znam_update_seeds, 3);
     bool copied_znam_update =
         built_znam_update && transaction_copy(&znam_update_projection,
                                               &znam_update);
@@ -778,6 +785,48 @@ int test_simnet(void)
              strcmp(after_update.target_value, "t1updated") == 0 &&
              strcmp(after_update.owner_address,
                     znam_owner_before_transfer) == 0);
+
+    uint8_t znam_bad_record_script[512];
+    size_t znam_bad_record_script_len =
+        znam_build_set_record(znam_bad_record_script,
+                              sizeof(znam_bad_record_script), "alice",
+                              ZNAM_TYPE_BTC, "1AttackerBtcAddrXXXXXXXXXXXXXXXXX");
+    SN_CHECK("build real ZNAM non-owner SET_RECORD script",
+             znam_bad_record_script_len > 0);
+
+    struct transaction znam_bad_record;
+    struct transaction znam_bad_record_projection;
+    transaction_init(&znam_bad_record_projection);
+    bool built_znam_bad_record =
+        znam_bad_record_script_len > 0 &&
+        sim_test_make_opreturn_spend(&znam_bad_record, &znam_update_txid, 2,
+                                     znam_bad_record_script,
+                                     znam_bad_record_script_len,
+                                     8000, 0xE1);
+    bool copied_znam_bad_record =
+        built_znam_bad_record &&
+        transaction_copy(&znam_bad_record_projection, &znam_bad_record);
+    SN_CHECK("build ZNAM non-owner SET_RECORD tx",
+             built_znam_bad_record && copied_znam_bad_record);
+    bool minted_znam_bad_record =
+        built_znam_bad_record && copied_znam_bad_record &&
+        simnet_mint_txs(&sim, &znam_bad_record, 1);
+    int znam_bad_record_height = simnet_tip_height(&sim);
+    SN_CHECK("mint ZNAM non-owner SET_RECORD through simnet",
+             minted_znam_bad_record);
+    bool indexed_znam_bad_record =
+        znam_open && minted_znam_bad_record &&
+        sim_test_index_block(&znam_db, &znam_bad_record_projection, 1,
+                             znam_bad_record_height, 0xDA);
+    SN_CHECK("fold ZNAM non-owner SET_RECORD into projection",
+             indexed_znam_bad_record);
+    char bad_btc_record[ZNAM_VALUE_MAX + 1];
+    memset(bad_btc_record, 0, sizeof(bad_btc_record));
+    bool bad_record_leaked =
+        db_znam_addr_get(&znam_db, "alice", ZNAM_TYPE_BTC,
+                         bad_btc_record, sizeof(bad_btc_record));
+    SN_CHECK("ZNAM non-owner SET_RECORD is ignored by projection",
+             indexed_znam_bad_record && !bad_record_leaked);
 
     uint8_t znam_record_script[512];
     size_t znam_record_script_len =
@@ -820,6 +869,47 @@ int test_simnet(void)
              db_znam_addr_get(&znam_db, "alice", ZNAM_TYPE_BTC,
                               btc_record, sizeof(btc_record)) &&
              strcmp(btc_record, "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa") == 0);
+
+    uint8_t znam_bad_text_script[512];
+    size_t znam_bad_text_script_len =
+        znam_build_set_text(znam_bad_text_script, sizeof(znam_bad_text_script),
+                            "alice", "email", "attacker@evil.test");
+    SN_CHECK("build real ZNAM non-owner SET_TEXT script",
+             znam_bad_text_script_len > 0);
+
+    struct transaction znam_bad_text;
+    struct transaction znam_bad_text_projection;
+    transaction_init(&znam_bad_text_projection);
+    bool built_znam_bad_text =
+        znam_bad_text_script_len > 0 &&
+        sim_test_make_opreturn_spend(&znam_bad_text, &znam_update_txid, 3,
+                                     znam_bad_text_script,
+                                     znam_bad_text_script_len,
+                                     8000, 0xE1);
+    bool copied_znam_bad_text =
+        built_znam_bad_text &&
+        transaction_copy(&znam_bad_text_projection, &znam_bad_text);
+    SN_CHECK("build ZNAM non-owner SET_TEXT tx",
+             built_znam_bad_text && copied_znam_bad_text);
+    bool minted_znam_bad_text =
+        built_znam_bad_text && copied_znam_bad_text &&
+        simnet_mint_txs(&sim, &znam_bad_text, 1);
+    int znam_bad_text_height = simnet_tip_height(&sim);
+    SN_CHECK("mint ZNAM non-owner SET_TEXT through simnet",
+             minted_znam_bad_text);
+    bool indexed_znam_bad_text =
+        znam_open && minted_znam_bad_text &&
+        sim_test_index_block(&znam_db, &znam_bad_text_projection, 1,
+                             znam_bad_text_height, 0xDB);
+    SN_CHECK("fold ZNAM non-owner SET_TEXT into projection",
+             indexed_znam_bad_text);
+    char bad_email_record[ZNAM_TEXT_VAL_MAX + 1];
+    memset(bad_email_record, 0, sizeof(bad_email_record));
+    bool bad_text_leaked =
+        db_znam_text_get(&znam_db, "alice", "email",
+                         bad_email_record, sizeof(bad_email_record));
+    SN_CHECK("ZNAM non-owner SET_TEXT is ignored by projection",
+             indexed_znam_bad_text && !bad_text_leaked);
 
     uint8_t znam_text_script[512];
     size_t znam_text_script_len =
@@ -976,7 +1066,7 @@ int test_simnet(void)
     SN_CHECK("malformed ZNAM OP_RETURN is indexed generically",
              indexed_znam_malformed &&
              sim_test_count_rows(&znam_db,
-                 "SELECT COUNT(*) FROM op_returns") == 8);
+                 "SELECT COUNT(*) FROM op_returns") == 10);
     struct znam_entry after_malformed;
     memset(&after_malformed, 0, sizeof(after_malformed));
     bool malformed_ignored =
