@@ -16,12 +16,12 @@
 
 #include "config/db_service.h"
 #include "config/runtime.h"
-#include "controllers/chain_projection.h"
 #include "models/database.h"
 #include "models/utxo.h"
 #include "jobs/refold_progress.h"
 #include "script/script.h"
 #include "script/standard.h"
+#include "services/chain_state_service.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "supervisors/domains.h"
@@ -456,8 +456,17 @@ int64_t utxo_mirror_sync_run_once(struct utxo_mirror_sync_service *svc)
      * the first within-N-of-tip pass rebuilds it once, and the count-mismatch
      * self-heal below still runs near tip. Fail-open: header tip unknown (-1)
      * leaves the original every-tick behavior. See
-     * docs/work/refold-fold-rate-bottlenecks.md (#3). */
-    int64_t header_tip = chain_projection_best_header_height();
+     * docs/work/refold-fold-rate-bottlenecks.md (#3).
+     *
+     * header_tip MUST come from the in-process chain_state_repository
+     * (csr_header_height), not chain_projection_best_header_height(): that
+     * helper is MCP-CLIENT-layer — it requires mcp_rpc_client_datadir(),
+     * which is never set inside the node process, so from here it always
+     * failed with "MCP datadir is unset" (11k-16k log lines/day) AND
+     * silently returned -1, which defeated BOTH guards above on every tick
+     * (both require header_tip > 0) and reproduced exactly the rebuild
+     * storm they exist to prevent. */
+    int64_t header_tip = csr_header_height(csr_instance());
     if (header_tip > 0 &&
         (int64_t)frontier + UTXO_MIRROR_SYNC_NEAR_TIP_BLOCKS < header_tip) {
         atomic_store(&svc->last_pass_unix, platform_time_wall_unix());

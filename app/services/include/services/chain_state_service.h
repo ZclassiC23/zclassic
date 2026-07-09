@@ -229,6 +229,11 @@ bool csr_align_coins_best_block(struct chain_state_repository *csr,
 void csr_snapshot(struct chain_state_repository *csr,
                    struct chain_state_view *out);
 
+/* Cheap header-tip-only read: in-memory pindex_best_hdr height under the
+ * repository lock, no SQLite queries. Returns -1 if csr is NULL/uninitialized
+ * or no header tip is set yet. Prefer this over csr_snapshot() for callers
+ * on a frequent tick that only need the header height. */
+int64_t csr_header_height(struct chain_state_repository *csr);
 
 /* ── Tunables ─────────────────────────────────────────────────── */
 
