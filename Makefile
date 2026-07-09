@@ -1565,9 +1565,9 @@ mvp: test_zcl zclassic23 zcl-rpc
 #
 # `make fuzz` builds the four binaries. `make fuzz-ci` runs each
 # for 60 seconds as a smoke test; CI uses this to detect already-
-# latent crashes without chasing exhaustive coverage. If clang is
-# unavailable, both targets print a skip message and exit 0 so
-# gcc-only hosts never fail the build.
+# latent crashes without chasing exhaustive coverage. Fuzz CI must
+# never false-green without the toolchain: install clang/libFuzzer or
+# opt out explicitly with `make ci SKIP_FUZZ=1`.
 FUZZ_CC ?= clang
 FUZZ_CFLAGS = -std=c23 -O1 -g -Wall -Wextra -Wno-unused-result \
 	-Wno-deprecated-declarations \
@@ -1580,9 +1580,23 @@ FUZZ_CFLAGS = -std=c23 -O1 -g -Wall -Wextra -Wno-unused-result \
 FUZZ_LIBS = $(TOR_LIBS) $(LIBS)
 
 FUZZ_TARGETS = $(BIN_DIR)/fuzz_block $(BIN_DIR)/fuzz_script $(BIN_DIR)/fuzz_p2p $(BIN_DIR)/fuzz_http
+FUZZ_CI_TIME ?= 60
+FUZZ_CI_WALL_TIME ?= 120
 
-.PHONY: fuzz fuzz-ci
-fuzz: $(FUZZ_TARGETS)
+.PHONY: check-fuzz-toolchain check-fuzz-ci-tools fuzz fuzz-ci
+check-fuzz-toolchain:
+	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
+		echo "fuzz-ci: ERROR: $(FUZZ_CC) not found (install clang/libFuzzer or run make ci SKIP_FUZZ=1)"; \
+		exit 2; \
+	fi
+
+check-fuzz-ci-tools: check-fuzz-toolchain
+	@if ! command -v timeout >/dev/null 2>&1; then \
+		echo "fuzz-ci: ERROR: timeout not found (install coreutils or run make ci SKIP_FUZZ=1)"; \
+		exit 2; \
+	fi
+
+fuzz: check-fuzz-toolchain $(FUZZ_TARGETS)
 
 .PHONY: fuzz_block fuzz_script fuzz_p2p fuzz_http
 fuzz_block: $(BIN_DIR)/fuzz_block
@@ -1593,8 +1607,8 @@ fuzz_http: $(BIN_DIR)/fuzz_http
 $(BIN_DIR)/fuzz_block: tools/fuzz/fuzz_block.c $(TMPL_GEN) $(ALL_SRCS)
 	@mkdir -p $(dir $@)
 	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
-		echo "fuzz_block: $(FUZZ_CC) not found — SKIP (install clang for fuzzing)"; \
-		touch $@; \
+		echo "fuzz_block: ERROR: $(FUZZ_CC) not found (install clang/libFuzzer)"; \
+		exit 2; \
 	else \
 		echo "$(FUZZ_CC) ... -o $@"; \
 		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_block.c $(ALL_SRCS) $(FUZZ_LIBS); \
@@ -1603,8 +1617,8 @@ $(BIN_DIR)/fuzz_block: tools/fuzz/fuzz_block.c $(TMPL_GEN) $(ALL_SRCS)
 $(BIN_DIR)/fuzz_script: tools/fuzz/fuzz_script.c $(TMPL_GEN) $(ALL_SRCS)
 	@mkdir -p $(dir $@)
 	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
-		echo "fuzz_script: $(FUZZ_CC) not found — SKIP"; \
-		touch $@; \
+		echo "fuzz_script: ERROR: $(FUZZ_CC) not found (install clang/libFuzzer)"; \
+		exit 2; \
 	else \
 		echo "$(FUZZ_CC) ... -o $@"; \
 		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_script.c $(ALL_SRCS) $(FUZZ_LIBS); \
@@ -1613,8 +1627,8 @@ $(BIN_DIR)/fuzz_script: tools/fuzz/fuzz_script.c $(TMPL_GEN) $(ALL_SRCS)
 $(BIN_DIR)/fuzz_p2p: tools/fuzz/fuzz_p2p.c $(TMPL_GEN) $(ALL_SRCS)
 	@mkdir -p $(dir $@)
 	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
-		echo "fuzz_p2p: $(FUZZ_CC) not found — SKIP"; \
-		touch $@; \
+		echo "fuzz_p2p: ERROR: $(FUZZ_CC) not found (install clang/libFuzzer)"; \
+		exit 2; \
 	else \
 		echo "$(FUZZ_CC) ... -o $@"; \
 		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_p2p.c $(ALL_SRCS) $(FUZZ_LIBS); \
@@ -1623,26 +1637,23 @@ $(BIN_DIR)/fuzz_p2p: tools/fuzz/fuzz_p2p.c $(TMPL_GEN) $(ALL_SRCS)
 $(BIN_DIR)/fuzz_http: tools/fuzz/fuzz_http.c $(TMPL_GEN) $(ALL_SRCS)
 	@mkdir -p $(dir $@)
 	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
-		echo "fuzz_http: $(FUZZ_CC) not found — SKIP"; \
-		touch $@; \
+		echo "fuzz_http: ERROR: $(FUZZ_CC) not found (install clang/libFuzzer)"; \
+		exit 2; \
 	else \
 		echo "$(FUZZ_CC) ... -o $@"; \
 		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_http.c $(ALL_SRCS) $(FUZZ_LIBS); \
 	fi
 
-fuzz-ci: $(FUZZ_TARGETS)
-	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
-		echo "fuzz-ci: $(FUZZ_CC) not found — SKIP"; \
-		exit 0; \
-	fi; \
-	set -e; \
+fuzz-ci: check-fuzz-ci-tools $(FUZZ_TARGETS)
+	@set -e; \
 	for t in $(FUZZ_TARGETS); do \
-		echo "=== $$t (60s) ==="; \
+		echo "=== $$t ($(FUZZ_CI_TIME)s) ==="; \
 		base=$$(basename "$$t"); kind="$${base#fuzz_}"; \
 		seed_dir="lib/test/fuzz_seeds/$$kind"; \
 		work_dir="/tmp/zcl_fuzz_$$kind"; \
 		rm -rf "$$work_dir"; mkdir -p "$$work_dir"; \
-		ASAN_OPTIONS=detect_leaks=0 $$t -max_total_time=60 \
+		timeout $(FUZZ_CI_WALL_TIME)s env ASAN_OPTIONS=detect_leaks=0 \
+			$$t -max_total_time=$(FUZZ_CI_TIME) \
 			-timeout=1 -print_final_stats=1 "$$work_dir" "$$seed_dir"; \
 		rm -rf "$$work_dir"; \
 	done
@@ -1650,20 +1661,16 @@ fuzz-ci: $(FUZZ_TARGETS)
 # Same binaries with leak detection ON. Separate target so CI stays
 # green while known-pre-existing leaks are being triaged; developers
 # and Wave 4+ commits that fix leaks opt into this stricter run.
-fuzz-ci-leaks: $(FUZZ_TARGETS)
-	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
-		echo "fuzz-ci-leaks: $(FUZZ_CC) not found — SKIP"; \
-		exit 0; \
-	fi; \
-	set -e; \
+fuzz-ci-leaks: check-fuzz-ci-tools $(FUZZ_TARGETS)
+	@set -e; \
 	for t in $(FUZZ_TARGETS); do \
-		echo "=== $$t (60s, leak detection ON) ==="; \
+		echo "=== $$t ($(FUZZ_CI_TIME)s, leak detection ON) ==="; \
 		base=$$(basename "$$t"); kind="$${base#fuzz_}"; \
 		seed_dir="lib/test/fuzz_seeds/$$kind"; \
 		work_dir="/tmp/zcl_fuzz_$${kind}_leaks"; \
 		rm -rf "$$work_dir"; mkdir -p "$$work_dir"; \
-		$$t -max_total_time=60 -timeout=1 -print_final_stats=1 \
-			"$$work_dir" "$$seed_dir"; \
+		timeout $(FUZZ_CI_WALL_TIME)s $$t -max_total_time=$(FUZZ_CI_TIME) \
+			-timeout=1 -print_final_stats=1 "$$work_dir" "$$seed_dir"; \
 		rm -rf "$$work_dir"; \
 	done
 
