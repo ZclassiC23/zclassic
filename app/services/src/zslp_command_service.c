@@ -167,6 +167,114 @@ struct zcl_result zslp_command_build_send_base_tx(struct wallet *wallet,
     return ZCL_OK;
 }
 
+struct zcl_result zslp_command_build_owner_base_tx(struct wallet *wallet,
+                                     const char *owner_address,
+                                     struct wallet_tx *wtx,
+                                     int64_t *fee_paid,
+                                     const char **tx_error)
+{
+    struct tx_destination owner_dest;
+
+    if (!wallet || !owner_address || !wtx || !fee_paid)
+        return ZCL_ERR(-1, "build_owner_base_tx: NULL argument");
+
+    if (!zslp_service_decode_transparent_destination(owner_address,
+                                                      &owner_dest) ||
+        owner_dest.type != DEST_KEY_ID) {
+        if (tx_error)
+            *tx_error = "owner address is not a spendable P2PKH address";
+        return ZCL_ERR(-2, "build_owner_base_tx: cannot decode owner "
+                            "address '%s' as P2PKH", owner_address);
+    }
+
+    zcl_mutex_lock(&wallet->cs);
+    int64_t fee = wallet->default_fee;
+    int height = wallet->best_block_height;
+    bool have_key = keystore_have_key(&wallet->keystore, &owner_dest.id.key);
+    zcl_mutex_unlock(&wallet->cs);
+
+    if (!have_key) {
+        if (tx_error)
+            *tx_error = "wallet does not control the name owner's "
+                        "private key";
+        return ZCL_ERR(-3, "build_owner_base_tx: wallet lacks owner key "
+                            "for '%s'", owner_address);
+    }
+
+    struct coin_entry available[4096];
+    size_t num_available = 0;
+    wallet_available_coins(wallet, available, &num_available, 4096, true,
+                           false);
+
+    const struct coin_entry *picked = NULL;
+    int64_t picked_value = 0;
+    for (size_t i = 0; i < num_available; i++) {
+        const struct tx_out *out =
+            &available[i].wtx->tx.vout[available[i].i];
+        struct tx_destination d;
+        if (!script_extract_destination(&out->script_pub_key, &d))
+            continue;
+        if (d.type != DEST_KEY_ID)
+            continue;
+        if (memcmp(d.id.key.id.data, owner_dest.id.key.id.data, 20) != 0)
+            continue;
+        if (out->value < 546 + fee)
+            continue;
+        picked = &available[i];
+        picked_value = out->value;
+        break;
+    }
+    if (!picked) {
+        if (tx_error)
+            *tx_error = "no spendable coin controlled by the name owner "
+                        "address";
+        return ZCL_ERR(-4, "build_owner_base_tx: no funded coin under "
+                            "'%s'", owner_address);
+    }
+
+    const struct chain_params *cp = chain_params_get();
+    int epoch = consensus_current_epoch(height, &cp->consensus);
+
+    memset(wtx, 0, sizeof(*wtx));
+    transaction_init(&wtx->tx);
+    if (epoch >= UPGRADE_SAPLING) {
+        wtx->tx.overwintered = true;
+        wtx->tx.version = SAPLING_TX_VERSION;
+        wtx->tx.version_group_id = SAPLING_VERSION_GROUP_ID;
+        wtx->tx.expiry_height = (uint32_t)(height + 20);
+    } else if (epoch >= UPGRADE_OVERWINTER) {
+        wtx->tx.overwintered = true;
+        wtx->tx.version = OVERWINTER_TX_VERSION;
+        wtx->tx.version_group_id = OVERWINTER_VERSION_GROUP_ID;
+        wtx->tx.expiry_height = (uint32_t)(height + 20);
+    }
+
+    int64_t change = picked_value - 546 - fee;
+    size_t num_out = change > 0 ? 2 : 1;
+    if (!transaction_alloc(&wtx->tx, 1, num_out)) {
+        if (tx_error)
+            *tx_error = "transaction allocation failed";
+        return ZCL_ERR(-5, "build_owner_base_tx: transaction_alloc(1,%zu) "
+                            "failed", num_out);
+    }
+
+    struct script dest_script;
+    script_for_destination(&dest_script, &owner_dest);
+    wtx->tx.vout[0].value = 546;
+    wtx->tx.vout[0].script_pub_key = dest_script;
+    if (num_out == 2) {
+        wtx->tx.vout[1].value = change;
+        wtx->tx.vout[1].script_pub_key = dest_script;
+    }
+
+    wtx->tx.vin[0].prevout.hash = picked->wtx->tx.hash;
+    wtx->tx.vin[0].prevout.n = picked->i;
+    wtx->tx.vin[0].sequence = UINT32_MAX - 1;
+
+    *fee_paid = fee;
+    return ZCL_OK;
+}
+
 static bool zslp_command_pick_token_id(const char *broadcast_txid,
                                        const struct zslp_token_create_request *req,
                                        char token_id_out[ZSLP_TOKEN_KEY_MAX + 1])

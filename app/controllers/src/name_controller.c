@@ -3,9 +3,25 @@
  * ZCL Names RPC controller.
  *
  * Commands:
- *   name_register  — register a name on-chain via OP_RETURN
- *   name_resolve   — look up a name's target
- *   name_list      — list all registered names */
+ *   name_register    — register a name on-chain via OP_RETURN
+ *   name_update      — replace a name's primary target (owner-only)
+ *   name_transfer    — hand ownership to a new owner (owner-only)
+ *   name_renew       — extend the registration term (permissionless)
+ *   name_set_record  — set an additional multi-coin address record
+ *                      (owner-only)
+ *   name_set_text    — set an arbitrary key/value text record
+ *                      (owner-only)
+ *   name_resolve     — look up a name's target
+ *   name_list        — list all registered names
+ *
+ * "owner-only" above is enforced twice: this controller refuses to build
+ * a mutation unless the wallet holds the current owner's private key
+ * (zslp_command_build_owner_base_tx), and the ZNAM projection independently
+ * re-derives the owner from the confirmed tx's first input and ignores any
+ * mutation that doesn't match (app/models/src/explorer_index.c:apply_znam)
+ * — the projection's check is authoritative; this controller's check is
+ * just a fail-fast so a caller without the key gets a clean RPC error
+ * instead of a broadcast tx the chain will silently drop. */
 
 #include "controllers/name_controller.h"
 #include "models/znam.h"
@@ -128,7 +144,7 @@ static void append_name_crud_links(struct json_value *obj, const char *name)
     json_push_kv_str(&links, "read", "/api/v1/names/{name}");
     json_push_kv_str(&links, "service_directory",
                      "/api/v1/names/{name}/services");
-    json_push_kv_str(&links, "update", "name_register/update OP_RETURN");
+    json_push_kv_str(&links, "update", "name_update");
     json_push_kv_str(&links, "delete", "not_supported_by_znam_v1");
     if (name && name[0]) {
         snprintf(self, sizeof(self), "/api/v1/names/%s", name);
@@ -363,6 +379,585 @@ static bool rpc_name_register(const struct json_value *params, bool help,
     return true;
 }
 
+/* ── name_update ────────────────────────────────────────────────── */
+
+static bool rpc_name_update(const struct json_value *params, bool help,
+                            struct json_value *result)
+{
+    if (help || !params || json_size(params) < 3) {
+        json_set_str(result,
+            "name_update \"name\" \"type\" \"value\"\n"
+            "\nReplace a registered ZCL Name's primary target on-chain.\n"
+            "\nArguments:\n"
+            "1. name  (string) Name to update (must already be registered)\n"
+            "2. type  (string) New target type: onion, zaddr, taddr, btc, ltc, doge, content\n"
+            "3. value (string) New target value\n"
+            "\nOnly the wallet holding the current owner's private key can\n"
+            "broadcast an update that the name projection will accept.\n");
+        return true;
+    }
+
+    const char *name = json_get_str(json_at(params, 0));
+    const char *type_str = json_get_str(json_at(params, 1));
+    const char *value = json_get_str(json_at(params, 2));
+
+    if (!name || !type_str || !value) {
+        json_set_str(result, "Missing arguments");
+        return false;
+    }
+    if (!znam_validate_name(name)) {
+        json_set_str(result, "Invalid name (1-63 chars, lowercase alphanumeric + hyphens)");
+        return false;
+    }
+    uint8_t target_type = parse_type(type_str);
+    if (target_type == 0) {
+        json_set_str(result,
+            "Invalid type (use: onion, zaddr, taddr, btc, ltc, doge, content)");
+        return false;
+    }
+    /* znam_build_update() itself only checks the value fits the caller's
+     * OP_RETURN buffer (512 bytes here), not ZNAM_VALUE_MAX — the parser
+     * (lib/znam/src/znam.c:znam_parse) is what actually enforces the
+     * documented 128-byte cap on-chain. Reject early rather than build a
+     * tx the projection will never accept. */
+    if (strlen(value) > ZNAM_VALUE_MAX) {
+        json_set_str(result, "Value too long (max 128 chars)");
+        return false;
+    }
+
+    struct znam_entry existing;
+    if (!g_name_ndb || !db_znam_find(g_name_ndb, name, &existing)) {
+        json_set_str(result, "Name not found");
+        return false;
+    }
+
+    uint8_t script[512];
+    size_t script_len = znam_build_update(script, sizeof(script),
+                                          name, target_type, value);
+    if (script_len == 0) {
+        json_set_str(result, "Failed to build OP_RETURN script");
+        return false;
+    }
+
+    if (g_name_wallet && g_name_mempool) {
+        struct wallet_tx wtx;
+        memset(&wtx, 0, sizeof(wtx));
+        int64_t fee_paid = 0;
+        const char *tx_error = NULL;
+
+        /* Coin-select from the CURRENT OWNER's own address so the tx's
+         * vin[0] is provably the owner — the projection's authorization
+         * check (fail-closed if the wallet doesn't hold that key or has
+         * no funded coin there). */
+        if (!zslp_command_build_owner_base_tx(g_name_wallet,
+                                              existing.owner_address,
+                                              &wtx, &fee_paid,
+                                              &tx_error).ok) {
+            json_set_str(result, tx_error ? tx_error : "Failed to build transaction");
+            return false;
+        }
+
+        struct wallet_tx_admission admission = {
+            .mempool = g_name_mempool,
+            .coins_tip = g_name_coins_tip,
+            .main_state = g_name_main_state,
+            .params = chain_params_get(),
+        };
+        struct zcl_result commit = zslp_command_commit_with_op_return(
+            g_name_wallet, &wtx, &admission, script, script_len);
+        if (!commit.ok) {
+            json_set_str(result, commit.message);
+            transaction_free(&wtx.tx);
+            LOG_FAIL("znam", "name_update: validated commit failed "
+                             "(code=%d): %s", commit.code, commit.message);
+        }
+
+        json_set_object(result);
+        json_push_kv_str(result, "name", name);
+        json_push_kv_str(result, "type", znam_type_name(target_type));
+        json_push_kv_str(result, "value", value);
+
+        char txid_hex[65];
+        uint256_get_hex(&wtx.tx.hash, txid_hex);
+        json_push_kv_str(result, "txid", txid_hex);
+        json_push_kv_int(result, "fee", fee_paid);
+        json_push_kv_str(result, "status", "broadcast");
+
+        printf("znam: updated '%s' -> %s (txid: %s)\n",
+               name, value, txid_hex);
+        return true;
+    }
+
+    json_set_object(result);
+    json_push_kv_str(result, "name", name);
+    json_push_kv_str(result, "type", znam_type_name(target_type));
+    json_push_kv_str(result, "value", value);
+
+    char hex[1025];
+    size_t hex_bytes = script_len < 512 ? script_len : 512;
+    HexStr(script, hex_bytes, false, hex, sizeof(hex));
+    json_push_kv_str(result, "op_return_hex", hex);
+    json_push_kv_int(result, "op_return_size", (int64_t)script_len);
+    json_push_kv_str(result, "status", "ready");
+    json_push_kv_str(result, "note",
+        "Wallet not loaded. Include this OP_RETURN as vout[0]; the name "
+        "projection accepts it only when vin[0] is signed by the current "
+        "owner.");
+
+    return true;
+}
+
+/* ── name_transfer ──────────────────────────────────────────────── */
+
+/* Matches znam_parse's hardcoded new_owner cap (lib/znam/src/znam.c);
+ * there is no ZNAM_* constant for it because TRANSFER's target field is
+ * a raw owner string, not a NAME/VALUE field. */
+#define ZNAM_NEW_OWNER_MAX 63
+
+static bool rpc_name_transfer(const struct json_value *params, bool help,
+                              struct json_value *result)
+{
+    if (help || !params || json_size(params) < 2) {
+        json_set_str(result,
+            "name_transfer \"name\" \"new_owner\"\n"
+            "\nTransfer ownership of a registered ZCL Name.\n"
+            "\nArguments:\n"
+            "1. name      (string) Name to transfer (must already be registered)\n"
+            "2. new_owner (string) The new owner's address (1-63 chars)\n"
+            "\nOnly the current owner can transfer a name; the ZNAM\n"
+            "projection enforces this at apply time.\n");
+        return true;
+    }
+
+    const char *name = json_get_str(json_at(params, 0));
+    const char *new_owner = json_get_str(json_at(params, 1));
+
+    if (!name || !new_owner) {
+        json_set_str(result, "Missing arguments");
+        return false;
+    }
+    if (!znam_validate_name(name)) {
+        json_set_str(result, "Invalid name (1-63 chars, lowercase alphanumeric + hyphens)");
+        return false;
+    }
+    size_t new_owner_len = strlen(new_owner);
+    if (new_owner_len == 0 || new_owner_len > ZNAM_NEW_OWNER_MAX) {
+        json_set_str(result, "Invalid new_owner (1-63 chars)");
+        return false;
+    }
+
+    struct znam_entry existing;
+    if (!g_name_ndb || !db_znam_find(g_name_ndb, name, &existing)) {
+        json_set_str(result, "Name not found");
+        return false;
+    }
+
+    uint8_t script[512];
+    size_t script_len = znam_build_transfer(script, sizeof(script),
+                                            name, new_owner);
+    if (script_len == 0) {
+        json_set_str(result, "Failed to build OP_RETURN script");
+        return false;
+    }
+
+    if (g_name_wallet && g_name_mempool) {
+        struct wallet_tx wtx;
+        memset(&wtx, 0, sizeof(wtx));
+        int64_t fee_paid = 0;
+        const char *tx_error = NULL;
+
+        if (!zslp_command_build_owner_base_tx(g_name_wallet,
+                                              existing.owner_address,
+                                              &wtx, &fee_paid,
+                                              &tx_error).ok) {
+            json_set_str(result, tx_error ? tx_error : "Failed to build transaction");
+            return false;
+        }
+
+        struct wallet_tx_admission admission = {
+            .mempool = g_name_mempool,
+            .coins_tip = g_name_coins_tip,
+            .main_state = g_name_main_state,
+            .params = chain_params_get(),
+        };
+        struct zcl_result commit = zslp_command_commit_with_op_return(
+            g_name_wallet, &wtx, &admission, script, script_len);
+        if (!commit.ok) {
+            json_set_str(result, commit.message);
+            transaction_free(&wtx.tx);
+            LOG_FAIL("znam", "name_transfer: validated commit failed "
+                             "(code=%d): %s", commit.code, commit.message);
+        }
+
+        json_set_object(result);
+        json_push_kv_str(result, "name", name);
+        json_push_kv_str(result, "new_owner", new_owner);
+
+        char txid_hex[65];
+        uint256_get_hex(&wtx.tx.hash, txid_hex);
+        json_push_kv_str(result, "txid", txid_hex);
+        json_push_kv_int(result, "fee", fee_paid);
+        json_push_kv_str(result, "status", "broadcast");
+
+        printf("znam: transferred '%s' -> %s (txid: %s)\n",
+               name, new_owner, txid_hex);
+        return true;
+    }
+
+    json_set_object(result);
+    json_push_kv_str(result, "name", name);
+    json_push_kv_str(result, "new_owner", new_owner);
+
+    char hex[1025];
+    size_t hex_bytes = script_len < 512 ? script_len : 512;
+    HexStr(script, hex_bytes, false, hex, sizeof(hex));
+    json_push_kv_str(result, "op_return_hex", hex);
+    json_push_kv_int(result, "op_return_size", (int64_t)script_len);
+    json_push_kv_str(result, "status", "ready");
+    json_push_kv_str(result, "note",
+        "Wallet not loaded. Include this OP_RETURN as vout[0]; the name "
+        "projection accepts it only when vin[0] is signed by the current "
+        "owner.");
+
+    return true;
+}
+
+/* ── name_renew ─────────────────────────────────────────────────── */
+
+static bool rpc_name_renew(const struct json_value *params, bool help,
+                           struct json_value *result)
+{
+    if (help || !params || json_size(params) < 1) {
+        json_set_str(result,
+            "name_renew \"name\"\n"
+            "\nExtend a registered ZCL Name's registration term by one\n"
+            "term (ZNAM_REGISTRATION_TERM_BLOCKS).\n"
+            "\nArguments:\n"
+            "1. name (string) Name to renew (must already be registered)\n"
+            "\nRENEW is permissionless (ENS-style) — anyone may pay to\n"
+            "extend a name's expiry; the projection performs no owner\n"
+            "check on this command.\n");
+        return true;
+    }
+
+    const char *name = json_get_str(json_at(params, 0));
+    if (!name) {
+        json_set_str(result, "Missing arguments");
+        return false;
+    }
+    if (!znam_validate_name(name)) {
+        json_set_str(result, "Invalid name (1-63 chars, lowercase alphanumeric + hyphens)");
+        return false;
+    }
+
+    struct znam_entry existing;
+    if (!g_name_ndb || !db_znam_find(g_name_ndb, name, &existing)) {
+        json_set_str(result, "Name not found");
+        return false;
+    }
+
+    uint8_t script[512];
+    size_t script_len = znam_build_renew(script, sizeof(script), name);
+    if (script_len == 0) {
+        json_set_str(result, "Failed to build OP_RETURN script");
+        return false;
+    }
+
+    if (g_name_wallet && g_name_mempool) {
+        struct wallet_tx wtx;
+        memset(&wtx, 0, sizeof(wtx));
+        int64_t fee_paid = 0;
+        const char *tx_error = NULL;
+
+        /* RENEW is permissionless — any wallet funds may pay for it,
+         * unlike the owner-restricted commands above. */
+        if (!zslp_command_build_genesis_base_tx(g_name_wallet, &wtx,
+                                                &fee_paid, &tx_error).ok) {
+            json_set_str(result, tx_error ? tx_error : "Failed to build transaction");
+            return false;
+        }
+
+        struct wallet_tx_admission admission = {
+            .mempool = g_name_mempool,
+            .coins_tip = g_name_coins_tip,
+            .main_state = g_name_main_state,
+            .params = chain_params_get(),
+        };
+        struct zcl_result commit = zslp_command_commit_with_op_return(
+            g_name_wallet, &wtx, &admission, script, script_len);
+        if (!commit.ok) {
+            json_set_str(result, commit.message);
+            transaction_free(&wtx.tx);
+            LOG_FAIL("znam", "name_renew: validated commit failed "
+                             "(code=%d): %s", commit.code, commit.message);
+        }
+
+        json_set_object(result);
+        json_push_kv_str(result, "name", name);
+
+        char txid_hex[65];
+        uint256_get_hex(&wtx.tx.hash, txid_hex);
+        json_push_kv_str(result, "txid", txid_hex);
+        json_push_kv_int(result, "fee", fee_paid);
+        json_push_kv_str(result, "status", "broadcast");
+
+        printf("znam: renewed '%s' (txid: %s)\n", name, txid_hex);
+        return true;
+    }
+
+    json_set_object(result);
+    json_push_kv_str(result, "name", name);
+
+    char hex[1025];
+    size_t hex_bytes = script_len < 512 ? script_len : 512;
+    HexStr(script, hex_bytes, false, hex, sizeof(hex));
+    json_push_kv_str(result, "op_return_hex", hex);
+    json_push_kv_int(result, "op_return_size", (int64_t)script_len);
+    json_push_kv_str(result, "status", "ready");
+    json_push_kv_str(result, "note",
+        "Wallet not loaded. Include this OP_RETURN as vout[0] manually.");
+
+    return true;
+}
+
+/* ── name_set_record ────────────────────────────────────────────── */
+
+static bool rpc_name_set_record(const struct json_value *params, bool help,
+                                struct json_value *result)
+{
+    if (help || !params || json_size(params) < 3) {
+        json_set_str(result,
+            "name_set_record \"name\" \"type\" \"value\"\n"
+            "\nSet an additional multi-coin address record for a\n"
+            "registered ZCL Name (ENS AddrResolver equivalent). Does not\n"
+            "change the name's primary target — see name_update.\n"
+            "\nArguments:\n"
+            "1. name  (string) Name to update (must already be registered)\n"
+            "2. type  (string) Coin type: onion, zaddr, taddr, btc, ltc, doge, content\n"
+            "3. value (string) Address/value for that coin type\n"
+            "\nOnly the wallet holding the current owner's private key can\n"
+            "broadcast a record that the name projection will accept.\n");
+        return true;
+    }
+
+    const char *name = json_get_str(json_at(params, 0));
+    const char *type_str = json_get_str(json_at(params, 1));
+    const char *value = json_get_str(json_at(params, 2));
+
+    if (!name || !type_str || !value) {
+        json_set_str(result, "Missing arguments");
+        return false;
+    }
+    if (!znam_validate_name(name)) {
+        json_set_str(result, "Invalid name (1-63 chars, lowercase alphanumeric + hyphens)");
+        return false;
+    }
+    uint8_t target_type = parse_type(type_str);
+    if (target_type == 0) {
+        json_set_str(result,
+            "Invalid type (use: onion, zaddr, taddr, btc, ltc, doge, content)");
+        return false;
+    }
+    /* See the matching comment in rpc_name_update: the builder only
+     * checks the OP_RETURN buffer size, not ZNAM_VALUE_MAX. */
+    if (strlen(value) > ZNAM_VALUE_MAX) {
+        json_set_str(result, "Value too long (max 128 chars)");
+        return false;
+    }
+
+    struct znam_entry existing;
+    if (!g_name_ndb || !db_znam_find(g_name_ndb, name, &existing)) {
+        json_set_str(result, "Name not found");
+        return false;
+    }
+
+    uint8_t script[512];
+    size_t script_len = znam_build_set_record(script, sizeof(script),
+                                              name, target_type, value);
+    if (script_len == 0) {
+        json_set_str(result, "Failed to build OP_RETURN script");
+        return false;
+    }
+
+    if (g_name_wallet && g_name_mempool) {
+        struct wallet_tx wtx;
+        memset(&wtx, 0, sizeof(wtx));
+        int64_t fee_paid = 0;
+        const char *tx_error = NULL;
+
+        if (!zslp_command_build_owner_base_tx(g_name_wallet,
+                                              existing.owner_address,
+                                              &wtx, &fee_paid,
+                                              &tx_error).ok) {
+            json_set_str(result, tx_error ? tx_error : "Failed to build transaction");
+            return false;
+        }
+
+        struct wallet_tx_admission admission = {
+            .mempool = g_name_mempool,
+            .coins_tip = g_name_coins_tip,
+            .main_state = g_name_main_state,
+            .params = chain_params_get(),
+        };
+        struct zcl_result commit = zslp_command_commit_with_op_return(
+            g_name_wallet, &wtx, &admission, script, script_len);
+        if (!commit.ok) {
+            json_set_str(result, commit.message);
+            transaction_free(&wtx.tx);
+            LOG_FAIL("znam", "name_set_record: validated commit failed "
+                             "(code=%d): %s", commit.code, commit.message);
+        }
+
+        json_set_object(result);
+        json_push_kv_str(result, "name", name);
+        json_push_kv_str(result, "type", znam_type_name(target_type));
+        json_push_kv_str(result, "value", value);
+
+        char txid_hex[65];
+        uint256_get_hex(&wtx.tx.hash, txid_hex);
+        json_push_kv_str(result, "txid", txid_hex);
+        json_push_kv_int(result, "fee", fee_paid);
+        json_push_kv_str(result, "status", "broadcast");
+
+        printf("znam: set_record '%s' %s -> %s (txid: %s)\n",
+               name, type_str, value, txid_hex);
+        return true;
+    }
+
+    json_set_object(result);
+    json_push_kv_str(result, "name", name);
+    json_push_kv_str(result, "type", znam_type_name(target_type));
+    json_push_kv_str(result, "value", value);
+
+    char hex[1025];
+    size_t hex_bytes = script_len < 512 ? script_len : 512;
+    HexStr(script, hex_bytes, false, hex, sizeof(hex));
+    json_push_kv_str(result, "op_return_hex", hex);
+    json_push_kv_int(result, "op_return_size", (int64_t)script_len);
+    json_push_kv_str(result, "status", "ready");
+    json_push_kv_str(result, "note",
+        "Wallet not loaded. Include this OP_RETURN as vout[0]; the name "
+        "projection accepts it only when vin[0] is signed by the current "
+        "owner.");
+
+    return true;
+}
+
+/* ── name_set_text ──────────────────────────────────────────────── */
+
+static bool rpc_name_set_text(const struct json_value *params, bool help,
+                              struct json_value *result)
+{
+    if (help || !params || json_size(params) < 2) {
+        json_set_str(result,
+            "name_set_text \"name\" \"key\" ( \"value\" )\n"
+            "\nSet an arbitrary key-value text record for a registered\n"
+            "ZCL Name (ENS TextResolver equivalent — email, url, avatar,\n"
+            "...). Omitting value clears the key.\n"
+            "\nArguments:\n"
+            "1. name  (string) Name to update (must already be registered)\n"
+            "2. key   (string) Record key (1-32 chars)\n"
+            "3. value (string, optional) Record value (0-128 chars)\n"
+            "\nOnly the wallet holding the current owner's private key can\n"
+            "broadcast a record that the name projection will accept.\n");
+        return true;
+    }
+
+    const char *name = json_get_str(json_at(params, 0));
+    const char *key = json_get_str(json_at(params, 1));
+    const struct json_value *arg2 = json_at(params, 2);
+    const char *value = arg2 ? json_get_str(arg2) : NULL;
+    if (!value)
+        value = "";
+
+    if (!name || !key) {
+        json_set_str(result, "Missing arguments");
+        return false;
+    }
+    if (!znam_validate_name(name)) {
+        json_set_str(result, "Invalid name (1-63 chars, lowercase alphanumeric + hyphens)");
+        return false;
+    }
+
+    struct znam_entry existing;
+    if (!g_name_ndb || !db_znam_find(g_name_ndb, name, &existing)) {
+        json_set_str(result, "Name not found");
+        return false;
+    }
+
+    uint8_t script[512];
+    size_t script_len = znam_build_set_text(script, sizeof(script),
+                                            name, key, value);
+    if (script_len == 0) {
+        json_set_str(result,
+            "Failed to build OP_RETURN script (key 1-32 chars, value 0-128 chars)");
+        return false;
+    }
+
+    if (g_name_wallet && g_name_mempool) {
+        struct wallet_tx wtx;
+        memset(&wtx, 0, sizeof(wtx));
+        int64_t fee_paid = 0;
+        const char *tx_error = NULL;
+
+        if (!zslp_command_build_owner_base_tx(g_name_wallet,
+                                              existing.owner_address,
+                                              &wtx, &fee_paid,
+                                              &tx_error).ok) {
+            json_set_str(result, tx_error ? tx_error : "Failed to build transaction");
+            return false;
+        }
+
+        struct wallet_tx_admission admission = {
+            .mempool = g_name_mempool,
+            .coins_tip = g_name_coins_tip,
+            .main_state = g_name_main_state,
+            .params = chain_params_get(),
+        };
+        struct zcl_result commit = zslp_command_commit_with_op_return(
+            g_name_wallet, &wtx, &admission, script, script_len);
+        if (!commit.ok) {
+            json_set_str(result, commit.message);
+            transaction_free(&wtx.tx);
+            LOG_FAIL("znam", "name_set_text: validated commit failed "
+                             "(code=%d): %s", commit.code, commit.message);
+        }
+
+        json_set_object(result);
+        json_push_kv_str(result, "name", name);
+        json_push_kv_str(result, "key", key);
+        json_push_kv_str(result, "value", value);
+
+        char txid_hex[65];
+        uint256_get_hex(&wtx.tx.hash, txid_hex);
+        json_push_kv_str(result, "txid", txid_hex);
+        json_push_kv_int(result, "fee", fee_paid);
+        json_push_kv_str(result, "status", "broadcast");
+
+        printf("znam: set_text '%s' %s -> %s (txid: %s)\n",
+               name, key, value, txid_hex);
+        return true;
+    }
+
+    json_set_object(result);
+    json_push_kv_str(result, "name", name);
+    json_push_kv_str(result, "key", key);
+    json_push_kv_str(result, "value", value);
+
+    char hex[1025];
+    size_t hex_bytes = script_len < 512 ? script_len : 512;
+    HexStr(script, hex_bytes, false, hex, sizeof(hex));
+    json_push_kv_str(result, "op_return_hex", hex);
+    json_push_kv_int(result, "op_return_size", (int64_t)script_len);
+    json_push_kv_str(result, "status", "ready");
+    json_push_kv_str(result, "note",
+        "Wallet not loaded. Include this OP_RETURN as vout[0]; the name "
+        "projection accepts it only when vin[0] is signed by the current "
+        "owner.");
+
+    return true;
+}
+
 /* ── REST API ───────────────────────────────────────────────────── */
 
 bool api_name_list(struct json_value *result)
@@ -425,9 +1020,14 @@ bool api_name_service_directory(const char *name, struct json_value *result)
 void register_name_rpc_commands(struct rpc_table *t)
 {
     struct rpc_command cmds[] = {
-        { "names", "name_register", rpc_name_register, true },
-        { "names", "name_resolve",  rpc_name_resolve,  true },
-        { "names", "name_list",     rpc_name_list,     true },
+        { "names", "name_register",   rpc_name_register,   true },
+        { "names", "name_update",     rpc_name_update,     true },
+        { "names", "name_transfer",   rpc_name_transfer,   true },
+        { "names", "name_renew",      rpc_name_renew,      true },
+        { "names", "name_set_record", rpc_name_set_record, true },
+        { "names", "name_set_text",   rpc_name_set_text,   true },
+        { "names", "name_resolve",    rpc_name_resolve,    true },
+        { "names", "name_list",       rpc_name_list,       true },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_must_append(t, &cmds[i]);
