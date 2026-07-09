@@ -16,8 +16,10 @@
 
 #include "test/test_helpers.h"
 
+#include "models/explorer_index.h"
 #include "sim/simnet.h"
 #include "core/uint256.h"
+#include "zslp/slp.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -40,18 +42,20 @@ static void sim_test_p2pkh_script(struct script *sp, unsigned char seed)
     sp->size = 25;
 }
 
-static bool sim_test_make_opreturn_spend(struct transaction *tx,
-                                         const struct uint256 *prev_txid,
-                                         uint32_t prev_n,
-                                         const uint8_t *opret,
-                                         size_t opret_len,
-                                         int64_t out_value,
-                                         unsigned char addr_seed)
+static bool sim_test_make_opreturn_spend_outputs(struct transaction *tx,
+                                                 const struct uint256 *prev_txid,
+                                                 uint32_t prev_n,
+                                                 const uint8_t *opret,
+                                                 size_t opret_len,
+                                                 const int64_t *out_values,
+                                                 const unsigned char *addr_seeds,
+                                                 size_t noutputs)
 {
     transaction_init(tx);
-    if (!prev_txid || !opret || opret_len == 0)
+    if (!prev_txid || !opret || opret_len == 0 || !out_values ||
+        !addr_seeds || noutputs == 0)
         return false;
-    if (!transaction_alloc(tx, 1, 2))
+    if (!transaction_alloc(tx, 1, noutputs + 1))
         return false;
 
     tx->version = 1;
@@ -65,11 +69,70 @@ static bool sim_test_make_opreturn_spend(struct transaction *tx,
 
     tx->vout[0].value = 0;
     script_set(&tx->vout[0].script_pub_key, opret, opret_len);
-    tx->vout[1].value = out_value;
-    sim_test_p2pkh_script(&tx->vout[1].script_pub_key, addr_seed);
+    for (size_t i = 0; i < noutputs; i++) {
+        tx->vout[i + 1].value = out_values[i];
+        sim_test_p2pkh_script(&tx->vout[i + 1].script_pub_key, addr_seeds[i]);
+    }
 
     transaction_compute_hash(tx);
     return true;
+}
+
+static bool sim_test_make_opreturn_spend(struct transaction *tx,
+                                         const struct uint256 *prev_txid,
+                                         uint32_t prev_n,
+                                         const uint8_t *opret,
+                                         size_t opret_len,
+                                         int64_t out_value,
+                                         unsigned char addr_seed)
+{
+    int64_t values[1] = { out_value };
+    unsigned char seeds[1] = { addr_seed };
+    return sim_test_make_opreturn_spend_outputs(tx, prev_txid, prev_n,
+                                                opret, opret_len, values,
+                                                seeds, 1);
+}
+
+static void sim_test_hex_bytes(const uint8_t *data, size_t len,
+                               char *out, size_t out_len)
+{
+    if (!out || out_len == 0)
+        return;
+    out[0] = '\0';
+    if (!data || out_len < len * 2 + 1)
+        return;
+    for (size_t i = 0; i < len; i++)
+        snprintf(out + (i * 2), out_len - (i * 2), "%02X", data[i]);
+}
+
+static void sim_test_slp_wire_token_id(const struct uint256 *internal,
+                                       struct uint256 *wire)
+{
+    for (int i = 0; i < 32; i++)
+        wire->data[i] = internal->data[31 - i];
+}
+
+static bool sim_test_apply_slp(struct node_db *ndb,
+                               const struct transaction *tx, int height)
+{
+    if (!tx || tx->num_vout == 0)
+        return false;
+    struct slp_message msg;
+    if (!slp_parse(tx->vout[0].script_pub_key.data,
+                   tx->vout[0].script_pub_key.size, &msg))
+        return false;
+    explorer_index_apply_slp(ndb, tx, &msg, height);
+    return true;
+}
+
+static int64_t sim_test_transfer_amount(
+    const struct db_zslp_transfer_info *xfers, int n, int tx_type, int vout)
+{
+    for (int i = 0; i < n; i++) {
+        if (xfers[i].tx_type == tx_type && xfers[i].vout == vout)
+            return xfers[i].amount;
+    }
+    return -1;
 }
 
 int test_simnet(void)
@@ -147,7 +210,108 @@ int test_simnet(void)
              simnet_coin_value(&sim, &custom_txid, 1, &custom_value) &&
              custom_value == 800000);
 
-    /* 6. Negative path: spending an absent coin fails cleanly (no crash). */
+    /* 6. ZSLP overlay slice: real SLP builders, real simnet acceptance,
+     *    real chain-derived token/transfer projection. */
+    struct node_db zslp_db;
+    memset(&zslp_db, 0, sizeof(zslp_db));
+    bool zslp_open = node_db_open(&zslp_db, ":memory:");
+    SN_CHECK("ZSLP projection db opens", zslp_open);
+
+    uint8_t genesis_script[512];
+    size_t genesis_script_len =
+        slp_build_genesis(genesis_script, sizeof(genesis_script),
+                          "SIM", "Simnet Token", "", NULL, 0, 0, 1000);
+    SN_CHECK("build real SLP GENESIS script", genesis_script_len > 0);
+
+    struct transaction slp_genesis;
+    struct transaction slp_genesis_projection;
+    transaction_init(&slp_genesis_projection);
+    bool built_slp_genesis =
+        genesis_script_len > 0 &&
+        sim_test_make_opreturn_spend(&slp_genesis, &custom_txid, 1,
+                                     genesis_script, genesis_script_len,
+                                     700000, 0x60);
+    bool copied_slp_genesis =
+        built_slp_genesis &&
+        transaction_copy(&slp_genesis_projection, &slp_genesis);
+    struct uint256 slp_token_id =
+        built_slp_genesis ? slp_genesis.hash : (struct uint256){0};
+    SN_CHECK("build SLP GENESIS tx", built_slp_genesis && copied_slp_genesis);
+    bool minted_slp_genesis =
+        built_slp_genesis && copied_slp_genesis &&
+        simnet_mint_txs(&sim, &slp_genesis, 1);
+    int slp_genesis_height = simnet_tip_height(&sim);
+    SN_CHECK("mint SLP GENESIS through simnet", minted_slp_genesis);
+    bool applied_slp_genesis =
+        zslp_open && minted_slp_genesis &&
+        sim_test_apply_slp(&zslp_db, &slp_genesis_projection,
+                           slp_genesis_height);
+    SN_CHECK("fold SLP GENESIS into token projection", applied_slp_genesis);
+
+    char slp_token_hex[65];
+    sim_test_hex_bytes(slp_token_id.data, 32, slp_token_hex,
+                       sizeof(slp_token_hex));
+    struct db_zslp_token_info slp_info;
+    memset(&slp_info, 0, sizeof(slp_info));
+    bool found_slp_token =
+        zslp_open && db_zslp_token_find(&zslp_db, slp_token_hex, &slp_info);
+    SN_CHECK("ZSLP projection sees token",
+             found_slp_token && strcmp(slp_info.ticker, "SIM") == 0 &&
+             strcmp(slp_info.name, "Simnet Token") == 0 &&
+             slp_info.total_minted == 1000);
+
+    struct uint256 slp_wire_token_id;
+    sim_test_slp_wire_token_id(&slp_token_id, &slp_wire_token_id);
+    uint64_t send_qty[2] = { 250, 750 };
+    uint8_t send_script[512];
+    size_t send_script_len =
+        slp_build_send(send_script, sizeof(send_script), &slp_wire_token_id,
+                       send_qty, 2);
+    SN_CHECK("build real SLP SEND script", send_script_len > 0);
+
+    int64_t send_values[2] = { 300000, 300000 };
+    unsigned char send_seeds[2] = { 0x80, 0xA0 };
+    struct transaction slp_send;
+    struct transaction slp_send_projection;
+    transaction_init(&slp_send_projection);
+    bool built_slp_send =
+        send_script_len > 0 &&
+        sim_test_make_opreturn_spend_outputs(&slp_send, &slp_token_id, 1,
+                                             send_script, send_script_len,
+                                             send_values, send_seeds, 2);
+    bool copied_slp_send =
+        built_slp_send && transaction_copy(&slp_send_projection, &slp_send);
+    SN_CHECK("build SLP SEND tx", built_slp_send && copied_slp_send);
+    bool minted_slp_send =
+        built_slp_send && copied_slp_send &&
+        simnet_mint_txs(&sim, &slp_send, 1);
+    int slp_send_height = simnet_tip_height(&sim);
+    SN_CHECK("mint SLP SEND through simnet", minted_slp_send);
+    bool applied_slp_send =
+        zslp_open && minted_slp_send &&
+        sim_test_apply_slp(&zslp_db, &slp_send_projection, slp_send_height);
+    SN_CHECK("fold SLP SEND into transfer projection", applied_slp_send);
+
+    struct db_zslp_transfer_info slp_xfers[4];
+    memset(slp_xfers, 0, sizeof(slp_xfers));
+    int slp_xfer_count =
+        zslp_open ? db_zslp_transfer_list_by_token(&zslp_db, slp_token_hex,
+                                                   slp_xfers, 4) : 0;
+    SN_CHECK("ZSLP projection sees genesis/send transfer balances",
+             slp_xfer_count == 3 &&
+             sim_test_transfer_amount(slp_xfers, slp_xfer_count,
+                                      SLP_TX_GENESIS, 1) == 1000 &&
+             sim_test_transfer_amount(slp_xfers, slp_xfer_count,
+                                      SLP_TX_SEND, 1) == 250 &&
+             sim_test_transfer_amount(slp_xfers, slp_xfer_count,
+                                      SLP_TX_SEND, 2) == 750);
+
+    transaction_free(&slp_genesis_projection);
+    transaction_free(&slp_send_projection);
+    if (zslp_open)
+        node_db_close(&zslp_db);
+
+    /* 7. Negative path: spending an absent coin fails cleanly (no crash). */
     struct uint256 bogus;
     memset(bogus.data, 0xAB, 32);
     struct uint256 unused;
