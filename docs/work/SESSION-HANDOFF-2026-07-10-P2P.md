@@ -44,7 +44,36 @@ timing` check is a **constant-time side-channel test that flakes under heavy
 build load** (measured ratio bad under saturation, clean when quiet) — rerun
 isolated before treating it as a regression.
 
+## Landed after the first handoff write (also on origin/main)
+
+9. **Wallet-P0 lock-holder fix** (`fix/wallet-p0-lock-holder`, verified
+   merge_ready + deploy_ready, copy-proven) — the live `getnewaddress` P0. Root
+   cause (re-verified, not assumed; the earlier catchup-connection fix was
+   already deployed): the wallet flush's BEGIN IMMEDIATE retried only 4× with no
+   backoff and stranded keys in RAM under a long WAL write-lock hold, and the
+   periodic WAL checkpoint used TRUNCATE which returns BUSY on the multi-writer
+   node.db so the WAL grew unbounded (196 MB live) and lengthened every hold.
+   Fix: 8-attempt exponential backoff outside the sqlite call + PASSIVE
+   checkpoint fallback on BUSY. 3-file storage/wallet-only diff, 0 consensus.
+   **Deploy is owner-gated** — after deploy the live latched state (302 keystore
+   vs 201 rows) self-heals on the next flush.
+10. **On-chain ZMSG memo channel** (`feat/zmsg-onchain`, verified merge_ready)
+    — agent-to-agent messaging through the existing 512-byte Sapling encrypted
+    memo, parity-safe (no opcode/consensus edit). Binary 38-byte-header wire
+    format (magic/version/flags/len/reply_to), send via the existing t→z path
+    with a binary-safe `memo_hex`, automatic ingest at tip-finalize with
+    deterministic `msg_id = SHA3(txid‖memo)` dedup, and a full in-sim e2e test
+    (real prover build→mine→decrypt→parse→ingest→store, params-gated). A second
+    weaker impl (`feat/onchain-memo-channel`, printable-ASCII, scan-on-demand,
+    no e2e test) was superseded and NOT merged — delete that branch.
+
 ## In flight when this handoff was written (isolated worktrees, NOT merged)
+
+- **MCP-over-onion mesh** (`feat/mcp-over-onion` @ `9b4ff1465`) — impl COMMITTED
+  but its adversarial security verifier **failed on a harness error**
+  (StructuredOutput retry cap), so the security verdict never completed. DO NOT
+  merge until an independent adversarial verify passes (default-deny allowlist,
+  always-auth, off-by-default, no bypass). Re-run the verify stage.
 
 - **Groth16 pure-C23 prover cure** (`fix/groth16-c23-prover` @ `be2d7d5ff`).
   Two of three root-caused defects FIXED + unit-pinned + committed:
