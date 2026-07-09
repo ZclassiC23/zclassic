@@ -47,6 +47,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -78,6 +79,14 @@ void simnet_free(struct simnet *s);
  * reason) if the real validator rejects the block. */
 bool simnet_mint_coinbase(struct simnet *s, struct uint256 *out_cb_txid);
 
+/* Mint a new block containing the harness coinbase followed by caller-built
+ * transparent transactions. `txs[0..ntx)` may include OP_RETURN outputs and
+ * spends against the live in-RAM coins view. On a valid request ownership of
+ * each tx's allocated vin/vout arrays transfers to simnet; the caller must
+ * keep any needed txids before calling. Returns false (and logs) if the real
+ * validator rejects the block. */
+bool simnet_mint_txs(struct simnet *s, struct transaction *txs, size_t ntx);
+
 /* Mint a block that spends `in_txid`:`in_n` to one new output of
  * `out_value`, plus the block's own coinbase (vtx[0]). The block is minted
  * at a height that satisfies coinbase maturity for the spent coin, so a
@@ -92,6 +101,9 @@ bool simnet_spend(struct simnet *s, const struct uint256 *in_txid,
 
 /* Height of the current tip. */
 int simnet_tip_height(const struct simnet *s);
+
+/* Copy the current tip hash into `out`. */
+bool simnet_tip_hash(const struct simnet *s, struct uint256 *out);
 
 /* True iff `txid` has at least one unspent output in the live UTXO set. */
 bool simnet_coin_exists(struct simnet *s, const struct uint256 *txid);

@@ -244,6 +244,37 @@ bool simnet_mint_coinbase(struct simnet *s, struct uint256 *out_cb_txid)
     return true;
 }
 
+bool simnet_mint_txs(struct simnet *s, struct transaction *txs, size_t ntx)
+{
+    if (!s || !s->initialized)
+        LOG_FAIL("simnet", "uninitialized simnet");
+    if (ntx > 0 && !txs)
+        LOG_FAIL("simnet", "NULL tx array for %zu txs", ntx);
+    if (ntx > SIZE_MAX - 1)
+        LOG_FAIL("simnet", "too many txs: %zu", ntx);
+
+    int height = s->tip_height + 1;
+    struct transaction cb = sim_make_coinbase(height);
+    struct transaction *block_txs =
+        zcl_calloc(ntx + 1, sizeof(*block_txs), "simnet_public_txs");
+    if (!block_txs) {
+        sim_free_tx(&cb);
+        for (size_t i = 0; i < ntx; i++)
+            sim_free_tx(&txs[i]);
+        LOG_FAIL("simnet", "OOM allocating %zu public tx slots", ntx + 1);
+    }
+
+    block_txs[0] = cb;
+    for (size_t i = 0; i < ntx; i++) {
+        block_txs[i + 1] = txs[i];
+        transaction_init(&txs[i]);
+    }
+
+    bool ok = sim_mint_block(s, block_txs, ntx + 1, height);
+    free(block_txs);
+    return ok;
+}
+
 bool simnet_spend(struct simnet *s, const struct uint256 *in_txid,
                   uint32_t in_n, int64_t out_value, struct uint256 *out_txid)
 {
@@ -296,6 +327,14 @@ bool simnet_spend(struct simnet *s, const struct uint256 *in_txid,
 int simnet_tip_height(const struct simnet *s)
 {
     return (s && s->initialized) ? s->tip_height : -1;
+}
+
+bool simnet_tip_hash(const struct simnet *s, struct uint256 *out)
+{
+    if (!s || !s->initialized || !out)
+        LOG_FAIL("simnet", "invalid tip hash request");
+    *out = s->tip.hashBlock;
+    return true;
 }
 
 bool simnet_coin_exists(struct simnet *s, const struct uint256 *txid)
