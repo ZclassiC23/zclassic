@@ -1581,11 +1581,18 @@ FUZZ_LIBS = $(TOR_LIBS) $(LIBS)
 
 FUZZ_TARGETS = $(BIN_DIR)/fuzz_block $(BIN_DIR)/fuzz_script $(BIN_DIR)/fuzz_p2p $(BIN_DIR)/fuzz_http
 FUZZ_CI_TIME ?= 60
+FUZZ_CI_WALL_TIME ?= 120
 
-.PHONY: check-fuzz-toolchain fuzz fuzz-ci
+.PHONY: check-fuzz-toolchain check-fuzz-ci-tools fuzz fuzz-ci
 check-fuzz-toolchain:
 	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
 		echo "fuzz-ci: ERROR: $(FUZZ_CC) not found (install clang/libFuzzer or run make ci SKIP_FUZZ=1)"; \
+		exit 2; \
+	fi
+
+check-fuzz-ci-tools: check-fuzz-toolchain
+	@if ! command -v timeout >/dev/null 2>&1; then \
+		echo "fuzz-ci: ERROR: timeout not found (install coreutils or run make ci SKIP_FUZZ=1)"; \
 		exit 2; \
 	fi
 
@@ -1637,7 +1644,7 @@ $(BIN_DIR)/fuzz_http: tools/fuzz/fuzz_http.c $(TMPL_GEN) $(ALL_SRCS)
 		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_http.c $(ALL_SRCS) $(FUZZ_LIBS); \
 	fi
 
-fuzz-ci: check-fuzz-toolchain $(FUZZ_TARGETS)
+fuzz-ci: check-fuzz-ci-tools $(FUZZ_TARGETS)
 	@set -e; \
 	for t in $(FUZZ_TARGETS); do \
 		echo "=== $$t ($(FUZZ_CI_TIME)s) ==="; \
@@ -1645,7 +1652,8 @@ fuzz-ci: check-fuzz-toolchain $(FUZZ_TARGETS)
 		seed_dir="lib/test/fuzz_seeds/$$kind"; \
 		work_dir="/tmp/zcl_fuzz_$$kind"; \
 		rm -rf "$$work_dir"; mkdir -p "$$work_dir"; \
-		ASAN_OPTIONS=detect_leaks=0 $$t -max_total_time=$(FUZZ_CI_TIME) \
+		timeout $(FUZZ_CI_WALL_TIME)s env ASAN_OPTIONS=detect_leaks=0 \
+			$$t -max_total_time=$(FUZZ_CI_TIME) \
 			-timeout=1 -print_final_stats=1 "$$work_dir" "$$seed_dir"; \
 		rm -rf "$$work_dir"; \
 	done
@@ -1653,7 +1661,7 @@ fuzz-ci: check-fuzz-toolchain $(FUZZ_TARGETS)
 # Same binaries with leak detection ON. Separate target so CI stays
 # green while known-pre-existing leaks are being triaged; developers
 # and Wave 4+ commits that fix leaks opt into this stricter run.
-fuzz-ci-leaks: check-fuzz-toolchain $(FUZZ_TARGETS)
+fuzz-ci-leaks: check-fuzz-ci-tools $(FUZZ_TARGETS)
 	@set -e; \
 	for t in $(FUZZ_TARGETS); do \
 		echo "=== $$t ($(FUZZ_CI_TIME)s, leak detection ON) ==="; \
@@ -1661,8 +1669,8 @@ fuzz-ci-leaks: check-fuzz-toolchain $(FUZZ_TARGETS)
 		seed_dir="lib/test/fuzz_seeds/$$kind"; \
 		work_dir="/tmp/zcl_fuzz_$${kind}_leaks"; \
 		rm -rf "$$work_dir"; mkdir -p "$$work_dir"; \
-		$$t -max_total_time=$(FUZZ_CI_TIME) -timeout=1 -print_final_stats=1 \
-			"$$work_dir" "$$seed_dir"; \
+		timeout $(FUZZ_CI_WALL_TIME)s $$t -max_total_time=$(FUZZ_CI_TIME) \
+			-timeout=1 -print_final_stats=1 "$$work_dir" "$$seed_dir"; \
 		rm -rf "$$work_dir"; \
 	done
 
