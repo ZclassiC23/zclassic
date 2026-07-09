@@ -170,13 +170,8 @@ static int h_zcl_onion_health(const struct mcp_request *req,
     const char *addr = onion_service_get_address();
 
     char *body = zcl_malloc(512, "onion_health_body");
-    if (!body) {
-        res->error = MCP_ERR_INTERNAL;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for onion health response");
-        LOG_ERR("mcp.net", "malloc failed for onion_health body (512 bytes)");
-        return 0;
-    }
+    if (!body)
+        return mcp_res_set_oom(res, 512, "mcp.net", "onion health response");
 
     if (!addr) {
         snprintf(body, 512,
@@ -199,12 +194,8 @@ static int h_zcl_onion_health(const struct mcp_request *req,
     uint8_t *resp = zcl_malloc(resp_cap, "onion_health_resp");
     if (!resp) {
         free(body);
-        res->error = MCP_ERR_INTERNAL;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for onion health probe buffer");
-        LOG_ERR("mcp.net", "malloc failed for onion_health resp (%zu bytes)",
-                resp_cap);
-        return 0;
+        return mcp_res_set_oom(res, resp_cap, "mcp.net",
+                               "onion health probe buffer");
     }
     size_t n = onion_service_handle_request("GET", probe_path, NULL, 0,
                                               resp, resp_cap);

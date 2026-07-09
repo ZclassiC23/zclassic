@@ -183,6 +183,38 @@ static inline int mcp_return_rpc_body_ctx(struct mcp_response *res,
     return 0;
 }
 
+/* ── OOM error-body helper ─────────────────────────────────────────
+ *
+ * Collapses the ~5-line "malloc/zcl_malloc failed" tail duplicated
+ * ~25 times across the controllers into one call: sets
+ * MCP_ERR_INTERNAL, formats res->error_message, LOG_ERRs the same
+ * failure (with the attempted byte count when one is known), and
+ * returns. The prior call sites had drifted between `return -1;` and
+ * `return 0;` on this path — the router treats a nonzero rc
+ * identically to a NULL body (router.c ~600), so this helper picks
+ * -1 (LOG_ERR's own return value) as the one canonical OOM code.
+ *
+ * `cap` is the attempted allocation size in bytes; pass 0 when no
+ * single byte count applies (e.g. the failure came from an internal
+ * json_value_to_body() helper that doesn't expose one) and the log
+ * line omits the "(N bytes)" suffix. `what` is the short noun phrase
+ * already used at each site's error_message, e.g. "status response"
+ * or "postmortem summary list" — reuse it verbatim so
+ * res->error_message text is unchanged at every call site.
+ *
+ * Required includes: same as mcp_return_rpc_body (already present
+ * everywhere this header is included). */
+static inline int mcp_res_set_oom(struct mcp_response *res, size_t cap,
+                                  const char *log_tag, const char *what)
+{
+    res->error = MCP_ERR_INTERNAL;
+    snprintf(res->error_message, sizeof(res->error_message),
+             "malloc failed for %s", what);
+    if (cap > 0)
+        LOG_ERR(log_tag, "malloc failed for %s (%zu bytes)", what, cap);
+    LOG_ERR(log_tag, "malloc failed for %s", what);
+}
+
 /* ── Lightweight "key":N scanner ──────────────────────────────────
  *
  * Pull an integer out of a JSON-ish body for cheap field reads.

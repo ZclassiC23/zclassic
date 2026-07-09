@@ -314,43 +314,55 @@ static bool status_peer_is_magicbean(const struct json_value *peer)
            status_peer_subver_has(peer, "MagicBean");
 }
 
-static void status_peer_status_counts(const struct json_value *peers,
-                                      int *total_out,
-                                      int *inbound_out,
-                                      int *outbound_out,
-                                      int *zcl23_out,
-                                      int *magicbean_out,
-                                      int *max_height_out)
+/* ── Peer survey ────────────────────────────────────────────────
+ *
+ * One fold over the getpeerinfo JSON array, shared by all three
+ * callers that used to each re-derive their own subset of these
+ * counts with slightly different idioms: h_zcl_status (total/
+ * inbound/outbound/zcl23/magicbean/max_height), h_zcl_operator_summary
+ * (total/inbound/outbound/ready/max_height), and h_zcl_syncdiag (just
+ * max_height, previously via a raw strstr scan of the unparsed RPC
+ * text). Each caller reads only the fields it needs. */
+struct peer_survey {
+    int total;
+    int inbound;
+    int outbound;
+    int ready;      /* state == "handshake_complete" or "active" */
+    int zcl23;
+    int magicbean;
+    int max_height; /* max "startingheight" across all peers */
+};
+
+static void status_peer_survey(const struct json_value *peers,
+                               struct peer_survey *out)
 {
-    int total = 0, inbound = 0, outbound = 0, zcl23 = 0, magicbean = 0;
-    int max_h = 0;
+    struct peer_survey s = {0};
 
     if (peers && peers->type == JSON_ARR) {
-        total = (int)json_size(peers);
+        s.total = (int)json_size(peers);
         for (size_t i = 0; i < json_size(peers); i++) {
             const struct json_value *peer = json_at(peers, i);
             if (!peer || peer->type != JSON_OBJ)
                 continue;
             if (status_json_bool(peer, "inbound", false))
-                inbound++;
+                s.inbound++;
             else
-                outbound++;
+                s.outbound++;
             if (status_peer_is_zcl23(peer))
-                zcl23++;
+                s.zcl23++;
             else if (status_peer_is_magicbean(peer))
-                magicbean++;
+                s.magicbean++;
+            const char *state = status_json_str(peer, "state", "");
+            if (strcmp(state, "handshake_complete") == 0 ||
+                strcmp(state, "active") == 0)
+                s.ready++;
             int h = (int)status_json_int(peer, "startingheight", 0);
-            if (h > max_h)
-                max_h = h;
+            if (h > s.max_height)
+                s.max_height = h;
         }
     }
 
-    if (total_out) *total_out = total;
-    if (inbound_out) *inbound_out = inbound;
-    if (outbound_out) *outbound_out = outbound;
-    if (zcl23_out) *zcl23_out = zcl23;
-    if (magicbean_out) *magicbean_out = magicbean;
-    if (max_height_out) *max_height_out = max_h;
+    if (out) *out = s;
 }
 
 static long long status_max_ll(long long a, long long b)
@@ -410,43 +422,6 @@ static void status_push_lane_safety_fields(
                                               "safe_default_action",
                                               "inspect_operator_lane")
                             : "inspect_operator_lane");
-}
-
-static void status_peer_summary(const struct json_value *peers,
-                                int *total_out,
-                                int *inbound_out,
-                                int *outbound_out,
-                                int *ready_out,
-                                long long *max_height_out)
-{
-    int total = 0, inbound = 0, outbound = 0, ready = 0;
-    long long max_h = 0;
-
-    if (peers && peers->type == JSON_ARR) {
-        total = (int)json_size(peers);
-        for (size_t i = 0; i < json_size(peers); i++) {
-            const struct json_value *p = json_at(peers, i);
-            if (!p || p->type != JSON_OBJ)
-                continue;
-            if (json_get_bool(json_get(p, "inbound")))
-                inbound++;
-            else
-                outbound++;
-            const char *state = json_get_str(json_get(p, "state"));
-            if (strcmp(state, "handshake_complete") == 0 ||
-                strcmp(state, "active") == 0)
-                ready++;
-            long long h = status_json_int(p, "startingheight", 0);
-            if (h > max_h)
-                max_h = h;
-        }
-    }
-
-    if (total_out) *total_out = total;
-    if (inbound_out) *inbound_out = inbound;
-    if (outbound_out) *outbound_out = outbound;
-    if (ready_out) *ready_out = ready;
-    if (max_height_out) *max_height_out = max_h;
 }
 
 static int blocker_status_priority(int cls)
@@ -550,9 +525,14 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
     bool peers_ok = status_parse_json(&peers_j, p) &&
                     peers_j.type == JSON_ARR;
     if (peers_ok) {
-        status_peer_status_counts(&peers_j, &pc, &inbound, &outbound,
-                                  &zcl23_cnt, &magicbean_cnt,
-                                  &max_peer_height);
+        struct peer_survey ps;
+        status_peer_survey(&peers_j, &ps);
+        pc = ps.total;
+        inbound = ps.inbound;
+        outbound = ps.outbound;
+        zcl23_cnt = ps.zcl23;
+        magicbean_cnt = ps.magicbean;
+        max_peer_height = ps.max_height;
     } else {
         pc = status_count_json_objects(p);
     }
@@ -619,13 +599,8 @@ static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
     json_free(&peers_j);
     free(h); free(p); free(s); free(v); free(hc); free(ci); free(cac);
     free(rf); free(tf); free(ce);
-    if (!out) {
-        res->error = MCP_ERR_INTERNAL;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for status response");
-        LOG_ERR("mcp.ops", "malloc failed for status body");
-        return -1;  // raw-return-ok:logged-oom
-    }
+    if (!out)
+        return mcp_res_set_oom(res, 0, "mcp.ops", "status response");
     res->body = out;
     return 0;
 }
@@ -663,8 +638,13 @@ static int h_zcl_operator_summary(const struct mcp_request *req,
     int peer_total = 0, peer_inbound = 0, peer_outbound = 0, peer_ready = 0;
     long long peer_max_height = 0;
     if (peers_ok) {
-        status_peer_summary(&peers_j, &peer_total, &peer_inbound,
-                            &peer_outbound, &peer_ready, &peer_max_height);
+        struct peer_survey ps;
+        status_peer_survey(&peers_j, &ps);
+        peer_total = ps.total;
+        peer_inbound = ps.inbound;
+        peer_outbound = ps.outbound;
+        peer_ready = ps.ready;
+        peer_max_height = ps.max_height;
     } else {
         peer_total = status_count_json_objects(peers);
     }
@@ -982,13 +962,8 @@ static int h_zcl_operator_summary(const struct mcp_request *req,
     json_free(&agent_j);
     free(chain); free(peers); free(diag); free(dl); free(mirror); free(health);
     free(agent);
-    if (!out) {
-        res->error = MCP_ERR_INTERNAL;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for operator summary response");
-        LOG_ERR("mcp.ops", "malloc failed for operator summary body");
-        return -1; // raw-return-ok:logged-oom
-    }
+    if (!out)
+        return mcp_res_set_oom(res, 0, "mcp.ops", "operator summary response");
     res->body = out;
     return 0;
 }
@@ -1008,13 +983,8 @@ static int h_zcl_agent_impact(const struct mcp_request *req,
     if (files && files->type == JSON_ARR) {
         params = json_value_to_body((struct json_value *)files,
                                     "agent_impact_params");
-        if (!params) {
-            res->error = MCP_ERR_INTERNAL;
-            snprintf(res->error_message, sizeof(res->error_message),
-                     "malloc failed for agent impact params");
-            LOG_ERR("mcp.ops", "malloc failed for agent impact params");
-            return -1; // raw-return-ok:logged-oom
-        }
+        if (!params)
+            return mcp_res_set_oom(res, 0, "mcp.ops", "agent impact params");
     }
 
     char *body = mcp_node_rpc("agentimpact", params ? params : "[]");
@@ -1159,13 +1129,8 @@ static int h_zcl_kpi(const struct mcp_request *req, struct mcp_response *res)
     free(mempool); free(wallet); free(chain); free(network);
     char *out = json_value_to_body(&root, "kpi_body");
     json_free(&root);
-    if (!out) {
-        res->error = MCP_ERR_INTERNAL;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for KPI response");
-        LOG_ERR("mcp.ops", "malloc failed for kpi body");
-        return -1; // raw-return-ok:logged-oom
-    }
+    if (!out)
+        return mcp_res_set_oom(res, 0, "mcp.ops", "KPI response");
     res->body = out;
     return 0;
 }
@@ -1178,13 +1143,8 @@ static int h_zcl_self_heal_stats(const struct mcp_request *req,
     process_block_self_heal_stats_snapshot(&stats);
 
     char *out = zcl_malloc(512, "self_heal_stats_body");
-    if (!out) {
-        res->error = MCP_ERR_INTERNAL;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for self-heal stats response");
-        LOG_ERR("mcp.ops", "malloc failed for self-heal stats body");
-        return 0;
-    }
+    if (!out)
+        return mcp_res_set_oom(res, 512, "mcp.ops", "self-heal stats response");
 
     snprintf(out, 512,
         "{"
@@ -1216,18 +1176,15 @@ static int h_zcl_syncdiag(const struct mcp_request *req,
     char *dl   = mcp_node_rpc("downloadstats", NULL);
     char *pi   = mcp_node_rpc("getpeerinfo", NULL);
 
-    /* Extract peer_max_height from getpeerinfo (max starting_height) */
+    /* Extract peer_max_height from getpeerinfo (max startingheight). */
     int peer_max_height = 0;
-    if (pi) {
-        /* Scan for "startingheight": N — take the maximum */
-        const char *p = pi;
-        while ((p = strstr(p, "\"startingheight\"")) != NULL) {
-            p += strlen("\"startingheight\"");
-            while (*p == ' ' || *p == ':') p++;
-            int h = atoi(p);
-            if (h > peer_max_height) peer_max_height = h;
-        }
+    struct json_value pi_j;
+    if (status_parse_json(&pi_j, pi) && pi_j.type == JSON_ARR) {
+        struct peer_survey ps;
+        status_peer_survey(&pi_j, &ps);
+        peer_max_height = ps.max_height;
     }
+    json_free(&pi_j);
 
     struct json_value root;
     struct json_value diag_json;
@@ -1258,13 +1215,8 @@ static int h_zcl_syncdiag(const struct mcp_request *req,
     free(diag); free(dl); free(pi);
     char *out = json_value_to_body(&root, "syncdiag_body");
     json_free(&root);
-    if (!out) {
-        res->error = MCP_ERR_INTERNAL;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for syncdiag response");
-        LOG_ERR("mcp.ops", "malloc failed for syncdiag body");
-        return -1; // raw-return-ok:logged-oom
-    }
+    if (!out)
+        return mcp_res_set_oom(res, 0, "mcp.ops", "syncdiag response");
     res->body = out;
     return 0;
 }
@@ -1312,13 +1264,8 @@ static int h_zcl_blockers(const struct mcp_request *req,
 
     char *out = json_value_to_body(&root, "zcl_blockers_body");
     json_free(&root);
-    if (!out) {
-        res->error = MCP_ERR_INTERNAL;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for blockers body");
-        LOG_ERR("mcp.ops", "malloc failed for zcl_blockers body");
-        return 0;
-    }
+    if (!out)
+        return mcp_res_set_oom(res, 0, "mcp.ops", "blockers body");
     res->body = out;
     return 0;
 }
@@ -1371,12 +1318,8 @@ static int h_zcl_postmortem_list(const struct mcp_request *req,
     struct postmortem_summary *summaries =
         zcl_malloc(sizeof(*summaries) * limit, "mcp.postmortem.list");
     if (!summaries) {
-        res->error = MCP_ERR_INTERNAL;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for postmortem summary list");
-        LOG_ERR("mcp.ops", "malloc failed for %zu postmortem summaries",
-                limit);
-        return 0;
+        return mcp_res_set_oom(res, sizeof(*summaries) * limit, "mcp.ops",
+                               "postmortem summary list");
     }
 
     size_t count = 0;
@@ -1419,13 +1362,8 @@ static int h_zcl_postmortem_list(const struct mcp_request *req,
     json_free(&arr);
     json_free(&root);
     free(summaries);
-    if (!body) {
-        res->error = MCP_ERR_INTERNAL;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for postmortem list response");
-        LOG_ERR("mcp.ops", "malloc failed for postmortem list body");
-        return 0;
-    }
+    if (!body)
+        return mcp_res_set_oom(res, 0, "mcp.ops", "postmortem list response");
     res->body = body;
     return 0;
 }
@@ -1461,11 +1399,8 @@ static int h_zcl_postmortem_replay(const struct mcp_request *req,
                                   "mcp.postmortem.payload");
     if (!payload) {
         seed_tape_close(tape);
-        res->error = MCP_ERR_INTERNAL;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for postmortem replay payload");
-        LOG_ERR("mcp.ops", "malloc failed for postmortem replay payload");
-        return 0;
+        return mcp_res_set_oom(res, POSTMORTEM_REPLAY_PAYLOAD_CAP, "mcp.ops",
+                               "postmortem replay payload");
     }
 
     struct json_value root, events;
@@ -1524,13 +1459,8 @@ static int h_zcl_postmortem_replay(const struct mcp_request *req,
     char *body = json_value_to_body(&root, "mcp.postmortem.replay.body");
     json_free(&events);
     json_free(&root);
-    if (!body) {
-        res->error = MCP_ERR_INTERNAL;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "malloc failed for postmortem replay response");
-        LOG_ERR("mcp.ops", "malloc failed for postmortem replay body");
-        return 0;
-    }
+    if (!body)
+        return mcp_res_set_oom(res, 0, "mcp.ops", "postmortem replay response");
     res->body = body;
     return 0;
 }
