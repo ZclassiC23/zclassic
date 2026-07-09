@@ -1,11 +1,20 @@
-> **▶ NEXT DEV START HERE: [`docs/work/SESSION-HANDOFF-2026-07-09-EVENING.md`](work/SESSION-HANDOFF-2026-07-09-EVENING.md)**
+> **▶ NEXT DEV START HERE: [`docs/work/SESSION-HANDOFF-2026-07-09-LATE.md`](work/SESSION-HANDOFF-2026-07-09-LATE.md)**
+> — 2026-07-09 late handoff: `origin/main` at **`7fa940ac2`**. Shipped
+> **simnet_wire steps A + B** (the deterministic in-memory adversarial P2P
+> wire-simulation harness) + four hardening/DRY lanes + a sticky-escalator
+> live-defect fix. Documents **the orchestration pattern** (Fable orchestrates /
+> **codex CLI wrapped in a Haiku subagent** implements / Sonnet verifies /
+> parallel subagent workflows) with reusable templates in
+> `docs/work/workflow-*.js`. In-flight lanes to relaunch: wire step C
+> (byzantine bridge), `test_simnet_txkit` parallel SIGSEGV, `SYNC_AT_TIP`
+> transition. Note: the Codex *plugin* is gone but the **codex CLI is in active
+> use** via Haiku subagents. Verify live state before trusting any doc.
+>
+> **▶ PRIOR: [`docs/work/SESSION-HANDOFF-2026-07-09-EVENING.md`](work/SESSION-HANDOFF-2026-07-09-EVENING.md)**
 > — 2026-07-09 evening handoff: `main` at the merge of `dry/coins-record-codec`
-> + `security/nullifier-backfill` (both build-only + lint green post-merge), the
-> new IO-harness design (`docs/work/io-harness-design.md`) and next-wave plan
-> (`docs/work/next-wave-plan.md`), and the note that **the Codex executor plugin
-> was REMOVED this session** — orchestrate with native subagents (Fable/Opus/
-> Sonnet/Haiku), not `codex:rescue`. Verify live state with `zcl_agent` /
-> `zcl_status` before trusting any doc.
+> + `security/nullifier-backfill`, the IO-harness design
+> (`docs/work/io-harness-design.md`) and next-wave plan
+> (`docs/work/next-wave-plan.md`).
 >
 > **▶ PRIOR: [`docs/work/SESSION-HANDOFF-2026-07-09.md`](work/SESSION-HANDOFF-2026-07-09.md)**
 > — 2026-07-09 (daytime) session handoff: what shipped (incl. the wallet P0 fix
