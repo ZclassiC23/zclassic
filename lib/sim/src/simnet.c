@@ -15,6 +15,7 @@
 #include "validation/contextual_check_tx.h"
 #include "consensus/validation.h"
 #include "consensus/consensus.h"          /* COINBASE_MATURITY */
+#include "consensus/params.h"             /* PRE_BUTTERCUP_POW_TARGET_SPACING */
 #include "coins/coins.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
@@ -43,12 +44,19 @@
  * so the "bad-cb-amount" reward check always passes. */
 #define SIM_COINBASE_VALUE 1000000
 
+/* Fixed simulator clock epoch. It is intentionally above the CLTV
+ * time-lock threshold (500,000,000) so time-based lock tests can advance by
+ * a few 150-second virtual blocks instead of millions of pre-threshold ones. */
+#define SIM_START_BLOCK_TIME 1700000000u
+
 /* ── Transaction builders (adapted from
  *    lib/test/src/test_connect_block_self_write.c) ─────────────────── */
 
 /* Coinbase whose scriptSig encodes `height`, giving each coinbase a unique
  * txid (so BIP30 never trips). One output of SIM_COINBASE_VALUE. */
-static struct transaction sim_make_coinbase(int height)
+static struct transaction sim_make_coinbase_to(int height,
+                                               const struct script *script,
+                                               int64_t value)
 {
     struct transaction tx;
     memset(&tx, 0, sizeof(tx));
@@ -67,11 +75,20 @@ static struct transaction sim_make_coinbase(int height)
     tx.vin[0].sequence = 0xFFFFFFFF;
     tx.num_vout = 1;
     tx.vout = zcl_calloc(1, sizeof(struct tx_out), "simnet_cb_vout");
-    tx.vout[0].value = SIM_COINBASE_VALUE;
-    uint8_t pk[] = {0x76, 0xa9, 0x14};
-    script_set(&tx.vout[0].script_pub_key, pk, sizeof(pk));
+    tx.vout[0].value = value;
+    if (script) {
+        tx.vout[0].script_pub_key = *script;
+    } else {
+        uint8_t pk[] = {0x76, 0xa9, 0x14};
+        script_set(&tx.vout[0].script_pub_key, pk, sizeof(pk));
+    }
     transaction_compute_hash(&tx);
     return tx;
+}
+
+static struct transaction sim_make_coinbase(int height)
+{
+    return sim_make_coinbase_to(height, NULL, SIM_COINBASE_VALUE);
 }
 
 /* Transparent spend of `in_txid`:`in_n` producing one output of
@@ -140,6 +157,7 @@ static bool sim_mint_block(struct simnet *s, struct transaction *txs,
     blk.header.nVersion = 4;
     blk.header.hashPrevBlock = s->tip.hashBlock;
     blk.header.hashMerkleRoot = compute_merkle_root(txids, ntx);
+    blk.header.nTime = s->next_block_time;
     free(txids);
 
     struct uint256 block_hash;
@@ -175,6 +193,8 @@ static bool sim_mint_block(struct simnet *s, struct transaction *txs,
     s->tip.has_chain_sapling_value = false;
     arith_uint256_set_u64(&s->tip.nChainWork, (uint64_t)height + 1);
     s->tip_height = height;
+    s->last_block_time = blk.header.nTime;
+    s->next_block_time += PRE_BUTTERCUP_POW_TARGET_SPACING;
     return true;
 }
 
@@ -208,6 +228,13 @@ bool simnet_init(struct simnet *s)
     s->tip.has_chain_sapling_value = false;
     arith_uint256_set_u64(&s->tip.nChainWork, (uint64_t)SIM_BASE_HEIGHT);
     s->tip_height = SIM_BASE_HEIGHT - 1;
+    s->last_block_time = 0;
+    s->next_block_time = SIM_START_BLOCK_TIME;
+    s->mempool_txs = NULL;
+    s->mempool_count = 0;
+    s->mempool_cap = 0;
+    s->mempool_last_reject = 0;
+    s->mempool_last_detail[0] = '\0';
 
     /* The live UTXO set: an empty coins cache over a zeroed backing view.
      * Its best block is the synthetic base tip (view/prevblock invariant). */
@@ -223,6 +250,12 @@ void simnet_free(struct simnet *s)
 {
     if (!s || !s->initialized)
         return;
+    for (size_t i = 0; i < s->mempool_count; i++)
+        transaction_free(&s->mempool_txs[i]);
+    free(s->mempool_txs);
+    s->mempool_txs = NULL;
+    s->mempool_count = 0;
+    s->mempool_cap = 0;
     coins_view_cache_free(&s->view);
     s->initialized = false;
 }
@@ -238,6 +271,27 @@ bool simnet_mint_coinbase(struct simnet *s, struct uint256 *out_cb_txid)
 
     if (!sim_mint_block(s, &cb, 1, height))
         return false;   /* sim_mint_block already logged + freed */
+
+    if (out_cb_txid)
+        *out_cb_txid = cb_txid;
+    return true;
+}
+
+bool simnet_mint_coinbase_to(struct simnet *s, const struct script *script,
+                             int64_t value, struct uint256 *out_cb_txid)
+{
+    if (!s || !s->initialized || !script)
+        LOG_FAIL("simnet", "invalid coinbase-to-script mint request");
+    if (!MoneyRange(value))
+        LOG_FAIL("simnet", "coinbase value out of range: %lld",
+                 (long long)value);
+
+    int height = s->tip_height + 1;
+    struct transaction cb = sim_make_coinbase_to(height, script, value);
+    struct uint256 cb_txid = cb.hash;
+
+    if (!sim_mint_block(s, &cb, 1, height))
+        return false;
 
     if (out_cb_txid)
         *out_cb_txid = cb_txid;
@@ -273,6 +327,17 @@ bool simnet_mint_txs(struct simnet *s, struct transaction *txs, size_t ntx)
     bool ok = sim_mint_block(s, block_txs, ntx + 1, height);
     free(block_txs);
     return ok;
+}
+
+bool simnet_mint_to_height(struct simnet *s, int target_height)
+{
+    if (!s || !s->initialized)
+        LOG_FAIL("simnet", "uninitialized simnet");
+    while (s->tip_height < target_height) {
+        if (!simnet_mint_coinbase(s, NULL))
+            return false;
+    }
+    return true;
 }
 
 bool simnet_spend(struct simnet *s, const struct uint256 *in_txid,
@@ -327,6 +392,16 @@ bool simnet_spend(struct simnet *s, const struct uint256 *in_txid,
 int simnet_tip_height(const struct simnet *s)
 {
     return (s && s->initialized) ? s->tip_height : -1;
+}
+
+uint32_t simnet_tip_time(const struct simnet *s)
+{
+    return (s && s->initialized) ? s->last_block_time : 0;
+}
+
+uint32_t simnet_next_block_time(const struct simnet *s)
+{
+    return (s && s->initialized) ? s->next_block_time : 0;
 }
 
 bool simnet_tip_hash(const struct simnet *s, struct uint256 *out)

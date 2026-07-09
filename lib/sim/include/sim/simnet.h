@@ -59,6 +59,13 @@ struct simnet {
     struct chain_params     params;     /* value copy + high checkpoint */
     struct checkpoint_entry cpentry;    /* params.checkpointData -> here */
     struct block_index      tip;        /* current tip; tip.hashBlock = stable tip hash */
+    struct transaction     *mempool_txs; /* FIFO simulator mempool, owned */
+    size_t mempool_count;
+    size_t mempool_cap;
+    uint32_t next_block_time;           /* deterministic virtual nTime for next mint */
+    uint32_t last_block_time;           /* nTime of the current tip, 0 before first mint */
+    int mempool_last_reject;            /* enum simnet_mempool_reject, kept int to avoid a header cycle */
+    char mempool_last_detail[128];
     int  tip_height;
     bool initialized;
 };
@@ -79,6 +86,11 @@ void simnet_free(struct simnet *s);
  * reason) if the real validator rejects the block. */
 bool simnet_mint_coinbase(struct simnet *s, struct uint256 *out_cb_txid);
 
+/* Mint a coinbase-only block whose single output pays `script` and `value`.
+ * This is the funding primitive used by the simulator wallet toolkit. */
+bool simnet_mint_coinbase_to(struct simnet *s, const struct script *script,
+                             int64_t value, struct uint256 *out_cb_txid);
+
 /* Mint a new block containing the harness coinbase followed by caller-built
  * transparent transactions. `txs[0..ntx)` may include OP_RETURN outputs and
  * spends against the live in-RAM coins view. On a valid request ownership of
@@ -86,6 +98,10 @@ bool simnet_mint_coinbase(struct simnet *s, struct uint256 *out_cb_txid);
  * keep any needed txids before calling. Returns false (and logs) if the real
  * validator rejects the block. */
 bool simnet_mint_txs(struct simnet *s, struct transaction *txs, size_t ntx);
+
+/* Mint empty coinbase blocks until the tip is at least `target_height`.
+ * Heights are contiguous; asking for the current/past height is a no-op. */
+bool simnet_mint_to_height(struct simnet *s, int target_height);
 
 /* Mint a block that spends `in_txid`:`in_n` to one new output of
  * `out_value`, plus the block's own coinbase (vtx[0]). The block is minted
@@ -101,6 +117,12 @@ bool simnet_spend(struct simnet *s, const struct uint256 *in_txid,
 
 /* Height of the current tip. */
 int simnet_tip_height(const struct simnet *s);
+
+/* Deterministic virtual block clock. `tip_time` is 0 before the first mint;
+ * `next_block_time` advances by ZClassic's 150-second target spacing after
+ * every minted block. */
+uint32_t simnet_tip_time(const struct simnet *s);
+uint32_t simnet_next_block_time(const struct simnet *s);
 
 /* Copy the current tip hash into `out`. */
 bool simnet_tip_hash(const struct simnet *s, struct uint256 *out);
