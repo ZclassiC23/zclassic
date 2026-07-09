@@ -243,6 +243,152 @@ static bool sw_run_mixed(uint64_t seed, uint64_t *out_fp,
     return ok;
 }
 
+/* Step E: the GARBAGE_AFTER_VERACK bad-handshake sub-case used to spin the
+ * run to max_ticks (an incomplete recv message the old idle predicate
+ * treated as perpetual activity). Post-fix it must reach idle with the node
+ * still connected — a valid "no halt, no crash" outcome. Seeds 0xf/0x69/0x8e
+ * are the exact seeds wire_sweep flagged. */
+static bool sw_run_garbage_after_verack(uint64_t seed, uint64_t *out_fp,
+                                        struct simnet_wire_stats *out_stats)
+{
+    blocker_reset_for_testing();
+    struct simnet_wire *wire = simnet_wire_create(1, seed);
+    if (!wire)
+        return false;
+
+    bool ok = simnet_wire_start_bad_handshake_peer(
+                  wire, 0,
+                  SIMNET_WIRE_BAD_HANDSHAKE_GARBAGE_AFTER_VERACK) &&
+              simnet_wire_run(wire, 4096, 0);
+
+    struct simnet_wire_stats st;
+    memset(&st, 0, sizeof(st));
+    if (simnet_wire_get_stats(wire, &st)) {
+        if (out_stats)
+            *out_stats = st;
+        if (out_fp)
+            *out_fp = st.fingerprint;
+    }
+    ok = ok &&
+         sw_stats_monitors_ok(&st) &&
+         !st.nut_disconnected &&
+         st.pending_events == 0 &&
+         st.to_nut_bytes == 0 &&
+         st.max_recv_msg_count <= MAX_RECV_MESSAGES;
+
+    simnet_wire_free(wire);
+    return ok;
+}
+
+/* Step E bandwidth shaping: a FLOOD peer under a small per-tick down cap.
+ * The ring auto-grows so nothing is dropped, but pump_to_nut() delivers at
+ * most down_cap bytes into the NUT per tick — proven by
+ * max_deliver_to_nut_per_tick <= down_cap. */
+static bool sw_run_bandwidth_flood(uint64_t seed, size_t down_cap,
+                                   uint64_t *out_fp,
+                                   struct simnet_wire_stats *out_stats)
+{
+    blocker_reset_for_testing();
+    struct simnet_wire *wire = simnet_wire_create(1, seed);
+    if (!wire)
+        return false;
+
+    bool ok = simnet_wire_start_peer_kind(wire, 0, SIMNET_WIRE_PEER_FLOOD) &&
+              simnet_wire_set_link_bandwidth(wire, 0, down_cap, SIZE_MAX) &&
+              simnet_wire_run(wire, 16000, 0);
+
+    struct simnet_wire_stats st;
+    memset(&st, 0, sizeof(st));
+    if (simnet_wire_get_stats(wire, &st)) {
+        if (out_stats)
+            *out_stats = st;
+        if (out_fp)
+            *out_fp = st.fingerprint;
+    }
+    ok = ok &&
+         sw_stats_monitors_ok(&st) &&
+         st.delivered_to_nut_bytes > 0 &&
+         st.max_deliver_to_nut_per_tick <= (uint64_t)down_cap &&
+         st.max_recv_msg_count <= MAX_RECV_MESSAGES &&
+         !st.nut_disconnected;
+
+    simnet_wire_free(wire);
+    return ok;
+}
+
+/* Step E REPLAY: a valid tx announcement delivered, then re-delivered
+ * verbatim after a delay. The node must handle the duplicate idempotently —
+ * consensus unchanged, no permanent blocker, no disconnect. Also proves the
+ * kind is implemented (not routed to wire_mark_not_implemented). */
+static bool sw_run_replay(uint64_t seed, uint64_t *out_fp,
+                          struct simnet_wire_stats *out_stats)
+{
+    blocker_reset_for_testing();
+    struct simnet_wire *wire = simnet_wire_create(1, seed);
+    if (!wire)
+        return false;
+
+    bool ok = simnet_wire_start_peer_kind(wire, 0, SIMNET_WIRE_PEER_REPLAY) &&
+              simnet_wire_run(wire, 8192, 0);
+
+    struct simnet_wire_stats st;
+    memset(&st, 0, sizeof(st));
+    if (simnet_wire_get_stats(wire, &st)) {
+        if (out_stats)
+            *out_stats = st;
+        if (out_fp)
+            *out_fp = st.fingerprint;
+    }
+    ok = ok &&
+         sw_stats_monitors_ok(&st) &&
+         st.not_implemented_peers == 0 &&
+         st.consensus_unchanged &&
+         st.handshake_complete &&
+         !st.nut_disconnected &&
+         st.pending_events == 0 &&
+         st.delivered_to_nut_bytes > 0 &&
+         st.max_recv_msg_count <= MAX_RECV_MESSAGES;
+
+    simnet_wire_free(wire);
+    return ok;
+}
+
+/* Step E adversarial reorder: two block announcements delivered in reversed
+ * causal order (height N+1 before N), distinct from latency jitter. The node
+ * must tolerate it with no monitor violation and no disconnect. */
+static bool sw_run_reorder(uint64_t seed, uint64_t *out_fp,
+                           struct simnet_wire_stats *out_stats)
+{
+    blocker_reset_for_testing();
+    struct simnet_wire *wire = simnet_wire_create(1, seed);
+    if (!wire)
+        return false;
+
+    bool ok = simnet_wire_start_peer_kind(wire, 0, SIMNET_WIRE_PEER_REORDER) &&
+              simnet_wire_run(wire, 8192, 0);
+
+    struct simnet_wire_stats st;
+    memset(&st, 0, sizeof(st));
+    if (simnet_wire_get_stats(wire, &st)) {
+        if (out_stats)
+            *out_stats = st;
+        if (out_fp)
+            *out_fp = st.fingerprint;
+    }
+    ok = ok &&
+         sw_stats_monitors_ok(&st) &&
+         st.not_implemented_peers == 0 &&
+         st.consensus_unchanged &&
+         st.handshake_complete &&
+         !st.nut_disconnected &&
+         st.pending_events == 0 &&
+         st.delivered_to_nut_bytes > 0 &&
+         st.max_recv_msg_count <= MAX_RECV_MESSAGES;
+
+    simnet_wire_free(wire);
+    return ok;
+}
+
 static bool sw_byz_reason_ok(
     enum simnet_byzantine_class kind,
     const struct simnet_wire_byzantine_observation *obs)
@@ -759,6 +905,101 @@ int test_simnet_wire_partition_survivor(void)
     return failures;
 }
 
+int test_simnet_wire_garbage_after_verack(void)
+{
+    printf("\n=== simnet_wire garbage-after-verack (Step E hang fix) ===\n");
+    int failures = 0;
+    /* The exact seeds wire_sweep flagged as hangs (0xf, 0x69, 0x8e). Each
+     * must now reach idle within max_ticks with the node still connected. */
+    static const uint64_t seeds[] = { 0xfULL, 0x69ULL, 0x8eULL };
+    for (size_t i = 0; i < sizeof(seeds) / sizeof(seeds[0]); i++) {
+        uint64_t fp_a = 0;
+        uint64_t fp_b = 0;
+        struct simnet_wire_stats st;
+        memset(&st, 0, sizeof(st));
+        bool a = sw_run_garbage_after_verack(seeds[i], &fp_a, &st);
+        bool b = sw_run_garbage_after_verack(seeds[i], &fp_b, NULL);
+        char msg[96];
+        snprintf(msg, sizeof(msg),
+                 "wire garbage_after_verack: seed 0x%llx terminates (no hang)",
+                 (unsigned long long)seeds[i]);
+        SW_CHECK(msg, a);
+        SW_CHECK("wire garbage_after_verack: same-seed fingerprint "
+                 "deterministic", a && b && fp_a == fp_b);
+        printf("[wire garbage_after_verack] seed=0x%llx fp=0x%016" PRIx64
+               " ticks=%" PRIu64 " disconnected=%d max_recv=%zu\n",
+               (unsigned long long)seeds[i], fp_a, st.ticks,
+               st.nut_disconnected ? 1 : 0, st.max_recv_msg_count);
+    }
+    return failures;
+}
+
+int test_simnet_wire_bandwidth_cap(void)
+{
+    printf("\n=== simnet_wire bandwidth cap (Step E) ===\n");
+    int failures = 0;
+    uint64_t fp_a = 0;
+    uint64_t fp_b = 0;
+    struct simnet_wire_stats st;
+    memset(&st, 0, sizeof(st));
+
+    const size_t down_cap = 512;
+    bool a = sw_run_bandwidth_flood(0x571A00000000e001ULL, down_cap,
+                                    &fp_a, &st);
+    bool b = sw_run_bandwidth_flood(0x571A00000000e001ULL, down_cap,
+                                    &fp_b, NULL);
+    SW_CHECK("wire bandwidth: FLOOD under cap delivers <= cap bytes/tick", a);
+    SW_CHECK("wire bandwidth: same-seed fingerprint deterministic",
+             a && b && fp_a == fp_b);
+    printf("[wire bandwidth] fp=0x%016" PRIx64
+           " cap=%zu max_per_tick=%" PRIu64 " total_to_nut=%" PRIu64 "\n",
+           fp_a, down_cap, st.max_deliver_to_nut_per_tick,
+           st.delivered_to_nut_bytes);
+    return failures;
+}
+
+int test_simnet_wire_peer_replay(void)
+{
+    printf("\n=== simnet_wire replay peer (Step E) ===\n");
+    int failures = 0;
+    uint64_t fp_a = 0;
+    uint64_t fp_b = 0;
+    struct simnet_wire_stats st;
+    memset(&st, 0, sizeof(st));
+
+    bool a = sw_run_replay(0x571A00000000e002ULL, &fp_a, &st);
+    bool b = sw_run_replay(0x571A00000000e002ULL, &fp_b, NULL);
+    SW_CHECK("wire replay: duplicated announcement handled idempotently", a);
+    SW_CHECK("wire replay: same-seed fingerprint deterministic",
+             a && b && fp_a == fp_b);
+    printf("[wire replay] fp=0x%016" PRIx64
+           " not_impl=%" PRIu64 " to_nut=%" PRIu64 " max_recv=%zu\n",
+           fp_a, st.not_implemented_peers, st.delivered_to_nut_bytes,
+           st.max_recv_msg_count);
+    return failures;
+}
+
+int test_simnet_wire_peer_reorder(void)
+{
+    printf("\n=== simnet_wire reorder peer (Step E) ===\n");
+    int failures = 0;
+    uint64_t fp_a = 0;
+    uint64_t fp_b = 0;
+    struct simnet_wire_stats st;
+    memset(&st, 0, sizeof(st));
+
+    bool a = sw_run_reorder(0x571A00000000e003ULL, &fp_a, &st);
+    bool b = sw_run_reorder(0x571A00000000e003ULL, &fp_b, NULL);
+    SW_CHECK("wire reorder: out-of-causal-order announcements tolerated", a);
+    SW_CHECK("wire reorder: same-seed fingerprint deterministic",
+             a && b && fp_a == fp_b);
+    printf("[wire reorder] fp=0x%016" PRIx64
+           " not_impl=%" PRIu64 " to_nut=%" PRIu64 " max_recv=%zu\n",
+           fp_a, st.not_implemented_peers, st.delivered_to_nut_bytes,
+           st.max_recv_msg_count);
+    return failures;
+}
+
 int test_simnet_wire(void)
 {
     printf("\n=== simnet_wire honest in-memory transport ===\n");
@@ -812,9 +1053,13 @@ int test_simnet_wire(void)
 
     failures += test_simnet_wire_peer_malformed_frame();
     failures += test_simnet_wire_peer_bad_handshake();
+    failures += test_simnet_wire_garbage_after_verack();
     failures += test_simnet_wire_peer_flood();
     failures += test_simnet_wire_peer_slowloris();
     failures += test_simnet_wire_mixed_scenario();
+    failures += test_simnet_wire_bandwidth_cap();
+    failures += test_simnet_wire_peer_replay();
+    failures += test_simnet_wire_peer_reorder();
     failures += test_simnet_wire_partition_recovery();
     failures += test_simnet_wire_partition_survivor();
     failures += test_simnet_wire_peer_invalid_block();

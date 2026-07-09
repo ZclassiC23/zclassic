@@ -30,9 +30,13 @@ int main(int argc, char **argv)
             }
             if (strcmp(name, "simnet_wire_peer_malformed_frame") == 0 ||
                 strcmp(name, "simnet_wire_peer_bad_handshake") == 0 ||
+                strcmp(name, "simnet_wire_garbage_after_verack") == 0 ||
                 strcmp(name, "simnet_wire_peer_flood") == 0 ||
                 strcmp(name, "simnet_wire_peer_slowloris") == 0 ||
                 strcmp(name, "simnet_wire_mixed_scenario") == 0 ||
+                strcmp(name, "simnet_wire_bandwidth_cap") == 0 ||
+                strcmp(name, "simnet_wire_peer_replay") == 0 ||
+                strcmp(name, "simnet_wire_peer_reorder") == 0 ||
                 strcmp(name, "simnet_wire_peer_invalid_block") == 0 ||
                 strcmp(name, "simnet_wire_peer_invalid_header") == 0 ||
                 strcmp(name, "simnet_wire_partition_recovery") == 0 ||
@@ -57,6 +61,9 @@ int main(int argc, char **argv)
                     } else if (strcmp(name, "simnet_wire_peer_bad_handshake") == 0) {
                         extern int test_simnet_wire_peer_bad_handshake(void);
                         failures += test_simnet_wire_peer_bad_handshake();
+                    } else if (strcmp(name, "simnet_wire_garbage_after_verack") == 0) {
+                        extern int test_simnet_wire_garbage_after_verack(void);
+                        failures += test_simnet_wire_garbage_after_verack();
                     } else if (strcmp(name, "simnet_wire_peer_flood") == 0) {
                         extern int test_simnet_wire_peer_flood(void);
                         failures += test_simnet_wire_peer_flood();
@@ -66,6 +73,15 @@ int main(int argc, char **argv)
                     } else if (strcmp(name, "simnet_wire_mixed_scenario") == 0) {
                         extern int test_simnet_wire_mixed_scenario(void);
                         failures += test_simnet_wire_mixed_scenario();
+                    } else if (strcmp(name, "simnet_wire_bandwidth_cap") == 0) {
+                        extern int test_simnet_wire_bandwidth_cap(void);
+                        failures += test_simnet_wire_bandwidth_cap();
+                    } else if (strcmp(name, "simnet_wire_peer_replay") == 0) {
+                        extern int test_simnet_wire_peer_replay(void);
+                        failures += test_simnet_wire_peer_replay();
+                    } else if (strcmp(name, "simnet_wire_peer_reorder") == 0) {
+                        extern int test_simnet_wire_peer_reorder(void);
+                        failures += test_simnet_wire_peer_reorder();
                     } else if (strcmp(name, "simnet_wire_peer_invalid_block") == 0) {
                         extern int test_simnet_wire_peer_invalid_block(void);
                         failures += test_simnet_wire_peer_invalid_block();
@@ -1186,6 +1202,8 @@ int main(int argc, char **argv)
     failures += test_reducer_step_drain_harness();
     failures += test_reducer_ondemand_genesis_seed();
     failures += test_connect_block_self_write();
+    failures += test_simnet_doublespend();
+    failures += test_simnet_chained_tx();
     failures += test_simnet_sapling_activation();
     failures += test_simnet_sapling_shielded_send();
     failures += test_connect_block_sapling_root();
