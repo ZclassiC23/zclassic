@@ -569,6 +569,48 @@ bool simnet_chain_mint(struct simnet_chain *chain, uint64_t first_seen,
     return true;
 }
 
+static struct simnet_block_entry *connect_retained(
+    struct simnet_chain *chain, const struct block *block,
+    struct simnet_block_entry *parent, struct block_index *parent_idx,
+    uint64_t first_seen)
+{
+    if (!chain || !block || !parent_idx || block->num_vtx == 0)
+        LOG_NULL("simnet.chain", "invalid connect_retained request");
+
+    struct uint256 hash;
+    block_header_get_hash(&block->header, &hash);
+
+    int height = parent_idx->nHeight + 1;
+    struct block_index idx;
+    simnet_chain_fill_index(&idx, block, &hash, parent_idx, height,
+                            first_seen);
+
+    struct coins_view scratch_null;
+    struct coins_view_cache scratch;
+    if (!simnet_chain_replay_to(chain, parent, &scratch_null, &scratch))
+        LOG_NULL("simnet.chain", "parent replay failed h=%d", height);
+
+    struct block_undo undo;
+    if (!simnet_chain_capture_undo(block, height, &scratch, &undo)) {
+        coins_view_cache_free(&scratch);
+        LOG_NULL("simnet.chain", "undo capture failed h=%d", height);
+    }
+
+    struct validation_state vs;
+    validation_state_init(&vs);
+    if (!connect_block(block, &vs, &idx, &scratch, &chain->params, false)) {
+        block_undo_free(&undo);
+        coins_view_cache_free(&scratch);
+        LOG_NULL("simnet.chain", "connect_block rejected h=%d: %s",
+                 height, vs.reject_reason);
+    }
+    coins_view_cache_free(&scratch);
+
+    return simnet_chain_store_entry(chain, block, &hash,
+                                    &block->header.hashPrevBlock, parent,
+                                    &idx, &undo, first_seen);
+}
+
 bool simnet_chain_accept_block(struct simnet_chain *chain,
                                const struct block *block,
                                uint64_t first_seen)
@@ -592,38 +634,10 @@ bool simnet_chain_accept_block(struct simnet_chain *chain,
         parent_idx = &parent->index;
     }
 
-    int height = parent_idx->nHeight + 1;
-    struct block_index idx;
-    simnet_chain_fill_index(&idx, block, &hash, parent_idx, height,
-                            first_seen);
-
-    struct coins_view scratch_null;
-    struct coins_view_cache scratch;
-    if (!simnet_chain_replay_to(chain, parent, &scratch_null, &scratch))
-        return false;
-
-    struct block_undo undo;
-    if (!simnet_chain_capture_undo(block, height, &scratch, &undo)) {
-        coins_view_cache_free(&scratch);
-        return false;
-    }
-
-    struct validation_state vs;
-    validation_state_init(&vs);
-    if (!connect_block(block, &vs, &idx, &scratch, &chain->params, false)) {
-        block_undo_free(&undo);
-        coins_view_cache_free(&scratch);
-        LOG_FAIL("simnet.chain", "connect_block rejected h=%d: %s",
-                 height, vs.reject_reason);
-    }
-    coins_view_cache_free(&scratch);
-
     struct simnet_block_entry *entry =
-        simnet_chain_store_entry(chain, block, &hash,
-                                 &block->header.hashPrevBlock, parent, &idx,
-                                 &undo, first_seen);
+        connect_retained(chain, block, parent, parent_idx, first_seen);
     if (!entry)
-        return false;
+        LOG_FAIL("simnet.chain", "connect_retained failed");
 
     if (simnet_chain_entry_better(chain, entry, chain->active_tip)) {
         if (!simnet_chain_activate(chain, entry))
