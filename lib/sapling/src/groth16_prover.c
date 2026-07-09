@@ -28,6 +28,41 @@ void groth16_prover_test_set_realloc_hook(void *(*hook)(void *, size_t))
     g_groth16_realloc_hook = hook;
 }
 
+#ifdef ZCL_TESTING
+/* ── Test-ONLY deterministic RNG hook for the blinding factors r, s
+ *    (see groth16_prover.h). Compiled ONLY under -DZCL_TESTING; the
+ *    production node binary has neither this symbol nor the branch in
+ *    groth16_prove below, so r, s ALWAYS come from zcl_random_secret_bytes
+ *    there. Defaults to NULL even in a ZCL_TESTING build. ────────────── */
+#include <stdatomic.h>
+static _Atomic(groth16_test_rng_fn) g_groth16_test_rng_fn = NULL;
+static void *g_groth16_test_rng_user = NULL;
+void groth16_set_test_rng_hook(groth16_test_rng_fn fn, void *user)
+{
+    /* Publish user before fn so a reader that observes non-NULL fn also
+     * observes the matching user pointer (mirrors sapling_set_test_rng_hook). */
+    g_groth16_test_rng_user = user;
+    atomic_store_explicit(&g_groth16_test_rng_fn, fn, memory_order_release);
+}
+
+/* Fill n bytes of blinding randomness: the test hook when installed, else
+ * the production CSPRNG. Byte-identical to zcl_random_secret_bytes when no
+ * hook is set. */
+static bool groth16_blind_bytes(uint8_t *out, size_t n, const char *label)
+{
+    groth16_test_rng_fn hook =
+        atomic_load_explicit(&g_groth16_test_rng_fn, memory_order_acquire);
+    if (hook)
+        return hook(g_groth16_test_rng_user, out, n);
+    return zcl_random_secret_bytes(out, n, label);
+}
+#else
+static inline bool groth16_blind_bytes(uint8_t *out, size_t n, const char *label)
+{
+    return zcl_random_secret_bytes(out, n, label);
+}
+#endif /* ZCL_TESTING */
+
 static inline void *g_cs_realloc(void *ptr, size_t size, const char *label)
 {
     if (g_groth16_realloc_hook)
@@ -753,10 +788,10 @@ bool groth16_prove(const struct groth16_pk *pk,
     struct fr r_blind, s_blind;
     {
         uint8_t rb[32];
-        if (!zcl_random_secret_bytes(rb, 32, "groth16_r_blind"))
+        if (!groth16_blind_bytes(rb, 32, "groth16_r_blind"))
             return false;
         fr_from_bytes(&r_blind, rb);
-        if (!zcl_random_secret_bytes(rb, 32, "groth16_s_blind")) {
+        if (!groth16_blind_bytes(rb, 32, "groth16_s_blind")) {
             memory_cleanse(rb, 32);
             return false;
         }

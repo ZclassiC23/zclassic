@@ -177,7 +177,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(chain_tip_watchdog_bounded_restart) X(blocker) X(service_state) \
     X(service_state_driver) \
     X(storage_coins_utxo) \
-    X(clock) X(rng) X(seed_tape) X(postmortem) X(simnet) X(simnet_cluster) X(simnet_wire) X(simnet_byzantine) X(simnet_txkit) X(simnet_doublespend) X(simnet_chained_tx) X(simnet_block_sigops) X(simnet_duplicate_input) X(simnet_value_inflation) X(simnet_fee_range) X(simnet_empty_vin_vout) X(simnet_input_value_range) X(simnet_sapling_activation) X(util_signal_handler) X(chaos_harness) X(stage) X(stage_anchor) X(mailbox) X(mailbox_adoption) \
+    X(clock) X(rng) X(seed_tape) X(postmortem) X(simnet) X(simnet_cluster) X(simnet_wire) X(simnet_byzantine) X(simnet_txkit) X(simnet_doublespend) X(simnet_chained_tx) X(simnet_block_sigops) X(simnet_duplicate_input) X(simnet_value_inflation) X(simnet_fee_range) X(simnet_empty_vin_vout) X(simnet_input_value_range) X(simnet_sapling_activation) X(simnet_sapling_shielded_send) X(util_signal_handler) X(chaos_harness) X(stage) X(stage_anchor) X(mailbox) X(mailbox_adoption) \
     X(projection) X(projection_adoption) X(progress_store) X(event_log) \
     X(mempool_projection) X(peers_projection) X(znam_projection) \
     X(wallet_projection) X(small_projections) \
@@ -454,6 +454,21 @@ static bool group_requires_exclusive_repo(const char *name)
     return strcmp(name, "make_lint_gates") == 0;
 }
 
+/* Params-heavy opt-in gate. These groups load the multi-MB Sapling Groth16
+ * proving keys from ~/.zcash-params and run REAL proving (seconds of CPU,
+ * ~50 MB RAM each) — too slow/heavy for the fast default pool. They are
+ * excluded from a default full run and opted in via ZCL_PARAMS_TESTS=1 (runs
+ * them alongside everything) or by naming one with --only=<name> (explicit
+ * selection). They stay fully registered so the opt-in paths reach them. */
+static bool group_is_params_heavy(const char *name)
+{
+    if (!name) return false;
+    if (strncmp(name, "test_", 5) == 0) name += 5;
+    return strcmp(name, "simnet_sapling_shielded_send") == 0 ||
+           strcmp(name, "snark_kat") == 0 ||
+           strcmp(name, "sapling_prover_rng_determinism") == 0;
+}
+
 static void run_group_exclusive(size_t idx, pid_t parent_pid,
                                 struct group_result *results)
 {
@@ -574,6 +589,31 @@ int main(int argc, char **argv)
             return 2;
         }
     }
+
+    /* Params-heavy opt-in gate: exclude the Groth16-proving groups from a
+     * default full run. They still run when ZCL_PARAMS_TESTS is set, or when
+     * explicitly selected via --only=<name> (which leaves results[i].skipped
+     * clear for the matching group). Folded into pre_skipped so they are not
+     * dispatched and are excluded from the pass/fail denominator. */
+    bool params_opt_in = getenv("ZCL_PARAMS_TESTS") != NULL;
+    size_t params_gated = 0;
+    /* An explicit --only=<name> is itself the opt-in for a params-heavy group,
+     * so skip the gate entirely when --only is in effect (the matching group
+     * is the only one left unskipped above). */
+    if (!params_opt_in && !only) {
+        for (size_t i = 0; i < g_num_groups; i++) {
+            if (results[i].skipped) continue;
+            if (!group_is_params_heavy(g_groups[i].name)) continue;
+            results[i].status = 0;              /* excludes from dispatch */
+            results[i].skipped = 1;
+            params_gated++;
+        }
+        pre_skipped += params_gated;
+    }
+    if (params_gated > 0)
+        printf("test_parallel: %zu params-heavy group(s) gated out "
+               "(set ZCL_PARAMS_TESTS=1 or --only=<name> to run)\n",
+               params_gated);
 
     struct child_slot *slots =
         calloc((size_t)jobs, sizeof(*slots));

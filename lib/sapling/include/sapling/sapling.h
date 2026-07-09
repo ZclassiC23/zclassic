@@ -107,6 +107,29 @@ bool sapling_generate_r(uint8_t result[32]);
  * single-threaded deterministic build, then clear it. */
 typedef bool (*sapling_test_rng_fn)(void *user, uint8_t *out, size_t n);
 void sapling_set_test_rng_hook(sapling_test_rng_fn fn, void *user);
+
+/* ── Test-ONLY deterministic RNG injection for the RedJubjub signing nonce ──
+ *
+ * redjubjub_sign draws an 80-byte nonce seed T from `zcl_random_secret_bytes`
+ * (kernel CSPRNG) — the spend_auth_sig and binding_sig of a Sapling tx. Those
+ * nonces feed the signature bytes, so with real entropy the enclosing tx's
+ * txid is NON-reproducible run-to-run. This is the last randomness seam a
+ * deterministic shielded transaction needs seeded (after Lane B's
+ * sapling_generate_r and Lane C's Groth16 r,s), so a seeded build is
+ * txid-stable.
+ *
+ * Compiled ONLY under `-DZCL_TESTING`; absent from the production node binary
+ * (no symbol, no branch), so `redjubjub_sign` there ALWAYS draws T from
+ * `zcl_random_secret_bytes`. NULL (the default even under ZCL_TESTING) is
+ * byte-identical to today. When set, each T draw is filled via `fn(user, buf,
+ * 80)`. Set around a single-threaded deterministic build, then clear it.
+ * Mirrors sapling_set_test_rng_hook / groth16_set_test_rng_hook.
+ *
+ * SECURITY NOTE: a repeated signing nonce leaks the signing key. This seam is
+ * why the deterministic simulator is TEST-ONLY: it deliberately makes nonces
+ * reproducible, which is catastrophic on a real key. It cannot exist in the
+ * production binary (compiled out), and no production path can install it. */
+void redjubjub_set_test_rng_hook(sapling_test_rng_fn fn, void *user);
 #endif /* ZCL_TESTING */
 
 /* RedJubjub signature verification (Zcash spec §5.4.7).
