@@ -3,131 +3,28 @@
  * Deterministic in-memory P2P wire transport for a real p2p_node.
  */
 
-#include "sim/simnet_wire.h"
+#include "simnet_wire_internal.h"
 
-#include "chain/chainparams.h"
-#include "coins/coins_view.h"
-#include "consensus/validation.h"
 #include "core/hash.h"
 #include "core/serialize.h"
+#include "event/event.h"
 #include "net/fast_sync.h"
-#include "net/msgprocessor.h"
-#include "net/net.h"
+#include "net/net_fault.h"
 #include "net/p2p_message.h"
-#include "net/protocol.h"
+#include "net/peer_scoring.h"
 #include "net/version.h"
 #include "platform/clock.h"
 #include "platform/rng.h"
 #include "platform/time_compat.h"
 #include "primitives/block.h"
-#include "sim/seed_tape.h"
+#include "util/blocker.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
-#include "validation/main_state.h"
-#include "validation/txmempool.h"
 
 #include <stdio.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
-
-#define SIMNET_WIRE_EVENT_ENQUEUED 129u
-#define SIMNET_WIRE_MIN_LATENCY_US 50u
-#define SIMNET_WIRE_LATENCY_SPAN_US 5000u
-#define SIMNET_WIRE_REORDER_SPAN_US 17u
-#define SIMNET_WIRE_DEFAULT_RING_CAP 4096u
-#define SIMNET_WIRE_MAX_PEERS 1024u
-#define SIMNET_WIRE_IO_CHUNK_BASE 0x10000u
-#define SIMNET_WIRE_RECV_LOW_WATER_SLOTS 16u
-#define SIMNET_WIRE_FNV_OFFSET 1469598103934665603ULL
-#define SIMNET_WIRE_FNV_PRIME 1099511628211ULL
-
-enum wire_event_kind {
-    WIRE_EVENT_DELIVER_TO_NUT = 1,
-    WIRE_EVENT_OPEN = 2,
-    WIRE_EVENT_CLOSE = 3,
-    WIRE_EVENT_PARTITION = 4,
-};
-
-enum wire_peer_kind {
-    WIRE_PEER_HONEST = 1,
-};
-
-struct wire_byte_ring {
-    uint8_t *data;
-    size_t cap;
-    size_t head;
-    size_t len;
-};
-
-struct wire_link {
-    struct wire_byte_ring to_nut;
-    struct wire_byte_ring to_peer;
-    bool open;
-    size_t down_tokens;
-    size_t up_tokens;
-};
-
-struct wire_event {
-    size_t peer_id;
-    uint64_t deliver_us;
-    uint64_t seq;
-    enum wire_event_kind kind;
-    uint8_t *bytes;
-    size_t len;
-};
-
-struct wire_peer {
-    enum wire_peer_kind kind;
-    struct wire_link link;
-    struct net_address addr;
-    bool version_sent;
-    bool verack_sent;
-    bool saw_nut_version;
-    bool saw_nut_verack;
-    bool saw_nut_sendheaders;
-    bool saw_nut_pong;
-    uint64_t ping_nonce_sent;
-    uint64_t last_pong_nonce;
-};
-
-struct simnet_wire {
-    size_t peer_count;
-    struct wire_peer *peers;
-    seed_tape_t *tape;
-
-    struct net_manager nm;
-    struct msg_processor mp;
-    struct main_state ms;
-    struct tx_mempool mempool;
-    struct coins_view null_view;
-    struct coins_view_cache coins_tip;
-    const struct chain_params *params;
-    struct p2p_node *nut;
-    struct send_segment *send_sentinel;
-    bool main_ready;
-    bool mempool_ready;
-    bool coins_ready;
-    bool net_ready;
-
-    struct wire_event *queue;
-    size_t queue_count;
-    size_t queue_cap;
-    uint64_t next_seq;
-    uint64_t fingerprint;
-    uint64_t ticks;
-    uint64_t delivered_to_nut_bytes;
-    uint64_t delivered_to_peer_bytes;
-};
-
-struct wire_event_record {
-    uint64_t peer_id;
-    uint64_t deliver_us;
-    uint64_t seq;
-    uint64_t len;
-    uint64_t bytes_hash;
-    uint8_t kind;
-};
 
 static uint64_t simnet_wire_now_us(void)
 {
@@ -137,7 +34,15 @@ static uint64_t simnet_wire_now_us(void)
     return (uint64_t)ns / 1000u;
 }
 
-static uint64_t simnet_wire_fnv_bytes(const uint8_t *bytes, size_t len)
+uint64_t simnet_wire_splitmix64_value(uint64_t x)
+{
+    uint64_t z = x + 0x9E3779B97F4A7C15ULL;
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
+
+uint64_t simnet_wire_fnv_bytes(const uint8_t *bytes, size_t len)
 {
     uint64_t h = SIMNET_WIRE_FNV_OFFSET;
     for (size_t i = 0; i < len; i++) {
@@ -147,9 +52,9 @@ static uint64_t simnet_wire_fnv_bytes(const uint8_t *bytes, size_t len)
     return h;
 }
 
-static void simnet_wire_fp_mix(struct simnet_wire *wire, size_t peer_id,
-                               uint8_t direction, const uint8_t *bytes,
-                               size_t len)
+void simnet_wire_fp_mix(struct simnet_wire *wire, size_t peer_id,
+                        uint8_t direction, const uint8_t *bytes,
+                        size_t len)
 {
     uint64_t h = wire->fingerprint ? wire->fingerprint
                                    : SIMNET_WIRE_FNV_OFFSET;
@@ -302,6 +207,52 @@ static bool simnet_wire_stub_submit_block(struct block *block,
     LOG_FAIL("simnet.wire", "unexpected block submit in wire harness");
 }
 
+static void simnet_wire_event_observer(enum event_type type, uint32_t peer_id,
+                                       const void *payload,
+                                       uint32_t payload_len, void *ctx)
+{
+    (void)peer_id;
+    (void)payload;
+    (void)payload_len;
+    struct simnet_wire *wire = (struct simnet_wire *)ctx;
+    if (!wire)
+        return;
+    if (type == EV_MSG_CHECKSUM_FAIL)
+        wire->events.checksum_fail++;
+    else if (type == EV_PEER_MISBEHAVE)
+        wire->events.peer_misbehave++;
+    else if (type == EV_BACKPRESSURE_REJECT)
+        wire->events.backpressure_reject++;
+    else if (type == EV_PEER_BANNED)
+        wire->events.peer_banned++;
+}
+
+static bool simnet_wire_install_event_observers(struct simnet_wire *wire)
+{
+    if (!wire)
+        LOG_FAIL("simnet.wire", "NULL observer owner");
+    event_log_init();
+    bool ok =
+        event_observe(EV_MSG_CHECKSUM_FAIL, simnet_wire_event_observer,
+                      wire) &&
+        event_observe(EV_PEER_MISBEHAVE, simnet_wire_event_observer,
+                      wire) &&
+        event_observe(EV_BACKPRESSURE_REJECT, simnet_wire_event_observer,
+                      wire) &&
+        event_observe(EV_PEER_BANNED, simnet_wire_event_observer, wire);
+    if (!ok)
+        LOG_FAIL("simnet.wire", "failed to install event observers");
+    return true;
+}
+
+static void simnet_wire_clear_event_observers(void)
+{
+    event_clear_observers(EV_MSG_CHECKSUM_FAIL);
+    event_clear_observers(EV_PEER_MISBEHAVE);
+    event_clear_observers(EV_BACKPRESSURE_REJECT);
+    event_clear_observers(EV_PEER_BANNED);
+}
+
 static bool simnet_wire_install_send_sentinel(struct simnet_wire *wire)
 {
     if (!wire || !wire->nut)
@@ -323,6 +274,8 @@ static bool simnet_wire_install_send_sentinel(struct simnet_wire *wire)
 
 static bool simnet_wire_init_runtime(struct simnet_wire *wire, uint64_t seed)
 {
+    if (!simnet_wire_install_event_observers(wire))
+        return false;
     wire->tape = seed_tape_open(seed, 1700000000);
     if (!wire->tape)
         LOG_FAIL("simnet.wire", "seed_tape_open failed");
@@ -469,9 +422,27 @@ static bool simnet_wire_enqueue(struct simnet_wire *wire, size_t peer_id,
     return true;
 }
 
-static bool simnet_wire_frame(struct simnet_wire *wire, const char *command,
-                              const uint8_t *payload, size_t payload_len,
-                              uint8_t **out, size_t *out_len)
+bool simnet_wire_enqueue_raw(struct simnet_wire *wire, size_t peer_id,
+                             const uint8_t *bytes, size_t len)
+{
+    return simnet_wire_enqueue(wire, peer_id, WIRE_EVENT_DELIVER_TO_NUT,
+                               bytes, len);
+}
+
+bool simnet_wire_deliver_raw_now(struct simnet_wire *wire, size_t peer_id,
+                                 const uint8_t *bytes, size_t len)
+{
+    if (!wire || peer_id >= wire->peer_count || (!bytes && len > 0))
+        LOG_FAIL("simnet.wire", "invalid immediate delivery peer=%zu len=%zu",
+                 peer_id, len);
+    if (!wire->peers[peer_id].link.open)
+        return true;
+    return ring_write(&wire->peers[peer_id].link.to_nut, bytes, len);
+}
+
+bool simnet_wire_frame(struct simnet_wire *wire, const char *command,
+                       const uint8_t *payload, size_t payload_len,
+                       uint8_t **out, size_t *out_len)
 {
     if (!wire || !command || !out || !out_len ||
         (!payload && payload_len > 0))
@@ -501,10 +472,9 @@ static bool simnet_wire_frame(struct simnet_wire *wire, const char *command,
     return true;
 }
 
-static bool simnet_wire_enqueue_frame(struct simnet_wire *wire, size_t peer_id,
-                                      const char *command,
-                                      const uint8_t *payload,
-                                      size_t payload_len)
+bool simnet_wire_enqueue_frame(struct simnet_wire *wire, size_t peer_id,
+                               const char *command, const uint8_t *payload,
+                               size_t payload_len)
 {
     uint8_t *frame = NULL;
     size_t frame_len = 0;
@@ -538,8 +508,7 @@ static bool simnet_wire_enqueue_pong(struct simnet_wire *wire, size_t peer_id,
     return true;
 }
 
-static bool simnet_wire_enqueue_version(struct simnet_wire *wire,
-                                        size_t peer_id)
+bool simnet_wire_enqueue_version(struct simnet_wire *wire, size_t peer_id)
 {
     if (!wire || peer_id >= wire->peer_count)
         LOG_FAIL("simnet.wire", "invalid version peer=%zu", peer_id);
@@ -617,11 +586,9 @@ static size_t simnet_wire_recv_cap_for_queue(size_t queued, size_t base_cap)
         return 0;
 
     size_t free_slots = MAX_RECV_MESSAGES - queued;
-    if (free_slots < SIMNET_WIRE_RECV_LOW_WATER_SLOTS) {
-        size_t cap = free_slots * (size_t)MSG_HEADER_SIZE;
-        if (cap < base_cap)
-            return cap;
-    }
+    size_t cap = free_slots * (size_t)MSG_HEADER_SIZE;
+    if (cap < base_cap)
+        return cap;
     return base_cap;
 }
 
@@ -638,6 +605,8 @@ static bool simnet_wire_pump_to_nut(struct simnet_wire *wire, size_t peer_id,
         zcl_mutex_lock(&node->cs_recv);
         size_t queued = node->recv_msg_count;
         if (queued >= MAX_RECV_MESSAGES) {
+            event_emitf(EV_BACKPRESSURE_REJECT, (uint32_t)node->id,
+                        "cmd=wire reason=recv_queue_full");
             zcl_mutex_unlock(&node->cs_recv);
             break;
         }
@@ -854,6 +823,163 @@ static uint64_t simnet_wire_progress_signature(const struct simnet_wire *wire)
     return h;
 }
 
+bool simnet_wire_tip_hash(const struct simnet_wire *wire, struct uint256 *out)
+{
+    if (!wire || !out)
+        LOG_FAIL("simnet.wire", "invalid tip hash request");
+    struct block_index *tip = active_chain_tip(&wire->ms.chain_active);
+    if (tip)
+        *out = tip->hashBlock;
+    else
+        uint256_set_null(out);
+    return true;
+}
+
+bool simnet_wire_coins_digest(const struct simnet_wire *wire,
+                              struct utxo_commitment *out)
+{
+    if (!wire || !out)
+        LOG_FAIL("simnet.wire", "invalid coins digest request");
+    coins_view_cache_recompute_commitment(&wire->coins_tip, out);
+    return true;
+}
+
+bool simnet_wire_save_capsule(const struct simnet_wire *wire,
+                              const char *path)
+{
+    if (!wire || !wire->tape || !path || !*path)
+        LOG_FAIL("simnet.wire", "invalid capsule save request");
+    int rc = seed_tape_save(wire->tape, path);
+    if (rc != 0)
+        LOG_FAIL("simnet.wire", "seed_tape_save failed rc=%d path=%s",
+                 rc, path);
+    return true;
+}
+
+void simnet_wire_mark_monitor_failed(struct simnet_wire *wire,
+                                     const char *reason)
+{
+    if (!wire)
+        return;
+    wire->monitor.failed = true;
+    if (!wire->monitor.saved_capsule && wire->tape) {
+        char path[96];
+        snprintf(path, sizeof(path),
+                 "/tmp/simnet_wire_%016llx.tape",
+                 (unsigned long long)wire->master_seed);
+        if (seed_tape_save(wire->tape, path) == 0)
+            wire->monitor.saved_capsule = true;
+    }
+    if (reason && *reason)
+        LOG_WARN("simnet.wire", "monitor violation: %s", reason);
+}
+
+static void simnet_wire_monitor_track_memory(struct simnet_wire *wire)
+{
+    if (!wire || !wire->nut)
+        return;
+    struct simnet_wire_monitor *m = &wire->monitor;
+    struct p2p_node *node = wire->nut;
+    if (node->recv_msg_count > m->max_recv_msg_count)
+        m->max_recv_msg_count = node->recv_msg_count;
+    if (node->send_size > m->max_send_size)
+        m->max_send_size = node->send_size;
+    if (node->inventory_to_send_count > m->max_inventory_to_send)
+        m->max_inventory_to_send = node->inventory_to_send_count;
+    if (node->addr_to_send_count > m->max_addr_to_send)
+        m->max_addr_to_send = node->addr_to_send_count;
+
+    if (node->recv_msg_count > MAX_RECV_MESSAGES) {
+        m->recv_queue_bounded = false;
+        simnet_wire_mark_monitor_failed(wire, "recv queue exceeded cap");
+    }
+    if (node->send_size > net_send_peer_bytes_cap() ||
+        node->inventory_to_send_count > MAX_INVENTORY_KNOWN ||
+        node->addr_to_send_count > MAX_ADDR_TO_SEND) {
+        m->memory_plateau_ok = false;
+        if (!m->warned_memory_growth) {
+            m->warned_memory_growth = true;
+            LOG_WARN("simnet.wire",
+                     "memory plateau warning send=%zu inv=%zu addr=%zu",
+                     node->send_size, node->inventory_to_send_count,
+                     node->addr_to_send_count);
+        }
+    }
+}
+
+static bool simnet_wire_monitor_blockers(struct simnet_wire *wire)
+{
+    if (!wire)
+        LOG_FAIL("simnet.wire", "NULL blocker monitor");
+    struct blocker_snapshot snaps[BLOCKER_CAP];
+    int n = blocker_snapshot_all(snaps, BLOCKER_CAP);
+    for (int i = 0; i < n; i++) {
+        if (snaps[i].class != (int)BLOCKER_PERMANENT)
+            continue;
+        wire->monitor.no_unexpected_permanent_blocker = false;
+        simnet_wire_mark_monitor_failed(wire,
+                                        "unexpected permanent blocker");
+        return false;
+    }
+    return true;
+}
+
+static bool simnet_wire_monitor_consensus(struct simnet_wire *wire)
+{
+    if (!wire)
+        LOG_FAIL("simnet.wire", "NULL consensus monitor");
+    struct uint256 tip;
+    struct utxo_commitment coins;
+    if (!simnet_wire_tip_hash(wire, &tip) ||
+        !simnet_wire_coins_digest(wire, &coins))
+        return false;
+    if (!uint256_eq(&tip, &wire->monitor.baseline_tip) ||
+        !utxo_commitment_equal(&coins, &wire->monitor.baseline_coins)) {
+        wire->monitor.consensus_unchanged = false;
+        simnet_wire_mark_monitor_failed(wire, "consensus baseline changed");
+        return false;
+    }
+    return true;
+}
+
+static bool simnet_wire_monitor_ban_expectations(struct simnet_wire *wire)
+{
+    if (!wire || !wire->nut)
+        LOG_FAIL("simnet.wire", "invalid ban monitor");
+    bool expect = false;
+    for (size_t i = 0; i < wire->peer_count; i++) {
+        if (wire->peers[i].ban_expected)
+            expect = true;
+    }
+    if (!expect || !peer_scoring_should_ban(wire->nut))
+        return true;
+    if (!wire->nut->disconnect ||
+        !is_banned(&wire->nm, &wire->nut->addr.svc.addr)) {
+        simnet_wire_mark_monitor_failed(wire,
+                                        "ban threshold did not disconnect");
+        return false;
+    }
+    return true;
+}
+
+bool simnet_wire_monitor_after_tick(struct simnet_wire *wire)
+{
+    if (!wire)
+        LOG_FAIL("simnet.wire", "NULL monitor tick");
+    simnet_wire_monitor_track_memory(wire);
+    return simnet_wire_monitor_blockers(wire) &&
+           simnet_wire_monitor_consensus(wire) &&
+           simnet_wire_monitor_ban_expectations(wire) &&
+           !wire->monitor.failed;
+}
+
+bool simnet_wire_monitor_finish(struct simnet_wire *wire)
+{
+    if (!wire)
+        LOG_FAIL("simnet.wire", "NULL monitor finish");
+    return simnet_wire_monitor_after_tick(wire);
+}
+
 static bool simnet_wire_idle(const struct simnet_wire *wire)
 {
     if (!wire || wire->queue_count > 0)
@@ -862,6 +988,12 @@ static bool simnet_wire_idle(const struct simnet_wire *wire)
         (wire->nut->recv_msg_count > 0 || wire->nut->send_size > 0))
         return false;
     for (size_t i = 0; i < wire->peer_count; i++) {
+        if (wire->peers[i].kind == SIMNET_WIRE_PEER_FLOOD &&
+            wire->peers[i].flood_active)
+            return false;
+        if (wire->peers[i].kind == SIMNET_WIRE_PEER_SLOWLORIS &&
+            !wire->peers[i].adversary_done)
+            return false;
         if (ring_available(&wire->peers[i].link.to_nut) > 0 ||
             ring_available(&wire->peers[i].link.to_peer) > 0)
             return false;
@@ -878,6 +1010,10 @@ static bool simnet_wire_tick(struct simnet_wire *wire, bool *progress)
     if (!simnet_wire_deliver_one_event(wire, progress))
         return false;
     for (size_t i = 0; i < wire->peer_count; i++) {
+        if (!simnet_wire_peer_tick(wire, i, progress))
+            return false;
+    }
+    for (size_t i = 0; i < wire->peer_count; i++) {
         if (!simnet_wire_pump_to_nut(wire, i, progress))
             return false;
     }
@@ -890,7 +1026,7 @@ static bool simnet_wire_tick(struct simnet_wire *wire, bool *progress)
             return false;
     }
     wire->ticks++;
-    return true;
+    return simnet_wire_monitor_after_tick(wire);
 }
 
 struct simnet_wire *simnet_wire_create(size_t peer_count, uint64_t seed)
@@ -904,8 +1040,13 @@ struct simnet_wire *simnet_wire_create(size_t peer_count, uint64_t seed)
         LOG_NULL("simnet.wire", "OOM allocating simnet_wire");
 
     wire->peer_count = peer_count;
+    wire->master_seed = seed;
     wire->fingerprint = SIMNET_WIRE_FNV_OFFSET;
     wire->next_seq = 1;
+    wire->monitor.recv_queue_bounded = true;
+    wire->monitor.no_unexpected_permanent_blocker = true;
+    wire->monitor.memory_plateau_ok = true;
+    wire->monitor.consensus_unchanged = true;
     wire->peers = zcl_calloc(peer_count, sizeof(*wire->peers),
                              "simnet_wire_peers");
     if (!wire->peers) {
@@ -921,7 +1062,8 @@ struct simnet_wire *simnet_wire_create(size_t peer_count, uint64_t seed)
 
     for (size_t i = 0; i < peer_count; i++) {
         struct wire_peer *peer = &wire->peers[i];
-        peer->kind = WIRE_PEER_HONEST;
+        peer->kind = SIMNET_WIRE_PEER_HONEST;
+        peer->child_seed = simnet_wire_splitmix64_value(seed ^ (uint64_t)i);
         peer->link.open = false;
         peer->link.down_tokens = SIZE_MAX;
         peer->link.up_tokens = SIZE_MAX;
@@ -933,6 +1075,12 @@ struct simnet_wire *simnet_wire_create(size_t peer_count, uint64_t seed)
         }
     }
 
+    if (!simnet_wire_tip_hash(wire, &wire->monitor.baseline_tip) ||
+        !simnet_wire_coins_digest(wire, &wire->monitor.baseline_coins)) {
+        simnet_wire_free(wire);
+        LOG_NULL("simnet.wire", "consensus monitor baseline failed");
+    }
+
     return wire;
 }
 
@@ -941,6 +1089,7 @@ void simnet_wire_free(struct simnet_wire *wire)
     if (!wire)
         return;
 
+    simnet_wire_clear_event_observers();
     if (wire->nut)
         p2p_node_free(wire->nut);
     if (wire->net_ready)
@@ -956,6 +1105,7 @@ void simnet_wire_free(struct simnet_wire *wire)
         for (size_t i = 0; i < wire->peer_count; i++) {
             ring_free(&wire->peers[i].link.to_nut);
             ring_free(&wire->peers[i].link.to_peer);
+            free(wire->peers[i].slowloris_frame);
         }
         free(wire->peers);
     }
@@ -981,6 +1131,7 @@ bool simnet_wire_start_honest_peer(struct simnet_wire *wire, size_t peer_id)
     if (!wire || peer_id >= wire->peer_count)
         LOG_FAIL("simnet.wire", "invalid start peer=%zu", peer_id);
     struct wire_peer *peer = &wire->peers[peer_id];
+    peer->kind = SIMNET_WIRE_PEER_HONEST;
     peer->link.open = true;
     return simnet_wire_enqueue_version(wire, peer_id);
 }
@@ -1012,7 +1163,7 @@ bool simnet_wire_run(struct simnet_wire *wire, uint64_t max_ticks,
     uint64_t stuck = 0;
     for (uint64_t i = 0; i < max_ticks; i++) {
         if (simnet_wire_idle(wire))
-            return true;
+            return simnet_wire_monitor_finish(wire);
         uint64_t before = simnet_wire_progress_signature(wire);
         bool tick_progress = false;
         if (!simnet_wire_tick(wire, &tick_progress))
@@ -1028,6 +1179,7 @@ bool simnet_wire_run(struct simnet_wire *wire, uint64_t max_ticks,
         }
     }
 
+    (void)simnet_wire_monitor_finish(wire);
     LOG_FAIL("simnet.wire", "max_ticks exhausted ticks=%llu pending=%zu",
              (unsigned long long)max_ticks, wire->queue_count);
 }
@@ -1073,11 +1225,31 @@ bool simnet_wire_get_stats(const struct simnet_wire *wire,
     out->delivered_to_peer_bytes = wire->delivered_to_peer_bytes;
     out->fingerprint = wire->fingerprint;
     out->rng_count = seed_tape_rng_count(wire->tape);
+    out->checksum_fail_events = wire->events.checksum_fail;
+    out->peer_misbehave_events = wire->events.peer_misbehave;
+    out->backpressure_reject_events = wire->events.backpressure_reject;
+    out->peer_banned_events = wire->events.peer_banned;
+    out->not_implemented_peers = wire->not_implemented_peers;
+    out->max_recv_msg_count = wire->monitor.max_recv_msg_count;
+    out->max_send_size = wire->monitor.max_send_size;
+    out->max_inventory_to_send = wire->monitor.max_inventory_to_send;
+    out->max_addr_to_send = wire->monitor.max_addr_to_send;
     out->pending_events = wire->queue_count;
     out->nut_disconnected = wire->nut ? wire->nut->disconnect : true;
+    out->nut_banned = wire->nut ?
+        is_banned((struct net_manager *)&wire->nm,
+                  &wire->nut->addr.svc.addr) : false;
+    out->recv_queue_bounded = wire->monitor.recv_queue_bounded;
+    out->no_unexpected_permanent_blocker =
+        wire->monitor.no_unexpected_permanent_blocker;
+    out->memory_plateau_ok = wire->monitor.memory_plateau_ok;
+    out->consensus_unchanged = wire->monitor.consensus_unchanged;
+    out->monitor_failed = wire->monitor.failed;
+    for (size_t i = 0; i < wire->peer_count; i++) {
+        out->to_nut_bytes += ring_available(&wire->peers[i].link.to_nut);
+        out->to_peer_bytes += ring_available(&wire->peers[i].link.to_peer);
+    }
     if (wire->peer_count > 0) {
-        out->to_nut_bytes = ring_available(&wire->peers[0].link.to_nut);
-        out->to_peer_bytes = ring_available(&wire->peers[0].link.to_peer);
         out->handshake_complete =
             simnet_wire_peer_handshake_complete(wire, 0);
         out->pong_received = wire->peers[0].saw_nut_pong;
