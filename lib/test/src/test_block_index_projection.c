@@ -551,6 +551,113 @@ done:
     return *failures - start_failures;
 }
 
+/* ── Test 9: collision_accounting_cached_stmt ──────────────────────── */
+
+/* Regression test for the exists-check statement being hoisted out of the
+ * per-event hot path (block_index_projection_catch_up() now prepares the
+ * "SELECT 1 FROM block_index WHERE hash = ?" exists-check once, alongside
+ * ins_stmt, instead of once per EV_BLOCK_HEADER event). This exercises the
+ * cached statement across multiple catch_up() calls (each call re-prepares
+ * and finalizes its own cached statement) and confirms the
+ * replace_collisions_total / was_present accounting is unchanged: a fresh
+ * hash must not be counted as a collision, and a re-inserted (same) hash
+ * must be. */
+static uint64_t read_meta_u64(const char *db_path, const char *key)
+{
+    sqlite3 *raw = NULL;
+    if (sqlite3_open_v2(db_path, &raw, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        if (raw) sqlite3_close(raw);
+        return (uint64_t)-1;
+    }
+    sqlite3_stmt *stmt = NULL;
+    uint64_t result = (uint64_t)-1;
+    if (sqlite3_prepare_v2(raw,
+            "SELECT v FROM projection_meta WHERE k = ?", -1, &stmt, NULL)
+            == SQLITE_OK) {
+        sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT);
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            const unsigned char *txt = sqlite3_column_text(stmt, 0);
+            if (txt) result = (uint64_t)strtoull((const char *)txt, NULL, 10);
+        }
+        sqlite3_finalize(stmt);
+    }
+    sqlite3_close(raw);
+    return result;
+}
+
+static int run_collision_accounting_cached_stmt(int *failures)
+{
+    int start_failures = *failures;
+
+    char dir[256]; bip_tmpdir(dir, sizeof(dir), "collision");
+    bip_mkdir_p(dir);
+    char el_path[320]; snprintf(el_path, sizeof(el_path), "%s/log.bin", dir);
+    char db_path[320]; snprintf(db_path, sizeof(db_path), "%s/p.db", dir);
+
+    event_log_t *log = event_log_open(el_path);
+    if (!log) { *failures += 1; goto done; }
+
+    block_index_projection_t *p = block_index_projection_open(db_path, log);
+    if (!p) { event_log_close(log); *failures += 1; goto done; }
+
+    /* Round 1: one brand-new hash. Must NOT be counted as a collision. */
+    struct ev_block_header hA1;
+    uint8_t solA[8] = {0};
+    make_header(&hA1, solA, sizeof(solA), 0x7000, 700, 0x01);
+    BIP_CHECK("collision: emit A(v1) OK", emit_header(log, &hA1, solA));
+    (void)block_index_projection_catch_up(p);
+
+    BIP_CHECK("collision: count=1 after fresh insert",
+              block_index_projection_count(p) == 1);
+    BIP_CHECK("collision: collisions=0 after fresh insert",
+              read_meta_u64(db_path, "replace_collisions_total") == 0);
+    BIP_CHECK("collision: events_consumed_total=1 after fresh insert",
+              read_meta_u64(db_path, "events_consumed_total") == 1);
+
+    /* Round 2: same hash again (same seed => same hash), different
+     * nStatus — a genuine INSERT OR REPLACE collision. Must be counted. */
+    struct ev_block_header hA2;
+    uint8_t solA2[8] = {0};
+    make_header(&hA2, solA2, sizeof(solA2), 0x7000, 700, 0x80);
+    BIP_CHECK("collision: hashes match across rounds",
+              memcmp(hA1.hash, hA2.hash, 32) == 0);
+    BIP_CHECK("collision: emit A(v2) OK", emit_header(log, &hA2, solA2));
+    (void)block_index_projection_catch_up(p);
+
+    BIP_CHECK("collision: count stays 1 (same hash replaced)",
+              block_index_projection_count(p) == 1);
+    BIP_CHECK("collision: collisions=1 after re-inserting same hash",
+              read_meta_u64(db_path, "replace_collisions_total") == 1);
+
+    struct disk_block_index got;
+    disk_block_index_init(&got);
+    BIP_CHECK("collision: get reflects second write",
+              block_index_projection_get(p, hA1.hash, &got) &&
+              got.nStatus == 0x80);
+
+    /* Round 3: a fresh, distinct hash. Must NOT bump the collision
+     * counter (proves was_present isn't stuck true/false from a stale
+     * cached statement). */
+    struct ev_block_header hB;
+    uint8_t solB[8] = {0};
+    make_header(&hB, solB, sizeof(solB), 0x7001, 701, 0x01);
+    BIP_CHECK("collision: emit B OK", emit_header(log, &hB, solB));
+    (void)block_index_projection_catch_up(p);
+
+    BIP_CHECK("collision: count=2 after second fresh insert",
+              block_index_projection_count(p) == 2);
+    BIP_CHECK("collision: collisions stays 1 after fresh insert of B",
+              read_meta_u64(db_path, "replace_collisions_total") == 1);
+    BIP_CHECK("collision: events_consumed_total=3 across 3 catch_up calls",
+              read_meta_u64(db_path, "events_consumed_total") == 3);
+
+    block_index_projection_close(p);
+    event_log_close(log);
+    bip_cleanup_dir(dir);
+done:
+    return *failures - start_failures;
+}
+
 /* ── EV_BLOCK_HEADER round-trip (covers Task 1) ────────────────────── */
 
 static int run_payload_roundtrip(int *failures)
@@ -605,6 +712,7 @@ int test_block_index_projection(void)
     run_reorg_replace(&failures);
     run_commitment_canonical(&failures);
     run_resume_from_partial(&failures);
+    run_collision_accounting_cached_stmt(&failures);
 
     printf("block_index_projection: %d failures\n", failures);
     return failures;

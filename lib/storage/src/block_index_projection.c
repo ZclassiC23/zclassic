@@ -291,6 +291,7 @@ void block_index_projection_close(block_index_projection_t *p)
 struct catch_up_ctx {
     block_index_projection_t *p;
     sqlite3_stmt *ins_stmt;       /* prepared INSERT OR REPLACE */
+    sqlite3_stmt *exists_stmt;    /* prepared SELECT 1 ... WHERE hash = ? */
     uint64_t batch_count;          /* events in current txn */
     uint64_t total_consumed;       /* across all batches this call */
     uint64_t collisions;           /* INSERT OR REPLACE that found a prior row */
@@ -379,17 +380,16 @@ static bool catch_up_cb(uint64_t offset, enum event_log_type type,
         }
     }
 
-    /* Did this hash exist before? (Used for replace_collisions metric.) */
-    sqlite3_stmt *exists = NULL;
+    /* Did this hash exist before? (Used for replace_collisions metric.)
+     * Statement is prepared once for the whole catch_up (see
+     * block_index_projection_catch_up()) and reset+rebound here, mirroring
+     * the ins_stmt lifecycle below. */
     bool was_present = false;
-    if (sqlite3_prepare_v2(c->p->db,
-            "SELECT 1 FROM block_index WHERE hash = ? LIMIT 1",
-            -1, &exists, NULL) == SQLITE_OK) {
-        sqlite3_bind_blob(exists, 1, h.hash, 32, SQLITE_TRANSIENT);
-        if (sqlite3_step(exists) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
-            was_present = true;
-        sqlite3_finalize(exists);
-    }
+    sqlite3_reset(c->exists_stmt);
+    sqlite3_clear_bindings(c->exists_stmt);
+    sqlite3_bind_blob(c->exists_stmt, 1, h.hash, 32, SQLITE_TRANSIENT);
+    if (sqlite3_step(c->exists_stmt) == SQLITE_ROW)  // raw-sql-ok:kernel-primitive
+        was_present = true;
 
     /* INSERT OR REPLACE. */
     sqlite3_reset(c->ins_stmt);
@@ -458,6 +458,20 @@ uint64_t block_index_projection_catch_up(block_index_projection_t *p)
         return (uint64_t)-1;
     }
 
+    /* Prepare the exists-check SELECT once for the whole catch_up, same
+     * lifecycle as ins_stmt above (reset+rebound per event in
+     * catch_up_cb(), finalized once below). */
+    if (sqlite3_prepare_v2(p->db,
+            "SELECT 1 FROM block_index WHERE hash = ? LIMIT 1",
+            -1, &c.exists_stmt, NULL) != SQLITE_OK) {
+        fprintf(stderr,  // obs-ok:block-index-projection-catch-up-failure
+                "[block_index_projection] prepare SELECT failed: %s\n",
+                sqlite3_errmsg(p->db));
+        sqlite3_finalize(c.ins_stmt);
+        pthread_mutex_unlock(&p->mu);
+        return (uint64_t)-1;
+    }
+
     int rc = event_log_stream(p->log, p->last_consumed_offset,
                               catch_up_cb, &c);
     /* Flush trailing batch (if any) — must run even on stream error
@@ -469,6 +483,7 @@ uint64_t block_index_projection_catch_up(block_index_projection_t *p)
         }
     }
     sqlite3_finalize(c.ins_stmt);
+    sqlite3_finalize(c.exists_stmt);
 
     /* Always persist last_catch_up_ms (one tiny standalone txn). */
     int64_t elapsed = mono_now_ms() - t0;
