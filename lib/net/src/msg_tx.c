@@ -114,6 +114,12 @@ bool process_inv(struct msg_processor *mp, struct p2p_node *node,
         event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
                     "inv too large (%llu) from %s",
                     (unsigned long long)count, node->addr_name);
+        /* PEER_OFFENCE_FLOOD's own doc comment names "inv" as covered —
+         * score it like headers does for the same oversized-count
+         * violation, so this specific abuse still accrues toward the
+         * ban threshold across reconnects instead of only disconnecting. */
+        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
+                            "inv count exceeds MAX_INV_SZ");
         printf("Peer %s: inv message too large (%llu)\n",
                node->addr_name, (unsigned long long)count);
         node->disconnect = true;

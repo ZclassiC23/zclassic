@@ -154,6 +154,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(boot_coins_anchor_dual_store_recovery) X(make_lint_gates) X(multisig) \
     X(mcp_fuzz) X(rpc_auth_hardening) \
     X(disk_block_io) X(msg_handlers) X(process_headers_adversarial) \
+    X(net_msg_dos) \
     X(chain_advance_coordinator) \
     X(chain_advance_atomicity) \
     X(lag_slo) X(boot_phase) X(path_check) X(supervisor) \
