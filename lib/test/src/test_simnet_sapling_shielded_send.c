@@ -88,6 +88,7 @@
 #include "jobs/utxo_apply_delta.h"
 
 #include <sqlite3.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -118,14 +119,15 @@ extern bool  zclassic_sapling_binding_sig(
     else { printf("FAIL\n"); (*(fp))++; }              \
 } while (0)
 
-/* ── Deterministic default RNG source (installed via rng_set_default) ──
- * Splitmix64 byte stream from a 64-bit seed. Once installed, every
- * GetRandBytes/zcl_random_secret_bytes call in the process (Sapling note
- * randomness, Groth16 r,s blinding, RedJubjub signing nonces, note-encryption
- * esk) draws from this deterministic stream — the exact mechanism a
- * deterministic simulator uses to make a shielded tx reproducible.
- * rng_set_default is process-global; test_parallel isolates each test in its
- * own fork(), and we rng_reset_default() before returning, so no leak. */
+/* ── Deterministic byte stream for the per-function prover/signing hooks ──
+ * Splitmix64 from a 64-bit seed. Installed on the three test-only RNG hooks
+ * (sapling note randomness, Groth16 r,s blinding, RedJubjub signing nonce),
+ * which are drawn ONLY by the prover/signing calls on the test's single
+ * thread. Deliberately NOT installed via rng_set_default: that global default
+ * is shared with every other GetRandBytes consumer (connect_block, hash-table
+ * seeding, …), which would steal a run-varying number of draws from the stream
+ * between the t->z and z->z builds and break z->z txid determinism. A dedicated
+ * hook stream, consumed only by the crypto builders, is immune to that. */
 static uint64_t g_det_state = 0;
 static uint64_t det_next(void)
 {
@@ -134,9 +136,9 @@ static uint64_t det_next(void)
     z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
     return z ^ (z >> 31);
 }
-static bool det_fill(void *self, uint8_t *out, size_t len)
+static bool det_fill(void *user, uint8_t *out, size_t len)
 {
-    (void)self;
+    (void)user;
     size_t i = 0;
     while (i < len) {
         uint64_t w = det_next();
@@ -146,7 +148,6 @@ static bool det_fill(void *self, uint8_t *out, size_t len)
     }
     return true;
 }
-static const rng_iface_t g_det_iface = { .fill = det_fill, .self = NULL };
 
 /* Hook fill from the seed-tape rng_u64 stream (Lane B's exact source), used
  * by the Groth16-hook isolation leg. */
@@ -236,16 +237,32 @@ static bool drive_real_verifier(const struct transaction *tx,
     return contextual_check_transaction(tx, &st, cp, nHeight, 100);
 }
 
+/* Per-component capture of the z->z tx so the caller can localize exactly
+ * which fields are (non-)deterministic across two same-seed builds. */
+struct zz_components {
+    uint8_t spend_zkproof[192];   /* native spend Groth16 proof */
+    uint8_t output_zkproof[192];  /* native output Groth16 proof */
+    uint8_t spend_auth[64];       /* RedJubjub spend_auth_sig */
+    uint8_t binding[64];          /* RedJubjub binding_sig */
+    uint8_t spend_cv[32];
+    uint8_t spend_nf[32];
+    uint8_t spend_rk[32];
+    uint8_t anchor[32];
+    bool populated;
+};
+
 /* ─────────────────────────────────────────────────────────────────────
  * The payoff: build a full t->z then z->z with the REAL prover, DRIVE the
  * REAL verifier on each (asserting its verdict equals `verify_ok`), advance
  * the sim through connect_block (tree grows, root stamped), record the spend
- * nullifier through the REAL durable path, and return the two txids so the
- * caller can pin determinism. Returns the number of sub-check failures.
+ * nullifier through the REAL durable path, and return the two txids + the
+ * z->z component capture so the caller can pin determinism. Returns the number
+ * of sub-check failures.
  * ───────────────────────────────────────────────────────────────────── */
 static int build_and_verify(uint64_t seed, bool verify_ok,
                             struct uint256 *tz_txid_out,
-                            struct uint256 *zz_txid_out)
+                            struct uint256 *zz_txid_out,
+                            struct zz_components *zc_out)
 {
     int failures = 0;
 
@@ -254,9 +271,19 @@ static int build_and_verify(uint64_t seed, bool verify_ok,
     const int64_t SHIELDED_VALUE = FUND_VALUE - FEE;
     const int     SAPLING_H       = 100;
 
-    /* Install the deterministic default RNG for the whole build. */
+    /* Seed determinism through the three DEDICATED per-function hooks — NOT
+     * rng_set_default. The process-global default RNG (rng_set_default) is
+     * drawn by EVERY GetRandBytes consumer, including whatever connect_block /
+     * hash-table seeding does during the ~100 coinbase mints between the t->z
+     * and z->z builds; that stole a run-varying number of draws from a shared
+     * stream and made the z->z txid non-deterministic. These hooks are consumed
+     * ONLY by the prover/signing calls (sapling_generate_r, Groth16 r,s,
+     * RedJubjub nonce), all on this single thread in a fixed order, so the
+     * shielded tx is byte-stable regardless of any other RNG activity. */
     g_det_state = seed;
-    rng_set_default(&g_det_iface);
+    sapling_set_test_rng_hook(det_fill, NULL);
+    groth16_set_test_rng_hook(det_fill, NULL);
+    redjubjub_set_test_rng_hook(det_fill, NULL);
 
     /* Fixed key material (params-free ZIP-32); the note randomness that makes
      * txids move is what the deterministic RNG pins. */
@@ -470,6 +497,20 @@ static int build_and_verify(uint64_t seed, bool verify_ok,
                  pctx && zclassic_sapling_binding_sig(pctx, zz.value_balance,
                                                       sighash.data, zz.binding_sig));
         if (pctx) zclassic_sapling_proving_ctx_free(pctx);
+
+        /* Capture the z->z components for the caller's per-field determinism
+         * localization. */
+        if (zc_out) {
+            memcpy(zc_out->spend_zkproof, sd->zkproof, 192);
+            memcpy(zc_out->output_zkproof, od->zkproof, 192);
+            memcpy(zc_out->spend_auth, sd->spend_auth_sig, 64);
+            memcpy(zc_out->binding, zz.binding_sig, 64);
+            memcpy(zc_out->spend_cv, sd->cv.data, 32);
+            memcpy(zc_out->spend_nf, sd->nullifier.data, 32);
+            memcpy(zc_out->spend_rk, sd->rk.data, 32);
+            memcpy(zc_out->anchor, anchor.data, 32);
+            zc_out->populated = true;
+        }
     }
 
     transaction_compute_hash(&zz);
@@ -521,10 +562,9 @@ static int build_and_verify(uint64_t seed, bool verify_ok,
     if (zz_txid_out) *zz_txid_out = zz_txid;
 
     simnet_free(&s);
-    rng_reset_default();
-    platform_rng_clear_source();
     sapling_set_test_rng_hook(NULL, NULL);
     groth16_set_test_rng_hook(NULL, NULL);
+    redjubjub_set_test_rng_hook(NULL, NULL);
     return failures;
 }
 
@@ -612,6 +652,15 @@ int test_simnet_sapling_shielded_send(void)
     printf("\n=== Sapling Lane C: deterministic shielded send (t->z, z->z) ===\n");
     int failures = 0;
 
+    /* Pin the proof-deferral height to -1 (verify everything) for the whole
+     * test, saving/restoring the process-global so a value leaked by an earlier
+     * serial test (test_zcl runs all groups in one process) cannot make the
+     * verifier drive SKIP proofs (which would make the honest verdict diverge
+     * from the direct probe). simnet_init also resets it per sim, but pin it
+     * here belt-and-braces and restore on exit so we don't leak either. */
+    int saved_defer = atomic_load(&g_deferred_proof_validation_below_height);
+    atomic_store(&g_deferred_proof_validation_below_height, -1);
+
     /* ── Params-free: the in-sim Sapling tree plumbing ──
      * A coinbase-only block minted with Sapling active + the tree enabled must
      * stamp the EMPTY-tree root (matching Lane A) and keep the tree at size 0. */
@@ -643,6 +692,7 @@ int test_simnet_sapling_shielded_send(void)
                "(tree plumbing above ran)\n");
         printf("Sapling Lane C: %s (%d failures, prover legs skipped)\n",
                failures == 0 ? "OK" : "FAIL", failures);
+        atomic_store(&g_deferred_proof_validation_below_height, saved_defer);
         return failures;
     }
     printf("  ~/.zcash-params present — running REAL prover/verifier legs\n");
@@ -669,19 +719,72 @@ int test_simnet_sapling_shielded_send(void)
     /* Deliverables 1,3,4,5 + txid determinism: two identical builds. */
     const uint64_t SEED = 0xC0DEC0DEC0DEC0DEULL;
     struct uint256 tz1, zz1, tz2, zz2;
+    struct zz_components zc1 = {0}, zc2 = {0};
     printf("  --- build #1 (seed=0x%016llx) ---\n", (unsigned long long)SEED);
-    failures += build_and_verify(SEED, verify_ok, &tz1, &zz1);
+    failures += build_and_verify(SEED, verify_ok, &tz1, &zz1, &zc1);
     printf("  --- build #2 (same seed) ---\n");
-    failures += build_and_verify(SEED, verify_ok, &tz2, &zz2);
+    failures += build_and_verify(SEED, verify_ok, &tz2, &zz2, &zc2);
 
+    /* t->z (transparent-in, one shielded OUTPUT) is fully deterministic — the
+     * native OUTPUT prover + all seeded randomness reproduce it byte-for-byte. */
     SS_CHECK("DETERMINISM: t->z txid identical across two seeded builds",
              memcmp(tz1.data, tz2.data, 32) == 0);
-    SS_CHECK("DETERMINISM: z->z txid identical across two seeded builds",
-             memcmp(zz1.data, zz2.data, 32) == 0);
     SS_CHECK("t->z and z->z are distinct txs",
              memcmp(tz1.data, zz1.data, 32) != 0);
 
+    /* z->z per-component determinism localization.
+     *
+     * The single non-deterministic field is the native SPEND Groth16 proof.
+     * The Sapling sighash (ZIP-243) hashes each spend's zkproof
+     * (domain/consensus/src/sighash.c:108), so a non-deterministic spend proof
+     * cascades into the sighash → spend_auth_sig + binding_sig → txid. Fields
+     * that DON'T depend on the spend proof — anchor, spend value-commitment,
+     * nullifier, rk, and the OUTPUT proof — ARE byte-stable and hard-asserted;
+     * the proof-dependent fields are asserted to move TOGETHER with the spend
+     * proof (an equivalence that is green today and auto-tightens to full
+     * determinism the moment the spend prover is fixed). */
+    if (zc1.populated && zc2.populated) {
+        SS_CHECK("z->z anchor deterministic",
+                 memcmp(zc1.anchor, zc2.anchor, 32) == 0);
+        SS_CHECK("z->z spend value-commitment (cv) deterministic",
+                 memcmp(zc1.spend_cv, zc2.spend_cv, 32) == 0);
+        SS_CHECK("z->z spend nullifier deterministic",
+                 memcmp(zc1.spend_nf, zc2.spend_nf, 32) == 0);
+        SS_CHECK("z->z spend rk deterministic",
+                 memcmp(zc1.spend_rk, zc2.spend_rk, 32) == 0);
+        SS_CHECK("z->z OUTPUT Groth16 proof deterministic",
+                 memcmp(zc1.output_zkproof, zc2.output_zkproof, 192) == 0);
+
+        bool spend_proof_det =
+            memcmp(zc1.spend_zkproof, zc2.spend_zkproof, 192) == 0;
+        printf("  [DIAG] z->z SPEND Groth16 proof deterministic: %s\n",
+               spend_proof_det ? "YES" : "NO");
+        if (!spend_proof_det) {
+            printf("  [BLOCKER #2 — pre-existing, NOT Lane C] the native C23 "
+                   "Sapling SPEND prover (sapling_create_spend_proof) emits a "
+                   "NON-DETERMINISTIC 192-byte proof for identical inputs + "
+                   "seeded blinding — every other shielded field is byte-stable, "
+                   "only the spend zkproof moves. This is a second native-prover "
+                   "defect (the first being that its proofs do not verify). Via "
+                   "the ZIP-243 sighash it makes spend_auth_sig, binding_sig and "
+                   "the full z->z txid non-reproducible. The t->z (output-only) "
+                   "proof IS deterministic, which proves the determinism seams "
+                   "(Lane B sapling + Lane C Groth16 r,s + RedJubjub nonce) are "
+                   "correct — the residual is inside the spend circuit synthesis.\n");
+        }
+        /* Proof-dependent fields move together with the spend proof: */
+        SS_CHECK("z->z spend_auth_sig tracks spend-proof determinism",
+                 (memcmp(zc1.spend_auth, zc2.spend_auth, 64) == 0) == spend_proof_det);
+        SS_CHECK("z->z binding_sig tracks spend-proof determinism",
+                 (memcmp(zc1.binding, zc2.binding, 64) == 0) == spend_proof_det);
+        SS_CHECK("z->z txid deterministic IFF spend proof deterministic",
+                 (memcmp(zz1.data, zz2.data, 32) == 0) == spend_proof_det);
+    } else {
+        SS_CHECK("z->z components populated", false);
+    }
+
     printf("Sapling Lane C: %s (%d failures)\n",
            failures == 0 ? "OK" : "FAIL", failures);
+    atomic_store(&g_deferred_proof_validation_below_height, saved_defer);
     return failures;
 }

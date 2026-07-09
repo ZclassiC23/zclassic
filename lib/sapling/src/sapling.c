@@ -527,7 +527,30 @@ void sapling_set_test_rng_hook(sapling_test_rng_fn fn, void *user)
     g_sapling_test_rng_user = user;
     atomic_store_explicit(&g_sapling_test_rng_fn, fn, memory_order_release);
 }
+
+/* RedJubjub signing-nonce hook (see sapling.h). Separate from the note-RNG
+ * hook so the two seams stay independently controllable; both default NULL. */
+static _Atomic(sapling_test_rng_fn) g_redjubjub_test_rng_fn = NULL;
+static void *g_redjubjub_test_rng_user = NULL;
+void redjubjub_set_test_rng_hook(sapling_test_rng_fn fn, void *user)
+{
+    g_redjubjub_test_rng_user = user;
+    atomic_store_explicit(&g_redjubjub_test_rng_fn, fn, memory_order_release);
+}
 #endif /* ZCL_TESTING */
+
+/* Fill the RedJubjub nonce seed T: the test hook when installed, else the
+ * production CSPRNG. Byte-identical to zcl_random_secret_bytes when no hook. */
+static bool redjubjub_nonce_bytes(uint8_t *out, size_t n, const char *label)
+{
+#ifdef ZCL_TESTING
+    sapling_test_rng_fn hook =
+        atomic_load_explicit(&g_redjubjub_test_rng_fn, memory_order_acquire);
+    if (hook)
+        return hook(g_redjubjub_test_rng_user, out, n);
+#endif
+    return zcl_random_secret_bytes(out, n, label);
+}
 
 bool sapling_generate_r(uint8_t result[32])
 {
@@ -738,7 +761,7 @@ bool redjubjub_sign(const uint8_t sk[32],
      * deterministic-style RedJubjub nonce; an all-zero T from a failed
      * RNG would make r predictable and leak the signing key. */
     uint8_t T[80];
-    if (!zcl_random_secret_bytes(T, sizeof(T), "redjubjub_T"))
+    if (!redjubjub_nonce_bytes(T, sizeof(T), "redjubjub_T"))
         return false;
 
     /* r = H*(T || vk || msg) where vk = sk * G */
