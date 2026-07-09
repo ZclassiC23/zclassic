@@ -9,6 +9,7 @@ Source anchors for this matrix are code, not project prose:
 - `lib/sim/src/simnet.c`
 - `lib/test/src/test_simnet.c`
 - `lib/test/src/test_simnet_doublespend.c`
+- `lib/test/src/test_simnet_duplicate_input.c`
 - `lib/zslp/include/zslp/slp.h`
 - `lib/zslp/src/slp.c`
 - `lib/znam/include/znam/znam.h`
@@ -87,6 +88,7 @@ not fold through `connect_block()` and are out of simnet scope.
 |--------|-------|-------------------------|
 | Transparent P2PKH spend | A | `make t ONLY=simnet`: `spend the matured coinbase through connect_block`, `spend output carries the chosen value`. |
 | Transparent double-spend rejection (same-block and cross-block) | A | `make t ONLY=simnet_doublespend`: `test_simnet_doublespend` mints two distinct transparent txs spending one matured-coinbase outpoint in the same block, and separately spends an outpoint in block N then attempts a second spend of it in block N+1; both are rejected by `connect_block()` with `bad-txns-inputs-missingorspent` and the tip does not advance. A positive-control single valid spend and a post-rejection honest mint prove the negatives are not vacuous. |
+| Transparent duplicate-input rejection (one tx, same outpoint twice) | A | `make t ONLY=simnet_duplicate_input`: `test_simnet_duplicate_input` mints one tx whose vin list contains the same matured-coinbase outpoint twice; `connect_block()` rejects it structurally (`check_block` -> `check_transaction`) with `bad-txns-inputs-duplicate` and the tip does not advance. A positive-control two-input tx over two DISTINCT coinbase outpoints is accepted, consumes both coins, and advances the tip — distinct from the double-spend (`missingorspent`) row above. |
 | Transparent multi-input spend | A | `make t ONLY=simnet`: `mint multi-input/multi-output/P2SH tx through simnet`, `multi-input tx consumes both inputs`. |
 | Transparent multi-output spend | A | `make t ONLY=simnet`: `explorer indexes multi-input/multi-output/P2SH tx`, `explorer records two transparent inputs`. |
 | OP_RETURN data output | A | `make t ONLY=simnet`: `simnet_mint_txs accepts transparent+OP_RETURN block`, plus malformed protocol OP_RETURN negatives below. |
