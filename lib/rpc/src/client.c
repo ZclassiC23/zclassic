@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "encoding/utilstrencodings.h"
+#include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
 struct convert_param {
@@ -295,6 +296,12 @@ int rpc_call_local(int port, const char *creds,
     int blen = snprintf(body, sizeof(body),
         "{\"jsonrpc\":\"1.0\",\"id\":1,\"method\":\"%s\",\"params\":%s}",
         method, params_json);
+    if (blen < 0 || blen >= (int)sizeof(body)) {
+        close(fd);
+        LOG_ERR("rpc", "local rpc body truncated: len=%d cap=%zu",
+                blen, sizeof(body));
+    }
+    size_t body_len = strlen(body);
 
     /* HTTP Basic auth: base64("user:pass") */
     char auth_b64[256];
@@ -306,8 +313,13 @@ int rpc_call_local(int port, const char *creds,
         "POST / HTTP/1.1\r\nHost: 127.0.0.1\r\n"
         "Authorization: Basic %s\r\n"
         "Content-Type: application/json\r\n"
-        "Content-Length: %d\r\nConnection: close\r\n\r\n%s",
-        auth_b64, blen, body);
+        "Content-Length: %zu\r\nConnection: close\r\n\r\n%s",
+        auth_b64, body_len, body);
+    if (rlen < 0 || rlen >= (int)sizeof(req)) {
+        close(fd);
+        LOG_ERR("rpc", "local rpc request truncated: len=%d cap=%zu",
+                rlen, sizeof(req));
+    }
 
     if (write(fd, req, (size_t)rlen) != rlen) { close(fd); return -1; }
 

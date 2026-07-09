@@ -51,6 +51,20 @@ bool legacy_rpc_fill_missing_creds(char *user, size_t user_sz,
                                    char *pass, size_t pass_sz,
                                    int *port, bool port_is_explicit);
 
+/* POST `body_json` to the local sibling zclassicd using credentials
+ * parsed from ~/.zclassic/zclassic.conf. The default target is
+ * 127.0.0.1:ZCLASSICD_RPC_DEFAULT_PORT unless rpcport is set in the
+ * conf file.
+ *
+ * On success: *out_resp = NUL-terminated response buffer (HTTP
+ * headers + blank line + JSON body). Caller must free(). Returns
+ * true.
+ *
+ * On failure: *out_resp = NULL, err populated, returns false. */
+bool legacy_rpc_authenticated_call(const char *body_json,
+                                   char **out_resp,
+                                   char *err, size_t err_sz);
+
 /* POST `body_json` to host:port with HTTP Basic auth user:pass and
  * receive the full response body into a newly malloc'd buffer.
  *
