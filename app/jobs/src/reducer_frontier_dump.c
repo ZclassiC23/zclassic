@@ -9,6 +9,7 @@
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
+#include "validation/chainstate.h"
 
 #include <sqlite3.h>
 #include <limits.h>
@@ -628,6 +629,16 @@ bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
                      fail_found
                          ? diagnostic_repair_hint("ok0_failure", fail_reason)
                          : "");
+
+    /* S5: active_chain_extend_window_have_data fast (best-header ancestry,
+     * O(log n)) vs slow (full-map scan + pprev-walk, O(map)) path hit
+     * counts. A live climb on window_extend_slow is a silent regression
+     * back to the fixed ~9s/block full-map-scan pathology — see
+     * chainstate.h / chainstate.c. */
+    json_push_kv_int(out, "window_extend_fast",
+                     (int64_t)active_chain_extend_window_have_data_fast_count());
+    json_push_kv_int(out, "window_extend_slow",
+                     (int64_t)active_chain_extend_window_have_data_slow_count());
 
     progress_store_tx_unlock();
     return true;

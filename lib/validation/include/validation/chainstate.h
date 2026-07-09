@@ -150,6 +150,18 @@ bool active_chain_extend_window_have_data(struct active_chain *c,
                                           struct block_map *m,
                                           struct block_index *best_header,
                                           int max_height);
+/* S5 observability: cumulative hit counts for the two traversal strategies
+ * inside active_chain_extend_window_have_data — the O(log n) best-header
+ * ancestry FAST path vs the O(map) full-scan+pprev-walk SLOW path (fires only
+ * when best_header is NULL/behind/off the finalized chain). A live node that
+ * starts climbing on the slow path is a silent regression back to the fixed
+ * ~9s/block full-map-scan pathology (commit b1c47d1d9) — these counters make
+ * that regression visible via `zcl_state subsystem=reducer_frontier`
+ * (window_extend_fast / window_extend_slow) instead of only inferrable from a
+ * throughput drop. Atomic: incremented from the reducer drive thread, read
+ * from any MCP/diagnostics thread. See chainstate.c. */
+uint64_t active_chain_extend_window_have_data_fast_count(void);
+uint64_t active_chain_extend_window_have_data_slow_count(void);
 struct most_work_selection_stats {
     int skipped_no_chaintx;
     int skipped_failed;

@@ -2,6 +2,7 @@
 
 #include "platform/time_compat.h"
 #include "test/test_helpers.h"
+#include <unistd.h>
 
 static void test_set_ipv4(struct net_address *addr,
                           uint8_t a, uint8_t b, uint8_t c, uint8_t d,
@@ -590,6 +591,98 @@ int test_connman_addnode_fallback(void)
         }
 
         connman_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* S6 (docs/work/sovereign-service-roadmap.md #S6): bootstrap
+     * fallback-of-last-resort. With DNS seeds AND the operator addrman
+     * file BOTH unavailable, the hardcoded chainparams onion-seed tier
+     * (connman.c:281-283 run_onion_seed_pass, addrman.c addrman_add) is
+     * the only remaining peer source and must still be reachable/bounded.
+     *
+     * The embedded Tor stub in this test binary never reports
+     * tor_integration_is_ready()==true, so the live onion-directory HTTP
+     * fetch (try_onion_seed_fetch -> tor_integration_fetch_onion_blocking)
+     * cannot be driven end-to-end without a real bootstrapped Tor circuit
+     * (see test_onion_bootstrap.c). This test instead deterministically
+     * proves the two halves that make the tier a genuine last resort:
+     * (1) with a chainparams copy whose DNS (nSeeds) and hardcoded IP
+     *     fixed-seed (nFixedSeeds) tiers are both zeroed, and no
+     *     peers.dat on disk (operator addrman file "unavailable"),
+     *     connman_kick_seed_discovery + connman_load_addrman leave the
+     *     node with zero outbound candidates — proving those tiers are
+     *     truly exhausted, not silently still supplying peers;
+     * (2) the surviving onionSeeds[] tier is non-empty, and once it
+     *     contributes addrman entries (the exact effect
+     *     try_onion_seed_fetch has on a successful /directory.json
+     *     fetch), a single bounded connman_pick_next_outbound_target
+     *     call yields a first peer from CONNMAN_TARGET_ADDRMAN — i.e.
+     *     the fallback-of-last-resort tier alone is sufficient. */
+    printf("connman_addnode_fallback: onion-seed tier is fallback of last "
+           "resort when DNS + addrman file are both unavailable... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        struct chain_params no_dns_no_fixed = *chain_params_get();
+        no_dns_no_fixed.nSeeds = 0;
+        no_dns_no_fixed.nFixedSeeds = 0;
+        bool ok = no_dns_no_fixed.nOnionSeeds > 0;
+
+        char tmpdir[] = "/tmp/zcl_connman_lastresort_XXXXXX";
+        ok = ok && mkdtemp(tmpdir) != NULL;
+
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&sigs, 0, sizeof(sigs));
+        ok = ok && connman_init(&cm, &no_dns_no_fixed, &sigs);
+        if (ok)
+            cm.datadir = tmpdir;
+
+        /* DNS (0 seeds) + hardcoded fixed seeds (0) contribute nothing;
+         * the operator addrman file does not exist in tmpdir either. */
+        if (ok)
+            connman_kick_seed_discovery(&cm);
+        if (ok)
+            connman_load_addrman(&cm);
+
+        struct addr_info pick;
+        enum connman_outbound_target_source source = CONNMAN_TARGET_NONE;
+        memset(&pick, 0, sizeof(pick));
+        bool exhausted_before_onion_tier =
+            ok && !connman_pick_next_outbound_target(&cm,
+                                                     &cm.next_addnode_cursor,
+                                                     &pick, &source, NULL);
+        ok = ok && exhausted_before_onion_tier;
+
+        /* Simulate the onion-seed tier's real effect: a successful
+         * /directory.json fetch from a hardcoded .onion seed adds the
+         * discovered clearnet peer via addrman_add (connman.c:232),
+         * bounded by nOnionSeeds attempts (the same bound
+         * run_onion_seed_pass iterates under, connman.c:282-283). */
+        if (ok) {
+            struct net_addr src;
+            net_addr_init(&src);
+            for (size_t i = 0; i < no_dns_no_fixed.nOnionSeeds; i++) {
+                struct net_address addr;
+                test_set_ipv4(&addr, 45, 33, (uint8_t)(i + 1), 1, 8033);
+                ok = ok && addrman_add(&cm.manager.addrman, &addr, &src, 0);
+            }
+        }
+
+        if (ok) {
+            memset(&pick, 0, sizeof(pick));
+            source = CONNMAN_TARGET_NONE;
+            ok = connman_pick_next_outbound_target(&cm,
+                                                    &cm.next_addnode_cursor,
+                                                    &pick, &source, NULL);
+            ok = ok && source == CONNMAN_TARGET_ADDRMAN;
+        }
+
+        connman_free(&cm);
+        char cmd[256];
+        snprintf(cmd, sizeof(cmd), "rm -rf %s", tmpdir);
+        (void)system(cmd);
+
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

@@ -10,9 +10,27 @@
 #include "storage/progress_store.h"
 #include <limits.h>
 #include <sqlite3.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include "util/safe_alloc.h"
+
+/* S5 observability counters — see chainstate.h
+ * active_chain_extend_window_have_data_{fast,slow}_count(). */
+static _Atomic uint64_t g_window_extend_fast_hits = 0;
+static _Atomic uint64_t g_window_extend_slow_hits = 0;
+
+uint64_t active_chain_extend_window_have_data_fast_count(void)
+{
+    return atomic_load_explicit(&g_window_extend_fast_hits,
+                                memory_order_relaxed);
+}
+
+uint64_t active_chain_extend_window_have_data_slow_count(void)
+{
+    return atomic_load_explicit(&g_window_extend_slow_hits,
+                                memory_order_relaxed);
+}
 
 /* --- Block Map (open-addressing hash table) --- */
 
@@ -575,6 +593,8 @@ bool active_chain_extend_window_have_data(struct active_chain *c,
          * the finalized height must be the SAME BLOCK as the tip (hash), but a
          * duplicate same-hash object must not defeat the fast-path ancestry walk
          * — that pointer mismatch is exactly the live 3162167 wedge. */
+        atomic_fetch_add_explicit(&g_window_extend_fast_hits, 1,
+                                  memory_order_relaxed);
         struct block_index *cand = tip;
         for (int h = lo; h <= hi; h++) {
             struct block_index *anc = block_index_get_ancestor(best_header, h);
@@ -591,6 +611,8 @@ bool active_chain_extend_window_have_data(struct active_chain *c,
     /* ── SLOW PATH (fallback): best_header absent / below the window / off the
      * finalized chain (reorg). Full-map scan + pprev-walk — the original, proven
      * logic, exercised by the test suite with best_header=NULL. ── */
+    atomic_fetch_add_explicit(&g_window_extend_slow_hits, 1,
+                              memory_order_relaxed);
 
     /* Collect eligible (have-data, failure-free) block_index entries in
      * (c->height, hi]. NOT gated on BLOCK_VALID_SCRIPTS — see the function
