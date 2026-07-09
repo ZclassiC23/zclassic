@@ -449,6 +449,7 @@ int test_simnet_wire_peer_invalid_block(void);
 int test_simnet_wire_peer_invalid_header(void);
 int test_simnet_txkit(void);
 int test_simnet_doublespend(void);
+int test_simnet_chained_tx(void);
 int test_simnet_sapling_activation(void);
 int test_connect_block_sapling_root(void);
 int test_connect_block_checkdatasig_sigops(void);
