@@ -15,6 +15,37 @@
 
 DEFINE_MODEL_CALLBACKS(swap_contract)
 
+static bool read_swap_blob(sqlite3_stmt *s, int col, void *dest,
+                           int expected_len, const char *column)
+{
+    int got = sqlite3_column_bytes(s, col);
+    const void *blob = sqlite3_column_blob(s, col);
+    if (!blob || got != expected_len)
+        LOG_FAIL("htlc",
+                 "zswp_contracts.%s blob length mismatch: got=%d expected=%d",
+                 column, got, expected_len);
+
+    AR_READ_BLOB(s, col, dest, expected_len);
+    return true;
+}
+
+static bool read_swap_optional_blob(sqlite3_stmt *s, int col, void *dest,
+                                    int expected_len, const char *column,
+                                    bool *present)
+{
+    *present = false;
+    if (sqlite3_column_type(s, col) == SQLITE_NULL) {
+        memset(dest, 0, (size_t)expected_len);
+        return true;
+    }
+
+    if (!read_swap_blob(s, col, dest, expected_len, column))
+        LOG_FAIL("htlc", "zswp_contracts.%s rejected", column);
+
+    *present = true;
+    return true;
+}
+
 static bool is_lowercase_hex(const char *s)
 {
     if (!s) return false;
@@ -112,7 +143,7 @@ bool db_swap_save(struct node_db *ndb, const struct swap_contract *swap)
         AR_BIND_INT(s, 16, swap->created_at));
 }
 
-static void row_to_swap(sqlite3_stmt *s, struct swap_contract *out)
+static bool row_to_swap(sqlite3_stmt *s, struct swap_contract *out)
 {
     memset(out, 0, sizeof(*out));
     const char *str = (const char *)sqlite3_column_text(s, 0);
@@ -122,14 +153,13 @@ static void row_to_swap(sqlite3_stmt *s, struct swap_contract *out)
     out->state = (enum swap_state)sqlite3_column_int(s, 2);
     out->chain = (enum swap_chain)sqlite3_column_int(s, 3);
 
-    AR_READ_BLOB(s, 4, out->secret_hash, 32);
+    if (!read_swap_blob(s, 4, out->secret_hash, 32, "secret_hash"))
+        LOG_FAIL("htlc", "zswp_contracts.secret_hash rejected");
 
-    int secret_len = sqlite3_column_bytes(s, 5);
-    const void *blob = sqlite3_column_blob(s, 5);
-    if (blob && secret_len >= 32) {
-        AR_READ_BLOB(s, 5, out->secret, 32);
-        out->has_secret = true;
-    }
+    bool has_secret = false;
+    if (!read_swap_optional_blob(s, 5, out->secret, 32, "secret", &has_secret))
+        LOG_FAIL("htlc", "zswp_contracts.secret rejected");
+    out->has_secret = has_secret;
 
     out->amount = sqlite3_column_int64(s, 6);
     out->locktime = (uint32_t)sqlite3_column_int(s, 7);
@@ -141,22 +171,32 @@ static void row_to_swap(sqlite3_stmt *s, struct swap_contract *out)
     if (str) snprintf(out->counter_address, sizeof(out->counter_address),
                       "%s", str);
 
-    AR_READ_BLOB(s, 10, out->funding_txid, 32);
+    if (!read_swap_blob(s, 10, out->funding_txid, 32, "funding_txid"))
+        LOG_FAIL("htlc", "zswp_contracts.funding_txid rejected");
 
     out->funding_vout = (uint32_t)sqlite3_column_int(s, 11);
 
-    blob = sqlite3_column_blob(s, 12);
+    const void *blob = sqlite3_column_blob(s, 12);
     int rlen = sqlite3_column_int(s, 13);
     int rbytes = sqlite3_column_bytes(s, 12);
-    if (blob && rlen > 0 && rlen <= 256 && rbytes >= rlen) {
-        memcpy(out->redeem_script, blob, (size_t)rlen);
-        out->redeem_script_len = (size_t)rlen;
-    }
+    if (rlen <= 0 || rlen > 256)
+        LOG_FAIL("htlc",
+                 "zswp_contracts.redeem_script_len invalid: got=%d "
+                 "expected=1..256",
+                 rlen);
+    if (!blob || rbytes != rlen)
+        LOG_FAIL("htlc",
+                 "zswp_contracts.redeem_script blob length mismatch: "
+                 "got=%d expected=%d",
+                 rbytes, rlen);
+    AR_READ_BLOB(s, 12, out->redeem_script, rlen);
+    out->redeem_script_len = (size_t)rlen;
 
     str = (const char *)sqlite3_column_text(s, 14);
     if (str) snprintf(out->p2sh_address, sizeof(out->p2sh_address), "%s", str);
 
     out->created_at = sqlite3_column_int64(s, 15);
+    return true;
 }
 
 bool db_swap_find(struct node_db *ndb, const char *swap_id,
@@ -169,7 +209,7 @@ bool db_swap_find(struct node_db *ndb, const char *swap_id,
     AR_QUERY_ONE_BOOL(ndb, s,
         "SELECT " SWAP_COLS " FROM zswp_contracts WHERE swap_id=?",
         AR_BIND_TEXT(s, 1, swap_id),
-        row_to_swap(s, out));
+        if (!row_to_swap(s, out)) { AR_FINALIZE(s); return false; });
 }
 
 int db_swap_list(struct node_db *ndb, struct swap_contract *out,
@@ -188,7 +228,7 @@ int db_swap_list(struct node_db *ndb, struct swap_contract *out,
             out, max,
             AR_BIND_INT(s, 1, state_filter);
             AR_BIND_INT(s, 2, (int)max),
-            row_to_swap(s, &out[count]));
+            if (!row_to_swap(s, &out[count])) continue);
     }
 
     AR_QUERY_LIST(ndb, s,
@@ -196,7 +236,7 @@ int db_swap_list(struct node_db *ndb, struct swap_contract *out,
         " FROM zswp_contracts ORDER BY created_at DESC LIMIT ?",
         out, max,
         AR_BIND_INT(s, 1, (int)max),
-        row_to_swap(s, &out[count]));
+        if (!row_to_swap(s, &out[count])) continue);
 }
 
 bool db_swap_update_state(struct node_db *ndb, const char *swap_id,

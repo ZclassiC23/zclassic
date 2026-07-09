@@ -295,6 +295,7 @@ size_t explorer_view_token_detail(const char *token_id_hex,
     /* Open our own SQLite connection (called from HTTPS thread) */
     sqlite3 *db = NULL;
     if (!explorer_open_readonly_db(datadir, &db)) {
+        LOG_ERR("explorer", "explorer_view_token_detail: failed to open db");
         return explorer_emit_error_page(r, max, 500, "Database Error", "Failed to open block index");
     }
     sqlite3_exec(db, "PRAGMA mmap_size=268435456", NULL, NULL, NULL);

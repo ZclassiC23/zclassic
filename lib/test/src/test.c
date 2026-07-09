@@ -7,7 +7,7 @@
 /* Required by process_block.c (normally in main.c) */
 volatile sig_atomic_t g_shutdown_requested = 0;
 
-int main(void)
+int main(int argc, char **argv)
 {
     setbuf(stdout, NULL); /* Unbuffered for test progress visibility */
     int failures = 0;
@@ -22,6 +22,11 @@ int main(void)
      * doesn't have to wait for the entire 1500-test suite.  Unset or
      * unknown value runs the full suite unchanged. */
     const char *only = getenv("ZCL_TEST_ONLY");
+    if ((!only || !*only) && argc > 1) {
+        only = argv[1];
+        if (strncmp(only, "test_", 5) == 0)
+            only += 5;
+    }
     if (only && strcmp(only, "onion") == 0) {
         printf("[test] ZCL_TEST_ONLY=onion — running onion bootstrap only\n");
         { extern int test_onion_bootstrap(void);
@@ -348,6 +353,13 @@ int main(void)
         printf("[test] ZCL_TEST_ONLY=seed_tape — running seed tape only\n");
         failures += test_seed_tape();
         printf("\n=== seed_tape subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "simnet_wire") == 0) {
+        printf("[test] ZCL_TEST_ONLY=simnet_wire — running simnet wire only\n");
+        failures += test_simnet_wire();
+        printf("\n=== simnet_wire subset complete: %d failure(s) ===\n",
                failures);
         return failures ? 1 : 0;
     }

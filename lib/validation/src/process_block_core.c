@@ -14,6 +14,7 @@
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include "process_block_internal.h"
+#include "util/log_macros.h"
 
 /* add_to_block_index() lives in lib/validation/src/accept_block_header.c
  * with its sole caller so header admission owns the runtime in-memory
@@ -30,8 +31,9 @@ struct block_index *find_most_work_chain(struct main_state *ms)
             &ms->chain_active, &ms->map_block_index, &stats);
 
     if (stats.skipped_no_chaintx > 0 && !best) {
-        printf("find_most_work_chain: WARNING: %d blocks skipped "
-               "(no data, nChainTx==0)\n", stats.skipped_no_chaintx);
+        LOG_WARN("chain_selection",
+                 "find_most_work_chain: WARNING: %d blocks skipped "
+                 "(no data, nChainTx==0)", stats.skipped_no_chaintx);
     }
 
     /* refuse to return a candidate BELOW the current tip.
@@ -47,12 +49,13 @@ struct block_index *find_most_work_chain(struct main_state *ms)
         time_t now_log = platform_time_wall_time_t();
         if (now_log - g_last_stale_log >= 60) {
             g_last_stale_log = now_log;
-            printf("find_most_work_chain: ignoring stale fork tip "
-                   "h=%d (tip h=%d, depth=%d) -- returning tip\n",
-                   stats.refused_below_tip_height,
-                   stats.refused_below_tip_tip_height,
-                   stats.refused_below_tip_tip_height -
-                   stats.refused_below_tip_height);
+            LOG_INFO("chain_selection",
+                     "find_most_work_chain: ignoring stale fork tip "
+                     "h=%d (tip h=%d, depth=%d) -- returning tip",
+                     stats.refused_below_tip_height,
+                     stats.refused_below_tip_tip_height,
+                     stats.refused_below_tip_tip_height -
+                     stats.refused_below_tip_height);
         }
     }
 
@@ -79,13 +82,14 @@ struct block_index *find_most_work_chain(struct main_state *ms)
                 time_t now_log = platform_time_wall_time_t();
                 if (now_log - g_last_stuck_log >= 60) {
                     g_last_stuck_log = now_log;
-                    printf("find_most_work_chain: STUCK at tip h=%d "
-                           "(best_header h=%d, gap=%d) "
-                           "skipped[failed=%d invalid=%d no_data=%d]\n",
-                           tip->nHeight, header_h,
-                           header_h - tip->nHeight,
-                           stats.skipped_failed, stats.skipped_invalid,
-                           stats.skipped_no_chaintx);
+                    LOG_WARN("chain_selection",
+                             "find_most_work_chain: STUCK at tip h=%d "
+                             "(best_header h=%d, gap=%d) "
+                             "skipped[failed=%d invalid=%d no_data=%d]",
+                             tip->nHeight, header_h,
+                             header_h - tip->nHeight,
+                             stats.skipped_failed, stats.skipped_invalid,
+                             stats.skipped_no_chaintx);
                 }
             }
         }

@@ -164,7 +164,7 @@ make zclassic23     # full link
 ```bash
 make -j"$(nproc)"   # test_zcl + zclassic23 + zclassic-cli
 make dev-bin        # fast local node executable, not for deploy/release
-make test           # full suite (488 parallel groups)
+make test           # full suite (497 parallel groups)
 make lint           # 40 defensive-coding gates
 make ci             # local gate: lint + tests + MVP slices (runs locally, not on GitHub Actions)
 make deploy         # force-fresh rebuild + restart the live service + verify build_commit

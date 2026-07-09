@@ -21,6 +21,20 @@
 
 DEFINE_MODEL_CALLBACKS(file_offer)
 
+static bool read_file_offer_blob(sqlite3_stmt *s, int col, void *dest,
+                                 int expected_len, const char *column)
+{
+    int got = sqlite3_column_bytes(s, col);
+    const void *blob = sqlite3_column_blob(s, col);
+    if (!blob || got != expected_len)
+        LOG_FAIL("market",
+                 "file_offers.%s blob length mismatch: got=%d expected=%d",
+                 column, got, expected_len);
+
+    AR_READ_BLOB(s, col, dest, expected_len);
+    return true;
+}
+
 bool db_file_offer_validate(const struct file_offer *offer,
                             struct ar_errors *errors)
 {
@@ -77,10 +91,11 @@ bool db_file_offer_save(struct node_db *ndb,
         AR_BIND_INT(s, 10, offer->ttl));
 }
 
-static void row_to_file_offer(sqlite3_stmt *s, struct file_offer *out)
+static bool row_to_file_offer(sqlite3_stmt *s, struct file_offer *out)
 {
     memset(out, 0, sizeof(*out));
-    AR_READ_BLOB(s, 0, out->root_hash, 32);
+    if (!read_file_offer_blob(s, 0, out->root_hash, 32, "root_hash"))
+        LOG_FAIL("market", "file_offers.root_hash rejected");
 
     const char *name = (const char *)sqlite3_column_text(s, 1);
     if (name) snprintf(out->filename, sizeof(out->filename), "%s", name);
@@ -89,13 +104,16 @@ static void row_to_file_offer(sqlite3_stmt *s, struct file_offer *out)
     out->num_chunks = (uint32_t)sqlite3_column_int(s, 3);
     out->price_per_mb = sqlite3_column_int64(s, 4);
 
-    AR_READ_BLOB(s, 5, out->z_addr, 43);
+    if (!read_file_offer_blob(s, 5, out->z_addr, 43, "z_addr"))
+        LOG_FAIL("market", "file_offers.z_addr rejected");
 
-    AR_READ_BLOB(s, 6, out->peer_ip, 16);
+    if (!read_file_offer_blob(s, 6, out->peer_ip, 16, "peer_ip"))
+        LOG_FAIL("market", "file_offers.peer_ip rejected");
 
     out->peer_port = (uint16_t)sqlite3_column_int(s, 7);
     out->last_seen = sqlite3_column_int64(s, 8);
     out->ttl = (uint8_t)sqlite3_column_int(s, 9);
+    return true;
 }
 
 int db_file_offer_list(struct node_db *ndb,
@@ -112,7 +130,7 @@ int db_file_offer_list(struct node_db *ndb,
         " FROM file_offers ORDER BY last_seen DESC LIMIT ?",
         out, max,
         AR_BIND_INT(s, 1, (int)max),
-        row_to_file_offer(s, &out[count]));
+        if (!row_to_file_offer(s, &out[count])) continue);
 }
 
 bool db_file_offer_find(struct node_db *ndb,
@@ -129,7 +147,7 @@ bool db_file_offer_find(struct node_db *ndb,
         "z_addr,peer_ip,peer_port,last_seen,ttl"
         " FROM file_offers WHERE root_hash=?",
         AR_BIND_BLOB(s, 1, root_hash, 32),
-        row_to_file_offer(s, out));
+        if (!row_to_file_offer(s, out)) { AR_FINALIZE(s); return false; });
 }
 
 int db_file_offer_prune(struct node_db *ndb, int64_t max_age)
