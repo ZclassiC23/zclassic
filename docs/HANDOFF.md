@@ -1,8 +1,16 @@
-> **▶ NEXT DEV START HERE: [`docs/work/SESSION-HANDOFF-2026-07-09.md`](work/SESSION-HANDOFF-2026-07-09.md)**
-> — 2026-07-09 session handoff: what shipped (incl. the wallet P0 fix and the
-> in-memory sim-network foundation `lib/sim/simnet`), the `handoff/*` WIP
-> branches and their exact remaining steps, and the known gotchas. Verify live
-> state with `zcl_agent` before trusting any doc.
+> **▶ NEXT DEV START HERE: [`docs/work/SESSION-HANDOFF-2026-07-09-EVENING.md`](work/SESSION-HANDOFF-2026-07-09-EVENING.md)**
+> — 2026-07-09 evening handoff: `main` at the merge of `dry/coins-record-codec`
+> + `security/nullifier-backfill` (both build-only + lint green post-merge), the
+> new IO-harness design (`docs/work/io-harness-design.md`) and next-wave plan
+> (`docs/work/next-wave-plan.md`), and the note that **the Codex executor plugin
+> was REMOVED this session** — orchestrate with native subagents (Fable/Opus/
+> Sonnet/Haiku), not `codex:rescue`. Verify live state with `zcl_agent` /
+> `zcl_status` before trusting any doc.
+>
+> **▶ PRIOR: [`docs/work/SESSION-HANDOFF-2026-07-09.md`](work/SESSION-HANDOFF-2026-07-09.md)**
+> — 2026-07-09 (daytime) session handoff: what shipped (incl. the wallet P0 fix
+> and the in-memory sim-network foundation `lib/sim/simnet`), the `handoff/*`
+> WIP branches and their exact remaining steps, and the known gotchas.
 >
 > **▶ WALLET P0 UPDATE (2026-07-09, later): [`docs/work/S2-utxo-mirror-delta.md`](work/S2-utxo-mirror-delta.md)**
 > — the S2 utxo_mirror delta-apply (Cause 1 of the wallet-persistence P0) is now

@@ -1,5 +1,14 @@
 # Dev workflow — add a Codex (GPT) executor tier to Claude Code
 
+> **DEPRECATED 2026-07-09: the Codex executor plugin was REMOVED. Do NOT try to
+> use codex:rescue / codex:codex-rescue — the plugin and agent type are gone.
+> Orchestrate with native subagents instead: Fable coordinates/plans/reviews,
+> Opus for hard implementation, Sonnet for scoped implementation +
+> verification, Haiku for mechanical work; set `model:` on every Agent call.**
+>
+> The rest of this file is kept as historical reference for the pattern (a
+> cheaper executor tier under an orchestrator), not as a live setup guide.
+
 Relayed from a referenced external workflow (x.com/cjzafir, 2026), adapted to
 zclassic23's own doctrine. The point: **Claude orchestrates; a cheaper GPT
 executor does the heavy typing**, so you burn far fewer Claude tokens per unit
