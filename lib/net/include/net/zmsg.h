@@ -38,6 +38,66 @@
 #define ZMSG_MEMO_MAGIC_0  0x5A  /* 'Z' */
 #define ZMSG_MEMO_MAGIC_1  0x4D  /* 'M' */
 
+/* ── On-chain ZMSG memo wire format (v1) ────────────────────────────
+ *
+ * An on-chain ZMSG rides inside the 512-byte encrypted Sapling memo of a
+ * shielded output (consensus treats the memo as opaque free-form bytes, so
+ * this format changes NO consensus predicate). Fixed 38-byte header; the
+ * reply-to field is always present (all-zero when unused) so decode needs no
+ * variable-offset arithmetic. Layout, all integers little-endian:
+ *
+ *   Offset  Size  Field         Notes
+ *   0       1     magic0        = 0x5A ('Z')
+ *   1       1     magic1        = 0x4D ('M')
+ *   2       1     version       = 0x01 (ZMSG_MEMO_VERSION)
+ *   3       1     flags         bit0 = HAS_REPLY_TO; bits 1-7 reserved (0)
+ *   4       2     payload_len   count of UTF-8 payload bytes, <= 474
+ *   6       32    reply_to      parent msg_id; all-zero when HAS_REPLY_TO clear
+ *   38      N     payload       UTF-8 message body (N = payload_len)
+ *   38+N    ...   padding       0xF6 to fill the 512-byte memo (Sapling convention)
+ *
+ * Max payload = 512 - 38 = 474 bytes. Decode is strict: it rejects a wrong
+ * magic, an unknown version, any reserved flag bit, or a payload_len past the
+ * 474-byte ceiling. See docs/ZMSG_ONCHAIN.md for the full spec. */
+
+#define ZMSG_MEMO_LEN            512
+#define ZMSG_MEMO_VERSION        0x01
+#define ZMSG_MEMO_HEADER_LEN     38
+#define ZMSG_MEMO_MAX_PAYLOAD    (ZMSG_MEMO_LEN - ZMSG_MEMO_HEADER_LEN)  /* 474 */
+#define ZMSG_MEMO_PAD_BYTE       0xF6
+#define ZMSG_MEMO_FLAG_HAS_REPLY_TO 0x01
+#define ZMSG_MEMO_FLAGS_KNOWN    ZMSG_MEMO_FLAG_HAS_REPLY_TO
+
+/* Dust-tier value (zatoshis) carried by the shielded output of an on-chain
+ * ZMSG. The message rides in the memo; the value is incidental. */
+#define ZMSG_ONCHAIN_DUST_ZAT    1000
+
+/* Decoded view of an on-chain ZMSG memo. payload is NOT NUL-terminated;
+ * payload_len is authoritative. */
+struct zmsg_memo {
+    uint8_t  version;
+    uint8_t  flags;
+    bool     has_reply_to;
+    uint8_t  reply_to[32];
+    uint16_t payload_len;
+    uint8_t  payload[ZMSG_MEMO_MAX_PAYLOAD];
+};
+
+/* Encode a ZMSG into the 512-byte Sapling memo buffer `out` (0xF6-padded).
+ * `payload`/`payload_len` is the UTF-8 body (payload_len <= ZMSG_MEMO_MAX_PAYLOAD;
+ * may be NULL only when payload_len == 0). `reply_to` is a 32-byte parent
+ * msg_id, or NULL for a fresh (non-reply) message. Returns false (and logs) on
+ * a NULL out or an over-long payload; on failure `out` is left unmodified. */
+bool zmsg_memo_encode(uint8_t out[ZMSG_MEMO_LEN],
+                      const uint8_t *payload, size_t payload_len,
+                      const uint8_t reply_to[32]);
+
+/* Parse a 512-byte Sapling memo as a ZMSG. Returns true only when the magic,
+ * version, flags, and payload_len all validate; false (no log — a non-ZMSG
+ * memo is the common, benign case) otherwise. `out` is zeroed first. Caller
+ * must pass non-NULL memo and out. */
+bool zmsg_memo_decode(const uint8_t memo[ZMSG_MEMO_LEN], struct zmsg_memo *out);
+
 /* ── P2P Message Struct ─────────────────────────────────────────── */
 
 struct zmsg_message {

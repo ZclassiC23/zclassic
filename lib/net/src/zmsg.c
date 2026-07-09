@@ -78,6 +78,64 @@ bool zmsg_deserialize(struct zmsg_message *msg, struct byte_stream *s)
     return ok;
 }
 
+/* ── On-chain memo codec (v1) ───────────────────────────────────── */
+
+bool zmsg_memo_encode(uint8_t out[ZMSG_MEMO_LEN],
+                      const uint8_t *payload, size_t payload_len,
+                      const uint8_t reply_to[32])
+{
+    if (!out) LOG_FAIL("zmsg", "memo_encode: out is NULL");
+    if (payload_len > ZMSG_MEMO_MAX_PAYLOAD)
+        LOG_FAIL("zmsg", "memo_encode: payload_len %zu exceeds max %d",
+                 payload_len, ZMSG_MEMO_MAX_PAYLOAD);
+    if (payload_len > 0 && !payload)
+        LOG_FAIL("zmsg", "memo_encode: payload NULL but payload_len=%zu",
+                 payload_len);
+
+    memset(out, ZMSG_MEMO_PAD_BYTE, ZMSG_MEMO_LEN);
+    out[0] = ZMSG_MEMO_MAGIC_0;
+    out[1] = ZMSG_MEMO_MAGIC_1;
+    out[2] = ZMSG_MEMO_VERSION;
+    out[3] = reply_to ? ZMSG_MEMO_FLAG_HAS_REPLY_TO : 0;
+    out[4] = (uint8_t)(payload_len & 0xFF);
+    out[5] = (uint8_t)((payload_len >> 8) & 0xFF);
+    if (reply_to)
+        memcpy(out + 6, reply_to, 32);
+    else
+        memset(out + 6, 0, 32);
+    if (payload_len > 0)
+        memcpy(out + ZMSG_MEMO_HEADER_LEN, payload, payload_len);
+    return true;
+}
+
+bool zmsg_memo_decode(const uint8_t memo[ZMSG_MEMO_LEN], struct zmsg_memo *out)
+{
+    if (!memo || !out) LOG_FAIL("zmsg", "memo_decode: NULL arg");
+    memset(out, 0, sizeof(*out));
+
+    /* Not a ZMSG memo is the common, benign case (every non-ZMSG shielded
+     * note passes through here) — return false quietly, do NOT log-spam. */
+    if (memo[0] != ZMSG_MEMO_MAGIC_0 || memo[1] != ZMSG_MEMO_MAGIC_1)
+        return false;
+    if (memo[2] != ZMSG_MEMO_VERSION)
+        return false;
+    uint8_t flags = memo[3];
+    if (flags & ~(uint8_t)ZMSG_MEMO_FLAGS_KNOWN)
+        return false;                       /* reserved flag bit set */
+    uint16_t plen = (uint16_t)memo[4] | ((uint16_t)memo[5] << 8);
+    if (plen > ZMSG_MEMO_MAX_PAYLOAD)
+        return false;                       /* payload runs past the memo */
+
+    out->version = memo[2];
+    out->flags = flags;
+    out->has_reply_to = (flags & ZMSG_MEMO_FLAG_HAS_REPLY_TO) != 0;
+    memcpy(out->reply_to, memo + 6, 32);
+    out->payload_len = plen;
+    if (plen > 0)
+        memcpy(out->payload, memo + ZMSG_MEMO_HEADER_LEN, plen);
+    return true;
+}
+
 void zmsg_compute_id(const struct zmsg_message *msg, uint8_t out[32])
 {
     if (!msg || !out) return;

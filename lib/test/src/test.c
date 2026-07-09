@@ -1227,6 +1227,7 @@ int main(int argc, char **argv)
     failures += test_simnet_input_value_range();
     failures += test_simnet_sapling_activation();
     failures += test_simnet_sapling_shielded_send();
+    failures += test_simnet_zmsg_onchain();
     failures += test_simnet_fuzz();
     failures += test_connect_block_sapling_root();
     failures += test_connect_block_checkdatasig_sigops();
