@@ -521,6 +521,7 @@ int test_clock(void);
 int test_rng(void);
 int test_seed_tape(void);
 int test_postmortem(void);
+int test_simnet_byzantine(void);
 int test_util_signal_handler(void);
 int test_chaos_harness(void);
 int test_stage(void);
