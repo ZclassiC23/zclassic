@@ -1,4 +1,14 @@
-> **▶ NEXT DEV START HERE: [`docs/work/SESSION-HANDOFF-2026-07-09-CODEX.md`](work/SESSION-HANDOFF-2026-07-09-CODEX.md)**
+> **▶ NEXT DEV START HERE: [`docs/work/SESSION-HANDOFF-2026-07-10-P2P.md`](work/SESSION-HANDOFF-2026-07-10-P2P.md)**
+> — 2026-07-10 P2P-services + Groth16-cure wave: `origin/main` @ `720547d73`.
+> Landed the librustzcash proving bridge (interim, C23-verifier-gated), the full
+> t→z shielded path, Lane C merge, simnet_fuzz, examples 1–11, ZNAM write RPCs.
+> In flight (isolated worktrees): the pure-C23 Groth16 prover cure (output
+> circuit + MSM fixed; round-trip + spend circuit remain), four P2P-service
+> lanes (memo channel, proof bundles, MCP-over-onion mesh, storefront demo), and
+> the wallet-P0 lock-holder fix. Shipped code MUST be C23; Zcash is an
+> attributed oracle, never linked.
+>
+> **▶ PRIOR: [`docs/work/SESSION-HANDOFF-2026-07-09-CODEX.md`](work/SESSION-HANDOFF-2026-07-09-CODEX.md)**
 > — stabilization handoff: durable shielded anchors, Sapling proving self-test,
 > wallet/mempool safety, operator-truth sync fixes, and vendor provenance gates.
 > **Deployment is on HOLD** pending the historical anchor backfill and the
