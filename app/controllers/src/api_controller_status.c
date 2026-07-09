@@ -11,13 +11,14 @@
 #include "controllers/agent_resources.h"
 #include "controllers/agent_security_posture.h"
 #include "controllers/api_controller.h"
+#include "controllers/download_stats_json.h"
+#include "controllers/node_binary_identity_json.h"
 #include "api_controller_internal.h"
 #include "config/runtime.h"
 #include "event_agent_summary.h"
 #include "event_agent_readiness.h"
 #include "json/json.h"
 #include "jobs/reducer_frontier.h"
-#include "net/download.h"
 #include "services/anchor_selfmint.h"
 #include "services/node_health_service.h"
 #include "sync/sync_state.h"
@@ -743,10 +744,10 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
         g_api_ctx.node_db : app_runtime_node_db(),
         g_api_ctx.main_state);
 
-    struct download_manager *dm = msg_get_download_mgr();
-    uint64_t dl_req = 0, dl_recv = 0, dl_tout = 0;
-    uint64_t dl_inflight = 0, dl_queued = 0;
-    dl_get_stats(dm, &dl_req, &dl_recv, &dl_tout, &dl_inflight, &dl_queued);
+    /* Read the download counters off the health snapshot already
+     * collected above instead of re-fetching from the download manager. */
+    struct download_stats_snapshot dl_snap;
+    download_stats_snapshot_from_health(&dl_snap, &health);
 
     struct api_freshness_meta freshness;
     api_freshness_prepare(&freshness, "served_tip", health.tip_height);
@@ -783,7 +784,8 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
         next_endpoint = "/api/v1/peers";
         summary = "node has no connected peers";
         operator_needed = true;
-    } else if (material_gap && (dl_inflight > 0 || dl_queued > 0)) {
+    } else if (material_gap &&
+               (dl_snap.in_flight > 0 || dl_snap.queued > 0)) {
         status = "catching_up";
         primary = "chain_gap";
         next_endpoint = "/api/v1/downloadstats";
@@ -860,11 +862,7 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
     struct json_value download;
     json_init(&download);
     json_set_object(&download);
-    json_push_kv_int(&download, "requested", (int64_t)dl_req);
-    json_push_kv_int(&download, "received", (int64_t)dl_recv);
-    json_push_kv_int(&download, "timed_out", (int64_t)dl_tout);
-    json_push_kv_int(&download, "in_flight", (int64_t)dl_inflight);
-    json_push_kv_int(&download, "queued", (int64_t)dl_queued);
+    download_stats_push_json(&download, &dl_snap, false);
     json_push_kv(&body, "download", &download);
     json_free(&download);
 

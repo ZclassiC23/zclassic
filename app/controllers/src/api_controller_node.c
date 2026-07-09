@@ -11,6 +11,7 @@
 #include "controllers/api_controller.h"
 #include "controllers/block_intake_json.h"
 #include "controllers/blockchain_controller.h"
+#include "controllers/download_stats_json.h"
 #include "controllers/file_controller.h"
 #include "controllers/network_controller.h"
 #include "api_controller_internal.h"
@@ -27,10 +28,7 @@
 #include "models/file_service.h"
 #include "models/wallet_key.h"
 #include "models/wallet_tx.h"
-#include "net/connman.h"
-#include "net/download.h"
 #include "sapling/incremental_merkle_tree.h"
-#include "services/gap_fill_service.h"
 #include "services/node_health_service.h"
 #include "net/snapshot_sync_contract.h"
 #include "validation/contextual_check_tx.h"
@@ -111,86 +109,16 @@ size_t api_serve_syncstate(uint8_t *response, size_t response_max)
 /* Download stats — IBD progress monitoring */
 size_t api_serve_downloadstats(uint8_t *response, size_t response_max)
 {
-    struct download_manager *dm = msg_get_download_mgr();
-    uint64_t req = 0, recv = 0, tout = 0, inflight = 0, queued = 0;
-    struct dl_diagnostics diag;
-    struct gap_fill_stats gf_stats;
-    struct connman_message_cycle_stats msg_stats;
+    struct download_stats_snapshot dl_snap;
+    download_stats_snapshot_collect(&dl_snap, true);
+
     struct json_value body;
-    dl_get_stats(dm, &req, &recv, &tout, &inflight, &queued);
-    dl_get_diagnostics(dm, &diag);
-    gap_fill_get_stats(&gf_stats);
-    connman_get_message_cycle_stats(rpc_net_get_connman(), &msg_stats);
     json_init(&body);
     json_set_object(&body);
     json_push_kv_str(&body, "schema", "zcl.downloadstats.v1");
     api_json_add_freshness(&body, "download_manager", -1);
     json_push_kv_str(&body, "sync_state", sync_state_name(sync_get_state()));
-    json_push_kv_int(&body, "requested", (int64_t)req);
-    json_push_kv_int(&body, "received", (int64_t)recv);
-    json_push_kv_int(&body, "timed_out", (int64_t)tout);
-    json_push_kv_int(&body, "in_flight", (int64_t)inflight);
-    json_push_kv_int(&body, "queued", (int64_t)queued);
-    json_push_kv_int(&body, "orphaned", (int64_t)diag.total_orphaned);
-    json_push_kv_int(&body, "accounting_drift", diag.accounting_drift);
-    json_push_kv_int(&body, "request_timeout_seconds",
-                     (int64_t)diag.request_timeout_seconds);
-    json_push_kv_int(&body, "oldest_in_flight_age_seconds",
-                     diag.oldest_in_flight_age_seconds);
-    json_push_kv_int(&body, "oldest_in_flight_height",
-                     diag.oldest_in_flight_height);
-    json_push_kv_int(&body, "oldest_in_flight_peer_id",
-                     (int64_t)diag.oldest_in_flight_peer_id);
-    json_push_kv_int(&body, "overdue_in_flight",
-                     (int64_t)diag.overdue_in_flight);
-    json_push_kv_int(&body, "in_flight_peer_count",
-                     (int64_t)diag.in_flight_peer_count);
-    json_push_kv_int(&body, "queue_peer_avoid_count",
-                     (int64_t)diag.queue_peer_avoid_count);
-    json_push_kv_int(&body, "queue_peer_avoid_max_seconds",
-                     diag.queue_peer_avoid_max_seconds);
-    json_push_kv_int(&body, "assign_attempts",
-                     (int64_t)diag.assign_attempts);
-    json_push_kv_int(&body, "assign_successes",
-                     (int64_t)diag.assign_successes);
-    json_push_kv_int(&body, "assign_zero_results",
-                     (int64_t)diag.assign_zero_results);
-    json_push_kv_int(&body, "dispatch_wakes",
-                     (int64_t)gf_stats.dispatch_wakes);
-    json_push_kv_int(&body, "message_cycles",
-                     (int64_t)msg_stats.cycles);
-    json_push_kv_int(&body, "message_nodes_snapshotted",
-                     (int64_t)msg_stats.nodes_snapshotted);
-    json_push_kv_int(&body, "message_send_calls",
-                     (int64_t)msg_stats.send_calls);
-    json_push_kv_int(&body, "message_process_calls",
-                     (int64_t)msg_stats.process_calls);
-    json_push_kv_int(&body, "message_recv_ready",
-                     (int64_t)msg_stats.recv_ready);
-    json_push_kv_int(&body, "message_idle_waits",
-                     (int64_t)msg_stats.idle_waits);
-    json_push_kv_int(&body, "message_wakes",
-                     (int64_t)msg_stats.wakes);
-    json_push_kv_int(&body, "last_assign_peer_id",
-                     (int64_t)diag.last_assign_peer_id);
-    json_push_kv_int(&body, "last_assign_max_requested",
-                     (int64_t)diag.last_assign_max_requested);
-    json_push_kv_int(&body, "last_assign_available",
-                     (int64_t)diag.last_assign_available);
-    json_push_kv_int(&body, "last_assign_assigned",
-                     (int64_t)diag.last_assign_assigned);
-    json_push_kv_int(&body, "last_assign_queue_len",
-                     (int64_t)diag.last_assign_queue_len);
-    json_push_kv_int(&body, "last_assign_active",
-                     (int64_t)diag.last_assign_active);
-    json_push_kv_int(&body, "last_assign_peer_in_flight",
-                     (int64_t)diag.last_assign_peer_in_flight);
-    json_push_kv_int(&body, "last_assign_peer_limit",
-                     (int64_t)diag.last_assign_peer_limit);
-    json_push_kv_int(&body, "last_assign_global_limit",
-                     (int64_t)diag.last_assign_global_limit);
-    json_push_kv_str(&body, "last_assign_result",
-                     dl_assign_result_name(diag.last_assign_result));
+    download_stats_push_json(&body, &dl_snap, true);
     controller_json_push_block_intake_stats(&body);
     json_push_kv_int(&body, "defer_proof_validation_below_height",
                      g_deferred_proof_validation_below_height);
@@ -266,14 +194,9 @@ size_t api_serve_health(uint8_t *response, size_t response_max)
     struct json_value download;
     json_init(&download);
     json_set_object(&download);
-    json_push_kv_int(&download, "requested",
-                     (int64_t)health.blocks_requested);
-    json_push_kv_int(&download, "received",
-                     (int64_t)health.blocks_received);
-    json_push_kv_int(&download, "timed_out",
-                     (int64_t)health.blocks_timed_out);
-    json_push_kv_int(&download, "in_flight", (int64_t)health.in_flight);
-    json_push_kv_int(&download, "queued", (int64_t)health.queued);
+    struct download_stats_snapshot dl_snap;
+    download_stats_snapshot_from_health(&dl_snap, &health);
+    download_stats_push_json(&download, &dl_snap, false);
     json_push_kv_bool(&download, "queue_backed_up",
                       health.queue_backed_up);
     json_push_kv(&body, "download", &download);
@@ -490,10 +413,10 @@ size_t api_serve_node_status(uint8_t *response, size_t response_max)
         }
     }
 
-    /* Download stats */
-    struct download_manager *dm = msg_get_download_mgr();
-    uint64_t dl_req = 0, dl_recv = 0, dl_tout = 0, dl_inflight = 0, dl_queued = 0;
-    dl_get_stats(dm, &dl_req, &dl_recv, &dl_tout, &dl_inflight, &dl_queued);
+    /* Download stats — read off the health snapshot already collected
+     * above instead of re-fetching from the download manager. */
+    struct download_stats_snapshot dl_snap;
+    download_stats_snapshot_from_health(&dl_snap, &health);
 
     struct json_value body;
     json_init(&body);
@@ -561,11 +484,7 @@ size_t api_serve_node_status(uint8_t *response, size_t response_max)
     struct json_value download;
     json_init(&download);
     json_set_object(&download);
-    json_push_kv_int(&download, "requested", (int64_t)dl_req);
-    json_push_kv_int(&download, "received", (int64_t)dl_recv);
-    json_push_kv_int(&download, "timed_out", (int64_t)dl_tout);
-    json_push_kv_int(&download, "in_flight", (int64_t)dl_inflight);
-    json_push_kv_int(&download, "queued", (int64_t)dl_queued);
+    download_stats_push_json(&download, &dl_snap, false);
     json_push_kv(&body, "download", &download);
     json_free(&download);
 

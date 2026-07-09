@@ -5,8 +5,10 @@
 #include "test/test_helpers.h"
 #include "controllers/agent_controller.h"
 #include "controllers/api_controller.h"
+#include "controllers/download_stats_json.h"
 #include "controllers/explorer_internal.h"
 #include "controllers/file_controller.h"
+#include "controllers/misc_controller.h"
 #include "controllers/name_controller.h"
 #include "controllers/network_controller.h"
 #include "event/event.h"
@@ -18,12 +20,15 @@
 #include "net/fast_sync.h"
 #include "net/net.h"
 #include "net/peer_lifecycle.h"
+#include "net/version.h"
 #include "platform/time_compat.h"
+#include "rpc/server.h"
 #include "services/block_source_policy.h"
 #include "services/node_health_service.h"
 #include "storage/progress_store.h"
 #include "sync/sync_state.h"
 #include "util/alerts.h"
+#include "util/clientversion.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 #include <string.h>
@@ -4331,6 +4336,212 @@ int test_api(void)
         reducer_frontier_provable_tip_reset();
         main_state_free(&ms);
         test_reset_shared_globals();
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: node/status, public status, and health download blocks "
+           "gained the throughput fields they were missing... ");
+    {
+        test_reset_shared_globals();
+        struct main_state ms;
+        struct block_index *blocks[2] = {0};
+        bool ok = api_test_build_chain(&ms, blocks, 2);
+        reducer_frontier_provable_tip_set(1);
+        api_set_state(&ms, NULL, NULL, NULL, "/tmp");
+
+        static const char *routes[] = {
+            "/api/node/status", "/api/status", "/api/health",
+        };
+        for (size_t i = 0; i < sizeof(routes) / sizeof(routes[0]); i++) {
+            size_t n = api_handle_request("GET", routes[i], NULL, 0,
+                                          resp, sizeof(resp));
+            const char *body = api_test_body(resp, n, sizeof(resp));
+            struct json_value root;
+            json_init(&root);
+            ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+            const struct json_value *download =
+                ok ? json_get(&root, "download") : NULL;
+            ok = ok && download != NULL;
+            /* The pre-existing abbreviated fields must still be present
+             * (behavior-preserving)... */
+            ok = ok && json_get(download, "requested") != NULL;
+            ok = ok && json_get(download, "received") != NULL;
+            ok = ok && json_get(download, "timed_out") != NULL;
+            ok = ok && json_get(download, "in_flight") != NULL;
+            ok = ok && json_get(download, "queued") != NULL;
+            /* ...and the throughput fields that used to be missing on
+             * these three endpoints must now be there too (additive
+             * fix, drift closed by the shared download_stats_push_json
+             * serializer). */
+            ok = ok && json_get(download, "bytes_downloaded") != NULL;
+            ok = ok && json_get(download, "mbps_avg") != NULL;
+            ok = ok && json_get(download, "gb_downloaded") != NULL;
+            json_free(&root);
+            if (!ok) {
+                fprintf(stderr, "  route %s missing a download field\n",
+                        routes[i]);
+                break;
+            }
+        }
+        /* /api/health additionally keeps its queue_backed_up field. */
+        {
+            size_t n = api_handle_request("GET", "/api/health", NULL, 0,
+                                          resp, sizeof(resp));
+            const char *body = api_test_body(resp, n, sizeof(resp));
+            struct json_value root;
+            json_init(&root);
+            ok = ok && n > 0 && body && json_read(&root, body, strlen(body));
+            const struct json_value *download =
+                ok ? json_get(&root, "download") : NULL;
+            ok = ok && download &&
+                 json_get(download, "queue_backed_up") != NULL;
+            json_free(&root);
+        }
+
+        api_set_state(NULL, NULL, NULL, NULL, NULL);
+        reducer_frontier_provable_tip_reset();
+        main_state_free(&ms);
+        test_reset_shared_globals();
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: downloadstats REST exposes throughput alongside its "
+           "existing full diagnostics (site1/site2 drift closed)... ");
+    {
+        test_reset_shared_globals();
+
+        size_t n = api_handle_request("GET", "/api/downloadstats", NULL, 0,
+                                      resp, sizeof(resp));
+        const char *body = api_test_body(resp, n, sizeof(resp));
+        struct json_value root;
+        json_init(&root);
+        bool ok = n > 0 && body && json_read(&root, body, strlen(body));
+        ok = ok && strcmp(json_get_str(json_get(&root, "schema")),
+                          "zcl.downloadstats.v1") == 0;
+        /* Core counts (always present). */
+        ok = ok && json_get(&root, "requested") != NULL;
+        ok = ok && json_get(&root, "received") != NULL;
+        ok = ok && json_get(&root, "timed_out") != NULL;
+        ok = ok && json_get(&root, "in_flight") != NULL;
+        ok = ok && json_get(&root, "queued") != NULL;
+        /* Diagnostics this endpoint already had. */
+        ok = ok && json_get(&root, "orphaned") != NULL;
+        ok = ok && json_get(&root, "accounting_drift") != NULL;
+        ok = ok && json_get(&root, "last_assign_result") != NULL;
+        /* Throughput fields it was MISSING before the consolidation. */
+        ok = ok && json_get(&root, "bytes_downloaded") != NULL;
+        ok = ok && json_get(&root, "mbps_avg") != NULL;
+        ok = ok && json_get(&root, "gb_downloaded") != NULL;
+        json_free(&root);
+
+        test_reset_shared_globals();
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: download_stats_snapshot_collect(full=false) is a "
+           "counts-consistent subset of full=true (shared collector)... ");
+    {
+        struct download_stats_snapshot full_snap = {0};
+        struct download_stats_snapshot thin_snap = {0};
+        download_stats_snapshot_collect(&full_snap, true);
+        download_stats_snapshot_collect(&thin_snap, false);
+
+        bool ok = full_snap.requested == thin_snap.requested;
+        ok = ok && full_snap.received == thin_snap.received;
+        ok = ok && full_snap.timed_out == thin_snap.timed_out;
+        ok = ok && full_snap.in_flight == thin_snap.in_flight;
+        ok = ok && full_snap.queued == thin_snap.queued;
+        ok = ok && full_snap.bytes_downloaded == thin_snap.bytes_downloaded;
+        ok = ok && full_snap.mbps_avg == thin_snap.mbps_avg;
+
+        struct json_value full_obj;
+        struct json_value thin_obj;
+        json_init(&full_obj);
+        json_set_object(&full_obj);
+        download_stats_push_json(&full_obj, &full_snap, true);
+        json_init(&thin_obj);
+        json_set_object(&thin_obj);
+        download_stats_push_json(&thin_obj, &thin_snap, false);
+        /* full=true carries extended diagnostics full=false does not. */
+        ok = ok && json_get(&full_obj, "last_assign_result") != NULL;
+        ok = ok && json_get(&thin_obj, "last_assign_result") == NULL;
+        /* Both push the same core + throughput fields. */
+        ok = ok && json_get(&full_obj, "bytes_downloaded") != NULL;
+        ok = ok && json_get(&thin_obj, "bytes_downloaded") != NULL;
+        json_free(&full_obj);
+        json_free(&thin_obj);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: getinfo/getnetworkinfo gain build_commit; bootstrapstatus "
+           "keeps client_name (node_binary_identity consolidation)... ");
+    {
+        /* Invoke the registered actor directly (bypassing
+         * rpc_table_execute()'s RPC-server warmup gate, same pattern as
+         * the existing name_list RPC tests above) so this test does not
+         * depend on set_rpc_warmup_finished() having been called. */
+        struct rpc_table misc_tbl;
+        struct rpc_table net_tbl;
+        struct json_value params;
+        struct json_value result = {0};
+        const struct rpc_command *cmd;
+
+        rpc_table_init(&misc_tbl);
+        register_misc_rpc_commands(&misc_tbl);
+        rpc_table_init(&net_tbl);
+        register_net_rpc_commands(&net_tbl);
+        rpc_net_set_connman(NULL);
+
+        json_init(&params);
+        json_set_array(&params);
+
+        cmd = rpc_table_find(&misc_tbl, "getinfo");
+        bool ok = cmd && cmd->actor(&params, false, &result);
+        ok = ok && json_get(&result, "version") != NULL;
+        ok = ok && strcmp(json_get_str(json_get(&result, "subversion")),
+                          CLIENT_NAME) == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "build_commit")),
+                          zcl_build_commit()) == 0;
+        ok = ok && json_get_int(json_get(&result, "protocolversion")) ==
+                       PROTOCOL_VERSION;
+        json_free(&result);
+
+        json_init(&result);
+        cmd = rpc_table_find(&net_tbl, "getnetworkinfo");
+        ok = ok && cmd && cmd->actor(&params, false, &result);
+        ok = ok && strcmp(json_get_str(json_get(&result, "subversion")),
+                          CLIENT_NAME) == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "build_commit")),
+                          zcl_build_commit()) == 0;
+        json_free(&result);
+
+        json_init(&result);
+        cmd = rpc_table_find(&net_tbl, "bootstrapstatus");
+        ok = ok && cmd && cmd->actor(&params, false, &result);
+        const struct json_value *binary =
+            ok ? json_get(&result, "binary") : NULL;
+        ok = ok && binary != NULL;
+        /* Pre-existing field name preserved (behavior-preserving)... */
+        ok = ok && strcmp(json_get_str(json_get(binary, "client_name")),
+                          CLIENT_NAME) == 0;
+        /* ...alongside the shared helper's "subversion" name and the
+         * build_commit it already carried. */
+        ok = ok && strcmp(json_get_str(json_get(binary, "subversion")),
+                          CLIENT_NAME) == 0;
+        ok = ok && strcmp(json_get_str(json_get(binary, "build_commit")),
+                          zcl_build_commit()) == 0;
+        json_free(&result);
+
+        json_free(&params);
+        rpc_net_set_connman(NULL);
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

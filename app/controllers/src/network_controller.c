@@ -5,6 +5,7 @@
 #include "platform/time_compat.h"
 #include "controllers/agent_controller.h"
 #include "controllers/network_controller.h"
+#include "controllers/node_binary_identity_json.h"
 #include "util/log_macros.h"
 #include "controllers/strong_params.h"
 #include "event/event.h"
@@ -17,7 +18,6 @@
 #include "net/peer_lifecycle.h"
 #include "net/protocol.h"
 #include "net/version.h"
-#include "util/clientversion.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -264,10 +264,7 @@ static bool rpc_getnetworkinfo(const struct json_value *params, bool help,
         "regarding P2P networking.");
 
     json_set_object(result);
-    json_push_kv_int(result, "version", CLIENT_VERSION);
-    json_push_kv_str(result, "subversion", CLIENT_NAME);
-    json_push_kv_str(result, "advertised_subver", msg_version_user_agent());
-    json_push_kv_int(result, "protocolversion", PROTOCOL_VERSION);
+    node_binary_identity_push_json(result, NULL, true);
 
     struct network_context *ctx = network_ctx();
     struct network_counts counts;
@@ -390,15 +387,7 @@ static bool rpc_bootstrapstatus(const struct json_value *params, bool help,
                       "zclassicd_beta6_fast_bootstrap_compatible",
                       beta6_fast);
 
-    struct json_value identity = {0};
-    json_set_object(&identity);
-    json_push_kv_int(&identity, "version", CLIENT_VERSION);
-    json_push_kv_str(&identity, "client_name", CLIENT_NAME);
-    json_push_kv_str(&identity, "advertised_subver",
-                     msg_version_user_agent());
-    json_push_kv_str(&identity, "build_commit", zcl_build_commit());
-    json_push_kv(result, "binary", &identity);
-    json_free(&identity);
+    node_binary_identity_push_json(result, "binary", false);
 
     struct json_value p2p = {0};
     json_set_object(&p2p);
