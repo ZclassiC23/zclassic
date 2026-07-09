@@ -131,6 +131,8 @@ size_t api_serve_downloadstats(uint8_t *response, size_t response_max)
     json_push_kv_int(&body, "timed_out", (int64_t)tout);
     json_push_kv_int(&body, "in_flight", (int64_t)inflight);
     json_push_kv_int(&body, "queued", (int64_t)queued);
+    json_push_kv_int(&body, "orphaned", (int64_t)diag.total_orphaned);
+    json_push_kv_int(&body, "accounting_drift", diag.accounting_drift);
     json_push_kv_int(&body, "request_timeout_seconds",
                      (int64_t)diag.request_timeout_seconds);
     json_push_kv_int(&body, "oldest_in_flight_age_seconds",

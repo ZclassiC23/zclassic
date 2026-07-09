@@ -268,6 +268,53 @@ static int test_dl_peer_disconnected(void)
     return failures;
 }
 
+/* Every path that takes a request out of flight must settle it (received,
+ * timed_out, or orphaned) — a leaked request once satisfied the old
+ * requested>settled arm of download_queue_starved forever at tip. */
+static int test_dl_settle_accounting(void)
+{
+    int failures = 0;
+    TEST("disconnect and drain settle requests as orphaned, drift stays 0") {
+        struct download_manager dm;
+        dl_init(&dm);
+        struct dl_diagnostics diag;
+
+        struct uint256 h1 = make_hash(1);
+        struct uint256 h2 = make_hash(2);
+        dl_mark_requested(&dm, &h1, 100, 1);
+        dl_mark_requested(&dm, &h2, 101, 1);
+
+        /* Disconnect: both requests settle as orphaned. */
+        ASSERT(dl_peer_disconnected(&dm, 1) == 2);
+        dl_get_diagnostics(&dm, &diag);
+        ASSERT(diag.total_orphaned == 2);
+        ASSERT(diag.accounting_drift == 0);
+
+        /* Requeued blocks re-request (total_requested counts them AGAIN)
+         * and one completes — the identity must still hold. */
+        struct uint256 out[5];
+        ASSERT(dl_assign_to_peer(&dm, 3, out, 5) == 2);
+        ASSERT(dl_mark_received(&dm, &out[0]) == 3);
+        dl_get_diagnostics(&dm, &diag);
+        ASSERT(diag.accounting_drift == 0);
+
+        /* Backpressure drain settles the remaining in-flight request. */
+        ASSERT(dl_drain_for_backpressure(&dm) == 1);
+        dl_get_diagnostics(&dm, &diag);
+        ASSERT(diag.total_orphaned == 3);
+        ASSERT(diag.accounting_drift == 0);
+
+        uint64_t req, recv, tout, inflight, queued;
+        dl_get_stats(&dm, &req, &recv, &tout, &inflight, &queued);
+        ASSERT(inflight == 0);
+        ASSERT(queued == 0);
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_dl_check_timeouts(void)
 {
     int failures = 0;
@@ -1040,6 +1087,7 @@ int test_download(void)
     failures += test_dl_queue_dedup();
     failures += test_dl_assign_to_peer();
     failures += test_dl_peer_disconnected();
+    failures += test_dl_settle_accounting();
     failures += test_dl_check_timeouts();
     failures += test_dl_timeout_retry_failover();
     failures += test_dl_timeout_retry_failover_peer_zero();

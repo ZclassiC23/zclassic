@@ -33,14 +33,19 @@ static _Atomic uint64_t g_last_witness_queued;
 static _Atomic int g_test_remedy_calls;
 #endif
 
-static bool download_work_pending(uint64_t requested, uint64_t received,
-                                  uint64_t timed_out, uint64_t inflight,
-                                  uint64_t queued)
+/* Pending work is LIVE state only: a queued or in-flight block. The former
+ * third arm (`requested > received + timed_out`) was cumulative-counter
+ * arithmetic: when the settle bookkeeping is perfect that difference IS the
+ * in-flight count (redundant with the second arm), and when any settle path
+ * leaks (disconnect-requeue and backpressure-drain both did) the residue is
+ * permanent — at tip, queued==0 and inflight==0 forever satisfied it, so the
+ * condition re-detected every cycle and paged the operator with nothing
+ * wrong (live latch 2026-07-09, stable phantom deficit of 2). Counter drift
+ * is now a watched diagnostic (dl_diagnostics.accounting_drift), not a
+ * detect input. */
+static bool download_work_pending(uint64_t inflight, uint64_t queued)
 {
-    uint64_t settled = received + timed_out;
-    if (settled < received)
-        settled = UINT64_MAX;
-    return queued > 0 || inflight > 0 || requested > settled;
+    return queued > 0 || inflight > 0;
 }
 
 static bool detect_download_queue_starved(void)
@@ -58,8 +63,7 @@ static bool detect_download_queue_starved(void)
     uint64_t requested = 0, received = 0, timed_out = 0;
     uint64_t inflight = 0, queued = 0;
     dl_get_stats(dm, &requested, &received, &timed_out, &inflight, &queued);
-    if (!download_work_pending(requested, received, timed_out, inflight,
-                               queued)) {
+    if (!download_work_pending(inflight, queued)) {
         atomic_store(&g_first_seen, 0);
         return false;
     }
@@ -123,8 +127,7 @@ static bool witness_download_queue_starved(int64_t target_at_detect)
     atomic_store(&g_last_witness_inflight, inflight);
     atomic_store(&g_last_witness_queued, queued);
     return requested > atomic_load(&g_requested_at_detect) ||
-           !download_work_pending(requested, received, timed_out, inflight,
-                                  queued);
+           !download_work_pending(inflight, queued);
 }
 
 static bool detail_download_queue_starved(struct json_value *out)
@@ -202,17 +205,17 @@ static bool detail_download_queue_starved(struct json_value *out)
         out, "witness_request_counter_advanced",
         atomic_load(&g_last_witness_requested) >
             atomic_load(&g_requested_at_detect));
-    bool pending = dm && download_work_pending(requested, received, timed_out,
-                                               inflight, queued);
+    bool pending = dm && download_work_pending(inflight, queued);
     bool witness_pending = download_work_pending(
-        atomic_load(&g_last_witness_requested),
-        atomic_load(&g_last_witness_received),
-        atomic_load(&g_last_witness_timed_out),
         atomic_load(&g_last_witness_inflight),
         atomic_load(&g_last_witness_queued));
     ok = ok && json_push_kv_bool(out, "pending_download_work", pending);
     ok = ok && json_push_kv_bool(out, "witness_download_work_drained",
                                  !witness_pending);
+    ok = ok && json_push_kv_int(out, "total_orphaned",
+                                (int64_t)diag.total_orphaned);
+    ok = ok && json_push_kv_int(out, "accounting_drift",
+                                diag.accounting_drift);
     ok = ok && json_push_kv_int(out, "assign_attempts",
                                 (int64_t)diag.assign_attempts);
     ok = ok && json_push_kv_int(out, "assign_successes",

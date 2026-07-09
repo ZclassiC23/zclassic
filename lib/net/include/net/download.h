@@ -99,6 +99,12 @@ struct dl_diagnostics {
     uint64_t last_assign_peer_limit;
     uint64_t last_assign_global_limit;
     int      last_assign_result;
+    uint64_t total_orphaned;    /* requests settled without a body:
+                                 * disconnect-requeue + backpressure drain */
+    int64_t  accounting_drift;  /* requested - received - timed_out -
+                                 * orphaned - in_flight; 0 unless a settle
+                                 * path leaked (each leaked request once
+                                 * latched download_queue_starved forever) */
 };
 
 enum dl_assign_result {
@@ -146,10 +152,17 @@ struct download_manager {
     size_t                qset_live;    /* live entries == queue_len */
     size_t                qset_tombs;   /* tombstoned entries */
 
-    /* Global stats */
+    /* Global stats. Settle invariant: every total_requested increment is
+     * matched by exactly one of total_received / total_timed_out /
+     * total_orphaned, or the request is still in a live slot (num_active).
+     * A path that deactivates a slot without settling breaks the identity
+     * and shows up as nonzero accounting_drift in dl_get_diagnostics(). */
     uint64_t total_requested;
     uint64_t total_received;
     uint64_t total_timed_out;
+    uint64_t total_orphaned;        /* settled by disconnect-requeue or
+                                     * backpressure drain (no body, no
+                                     * timeout) */
     uint64_t total_duplicate;
     uint64_t total_queue_evicted;   /* high-height entries displaced at cap */
     uint64_t total_queue_rejected;  /* pushes refused at cap (not lower

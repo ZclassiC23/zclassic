@@ -323,6 +323,51 @@ int test_sync_watchdog_conditions(void)
     }
 
     {
+        /* Regression (live latch 2026-07-09): a request that left flight
+         * without a body (disconnect-requeue / backpressure drain) must not
+         * read as pending work once the queue is empty. The old
+         * requested > received+timed_out arm turned that residue into a
+         * permanent re-detect at tip — 5 unwitnessed kicks, then an
+         * operator page with nothing wrong. */
+        struct fake_clock clock;
+        fake_clock_install(&clock, 3400);
+        struct connman cm;
+        struct download_manager dm;
+        struct main_state ms;
+        reset_sync_watchdog(&cm, &dm, &ms);
+        zcl_mutex_destroy(&dm.cs);
+        dl_init(&dm);
+        sync_monitor_set_context(&cm, &dm, &ms);
+        bool ok = true;
+        register_download_queue_starved();
+
+        struct p2p_node peer = {0};
+        struct p2p_node *peers[1] = { &peer };
+        cm.manager.nodes = peers;
+        cm.manager.num_nodes = 1;
+
+        struct uint256 rh = {0};
+        rh.data[0] = 0xd7;
+        ok = ok && dl_mark_requested(&dm, &rh, 88, 1);
+        ok = ok && dl_drain_for_backpressure(&dm) == 1;
+
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
+        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+        condition_engine_tick();
+        fake_clock_set(&clock, 3521);
+        condition_engine_tick();
+        fake_clock_set(&clock, 3650);
+        condition_engine_tick();
+        ok = ok && download_queue_starved_test_remedy_calls() == 0;
+        ok = ok && condition_engine_get_active_count() == 0;
+        SYNC_WATCHDOG_CHECK(
+            "download queue starved ignores settled orphaned requests", ok);
+        dl_free(&dm);
+        zcl_mutex_destroy(&dm.cs);
+        cleanup_sync_watchdog();
+    }
+
+    {
         struct fake_clock clock;
         fake_clock_install(&clock, 3500);
         struct connman cm;

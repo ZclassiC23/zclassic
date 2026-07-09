@@ -663,6 +663,11 @@ size_t dl_peer_disconnected(struct download_manager *dm, uint32_t peer_id)
         dl_queue_push(dm, &s->hash, s->height, peer_id, avoid_until);
         s->active = false;
         dm->num_active--;
+        /* Settle the request (see the invariant on the stats fields): the
+         * requeued block will increment total_requested AGAIN when it is
+         * re-assigned, so leaving the original request open here leaks a
+         * permanent +1 into requested-vs-settled arithmetic. */
+        dm->total_orphaned++;
         requeued++;
     }
 
@@ -1106,6 +1111,12 @@ void dl_get_diagnostics(struct download_manager *dm,
     out->last_assign_peer_limit = dm->last_assign_peer_limit;
     out->last_assign_global_limit = dm->last_assign_global_limit;
     out->last_assign_result = dm->last_assign_result;
+    out->total_orphaned = dm->total_orphaned;
+    out->accounting_drift = (int64_t)dm->total_requested -
+                            (int64_t)dm->total_received -
+                            (int64_t)dm->total_timed_out -
+                            (int64_t)dm->total_orphaned -
+                            (int64_t)dm->num_active;
     for (size_t i = 0; i < dm->queue_len; i++) {
         if (dm->queue_avoid_until[i] <= now)
             continue;
@@ -1158,7 +1169,10 @@ size_t dl_drain_for_backpressure(struct download_manager *dm)
      * find_slot relies on the hash bits to distinguish a virgin slot
      * from a deletion gap during open-addressing probes. The block
      * body that arrives later finds no active slot, dl_mark_received
-     * returns 0, and net_message_free reclaims the buffer as usual. */
+     * returns 0, and net_message_free reclaims the buffer as usual.
+     * Every dropped in-flight request is settled as orphaned so the
+     * requested-vs-settled identity survives the drain. */
+    dm->total_orphaned += dm->num_active;
     for (size_t i = 0; i < dm->num_slots; i++)
         dm->slots[i].active = false;
     dm->num_active = 0;
