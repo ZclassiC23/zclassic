@@ -16,6 +16,10 @@ Source anchors for this matrix are code, not project prose:
 - `lib/test/src/test_simnet_fee_range.c`
 - `lib/test/src/test_simnet_empty_vin_vout.c`
 - `lib/test/src/test_simnet_input_value_range.c`
+- `lib/test/src/test_simnet_sapling_activation.c`
+- `lib/test/src/test_simnet_sapling_shielded_send.c`
+- `lib/sim/include/sim/simnet_sapling.h`
+- `lib/sim/src/simnet_sapling.c`
 - `lib/zslp/include/zslp/slp.h`
 - `lib/zslp/src/slp.c`
 - `lib/znam/include/znam/znam.h`
@@ -120,7 +124,9 @@ not fold through `connect_block()` and are out of simnet scope.
 | ZNAM malformed lokad | A | Negative case: `malformed ZNAM OP_RETURN is indexed generically`, `malformed ZNAM lokad does not mutate name projection`. |
 | ZMSG P2P send (`zmsg`) | C | P2P message, not a chain action. Serialization, overflow rejection, deterministic id, and in-memory store are covered by `test_protocols`; network framing is covered by `test_net`. |
 | ZMSG P2P ack (`zmsgack`) | C | P2P acknowledgement dispatch, not a chain action. Dispatch table coverage is in `test_net`; ZMSG message primitives are in `test_protocols`. |
-| ZMSG Sapling memo channel | B | On-chain channel constants exist, but the messaging controller currently queues P2P sends and does not construct Sapling memo transactions. Simnet also lacks phase-2 Sapling post-activation tree support. |
+| ZMSG Sapling memo channel | B | On-chain channel constants exist, but the messaging controller currently queues P2P sends and does not construct Sapling memo transactions. Simnet-side Sapling support now exists (see the shielded rows below), so the remaining gap is the controller send path only. |
+| Sapling sim-local activation | A | `make t ONLY=simnet_sapling_activation`: `test_simnet_sapling_activation` lowers Overwinter/Sapling activation on the sim's params value-copy only (`simnet_activate_sapling_at`), proves no mainnet leak (`chain_params_get()` unchanged), and a post-activation transparent block passes the real `hashFinalSaplingRoot` check via the empty-tree-root stamp. |
+| Sapling shielded send (t→z, z→z) | A | Params-gated (`ZCL_PARAMS_TESTS=1` or `--only=simnet_sapling_shielded_send`; real Groth16 proving is seconds+RAM-heavy, so it is out of the default fast pool): `test_simnet_sapling_shielded_send` drives the full in-sim shielded pipeline — depth-32 note-commitment tree + anchor/witness (`lib/sim/src/simnet_sapling.c`), t→z and z→z built with the real prover and verified by the real consensus verifier, memo/rcm decrypt round-trip, durable nullifier set with shielded double-spend rejection, and seeded txid determinism via the `ZCL_TESTING` RNG hooks. |
 | Market offer gossip (`zfilelist`) | C | P2P gossip action, out of simnet scope. Serialization/cache behavior is covered by `test_file_market` and dispatch/cache coverage in `test_net`. |
 | Market challenge (`zfilechal`) | C | P2P proof-of-possession challenge, out of simnet scope. Covered at serialization/model level by `test_file_market`. |
 | Market proof (`zfileproof`) | C | P2P challenge response, out of simnet scope. Covered at serialization/model level by `test_file_market`. |
