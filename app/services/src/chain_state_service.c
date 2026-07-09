@@ -792,3 +792,19 @@ void csr_snapshot(struct chain_state_repository *csr,
         out->commits_rejected_total += csr->commits_rejected[i];
     pthread_mutex_unlock(&csr->lock);
 }
+
+int64_t csr_header_height(struct chain_state_repository *csr)
+{
+    /* In-process, in-memory read of the header tip: just the pindex_best_hdr
+     * pointer under the repository lock. Deliberately does NOT go through
+     * csr_snapshot(), which also runs two SQLite queries (blocks MAX(height),
+     * UTXO count) — too expensive for a caller that only wants the header
+     * height on a frequent tick (e.g. utxo_mirror_sync_service's 5s poll). */
+    int64_t h = -1;
+    if (!csr || !csr->initialized) return -1; // raw-return-ok:sentinel
+    pthread_mutex_lock(&csr->lock);
+    if (csr->pindex_best_hdr && *csr->pindex_best_hdr)
+        h = (*csr->pindex_best_hdr)->nHeight;
+    pthread_mutex_unlock(&csr->lock);
+    return h;
+}
