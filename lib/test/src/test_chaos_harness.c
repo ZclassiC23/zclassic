@@ -501,6 +501,87 @@ int test_chaos_harness(void)
         NULL);
     CHAOS_CHECK("bad seed fails", rc != 0);
 
+    /* ── simnet mode: drives a REAL simnet_cluster (real
+     * connect_block/disconnect_block/fork-choice), not sim_peer counters.
+     * See tools/sim/chaos.c "simnet mode" block + docs/CHAOS_HARNESS.md. */
+
+    rc = run_temp_scenario(
+        "seed 0xC0A1E5C1\n"
+        "mode simnet\n"
+        "simnet_nodes 3\n"
+        "simnet_mint node=0\n"
+        "simnet_relay node=0\n"
+        "simnet_deliver\n"
+        "expect simnet_converged == 1\n"
+        "simnet_partition a=0 b=2\n"
+        "simnet_mint node=0\n"
+        "simnet_relay node=0\n"
+        "simnet_mint node=0\n"
+        "simnet_relay node=0\n"
+        "simnet_deliver\n"
+        "simnet_heal a=0 b=2\n"
+        "simnet_deliver\n"
+        "expect simnet_converged == 1\n"
+        "expect simnet_tip_monotonic == 1\n"
+        "expect no_crash\n",
+        &ctx);
+    CHAOS_CHECK("simnet partition-then-heal converges", rc == 0);
+
+    rc = run_temp_scenario(
+        "seed 0xBEEF000000000002\n"
+        "mode simnet\n"
+        "simnet_nodes 2\n"
+        "simnet_mint node=0\n"
+        "simnet_mint node=0\n"
+        "simnet_mint node=0\n"
+        "simnet_mint node=1\n"
+        "simnet_mint node=1\n"
+        "simnet_mint node=1\n"
+        "simnet_mint node=1\n"
+        "simnet_relay node=0\n"
+        "simnet_relay node=1\n"
+        "simnet_deliver\n"
+        "expect simnet_converged == 1\n"
+        "expect simnet_tip_monotonic == 1\n"
+        "expect no_crash\n",
+        &ctx);
+    CHAOS_CHECK("simnet competing-chains reorg converges on more work",
+                rc == 0);
+
+    CHAOS_CHECK("simnet mode requires 'mode simnet' first",
+                run_temp_scenario(
+                    "seed 1\n"
+                    "simnet_nodes 2\n"
+                    "expect no_crash\n",
+                    NULL) != 0);
+
+    CHAOS_CHECK("simnet_nodes rejects an out-of-range count",
+                run_temp_scenario(
+                    "seed 1\n"
+                    "mode simnet\n"
+                    "simnet_nodes 1\n"
+                    "expect no_crash\n",
+                    NULL) != 0);
+
+    /* Two nodes permanently partitioned and left to mint conflicting
+     * equal-length branches never converge; the auto-check at end of
+     * a simnet-mode run must catch this and fail loudly instead of
+     * silently reporting PASS. */
+    rc = run_temp_scenario(
+        "seed 0xDEADBEEF\n"
+        "mode simnet\n"
+        "simnet_nodes 2\n"
+        "simnet_partition a=0 b=1\n"
+        "simnet_mint node=0\n"
+        "simnet_relay node=0\n"
+        "simnet_mint node=1\n"
+        "simnet_relay node=1\n"
+        "simnet_deliver\n"
+        "expect no_crash\n",
+        &ctx);
+    CHAOS_CHECK("simnet non-convergence is caught, not silently passed",
+                rc != 0 && ctx.simnet_mode);
+
     if (failures == 0)
         printf("=== chaos_harness tests: ALL PASS ===\n\n");
     else

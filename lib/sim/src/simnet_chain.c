@@ -694,6 +694,15 @@ bool simnet_chain_tip_hash(const struct simnet_chain *chain,
     return true;
 }
 
+bool simnet_chain_tip_height(const struct simnet_chain *chain,
+                             int32_t *out_height)
+{
+    if (!chain || !out_height)
+        LOG_FAIL("simnet.chain", "invalid tip height request");
+    *out_height = (int32_t)simnet_chain_entry_height(chain->active_tip);
+    return true;
+}
+
 bool simnet_chain_coins_digest(struct simnet_chain *chain,
                                struct utxo_commitment *out)
 {

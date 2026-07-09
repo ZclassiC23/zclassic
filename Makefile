@@ -780,21 +780,12 @@ test: test_parallel
 test-full: test_zcl
 	ulimit -s unlimited && $(TEST_ZCL_BIN)
 
-.PHONY: zclassic23-chaos
-zclassic23-chaos: $(ZCLASSIC23_CHAOS_BIN)
-$(ZCLASSIC23_CHAOS_BIN): tools/sim/chaos.c tools/sim/sim_peer.c \
-	lib/util/src/safe_alloc.c \
-	lib/util/include/util/safe_alloc.h lib/net/src/net_fault.c \
-	lib/net/include/net/net_fault.h lib/platform/src/clock.c \
-	lib/platform/include/platform/clock.h lib/platform/include/platform/time_compat.h \
-	lib/storage/src/boot_auto_reindex.c lib/storage/include/storage/boot_auto_reindex.h
-	@mkdir -p $(dir $@)
-	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	    -D_POSIX_C_SOURCE=200809L -Ilib/util/include -Ilib/net/include \
-	    -Ilib/platform/include -Ilib/storage/include -Itools \
-	    -o $@ tools/sim/chaos.c tools/sim/sim_peer.c \
-	    lib/util/src/safe_alloc.c lib/net/src/net_fault.c \
-	    lib/platform/src/clock.c lib/storage/src/boot_auto_reindex.c
+# zclassic23-chaos links the FULL node source tree ($(ALL_SRCS), same
+# whole-program LTO shape as wire_sweep/test_parallel below) rather than a
+# hand-picked file list. `mode simnet` scenarios drive lib/sim/simnet_cluster
+# (real connect_block/disconnect_block/fork-choice), so the binary needs the
+# real consensus/coins/script/validation stack, not just sim_peer's counters.
+$(eval $(call BUILD_NODE_TOOL,zclassic23-chaos,tools/sim/chaos.c $(CHAOS_SIM_SRCS)))
 
 chaos: zclassic23-chaos
 	@set -eu; \

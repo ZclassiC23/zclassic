@@ -29,6 +29,17 @@ bool simnet_cluster_mint_on(struct simnet_cluster *cluster, size_t node_id,
 bool simnet_cluster_broadcast(struct simnet_cluster *cluster,
                               size_t from_node,
                               const struct uint256 *block_hash);
+
+/* Same as simnet_cluster_broadcast, but skips any destination node whose
+ * index is marked true in exclude_to (an array of cluster->node_count
+ * bools). Lets a caller model a network partition without a per-link
+ * transport: enqueue deliveries only to currently-reachable peers. Passing
+ * exclude_to == NULL broadcasts to all peers, identical to
+ * simnet_cluster_broadcast. */
+bool simnet_cluster_broadcast_except(struct simnet_cluster *cluster,
+                                     size_t from_node,
+                                     const struct uint256 *block_hash,
+                                     const bool *exclude_to);
 bool simnet_cluster_deliver_pending(struct simnet_cluster *cluster);
 
 bool simnet_cluster_tip_hash(const struct simnet_cluster *cluster,
@@ -36,6 +47,11 @@ bool simnet_cluster_tip_hash(const struct simnet_cluster *cluster,
 bool simnet_cluster_coins_digest(struct simnet_cluster *cluster,
                                  size_t node_id,
                                  struct utxo_commitment *out);
+
+/* Active-tip height for node_id (>= SIM_CHAIN_BASE_HEIGHT - 1 at genesis).
+ * Used to assert per-node tip monotonicity across a chaos run. */
+bool simnet_cluster_tip_height(const struct simnet_cluster *cluster,
+                               size_t node_id, int32_t *out_height);
 
 uint64_t simnet_cluster_delivery_fingerprint(
     const struct simnet_cluster *cluster);
@@ -65,6 +81,8 @@ bool simnet_chain_block_first_seen(const struct simnet_chain *chain,
 
 bool simnet_chain_tip_hash(const struct simnet_chain *chain,
                            struct uint256 *out);
+bool simnet_chain_tip_height(const struct simnet_chain *chain,
+                             int32_t *out_height);
 bool simnet_chain_coins_digest(struct simnet_chain *chain,
                                struct utxo_commitment *out);
 
