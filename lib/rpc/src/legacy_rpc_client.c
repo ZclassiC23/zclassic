@@ -11,6 +11,7 @@
 
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
+#include "rpc/zclassicd_port.h"
 #include "util/safe_alloc.h"
 
 #include <arpa/inet.h>
@@ -104,6 +105,30 @@ bool legacy_rpc_fill_missing_creds(char *user, size_t user_sz,
 }
 
 /* ── HTTP/1.1 JSON-RPC call ────────────────────────────────────── */
+
+bool legacy_rpc_authenticated_call(const char *body_json,
+                                   char **out_resp,
+                                   char *err, size_t err_sz)
+{
+    char user[128] = {0};
+    char pass[256] = {0};
+    int port = ZCLASSICD_RPC_DEFAULT_PORT;
+
+    if (out_resp) *out_resp = NULL;
+    if (!body_json || !out_resp) {
+        if (err && err_sz) snprintf(err, err_sz, "bad args");
+        return false;
+    }
+    if (!legacy_rpc_parse_conf(user, sizeof(user), pass, sizeof(pass),
+                               &port)) {
+        if (err && err_sz)
+            snprintf(err, err_sz, "missing zclassicd rpc credentials");
+        return false;
+    }
+
+    return legacy_rpc_call("127.0.0.1", port, user, pass, body_json,
+                           out_resp, err, err_sz);
+}
 
 bool legacy_rpc_call(const char *host, int port,
                      const char *user, const char *pass,
@@ -225,6 +250,16 @@ bool legacy_rpc_call(const char *host, int port,
 
     *out_resp = buf;
     return true;
+}
+
+bool legacy_rpc_call_with_explicit_creds(const char *host, int port,
+                                         const char *user, const char *pass,
+                                         const char *body_json,
+                                         char **out_resp,
+                                         char *err, size_t err_sz)
+{
+    return legacy_rpc_call(host, port, user, pass, body_json, out_resp,
+                           err, err_sz);
 }
 
 /* ── HTTP body locator ─────────────────────────────────────────── */

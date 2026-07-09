@@ -7,7 +7,6 @@
 #include "core/uint256.h"
 #include "json/json.h"
 #include "rpc/legacy_rpc_client.h"
-#include "rpc/zclassicd_port.h"
 #include "storage/coins_kv.h"           /* boundary utxo_root read */
 #include "storage/progress_store.h"     /* progress_store_db() handle */
 #include "validation/sync_evidence_policy.h"
@@ -15,17 +14,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-static bool lco_rpc_creds(char *user, size_t user_sz,
-                          char *pass, size_t pass_sz, int *port)
-{
-    int p = (port && *port > 0) ? *port : ZCLASSICD_RPC_DEFAULT_PORT;
-
-    if (!legacy_rpc_parse_conf(user, user_sz, pass, pass_sz, &p))
-        return false;
-    if (port) *port = p;
-    return true;
-}
 
 static bool lco_rpc_result_obj(const char *raw, struct json_value *root,
                                const struct json_value **result)
@@ -45,23 +33,19 @@ static bool lco_rpc_result_obj(const char *raw, struct json_value *root,
 
 bool legacy_chain_rpc_get_block_hash_hex(int height, char out_hex[65])
 {
-    char user[128], pass[256], err[256];
+    char err[256];
     char req[256];
     char *resp = NULL;
-    int port = ZCLASSICD_RPC_DEFAULT_PORT;
     bool ok;
 
     if (!out_hex || height < 0)
         return false;
     out_hex[0] = '\0';
-    if (!lco_rpc_creds(user, sizeof(user), pass, sizeof(pass), &port))
-        return false;
 
     snprintf(req, sizeof(req),
              "{\"jsonrpc\":\"1.0\",\"id\":\"zcl23-chain\","
              "\"method\":\"getblockhash\",\"params\":[%d]}", height);
-    if (!legacy_rpc_call("127.0.0.1", port, user, pass, req, &resp,
-                         err, sizeof(err)))
+    if (!legacy_rpc_authenticated_call(req, &resp, err, sizeof(err)))
         return false;
 
     ok = legacy_rpc_parse_result_string(resp, out_hex, 65, err, sizeof(err)) && strlen(out_hex) == 64;
@@ -71,15 +55,12 @@ bool legacy_chain_rpc_get_block_hash_hex(int height, char out_hex[65])
 
 bool legacy_chain_rpc_get_mmb_leaf(int height, struct mmb_leaf *leaf)
 {
-    char user[128], pass[256], err[256];
+    char err[256];
     char req[512], hash_hex[65];
     char *resp = NULL;
-    int port = ZCLASSICD_RPC_DEFAULT_PORT;
     bool ok;
 
     if (!leaf || height < 0)
-        return false;
-    if (!lco_rpc_creds(user, sizeof(user), pass, sizeof(pass), &port))
         return false;
     if (!legacy_chain_rpc_get_block_hash_hex(height, hash_hex))
         return false;
@@ -88,8 +69,7 @@ bool legacy_chain_rpc_get_mmb_leaf(int height, struct mmb_leaf *leaf)
              "{\"jsonrpc\":\"1.0\",\"id\":\"zcl23-chain\","
              "\"method\":\"getblockheader\",\"params\":[\"%s\",true]}",
              hash_hex);
-    if (!legacy_rpc_call("127.0.0.1", port, user, pass, req, &resp,
-                         err, sizeof(err)))
+    if (!legacy_rpc_authenticated_call(req, &resp, err, sizeof(err)))
         return false;
 
     struct json_value root = {0};
@@ -145,15 +125,12 @@ bool legacy_chain_rpc_get_chainwork(const uint8_t block_hash[32],
 {
     struct uint256 hash = {0};
     struct uint256 work = {0};
-    char user[128], pass[256], err[256];
+    char err[256];
     char req[512], hash_hex[65];
     char *resp = NULL;
-    int port = ZCLASSICD_RPC_DEFAULT_PORT;
     bool ok;
 
     if (!block_hash || !chain_work)
-        return false;
-    if (!lco_rpc_creds(user, sizeof(user), pass, sizeof(pass), &port))
         return false;
 
     memcpy(hash.data, block_hash, 32);
@@ -162,8 +139,7 @@ bool legacy_chain_rpc_get_chainwork(const uint8_t block_hash[32],
              "{\"jsonrpc\":\"1.0\",\"id\":\"zcl23-chain\","
              "\"method\":\"getblockheader\",\"params\":[\"%s\",true]}",
              hash_hex);
-    if (!legacy_rpc_call("127.0.0.1", port, user, pass, req, &resp,
-                         err, sizeof(err)))
+    if (!legacy_rpc_authenticated_call(req, &resp, err, sizeof(err)))
         return false;
 
     struct json_value root = {0};
@@ -185,24 +161,20 @@ bool legacy_chain_rpc_get_chainwork(const uint8_t block_hash[32],
 
 bool legacy_chain_rpc_get_block_count(int *out_height)
 {
-    char user[128], pass[256], err[256];
+    char err[256];
     char req[256];
     char *resp = NULL;
-    int port = ZCLASSICD_RPC_DEFAULT_PORT;
     int64_t h = 0;
     bool ok;
 
     if (!out_height)
         return false;
     *out_height = 0;
-    if (!lco_rpc_creds(user, sizeof(user), pass, sizeof(pass), &port))
-        return false;
 
     snprintf(req, sizeof(req),
              "{\"jsonrpc\":\"1.0\",\"id\":\"zcl23-chain\","
              "\"method\":\"getblockcount\",\"params\":[]}");
-    if (!legacy_rpc_call("127.0.0.1", port, user, pass, req, &resp,
-                         err, sizeof(err)))
+    if (!legacy_rpc_authenticated_call(req, &resp, err, sizeof(err)))
         return false;
 
     ok = legacy_rpc_parse_result_int(resp, &h, err, sizeof(err)) &&
@@ -216,17 +188,14 @@ bool legacy_chain_rpc_get_block_count(int *out_height)
 bool legacy_chain_rpc_get_block_hex(int height, char *out_hex,
                                     size_t out_hex_sz)
 {
-    char user[128], pass[256], err[256];
+    char err[256];
     char req[256], hash_hex[65];
     char *resp = NULL;
-    int port = ZCLASSICD_RPC_DEFAULT_PORT;
     bool ok;
 
     if (!out_hex || out_hex_sz == 0 || height < 0)
         return false;
     out_hex[0] = '\0';
-    if (!lco_rpc_creds(user, sizeof(user), pass, sizeof(pass), &port))
-        return false;
     if (!legacy_chain_rpc_get_block_hash_hex(height, hash_hex))
         return false;
 
@@ -234,8 +203,7 @@ bool legacy_chain_rpc_get_block_hex(int height, char *out_hex,
     snprintf(req, sizeof(req),
              "{\"jsonrpc\":\"1.0\",\"id\":\"zcl23-chain\","
              "\"method\":\"getblock\",\"params\":[\"%s\",0]}", hash_hex);
-    if (!legacy_rpc_call("127.0.0.1", port, user, pass, req, &resp,
-                         err, sizeof(err)))
+    if (!legacy_rpc_authenticated_call(req, &resp, err, sizeof(err)))
         return false;
 
     ok = legacy_rpc_parse_result_string(resp, out_hex, out_hex_sz,

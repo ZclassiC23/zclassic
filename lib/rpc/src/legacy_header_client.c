@@ -93,8 +93,8 @@ bool legacy_header_rpc_fetch_remote_tip(const char *host, int port,
     char body[128];
     char *resp = NULL;
     lhc_build_getblockcount_body(body, sizeof(body));
-    if (!legacy_rpc_call(host, port, user, pass, body, &resp,
-                         err, err_sz)) {
+    if (!legacy_rpc_call_with_explicit_creds(host, port, user, pass, body,
+                                             &resp, err, err_sz)) {
         return false;
     }
 
@@ -121,8 +121,8 @@ bool legacy_header_rpc_fetch_one(const char *host, int port,
     char body[256];
     char *resp = NULL;
     lhc_build_rpc_body_int(body, sizeof(body), "getblockhash", height);
-    if (!legacy_rpc_call(host, port, user, pass, body, &resp,
-                         err, err_sz)) {
+    if (!legacy_rpc_call_with_explicit_creds(host, port, user, pass, body,
+                                             &resp, err, err_sz)) {
         return false;
     }
 
@@ -140,8 +140,8 @@ bool legacy_header_rpc_fetch_one(const char *host, int port,
 
     resp = NULL;
     lhc_build_getblockheader_body(body, sizeof(body), hash_hex);
-    if (!legacy_rpc_call(host, port, user, pass, body, &resp,
-                         err, err_sz)) {
+    if (!legacy_rpc_call_with_explicit_creds(host, port, user, pass, body,
+                                             &resp, err, err_sz)) {
         return false;
     }
 
@@ -203,8 +203,8 @@ bool legacy_header_rpc_fetch_batch(const char *host, int port,
     body1[off] = '\0';
 
     char *resp1 = NULL;
-    if (!legacy_rpc_call(host, port, user, pass, body1, &resp1,
-                         err, err_sz)) {
+    if (!legacy_rpc_call_with_explicit_creds(host, port, user, pass, body1,
+                                             &resp1, err, err_sz)) {
         free(body1);
         return false;
     }
@@ -270,8 +270,8 @@ bool legacy_header_rpc_fetch_batch(const char *host, int port,
     body2[off] = '\0';
 
     char *resp2 = NULL;
-    if (!legacy_rpc_call(host, port, user, pass, body2, &resp2,
-                         err, err_sz)) {
+    if (!legacy_rpc_call_with_explicit_creds(host, port, user, pass, body2,
+                                             &resp2, err, err_sz)) {
         free(body2);
         return false;
     }
