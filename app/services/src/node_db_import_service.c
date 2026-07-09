@@ -350,6 +350,12 @@ struct zcl_result node_db_import_service_run(struct node_db *ndb,
             size_t val_len;
             const char *val_data = db_iter_value(&it, &val_len);
             uint32_t checked_len = 0;
+            /* Replay-gated follow-up: older import code truncated CCoins
+             * values through a 65535-byte length path.  This branch already
+             * rejects only above the explicit 4 MiB cap and copies byte-for-
+             * byte into a uint32_t-sized buffer.  Do not reintroduce or tighten
+             * that boundary without full-history replay against real
+             * chainstate. */
             struct zcl_result len_ok =
                 utxo_import_value_len_checked(val_len, &checked_len);
             if (!len_ok.ok) {

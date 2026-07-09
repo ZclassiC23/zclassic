@@ -174,6 +174,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(have_data_unreadable) \
     X(chain_tip_watchdog_bounded_restart) X(blocker) X(service_state) \
     X(service_state_driver) \
+    X(storage_coins_utxo) \
     X(clock) X(rng) X(seed_tape) X(postmortem) X(simnet) X(util_signal_handler) X(chaos_harness) X(stage) X(stage_anchor) X(mailbox) X(mailbox_adoption) \
     X(projection) X(projection_adoption) X(progress_store) X(event_log) \
     X(mempool_projection) X(peers_projection) X(znam_projection) \
@@ -241,7 +242,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(bg_validation_store_port) \
     X(zslp_store_port) \
     X(sapling_tree) X(heartbeat) X(syncdiag_rpc) X(peer_lifecycle) \
-    X(chainstate_legacy_reader) X(utxo_import_pipeline) X(ccoins_decoder_kat) X(blob_read_bounds) X(ldb_snapshot) \
+    X(chainstate_legacy_reader) X(utxo_import_pipeline) X(ccoins_decoder_kat) X(coins_record_codec) X(blob_read_bounds) X(ldb_snapshot) \
     X(utxo_snapshot_loader) \
     X(load_verify_boot) \
     X(chain_stall_repro) \
