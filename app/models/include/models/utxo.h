@@ -75,6 +75,15 @@ int db_utxo_repair_missing_heights_from_tx_index(struct node_db *ndb);
  * truth and the wallet/explorer tables are read models. */
 bool db_utxo_rebuild_wallet_and_address_caches(struct node_db *ndb);
 
+/* Re-derive the addresses + wallet_utxos cache rows for a SINGLE address_hash
+ * from the authoritative `utxos` table. Used by the incremental (delta) mirror
+ * path so that only the addresses touched by a block delta are refreshed,
+ * instead of a full-table GROUP BY over every UTXO. Idempotent and always
+ * consistent with `utxos` (delete-then-rederive, never +/- arithmetic).
+ * MUST be called inside an already-open node.db write transaction. */
+bool db_utxo_refresh_caches_for_address(struct node_db *ndb,
+                                        const uint8_t address_hash[20]);
+
 /* ── Iteration ─────────────────────────────────────────────────── */
 
 /* Callback for db_utxo_each(). Return true to continue, false to stop.

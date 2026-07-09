@@ -364,6 +364,67 @@ bool db_utxo_rebuild_wallet_and_address_caches(struct node_db *ndb)
     return true;
 }
 
+/* Run one address-parameterized DML statement (a single 20-byte address_hash
+ * bound at position 1), inside the caller's already-open transaction. Prepared
+ * ad hoc: the delta path touches only a handful of addresses per pass, so the
+ * prepare cost is negligible and no cached statement is warranted. */
+static bool addr_refresh_exec(struct node_db *ndb, const char *sql,
+                              const uint8_t address_hash[20])
+{
+    sqlite3_stmt *s = NULL;
+    AR_PREPARE_BOOL(ndb, s, sql);   /* fprintf + return false on prepare fail */
+    AR_BIND_BLOB(s, 1, address_hash, 20);
+    bool ok = false;
+    AR_FINALIZE_STEP_DONE(s, ok);
+    if (!ok)
+        LOG_FAIL("utxo", "refresh_caches_for_address: step failed: %s",
+                 sqlite3_errmsg(ndb->db));
+    return true;
+}
+
+bool db_utxo_refresh_caches_for_address(struct node_db *ndb,
+                                        const uint8_t address_hash[20])
+{
+    if (!ndb || !ndb->open)
+        LOG_FAIL("utxo", "refresh_caches_for_address: db unavailable");
+    if (!address_hash)
+        LOG_FAIL("utxo", "refresh_caches_for_address: null address_hash");
+
+    /* Re-derive BOTH read models for this one address from the authoritative
+     * `utxos` table. Delete-then-insert keeps them exactly consistent with the
+     * source set: an address whose last UTXO was just spent ends with no row,
+     * and there is no +/- arithmetic to drift. The addresses aggregate mirrors
+     * db_utxo_rebuild_wallet_and_address_caches exactly (MAX(script_type),
+     * SUM(value), COUNT(*), MIN/MAX(height)); wallet_utxos is filtered to the
+     * operator's own keys. Caller holds the node.db write transaction. */
+    if (!addr_refresh_exec(ndb,
+            "DELETE FROM addresses WHERE address_hash=?1", address_hash))
+        return false;
+    if (!addr_refresh_exec(ndb,
+            "INSERT INTO addresses"
+            " (address_hash,script_type,balance,utxo_count,"
+            "  first_seen_height,last_seen_height)"
+            " SELECT address_hash, MAX(script_type), SUM(value), COUNT(*),"
+            "        MIN(height), MAX(height)"
+            " FROM utxos WHERE address_hash=?1 GROUP BY address_hash",
+            address_hash))
+        return false;
+    if (!addr_refresh_exec(ndb,
+            "DELETE FROM wallet_utxos WHERE address_hash=?1", address_hash))
+        return false;
+    if (!addr_refresh_exec(ndb,
+            "INSERT INTO wallet_utxos"
+            " (txid,vout,value,address_hash,script,height,is_coinbase)"
+            " SELECT u.txid,u.vout,u.value,u.address_hash,u.script,"
+            "        u.height,u.is_coinbase"
+            " FROM utxos u JOIN wallet_keys wk"
+            "   ON u.address_hash=wk.pubkey_hash"
+            " WHERE u.address_hash=?1",
+            address_hash))
+        return false;
+    return true;
+}
+
 void db_utxo_free(struct db_utxo *u)
 {
     if (!u) return;

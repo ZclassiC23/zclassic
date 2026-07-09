@@ -90,6 +90,77 @@ static bool ums_add_coin(sqlite3 *pdb, uint8_t tag, int64_t value, int32_t h)
     return coins_kv_add(pdb, txid, 0, value, h, true, script, sizeof(script));
 }
 
+/* ── Delta-path fixtures ────────────────────────────────────────────
+ * The incremental (delta) mirror path reads utxo_apply_delta.spent_blob to
+ * learn which coins left the set at each height. These helpers write that
+ * table directly (in progress.kv) in the exact serialize_spent() wire layout
+ * so the delta apply exercises the real read/parse path. */
+
+static void ums_le32(uint8_t *p, uint32_t v)
+{
+    p[0]=(uint8_t)v; p[1]=(uint8_t)(v>>8); p[2]=(uint8_t)(v>>16); p[3]=(uint8_t)(v>>24);
+}
+static void ums_le64(uint8_t *p, int64_t v)
+{
+    uint64_t u=(uint64_t)v;
+    for (int i=0;i<8;i++) p[i]=(uint8_t)(u>>(8*i));
+}
+
+/* Ensure the delta table exists, then INSERT one height row whose spent_blob
+ * holds a SINGLE spent coin (tag) with its full pre-image. added_blob empty. */
+static bool ums_write_delta_row(sqlite3 *pdb, int32_t height, uint8_t spent_tag,
+                                int64_t spent_value, int32_t spent_height)
+{
+    if (sqlite3_exec(pdb,
+            "CREATE TABLE IF NOT EXISTS utxo_apply_delta ("
+            "height INTEGER PRIMARY KEY, branch_hash BLOB NOT NULL,"
+            "spent_blob BLOB NOT NULL, added_blob BLOB NOT NULL)",
+            NULL, NULL, NULL) != SQLITE_OK)
+        return false;
+
+    uint8_t txid[32]; ums_txid(txid, spent_tag);
+    uint8_t script[25], hash20[20]; ums_p2pkh(script, hash20, spent_tag);
+
+    uint8_t blob[32+4+8+4+1+4+25];
+    uint8_t *p = blob;
+    memcpy(p, txid, 32); p += 32;
+    ums_le32(p, 0);              p += 4;   /* vout */
+    ums_le64(p, spent_value);    p += 8;   /* value */
+    ums_le32(p, (uint32_t)spent_height); p += 4; /* creation height */
+    *p++ = 1;                              /* is_coinbase */
+    ums_le32(p, sizeof(script)); p += 4;   /* script_len */
+    memcpy(p, script, sizeof(script)); p += sizeof(script);
+
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(pdb,
+            "INSERT OR REPLACE INTO utxo_apply_delta"
+            " (height,branch_hash,spent_blob,added_blob) VALUES (?,?,?,?)",
+            -1, &s, NULL) != SQLITE_OK)
+        return false;
+    uint8_t zero32[32] = {0};
+    sqlite3_bind_int64(s, 1, height);
+    sqlite3_bind_blob(s, 2, zero32, 32, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 3, blob, (int)(p - blob), SQLITE_STATIC);
+    sqlite3_bind_blob(s, 4, "", 0, SQLITE_STATIC);
+    bool ok = sqlite3_step(s) == SQLITE_DONE;
+    sqlite3_finalize(s);
+    return ok;
+}
+
+/* Read the `addresses` aggregate cache balance for a hash; -1 if no row. */
+static int64_t ums_addr_cache_balance(struct node_db *ndb, const uint8_t h[20])
+{
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT balance FROM addresses WHERE address_hash=?",
+            -1, &s, NULL) != SQLITE_OK)
+        return -2;
+    sqlite3_bind_blob(s, 1, h, 20, SQLITE_STATIC);
+    int64_t bal = (sqlite3_step(s) == SQLITE_ROW) ? sqlite3_column_int64(s, 0) : -1;
+    sqlite3_finalize(s);
+    return bal;
+}
+
 int test_utxo_mirror_sync(void);
 int test_utxo_mirror_sync(void)
 {
@@ -194,6 +265,76 @@ int test_utxo_mirror_sync(void)
      * mirror passes (consensus path untouched). */
     UMS_CHECK("coins_kv count untouched by feeder (== 3)",
               coins_kv_count(pdb) == 3);
+
+    /* ── DELTA PATH ────────────────────────────────────────────────────
+     * State now: mirror {0x11@100, 0x22@100, 0x44@104}, cursor==106,
+     * coins_kv {0x11,0x22,0x44}, frontier==106. A new block at h=107 CREATES
+     * 0x55 and SPENDS 0x44. With a utxo_apply_delta row present for h=107 the
+     * mirror pass must take the INCREMENTAL path: upsert only 0x55, delete only
+     * 0x44, and re-derive only the touched addresses — NOT wipe+rebuild all
+     * rows. The discriminator: the delta returns rows_CHANGED (2 = 1 add + 1
+     * delete), whereas a wholesale rebuild would return the full row count (3). */
+    {
+        uint8_t txid44[32]; ums_txid(txid44, 0x44);
+        UMS_CHECK("delta: add coin 0x55@107", ums_add_coin(pdb, 0x55, 5555, 107));
+        UMS_CHECK("delta: spend coin 0x44", coins_kv_spend(pdb, txid44, 0));
+        UMS_CHECK("delta: coins_kv count == 3", coins_kv_count(pdb) == 3);
+        UMS_CHECK("delta: write utxo_apply_delta[107] (spends 0x44)",
+                  ums_write_delta_row(pdb, 107, 0x44, 3333, 104));
+        UMS_CHECK("delta: advance frontier 107", ums_set_frontier(pdb, 107));
+
+        int64_t w = utxo_mirror_sync_run_once(&svc);
+        UMS_CHECK("delta: rows_changed == 2 (incremental, not a full rebuild)",
+                  w == 2);
+        UMS_CHECK("delta: mirror count == 3", db_utxo_count(&ndb) == 3);
+        UMS_CHECK("delta: mirror max height == 107", db_utxo_max_height(&ndb) == 107);
+        UMS_CHECK("delta: spent 0x44 gone from mirror",
+                  !db_utxo_exists(&ndb, txid44, 0));
+        UMS_CHECK("delta: new 0x55 present in mirror",
+                  db_utxo_exists(&ndb,
+                      (const uint8_t[32]){[0]=0x55,[31]=0x9c}, 0));
+
+        uint8_t s55[25], h55[20]; ums_p2pkh(s55, h55, 0x55);
+        uint8_t s44[25], h44[20]; ums_p2pkh(s44, h44, 0x44);
+        UMS_CHECK("delta: 0x55 utxo balance == 5555",
+                  db_utxo_balance_for_address(&ndb, h55) == 5555);
+        /* addresses AGGREGATE cache was maintained incrementally, not left
+         * stale: 0x55 appears with its balance, 0x44 row is gone. */
+        UMS_CHECK("delta: addresses cache 0x55 == 5555",
+                  ums_addr_cache_balance(&ndb, h55) == 5555);
+        UMS_CHECK("delta: addresses cache 0x44 removed",
+                  ums_addr_cache_balance(&ndb, h44) == -1);
+        /* An untouched address (0x11) is unchanged. */
+        uint8_t s11[25], h11[20]; ums_p2pkh(s11, h11, 0x11);
+        UMS_CHECK("delta: untouched 0x11 cache == 1000",
+                  ums_addr_cache_balance(&ndb, h11) == 1000);
+
+        int64_t cur = -1;
+        node_db_state_get_int(&ndb, UTXO_MIRROR_SYNC_CURSOR_KEY, &cur);
+        UMS_CHECK("delta: cursor advanced to 107", cur == 107);
+
+        /* Next pass: no drift → no work (proves the delta cursor is durable). */
+        UMS_CHECK("delta: pass after is a no-op",
+                  utxo_mirror_sync_run_once(&svc) == 0);
+        UMS_CHECK("delta: coins_kv still untouched (== 3)",
+                  coins_kv_count(pdb) == 3);
+    }
+
+    /* ── DELTA FALLBACK ────────────────────────────────────────────────
+     * A missing utxo_apply_delta row in the range must NOT silently drop a
+     * spend: the pass falls back to a full wholesale rebuild (returns the full
+     * row count) so the mirror still converges on coins_kv. */
+    {
+        uint8_t txid55[32]; ums_txid(txid55, 0x55);
+        UMS_CHECK("fallback: spend 0x55", coins_kv_spend(pdb, txid55, 0));
+        UMS_CHECK("fallback: coins_kv count == 2", coins_kv_count(pdb) == 2);
+        /* Deliberately DO NOT write utxo_apply_delta[108]. */
+        UMS_CHECK("fallback: advance frontier 108", ums_set_frontier(pdb, 108));
+        int64_t w = utxo_mirror_sync_run_once(&svc);
+        UMS_CHECK("fallback: full rebuild returns full count (2)", w == 2);
+        UMS_CHECK("fallback: mirror count == 2", db_utxo_count(&ndb) == 2);
+        UMS_CHECK("fallback: spent 0x55 gone", !db_utxo_exists(&ndb, txid55, 0));
+    }
 
     app_runtime_set_current(NULL);
     db_service_stop(&dbsvc);

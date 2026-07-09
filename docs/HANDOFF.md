@@ -3,6 +3,13 @@
 > in-memory sim-network foundation `lib/sim/simnet`), the `handoff/*` WIP
 > branches and their exact remaining steps, and the known gotchas. Verify live
 > state with `zcl_agent` before trusting any doc.
+>
+> **▶ WALLET P0 UPDATE (2026-07-09, later): [`docs/work/S2-utxo-mirror-delta.md`](work/S2-utxo-mirror-delta.md)**
+> — the S2 utxo_mirror delta-apply (Cause 1 of the wallet-persistence P0) is now
+> CODE-COMPLETE + unit-tested + lint-green (on `main`), and the persistent
+> node.db lock holder (Cause 2) is DIAGNOSED (the catch-up job's private node.db
+> connection). Still TODO: copy-prove on a live datadir copy, fix Cause 2, then
+> the operator-gated canonical deploy. Read that doc before touching the P0.
 
 ## CURRENT STATE (2026-07-08, P0 anchor mint restarted from clean copy)
 

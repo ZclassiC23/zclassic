@@ -12,6 +12,7 @@
 
 #include "platform/time_compat.h"
 #include "services/utxo_mirror_sync_service.h"
+#include "services/utxo_mirror_delta.h"
 
 #include "config/db_service.h"
 #include "config/runtime.h"
@@ -36,6 +37,12 @@
 #include <string.h>
 
 /* ── Global instance pointer ───────────────────────────────── */
+
+/* Per-pass height cap for the incremental delta apply: bounds the write-lock
+ * hold so a large post-outage gap catches up over a few passes instead of one
+ * multi-second transaction. A normal at-tip pass moves 1–2 heights and writes a
+ * handful of rows. */
+#define UTXO_MIRROR_DELTA_MAX_HEIGHTS_PER_PASS 2000
 
 struct utxo_mirror_sync_service *g_utxo_mirror_sync = NULL;
 
@@ -347,27 +354,66 @@ static int64_t mirror_rebuild_from_coins_kv(struct node_db *ndb)
 
 struct mirror_rebuild_ctx {
     struct utxo_mirror_sync_service *svc;
-    int32_t frontier;
-    int64_t written;
+    int32_t cursor;          /* current mirror cursor (in) */
+    int32_t frontier;        /* coins_kv applied frontier (in) */
+    int64_t mirror_count;    /* current mirror row count (in) */
+    int32_t applied_through; /* height the mirror is consistent through (out) */
+    int64_t written;         /* rows changed / written (out) */
     bool cursor_persisted;
+    bool used_delta;         /* diagnostics: delta vs wholesale rebuild */
 };
+
+static bool mirror_persist_cursor(struct node_db *ndb, int32_t through)
+{
+    int64_t v = (int64_t)through;
+    return app_runtime_node_db_state_set(
+        ndb, UTXO_MIRROR_SYNC_CURSOR_KEY, &v, sizeof(v));
+}
 
 static bool mirror_rebuild_and_advance_lane(struct node_db *ndb, void *ctx)
 {
     struct mirror_rebuild_ctx *r = ctx;
-    int64_t frontier64;
 
     if (!ndb || !ndb->open || !r || !r->svc)
         return false;
 
     app_runtime_node_db_sync_flush_if_needed(ndb);
+
+    /* Incremental delta when the mirror only LAGS the frontier (the steady-state
+     * case — a few blocks behind). A torn mirror (cursor already == frontier but
+     * row counts differ) or a fresh/empty mirror can't be delta'd, so those fall
+     * through to the wholesale rebuild, which also self-heals any residual count
+     * gap a delta might leave (e.g. a missing utxo_apply_delta row). This turns
+     * the O(total_UTXO_count) DELETE+reinsert paid on every accepted block into
+     * O(coins touched by the new blocks). */
+    if (r->cursor > 0 && r->mirror_count > 0 && r->frontier > r->cursor) {
+        int32_t applied_through = r->cursor;
+        int64_t rows = 0;
+        int rc = utxo_mirror_delta_apply(ndb, r->cursor, r->frontier,
+                                         UTXO_MIRROR_DELTA_MAX_HEIGHTS_PER_PASS,
+                                         &applied_through, &rows);
+        if (rc == UTXO_MIRROR_DELTA_OK) {
+            r->used_delta = true;
+            r->written = rows;
+            r->applied_through = applied_through;
+            r->cursor_persisted = mirror_persist_cursor(ndb, applied_through);
+            if (!r->cursor_persisted)
+                LOG_WARN("utxo_mirror",
+                         "[utxo_mirror] delta cursor persist failed at %d "
+                         "(mirror data correct; next pass re-detects drift)",
+                         applied_through);
+            return true;
+        }
+        if (rc == UTXO_MIRROR_DELTA_ERROR)
+            return false;  /* logged in utxo_mirror_delta_apply; pass re-runs */
+        /* UTXO_MIRROR_DELTA_FALLBACK → wholesale rebuild below. */
+    }
+
     r->written = mirror_rebuild_from_coins_kv(ndb);
     if (r->written < 0)
         return false;
-
-    frontier64 = (int64_t)r->frontier;
-    r->cursor_persisted = app_runtime_node_db_state_set(
-        ndb, UTXO_MIRROR_SYNC_CURSOR_KEY, &frontier64, sizeof(frontier64));
+    r->applied_through = r->frontier;
+    r->cursor_persisted = mirror_persist_cursor(ndb, r->frontier);
     if (!r->cursor_persisted)
         LOG_WARN("utxo_mirror",
                  "[utxo_mirror] cursor persist failed at frontier=%d "
@@ -460,9 +506,13 @@ int64_t utxo_mirror_sync_run_once(struct utxo_mirror_sync_service *svc)
 
     struct mirror_rebuild_ctx rebuild = {
         .svc = svc,
+        .cursor = (int32_t)state.cursor,
         .frontier = frontier,
+        .mirror_count = state.mirror_count,
+        .applied_through = (int32_t)state.cursor,
         .written = -1,
         .cursor_persisted = false,
+        .used_delta = false,
     };
     if (!mirror_run_db_lane(svc->ndb, mirror_rebuild_and_advance_lane,
                             &rebuild) || rebuild.written < 0) {
@@ -472,12 +522,13 @@ int64_t utxo_mirror_sync_run_once(struct utxo_mirror_sync_service *svc)
 
     atomic_fetch_add(&svc->rebuilds_run, 1);
     atomic_fetch_add(&svc->rows_written, rebuild.written);
-    atomic_store(&svc->last_mirror_height, (int64_t)frontier);
+    atomic_store(&svc->last_mirror_height, (int64_t)rebuild.applied_through);
     atomic_store(&svc->last_pass_unix, platform_time_wall_unix());
 
     LOG_INFO("utxo_mirror",
-             "[utxo_mirror] rebuilt mirror: %lld rows synced to height %d",
-             (long long)rebuild.written, frontier);
+             "[utxo_mirror] %s mirror: %lld rows, synced to height %d",
+             rebuild.used_delta ? "delta-applied" : "rebuilt",
+             (long long)rebuild.written, rebuild.applied_through);
     return rebuild.written;
 }
 
