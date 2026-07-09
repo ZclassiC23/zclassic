@@ -132,6 +132,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(rescanwitnesses_diverge_guard) \
     X(gap_fill_frontier_window) \
     X(snark_kat) \
+    X(sapling_prover_rng_determinism) \
     X(no_hardcoded_home) X(cookie_rotation) X(reorg_safety) X(reorg_parity) \
     X(reorg_projection_parity) X(stage_reorg_unwind_parity) \
     X(coins_applied_frontier) \

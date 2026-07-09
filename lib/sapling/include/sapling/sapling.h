@@ -82,6 +82,33 @@ bool sapling_compute_nf(const uint8_t diversifier[11], const uint8_t pk_d[32],
  * may discard the return value; production callers must propagate. */
 bool sapling_generate_r(uint8_t result[32]);
 
+#ifdef ZCL_TESTING
+/* ── Test-ONLY deterministic RNG injection for sapling_generate_r ──
+ *
+ * The deterministic simulator needs the Sapling prover's note
+ * randomness (rcv/esk/rcm/ar) to be reproducible run-to-run so tx
+ * bytes / txids are stable for a given 64-bit seed. In a normal
+ * build these come from `zcl_random_secret_bytes` → `GetRandBytes`
+ * (real kernel CSPRNG) and are NON-reproducible by design.
+ *
+ * This seam is compiled ONLY under `-DZCL_TESTING` (test_zcl /
+ * test_parallel and the sim harness). It does not exist in the
+ * production node binary, so `sapling_generate_r()` there ALWAYS
+ * draws from `GetRandBytes` — there is no runtime flag, env var, or
+ * symbol a production path could flip to divert the prover RNG.
+ *
+ * When `fn` is NULL (the default, even in a ZCL_TESTING build),
+ * `sapling_generate_r()` is byte-identical to today. When `fn` is
+ * set, each `sapling_generate_r()` call fills its 64-byte reduction
+ * buffer via `fn(user, buf, 64)` instead. `fn` must return true on
+ * success (buffer filled) or false to signal RNG failure (handled
+ * exactly like a `zcl_random_secret_bytes` failure). Pass NULL to
+ * restore the default. Not thread-partitioned: set it around a
+ * single-threaded deterministic build, then clear it. */
+typedef bool (*sapling_test_rng_fn)(void *user, uint8_t *out, size_t n);
+void sapling_set_test_rng_hook(sapling_test_rng_fn fn, void *user);
+#endif /* ZCL_TESTING */
+
 /* RedJubjub signature verification (Zcash spec §5.4.7).
  * Returns true iff (vk, msg, sig) is a valid signature, asserting:
  *   - vk and R = sig_rbar deserialize to valid Jubjub points;

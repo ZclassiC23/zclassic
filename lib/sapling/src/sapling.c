@@ -508,10 +508,42 @@ static void bytes_le_to_fr_raw(uint64_t out[4], const uint8_t bytes[32])
 void sapling_set_spend_vk(struct groth16_vk *vk) { sapling_spend_vk = vk; }
 void sapling_set_output_vk(struct groth16_vk *vk) { sapling_output_vk = vk; }
 
+#ifdef ZCL_TESTING
+/* ── Test-ONLY deterministic RNG hook (see sapling.h) ─────────────
+ *
+ * Compiled ONLY under -DZCL_TESTING. The production node binary does
+ * not contain this symbol or the branch below at all: sapling_generate_r()
+ * there is byte-identical to the pre-hook code (always zcl_random_secret_bytes
+ * → GetRandBytes → kernel CSPRNG). Even in a ZCL_TESTING build the hook
+ * defaults to NULL, so nothing diverts the prover RNG until a test
+ * explicitly installs a deterministic source and then clears it. */
+#include <stdatomic.h>
+static _Atomic(sapling_test_rng_fn) g_sapling_test_rng_fn = NULL;
+static void *g_sapling_test_rng_user = NULL;
+void sapling_set_test_rng_hook(sapling_test_rng_fn fn, void *user)
+{
+    /* Publish user before fn so a concurrent reader that observes a
+     * non-NULL fn also observes the matching user pointer. */
+    g_sapling_test_rng_user = user;
+    atomic_store_explicit(&g_sapling_test_rng_fn, fn, memory_order_release);
+}
+#endif /* ZCL_TESTING */
+
 bool sapling_generate_r(uint8_t result[32])
 {
     uint8_t buf[64];
-    if (!zcl_random_secret_bytes(buf, 64, "sapling_r")) {
+    bool ok;
+#ifdef ZCL_TESTING
+    sapling_test_rng_fn hook =
+        atomic_load_explicit(&g_sapling_test_rng_fn, memory_order_acquire);
+    if (hook)
+        ok = hook(g_sapling_test_rng_user, buf, 64);
+    else
+        ok = zcl_random_secret_bytes(buf, 64, "sapling_r");
+#else
+    ok = zcl_random_secret_bytes(buf, 64, "sapling_r");
+#endif
+    if (!ok) {
         memset(result, 0, 32);
         /* buf holds partial/full RNG output unused on error — cleanse like the success path */
         memory_cleanse(buf, 64);

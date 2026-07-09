@@ -1167,6 +1167,8 @@ int main(int argc, char **argv)
     failures += test_rescanwitnesses_diverge_guard();
     failures += test_gap_fill_frontier_window();
     failures += test_snark_kat();
+    { extern int test_sapling_prover_rng_determinism(void);
+      failures += test_sapling_prover_rng_determinism(); }
     failures += test_unclean_shutdown_advance();
     { extern int test_no_hardcoded_home(void);
       failures += test_no_hardcoded_home(); }
