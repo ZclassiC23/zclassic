@@ -14,10 +14,12 @@
  */
 
 #include "primitives/block.h"
+#include "primitives/transaction.h"
 #include "core/serialize.h"
 #include "consensus/validation.h"
 #include "chain/chainparams.h"
 #include "validation/check_block.h"
+#include "validation/check_transaction.h"
 
 #include <signal.h>
 #include <stddef.h>
@@ -76,6 +78,37 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
                               /*check_size_limits=*/true);
         }
         block_free(&block);
+        stream_free(&s);
+    }
+
+    /* Standalone transaction path — the mempool/relay entry point.
+     * transaction_deserialize decodes the ZCL overwintered/Sapling wire
+     * format (a lot of optional, length-prefixed fields), and
+     * check_transaction is the context-free structural validator that
+     * runs before any tx enters the mempool. check_block above validates
+     * txs only as block members; a standalone relay tx reaches
+     * check_transaction's own reject reasons (empty vin/vout, dup inputs,
+     * negative/oversize values, size cap, JoinSplit/Sapling structural
+     * bounds) directly, so fuzzing it covers code the block path skips.
+     * Both must bound-check every read under ANY input without a
+     * segfault. State is per-iteration and freed before return. */
+    {
+        struct byte_stream s;
+        stream_init_from_data(&s, data, size);
+        struct transaction tx;
+        transaction_init(&tx);
+        if (transaction_deserialize(&tx, &s)) {
+            struct validation_state st;
+            validation_state_init(&st);
+            (void)check_transaction(&tx, &st);
+
+            /* In-block variant consults the oversize grandfather table
+             * (a different bounded predicate) — exercise it too. */
+            struct validation_state stb;
+            validation_state_init(&stb);
+            (void)check_transaction_in_block(&tx, &stb);
+        }
+        transaction_free(&tx);
         stream_free(&s);
     }
     return 0;
