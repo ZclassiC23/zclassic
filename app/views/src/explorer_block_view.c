@@ -5,6 +5,7 @@
  * file assembles the HTML. */
 
 #include "views/explorer_block_view.h"
+#include "views/explorer_pages_view.h"
 #include "controllers/explorer_internal.h"
 #include "util/template.h"
 #include "views/format_helpers.h"
@@ -19,12 +20,7 @@
 
 size_t explorer_view_block_not_found_rpc(uint8_t *r, size_t max)
 {
-    return (size_t)snprintf((char *)r, max,
-        "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
-        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<link rel='stylesheet' href='/explorer/style.css'></head><body>"
-        EXPLORER_NAV "<h2>Block Not Found</h2>" EXPLORER_FOOTER);
+    return explorer_emit_error_page(r, max, 404, "Block Not Found", "The requested block was not found");
 }
 
 /* ── Block Not Found (native path) ────────────────────────── */
@@ -32,14 +28,9 @@ size_t explorer_view_block_not_found_rpc(uint8_t *r, size_t max)
 size_t explorer_view_block_not_found(const char *safe_param,
                                      uint8_t *r, size_t max)
 {
-    return (size_t)snprintf((char *)r, max,
-        "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
-        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<link rel='stylesheet' href='/explorer/style.css'></head><body>"
-        EXPLORER_NAV "<h2>Block Not Found</h2>"
-        "<p>No block found for: <code>%s</code></p>"
-        EXPLORER_FOOTER, safe_param ? safe_param : "");
+    char msg[256];
+    snprintf(msg, sizeof(msg), "No block found for: <code>%s</code>", safe_param ? safe_param : "");
+    return explorer_emit_error_page(r, max, 404, "Block Not Found", msg);
 }
 
 /* ── Block Detail (RPC proxy) ─────────────────────────────── */

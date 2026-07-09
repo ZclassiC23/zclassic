@@ -5,6 +5,7 @@
  * controller parses and fetches; this file owns HTML assembly. */
 
 #include "views/explorer_tx_view.h"
+#include "views/explorer_pages_view.h"
 #include "controllers/explorer_internal.h"
 #include "chain/subsidy.h"      /* ZATOSHI_PER_ZCL */
 #include "util/template.h"
@@ -21,13 +22,9 @@
 size_t explorer_view_tx_not_found_rpc(const char *param,
                                       uint8_t *r, size_t max)
 {
-    return (size_t)snprintf((char *)r, max,
-        "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
-        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<link rel='stylesheet' href='/explorer/style.css'></head><body>"
-        EXPLORER_NAV "<h2>Transaction Not Found</h2>"
-        "<p>TxID: <code>%s</code></p>" EXPLORER_FOOTER, param ? param : "");
+    char msg[256];
+    snprintf(msg, sizeof(msg), "TxID: <code>%s</code>", param ? param : "");
+    return explorer_emit_error_page(r, max, 404, "Transaction Not Found", msg);
 }
 
 /* ── RPC-proxy: Transaction Detail ─────────────────────────── */

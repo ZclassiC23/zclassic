@@ -375,20 +375,14 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
     size_t max = buf_max;
     size_t off = 0;
 
-    char db_path[1024];
-    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
     sqlite3 *db = NULL;
-    int open_rc = sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL);
-    if (open_rc != SQLITE_OK) {
-        printf("Stats: failed to open %s: %s (rc=%d)\n",
-               db_path, db ? sqlite3_errmsg(db) : "null", open_rc);
+    if (!explorer_open_readonly_db(datadir, &db)) {
+        printf("Stats: failed to open database\n");
         fflush(stdout);
-        if (db) sqlite3_close(db);
         return 0;
     }
     sqlite3_exec(db, "PRAGMA mmap_size=268435456", NULL, NULL, NULL);
     sqlite3_exec(db, "PRAGMA query_only=ON", NULL, NULL, NULL);
-    sqlite3_busy_timeout(db, 30000);
 
     /* ════════════════════════════════════════════════════════
      *  PHASE 1: Gather all data with minimal queries
@@ -424,7 +418,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
         }
     }
     if (tip <= 0) {
-        printf("Stats: no blocks (tip=%d, db=%s)\n", tip, db_path);
+        printf("Stats: no blocks (tip=%d)\n", tip);
         fflush(stdout);
         sqlite3_close(db);
         return 0;

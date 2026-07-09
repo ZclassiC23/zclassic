@@ -20,6 +20,14 @@ size_t explorer_view_loading_placeholder(uint8_t *r, size_t max,
                                           const char *accent,
                                           const char *subtitle);
 
+/* Shared error-page emitter for HTTP errors (404, 500, 503, etc.).
+ * Renders a styled error page with the given title and message.
+ * Returns bytes written. */
+size_t explorer_emit_error_page(uint8_t *out, size_t max,
+                                 int http_status,
+                                 const char *title,
+                                 const char *message);
+
 /* ZSLP tokens index page. Opens its own read-only node.db under datadir,
  * renders into r, returns bytes written (0 on error). */
 size_t explorer_view_tokens(const char *datadir, uint8_t *r, size_t max);

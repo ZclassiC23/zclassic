@@ -65,6 +65,45 @@ size_t explorer_view_loading_placeholder(uint8_t *r, size_t max,
     return off;
 }
 
+/* ── Shared error-page emitter ────────────────────────────────── */
+
+size_t explorer_emit_error_page(uint8_t *out, size_t max,
+                                 int http_status,
+                                 const char *title,
+                                 const char *message)
+{
+    if (!out || max < 1) return 0;
+
+    const char *status_line = NULL;
+    switch (http_status) {
+        case 404: status_line = "HTTP/1.1 404 Not Found"; break;
+        case 500: status_line = "HTTP/1.1 500 Internal Server Error"; break;
+        case 503: status_line = "HTTP/1.1 503 Service Unavailable"; break;
+        default: status_line = "HTTP/1.1 500 Internal Server Error"; break;
+    }
+
+    size_t off = 0;
+    APPEND(off, out, max,
+        "%s\r\nContent-Type: text/html; charset=utf-8\r\n"
+        "Connection: close\r\n\r\n"
+        "<!DOCTYPE html><html><head><meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width,initial-scale=1'>"
+        "<link rel='stylesheet' href='/explorer/style.css'>"
+        "</head><body>" EXPLORER_NAV
+        "<div style='max-width:900px;margin:50px auto;color:#ccc'>"
+        "<h1>%s</h1>"
+        "<p>%s</p>"
+        "<div style='margin-top:20px'>"
+        "<a href='/explorer' style='display:inline-block;background:#33ff99;"
+        "color:#07130d;padding:10px 14px;border-radius:6px;font-weight:700;"
+        "text-decoration:none'>Back to Explorer</a>"
+        "</div></div>" EXPLORER_FOOTER,
+        status_line,
+        title ? title : "Error",
+        message ? message : "An error occurred");
+    return off;
+}
+
 /* Reverse a 64-char big-endian hex txid/token-id into display byte order
  * and lowercase it. out must be >= 65 bytes. Returns false (out empty) if
  * the input isn't exactly 64 hex chars. */
@@ -89,12 +128,11 @@ size_t explorer_view_tokens(const char *datadir, uint8_t *r, size_t max)
 {
     if (!datadir || !r) return 0;
 
-    char db_path[1024];
-    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
     sqlite3 *db = NULL;
-    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
-        LOG_RETURN((size_t)0, "explorer",
-                   "explorer_view_tokens: failed to open db %s", db_path);
+    if (!explorer_open_readonly_db(datadir, &db)) {
+        LOG_ERR("explorer", "explorer_view_tokens: failed to open db");
+        return explorer_emit_error_page(r, max, 500, "Database Error", "Failed to open block index");
+    }
     sqlite3_exec(db, "PRAGMA mmap_size=268435456", NULL, NULL, NULL);
 
     size_t off = 0;
@@ -255,11 +293,10 @@ size_t explorer_view_token_detail(const char *token_id_hex,
         return 0;
 
     /* Open our own SQLite connection (called from HTTPS thread) */
-    char db_path[1024];
-    snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
     sqlite3 *db = NULL;
-    if (sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK)
-        return 0;
+    if (!explorer_open_readonly_db(datadir, &db)) {
+        return explorer_emit_error_page(r, max, 500, "Database Error", "Failed to open block index");
+    }
     sqlite3_exec(db, "PRAGMA mmap_size=268435456", NULL, NULL, NULL);
 
     /* Parse hex token ID — try direct first, then reversed byte order */
@@ -317,14 +354,9 @@ size_t explorer_view_token_detail(const char *token_id_hex,
 
     if (!found) {
         sqlite3_close(db);
-        return (size_t)snprintf((char *)r, max,
-            "HTTP/1.1 404 Not Found\r\nContent-Type: text/html\r\nConnection: close\r\n\r\n"
-            "<!DOCTYPE html><html><head><meta charset='utf-8'>"
-            "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-            "<link rel='stylesheet' href='/explorer/style.css'></head><body>"
-            EXPLORER_NAV "<h2>Token Not Found</h2>"
-            "<p>No ZSLP token with ID: <code>%s</code></p>" EXPLORER_FOOTER,
-            token_id_hex);
+        char msg[256];
+        snprintf(msg, sizeof(msg), "No ZSLP token with ID: <code>%s</code>", token_id_hex ? token_id_hex : "");
+        return explorer_emit_error_page(r, max, 404, "Token Not Found", msg);
     }
 
     size_t off = 0;
