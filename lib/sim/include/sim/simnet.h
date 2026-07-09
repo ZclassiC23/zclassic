@@ -102,6 +102,9 @@ bool simnet_spend(struct simnet *s, const struct uint256 *in_txid,
 /* Height of the current tip. */
 int simnet_tip_height(const struct simnet *s);
 
+/* Copy the current tip hash into `out`. */
+bool simnet_tip_hash(const struct simnet *s, struct uint256 *out);
+
 /* True iff `txid` has at least one unspent output in the live UTXO set. */
 bool simnet_coin_exists(struct simnet *s, const struct uint256 *txid);
 

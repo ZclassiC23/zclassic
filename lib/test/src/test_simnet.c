@@ -18,6 +18,7 @@
 
 #include "models/explorer_index.h"
 #include "models/znam.h"
+#include "sim/sim_peer.h"
 #include "sim/simnet.h"
 #include "core/uint256.h"
 #include "znam/znam.h"
@@ -161,6 +162,21 @@ static int64_t sim_test_transfer_amount(
             return xfers[i].amount;
     }
     return -1;
+}
+
+static bool sim_test_write_peer_block_file(const char *path,
+                                           const struct uint256 *block_marker)
+{
+    if (!path || !block_marker)
+        return false;
+
+    FILE *fp = fopen(path, "wb");
+    if (!fp)
+        return false;
+    bool ok = fwrite(block_marker->data, 1, sizeof(block_marker->data), fp) ==
+              sizeof(block_marker->data);
+    ok = (fclose(fp) == 0) && ok;
+    return ok;
 }
 
 static bool sim_test_index_block(struct node_db *ndb,
@@ -449,7 +465,106 @@ int test_simnet(void)
     if (znam_open)
         node_db_close(&znam_db);
 
-    /* 8. Negative path: spending an absent coin fails cleanly (no crash). */
+    /* 8. Minimal multi-node slice: copy an accepted block marker through
+     *    tools/sim/sim_peer, replay the same accepted tx into a second
+     *    RAM-only simnet, and assert both nodes converge to the same tip. */
+    struct simnet left;
+    struct simnet right;
+    bool left_init = simnet_init(&left);
+    bool right_init = simnet_init(&right);
+    SN_CHECK("multi-node simnets initialize", left_init && right_init);
+
+    struct uint256 left_cb;
+    struct uint256 right_cb;
+    uint256_set_null(&left_cb);
+    uint256_set_null(&right_cb);
+    bool left_cb_minted = left_init && simnet_mint_coinbase(&left, &left_cb);
+    bool right_cb_minted = right_init && simnet_mint_coinbase(&right, &right_cb);
+    SN_CHECK("multi-node matching coinbases mint",
+             left_cb_minted && right_cb_minted &&
+             uint256_cmp(&left_cb, &right_cb) == 0);
+
+    struct uint256 left_fund;
+    struct uint256 right_fund;
+    uint256_set_null(&left_fund);
+    uint256_set_null(&right_fund);
+    bool left_funded =
+        left_cb_minted && simnet_spend(&left, &left_cb, 0, 850000,
+                                       &left_fund);
+    bool right_funded =
+        right_cb_minted && simnet_spend(&right, &right_cb, 0, 850000,
+                                        &right_fund);
+    SN_CHECK("multi-node matching funding txs mint",
+             left_funded && right_funded &&
+             uint256_cmp(&left_fund, &right_fund) == 0);
+
+    struct transaction left_peer_tx;
+    struct transaction right_peer_tx;
+    transaction_init(&right_peer_tx);
+    uint8_t peer_opret[] = {0x6a, 0x05, 'P', 'E', 'E', 'R', '1'};
+    bool built_peer_tx =
+        left_funded &&
+        sim_test_make_opreturn_spend(&left_peer_tx, &left_fund, 0,
+                                     peer_opret, sizeof(peer_opret),
+                                     800000, 0x31);
+    bool copied_peer_tx =
+        built_peer_tx && transaction_copy(&right_peer_tx, &left_peer_tx);
+    struct uint256 peer_txid =
+        built_peer_tx ? left_peer_tx.hash : (struct uint256){0};
+    SN_CHECK("build peer-copied tx", built_peer_tx && copied_peer_tx);
+
+    bool left_accepted =
+        built_peer_tx && simnet_mint_txs(&left, &left_peer_tx, 1);
+    SN_CHECK("left node accepts peer block tx", left_accepted);
+
+    char peer_dir[256];
+    char peer_block_path[320];
+    test_make_tmpdir(peer_dir, sizeof(peer_dir), "simnet", "peer");
+    snprintf(peer_block_path, sizeof(peer_block_path),
+             "%s/accepted-block.bin", peer_dir);
+    struct uint256 left_tip_marker;
+    bool wrote_peer_block =
+        left_accepted && simnet_tip_hash(&left, &left_tip_marker) &&
+        sim_test_write_peer_block_file(peer_block_path, &left_tip_marker);
+    SN_CHECK("write accepted block marker for sim_peer", wrote_peer_block);
+
+    struct sim_peer_set peers;
+    sim_peer_set_init(&peers);
+    size_t peer_bytes = 0;
+    int peer_resize_rc = sim_peer_set_resize(&peers, 2);
+    int peer_send_rc =
+        wrote_peer_block ? sim_peer_send_block(&peers, 1, peer_block_path,
+                                               &peer_bytes) : -1;
+    const struct sim_peer *peer_one = sim_peer_get(&peers, 1);
+    SN_CHECK("sim_peer copies accepted block marker to second node",
+             peer_resize_rc == 0 && peer_send_rc == 0 && peer_one &&
+             peer_one->blocks_sent == 1 && peer_bytes == 32);
+
+    bool right_accepted =
+        peer_send_rc == 0 && copied_peer_tx &&
+        simnet_mint_txs(&right, &right_peer_tx, 1);
+    SN_CHECK("right node accepts copied peer block tx", right_accepted);
+
+    struct uint256 left_tip;
+    struct uint256 right_tip;
+    bool tips_read =
+        left_accepted && right_accepted &&
+        simnet_tip_hash(&left, &left_tip) &&
+        simnet_tip_hash(&right, &right_tip);
+    SN_CHECK("multi-node simnets converge to the same tip",
+             tips_read &&
+             simnet_tip_height(&left) == simnet_tip_height(&right) &&
+             uint256_cmp(&left_tip, &right_tip) == 0 &&
+             simnet_coin_exists(&left, &peer_txid) &&
+             simnet_coin_exists(&right, &peer_txid));
+
+    if (!right_accepted)
+        transaction_free(&right_peer_tx);
+    test_cleanup_tmpdir(peer_dir);
+    simnet_free(&left);
+    simnet_free(&right);
+
+    /* 9. Negative path: spending an absent coin fails cleanly (no crash). */
     struct uint256 bogus;
     memset(bogus.data, 0xAB, 32);
     struct uint256 unused;

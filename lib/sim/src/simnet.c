@@ -329,6 +329,14 @@ int simnet_tip_height(const struct simnet *s)
     return (s && s->initialized) ? s->tip_height : -1;
 }
 
+bool simnet_tip_hash(const struct simnet *s, struct uint256 *out)
+{
+    if (!s || !s->initialized || !out)
+        LOG_FAIL("simnet", "invalid tip hash request");
+    *out = s->tip.hashBlock;
+    return true;
+}
+
 bool simnet_coin_exists(struct simnet *s, const struct uint256 *txid)
 {
     if (!s || !s->initialized || !txid)
