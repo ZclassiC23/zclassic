@@ -457,6 +457,29 @@ static int h_zcl_replay_exec(const struct mcp_request *req,
         return 0;
     }
 
+    /* Least-privilege: replay re-dispatches through mcp_router_dispatch(),
+     * which bypasses the auth-tier and destructive rate-limit checks that
+     * only mcp_middleware_dispatch() applies. Re-executing a destructive
+     * tool here would let a normal-tier (or unauthenticated) caller trigger
+     * an action the destructive tier is meant to gate — and would skip the
+     * destructive bucket entirely. Refuse to replay any destructive tool;
+     * the operator must invoke it directly with the correct credential. */
+    const struct mcp_tool_route *route = mcp_router_find(tool);
+    if (route && (route->flags & MCP_TOOL_FLAG_DESTRUCTIVE)) {
+        /* Format the message and log BEFORE freeing arr: `tool` points into
+         * the parsed JSON that json_free() releases. */
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "refusing to replay destructive tool '%s'; invoke it "
+                 "directly with the destructive credential", tool);
+        res->error = MCP_ERR_AUTH_REQUIRED;
+        LOG_ERR("mcp.diag",
+                "replay_exec: refused destructive tool=%s at index %lld",
+                tool, (long long)idx);
+        json_free(&arr);
+        free(dump);
+        return 0;
+    }
+
     char *result = mcp_router_dispatch(tool, NULL);
     json_free(&arr);
     free(dump);
@@ -589,9 +612,10 @@ static const struct mcp_tool_route k_routes[] = {
       h_zcl_replay_dump, 0, NULL },
     { "zcl_replay_exec", "ops",
       "Re-execute a previously recorded MCP request by index from the "
-      "replay buffer. Useful for debugging and regression testing.",
+      "replay buffer. Useful for debugging and regression testing. "
+      "Destructive tools are refused; invoke those directly.",
       p_replay_exec, PARAM_COUNT(p_replay_exec),
-      h_zcl_replay_exec, 0, NULL },
+      h_zcl_replay_exec, MCP_TOOL_FLAG_DESTRUCTIVE, NULL },
 };
 
 void mcp_register_diagnostics(void)

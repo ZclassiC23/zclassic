@@ -24,6 +24,8 @@
 #include "test/test_helpers.h"
 #include "mcp/router.h"
 #include "mcp/controllers.h"
+#include "mcp/middleware.h"
+#include "mcp/replay.h"
 #include "mcp/rpc_params.h"
 #include "mcp/rpc_client.h"
 #include "controllers/agent_controller.h"
@@ -530,6 +532,50 @@ static int test_postmortem_tools_dispatch(void)
 
         seed_tape_close(tape);
         test_rm_rf_recursive(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Security regression: zcl_replay_exec re-dispatches through
+ * mcp_router_dispatch, which bypasses the middleware auth-tier and
+ * destructive rate-limit checks. Replaying a destructive tool must be
+ * refused so a normal-tier caller can't launder a destructive action
+ * through the replay buffer, and zcl_replay_exec itself must be flagged
+ * destructive so the middleware gates it. */
+static int test_zcl_replay_exec_refuses_destructive(void)
+{
+    int failures = 0;
+    TEST("replay_exec is destructive-flagged and refuses destructive replay") {
+        register_all();
+
+        /* zcl_replay_exec itself is gated by the destructive tier. */
+        const struct mcp_tool_route *self = mcp_router_find("zcl_replay_exec");
+        ASSERT(self != NULL);
+        ASSERT(self->flags & MCP_TOOL_FLAG_DESTRUCTIVE);
+
+        struct mcp_middleware mw;
+        mcp_middleware_init(&mw);
+        ASSERT(mcp_middleware_is_destructive(&mw, "zcl_replay_exec"));
+
+        /* Seed the replay ring with a destructive tool call, then try to
+         * replay it — it must be refused, not re-executed. */
+        mcp_replay_init();
+        mcp_replay_record("zcl_metrics_reset", "{}", "{}", 100, false);
+        size_t n = mcp_replay_count();
+        ASSERT(n >= 1);
+
+        char args_src[64];
+        snprintf(args_src, sizeof(args_src), "{\"index\":%zu}", n - 1);
+        struct json_value args = {0};
+        ASSERT(json_read(&args, args_src, strlen(args_src)));
+        char *body = mcp_router_dispatch("zcl_replay_exec", &args);
+        ASSERT(body != NULL);
+        ASSERT(contains(body, "AUTH_REQUIRED"));
+        ASSERT(contains(body, "destructive"));
+        free(body);
+        json_free(&args);
+
         PASS();
     } _test_next:;
     return failures;
@@ -4043,6 +4089,7 @@ int test_mcp_controllers(void)
     failures += test_zcl_peer_incidents_falls_back_to_dumpstate();
     failures += test_zcl_bootstrapstatus_exposes_beta6_contract();
     failures += test_meta_tools_in_ops_domain();
+    failures += test_zcl_replay_exec_refuses_destructive();
     failures += test_zcl_logtail_handles_null_eventlog_rpc();
     failures += test_tools_list_json_well_formed();
     failures += test_input_schema_for_zcl_getblock();
