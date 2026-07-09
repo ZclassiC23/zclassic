@@ -375,11 +375,14 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
     size_t max = buf_max;
     size_t off = 0;
 
+    sqlite3 *db = NULL;
     char db_path[1024];
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
-    sqlite3 *db = NULL;
-    int open_rc = sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL);
-    if (open_rc != SQLITE_OK) {
+    if (!explorer_open_readonly_db(datadir, &db)) {
+        /* explorer_open_readonly_db() already ran the real open attempt
+         * and closed/NULLed db on failure; re-open here only to recover
+         * the sqlite rc/errmsg for the diagnostic below. */
+        int open_rc = sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL);
         LOG_WARN("explorer",
                  "Stats: failed to open %s: %s (rc=%d)",
                  db_path, db ? sqlite3_errmsg(db) : "null", open_rc);
@@ -388,7 +391,6 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
     }
     sqlite3_exec(db, "PRAGMA mmap_size=268435456", NULL, NULL, NULL);
     sqlite3_exec(db, "PRAGMA query_only=ON", NULL, NULL, NULL);
-    sqlite3_busy_timeout(db, 30000);
 
     /* ════════════════════════════════════════════════════════
      *  PHASE 1: Gather all data with minimal queries
