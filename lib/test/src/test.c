@@ -34,7 +34,9 @@ int main(int argc, char **argv)
                 strcmp(name, "simnet_wire_peer_slowloris") == 0 ||
                 strcmp(name, "simnet_wire_mixed_scenario") == 0 ||
                 strcmp(name, "simnet_wire_peer_invalid_block") == 0 ||
-                strcmp(name, "simnet_wire_peer_invalid_header") == 0) {
+                strcmp(name, "simnet_wire_peer_invalid_header") == 0 ||
+                strcmp(name, "simnet_wire_partition_recovery") == 0 ||
+                strcmp(name, "simnet_wire_partition_survivor") == 0) {
                 continue;
             }
             simnet_wire_args = false;
@@ -70,6 +72,12 @@ int main(int argc, char **argv)
                     } else if (strcmp(name, "simnet_wire_peer_invalid_header") == 0) {
                         extern int test_simnet_wire_peer_invalid_header(void);
                         failures += test_simnet_wire_peer_invalid_header();
+                    } else if (strcmp(name, "simnet_wire_partition_recovery") == 0) {
+                        extern int test_simnet_wire_partition_recovery(void);
+                        failures += test_simnet_wire_partition_recovery();
+                    } else if (strcmp(name, "simnet_wire_partition_survivor") == 0) {
+                        extern int test_simnet_wire_partition_survivor(void);
+                        failures += test_simnet_wire_partition_survivor();
                     }
                 }
             }

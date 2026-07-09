@@ -366,6 +366,176 @@ static bool sw_run_invalid_header(
     return ok;
 }
 
+/* Step D1 — per-link partition/recovery. Models "the NUT loses its
+ * connection to some peers while others stay reachable" using the
+ * existing wire_link.open + WIRE_EVENT_OPEN/CLOSE plumbing (F1 in
+ * docs/work/wire-next-wave-specs.md). Egress is pinned to peer slot 0
+ * (simnet_wire.c simnet_wire_drain_nut_send), so peer 0 is the only
+ * link whose closure is directly observable via ping/pong; other slots
+ * are ingress-only adversarial byte sources feeding the same p2p_node
+ * (F0). This test closes peer 0 directly via simnet_wire_partition_peer
+ * (manual, not scripted) while an attacker FLOOD peer stays open on
+ * slot 1, confirms no silent halt (no PERMANENT blocker) during the
+ * outage, then reopens peer 0 and proves recovery with a fresh
+ * ping/pong round-trip — mirroring sw_run_slowloris's recovery-nonce
+ * pattern. */
+static bool sw_run_partition_recovery(uint64_t seed, uint64_t *out_fp,
+                                      struct simnet_wire_stats *out_stats)
+{
+    blocker_reset_for_testing();
+    struct wire_scenario_peer peers[] = {
+        { SIMNET_WIRE_PEER_FLOOD, 1 },
+    };
+    struct wire_scenario scenario = {
+        .master_seed = seed,
+        .peers = peers,
+        .peer_kind_count = sizeof(peers) / sizeof(peers[0]),
+        .honest_peer_count = 1,
+    };
+    struct simnet_wire *wire = simnet_wire_create_scenario(&scenario);
+    if (!wire)
+        return false;
+
+    const uint64_t nonce_before = 0x5052454341534531ULL;
+    const uint64_t nonce_after = 0x504f535443415345ULL;
+
+    /* Baseline: honest peer 0 completes handshake and round-trips a
+     * ping while the attacker on slot 1 (FLOOD) shares the connection. */
+    bool ok = simnet_wire_run(wire, 512, 0) &&
+              simnet_wire_peer_handshake_complete(wire, 0) &&
+              simnet_wire_peer_send_ping(wire, 0, nonce_before) &&
+              simnet_wire_run(wire, 512, 128) &&
+              simnet_wire_peer_pong_received(wire, 0, nonce_before);
+
+    /* Partition the NUT's only egress-visible connection (peer 0) while
+     * the attacker byte source on peer 1 stays open (link.open
+     * untouched). Frames the NUT still queues for peer 0 are silently
+     * dropped by the closed link (simnet_wire_drain_nut_send), matching
+     * a real network partition rather than a buffered outage. */
+    ok = ok && simnet_wire_partition_peer(wire, 0, true);
+    ok = ok && simnet_wire_run(wire, 256, 0);
+
+    /* No-silent-halt check: the typed blocker registry
+     * (simnet_wire_monitor_blockers, run every tick via
+     * simnet_wire_monitor_after_tick) must show no unexpected PERMANENT
+     * blocker while the honest link is down. */
+    struct simnet_wire_stats mid;
+    memset(&mid, 0, sizeof(mid));
+    ok = ok && simnet_wire_get_stats(wire, &mid) &&
+         mid.no_unexpected_permanent_blocker && !mid.monitor_failed &&
+         mid.peers_open == 1; /* only the attacker's link remains open */
+
+    /* Reopen peer 0 and prove recovery with a fresh ping/pong. */
+    ok = ok && simnet_wire_partition_peer(wire, 0, false);
+    ok = ok && simnet_wire_run(wire, 256, 0) &&
+         simnet_wire_peer_send_ping(wire, 0, nonce_after) &&
+         simnet_wire_run(wire, 512, 128) &&
+         simnet_wire_peer_pong_received(wire, 0, nonce_after);
+
+    struct simnet_wire_stats st;
+    memset(&st, 0, sizeof(st));
+    if (simnet_wire_get_stats(wire, &st)) {
+        if (out_stats)
+            *out_stats = st;
+        if (out_fp)
+            *out_fp = st.fingerprint;
+    }
+    ok = ok &&
+         sw_stats_monitors_ok(&st) &&
+         st.max_recv_msg_count <= MAX_RECV_MESSAGES &&
+         st.peers_open == 2 &&
+         st.pong_received;
+
+    simnet_wire_free(wire);
+    return ok;
+}
+
+/* Scripted-timeline variant: exercises wire_scenario.partitions[] /
+ * simnet_wire_create_scenario() end to end instead of manual
+ * simnet_wire_partition_peer() calls. A 3-of-4 majority (peers 1-3) close
+ * at tick 100 and reopen at tick 180 while the honest survivor (peer 0,
+ * the only egress-visible link) is never touched.
+ *
+ * Peers 1-3 use SIMNET_WIRE_PEER_ECLIPSE — a kind this harness has no
+ * traffic generator for (simnet_wire_start_peer_kind() routes it to
+ * wire_mark_not_implemented(), which sets no link state and enqueues
+ * nothing) — as an inert "connected but silent" placeholder, opened
+ * manually right after creation. This is deliberate, not a shortcut: per
+ * F0 in docs/work/wire-next-wave-specs.md, every wire_peer slot's
+ * ingress bytes land in the ONE shared p2p_node parser, which keeps a
+ * single partial-message reassembly buffer. Two things independently
+ * corrupt that shared buffer if used here instead: (a) several
+ * *simultaneous* multi-tick-draining streams (e.g. 3 concurrent FLOOD or
+ * SLOWLORIS peers) interleave unrelated peers' bytes mid-frame, and (b)
+ * SIMNET_WIRE_MALFORMED_BAD_MAGIC / _OVERSIZED make the lower-layer
+ * p2p_node_receive_bytes() call itself return false, which
+ * simnet_wire_pump_to_nut() treats as harness-fatal
+ * (LOG_FAIL("NUT rejected inbound bytes")) — a real, pre-existing gap in
+ * this harness (only BAD_CHECKSUM is exercised by the existing
+ * sw_run_malformed test), unrelated to partitioning and out of D1's
+ * scope to fix. Silent ECLIPSE placeholders sidestep both landmines
+ * while still exercising the open/close plumbing under multi-peer load.
+ *
+ * simnet_wire_idle() treats an unfired scripted partition as pending
+ * work so the run does not exit before the timeline completes, and the
+ * permanent-blocker monitor runs every tick throughout the
+ * majority-closed window. After the script finishes, the survivor still
+ * round-trips a fresh ping — proving the harness kept making progress on
+ * the honest link the whole time. */
+static bool sw_run_partition_survivor(uint64_t seed, uint64_t *out_fp,
+                                      struct simnet_wire_stats *out_stats)
+{
+    blocker_reset_for_testing();
+    struct wire_scenario_peer peers[] = {
+        { SIMNET_WIRE_PEER_ECLIPSE, 3 },
+    };
+    struct wire_scenario_partition partitions[] = {
+        { 1, 100, 80 },
+        { 2, 100, 80 },
+        { 3, 100, 80 },
+    };
+    struct wire_scenario scenario = {
+        .master_seed = seed,
+        .peers = peers,
+        .peer_kind_count = sizeof(peers) / sizeof(peers[0]),
+        .honest_peer_count = 1,
+        .partitions = partitions,
+        .partition_count = sizeof(partitions) / sizeof(partitions[0]),
+    };
+    struct simnet_wire *wire = simnet_wire_create_scenario(&scenario);
+    if (!wire)
+        return false;
+
+    bool ok = simnet_wire_partition_peer(wire, 1, false) &&
+              simnet_wire_partition_peer(wire, 2, false) &&
+              simnet_wire_partition_peer(wire, 3, false) &&
+              simnet_wire_run(wire, 4096, 0) &&
+              simnet_wire_peer_handshake_complete(wire, 0);
+
+    const uint64_t nonce = 0x5355525649564f52ULL;
+    ok = ok &&
+         simnet_wire_peer_send_ping(wire, 0, nonce) &&
+         simnet_wire_run(wire, 1024, 128) &&
+         simnet_wire_peer_pong_received(wire, 0, nonce);
+
+    struct simnet_wire_stats st;
+    memset(&st, 0, sizeof(st));
+    if (simnet_wire_get_stats(wire, &st)) {
+        if (out_stats)
+            *out_stats = st;
+        if (out_fp)
+            *out_fp = st.fingerprint;
+    }
+    ok = ok &&
+         sw_stats_monitors_ok(&st) &&
+         !st.nut_disconnected &&
+         st.peers_open == 4 && /* every scripted link reopened by the end */
+         st.pong_received;
+
+    simnet_wire_free(wire);
+    return ok;
+}
+
 int test_simnet_wire_peer_malformed_frame(void)
 {
     printf("\n=== simnet_wire malformed frame peer ===\n");
@@ -545,6 +715,50 @@ int test_simnet_wire_peer_invalid_header(void)
     return failures;
 }
 
+int test_simnet_wire_partition_recovery(void)
+{
+    printf("\n=== simnet_wire partition recovery (D1, manual API) ===\n");
+    int failures = 0;
+    uint64_t fp_a = 0;
+    uint64_t fp_b = 0;
+    struct simnet_wire_stats st;
+    memset(&st, 0, sizeof(st));
+
+    bool a = sw_run_partition_recovery(0x571A00000000d001ULL, &fp_a, &st);
+    bool b = sw_run_partition_recovery(0x571A00000000d001ULL, &fp_b, NULL);
+    SW_CHECK("wire partition: honest link closes with no silent halt, "
+             "reopens and recovers pong", a);
+    SW_CHECK("wire partition: same-seed fingerprint deterministic",
+             a && b && fp_a == fp_b);
+    printf("[wire partition recovery] fp=0x%016" PRIx64
+           " peers_open=%zu max_recv=%zu pong=%d\n",
+           fp_a, st.peers_open, st.max_recv_msg_count,
+           st.pong_received ? 1 : 0);
+    return failures;
+}
+
+int test_simnet_wire_partition_survivor(void)
+{
+    printf("\n=== simnet_wire partition survivor (D1, scripted timeline) ===\n");
+    int failures = 0;
+    uint64_t fp_a = 0;
+    uint64_t fp_b = 0;
+    struct simnet_wire_stats st;
+    memset(&st, 0, sizeof(st));
+
+    bool a = sw_run_partition_survivor(0x571A00000000d002ULL, &fp_a, &st);
+    bool b = sw_run_partition_survivor(0x571A00000000d002ULL, &fp_b, NULL);
+    SW_CHECK("wire partition: honest survivor keeps working through a "
+             "scripted majority-attacker-link closure", a);
+    SW_CHECK("wire partition: same-seed fingerprint deterministic",
+             a && b && fp_a == fp_b);
+    printf("[wire partition survivor] fp=0x%016" PRIx64
+           " peers_open=%zu max_recv=%zu pong=%d\n",
+           fp_a, st.peers_open, st.max_recv_msg_count,
+           st.pong_received ? 1 : 0);
+    return failures;
+}
+
 int test_simnet_wire(void)
 {
     printf("\n=== simnet_wire honest in-memory transport ===\n");
@@ -601,6 +815,8 @@ int test_simnet_wire(void)
     failures += test_simnet_wire_peer_flood();
     failures += test_simnet_wire_peer_slowloris();
     failures += test_simnet_wire_mixed_scenario();
+    failures += test_simnet_wire_partition_recovery();
+    failures += test_simnet_wire_partition_survivor();
     failures += test_simnet_wire_peer_invalid_block();
     failures += test_simnet_wire_peer_invalid_header();
 

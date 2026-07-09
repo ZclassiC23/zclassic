@@ -539,5 +539,37 @@ struct simnet_wire *simnet_wire_create_scenario(
         }
     }
     (void)scenario->duration_us;
+
+    if (scenario->partition_count > 0) {
+        if (!scenario->partitions) {
+            simnet_wire_free(wire);
+            LOG_NULL("simnet.wire.peer",
+                     "scenario partition_count>0 with NULL partitions");
+        }
+        wire->partitions = zcl_calloc(scenario->partition_count,
+                                      sizeof(*wire->partitions),
+                                      "simnet_wire_scenario_partitions");
+        if (!wire->partitions) {
+            simnet_wire_free(wire);
+            LOG_NULL("simnet.wire.peer", "OOM scenario partitions count=%zu",
+                     scenario->partition_count);
+        }
+        for (size_t i = 0; i < scenario->partition_count; i++) {
+            const struct wire_scenario_partition *src =
+                &scenario->partitions[i];
+            if (src->peer_id >= wire->peer_count) {
+                simnet_wire_free(wire);
+                LOG_NULL("simnet.wire.peer",
+                         "scenario partition peer_id=%zu out of range "
+                         "peer_count=%zu",
+                         src->peer_id, wire->peer_count);
+            }
+            wire->partitions[i].peer_id = src->peer_id;
+            wire->partitions[i].at_tick = src->at_tick;
+            wire->partitions[i].duration_ticks = src->duration_ticks;
+        }
+        wire->partition_count = scenario->partition_count;
+    }
+
     return wire;
 }
