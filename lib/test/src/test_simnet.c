@@ -28,6 +28,50 @@
     else { printf("FAIL\n"); failures++; } \
 } while (0)
 
+static void sim_test_p2pkh_script(struct script *sp, unsigned char seed)
+{
+    sp->data[0] = 0x76;  /* OP_DUP */
+    sp->data[1] = 0xa9;  /* OP_HASH160 */
+    sp->data[2] = 0x14;  /* push 20 */
+    for (int i = 0; i < 20; i++)
+        sp->data[3 + i] = (unsigned char)(seed + i);
+    sp->data[23] = 0x88; /* OP_EQUALVERIFY */
+    sp->data[24] = 0xac; /* OP_CHECKSIG */
+    sp->size = 25;
+}
+
+static bool sim_test_make_opreturn_spend(struct transaction *tx,
+                                         const struct uint256 *prev_txid,
+                                         uint32_t prev_n,
+                                         const uint8_t *opret,
+                                         size_t opret_len,
+                                         int64_t out_value,
+                                         unsigned char addr_seed)
+{
+    transaction_init(tx);
+    if (!prev_txid || !opret || opret_len == 0)
+        return false;
+    if (!transaction_alloc(tx, 1, 2))
+        return false;
+
+    tx->version = 1;
+    tx->vin[0].prevout.hash = *prev_txid;
+    tx->vin[0].prevout.n = prev_n;
+    {
+        uint8_t sig[] = {0x00, 0x00};
+        script_set(&tx->vin[0].script_sig, sig, sizeof(sig));
+    }
+    tx->vin[0].sequence = 0xFFFFFFFFu;
+
+    tx->vout[0].value = 0;
+    script_set(&tx->vout[0].script_pub_key, opret, opret_len);
+    tx->vout[1].value = out_value;
+    sim_test_p2pkh_script(&tx->vout[1].script_pub_key, addr_seed);
+
+    transaction_compute_hash(tx);
+    return true;
+}
+
 int test_simnet(void)
 {
     printf("\n=== simnet in-memory chain harness ===\n");
@@ -83,7 +127,27 @@ int test_simnet(void)
     SN_CHECK("a further coinbase mints on top of the spend block", minted2);
     SN_CHECK("second coinbase coin exists", simnet_coin_exists(&sim, &cb2_txid));
 
-    /* 5. Negative path: spending an absent coin fails cleanly (no crash). */
+    /* 5. Public arbitrary-tx mint: OP_RETURN is accepted by consensus and
+     *    pruned as unspendable while the transparent output remains live. */
+    struct transaction custom;
+    uint8_t opret[] = {0x6a, 0x04, 'S', 'I', 'M', '1'};
+    bool built_custom =
+        sim_test_make_opreturn_spend(&custom, &spend_txid, 0, opret,
+                                     sizeof(opret), 800000, 0x40);
+    struct uint256 custom_txid = built_custom ? custom.hash : (struct uint256){0};
+    SN_CHECK("build arbitrary OP_RETURN spend tx", built_custom);
+    bool minted_custom = built_custom && simnet_mint_txs(&sim, &custom, 1);
+    SN_CHECK("simnet_mint_txs accepts transparent+OP_RETURN block",
+             minted_custom);
+    SN_CHECK("arbitrary tx consumed its input",
+             minted_custom && !simnet_coin_exists(&sim, &spend_txid));
+    int64_t custom_value = 0;
+    SN_CHECK("arbitrary tx transparent output remains in coins view",
+             minted_custom &&
+             simnet_coin_value(&sim, &custom_txid, 1, &custom_value) &&
+             custom_value == 800000);
+
+    /* 6. Negative path: spending an absent coin fails cleanly (no crash). */
     struct uint256 bogus;
     memset(bogus.data, 0xAB, 32);
     struct uint256 unused;

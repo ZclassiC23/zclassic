@@ -47,6 +47,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stddef.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -77,6 +78,14 @@ void simnet_free(struct simnet *s);
  * non-NULL, receives the coinbase txid. Returns false (and logs the reject
  * reason) if the real validator rejects the block. */
 bool simnet_mint_coinbase(struct simnet *s, struct uint256 *out_cb_txid);
+
+/* Mint a new block containing the harness coinbase followed by caller-built
+ * transparent transactions. `txs[0..ntx)` may include OP_RETURN outputs and
+ * spends against the live in-RAM coins view. On a valid request ownership of
+ * each tx's allocated vin/vout arrays transfers to simnet; the caller must
+ * keep any needed txids before calling. Returns false (and logs) if the real
+ * validator rejects the block. */
+bool simnet_mint_txs(struct simnet *s, struct transaction *txs, size_t ntx);
 
 /* Mint a block that spends `in_txid`:`in_n` to one new output of
  * `out_value`, plus the block's own coinbase (vtx[0]). The block is minted
