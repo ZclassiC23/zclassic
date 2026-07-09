@@ -56,8 +56,13 @@ struct wire_link {
     struct wire_byte_ring to_nut;
     struct wire_byte_ring to_peer;
     bool open;
+    /* Per-tick byte budget (down_tokens/up_tokens) refilled to the cap
+     * (down_cap/up_cap) at the start of every tick. SIZE_MAX == unbounded,
+     * the default. See simnet_wire_set_link_bandwidth(). */
     size_t down_tokens;
     size_t up_tokens;
+    size_t down_cap;
+    size_t up_cap;
 };
 
 struct wire_event {
@@ -97,6 +102,22 @@ struct wire_peer {
     uint8_t *slowloris_frame;
     size_t slowloris_len;
     size_t slowloris_pos;
+
+    /* REPLAY (Step E): a valid frame is delivered once, retained, and then
+     * re-delivered verbatim after replay_delay ticks — exercises the node's
+     * idempotent handling of a duplicated announcement. */
+    uint8_t *replay_frame;
+    size_t replay_len;
+    uint64_t replay_first_tick;
+    uint64_t replay_delay;
+    bool replay_sent;
+    bool replay_done;
+
+    /* REORDER (Step E): two block-announcement frames delivered in reversed
+     * causal order (the height N+1 announcement strictly before height N),
+     * distinct from the transport's latency-jitter reordering. */
+    uint64_t reorder_step;
+    bool reorder_done;
 };
 
 struct simnet_wire_monitor {
@@ -164,6 +185,8 @@ struct simnet_wire {
     uint64_t ticks;
     uint64_t delivered_to_nut_bytes;
     uint64_t delivered_to_peer_bytes;
+    uint64_t last_delivered_to_nut;
+    uint64_t max_deliver_to_nut_per_tick;
     uint64_t not_implemented_peers;
     struct simnet_wire_monitor monitor;
     struct simnet_wire_event_counts events;

@@ -33,6 +33,7 @@ enum simnet_wire_peer_kind {
     SIMNET_WIRE_PEER_REPLAY = 8,
     SIMNET_WIRE_PEER_ECLIPSE = 9,
     SIMNET_WIRE_PEER_FUZZ = 10,
+    SIMNET_WIRE_PEER_REORDER = 11,
 };
 
 enum simnet_wire_malformed_case {
@@ -79,6 +80,7 @@ struct simnet_wire_stats {
     uint64_t ticks;
     uint64_t delivered_to_nut_bytes;
     uint64_t delivered_to_peer_bytes;
+    uint64_t max_deliver_to_nut_per_tick;
     uint64_t fingerprint;
     uint64_t rng_count;
     uint64_t checksum_fail_events;
@@ -163,6 +165,16 @@ bool simnet_wire_peer_stop_adversary(struct simnet_wire *wire,
  * other slot cuts an ingress-only byte source while peer 0 stays live. */
 bool simnet_wire_partition_peer(struct simnet_wire *wire, size_t peer_id,
                                 bool closed);
+
+/* Step E bandwidth shaping. Sets a per-tick byte budget on peer_id's link:
+ * at most down_cap bytes are delivered INTO the NUT and at most up_cap
+ * bytes drained OUT of the NUT per tick. SIZE_MAX means unbounded (the
+ * default). The budget refills to the cap at the start of every tick, so a
+ * small cap throttles an otherwise-unbounded FLOOD to <= down_cap
+ * bytes/tick (observable via simnet_wire_stats.max_deliver_to_nut_per_tick).
+ * Tick-keyed only — no wall-clock. */
+bool simnet_wire_set_link_bandwidth(struct simnet_wire *wire, size_t peer_id,
+                                    size_t down_cap, size_t up_cap);
 
 bool simnet_wire_run(struct simnet_wire *wire, uint64_t max_ticks,
                      uint64_t stuck_guard);

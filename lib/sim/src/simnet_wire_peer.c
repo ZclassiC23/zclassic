@@ -353,7 +353,9 @@ bool simnet_wire_start_peer_kind(struct simnet_wire *wire, size_t peer_id,
     if (kind == SIMNET_WIRE_PEER_BAD_HANDSHAKE)
         return wire_start_bad_handshake(wire, peer_id);
     if (kind == SIMNET_WIRE_PEER_FLOOD ||
-        kind == SIMNET_WIRE_PEER_SLOWLORIS)
+        kind == SIMNET_WIRE_PEER_SLOWLORIS ||
+        kind == SIMNET_WIRE_PEER_REPLAY ||
+        kind == SIMNET_WIRE_PEER_REORDER)
         return wire_start_stream_adversary(wire, peer_id, kind);
     if (kind == SIMNET_WIRE_PEER_INVALID_BLOCK)
         return simnet_wire_start_invalid_block_peer(
@@ -490,6 +492,113 @@ static bool wire_tick_slowloris(struct simnet_wire *wire, size_t peer_id,
     return true;
 }
 
+/* Build a one-item `inv` frame announcing (type, hash). Used by the REPLAY
+ * and REORDER adversaries to emit real, well-formed block/tx announcements. */
+static bool wire_build_single_inv(struct simnet_wire *wire, int type,
+                                  const struct uint256 *hash,
+                                  uint8_t **out, size_t *out_len)
+{
+    if (!wire || !hash || !out || !out_len)
+        LOG_FAIL("simnet.wire.peer", "invalid single inv request");
+    struct byte_stream s;
+    stream_init(&s, 64);
+    struct inv_item inv;
+    inv_item_init_typed(&inv, type, hash);
+    bool ok = stream_write_compact_size(&s, 1) &&
+              inv_item_serialize(&inv, &s) &&
+              simnet_wire_frame(wire, "inv", s.data, s.size, out, out_len);
+    stream_free(&s);
+    return ok;
+}
+
+/* Deterministic 32-byte hash for a labelled announcement height (no
+ * wall-clock, no external entropy — derived purely from the peer's
+ * child_seed so the same seed always produces the same reorder scenario
+ * and fingerprint). */
+static void wire_labelled_hash(uint64_t seed, uint64_t height,
+                               struct uint256 *out)
+{
+    for (size_t i = 0; i < sizeof(out->data) / sizeof(uint64_t); i++) {
+        uint64_t v = simnet_wire_splitmix64_value(
+            seed ^ (height * 0x9E3779B97F4A7C15ULL) ^ (uint64_t)i);
+        memcpy(out->data + i * sizeof(uint64_t), &v, sizeof(v));
+    }
+}
+
+/* REPLAY: deliver one valid tx announcement, retain it, and re-deliver it
+ * verbatim after replay_delay ticks. Proves the node handles a duplicated
+ * announcement idempotently (no consensus change, no permanent blocker,
+ * no disconnect) — the monitors enforce those invariants. */
+static bool wire_tick_replay(struct simnet_wire *wire, size_t peer_id,
+                             bool *progress)
+{
+    struct wire_peer *peer = &wire->peers[peer_id];
+    if (peer->replay_done)
+        return true;
+    if (!wire_nut_handshake_complete(wire))
+        return true;
+    if (!peer->replay_sent) {
+        struct uint256 hash;
+        wire_random_bytes(hash.data, sizeof(hash.data));
+        if (!wire_build_single_inv(wire, MSG_TX, &hash, &peer->replay_frame,
+                                   &peer->replay_len))
+            return false;
+        if (!simnet_wire_deliver_raw_now(wire, peer_id, peer->replay_frame,
+                                         peer->replay_len))
+            return false;
+        peer->replay_sent = true;
+        peer->replay_first_tick = wire->ticks;
+        peer->replay_delay = 2u + (peer->child_seed % 4u);
+        *progress = true;
+        return true;
+    }
+    if (wire->ticks >= peer->replay_first_tick + peer->replay_delay) {
+        /* Re-send the EXACT same bytes — a verbatim replay. */
+        if (!simnet_wire_deliver_raw_now(wire, peer_id, peer->replay_frame,
+                                         peer->replay_len))
+            return false;
+        peer->replay_done = true;
+        *progress = true;
+    }
+    return true;
+}
+
+/* REORDER: deliver two block announcements in reversed causal order — the
+ * height N+1 inv strictly before the height N inv, on separate ticks. This
+ * is an explicit, deterministic causal reversal, distinct from the
+ * transport's latency-jitter reordering. The node must tolerate it with no
+ * monitor violation. */
+static bool wire_tick_reorder(struct simnet_wire *wire, size_t peer_id,
+                              bool *progress)
+{
+    struct wire_peer *peer = &wire->peers[peer_id];
+    if (peer->reorder_done)
+        return true;
+    if (!wire_nut_handshake_complete(wire))
+        return true;
+
+    /* step 0 -> height N+1 (delivered FIRST); step 1 -> height N. */
+    uint64_t height = peer->reorder_step == 0 ? 1u : 0u;
+    struct uint256 hash;
+    wire_labelled_hash(peer->child_seed, height, &hash);
+
+    uint8_t *frame = NULL;
+    size_t frame_len = 0;
+    if (!wire_build_single_inv(wire, MSG_BLOCK, &hash, &frame, &frame_len))
+        return false;
+    bool ok = simnet_wire_deliver_raw_now(wire, peer_id, frame, frame_len);
+    free(frame);
+    if (!ok)
+        return false;
+
+    if (peer->reorder_step == 0)
+        peer->reorder_step = 1;
+    else
+        peer->reorder_done = true;
+    *progress = true;
+    return true;
+}
+
 bool simnet_wire_peer_tick(struct simnet_wire *wire, size_t peer_id,
                            bool *progress)
 {
@@ -500,6 +609,10 @@ bool simnet_wire_peer_tick(struct simnet_wire *wire, size_t peer_id,
         return wire_tick_flood(wire, peer_id, progress);
     if (peer->kind == SIMNET_WIRE_PEER_SLOWLORIS)
         return wire_tick_slowloris(wire, peer_id, progress);
+    if (peer->kind == SIMNET_WIRE_PEER_REPLAY)
+        return wire_tick_replay(wire, peer_id, progress);
+    if (peer->kind == SIMNET_WIRE_PEER_REORDER)
+        return wire_tick_reorder(wire, peer_id, progress);
     if (peer->kind == SIMNET_WIRE_PEER_INVALID_BLOCK ||
         peer->kind == SIMNET_WIRE_PEER_INVALID_HEADER)
         return simnet_wire_byzantine_tick(wire, peer_id, progress);
