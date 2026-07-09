@@ -17,8 +17,10 @@
 #include "test/test_helpers.h"
 
 #include "models/explorer_index.h"
+#include "models/znam.h"
 #include "sim/simnet.h"
 #include "core/uint256.h"
+#include "znam/znam.h"
 #include "zslp/slp.h"
 
 #include <stdio.h>
@@ -93,6 +95,32 @@ static bool sim_test_make_opreturn_spend(struct transaction *tx,
                                                 seeds, 1);
 }
 
+static bool sim_test_make_p2pkh_spend(struct transaction *tx,
+                                      const struct uint256 *prev_txid,
+                                      uint32_t prev_n, int64_t out_value,
+                                      unsigned char addr_seed)
+{
+    transaction_init(tx);
+    if (!prev_txid)
+        return false;
+    if (!transaction_alloc(tx, 1, 1))
+        return false;
+
+    tx->version = 1;
+    tx->vin[0].prevout.hash = *prev_txid;
+    tx->vin[0].prevout.n = prev_n;
+    {
+        uint8_t sig[] = {0x00, 0x00};
+        script_set(&tx->vin[0].script_sig, sig, sizeof(sig));
+    }
+    tx->vin[0].sequence = 0xFFFFFFFFu;
+    tx->vout[0].value = out_value;
+    sim_test_p2pkh_script(&tx->vout[0].script_pub_key, addr_seed);
+
+    transaction_compute_hash(tx);
+    return true;
+}
+
 static void sim_test_hex_bytes(const uint8_t *data, size_t len,
                                char *out, size_t out_len)
 {
@@ -133,6 +161,35 @@ static int64_t sim_test_transfer_amount(
             return xfers[i].amount;
     }
     return -1;
+}
+
+static bool sim_test_index_block(struct node_db *ndb,
+                                 const struct transaction *txs, size_t ntx,
+                                 int height, unsigned char hash_seed)
+{
+    if (!ndb || !ndb->open || !txs || ntx == 0)
+        return false;
+
+    struct block blk;
+    block_init(&blk);
+    blk.vtx = (struct transaction *)txs;
+    blk.num_vtx = ntx;
+
+    struct uint256 bhash;
+    memset(bhash.data, hash_seed, sizeof(bhash.data));
+    struct block_index pindex;
+    block_index_init(&pindex);
+    pindex.nHeight = height;
+    pindex.phashBlock = &bhash;
+
+    uint8_t prev_receipt[32] = {0};
+    uint8_t out_receipt[32];
+    bool ok = explorer_index_block(ndb, &blk, &pindex, prev_receipt,
+                                   out_receipt, NULL, NULL);
+
+    blk.vtx = NULL;
+    blk.num_vtx = 0;
+    return ok;
 }
 
 int test_simnet(void)
@@ -281,6 +338,8 @@ int test_simnet(void)
                                              send_values, send_seeds, 2);
     bool copied_slp_send =
         built_slp_send && transaction_copy(&slp_send_projection, &slp_send);
+    struct uint256 slp_send_txid =
+        built_slp_send ? slp_send.hash : (struct uint256){0};
     SN_CHECK("build SLP SEND tx", built_slp_send && copied_slp_send);
     bool minted_slp_send =
         built_slp_send && copied_slp_send &&
@@ -311,7 +370,86 @@ int test_simnet(void)
     if (zslp_open)
         node_db_close(&zslp_db);
 
-    /* 7. Negative path: spending an absent coin fails cleanly (no crash). */
+    /* 7. ZNAM overlay slice: real ZNAM REGISTER builder, simnet acceptance,
+     *    explorer owner derivation from the indexed funding output, and
+     *    model-backed name resolution. */
+    struct node_db znam_db;
+    memset(&znam_db, 0, sizeof(znam_db));
+    bool znam_open = node_db_open(&znam_db, ":memory:");
+    SN_CHECK("ZNAM projection db opens", znam_open);
+
+    struct transaction znam_owner_fund;
+    struct transaction znam_owner_fund_projection;
+    transaction_init(&znam_owner_fund_projection);
+    bool built_znam_owner_fund =
+        sim_test_make_p2pkh_spend(&znam_owner_fund, &slp_send_txid, 1,
+                                  250000, 0xC0);
+    bool copied_znam_owner_fund =
+        built_znam_owner_fund &&
+        transaction_copy(&znam_owner_fund_projection, &znam_owner_fund);
+    struct uint256 znam_owner_fund_txid =
+        built_znam_owner_fund ? znam_owner_fund.hash : (struct uint256){0};
+    SN_CHECK("build ZNAM owner funding tx",
+             built_znam_owner_fund && copied_znam_owner_fund);
+    bool minted_znam_owner_fund =
+        built_znam_owner_fund && copied_znam_owner_fund &&
+        simnet_mint_txs(&sim, &znam_owner_fund, 1);
+    int znam_owner_fund_height = simnet_tip_height(&sim);
+    SN_CHECK("mint ZNAM owner funding tx through simnet",
+             minted_znam_owner_fund);
+    bool indexed_znam_owner_fund =
+        znam_open && minted_znam_owner_fund &&
+        sim_test_index_block(&znam_db, &znam_owner_fund_projection, 1,
+                             znam_owner_fund_height, 0xD1);
+    SN_CHECK("index ZNAM owner funding output", indexed_znam_owner_fund);
+
+    uint8_t znam_script[512];
+    size_t znam_script_len =
+        znam_build_register(znam_script, sizeof(znam_script),
+                            "alice", ZNAM_TYPE_TADDR, "t1simtarget");
+    SN_CHECK("build real ZNAM REGISTER script", znam_script_len > 0);
+
+    struct transaction znam_register;
+    struct transaction znam_register_projection;
+    transaction_init(&znam_register_projection);
+    bool built_znam_register =
+        znam_script_len > 0 &&
+        sim_test_make_opreturn_spend(&znam_register, &znam_owner_fund_txid, 0,
+                                     znam_script, znam_script_len,
+                                     200000, 0xE0);
+    bool copied_znam_register =
+        built_znam_register &&
+        transaction_copy(&znam_register_projection, &znam_register);
+    SN_CHECK("build ZNAM REGISTER tx",
+             built_znam_register && copied_znam_register);
+    bool minted_znam_register =
+        built_znam_register && copied_znam_register &&
+        simnet_mint_txs(&sim, &znam_register, 1);
+    int znam_register_height = simnet_tip_height(&sim);
+    SN_CHECK("mint ZNAM REGISTER through simnet", minted_znam_register);
+    bool indexed_znam_register =
+        znam_open && minted_znam_register &&
+        sim_test_index_block(&znam_db, &znam_register_projection, 1,
+                             znam_register_height, 0xD2);
+    SN_CHECK("fold ZNAM REGISTER into name projection", indexed_znam_register);
+
+    struct znam_entry resolved;
+    memset(&resolved, 0, sizeof(resolved));
+    bool resolved_znam =
+        znam_open && db_znam_find(&znam_db, "alice", &resolved);
+    SN_CHECK("ZNAM projection resolves registered name",
+             resolved_znam && strcmp(resolved.name, "alice") == 0 &&
+             resolved.target_type == ZNAM_TYPE_TADDR &&
+             strcmp(resolved.target_value, "t1simtarget") == 0 &&
+             resolved.owner_address[0] != '\0' &&
+             resolved.reg_height == znam_register_height);
+
+    transaction_free(&znam_owner_fund_projection);
+    transaction_free(&znam_register_projection);
+    if (znam_open)
+        node_db_close(&znam_db);
+
+    /* 8. Negative path: spending an absent coin fails cleanly (no crash). */
     struct uint256 bogus;
     memset(bogus.data, 0xAB, 32);
     struct uint256 unused;
