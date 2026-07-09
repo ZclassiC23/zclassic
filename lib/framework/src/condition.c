@@ -477,19 +477,47 @@ void condition_engine_rebaseline_clocks(void)
     pthread_mutex_unlock(&g_condition_mu);
 }
 
+static bool condition_is_unresolved(const struct condition *c)
+{
+    int max_attempts = c->max_attempts > 0 ? c->max_attempts : 1;
+    bool active = atomic_load(&c->state.currently_active);
+    bool operator_needed =
+        atomic_load(&c->state.operator_needed_emitted) ||
+        atomic_load(&c->state.last_operator_needed_unix) > 0;
+    bool exhausted = atomic_load(&c->state.attempts) >= max_attempts;
+    return active && (operator_needed || exhausted);
+}
+
 int condition_engine_get_unresolved_count(void)
 {
     int n = 0;
     pthread_mutex_lock(&g_condition_mu);
     for (int i = 0; i < g_condition_count; i++) {
+        if (condition_is_unresolved(g_conditions[i]))
+            n++;
+    }
+    pthread_mutex_unlock(&g_condition_mu);
+    return n;
+}
+
+/* Same "unresolved" predicate as condition_engine_get_unresolved_count(),
+ * scoped to COND_CRITICAL. Callers that gate a HEAVY, broad remedy (e.g. the
+ * sticky_escalator's chain-recovery ladder, which can reach the
+ * reindex-chainstate rung) off "is anything unresolved" must not be tripped
+ * by a WARN-severity condition that owns its own bounded, self-contained
+ * remedy/cooldown (e.g. download_queue_starved's unbounded kick_local_sync
+ * re-arm) — that is a peer/bandwidth fault, never a chain-tip stall. Live
+ * 2026-07-09: download_queue_starved stayed active 8+ hours on a healthy,
+ * tip-synced node; once its own age-based operator-needed page latched, the
+ * unscoped count kept the sticky ladder cycling through 'reindex' every few
+ * minutes for no chain reason (see sticky_escalator.c apply_drive()). */
+int condition_engine_get_unresolved_critical_count(void)
+{
+    int n = 0;
+    pthread_mutex_lock(&g_condition_mu);
+    for (int i = 0; i < g_condition_count; i++) {
         const struct condition *c = g_conditions[i];
-        int max_attempts = c->max_attempts > 0 ? c->max_attempts : 1;
-        bool active = atomic_load(&c->state.currently_active);
-        bool operator_needed =
-            atomic_load(&c->state.operator_needed_emitted) ||
-            atomic_load(&c->state.last_operator_needed_unix) > 0;
-        bool exhausted = atomic_load(&c->state.attempts) >= max_attempts;
-        if (active && (operator_needed || exhausted))
+        if (c->severity == COND_CRITICAL && condition_is_unresolved(c))
             n++;
     }
     pthread_mutex_unlock(&g_condition_mu);
