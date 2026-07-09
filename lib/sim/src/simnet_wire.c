@@ -264,22 +264,24 @@ static void simnet_wire_clear_event_observers(void)
     event_clear_observers(EV_HEADERS_REJECTED);
 }
 
-static bool simnet_wire_install_send_sentinel(struct simnet_wire *wire)
+static bool simnet_wire_install_send_sentinel(struct simnet_wire *wire,
+                                              size_t peer_id)
 {
-    if (!wire || !wire->nut)
-        LOG_FAIL("simnet.wire", "invalid sentinel install");
+    if (!wire || peer_id >= wire->peer_count || !wire->peers[peer_id].node)
+        LOG_FAIL("simnet.wire", "invalid sentinel install peer=%zu", peer_id);
+    struct p2p_node *node = wire->peers[peer_id].node;
     struct send_segment *sentinel =
         zcl_calloc(1, sizeof(*sentinel), "simnet_wire_send_sentinel");
     if (!sentinel)
         LOG_FAIL("simnet.wire", "OOM allocating send sentinel");
 
-    zcl_mutex_lock(&wire->nut->cs_send);
-    wire->nut->send_head = sentinel;
-    wire->nut->send_tail = sentinel;
-    wire->nut->send_offset = 0;
-    zcl_mutex_unlock(&wire->nut->cs_send);
+    zcl_mutex_lock(&node->cs_send);
+    node->send_head = sentinel;
+    node->send_tail = sentinel;
+    node->send_offset = 0;
+    zcl_mutex_unlock(&node->cs_send);
 
-    wire->send_sentinel = sentinel;
+    wire->peers[peer_id].send_sentinel = sentinel;
     return true;
 }
 
@@ -322,17 +324,33 @@ static bool simnet_wire_init_runtime(struct simnet_wire *wire, uint64_t seed)
     wire->mp.block_submit_ctx = wire;
     wire->mp.compact_block_submit = simnet_wire_stub_submit_block;
 
-    struct net_address addr;
-    simnet_wire_init_peer_addr(&addr, 0, wire->params);
-    wire->nut = p2p_node_create(&wire->nm, ZCL_INVALID_SOCKET, &addr,
-                                "simnet-wire-peer0", true);
-    if (!wire->nut)
-        LOG_FAIL("simnet.wire", "p2p_node_create failed");
-    wire->nut->services = NODE_NETWORK;
-    wire->nut->network_node = true;
-    wire->nut->relay_txes = true;
+    /* The per-peer p2p_node instances are created in simnet_wire_create()
+     * once each peer slot's address is initialized (D2); wire->nut is then
+     * aliased to peers[0].node. The msg_processor above is shared across
+     * every node — one context, N connections, exactly the real model. */
+    return true;
+}
 
-    return simnet_wire_install_send_sentinel(wire);
+/* D2: create one independent p2p_node per peer slot and capture its egress.
+ * Each node has its own recv/send queues, handshake state machine and ban
+ * scoring, and a distinct peer address so a ban on one connection never
+ * touches another (the property the eclipse test relies on). */
+static bool simnet_wire_create_peer_node(struct simnet_wire *wire,
+                                         size_t peer_id)
+{
+    if (!wire || peer_id >= wire->peer_count)
+        LOG_FAIL("simnet.wire", "invalid peer node create peer=%zu", peer_id);
+    struct wire_peer *peer = &wire->peers[peer_id];
+    char name[32];
+    snprintf(name, sizeof(name), "simnet-wire-peer%zu", peer_id);
+    peer->node = p2p_node_create(&wire->nm, ZCL_INVALID_SOCKET, &peer->addr,
+                                 name, true);
+    if (!peer->node)
+        LOG_FAIL("simnet.wire", "p2p_node_create failed peer=%zu", peer_id);
+    peer->node->services = NODE_NETWORK;
+    peer->node->network_node = true;
+    peer->node->relay_txes = true;
+    return simnet_wire_install_send_sentinel(wire, peer_id);
 }
 
 static bool simnet_wire_event_less(const struct wire_event *a,
@@ -636,7 +654,7 @@ static bool simnet_wire_pump_to_nut(struct simnet_wire *wire, size_t peer_id,
     if (!wire || peer_id >= wire->peer_count || !progress)
         LOG_FAIL("simnet.wire", "invalid ingress pump peer=%zu", peer_id);
     struct wire_peer *peer = &wire->peers[peer_id];
-    struct p2p_node *node = wire->nut;
+    struct p2p_node *node = peer->node;
 
     while (peer->link.open && !node->disconnect &&
            ring_available(&peer->link.to_nut) > 0) {
@@ -800,28 +818,32 @@ static bool simnet_wire_peer_process(struct simnet_wire *wire, size_t peer_id,
     return true;
 }
 
-static bool simnet_wire_drain_nut_send(struct simnet_wire *wire,
-                                       bool *progress)
+/* D2: drain each peer's OWN p2p_node send queue back to that peer's link
+ * (kills the old hardcoded peer_id=0). Routing is by node identity: the
+ * msg_processor appended each reply onto the node it was invoked for, so a
+ * node's egress belongs to exactly one peer. A closed link silently drops
+ * the segment (a real partition, not a buffered outage). */
+static bool simnet_wire_drain_peer_send(struct simnet_wire *wire,
+                                        size_t peer_id, bool *progress)
 {
-    if (!wire || !wire->nut || !wire->send_sentinel || !progress)
-        LOG_FAIL("simnet.wire", "invalid egress drain");
-    struct p2p_node *node = wire->nut;
+    struct wire_peer *peer = &wire->peers[peer_id];
+    struct p2p_node *node = peer->node;
+    if (!node || !peer->send_sentinel)
+        return true;
 
     zcl_mutex_lock(&node->cs_send);
-    while (wire->send_sentinel->next) {
-        struct send_segment *seg = wire->send_sentinel->next;
-        wire->send_sentinel->next = seg->next;
+    while (peer->send_sentinel->next) {
+        struct send_segment *seg = peer->send_sentinel->next;
+        peer->send_sentinel->next = seg->next;
         if (node->send_tail == seg)
-            node->send_tail = wire->send_sentinel;
+            node->send_tail = peer->send_sentinel;
         if (node->send_size >= seg->size)
             node->send_size -= seg->size;
         else
             node->send_size = 0;
         node->send_offset = 0;
 
-        size_t peer_id = 0;
-        if (wire->peer_count > 0 && wire->peers[peer_id].link.open) {
-            struct wire_peer *peer = &wire->peers[peer_id];
+        if (peer->link.open) {
             if (!ring_write(&peer->link.to_peer, seg->data, seg->size)) {
                 zcl_mutex_unlock(&node->cs_send);
                 return false;
@@ -835,9 +857,21 @@ static bool simnet_wire_drain_nut_send(struct simnet_wire *wire,
         }
         send_segment_free(seg);
     }
-    node->send_head = wire->send_sentinel;
-    node->send_tail = wire->send_sentinel;
+    node->send_head = peer->send_sentinel;
+    node->send_tail = peer->send_sentinel;
     zcl_mutex_unlock(&node->cs_send);
+    return true;
+}
+
+static bool simnet_wire_drain_nut_send(struct simnet_wire *wire,
+                                       bool *progress)
+{
+    if (!wire || !progress)
+        LOG_FAIL("simnet.wire", "invalid egress drain");
+    for (size_t i = 0; i < wire->peer_count; i++) {
+        if (!simnet_wire_drain_peer_send(wire, i, progress))
+            return false;
+    }
     return true;
 }
 
@@ -848,12 +882,13 @@ static uint64_t simnet_wire_progress_signature(const struct simnet_wire *wire)
     uint64_t h = wire->fingerprint ^ wire->queue_count;
     h ^= wire->delivered_to_nut_bytes << 7;
     h ^= wire->delivered_to_peer_bytes << 13;
-    if (wire->nut) {
-        h ^= (uint64_t)wire->nut->recv_msg_count << 21;
-        h ^= (uint64_t)wire->nut->send_size << 29;
-        h ^= wire->nut->disconnect ? 0xfeed0001ULL : 0;
-    }
     for (size_t i = 0; i < wire->peer_count; i++) {
+        const struct p2p_node *node = wire->peers[i].node;
+        if (node) {
+            h ^= (uint64_t)node->recv_msg_count << (21u + (i % 7u));
+            h ^= (uint64_t)node->send_size << (29u + (i % 3u));
+            h ^= node->disconnect ? (0xfeed0001ULL + i) : 0;
+        }
         h ^= ring_available(&wire->peers[i].link.to_nut) << (i % 17u);
         h ^= ring_available(&wire->peers[i].link.to_peer) << ((i + 5u) % 23u);
         h ^= wire->peers[i].saw_nut_pong ? (0xbeefULL + i) : 0;
@@ -914,33 +949,41 @@ void simnet_wire_mark_monitor_failed(struct simnet_wire *wire,
 
 static void simnet_wire_monitor_track_memory(struct simnet_wire *wire)
 {
-    if (!wire || !wire->nut)
+    if (!wire)
         return;
     struct simnet_wire_monitor *m = &wire->monitor;
-    struct p2p_node *node = wire->nut;
-    if (node->recv_msg_count > m->max_recv_msg_count)
-        m->max_recv_msg_count = node->recv_msg_count;
-    if (node->send_size > m->max_send_size)
-        m->max_send_size = node->send_size;
-    if (node->inventory_to_send_count > m->max_inventory_to_send)
-        m->max_inventory_to_send = node->inventory_to_send_count;
-    if (node->addr_to_send_count > m->max_addr_to_send)
-        m->max_addr_to_send = node->addr_to_send_count;
+    /* D2: every peer is now its own connection — the bounded-memory /
+     * no-silent-halt guarantees must hold across ALL of them, so track the
+     * max over each node, not just peer 0. */
+    for (size_t i = 0; i < wire->peer_count; i++) {
+        struct p2p_node *node = wire->peers[i].node;
+        if (!node)
+            continue;
+        if (node->recv_msg_count > m->max_recv_msg_count)
+            m->max_recv_msg_count = node->recv_msg_count;
+        if (node->send_size > m->max_send_size)
+            m->max_send_size = node->send_size;
+        if (node->inventory_to_send_count > m->max_inventory_to_send)
+            m->max_inventory_to_send = node->inventory_to_send_count;
+        if (node->addr_to_send_count > m->max_addr_to_send)
+            m->max_addr_to_send = node->addr_to_send_count;
 
-    if (node->recv_msg_count > MAX_RECV_MESSAGES) {
-        m->recv_queue_bounded = false;
-        simnet_wire_mark_monitor_failed(wire, "recv queue exceeded cap");
-    }
-    if (node->send_size > net_send_peer_bytes_cap() ||
-        node->inventory_to_send_count > MAX_INVENTORY_KNOWN ||
-        node->addr_to_send_count > MAX_ADDR_TO_SEND) {
-        m->memory_plateau_ok = false;
-        if (!m->warned_memory_growth) {
-            m->warned_memory_growth = true;
-            LOG_WARN("simnet.wire",
-                     "memory plateau warning send=%zu inv=%zu addr=%zu",
-                     node->send_size, node->inventory_to_send_count,
-                     node->addr_to_send_count);
+        if (node->recv_msg_count > MAX_RECV_MESSAGES) {
+            m->recv_queue_bounded = false;
+            simnet_wire_mark_monitor_failed(wire, "recv queue exceeded cap");
+        }
+        if (node->send_size > net_send_peer_bytes_cap() ||
+            node->inventory_to_send_count > MAX_INVENTORY_KNOWN ||
+            node->addr_to_send_count > MAX_ADDR_TO_SEND) {
+            m->memory_plateau_ok = false;
+            if (!m->warned_memory_growth) {
+                m->warned_memory_growth = true;
+                LOG_WARN("simnet.wire",
+                         "memory plateau warning peer=%zu send=%zu inv=%zu "
+                         "addr=%zu", i, node->send_size,
+                         node->inventory_to_send_count,
+                         node->addr_to_send_count);
+            }
         }
     }
 }
@@ -985,20 +1028,22 @@ static bool simnet_wire_monitor_consensus(struct simnet_wire *wire)
 
 static bool simnet_wire_monitor_ban_expectations(struct simnet_wire *wire)
 {
-    if (!wire || !wire->nut)
+    if (!wire)
         LOG_FAIL("simnet.wire", "invalid ban monitor");
-    bool expect = false;
+    /* D2: check each ban-expecting peer against its OWN node — a node that
+     * crossed the ban threshold must be disconnected and its address banned,
+     * independently of the other connections. */
     for (size_t i = 0; i < wire->peer_count; i++) {
-        if (wire->peers[i].ban_expected)
-            expect = true;
-    }
-    if (!expect || !peer_scoring_should_ban(wire->nut))
-        return true;
-    if (!wire->nut->disconnect ||
-        !is_banned(&wire->nm, &wire->nut->addr.svc.addr)) {
-        simnet_wire_mark_monitor_failed(wire,
-                                        "ban threshold did not disconnect");
-        return false;
+        struct wire_peer *peer = &wire->peers[i];
+        if (!peer->ban_expected || !peer->node ||
+            !peer_scoring_should_ban(peer->node))
+            continue;
+        if (!peer->node->disconnect ||
+            !is_banned(&wire->nm, &peer->node->addr.svc.addr)) {
+            simnet_wire_mark_monitor_failed(
+                wire, "ban threshold did not disconnect");
+            return false;
+        }
     }
     return true;
 }
@@ -1069,23 +1114,26 @@ static bool simnet_wire_idle(const struct simnet_wire *wire)
 {
     if (!wire || wire->queue_count > 0)
         return false;
-    if (wire->nut) {
-        if (wire->nut->send_size > 0)
+    /* D2: any node with a pending send or a COMPLETE queued recv message has
+     * real work; check all of them, not just peer 0. An INCOMPLETE
+     * head-of-queue message with no inbound bytes left to finish it (the
+     * queue + every peer ring are checked below, so if we reach here none
+     * are available) is a quiescent state, not activity —
+     * msg_process_messages() gates on net_message_complete() and cannot
+     * advance it, and no further bytes will arrive. Treating such a partial
+     * as "busy" spins the run to max_ticks. The GARBAGE_AFTER_VERACK
+     * bad-handshake sub-case is exactly this: the peer completes its own
+     * handshake then emits a 4-byte fragment that lands as an incomplete
+     * 24-byte header the node harmlessly parks in recv_msgs[0] before going
+     * silent (seeds 0xf/0x69/0x8e). */
+    for (size_t i = 0; i < wire->peer_count; i++) {
+        const struct p2p_node *node = wire->peers[i].node;
+        if (!node)
+            continue;
+        if (node->send_size > 0)
             return false;
-        /* Only a COMPLETE queued message is real pending work: it will be
-         * drained by msg_process_messages() next tick (progress). An
-         * INCOMPLETE head-of-queue message with no inbound bytes left to
-         * finish it (the queue + every peer ring are checked below, so if
-         * we reach here none are available) is a quiescent state, not
-         * activity — msg_process_messages() gates on net_message_complete()
-         * and cannot advance it, and no further bytes will arrive. Treating
-         * such a partial as "busy" spins the run to max_ticks. The
-         * GARBAGE_AFTER_VERACK bad-handshake sub-case is exactly this: the
-         * peer completes its own handshake then emits a 4-byte fragment
-         * that lands as an incomplete 24-byte header the node harmlessly
-         * parks in recv_msgs[0] before going silent (seeds 0xf/0x69/0x8e). */
-        if (wire->nut->recv_msg_count > 0 &&
-            net_message_complete(&wire->nut->recv_msgs[0]))
+        if (node->recv_msg_count > 0 &&
+            net_message_complete(&node->recv_msgs[0]))
             return false;
     }
     if (simnet_wire_scenario_partitions_pending(wire))
@@ -1142,8 +1190,13 @@ static bool simnet_wire_tick(struct simnet_wire *wire, bool *progress)
         if (!simnet_wire_pump_to_nut(wire, i, progress))
             return false;
     }
-    if (!msg_process_messages(&wire->mp, wire->nut))
-        LOG_FAIL("simnet.wire", "msg_process_messages failed");
+    /* D2: run the shared msg_processor once per node — each connection's
+     * recv queue is drained and its replies appended onto its own send
+     * queue, exercising the real multi-peer dispatch path. */
+    for (size_t i = 0; i < wire->peer_count; i++) {
+        if (!msg_process_messages(&wire->mp, wire->peers[i].node))
+            LOG_FAIL("simnet.wire", "msg_process_messages failed peer=%zu", i);
+    }
     if (!simnet_wire_drain_nut_send(wire, progress))
         return false;
     for (size_t i = 0; i < wire->peer_count; i++) {
@@ -1207,7 +1260,15 @@ struct simnet_wire *simnet_wire_create(size_t peer_count, uint64_t seed)
             simnet_wire_free(wire);
             LOG_NULL("simnet.wire", "peer ring init failed index=%zu", i);
         }
+        if (!simnet_wire_create_peer_node(wire, i)) {
+            simnet_wire_free(wire);
+            LOG_NULL("simnet.wire", "peer node create failed index=%zu", i);
+        }
     }
+
+    /* wire->nut is peer 0's connection — the one the single-connection
+     * call sites and simnet_wire_node() observe. */
+    wire->nut = wire->peers[0].node;
 
     if (!simnet_wire_tip_hash(wire, &wire->monitor.baseline_tip) ||
         !simnet_wire_coins_digest(wire, &wire->monitor.baseline_coins)) {
@@ -1224,8 +1285,19 @@ void simnet_wire_free(struct simnet_wire *wire)
         return;
 
     simnet_wire_clear_event_observers();
-    if (wire->nut)
-        p2p_node_free(wire->nut);
+    /* D2: each peer owns its own p2p_node (wire->nut aliases peers[0].node,
+     * so it is freed by the loop below — do NOT free it separately). The
+     * send_sentinel is the node's permanent send_head and is freed by
+     * p2p_node_free's send-list walk. */
+    if (wire->peers) {
+        for (size_t i = 0; i < wire->peer_count; i++) {
+            if (wire->peers[i].node) {
+                p2p_node_free(wire->peers[i].node);
+                wire->peers[i].node = NULL;
+            }
+        }
+    }
+    wire->nut = NULL;
     simnet_wire_byzantine_free(wire);
     if (wire->net_ready)
         net_manager_free(&wire->nm);
@@ -1324,17 +1396,20 @@ bool simnet_wire_run(struct simnet_wire *wire, uint64_t max_ticks,
 bool simnet_wire_peer_handshake_complete(const struct simnet_wire *wire,
                                          size_t peer_id)
 {
-    if (!wire || peer_id >= wire->peer_count || !wire->nut)
+    if (!wire || peer_id >= wire->peer_count)
         return false;
     const struct wire_peer *peer = &wire->peers[peer_id];
+    const struct p2p_node *node = peer->node;
+    if (!node)
+        return false;
     return peer->version_sent &&
            peer->verack_sent &&
            peer->saw_nut_version &&
            peer->saw_nut_verack &&
-           atomic_load(&wire->nut->state) >= PEER_HANDSHAKE_COMPLETE &&
-           wire->nut->version == PROTOCOL_VERSION &&
-           wire->nut->recv_version == PROTOCOL_VERSION &&
-           !wire->nut->disconnect;
+           atomic_load(&node->state) >= PEER_HANDSHAKE_COMPLETE &&
+           node->version == PROTOCOL_VERSION &&
+           node->recv_version == PROTOCOL_VERSION &&
+           !node->disconnect;
 }
 
 bool simnet_wire_peer_pong_received(const struct simnet_wire *wire,

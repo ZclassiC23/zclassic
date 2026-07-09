@@ -448,6 +448,7 @@ int test_simnet_wire_peer_replay(void);
 int test_simnet_wire_peer_reorder(void);
 int test_simnet_wire_peer_invalid_block(void);
 int test_simnet_wire_peer_invalid_header(void);
+int test_simnet_wire_eclipse(void);
 int test_simnet_txkit(void);
 int test_simnet_contract(void);
 int test_simnet_doublespend(void);
