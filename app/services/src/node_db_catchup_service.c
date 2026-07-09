@@ -53,6 +53,7 @@
 #include "coins/undo.h"
 #include "validation/chainstate.h"
 #include "validation/txmempool.h"
+#include "validation/process_block.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "sapling/sapling.h"
 #include "sapling/note_encryption.h"
@@ -750,6 +751,17 @@ int node_db_catchup_service_run(struct node_db *ndb,
             }
             tx_open = false;
             last_committed_height = h;
+            /* Persist the Sapling note-commitment frontier to the flat-file
+             * checkpoint (rate-limited to every
+             * SAPLING_CHECKPOINT_BLOCK_INTERVAL blocks). {h, block hash,
+             * root} are self-consistent here: the tree was just advanced to
+             * h by appending this block's outputs. A clean restart resumes
+             * replay from this height instead of re-folding from Sapling
+             * activation. */
+            if (pindex->phashBlock)
+                sapling_tree_flat_checkpoint_note(&sapling_tree, h,
+                                                  pindex->phashBlock->data,
+                                                  false);
             int64_t elapsed = (int64_t)platform_time_wall_time_t() - t_start;
             int rate = elapsed > 0 ? indexed / (int)elapsed : 0;
             printf("SQLite: %d/%d blocks (height %d, %d blk/s, %d wallet txs)\n",
@@ -822,6 +834,14 @@ int node_db_catchup_service_run(struct node_db *ndb,
             } else {
                 tx_open = false;
                 last_committed_height = last_indexed_height;
+                /* Force a fresh flat-file checkpoint at catchup completion
+                 * (including on reaching tip), so the next boot has a
+                 * checkpoint at the newest applied height. Guarded on a
+                 * resolvable tip block hash for the {height, hash, root} key. */
+                if (last_indexed_tip && last_indexed_tip->phashBlock)
+                    sapling_tree_flat_checkpoint_note(
+                        &sapling_tree, last_committed_height,
+                        last_indexed_tip->phashBlock->data, true);
             }
         }
     }

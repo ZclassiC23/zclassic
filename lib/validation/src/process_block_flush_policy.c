@@ -20,6 +20,7 @@
 #include "core/serialize.h"
 #include "core/utiltime.h"
 #include "event/event.h"
+#include "sapling/incremental_merkle_tree.h"
 #include "storage/coins_view_sqlite.h"
 #include "util/log_macros.h"
 
@@ -103,6 +104,72 @@ void set_sapling_checkpoint_datadir(const char *datadir)
                      "%s/sapling_tree_ckpt.dat", datadir);
     if (n < 0 || (size_t)n >= sizeof(g_sapling_ckpt_path))
         g_sapling_ckpt_path[0] = '\0';
+}
+
+/* ── Flat-file checkpoint write wiring + diagnostics ─────────────
+ *
+ * The load/resume side already existed; this is the previously-missing
+ * periodic WRITE. `g_blocks_since_flat_ckpt` counts note() calls; every
+ * SAPLING_CHECKPOINT_BLOCK_INTERVAL calls (or on `force`) the current tree
+ * is serialized to the flat file keyed by {height, block_hash, root}. */
+static _Atomic int64_t g_blocks_since_flat_ckpt = 0;
+static _Atomic int64_t g_ckpt_last_write_height = -1;
+static _Atomic int64_t g_ckpt_writes = 0;
+static _Atomic int64_t g_ckpt_write_fails = 0;
+static _Atomic int64_t g_ckpt_last_load_height = -1;
+static _Atomic int     g_ckpt_last_load_result = SAPLING_CKPT_LOAD_NONE;
+static char            g_ckpt_last_load_detail[32] = {0};
+
+bool sapling_tree_flat_checkpoint_note(
+    const struct incremental_merkle_tree *tree, int64_t height,
+    const uint8_t block_hash[32], bool force)
+{
+    if (!tree || g_sapling_ckpt_path[0] == '\0')
+        return false;
+
+    int64_t since = atomic_fetch_add(&g_blocks_since_flat_ckpt, 1) + 1;
+    if (!force && since < SAPLING_CHECKPOINT_BLOCK_INTERVAL)
+        return false;
+    atomic_store(&g_blocks_since_flat_ckpt, 0);
+
+    bool ok = sapling_tree_flush_checkpoint(tree, height, block_hash,
+                                            g_sapling_ckpt_path);
+    if (ok) {
+        atomic_store(&g_ckpt_last_write_height, height);
+        atomic_fetch_add(&g_ckpt_writes, 1);
+    } else {
+        atomic_fetch_add(&g_ckpt_write_fails, 1);
+        LOG_WARN("sapling_tree",
+                 "flat_checkpoint_note: write failed at h=%lld path=%s",
+                 (long long)height, g_sapling_ckpt_path);
+    }
+    return ok;
+}
+
+void sapling_ckpt_record_load(enum sapling_ckpt_load_result result,
+                              int64_t height, const char *detail)
+{
+    atomic_store(&g_ckpt_last_load_height, height);
+    atomic_store(&g_ckpt_last_load_result, (int)result);
+    if (detail) {
+        snprintf(g_ckpt_last_load_detail, sizeof(g_ckpt_last_load_detail),
+                 "%s", detail);
+    } else {
+        g_ckpt_last_load_detail[0] = '\0';
+    }
+}
+
+void sapling_ckpt_get_stats(struct sapling_ckpt_stats *out)
+{
+    if (!out) return;
+    out->last_write_height = atomic_load(&g_ckpt_last_write_height);
+    out->writes = atomic_load(&g_ckpt_writes);
+    out->write_fails = atomic_load(&g_ckpt_write_fails);
+    out->last_load_height = atomic_load(&g_ckpt_last_load_height);
+    out->last_load_result = atomic_load(&g_ckpt_last_load_result);
+    snprintf(out->last_load_detail, sizeof(out->last_load_detail), "%s",
+             g_ckpt_last_load_detail);
+    snprintf(out->path, sizeof(out->path), "%s", g_sapling_ckpt_path);
 }
 
 bool sapling_tree_persist_once(void)
