@@ -380,9 +380,9 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
     sqlite3 *db = NULL;
     int open_rc = sqlite3_open_v2(db_path, &db, SQLITE_OPEN_READONLY, NULL);
     if (open_rc != SQLITE_OK) {
-        printf("Stats: failed to open %s: %s (rc=%d)\n",
-               db_path, db ? sqlite3_errmsg(db) : "null", open_rc);
-        fflush(stdout);
+        LOG_WARN("explorer",
+                 "Stats: failed to open %s: %s (rc=%d)",
+                 db_path, db ? sqlite3_errmsg(db) : "null", open_rc);
         if (db) sqlite3_close(db);
         return 0;
     }
@@ -394,7 +394,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
      *  PHASE 1: Gather all data with minimal queries
      * ════════════════════════════════════════════════════════ */
 
-    printf("Stats: phase 1 — gathering data...\n"); fflush(stdout);
+    LOG_INFO("explorer", "Stats: phase 1 — gathering data...");
 
     /* ── 1a: Tip block ── */
     int tip = 0;
@@ -414,18 +414,19 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
                 if (bits > 0)
                     diff = explorer_difficulty_from_bits(bits);
             } else {
-                printf("Stats: tip query step failed: rc=%d %s\n",
-                       step_rc, sqlite3_errmsg(db)); fflush(stdout);
+                LOG_WARN("explorer",
+                         "Stats: tip query step failed: rc=%d %s",
+                         step_rc, sqlite3_errmsg(db));
             }
             sqlite3_finalize(s);
         } else {
-            printf("Stats: tip query prepare failed: rc=%d %s\n",
-                   prep_rc, sqlite3_errmsg(db)); fflush(stdout);
+            LOG_WARN("explorer",
+                     "Stats: tip query prepare failed: rc=%d %s",
+                     prep_rc, sqlite3_errmsg(db));
         }
     }
     if (tip <= 0) {
-        printf("Stats: no blocks (tip=%d, db=%s)\n", tip, db_path);
-        fflush(stdout);
+        LOG_WARN("explorer", "Stats: no blocks (tip=%d, db=%s)", tip, db_path);
         sqlite3_close(db);
         return 0;
     }
@@ -534,7 +535,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
         "SELECT count(*) FROM transactions WHERE is_coinbase=1");
 
     /* ── 1e: Sprout + Sapling — single-pass each ── */
-    printf("Stats: querying shielded pools...\n"); fflush(stdout);
+    LOG_INFO("explorer", "Stats: querying shielded pools...");
     struct shielded_stats sprout, sapling;
     query_shielded_stats(db, "sprout_value", &sprout);
     query_shielded_stats(db, "sapling_value", &sapling);
@@ -621,8 +622,8 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
     int64_t tip_age_secs = (now_wall > tip_time) ? now_wall - tip_time : 0;
 
     int64_t t_query_ms = (int64_t)platform_time_wall_time_t() - t_start_ms;
-    printf("Stats: phase 1 complete in %llds, building HTML...\n",
-        (long long)t_query_ms); fflush(stdout);
+    LOG_INFO("explorer", "Stats: phase 1 complete in %llds, building HTML...",
+        (long long)t_query_ms);
 
     /* ════════════════════════════════════════════════════════
      *  PHASE 2: Render HTML
@@ -751,8 +752,7 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
     APPEND(off, r, max, EXPLORER_FOOTER);
 
     sqlite3_close(db);
-    printf("Stats: built %zu bytes (tip=%d) in %llds total\n",
+    LOG_INFO("explorer", "Stats: built %zu bytes (tip=%d) in %llds total",
         off, tip, (long long)((int64_t)platform_time_wall_time_t() - t_start_ms));
-    fflush(stdout);
     return off;
 }

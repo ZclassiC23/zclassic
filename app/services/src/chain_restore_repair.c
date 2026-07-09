@@ -210,8 +210,9 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
             if (!active_chain_install_tip_slot(c, tip))
                 LOG_RETURN(0, "chain_restore",
                            "live tip install failed (tip_h=%d)", tip_h);
-            printf("[chain-restore] installed live tip without full "
-                   "active_chain walk: h=%d\n", tip_h);
+            LOG_INFO("chain_restore",
+                     "[chain-restore] installed live tip without full "
+                     "active_chain walk: h=%d", tip_h);
         } else {
             struct zcl_result cr = chain_restore_commit_tip_via_csr(
                     ms, tip, false, "rebuild_active_chain_full");
@@ -254,9 +255,10 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
     int pprev_walk_budget = tip_h + 1;
     for (struct block_index *p = tip; p != NULL; p = p->pprev) {
         if (--pprev_walk_budget < 0) {
-            printf("[chain-restore] stopped cyclic pprev walk during live boot: "
-                   "tip_h=%d deepest=%d populated=%d\n",
-                   tip_h, deepest, populated);
+            LOG_WARN("chain_restore",
+                     "[chain-restore] stopped cyclic pprev walk during live boot: "
+                     "tip_h=%d deepest=%d populated=%d",
+                     tip_h, deepest, populated);
             break;
         }
         int h = p->nHeight;
@@ -456,9 +458,10 @@ int chain_restore_backfill_nbits_from_disk(struct main_state *ms,
     free(fixed_items);
 
     if (fixed > 0 || read_errors > 0 || invalidated_off_chain > 0)
-        printf("[nbits-backfill] fixed=%d pindex entries (read_errors=%d "
-               "off_chain_cleared=%d)\n",
-               fixed, read_errors, invalidated_off_chain);
+        LOG_INFO("chain_restore",
+                 "[nbits-backfill] fixed=%d pindex entries (read_errors=%d "
+                 "off_chain_cleared=%d)",
+                 fixed, read_errors, invalidated_off_chain);
 
     chain_restore_record_backfill_result(fixed, read_errors,
                                          invalidated_off_chain);
@@ -509,11 +512,12 @@ int chain_restore_clear_failed_above_tip(struct main_state *ms)
     }
 
     if (cleared > 0)
-        printf("[chain-restore] cleared %d stale BLOCK_FAILED_VALID "
-               "flags above tip h=%d%s\n", cleared, tip_h,
-               refetch ? " (and dropped HAVE_DATA at H*+1 to force a peer "
-                         "body re-fetch instead of re-folding the same "
-                         "failed body)" : "");
+        LOG_INFO("chain_restore",
+                 "[chain-restore] cleared %d stale BLOCK_FAILED_VALID "
+                 "flags above tip h=%d%s", cleared, tip_h,
+                 refetch ? " (and dropped HAVE_DATA at H*+1 to force a peer "
+                           "body re-fetch instead of re-folding the same "
+                           "failed body)" : "");
 
     return cleared;
 }
@@ -711,26 +715,29 @@ struct zcl_result chain_restore_finalize(struct main_state *ms, const char *data
             chain_restore_log_first_mismatch(&ms->chain_active,
                                              r.first_mismatch_height);
         } else {
-            printf("[chain-integrity] post-restore check RECONCILABLE: tip_h=%d "
-                   "(zero_nbits=%d tip_window_holes=%d mismatches=%d; tip not "
-                   "yet data-backed) — reducer will reconcile forward\n",
-                   r.tip_height, r.zero_nbits_count, r.tip_window_holes,
-                   r.active_chain_mismatches);
+            LOG_WARN("chain",
+                     "[chain-integrity] post-restore check RECONCILABLE: tip_h=%d "
+                     "(zero_nbits=%d tip_window_holes=%d mismatches=%d; tip not "
+                     "yet data-backed) — reducer will reconcile forward",
+                     r.tip_height, r.zero_nbits_count, r.tip_window_holes,
+                     r.active_chain_mismatches);
         }
     } else if (tip) {
         /* Holes below tip-WINDOW are expected (live-tip-only boot)
          * and not corruption — report them at INFO so operators
          * can see the chain shape without alarm. */
         if (r.active_chain_holes > 0)
-            printf("[chain-integrity] post-restore check OK: "
-                   "tip_h=%d tip_window clean, "
-                   "%d expected holes below tip-%d (live-tip-only boot)\n",
-                   r.tip_height, r.active_chain_holes,
-                   CHAIN_INTEGRITY_TIP_WINDOW);
+            LOG_INFO("chain",
+                     "[chain-integrity] post-restore check OK: "
+                     "tip_h=%d tip_window clean, "
+                     "%d expected holes below tip-%d (live-tip-only boot)",
+                     r.tip_height, r.active_chain_holes,
+                     CHAIN_INTEGRITY_TIP_WINDOW);
         else
-            printf("[chain-integrity] post-restore check OK: "
-                   "tip_h=%d nbits clean, active_chain full\n",
-                   r.tip_height);
+            LOG_INFO("chain",
+                     "[chain-integrity] post-restore check OK: "
+                     "tip_h=%d nbits clean, active_chain full",
+                     r.tip_height);
         bii_record_recovery_status(
             BII_OK, BII_RECOVERY_ACCEPTED,
             "post-restore integrity clean; active chain reconciled",
