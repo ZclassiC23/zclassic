@@ -43,6 +43,85 @@ static int h_zcl_name_register(const struct mcp_request *req, struct mcp_respons
                                    "name=%s", n ? n : "(null)");
 }
 
+static int h_zcl_name_update(const struct mcp_request *req, struct mcp_response *res)
+{
+    const char *n = json_get_str(json_get(req->args, "name"));
+    const char *t = json_get_str(json_get(req->args, "type"));
+    const char *v = json_get_str(json_get(req->args, "value"));
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, n);
+    mcp_params_push_str(&p, t);
+    mcp_params_push_str(&p, v);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("name_update", params) : NULL;
+    free(params);
+    return mcp_return_rpc_body_ctx(res, out, "name_update", "mcp.app",
+                                   "name=%s", n ? n : "(null)");
+}
+
+static int h_zcl_name_transfer(const struct mcp_request *req, struct mcp_response *res)
+{
+    const char *n = json_get_str(json_get(req->args, "name"));
+    const char *o = json_get_str(json_get(req->args, "new_owner"));
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, n);
+    mcp_params_push_str(&p, o);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("name_transfer", params) : NULL;
+    free(params);
+    return mcp_return_rpc_body_ctx(res, out, "name_transfer", "mcp.app",
+                                   "name=%s", n ? n : "(null)");
+}
+
+static int h_zcl_name_renew(const struct mcp_request *req, struct mcp_response *res)
+{
+    const char *n = json_get_str(json_get(req->args, "name"));
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, n);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("name_renew", params) : NULL;
+    free(params);
+    return mcp_return_rpc_body_ctx(res, out, "name_renew", "mcp.app",
+                                   "name=%s", n ? n : "(null)");
+}
+
+static int h_zcl_name_set_record(const struct mcp_request *req, struct mcp_response *res)
+{
+    const char *n = json_get_str(json_get(req->args, "name"));
+    const char *t = json_get_str(json_get(req->args, "type"));
+    const char *v = json_get_str(json_get(req->args, "value"));
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, n);
+    mcp_params_push_str(&p, t);
+    mcp_params_push_str(&p, v);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("name_set_record", params) : NULL;
+    free(params);
+    return mcp_return_rpc_body_ctx(res, out, "name_set_record", "mcp.app",
+                                   "name=%s", n ? n : "(null)");
+}
+
+static int h_zcl_name_set_text(const struct mcp_request *req, struct mcp_response *res)
+{
+    const char *n = json_get_str(json_get(req->args, "name"));
+    const char *k = json_get_str(json_get(req->args, "key"));
+    const char *v = json_get_str(json_get(req->args, "value"));
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, n);
+    mcp_params_push_str(&p, k);
+    mcp_params_push_str(&p, v);
+    char *params = mcp_params_to_json(&p);
+    char *out = params ? mcp_node_rpc("name_set_text", params) : NULL;
+    free(params);
+    return mcp_return_rpc_body_ctx(res, out, "name_set_text", "mcp.app",
+                                   "name=%s", n ? n : "(null)");
+}
+
 /* ── Messaging (ZMSG) ───────────────────────────────────────── */
 
 static int h_zcl_msg_send_named(const struct mcp_request *req, struct mcp_response *res)
@@ -195,6 +274,40 @@ static const struct mcp_param_spec p_name_register[] = {
     { "value", MCP_PARAM_STR, true, "Target value",
       0, 0, 1, 256, NULL, NULL },
 };
+static const struct mcp_param_spec p_name_update[] = {
+    { "name",  MCP_PARAM_STR, true, "Name (1-63 chars, must already be registered)",
+      0, 0, 1, 63, NULL, NULL },
+    { "type",  MCP_PARAM_STR, true, "New target type",
+      0, 0, 0, 0, "onion,zaddr,taddr,btc,ltc,doge,content", NULL },
+    { "value", MCP_PARAM_STR, true, "New target value",
+      0, 0, 1, 256, NULL, NULL },
+};
+static const struct mcp_param_spec p_name_transfer[] = {
+    { "name",      MCP_PARAM_STR, true, "Name (1-63 chars, must already be registered)",
+      0, 0, 1, 63, NULL, NULL },
+    { "new_owner", MCP_PARAM_STR, true, "New owner address (1-63 chars)",
+      0, 0, 1, 63, NULL, NULL },
+};
+static const struct mcp_param_spec p_name_renew[] = {
+    { "name", MCP_PARAM_STR, true, "Name (1-63 chars, must already be registered)",
+      0, 0, 1, 63, NULL, NULL },
+};
+static const struct mcp_param_spec p_name_set_record[] = {
+    { "name",  MCP_PARAM_STR, true, "Name (1-63 chars, must already be registered)",
+      0, 0, 1, 63, NULL, NULL },
+    { "type",  MCP_PARAM_STR, true, "Coin type for this record",
+      0, 0, 0, 0, "onion,zaddr,taddr,btc,ltc,doge,content", NULL },
+    { "value", MCP_PARAM_STR, true, "Address/value for that coin type",
+      0, 0, 1, 256, NULL, NULL },
+};
+static const struct mcp_param_spec p_name_set_text[] = {
+    { "name",  MCP_PARAM_STR, true, "Name (1-63 chars, must already be registered)",
+      0, 0, 1, 63, NULL, NULL },
+    { "key",   MCP_PARAM_STR, true, "Text record key (1-32 chars)",
+      0, 0, 1, 32, NULL, NULL },
+    { "value", MCP_PARAM_STR, false, "Text record value (0-128 chars); omit to clear",
+      0, 0, 0, 128, NULL, NULL },
+};
 static const struct mcp_param_spec p_msg_send_named[] = {
     { "name",    MCP_PARAM_STR, true, "ZCL Name (e.g. alice)",
       0, 0, 1, 63, NULL, NULL },
@@ -274,6 +387,31 @@ static const struct mcp_tool_route k_routes[] = {
       "Build an OP_RETURN script to register a ZCL Name on-chain.",
       p_name_register, PARAM_COUNT(p_name_register),
       h_zcl_name_register, .flags = MCP_TOOL_FLAG_DESTRUCTIVE },
+    { "zcl_name_update", "app",
+      "Replace a registered ZCL Name's primary target. Owner-only: the "
+      "wallet must hold the current owner's private key.",
+      p_name_update, PARAM_COUNT(p_name_update),
+      h_zcl_name_update, .flags = MCP_TOOL_FLAG_DESTRUCTIVE },
+    { "zcl_name_transfer", "app",
+      "Transfer ownership of a registered ZCL Name to a new owner "
+      "address. Owner-only.",
+      p_name_transfer, PARAM_COUNT(p_name_transfer),
+      h_zcl_name_transfer, .flags = MCP_TOOL_FLAG_DESTRUCTIVE },
+    { "zcl_name_renew", "app",
+      "Extend a registered ZCL Name's registration term by one term. "
+      "Permissionless — anyone may pay to renew.",
+      p_name_renew, PARAM_COUNT(p_name_renew),
+      h_zcl_name_renew, .flags = MCP_TOOL_FLAG_DESTRUCTIVE },
+    { "zcl_name_set_record", "app",
+      "Set an additional multi-coin address record (BTC/LTC/DOGE/...) "
+      "for a registered ZCL Name. Owner-only.",
+      p_name_set_record, PARAM_COUNT(p_name_set_record),
+      h_zcl_name_set_record, .flags = MCP_TOOL_FLAG_DESTRUCTIVE },
+    { "zcl_name_set_text", "app",
+      "Set an arbitrary key/value text record (email, url, avatar, ...) "
+      "for a registered ZCL Name. Owner-only.",
+      p_name_set_text, PARAM_COUNT(p_name_set_text),
+      h_zcl_name_set_text, .flags = MCP_TOOL_FLAG_DESTRUCTIVE },
     { "zcl_name_list", "app",
       "List all registered ZCL Names on the network.",
       NULL, 0, h_zcl_name_list, 0, NULL },

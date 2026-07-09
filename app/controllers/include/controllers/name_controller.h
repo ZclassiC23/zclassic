@@ -3,9 +3,16 @@
  * Name Controller — RPC commands for ZCL Names (ZNAM).
  *
  * Commands:
- *   name_register  — register a name on-chain
- *   name_resolve   — look up a name
- *   name_list      — list registered names */
+ *   name_register    — register a name on-chain
+ *   name_update      — replace a name's primary target (owner-only)
+ *   name_transfer    — hand ownership to a new owner (owner-only)
+ *   name_renew       — extend the registration term (permissionless)
+ *   name_set_record  — set an additional multi-coin address record
+ *                      (owner-only)
+ *   name_set_text    — set an arbitrary key/value text record
+ *                      (owner-only)
+ *   name_resolve     — look up a name
+ *   name_list        — list registered names */
 
 #ifndef ZCL_CONTROLLERS_NAME_H
 #define ZCL_CONTROLLERS_NAME_H

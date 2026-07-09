@@ -50,7 +50,10 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL     127  /* +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
+#define EXPECTED_TOTAL     132  /* +5 ZNAM write RPCs: zcl_name_update,
+                                 *   zcl_name_transfer, zcl_name_renew,
+                                 *   zcl_name_set_record, zcl_name_set_text;
+                                 * +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
                                  * +3 power-user tools: chain_tip,
                                  * reorg_history, mempool_inspect;
                                  * +1 Round 6 C5: zcl_blockers;
@@ -108,7 +111,9 @@
                                  * + zcl_bootstrapstatus
                                  * + zcl_peer_incidents */
 #define EXPECTED_WALLET     23
-#define EXPECTED_APP        16
+#define EXPECTED_APP        21  /* +5 ZNAM write RPCs (name_update,
+                                 * name_transfer, name_renew, name_set_record,
+                                 * name_set_text) */
 #define EXPECTED_HEADROOM   32
 
 /* ── Helpers ────────────────────────────────────────────────── */
@@ -3481,7 +3486,9 @@ static int test_destructive_tools_registered(void)
             "zcl_rescanblockchain", "zcl_replaywalletfromchain",
             "zcl_dumpprivkey", "zcl_wallet_backup_now",
             "zcl_addnode", "zcl_pingpeer",
-            "zcl_name_register", "zcl_msg_send", "zcl_market_offer",
+            "zcl_name_register", "zcl_name_update", "zcl_name_transfer",
+            "zcl_name_renew", "zcl_name_set_record", "zcl_name_set_text",
+            "zcl_msg_send", "zcl_market_offer",
             "zcl_swap_initiate",
         };
         for (size_t i = 0; i < sizeof(k)/sizeof(k[0]); i++) {
@@ -3603,6 +3610,8 @@ static int test_app_protocol_tools_registered(void)
         register_all();
         const char *k[] = {
             "zcl_name_resolve", "zcl_name_register", "zcl_name_list",
+            "zcl_name_update", "zcl_name_transfer", "zcl_name_renew",
+            "zcl_name_set_record", "zcl_name_set_text",
             "zcl_msg_send", "zcl_msg_send_named", "zcl_msg_inbox", "zcl_msg_read",
             "zcl_market_list", "zcl_market_offer", "zcl_market_buy",
             "zcl_market_status",
