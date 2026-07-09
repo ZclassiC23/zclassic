@@ -435,6 +435,7 @@ int test_reducer_frontier_reconcile_light(void);
 int test_connect_block_self_write(void);
 int test_simnet(void);
 int test_simnet_cluster(void);
+int test_simnet_wire(void);
 int test_simnet_txkit(void);
 int test_connect_block_sapling_root(void);
 int test_connect_block_checkdatasig_sigops(void);

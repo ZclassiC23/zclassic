@@ -20,6 +20,31 @@
 
 DEFINE_MODEL_CALLBACKS(zmsg)
 
+static bool read_zmsg_blob(sqlite3_stmt *s, int col, void *dest,
+                           int expected_len, const char *column)
+{
+    int got = sqlite3_column_bytes(s, col);
+    const void *blob = sqlite3_column_blob(s, col);
+    if (!blob || got != expected_len)
+        LOG_FAIL("zmsg",
+                 "zmsg_messages.%s blob length mismatch: got=%d expected=%d",
+                 column, got, expected_len);
+
+    AR_READ_BLOB(s, col, dest, expected_len);
+    return true;
+}
+
+static bool read_zmsg_optional_blob(sqlite3_stmt *s, int col, void *dest,
+                                    int expected_len, const char *column)
+{
+    if (sqlite3_column_type(s, col) == SQLITE_NULL) {
+        memset(dest, 0, (size_t)expected_len);
+        return true;
+    }
+
+    return read_zmsg_blob(s, col, dest, expected_len, column);
+}
+
 bool db_zmsg_validate(const struct zmsg_message *msg,
                       struct ar_errors *errors)
 {
@@ -77,10 +102,11 @@ bool db_zmsg_save(struct node_db *ndb, const struct zmsg_message *msg)
         AR_BIND_INT(s, 9, msg->read ? 1 : 0));
 }
 
-static void row_to_zmsg(sqlite3_stmt *s, struct zmsg_message *out)
+static bool row_to_zmsg(sqlite3_stmt *s, struct zmsg_message *out)
 {
     memset(out, 0, sizeof(*out));
-    AR_READ_BLOB(s, 0, out->msg_id, 32);
+    if (!read_zmsg_blob(s, 0, out->msg_id, 32, "msg_id"))
+        LOG_FAIL("zmsg", "zmsg_messages.msg_id rejected");
 
     out->direction = sqlite3_column_int(s, 1);
     out->channel = sqlite3_column_int(s, 2);
@@ -96,9 +122,11 @@ static void row_to_zmsg(sqlite3_stmt *s, struct zmsg_message *out)
 
     out->timestamp = sqlite3_column_int64(s, 6);
 
-    AR_READ_BLOB(s, 7, out->txid, 32);
+    if (!read_zmsg_optional_blob(s, 7, out->txid, 32, "txid"))
+        LOG_FAIL("zmsg", "zmsg_messages.txid rejected");
 
     out->read = sqlite3_column_int(s, 8) != 0;
+    return true;
 }
 
 int db_zmsg_list(struct node_db *ndb, struct zmsg_message *out,
@@ -119,7 +147,7 @@ int db_zmsg_list(struct node_db *ndb, struct zmsg_message *out,
     sqlite3_stmt *s = NULL;
     AR_QUERY_LIST(ndb, s, sql, out, max,
         AR_BIND_INT(s, 1, (int)max),
-        row_to_zmsg(s, &out[count]));
+        if (!row_to_zmsg(s, &out[count])) continue);
 }
 
 bool db_zmsg_mark_read(struct node_db *ndb, const uint8_t msg_id[32])
