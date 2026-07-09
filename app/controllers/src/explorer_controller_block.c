@@ -104,7 +104,9 @@ static size_t serve_block_rpc(const char *param, uint8_t *r, size_t max)
                 if (tlen >= 64)
                     snprintf(short_txid, sizeof(short_txid), "%.8s...%.4s", txid, txid + 60);
                 else
-                    snprintf(short_txid, sizeof(short_txid), "%s", txid);
+                    /* bounded to fit short_txid[18]; a malformed sub-64 txid
+                     * is displayed truncated rather than tripping fortify */
+                    snprintf(short_txid, sizeof(short_txid), "%.17s", txid);
 
                 rows[nrows].index = idx;
                 snprintf(rows[nrows].txid, sizeof(rows[nrows].txid), "%s", txid);
@@ -194,9 +196,15 @@ size_t serve_block(const char *param, uint8_t *r, size_t max)
             const struct transaction *tx = &blk.vtx[i];
             struct explorer_block_tx_row *row = &rows[nrows];
 
-            uint256_get_hex(&tx->hash, row->txid);
+            /* Format the abbreviation from a local copy: row->txid and
+             * row->short_txid live in the same rows[] object, so passing
+             * row->txid as the snprintf source trips -Wrestrict even though
+             * the two fields never overlap. */
+            char txid_hex[65];
+            uint256_get_hex(&tx->hash, txid_hex);
+            memcpy(row->txid, txid_hex, sizeof(row->txid));
             snprintf(row->short_txid, sizeof(row->short_txid),
-                     "%.8s...%.4s", row->txid, row->txid + 60);
+                     "%.8s...%.4s", txid_hex, txid_hex + 60);
 
             zcl_format_zcl(row->value, sizeof(row->value),
                            transaction_get_value_out(tx));
