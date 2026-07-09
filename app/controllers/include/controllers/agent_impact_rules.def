@@ -104,6 +104,7 @@ AGENT_IMPACT_RULE("lib/sim/src/simnet_wire*|lib/sim/include/sim/simnet_wire.h|li
 AGENT_IMPACT_RULE("lib/sim/src/seed_tape.c|lib/sim/include/sim/seed_tape.h|lib/sim/src/postmortem.c|lib/sim/include/sim/postmortem.h", "simnet simnet_wire make_lint_gates")
 AGENT_IMPACT_RULE("lib/sapling/*|lib/test/src/test_sapling*.c|lib/test/src/test_simnet_sapling*.c|lib/test/src/test_snark_kat.c|lib/test/src/test_shielded_*.c", "sapling simnet_sapling_activation make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_simnet_doublespend.c", "simnet_doublespend make_lint_gates")
+AGENT_IMPACT_RULE("lib/test/src/test_simnet_fee_range.c", "simnet_fee_range make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/misc_controller.c|app/controllers/include/controllers/misc_controller.h", "syncdiag_rpc rpc_safety")
 AGENT_IMPACT_RULE("app/controllers/src/blockchain_controller*.c|app/controllers/include/controllers/blockchain_controller.h|lib/test/src/test_rpc_safety.c", "rpc_safety make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/event_agent_summary_internal.h|app/controllers/src/event_agent_summary_json.c", "syncdiag_rpc mcp_controllers api make_lint_gates node_health_service")

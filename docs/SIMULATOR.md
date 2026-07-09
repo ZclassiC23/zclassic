@@ -9,6 +9,7 @@ Source anchors for this matrix are code, not project prose:
 - `lib/sim/src/simnet.c`
 - `lib/test/src/test_simnet.c`
 - `lib/test/src/test_simnet_doublespend.c`
+- `lib/test/src/test_simnet_fee_range.c`
 - `lib/zslp/include/zslp/slp.h`
 - `lib/zslp/src/slp.c`
 - `lib/znam/include/znam/znam.h`
@@ -87,6 +88,7 @@ not fold through `connect_block()` and are out of simnet scope.
 |--------|-------|-------------------------|
 | Transparent P2PKH spend | A | `make t ONLY=simnet`: `spend the matured coinbase through connect_block`, `spend output carries the chosen value`. |
 | Transparent double-spend rejection (same-block and cross-block) | A | `make t ONLY=simnet_doublespend`: `test_simnet_doublespend` mints two distinct transparent txs spending one matured-coinbase outpoint in the same block, and separately spends an outpoint in block N then attempts a second spend of it in block N+1; both are rejected by `connect_block()` with `bad-txns-inputs-missingorspent` and the tip does not advance. A positive-control single valid spend and a post-rejection honest mint prove the negatives are not vacuous. |
+| Negative-fee / money-creation rejection (outputs exceed inputs) | A | `make t ONLY=simnet_fee_range`: `test_simnet_fee_range` spends a matured coinbase to an output LARGER than the input (implied negative fee), which `connect_block()` rejects with `bad-txns-in-belowout` (the `value_in < value_out` check at connect_block.c:527 fires before the shadowed `bad-txns-fee-negative` check) and the tip does not advance. A positive control spending to a smaller output (a +100k-zatoshi in-range fee) is accepted and advances the tip. Note: `bad-txns-fee-negative` is arithmetically unreachable (shadowed by belowout) and `bad-txns-fee-outofrange` needs a per-block fee sum > MAX_MONEY, not constructible under subsidy-bounded simnet funding. |
 | Transparent multi-input spend | A | `make t ONLY=simnet`: `mint multi-input/multi-output/P2SH tx through simnet`, `multi-input tx consumes both inputs`. |
 | Transparent multi-output spend | A | `make t ONLY=simnet`: `explorer indexes multi-input/multi-output/P2SH tx`, `explorer records two transparent inputs`. |
 | OP_RETURN data output | A | `make t ONLY=simnet`: `simnet_mint_txs accepts transparent+OP_RETURN block`, plus malformed protocol OP_RETURN negatives below. |
