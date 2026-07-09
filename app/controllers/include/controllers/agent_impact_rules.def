@@ -8,6 +8,7 @@
 
 AGENT_IMPACT_RULE("Makefile|README.md|.github/CONTRIBUTING.md|src/main.c|tools/*|tools/scripts/*|deploy/*.service|deploy/*.timer|deploy/examples/*.service|deploy/examples/*.timer|docs/AGENT_API.md|docs/BUILD.md|docs/CODEBASE_MAP.md|docs/HOW_THE_NODE_WORKS.md|docs/GETTING_STARTED.md|docs/work/fast-path.md|docs/RUNBOOK.md|lib/test/src/test_make_lint_gates.c", "make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/include/controllers/agent_impact_rules.def", "syncdiag_rpc make_lint_gates")
+AGENT_IMPACT_RULE("docs/HANDOFF.md|docs/work/SESSION-HANDOFF-2026-07-09.md|docs/work/sovereign-service-roadmap.md", "make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/explorer_*.c|app/controllers/include/controllers/explorer_*.h|app/views/src/explorer_*.c|app/views/src/explorer_*.css|app/views/include/views/explorer_*.h|lib/test/src/test_explorer*.c", "explorer")
 
 AGENT_IMPACT_RULE("tools/mcp/*|tools/mcp_server.c|app/controllers/src/*mcp*|lib/test/src/test_mcp_controllers.c", "mcp_controllers")

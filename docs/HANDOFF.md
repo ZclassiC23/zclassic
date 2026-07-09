@@ -1,3 +1,9 @@
+> **▶ NEXT DEV START HERE: [`docs/work/SESSION-HANDOFF-2026-07-09.md`](work/SESSION-HANDOFF-2026-07-09.md)**
+> — 2026-07-09 session handoff: what shipped (incl. the wallet P0 fix and the
+> in-memory sim-network foundation `lib/sim/simnet`), the `handoff/*` WIP
+> branches and their exact remaining steps, and the known gotchas. Verify live
+> state with `zcl_agent` before trusting any doc.
+
 ## CURRENT STATE (2026-07-08, P0 anchor mint restarted from clean copy)
 
 **2026-07-08 18:45 UTC - the post-restart RAM-flush gate has passed twice;
