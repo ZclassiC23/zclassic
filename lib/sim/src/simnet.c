@@ -17,6 +17,8 @@
 #include "consensus/validation.h"
 #include "consensus/consensus.h"          /* COINBASE_MATURITY */
 #include "consensus/params.h"             /* PRE_BUTTERCUP_POW_TARGET_SPACING */
+#include "consensus/upgrades.h"           /* UPGRADE_OVERWINTER / UPGRADE_SAPLING */
+#include "sapling/incremental_merkle_tree.h" /* empty Sapling tree root */
 #include "coins/coins.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
@@ -162,6 +164,21 @@ static bool sim_mint_block(struct simnet *s, struct transaction *txs,
     blk.header.nTime = s->next_block_time;
     free(txids);
 
+    /* Post-Sapling activation, connect_block (connect_block.c:704-736)
+     * rejects an all-zero hashFinalSaplingRoot. The sim mints only
+     * transparent txs, so the Sapling note-commitment tree is never
+     * appended to and stays empty; its root is exactly the empty-tree
+     * root. Filling it here keeps every mint helper usable once a sim
+     * lowers the Sapling activation height via simnet_activate_sapling_at().
+     * A later lane that adds real shielded outputs must instead thread the
+     * evolving tree root through here. */
+    if (consensus_network_upgrade_active(&s->params.consensus, height,
+                                         UPGRADE_SAPLING)) {
+        struct incremental_merkle_tree stree;
+        sapling_tree_init(&stree);
+        incremental_tree_empty_root(&stree, &blk.header.hashFinalSaplingRoot);
+    }
+
     struct uint256 block_hash;
     block_header_get_hash(&blk.header, &block_hash);
 
@@ -282,6 +299,27 @@ void simnet_use_seed_tape(struct simnet *s, seed_tape_t *tape)
         if (now > 0 && now <= UINT32_MAX)
             s->next_block_time = (uint32_t)now;
     }
+}
+
+void simnet_activate_sapling_at(struct simnet *s, int height)
+{
+    if (!s || !s->initialized) {
+        LOG_WARN("simnet",
+                 "cannot set Sapling activation on uninitialized simnet");
+        return;
+    }
+    if (height < 0) {
+        LOG_WARN("simnet", "ignoring negative Sapling activation height %d",
+                 height);
+        return;
+    }
+    /* Mutate ONLY the sim's value-copy of params — never chain_params_get()
+     * or the mainnet definition in lib/chain/src/chainparams.c. Overwinter
+     * must be active wherever Sapling is (Sapling is an Overwinter-family
+     * upgrade); mainnet already ships both at the same height (476969), so
+     * co-lowering them to `height` is the faithful sim-local profile. */
+    s->params.consensus.vUpgrades[UPGRADE_OVERWINTER].nActivationHeight = height;
+    s->params.consensus.vUpgrades[UPGRADE_SAPLING].nActivationHeight = height;
 }
 
 bool simnet_mint_coinbase(struct simnet *s, struct uint256 *out_cb_txid)

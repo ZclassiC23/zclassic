@@ -442,6 +442,7 @@ int test_simnet_wire_peer_flood(void);
 int test_simnet_wire_peer_slowloris(void);
 int test_simnet_wire_mixed_scenario(void);
 int test_simnet_txkit(void);
+int test_simnet_sapling_activation(void);
 int test_connect_block_sapling_root(void);
 int test_connect_block_checkdatasig_sigops(void);
 int test_utxo_apply_coinbase_maturity(void);

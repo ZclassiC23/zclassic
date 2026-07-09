@@ -1168,6 +1168,7 @@ int main(int argc, char **argv)
     failures += test_reducer_step_drain_harness();
     failures += test_reducer_ondemand_genesis_seed();
     failures += test_connect_block_self_write();
+    failures += test_simnet_sapling_activation();
     failures += test_connect_block_sapling_root();
     failures += test_connect_block_checkdatasig_sigops();
     failures += test_utxo_apply_coinbase_maturity();
