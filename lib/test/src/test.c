@@ -150,6 +150,21 @@ int main(int argc, char **argv)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "snark_kat") == 0) {
+        printf("[test] ZCL_TEST_ONLY=snark_kat — running SNARK KAT only\n");
+        failures += test_snark_kat();
+        printf("\n=== snark_kat subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
+    if (only && strcmp(only, "groth16_selfverify") == 0) {
+        extern int test_groth16_selfverify(void);
+        printf("[test] ZCL_TEST_ONLY=groth16_selfverify — running self-verify only\n");
+        failures += test_groth16_selfverify();
+        printf("\n=== groth16_selfverify subset complete: %d failure(s) ===\n",
+               failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "chain_advance_coordinator") == 0) {
         printf("[test] ZCL_TEST_ONLY=chain_advance_coordinator — running source policy only\n");
         failures += test_chain_advance_coordinator();
