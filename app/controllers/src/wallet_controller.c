@@ -68,7 +68,7 @@ static bool rpc_getnewaddress(const struct json_value *params, bool help,
         struct key_id new_kid;
         bool have_kid = wallet_last_key_id(ctx->wallet, &new_kid);
 
-        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
+        struct zcl_result fr = wallet_controller_flush_r(ctx);
         if (!fr.ok) {
             if (have_kid) {
                 (void)wallet_remove_key(ctx->wallet, &new_kid);
@@ -360,7 +360,7 @@ static bool rpc_sendtoaddress(const struct json_value *params, bool help,
      * unspendable on restart. Treat a pre-broadcast flush failure as a hard
      * error and abort the send (write-ahead the key, like zclassicd). */
     if (ctx->wallet_db) {
-        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
+        struct zcl_result fr = wallet_controller_flush_r(ctx);
         if (!fr.ok) {
             transaction_free(&wtx.tx);
             json_set_str(result, "Cannot persist change key before broadcast — send aborted");
@@ -387,7 +387,7 @@ static bool rpc_sendtoaddress(const struct json_value *params, bool help,
      * guarantee was already met by the pre-broadcast flush above; this is
      * non-fatal and re-runs on the next flush trigger if it fails. */
     if (ctx->wallet_db) {
-        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
+        struct zcl_result fr = wallet_controller_flush_r(ctx);
         if (!fr.ok) {
             LOG_WARN("wallet", "sendtoaddress: post-broadcast tx flush failed "
                                "(code=%d): %s", fr.code, fr.message);
@@ -436,7 +436,7 @@ bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
      * the send if the keystore flush fails, so we never broadcast a tx whose
      * RAM-only change key isn't durable. */
     if (ctx->wallet_db) {
-        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
+        struct zcl_result fr = wallet_controller_flush_r(ctx);
         if (!fr.ok) {
             transaction_free(&wtx.tx);
             snprintf(error_out, error_out_size,
@@ -460,7 +460,7 @@ bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
     /* Best-effort second flush to persist the new tx record (change-key
      * durability already met by the pre-broadcast flush above). */
     if (ctx->wallet_db) {
-        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
+        struct zcl_result fr = wallet_controller_flush_r(ctx);
         if (!fr.ok) {
             LOG_WARN("wallet", "direct_sendtoaddress: post-broadcast tx flush "
                                "failed (code=%d): %s", fr.code, fr.message);
@@ -550,7 +550,7 @@ static bool rpc_keypoolrefill(const struct json_value *params, bool help,
      * pre-existing address twice. Log and error; canary will flag
      * the daemon as unhealthy and operator can intervene. */
     if (ctx->wallet_db) {
-        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
+        struct zcl_result fr = wallet_controller_flush_r(ctx);
         if (!fr.ok) {
             json_set_str(result,
                 "Error: keypool refilled in memory but persistence flush failed. "

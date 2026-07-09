@@ -74,11 +74,17 @@ struct node_db_sync_import_job {
 bool node_db_sync_init(struct node_db *ndb, const char *datadir);
 
 /* Open a dedicated private SQLite handle that points at the same on-disk
- * database as an existing file-backed node_db. Intended for long-running
- * maintenance jobs (catchup/import) that should not share the runtime
- * DB-service write owner. */
+ * database as an existing file-backed node_db. This is for explicit
+ * isolated import/recovery flows only; live catchup must use the shared
+ * db_service write lane. */
 bool node_db_sync_open_private_db_like(const struct node_db *src,
                                        struct node_db *out);
+
+#ifdef ZCL_TESTING
+void node_db_sync_catchup_test_reset_lane_stats(void);
+int node_db_sync_catchup_test_lane_calls(void);
+int node_db_sync_catchup_test_worker_lane_calls(void);
+#endif
 
 /* Global flag: set to true while rescanwitnesses is running.
  * Prevents connect_block from overwriting the Sapling tree. */

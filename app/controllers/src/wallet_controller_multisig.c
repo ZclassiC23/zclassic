@@ -154,7 +154,7 @@ bool rpc_sendmany(const struct json_value *params, bool help,
         connman_relay_transaction(ctx->connman, &wtx.tx.hash);
 
     if (ctx->wallet_db) {
-        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
+        struct zcl_result fr = wallet_controller_flush_r(ctx);
         if (!fr.ok) {
             LOG_WARN("wallet", "send: post-broadcast flush failed "
                                "(code=%d): %s", fr.code, fr.message);
