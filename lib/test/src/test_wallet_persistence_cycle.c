@@ -18,12 +18,14 @@
 #include "support/cleanse.h"
 #include "util/ar_step_readonly.h"
 #include "util/safe_alloc.h"
+#include "platform/time_compat.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <limits.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <pthread.h>
 
 /* Minimal schema mirroring the production tables wallet_sqlite.c
  * prepares statements against.  wallet_watch_only is included —
@@ -364,6 +366,104 @@ static int test_flush_resets_cached_read_cursors(void)
     return failures;
 }
 
+/* Holder thread: grab the WAL write lock on a second connection, hold it for
+ * `hold_ms`, then release. Used by test_flush_waits_out_transient_lock to
+ * reproduce a background node.db writer (catch-up / store / evidence) that
+ * holds the single WAL write lock across a window longer than the wallet
+ * flush's OLD 4-attempt budget. */
+struct lock_holder_args {
+    char path[128];
+    int  hold_ms;
+    int  acquired; /* set once BEGIN IMMEDIATE succeeds */
+};
+
+static void *lock_holder_thread(void *arg)
+{
+    struct lock_holder_args *a = arg;
+    sqlite3 *holder = NULL;
+    if (sqlite3_open(a->path, &holder) != SQLITE_OK) return NULL;
+    sqlite3_busy_timeout(holder, 0);
+    if (sqlite3_exec(holder, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK &&
+        sqlite3_exec(holder, "INSERT INTO node_state(key,value) VALUES('h',x'00')",
+                     NULL, NULL, NULL) == SQLITE_OK) {
+        __atomic_store_n(&a->acquired, 1, __ATOMIC_SEQ_CST);
+        platform_sleep_ms(a->hold_ms);
+        sqlite3_exec(holder, "COMMIT", NULL, NULL, NULL);
+    }
+    sqlite3_close(holder);
+    return NULL;
+}
+
+/* Regression for the wallet-persistence P0 (node.db write-lock starvation):
+ * a background node.db writer holds the single WAL write lock for a window
+ * that exceeds the flush's OLD fixed 4-attempt budget. The hardened flush
+ * (WALLET_FLUSH_BEGIN_MAX_ATTEMPTS + inter-attempt backoff + statement reset)
+ * must wait it out on the SAME flush call and durably persist the key —
+ * never strand it in RAM. The hold (500 ms) exceeds ~4×busy_timeout(100 ms)
+ * = ~400 ms yet stays well under the new ~8×(100 ms)+backoff budget, so this
+ * asserts the enlarged tolerance without a tight timing race. */
+static int test_flush_waits_out_transient_lock(void)
+{
+    int failures = 0;
+    TEST("wallet_persistence: flush waits out a transient held WAL write lock") {
+        clear_passphrase();
+
+        char path[128];
+        snprintf(path, sizeof(path),
+                 "./test-tmp/wallet_transient_%d.db", (int)getpid());
+        mkdir("./test-tmp", 0755);
+        unlink(path);
+
+        sqlite3 *db = open_fixture_db(path, true);
+        ASSERT(db);
+        sqlite3_exec(db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL);
+        sqlite3_busy_timeout(db, 100);
+
+        struct wallet_sqlite ws;
+        ASSERT(wallet_sqlite_open_r(&ws, db).ok);
+
+        struct wallet *w = alloc_wallet();
+        ASSERT(w);
+        struct privkey key;
+        struct pubkey pk;
+        make_test_key(&key, &pk, 0x7C);
+        ASSERT(keystore_add_key(&w->keystore, &key));
+
+        struct lock_holder_args ha;
+        memset(&ha, 0, sizeof(ha));
+        snprintf(ha.path, sizeof(ha.path), "%s", path);
+        ha.hold_ms = 500;
+        pthread_t th;
+        ASSERT(pthread_create(&th, NULL, lock_holder_thread, &ha) == 0);
+
+        /* Wait until the holder actually owns the write lock, so the flush
+         * genuinely contends (bounded spin, not a fixed sleep). */
+        for (int i = 0; i < 200 &&
+             !__atomic_load_n(&ha.acquired, __ATOMIC_SEQ_CST); i++)
+            platform_sleep_ms(1);
+        ASSERT(__atomic_load_n(&ha.acquired, __ATOMIC_SEQ_CST) == 1);
+
+        /* Single flush call: it must retry across the 500 ms hold and win. */
+        struct zcl_result ok = wallet_sqlite_flush_r(&ws, w);
+        ASSERT(ok.ok);
+
+        pthread_join(th, NULL);
+
+        struct privkey got;
+        privkey_init(&got);
+        ASSERT(wallet_sqlite_read_single_key(&ws, &pk, &got).ok);
+        ASSERT(memcmp(got.vch, key.vch, 32) == 0);
+        memory_cleanse(got.vch, 32);
+
+        wallet_sqlite_close(&ws);
+        sqlite3_close(db);
+        free_wallet(w);
+        unlink(path);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_read_single_key_not_found(void)
 {
     int failures = 0;
@@ -592,6 +692,7 @@ int test_wallet_persistence_cycle(void)
     failures += test_self_test_passes();
     failures += test_write_then_reopen_preserves_keys();
     failures += test_flush_retries_under_write_lock();
+    failures += test_flush_waits_out_transient_lock();
     failures += test_flush_resets_cached_read_cursors();
     failures += test_read_single_key_not_found();
     failures += test_delete_key_roundtrip();

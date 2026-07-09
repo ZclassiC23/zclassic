@@ -236,9 +236,28 @@ bool node_db_wal_checkpoint(struct node_db *ndb)
         node_db_note_activity(ndb, "wal_checkpoint", SQLITE_OK);
         return true;
     }
+    /* TRUNCATE resets the WAL file to zero bytes but needs an exclusive
+     * checkpoint moment: on a busy multi-connection node.db (the periodic
+     * checkpoint, catch-up, and the many onion/explorer/coordinator readers
+     * all share this file) it returns SQLITE_BUSY and reclaims NOTHING, so
+     * the WAL grew without bound (observed ~196 MB on the canonical node) and
+     * an ever-larger WAL lengthens every write-lock hold window until the
+     * wallet-key flush can no longer win the lock within its retry budget.
+     * Fall back to a PASSIVE checkpoint when TRUNCATE is busy: PASSIVE never
+     * blocks on other connections and reclaims every WAL frame up to the
+     * oldest live reader, so the WAL stops growing (frames are reused) even
+     * when it cannot be truncated to zero. A PASSIVE pass that checkpoints
+     * some frames is progress, not a failure. */
     int rc = sqlite3_wal_checkpoint_v2(ndb->db, NULL,
                                        SQLITE_CHECKPOINT_TRUNCATE,
                                        NULL, NULL);
+    if (rc == SQLITE_BUSY || rc == SQLITE_LOCKED) {
+        int prc = sqlite3_wal_checkpoint_v2(ndb->db, NULL,
+                                            SQLITE_CHECKPOINT_PASSIVE,
+                                            NULL, NULL);
+        node_db_note_activity(ndb, "wal_checkpoint_passive", prc);
+        return prc == SQLITE_OK;
+    }
     node_db_note_activity(ndb, "wal_checkpoint", rc);
     return rc == SQLITE_OK;
 }

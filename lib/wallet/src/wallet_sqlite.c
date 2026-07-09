@@ -36,10 +36,18 @@
 
 /* Bounded BEGIN IMMEDIATE retries for wallet_sqlite_flush_r under WAL
  * write-lock contention. Each attempt already blocks up to the connection
- * busy_timeout via the SQLite busy handler, so this bounds total wait to
- * ~attempts × busy_timeout — enough to outlast a bulk-catch-up commit window
- * without hanging a key persist indefinitely. */
-#define WALLET_FLUSH_BEGIN_MAX_ATTEMPTS 4
+ * busy_timeout via the SQLite busy handler; between attempts we also sleep a
+ * short backoff (releasing the shared connection mutex so other node.db
+ * users make progress) and re-reset the cached statements. This bounds total
+ * wait to ~attempts × busy_timeout — enough to outlast a bulk catch-up /
+ * WAL-checkpoint window that momentarily holds the single WAL write lock,
+ * without hanging a key persist indefinitely. Key persistence is rare and not
+ * latency-critical, so a slower success beats stranding a keypool key in RAM
+ * (which makes getnewaddress refuse to hand out an unsaved address). */
+#define WALLET_FLUSH_BEGIN_MAX_ATTEMPTS 8
+
+/* Per-attempt backoff ceiling (ms) between BEGIN IMMEDIATE retries. */
+#define WALLET_FLUSH_BEGIN_BACKOFF_MAX_MS 250
 
 /* Counts rows dropped by read_keys_r because decode/decrypt failed.
  * Surfaced via wallet_sqlite_read_keys_corrupt_count() and, by
@@ -1130,6 +1138,19 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
                      "flush: BEGIN IMMEDIATE busy (rc=%d), retry %d/%d",
                      rc, begin_attempt + 1, WALLET_FLUSH_BEGIN_MAX_ATTEMPTS);
             if (begin_err) sqlite3_free(begin_err);
+            /* Backoff OUTSIDE the sqlite call so the shared connection mutex
+             * is released between attempts (other node.db threads — the
+             * db-service worker, coordinator/evidence writers, readers — can
+             * run, and any WAL checkpoint / competing writer can complete and
+             * drop the write lock). Exponential, capped. Then re-reset the
+             * cached statements: a read cursor re-armed by another thread on
+             * the shared handle can itself force SQLITE_BUSY on the next
+             * BEGIN IMMEDIATE even once the external writer has released. */
+            int backoff_ms = 10 << (begin_attempt < 5 ? begin_attempt : 5);
+            if (backoff_ms > WALLET_FLUSH_BEGIN_BACKOFF_MAX_MS)
+                backoff_ms = WALLET_FLUSH_BEGIN_BACKOFF_MAX_MS;
+            platform_sleep_ms(backoff_ms);
+            wallet_sqlite_reset_all_statements(ws);
             continue;
         }
         struct zcl_result r = ZCL_ERR(WSQL_TXN_BEGIN_FAIL,
