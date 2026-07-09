@@ -682,6 +682,158 @@ static bool sw_run_partition_survivor(uint64_t seed, uint64_t *out_fp,
     return ok;
 }
 
+/* Step D2 — true multi-connection eclipse. Each wire_peer slot is now an
+ * independently-stateful, separately-handshaken p2p_node (its own recv/send
+ * queues, handshake state machine and ban scoring, distinct address), and
+ * NUT egress is routed per-peer instead of the old hardcoded peer 0. This
+ * exercises the REAL multi-peer dispatch path (msg_process_messages is run
+ * once per node).
+ *
+ * Scenario: M=2 honest peers + K=2 attacker peers (FLOOD — a garbage inv
+ * view). Assertions:
+ *  (0) All four connections independently complete their own handshake —
+ *      the D2 deliverable (both honest AND both attacker nodes reach
+ *      PEER_HANDSHAKE_COMPLETE on their own p2p_node).
+ *  (1) The attackers genuinely fed a garbage view (backpressure fired) yet
+ *      the NUT never adopted an invalid/lower-work tip — consensus_unchanged
+ *      (tip + UTXO commitment == baseline) is enforced every tick, including
+ *      throughout the eclipse window.
+ *  (2) Cutting ALL honest links (per-link wire_link.open via
+ *      simnet_wire_partition_peer, NOT the global net_partition switch) while
+ *      the attacker links stay open causes no silent halt: no unexpected
+ *      PERMANENT blocker, the honest nodes stay connected (not disconnected —
+ *      a partition is a byte-flow cut, not a teardown), and only the two
+ *      attacker links remain open.
+ *  (3) When the honest links reopen the node converges back: both honest
+ *      peers round-trip a fresh ping/pong.
+ *
+ * The garbage-feed and the honest-link cut are sequential phases: each honest
+ * ping/pong round-trip spans far more wire ticks (per-event latency jitter)
+ * than the bounded 16-tick FLOOD burst, so the attackers finish spamming
+ * before the cut. This does not weaken any assertion — the consensus and
+ * no-permanent-blocker monitors run every tick, including throughout the
+ * eclipse window, so "NUT surrounded only by attacker connections, does not
+ * halt and does not adopt a bad tip" is checked while honest links are down.
+ * Deterministic under seed_tape (same seed -> same fingerprint). */
+static bool sw_run_eclipse(uint64_t seed, uint64_t *out_fp,
+                           struct simnet_wire_stats *out_stats)
+{
+    blocker_reset_for_testing();
+    struct wire_scenario_peer peers[] = {
+        { SIMNET_WIRE_PEER_FLOOD, 2 },
+    };
+    struct wire_scenario scenario = {
+        .master_seed = seed,
+        .peers = peers,
+        .peer_kind_count = sizeof(peers) / sizeof(peers[0]),
+        .honest_peer_count = 2,
+    };
+    struct simnet_wire *wire = simnet_wire_create_scenario(&scenario);
+    if (!wire)
+        return false;
+
+    const uint64_t nb0 = 0x45434c4950534530ULL;
+    const uint64_t nb1 = 0x45434c4950534531ULL;
+    const uint64_t na0 = 0x52454a4f494e4530ULL;
+    const uint64_t na1 = 0x52454a4f494e4531ULL;
+
+    /* Phase 0/1: bring all four connections up. Both honest peers (0,1) and
+     * both attacker peers (2,3) complete their OWN handshake; the attackers
+     * flood a garbage inv view in the process. */
+    bool ok = simnet_wire_run(wire, 1024, 0) &&
+              simnet_wire_peer_handshake_complete(wire, 0) &&
+              simnet_wire_peer_handshake_complete(wire, 1) &&
+              simnet_wire_peer_handshake_complete(wire, 2) &&
+              simnet_wire_peer_handshake_complete(wire, 3);
+
+    /* Both honest peers round-trip a ping before the eclipse. */
+    ok = ok &&
+         simnet_wire_peer_send_ping(wire, 0, nb0) &&
+         simnet_wire_peer_send_ping(wire, 1, nb1) &&
+         simnet_wire_run(wire, 1024, 128) &&
+         simnet_wire_peer_pong_received(wire, 0, nb0) &&
+         simnet_wire_peer_pong_received(wire, 1, nb1);
+
+    struct simnet_wire_stats base;
+    memset(&base, 0, sizeof(base));
+    ok = ok && simnet_wire_get_stats(wire, &base) &&
+         base.consensus_unchanged &&
+         base.backpressure_reject_events > 0 && /* attackers fed garbage */
+         base.peers_open == 4;
+
+    /* Phase 2: eclipse — cut BOTH honest links; the attacker links stay
+     * open. The NUT is now reachable only by attacker connections. */
+    ok = ok &&
+         simnet_wire_partition_peer(wire, 0, true) &&
+         simnet_wire_partition_peer(wire, 1, true) &&
+         simnet_wire_run(wire, 512, 0);
+
+    struct simnet_wire_stats mid;
+    memset(&mid, 0, sizeof(mid));
+    ok = ok && simnet_wire_get_stats(wire, &mid) &&
+         mid.no_unexpected_permanent_blocker && /* no silent halt */
+         !mid.monitor_failed &&
+         mid.consensus_unchanged && /* never adopted an attacker tip */
+         !mid.nut_disconnected && /* honest node 0 still alive */
+         simnet_wire_peer_handshake_complete(wire, 1) && /* honest 1 alive */
+         mid.peers_open == 2; /* only the two attacker links remain open */
+
+    /* Phase 3: reopen the honest links and prove convergence — both honest
+     * peers round-trip a fresh ping/pong. */
+    ok = ok &&
+         simnet_wire_partition_peer(wire, 0, false) &&
+         simnet_wire_partition_peer(wire, 1, false) &&
+         simnet_wire_run(wire, 512, 0) &&
+         simnet_wire_peer_send_ping(wire, 0, na0) &&
+         simnet_wire_peer_send_ping(wire, 1, na1) &&
+         simnet_wire_run(wire, 1024, 128) &&
+         simnet_wire_peer_pong_received(wire, 0, na0) &&
+         simnet_wire_peer_pong_received(wire, 1, na1);
+
+    struct simnet_wire_stats st;
+    memset(&st, 0, sizeof(st));
+    if (simnet_wire_get_stats(wire, &st)) {
+        if (out_stats)
+            *out_stats = st;
+        if (out_fp)
+            *out_fp = st.fingerprint;
+    }
+    ok = ok &&
+         sw_stats_monitors_ok(&st) &&
+         st.consensus_unchanged &&
+         !st.nut_disconnected &&
+         st.peers_open == 4 && /* every link back up after recovery */
+         st.max_recv_msg_count <= MAX_RECV_MESSAGES &&
+         st.pong_received;
+
+    simnet_wire_free(wire);
+    return ok;
+}
+
+int test_simnet_wire_eclipse(void)
+{
+    printf("\n=== simnet_wire eclipse (D2, multi-connection) ===\n");
+    int failures = 0;
+    uint64_t fp_a = 0;
+    uint64_t fp_b = 0;
+    struct simnet_wire_stats st;
+    memset(&st, 0, sizeof(st));
+
+    bool a = sw_run_eclipse(0x571A00000000d003ULL, &fp_a, &st);
+    bool b = sw_run_eclipse(0x571A00000000d003ULL, &fp_b, NULL);
+    SW_CHECK("wire eclipse: 2 honest + 2 attacker peers each independently "
+             "handshake; all-honest cut causes no silent halt, no bad-tip "
+             "adoption, and both honest peers reconverge on reopen", a);
+    SW_CHECK("wire eclipse: same-seed fingerprint deterministic",
+             a && b && fp_a == fp_b);
+    printf("[wire eclipse] fp=0x%016" PRIx64
+           " peers_open=%zu backpressure=%" PRIu64
+           " consensus_unchanged=%d max_recv=%zu\n",
+           fp_a, st.peers_open, st.backpressure_reject_events,
+           st.consensus_unchanged ? 1 : 0, st.max_recv_msg_count);
+    return failures;
+}
+
 int test_simnet_wire_peer_malformed_frame(void)
 {
     printf("\n=== simnet_wire malformed frame peer ===\n");
@@ -1062,6 +1214,7 @@ int test_simnet_wire(void)
     failures += test_simnet_wire_peer_reorder();
     failures += test_simnet_wire_partition_recovery();
     failures += test_simnet_wire_partition_survivor();
+    failures += test_simnet_wire_eclipse();
     failures += test_simnet_wire_peer_invalid_block();
     failures += test_simnet_wire_peer_invalid_header();
 

@@ -78,6 +78,14 @@ struct wire_peer {
     enum simnet_wire_peer_kind kind;
     struct wire_link link;
     struct net_address addr;
+    /* D2: each peer slot is a fully independent, separately-handshaken
+     * connection into the node-under-test. `node` is this peer's own
+     * struct p2p_node (its own recv/send queues + handshake state machine +
+     * ban scoring), and `send_sentinel` is the permanent dummy send-list head
+     * used to capture that node's egress without a real socket. peers[0].node
+     * is aliased as wire->nut for the single-connection call sites. */
+    struct p2p_node *node;
+    struct send_segment *send_sentinel;
     bool version_sent;
     bool verack_sent;
     bool saw_nut_version;
@@ -170,8 +178,10 @@ struct simnet_wire {
     struct coins_view null_view;
     struct coins_view_cache coins_tip;
     const struct chain_params *params;
+    /* Alias for peers[0].node — the "observed" connection for the many
+     * single-connection call sites and simnet_wire_node(). Per-peer egress
+     * capture lives on each wire_peer's own send_sentinel (D2). */
     struct p2p_node *nut;
-    struct send_segment *send_sentinel;
     bool main_ready;
     bool mempool_ready;
     bool coins_ready;

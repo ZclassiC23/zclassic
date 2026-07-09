@@ -22,15 +22,6 @@
 #define SIMNET_WIRE_FLOOD_MAX_TICKS 16u
 #define SIMNET_WIRE_SLOWLORIS_PAYLOAD_LEN 10016u
 
-static bool wire_nut_handshake_complete(const struct simnet_wire *wire)
-{
-    return wire && wire->nut &&
-           atomic_load(&wire->nut->state) >= PEER_HANDSHAKE_COMPLETE &&
-           wire->nut->version == PROTOCOL_VERSION &&
-           wire->nut->recv_version == PROTOCOL_VERSION &&
-           !wire->nut->disconnect;
-}
-
 static void wire_random_bytes(uint8_t *out, size_t len)
 {
     if (!out && len > 0)
@@ -126,7 +117,7 @@ static bool wire_send_bad_checksum(struct simnet_wire *wire, size_t peer_id)
     frame[byte_off] ^= (uint8_t)(1u << (rng_u64() % 8u));
     bool ok = simnet_wire_enqueue_raw(wire, peer_id, frame, frame_len);
     free(frame);
-    peer_misbehaving(&wire->nm, wire->nut, 10,
+    peer_misbehaving(&wire->nm, wire->peers[peer_id].node, 10,
                      "simnet malformed frame: bad checksum");
     return ok;
 }
@@ -148,7 +139,7 @@ static bool wire_send_oversized(struct simnet_wire *wire, size_t peer_id)
     frame[MSG_HEADER_SIZE] = (uint8_t)rng_u64();
     bool ok = simnet_wire_enqueue_raw(wire, peer_id, frame, total);
     free(frame);
-    peer_misbehaving(&wire->nm, wire->nut, 10,
+    peer_misbehaving(&wire->nm, wire->peers[peer_id].node, 10,
                      "simnet malformed frame: oversized");
     return ok;
 }
@@ -168,7 +159,7 @@ static bool wire_send_bad_magic(struct simnet_wire *wire, size_t peer_id)
     frame[byte_off] ^= (uint8_t)(1u << (rng_u64() % 8u));
     bool ok = simnet_wire_enqueue_raw(wire, peer_id, frame, frame_len);
     free(frame);
-    peer_misbehaving(&wire->nm, wire->nut, 10,
+    peer_misbehaving(&wire->nm, wire->peers[peer_id].node, 10,
                      "simnet malformed frame: bad magic");
     return ok;
 }
@@ -193,7 +184,7 @@ static bool wire_start_data_before_version(struct simnet_wire *wire,
     uint8_t payload[8];
     if (!wire_ping_payload(payload))
         return false;
-    peer_misbehaving(&wire->nm, wire->nut, 10,
+    peer_misbehaving(&wire->nm, wire->peers[peer_id].node, 10,
                      "simnet bad handshake: data before version");
     return simnet_wire_enqueue_frame(wire, peer_id, "ping", payload,
                                      sizeof(payload));
@@ -201,7 +192,7 @@ static bool wire_start_data_before_version(struct simnet_wire *wire,
 
 static bool wire_start_verack_first(struct simnet_wire *wire, size_t peer_id)
 {
-    peer_misbehaving(&wire->nm, wire->nut, 10,
+    peer_misbehaving(&wire->nm, wire->peers[peer_id].node, 10,
                      "simnet bad handshake: verack first");
     return simnet_wire_enqueue_frame(wire, peer_id, "verack", NULL, 0);
 }
@@ -211,7 +202,7 @@ static bool wire_start_garbage_after_verack(struct simnet_wire *wire,
 {
     uint8_t garbage[4];
     wire_random_bytes(garbage, sizeof(garbage));
-    peer_misbehaving(&wire->nm, wire->nut, 10,
+    peer_misbehaving(&wire->nm, wire->peers[peer_id].node, 10,
                      "simnet bad handshake: garbage after verack");
     return simnet_wire_enqueue_version(wire, peer_id) &&
            simnet_wire_enqueue_frame(wire, peer_id, "verack", NULL, 0) &&
@@ -242,7 +233,11 @@ static bool wire_start_stream_adversary(struct simnet_wire *wire,
     peer->adversary_started = true;
     if (kind == SIMNET_WIRE_PEER_FLOOD)
         peer->flood_active = true;
-    if (peer_id == 0 && !wire_nut_handshake_complete(wire))
+    /* D2: every stream adversary now completes its OWN version/verack
+     * handshake against its OWN p2p_node (not just peer 0), so a flood /
+     * slowloris / replay / reorder peer at any slot exercises the real
+     * post-handshake dispatch path on an independently-tracked connection. */
+    if (!peer->version_sent && !simnet_wire_peer_handshake_complete(wire, peer_id))
         return simnet_wire_enqueue_version(wire, peer_id);
     return true;
 }
@@ -408,7 +403,7 @@ static bool wire_tick_flood(struct simnet_wire *wire, size_t peer_id,
     struct wire_peer *peer = &wire->peers[peer_id];
     if (!peer->flood_active || peer->adversary_done)
         return true;
-    if (!wire_nut_handshake_complete(wire))
+    if (!simnet_wire_peer_handshake_complete(wire, peer_id))
         return true;
 
     for (size_t i = 0; i < SIMNET_WIRE_FLOOD_FRAMES_PER_TICK; i++) {
@@ -468,7 +463,7 @@ static bool wire_tick_slowloris(struct simnet_wire *wire, size_t peer_id,
     struct wire_peer *peer = &wire->peers[peer_id];
     if (peer->adversary_done)
         return true;
-    if (!wire_nut_handshake_complete(wire))
+    if (!simnet_wire_peer_handshake_complete(wire, peer_id))
         return true;
     for (size_t i = 0; i < wire->peer_count; i++) {
         if (i != peer_id && wire->peers[i].kind == SIMNET_WIRE_PEER_FLOOD &&
@@ -535,7 +530,7 @@ static bool wire_tick_replay(struct simnet_wire *wire, size_t peer_id,
     struct wire_peer *peer = &wire->peers[peer_id];
     if (peer->replay_done)
         return true;
-    if (!wire_nut_handshake_complete(wire))
+    if (!simnet_wire_peer_handshake_complete(wire, peer_id))
         return true;
     if (!peer->replay_sent) {
         struct uint256 hash;
@@ -574,7 +569,7 @@ static bool wire_tick_reorder(struct simnet_wire *wire, size_t peer_id,
     struct wire_peer *peer = &wire->peers[peer_id];
     if (peer->reorder_done)
         return true;
-    if (!wire_nut_handshake_complete(wire))
+    if (!simnet_wire_peer_handshake_complete(wire, peer_id))
         return true;
 
     /* step 0 -> height N+1 (delivered FIRST); step 1 -> height N. */
