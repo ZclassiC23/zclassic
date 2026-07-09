@@ -17,6 +17,60 @@ int main(int argc, char **argv)
     ecc_start();
     ecc_verify_init();
 
+    if (argc > 1) {
+        bool simnet_wire_args = true;
+        bool saw_simnet_wire_group = false;
+        for (int i = 1; i < argc; i++) {
+            const char *name = argv[i];
+            if (strncmp(name, "test_", 5) == 0)
+                name += 5;
+            if (strcmp(name, "simnet_wire") == 0) {
+                saw_simnet_wire_group = true;
+                continue;
+            }
+            if (strcmp(name, "simnet_wire_peer_malformed_frame") == 0 ||
+                strcmp(name, "simnet_wire_peer_bad_handshake") == 0 ||
+                strcmp(name, "simnet_wire_peer_flood") == 0 ||
+                strcmp(name, "simnet_wire_peer_slowloris") == 0 ||
+                strcmp(name, "simnet_wire_mixed_scenario") == 0) {
+                continue;
+            }
+            simnet_wire_args = false;
+            break;
+        }
+        if (simnet_wire_args) {
+            if (saw_simnet_wire_group) {
+                printf("[test] argv simnet_wire suite — running simnet wire only\n");
+                failures += test_simnet_wire();
+            } else {
+                for (int i = 1; i < argc; i++) {
+                    const char *name = argv[i];
+                    if (strncmp(name, "test_", 5) == 0)
+                        name += 5;
+                    if (strcmp(name, "simnet_wire_peer_malformed_frame") == 0) {
+                        extern int test_simnet_wire_peer_malformed_frame(void);
+                        failures += test_simnet_wire_peer_malformed_frame();
+                    } else if (strcmp(name, "simnet_wire_peer_bad_handshake") == 0) {
+                        extern int test_simnet_wire_peer_bad_handshake(void);
+                        failures += test_simnet_wire_peer_bad_handshake();
+                    } else if (strcmp(name, "simnet_wire_peer_flood") == 0) {
+                        extern int test_simnet_wire_peer_flood(void);
+                        failures += test_simnet_wire_peer_flood();
+                    } else if (strcmp(name, "simnet_wire_peer_slowloris") == 0) {
+                        extern int test_simnet_wire_peer_slowloris(void);
+                        failures += test_simnet_wire_peer_slowloris();
+                    } else if (strcmp(name, "simnet_wire_mixed_scenario") == 0) {
+                        extern int test_simnet_wire_mixed_scenario(void);
+                        failures += test_simnet_wire_mixed_scenario();
+                    }
+                }
+            }
+            printf("\n=== simnet_wire argv subset complete: %d failure(s) ===\n",
+                   failures);
+            return failures ? 1 : 0;
+        }
+    }
+
     /* Developer-only fast loop: ZCL_TEST_ONLY=persistence runs only the
      * persistence-layer regression tests (agent-2 scope) so an iteration
      * doesn't have to wait for the entire 1500-test suite.  Unset or
