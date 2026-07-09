@@ -315,10 +315,10 @@ int main(void)
     node_db_close(&db);
     simnet_free(&sim);
 
-    printf("\nAll steps succeeded: GENESIS(1000) -> SEND(250+750) -> MINT(+125 "
+    printf("\n=== SUCCESS: GENESIS(1000) -> SEND(250+750) -> MINT(+125 "
           "recorded as a transfer row, total_minted stays a GENESIS-only "
           "1000), verified via both the chain projection and independent "
-          "parse.\n");
+          "parse ===\n");
     return 0;
 }
 

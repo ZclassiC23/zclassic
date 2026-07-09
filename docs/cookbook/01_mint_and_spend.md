@@ -37,7 +37,7 @@ integrator's `examples/Makefile` should reuse.)
       new UTXO present in view:  yes
       new UTXO value:            900000 zats
 
-PASS: mint -> mature -> spend -> verify, all through the real validator.
+=== SUCCESS: minted a coinbase, matured it past COINBASE_MATURITY, spent it, and verified the UTXO-set fold — all through the real validator ===
 ```
 
 Because a fixed `seed_tape` seeds both the wallet's keypair RNG and the

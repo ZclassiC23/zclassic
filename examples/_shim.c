@@ -17,5 +17,21 @@
  */
 
 #include <signal.h>
+#include <stdio.h>
 
 volatile sig_atomic_t g_shutdown_requested = 0;
+
+/* Force stdout to line-buffer even when it isn't a tty (piped into `make
+ * run`, `tail`, a log file, ...). glibc's default for a non-tty stdout is
+ * fully-buffered, which only flushes at exit — meanwhile stderr (where the
+ * node's LOG_FAIL/LOG_ERR diagnostics land, see util/log_macros.h) is always
+ * unbuffered. Without this, an example's own narration can appear AFTER a
+ * library log line that was actually emitted much later in the run, which
+ * reads as a fault before the task even started. A constructor runs before
+ * main() in every example that links this shim, so no per-example edit is
+ * needed. */
+__attribute__((constructor))
+static void examples_line_buffer_stdout(void)
+{
+    setvbuf(stdout, NULL, _IOLBF, 0);
+}

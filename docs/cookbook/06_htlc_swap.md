@@ -43,7 +43,7 @@ core, crypto — the same as any other example in this directory.)
       redeem path : secret-holder claims any time before or after timeout
       refund path : original funder reclaims only after the CLTV height
 
-OK — HTLC atomic-swap lifecycle (fund/redeem, fund/refund) all settled.
+=== SUCCESS: HTLC atomic-swap lifecycle settled both ways — fund/redeem (secret-holder claims) and fund/refund (funder reclaims after CLTV timeout) ===
 ```
 
 Heights are deterministic given the fixed seed (`0x06874C5350`) and

@@ -183,7 +183,9 @@ int main(void)
         return 1;
     }
 
-    printf("\nPASS: mint -> mature -> spend -> verify, all through the real validator.\n");
+    printf("\n=== SUCCESS: minted a coinbase, matured it past COINBASE_MATURITY, "
+           "spent it, and verified the UTXO-set fold — all through the real "
+           "validator ===\n");
 
     simnet_wallet_free(wallet);
     simnet_free(&sim);

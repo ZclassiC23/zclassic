@@ -33,7 +33,7 @@ project's standard `-I` include set — see the root `Makefile`'s
 ## Expected output sketch
 
 ```
-=== 02_multi_io_p2sh ===
+=== 02_multi_io_p2sh: multi-input/multi-output send + a P2SH HTLC fund/redeem ===
 [1/4] minting two coinbases to alice (200 maturity blocks total)...
 [2/4] building multi-input/multi-output transparent tx (2 inputs -> 2 recipients + change)...
     multi-input/multi-output    txid=<64 hex chars> fee=<n> zats size=<n> bytes
@@ -42,9 +42,8 @@ project's standard `-I` include set — see the root `Makefile`'s
 [4/4] redeeming the P2SH HTLC (reveal secret)...
     P2SH HTLC redeem              txid=<64 hex chars> fee=<n> zats size=<n> bytes
 
-All transaction shapes built, minted, and verified through connect_block().
 tip height = <n>
-PASS
+=== SUCCESS: built, minted, and verified a multi-input/multi-output transparent send and a P2SH HTLC fund+redeem, all through connect_block() ===
 ```
 
 Exact fee/size numbers are deterministic given the fixed seed and the

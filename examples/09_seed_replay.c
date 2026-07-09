@@ -97,6 +97,9 @@ static void cleanup_capsule_dir(const char *dir)
 
 int main(void)
 {
+    printf("=== 09_seed_replay: record a seed tape, snapshot it two ways, "
+           "prove bit-identical replay ===\n\n");
+
     char scratch_dir[] = "/tmp/zcl_example_09_seed_replay_XXXXXX";
     if (!mkdtemp(scratch_dir)) {
         fprintf(stderr, "FAIL: mkdtemp scratch dir: %s\n", strerror(errno));
@@ -239,11 +242,10 @@ int main(void)
         return 1;
     }
 
-    printf("\nOK: both the plain .bin file and the postmortem capsule "
-          "replayed the exact RNG stream and event order the original "
-          "process produced. A crash capsule captured this same way is "
-          "a complete, replayable postmortem: no live process needed to "
-          "reproduce the bug byte-for-byte.\n");
+    printf("\n=== SUCCESS: both the plain .bin file and the postmortem "
+          "capsule replayed the exact RNG stream and event order the "
+          "original process produced — a crash capsule is a complete, "
+          "replayable postmortem, no live process needed ===\n");
     return 0;
 }
 

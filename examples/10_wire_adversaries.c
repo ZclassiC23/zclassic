@@ -73,6 +73,9 @@ static void print_stats(const char *label, const struct simnet_wire_stats *st)
 
 int main(void)
 {
+    printf("=== 10_wire_adversaries: honest peer + flooding adversary, "
+           "partition with no silent halt, then heal ===\n\n");
+
     /* Select a chain network before any wire/net code runs — simnet_wire
      * reads its parameters (e.g. block-relay message shaping) through
      * chain_params_get(), which asserts one was chosen. */
@@ -198,9 +201,9 @@ int main(void)
         return 1;
     }
 
-    printf("OK: partition -> no silent halt -> heal -> recovery, all "
-           "deterministic (fingerprint=0x%016" PRIx64 ", ticks=%" PRIu64
-           ", backpressure_rejects=%" PRIu64 ")\n",
+    printf("=== SUCCESS: partition -> no silent halt -> heal -> recovery, "
+           "all deterministic (fingerprint=0x%016" PRIx64 ", ticks=%" PRIu64
+           ", backpressure_rejects=%" PRIu64 ") ===\n",
            final_st.fingerprint, final_st.ticks,
            final_st.backpressure_reject_events);
 

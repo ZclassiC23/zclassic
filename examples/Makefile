@@ -25,11 +25,15 @@
 # whether or not it happens to touch any #ifdef ZCL_TESTING declaration.
 #
 # Targets:
-#   make -C examples          — build every example binary into bin/
-#   make -C examples run      — build, then run every binary; stop at the
-#                                first nonzero exit
-#   make -C examples clean    — remove bin/ and obj/ (does not touch the
-#                                root build)
+#   make -C examples             — build every example binary into bin/,
+#                                   then print a friendly one-screen index
+#   make -C examples run         — build, then run every binary in order;
+#                                   stop at the first nonzero exit, naming
+#                                   the failing example
+#   make -C examples run-<name>  — build (if needed) and run just one
+#                                   example, e.g. run-04_zslp_token
+#   make -C examples clean       — remove bin/ and obj/ (does not touch the
+#                                   root build)
 
 ROOT := ..
 
@@ -73,7 +77,21 @@ LIB_OBJS := $(filter-out %/lib/test/src/test_parallel.o %lib/test/src/test_paral
 
 .PHONY: all run clean objects
 
+# Bare `make -C examples` builds every binary, then prints a friendly
+# one-screen map of what's here and how to run it — free to print (the
+# build already happened) and the fastest way to learn this directory's
+# entry points without opening README.md first.
 all: $(BINS)
+	@echo
+	@echo "Built $(words $(BINS)) zclassic23 teaching examples into $(BIN_DIR)/."
+	@echo
+	@echo "  make -C examples run               run all $(words $(BINS)), in order, stop at the first failure"
+	@echo "  make -C examples run-<name>        run just one example, e.g. run-04_zslp_token"
+	@echo "  make -C examples clean             remove bin/ and obj/"
+	@echo
+	@echo "Examples (see examples/README.md / docs/cookbook/<name>.md for the full walkthrough):"
+	@for n in $(NAMES); do printf "  %-24s ./%s/%s\n" "$$n" "$(BIN_DIR)" "$$n"; done
+	@echo
 
 # Make sure the root's non-LTO test object tree exists and is up to date.
 # This is the exact target the node's fast edit/test loop (`make t-fast`)
@@ -94,14 +112,26 @@ $(BIN_DIR)/%: $(OBJ_DIR)/%.o $(SHIM_OBJ)
 	cd $(ROOT) && $(CC) $(EX_LDFLAGS) -o $(abspath $@) $(abspath $<) $(abspath $(SHIM_OBJ)) \
 	    $(LIB_OBJS) $(EX_TOR_LIBS) $(EX_LIBS) $(EX_GTK_LIBS) $(EX_WK_LIBS)
 
+# One command, zero parameters: build+run all 11 in order, stop at the
+# FIRST failure and name it plainly (rather than relying on make's own
+# "recipe for target ... failed" noise) so a broken example is unambiguous.
 run: all
 	@set -e; \
 	for b in $(BINS); do \
 	  echo "=== running $$b ==="; \
-	  ./$$b; \
+	  if ! ./$$b; then \
+	    echo; \
+	    echo ">>> FAILED: $$b (see output above) <<<" >&2; \
+	    exit 1; \
+	  fi; \
 	  echo; \
 	done
 	@echo "All $(words $(BINS)) examples ran successfully."
+
+# `make -C examples run-<name>` — build (if needed) and run exactly one
+# example, e.g. `make -C examples run-04_zslp_token`.
+run-%: $(BIN_DIR)/%
+	@./$<
 
 clean:
 	rm -rf $(BIN_DIR) $(OBJ_DIR)

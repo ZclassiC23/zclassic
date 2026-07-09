@@ -29,7 +29,7 @@ examples/03_op_return_overlay.c -o /tmp/03_op_return_overlay <link objects>`.)
 ## Expected output sketch
 
 ```
-=== 03_op_return_overlay ===
+=== 03_op_return_overlay: OP_RETURN as a provably-unspendable data carrier ===
 [1/4] minting a coinbase to alice, mining 100 blocks to maturity...
 [2/4] building an OP_RETURN data carrier, reading the payload back BEFORE mining...
     recovered payload (12 bytes): "hello, chain"
@@ -39,9 +39,8 @@ examples/03_op_return_overlay.c -o /tmp/03_op_return_overlay <link objects>`.)
 [4/4] building a Lokad-tagged overlay payload ('ZNAM' + fields) alongside a real value transfer to bob...
     OP_RETURN + value (ZNAM-shaped) txid=<64 hex chars> fee=<n> zats size=<n> bytes
 
-OP_RETURN carriers built, read back pre-mine, and verified through connect_block().
 tip height = 102
-PASS
+=== SUCCESS: built OP_RETURN data carriers, read them back pre-mine, and verified them through connect_block() ===
 ```
 
 Exact txids/fees/sizes are byte-identical run to run (fixed seed tape), and

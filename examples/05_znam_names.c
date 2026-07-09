@@ -415,9 +415,9 @@ int main(void)
     node_db_close(&db);
     simnet_free(&sim);
 
-    printf("\nAll steps succeeded: REGISTER -> UPDATE -> SET_TEXT applied by "
+    printf("\n=== SUCCESS: REGISTER -> UPDATE -> SET_TEXT applied by "
           "the true owner; a non-owner UPDATE parsed as valid ZNAM wire "
-          "data but was rejected by the projection's owner-address check.\n");
+          "data but was rejected by the projection's owner-address check ===\n");
     return 0;
 }
 

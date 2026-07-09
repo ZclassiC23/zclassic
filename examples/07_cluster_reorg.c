@@ -193,9 +193,9 @@ int main(void)
         return 1;
     }
 
-    printf("\nOK: node 0 reorged off its 3-block branch onto node 1's "
-           "6-block branch via disconnect_block/connect_block; both nodes "
-           "now share tip hash + identical UTXO digest.\n");
+    printf("\n=== SUCCESS: node 0 reorged off its 3-block branch onto node "
+           "1's 6-block branch via disconnect_block/connect_block; both "
+           "nodes now share tip hash + identical UTXO digest ===\n");
 
     simnet_cluster_free(cluster);
     return 0;

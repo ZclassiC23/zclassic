@@ -44,9 +44,9 @@ so every run produces byte-identical output.
     parsed SEND     type=SEND outputs=2 qty[vout1]=250 qty[vout2]=750
     parsed MINT     type=MINT additional_qty=125
 
-All steps succeeded: GENESIS(1000) -> SEND(250+750) -> MINT(+125 recorded as
+=== SUCCESS: GENESIS(1000) -> SEND(250+750) -> MINT(+125 recorded as
 a transfer row, total_minted stays a GENESIS-only 1000), verified via both
-the chain projection and independent parse.
+the chain projection and independent parse ===
 ```
 
 Exact heights depend on `simnet`'s coinbase-maturity mechanics (each

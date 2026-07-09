@@ -330,7 +330,9 @@ int main(void)
     simnet_wallet_free(alice);
     simnet_wallet_free(bob);
 
-    printf("\nOK — HTLC atomic-swap lifecycle (fund/redeem, fund/refund) all settled.\n");
+    printf("\n=== SUCCESS: HTLC atomic-swap lifecycle settled both ways — "
+           "fund/redeem (secret-holder claims) and fund/refund (funder "
+           "reclaims after CLTV timeout) ===\n");
     return 0;
 }
 

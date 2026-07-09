@@ -24,6 +24,8 @@ clean checkout.)
 ## Expected output sketch
 
 ```
+=== 09_seed_replay: record a seed tape, snapshot it two ways, prove bit-identical replay ===
+
 [1/5] opening a fresh seed tape (seed=0x5eed7a9e00000042)...
 [2/5] driving a small 'sim run': 4 RNG draws (nonce stand-ins) + 3 clock
       advances (150s simulated block interval) + 3 injected peer-message
@@ -47,10 +49,9 @@ clean checkout.)
       replay tape rejects new writes (-EROFS): yes
       injected event queue replays in order: yes
 
-OK: both the plain .bin file and the postmortem capsule replayed the exact
-RNG stream and event order the original process produced. A crash capsule
-captured this same way is a complete, replayable postmortem: no live
-process needed to reproduce the bug byte-for-byte.
+=== SUCCESS: both the plain .bin file and the postmortem capsule replayed the exact
+RNG stream and event order the original process produced — a crash capsule
+is a complete, replayable postmortem, no live process needed ===
 ```
 
 Exit code 0 on success; nonzero with an `stderr` reason on any mismatch.

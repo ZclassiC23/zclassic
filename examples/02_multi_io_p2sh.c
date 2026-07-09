@@ -187,7 +187,8 @@ int main(void)
     struct simnet_wallet *carol = simnet_wallet_create(&sim);
     assert(alice && bob && carol);
 
-    printf("=== 02_multi_io_p2sh ===\n");
+    printf("=== 02_multi_io_p2sh: multi-input/multi-output send + a P2SH "
+           "HTLC fund/redeem ===\n");
 
     /* [1/4] Fund alice with TWO separate matured coinbases. simnet_wallet_fund
      * mints the coinbase then mines COINBASE_MATURITY (100) empty blocks so
@@ -256,9 +257,7 @@ int main(void)
     print_result("P2SH HTLC redeem", &redeem);
     transaction_free(&redeem_tx);
 
-    printf("\nAll transaction shapes built, minted, and verified through"
-           " connect_block().\n");
-    printf("tip height = %d\n", simnet_tip_height(&sim));
+    printf("\ntip height = %d\n", simnet_tip_height(&sim));
 
     simnet_wallet_free(alice);
     simnet_wallet_free(bob);
@@ -267,7 +266,9 @@ int main(void)
     seed_tape_uninstall();
     seed_tape_close(tape);
 
-    printf("PASS\n");
+    printf("=== SUCCESS: built, minted, and verified a multi-input/"
+           "multi-output transparent send and a P2SH HTLC fund+redeem, "
+           "all through connect_block() ===\n");
     return 0;
 }
 

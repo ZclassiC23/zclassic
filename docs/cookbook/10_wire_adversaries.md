@@ -27,6 +27,8 @@ headers the real test binary uses (`-Ilib/*/include`, `-DZCL_TESTING`); see
 ## Expected output (sketch)
 
 ```
+=== 10_wire_adversaries: honest peer + flooding adversary, partition with no silent halt, then heal ===
+
 [1/6] building a 2-peer scenario: peer 0 honest, peer 1 FLOOD (seed=0x10adee5a0000a11e)...
 [2/6] baseline: draining handshake + attacker traffic, then round-tripping a ping on the honest link...
     OK: honest peer handshook and got its pong back despite concurrent flood traffic.
@@ -37,7 +39,7 @@ headers the real test binary uses (`-Ilib/*/include`, `-DZCL_TESTING`); see
 [5/6] healing the link (closed=false)...
 [6/6] proving recovery with a fresh ping/pong round trip...
     [post-heal] peers_open=2 handshake=1 pong=1 no_perm_blocker=1 monitor_failed=0 fp=0x...
-OK: partition -> no silent halt -> heal -> recovery, all deterministic (fingerprint=0x..., ticks=..., backpressure_rejects=...)
+=== SUCCESS: partition -> no silent halt -> heal -> recovery, all deterministic (fingerprint=0x..., ticks=..., backpressure_rejects=...) ===
 ```
 
 Exit code 0 on success; nonzero with a `FAIL: ...` line on `stderr` if any

@@ -125,7 +125,8 @@ int main(void)
     struct simnet_wallet *bob = simnet_wallet_create(&sim);
     assert(alice && bob);
 
-    printf("=== 03_op_return_overlay ===\n");
+    printf("=== 03_op_return_overlay: OP_RETURN as a provably-unspendable "
+           "data carrier ===\n");
 
     /* [1/4] Fund alice with one matured coinbase. simnet_wallet_fund mints
      * the coinbase then mines COINBASE_MATURITY (100) empty blocks so the
@@ -208,9 +209,7 @@ int main(void)
     assert(simnet_wallet_balance(bob) == 25000);
     print_result("OP_RETURN + value (ZNAM-shaped)", &opret_with_value);
 
-    printf("\nOP_RETURN carriers built, read back pre-mine, and verified"
-           " through connect_block().\n");
-    printf("tip height = %d\n", simnet_tip_height(&sim));
+    printf("\ntip height = %d\n", simnet_tip_height(&sim));
 
     simnet_wallet_free(alice);
     simnet_wallet_free(bob);
@@ -218,7 +217,8 @@ int main(void)
     seed_tape_uninstall();
     seed_tape_close(tape);
 
-    printf("PASS\n");
+    printf("=== SUCCESS: built OP_RETURN data carriers, read them back "
+           "pre-mine, and verified them through connect_block() ===\n");
     return 0;
 }
 

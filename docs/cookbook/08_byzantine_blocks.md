@@ -26,7 +26,7 @@ for the include list an ad hoc build needs.)
 ## Expected output sketch
 
 ```
-=== Example 08: byzantine blocks rejected by real consensus ===
+=== 08_byzantine_blocks: four ways a block/header can be adversarially malformed, each rejected by real consensus ===
 
 [1/4] bad merkle root (bad_merkle)... OK
         reject_reason="bad-txnmrklroot" (expected "bad-txnmrklroot")
@@ -48,9 +48,9 @@ for the include list an ad hoc build needs.)
         blocker=simnet_byz.invalid_pow class=PERMANENT
         tip: 0 -> 0 (unchanged), honest block after: accepted
 
-All 4 byzantine classes were rejected with the correct named reason, left
+=== SUCCESS: all 4 byzantine classes were rejected with the correct named reason, left
 the tip unchanged, and did not stop an honest block from connecting right
-after. Consensus rejection is a normal return value, not a special case.
+after ===
 ```
 
 Exit code 0 on success; nonzero with a `FAILED:` line on stderr if any case

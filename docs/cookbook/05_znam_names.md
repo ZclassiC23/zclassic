@@ -41,9 +41,9 @@ network — so every run produces byte-identical output.
       block accepted at height 205; znam_parse decodes it as a valid UPDATE("alice-home" -> t1stolentarget) — the wire format has no owner field
       projection after fold: target=t1updatedtarget owner=t1... — the forged block parsed but was NOT applied (owner-address mismatch at the authorization layer)
 
-All steps succeeded: REGISTER -> UPDATE -> SET_TEXT applied by the true
+=== SUCCESS: REGISTER -> UPDATE -> SET_TEXT applied by the true
 owner; a non-owner UPDATE parsed as valid ZNAM wire data but was rejected by
-the projection's owner-address check.
+the projection's owner-address check ===
 ```
 
 Exact heights depend on `simnet`'s coinbase-maturity mechanics

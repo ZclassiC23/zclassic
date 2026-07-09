@@ -135,7 +135,8 @@ static bool run_and_check_one(const struct byz_demo_case *tc, int idx, int total
 
 int main(void)
 {
-    printf("=== Example 08: byzantine blocks rejected by real consensus ===\n\n");
+    printf("=== 08_byzantine_blocks: four ways a block/header can be "
+           "adversarially malformed, each rejected by real consensus ===\n\n");
 
     /* Select a chain network before any chain/consensus code runs — the
      * fixtures below build real blocks/headers that connect_block() and
@@ -167,10 +168,9 @@ int main(void)
         return 1;
     }
 
-    printf("All %zu byzantine classes were rejected with the correct named "
-           "reason, left the tip unchanged, and did not stop an honest "
-           "block from connecting right after. Consensus rejection is a "
-           "normal return value, not a special case.\n", NUM_CASES);
+    printf("=== SUCCESS: all %zu byzantine classes were rejected with the "
+           "correct named reason, left the tip unchanged, and did not stop "
+           "an honest block from connecting right after ===\n", NUM_CASES);
     return 0;
 }
 

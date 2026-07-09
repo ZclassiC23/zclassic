@@ -41,9 +41,9 @@ byte-identical run to run.
     node0 utxo count:  N
     node1 utxo count:  N
 
-OK: node 0 reorged off its 3-block branch onto node 1's 6-block branch via
+=== SUCCESS: node 0 reorged off its 3-block branch onto node 1's 6-block branch via
 disconnect_block/connect_block; both nodes now share tip hash + identical
-UTXO digest.
+UTXO digest ===
 ```
 
 Exit code 0 on success; nonzero with a `FAIL:` message on stderr if any
