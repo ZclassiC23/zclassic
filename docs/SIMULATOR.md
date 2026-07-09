@@ -89,7 +89,7 @@ not fold through `connect_block()` and are out of simnet scope.
 | Transparent multi-output spend | A | `make t ONLY=simnet`: `explorer indexes multi-input/multi-output/P2SH tx`, `explorer records two transparent inputs`. |
 | OP_RETURN data output | A | `make t ONLY=simnet`: `simnet_mint_txs accepts transparent+OP_RETURN block`, plus malformed protocol OP_RETURN negatives below. |
 | P2SH funding output | A | `make t ONLY=simnet`: `P2SH output remains in coins view`, `explorer records one P2SH output`. |
-| P2SH redeem | B | Requires a mempool/script path that constructs and spends the P2SH output with the redeem script and signature stack. HTLC script builders are covered by `test_htlc`, but simnet does not yet drive redeem/refund settlement. |
+| P2SH redeem | A | `make t ONLY=simnet`: `test_simnet_txkit` covers HTLC P2SH funding, redeem settlement (claim with secret), and refund settlement (reclaim after locktime). |
 | ZSLP `GENESIS` | A | `make t ONLY=simnet`: `mint SLP GENESIS through simnet`, `ZSLP projection sees token`. |
 | ZSLP `SEND` | A | `make t ONLY=simnet`: `mint SLP SEND through simnet`, `ZSLP projection sees genesis/send transfer balances`. |
 | ZSLP `MINT` | A | `make t ONLY=simnet`: `mint SLP MINT through simnet`, `ZSLP projection sees mint transfer`. |
@@ -120,11 +120,11 @@ not fold through `connect_block()` and are out of simnet scope.
 | Market RPC/local `zmarket_list` | C | Local read/controller action. Lower-level offer list/find behavior is covered by `test_file_market`; no end-to-end simnet coverage. |
 | Market RPC/local `zmarket_buy` | C | Local download workflow action. The chunk/payment glue is not an on-chain simnet action today; no end-to-end simnet coverage. |
 | Market RPC/local `zmarket_status` | C | Local read/controller action. File manifest/status pieces are covered by `test_file_controller`; no end-to-end simnet coverage. |
-| HTLC script build | B | Script-builder action, not a complete simnet settlement. `test_htlc` covers the 97-byte contract and address/script primitives. |
-| HTLC P2SH address derivation | B | Script/address primitive covered by `test_htlc`; simnet only funds P2SH today, it does not drive the HTLC redeem/refund path. |
-| HTLC redeem scriptSig build | B | Builder exists and is covered by `test_htlc`; simnet lacks a mempool/timelock/script execution flow for settlement. |
-| HTLC refund scriptSig build | B | Builder exists and is covered by `test_htlc`; simnet lacks a mempool/timelock/script execution flow for settlement. |
-| HTLC secret extraction | B | Primitive exists and is covered by `test_htlc`; there is no simnet claim transaction path today. |
+| HTLC script build | A | `make t ONLY=simnet`: `test_simnet_txkit` builds and tests the 97-byte HTLC contract through settlement (lines 321-322). |
+| HTLC P2SH address derivation | A | `make t ONLY=simnet`: `test_simnet_txkit` derives P2SH address from HTLC script and funds P2SH output; redeem/refund settlement paths are tested end-to-end. |
+| HTLC redeem scriptSig build | A | `make t ONLY=simnet`: `test_simnet_txkit` (lines 334-345) builds redeem scriptSig, enqueues to mempool, and verifies settlement through connect_block. |
+| HTLC refund scriptSig build | A | `make t ONLY=simnet`: `test_simnet_txkit` (lines 362-381) builds refund scriptSig, tests nonfinal rejection before lock height, advances to lock height, then enqueues and verifies settlement. |
+| HTLC secret extraction | A | `make t ONLY=simnet`: `test_simnet_txkit` uses extracted secret in redeem scriptSig (line 195) and verifies it through mempool/settlement. |
 | Swap chain selection (`ZCL`, `BTC`, `LTC`, `DOGE`) | C | Controller/model selection action, not a chain action. Covered by swap/HTLC protocol tests. |
 | Swap initiate | C | Controller/model action that builds local swap state. On-chain funding/settlement remains Class B. |
 | Swap participate | C | Controller/model action that builds local swap state. On-chain funding/settlement remains Class B. |
