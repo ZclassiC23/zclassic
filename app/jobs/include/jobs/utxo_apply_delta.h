@@ -108,6 +108,14 @@ void utxo_apply_compute_block_delta(const struct block *blk,
 /* Ensure the durable per-block inverse-delta table exists. */
 bool utxo_apply_ensure_delta_schema(sqlite3 *db);
 
+/* Shared transactional rewind primitive.  Delete every reducer-owned row
+ * whose creation height is in [first_height,last_height], including durable
+ * nullifiers and Sprout/Sapling anchors.  The caller owns the transaction;
+ * rollback therefore restores every projection together.  Reorg, repair,
+ * replay, and focused parity tests all route through this one seam. */
+bool utxo_apply_delete_rows_above(sqlite3 *db, int first_height,
+                                  int last_height);
+
 /* Persist the per-block inverse-delta for `height`, stamped with the
  * OLD branch hash. MUST run inside the stage txn so it lands atomically
  * with the log row + cursor. Called only on a successful apply. */

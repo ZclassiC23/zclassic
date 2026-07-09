@@ -6,6 +6,7 @@
 #include "sapling/bls12_381.h"
 #include "sapling/bn254.h"
 #include "sapling/sapling.h"
+#include "sapling/sapling_prover.h"
 #include "sapling/sprout.h"
 #include "chain/chainparams.h"
 #include "crypto/sha512.h"
@@ -33,6 +34,20 @@
 #define SPROUT_GROTH16_PARAMS_SHA512                                         \
     "20bc1f6bd89d0321b90a3f1b7e2050a7dafb427e86e7ef33b0b7a5c06077f5bf"       \
     "5695846952eac2b6231222df633e258682e9b6e2545f732c30fd76ae230ac65d"
+
+/* Canonical BLAKE2b-512 digests consumed by the pinned Zcash proving
+ * backend. These are intentionally separate from the SHA-512 integrity gate
+ * above: the C23 loader verifies SHA-512 before invoking Rust, then the
+ * canonical prover independently checks the ceremony files with BLAKE2b. */
+#define SAPLING_SPEND_PARAMS_BLAKE2B                                        \
+    "8270785a1a0d0bc77196f000ee6d221c9c9894f55307bd9357c3f0105d31ca639"       \
+    "91ab91324160d8f53e2bbd3c2633a6eb8bdf5205d822e7f3f73edac51b2b70c"
+#define SAPLING_OUTPUT_PARAMS_BLAKE2B                                       \
+    "657e3d38dbb5cb5e7dd2970e8b03d69b4787dd907285b5a7f0790dcc8072f60b"       \
+    "f593b32cc2d1c030e00ff5ae64bf84c5c3beb84ddc841d48264b4a171744d028"
+#define SPROUT_GROTH16_PARAMS_BLAKE2B                                       \
+    "e9b238411bd6c0ec4791e9d04245ec350c9c5744f5610dfcce4365d5ca49dfef"       \
+    "d5054e371842b3f88fa1b9d7e8e075249b3ebabd167fa8b0f3161292d36c180a"
 
 /* Compute SHA-512 of a buffer and compare against the expected hex digest
  * in constant time. On mismatch, print expected/actual and return false so
@@ -241,16 +256,9 @@ bool sapling_init_params(const char *params_dir)
                  "Loaded sapling-spend proving key: %zu bytes",
                  spend_pk_len);
 
-    /* Initialize native C23 prover with params paths for Groth16 proving */
+    /* Initialize the pinned canonical proving backend. Consensus verification
+     * has already installed the independent C23 VKs above. */
     {
-        extern void zclassic_init_zksnark_params(
-            const uint8_t *spend_path, size_t spend_path_len,
-            const char *spend_hash,
-            const uint8_t *output_path, size_t output_path_len,
-            const char *output_hash,
-            const uint8_t *sprout_path, size_t sprout_path_len,
-            const char *sprout_hash);
-
         char spend_path[1024], output_path2[1024], sprout_path[1024];
         snprintf(spend_path, sizeof(spend_path),
                  "%s/sapling-spend.params", params_dir);
@@ -261,13 +269,18 @@ bool sapling_init_params(const char *params_dir)
 
         zclassic_init_zksnark_params(
             (const uint8_t *)spend_path, strlen(spend_path),
-            SAPLING_SPEND_PARAMS_SHA512,
+            SAPLING_SPEND_PARAMS_BLAKE2B,
             (const uint8_t *)output_path2, strlen(output_path2),
-            SAPLING_OUTPUT_PARAMS_SHA512,
+            SAPLING_OUTPUT_PARAMS_BLAKE2B,
             (const uint8_t *)sprout_path, strlen(sprout_path),
-            SPROUT_GROTH16_PARAMS_SHA512);
-        LOG_INFO("sapling_params",
-                 "native C23 prover zkSNARK params initialized.");
+            SPROUT_GROTH16_PARAMS_BLAKE2B);
+
+        if (!zclassic_sapling_prover_run_self_test()) {
+            LOG_WARN("sapling_params",
+                     "proving capability unavailable: backend=%s status=%s; consensus verification remains active",
+                     zclassic_sapling_prover_backend(),
+                     zclassic_sapling_prover_status());
+        }
     }
 
     atomic_store(&params_loaded, true);

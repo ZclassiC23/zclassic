@@ -9,6 +9,7 @@
 #include "services/chain_evidence_authority_service.h"
 #include "services/chain_evidence_persistence_service.h"
 
+#include "models/block.h"
 #include "models/database.h"
 #include "validation/sync_evidence_policy.h"
 
@@ -42,6 +43,18 @@ static int state_get_i32(struct node_db *ndb, const char *key, int def)
     if (ndb)
         (void)node_db_state_get_int(ndb, key, &v);
     return (int)v;
+}
+
+static bool persisted_tip_matches_projection(struct node_db *ndb,
+                                             int height,
+                                             const struct uint256 *hash)
+{
+    struct db_block row;
+    if (!ndb || height < 0 || !hash)
+        return false;
+    memset(&row, 0, sizeof(row));
+    return db_block_find_by_height(ndb, height, &row) &&
+           memcmp(row.hash, hash->data, sizeof(row.hash)) == 0;
 }
 
 void chain_evidence_controller_snapshot(
@@ -147,10 +160,29 @@ void chain_evidence_controller_snapshot(
     out->publish_state_not_local =
         out->active_tip_height >= 0 &&
         out->publish_state != CEC_PUBLISH_LOCAL_EVIDENCE;
+    /* node.db's blocks projection and the cec evidence follower do not share
+     * one transaction: the projection can commit height H while the evidence
+     * record still names H-1.  Both are durable frontiers behind the live
+     * reducer/window tip, and a different hash is expected in that shape.
+     *
+     * Keep the carve-out deliberately narrow.  The persisted evidence must be
+     * at the projection frontier or exactly one row behind it, its hash must
+     * bind to the canonical projection row at that persisted height, and the
+     * whole durable projection must be behind the live tip. A two-row evidence
+     * gap, a persisted height ahead of the projection, a missing/corrupt
+     * projection binding, or a same-height hash split remains
+     * active_tip_hash_mismatch. csr_cursor_mismatch independently catches a
+     * live active-tip/coins-tip split. */
     bool durable_frontier_lag =
         out->sqlite_max_height >= 0 &&
-        out->persisted_active_tip_height == out->sqlite_max_height &&
-        out->sqlite_max_height < out->active_tip_height;
+        out->persisted_active_tip_height >= 0 &&
+        out->has_persisted_active_tip_hash &&
+        out->persisted_active_tip_height <= out->sqlite_max_height &&
+        out->persisted_active_tip_height >= out->sqlite_max_height - 1 &&
+        out->sqlite_max_height < out->active_tip_height &&
+        persisted_tip_matches_projection(
+            authority->ndb, out->persisted_active_tip_height,
+            &out->persisted_active_tip_hash);
     out->active_tip_hash_mismatch =
         out->has_active_tip_hash &&
         out->has_persisted_active_tip_hash &&

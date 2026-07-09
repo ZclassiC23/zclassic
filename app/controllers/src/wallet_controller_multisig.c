@@ -141,10 +141,22 @@ bool rpc_sendmany(const struct json_value *params, bool help,
         LOG_FAIL("wallet", "sendmany: create multi-tx failed (%zu recipients): %s", n, error ? error : "unknown");
     }
 
-    if (!wallet_commit_transaction(ctx->wallet, &wtx, ctx->mempool)) {
-        json_set_str(result, "Error committing transaction");
+    struct zcl_result commit = wallet_commit_from_context(ctx, &wtx);
+    if (!commit.ok) {
+        json_set_str(result, commit.message);
         transaction_free(&wtx.tx);
-        LOG_FAIL("wallet", "sendmany: commit transaction failed (%zu recipients)", n);
+        LOG_FAIL("wallet", "sendmany: commit transaction failed (%zu recipients, "
+                           "code=%d): %s", n, commit.code, commit.message);
+    }
+
+    struct zcl_result persisted =
+        wallet_persist_commit_before_relay(ctx, &wtx);
+    if (!persisted.ok) {
+        json_set_str(result, persisted.message);
+        transaction_free(&wtx.tx);
+        LOG_FAIL("wallet", "sendmany: pre-relay durability failed "
+                           "(code=%d): %s", persisted.code,
+                           persisted.message);
     }
 
     if (wallet_ctx_db_ready(ctx))
@@ -152,14 +164,6 @@ bool rpc_sendmany(const struct json_value *params, bool help,
 
     if (ctx->connman)
         connman_relay_transaction(ctx->connman, &wtx.tx.hash);
-
-    if (ctx->wallet_db) {
-        struct zcl_result fr = wallet_controller_flush_r(ctx);
-        if (!fr.ok) {
-            LOG_WARN("wallet", "send: post-broadcast flush failed "
-                               "(code=%d): %s", fr.code, fr.message);
-        }
-    }
 
     char txid[65];
     uint256_get_hex(&wtx.tx.hash, txid);
@@ -251,4 +255,3 @@ bool rpc_addmultisigaddress(const struct json_value *params, bool help,
     json_push_kv_str(result, "redeemScript", redeem_hex);
     return true;
 }
-

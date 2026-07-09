@@ -382,6 +382,17 @@ int test_coins_ram(void)
             "nf BLOB NOT NULL, pool INTEGER NOT NULL, "
             "height INTEGER NOT NULL, PRIMARY KEY(nf,pool)) "
             "WITHOUT ROWID;"
+            "CREATE TABLE IF NOT EXISTS sprout_anchors ("
+            "anchor BLOB PRIMARY KEY NOT NULL, "
+            "height INTEGER NOT NULL, tree BLOB NOT NULL) "
+            "WITHOUT ROWID;"
+            "CREATE TABLE IF NOT EXISTS sapling_anchors ("
+            "anchor BLOB PRIMARY KEY NOT NULL, "
+            "height INTEGER NOT NULL, tree BLOB NOT NULL) "
+            "WITHOUT ROWID;"
+            "CREATE TABLE IF NOT EXISTS anchor_state ("
+            "pool INTEGER PRIMARY KEY NOT NULL, "
+            "activation_cursor INTEGER NOT NULL) WITHOUT ROWID;"
             "INSERT OR REPLACE INTO utxo_apply_log"
             "(height,status,ok,spent_count,added_count,"
             "total_value_delta,applied_at) "
@@ -403,6 +414,14 @@ int test_coins_ram(void)
             "ON CONFLICT(name) DO UPDATE SET cursor=42;"
             "INSERT OR REPLACE INTO nullifiers(nf,pool,height) "
             "VALUES(zeroblob(32),0,42);"
+            "INSERT OR REPLACE INTO sprout_anchors(anchor,height,tree) "
+            "VALUES(x'14',20,x'00'),(x'15',21,x'00'),"
+            "(x'2A',42,x'00');"
+            "INSERT OR REPLACE INTO sapling_anchors(anchor,height,tree) "
+            "VALUES(x'14',20,x'00'),(x'15',21,x'00'),"
+            "(x'2A',42,x'00');"
+            "INSERT OR REPLACE INTO anchor_state(pool,activation_cursor) "
+            "VALUES(0,7),(1,8);"
             "INSERT OR REPLACE INTO coins"
             "(txid,vout,value,height,is_coinbase,script) "
             "VALUES(zeroblob(32),20,20,20,0,x'51'),"
@@ -441,6 +460,27 @@ int test_coins_ram(void)
                  cr_scalar_i64(db,
                      "SELECT COUNT(*) FROM nullifiers "
                      "WHERE height>=21") == 0);
+        CR_CHECK("reconcile: equal-cursor keeps Sprout anchor below tail",
+                 cr_scalar_i64(db,
+                     "SELECT COUNT(*) FROM sprout_anchors "
+                     "WHERE height=20") == 1);
+        CR_CHECK("reconcile: equal-cursor purges Sprout anchor tail",
+                 cr_scalar_i64(db,
+                     "SELECT COUNT(*) FROM sprout_anchors "
+                     "WHERE height>=21") == 0);
+        CR_CHECK("reconcile: equal-cursor keeps Sapling anchor below tail",
+                 cr_scalar_i64(db,
+                     "SELECT COUNT(*) FROM sapling_anchors "
+                     "WHERE height=20") == 1);
+        CR_CHECK("reconcile: equal-cursor purges Sapling anchor tail",
+                 cr_scalar_i64(db,
+                     "SELECT COUNT(*) FROM sapling_anchors "
+                     "WHERE height>=21") == 0);
+        CR_CHECK("reconcile: anchor coverage state preserved",
+                 cr_scalar_i64(db,
+                     "SELECT COUNT(*) FROM anchor_state WHERE "
+                     "(pool=0 AND activation_cursor=7) OR "
+                     "(pool=1 AND activation_cursor=8)") == 2);
         CR_CHECK("reconcile: equal-cursor tip cursor clamped",
                  cr_scalar_i64(db,
                      "SELECT cursor FROM stage_cursor "
@@ -543,6 +583,17 @@ int test_coins_ram(void)
                  cr_scalar_i64(db, "SELECT COUNT(*) FROM tip_finalize_log") == 0);
         CR_CHECK("reconcile: stale nullifiers purged",
                  cr_scalar_i64(db, "SELECT COUNT(*) FROM nullifiers") == 0);
+        CR_CHECK("reconcile: stale Sprout anchors purged",
+                 cr_scalar_i64(db,
+                     "SELECT COUNT(*) FROM sprout_anchors") == 0);
+        CR_CHECK("reconcile: stale Sapling anchors purged",
+                 cr_scalar_i64(db,
+                     "SELECT COUNT(*) FROM sapling_anchors") == 0);
+        CR_CHECK("reconcile: genesis replay preserves anchor coverage state",
+                 cr_scalar_i64(db,
+                     "SELECT COUNT(*) FROM anchor_state WHERE "
+                     "(pool=0 AND activation_cursor=7) OR "
+                     "(pool=1 AND activation_cursor=8)") == 2);
         CR_CHECK("reconcile: stale durable coins purged",
                  cr_scalar_i64(db, "SELECT COUNT(*) FROM coins") == 0);
         CR_CHECK("reconcile: upstream created_outputs preserved",

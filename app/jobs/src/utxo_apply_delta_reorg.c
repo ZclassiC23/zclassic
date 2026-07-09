@@ -21,6 +21,7 @@
 #include "primitives/transaction.h"
 #include "storage/coins_kv.h"
 #include "storage/nullifier_kv.h"
+#include "storage/anchor_kv.h"
 #include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
 #include "util/log_macros.h"
@@ -226,6 +227,13 @@ bool utxo_apply_delete_rows_above(sqlite3 *db, int fork_plus1, int last_h)
      * run), where the bare DELETE would fail "no such table". */
     if (!nullifier_kv_ensure_schema(db))
         return false;  /* nullifier_kv logged the failure */
+    if (!anchor_kv_ensure_schema(db)) {
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] unwind could not ensure anchor schema "
+                 "range=[%d,%d]",
+                 fork_plus1, last_h);
+        return false;
+    }
     static const char *const sqls[] = {
         "DELETE FROM utxo_apply_log WHERE height >= ? AND height <= ?",
         "DELETE FROM utxo_apply_delta WHERE height >= ? AND height <= ?",
@@ -257,6 +265,12 @@ bool utxo_apply_delete_rows_above(sqlite3 *db, int fork_plus1, int last_h)
             LOG_WARN("utxo_apply", "[utxo_apply] unwind delete rc=%d", rc);
             return false;
         }
+    }
+    if (!anchor_kv_delete_range(db, fork_plus1, last_h)) {
+        LOG_WARN("utxo_apply",
+                 "[utxo_apply] unwind anchor delete failed range=[%d,%d]",
+                 fork_plus1, last_h);
+        return false;
     }
     return true;
 }

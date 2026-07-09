@@ -186,6 +186,41 @@ bool sync_set_state(enum sync_state new_state, const char *reason)
     return true;
 }
 
+bool sync_try_transition(enum sync_state expected,
+                         enum sync_state new_state,
+                         const char *reason)
+{
+    if (expected < 0 || expected >= SYNC_NUM_STATES ||
+        new_state < 0 || new_state >= SYNC_NUM_STATES)
+        return false;
+    if (expected == new_state)
+        return sync_get_state() == expected;
+    if (!g_sync_transitions[expected][new_state])
+        return false;
+
+    int observed = (int)expected;
+    if (!atomic_compare_exchange_strong(&g_sync_state, &observed,
+                                        (int)new_state))
+        return false;
+
+    atomic_store(&g_sync_state_entered_time,
+                 (int64_t)platform_time_wall_time_t());
+    atomic_store(&g_sync_state_entry_height, 0);
+    if (g_sync_state_change_cb)
+        g_sync_state_change_cb(new_state, 0);
+
+    char buf[EVENT_PAYLOAD_SIZE];
+    int n = snprintf(buf, sizeof(buf), "%s->%s: %s",
+                     sync_state_name(expected), sync_state_name(new_state),
+                     reason ? reason : "");
+    event_emit(EV_SYNC_STATE_CHANGE, 0, buf,
+               (uint32_t)(n > 0 ? n : 0));
+    printf("Sync: %s -> %s (%s)\n",
+           sync_state_name(expected), sync_state_name(new_state),
+           reason ? reason : "");
+    return true;
+}
+
 /* ── Snapshot sync state machine ────────────────────────── */
 
 static _Atomic int g_snapsync_state = SNAPSYNC_IDLE;

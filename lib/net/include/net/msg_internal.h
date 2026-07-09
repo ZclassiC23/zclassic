@@ -86,6 +86,8 @@ enum tx_accept_result {
     TX_ACCEPT_CONFLICT,         /* double-spend vs current mempool */
     TX_ACCEPT_BELOW_FEE,        /* fee < min_relay_fee */
     TX_ACCEPT_MISSING_INPUTS,   /* unknown inputs (orphan) */
+    TX_ACCEPT_NONFINAL,         /* nLockTime policy rejection */
+    TX_ACCEPT_EXPIRING_SOON,    /* expiry-height policy rejection */
     TX_ACCEPT_INTERNAL_ERROR,   /* mempool full / OOM */
 };
 

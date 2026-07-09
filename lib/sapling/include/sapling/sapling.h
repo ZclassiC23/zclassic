@@ -161,8 +161,8 @@ bool sapling_build_output_description(
 
 /* Build output description using Sapling proving context.
  * proving_ctx: opaque proving context from zclassic_sapling_proving_ctx_init
- * This produces cv and zkproof via native C23 prover (matching the reference circuit).
- * cm, epk, and encryption are computed by our C23 code. */
+ * The pinned canonical backend produces cv and zkproof; consensus
+ * verification, cm, epk, and encryption remain in independent C23 code. */
 bool sapling_build_output_with_ctx(
     void *proving_ctx,
     const uint8_t ovk[32],

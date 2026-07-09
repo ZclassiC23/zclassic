@@ -99,6 +99,14 @@ enum mempool_accept_result accept_to_mempool(
     if (!check_transaction(tx, &state))
         return MEMPOOL_ACCEPT_INVALID;
 
+    /* A live acceptance decision is impossible without all three chain
+     * authorities. Historically NULL test scaffolding skipped proof, input,
+     * fee, and script checks and then admitted the transaction anyway. Keep
+     * structural-invalid classification above for diagnostics, but never add
+     * a structurally-valid transaction through an incomplete context. */
+    if (!coins_tip || !main_state || !params)
+        return MEMPOOL_ACCEPT_INTERNAL_ERROR;
+
     transaction_compute_hash(tx);
     struct uint256 hash = tx->hash;
 
@@ -110,59 +118,70 @@ enum mempool_accept_result accept_to_mempool(
     if (tx_mempool_has_conflict(pool, tx))
         return MEMPOOL_ACCEPT_CONFLICT;
 
-    int tip_height = main_state
-        ? active_chain_height(&main_state->chain_active) : 0;
+    int tip_height = 0;
+    int64_t lock_time_cutoff = (int64_t)platform_time_wall_time_t();
+    /* BIP113 mempool policy evaluates against the current tip's MTP.
+     * Snapshot height + cutoff under cs_main so a concurrent reorg cannot
+     * give us a height from one tip and a timestamp from another. */
+    zcl_mutex_lock(&main_state->cs_main);
+    tip_height = active_chain_height(&main_state->chain_active);
+    struct block_index *tip = active_chain_tip(&main_state->chain_active);
+    if (tip)
+        lock_time_cutoff = block_index_get_median_time_past(tip);
+    zcl_mutex_unlock(&main_state->cs_main);
     int next_height = tip_height + 1;
-    uint32_t branch_id = params
-        ? consensus_current_epoch_branch_id(next_height, &params->consensus)
-        : 0;
+    uint32_t branch_id =
+        consensus_current_epoch_branch_id(next_height, &params->consensus);
+
+    /* Match zclassicd CheckFinalTx: mempool transactions must already be
+     * final for the next block, using tip median-time-past for time locks.
+     * This is relay policy (block connection performs its own consensus
+     * finality check against the candidate block time). */
+    if (!is_final_tx(tx, next_height, lock_time_cutoff))
+        return MEMPOOL_ACCEPT_NONFINAL;
+    if (is_expiring_soon_tx(tx, next_height))
+        return MEMPOOL_ACCEPT_EXPIRING_SOON;
 
     /* 2. Height-aware shielded checks: JoinSplit Ed25519 signature,
      *    Sapling Groth16 spend/output proofs + binding signature, and
      *    Sprout zk-SNARK proofs. THIS is the proof verification the
      *    relay path was missing. dosLevel 100 mirrors the relay-time
-     *    contextual check in zclassicd's AcceptToMemoryPool. Requires
-     *    chain params; without them (unit-test scaffolding) skip — a
-     *    NULL params can only occur off the live path. */
-    if (params) {
-        validation_state_init(&state);
-        if (!contextual_check_transaction(tx, &state, &params->consensus,
-                                          next_height, 100))
-            return MEMPOOL_ACCEPT_INVALID;
-    }
+     *    contextual check in zclassicd's AcceptToMemoryPool. */
+    validation_state_init(&state);
+    if (!contextual_check_transaction(tx, &state, &params->consensus,
+                                      next_height, 100))
+        return MEMPOOL_ACCEPT_INVALID;
 
-    /* 3. Input-dependent checks: require a live coins view. Absent view
-     *    (unit tests only) means we accept at fee=0 and rely on the
-     *    post-add policy hook for eviction. The transparent SIGNATURE
-     *    check (verify_script) lives here because it needs each prevout's
+    /* 3. Input-dependent checks. The transparent SIGNATURE check
+     *    (verify_script) lives here because it needs each prevout's
      *    scriptPubKey + value from the view. */
     int64_t fee = 0;
-    if (coins_tip) {
-        if (!coins_view_cache_have_inputs(coins_tip, tx))
-            return MEMPOOL_ACCEPT_MISSING_INPUTS;
+    if (!coins_view_cache_have_inputs(coins_tip, tx))
+        return MEMPOOL_ACCEPT_MISSING_INPUTS;
+    if (!coins_view_cache_have_joinsplit_requirements(coins_tip, tx))
+        return MEMPOOL_ACCEPT_INVALID;
 
-        int64_t value_in = coins_view_cache_get_value_in(coins_tip, tx);
-        if (value_in < 0)
-            return MEMPOOL_ACCEPT_INVALID;
+    int64_t value_in = coins_view_cache_get_value_in(coins_tip, tx);
+    if (value_in < 0)
+        return MEMPOOL_ACCEPT_INVALID;
 
-        int64_t value_out = transaction_get_value_out(tx);
-        if (value_out < 0 || value_in < value_out)
-            return MEMPOOL_ACCEPT_INVALID;
+    int64_t value_out = transaction_get_value_out(tx);
+    if (value_out < 0 || value_in < value_out)
+        return MEMPOOL_ACCEPT_INVALID;
 
-        fee = value_in - value_out;
+    fee = value_in - value_out;
 
-        int64_t min_relay_fee = pool->min_relay_fee;
-        if (min_relay_fee > 0 && fee < min_relay_fee)
-            return MEMPOOL_ACCEPT_BELOW_FEE;
+    int64_t min_relay_fee = pool->min_relay_fee;
+    if (min_relay_fee > 0 && fee < min_relay_fee)
+        return MEMPOOL_ACCEPT_BELOW_FEE;
 
-        /* Transparent scriptSig verification — the missing signature
-         * check. A bad-sig tx is rejected here, BEFORE add+relay. */
-        bool missing_inputs = false;
-        if (!verify_tx_inputs_scripts(coins_tip, tx, branch_id,
-                                      &missing_inputs)) {
-            return missing_inputs ? MEMPOOL_ACCEPT_MISSING_INPUTS
-                                  : MEMPOOL_ACCEPT_INVALID;
-        }
+    /* Transparent scriptSig verification — a bad-sig tx is rejected here,
+     * BEFORE add+relay. */
+    bool missing_inputs = false;
+    if (!verify_tx_inputs_scripts(coins_tip, tx, branch_id,
+                                  &missing_inputs)) {
+        return missing_inputs ? MEMPOOL_ACCEPT_MISSING_INPUTS
+                              : MEMPOOL_ACCEPT_INVALID;
     }
 
     struct mempool_entry entry;
@@ -172,10 +191,19 @@ enum mempool_accept_result accept_to_mempool(
                        tx_mempool_has_no_inputs_of(pool, tx),
                        false, branch_id);
 
-    if (!tx_mempool_add_unchecked(pool, &hash, &entry)) {
-        mempool_entry_free(&entry);
+    bool added = tx_mempool_add_unchecked(pool, &hash, &entry);
+    /* tx_mempool_add_unchecked deep-copies the entry. Always release this
+     * staging copy; omitting the success-path free leaked one full transaction
+     * per accepted relay and made sustained traffic an unbounded heap leak. */
+    mempool_entry_free(&entry);
+    if (!added)
         return MEMPOOL_ACCEPT_INTERNAL_ERROR;
-    }
+
+    /* The post-add policy hook may evict synchronously after limits are
+     * recomputed. Never report success/relay a candidate no longer owned by
+     * the mempool. */
+    if (!tx_mempool_exists(pool, &hash))
+        return MEMPOOL_ACCEPT_INTERNAL_ERROR;
 
     return MEMPOOL_ACCEPT_OK;
 }

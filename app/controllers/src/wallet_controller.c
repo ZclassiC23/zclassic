@@ -26,22 +26,6 @@ void rpc_wallet_set_coins_tip(struct coins_view_cache *tip)
 }
 
 
-static bool wallet_last_key_id(const struct wallet *w, struct key_id *out)
-{
-    if (!w || !out) return false;
-    const struct basic_keystore *ks = &w->keystore;
-    if (ks->num_keys == 0) return false;
-    /* Scan backward for the first used slot — the array compacts on
-     * remove, but a prior rollback could have left a hole. */
-    for (size_t i = ks->num_keys; i > 0; i--) {
-        if (ks->keys[i - 1].used) {
-            *out = ks->keys[i - 1].keyid;
-            return true;
-        }
-    }
-    return false;
-}
-
 static bool rpc_getnewaddress(const struct json_value *params, bool help,
                                struct json_value *result)
 {
@@ -52,38 +36,68 @@ static bool rpc_getnewaddress(const struct json_value *params, bool help,
         "Returns a new ZClassic address for receiving payments.");
 
     ENSURE_WALLET(result);
+    if (!ctx->wallet_db || !ctx->wallet_db->open) {
+        json_set_str(result,
+            "Error: wallet durability backend unavailable; address not created");
+        LOG_FAIL("wallet",
+                 "getnewaddress: refusing RAM-only receive address");
+    }
+
+    bool direct_generated = wallet_has_hd(ctx->wallet);
+    if (!direct_generated &&
+        wallet_key_pool_persisted_size(ctx->wallet) == 0) {
+        if (!wallet_top_up_key_pool(ctx->wallet, DEFAULT_KEYPOOL_SIZE)) {
+            json_set_str(result, "Error: keypool top-up failed");
+            LOG_FAIL("wallet", "getnewaddress: keypool top-up failed");
+        }
+        int64_t pool_generation =
+            wallet_key_pool_generation_ceiling(ctx->wallet);
+        if (ctx->wallet_db) {
+            struct zcl_result topup_flush = wallet_flush_from_context(ctx);
+            if (!topup_flush.ok) {
+                json_set_str(result,
+                    "Error: wallet persistence failed. No unpersisted "
+                    "keypool address was returned.");
+                LOG_FAIL("wallet",
+                         "getnewaddress: keypool durability failed "
+                         "(code=%d): %s",
+                         topup_flush.code, topup_flush.message);
+            }
+        }
+        wallet_key_pool_mark_persisted_through(
+            ctx->wallet, pool_generation);
+    }
 
     char addr[128];
-    if (!wallet_get_new_address(ctx->wallet, addr, sizeof(addr))) {
-        json_set_str(result, "Error: keypool ran out");
-        LOG_FAIL("wallet", "getnewaddress: keypool ran out");
+    struct key_id generated_kid;
+    if (!wallet_get_new_address_ex(ctx->wallet, addr, sizeof(addr),
+                                   &generated_kid)) {
+        json_set_str(result, "Error: no durable keypool address available");
+        LOG_FAIL("wallet", "getnewaddress: durable keypool ran out");
     }
 
     /* Persist the fresh key to wallet_keys BEFORE handing the address
-     * to the user. If the flush fails, roll back the keystore add
-     * (we capture the new key_id from the tail) so in-memory and
-     * on-disk agree. Never return an address we cannot persist: a
+     * to the user. If the flush fails, roll back the exact returned key ID
+     * so concurrent key generation cannot make us remove a different key.
+     * Never return an address we cannot persist: a
      * receive to an unsaved key would lose funds on the next restart. */
-    if (ctx->wallet_db) {
-        struct key_id new_kid;
-        bool have_kid = wallet_last_key_id(ctx->wallet, &new_kid);
-
-        struct zcl_result fr = wallet_controller_flush_r(ctx);
+    if (ctx->wallet_db && direct_generated) {
+        struct zcl_result fr = wallet_flush_from_context(ctx);
         if (!fr.ok) {
-            if (have_kid) {
-                (void)wallet_remove_key(ctx->wallet, &new_kid);
-            }
+            bool removed = wallet_remove_key(ctx->wallet, &generated_kid);
             json_set_str(result,
                 "Error: wallet persistence failed. New address NOT saved. "
                 "Check getwalletinfo.persistence and node.log.");
             LOG_FAIL("wallet", "getnewaddress: wallet_sqlite_flush_r failed "
-                                "(had_kid=%d, code=%d): %s",
-                                (int)have_kid, fr.code, fr.message);
+                                "(exact_key_removed=%d, code=%d): %s",
+                                (int)removed, fr.code, fr.message);
         }
 
-        /* Success: kick the JSON backup writer so the mirror follows. */
-        wallet_backup_service_on_key_change();
     }
+
+    /* Success: kick the JSON backup writer so the mirror follows. */
+    if (ctx->wallet_db)
+        wallet_backup_service_on_key_change();
 
     json_set_str(result, addr);
     return true;
@@ -360,7 +374,7 @@ static bool rpc_sendtoaddress(const struct json_value *params, bool help,
      * unspendable on restart. Treat a pre-broadcast flush failure as a hard
      * error and abort the send (write-ahead the key, like zclassicd). */
     if (ctx->wallet_db) {
-        struct zcl_result fr = wallet_controller_flush_r(ctx);
+        struct zcl_result fr = wallet_flush_from_context(ctx);
         if (!fr.ok) {
             transaction_free(&wtx.tx);
             json_set_str(result, "Cannot persist change key before broadcast — send aborted");
@@ -369,10 +383,22 @@ static bool rpc_sendtoaddress(const struct json_value *params, bool help,
         }
     }
 
-    if (!wallet_commit_transaction(ctx->wallet, &wtx, ctx->mempool)) {
-        json_set_str(result, "Error committing transaction");
+    struct zcl_result commit = wallet_commit_from_context(ctx, &wtx);
+    if (!commit.ok) {
+        json_set_str(result, commit.message);
         transaction_free(&wtx.tx);
-        LOG_FAIL("wallet", "sendtoaddress: commit transaction failed");
+        LOG_FAIL("wallet", "sendtoaddress: commit transaction failed "
+                           "(code=%d): %s", commit.code, commit.message);
+    }
+
+    struct zcl_result persisted =
+        wallet_persist_commit_before_relay(ctx, &wtx);
+    if (!persisted.ok) {
+        json_set_str(result, persisted.message);
+        transaction_free(&wtx.tx);
+        LOG_FAIL("wallet", "sendtoaddress: pre-relay durability failed "
+                           "(code=%d): %s", persisted.code,
+                           persisted.message);
     }
 
     if (wallet_ctx_db_ready(ctx))
@@ -381,18 +407,6 @@ static bool rpc_sendtoaddress(const struct json_value *params, bool help,
     /* Relay to peers */
     if (ctx->connman)
         connman_relay_transaction(ctx->connman, &wtx.tx.hash);
-
-    /* Best-effort second flush to persist the new tx record (added to the
-     * keystore map by wallet_commit_transaction). The change-key durability
-     * guarantee was already met by the pre-broadcast flush above; this is
-     * non-fatal and re-runs on the next flush trigger if it fails. */
-    if (ctx->wallet_db) {
-        struct zcl_result fr = wallet_controller_flush_r(ctx);
-        if (!fr.ok) {
-            LOG_WARN("wallet", "sendtoaddress: post-broadcast tx flush failed "
-                               "(code=%d): %s", fr.code, fr.message);
-        }
-    }
 
     char txid[65];
     uint256_get_hex(&wtx.tx.hash, txid);
@@ -436,7 +450,7 @@ bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
      * the send if the keystore flush fails, so we never broadcast a tx whose
      * RAM-only change key isn't durable. */
     if (ctx->wallet_db) {
-        struct zcl_result fr = wallet_controller_flush_r(ctx);
+        struct zcl_result fr = wallet_flush_from_context(ctx);
         if (!fr.ok) {
             transaction_free(&wtx.tx);
             snprintf(error_out, error_out_size,
@@ -446,26 +460,28 @@ bool wallet_direct_sendtoaddress(const char *address, int64_t amount_sat,
         }
     }
 
-    if (!wallet_commit_transaction(ctx->wallet, &wtx, ctx->mempool)) {
-        snprintf(error_out, error_out_size, "Error committing transaction");
+    struct zcl_result commit = wallet_commit_from_context(ctx, &wtx);
+    if (!commit.ok) {
+        snprintf(error_out, error_out_size, "%s", commit.message);
         transaction_free(&wtx.tx);
-        LOG_FAIL("wallet", "direct_sendtoaddress: commit transaction failed");
+        LOG_FAIL("wallet", "direct_sendtoaddress: commit transaction failed "
+                           "(code=%d): %s", commit.code, commit.message);
+    }
+
+    struct zcl_result persisted =
+        wallet_persist_commit_before_relay(ctx, &wtx);
+    if (!persisted.ok) {
+        snprintf(error_out, error_out_size, "%s", persisted.message);
+        transaction_free(&wtx.tx);
+        LOG_FAIL("wallet", "direct_sendtoaddress: pre-relay durability failed "
+                           "(code=%d): %s", persisted.code,
+                           persisted.message);
     }
 
     if (wallet_ctx_db_ready(ctx))
         node_db_sync_wallet_tx(ctx->node_db, &wtx.tx, ctx->wallet, 0);
     if (ctx->connman)
         connman_relay_transaction(ctx->connman, &wtx.tx.hash);
-
-    /* Best-effort second flush to persist the new tx record (change-key
-     * durability already met by the pre-broadcast flush above). */
-    if (ctx->wallet_db) {
-        struct zcl_result fr = wallet_controller_flush_r(ctx);
-        if (!fr.ok) {
-            LOG_WARN("wallet", "direct_sendtoaddress: post-broadcast tx flush "
-                               "failed (code=%d): %s", fr.code, fr.message);
-        }
-    }
 
     uint256_get_hex(&wtx.tx.hash, txid_out);
     transaction_free(&wtx.tx);
@@ -538,11 +554,18 @@ static bool rpc_keypoolrefill(const struct json_value *params, bool help,
     if (rpc_params_invalid(&p)) { rpc_params_error(&p, result); LOG_FAIL("wallet", "keypoolrefill: invalid params"); }
 
     ENSURE_WALLET(result);
+    if (!ctx->wallet_db || !ctx->wallet_db->open) {
+        json_set_str(result,
+            "Error: wallet durability backend unavailable; keypool unchanged");
+        LOG_FAIL("wallet", "keypoolrefill: refusing RAM-only keypool");
+    }
 
     if (!wallet_top_up_key_pool(ctx->wallet, new_size)) {
         json_set_str(result, "Error refilling keypool");
         LOG_FAIL("wallet", "keypoolrefill: failed to refill keypool (size=%u)", new_size);
     }
+    int64_t pool_generation =
+        wallet_key_pool_generation_ceiling(ctx->wallet);
 
     /* Flush the fresh keypool entries. If persistence fails the
      * keypool indices still point into the keystore, but the on-disk
@@ -550,7 +573,7 @@ static bool rpc_keypoolrefill(const struct json_value *params, bool help,
      * pre-existing address twice. Log and error; canary will flag
      * the daemon as unhealthy and operator can intervene. */
     if (ctx->wallet_db) {
-        struct zcl_result fr = wallet_controller_flush_r(ctx);
+        struct zcl_result fr = wallet_flush_from_context(ctx);
         if (!fr.ok) {
             json_set_str(result,
                 "Error: keypool refilled in memory but persistence flush failed. "
@@ -559,7 +582,12 @@ static bool rpc_keypoolrefill(const struct json_value *params, bool help,
                                 "(new_size=%u, code=%d): %s",
                                 new_size, fr.code, fr.message);
         }
+        wallet_key_pool_mark_persisted_through(
+            ctx->wallet, pool_generation);
         wallet_backup_service_on_keypool_topup();
+    } else {
+        wallet_key_pool_mark_persisted_through(
+            ctx->wallet, pool_generation);
     }
 
     json_set_null(result);

@@ -35,6 +35,12 @@ struct sapling_keystore {
     size_t num_keys;
 };
 
+struct sapling_address_undo {
+    uint32_t child_index;
+    bool generated_seed;
+    bool valid;
+};
+
 void sapling_keystore_init(struct sapling_keystore *sks);
 void sapling_keystore_free(struct sapling_keystore *sks);
 
@@ -61,6 +67,20 @@ bool sapling_keystore_set_seed(struct sapling_keystore *sks,
 bool sapling_keystore_new_address(struct sapling_keystore *sks,
                                    uint8_t diversifier_out[ZC_DIVERSIFIER_SIZE],
                                    uint8_t pk_d_out[32]);
+
+/* Transactional sibling used by receive-address creation. `undo_out` names
+ * the exact appended child and whether this call created the seed. A caller
+ * whose durability step fails may remove that address with
+ * sapling_keystore_rollback_address(); rollback refuses if another child was
+ * appended meanwhile, so it never erases a concurrent successful address. */
+bool sapling_keystore_new_address_ex(
+    struct sapling_keystore *sks,
+    uint8_t diversifier_out[ZC_DIVERSIFIER_SIZE],
+    uint8_t pk_d_out[32],
+    struct sapling_address_undo *undo_out);
+bool sapling_keystore_rollback_address(
+    struct sapling_keystore *sks,
+    const struct sapling_address_undo *undo);
 
 bool sapling_encode_payment_address(const uint8_t diversifier[ZC_DIVERSIFIER_SIZE],
                                      const uint8_t pk_d[32],

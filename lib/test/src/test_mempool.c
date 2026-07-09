@@ -5,6 +5,7 @@
 #include "net/msgprocessor.h"
 #include "net/msg_internal.h"
 #include "net/peer_scoring.h"
+#include "validation/main_state.h"
 #include "util/sync.h"
 #include <stdatomic.h>
 
@@ -77,6 +78,9 @@ static void p21_build_spend(struct transaction *tx,
 int test_mempool(void)
 {
     int failures = 0;
+    struct main_state p21_main_state;
+    main_state_init(&p21_main_state);
+    const struct chain_params *p21_params = chain_params_get();
 
     printf("txmempool init/free... ");
     {
@@ -752,6 +756,8 @@ int test_mempool(void)
         struct msg_processor mp = {0};
         mp.mempool = &pool;
         mp.coins_tip = &coins;
+        mp.main_state = &p21_main_state;
+        mp.params = p21_params;
         mp.net_mgr = &nm;
 
         /* Forge an out-of-range vout value — triggers
@@ -821,6 +827,8 @@ int test_mempool(void)
         struct msg_processor mp = {0};
         mp.mempool = &pool;
         mp.coins_tip = &coins;
+        mp.main_state = &p21_main_state;
+        mp.params = p21_params;
         mp.net_mgr = &nm;
 
         /* First spend — unique output hash so the two txs have
@@ -885,6 +893,8 @@ int test_mempool(void)
         struct msg_processor mp = {0};
         mp.mempool = &pool;
         mp.coins_tip = &coins;
+        mp.main_state = &p21_main_state;
+        mp.params = p21_params;
         mp.net_mgr = &nm;
 
         struct transaction tx;
@@ -1079,5 +1089,6 @@ int test_mempool(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    main_state_free(&p21_main_state);
     return failures;
 }

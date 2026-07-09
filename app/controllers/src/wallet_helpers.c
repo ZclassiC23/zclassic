@@ -4,9 +4,12 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "controllers/wallet_helpers.h"
+#include "controllers/sync_controller.h"
 #include "views/format_helpers.h"
 #include "wallet/wallet.h"
+#include "wallet/wallet_sqlite.h"
 #include "chain/chainparams.h"
+#include "config/runtime.h"
 #include "json/json.h"
 #include "keys/key_io.h"
 #include "script/standard.h"
@@ -19,6 +22,127 @@
 #include "util/log_macros.h"
 
 struct wallet_rpc_context g_wallet_ctx = {0};
+
+struct wallet_flush_lane_ctx {
+    struct wallet_sqlite *wallet_db;
+    struct wallet *wallet;
+    struct zcl_result result;
+};
+
+static bool wallet_flush_lane_write(struct node_db *ndb, void *opaque)
+{
+    struct wallet_flush_lane_ctx *flush = opaque;
+
+    if (!flush || !flush->wallet_db || !flush->wallet) {
+        if (flush)
+            flush->result = ZCL_ERR(-1, "wallet flush lane: invalid context");
+        LOG_FAIL("wallet", "wallet flush lane: invalid context");
+    }
+    if (ndb && ndb->sync_in_batch && !node_db_sync_flush(ndb)) {
+        flush->result = ZCL_ERR(-1,
+            "wallet flush lane: pending node.db batch commit failed");
+        LOG_FAIL("wallet", "%s", flush->result.message);
+    }
+    flush->result = wallet_sqlite_flush_r(flush->wallet_db, flush->wallet);
+    if (!flush->result.ok)
+        LOG_FAIL("wallet", "wallet flush lane failed (code=%d): %s",
+                 flush->result.code, flush->result.message);
+    return true;
+}
+
+struct zcl_result wallet_commit_from_context(
+    const struct wallet_rpc_context *ctx, struct wallet_tx *wtx)
+{
+    if (!ctx || !wtx)
+        return ZCL_ERR(-1, "wallet commit context: NULL context or transaction");
+    struct wallet_tx_admission admission = {
+        .mempool = ctx->mempool,
+        .coins_tip = ctx->coins_tip,
+        .main_state = ctx->main_state,
+        .params = chain_params_get(),
+    };
+    return wallet_commit_transaction(ctx->wallet, wtx, &admission);
+}
+
+struct zcl_result wallet_flush_from_context(
+    const struct wallet_rpc_context *ctx)
+{
+    if (!ctx || !ctx->wallet)
+        return ZCL_ERR(-1, "wallet flush: incomplete context");
+    if (!ctx->wallet_db)
+        return ZCL_OK;
+
+    struct wallet_flush_lane_ctx flush = {
+        .wallet_db = ctx->wallet_db,
+        .wallet = ctx->wallet,
+        .result = ZCL_ERR(-1, "wallet flush lane did not run"),
+    };
+    struct db_service *dbsvc = app_runtime_db_service();
+    if (dbsvc && db_service_is_started(dbsvc) && ctx->node_db &&
+        db_service_node_db(dbsvc) == ctx->node_db) {
+        bool ran = db_service_run_write(dbsvc, wallet_flush_lane_write, &flush);
+        if (!ran && flush.result.ok)
+            return ZCL_ERR(-1, "wallet flush lane failed without detail");
+        return flush.result;
+    }
+
+    (void)wallet_flush_lane_write(ctx->node_db, &flush);
+    return flush.result;
+}
+
+struct zcl_result wallet_persist_commit_before_relay(
+    const struct wallet_rpc_context *ctx, const struct wallet_tx *wtx)
+{
+    if (!ctx || !ctx->wallet || !ctx->mempool || !wtx)
+        return ZCL_ERR(-1,
+            "wallet durability: incomplete context or transaction");
+    if (!ctx->wallet_db)
+        return ZCL_OK;
+
+    struct zcl_result flushed = wallet_flush_from_context(ctx);
+    if (flushed.ok)
+        return ZCL_OK;
+
+    struct zcl_result rollback = wallet_rollback_transaction(
+        ctx->wallet, wtx, ctx->mempool);
+    if (!rollback.ok) {
+        return ZCL_ERR(-3,
+            "wallet durability failed (%s) and rollback failed (%s)",
+            flushed.message, rollback.message);
+    }
+    return ZCL_ERR(-2,
+        "wallet durability failed before relay; commit rolled back: %s",
+        flushed.message);
+}
+
+struct zcl_result wallet_rollback_persisted_commit(
+    const struct wallet_rpc_context *ctx, const struct wallet_tx *wtx)
+{
+    if (!ctx || !ctx->wallet || !ctx->mempool || !wtx)
+        return ZCL_ERR(-1,
+            "wallet persisted rollback: incomplete context or transaction");
+
+    struct zcl_result memory = wallet_rollback_transaction(
+        ctx->wallet, wtx, ctx->mempool);
+    bool disk_ok = true;
+    if (ctx->wallet_db) {
+        disk_ok = ctx->node_db && ctx->node_db->open &&
+            node_db_sync_wallet_tx_delete(ctx->node_db, wtx->tx.hash.data);
+    }
+
+    if (!memory.ok && !disk_ok)
+        return ZCL_ERR(-4,
+            "wallet persisted rollback failed in memory (%s) and on disk",
+            memory.message);
+    if (!memory.ok)
+        return ZCL_ERR(-2, "wallet persisted rollback failed in memory: %s",
+                       memory.message);
+    if (!disk_ok)
+        return ZCL_ERR(-3,
+            "wallet persisted rollback removed memory/mempool state but could "
+            "not delete wallet_transactions row");
+    return ZCL_OK;
+}
 
 void wallet_rpc_context_set_base(struct wallet *wallet,
                                  struct main_state *main_state,

@@ -22,6 +22,7 @@
 #include "platform/time_compat.h"
 #include "storage/coins_kv.h"
 #include "storage/nullifier_kv.h"
+#include "storage/anchor_kv.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "util/stage.h"
@@ -293,6 +294,13 @@ bool stage_repair_header_solution_poison_rewind(
      * the whole rewind on "no such table". Idempotent. */
     if (!nullifier_kv_ensure_schema(db))
         return false;  /* nullifier_kv logged the failure */
+    if (!anchor_kv_ensure_schema(db)) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] header poison rewind could not ensure "
+                 "anchor schema h=%d active_tip=%d",
+                 height, active_tip_height);
+        return false;
+    }
 
     /* tip_finalize_log is DELIBERATELY ABSENT here: doctrine forbids deleting
      * tip_finalize_log rows (a prior deletion collapsed the public tip to
@@ -314,6 +322,8 @@ bool stage_repair_header_solution_poison_rewind(
          * at/above the frontier, and only successful applies insert
          * nullifiers. */
         "nullifiers",
+        "sprout_anchors",
+        "sapling_anchors",
     };
     static const char *const downstream_stages[] = {
         "body_fetch",

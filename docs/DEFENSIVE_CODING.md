@@ -415,6 +415,7 @@ add/remove a gate.
 - `check-systemd-memory-budget`
 - `check-test-registration`
 - `check-typed-blocker`
+- `check-vendor-provenance`
 - `check-doc-no-false-deleted`
 - `check-stage-log-reorg-unsafe`
 - `check-zclassicd-reach-allowlist`

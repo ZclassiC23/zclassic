@@ -19,6 +19,7 @@
 #include "core/serialize.h"
 #include "support/cleanse.h"
 #include "validation/chainstate.h"
+#include "validation/accept_to_mempool.h"
 #include "validation/txmempool.h"
 #include "validation/check_transaction.h"
 #include "validation/sighash.h"
@@ -121,6 +122,7 @@ void wallet_init(struct wallet *w)
     keystore_init(&w->keystore);
     memset(w->map_wallet, 0, sizeof(w->map_wallet));
     w->num_wallet_tx = 0;
+    memset(w->key_pool, 0, sizeof(w->key_pool));
     w->key_pool_size = 0;
     w->next_key_pool_index = 0;
     w->oldest_key_pool_time = 0;
@@ -360,7 +362,8 @@ bool wallet_get_new_change_address(struct wallet *w, char *addr_out,
     return wallet_pubkey_to_addr(&pk, addr_out, addr_size);
 }
 
-bool wallet_get_new_address(struct wallet *w, char *addr_out, size_t addr_size)
+bool wallet_get_new_address_ex(struct wallet *w, char *addr_out,
+                               size_t addr_size, struct key_id *key_id_out)
 {
     struct pubkey pk;
 
@@ -374,7 +377,14 @@ bool wallet_get_new_address(struct wallet *w, char *addr_out, size_t addr_size)
             return false;
     }
 
+    if (key_id_out)
+        *key_id_out = pubkey_get_id(&pk);
     return wallet_pubkey_to_addr(&pk, addr_out, addr_size);
+}
+
+bool wallet_get_new_address(struct wallet *w, char *addr_out, size_t addr_size)
+{
+    return wallet_get_new_address_ex(w, addr_out, addr_size, NULL);
 }
 
 bool wallet_top_up_key_pool(struct wallet *w, unsigned int target_size)
@@ -406,10 +416,16 @@ bool wallet_top_up_key_pool(struct wallet *w, unsigned int target_size)
         struct pubkey pk;
         if (!wallet_generate_new_key(w, &pk))
             return false;
+        struct key_id kid = pubkey_get_id(&pk);
 
         zcl_mutex_lock(&w->cs);
         if (w->key_pool_size < target_size) {
-            w->key_pool[w->key_pool_size] = w->next_key_pool_index++;
+            struct wallet_key_pool_entry *entry =
+                &w->key_pool[w->key_pool_size];
+            entry->keyid = kid;
+            entry->generation = w->next_key_pool_index;
+            entry->persisted = false;
+            w->next_key_pool_index++;
             w->key_pool_size++;
         }
         zcl_mutex_unlock(&w->cs);
@@ -417,25 +433,74 @@ bool wallet_top_up_key_pool(struct wallet *w, unsigned int target_size)
     return true;
 }
 
+int64_t wallet_key_pool_generation_ceiling(const struct wallet *w)
+{
+    if (!w)
+        return -1;
+    zcl_mutex_lock((zcl_mutex_t *)&w->cs);
+    int64_t ceiling = w->next_key_pool_index - 1;
+    zcl_mutex_unlock((zcl_mutex_t *)&w->cs);
+    return ceiling;
+}
+
+void wallet_key_pool_mark_persisted_through(struct wallet *w,
+                                            int64_t generation)
+{
+    if (!w || generation < 0)
+        return;
+    zcl_mutex_lock(&w->cs);
+    for (size_t i = 0; i < w->key_pool_size; i++)
+        if (w->key_pool[i].generation <= generation)
+            w->key_pool[i].persisted = true;
+    zcl_mutex_unlock(&w->cs);
+}
+
+size_t wallet_key_pool_persisted_size(const struct wallet *w)
+{
+    if (!w)
+        return 0;
+    size_t count = 0;
+    zcl_mutex_lock((zcl_mutex_t *)&w->cs);
+    for (size_t i = 0; i < w->key_pool_size; i++)
+        if (w->key_pool[i].persisted)
+            count++;
+    zcl_mutex_unlock((zcl_mutex_t *)&w->cs);
+    return count;
+}
+
 bool wallet_get_key_from_pool(struct wallet *w, struct pubkey *pk_out)
 {
+    if (!w || !pk_out)
+        LOG_FAIL("wallet", "get_key_from_pool: NULL wallet or output");
+
     zcl_mutex_lock(&w->cs);
-    if (w->key_pool_size == 0) {
+    size_t selected = SIZE_MAX;
+    for (size_t i = w->key_pool_size; i > 0; i--) {
+        if (w->key_pool[i - 1].persisted) {
+            selected = i - 1;
+            break;
+        }
+    }
+    if (selected == SIZE_MAX) {
         zcl_mutex_unlock(&w->cs);
-        if (!wallet_top_up_key_pool(w, DEFAULT_KEYPOOL_SIZE))
-            return false;
-        zcl_mutex_lock(&w->cs);
+        LOG_FAIL("wallet",
+                 "get_key_from_pool: no persisted keypool entry available");
     }
 
-    if (w->key_pool_size == 0) {
-        zcl_mutex_unlock(&w->cs);
-        return wallet_generate_new_key(w, pk_out);
-    }
-
+    struct key_id kid = w->key_pool[selected].keyid;
+    if (selected + 1 < w->key_pool_size)
+        w->key_pool[selected] = w->key_pool[w->key_pool_size - 1];
+    memset(&w->key_pool[w->key_pool_size - 1], 0,
+           sizeof(w->key_pool[w->key_pool_size - 1]));
     w->key_pool_size--;
     zcl_mutex_unlock(&w->cs);
 
-    return wallet_generate_new_key(w, pk_out);
+    /* Top-up already generated and persisted this private key. Return that
+     * exact public key instead of generating an unrelated extra key (the old
+     * implementation's 100-then-101st-key bug). */
+    if (!keystore_get_pubkey(&w->keystore, &kid, pk_out))
+        LOG_FAIL("wallet", "get_key_from_pool: persisted pool key missing");
+    return true;
 }
 
 static size_t wallet_find_slot(const struct wallet *w, const struct uint256 *hash)
@@ -459,6 +524,9 @@ static size_t wallet_find_free_slot(const struct wallet *w)
 
 bool wallet_add_to_wallet(struct wallet *w, const struct wallet_tx *wtx)
 {
+    if (!w || !wtx)
+        LOG_FAIL("wallet", "add_to_wallet: NULL wallet or transaction");
+
     zcl_mutex_lock(&w->cs);
 
     size_t idx = wallet_find_slot(w, &wtx->tx.hash);
@@ -478,75 +546,21 @@ bool wallet_add_to_wallet(struct wallet *w, const struct wallet_tx *wtx)
         return false;
     }
 
-    w->map_wallet[idx] = *wtx;
-    w->map_wallet[idx].used = true;
-
-    if (wtx->tx.num_vin > 0 && wtx->tx.vin) {
-        struct transaction *dst = &w->map_wallet[idx].tx;
-        dst->vin = zcl_malloc(wtx->tx.num_vin * sizeof(struct tx_in), "wallet_tx_vin");
-        if (!dst->vin) {
-            w->map_wallet[idx].used = false;
-            zcl_mutex_unlock(&w->cs);
-            return false;
-        }
-        memcpy(dst->vin, wtx->tx.vin,
-               wtx->tx.num_vin * sizeof(struct tx_in));
+    /* Build a complete independent record before publishing the slot.  The
+     * former field-by-field copy installed the shallow source pointers first
+     * and silently zeroed a shielded vector when one allocation failed.  That
+     * reported success with a partial wallet transaction (and left durability
+     * or rollback reasoning about different bytes than the admitted tx).
+     * transaction_copy is all-or-nothing and frees its partial allocations on
+     * failure, so an unused map slot remains byte-clean. */
+    struct wallet_tx copy = *wtx;
+    transaction_init(&copy.tx);
+    if (!transaction_copy(&copy.tx, &wtx->tx)) {
+        zcl_mutex_unlock(&w->cs);
+        LOG_FAIL("wallet", "add_to_wallet: deep transaction copy failed");
     }
-    if (wtx->tx.num_vout > 0 && wtx->tx.vout) {
-        struct transaction *dst = &w->map_wallet[idx].tx;
-        dst->vout = zcl_malloc(wtx->tx.num_vout * sizeof(struct tx_out), "wallet_tx_vout");
-        if (!dst->vout) {
-            free(dst->vin);
-            dst->vin = NULL;
-            w->map_wallet[idx].used = false;
-            zcl_mutex_unlock(&w->cs);
-            return false;
-        }
-        memcpy(dst->vout, wtx->tx.vout,
-               wtx->tx.num_vout * sizeof(struct tx_out));
-    }
-
-    /* Deep-copy shielded spend/output arrays to avoid dangling
-     * pointers when the source block is freed. */
-    {
-        struct transaction *dst = &w->map_wallet[idx].tx;
-        if (dst->num_shielded_spend > 0 && dst->v_shielded_spend) {
-            size_t sz = dst->num_shielded_spend *
-                        sizeof(struct spend_description);
-            struct spend_description *copy = zcl_malloc(sz, "wallet_spend_desc");
-            if (copy) {
-                memcpy(copy, dst->v_shielded_spend, sz);
-                dst->v_shielded_spend = copy;
-            } else {
-                dst->v_shielded_spend = NULL;
-                dst->num_shielded_spend = 0;
-            }
-        }
-        if (dst->num_shielded_output > 0 && dst->v_shielded_output) {
-            size_t sz = dst->num_shielded_output *
-                        sizeof(struct output_description);
-            struct output_description *copy = zcl_malloc(sz, "wallet_output_desc");
-            if (copy) {
-                memcpy(copy, dst->v_shielded_output, sz);
-                dst->v_shielded_output = copy;
-            } else {
-                dst->v_shielded_output = NULL;
-                dst->num_shielded_output = 0;
-            }
-        }
-        if (dst->num_joinsplit > 0 && dst->v_joinsplit) {
-            size_t sz = dst->num_joinsplit *
-                        sizeof(struct js_description);
-            struct js_description *copy = zcl_malloc(sz, "wallet_joinsplit_desc");
-            if (copy) {
-                memcpy(copy, dst->v_joinsplit, sz);
-                dst->v_joinsplit = copy;
-            } else {
-                dst->v_joinsplit = NULL;
-                dst->num_joinsplit = 0;
-            }
-        }
-    }
+    copy.used = true;
+    w->map_wallet[idx] = copy;
 
     w->num_wallet_tx++;
     zcl_mutex_unlock(&w->cs);
@@ -1069,11 +1083,57 @@ bool wallet_create_transaction_multi(struct wallet *w,
     return true;
 }
 
-bool wallet_commit_transaction(struct wallet *w, struct wallet_tx *wtx,
-                                struct tx_mempool *mempool)
+static const char *wallet_mempool_result_name(enum mempool_accept_result r)
 {
-    if (!wallet_add_to_wallet(w, wtx))
-        return false;
+    switch (r) {
+    case MEMPOOL_ACCEPT_OK:             return "ok";
+    case MEMPOOL_ACCEPT_INVALID:        return "invalid";
+    case MEMPOOL_ACCEPT_DUPLICATE:      return "duplicate";
+    case MEMPOOL_ACCEPT_CONFLICT:       return "conflict";
+    case MEMPOOL_ACCEPT_BELOW_FEE:      return "below_fee";
+    case MEMPOOL_ACCEPT_MISSING_INPUTS: return "missing_inputs";
+    case MEMPOOL_ACCEPT_NONFINAL:       return "nonfinal";
+    case MEMPOOL_ACCEPT_EXPIRING_SOON:  return "expiring_soon";
+    case MEMPOOL_ACCEPT_INTERNAL_ERROR: return "internal_error";
+    }
+    return "unknown";
+}
+
+struct zcl_result wallet_commit_transaction(
+    struct wallet *w, struct wallet_tx *wtx,
+    const struct wallet_tx_admission *admission)
+{
+    if (!w || !wtx || !admission)
+        return ZCL_ERR(-1, "wallet commit: NULL wallet, tx, or admission context");
+    if (!admission->mempool || !admission->coins_tip ||
+        !admission->main_state || !admission->params) {
+        return ZCL_ERR(-2,
+            "wallet commit: incomplete validation context "
+            "(mempool=%p coins_tip=%p main_state=%p params=%p)",
+            (void *)admission->mempool, (void *)admission->coins_tip,
+            (void *)admission->main_state, (const void *)admission->params);
+    }
+
+    /* Validate BEFORE wallet mutation. accept_to_mempool performs structural,
+     * contextual shielded-proof/binding-signature, input, fee, and transparent
+     * script checks before inserting the transaction. */
+    enum mempool_accept_result ar = accept_to_mempool(
+        admission->mempool, admission->coins_tip, admission->main_state,
+        admission->params, &wtx->tx);
+    if (ar != MEMPOOL_ACCEPT_OK) {
+        return ZCL_ERR(-100 - (int)ar,
+            "wallet commit: mempool admission rejected transaction (%s)",
+            wallet_mempool_result_name(ar));
+    }
+
+    if (!wallet_add_to_wallet(w, wtx)) {
+        /* Admission succeeded but the wallet record failed (e.g. OOM/cap).
+         * Roll back the pool so callers never relay a transaction whose
+         * ownership/change record could not be installed. */
+        tx_mempool_remove(admission->mempool, &wtx->tx.hash);
+        return ZCL_ERR(-3,
+            "wallet commit: wallet record failed after admission; mempool rolled back");
+    }
 
     /* Mutate the spent set under a brief w->cs hold so concurrent readers
      * (under w->cs) never race the writes. w->cs is non-recursive, so it is
@@ -1084,33 +1144,47 @@ bool wallet_commit_transaction(struct wallet *w, struct wallet_tx *wtx,
                                     wtx->tx.vin[i].prevout.n);
     zcl_mutex_unlock(&w->cs);
 
-    struct validation_state vs;
-    validation_state_init(&vs);
+    return ZCL_OK;
+}
 
-    int64_t fee = 0;
-    int64_t value_out = transaction_get_value_out(&wtx->tx);
-    int64_t value_in = wallet_get_debit(w, &wtx->tx);
-    if (value_in > value_out)
-        fee = value_in - value_out;
+struct zcl_result wallet_rollback_transaction(
+    struct wallet *w, const struct wallet_tx *wtx,
+    struct tx_mempool *mempool)
+{
+    if (!w || !wtx || !mempool)
+        return ZCL_ERR(-1, "wallet rollback: NULL wallet, tx, or mempool");
 
-    const struct chain_params *cp = chain_params_get();
-    /* Snapshot best_block_height (mutated by wallet_rescan) under a brief
-     * w->cs hold for an atomic read; never held across the mempool add. */
+    /* The transaction has not been relayed yet, so removing the local pool
+     * entry first prevents any later inventory scan from discovering it while
+     * the wallet record is being unwound. */
+    tx_mempool_remove(mempool, &wtx->tx.hash);
+
     zcl_mutex_lock(&w->cs);
-    int height = w->best_block_height;
+    size_t idx = wallet_find_slot(w, &wtx->tx.hash);
+    if (idx >= MAX_WALLET_TX) {
+        zcl_mutex_unlock(&w->cs);
+        return ZCL_ERR(-2,
+            "wallet rollback: committed transaction not found in wallet map");
+    }
+
+    for (size_t i = 0; i < wtx->tx.num_vin; i++)
+        wallet_unmark_outpoint_spent(w, &wtx->tx.vin[i].prevout.hash,
+                                     wtx->tx.vin[i].prevout.n);
+    for (size_t si = 0; si < wtx->tx.num_shielded_spend; si++) {
+        const uint8_t *nf = wtx->tx.v_shielded_spend[si].nullifier.data;
+        for (size_t ni = 0; ni < w->num_sapling_notes; ni++) {
+            if (w->sapling_notes[ni].used &&
+                memcmp(w->sapling_notes[ni].nf, nf, 32) == 0)
+                w->sapling_notes[ni].spent = false;
+        }
+    }
+
+    transaction_free(&w->map_wallet[idx].tx);
+    memset(&w->map_wallet[idx], 0, sizeof(w->map_wallet[idx]));
+    if (w->num_wallet_tx > 0)
+        w->num_wallet_tx--;
     zcl_mutex_unlock(&w->cs);
-    uint32_t branch_id = consensus_current_epoch_branch_id(height, &cp->consensus);
-
-    struct mempool_entry entry;
-    mempool_entry_init(&entry, &wtx->tx, fee, GetTime(), 0.0,
-                       (unsigned int)height, true, false, branch_id);
-
-    zcl_mutex_lock(&mempool->cs);
-    bool ok = tx_mempool_add_unchecked(mempool, &wtx->tx.hash, &entry);
-    zcl_mutex_unlock(&mempool->cs);
-
-    mempool_entry_free(&entry);
-    return ok;
+    return ZCL_OK;
 }
 
 void wallet_sync_transaction(struct wallet *w, const struct transaction *tx,

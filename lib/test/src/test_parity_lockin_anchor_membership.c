@@ -1,102 +1,408 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright 2026 Rhett Creighton
  *
- * L7 LOCK-IN — shielded anchor-membership is a stub.
+ * L7 parity restoration: active-chain Sprout/Sapling anchor membership.
  *
- * Parity-audit round 2 (docs/work/parity-audit-round2-findings.md, L7):
- * coins_view_cache_have_joinsplit_requirements() is a structural stub that
- * ignores both arguments and returns true (coins_view.c:477-486). It is
- * called per-tx on the connect path (connect_block.c:477). zclassicd's
- * HaveShieldedRequirements rejects a JoinSplit/Spend whose anchor never
- * existed in chain history (GetSproutAnchorAt / GetSaplingAnchorAt,
- * coins.cpp:565-604). The zk-proof still binds the claimed root, but the
- * membership rule itself is entirely absent in zcl23: the sapling_anchors
- * table is created but never read to reject.
- *
- * THIS PIN ASSERTS THE CURRENT (LOOSENED) BEHAVIOR: a transaction carrying a
- * forged / never-existed JoinSplit anchor (and a forged Sapling spend anchor)
- * passes the requirements check today (returns true). When a real
- * anchor-membership implementation lands (parity-RESTORING per the doc; the
- * highest-priority real loosening), this assertion flips deliberately and the
- * forged-anchor tx must be rejected.
- */
+ * This group exercises the same durable anchor store, coins-view predicate,
+ * reducer writer, and shared rewind primitive used in production.  It pins
+ * the important zclassicd semantics: forged roots fail, historical roots
+ * pass, Sprout same-transaction intermediate roots pass, incomplete imported
+ * history fails closed with a distinct verdict, and anchor writes are atomic
+ * with reducer commit/rollback/reorg handling. */
 
 #include "test/test_helpers.h"
 
 #include "coins/coins_view.h"
-#include "primitives/transaction.h"
-#include "core/uint256.h"
+#include "jobs/utxo_apply_anchors.h"
+#include "jobs/utxo_apply_delta.h"
+#include "primitives/block.h"
+#include "sapling/incremental_merkle_tree.h"
+#include "storage/anchor_kv.h"
 #include "util/safe_alloc.h"
 
+#include <sqlite3.h>
 #include <stdio.h>
 #include <string.h>
 
-#define L7_CHECK(name, expr) do {                                  \
-    printf("parity_lockin_anchor_membership: %s... ", (name));     \
-    if ((expr)) printf("OK\n");                                    \
-    else { printf("FAIL\n"); failures++; }                         \
+#define L7_CHECK(name, expr) do {                              \
+    printf("parity_lockin_anchor_membership: %s... ", (name)); \
+    if ((expr)) printf("OK\n");                               \
+    else { printf("FAIL\n"); failures++; }                    \
 } while (0)
 
-int test_parity_lockin_anchor_membership(void)
+struct anchor_test_view {
+    struct coins_view view;
+    sqlite3 *db;
+};
+
+static enum coins_anchor_lookup_result test_get_anchor(
+    void *self, enum coins_anchor_pool pool, const struct uint256 *root,
+    struct incremental_merkle_tree *tree_out)
+{
+    struct anchor_test_view *tv = self;
+    if (!tv || !tv->db)
+        return COINS_ANCHOR_ERROR;
+    enum anchor_kv_lookup_result r = anchor_kv_get(
+        tv->db, (int)pool, root, tree_out, NULL);
+    switch (r) {
+    case ANCHOR_KV_FOUND: return COINS_ANCHOR_FOUND;
+    case ANCHOR_KV_MISSING: return COINS_ANCHOR_MISSING;
+    case ANCHOR_KV_HISTORY_INCOMPLETE:
+        return COINS_ANCHOR_HISTORY_INCOMPLETE;
+    case ANCHOR_KV_ERROR:
+    default: return COINS_ANCHOR_ERROR;
+    }
+}
+
+static struct coins_view_vtable g_test_anchor_vtable = {
+    .get_anchor = test_get_anchor,
+};
+
+static void test_view_init(struct anchor_test_view *tv, sqlite3 *db)
+{
+    memset(tv, 0, sizeof(*tv));
+    tv->db = db;
+    tv->view.vtable = &g_test_anchor_vtable;
+    tv->view.impl = tv;
+}
+
+static bool sql_ok(sqlite3 *db, const char *sql)
+{
+    char *err = NULL;
+    int rc = sqlite3_exec(db, sql, NULL, NULL, &err);
+    if (err)
+        sqlite3_free(err);
+    return rc == SQLITE_OK;
+}
+
+static void fill_hash(struct uint256 *hash, unsigned char value)
+{
+    memset(hash->data, value, sizeof(hash->data));
+}
+
+static void summary_init(struct delta_summary *summary)
+{
+    memset(summary, 0, sizeof(*summary));
+    summary->ok = true;
+    summary->status = "ok";
+}
+
+static bool block_with_joinsplit(struct block *blk)
+{
+    block_init(blk);
+    blk->num_vtx = 1;
+    blk->vtx = zcl_calloc(1, sizeof(*blk->vtx), "l7_anchor_block_tx");
+    if (!blk->vtx)
+        return false;
+    transaction_init(&blk->vtx[0]);
+    blk->vtx[0].num_joinsplit = 1;
+    blk->vtx[0].v_joinsplit = zcl_calloc(
+        1, sizeof(*blk->vtx[0].v_joinsplit), "l7_anchor_block_js");
+    if (!blk->vtx[0].v_joinsplit) {
+        block_free(blk);
+        return false;
+    }
+    struct incremental_merkle_tree empty;
+    sprout_tree_init(&empty);
+    incremental_tree_root(&empty, &blk->vtx[0].v_joinsplit[0].anchor);
+    fill_hash(&blk->vtx[0].v_joinsplit[0].commitments[0], 0x11);
+    fill_hash(&blk->vtx[0].v_joinsplit[0].commitments[1], 0x22);
+    return true;
+}
+
+static bool block_with_sapling_output(struct block *blk, unsigned char cm,
+                                       const struct uint256 *header_root)
+{
+    block_init(blk);
+    blk->num_vtx = 1;
+    blk->vtx = zcl_calloc(1, sizeof(*blk->vtx), "l7_anchor_sapling_tx");
+    if (!blk->vtx)
+        return false;
+    transaction_init(&blk->vtx[0]);
+    blk->vtx[0].num_shielded_output = 1;
+    blk->vtx[0].v_shielded_output = zcl_calloc(
+        1, sizeof(*blk->vtx[0].v_shielded_output),
+        "l7_anchor_sapling_output");
+    if (!blk->vtx[0].v_shielded_output) {
+        block_free(blk);
+        return false;
+    }
+    fill_hash(&blk->vtx[0].v_shielded_output[0].cm, cm);
+    blk->header.hashFinalSaplingRoot = *header_root;
+    return true;
+}
+
+static int test_membership_predicate(void)
 {
     int failures = 0;
+    sqlite3 *db = NULL;
+    L7_CHECK("open complete-history anchor store",
+             sqlite3_open(":memory:", &db) == SQLITE_OK);
+    if (!db)
+        return failures + 1;
+    L7_CHECK("initialize from-genesis anchor history",
+             anchor_kv_initialize_history(db, 0));
 
-    /* A cache layered over a null backing view — the stub never consults it,
-     * but we build it honestly so the call is exercised as the connect path
-     * does. */
+    struct anchor_test_view backing;
+    test_view_init(&backing, db);
     struct coins_view_cache view;
-    struct coins_view null_view;
-    memset(&null_view, 0, sizeof(null_view));
-    coins_view_cache_init(&view, &null_view);
+    coins_view_cache_init(&view, &backing.view);
 
-    /* ---- PIN 1: a tx with a forged JoinSplit anchor is accepted ---- */
     {
         struct transaction tx;
         transaction_init(&tx);
         tx.num_joinsplit = 1;
-        tx.v_joinsplit = zcl_calloc(1, sizeof(struct js_description),
-                                    "l7_js");
-        /* Arbitrary anchor that was never the root of any committed
-         * Sprout note-commitment tree. */
-        memset(tx.v_joinsplit[0].anchor.data, 0xDE, 32);
-
-        bool ok = coins_view_cache_have_joinsplit_requirements(&view, &tx);
-        L7_CHECK("L7 PIN: tx with forged JoinSplit anchor "
-                 "-> requirements ACCEPTED today (stub returns true)",
-                 ok == true);
-
+        tx.v_joinsplit = zcl_calloc(1, sizeof(*tx.v_joinsplit),
+                                    "l7_forged_js");
+        fill_hash(&tx.v_joinsplit[0].anchor, 0xDE);
+        enum coins_shielded_requirements_result r =
+            coins_view_cache_check_shielded_requirements(&view, &tx);
+        L7_CHECK("forged Sprout root is rejected as missing",
+                 r == COINS_SHIELDED_REQUIREMENTS_MISSING_ANCHOR &&
+                 !coins_view_cache_have_joinsplit_requirements(&view, &tx));
         transaction_free(&tx);
     }
 
-    /* ---- PIN 2: a tx with a forged Sapling spend anchor is accepted ---- */
     {
         struct transaction tx;
         transaction_init(&tx);
         tx.num_shielded_spend = 1;
-        tx.v_shielded_spend = zcl_calloc(1, sizeof(struct spend_description),
-                                         "l7_spend");
-        memset(tx.v_shielded_spend[0].anchor.data, 0xAB, 32);
-
-        bool ok = coins_view_cache_have_joinsplit_requirements(&view, &tx);
-        L7_CHECK("L7 PIN: tx with forged Sapling spend anchor "
-                 "-> requirements ACCEPTED today (stub returns true)",
-                 ok == true);
-
+        tx.v_shielded_spend = zcl_calloc(1, sizeof(*tx.v_shielded_spend),
+                                         "l7_forged_spend");
+        fill_hash(&tx.v_shielded_spend[0].anchor, 0xAB);
+        enum coins_shielded_requirements_result r =
+            coins_view_cache_check_shielded_requirements(&view, &tx);
+        L7_CHECK("forged Sapling root is rejected as missing",
+                 r == COINS_SHIELDED_REQUIREMENTS_MISSING_ANCHOR &&
+                 !coins_view_cache_have_joinsplit_requirements(&view, &tx));
         transaction_free(&tx);
     }
 
-    /* ---- PIN 3: even a fully empty (no-shielded) tx returns true ---- *
-     * Documents that the stub's verdict is independent of the tx: it never
-     * inspects anchors at all. */
     {
         struct transaction tx;
         transaction_init(&tx);
-        bool ok = coins_view_cache_have_joinsplit_requirements(&view, &tx);
-        L7_CHECK("L7: empty tx -> requirements true (verdict ignores tx)",
-                 ok == true);
+        L7_CHECK("transparent transaction has no anchor requirement",
+                 coins_view_cache_check_shielded_requirements(&view, &tx) ==
+                     COINS_SHIELDED_REQUIREMENTS_OK);
+        transaction_free(&tx);
+    }
+
+    struct incremental_merkle_tree sprout;
+    struct uint256 sprout_root;
+    sprout_tree_init(&sprout);
+    struct uint256 sprout_leaf;
+    fill_hash(&sprout_leaf, 0x31);
+    incremental_tree_append(&sprout, &sprout_leaf);
+    incremental_tree_root(&sprout, &sprout_root);
+    L7_CHECK("persist historical Sprout frontier",
+             anchor_kv_add_tree(db, ANCHOR_POOL_SPROUT, &sprout, 10));
+
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        tx.num_joinsplit = 1;
+        tx.v_joinsplit = zcl_calloc(1, sizeof(*tx.v_joinsplit),
+                                    "l7_known_js");
+        tx.v_joinsplit[0].anchor = sprout_root;
+        L7_CHECK("stored historical Sprout root is accepted",
+                 coins_view_cache_have_joinsplit_requirements(&view, &tx));
+        transaction_free(&tx);
+    }
+
+    struct incremental_merkle_tree sapling;
+    struct uint256 sapling_root;
+    sapling_tree_init(&sapling);
+    struct uint256 sapling_leaf;
+    fill_hash(&sapling_leaf, 0x41);
+    incremental_tree_append(&sapling, &sapling_leaf);
+    incremental_tree_root(&sapling, &sapling_root);
+    L7_CHECK("persist historical Sapling frontier",
+             anchor_kv_add_tree(db, ANCHOR_POOL_SAPLING, &sapling, 20));
+
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        tx.num_shielded_spend = 1;
+        tx.v_shielded_spend = zcl_calloc(1, sizeof(*tx.v_shielded_spend),
+                                         "l7_known_spend");
+        tx.v_shielded_spend[0].anchor = sapling_root;
+        L7_CHECK("stored historical Sapling root is accepted",
+                 coins_view_cache_have_joinsplit_requirements(&view, &tx));
+        transaction_free(&tx);
+    }
+
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        tx.num_joinsplit = 2;
+        tx.v_joinsplit = zcl_calloc(2, sizeof(*tx.v_joinsplit),
+                                    "l7_intermediate_js");
+        struct incremental_merkle_tree tree;
+        sprout_tree_init(&tree);
+        incremental_tree_root(&tree, &tx.v_joinsplit[0].anchor);
+        fill_hash(&tx.v_joinsplit[0].commitments[0], 0x51);
+        fill_hash(&tx.v_joinsplit[0].commitments[1], 0x52);
+        incremental_tree_append(&tree, &tx.v_joinsplit[0].commitments[0]);
+        incremental_tree_append(&tree, &tx.v_joinsplit[0].commitments[1]);
+        incremental_tree_root(&tree, &tx.v_joinsplit[1].anchor);
+        fill_hash(&tx.v_joinsplit[1].commitments[0], 0x53);
+        fill_hash(&tx.v_joinsplit[1].commitments[1], 0x54);
+        L7_CHECK("Sprout same-transaction intermediate root is accepted",
+                 coins_view_cache_have_joinsplit_requirements(&view, &tx));
         transaction_free(&tx);
     }
 
     coins_view_cache_free(&view);
+    sqlite3_close(db);
+
+    sqlite3 *gap_db = NULL;
+    L7_CHECK("open imported-history anchor store",
+             sqlite3_open(":memory:", &gap_db) == SQLITE_OK);
+    if (!gap_db)
+        return failures + 1;
+    L7_CHECK("mark imported anchor history incomplete",
+             anchor_kv_initialize_history(gap_db, 100));
+    test_view_init(&backing, gap_db);
+    coins_view_cache_init(&view, &backing.view);
+    {
+        struct transaction tx;
+        transaction_init(&tx);
+        tx.num_shielded_spend = 1;
+        tx.v_shielded_spend = zcl_calloc(1, sizeof(*tx.v_shielded_spend),
+                                         "l7_gap_spend");
+        fill_hash(&tx.v_shielded_spend[0].anchor, 0x61);
+        L7_CHECK("unknown root with imported history fails closed distinctly",
+                 coins_view_cache_check_shielded_requirements(&view, &tx) ==
+                     COINS_SHIELDED_REQUIREMENTS_HISTORY_INCOMPLETE &&
+                 !coins_view_cache_have_joinsplit_requirements(&view, &tx));
+        transaction_free(&tx);
+    }
+    coins_view_cache_free(&view);
+    sqlite3_close(gap_db);
     return failures;
+}
+
+static int test_reducer_atomicity(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    L7_CHECK("open reducer anchor store",
+             sqlite3_open(":memory:", &db) == SQLITE_OK);
+    if (!db)
+        return failures + 1;
+    L7_CHECK("initialize reducer anchor history",
+             anchor_kv_initialize_history(db, 0));
+
+    struct block sprout_block;
+    L7_CHECK("construct Sprout reducer block",
+             block_with_joinsplit(&sprout_block));
+    struct incremental_merkle_tree expected_tree;
+    struct uint256 expected_root;
+    sprout_tree_init(&expected_tree);
+    incremental_tree_append(
+        &expected_tree, &sprout_block.vtx[0].v_joinsplit[0].commitments[0]);
+    incremental_tree_append(
+        &expected_tree, &sprout_block.vtx[0].v_joinsplit[0].commitments[1]);
+    incremental_tree_root(&expected_tree, &expected_root);
+
+    struct delta_summary summary;
+    summary_init(&summary);
+    L7_CHECK("begin reducer rollback probe", sql_ok(db, "BEGIN IMMEDIATE"));
+    L7_CHECK("reducer writer inserts Sprout anchor in caller transaction",
+             utxo_apply_check_and_insert_anchors(
+                 db, &sprout_block, 50, &summary) && summary.ok &&
+             anchor_kv_get(db, ANCHOR_POOL_SPROUT, &expected_root,
+                           NULL, NULL) == ANCHOR_KV_FOUND);
+    L7_CHECK("rollback reducer anchor transaction", sql_ok(db, "ROLLBACK"));
+    L7_CHECK("rollback removes uncommitted Sprout anchor",
+             anchor_kv_get(db, ANCHOR_POOL_SPROUT, &expected_root,
+                           NULL, NULL) == ANCHOR_KV_MISSING);
+
+    summary_init(&summary);
+    L7_CHECK("begin reducer commit probe", sql_ok(db, "BEGIN IMMEDIATE"));
+    L7_CHECK("reducer writer accepts Sprout block",
+             utxo_apply_check_and_insert_anchors(
+                 db, &sprout_block, 50, &summary) && summary.ok);
+    L7_CHECK("commit reducer anchor transaction", sql_ok(db, "COMMIT"));
+    L7_CHECK("committed Sprout anchor remains durable",
+             anchor_kv_get(db, ANCHOR_POOL_SPROUT, &expected_root,
+                           NULL, NULL) == ANCHOR_KV_FOUND);
+
+    L7_CHECK("create reducer log/delta rewind fixtures",
+             sql_ok(db,
+                 "CREATE TABLE utxo_apply_log(height INTEGER PRIMARY KEY);"
+                 "CREATE TABLE utxo_apply_delta(height INTEGER PRIMARY KEY);"));
+    L7_CHECK("begin shared rewind rollback probe",
+             sql_ok(db, "BEGIN IMMEDIATE"));
+    L7_CHECK("shared reducer rewind deletes anchor in caller transaction",
+             utxo_apply_delete_rows_above(db, 50, 50) &&
+             anchor_kv_get(db, ANCHOR_POOL_SPROUT, &expected_root,
+                           NULL, NULL) == ANCHOR_KV_MISSING);
+    L7_CHECK("rollback shared rewind", sql_ok(db, "ROLLBACK"));
+    L7_CHECK("rewind rollback restores anchor",
+             anchor_kv_get(db, ANCHOR_POOL_SPROUT, &expected_root,
+                           NULL, NULL) == ANCHOR_KV_FOUND);
+    L7_CHECK("begin committed shared rewind", sql_ok(db, "BEGIN IMMEDIATE"));
+    L7_CHECK("shared reducer rewind succeeds",
+             utxo_apply_delete_rows_above(db, 50, 50));
+    L7_CHECK("commit shared reducer rewind", sql_ok(db, "COMMIT"));
+    L7_CHECK("committed rewind removes abandoned anchor",
+             anchor_kv_get(db, ANCHOR_POOL_SPROUT, &expected_root,
+                           NULL, NULL) == ANCHOR_KV_MISSING);
+    block_free(&sprout_block);
+
+    struct incremental_merkle_tree sapling_tree;
+    struct uint256 sapling_expected;
+    struct uint256 sapling_cm;
+    sapling_tree_init(&sapling_tree);
+    fill_hash(&sapling_cm, 0x71);
+    incremental_tree_append(&sapling_tree, &sapling_cm);
+    incremental_tree_root(&sapling_tree, &sapling_expected);
+    struct block sapling_block;
+    L7_CHECK("construct Sapling reducer block",
+             block_with_sapling_output(
+                 &sapling_block, 0x71, &sapling_expected));
+    summary_init(&summary);
+    L7_CHECK("begin Sapling reducer transaction",
+             sql_ok(db, "BEGIN IMMEDIATE"));
+    L7_CHECK("Sapling writer matches header and inserts anchor",
+             utxo_apply_check_and_insert_anchors(
+                 db, &sapling_block, 476969, &summary) && summary.ok &&
+             anchor_kv_get(db, ANCHOR_POOL_SAPLING, &sapling_expected,
+                           NULL, NULL) == ANCHOR_KV_FOUND);
+    L7_CHECK("commit Sapling reducer transaction", sql_ok(db, "COMMIT"));
+    block_free(&sapling_block);
+
+    struct incremental_merkle_tree next_tree = sapling_tree;
+    struct uint256 next_cm;
+    struct uint256 next_root;
+    fill_hash(&next_cm, 0x72);
+    incremental_tree_append(&next_tree, &next_cm);
+    incremental_tree_root(&next_tree, &next_root);
+    struct uint256 wrong_root;
+    fill_hash(&wrong_root, 0xFF);
+    struct block wrong_block;
+    L7_CHECK("construct mismatched Sapling reducer block",
+             block_with_sapling_output(&wrong_block, 0x72, &wrong_root));
+    summary_init(&summary);
+    L7_CHECK("begin mismatched Sapling transaction",
+             sql_ok(db, "BEGIN IMMEDIATE"));
+    L7_CHECK("Sapling header/frontier mismatch fails closed",
+             utxo_apply_check_and_insert_anchors(
+                 db, &wrong_block, 476970, &summary) && !summary.ok &&
+             summary.status &&
+             strcmp(summary.status, "sapling_frontier_mismatch") == 0 &&
+             anchor_kv_get(db, ANCHOR_POOL_SAPLING, &next_root,
+                           NULL, NULL) == ANCHOR_KV_MISSING);
+    L7_CHECK("rollback mismatched Sapling transaction",
+             sql_ok(db, "ROLLBACK"));
+    block_free(&wrong_block);
+
+    sqlite3_close(db);
+    return failures;
+}
+
+int test_parity_lockin_anchor_membership(void)
+{
+    return test_membership_predicate() + test_reducer_atomicity();
 }

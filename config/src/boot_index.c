@@ -29,12 +29,16 @@
 #include "controllers/sync_controller.h"
 #include "net/snapshot_sync_contract.h"
 #include "jobs/reducer_frontier.h"
+#include "jobs/utxo_apply_anchors.h"
+#include "jobs/utxo_apply_delta.h"
 #include "services/reindex_epilogue.h"
 #include "services/utxo_recovery_service.h"
 #include "validation/main_state.h"
 #include "event/event.h"
 #include "primitives/block.h"
 #include "storage/boot_auto_reindex.h"
+#include "storage/anchor_kv.h"
+#include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "util/ar_step_readonly.h"
 #include "util/safe_alloc.h"
@@ -46,6 +50,55 @@
 #include <errno.h>
 #include <malloc.h>
 #include <sqlite3.h>
+
+static bool boot_index_anchor_tx(sqlite3 *db, const struct block *blk,
+                                 int height, bool reset)
+{
+    if (!db || (reset == (blk != NULL)))
+        LOG_FAIL("reindex-chainstate", "anchor tx invalid args reset=%d blk=%p",
+                 reset ? 1 : 0, (const void *)blk);
+
+    progress_store_tx_lock();
+    char *err = NULL;
+    if (sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        LOG_WARN("reindex-chainstate", "anchor BEGIN failed: %s",
+                 err ? err : sqlite3_errmsg(db));
+        if (err) sqlite3_free(err);
+        progress_store_tx_unlock();
+        return false;
+    }
+
+    bool ok = true;
+    if (reset) {
+        ok = anchor_kv_reset_in_tx(db, 0);
+    } else {
+        struct delta_summary summary;
+        memset(&summary, 0, sizeof(summary));
+        summary.ok = true;
+        summary.status = "ok";
+        ok = utxo_apply_check_and_insert_anchors(db, blk, height, &summary);
+        if (ok && !summary.ok) {
+            LOG_WARN("reindex-chainstate",
+                     "anchor derivation refused h=%d status=%s kind=%s",
+                     height, summary.status ? summary.status : "unknown",
+                     summary.failure_kind ? summary.failure_kind : "unknown");
+            ok = false;
+        }
+    }
+
+    const char *finish = ok ? "COMMIT" : "ROLLBACK";
+    if (sqlite3_exec(db, finish, NULL, NULL, &err) != SQLITE_OK) {
+        LOG_WARN("reindex-chainstate", "anchor %s failed: %s", finish,
+                 err ? err : sqlite3_errmsg(db));
+        if (err) sqlite3_free(err);
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        ok = false;
+    } else if (err) {
+        sqlite3_free(err);
+    }
+    progress_store_tx_unlock();
+    return ok;
+}
 
 static struct db_service *boot_index_db_service_for(struct node_db *ndb)
 {
@@ -293,6 +346,17 @@ bool reindex_chainstate(struct main_state *ms,
 
     coins_view_cache_init(cvtip, &cvs->view);
 
+    /* Reindex is the authoritative from-genesis anchor backfill.  Reset the
+     * active-chain root set before replay, then derive each block's roots in
+     * order below.  A crash leaves an incomplete reindex that the existing
+     * sentinel reruns; no stale branch roots survive the next reset. */
+    sqlite3 *anchor_db = progress_store_db();
+    if (!anchor_db || !boot_index_anchor_tx(anchor_db, NULL, 0, true)) {
+        LOG_WARN("reindex-chainstate",
+                 "cannot reset durable shielded anchor history");
+        return false;
+    }
+
     set_flush_policy(3600, 1000000, 500);
     if (ndb->open) {
         if (!boot_index_enter_turbo_mode(ndb))
@@ -339,6 +403,16 @@ bool reindex_chainstate(struct main_state *ms,
             block_free(&blk);
             errors++;
             break; /* MUST stop — continuing would skip this block's UTXOs */
+        }
+
+        if (!boot_index_anchor_tx(anchor_db, &blk, h, false)) {
+            fprintf(stderr,
+                    "reindex-chainstate: shielded anchor derivation FATAL at "
+                    "height %d — stopping to prevent opposite-verdict state\n",
+                    h);
+            block_free(&blk);
+            errors++;
+            break;
         }
 
         block_free(&blk);

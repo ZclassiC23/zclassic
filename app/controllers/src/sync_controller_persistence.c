@@ -13,6 +13,7 @@
 #include "models/wallet_key.h"
 #include "models/wallet_tx.h"
 #include "primitives/transaction.h"
+#include "validation/accept_to_mempool.h"
 #include "validation/txmempool.h"
 #include "wallet/keystore.h"
 #include "wallet/sapling_keys.h"
@@ -226,7 +227,11 @@ int node_db_sync_mempool_save(struct node_db *ndb,
 
 struct mempool_load_ctx {
     struct tx_mempool *pool;
+    struct coins_view_cache *coins_tip;
+    struct main_state *main_state;
+    const struct chain_params *params;
     int loaded;
+    int rejected;
 };
 
 static void mempool_load_cb(const struct db_mempool_entry *e, void *ctx)
@@ -244,27 +249,43 @@ static void mempool_load_cb(const struct db_mempool_entry *e, void *ctx)
     }
     transaction_compute_hash(&tx);
 
-    struct mempool_entry me;
-    mempool_entry_init(&me, &tx, e->fee, e->time_added,
-                       0.0, (unsigned int)e->height_added,
-                       true, e->spends_coinbase, 0);
-
-    if (tx_mempool_add_unchecked(lc->pool, &tx.hash, &me))
+    enum mempool_accept_result ar = accept_to_mempool(
+        lc->pool, lc->coins_tip, lc->main_state, lc->params, &tx);
+    if (ar == MEMPOOL_ACCEPT_OK)
         lc->loaded++;
+    else
+        lc->rejected++;
 
     transaction_free(&tx);
 }
 
 int node_db_sync_mempool_load(struct node_db *ndb,
-                              struct tx_mempool *mempool)
+                              struct tx_mempool *mempool,
+                              struct coins_view_cache *coins_tip,
+                              struct main_state *main_state,
+                              const struct chain_params *params)
 {
-    if (!ndb->open || !mempool) return 0;
+    if (!ndb || !ndb->open || !mempool || !coins_tip || !main_state ||
+        !params) {
+        LOG_WARN("sync", "mempool_load: incomplete validation context");
+        return 0;
+    }
 
-    struct mempool_load_ctx ctx = { .pool = mempool, .loaded = 0 };
+    struct mempool_load_ctx ctx = {
+        .pool = mempool,
+        .coins_tip = coins_tip,
+        .main_state = main_state,
+        .params = params,
+        .loaded = 0,
+        .rejected = 0,
+    };
     db_mempool_each(ndb, mempool_load_cb, &ctx);
 
     if (ctx.loaded > 0)
         printf("SQLite: loaded %d mempool transactions\n", ctx.loaded);
+    if (ctx.rejected > 0)
+        LOG_WARN("sync", "mempool_load: dropped %d stale or invalid rows",
+                 ctx.rejected);
 
     db_mempool_clear(ndb);
 

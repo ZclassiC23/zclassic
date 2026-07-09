@@ -107,8 +107,13 @@ struct db_service *sync_db_service_for(struct node_db *ndb)
 {
     struct db_service *dbsvc = app_runtime_db_service();
 
-    if (!ndb || !dbsvc)
-        LOG_NULL("sync", "ndb or dbsvc is NULL");
+    if (!ndb)
+        LOG_NULL("sync", "sync_db_service_for: node_db is NULL");
+    /* Boot fixtures and deliberately unregistered runtimes use the direct
+     * node_db fallback in every caller below. An absent service is therefore
+     * a normal adapter choice, not an error worth flooding node.log with. */
+    if (!dbsvc)
+        return NULL;
     return db_service_node_db(dbsvc) == ndb ? dbsvc : NULL;
 }
 

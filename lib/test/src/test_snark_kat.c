@@ -43,16 +43,14 @@
  * a verifier that regresses to rejecting valid relations fails the
  * bilinearity leg.
  *
- * REAL prover->verify round-trip (DIAGNOSTIC)
- * -------------------------------------------
- * We additionally drive the production native-C23 Sapling prover
+ * REAL prover->verify round-trip (HARD)
+ * -------------------------------------
+ * We additionally drive the production statically-linked Sapling prover
  * (sapling_build_output_with_ctx) and feed its proof to the consensus
- * verifier (sapling_check_output). On a healthy tree this verifies
- * TRUE; the positive result is reported as a diagnostic line rather
- * than a hard gate, because the full circuit-prover<->verifier
- * round-trip is a separate, deeper invariant than the engine
- * bilinearity this KAT locks, and we will not fabricate proof bytes to
- * force it. The negative tamper legs on the produced proof ARE asserted.
+ * verifier (sapling_check_output). This MUST verify TRUE. An always-invalid
+ * prover can no longer false-green behind negative-only proof tests; the
+ * positive cross-implementation result is a release gate. The negative
+ * tamper legs on the same produced proof are asserted too.
  *
  * HONEST SCOPE NOTE
  * -----------------
@@ -223,11 +221,10 @@ int test_snark_kat(void)
     /* ───────────────────────────────────────────────────────────────
      * KAT B — production prover -> consensus verifier.
      *
-     * POSITIVE is reported as a DIAGNOSTIC (see header). The tamper
-     * legs are asserted: a flipped proof byte and a tampered public
-     * input MUST be rejected by the consensus verifier.
+     * POSITIVE is HARD (see header). A flipped proof byte and a tampered
+     * public input MUST also be rejected by the consensus verifier.
      * ─────────────────────────────────────────────────────────────── */
-    printf("KAT B: native prover -> sapling_check_output (consensus path)\n");
+    printf("KAT B: canonical prover -> sapling_check_output (consensus path)\n");
     {
         const char *home = getenv("HOME");
         char params_dir[512];
@@ -257,15 +254,15 @@ int test_snark_kat(void)
                 sapling_build_output_with_ctx(pctx, ovk, diversifier, pk_d,
                                               12345, NULL,
                                               cv, cm, epk, enc, out_ct, proof);
-            KAT_CHECK("native prover produced an output proof", built);
+            KAT_CHECK("canonical prover produced an output proof", built);
 
             if (built) {
-                /* DIAGNOSTIC: positive round-trip. Reported, not gated. */
+                /* POSITIVE (HARD): the production prover must satisfy the
+                 * independent consensus verifier. */
                 struct sapling_verification_ctx vctx;
                 sapling_verification_ctx_init(&vctx);
                 bool accept = sapling_check_output(&vctx, cv, cm, epk, proof);
-                printf("  [diag] verify(real prover proof) = %s\n",
-                       accept ? "true" : "false");
+                KAT_CHECK("verify(real prover proof) == true (HARD)", accept);
 
                 /* NEGATIVE (HARD): flip one proof byte -> reject. */
                 uint8_t bad_proof[192];

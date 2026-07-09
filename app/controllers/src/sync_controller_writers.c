@@ -186,6 +186,17 @@ static bool node_db_sync_wallet_tx_local(struct node_db *ndb,
         }
     }
 
+    /* A pure z->z/z->t transaction has no wallet-owned transparent input or
+     * output, but its Sapling nullifier still makes it a wallet transaction.
+     * The caller reserves/marks owned notes before invoking this projection. */
+    for (size_t i = 0; i < tx->num_shielded_spend && !from_me; i++) {
+        if (wallet_sapling_nullifier_is_spent(
+                w, tx->v_shielded_spend[i].nullifier.data)) {
+            from_me = true;
+            is_ours = true;
+        }
+    }
+
     /* Only save the full tx if it involves our wallet */
     if (is_ours) {
         size_t raw_len = 0;
@@ -451,6 +462,91 @@ bool node_db_sync_sapling_spend(struct node_db *ndb,
 {
     return node_db_sync_sapling_spend_ex(ndb, nullifier, spending_txid)
            == DB_MARK_SPENT_OK;
+}
+
+struct wallet_sapling_spends_ctx {
+    const struct transaction *tx;
+    size_t marked;
+};
+
+static bool node_db_sync_wallet_sapling_spends_write(
+    struct node_db *ndb, void *ctx)
+{
+    struct wallet_sapling_spends_ctx *batch = ctx;
+    if (!ndb || !ndb->open || !batch || !batch->tx)
+        LOG_FAIL("sync", "wallet_sapling_spends_write: invalid context");
+
+    DB_TXN_SCOPE(txn, ndb, "wallet.sapling_note_reserve");
+    if (!txn)
+        LOG_FAIL("sync", "wallet_sapling_spends_write: transaction begin failed");
+
+    for (size_t i = 0; i < batch->tx->num_shielded_spend; i++) {
+        const uint8_t *nf =
+            batch->tx->v_shielded_spend[i].nullifier.data;
+        enum db_mark_spent_result r = db_sapling_note_mark_spent_ex(
+            ndb, nf, batch->tx->hash.data);
+        /* Every spend in a wallet-authored shielded transaction came from the
+         * unspent-note query immediately before construction. NOT_FOUND here
+         * is therefore a race/stale selection, not a benign projection miss. */
+        if (r != DB_MARK_SPENT_OK)
+            LOG_FAIL("sync",
+                     "wallet_sapling_spends_write: note %zu mark failed (%d)",
+                     i, (int)r);
+        batch->marked++;
+    }
+    if (!db_txn_commit(txn))
+        LOG_FAIL("sync", "wallet_sapling_spends_write: transaction commit failed");
+    return true;
+}
+
+bool node_db_sync_wallet_sapling_spends(
+    struct node_db *ndb, const struct transaction *tx)
+{
+    if (!ndb || !ndb->open || !tx || tx->num_shielded_spend == 0)
+        LOG_FAIL("sync", "wallet_sapling_spends: invalid args or no spends");
+    struct wallet_sapling_spends_ctx ctx = {
+        .tx = tx,
+        .marked = 0,
+    };
+    if (!sync_run_write(ndb, node_db_sync_wallet_sapling_spends_write, &ctx))
+        LOG_FAIL("sync", "wallet_sapling_spends: atomic write failed");
+    if (ctx.marked != tx->num_shielded_spend)
+        LOG_FAIL("sync", "wallet_sapling_spends: marked=%zu expected=%zu",
+                 ctx.marked, tx->num_shielded_spend);
+    return true;
+}
+
+struct wallet_tx_delete_ctx {
+    const uint8_t *txid;
+    bool ok;
+};
+
+static bool node_db_sync_wallet_tx_delete_write(struct node_db *ndb, void *ctx)
+{
+    struct wallet_tx_delete_ctx *del = ctx;
+
+    if (!ndb || !ndb->open || !del || !del->txid)
+        LOG_FAIL("sync", "wallet_tx_delete_write: invalid context");
+    if (ndb->sync_in_batch && !node_db_sync_flush(ndb))
+        LOG_FAIL("sync", "wallet_tx_delete_write: pending batch flush failed");
+    del->ok = db_wallet_tx_delete(ndb, del->txid);
+    if (!del->ok)
+        LOG_FAIL("sync", "wallet_tx_delete_write: model delete failed");
+    return true;
+}
+
+bool node_db_sync_wallet_tx_delete(struct node_db *ndb,
+                                   const uint8_t txid[32])
+{
+    struct wallet_tx_delete_ctx ctx = {
+        .txid = txid,
+        .ok = false,
+    };
+
+    if (!ndb || !ndb->open || !txid)
+        LOG_FAIL("sync", "wallet_tx_delete: invalid args");
+    return sync_run_write(ndb, node_db_sync_wallet_tx_delete_write, &ctx) &&
+           ctx.ok;
 }
 
 static bool node_db_sync_peer_write(struct node_db *ndb, void *ctx)

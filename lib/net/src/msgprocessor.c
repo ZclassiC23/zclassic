@@ -353,8 +353,13 @@ static void msg_block_intake_maybe_drain_catchup(
         return;
 
     struct msg_processor *mp = in->mp;
-    if (!mp || !mp->catchup_drain || sync_get_state() == SYNC_AT_TIP)
+    if (!mp || !mp->catchup_drain)
         return;
+
+    /* An item can enter this worker in BLOCKS_DOWNLOAD and finish after a
+     * periodic evaluator commits AT_TIP. It may already have staged reducer
+     * work, so the final catch-up drain remains mandatory across that edge.
+     * Skipping solely because the label changed can strand the last body. */
 
     pthread_mutex_lock(&in->mu);
     size_t queued = in->depth;

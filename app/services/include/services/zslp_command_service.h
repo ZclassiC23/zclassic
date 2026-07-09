@@ -12,12 +12,12 @@
 #include "util/result.h"
 
 struct wallet;
-struct tx_mempool;
 struct wallet_tx;
+struct wallet_tx_admission;
 
 struct zcl_result zslp_command_commit_with_op_return(struct wallet *wallet,
-                                        struct tx_mempool *mempool,
                                         struct wallet_tx *wtx,
+                                        const struct wallet_tx_admission *admission,
                                         const uint8_t *op_script,
                                         size_t script_len);
 struct zcl_result zslp_command_build_genesis_base_tx(struct wallet *wallet,

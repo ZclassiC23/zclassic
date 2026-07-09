@@ -135,6 +135,17 @@ struct sync_block_acceptance {
     enum peer_state next_peer_state;
 };
 
+/* Periodic catch-up -> AT_TIP decision.  The asynchronous reducer intake is
+ * the normal BLOCKS_DOWNLOAD path, so the per-message synchronous acceptance
+ * callback cannot be the sole owner of this transition (that callback is
+ * bypassed until the FSM is already AT_TIP). */
+struct sync_tip_state_evaluation {
+    bool should_set_at_tip;
+    int target_height;
+    int served_gap;
+    int local_gap;
+};
+
 bool syncsvc_should_begin_peer_sync(const struct p2p_node *node,
                                     int our_height,
                                     int best_header_height,
@@ -346,6 +357,18 @@ void syncsvc_note_valid_block(struct sync_block_acceptance *result,
                               int best_header_height,
                               uint32_t new_tip_time,
                               int max_peer_height);
+void syncsvc_plan_periodic_tip_state(
+    struct sync_tip_state_evaluation *result,
+    enum sync_state sync_state,
+    bool served_tip_published,
+    int served_height,
+    int local_height,
+    int header_height,
+    int peer_height,
+    size_t peer_count,
+    uint64_t queued,
+    uint64_t in_flight,
+    uint64_t intake_pending);
 void syncsvc_collect_progress(struct sync_progress_snapshot *snapshot,
                               struct download_manager *dm,
                               enum sync_state sync_state,

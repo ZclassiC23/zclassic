@@ -1307,6 +1307,8 @@ bool app_init(struct app_context *ctx)
         /* Genuinely empty wallet — generate the initial keypool and
          * flush. This is STATE A/B's terminal action. */
         wallet_top_up_key_pool(&g_wallet, DEFAULT_KEYPOOL_SIZE);
+        int64_t initial_pool_generation =
+            wallet_key_pool_generation_ceiling(&g_wallet);
         if (g_wallet_sqlite.open) {
             struct zcl_result _r = wallet_sqlite_flush_r(
                 &g_wallet_sqlite, &g_wallet);
@@ -1323,6 +1325,11 @@ bool app_init(struct app_context *ctx)
                             "wallet_keypool_flush_failed code=%d", _r.code);
                 exit(1);
             }
+            wallet_key_pool_mark_persisted_through(
+                &g_wallet, initial_pool_generation);
+        } else {
+            wallet_key_pool_mark_persisted_through(
+                &g_wallet, initial_pool_generation);
         }
         if (g_node_db.open)
             node_db_wal_checkpoint(&g_node_db);

@@ -21,8 +21,8 @@
 #include <string.h>
 
 struct zcl_result zslp_command_commit_with_op_return(struct wallet *wallet,
-                                        struct tx_mempool *mempool,
                                         struct wallet_tx *wtx,
+                                        const struct wallet_tx_admission *admission,
                                         const uint8_t *op_script,
                                         size_t script_len)
 {
@@ -32,7 +32,7 @@ struct zcl_result zslp_command_commit_with_op_return(struct wallet *wallet,
     int height;
     uint32_t branch_id;
 
-    if (!wallet || !mempool || !wtx || !op_script || script_len == 0)
+    if (!wallet || !wtx || !admission || !op_script || script_len == 0)
         return ZCL_ERR(-1, "commit_with_op_return: NULL argument or empty script");
 
     old_nout = wtx->tx.num_vout;
@@ -112,8 +112,10 @@ struct zcl_result zslp_command_commit_with_op_return(struct wallet *wallet,
     zcl_mutex_unlock(&wallet->cs);
 
     transaction_compute_hash(&wtx->tx);
-    if (!wallet_commit_transaction(wallet, wtx, mempool))
-        return ZCL_ERR(-3, "commit_with_op_return: wallet_commit_transaction failed");
+    struct zcl_result commit =
+        wallet_commit_transaction(wallet, wtx, admission);
+    if (!commit.ok)
+        return ZCL_ERR(-3, "commit_with_op_return: %s", commit.message);
     return ZCL_OK;
 }
 

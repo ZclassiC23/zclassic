@@ -26,6 +26,13 @@ bool z_sendmany_shielded(
     const bool *z_has_memo, size_t num_z_out,
     struct json_value *result)
 {
+        if (!wallet_ctx_db_ready(ctx)) {
+            json_set_str(result,
+                         "Shielded wallet database is unavailable; send aborted");
+            LOG_FAIL("wallet_shielded",
+                     "z_sendmany: shielded spend requires an open node.db");
+        }
+
         int64_t fee = ctx->wallet->default_fee;
 
         /* Select unspent notes for the from z-address */
@@ -63,6 +70,25 @@ bool z_sendmany_shielded(
             json_set_str(result, "Insufficient shielded funds");
             LOG_FAIL("wallet_shielded", "z_sendmany: insufficient shielded funds: have=%lld need=%lld",
                      (long long)notes_total, (long long)(total_amount + fee));
+        }
+
+        /* Wallet proving is a capability, not an assumption. The backend is
+         * exposed only after a real Spend + Output + binding bundle passes the
+         * independent consensus verifier at parameter-load time. Note lookup
+         * above is read-only and preserves the more specific no-funds/view-only
+         * diagnostics; fail here before witness/proof work or spent-state
+         * mutation. */
+        if (!zclassic_sapling_prover_is_ready()) {
+            char err[256];
+            snprintf(err, sizeof(err),
+                     "Shielded proving unavailable (%s, %s)",
+                     zclassic_sapling_prover_backend(),
+                     zclassic_sapling_prover_status());
+            json_set_str(result, err);
+            LOG_FAIL("wallet_shielded",
+                     "z_sendmany: refusing shielded spend: backend=%s status=%s",
+                     zclassic_sapling_prover_backend(),
+                     zclassic_sapling_prover_status());
         }
 
         /* Witnesses are maintained incrementally by connect_block and bulk_blocks.
@@ -336,15 +362,37 @@ shielded_cleanup:
 
         /* Broadcast */
         transaction_compute_hash(&wtx.tx);
+        wtx.time_received = GetTime();
+        wtx.from_me = true;
+        wtx.used = true;
 
-        if (ctx->mempool) {
-            struct mempool_entry me;
-            mempool_entry_init(&me, &wtx.tx, fee, (int64_t)platform_time_wall_time_t(),
-                               0.0, (unsigned int)height, true, false, 0);
-            tx_mempool_add_unchecked(ctx->mempool, &wtx.tx.hash, &me);
+        /* The old shielded-spend branch bypassed every mempool check with
+         * tx_mempool_add_unchecked(), ignored its return, and marked notes
+         * spent even when admission failed. Use the same consensus gate and
+         * rollback contract as every transparent wallet send. */
+        struct zcl_result commit = wallet_commit_from_context(ctx, &wtx);
+        if (!commit.ok) {
+            transaction_free(&wtx.tx);
+            json_set_str(result, commit.message);
+            LOG_FAIL("wallet_shielded",
+                     "z_sendmany: shielded commit rejected (code=%d): %s",
+                     commit.code, commit.message);
         }
 
-        /* Mark the selected notes SPENT immediately at broadcast — by their
+        /* Persist the wallet transaction through node.db's single-writer lane
+         * before network relay. A failed durability step unwinds wallet and
+         * mempool state. */
+        struct zcl_result persisted =
+            wallet_persist_commit_before_relay(ctx, &wtx);
+        if (!persisted.ok) {
+            transaction_free(&wtx.tx);
+            json_set_str(result, persisted.message);
+            LOG_FAIL("wallet_shielded",
+                     "z_sendmany: pre-relay durability failed (code=%d): %s",
+                     persisted.code, persisted.message);
+        }
+
+        /* Reserve the selected notes before broadcast — by their
          * stored nullifier, keyed to the new txid — both in SQLite (so the next
          * db_sapling_note_list_unspent_for_ivk selection excludes them) and in
          * the in-memory wallet. Without this, a second z_sendmany issued before
@@ -353,18 +401,33 @@ shielded_cleanup:
          * confirms and the funds appear stuck. This mirrors the transparent
          * path, which marks UTXOs spent at broadcast (wallet_commit_transaction
          * + node_db_sync_wallet_tx). */
-        if (wallet_ctx_db_ready(ctx)) {
-            for (size_t i = 0; i < num_sel_notes; i++) {
-                if (node_db_sync_sapling_spend_ex(ctx->node_db,
-                        selected_notes[i].nullifier, wtx.tx.hash.data)
-                    == DB_MARK_SPENT_ERROR) {
-                    LOG_WARN("wallet_shielded",
-                             "z_sendmany: failed to mark note %zu spent at broadcast", i);
-                }
+        if (!node_db_sync_wallet_sapling_spends(ctx->node_db, &wtx.tx)) {
+            struct zcl_result compensated =
+                wallet_rollback_persisted_commit(ctx, &wtx);
+            transaction_free(&wtx.tx);
+            if (!compensated.ok) {
+                json_set_str(result, compensated.message);
+                LOG_FAIL("wallet_shielded",
+                         "z_sendmany: note reservation and durable compensation "
+                         "failed (code=%d): %s",
+                         compensated.code, compensated.message);
             }
+            json_set_str(result, "Cannot reserve shielded notes; send aborted");
+            LOG_FAIL("wallet_shielded",
+                     "z_sendmany: atomic wallet-note reservation failed");
         }
         if (ctx->wallet)
             wallet_mark_sapling_nullifiers_spent(ctx->wallet, &wtx.tx);
+
+        /* node.db's wallet projection is rebuildable; report a write failure,
+         * but the authoritative private wallet transaction + note reservation
+         * are already durable before relay. */
+        if (!node_db_sync_wallet_tx(ctx->node_db, &wtx.tx, ctx->wallet, 0))
+            LOG_WARN("wallet_shielded",
+                     "z_sendmany: wallet projection write failed after durable reservation");
+
+        if (ctx->connman)
+            connman_relay_transaction(ctx->connman, &wtx.tx.hash);
 
         char txid_hex[65];
         uint256_get_hex(&wtx.tx.hash, txid_hex);

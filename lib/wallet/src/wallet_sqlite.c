@@ -1140,6 +1140,14 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
     }
 
     zcl_mutex_lock(&w->cs);
+    /* Snapshot all three mutable wallet domains under one documented order:
+     * wallet -> transparent keystore -> Sapling keystore. Key generation uses
+     * wallet -> transparent, while Sapling generation takes only Sapling, so
+     * no production path takes the reverse order. Without these inner locks a
+     * concurrent address/import operation could publish half an entry while
+     * the flush serialized it. */
+    zcl_mutex_lock(&w->keystore.cs);
+    zcl_mutex_lock(&w->sapling_keys.cs);
 
     /* Invariant: if ANY writer fails, ROLLBACK the whole transaction
      * rather than COMMIT a partial state — committing only the writes
@@ -1226,6 +1234,8 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
         goto rollback;
     }
 
+    zcl_mutex_unlock(&w->sapling_keys.cs);
+    zcl_mutex_unlock(&w->keystore.cs);
     zcl_mutex_unlock(&w->cs);
 
     char *commit_err = NULL;
@@ -1242,6 +1252,8 @@ struct zcl_result wallet_sqlite_flush_r(struct wallet_sqlite *ws,
     return ZCL_OK;
 
 rollback:
+    zcl_mutex_unlock(&w->sapling_keys.cs);
+    zcl_mutex_unlock(&w->keystore.cs);
     zcl_mutex_unlock(&w->cs);
     {
         char *rb_err = NULL;

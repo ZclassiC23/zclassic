@@ -171,3 +171,17 @@ struct wallet *app_runtime_wallet(void)
         return NULL;
     return g_current_runtime->wallet;
 }
+
+struct main_state *app_runtime_main_state(void)
+{
+    if (!g_current_runtime)
+        return NULL;
+    return g_current_runtime->main_state;
+}
+
+struct coins_view_cache *app_runtime_coins_tip(void)
+{
+    if (!g_current_runtime)
+        return NULL;
+    return g_current_runtime->coins_tip;
+}

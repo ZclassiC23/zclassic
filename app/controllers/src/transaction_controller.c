@@ -263,6 +263,10 @@ static bool rpc_sendrawtransaction(const struct json_value *params, bool help,
                 msg = "TX rejected: insufficient fee"; break;
             case MEMPOOL_ACCEPT_MISSING_INPUTS:
                 msg = "TX rejected: inputs missing or already spent"; break;
+            case MEMPOOL_ACCEPT_NONFINAL:
+                msg = "TX rejected: non-final lock time"; break;
+            case MEMPOOL_ACCEPT_EXPIRING_SOON:
+                msg = "TX rejected: expiry height is too close"; break;
             default:
                 msg = "TX rejected: failed to add to mempool"; break;
             }

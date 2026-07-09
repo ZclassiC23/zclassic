@@ -13,11 +13,30 @@
 #include "primitives/transaction.h"
 #include "chain/chain.h"
 #include "core/amount.h"
+#include "util/result.h"
 #include "util/sync.h"
 #include <stdbool.h>
 #include <stdint.h>
 
 struct tx_mempool;
+struct coins_view_cache;
+struct main_state;
+struct chain_params;
+
+/* Explicit admission context for a locally-authored wallet transaction.
+ *
+ * Wallet-originated transactions are network inputs too: before they mutate
+ * wallet state or reach relay they must pass the SAME accept_to_mempool gate
+ * as P2P `tx` and sendrawtransaction. Keeping every dependency explicit
+ * prevents unit scaffolding or a new controller from silently falling back to
+ * tx_mempool_add_unchecked(). Production callers must provide all fields; a
+ * missing field fails closed. */
+struct wallet_tx_admission {
+    struct tx_mempool *mempool;
+    struct coins_view_cache *coins_tip;
+    struct main_state *main_state;
+    const struct chain_params *params;
+};
 
 #define MAX_WALLET_TX 65536
 #define MAX_KEY_POOL 2000
@@ -25,6 +44,12 @@ struct tx_mempool;
 #define DEFAULT_TX_CONFIRM_TARGET 2
 #define WALLET_FEATURE_BASE 10500
 #define WALLET_FEATURE_LATEST 60000
+
+struct wallet_key_pool_entry {
+    struct key_id keyid;
+    int64_t generation;
+    bool persisted;
+};
 
 struct key_pool {
     int64_t time;
@@ -97,7 +122,7 @@ struct wallet {
     struct wallet_tx map_wallet[MAX_WALLET_TX];
     size_t num_wallet_tx;
 
-    int64_t key_pool[MAX_KEY_POOL];
+    struct wallet_key_pool_entry key_pool[MAX_KEY_POOL];
     size_t key_pool_size;
     int64_t next_key_pool_index;
 
@@ -135,7 +160,21 @@ void wallet_free(struct wallet *w);
 
 bool wallet_generate_new_key(struct wallet *w, struct pubkey *pk_out);
 bool wallet_get_new_address(struct wallet *w, char *addr_out, size_t addr_size);
+/* Same operation, also returning the exact generated/consumed key id. The
+ * token lets a durability failure remove its own HD key rather than guessing
+ * from the mutable keystore tail. */
+bool wallet_get_new_address_ex(struct wallet *w, char *addr_out,
+                               size_t addr_size, struct key_id *key_id_out);
 bool wallet_top_up_key_pool(struct wallet *w, unsigned int target_size);
+/* A top-up publishes new entries as unpersisted. They cannot be handed to a
+ * caller until a successful wallet flush marks the pool durable. */
+/* Capture after top-up, then mark only that generation after the flush. This
+ * watermark prevents a concurrent post-snapshot top-up from being mislabeled
+ * durable. */
+int64_t wallet_key_pool_generation_ceiling(const struct wallet *w);
+void wallet_key_pool_mark_persisted_through(struct wallet *w,
+                                            int64_t generation);
+size_t wallet_key_pool_persisted_size(const struct wallet *w);
 bool wallet_get_key_from_pool(struct wallet *w, struct pubkey *pk_out);
 
 bool wallet_add_to_wallet(struct wallet *w, const struct wallet_tx *wtx);
@@ -178,8 +217,20 @@ bool wallet_create_transaction_multi(struct wallet *w,
                                       int64_t *fee_out,
                                       const char **error);
 
-bool wallet_commit_transaction(struct wallet *w, struct wallet_tx *wtx,
-                                struct tx_mempool *mempool);
+/* Validate -> admit to mempool -> record in wallet -> mark inputs spent.
+ * On any validation/admission failure the wallet is left unchanged. If the
+ * wallet record cannot be installed after admission, the mempool insertion is
+ * rolled back. */
+struct zcl_result wallet_commit_transaction(
+    struct wallet *w, struct wallet_tx *wtx,
+    const struct wallet_tx_admission *admission);
+
+/* Undo an unrelayed commit after a durability step fails. Removes the
+ * transaction from the mempool and wallet map and restores transparent and
+ * shielded spent markers. This is only safe before relay. */
+struct zcl_result wallet_rollback_transaction(
+    struct wallet *w, const struct wallet_tx *wtx,
+    struct tx_mempool *mempool);
 
 void wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
                               const struct block_index *pindex);

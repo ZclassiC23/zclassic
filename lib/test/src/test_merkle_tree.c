@@ -868,6 +868,43 @@ static int test_merkle_tree_scale(void)
                 ok = false;
                 break;
             }
+
+            /* Teeth: reconstruct the final anchor from the exact leaf and
+             * serialized sibling/direction pairs. A length-only assertion
+             * missed the historical level-0 inversion (leaf-as-sibling with
+             * the opposite direction), which made every generated spend path
+             * unusable by the canonical Sapling circuit. */
+            struct uint256 cur = {{0}};
+            cur.data[0] = (uint8_t)(positions[j] - 1);
+            for (size_t level = 0;
+                 level < SAPLING_INCREMENTAL_MERKLE_TREE_DEPTH; level++) {
+                struct uint256 sibling;
+                struct uint256 parent;
+                const size_t off = 1 + level * 33;
+                memcpy(sibling.data, path + off, 32);
+                const uint8_t direction = path[off + 32];
+                if (direction == 0)
+                    witnesses[j].tree.combine(
+                        &cur, &sibling, level, &parent);
+                else if (direction == 1)
+                    witnesses[j].tree.combine(
+                        &sibling, &cur, level, &parent);
+                else {
+                    printf("FAIL (witness %d invalid direction at level %zu)\n",
+                           positions[j], level);
+                    ok = false;
+                    break;
+                }
+                cur = parent;
+            }
+            if (!ok)
+                break;
+            if (memcmp(cur.data, tree_root.data, 32) != 0) {
+                printf("FAIL (witness %d serialized path does not reconstruct root)\n",
+                       positions[j]);
+                ok = false;
+                break;
+            }
         }
         if (ok)
             printf("OK (all %d positions valid)\n", num_pos);

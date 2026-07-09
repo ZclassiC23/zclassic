@@ -578,6 +578,8 @@ bool app_init_services(struct app_context *ctx,
     svc->runtime.snapshot_sync = &svc->snapshot_sync;
     svc->runtime.mempool = svc->mempool;
     svc->runtime.wallet = svc->wallet;
+    svc->runtime.main_state = svc->state;
+    svc->runtime.coins_tip = svc->coins_tip;
     app_runtime_set_current(&svc->runtime);
     boot_register_process_block_hooks(svc);
 
@@ -596,7 +598,8 @@ bool app_init_services(struct app_context *ctx,
     event_observe_async(EV_REORG_START, boot_sync_state_logger, NULL);
 
     if (boot_node_db(svc))
-        node_db_sync_mempool_load(boot_node_db(svc), svc->mempool);
+        node_db_sync_mempool_load(boot_node_db(svc), svc->mempool,
+                                  svc->coins_tip, svc->state, svc->params);
 
     /* Rescan blockchain for wallet transactions if wallet is behind chain tip */
     {
@@ -1207,6 +1210,7 @@ bool app_init_services(struct app_context *ctx,
     sync_monitor_init();
     sync_monitor_set_context(svc->connman, msg_get_download_mgr(),
                              svc->state);
+    sync_monitor_set_msg_processor(svc->msg_processor);
 
     /* Service health and sync detail RPCs */
     rpc_health_set_state(svc->state, &svc->bg_validation,
@@ -1231,7 +1235,8 @@ bool app_init_services(struct app_context *ctx,
 
     /* ZCL Names — on-chain name registry */
     rpc_name_set_state(boot_node_db(svc));
-    rpc_name_set_wallet(svc->wallet, svc->mempool);
+    rpc_name_set_wallet(svc->wallet, svc->mempool, svc->state,
+                        svc->coins_tip);
     register_name_rpc_commands(svc->rpc_table);
 
     /* ZCL Messaging — encrypted P2P messages */

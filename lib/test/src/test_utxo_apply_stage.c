@@ -10,6 +10,7 @@
 #include "json/json.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
+#include "sapling/incremental_merkle_tree.h"
 #include "jobs/utxo_apply_nullifiers.h"
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/tip_finalize_stage.h"
@@ -455,7 +456,14 @@ static bool uv_add_sapling_spends(struct transaction *tx,
         zcl_calloc(n, sizeof(struct spend_description), "uv_sap");
     if (!tx->v_shielded_spend) return false;
     tx->num_shielded_spend = n;
+    struct incremental_merkle_tree empty;
+    struct uint256 empty_root;
+    sapling_tree_init(&empty);
+    incremental_tree_root(&empty, &empty_root);
     for (size_t i = 0; i < n; i++) {
+        /* Keep the synthetic proof fixture anchored to a protocol-defined
+         * active root so this nullifier test reaches the predicate it owns. */
+        tx->v_shielded_spend[i].anchor = empty_root;
         tx->v_shielded_spend[i].nullifier.data[0] = tags[i];
         tx->v_shielded_spend[i].nullifier.data[1] = mark;
     }
@@ -471,6 +479,9 @@ static bool uv_add_joinsplit_nfs(struct transaction *tx, uint8_t tag0,
         zcl_calloc(1, sizeof(struct js_description), "uv_js");
     if (!tx->v_joinsplit) return false;
     tx->num_joinsplit = 1;
+    struct incremental_merkle_tree empty;
+    sprout_tree_init(&empty);
+    incremental_tree_root(&empty, &tx->v_joinsplit[0].anchor);
     tx->v_joinsplit[0].nullifiers[0].data[0] = tag0;
     tx->v_joinsplit[0].nullifiers[0].data[1] = mark;
     tx->v_joinsplit[0].nullifiers[1].data[0] = tag1;

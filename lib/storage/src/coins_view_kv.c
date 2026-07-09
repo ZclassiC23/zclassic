@@ -12,6 +12,7 @@
 #include "coins/coins.h"
 #include "core/uint256.h"
 #include "storage/coins_kv.h"
+#include "storage/anchor_kv.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 
@@ -80,12 +81,40 @@ static bool ckv_get_stats_impl(void *self, struct coins_stats *stats)
     return false;
 }
 
+static enum coins_anchor_lookup_result ckv_get_anchor_impl(
+    void *self, enum coins_anchor_pool pool, const struct uint256 *root,
+    struct incremental_merkle_tree *tree_out)
+{
+    (void)self;
+    if (!root)
+        return COINS_ANCHOR_ERROR;
+    /* The singleton progress.kv connection is transaction-scoped, not merely
+     * statement-threadsafe.  Serialize this read so mempool/connect cannot
+     * observe an anchor inserted by an uncommitted reducer transaction.  The
+     * lock is recursive for callers already inside the stage transaction. */
+    progress_store_tx_lock();
+    sqlite3 *db = progress_store_db();
+    enum anchor_kv_lookup_result r = db
+        ? anchor_kv_get(db, (int)pool, root, tree_out, NULL)
+        : ANCHOR_KV_ERROR;
+    progress_store_tx_unlock();
+    switch (r) {
+    case ANCHOR_KV_FOUND: return COINS_ANCHOR_FOUND;
+    case ANCHOR_KV_MISSING: return COINS_ANCHOR_MISSING;
+    case ANCHOR_KV_HISTORY_INCOMPLETE:
+        return COINS_ANCHOR_HISTORY_INCOMPLETE;
+    case ANCHOR_KV_ERROR:
+    default: return COINS_ANCHOR_ERROR;
+    }
+}
+
 static struct coins_view_vtable ckv_vtable = {
     .get_coins      = ckv_get_coins_impl,
     .have_coins     = ckv_have_coins_impl,
     .get_best_block = ckv_get_best_block_impl,
     .batch_write    = ckv_batch_write_impl,
     .get_stats      = ckv_get_stats_impl,
+    .get_anchor     = ckv_get_anchor_impl,
 };
 
 bool coins_view_kv_init(struct coins_view_kv *ckv)

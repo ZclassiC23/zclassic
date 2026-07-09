@@ -60,9 +60,10 @@ fresh-machine path for people cloning from GitHub. This README is the overview;
 the project's own hosted lanes.
 
 **Prerequisites:** gcc 14+ (or clang with `-std=c23`), GNU make, plus
-`cmake`, `autoconf`, `curl`/`wget`, and `unzip` for the one-time vendored-library
+`cmake`, `autoconf`, `patch`, `cargo` + `rustc`, `curl`/`wget`, and `unzip` for the one-time vendored-library
 build. **The first build needs internet** — it fetches pinned third-party source
-tarballs (OpenSSL, libevent, LevelDB, zlib, SQLite) and verifies them against
+tarballs (OpenSSL, libevent, LevelDB, zlib, SQLite, and the canonical Zcash
+Sapling prover) and verifies them against
 pinned SHA-256s before compiling locally; afterward the archives are cached in
 `vendor/lib/` and builds are offline. A clean `make vendor && make` takes ~1–2
 minutes on a modern multi-core box.
@@ -72,7 +73,7 @@ git clone https://github.com/ZclassiC23/zclassic.git && cd zclassic
 make                # node + CLI + RPC tool -> build/bin/{zclassic23,zclassic-cli,zcl-rpc}
 make fast-rebuild   # changed-file dev compile + non-LTO local node link
 make dev-bin        # fast non-LTO local node -> build/bin/zclassic23-dev
-make test           # full suite (488 parallel groups)
+make test           # full suite (508 parallel groups)
 make lint           # defensive-coding gates
 ```
 
@@ -80,11 +81,13 @@ make lint           # defensive-coding gates
 `zclassic-cli` / `zcl-rpc` clients used in the examples below.) The first build
 auto-runs **`make vendor`**, which builds the static
 third-party archives in `vendor/lib/` from source (OpenSSL, libevent ×3, LevelDB,
-SQLite, zlib) plus the in-tree Tor stub — sources are pulled from pinned URLs and
+SQLite, zlib, librustzcash) plus the in-tree Tor stub — sources are pulled from pinned URLs and
 verified against pinned SHA256 hashes, then compiled locally. Only
 `libsecp256k1.a` (a custom Bitcoin Core fork build) ships committed. `make vendor`
-is idempotent: once the archives exist it is a no-op (`make vendor-force`
-rebuilds). Per-library sources, versions, and hashes are in
+is provenance-idempotent: it skips only archives whose bytes, source pin,
+recipe, toolchain, and dependencies match their deterministic stamp
+(`make vendor-force` rebuilds all fetched archives). Per-library sources,
+versions, and hashes are in
 [`docs/BUILD.md`](docs/BUILD.md).
 
 ```bash

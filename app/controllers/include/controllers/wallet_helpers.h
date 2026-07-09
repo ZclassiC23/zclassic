@@ -4,6 +4,7 @@
 #define ZCL_CONTROLLERS_WALLET_HELPERS_H
 
 #include "rpc/server.h"
+#include "util/result.h"
 #include <stddef.h>
 #include <stdint.h>
 #include <stdbool.h>
@@ -17,6 +18,7 @@ struct node_db;
 struct coins_view_cache;
 struct json_value;
 struct transaction;
+struct wallet_tx;
 struct db_wallet_tx;
 struct tx_destination;
 
@@ -85,6 +87,29 @@ static inline struct coins_view_cache *wallet_rpc_coins_tip(void)
  * and the in-memory fallback. Defined in wallet_helpers.c so callers
  * need not pull in the full struct node_db definition. */
 bool wallet_ctx_db_ready(const struct wallet_rpc_context *ctx);
+
+/* Submit a locally-authored transaction through the shared validation gate.
+ * This is the only controller-side wallet commit entry point. */
+struct zcl_result wallet_commit_from_context(
+    const struct wallet_rpc_context *ctx, struct wallet_tx *wtx);
+
+/* Flush the in-memory wallet through the node.db single-writer lane. Any
+ * open reducer batch is committed first, so wallet_sqlite never starts a
+ * nested transaction on the shared SQLite handle. A missing wallet DB is a
+ * deliberate in-memory configuration and returns ZCL_OK. */
+struct zcl_result wallet_flush_from_context(
+    const struct wallet_rpc_context *ctx);
+
+/* Durably flush an admitted wallet transaction before relay. On failure the
+ * unrelayed wallet+mempool commit is rolled back. */
+struct zcl_result wallet_persist_commit_before_relay(
+    const struct wallet_rpc_context *ctx, const struct wallet_tx *wtx);
+
+/* Compensate a transaction that was already flushed but cannot proceed to
+ * relay (for example, an atomic shielded-note reservation failed). Removes
+ * it from mempool, the in-memory wallet, and wallet_transactions. */
+struct zcl_result wallet_rollback_persisted_commit(
+    const struct wallet_rpc_context *ctx, const struct wallet_tx *wtx);
 
 #define ENSURE_WALLET(result) do {                        \
     if (!wallet_rpc_wallet()) {                           \

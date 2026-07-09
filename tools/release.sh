@@ -159,6 +159,12 @@ info "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH (HEAD commit time)"
 info "Release CFLAGS:  $REL_CFLAGS"
 info "Release LDFLAGS: $REL_LDFLAGS"
 
+# Vendor provenance is part of the release input contract. This repairs any
+# archive whose stamp no longer matches its source pin/recipe/toolchain and
+# independently audits the installed bytes before the release build begins.
+info "Verifying deterministic vendor provenance"
+make vendor-ready
+
 # Build from clean (deterministic flags overridden on the command line)
 info "Running: make clean && make zclassic23 zclassic-cli (reproducible flags)"
 make clean >/dev/null 2>&1 || true
@@ -168,6 +174,8 @@ make -j"$(nproc)" CFLAGS="$REL_CFLAGS" LDFLAGS="$REL_LDFLAGS" \
 # Verify binaries exist
 [ -f "$NODE_BIN" ] || die "Build failed: $NODE_BIN not found"
 [ -f "$CLI_BIN" ]  || die "Build failed: $CLI_BIN not found"
+tools/dep_audit.sh >/dev/null ||
+    die "dependency provenance/version audit failed after release build"
 
 # Clean previous staging after make clean has removed build/.
 rm -rf "$STAGING"
@@ -219,6 +227,19 @@ fi
 # Copy essential files
 cp LICENSE "$STAGING/" 2>/dev/null || true
 cp README.md "$STAGING/" 2>/dev/null || true
+
+# Ship the exact deterministic archive attestations consumed by this build.
+# They contain no timestamps or local paths; concatenation order is fixed.
+VENDOR_PROVENANCE_OUT="$STAGING/VENDOR-PROVENANCE"
+: >"$VENDOR_PROVENANCE_OUT"
+for stamp in "$REPO_ROOT"/vendor/lib/.provenance/*.stamp; do
+    [ -f "$stamp" ] || die "missing generated vendor provenance stamps"
+    printf '### %s\n' "$(basename "$stamp")" >>"$VENDOR_PROVENANCE_OUT"
+    cat "$stamp" >>"$VENDOR_PROVENANCE_OUT"
+done
+printf '### libsecp256k1.manifest\n' >>"$VENDOR_PROVENANCE_OUT"
+cat "$REPO_ROOT/vendor/provenance/libsecp256k1.manifest" \
+    >>"$VENDOR_PROVENANCE_OUT"
 
 # Create tarball — deterministically, so the .sha3 is stable across machines.
 #   --sort=name        : stable member order (independent of readdir order)

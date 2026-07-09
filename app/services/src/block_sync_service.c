@@ -183,6 +183,62 @@ void syncsvc_note_valid_block(struct sync_block_acceptance *result,
     }
 }
 
+void syncsvc_plan_periodic_tip_state(
+    struct sync_tip_state_evaluation *result,
+    enum sync_state sync_state,
+    bool served_tip_published,
+    int served_height,
+    int local_height,
+    int header_height,
+    int peer_height,
+    size_t peer_count,
+    uint64_t queued,
+    uint64_t in_flight,
+    uint64_t intake_pending)
+{
+    struct sync_tip_state_evaluation empty = {
+        .target_height = -1,
+        .served_gap = -1,
+        .local_gap = -1,
+    };
+    if (!result)
+        return;
+    *result = empty;
+
+    /* Only catch-up states have legal, meaningful periodic AT_TIP edges.
+     * Snapshot/reorg/failure ownership must never be pre-empted by a height
+     * sample taken on another thread. */
+    if (sync_state != SYNC_HEADERS_DOWNLOAD &&
+        sync_state != SYNC_BLOCKS_DOWNLOAD &&
+        sync_state != SYNC_CONNECTING_BLOCKS)
+        return;
+
+    /* Fail closed until every authority needed by the decision exists.  In
+     * particular, do not turn an isolated node AT_TIP merely because its
+     * local/header heights agree with each other. */
+    if (!served_tip_published || served_height < 0 || local_height < 0 ||
+        served_height > local_height || header_height < local_height ||
+        peer_count == 0 || peer_height < 0)
+        return;
+
+    int target = local_height;
+    if (header_height > target)
+        target = header_height;
+    if (peer_height > target)
+        target = peer_height;
+
+    result->target_height = target;
+    result->served_gap = target > served_height ? target - served_height : 0;
+    result->local_gap = target > local_height ? target - local_height : 0;
+
+    /* A one-block gap is the reducer's normal lookahead/finality shape.  Do
+     * not flip modes while body work is still queued or in flight: AT_TIP
+     * changes block intake and relay policy, so the queue must first drain. */
+    result->should_set_at_tip =
+        result->served_gap <= 1 && result->local_gap <= 1 &&
+        queued == 0 && in_flight == 0 && intake_pending == 0;
+}
+
 void syncsvc_collect_progress(struct sync_progress_snapshot *snapshot,
                               struct download_manager *dm,
                               enum sync_state sync_state,

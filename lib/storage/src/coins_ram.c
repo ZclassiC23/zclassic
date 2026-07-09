@@ -847,6 +847,8 @@ static bool coins_ram_purge_replay_tail(sqlite3 *db, int64_t want_cursor)
         "utxo_apply_log",
         "utxo_apply_delta",
         "nullifiers",
+        "sprout_anchors",
+        "sapling_anchors",
     };
     for (size_t i = 0; i < sizeof(replay_tail_tables) /
                             sizeof(replay_tail_tables[0]); i++) {

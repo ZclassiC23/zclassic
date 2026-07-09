@@ -3,89 +3,129 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php.
  *
- * Pure C23 replacements for native C23 prover FFI.
- * Delegates to native Sapling/Groth16 implementations. */
+ * Stable C facade for Sapling proving and verification.
+ *
+ * Consensus verification remains in the independent C23 implementation in
+ * sapling.c. Wallet-side proving delegates to the SHA256-pinned
+ * librustzcash revision used by canonical ZClassic. The backend is not made
+ * available to callers until a real Spend + Output + binding-signature bundle
+ * produced by Rust is accepted by the C23 consensus verifier.
+ */
 
 #include "sapling/sapling_prover.h"
+
+#include "sapling/fr.h"
+#include "sapling/incremental_merkle_tree.h"
 #include "sapling/sapling.h"
 #include "sapling/sapling_circuit.h"
-#include "sapling/fr.h"
+#include "support/cleanse.h"
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
+
+#include <stdatomic.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdio.h>
-#include <sys/stat.h>
-#include <sys/mman.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include "util/safe_alloc.h"
-#include "util/log_macros.h"
-#include "support/cleanse.h"
 
-#pragma GCC diagnostic push
-#pragma GCC diagnostic ignored "-Wpedantic"
+#define SAPLING_COMPACT_WITNESS_LEN \
+    ((size_t)(1 + SAPLING_MERKLE_DEPTH * 33))
+#define RUSTZCASH_WITNESS_LEN \
+    ((size_t)(1 + SAPLING_MERKLE_DEPTH * 33 + 8))
 
-/* --- Proving key file cache --- */
+/* Minimal C declarations for the pinned upstream static library. Keeping
+ * these private prevents the third-party header (which is C++-oriented) from
+ * leaking across the repository's public C API. */
+extern void librustzcash_init_zksnark_params(
+    const uint8_t *spend_path, size_t spend_path_len,
+    const char *spend_hash,
+    const uint8_t *output_path, size_t output_path_len,
+    const char *output_hash,
+    const uint8_t *sprout_path, size_t sprout_path_len,
+    const char *sprout_hash);
 
-static uint8_t *g_spend_pk_data = NULL;
-static size_t g_spend_pk_len = 0;
-static uint8_t *g_output_pk_data = NULL;
-static size_t g_output_pk_len = 0;
-static char g_params_dir[512] = {0};
+extern void *librustzcash_sapling_proving_ctx_init(void);
+extern void librustzcash_sapling_proving_ctx_free(void *ctx);
+extern bool librustzcash_sapling_output_proof(
+    void *ctx,
+    const uint8_t *esk,
+    const uint8_t *diversifier,
+    const uint8_t *pk_d,
+    const uint8_t *rcm,
+    uint64_t value,
+    uint8_t *cv,
+    uint8_t *zkproof);
+extern bool librustzcash_sapling_spend_proof(
+    void *ctx,
+    const uint8_t *ak,
+    const uint8_t *nsk,
+    const uint8_t *diversifier,
+    const uint8_t *rcm,
+    const uint8_t *ar,
+    uint64_t value,
+    const uint8_t *anchor,
+    const uint8_t *witness,
+    uint8_t *cv,
+    uint8_t *rk,
+    uint8_t *zkproof);
+extern bool librustzcash_sapling_binding_sig(
+    const void *ctx,
+    int64_t value_balance,
+    const uint8_t *sighash,
+    uint8_t *result);
 
-static bool load_pk_file(const char *path, uint8_t **data, size_t *len)
+enum prover_state {
+    PROVER_UNINITIALIZED = 0,
+    PROVER_BACKEND_INITIALIZED,
+    PROVER_SELF_TESTING,
+    PROVER_READY,
+    PROVER_FAILED,
+};
+
+static _Atomic int g_prover_state = PROVER_UNINITIALIZED;
+static _Atomic bool g_rust_params_initialized = false;
+
+static const char *prover_state_name(int state)
 {
-    int fd = open(path, O_RDONLY);
-    if (fd < 0)
-        LOG_FAIL("sapling_prover", "load_pk_file: open(%s) failed", path);
-    struct stat st;
-    if (fstat(fd, &st) != 0) {
-        close(fd);
-        LOG_FAIL("sapling_prover", "load_pk_file: fstat(%s) failed", path);
+    switch (state) {
+    case PROVER_UNINITIALIZED: return "params_not_initialized";
+    case PROVER_BACKEND_INITIALIZED: return "self_test_pending";
+    case PROVER_SELF_TESTING: return "self_test_running";
+    case PROVER_READY: return "ready";
+    case PROVER_FAILED: return "self_test_failed";
+    default: return "invalid_state";
     }
-    *len = (size_t)st.st_size;
-    *data = mmap(NULL, *len, PROT_READ, MAP_PRIVATE, fd, 0);
-    close(fd);
-    if (*data == MAP_FAILED) {
-        *data = NULL;
-        LOG_FAIL("sapling_prover",
-                 "load_pk_file: mmap(%s, %zu) failed", path, *len);
-    }
-    return true;
 }
 
-static bool ensure_spend_pk(void)
+bool zclassic_sapling_prover_is_ready(void)
 {
-    if (g_spend_pk_data) return true;
-    if (!g_params_dir[0])
-        LOG_FAIL("sapling_prover",
-                 "ensure_spend_pk: params_dir not configured (call zclassic_sapling_prover_init first)");
-    char path[512];
-    snprintf(path, sizeof(path), "%s/sapling-spend.params", g_params_dir);
-    return load_pk_file(path, &g_spend_pk_data, &g_spend_pk_len);
+    return atomic_load(&g_prover_state) == PROVER_READY;
 }
 
-static bool ensure_output_pk(void)
+const char *zclassic_sapling_prover_status(void)
 {
-    if (g_output_pk_data) return true;
-    if (!g_params_dir[0])
-        LOG_FAIL("sapling_prover",
-                 "ensure_output_pk: params_dir not configured (call zclassic_sapling_prover_init first)");
-    char path[512];
-    snprintf(path, sizeof(path), "%s/sapling-output.params", g_params_dir);
-    return load_pk_file(path, &g_output_pk_data, &g_output_pk_len);
+    return prover_state_name(atomic_load(&g_prover_state));
 }
 
-/* --- Verification: delegate to sapling.c native C23 --- */
+const char *zclassic_sapling_prover_backend(void)
+{
+    return "librustzcash-06da3b9ac8f2";
+}
+
+/* --- Verification: the consensus C23 implementation -------------------- */
 
 void *zclassic_sapling_verification_ctx_init(void)
 {
     struct sapling_verification_ctx *ctx =
-        zcl_calloc(1, sizeof(struct sapling_verification_ctx), "sapling_verify_ctx");
-    if (ctx) sapling_verification_ctx_init(ctx);
+        zcl_calloc(1, sizeof(*ctx), "sapling_verify_ctx");
+    if (ctx)
+        sapling_verification_ctx_init(ctx);
     return ctx;
 }
 
-void zclassic_sapling_verification_ctx_free(void *ctx) { free(ctx); }
+void zclassic_sapling_verification_ctx_free(void *ctx)
+{
+    free(ctx);
+}
 
 bool zclassic_sapling_check_spend(
     void *ctx, const uint8_t *cv, const uint8_t *anchor,
@@ -93,18 +133,14 @@ bool zclassic_sapling_check_spend(
     const uint8_t *zkproof, const uint8_t *spend_auth_sig,
     const uint8_t *sighash_value)
 {
-    /* Full Groth16 + SpendAuth + binding sig accumulation.
-     * Delegates to sapling.c which handles bvk accumulation internally. */
     return sapling_check_spend(ctx, cv, anchor, nullifier, rk,
-                                zkproof, spend_auth_sig, sighash_value);
+                               zkproof, spend_auth_sig, sighash_value);
 }
 
 bool zclassic_sapling_check_output(
     void *ctx, const uint8_t *cv, const uint8_t *cm,
     const uint8_t *epk, const uint8_t *zkproof)
 {
-    /* Full Groth16 + binding sig accumulation.
-     * Delegates to sapling.c which handles bvk accumulation internally. */
     return sapling_check_output(ctx, cv, cm, epk, zkproof);
 }
 
@@ -112,40 +148,146 @@ bool zclassic_sapling_final_check(
     void *ctx, int64_t value_balance,
     const uint8_t *binding_sig, const uint8_t *sighash_value)
 {
-    return sapling_final_check(ctx, value_balance, binding_sig, sighash_value);
+    return sapling_final_check(ctx, value_balance, binding_sig,
+                               sighash_value);
 }
 
-/* --- Proving: use C23 Groth16 prover --- */
+/* --- Witness ABI conversion --------------------------------------------- */
 
-struct zclassic_proving_ctx {
-    struct fs bsk;  /* accumulated binding signing key (Fs field element) */
-    bool has_bsk;
-};
+bool sapling_spend_parse_witness(const uint8_t *witness,
+                                 size_t witness_len,
+                                 struct sapling_spend_witness *wit)
+{
+    if (!witness || !wit)
+        LOG_FAIL("sapling_prover", "parse_witness: NULL input");
+    if (witness_len < SAPLING_COMPACT_WITNESS_LEN)
+        LOG_FAIL("sapling_prover",
+                 "parse_witness: short input: got=%zu need=%zu",
+                 witness_len, SAPLING_COMPACT_WITNESS_LEN);
+    if (witness[0] != SAPLING_MERKLE_DEPTH)
+        LOG_FAIL("sapling_prover",
+                 "parse_witness: depth=%u expected=%u",
+                 witness[0], SAPLING_MERKLE_DEPTH);
+
+    for (size_t i = 0; i < SAPLING_MERKLE_DEPTH; i++) {
+        const size_t off = 1 + i * 33;
+        memcpy(wit->auth_path[i], witness + off, 32);
+        if (witness[off + 32] > 1)
+            LOG_FAIL("sapling_prover",
+                     "parse_witness: invalid direction byte at level=%zu",
+                     i);
+        wit->auth_path_bits[i] = witness[off + 32] != 0;
+    }
+    return true;
+}
+
+/* zclassic23's compact witness is leaf-to-root and carries one direction
+ * byte per sibling. The legacy Zcash Rust ABI serializes the sibling vector
+ * root-to-leaf (each item prefixed with its byte length) and appends the leaf
+ * position as little-endian u64. Convert only after fully validating bounds
+ * and direction bytes; upstream contains asserts for this legacy layout. */
+static bool witness_to_rust(const uint8_t *witness, size_t witness_len,
+                            uint8_t rust_witness[RUSTZCASH_WITNESS_LEN])
+{
+    struct sapling_spend_witness parsed;
+    memset(&parsed, 0, sizeof(parsed));
+    if (!sapling_spend_parse_witness(witness, witness_len, &parsed))
+        return false;
+
+    size_t off = 0;
+    rust_witness[off++] = SAPLING_MERKLE_DEPTH;
+    for (size_t stream_i = 0; stream_i < SAPLING_MERKLE_DEPTH;
+         stream_i++) {
+        const size_t level = SAPLING_MERKLE_DEPTH - 1 - stream_i;
+        rust_witness[off++] = 32;
+        memcpy(rust_witness + off, parsed.auth_path[level], 32);
+        off += 32;
+    }
+
+    uint64_t position = 0;
+    for (size_t i = 0; i < SAPLING_MERKLE_DEPTH; i++) {
+        if (parsed.auth_path_bits[i])
+            position |= UINT64_C(1) << i;
+    }
+    for (size_t i = 0; i < 8; i++)
+        rust_witness[off++] = (uint8_t)(position >> (8 * i));
+
+    memory_cleanse(&parsed, sizeof(parsed));
+    if (off != RUSTZCASH_WITNESS_LEN)
+        LOG_FAIL("sapling_prover",
+                 "witness conversion size mismatch: got=%zu expected=%zu",
+                 off, RUSTZCASH_WITNESS_LEN);
+    return true;
+}
+
+static bool rust_spend_proof_raw(
+    void *ctx,
+    const uint8_t *ak,
+    const uint8_t *nsk,
+    const uint8_t *diversifier,
+    const uint8_t *rcm,
+    const uint8_t *ar,
+    uint64_t value,
+    const uint8_t *anchor,
+    const uint8_t *witness,
+    size_t witness_len,
+    uint8_t *cv,
+    uint8_t *rk,
+    uint8_t *zkproof)
+{
+    uint8_t rust_witness[RUSTZCASH_WITNESS_LEN];
+    memset(rust_witness, 0, sizeof(rust_witness));
+    if (!witness_to_rust(witness, witness_len, rust_witness))
+        return false;
+
+    const bool ok = librustzcash_sapling_spend_proof(
+        ctx, ak, nsk, diversifier, rcm, ar, value, anchor,
+        rust_witness, cv, rk, zkproof);
+    memory_cleanse(rust_witness, sizeof(rust_witness));
+    return ok;
+}
+
+/* --- Proving context and calls ------------------------------------------ */
 
 void *zclassic_sapling_proving_ctx_init(void)
 {
-    return zcl_calloc(1, sizeof(struct zclassic_proving_ctx), "sapling_proving_ctx");
+    if (!zclassic_sapling_prover_is_ready())
+        LOG_NULL("sapling_prover",
+                 "proving disabled: backend=%s status=%s",
+                 zclassic_sapling_prover_backend(),
+                 zclassic_sapling_prover_status());
+
+    void *ctx = librustzcash_sapling_proving_ctx_init();
+    if (!ctx)
+        LOG_NULL("sapling_prover", "Rust proving context allocation failed");
+    return ctx;
 }
 
-void zclassic_sapling_proving_ctx_free(void *ctx) { free(ctx); }
-
-bool sapling_spend_parse_witness(const uint8_t *witness,
-                                  size_t witness_len,
-                                  struct sapling_spend_witness *wit)
+void zclassic_sapling_proving_ctx_free(void *ctx)
 {
-    /* enforce the fixed wire length before any read. A caller
-     * that hands us a buffer shorter than the 1057-byte layout used
-     * to walk off the end inside the loop below (memcpy + byte read
-     * up to witness[1055]). Reject early with a clean false. */
-    if (witness_len < (size_t)(1 + SAPLING_MERKLE_DEPTH * 33))
-        return false;
-    uint8_t depth = witness[0];
-    if (depth != SAPLING_MERKLE_DEPTH)
-        return false;
-    for (int i = 0; i < SAPLING_MERKLE_DEPTH; i++) {
-        memcpy(wit->auth_path[i], witness + 1 + i * 33, 32);
-        wit->auth_path_bits[i] = witness[1 + i * 33 + 32] != 0;
-    }
+    if (ctx)
+        librustzcash_sapling_proving_ctx_free(ctx);
+}
+
+bool zclassic_sapling_output_proof(
+    void *ctx,
+    const unsigned char *esk,
+    const unsigned char *diversifier,
+    const unsigned char *pk_d,
+    const unsigned char *rcm,
+    uint64_t value,
+    unsigned char *cv,
+    unsigned char *zkproof)
+{
+    if (!zclassic_sapling_prover_is_ready())
+        LOG_FAIL("sapling_prover",
+                 "output proof disabled: status=%s",
+                 zclassic_sapling_prover_status());
+    if (!ctx || !esk || !diversifier || !pk_d || !rcm || !cv || !zkproof)
+        LOG_FAIL("sapling_prover", "output proof: NULL argument");
+    if (!librustzcash_sapling_output_proof(
+            ctx, esk, diversifier, pk_d, rcm, value, cv, zkproof))
+        LOG_FAIL("sapling_prover", "Rust output proof construction failed");
     return true;
 }
 
@@ -156,7 +298,7 @@ bool zclassic_sapling_spend_proof(
     const unsigned char *diversifier,
     const unsigned char *rcm,
     const unsigned char *ar,
-    const uint64_t value,
+    uint64_t value,
     const unsigned char *anchor,
     const unsigned char *witness,
     size_t witness_len,
@@ -164,220 +306,204 @@ bool zclassic_sapling_spend_proof(
     unsigned char *rk,
     unsigned char *zkproof)
 {
-    /* Secret witness material — declared up front so every exit (success
-     * and every LOG_FAIL error path) routes through `cleanup:` and wipes
-     * them. All cleanses happen AFTER the last read of each secret (the
-     * proof/nullifier/bsk are already produced), so this is output-neutral. */
-    uint8_t rcv[32] = {0};
-    struct sapling_spend_witness wit;
-    uint8_t nk[32] = {0}, ivk[32] = {0};
-    bool ok = false;
-
-    if (!ensure_spend_pk()) {
-        fprintf(stderr, "[sapling_prover] %s:%d %s(): "  // obs-ok:proof-error-terminates-via-goto-cleanup
-                "spend_proof: ensure_spend_pk failed (params_dir=%s)\n",
-                __FILE__, __LINE__, __func__, g_params_dir);
-        goto cleanup;
-    }
-
-    /* Generate rcv for value commitment */
-    if (!sapling_generate_r(rcv)) {
-        fprintf(stderr, "[sapling_prover] %s:%d %s(): "  // obs-ok:proof-error-terminates-via-goto-cleanup
-                "spend_proof: sapling_generate_r(rcv) failed (RNG hygiene)\n",
-                __FILE__, __LINE__, __func__);
-        goto cleanup;
-    }
-
-    /* cv = value_commit(value, rcv) */
-    if (!sapling_value_commit(value, rcv, cv)) {
-        fprintf(stderr, "[sapling_prover] %s:%d %s(): "  // obs-ok:proof-error-terminates-via-goto-cleanup
-                "spend_proof: sapling_value_commit failed\n",
-                __FILE__, __LINE__, __func__);
-        goto cleanup;
-    }
-
-    /* rk = randomize(ak, ar) via spend auth generator */
-    if (!sapling_compute_rk(ak, ar, rk)) {
-        fprintf(stderr, "[sapling_prover] %s:%d %s(): "  // obs-ok:proof-error-terminates-via-goto-cleanup
-                "spend_proof: sapling_compute_rk failed\n",
-                __FILE__, __LINE__, __func__);
-        goto cleanup;
-    }
-
-    memcpy(wit.ak, ak, 32);
-    memcpy(wit.nsk, nsk, 32);
-    memcpy(wit.ar, ar, 32);
-    wit.value = value;
-    memcpy(wit.diversifier, diversifier, 11);
-
-    /* Derive pk_d from nsk → nk, then crh_ivk(ak, nk) → ivk, then ivk_to_pkd */
-    sapling_nsk_to_nk(nsk, nk);
-    sapling_crh_ivk(ak, nk, ivk);
-    sapling_ivk_to_pkd(ivk, diversifier, wit.pk_d);
-
-    memcpy(wit.rcm, rcm, 32);
-    memcpy(wit.rcv, rcv, 32);
-
-    /* Parse merkle path: depth(1) || 32 × (sibling(32) || bit(1)).
-     * The helper bounds-checks witness_len against the fixed 1057-byte
-     * layout before reading anything — see sapling_spend_parse_witness
-     * for the rationale. */
-    if (!sapling_spend_parse_witness(witness, witness_len, &wit)) {
-        fprintf(stderr, "[sapling_prover] %s:%d %s(): "  // obs-ok:proof-error-terminates-via-goto-cleanup
-                "spend_proof: malformed merkle path (witness_len=%zu, expected >= %zu)\n",
-                __FILE__, __LINE__, __func__,
-                witness_len,
-                (size_t)(1 + SAPLING_MERKLE_DEPTH * 33));
-        goto cleanup;
-    }
-
-    /* Compute nullifier */
-    struct sapling_spend_inputs pub;
-    memcpy(pub.rk, rk, 32);
-    memcpy(pub.cv, cv, 32);
-    memcpy(pub.anchor, anchor, 32);
-
-    uint64_t position = 0;
-    for (int i = 0; i < 32; i++)
-        if (wit.auth_path_bits[i])
-            position |= (uint64_t)1 << i;
-    sapling_compute_nf(diversifier, wit.pk_d, value, rcm,
-                        ak, nk, position, pub.nullifier);
-
-    /* Groth16 prove */
-    if (!sapling_create_spend_proof(g_spend_pk_data, g_spend_pk_len,
-                                     &wit, &pub, zkproof)) {
-        fprintf(stderr, "[sapling_prover] %s:%d %s(): "  // obs-ok:proof-error-terminates-via-goto-cleanup
-                "spend_proof: sapling_create_spend_proof failed\n",
-                __FILE__, __LINE__, __func__);
-        goto cleanup;
-    }
-
-    /* Accumulate bsk: bsk += rcv (spends add). This is the last read of
-     * rcv; all secret reads are now complete. */
-    struct zclassic_proving_ctx *pctx = ctx;
-    if (pctx) {
-        struct fs rcv_fs;
-        fs_from_bytes(&rcv_fs, rcv);
-        struct fs new_bsk;
-        fs_add(&new_bsk, &pctx->bsk, &rcv_fs);
-        pctx->bsk = new_bsk;
-        pctx->has_bsk = true;
-        memory_cleanse(&rcv_fs, sizeof(rcv_fs));
-    }
-
-    ok = true;
-
-cleanup:
-    /* Wipe the spend secrets on every path: rcv randomness, the witness
-     * struct (ak/nsk/ar/rcm/rcv + derived pk_d), and the derived nk/ivk. */
-    memory_cleanse(rcv, sizeof(rcv));
-    memory_cleanse(&wit, sizeof(wit));
-    memory_cleanse(nk, sizeof(nk));
-    memory_cleanse(ivk, sizeof(ivk));
-    return ok;
-}
-
-bool zclassic_sapling_output_proof(
-    void *ctx,
-    const unsigned char *esk,
-    const unsigned char *diversifier,
-    const unsigned char *pk_d,
-    const unsigned char *rcm,
-    const uint64_t value,
-    unsigned char *cv,
-    unsigned char *zkproof)
-{
-    /* Secret witness material — declared up front so every exit (success
-     * and every LOG_FAIL error path) routes through `cleanup:` and wipes
-     * them. All cleanses happen AFTER the last read (proof + bsk already
-     * produced), so this is output-neutral. */
-    uint8_t rcv[32] = {0};
-    struct sapling_output_witness wit;
-    bool ok = false;
-
-    if (!ensure_output_pk()) {
-        fprintf(stderr, "[sapling_prover] %s:%d %s(): "  // obs-ok:proof-error-terminates-via-goto-cleanup
-                "output_proof: ensure_output_pk failed (params_dir=%s)\n",
-                __FILE__, __LINE__, __func__, g_params_dir);
-        goto cleanup;
-    }
-
-    if (!sapling_generate_r(rcv)) {
-        fprintf(stderr, "[sapling_prover] %s:%d %s(): "  // obs-ok:proof-error-terminates-via-goto-cleanup
-                "output_proof: sapling_generate_r(rcv) failed (RNG hygiene)\n",
-                __FILE__, __LINE__, __func__);
-        goto cleanup;
-    }
-
-    if (!sapling_value_commit(value, rcv, cv)) {
-        fprintf(stderr, "[sapling_prover] %s:%d %s(): "  // obs-ok:proof-error-terminates-via-goto-cleanup
-                "output_proof: sapling_value_commit failed\n",
-                __FILE__, __LINE__, __func__);
-        goto cleanup;
-    }
-
-    wit.value = value;
-    memcpy(wit.diversifier, diversifier, 11);
-    memcpy(wit.pk_d, pk_d, 32);
-    memcpy(wit.rcm, rcm, 32);
-    memcpy(wit.esk, esk, 32);
-    memcpy(wit.rcv, rcv, 32);
-
-    struct sapling_output_inputs pub;
-    memcpy(pub.cv, cv, 32);
-    sapling_ka_derivepublic(diversifier, esk, pub.epk);
-    sapling_compute_cm(diversifier, pk_d, value, rcm, pub.cm);
-
-    if (!sapling_create_output_proof(g_output_pk_data, g_output_pk_len,
-                                      &wit, &pub, zkproof)) {
-        fprintf(stderr, "[sapling_prover] %s:%d %s(): "  // obs-ok:proof-error-terminates-via-goto-cleanup
-                "output_proof: sapling_create_output_proof failed\n",
-                __FILE__, __LINE__, __func__);
-        goto cleanup;
-    }
-
-    /* Accumulate bsk: bsk -= rcv (outputs subtract). Last read of rcv. */
-    struct zclassic_proving_ctx *pctx = ctx;
-    if (pctx) {
-        struct fs rcv_fs, neg_rcv;
-        fs_from_bytes(&rcv_fs, rcv);
-        fs_neg(&neg_rcv, &rcv_fs);
-        struct fs new_bsk;
-        fs_add(&new_bsk, &pctx->bsk, &neg_rcv);
-        pctx->bsk = new_bsk;
-        pctx->has_bsk = true;
-        memory_cleanse(&rcv_fs, sizeof(rcv_fs));
-        memory_cleanse(&neg_rcv, sizeof(neg_rcv));
-    }
-
-    ok = true;
-
-cleanup:
-    /* Wipe the output secrets on every path: rcv randomness and the
-     * witness struct (esk/rcm/rcv). */
-    memory_cleanse(rcv, sizeof(rcv));
-    memory_cleanse(&wit, sizeof(wit));
-    return ok;
+    if (!zclassic_sapling_prover_is_ready())
+        LOG_FAIL("sapling_prover",
+                 "spend proof disabled: status=%s",
+                 zclassic_sapling_prover_status());
+    if (!ctx || !ak || !nsk || !diversifier || !rcm || !ar || !anchor ||
+        !witness || !cv || !rk || !zkproof)
+        LOG_FAIL("sapling_prover", "spend proof: NULL argument");
+    if (!rust_spend_proof_raw(ctx, ak, nsk, diversifier, rcm, ar,
+                              value, anchor, witness, witness_len,
+                              cv, rk, zkproof))
+        LOG_FAIL("sapling_prover", "Rust spend proof construction failed");
+    return true;
 }
 
 bool zclassic_sapling_binding_sig(
     const void *ctx, int64_t value_balance,
     const unsigned char *sighash, unsigned char *result)
 {
-    (void)value_balance;
-    const struct zclassic_proving_ctx *pctx = ctx;
-    if (!pctx || !pctx->has_bsk)
+    if (!zclassic_sapling_prover_is_ready())
         LOG_FAIL("sapling_prover",
-                 "binding_sig: proving ctx missing bsk (spend/output not called first?)");
-    uint8_t bsk_bytes[32];
-    fs_to_bytes(bsk_bytes, &pctx->bsk);
-    /* generator_idx=1 for binding signature (uses value commitment generator) */
-    bool ok = redjubjub_sign(bsk_bytes, sighash, 32, result, 1);
-    /* Wipe the binding signing key after the signature is produced
-     * (last read), on both success and failure. Output-neutral. */
-    memory_cleanse(bsk_bytes, sizeof(bsk_bytes));
+                 "binding signature disabled: status=%s",
+                 zclassic_sapling_prover_status());
+    if (!ctx || !sighash || !result)
+        LOG_FAIL("sapling_prover", "binding signature: NULL argument");
+    if (!librustzcash_sapling_binding_sig(
+            ctx, value_balance, sighash, result))
+        LOG_FAIL("sapling_prover",
+                 "Rust binding signature consistency check failed");
+    return true;
+}
+
+/* --- Positive prover -> consensus verifier capability gate -------------- */
+
+static bool find_diversifier(uint8_t diversifier[11])
+{
+    memset(diversifier, 0, 11);
+    for (unsigned int i = 0; i < 256; i++) {
+        diversifier[0] = (uint8_t)i;
+        if (sapling_check_diversifier(diversifier))
+            return true;
+    }
+    LOG_FAIL("sapling_prover", "self-test could not find a diversifier");
+}
+
+static bool self_test_bundle(void)
+{
+    const uint64_t value = UINT64_C(12345);
+    bool ok = false;
+    const char *failed_at = "rng";
+    void *pctx = NULL;
+
+    uint8_t ask[32] = {0}, nsk[32] = {0}, ak[32] = {0}, nk[32] = {0};
+    uint8_t ivk[32] = {0}, diversifier[11] = {0}, pk_d[32] = {0};
+    uint8_t spend_rcm[32] = {0}, ar[32] = {0}, nullifier[32] = {0};
+    uint8_t spend_cv[32] = {0}, rk[32] = {0}, spend_proof[192] = {0};
+    uint8_t spend_cm[32] = {0}, spend_sig[64] = {0};
+    uint8_t output_rcm[32] = {0}, esk[32] = {0};
+    uint8_t output_cv[32] = {0}, output_cm[32] = {0};
+    uint8_t epk[32] = {0}, output_proof[192] = {0};
+    uint8_t binding_sig[64] = {0};
+    uint8_t sighash[32] = {0};
+    uint8_t compact_witness[SAPLING_COMPACT_WITNESS_LEN];
+    memset(compact_witness, 0, sizeof(compact_witness));
+
+    if (!sapling_generate_r(ask) || !sapling_generate_r(nsk) ||
+        !sapling_generate_r(spend_rcm) || !sapling_generate_r(ar) ||
+        !sapling_generate_r(output_rcm) || !sapling_generate_r(esk))
+        goto cleanup;
+    failed_at = "diversifier";
+    if (!find_diversifier(diversifier))
+        goto cleanup;
+
+    sapling_ask_to_ak(ask, ak);
+    sapling_nsk_to_nk(nsk, nk);
+    sapling_crh_ivk(ak, nk, ivk);
+    failed_at = "spend_note";
+    if (!sapling_ivk_to_pkd(ivk, diversifier, pk_d) ||
+        !sapling_compute_cm(diversifier, pk_d, value,
+                            spend_rcm, spend_cm))
+        goto cleanup;
+
+    struct incremental_merkle_tree tree;
+    struct incremental_witness witness;
+    struct uint256 leaf;
+    struct uint256 anchor;
+    memcpy(leaf.data, spend_cm, 32);
+    sapling_tree_init(&tree);
+    incremental_tree_append(&tree, &leaf);
+    incremental_witness_init(&witness, &tree);
+    incremental_witness_root(&witness, &anchor);
+    size_t compact_len = 0;
+    failed_at = "merkle_witness";
+    if (!incremental_witness_merkle_path(
+            &witness, compact_witness, &compact_len) ||
+        compact_len != sizeof(compact_witness))
+        goto cleanup;
+
+    failed_at = "proving_ctx";
+    pctx = librustzcash_sapling_proving_ctx_init();
+    if (!pctx)
+        goto cleanup;
+    failed_at = "spend_proof";
+    if (!rust_spend_proof_raw(
+            pctx, ak, nsk, diversifier, spend_rcm, ar, value,
+            anchor.data, compact_witness, compact_len,
+            spend_cv, rk, spend_proof))
+        goto cleanup;
+    failed_at = "nullifier";
+    if (!sapling_compute_nf(diversifier, pk_d, value, spend_rcm,
+                            ak, nk, 0, nullifier))
+        goto cleanup;
+
+    struct fs ask_fs, ar_fs, rsk_fs;
+    uint8_t rsk[32] = {0};
+    fs_from_bytes(&ask_fs, ask);
+    fs_from_bytes(&ar_fs, ar);
+    fs_add(&rsk_fs, &ask_fs, &ar_fs);
+    fs_to_bytes(rsk, &rsk_fs);
+    memset(sighash, 0x5a, sizeof(sighash));
+    failed_at = "spend_signature";
+    if (!redjubjub_sign(rsk, sighash, sizeof(sighash), spend_sig, 5)) {
+        memory_cleanse(rsk, sizeof(rsk));
+        memory_cleanse(&ask_fs, sizeof(ask_fs));
+        memory_cleanse(&ar_fs, sizeof(ar_fs));
+        memory_cleanse(&rsk_fs, sizeof(rsk_fs));
+        goto cleanup;
+    }
+    memory_cleanse(rsk, sizeof(rsk));
+    memory_cleanse(&ask_fs, sizeof(ask_fs));
+    memory_cleanse(&ar_fs, sizeof(ar_fs));
+    memory_cleanse(&rsk_fs, sizeof(rsk_fs));
+
+    failed_at = "output_bundle";
+    if (!librustzcash_sapling_output_proof(
+            pctx, esk, diversifier, pk_d, output_rcm, value,
+            output_cv, output_proof) ||
+        !sapling_compute_cm(diversifier, pk_d, value,
+                            output_rcm, output_cm) ||
+        !sapling_ka_derivepublic(diversifier, esk, epk) ||
+        !librustzcash_sapling_binding_sig(
+            pctx, 0, sighash, binding_sig))
+        goto cleanup;
+
+    struct sapling_verification_ctx vctx;
+    sapling_verification_ctx_init(&vctx);
+    failed_at = "consensus_verifier";
+    if (!sapling_check_spend(&vctx, spend_cv, anchor.data, nullifier,
+                             rk, spend_proof, spend_sig, sighash) ||
+        !sapling_check_output(&vctx, output_cv, output_cm, epk,
+                              output_proof) ||
+        !sapling_final_check(&vctx, 0, binding_sig, sighash))
+        goto cleanup;
+
+    ok = true;
+
+cleanup:
+    if (!ok)
+        LOG_WARN("sapling_prover", "positive self-test failed at stage=%s",
+                 failed_at);
+    if (pctx)
+        librustzcash_sapling_proving_ctx_free(pctx);
+    memory_cleanse(ask, sizeof(ask));
+    memory_cleanse(nsk, sizeof(nsk));
+    memory_cleanse(ak, sizeof(ak));
+    memory_cleanse(nk, sizeof(nk));
+    memory_cleanse(ivk, sizeof(ivk));
+    memory_cleanse(pk_d, sizeof(pk_d));
+    memory_cleanse(spend_rcm, sizeof(spend_rcm));
+    memory_cleanse(ar, sizeof(ar));
+    memory_cleanse(output_rcm, sizeof(output_rcm));
+    memory_cleanse(esk, sizeof(esk));
+    memory_cleanse(compact_witness, sizeof(compact_witness));
     return ok;
+}
+
+bool zclassic_sapling_prover_run_self_test(void)
+{
+    int expected = PROVER_BACKEND_INITIALIZED;
+    if (!atomic_compare_exchange_strong(
+            &g_prover_state, &expected, PROVER_SELF_TESTING)) {
+        if (expected == PROVER_READY)
+            return true;
+        LOG_FAIL("sapling_prover",
+                 "cannot run self-test from state=%s",
+                 prover_state_name(expected));
+    }
+
+    if (!self_test_bundle()) {
+        atomic_store(&g_prover_state, PROVER_FAILED);
+        LOG_FAIL("sapling_prover",
+                 "positive Spend/Output/binding prover->verifier gate failed; proving remains disabled");
+    }
+
+    atomic_store(&g_prover_state, PROVER_READY);
+    LOG_INFO("sapling_prover",
+             "positive Spend/Output/binding prover->C23-verifier gate passed; backend=%s",
+             zclassic_sapling_prover_backend());
+    return true;
 }
 
 void zclassic_init_zksnark_params(
@@ -388,17 +514,21 @@ void zclassic_init_zksnark_params(
     const uint8_t *sprout_path, size_t sprout_path_len,
     const char *sprout_hash)
 {
-    (void)spend_hash; (void)output_hash;
-    (void)sprout_path; (void)sprout_path_len; (void)sprout_hash;
-    (void)output_path; (void)output_path_len;
-
-    if (spend_path && spend_path_len > 0) {
-        size_t copy_len = spend_path_len < 511 ? spend_path_len : 511;
-        memcpy(g_params_dir, spend_path, copy_len);
-        g_params_dir[copy_len] = 0;
-        char *slash = strrchr(g_params_dir, '/');
-        if (slash) *slash = 0;
+    if (atomic_load(&g_rust_params_initialized))
+        return;
+    if (!spend_path || spend_path_len == 0 || !spend_hash ||
+        !output_path || output_path_len == 0 || !output_hash ||
+        !sprout_path || sprout_path_len == 0 || !sprout_hash) {
+        atomic_store(&g_prover_state, PROVER_FAILED);
+        LOG_WARN("sapling_prover",
+                 "Rust parameter initialization rejected incomplete paths/hashes");
+        return;
     }
-}
 
-#pragma GCC diagnostic pop
+    librustzcash_init_zksnark_params(
+        spend_path, spend_path_len, spend_hash,
+        output_path, output_path_len, output_hash,
+        sprout_path, sprout_path_len, sprout_hash);
+    atomic_store(&g_rust_params_initialized, true);
+    atomic_store(&g_prover_state, PROVER_BACKEND_INITIALIZED);
+}

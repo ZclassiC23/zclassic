@@ -391,5 +391,115 @@ skip_ubal:
     }
 skip_sap_snap:;
 
+    /* Wallet publication must be all-or-nothing. In particular, an OOM while
+     * copying a later shielded vector must not leave a partial map entry or
+     * silently drop consensus-relevant bytes. */
+    printf("wallet transaction copy is atomic across shielded vectors... ");
+    {
+        struct wallet *w = zcl_calloc(1, sizeof(*w), "test_wallet_atomic_copy");
+        struct wallet_tx src;
+        memset(&src, 0, sizeof(src));
+        transaction_init(&src.tx);
+        bool ok = w != NULL;
+        if (w)
+            wallet_init(w);
+
+        src.tx.v_shielded_spend = zcl_calloc(
+            1, sizeof(*src.tx.v_shielded_spend), "test_wallet_copy_spend");
+        src.tx.v_shielded_output = zcl_calloc(
+            1, sizeof(*src.tx.v_shielded_output), "test_wallet_copy_output");
+        src.tx.num_shielded_spend = src.tx.v_shielded_spend ? 1 : 0;
+        src.tx.num_shielded_output = src.tx.v_shielded_output ? 1 : 0;
+        src.tx.hash.data[0] = 0xA7;
+        if (!src.tx.v_shielded_spend || !src.tx.v_shielded_output)
+            ok = false;
+
+        if (ok) {
+            zcl_alloc_fault_fail_next("tx_shielded_output");
+            bool added = wallet_add_to_wallet(w, &src);
+            zcl_alloc_fault_clear();
+            if (added || w->num_wallet_tx != 0 || w->map_wallet[0].used ||
+                !src.tx.v_shielded_spend || !src.tx.v_shielded_output)
+                ok = false;
+        }
+        if (ok) {
+            bool added = wallet_add_to_wallet(w, &src);
+            const struct wallet_tx *stored = wallet_get_tx(w, &src.tx.hash);
+            if (!added || !stored || w->num_wallet_tx != 1 ||
+                stored->tx.num_shielded_spend != 1 ||
+                stored->tx.num_shielded_output != 1 ||
+                stored->tx.v_shielded_spend == src.tx.v_shielded_spend ||
+                stored->tx.v_shielded_output == src.tx.v_shielded_output)
+                ok = false;
+        }
+
+        transaction_free(&src.tx);
+        if (w) {
+            wallet_free(w);
+            free(w);
+        }
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("legacy keypool returns persisted pre-generated keys only... ");
+    {
+        struct wallet *w = zcl_calloc(1, sizeof(*w), "test_wallet_keypool");
+        bool ok = w != NULL;
+        struct pubkey pk;
+        if (w) {
+            wallet_init(w);
+            ok = wallet_top_up_key_pool(w, 3) &&
+                 w->keystore.num_keys == 3 &&
+                 w->key_pool_size == 3 &&
+                 wallet_key_pool_persisted_size(w) == 0;
+            /* A failed/unfinished flush must never expose one of the fresh
+             * pool addresses. */
+            if (wallet_get_key_from_pool(w, &pk))
+                ok = false;
+            int64_t generation = wallet_key_pool_generation_ceiling(w);
+            wallet_key_pool_mark_persisted_through(w, generation);
+            if (!wallet_get_key_from_pool(w, &pk) ||
+                w->keystore.num_keys != 3 || w->key_pool_size != 2 ||
+                wallet_key_pool_persisted_size(w) != 2)
+                ok = false;
+            wallet_free(w);
+            free(w);
+        }
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("Sapling address rollback removes only the exact latest child... ");
+    {
+        struct sapling_keystore sks;
+        uint8_t d[ZC_DIVERSIFIER_SIZE], pk_d[32];
+        struct sapling_address_undo first, second;
+        sapling_keystore_init(&sks);
+        bool ok = sapling_keystore_new_address_ex(&sks, d, pk_d, &first) &&
+                  first.valid && first.generated_seed &&
+                  first.child_index == 0 && sks.num_keys == 1 &&
+                  sks.next_child_index == 1;
+        if (ok && !sapling_keystore_rollback_address(&sks, &first))
+            ok = false;
+        if (sks.has_seed || sks.num_keys != 0 || sks.next_child_index != 0)
+            ok = false;
+
+        if (ok && (!sapling_keystore_new_address_ex(&sks, d, pk_d, &first) ||
+                   !sapling_keystore_new_address_ex(&sks, d, pk_d, &second)))
+            ok = false;
+        /* Once another child exists, rolling back `first` must refuse rather
+         * than erase the concurrent/latest child. */
+        if (ok && sapling_keystore_rollback_address(&sks, &first))
+            ok = false;
+        if (ok && (sks.num_keys != 2 || sks.next_child_index != 2))
+            ok = false;
+        if (ok && (!sapling_keystore_rollback_address(&sks, &second) ||
+                   !sapling_keystore_rollback_address(&sks, &first)))
+            ok = false;
+        if (sks.has_seed || sks.num_keys != 0 || sks.next_child_index != 0)
+            ok = false;
+        sapling_keystore_free(&sks);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

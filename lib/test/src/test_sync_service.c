@@ -1713,6 +1713,71 @@ static int test_sync_service_recent_tip_bypasses_headers(void)
     return failures;
 }
 
+static int test_sync_service_periodic_tip_evaluator(void)
+{
+    int failures = 0;
+
+    TEST("sync_service periodic evaluator is bounded and fail-closed") {
+        struct sync_tip_state_evaluation result;
+
+        /* The published tip may intentionally trail the active tip by one. */
+        syncsvc_plan_periodic_tip_state(
+            &result, SYNC_BLOCKS_DOWNLOAD, true,
+            /*served*/99, /*local*/100, /*header*/100, /*peer*/98,
+            /*peers*/23, /*queued*/0, /*in_flight*/0, /*intake*/0);
+        ASSERT(result.should_set_at_tip);
+        ASSERT(result.target_height == 100);
+        ASSERT(result.served_gap == 1);
+        ASSERT(result.local_gap == 0);
+
+        /* Unpublished evidence and a wider served gap are not at-tip. */
+        syncsvc_plan_periodic_tip_state(
+            &result, SYNC_BLOCKS_DOWNLOAD, false,
+            100, 100, 100, 100, 3, 0, 0, 0);
+        ASSERT(!result.should_set_at_tip);
+        syncsvc_plan_periodic_tip_state(
+            &result, SYNC_BLOCKS_DOWNLOAD, true,
+            98, 100, 100, 100, 3, 0, 0, 0);
+        ASSERT(!result.should_set_at_tip);
+        ASSERT(result.served_gap == 2);
+
+        /* Isolation and pending body work keep the state in catch-up. */
+        syncsvc_plan_periodic_tip_state(
+            &result, SYNC_BLOCKS_DOWNLOAD, true,
+            99, 100, 100, 100, 0, 0, 0, 0);
+        ASSERT(!result.should_set_at_tip);
+        syncsvc_plan_periodic_tip_state(
+            &result, SYNC_BLOCKS_DOWNLOAD, true,
+            99, 100, 100, 100, 3, 1, 0, 0);
+        ASSERT(!result.should_set_at_tip);
+        syncsvc_plan_periodic_tip_state(
+            &result, SYNC_BLOCKS_DOWNLOAD, true,
+            99, 100, 100, 100, 3, 0, 1, 0);
+        ASSERT(!result.should_set_at_tip);
+        syncsvc_plan_periodic_tip_state(
+            &result, SYNC_BLOCKS_DOWNLOAD, true,
+            99, 100, 100, 100, 3, 0, 0, 1);
+        ASSERT(!result.should_set_at_tip);
+
+        /* A reorg owner or an internally inconsistent frontier view wins. */
+        syncsvc_plan_periodic_tip_state(
+            &result, SYNC_REORG, true,
+            99, 100, 100, 100, 3, 0, 0, 0);
+        ASSERT(!result.should_set_at_tip);
+        syncsvc_plan_periodic_tip_state(
+            &result, SYNC_BLOCKS_DOWNLOAD, true,
+            99, 100, 99, 100, 3, 0, 0, 0);
+        ASSERT(!result.should_set_at_tip);
+        syncsvc_plan_periodic_tip_state(
+            &result, SYNC_BLOCKS_DOWNLOAD, true,
+            101, 100, 100, 100, 3, 0, 0, 0);
+        ASSERT(!result.should_set_at_tip);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 int test_sync_service(void)
 {
     int failures = 0;
@@ -1762,6 +1827,7 @@ int test_sync_service(void)
     failures += test_sync_service_false_at_tip_peer_far_ahead();
     failures += test_sync_service_genuinely_at_tip();
     failures += test_sync_service_recent_tip_bypasses_headers();
+    failures += test_sync_service_periodic_tip_evaluator();
     sync_set_state(SYNC_IDLE, "done");
     return failures;
 }

@@ -32,6 +32,30 @@ struct coins_map {
     size_t size;
 };
 
+struct incremental_merkle_tree;
+
+/* Shielded anchor namespaces and lookup verdicts.  Numeric pool values are
+ * durable and intentionally match storage/anchor_kv.h without making the
+ * foundational coins interface depend on a storage implementation. */
+enum coins_anchor_pool {
+    COINS_ANCHOR_SPROUT = 0,
+    COINS_ANCHOR_SAPLING = 1,
+};
+
+enum coins_anchor_lookup_result {
+    COINS_ANCHOR_ERROR = -1,
+    COINS_ANCHOR_MISSING = 0,
+    COINS_ANCHOR_FOUND = 1,
+    COINS_ANCHOR_HISTORY_INCOMPLETE = 2,
+};
+
+enum coins_shielded_requirements_result {
+    COINS_SHIELDED_REQUIREMENTS_OK = 0,
+    COINS_SHIELDED_REQUIREMENTS_MISSING_ANCHOR,
+    COINS_SHIELDED_REQUIREMENTS_HISTORY_INCOMPLETE,
+    COINS_SHIELDED_REQUIREMENTS_STORE_ERROR,
+};
+
 static inline uint64_t coins_map_hash(const struct uint256 *txid)
 {
     uint64_t h;
@@ -100,6 +124,13 @@ struct coins_view_vtable {
                         const struct uint256 *hash_block);
     /* Aggregate UTXO-set stats; may be NULL when unsupported. */
     bool (*get_stats)(void *self, struct coins_stats *stats);
+    /* Resolve an active-chain Sprout/Sapling note-commitment root.  Sprout
+     * callers request the historical frontier so same-transaction
+     * intermediate JoinSplit roots can be derived exactly as zclassicd does.
+     * Sapling callers may pass tree_out=NULL when membership alone suffices. */
+    enum coins_anchor_lookup_result (*get_anchor)(
+        void *self, enum coins_anchor_pool pool, const struct uint256 *root,
+        struct incremental_merkle_tree *tree_out);
 };
 
 struct coins_view {
@@ -130,6 +161,15 @@ static inline bool coins_view_get_best_block(struct coins_view *cv,
     if (cv->vtable && cv->vtable->get_best_block)
         return cv->vtable->get_best_block(cv->impl, hash);
     return false;
+}
+
+static inline enum coins_anchor_lookup_result coins_view_get_anchor(
+    struct coins_view *cv, enum coins_anchor_pool pool,
+    const struct uint256 *root, struct incremental_merkle_tree *tree_out)
+{
+    if (cv && cv->vtable && cv->vtable->get_anchor)
+        return cv->vtable->get_anchor(cv->impl, pool, root, tree_out);
+    return COINS_ANCHOR_HISTORY_INCOMPLETE;
 }
 
 struct coins_view_cache {
@@ -243,10 +283,20 @@ bool coins_view_cache_have_inputs(struct coins_view_cache *c,
 int64_t coins_view_cache_get_value_in(struct coins_view_cache *c,
                                        const struct transaction *tx);
 
-/* Sprout JoinSplit anchor/nullifier availability check. Currently a
- * structural stub that always returns true (Sprout anchor/nullifier
- * enforcement lives elsewhere on the validation path); kept for interface
- * symmetry with the input-availability checks. */
+/* Exact zclassicd anchor-membership predicate.  Sprout permits a later
+ * JoinSplit in the same transaction to reference an intermediate root made by
+ * an earlier JoinSplit, so this check retrieves and advances historical
+ * frontiers; Sapling spends require a durable active-chain root directly.
+ * Empty roots are protocol-defined and need no store row.
+ *
+ * The detailed form distinguishes a positively absent forged root from an
+ * incomplete snapshot/import history and a store error.  Consensus callers
+ * fail closed for all three non-OK results; reducer diagnostics use the
+ * distinction to name the owner/action. */
+enum coins_shielded_requirements_result
+coins_view_cache_check_shielded_requirements(
+    struct coins_view_cache *c, const struct transaction *tx);
+
 bool coins_view_cache_have_joinsplit_requirements(
     struct coins_view_cache *c, const struct transaction *tx);
 

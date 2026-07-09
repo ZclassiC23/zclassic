@@ -60,6 +60,8 @@ static enum tx_accept_result msg_tx_classify(struct msg_processor *mp,
     case MEMPOOL_ACCEPT_CONFLICT:       return TX_ACCEPT_CONFLICT;
     case MEMPOOL_ACCEPT_BELOW_FEE:      return TX_ACCEPT_BELOW_FEE;
     case MEMPOOL_ACCEPT_MISSING_INPUTS: return TX_ACCEPT_MISSING_INPUTS;
+    case MEMPOOL_ACCEPT_NONFINAL:       return TX_ACCEPT_NONFINAL;
+    case MEMPOOL_ACCEPT_EXPIRING_SOON:  return TX_ACCEPT_EXPIRING_SOON;
     case MEMPOOL_ACCEPT_INTERNAL_ERROR: return TX_ACCEPT_INTERNAL_ERROR;
     }
     return TX_ACCEPT_INTERNAL_ERROR;
@@ -90,6 +92,8 @@ enum tx_accept_result msg_tx_accept(struct msg_processor *mp,
         case TX_ACCEPT_DUPLICATE:
         case TX_ACCEPT_BELOW_FEE:
         case TX_ACCEPT_MISSING_INPUTS:
+        case TX_ACCEPT_NONFINAL:
+        case TX_ACCEPT_EXPIRING_SOON:
         case TX_ACCEPT_INTERNAL_ERROR:
             break;
         }

@@ -375,7 +375,16 @@ static int test_process_block_msg_reducer_pending_stays_retryable(void)
 struct async_block_submit_ctx {
     atomic_int entered;
     atomic_int release;
+    atomic_int drains;
 };
+
+static int count_async_catchup_drain(void *ctx)
+{
+    struct async_block_submit_ctx *submit_ctx = ctx;
+    atomic_fetch_add_explicit(&submit_ctx->drains, 1,
+                              memory_order_relaxed);
+    return 0;
+}
 
 static bool submit_async_blocking_pending(struct block *block,
                                           struct validation_state *out,
@@ -425,6 +434,8 @@ static int test_process_block_msg_queues_reducer_during_catchup(void)
         mp.params = chain_params_get();
         mp.block_submit = submit_async_blocking_pending;
         mp.block_submit_ctx = &submit_ctx;
+        mp.catchup_drain = count_async_catchup_drain;
+        mp.catchup_drain_ctx = &submit_ctx;
 
         struct p2p_node node;
         memset(&node, 0, sizeof(node));
@@ -451,9 +462,16 @@ static int test_process_block_msg_queues_reducer_during_catchup(void)
         ASSERT(stats.processed == 0);
         ASSERT(!block_already_seen(&hash));
 
+        /* The periodic evaluator may commit while this worker owns the final
+         * historical body. Its post-submit reducer drain must survive the
+         * raw-state edge or that last body can remain staged forever. */
+        ASSERT(sync_try_transition(SYNC_BLOCKS_DOWNLOAD, SYNC_AT_TIP,
+                                   "unit periodic edge"));
         atomic_store_explicit(&submit_ctx.release, 1,
                               memory_order_release);
         msg_processor_stop_block_intake(&mp);
+        ASSERT(atomic_load_explicit(&submit_ctx.drains,
+                                    memory_order_acquire) == 1);
         stream_free(&s);
         block_free(&blk);
         main_state_free(&ms);

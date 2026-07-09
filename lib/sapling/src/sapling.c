@@ -7,6 +7,7 @@
 #include <inttypes.h>
 #include "sapling/sapling.h"
 #include "sapling/sapling_circuit.h"
+#include "sapling/sapling_prover.h"
 #include "sapling/params_init.h"
 #include "sapling/pedersen_hash.h"
 #include "sapling/note_encryption.h"
@@ -945,7 +946,7 @@ bool sapling_build_output_description(
     return true;
 }
 
-/* --- native C23 prover-backed spend description builder --- */
+/* --- canonical prover-backed spend description builder --- */
 
 bool sapling_build_spend_with_ctx(
     void *proving_ctx,
@@ -975,17 +976,9 @@ bool sapling_build_spend_with_ctx(
         LOG_FAIL("sapling", "build_spend_with_ctx: sapling_compute_nf failed");
     }
 
-    /* Call native C23 prover for spend proof (cv, rk, zkproof). The
+    /* Call the pinned canonical prover for spend proof (cv, rk, zkproof). The
      * `witness_len` passed through here gates the merkle-path parse
-     * in zclassic_sapling_spend_proof —. */
-    extern bool zclassic_sapling_spend_proof(
-        void *ctx, const unsigned char *ak, const unsigned char *nsk,
-        const unsigned char *diversifier, const unsigned char *rcm,
-        const unsigned char *ar, const uint64_t value,
-        const unsigned char *anchor,
-        const unsigned char *witness, size_t witness_len,
-        unsigned char *cv, unsigned char *rk, unsigned char *zkproof);
-
+     * in zclassic_sapling_spend_proof. */
     if (!zclassic_sapling_spend_proof(
             proving_ctx, ak, nsk, diversifier, rcm, ar_out,
             value, anchor, witness_path, witness_len,
@@ -1004,7 +997,7 @@ bool sapling_build_spend_with_ctx(
     return true;
 }
 
-/* --- native C23 prover-backed output description builder --- */
+/* --- canonical prover-backed output description builder --- */
 
 bool sapling_build_output_with_ctx(
     void *proving_ctx,
@@ -1019,12 +1012,7 @@ bool sapling_build_output_with_ctx(
     if (!sapling_generate_r(rcm) || !sapling_generate_r(esk))
         LOG_FAIL("sapling", "build_output_with_ctx: sapling_generate_r failed (RNG hygiene)");
 
-    /* Use native C23 prover to generate cv and zkproof (with internal rcv) */
-    extern bool zclassic_sapling_output_proof(
-        void *ctx, const unsigned char *esk, const unsigned char *diversifier,
-        const unsigned char *pk_d, const unsigned char *rcm,
-        const uint64_t value, unsigned char *cv, unsigned char *zkproof);
-
+    /* The pinned canonical prover generates cv and zkproof with internal rcv. */
     if (!zclassic_sapling_output_proof(proving_ctx, esk, to_d, to_pk_d,
                                             rcm, value, od_cv, od_proof)) {
         memset(rcm, 0, 32);

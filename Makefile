@@ -178,7 +178,9 @@ TOR_FULL = $(wildcard vendor/tor/libtor.a \
 TOR_LIBS = $(if $(TOR_FULL),$(TOR_FULL),-Lvendor/lib -ltor_stub)
 # All dependencies bundled in vendor/lib as static archives.
 # Zero system library requirements beyond libc.
-# OpenSSL 3.0 (Apache 2.0), libevent, zlib — all vendored.
+# OpenSSL 3.0 (Apache 2.0), libevent, zlib, and the Zcash Sapling prover
+# (MIT/Apache 2.0) — all vendored and statically linked.  librustzcash is used
+# only for wallet-side proving; consensus verification remains in C23.
 # LevelDB is a C++ archive behind a C API. Link with cc for release LTO
 # consistency, but add the C++ driver's stdlib search directory so hosts whose
 # cc/c++ packages are split still find libstdc++.
@@ -186,9 +188,9 @@ CXX_STDLIB_FILE := $(shell $(CXX) -print-file-name=libstdc++.a 2>/dev/null)
 CXX_STDLIB_DIR := $(if $(filter /%,$(CXX_STDLIB_FILE)),$(dir $(CXX_STDLIB_FILE)),)
 CXX_STDLIB_LDFLAGS := $(if $(CXX_STDLIB_DIR),-L$(CXX_STDLIB_DIR),)
 LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
-	$(CXX_STDLIB_LDFLAGS) -lstdc++ -lm -lsqlite3 -ldl -lpthread \
+	$(CXX_STDLIB_LDFLAGS) -lstdc++ -lsqlite3 \
 	-levent -levent_openssl -levent_pthreads \
-	-lssl -lcrypto -lz
+	-lssl -lcrypto -lz -lrustzcash -ldl -lpthread -lm
 
 # Vendored static archives the final link needs.  Only libsecp256k1.a is
 # committed to git; `make vendor` builds the rest from source (pinned URL +
@@ -196,16 +198,25 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 # docs/BUILD.md and tools/scripts/build_vendor.sh.
 VENDOR_ARCHIVES = libsecp256k1.a libcrypto.a libssl.a libevent.a \
 	libevent_openssl.a libevent_pthreads.a libleveldb.a libsqlite3.a \
-	libz.a libtor_stub.a
+	libz.a librustzcash.a libtor_stub.a
 VENDOR_LIBS = $(addprefix vendor/lib/,$(VENDOR_ARCHIVES))
 
-.PHONY: vendor vendor-force
-# Build every missing vendor/lib/*.a from source (idempotent: a present
-# archive is a no-op).  `make vendor-force` rebuilds all of them.
+.PHONY: vendor vendor-force vendor-provenance vendor-ready check-vendor-provenance
+# Build every missing OR provenance-stale vendor/lib/*.a from its pinned,
+# SHA256-verified source. `make vendor-force` rebuilds all of them.
 vendor:
 	tools/scripts/build_vendor.sh
 vendor-force:
 	VENDOR_FORCE=1 tools/scripts/build_vendor.sh
+vendor-provenance:
+	@tools/scripts/build_vendor.sh --check-provenance
+# Link/release/deploy front door: repair stale archives, then independently
+# audit installed bytes before any binary can consume them.
+vendor-ready:
+	@tools/scripts/build_vendor.sh
+	@tools/dep_audit.sh
+check-vendor-provenance:
+	@tools/scripts/test_vendor_provenance.sh
 
 # Auto-vendor: if any required archive is absent, build it.  The per-archive
 # rule lets `make zclassic23` pull in `make vendor` transparently on a fresh
@@ -393,7 +404,7 @@ syntax-check: $(VIEW_GEN_HEADERS)
 
 # The highest-signal lint gates for the inner loop. Run full `make lint` at
 # sub-wave boundaries / before commit.
-lint-fast: check-raw-sqlite check-malloc check-silent-errors check-model-validation check-model-ar-lifecycle check-one-write-path
+lint-fast: check-raw-sqlite check-malloc check-silent-errors check-model-validation check-model-ar-lifecycle check-one-write-path check-vendor-provenance
 	@echo "lint-fast: OK"
 
 # Cache-aware agent/operator loop:
@@ -1852,7 +1863,7 @@ $(TEST_FAST_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_COMMIT_STAMP)
 PREFIX  ?= /usr/local
 DESTDIR ?=
 .PHONY: install
-install: zclassic23 zcl-rpc
+install: vendor-ready zclassic23 zcl-rpc
 	install -d "$(DESTDIR)$(PREFIX)/bin"
 	install -m 755 $(ZCLASSIC23_BIN) "$(DESTDIR)$(PREFIX)/bin/zclassic23"
 	install -m 755 $(ZCL_RPC_BIN)    "$(DESTDIR)$(PREFIX)/bin/zcl-rpc"
@@ -1866,7 +1877,7 @@ install: zclassic23 zcl-rpc
 	fi
 	@echo "make install: zclassic23 + zcl-rpc -> $(DESTDIR)$(PREFIX)/bin"
 
-deploy: lint zclassic-cli tools/wal_checkpoint
+deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	@./tools/deploy_guard.sh canonical-deploy
 	@# Force a fresh production binary. The $(ZCLASSIC23_BIN) rule is a single
 	@# whole-program cc over $(ALL_SRCS) with NO depfile tracking, so a
@@ -2049,7 +2060,7 @@ quality-linger-status:
 	@systemctl --user status zclassic23-fuzz.service zclassic23-coverage.service zclassic23-test-suite.service --no-pager -n 12 2>/dev/null || true
 	@./tools/scripts/background_quality_lane.sh status
 
-release:
+release: vendor-ready
 	@./tools/release.sh
 
 # Install the tracked git hooks (shared across all worktrees via core.hooksPath).
@@ -2751,7 +2762,7 @@ check-honest-witness:
 	@echo "══ LINT: honest witness (E12) ══"
 	@ZCL_LINT_MODE=FAIL ./tools/lint/check_honest_witness.sh
 
-lint: check-git-hooks-installed check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate
+lint: check-git-hooks-installed check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vendor-provenance
 	@echo "══ LINT: all checks passed ══"
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the
@@ -2793,7 +2804,7 @@ ci-symbol-floor: zclassic23
 ci-reproducible:
 	@bash tools/scripts/check_reproducible_build.sh
 
-ci: lint bench-regress zclassic23 test_parallel
+ci: vendor-ready lint bench-regress zclassic23 test_parallel
 	@echo "══ CI: portability symbol-floor (C1) ══"
 	$(MAKE) ci-symbol-floor
 	@echo "══ CI: test (per-process isolated runner) ══"

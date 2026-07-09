@@ -52,6 +52,21 @@ static struct tx_mempool *zslp_mempool(void)
     return app_runtime_mempool();
 }
 
+static bool zslp_wallet_admission(struct wallet_tx_admission *out)
+{
+    if (!out)
+        LOG_FAIL("zslp", "wallet_admission: NULL output");
+    *out = (struct wallet_tx_admission) {
+        .mempool = app_runtime_mempool(),
+        .coins_tip = app_runtime_coins_tip(),
+        .main_state = app_runtime_main_state(),
+        .params = chain_params_get(),
+    };
+    if (!out->mempool || !out->coins_tip || !out->main_state)
+        LOG_FAIL("zslp", "wallet_admission: runtime validation context incomplete");
+    return true;
+}
+
 static const char *zslp_effective_datadir(const char *datadir)
 {
     return datadir ? datadir : zslp_ctx()->datadir;
@@ -146,7 +161,9 @@ const char *zslp_create_token(const char *datadir,
         LOG_NULL("zslp", "create_token: tx build failed: %s",
                  tx_error ? tx_error : "unknown");
 
-    if (!zslp_command_commit_with_op_return(wallet, mempool, &wtx,
+    struct wallet_tx_admission admission;
+    if (!zslp_wallet_admission(&admission) ||
+        !zslp_command_commit_with_op_return(wallet, &wtx, &admission,
                                             script, slen).ok) {
         LOG_WARN("zslp", "zslp: commit failed");
         transaction_free(&wtx.tx);
@@ -271,7 +288,9 @@ bool zslp_mint(const char *datadir,
         LOG_FAIL("zslp", "mint: tx build failed: %s",
                  tx_error ? tx_error : "unknown");
 
-    if (!zslp_command_commit_with_op_return(wallet, mempool, &wtx,
+    struct wallet_tx_admission admission;
+    if (!zslp_wallet_admission(&admission) ||
+        !zslp_command_commit_with_op_return(wallet, &wtx, &admission,
                                             op_script, slen).ok) {
         LOG_WARN("zslp", "zslp: mint commit failed");
         transaction_free(&wtx.tx);
@@ -342,7 +361,9 @@ bool zslp_send(const char *datadir,
         LOG_FAIL("zslp", "send: tx build failed: %s",
                  tx_error ? tx_error : "unknown");
 
-    if (!zslp_command_commit_with_op_return(wallet, mempool, &wtx,
+    struct wallet_tx_admission admission;
+    if (!zslp_wallet_admission(&admission) ||
+        !zslp_command_commit_with_op_return(wallet, &wtx, &admission,
                                             op_script, slen).ok) {
         LOG_WARN("zslp", "zslp: commit failed");
         transaction_free(&wtx.tx);

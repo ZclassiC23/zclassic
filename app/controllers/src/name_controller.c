@@ -14,6 +14,7 @@
 #include "rpc/server.h"
 #include "models/database.h"
 #include "wallet/wallet.h"
+#include "chain/chainparams.h"
 #include "validation/txmempool.h"
 #include "services/zslp_command_service.h"
 #include "encoding/utilstrencodings.h"
@@ -27,16 +28,22 @@
 static struct node_db *g_name_ndb = NULL;
 static struct wallet *g_name_wallet = NULL;
 static struct tx_mempool *g_name_mempool = NULL;
+static struct main_state *g_name_main_state = NULL;
+static struct coins_view_cache *g_name_coins_tip = NULL;
 
 void rpc_name_set_state(struct node_db *ndb)
 {
     g_name_ndb = ndb;
 }
 
-void rpc_name_set_wallet(struct wallet *w, struct tx_mempool *mp)
+void rpc_name_set_wallet(struct wallet *w, struct tx_mempool *mp,
+                         struct main_state *main_state,
+                         struct coins_view_cache *coins_tip)
 {
     g_name_wallet = w;
     g_name_mempool = mp;
+    g_name_main_state = main_state;
+    g_name_coins_tip = coins_tip;
 }
 
 /* ── Helper ─────────────────────────────────────────────────────── */
@@ -306,10 +313,19 @@ static bool rpc_name_register(const struct json_value *params, bool help,
         }
 
         /* Prepend OP_RETURN, re-sign, broadcast */
-        if (!zslp_command_commit_with_op_return(g_name_wallet, g_name_mempool,
-                                                &wtx, script, script_len).ok) {
-            json_set_str(result, "Failed to broadcast transaction");
-            return false;
+        struct wallet_tx_admission admission = {
+            .mempool = g_name_mempool,
+            .coins_tip = g_name_coins_tip,
+            .main_state = g_name_main_state,
+            .params = chain_params_get(),
+        };
+        struct zcl_result commit = zslp_command_commit_with_op_return(
+            g_name_wallet, &wtx, &admission, script, script_len);
+        if (!commit.ok) {
+            json_set_str(result, commit.message);
+            transaction_free(&wtx.tx);
+            LOG_FAIL("znam", "name_register: validated commit failed "
+                             "(code=%d): %s", commit.code, commit.message);
         }
 
         /* Return success with txid */

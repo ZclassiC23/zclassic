@@ -22,6 +22,7 @@
 #include "models/database.h"
 #include "storage/progress_store.h"
 #include "storage/coins_kv.h"
+#include "storage/anchor_kv.h"
 #include "storage/disk_block_io.h"       /* block_index_have_data_readable */
 #include "config/boot_internal.h"        /* boot_index_clear_coins_state */
 #include "config/mint_anchor_progress.h" /* mint_anchor_progress_* */
@@ -126,6 +127,8 @@ void boot_refold_staged_reset(struct node_db *ndb)
         if (!stage_repair_force_stage_cursor(rpdb, k_refold_stages[i], 0))
             refold_ok = false;
     if (refold_ok && !coins_kv_set_applied_height_in_tx(rpdb, 0))
+        refold_ok = false;
+    if (refold_ok && !anchor_kv_reset_in_tx(rpdb, 0))
         refold_ok = false;
     if (refold_ok) {
         (void)progress_meta_delete_in_tx(rpdb, REDUCER_TRUSTED_BASE_HEIGHT_KEY);
@@ -620,6 +623,11 @@ void boot_refold_from_anchor_reset(struct node_db *ndb)
     /* utxo_apply's next-height cursor convention: applied-through `anchor`
      * means the frontier value is anchor+1. */
     if (refold_ok && !coins_kv_set_applied_height_in_tx(rpdb, anchor + 1))
+        refold_ok = false;
+    /* The UTXO snapshot does not carry historical Sprout/Sapling roots.
+     * Record that absence explicitly: the fold must backfill [0,anchor)
+     * before accepting an unknown shielded root. */
+    if (refold_ok && !anchor_kv_reset_in_tx(rpdb, anchor))
         refold_ok = false;
     if (refold_ok && seeded_from_minted_snapshot) {
         uint8_t one = 1;
@@ -1703,6 +1711,8 @@ retry_authority_store:
         if (!stage_repair_force_stage_cursor(rpdb, k_coins_stages[i], seed_h))
             refold_ok = false;
     if (refold_ok && !coins_kv_set_applied_height_in_tx(rpdb, seed_h + 1))
+        refold_ok = false;
+    if (refold_ok && !anchor_kv_reset_in_tx(rpdb, seed_h))
         refold_ok = false;
     if (refold_ok) {
         (void)progress_meta_delete_in_tx(rpdb, REDUCER_TRUSTED_BASE_HEIGHT_KEY);

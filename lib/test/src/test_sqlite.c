@@ -10,7 +10,9 @@
 #include "services/chain_evidence_persistence_service.h"
 #include "wallet/wallet.h"
 #include "script/standard.h"
+#include "coins/coins_view.h"
 #include "validation/chainstate.h"
+#include "validation/main_state.h"
 #include "util/safe_alloc.h"
 #include <pthread.h>
 #include <time.h>
@@ -1284,6 +1286,44 @@ int test_sqlite(void) {
 
         ok = ok && db_mempool_clear(&ndb);
         ok = ok && (db_mempool_count(&ndb) == 0);
+
+        /* Startup persistence is untrusted input too. A structurally valid
+         * row with a missing prevout must be revalidated and dropped instead
+         * of re-entering through tx_mempool_add_unchecked(). */
+        struct transaction stale = make_sync_test_tx();
+        struct byte_stream raw_stream;
+        stream_init(&raw_stream, 256);
+        ok = ok && transaction_serialize(&stale, &raw_stream);
+        memset(&e, 0, sizeof(e));
+        memcpy(e.txid, stale.hash.data, 32);
+        e.raw_tx = raw_stream.data;
+        e.raw_tx_len = raw_stream.size;
+        e.fee = 10000;
+        e.size = (int)raw_stream.size;
+        e.time_added = 1700000000;
+        e.height_added = 500;
+        ok = ok && db_mempool_save(&ndb, &e);
+
+        struct tx_mempool restored;
+        tx_mempool_init(&restored, 0);
+        struct coins_view null_view;
+        memset(&null_view, 0, sizeof(null_view));
+        struct coins_view_cache coins;
+        coins_view_cache_init(&coins, &null_view);
+        struct main_state main_state;
+        main_state_init(&main_state);
+
+        int loaded = node_db_sync_mempool_load(
+            &ndb, &restored, &coins, &main_state, chain_params_get());
+        ok = ok && loaded == 0;
+        ok = ok && tx_mempool_size(&restored) == 0;
+        ok = ok && db_mempool_count(&ndb) == 0;
+
+        main_state_free(&main_state);
+        coins_view_cache_free(&coins);
+        tx_mempool_free(&restored);
+        stream_free(&raw_stream);
+        free_sync_test_tx(&stale);
 
         node_db_close(&ndb);
         if (ok) printf("OK\n");

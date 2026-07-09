@@ -55,10 +55,16 @@ struct watchdog_local_recovery_stats {
     char    last_reason[64];
 };
 
+struct msg_processor;
+
 void sync_monitor_init(void);
 void sync_monitor_set_context(struct connman *cm,
                               struct download_manager *dm,
                               struct main_state *ms);
+/* Binds the async historical-block intake owner. Kept separate from the
+ * long-standing condition context setter so isolated condition fixtures do
+ * not need to construct a protocol processor. */
+void sync_monitor_set_msg_processor(struct msg_processor *mp);
 struct connman *sync_monitor_connman(void);
 struct download_manager *sync_monitor_download_manager(void);
 struct main_state *sync_monitor_main_state(void);
@@ -81,6 +87,10 @@ void sync_monitor_get_local_recovery_stats(
 
 void sync_monitor_on_block_connected(int height);
 int64_t sync_monitor_tip_advance_age(void);
+/* Five-second runtime-driver evaluation of the raw sync FSM.  Uses the
+ * published served frontier plus local/header/peer heights and only commits
+ * AT_TIP after pending body work drains. Safe before context initialization. */
+struct zcl_result sync_monitor_evaluate_tip_state(void);
 void sync_monitor_record_recovery(enum watchdog_recovery_type type,
                                   int local_height,
                                   int peer_height,

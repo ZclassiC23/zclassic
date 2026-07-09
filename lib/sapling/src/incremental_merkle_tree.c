@@ -780,12 +780,9 @@ bool incremental_witness_merkle_path(const struct incremental_witness *w,
     const struct incremental_merkle_tree *t = &w->tree;
     size_t depth = t->depth;
 
-    /* Compute leaf position = tree_size - 1 */
-    size_t tree_sz = incremental_tree_size(t);
-    if (tree_sz == 0)
+    if (incremental_tree_size(t) == 0)
         LOG_FAIL("incremental_merkle_tree",
                  "merkle_path: tree is empty (no leaves to authenticate)");
-    uint64_t position = tree_sz - 1;
 
     /* Build the authentication path by collecting siblings at each level.
      * Walk the same structure as incremental_witness_root but collect
@@ -796,22 +793,25 @@ bool incremental_witness_merkle_path(const struct incremental_witness *w,
     size_t num_levels = 0;
 
     /* Level 0: left/right of the tree base */
-    (void)position;
     size_t filled_idx = 0;
 
     if (t->has_right) {
-        /* Leaf was left child at level 0 → sibling is right */
-        auth_path[0] = t->right;
-        path_bits[0] = 0; /* leaf on left side */
+        /* A witness tracks the LAST leaf present when it is created. If a
+         * right leaf exists, that is the witnessed leaf: its sibling is the
+         * left leaf and its position bit is 1. */
+        auth_path[0] = t->left;
+        path_bits[0] = 1;
     } else {
-        /* Leaf is the right child → sibling is left */
-        if (t->has_left) {
-            auth_path[0] = t->left;
-            path_bits[0] = 1;
-        } else {
+        /* With only a left leaf, the witnessed leaf is on the left. The first
+         * later leaf replayed into this witness occupies its right-sibling
+         * slot and is stored in filled[0]; only an unadvanced witness uses the
+         * uncommitted leaf. Mirror incremental_witness_root's consumption so
+         * higher levels start at the next filled subtree. */
+        if (filled_idx < w->num_filled)
+            auth_path[0] = w->filled[filled_idx++];
+        else
             t->uncommitted(&auth_path[0]);
-            path_bits[0] = 0;
-        }
+        path_bits[0] = 0;
     }
     num_levels = 1;
 

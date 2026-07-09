@@ -1,3 +1,18 @@
+> **▶ NEXT DEV START HERE: [`docs/work/SESSION-HANDOFF-2026-07-09-CODEX.md`](work/SESSION-HANDOFF-2026-07-09-CODEX.md)**
+> — stabilization handoff: durable shielded anchors, Sapling proving self-test,
+> wallet/mempool safety, operator-truth sync fixes, and vendor provenance gates.
+> **Deployment is on HOLD** pending the historical anchor backfill and the
+> documented wallet publication/rollback race fixes.
+>
+> **VENDOR PROVENANCE MIGRATION COMPLETE (2026-07-09):** `make vendor` rebuilt
+> every fetched archive from its pinned source and deterministic recipe;
+> `make audit` passes with OpenSSL **3.0.16**, SQLite 3.49.0, libevent 2.1.12,
+> LevelDB 1.23, zlib 1.3.1, and the pinned librustzcash revision. The migration
+> also fixed generic-tool fingerprinting (`perl -dumpmachine`), LevelDB's CMake
+> archiver resolution, Rust build-host path leakage, and the libevent ABI
+> required by embedded Tor. Never hand-author/adopt provenance stamps. No node
+> or live datadir was touched.
+>
 > **▶ NEXT DEV START HERE: [`docs/work/SESSION-HANDOFF-2026-07-09-LATE.md`](work/SESSION-HANDOFF-2026-07-09-LATE.md)**
 > — 2026-07-09 late handoff: `origin/main` at **`7fa940ac2`**. Shipped
 > **simnet_wire steps A + B** (the deterministic in-memory adversarial P2P

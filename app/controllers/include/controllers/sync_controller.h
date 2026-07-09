@@ -33,7 +33,10 @@ struct wallet;
 struct node_health_snapshot;
 struct active_chain;
 struct coins_view_db;
+struct coins_view_cache;
 struct tx_mempool;
+struct main_state;
+struct chain_params;
 
 struct node_db_sync_job_status {
     bool catchup_active;
@@ -159,6 +162,19 @@ bool node_db_sync_sapling_spend(struct node_db *ndb,
                                 const uint8_t nullifier[32],
                                 const uint8_t spending_txid[32]);
 
+/* Atomically reserve every wallet-owned Sapling note spent by an unconfirmed
+ * locally-authored transaction. Unlike node_db_sync_sapling_spend_ex(), this
+ * wallet-only path does NOT insert into the confirmed-chain
+ * sapling_nullifiers projection. */
+bool node_db_sync_wallet_sapling_spends(
+    struct node_db *ndb, const struct transaction *tx);
+
+/* Delete an unrelayed wallet transaction through the node.db single-writer
+ * lane. Used as the durable compensation step when a post-flush reservation
+ * fails. */
+bool node_db_sync_wallet_tx_delete(struct node_db *ndb,
+                                   const uint8_t txid[32]);
+
 /* Persist a peer address we learned about. */
 bool node_db_sync_peer(struct node_db *ndb,
                        const uint8_t ip[16], uint16_t port,
@@ -212,9 +228,13 @@ int node_db_sync_mempool_save(struct node_db *ndb,
                               const struct tx_mempool *mempool);
 
 /* Load persisted mempool from SQLite into in-memory pool.
- * Called on startup. Returns count loaded. */
+ * Called on startup. Every row is revalidated against the current chain;
+ * stale/invalid rows are dropped. Returns count loaded. */
 int node_db_sync_mempool_load(struct node_db *ndb,
-                              struct tx_mempool *mempool);
+                              struct tx_mempool *mempool,
+                              struct coins_view_cache *coins_tip,
+                              struct main_state *main_state,
+                              const struct chain_params *params);
 
 void node_db_sync_get_job_status(struct node_db_sync_job_status *out);
 

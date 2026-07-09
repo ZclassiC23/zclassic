@@ -3475,6 +3475,7 @@ static int test_destructive_tools_registered(void)
         /* self_test skips these, but they must still be reachable over
          * the wire — otherwise the compat contract breaks. */
         const char *k[] = {
+            "zcl_getnewaddress", "zcl_z_getnewaddress",
             "zcl_send", "zcl_sendtoaddress", "zcl_importprivkey",
             "zcl_wallet_receive_intent",
             "zcl_rescanblockchain", "zcl_replaywalletfromchain",
@@ -3484,13 +3485,61 @@ static int test_destructive_tools_registered(void)
             "zcl_swap_initiate",
         };
         for (size_t i = 0; i < sizeof(k)/sizeof(k[0]); i++) {
-            if (mcp_router_find(k[i]) == NULL) {
+            const struct mcp_tool_route *route = mcp_router_find(k[i]);
+            if (route == NULL) {
                 printf("FAIL (missing %s)\n", k[i]);
                 failures++; goto _test_next;
             }
+            ASSERT(route->flags & MCP_TOOL_FLAG_DESTRUCTIVE);
         }
         PASS();
     } _test_next:;
+    return failures;
+}
+
+static int g_self_test_taddr_rpc_calls;
+static int g_self_test_zaddr_rpc_calls;
+
+static char *mock_self_test_address_rpc(const char *method,
+                                        const char *params_json)
+{
+    (void)params_json;
+    if (strcmp(method, "getnewaddress") == 0)
+        g_self_test_taddr_rpc_calls++;
+    if (strcmp(method, "z_getnewaddress") == 0)
+        g_self_test_zaddr_rpc_calls++;
+    return strdup("null");
+}
+
+static int test_self_test_skips_address_generation(void)
+{
+    int failures = 0;
+    TEST("controllers: self_test skips both wallet address generators") {
+        /* Keep the sweep small and hermetic: wallet + meta is enough to run
+         * the real self-test loop, while the RPC hook proves neither key-
+         * generating handler was dispatched. */
+        mcp_router_reset();
+        mcp_register_wallet();
+        mcp_register_meta();
+        g_self_test_taddr_rpc_calls = 0;
+        g_self_test_zaddr_rpc_calls = 0;
+        mcp_rpc_client_set_test_hook(mock_self_test_address_rpc);
+
+        char *body = mcp_router_dispatch("zcl_self_test", NULL);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+        ASSERT(contains(body,
+            "\"tool\":\"zcl_getnewaddress\",\"domain\":\"wallet\","
+            "\"status\":\"skipped\",\"reason\":\"destructive\""));
+        ASSERT(contains(body,
+            "\"tool\":\"zcl_z_getnewaddress\",\"domain\":\"wallet\","
+            "\"status\":\"skipped\",\"reason\":\"destructive\""));
+        ASSERT(g_self_test_taddr_rpc_calls == 0);
+        ASSERT(g_self_test_zaddr_rpc_calls == 0);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
     return failures;
 }
 
@@ -4157,6 +4206,7 @@ int test_mcp_controllers(void)
     failures += test_tools_list_json_well_formed();
     failures += test_input_schema_for_zcl_getblock();
     failures += test_destructive_tools_registered();
+    failures += test_self_test_skips_address_generation();
     failures += test_duplicate_register_rejected();
     failures += test_reset_clears_and_reregister_restores();
     failures += test_wallet_shielded_tools_registered();

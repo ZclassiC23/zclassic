@@ -56,16 +56,22 @@ bool sapling_keystore_set_seed(struct sapling_keystore *sks,
     return true;
 }
 
-bool sapling_keystore_new_address(struct sapling_keystore *sks,
-                                   uint8_t diversifier_out[ZC_DIVERSIFIER_SIZE],
-                                   uint8_t pk_d_out[32])
+bool sapling_keystore_new_address_ex(
+    struct sapling_keystore *sks,
+    uint8_t diversifier_out[ZC_DIVERSIFIER_SIZE],
+    uint8_t pk_d_out[32],
+    struct sapling_address_undo *undo_out)
 {
+    if (undo_out)
+        memset(undo_out, 0, sizeof(*undo_out));
     zcl_mutex_lock(&sks->cs);
 
+    bool generated_seed = false;
     if (!sks->has_seed) {
         GetRandBytes(sks->seed, 32);
         sks->has_seed = true;
         zip32_xsk_master(&sks->master_xsk, sks->seed, 32);
+        generated_seed = true;
     }
 
     if (sks->num_keys >= MAX_SAPLING_KEYS) {
@@ -115,6 +121,12 @@ bool sapling_keystore_new_address(struct sapling_keystore *sks,
     sks->num_keys++;
     sks->next_child_index++;
 
+    if (undo_out) {
+        undo_out->child_index = entry->child_index;
+        undo_out->generated_seed = generated_seed;
+        undo_out->valid = true;
+    }
+
     memcpy(diversifier_out, diversifier, ZC_DIVERSIFIER_SIZE);
     memcpy(pk_d_out, pk_d, 32);
 
@@ -122,6 +134,50 @@ bool sapling_keystore_new_address(struct sapling_keystore *sks,
     memory_cleanse(&coin_key, sizeof(coin_key));
     memory_cleanse(&account_key, sizeof(account_key));
 
+    zcl_mutex_unlock(&sks->cs);
+    return true;
+}
+
+bool sapling_keystore_new_address(struct sapling_keystore *sks,
+                                   uint8_t diversifier_out[ZC_DIVERSIFIER_SIZE],
+                                   uint8_t pk_d_out[32])
+{
+    return sapling_keystore_new_address_ex(
+        sks, diversifier_out, pk_d_out, NULL);
+}
+
+bool sapling_keystore_rollback_address(
+    struct sapling_keystore *sks,
+    const struct sapling_address_undo *undo)
+{
+    if (!sks || !undo || !undo->valid)
+        LOG_FAIL("sapling_keys", "rollback_address: invalid arguments/token");
+
+    zcl_mutex_lock(&sks->cs);
+    if (sks->num_keys == 0 ||
+        sks->next_child_index != undo->child_index + 1) {
+        zcl_mutex_unlock(&sks->cs);
+        LOG_FAIL("sapling_keys",
+                 "rollback_address: child %u is no longer the latest",
+                 undo->child_index);
+    }
+    struct sapling_key_entry *entry = &sks->keys[sks->num_keys - 1];
+    if (!entry->used || entry->child_index != undo->child_index) {
+        zcl_mutex_unlock(&sks->cs);
+        LOG_FAIL("sapling_keys",
+                 "rollback_address: latest entry does not match child %u",
+                 undo->child_index);
+    }
+
+    memory_cleanse(entry, sizeof(*entry));
+    sks->num_keys--;
+    sks->next_child_index = undo->child_index;
+    if (undo->generated_seed && sks->num_keys == 0) {
+        memory_cleanse(sks->seed, sizeof(sks->seed));
+        memory_cleanse(&sks->master_xsk, sizeof(sks->master_xsk));
+        sks->has_seed = false;
+        sks->next_child_index = 0;
+    }
     zcl_mutex_unlock(&sks->cs);
     return true;
 }

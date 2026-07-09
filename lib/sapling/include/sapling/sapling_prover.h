@@ -1,8 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Pure C23 API for Sapling proving and verification.
- * Drop-in replacement for the Rust native C23 prover FFI.
- * All functions implemented in lib/zcash/src/zclassic_c23.c */
+ * Stable C23 API for Sapling proving and verification.
+ * Consensus verification is native C23. Proving is delegated to the pinned,
+ * statically-linked Zcash prover and remains disabled until a positive
+ * prover-to-consensus-verifier self-test passes. */
 
 #ifndef ZCL_SAPLING_PROVER_H
 #define ZCL_SAPLING_PROVER_H
@@ -11,7 +12,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
-/* Parameter loading (no-op — VKs loaded by sapling_init_params) */
+/* Parameter loading. The caller supplies the canonical BLAKE2b hashes used
+ * by librustzcash; sapling_init_params independently checks SHA-512 first. */
 void zclassic_init_zksnark_params(
     const uint8_t *spend_path, size_t spend_path_len,
     const char *spend_hash,
@@ -19,6 +21,14 @@ void zclassic_init_zksnark_params(
     const char *output_hash,
     const uint8_t *sprout_path, size_t sprout_path_len,
     const char *sprout_hash);
+
+/* Runtime proving capability. `run_self_test` must be called after the C23
+ * verifying keys and Rust proving parameters have initialized. No proving
+ * context can be created until it returns true. */
+bool zclassic_sapling_prover_run_self_test(void);
+bool zclassic_sapling_prover_is_ready(void);
+const char *zclassic_sapling_prover_status(void);
+const char *zclassic_sapling_prover_backend(void);
 
 /* Verification context */
 void *zclassic_sapling_verification_ctx_init(void);

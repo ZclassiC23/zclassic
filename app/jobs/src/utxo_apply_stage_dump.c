@@ -93,6 +93,8 @@ bool utxo_apply_dump_state_json(struct json_value *out, const char *key)
                       (int64_t)atomic_load(&g_ua_bad_cb_amount_total));
     json_push_kv_int (out, "shielded_double_spend_total",
                       (int64_t)atomic_load(&g_ua_shielded_double_spend_total));
+    json_push_kv_int (out, "shielded_anchor_reject_total",
+                      (int64_t)atomic_load(&g_ua_shielded_anchor_reject_total));
     json_push_kv_int (out, "upstream_failed_total",
                       (int64_t)atomic_load(&g_ua_upstream_failed_total));
     json_push_kv_int (out, "internal_error_total",

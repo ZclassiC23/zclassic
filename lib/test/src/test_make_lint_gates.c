@@ -2771,6 +2771,17 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(main_src, "mcp_middleware_dispatch") != NULL);
         ASSERT(strstr(main_src, "mw.default_timeout_ms = 0") != NULL);
         ASSERT(strstr(main_src, "ZCL_MCP_CALL_BEARER_TOKEN") != NULL);
+        {
+            const char *mcp_init = strstr(main_src,
+                "mcp_rpc_client_init(datadir, cli_port);");
+            const char *params_select = mcp_init
+                ? strstr(mcp_init, "chain_params_select(CHAIN_MAIN);") : NULL;
+            const char *route_register = params_select
+                ? strstr(params_select, "cli_mcp_register_all();") : NULL;
+            ASSERT(mcp_init != NULL);
+            ASSERT(params_select != NULL);
+            ASSERT(route_register != NULL);
+        }
 
         ASSERT(repo_path(path, sizeof(path),
                          "docs/AGENT_ARCHITECTURE.md") == 0);

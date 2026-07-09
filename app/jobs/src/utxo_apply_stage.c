@@ -11,6 +11,7 @@
 #include "jobs/utxo_apply_delta.h"
 #include "jobs/replay_count_only.h"
 #include "jobs/utxo_apply_nullifiers.h"
+#include "jobs/utxo_apply_anchors.h"
 #include "jobs/stage_helpers.h"
 #include "utxo_apply_log_store.h"
 #include "utxo_apply_stage_internal.h"
@@ -26,6 +27,7 @@
 #include "storage/coins_ram.h"
 #include "storage/disk_block_io.h"
 #include "storage/nullifier_kv.h"
+#include "storage/anchor_kv.h"
 #include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
 #include "util/blocker.h"
@@ -77,6 +79,7 @@ _Atomic uint64_t g_ua_value_overflow_total = 0;
 _Atomic uint64_t g_ua_coinbase_protect_total = 0;
 _Atomic uint64_t g_ua_bad_cb_amount_total = 0;
 _Atomic uint64_t g_ua_shielded_double_spend_total = 0;
+_Atomic uint64_t g_ua_shielded_anchor_reject_total = 0;
 _Atomic uint64_t g_ua_upstream_failed_total = 0;
 _Atomic uint64_t g_ua_internal_error_total = 0;
 _Atomic uint64_t g_ua_reorg_unwound_total = 0;
@@ -396,6 +399,21 @@ static job_result_t step_apply(struct stage_step_ctx *c)
         return JOB_ADVANCED;
     }
 
+    /* Shielded anchor-membership + frontier gate (L7) -- BEFORE nullifiers
+     * and coins, in this same stage transaction.  A forged root is a normal
+     * consensus refusal; an imported/snapshot history gap is a fail-closed,
+     * explicitly named blocker.  Both leave H* and all state at next_h-1. */
+    if (summary.ok && utxo_projection_get_author() == UTXO_AUTHOR_STAGE) {
+        if (!utxo_apply_check_and_insert_anchors(db, &blk, next_h,
+                                                 &summary)) {
+            ua_fatal_permanent_blocker(next_h,
+                                       "shielded anchor store failure");
+            free_delta(&summary);
+            block_free(&blk);
+            return JOB_FATAL;
+        }
+    }
+
     /* Shielded-nullifier double-spend gate (C-3) — BEFORE the coins write,
      * under the same author gate. May flip summary.ok to a consensus reject
      * (which then takes the regular counter/log/JOB_BLOCKED path below); a
@@ -469,6 +487,11 @@ static job_result_t step_apply(struct stage_step_ctx *c)
             label = "bad-cb-amount";
         } else if (strcmp(summary.status, "shielded_double_spend") == 0) {
             counter = &g_ua_shielded_double_spend_total;
+            label = "bad-txns-joinsplit-requirements-not-met";
+        } else if (strcmp(summary.status, "shielded_anchor_missing") == 0 ||
+                   strcmp(summary.status, "shielded_anchor_history_gap") == 0 ||
+                   strcmp(summary.status, "sapling_frontier_mismatch") == 0) {
+            counter = &g_ua_shielded_anchor_reject_total;
             label = "bad-txns-joinsplit-requirements-not-met";
         }
         utxo_apply_reject_count_and_emit(next_h, summary.status, counter,
@@ -643,6 +666,18 @@ bool utxo_apply_stage_init(struct main_state *ms)
         pthread_mutex_unlock(&g_lock);
         return false;
     }
+
+    /* L7 durable active-chain anchor set.  The first adoption cursor is an
+     * honesty boundary: zero means a from-genesis store; a nonzero value means
+     * the prefix is absent and unknown anchors must fail closed until the
+     * owner-gated body backfill completes. */
+    uint64_t anchor_cursor = stage_cursor_persisted(db, STAGE_NAME, STAGE_NAME);
+    if (anchor_cursor > (uint64_t)INT64_MAX ||
+        !anchor_kv_initialize_history(db, (int64_t)anchor_cursor)) {
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
+    utxo_apply_anchor_gap_blocker_refresh(db);
 
     /* Consensus shielded-nullifier set (C-3). Existence is probed BEFORE the
      * ensure so FIRST creation can stamp the activation marker: heights

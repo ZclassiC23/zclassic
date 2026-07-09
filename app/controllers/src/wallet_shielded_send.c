@@ -513,10 +513,23 @@ bool rpc_z_sendmany(const struct json_value *params, bool help,
         }
     }
 
-    if (!wallet_commit_transaction(ctx->wallet, &wtx, ctx->mempool)) {
-        json_set_str(result, "Error committing transaction");
+    struct zcl_result commit = wallet_commit_from_context(ctx, &wtx);
+    if (!commit.ok) {
+        json_set_str(result, commit.message);
         transaction_free(&wtx.tx);
-        LOG_FAIL("wallet_shielded", "z_sendmany: wallet_commit_transaction failed");
+        LOG_FAIL("wallet_shielded", "z_sendmany: wallet commit failed "
+                                    "(code=%d): %s", commit.code,
+                                    commit.message);
+    }
+
+    struct zcl_result persisted =
+        wallet_persist_commit_before_relay(ctx, &wtx);
+    if (!persisted.ok) {
+        json_set_str(result, persisted.message);
+        transaction_free(&wtx.tx);
+        LOG_FAIL("wallet_shielded",
+                 "z_sendmany: pre-relay durability failed (code=%d): %s",
+                 persisted.code, persisted.message);
     }
 
     if (wallet_ctx_db_ready(ctx))
@@ -525,18 +538,9 @@ bool rpc_z_sendmany(const struct json_value *params, bool help,
     if (ctx->connman)
         connman_relay_transaction(ctx->connman, &wtx.tx.hash);
 
-    /* Best-effort second flush to persist the new tx record (change-key
-     * durability already met by the pre-broadcast flush above). */
-    if (ctx->wallet_db) {
-        struct zcl_result fr = wallet_sqlite_flush_r(ctx->wallet_db, ctx->wallet);
-        if (!fr.ok) {
-            LOG_WARN("wallet", "z_sendmany: post-broadcast tx flush failed "
-                                "(code=%d): %s", fr.code, fr.message);
-        }
-    }
-
     char txid[65];
     uint256_get_hex(&wtx.tx.hash, txid);
     json_set_str(result, txid);
+    transaction_free(&wtx.tx);
     return true;
 }

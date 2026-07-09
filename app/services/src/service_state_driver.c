@@ -178,6 +178,11 @@ struct zcl_result service_state_restore_from_progress_store(void)
 
 void service_state_driver_tick(void)
 {
+    /* The same five-second supervised tick also closes the raw sync FSM's
+     * asynchronous-intake edge.  This must run even while the higher-level
+     * service_state is still in a pre-serving state. */
+    (void)sync_monitor_evaluate_tip_state();
+
     enum service_state cur = service_state_current();
 
     /* Step 1 — REPAIRING edge. A named repair Condition that is actively

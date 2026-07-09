@@ -131,6 +131,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(sprout_phgr13_kat) \
     X(rescanwitnesses_diverge_guard) \
     X(gap_fill_frontier_window) \
+    X(groth16_selfverify) \
     X(snark_kat) \
     X(sapling_prover_rng_determinism) \
     X(no_hardcoded_home) X(cookie_rotation) X(reorg_safety) X(reorg_parity) \

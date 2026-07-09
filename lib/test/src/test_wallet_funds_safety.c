@@ -293,6 +293,71 @@ int test_wallet_funds_safety(void)
                   n_after == 0);
     }
 
+    /* ── HIGH: multi-note reservation is all-or-nothing ─────────────────── */
+    {
+        uint8_t ivk_b[32]; memset(ivk_b, 0x81, sizeof(ivk_b));
+        uint8_t nf_0[32]; memset(nf_0, 0x82, sizeof(nf_0));
+        uint8_t nf_1[32]; memset(nf_1, 0x83, sizeof(nf_1));
+        bool ok = wfs_save_note(&ndb, 0x84, ivk_b, 4000, 200, 0x82);
+        ok = ok && wfs_save_note(&ndb, 0x85, ivk_b, 5000, 200, 0x83);
+        WFS_CHECK("seeded two notes for atomic reservation", ok);
+
+        struct transaction tx;
+        transaction_init(&tx);
+        tx.v_shielded_spend = zcl_calloc(2, sizeof(*tx.v_shielded_spend),
+                                         "wallet_funds_safety.batch_spends");
+        tx.num_shielded_spend = tx.v_shielded_spend ? 2 : 0;
+        memset(tx.hash.data, 0x86, sizeof(tx.hash.data));
+        if (tx.v_shielded_spend) {
+            memcpy(tx.v_shielded_spend[0].nullifier.data, nf_0, 32);
+            memset(tx.v_shielded_spend[1].nullifier.data, 0xFF, 32);
+        }
+
+        bool reserved = tx.num_shielded_spend == 2 &&
+            node_db_sync_wallet_sapling_spends(&ndb, &tx);
+        WFS_CHECK("reservation rejects when any selected note is missing",
+                  !reserved);
+        struct db_sapling_note after_failed[4];
+        int n_after_failed = db_sapling_note_list_unspent_for_ivk(
+            &ndb, ivk_b, after_failed, 4);
+        WFS_CHECK("failed reservation rolls back the earlier note update",
+                  n_after_failed == 2);
+
+        if (tx.v_shielded_spend)
+            memcpy(tx.v_shielded_spend[1].nullifier.data, nf_1, 32);
+        reserved = tx.num_shielded_spend == 2 &&
+            node_db_sync_wallet_sapling_spends(&ndb, &tx);
+        WFS_CHECK("reservation commits when every selected note exists",
+                  reserved);
+        struct db_sapling_note after_success[4];
+        int n_after_success = db_sapling_note_list_unspent_for_ivk(
+            &ndb, ivk_b, after_success, 4);
+        WFS_CHECK("successful reservation hides both notes from reselection",
+                  n_after_success == 0);
+        transaction_free(&tx);
+    }
+
+    /* Durable compensation deletes an unrelayed wallet transaction through
+     * the same serialized node.db write lane used in production. */
+    {
+        struct db_wallet_tx txrow;
+        uint8_t raw_tx = 0;
+        memset(&txrow, 0, sizeof(txrow));
+        memset(txrow.txid, 0x91, sizeof(txrow.txid));
+        txrow.raw_tx = &raw_tx;
+        txrow.raw_tx_len = sizeof(raw_tx);
+        txrow.time_received = 1713000000;
+        txrow.from_me = true;
+        bool ok = db_wallet_tx_save(&ndb, &txrow);
+        WFS_CHECK("seeded an unrelayed wallet row for compensation", ok);
+        WFS_CHECK("serialized compensation deletes the durable wallet row",
+                  ok && node_db_sync_wallet_tx_delete(&ndb, txrow.txid));
+        struct db_wallet_tx absent;
+        memset(&absent, 0, sizeof(absent));
+        WFS_CHECK("compensated wallet row is absent",
+                  !db_wallet_tx_find(&ndb, txrow.txid, &absent));
+    }
+
     /* ── P3/qw11: zclassicd view notes are marked inert and non-clobbering ─ */
     {
         struct wallet *w = zcl_calloc(1, sizeof(*w),

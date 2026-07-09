@@ -32,7 +32,8 @@
  *   2. contextual_check_transaction   (JoinSplit Ed25519 sig, Sapling
  *                                      Groth16 spend/output proofs +
  *                                      binding sig, Sprout zk-SNARKs)
- *   3. (with a live coins view) inputs-exist, value/fee sanity,
+ *   3. next-block finality             (height + tip median-time-past)
+ *   4. (with a live coins view) inputs-exist, value/fee sanity,
  *      min-relay-fee, and per-input verify_script (the transparent
  *      signature check that was missing) BEFORE add+relay.
  *
@@ -46,18 +47,14 @@
  * (a layer both lib/net and app/controllers already depend on) without
  * pulling in either caller's context struct:
  *   - pool       : destination mempool (required)
- *   - coins_tip  : live UTXO view; if NULL (unit-test scaffolding) the
- *                  input-existence / fee / script checks are skipped and
- *                  the tx is admitted at fee=0 (post-add policy hooks
- *                  still apply). Shielded-proof checks ALWAYS run.
- *   - main_state : chain tip, for next-block height / branch id; if NULL
- *                  height 0 is assumed.
- *   - params     : chain params (consensus). If NULL, height-aware
- *                  shielded checks are skipped (test scaffolding only).
+ *   - coins_tip  : live UTXO + shielded-anchor view (required).
+ *   - main_state : chain tip, for next-block height / branch id (required).
+ *   - params     : chain params / upgrade schedule (required).
  *   - tx         : the candidate. Its hash must already be computed by
  *                  the caller (transaction_compute_hash).
  *
- * Returns one of enum mempool_accept_result. The caller maps the result
+ * Any missing required context returns MEMPOOL_ACCEPT_INTERNAL_ERROR and the
+ * transaction is not inserted. Returns one of enum mempool_accept_result. The caller maps the result
  * onto its own reject reason / peer scoring / RPC error string. */
 enum mempool_accept_result {
     MEMPOOL_ACCEPT_OK = 0,
@@ -66,6 +63,8 @@ enum mempool_accept_result {
     MEMPOOL_ACCEPT_CONFLICT,        /* double-spend vs current mempool */
     MEMPOOL_ACCEPT_BELOW_FEE,       /* fee < min_relay_fee */
     MEMPOOL_ACCEPT_MISSING_INPUTS,  /* unknown inputs (orphan) */
+    MEMPOOL_ACCEPT_NONFINAL,        /* nLockTime not final for next block */
+    MEMPOOL_ACCEPT_EXPIRING_SOON,   /* expiry falls inside relay horizon */
     MEMPOOL_ACCEPT_INTERNAL_ERROR,  /* mempool full / OOM / bad args */
 };
 

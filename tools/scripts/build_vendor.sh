@@ -16,16 +16,20 @@
 #                libevent.a, libevent_openssl.a,
 #                libevent_pthreads.a                   (libevent)
 #                libleveldb.a                          (LevelDB)
+#                librustzcash.a                       (Sapling prover)
 #                libz.a                                (zlib)
 #
-# Idempotent: a lib whose .a already exists in vendor/lib/ is skipped, so
-# re-running is a no-op once vendor/lib/ is populated. Force a full rebuild
-# with VENDOR_FORCE=1. Downloads are cached under vendor/.cache/ (gitignored).
+# Idempotent by PROVENANCE, not existence: an archive is skipped only when its
+# deterministic stamp matches the source pin, recipe revision/flags, relevant
+# dependency stamps, toolchain identity, and the archive's current SHA256.
+# Missing/mismatched stamps rebuild. Force a full rebuild with VENDOR_FORCE=1.
+# Downloads are cached under vendor/.cache/ (gitignored).
 #
 # Usage:
 #   tools/scripts/build_vendor.sh            # build only what's missing
 #   VENDOR_FORCE=1 tools/scripts/build_vendor.sh
 #   tools/scripts/build_vendor.sh libz.a libsqlite3.a   # build a subset
+#   tools/scripts/build_vendor.sh --check-provenance    # read-only verification
 
 set -euo pipefail
 
@@ -36,6 +40,11 @@ LIB="$VENDOR/lib"
 INC="$VENDOR/include"
 CACHE="$VENDOR/.cache"
 WORK="$VENDOR/.build"
+SECP_MANIFEST="$VENDOR/provenance/libsecp256k1.manifest"
+LIBEVENT_PATCH="$VENDOR/patches/libevent-2.1.12-secure-rng-abi.patch"
+
+# shellcheck source=tools/scripts/vendor_provenance_lib.sh
+. "$SCRIPT_DIR/vendor_provenance_lib.sh"
 
 JOBS="$(nproc 2>/dev/null || echo 4)"
 FORCE="${VENDOR_FORCE:-0}"
@@ -64,10 +73,32 @@ ZLIB_VER="1.3.1"                              # 1.3 line, clean of CVE-2022-3743
 ZLIB_URL="https://github.com/madler/zlib/releases/download/v${ZLIB_VER}/zlib-${ZLIB_VER}.tar.gz"
 ZLIB_SHA="9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
 
+# Exact Sapling circuit/prover revision linked by the canonical ZClassic
+# daemon.  Its C ABI stays behind lib/sapling/sapling_prover.h; zclassic23
+# continues to use the independent C23 verifier for consensus.
+RUSTZCASH_COMMIT="06da3b9ac8f278e5d4ae13088cf0a4c03d2c13f5"
+RUSTZCASH_URL="https://github.com/zcash/librustzcash/archive/${RUSTZCASH_COMMIT}.tar.gz"
+RUSTZCASH_SHA="9909ec59fa7a411c2071d6237b3363a0bc6e5e42358505cf64b7da0f58a7ff5a"
+
 # Reproducibility: pin the build epoch + strip nondeterministic ar metadata.
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1700000000}"
 export TZ=UTC LC_ALL=C
 ARFLAGS_DET="Dcr"   # D = deterministic (zero mtime/uid/gid) when supported
+VENDOR_CC="${VENDOR_CC:-cc}"
+VENDOR_AR="${VENDOR_AR:-ar}"
+
+# Recipe revisions are part of every expected stamp. Bump the affected value
+# whenever its commands or semantic flags change. Exact flags and toolchain
+# identities are bound separately, so pin/tool upgrades invalidate without a
+# manual revision bump.
+PROVENANCE_CONTRACT_REV="vp3"
+RECIPE_TOR_STUB="tor-stub-r2"
+RECIPE_SQLITE="sqlite-r2"
+RECIPE_ZLIB="zlib-r2"
+RECIPE_OPENSSL="openssl-r3"
+RECIPE_LIBEVENT="libevent-r5"
+RECIPE_LEVELDB="leveldb-r4"
+RECIPE_RUSTZCASH="rustzcash-r3"
 
 # --- logging (to stderr; stdout is reserved for fetch() to echo a path) -----
 say()  { printf '\033[36m[vendor]\033[0m %s\n' "$*" >&2; }
@@ -117,25 +148,211 @@ fetch() {
     echo "$dest"
 }
 
-have() { [[ -f "$LIB/$1" && "$FORCE" != "1" ]]; }
+archive_group() {
+    case "$1" in
+        libtor_stub.a) printf 'tor_stub' ;;
+        libsqlite3.a) printf 'sqlite' ;;
+        libz.a) printf 'zlib' ;;
+        libcrypto.a|libssl.a) printf 'openssl' ;;
+        libevent.a|libevent_openssl.a|libevent_pthreads.a) printf 'libevent' ;;
+        libleveldb.a) printf 'leveldb' ;;
+        librustzcash.a) printf 'rustzcash' ;;
+        *) return 1 ;;
+    esac
+}
+
+recipe_revision() {
+    case "$1" in
+        tor_stub) printf '%s' "$RECIPE_TOR_STUB" ;;
+        sqlite) printf '%s' "$RECIPE_SQLITE" ;;
+        zlib) printf '%s' "$RECIPE_ZLIB" ;;
+        openssl) printf '%s' "$RECIPE_OPENSSL" ;;
+        libevent) printf '%s' "$RECIPE_LIBEVENT" ;;
+        leveldb) printf '%s' "$RECIPE_LEVELDB" ;;
+        rustzcash) printf '%s' "$RECIPE_RUSTZCASH" ;;
+        *) return 1 ;;
+    esac
+}
+
+recipe_source_fields() {
+    case "$1" in
+        tor_stub)
+            printf 'version=in-tree\nsource_url=in-tree:vendor/tor_stub.c\nsource_sha256=%s\n' \
+                "$(vp_sha256_file "$VENDOR/tor_stub.c")"
+            ;;
+        sqlite)
+            printf 'version=%s\nsource_url=%s\nsource_sha256=%s\n' \
+                "${SQLITE_AMALG#sqlite-amalgamation-}" "$SQLITE_URL" "$SQLITE_SHA"
+            ;;
+        zlib)
+            printf 'version=%s\nsource_url=%s\nsource_sha256=%s\n' \
+                "$ZLIB_VER" "$ZLIB_URL" "$ZLIB_SHA"
+            ;;
+        openssl)
+            printf 'version=%s\nsource_url=%s\nsource_sha256=%s\n' \
+                "$OPENSSL_VER" "$OPENSSL_URL" "$OPENSSL_SHA"
+            ;;
+        libevent)
+            printf 'version=%s\nsource_url=%s\nsource_sha256=%s\nsource_patch=%s\nsource_patch_sha256=%s\n' \
+                "$LIBEVENT_VER" "$LIBEVENT_URL" "$LIBEVENT_SHA" \
+                "vendor/patches/$(basename "$LIBEVENT_PATCH")" \
+                "$(vp_sha256_file "$LIBEVENT_PATCH")"
+            ;;
+        leveldb)
+            printf 'version=%s\nsource_url=%s\nsource_sha256=%s\n' \
+                "$LEVELDB_VER" "$LEVELDB_URL" "$LEVELDB_SHA"
+            ;;
+        rustzcash)
+            printf 'version=%s\nsource_url=%s\nsource_sha256=%s\n' \
+                "$RUSTZCASH_COMMIT" "$RUSTZCASH_URL" "$RUSTZCASH_SHA"
+            ;;
+        *) return 1 ;;
+    esac
+}
+
+recipe_flags() {
+    local group="$1" leveldb_route="direct-cxx11"
+    command -v cmake >/dev/null 2>&1 && leveldb_route="cmake-release"
+    case "$group" in
+        tor_stub) printf '%s' '-std=c23 -O2 -fPIC; ar=Dcr' ;;
+        sqlite) printf '%s' '-O2 -fPIC -DSQLITE_THREADSAFE=1 -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_JSON1 -DSQLITE_ENABLE_COLUMN_METADATA -DSQLITE_OMIT_DEPRECATED -DSQLITE_DEFAULT_FOREIGN_KEYS=1; ar=Dcr' ;;
+        zlib) printf '%s' 'CFLAGS=-O2 -fPIC; ./configure --static; make libz.a' ;;
+        openssl) printf '%s' './Configure no-shared no-tests --prefix=/usr/local --openssldir=/etc/ssl --libdir=lib; make build_libs' ;;
+        libevent) printf '%s' 'apply pinned secure-rng ABI patch; CFLAGS=-O2 -fPIC -Ivendor/include; LDFLAGS=-Lvendor/lib; CPPFLAGS=-Ivendor/include; ./configure --disable-shared --enable-static --disable-samples --disable-libevent-regress; require=evutil_secure_rng_add_bytes' ;;
+        leveldb) printf '%s' "route=$leveldb_route; Release PIC static; tests=off; benchmarks=off; direct=-std=c++11 -O2 -DNDEBUG -fPIC -fno-exceptions -fno-rtti"
+            ;;
+        rustzcash) printf '%s' 'cargo build --locked --release --package librustzcash; CARGO_INCREMENTAL=0; RUSTFLAGS=remap-source-and-cargo-home:/usr/src/zclassic23,-C debuginfo=0; reject-build-host-paths' ;;
+        *) return 1 ;;
+    esac
+}
+
+recipe_toolchain_sha() {
+    local group="$1" cxx identities
+    identities="cc=$(vp_compiler_identity_sha "$VENDOR_CC")
+ar=$(vp_tool_identity_sha "$VENDOR_AR")"
+    case "$group" in
+        openssl)
+            identities="$identities
+perl=$(vp_tool_identity_sha perl)
+make=$(vp_tool_identity_sha make)"
+            ;;
+        libevent|zlib)
+            identities="$identities
+make=$(vp_tool_identity_sha make)"
+            ;;
+        leveldb)
+            cxx="$(leveldb_cxx_compiler)"
+            identities="cxx=$(vp_compiler_identity_sha "$cxx")
+ar=$(vp_tool_identity_sha "$VENDOR_AR")
+make=$(vp_tool_identity_sha make)"
+            if command -v cmake >/dev/null 2>&1; then
+                identities="$identities
+cmake=$(vp_tool_identity_sha cmake)"
+            fi
+            ;;
+        rustzcash)
+            identities="rustc=$(vp_tool_identity_sha rustc)
+cargo=$(vp_tool_identity_sha cargo)"
+            ;;
+        tor_stub|sqlite) ;;
+        *) return 1 ;;
+    esac
+    vp_sha256_text "$identities"
+}
+
+recipe_dependencies() {
+    local group="$1" archive sha
+    if [[ "$group" != "libevent" ]]; then
+        printf 'none'
+        return
+    fi
+    for archive in libcrypto.a libssl.a; do
+        sha="$(vp_stamp_sha256 "$LIB" "$archive" 2>/dev/null || printf 'missing')"
+        printf '%s=%s\n' "$archive" "$sha"
+    done
+}
+
+archive_descriptor() {
+    local archive="$1" group source_fields flags dependencies
+    group="$(archive_group "$archive")" || return 1
+    source_fields="$(recipe_source_fields "$group")" || return 1
+    flags="$(recipe_flags "$group")" || return 1
+    dependencies="$(recipe_dependencies "$group")"
+    printf 'schema=%s\n' "$VP_SCHEMA"
+    printf 'archive=%s\n' "$archive"
+    printf 'component=%s\n' "$group"
+    printf '%s\n' "$source_fields"
+    printf 'provenance_contract_revision=%s\n' "$PROVENANCE_CONTRACT_REV"
+    printf 'recipe_revision=%s\n' "$(recipe_revision "$group")"
+    printf 'recipe_flags_sha256=%s\n' "$(vp_sha256_text "$flags")"
+    printf 'source_date_epoch=%s\n' "$SOURCE_DATE_EPOCH"
+    printf 'toolchain_sha256=%s\n' "$(recipe_toolchain_sha "$group")"
+    printf 'dependencies_sha256=%s' "$(vp_sha256_text "$dependencies")"
+}
+
+archive_current() {
+    local archive="$1" descriptor
+    [[ -f "$LIB/$archive" ]] || return 1
+    descriptor="$(archive_descriptor "$archive")" || return 1
+    vp_verify_stamp "$LIB" "$archive" "$descriptor"
+}
+
+have() {
+    [[ "$FORCE" != "1" ]] && archive_current "$1"
+}
+
+invalidate_stamps() {
+    local archive
+    for archive in "$@"; do
+        rm -f "$(vp_stamp_path "$LIB" "$archive")"
+    done
+}
+
+stamp_archives() {
+    local archive descriptor
+    for archive in "$@"; do
+        descriptor="$(archive_descriptor "$archive")" ||
+            die "cannot compute provenance descriptor for $archive"
+        vp_write_stamp "$LIB" "$archive" "$descriptor" ||
+            die "cannot write provenance stamp for $archive"
+    done
+}
+
+install_archive() {
+    local source="$1" archive="$2" tmp
+    tmp="$LIB/.${archive}.tmp.$$"
+    cp -f "$source" "$tmp"
+    chmod 0644 "$tmp"
+    mv -f "$tmp" "$LIB/$archive"
+}
+
+verify_committed_secp() {
+    vp_verify_locked_manifest "$LIB/libsecp256k1.a" "$SECP_MANIFEST" \
+        libsecp256k1.a
+}
 
 # --- per-library builders ---------------------------------------------------
 
 build_tor_stub() {     # IN-TREE: vendor/tor_stub.c
-    have libtor_stub.a && { say "skip    libtor_stub.a (present)"; return; }
+    have libtor_stub.a && { say "skip    libtor_stub.a (provenance current)"; return; }
     say "build   libtor_stub.a  (in-tree: vendor/tor_stub.c)"
     [[ -f "$VENDOR/tor_stub.c" ]] || die "vendor/tor_stub.c missing (tracked source expected)"
-    local o="$WORK/tor_stub.o"
+    invalidate_stamps libtor_stub.a
+    local o="$WORK/tor_stub.o" built="$WORK/libtor_stub.a"
     mkdir -p "$WORK"
-    cc -std=c23 -O2 -fPIC -c "$VENDOR/tor_stub.c" -o "$o"
-    rm -f "$LIB/libtor_stub.a"
-    ar $ARFLAGS_DET "$LIB/libtor_stub.a" "$o" 2>/dev/null || ar cr "$LIB/libtor_stub.a" "$o"
+    "$VENDOR_CC" -std=c23 -O2 -fPIC -c "$VENDOR/tor_stub.c" -o "$o"
+    rm -f "$built"
+    "$VENDOR_AR" $ARFLAGS_DET "$built" "$o" 2>/dev/null ||
+        "$VENDOR_AR" cr "$built" "$o"
+    install_archive "$built" libtor_stub.a
+    stamp_archives libtor_stub.a
     ok "built   libtor_stub.a"
 }
 
 build_sqlite() {       # FETCHED: SQLite amalgamation
-    have libsqlite3.a && { say "skip    libsqlite3.a (present)"; return; }
+    have libsqlite3.a && { say "skip    libsqlite3.a (provenance current)"; return; }
     say "build   libsqlite3.a  (SQLite ${SQLITE_AMALG#sqlite-amalgamation-})"
+    invalidate_stamps libsqlite3.a
     local zip; zip="$(fetch "$SQLITE_URL" "$SQLITE_SHA" "${SQLITE_AMALG}.zip")"
     local d="$WORK/$SQLITE_AMALG"
     rm -rf "$d"; need unzip; unzip -q -o "$zip" -d "$WORK"
@@ -143,32 +360,41 @@ build_sqlite() {       # FETCHED: SQLite amalgamation
     local FLAGS="-DSQLITE_THREADSAFE=1 -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_RTREE \
         -DSQLITE_ENABLE_JSON1 -DSQLITE_ENABLE_COLUMN_METADATA -DSQLITE_OMIT_DEPRECATED \
         -DSQLITE_DEFAULT_FOREIGN_KEYS=1"
-    cc -O2 -fPIC $FLAGS -c "$d/sqlite3.c" -o "$WORK/sqlite3.o"
-    rm -f "$LIB/libsqlite3.a"
-    ar $ARFLAGS_DET "$LIB/libsqlite3.a" "$WORK/sqlite3.o" 2>/dev/null || ar cr "$LIB/libsqlite3.a" "$WORK/sqlite3.o"
+    "$VENDOR_CC" -O2 -fPIC $FLAGS -c "$d/sqlite3.c" -o "$WORK/sqlite3.o"
+    local built="$WORK/libsqlite3.a"
+    rm -f "$built"
+    "$VENDOR_AR" $ARFLAGS_DET "$built" "$WORK/sqlite3.o" 2>/dev/null ||
+        "$VENDOR_AR" cr "$built" "$WORK/sqlite3.o"
+    install_archive "$built" libsqlite3.a
     # Keep the amalgamation source in vendor/ (gitignored) so the rest of the
     # build (tools/sqlq.c etc.) and the header stay in sync.
     cp -f "$d/sqlite3.c" "$VENDOR/sqlite3.c"
     cp -f "$d/sqlite3.h" "$INC/sqlite3.h"
+    stamp_archives libsqlite3.a
     ok "built   libsqlite3.a"
 }
 
 build_zlib() {         # FETCHED: zlib
-    have libz.a && { say "skip    libz.a (present)"; return; }
+    have libz.a && { say "skip    libz.a (provenance current)"; return; }
     say "build   libz.a  (zlib ${ZLIB_VER})"
+    invalidate_stamps libz.a
     local tb; tb="$(fetch "$ZLIB_URL" "$ZLIB_SHA" "zlib-${ZLIB_VER}.tar.gz")"
     local d="$WORK/zlib-${ZLIB_VER}"
     rm -rf "$d"; tar -C "$WORK" -xzf "$tb"
-    ( cd "$d" && CFLAGS="-O2 -fPIC" ./configure --static >/dev/null \
+    ( cd "$d" && CC="$VENDOR_CC" AR="$VENDOR_AR" CFLAGS="-O2 -fPIC" \
+        ./configure --static >/dev/null \
         && make -j"$JOBS" libz.a >/dev/null )
-    cp -f "$d/libz.a" "$LIB/libz.a"
+    install_archive "$d/libz.a" libz.a
     cp -f "$d/zlib.h" "$d/zconf.h" "$INC/"
+    stamp_archives libz.a
     ok "built   libz.a"
 }
 
 build_openssl() {      # FETCHED: OpenSSL -> libcrypto.a + libssl.a
-    { have libcrypto.a && have libssl.a; } && { say "skip    libcrypto.a/libssl.a (present)"; return; }
+    need perl
+    { have libcrypto.a && have libssl.a; } && { say "skip    libcrypto.a/libssl.a (provenance current)"; return; }
     say "build   libcrypto.a + libssl.a  (OpenSSL ${OPENSSL_VER}) — this is the slow one"
+    invalidate_stamps libcrypto.a libssl.a
     local tb; tb="$(fetch "$OPENSSL_URL" "$OPENSSL_SHA" "openssl-${OPENSSL_VER}.tar.gz")"
     local d="$WORK/openssl-${OPENSSL_VER}"
     rm -rf "$d"; tar -C "$WORK" -xzf "$tb"
@@ -189,36 +415,61 @@ build_openssl() {      # FETCHED: OpenSSL -> libcrypto.a + libssl.a
     # agnostic. (Do NOT pass -DOPENSSLDIR etc — Configure already defines them
     # from --prefix/--openssldir, and a -D redefine errors the build.)
     ( cd "$d" \
+        && export CC="$VENDOR_CC" AR="$VENDOR_AR" \
         && ./Configure no-shared no-tests \
              --prefix=/usr/local --openssldir=/etc/ssl --libdir=lib >/dev/null \
         && make -j"$JOBS" build_libs >/dev/null 2>&1 )
-    cp -f "$d/libcrypto.a" "$LIB/libcrypto.a"
-    cp -f "$d/libssl.a"    "$LIB/libssl.a"
+    install_archive "$d/libcrypto.a" libcrypto.a
+    install_archive "$d/libssl.a" libssl.a
     rm -rf "$INC/openssl"; mkdir -p "$INC/openssl"
     cp -f "$d/include/openssl/"*.h "$INC/openssl/" 2>/dev/null || true
+    stamp_archives libcrypto.a libssl.a
     ok "built   libcrypto.a + libssl.a"
 }
 
 build_libevent() {     # FETCHED: libevent -> libevent.a + libevent_openssl.a + libevent_pthreads.a
+    # Validate/rebuild OpenSSL first. Its stamp digests are bound into every
+    # libevent descriptor, so a dependency upgrade invalidates all outputs.
+    build_openssl
     { have libevent.a && have libevent_openssl.a && have libevent_pthreads.a; } \
-        && { say "skip    libevent*.a (present)"; return; }
-    # libevent_openssl needs the OpenSSL headers we just installed.
-    { have libcrypto.a && have libssl.a; } || build_openssl
+        && { say "skip    libevent*.a (provenance current)"; return; }
     say "build   libevent.a + libevent_openssl.a + libevent_pthreads.a  (libevent ${LIBEVENT_VER})"
+    need nm; need patch
+    [[ -f "$LIBEVENT_PATCH" ]] || die "missing libevent patch: $LIBEVENT_PATCH"
+    invalidate_stamps libevent.a libevent_openssl.a libevent_pthreads.a
     local tb; tb="$(fetch "$LIBEVENT_URL" "$LIBEVENT_SHA" "libevent-${LIBEVENT_VER}.tar.gz")"
     local d="$WORK/libevent-${LIBEVENT_VER}-stable"
+    local build_log="$WORK/libevent-build.log"
+    local symbols="$WORK/libevent.symbols"
     rm -rf "$d"; tar -C "$WORK" -xzf "$tb"
-    ( cd "$d" \
-        && CFLAGS="-O2 -fPIC -I$INC" LDFLAGS="-L$LIB" \
-           ./configure --disable-shared --enable-static --disable-samples \
-             --disable-libevent-regress \
-             CPPFLAGS="-I$INC" >/dev/null \
-        && make -j"$JOBS" >/dev/null 2>&1 )
-    cp -f "$d/.libs/libevent.a"          "$LIB/libevent.a"
-    cp -f "$d/.libs/libevent_openssl.a"  "$LIB/libevent_openssl.a"
-    cp -f "$d/.libs/libevent_pthreads.a" "$LIB/libevent_pthreads.a"
+    # Newer glibc exposes arc4random() but not arc4random_addrandom(). In that
+    # combination libevent 2.1.12 omits evutil_secure_rng_add_bytes even though
+    # its public header declares it; the embedded Tor archive requires that
+    # symbol. The pinned patch keeps the API present and makes it a no-op only
+    # on platforms whose system arc4random has no entropy-injection primitive,
+    # matching current upstream behavior while retaining the pinned release.
+    if ! ( cd "$d" \
+            && patch -p1 --forward <"$LIBEVENT_PATCH" \
+            && CC="$VENDOR_CC" AR="$VENDOR_AR" \
+               CFLAGS="-O2 -fPIC -I$INC" LDFLAGS="-L$LIB" \
+               CPPFLAGS="-I$INC" \
+               ./configure --disable-shared --enable-static \
+                 --disable-samples --disable-libevent-regress \
+            && make -j"$JOBS" \
+        ) >"$build_log" 2>&1; then
+        tail -200 "$build_log" >&2 || true
+        die "libevent build failed (log: $build_log)"
+    fi
+    nm -g --defined-only "$d/.libs/libevent.a" >"$symbols" 2>/dev/null ||
+        die "could not inspect rebuilt libevent.a"
+    grep -qE ' [Tt] evutil_secure_rng_add_bytes$' "$symbols" ||
+        die "libevent.a lacks Tor-required evutil_secure_rng_add_bytes"
+    install_archive "$d/.libs/libevent.a" libevent.a
+    install_archive "$d/.libs/libevent_openssl.a" libevent_openssl.a
+    install_archive "$d/.libs/libevent_pthreads.a" libevent_pthreads.a
     # event2/* headers are consumed via the vendored tor build, not directly by
     # app code, so we do not need to install them for the zclassic23 link.
+    stamp_archives libevent.a libevent_openssl.a libevent_pthreads.a
     ok "built   libevent*.a"
 }
 
@@ -318,41 +569,150 @@ EOF
             -c "$d/$src" -o "$obj"
         objs+=("$obj")
     done
-    rm -f "$LIB/libleveldb.a"
-    ar $ARFLAGS_DET "$LIB/libleveldb.a" "${objs[@]}" 2>/dev/null ||
-        ar cr "$LIB/libleveldb.a" "${objs[@]}"
+    rm -f "$WORK/libleveldb.a"
+    "$VENDOR_AR" $ARFLAGS_DET "$WORK/libleveldb.a" "${objs[@]}" 2>/dev/null ||
+        "$VENDOR_AR" cr "$WORK/libleveldb.a" "${objs[@]}"
 }
 
 build_leveldb() {      # FETCHED: LevelDB -> libleveldb.a
-    have libleveldb.a && { say "skip    libleveldb.a (present)"; return; }
+    have libleveldb.a && { say "skip    libleveldb.a (provenance current)"; return; }
     say "build   libleveldb.a  (LevelDB ${LEVELDB_VER})"
+    invalidate_stamps libleveldb.a
     local tb; tb="$(fetch "$LEVELDB_URL" "$LEVELDB_SHA" "leveldb-${LEVELDB_VER}.tar.gz")"
     local d="$WORK/leveldb-${LEVELDB_VER}"
     rm -rf "$d"; tar -C "$WORK" -xzf "$tb"
     if command -v cmake >/dev/null 2>&1; then
-        ( cd "$d" && cmake -S . -B build_static \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DBUILD_SHARED_LIBS=OFF \
-            -DLEVELDB_BUILD_TESTS=OFF \
-            -DLEVELDB_BUILD_BENCHMARKS=OFF \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON >/dev/null \
-            && cmake --build build_static -j"$JOBS" --target leveldb >/dev/null 2>&1 )
-        cp -f "$d/build_static/libleveldb.a" "$LIB/libleveldb.a"
+        local cxx ar_executable cmake_log
+        cxx="$(leveldb_cxx_compiler)"
+        ar_executable="$(command -v "$VENDOR_AR" 2>/dev/null || true)"
+        [[ -n "$ar_executable" ]] ||
+            die "LevelDB: could not resolve archiver '$VENDOR_AR'"
+        cmake_log="$WORK/leveldb-cmake.log"
+        if ! ( cd "$d" && cmake -S . -B build_static \
+                -DCMAKE_BUILD_TYPE=Release \
+                -DCMAKE_CXX_COMPILER="$cxx" \
+                -DCMAKE_AR="$ar_executable" \
+                -DBUILD_SHARED_LIBS=OFF \
+                -DLEVELDB_BUILD_TESTS=OFF \
+                -DLEVELDB_BUILD_BENCHMARKS=OFF \
+                -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
+                && cmake --build build_static -j"$JOBS" --target leveldb \
+            ) >"$cmake_log" 2>&1; then
+            tail -200 "$cmake_log" >&2 || true
+            die "LevelDB CMake build failed (log: $cmake_log)"
+        fi
+        install_archive "$d/build_static/libleveldb.a" libleveldb.a
     else
         build_leveldb_direct "$d"
+        install_archive "$WORK/libleveldb.a" libleveldb.a
     fi
     # Tracked vendor/include/leveldb/*.h (1.18) expose the same stable C API
     # (leveldb/c.h) the repo uses; we intentionally do NOT overwrite them.
+    stamp_archives libleveldb.a
     ok "built   libleveldb.a"
 }
 
+build_rustzcash() {    # FETCHED: canonical Zcash Sapling prover -> librustzcash.a
+    need cargo; need rustc; need nm
+    have librustzcash.a && { say "skip    librustzcash.a (provenance current)"; return; }
+    say "build   librustzcash.a  (Zcash ${RUSTZCASH_COMMIT:0:12})"
+    invalidate_stamps librustzcash.a
+
+    local tb; tb="$(fetch "$RUSTZCASH_URL" "$RUSTZCASH_SHA" \
+        "librustzcash-${RUSTZCASH_COMMIT}.tar.gz")"
+    local d="$WORK/librustzcash-${RUSTZCASH_COMMIT}"
+    rm -rf "$d"
+    mkdir -p "$d"
+    tar -C "$d" -xzf "$tb" --strip-components=1
+
+    # Cargo.lock pins registry checksums and the sole git dependency to an
+    # exact revision.  Disable incremental state, use the upstream release
+    # profile's single codegen unit + LTO, and remap the throwaway extraction
+    # directory so neither the archive nor the final one-binary artifact
+    # embeds $HOME or vendor/.build paths. SOURCE_DATE_EPOCH is shared with
+    # the C archives above for the build-twice reproducibility contract.
+    (
+        cd "$d"
+        CARGO_HOME="$CACHE/cargo-home" \
+        CARGO_TARGET_DIR="$d/target" \
+        CARGO_INCREMENTAL=0 \
+        RUSTFLAGS="--remap-path-prefix=$d=/usr/src/zclassic23/librustzcash --remap-path-prefix=$CACHE/cargo-home=/usr/src/zclassic23/cargo-home -C debuginfo=0" \
+            cargo build --locked --release --package librustzcash
+    )
+
+    local built="$d/target/release/librustzcash.a"
+    local symbols="$d/target/release/librustzcash.symbols"
+    [[ -f "$built" ]] || die "cargo succeeded but librustzcash.a is missing"
+    nm -g --defined-only "$built" >"$symbols" 2>/dev/null ||
+        die "could not inspect librustzcash.a symbols"
+    if ! grep -q 'librustzcash_sapling_spend_proof' "$symbols"; then
+        die "librustzcash.a lacks the Sapling proving C ABI"
+    fi
+    # A static archive can be functionally correct while still leaking the
+    # build user's home through Rust panic/debug file names.  Reject it here,
+    # before installation or final linking, so test_no_hardcoded_home is a
+    # backstop rather than the first place the leak is discovered.
+    local forbidden
+    for forbidden in "$REPO_ROOT" "$WORK" "$CACHE" "${HOME:-}"; do
+        [[ -n "$forbidden" ]] || continue
+        if LC_ALL=C grep -aF "$forbidden" "$built" >/dev/null; then
+            die "librustzcash.a embeds build-host path: $forbidden"
+        fi
+    done
+    install_archive "$built" librustzcash.a
+    stamp_archives librustzcash.a
+    ok "built   librustzcash.a"
+}
+
 # --- orchestration ----------------------------------------------------------
-need cc; need ar; need sha256sum; need tar; need make
+need "$VENDOR_CC"; need "$VENDOR_AR"; need sha256sum; need tar; need make
 mkdir -p "$LIB" "$INC" "$WORK"
 acquire_vendor_lock
 
+REQUIRED=(libsecp256k1.a libcrypto.a libssl.a libevent.a libevent_openssl.a
+          libevent_pthreads.a libleveldb.a libsqlite3.a libz.a
+          librustzcash.a libtor_stub.a)
+
+check_one_provenance() {
+    local archive="$1" descriptor
+    if [[ "$archive" == "libsecp256k1.a" ]]; then
+        verify_committed_secp
+        return
+    fi
+    descriptor="$(archive_descriptor "$archive")" || return 1
+    vp_verify_stamp "$LIB" "$archive" "$descriptor"
+}
+
+check_provenance_set() {
+    local archive failed=0
+    for archive in "$@"; do
+        if check_one_provenance "$archive"; then
+            [[ "${VENDOR_PROVENANCE_QUIET:-0}" == "1" ]] ||
+                ok "verify  $archive provenance current"
+        else
+            [[ "${VENDOR_PROVENANCE_QUIET:-0}" == "1" ]] ||
+                say "STALE   $archive (missing/mismatched provenance or bytes)"
+            failed=1
+        fi
+    done
+    return "$failed"
+}
+
+if [[ "${1:-}" == "--check-provenance" ]]; then
+    shift
+    if [[ $# -gt 0 ]]; then
+        check_provenance_set "$@" ||
+            die "vendor provenance verification failed"
+    else
+        check_provenance_set "${REQUIRED[@]}" ||
+            die "vendor provenance verification failed"
+    fi
+    ok "vendor provenance verification passed"
+    exit 0
+fi
+
 # Build order: openssl before libevent (libevent_openssl needs its headers).
-ALL=(build_tor_stub build_zlib build_sqlite build_openssl build_libevent build_leveldb)
+ALL=(build_tor_stub build_zlib build_sqlite build_openssl build_libevent build_leveldb build_rustzcash)
 
 # Map .a names -> builder for the subset form.
 declare -A BUILDER=(
@@ -362,6 +722,7 @@ declare -A BUILDER=(
     [libcrypto.a]=build_openssl [libssl.a]=build_openssl
     [libevent.a]=build_libevent [libevent_openssl.a]=build_libevent [libevent_pthreads.a]=build_libevent
     [libleveldb.a]=build_leveldb
+    [librustzcash.a]=build_rustzcash
 )
 
 if [[ $# -gt 0 ]]; then
@@ -376,18 +737,18 @@ else
 fi
 
 # --- verify the full set ----------------------------------------------------
-REQUIRED=(libsecp256k1.a libcrypto.a libssl.a libevent.a libevent_openssl.a
-          libevent_pthreads.a libleveldb.a libsqlite3.a libz.a libtor_stub.a)
-missing=()
-for a in "${REQUIRED[@]}"; do [[ -f "$LIB/$a" ]] || missing+=("$a"); done
-if [[ ${#missing[@]} -gt 0 ]]; then
+stale=()
+for a in "${REQUIRED[@]}"; do
+    check_one_provenance "$a" || stale+=("$a")
+done
+if [[ ${#stale[@]} -gt 0 ]]; then
     if [[ $# -gt 0 ]]; then
-        say "subset build complete; still absent: ${missing[*]}"
+        say "subset build complete; still missing/stale: ${stale[*]}"
     else
-        die "vendor build finished but these archives are still missing: ${missing[*]}"
+        die "vendor build finished but provenance is stale: ${stale[*]}"
     fi
 else
     rm -rf "$WORK"
-    ok "all vendor/lib archives present:"
+    ok "all vendor/lib archives provenance-verified:"
     ( cd "$LIB" && ls -1 *.a | sed 's/^/        /' )
 fi

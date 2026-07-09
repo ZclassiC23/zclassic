@@ -99,10 +99,12 @@ This binary is for local AI/operator iteration only. `make zclassic23`,
 ## Prerequisites
 
 - **gcc 14+** (or clang with working `-std=c23`) and **GNU make**.
-- For `make vendor`: a C++11 compiler (`c++` or `g++`) for LevelDB, optional
-  **`cmake`** for the preferred LevelDB build path, **`autoconf`** + an
+- For `make vendor`: a C++11 compiler (`c++` or `g++`) for LevelDB, **`cargo`**
+  + **`rustc`** for the canonical Sapling prover, optional **`cmake`** for the
+  preferred LevelDB build path, **`autoconf`** + an
   autotools toolchain (libevent, zlib), **`curl`** or **`wget`**, **`unzip`**
-  (SQLite amalgamation zip), and **`sha256sum`**.
+  (SQLite amalgamation zip), **`patch`** (pinned libevent compatibility patch),
+  and **`sha256sum`**.
 - For the embedded Tor onion service (optional): the `vendor/tor` submodule
   (`git submodule update --init`). When that submodule is built, the Makefile
   links the real Tor; otherwise it links the in-tree `libtor_stub.a` that
@@ -126,6 +128,7 @@ against its minimum-safe version.
 | `libleveldb.a` | LevelDB | 1.23 | fetched + built | https://github.com/google/leveldb |
 | `libsqlite3.a` | SQLite (amalgamation) | 3.49.0 | fetched + built | https://www.sqlite.org/ |
 | `libz.a` | zlib | 1.3.1 | fetched + built | https://github.com/madler/zlib |
+| `librustzcash.a` | Zcash Sapling prover | `06da3b9ac8f2` | fetched + built | https://github.com/zcash/librustzcash |
 
 That is 11 archives total (the 10 `make vendor` builds + the committed
 `libsecp256k1.a`).
@@ -133,6 +136,11 @@ That is 11 archives total (the 10 `make vendor` builds + the committed
 Notes:
 - **OpenSSL pinned to 3.0.16** — the project's minimum-safe floor (the older
   vendored 3.0.13 was below it). `make audit` reports the version.
+- **libevent 2.1.12** carries the pinned, digest-bound
+  `vendor/patches/libevent-2.1.12-secure-rng-abi.patch`. It preserves the
+  public `evutil_secure_rng_add_bytes` symbol required by embedded Tor on
+  newer glibc systems where libevent otherwise omits it; the vendor builder
+  asserts the symbol before installing the archive.
 - **LevelDB 1.23** is built, while the committed `vendor/include/leveldb/*.h`
   headers are 1.18. That is intentional and safe: the repo uses only LevelDB's
   stable C API (`<leveldb/c.h>`), which is unchanged across 1.18→1.23, so the
@@ -145,6 +153,11 @@ Notes:
 - **SQLite 3.49.0** amalgamation; `make vendor` also refreshes
   `vendor/include/sqlite3.h` and `vendor/sqlite3.c` so the rest of the build
   (e.g. `tools/sqlq.c`) stays in sync.
+- **librustzcash is proving-only.** It is the exact, SHA256-pinned revision
+  used by the canonical ZClassic daemon and is linked statically behind the
+  repository's C ABI. Sapling block/transaction verification stays in the
+  independent C23 verifier. `Cargo.lock` pins registry checksums and the git
+  dependency revision; build paths are remapped before the archive is linked.
 - Downloads are cached under `vendor/.cache/` (gitignored); build trees live in
   `vendor/.build/` (removed on a clean full run). To bump a version, edit the
   pinned version + SHA256 in `tools/scripts/build_vendor.sh`.

@@ -59,11 +59,18 @@ bool rpc_z_getnewaddress(const struct json_value *params, bool help,
         "\"address\"  (string) The new z-address\n");
 
     ENSURE_WALLET(result);
+    if (!ctx->wallet_db || !ctx->wallet_db->open) {
+        json_set_str(result,
+            "Error: wallet durability backend unavailable; address not created");
+        LOG_FAIL("wallet_shielded",
+                 "z_getnewaddress: refusing RAM-only receive address");
+    }
 
     uint8_t diversifier[11];
     uint8_t pk_d[32];
-    if (!sapling_keystore_new_address(&ctx->wallet->sapling_keys,
-                                       diversifier, pk_d)) {
+    struct sapling_address_undo undo;
+    if (!sapling_keystore_new_address_ex(&ctx->wallet->sapling_keys,
+                                          diversifier, pk_d, &undo)) {
         json_set_str(result, "Failed to generate Sapling address");
         LOG_FAIL("wallet_shielded", "sapling_keystore_new_address failed");
     }
@@ -73,35 +80,29 @@ bool rpc_z_getnewaddress(const struct json_value *params, bool help,
     if (!sapling_encode_payment_address(diversifier, pk_d,
             cp->bech32HRPs[BECH32_SAPLING_PAYMENT_ADDRESS],
             addr, sizeof(addr))) {
+        (void)sapling_keystore_rollback_address(
+            &ctx->wallet->sapling_keys, &undo);
         json_set_str(result, "Failed to encode address");
         LOG_FAIL("wallet_shielded", "sapling_encode_payment_address failed for HRP=%s",
                  cp->bech32HRPs[BECH32_SAPLING_PAYMENT_ADDRESS]);
     }
 
-    /* Persist sapling keys to wallet DB. Errors here are fatal to the
-     * RPC: the in-memory key is derivable from the seed + child_index
-     * but if either row fails to land on disk we are shipping a
-     * z-address the user cannot recover after restart. Report and
-     * let the persistence health block flag the daemon. */
+    /* Flush seed + child + next_child in one wallet transaction through the
+     * node.db single-writer lane. If durability fails, remove exactly the
+     * child appended above; the undo helper refuses to erase a concurrently
+     * appended child. Never return an address absent from durable storage. */
     if (ctx->wallet_db) {
-        struct sapling_keystore *sks = &ctx->wallet->sapling_keys;
-        if (sks->has_seed) {
-            if (!wallet_sqlite_write_sapling_seed(ctx->wallet_db, sks->seed)) {
-                json_set_str(result,
-                    "Error: failed to persist Sapling seed. Address NOT saved. "
-                    "Check getwalletinfo.persistence and node.log.");
-                LOG_FAIL("wallet_shielded", "z_getnewaddress: sapling_seed flush failed");
-            }
-        }
-        if (sks->num_keys > 0) {
-            if (!wallet_sqlite_write_sapling_key(ctx->wallet_db,
-                    sks->keys[sks->num_keys - 1].child_index,
-                    &sks->keys[sks->num_keys - 1])) {
-                json_set_str(result,
-                    "Error: failed to persist Sapling key. Address NOT saved. "
-                    "Check getwalletinfo.persistence and node.log.");
-                LOG_FAIL("wallet_shielded", "z_getnewaddress: sapling_key flush failed");
-            }
+        struct zcl_result fr = wallet_flush_from_context(ctx);
+        if (!fr.ok) {
+            bool rolled_back = sapling_keystore_rollback_address(
+                &ctx->wallet->sapling_keys, &undo);
+            json_set_str(result,
+                "Error: failed to persist Sapling address. Address NOT saved. "
+                "Check getwalletinfo.persistence and node.log.");
+            LOG_FAIL("wallet_shielded",
+                     "z_getnewaddress: atomic wallet flush failed "
+                     "(code=%d rollback=%d): %s",
+                     fr.code, (int)rolled_back, fr.message);
         }
         wallet_backup_service_on_key_change();
     }

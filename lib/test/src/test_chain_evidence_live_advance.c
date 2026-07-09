@@ -17,6 +17,7 @@
 #include "services/chain_evidence_authority_service.h"
 #include "validation/chainstate.h"
 #include "coins/coins_view.h"
+#include "models/block.h"
 #include "models/database.h"
 
 #include <stdio.h>
@@ -104,6 +105,86 @@ static bool promote_to(struct live_fixture *f, int idx)
 static bool reducer_move_served_tip(struct live_fixture *f, int idx)
 {
     return active_chain_move_window_tip(&f->chain, &f->blocks[idx]);
+}
+
+static bool save_projection_block(struct live_fixture *f, int idx)
+{
+    uint8_t solution = 0x01;
+    struct db_block row;
+    memset(&row, 0, sizeof(row));
+    memcpy(row.hash, f->hashes[idx].data, sizeof(row.hash));
+    if (idx > 0)
+        memcpy(row.prev_hash, f->hashes[idx - 1].data,
+               sizeof(row.prev_hash));
+    memset(row.merkle_root, 0x5a, sizeof(row.merkle_root));
+    row.height = idx;
+    row.version = 4;
+    row.time = (uint32_t)idx + 1;
+    row.bits = 0x1f07ffffU;
+    row.solution = &solution;
+    row.solution_len = sizeof(solution);
+    row.status = BLOCK_VALID_TRANSACTIONS;
+    row.num_tx = 1;
+    return db_block_save(&f->ndb, &row);
+}
+
+/* The blocks projection and cec evidence follower commit independently.  A
+ * live tuple can therefore be active=N, sqlite=N-k, persisted=sqlite-1.  That
+ * one-row durable skew is not a fork/hash contradiction; a two-row skew is.
+ * This pins the exact production tuple that made full REST health red while
+ * bounded MCP health correctly recognized a current reducer frontier. */
+static int test_durable_frontier_one_row_skew_is_not_hash_mismatch(void)
+{
+    int failures = 0;
+    struct live_fixture f;
+    if (!live_fixture_init(&f))
+        return 1;
+
+    if (!promote_to(&f, 1) ||
+        !save_projection_block(&f, 1) ||
+        !save_projection_block(&f, 2) ||
+        !reducer_move_served_tip(&f, 3))
+        failures++;
+    /* Production's applied coins cursor already names the live active tip;
+     * keep that independent invariant green so this test isolates the
+     * persisted-evidence/projection skew. */
+    coins_view_cache_set_best_block(&f.coins_tip, &f.hashes[3]);
+
+    struct chain_evidence_controller_view one_behind;
+    chain_evidence_controller_snapshot(&f.authority, &one_behind);
+    if (one_behind.active_tip_height != 3 ||
+        one_behind.sqlite_max_height != 2 ||
+        one_behind.persisted_active_tip_height != 1 ||
+        one_behind.active_tip_hash_mismatch ||
+        one_behind.health_reason[0] != '\0')
+        failures++;
+
+    /* The height shape alone is insufficient: a random/corrupt persisted
+     * hash at sqlite-1 must not inherit the expected-lag exemption. */
+    if (!node_db_state_set(&f.ndb, "cec.active_tip_hash",
+                           f.hashes[0].data, 32))
+        failures++;
+    struct chain_evidence_controller_view tampered;
+    chain_evidence_controller_snapshot(&f.authority, &tampered);
+    if (!tampered.active_tip_hash_mismatch ||
+        strcmp(tampered.health_reason, "active_tip_hash_mismatch") != 0)
+        failures++;
+
+    /* Widen only the evidence gap.  sqlite remains 2 and active remains 3;
+     * persisted=0 is now two rows behind the projection and must fail loud. */
+    if (!node_db_state_set(&f.ndb, "cec.active_tip_hash",
+                           f.hashes[0].data, 32) ||
+        !node_db_state_set_int(&f.ndb, "cec.active_tip_height", 0))
+        failures++;
+
+    struct chain_evidence_controller_view two_behind;
+    chain_evidence_controller_snapshot(&f.authority, &two_behind);
+    if (!two_behind.active_tip_hash_mismatch ||
+        strcmp(two_behind.health_reason, "active_tip_hash_mismatch") != 0)
+        failures++;
+
+    live_fixture_free(&f);
+    return failures;
 }
 
 /* CORE REGRESSION: after the reducer advances the served tip past the
@@ -439,6 +520,7 @@ int test_chain_evidence_live_advance(void)
 {
     int failures = 0;
     printf("\n=== chain_evidence_live_advance tests ===\n");
+    failures += test_durable_frontier_one_row_skew_is_not_hash_mismatch();
     failures += test_live_advance_clears_active_tip_hash_mismatch();
     failures += test_live_advance_note_then_drain();
     failures += test_live_advance_drain_repairs_current_tip_without_pending();

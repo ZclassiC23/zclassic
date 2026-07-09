@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "coins/coins_view.h"
+#include "sapling/incremental_merkle_tree.h"
 #include <stdio.h>
 #include <string.h>
 #include "util/log_macros.h"
@@ -253,6 +254,14 @@ static bool cvc_get_best_block(void *self, struct uint256 *hash)
     return true;
 }
 
+static enum coins_anchor_lookup_result cvc_get_anchor(
+    void *self, enum coins_anchor_pool pool, const struct uint256 *root,
+    struct incremental_merkle_tree *tree_out)
+{
+    struct coins_view_cache *cache = (struct coins_view_cache *)self;
+    return coins_view_get_anchor(&cache->base, pool, root, tree_out);
+}
+
 static bool cvc_batch_write(void *self, struct coins_map *map_coins,
                              const struct uint256 *hash_block)
 {
@@ -310,6 +319,7 @@ static struct coins_view_vtable g_cache_vtable = {
     .get_best_block = cvc_get_best_block,
     .batch_write = cvc_batch_write,
     .get_stats = NULL,
+    .get_anchor = cvc_get_anchor,
 };
 
 void coins_view_cache_as_view(struct coins_view *out,
@@ -465,13 +475,124 @@ int64_t coins_view_cache_get_value_in(struct coins_view_cache *c,
     return value;
 }
 
+struct sprout_intermediate {
+    struct uint256 root;
+    struct incremental_merkle_tree tree;
+};
+
+static bool anchor_is_empty(enum coins_anchor_pool pool,
+                            const struct uint256 *root,
+                            struct incremental_merkle_tree *tree_out)
+{
+    struct incremental_merkle_tree tree;
+    if (pool == COINS_ANCHOR_SPROUT)
+        sprout_tree_init(&tree);
+    else
+        sapling_tree_init(&tree);
+    struct uint256 empty;
+    incremental_tree_root(&tree, &empty);
+    if (!uint256_eq(root, &empty))
+        return false;
+    if (tree_out)
+        *tree_out = tree;
+    return true;
+}
+
+static enum coins_shielded_requirements_result anchor_result_map(
+    enum coins_anchor_lookup_result r)
+{
+    switch (r) {
+    case COINS_ANCHOR_FOUND:
+        return COINS_SHIELDED_REQUIREMENTS_OK;
+    case COINS_ANCHOR_MISSING:
+        return COINS_SHIELDED_REQUIREMENTS_MISSING_ANCHOR;
+    case COINS_ANCHOR_HISTORY_INCOMPLETE:
+        return COINS_SHIELDED_REQUIREMENTS_HISTORY_INCOMPLETE;
+    case COINS_ANCHOR_ERROR:
+    default:
+        return COINS_SHIELDED_REQUIREMENTS_STORE_ERROR;
+    }
+}
+
+enum coins_shielded_requirements_result
+coins_view_cache_check_shielded_requirements(
+    struct coins_view_cache *c, const struct transaction *tx)
+{
+    if (!c || !tx)
+        return COINS_SHIELDED_REQUIREMENTS_STORE_ERROR;
+    if (tx->num_joinsplit == 0 && tx->num_shielded_spend == 0)
+        return COINS_SHIELDED_REQUIREMENTS_OK;
+
+    struct sprout_intermediate *intermediates = NULL;
+    if (tx->num_joinsplit > 0) {
+        if (tx->num_joinsplit > SIZE_MAX / sizeof(*intermediates))
+            return COINS_SHIELDED_REQUIREMENTS_STORE_ERROR;
+        intermediates = zcl_calloc(tx->num_joinsplit,
+                                   sizeof(*intermediates),
+                                   "shielded_requirements_intermediates");
+        if (!intermediates)
+            return COINS_SHIELDED_REQUIREMENTS_STORE_ERROR;
+    }
+
+    size_t num_intermediates = 0;
+    enum coins_shielded_requirements_result result =
+        COINS_SHIELDED_REQUIREMENTS_OK;
+    for (size_t i = 0; i < tx->num_joinsplit; i++) {
+        const struct js_description *js = &tx->v_joinsplit[i];
+        struct incremental_merkle_tree tree;
+        bool found_intermediate = false;
+
+        /* zclassicd's per-transaction `intermediates` map: an anchor made by
+         * an earlier JoinSplit of THIS transaction is valid, while a root made
+         * by an earlier transaction of the same block is not yet pushed. */
+        for (size_t j = 0; j < num_intermediates; j++) {
+            if (uint256_eq(&intermediates[j].root, &js->anchor)) {
+                tree = intermediates[j].tree;
+                found_intermediate = true;
+                break;
+            }
+        }
+        if (!found_intermediate) {
+            enum coins_anchor_lookup_result ar;
+            if (anchor_is_empty(COINS_ANCHOR_SPROUT, &js->anchor, &tree))
+                ar = COINS_ANCHOR_FOUND;
+            else
+                ar = coins_view_get_anchor(&c->base, COINS_ANCHOR_SPROUT,
+                                           &js->anchor, &tree);
+            result = anchor_result_map(ar);
+            if (result != COINS_SHIELDED_REQUIREMENTS_OK)
+                goto out;
+        }
+
+        for (size_t j = 0; j < ZC_NUM_JS_OUTPUTS; j++)
+            incremental_tree_append(&tree, &js->commitments[j]);
+        incremental_tree_root(&tree,
+                              &intermediates[num_intermediates].root);
+        intermediates[num_intermediates].tree = tree;
+        num_intermediates++;
+    }
+
+    for (size_t i = 0; i < tx->num_shielded_spend; i++) {
+        const struct uint256 *root = &tx->v_shielded_spend[i].anchor;
+        enum coins_anchor_lookup_result ar;
+        if (anchor_is_empty(COINS_ANCHOR_SAPLING, root, NULL))
+            ar = COINS_ANCHOR_FOUND;
+        else
+            ar = coins_view_get_anchor(&c->base, COINS_ANCHOR_SAPLING,
+                                       root, NULL);
+        result = anchor_result_map(ar);
+        if (result != COINS_SHIELDED_REQUIREMENTS_OK)
+            goto out;
+    }
+
+out:
+    free(intermediates);
+    return result;
+}
+
 bool coins_view_cache_have_joinsplit_requirements(
     struct coins_view_cache *c, const struct transaction *tx)
 {
-    /* Live nullifier double-spend enforcement is nullifier_kv on the reducer
-     * path (utxo_apply_nullifiers.c utxo_apply_check_and_insert_nullifiers);
-     * this stub stays a structural true for interface symmetry. */
-    (void)c;
-    (void)tx;
-    return true;
+    return coins_view_cache_check_shielded_requirements(c, tx) ==
+           COINS_SHIELDED_REQUIREMENTS_OK;
 }

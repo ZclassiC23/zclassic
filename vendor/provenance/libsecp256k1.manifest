@@ -1,0 +1,9 @@
+schema=zclassic23.committed-vendor-manifest.v1
+archive=libsecp256k1.a
+archive_sha256=dc059d97a028d453eeeb0747ad9674eea9ce1e6f5074356b3070c8121ef65296
+archive_size=173264
+source_status=legacy-import-source-unresolved
+repository_introduced_commit=fbe0af9b9571ad973917ee248241ebf877bc2c73
+replacement_policy=source-proof-required
+replacement_requirements=upstream-url,source-revision,source-sha256,reproducible-build-recipe,abi-tests
+note=Current bytes are integrity-locked; this manifest does not invent missing upstream provenance.

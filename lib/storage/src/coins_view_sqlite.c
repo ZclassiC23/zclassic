@@ -26,6 +26,7 @@
 
 #include <time.h>
 #include "storage/coins_view_sqlite.h"
+#include "storage/anchor_kv.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "coins/coins.h"
@@ -67,12 +68,38 @@ static bool cvs_batch_write_impl(void *self, struct coins_map *map_coins,
         cvs, map_coins, hash_block, NULL);
 }
 
+static enum coins_anchor_lookup_result cvs_get_anchor_impl(
+    void *self, enum coins_anchor_pool pool, const struct uint256 *root,
+    struct incremental_merkle_tree *tree_out)
+{
+    /* Anchors are consensus kernel state in progress.kv even when this view's
+     * transparent coins come from node.db (notably -reindex-chainstate). */
+    (void)self;
+    if (!root)
+        return COINS_ANCHOR_ERROR;
+    progress_store_tx_lock();
+    sqlite3 *db = progress_store_db();
+    enum anchor_kv_lookup_result r = db
+        ? anchor_kv_get(db, (int)pool, root, tree_out, NULL)
+        : ANCHOR_KV_ERROR;
+    progress_store_tx_unlock();
+    switch (r) {
+    case ANCHOR_KV_FOUND: return COINS_ANCHOR_FOUND;
+    case ANCHOR_KV_MISSING: return COINS_ANCHOR_MISSING;
+    case ANCHOR_KV_HISTORY_INCOMPLETE:
+        return COINS_ANCHOR_HISTORY_INCOMPLETE;
+    case ANCHOR_KV_ERROR:
+    default: return COINS_ANCHOR_ERROR;
+    }
+}
+
 static struct coins_view_vtable cvs_vtable = {
     .get_coins     = cvs_get_coins_impl,
     .have_coins    = cvs_have_coins_impl,
     .get_best_block = cvs_get_best_block_impl,
     .batch_write   = cvs_batch_write_impl,
     .get_stats     = NULL,
+    .get_anchor    = cvs_get_anchor_impl,
 };
 
 /* max UTXO rows above tip that auto-rewind will touch. A single

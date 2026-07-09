@@ -185,7 +185,7 @@ missing_vendor_archives() {
     local missing="" archive
     for archive in libcrypto.a libssl.a libevent.a libevent_openssl.a \
         libevent_pthreads.a libleveldb.a libsqlite3.a libz.a \
-        libtor_stub.a; do
+        librustzcash.a libtor_stub.a; do
         if [ ! -f "vendor/lib/$archive" ]; then
             missing="${missing}${missing:+ }$archive"
         fi
@@ -249,6 +249,16 @@ preflight_build() {
             fi
             ;;
     esac
+    case " $missing " in
+        *" librustzcash.a "*)
+            require_tool_for_preflight cargo \
+                "required to source-build the pinned Sapling prover" ||
+                return 1
+            require_tool_for_preflight rustc \
+                "required to source-build the pinned Sapling prover" ||
+                return 1
+            ;;
+    esac
 
     return 0
 }
@@ -280,6 +290,8 @@ run_build() {
             fi
             ;;
         release|zclassic23)
+            log "vendor_gate=make vendor-ready"
+            run_cmd make vendor-ready || return $?
             log "build_command=make zclassic23"
             run_cmd make zclassic23 || return $?
             ZCL_REMOTE_ARTIFACT="build/bin/zclassic23"

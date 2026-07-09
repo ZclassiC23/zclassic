@@ -38,6 +38,7 @@
 #include "storage/coins_db.h"
 #include "storage/chainstate_legacy_reader.h"
 #include "storage/ldb_snapshot.h"
+#include "chain/chainparams.h"
 #include "chain/checkpoints.h"
 #include "chain/utxo_snapshot_loader.h"  /* uss_open: post-write checkpoint verify */
 #include "coins/utxo_commitment.h"
@@ -1113,6 +1114,13 @@ static int cli_run_mcp_call(const char *datadir,
     }
 
     mcp_rpc_client_init(datadir, cli_port);
+    /* A one-shot MCP process does not boot app_init(), so no composition root
+     * has selected chain parameters. Most tools proxy to the running node, but
+     * read-only native tools such as zcl_replay_verify execute locally and
+     * call chain_params_get(). Select mainnet before ANY route can dispatch;
+     * CLI mode currently has no -testnet/-regtest spelling (those flags select
+     * node mode), and its canonical datadir/legacy verifier are mainnet. */
+    chain_params_select(CHAIN_MAIN);
     cli_mcp_register_all();
 
     struct mcp_middleware mw;

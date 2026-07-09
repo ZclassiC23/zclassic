@@ -14,12 +14,16 @@ struct node_db;
 struct snapshot_sync_service;
 struct tx_mempool;
 struct wallet;
+struct main_state;
+struct coins_view_cache;
 
 struct app_runtime_context {
     struct db_service *db_service;
     struct snapshot_sync_service *snapshot_sync;
     struct tx_mempool *mempool;
     struct wallet *wallet;
+    struct main_state *main_state;
+    struct coins_view_cache *coins_tip;
 };
 
 struct app_runtime_tx_index_hit {
@@ -55,5 +59,7 @@ sqlite3 *app_runtime_query_db(void);
 struct snapshot_sync_service *app_runtime_snapshot_sync(void);
 struct tx_mempool *app_runtime_mempool(void);
 struct wallet *app_runtime_wallet(void);
+struct main_state *app_runtime_main_state(void);
+struct coins_view_cache *app_runtime_coins_tip(void);
 
 #endif

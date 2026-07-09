@@ -1,17 +1,19 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
-// one-result-type-ok:monitor-frontier-repair-result — E2 (one way out): most
-// of this file is sync-monitor / recovery-stats recording (void setters,
-// pointer accessors, pure predicates, and out-param stats). The one operation
-// executor is sync_monitor_queue_active_frontier_body(), and it returns
-// struct zcl_result so a Condition remedy keeps contextual failure reasons.
+// one-result-type-ok:monitor-operations-use-zcl-result — E2 (one way out):
+// most of this file is sync-monitor / recovery-stats recording (void setters,
+// pointer accessors, pure predicates, and out-param stats). Both operation
+// executors (frontier body queue + periodic tip-state evaluation) return
+// struct zcl_result so failures retain contextual reasons.
 
 #include "services/sync_monitor.h"
 #include "util/log_macros.h"
 
+#include "jobs/reducer_frontier.h"
 #include "json/json.h"
 #include "framework/condition.h"
 #include "net/connman.h"
+#include "net/https_server.h"
 #include "net/msgprocessor.h"
 #include "net/netaddr.h"
 #include "platform/time_compat.h"
@@ -20,6 +22,7 @@
 #include "services/gap_fill_service.h"
 #include "sync/sync_state.h"
 #include "validation/chainstate.h"
+#include "validation/process_block.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -39,12 +42,23 @@ static _Atomic int g_last_recovery_peer_height;
 static _Atomic int g_last_recovery_peer_count;
 static _Atomic int g_last_recovery_target_height;
 static _Atomic int g_last_recovery_manifest_height;
+static _Atomic uint64_t g_tip_state_evaluations;
+static _Atomic uint64_t g_tip_state_transitions;
+static _Atomic int g_tip_eval_served_height;
+static _Atomic int g_tip_eval_local_height;
+static _Atomic int g_tip_eval_header_height;
+static _Atomic int g_tip_eval_peer_height;
+static _Atomic int g_tip_eval_target_height;
+static _Atomic int g_tip_eval_served_gap;
+static _Atomic int g_tip_eval_local_gap;
+static _Atomic uint64_t g_tip_eval_intake_pending;
 static char g_last_recovery_reason[96];
 static char g_last_recovery_trigger[64];
 
 static struct connman *g_condition_cm;
 static struct download_manager *g_condition_dm;
 static struct main_state *g_condition_ms;
+static struct msg_processor *g_condition_mp;
 
 static struct {
     bool active;
@@ -71,6 +85,7 @@ void sync_monitor_init(void)
     g_condition_cm = NULL;
     g_condition_dm = NULL;
     g_condition_ms = NULL;
+    g_condition_mp = NULL;
     condition_engine_set_main_state(NULL);
     pthread_mutex_lock(&g_local_recovery_lock);
     memset(&g_local_recovery, 0, sizeof(g_local_recovery));
@@ -87,7 +102,22 @@ void sync_monitor_init(void)
     atomic_store(&g_last_recovery_peer_count, 0);
     atomic_store(&g_last_recovery_target_height, -1);
     atomic_store(&g_last_recovery_manifest_height, -1);
+    atomic_store(&g_tip_state_evaluations, 0);
+    atomic_store(&g_tip_state_transitions, 0);
+    atomic_store(&g_tip_eval_served_height, -1);
+    atomic_store(&g_tip_eval_local_height, -1);
+    atomic_store(&g_tip_eval_header_height, -1);
+    atomic_store(&g_tip_eval_peer_height, -1);
+    atomic_store(&g_tip_eval_target_height, -1);
+    atomic_store(&g_tip_eval_served_gap, -1);
+    atomic_store(&g_tip_eval_local_gap, -1);
+    atomic_store(&g_tip_eval_intake_pending, 0);
     sync_state_monitor_init();
+}
+
+void sync_monitor_set_msg_processor(struct msg_processor *mp)
+{
+    g_condition_mp = mp;
 }
 
 void sync_monitor_set_context(struct connman *cm,
@@ -138,6 +168,97 @@ int64_t sync_monitor_tip_advance_age(void)
         return -1; // raw-return-ok:sentinel
     int64_t now = (int64_t)platform_time_wall_time_t();
     return (now > last) ? (now - last) : 0;
+}
+
+struct zcl_result sync_monitor_evaluate_tip_state(void)
+{
+    struct main_state *ms = sync_monitor_main_state();
+    struct connman *cm = sync_monitor_connman();
+    struct download_manager *dm = sync_monitor_download_manager();
+    struct msg_processor *mp = g_condition_mp;
+    if (!ms || !cm || !dm || !mp)
+        return ZCL_OK;
+
+    int local_height;
+    int header_height;
+    zcl_mutex_lock(&ms->cs_main);
+    local_height = active_chain_height(&ms->chain_active);
+    header_height = ms->pindex_best_header
+        ? ms->pindex_best_header->nHeight : local_height;
+    zcl_mutex_unlock(&ms->cs_main);
+
+    int peer_height = connman_max_peer_height(cm);
+    size_t peer_count = connman_get_node_count(cm);
+    uint64_t requested = 0, received = 0, timed_out = 0;
+    uint64_t in_flight = 0, queued = 0;
+    dl_get_stats(dm, &requested, &received, &timed_out,
+                 &in_flight, &queued);
+    (void)requested;
+    (void)received;
+    (void)timed_out;
+
+    struct msg_block_intake_stats intake;
+    msg_processor_get_block_intake_stats(mp, &intake);
+    uint64_t intake_pending = intake.current_depth;
+    if (intake.enqueued < intake.processed) {
+        /* A producer publishes its enqueue counter just after releasing the
+         * queue lock, so a fleeting processed>enqueued observation is legal.
+         * Treat it as unknown/pending and retry on the next tick. */
+        intake_pending = UINT64_MAX;
+    } else if (intake.enqueued - intake.processed > intake_pending) {
+        intake_pending = intake.enqueued - intake.processed;
+    }
+
+    int served_height = reducer_frontier_provable_tip_cached();
+    struct sync_tip_state_evaluation eval;
+    enum sync_state observed = sync_get_state();
+    syncsvc_plan_periodic_tip_state(
+        &eval, observed, reducer_frontier_provable_tip_is_published(),
+        served_height, local_height, header_height, peer_height, peer_count,
+        queued, in_flight, intake_pending);
+
+    atomic_fetch_add(&g_tip_state_evaluations, 1);
+    atomic_store(&g_tip_eval_served_height, served_height);
+    atomic_store(&g_tip_eval_local_height, local_height);
+    atomic_store(&g_tip_eval_header_height, header_height);
+    atomic_store(&g_tip_eval_peer_height, peer_height);
+    atomic_store(&g_tip_eval_target_height, eval.target_height);
+    atomic_store(&g_tip_eval_served_gap, eval.served_gap);
+    atomic_store(&g_tip_eval_local_gap, eval.local_gap);
+    atomic_store(&g_tip_eval_intake_pending, intake_pending);
+
+    if (!eval.should_set_at_tip)
+        return ZCL_OK;
+
+    char reason[160];
+    snprintf(reason, sizeof(reason),
+             "periodic frontier current served=%d local=%d header=%d peer=%d",
+             served_height, local_height, header_height, peer_height);
+    if (!sync_try_transition(observed, SYNC_AT_TIP, reason)) {
+        /* Another sync owner won the race. That is benign; never overwrite a
+         * reorg/snapshot/header transition from this periodic sample. */
+        if (sync_get_state() != observed)
+            return ZCL_OK;
+        LOG_WARN("sync_monitor",
+                 "periodic AT_TIP transition refused from %s",
+                 sync_state_name(observed));
+        return ZCL_ERR(-1, "periodic AT_TIP transition refused from %s",
+                       sync_state_name(observed));
+    }
+
+    atomic_fetch_add(&g_tip_state_transitions, 1);
+    /* Preserve the side effects the old synchronous block-acceptance edge
+     * owned.  These are operational policy only; no consensus state changes. */
+    set_flush_policy(3600, 500000, 100);
+    https_deferred_check();
+    event_emitf(EV_TIP_UPDATED, 0,
+                "AT_TIP periodic local=%d served=%d", local_height,
+                served_height);
+    LOG_INFO("sync_monitor",
+             "periodic evaluator committed AT_TIP served=%d local=%d "
+             "header=%d peer=%d", served_height, local_height,
+             header_height, peer_height);
+    return ZCL_OK;
 }
 
 void sync_monitor_record_recovery(enum watchdog_recovery_type type,
@@ -628,6 +749,26 @@ bool sync_monitor_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "download_queued", (int64_t)dl_queued);
     json_push_kv_int(out, "download_bytes_received", (int64_t)dl_bytes);
     json_push_kv_real(out, "download_mbps_avg", dl_mbps_avg);
+    json_push_kv_int(out, "tip_state_evaluations",
+                     (int64_t)atomic_load(&g_tip_state_evaluations));
+    json_push_kv_int(out, "tip_state_transitions",
+                     (int64_t)atomic_load(&g_tip_state_transitions));
+    json_push_kv_int(out, "tip_eval_served_height",
+                     atomic_load(&g_tip_eval_served_height));
+    json_push_kv_int(out, "tip_eval_local_height",
+                     atomic_load(&g_tip_eval_local_height));
+    json_push_kv_int(out, "tip_eval_header_height",
+                     atomic_load(&g_tip_eval_header_height));
+    json_push_kv_int(out, "tip_eval_peer_height",
+                     atomic_load(&g_tip_eval_peer_height));
+    json_push_kv_int(out, "tip_eval_target_height",
+                     atomic_load(&g_tip_eval_target_height));
+    json_push_kv_int(out, "tip_eval_served_gap",
+                     atomic_load(&g_tip_eval_served_gap));
+    json_push_kv_int(out, "tip_eval_local_gap",
+                     atomic_load(&g_tip_eval_local_gap));
+    json_push_kv_int(out, "tip_eval_intake_pending",
+                     (int64_t)atomic_load(&g_tip_eval_intake_pending));
 
     struct watchdog_local_recovery_stats lr;
     sync_monitor_get_local_recovery_stats(&lr);

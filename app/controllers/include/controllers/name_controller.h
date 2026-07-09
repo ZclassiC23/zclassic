@@ -17,9 +17,13 @@
 
 struct wallet;
 struct tx_mempool;
+struct main_state;
+struct coins_view_cache;
 
 void rpc_name_set_state(struct node_db *ndb);
-void rpc_name_set_wallet(struct wallet *w, struct tx_mempool *mp);
+void rpc_name_set_wallet(struct wallet *w, struct tx_mempool *mp,
+                         struct main_state *main_state,
+                         struct coins_view_cache *coins_tip);
 void register_name_rpc_commands(struct rpc_table *t);
 const char *znam_type_name(uint8_t t);
 

@@ -106,6 +106,28 @@ static int test_sync_fsm_rejects_at_tip_to_blocks(void)
     return failures;
 }
 
+static int test_sync_fsm_conditional_transition_is_race_safe(void)
+{
+    int failures = 0;
+    TEST("sync_state FSM: conditional transition commits only expected edge") {
+        reset_sync_state();
+        ASSERT(sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup"));
+        ASSERT(sync_set_state(SYNC_BLOCKS_DOWNLOAD, "setup"));
+        ASSERT(sync_try_transition(SYNC_BLOCKS_DOWNLOAD, SYNC_AT_TIP,
+                                   "periodic evaluator"));
+        ASSERT(sync_get_state() == SYNC_AT_TIP);
+
+        ASSERT(sync_set_state(SYNC_IDLE, "reset"));
+        ASSERT(sync_set_state(SYNC_HEADERS_DOWNLOAD, "racing owner won"));
+        ASSERT(!sync_try_transition(SYNC_BLOCKS_DOWNLOAD, SYNC_AT_TIP,
+                                    "stale periodic sample"));
+        ASSERT(sync_get_state() == SYNC_HEADERS_DOWNLOAD);
+        ASSERT(sync_set_state(SYNC_IDLE, "cleanup"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_sync_state_name_covers_all_states(void)
 {
     int failures = 0;
@@ -175,6 +197,7 @@ int test_sync_state_fsm(void)
     failures += test_sync_fsm_accepts_legal_chain();
     failures += test_sync_fsm_no_self_loop();
     failures += test_sync_fsm_rejects_at_tip_to_blocks();
+    failures += test_sync_fsm_conditional_transition_is_race_safe();
     failures += test_sync_state_name_covers_all_states();
     failures += test_snapsync_fsm_rejects_idle_to_complete();
     failures += test_snapsync_fsm_accepts_legal_chain();

@@ -43,6 +43,13 @@ enum sync_state {
 
 enum sync_state sync_get_state(void);
 bool sync_set_state(enum sync_state new_state, const char *reason);
+/* Race-safe conditional edge for periodic evaluators. Returns true only when
+ * `expected` was still current and the legal transition was committed (or
+ * expected==new_state). A concurrent owner changing the state is a benign
+ * false, not an illegal-transition BUG. */
+bool sync_try_transition(enum sync_state expected,
+                         enum sync_state new_state,
+                         const char *reason);
 const char *sync_state_name(enum sync_state state);
 void sync_state_monitor_init(void);
 int64_t sync_get_state_duration(void);

@@ -28,19 +28,20 @@
  *      would fail loudly if the default ever stopped being
  *      GetRandBytes.
  *   4. (params-gated, SKIP if ~/.zcash-params absent) the SAME seed
- *      drives the REAL native prover to identical cv/cm/epk bytes
- *      end-to-end — proving the hook actually reaches
- *      `sapling_build_output_with_ctx`.
+ *      drives the C-authored note randomness to identical cm/epk bytes
+ *      end-to-end, while the pinned Rust prover independently draws rcv
+ *      and therefore produces a different cv/proof. This pins both sides
+ *      of the FFI entropy boundary.
  *
  * HONEST SCOPE NOTE
  * -----------------
- * The Groth16 proof-blinding factors r,s are drawn independently in
- * `groth16_prover.c` (via `zcl_random_secret_bytes`), NOT through
- * `sapling_generate_r`. So the 192-byte zk-proof itself stays
- * non-deterministic under THIS hook alone; only the note-randomness-
- * derived fields (cv/cm/epk) are pinned. Full proof-byte / txid
- * reproducibility needs that second seam seeded too — a follow-up.
- * We deliberately do NOT assert proof-byte equality here.
+ * The statically-linked canonical prover owns value-commitment randomness
+ * and Groth16 proof blinding. Those draws deliberately do NOT cross the
+ * test-only C RNG hook. Thus the 192-byte proof and cv stay
+ * non-deterministic; cm/epk remain pinned because their rcm/esk are authored
+ * by the C wrapper. Full shielded-tx byte reproducibility would require an
+ * explicit test-only RNG ABI in the canonical backend — a follow-up, not a
+ * reason to weaken production entropy.
  */
 
 #include "test/test_helpers.h"
@@ -171,9 +172,11 @@ int test_sapling_prover_rng_determinism(void)
                   memcmp(r1, r2, 32) != 0);
     }
 
-    /* ── 5. (params-gated) end-to-end prover determinism ──
-     * Prove the hook reaches the REAL native prover: same seed =>
-     * identical cv/cm/epk out of sapling_build_output_with_ctx.
+    /* ── 5. (params-gated) end-to-end FFI entropy boundary ──
+     * Prove the hook reaches the C-authored note fields: same seed =>
+     * identical cm/epk out of sapling_build_output_with_ctx. The canonical
+     * Rust backend owns rcv and proof blinding, so cv/proof must retain real
+     * entropy rather than being captured by a test-only C hook.
      * SKIPS cleanly when ~/.zcash-params is absent (test_snark_kat
      * pattern). We do NOT assert proof-byte equality (Groth16
      * blinding is an independent RNG source — see scope note). */
@@ -239,20 +242,16 @@ int test_sapling_prover_rng_determinism(void)
                 }
             }
 
-            RNG_CHECK("native prover produced two output descriptions",
+            RNG_CHECK("canonical prover produced two output descriptions",
                       b1 && b2);
-            RNG_CHECK("same seed -> identical cv (real prover)",
-                      b1 && b2 && memcmp(cv1, cv2, 32) == 0);
+            RNG_CHECK("same C seed -> distinct cv (backend rcv entropy)",
+                      b1 && b2 && memcmp(cv1, cv2, 32) != 0);
             RNG_CHECK("same seed -> identical cm (real prover)",
                       b1 && b2 && memcmp(cm1, cm2, 32) == 0);
             RNG_CHECK("same seed -> identical epk (real prover)",
                       b1 && b2 && memcmp(epk1, epk2, 32) == 0);
-            /* Diagnostic only: the Groth16 proof blinding is a separate
-             * RNG source, so the 192-byte proof is expected to differ. */
-            if (b1 && b2)
-                printf("  [diag] proof bytes %s (Groth16 blinding is a "
-                       "separate, still-unseeded RNG source)\n",
-                       memcmp(proof1, proof2, 192) == 0 ? "match" : "differ");
+            RNG_CHECK("same C seed -> distinct proof (backend entropy)",
+                      b1 && b2 && memcmp(proof1, proof2, 192) != 0);
         }
     }
 
