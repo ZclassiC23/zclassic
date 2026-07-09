@@ -150,6 +150,171 @@ static bool addrman_find_occupied_slot(const int *table,
     return false;
 }
 
+/* ── Address index ─────────────────────────────────────────────────
+ * O(1) net_addr→entry-id map so addrman_add() dedups an incoming addr
+ * without the old O(id_count) linear scan over `entries` (up to 65536
+ * compares per address, MAX_ADDR_TO_SEND=1000 per untrusted P2P addr
+ * message). Open addressing, linear probe, tombstoned deletes — mirrors
+ * the qset scheme in download.c. `entries` (with `used`) is the source
+ * of truth; the index only answers "which id has this address?". All
+ * helpers require the caller to hold am->cs. The index is in-memory
+ * only: never serialized, rebuilt from `entries` on load. */
+
+#define ADDRMAN_INDEX_INITIAL_SLOTS 8192
+
+struct addr_index_slot {
+    struct net_addr key;
+    int id;
+    uint8_t state;   /* 0 = empty (probe end), 1 = live, 2 = tombstone */
+};
+
+/* FNV-1a over the identity-defining bytes of a net_addr. MUST hash exactly
+ * the fields net_addr_eq() compares: ip[16], has_torv3, and torv3 only when
+ * has_torv3 is set (torv3 bytes are ignored by eq otherwise). */
+static size_t addr_index_hash(const struct net_addr *a, size_t mask)
+{
+    uint64_t fnv = 14695981039346656037ULL;
+    for (int i = 0; i < 16; i++) {
+        fnv ^= a->ip[i];
+        fnv *= 1099511628211ULL;
+    }
+    fnv ^= (unsigned char)(a->has_torv3 ? 1u : 0u);
+    fnv *= 1099511628211ULL;
+    if (a->has_torv3) {
+        for (int i = 0; i < TORV3_ADDR_SIZE; i++) {
+            fnv ^= a->torv3[i];
+            fnv *= 1099511628211ULL;
+        }
+    }
+    return (size_t)(fnv & mask);
+}
+
+/* Return the entry id for `addr`, or -1 if not present. Const/read-only. */
+static int addr_index_lookup(const struct addr_man *am,
+                             const struct net_addr *addr)
+{
+    if (!am->idx || am->idx_slots == 0)
+        return -1;
+    size_t mask = am->idx_slots - 1;
+    size_t idx = addr_index_hash(addr, mask);
+    for (size_t i = 0; i < am->idx_slots; i++) {
+        const struct addr_index_slot *e = &am->idx[(idx + i) & mask];
+        if (e->state == 0)
+            return -1;                          /* empty: probe chain end */
+        if (e->state == 1 && net_addr_eq(&e->key, addr))
+            return e->id;
+    }
+    return -1;
+}
+
+/* Brute-force fallback: lowest used entry id matching `addr`, else -1.
+ * Used when the index is unavailable (OOM at init) and by the verifier. */
+static int addr_scan_id(const struct addr_man *am, const struct net_addr *addr)
+{
+    for (int i = 0; i < am->id_count; i++)
+        if (am->entries[i].used &&
+            net_addr_eq(&am->entries[i].addr.svc.addr, addr))
+            return i;
+    return -1;
+}
+
+/* Insert (addr→id) without a duplicate check. Callers guarantee the address
+ * is not already live (addrman_add only creates an entry after find_addr
+ * returned NULL) and that capacity was reserved. Reuses tombstones. */
+static void addr_index_insert_raw(struct addr_man *am,
+                                  const struct net_addr *addr, int id)
+{
+    if (!am->idx || am->idx_slots == 0)
+        return;
+    size_t mask = am->idx_slots - 1;
+    size_t idx = addr_index_hash(addr, mask);
+    for (size_t i = 0; i < am->idx_slots; i++) {
+        struct addr_index_slot *e = &am->idx[(idx + i) & mask];
+        if (e->state != 1) {
+            if (e->state == 2) am->idx_tombs--;
+            e->key = *addr;
+            e->id = id;
+            e->state = 1;
+            am->idx_live++;
+            return;
+        }
+    }
+}
+
+/* Rebuild the index from `entries` (the source of truth), dropping
+ * tombstones and growing to `new_slots` (power of 2). Keeps the old table
+ * on alloc failure — correctness is unaffected, only probe lengths suffer.
+ * Iterates ids ascending and skips duplicates so the index resolves to the
+ * same (lowest) id a brute-force scan would, even for a corrupt load. */
+static void addr_index_rebuild(struct addr_man *am, size_t new_slots)
+{
+    struct addr_index_slot *ns =
+        zcl_calloc(new_slots, sizeof(struct addr_index_slot), "addr_index");
+    if (!ns) {
+        LOG_WARN("addrman", "addr_index_rebuild: calloc failed slots=%zu, keeping old table", new_slots);
+        return;
+    }
+    free(am->idx);
+    am->idx = ns;
+    am->idx_slots = new_slots;
+    am->idx_live = 0;
+    am->idx_tombs = 0;
+    for (int i = 0; i < am->id_count; i++) {
+        if (!am->entries[i].used)
+            continue;
+        if (addr_index_lookup(am, &am->entries[i].addr.svc.addr) != -1)
+            continue;                           /* keep lowest id on dup */
+        addr_index_insert_raw(am, &am->entries[i].addr.svc.addr, i);
+    }
+}
+
+/* Ensure room for one more live entry at < 50% combined load. Rebuild
+ * reads `entries`, so callers MUST reserve BEFORE writing the new entry
+ * into `entries`/bumping id_count — otherwise the rebuild folds the new
+ * entry in and the following insert_raw double-counts it. */
+static void addr_index_reserve_one(struct addr_man *am)
+{
+    if (!am->idx || am->idx_slots == 0)
+        return;
+    if ((am->idx_live + am->idx_tombs + 1) * 2 < am->idx_slots)
+        return;
+    size_t want = am->idx_slots;
+    if ((am->idx_live + 1) * 2 >= want)
+        want *= 2;                              /* genuinely full: grow */
+    /* else tombstone-heavy: rebuild at the same size to reclaim tombs */
+    addr_index_rebuild(am, want);
+}
+
+/* Tombstone the live slot for `addr` (delete path). No-op if absent. */
+static void addr_index_remove(struct addr_man *am, const struct net_addr *addr)
+{
+    if (!am->idx || am->idx_slots == 0)
+        return;
+    size_t mask = am->idx_slots - 1;
+    size_t idx = addr_index_hash(addr, mask);
+    for (size_t i = 0; i < am->idx_slots; i++) {
+        struct addr_index_slot *e = &am->idx[(idx + i) & mask];
+        if (e->state == 0)
+            return;
+        if (e->state == 1 && net_addr_eq(&e->key, addr)) {
+            e->state = 2;
+            am->idx_live--;
+            am->idx_tombs++;
+            return;
+        }
+    }
+}
+
+/* Empty the index without freeing it (addrman_clear / addrman_deserialize). */
+static void addr_index_clear(struct addr_man *am)
+{
+    if (!am->idx || am->idx_slots == 0)
+        return;
+    memset(am->idx, 0, am->idx_slots * sizeof(struct addr_index_slot));
+    am->idx_live = 0;
+    am->idx_tombs = 0;
+}
+
 void addrman_init(struct addr_man *am)
 {
     zcl_mutex_init(&am->cs);
@@ -162,6 +327,12 @@ void addrman_init(struct addr_man *am)
     am->random_cap = 0;
     am->entries_cap = 4096;
     am->entries = zcl_calloc(am->entries_cap, sizeof(struct addr_info), "addr_entries");
+    am->idx_slots = ADDRMAN_INDEX_INITIAL_SLOTS;
+    am->idx = zcl_calloc(am->idx_slots, sizeof(struct addr_index_slot), "addr_index");
+    am->idx_live = 0;
+    am->idx_tombs = 0;
+    if (!am->idx)
+        am->idx_slots = 0;   /* fall back to linear scan in find_addr */
     for (int i = 0; i < ADDRMAN_NEW_BUCKET_COUNT; i++)
         for (int j = 0; j < ADDRMAN_BUCKET_SIZE; j++)
             am->vvNew[i][j] = -1;
@@ -174,8 +345,13 @@ void addrman_free(struct addr_man *am)
 {
     free(am->random_order);
     free(am->entries);
+    free(am->idx);
     am->random_order = NULL;
     am->entries = NULL;
+    am->idx = NULL;
+    am->idx_slots = 0;
+    am->idx_live = 0;
+    am->idx_tombs = 0;
     zcl_mutex_destroy(&am->cs);
 }
 
@@ -191,6 +367,7 @@ void addrman_clear(struct addr_man *am)
     am->random_cap = 0;
     if (am->entries)
         memset(am->entries, 0, am->entries_cap * sizeof(struct addr_info));
+    addr_index_clear(am);
     for (int i = 0; i < ADDRMAN_NEW_BUCKET_COUNT; i++)
         for (int j = 0; j < ADDRMAN_BUCKET_SIZE; j++)
             am->vvNew[i][j] = -1;
@@ -245,14 +422,27 @@ static struct addr_info *find_addr(struct addr_man *am,
     if (!am || !addr || !am->entries)
         LOG_NULL("addrman", "find_addr: bad args");
 
-    for (int i = 0; i < am->id_count; i++) {
-        if (am->entries[i].used &&
-            net_addr_eq(&am->entries[i].addr.svc.addr, addr)) {
-            if (pnId) *pnId = i;
-            return &am->entries[i];
+    if (am->idx && am->idx_slots) {
+        int id = addr_index_lookup(am, addr);
+        if (id < 0)
+            return NULL;
+        /* Defensive: a valid index always points at a matching used entry;
+         * treat any mismatch as absent rather than returning a stale row. */
+        if (id >= 0 && (size_t)id < am->entries_cap &&
+            am->entries[id].used &&
+            net_addr_eq(&am->entries[id].addr.svc.addr, addr)) {
+            if (pnId) *pnId = id;
+            return &am->entries[id];
         }
+        return NULL;
     }
-    return NULL;
+
+    /* Fallback: linear scan when the index is unavailable (OOM at init). */
+    int id = addr_scan_id(am, addr);
+    if (id < 0)
+        return NULL;
+    if (pnId) *pnId = id;
+    return &am->entries[id];
 }
 
 static struct addr_info *create_entry(struct addr_man *am,
@@ -273,6 +463,9 @@ static struct addr_info *create_entry(struct addr_man *am,
         am->entries = p;
         am->entries_cap = new_cap;
     }
+    /* Reserve BEFORE bumping id_count: a rebuild scans entries[0..id_count),
+     * so the not-yet-written new entry stays out and insert_raw adds it once. */
+    addr_index_reserve_one(am);
     am->id_count++;
 
     struct addr_info *info = &am->entries[id];
@@ -287,6 +480,7 @@ static struct addr_info *create_entry(struct addr_man *am,
     info->random_pos = (int)am->random_size;
     info->used = true;
     random_push(am, id);
+    addr_index_insert_raw(am, &info->addr.svc.addr, id);
 
     if (pnId) *pnId = id;
     return info;
@@ -295,6 +489,9 @@ static struct addr_info *create_entry(struct addr_man *am,
 static void delete_entry(struct addr_man *am, int nId)
 {
     struct addr_info *info = &am->entries[nId];
+    /* Drop this address from the index BEFORE clearing `used` (the key still
+     * lives in info->addr). Keeps the index in lock-step with `used`. */
+    addr_index_remove(am, &info->addr.svc.addr);
     swap_random(am, (unsigned int)info->random_pos,
                 (unsigned int)(am->random_size - 1));
     am->random_size--;
@@ -779,7 +976,58 @@ int addrman_consistency_check(const struct addr_man *am,
         }
     }
 
+    /* 6. Verify the O(1) address index agrees with `entries`. */
+    if (addrman_index_verify(am, err_buf, err_cap) != 0)
+        return -1;
+
 #undef CC_ERR
+    return 0;
+}
+
+int addrman_index_verify(const struct addr_man *am,
+                         char *err_buf, size_t err_cap)
+{
+#define IV_ERR(fmt, ...) do { \
+    if (err_buf && err_cap > 0) \
+        snprintf(err_buf, err_cap, fmt, ##__VA_ARGS__); \
+    return -1; \
+} while (0)
+
+    /* NULL index == OOM fallback to linear scan: nothing to verify. */
+    if (!am->idx || am->idx_slots == 0)
+        return 0;
+
+    /* Every used entry resolves through the index to the same id a
+     * brute-force scan would return. */
+    size_t used = 0;
+    for (int i = 0; i < am->id_count; i++) {
+        if (!am->entries[i].used)
+            continue;
+        used++;
+        int li = addr_index_lookup(am, &am->entries[i].addr.svc.addr);
+        int si = addr_scan_id(am, &am->entries[i].addr.svc.addr);
+        if (li != si)
+            IV_ERR("index/scan disagree for entry %d: index=%d scan=%d",
+                   i, li, si);
+    }
+    if (used != am->idx_live)
+        IV_ERR("idx_live=%zu but %zu used entries", am->idx_live, used);
+
+    /* Every live slot points at a used entry whose address matches its key. */
+    for (size_t s = 0; s < am->idx_slots; s++) {
+        const struct addr_index_slot *e = &am->idx[s];
+        if (e->state != 1)
+            continue;
+        if (e->id < 0 || (size_t)e->id >= am->entries_cap)
+            IV_ERR("index slot %zu: id=%d out of range (cap=%zu)",
+                   s, e->id, am->entries_cap);
+        if (!am->entries[e->id].used)
+            IV_ERR("index slot %zu: id=%d not used", s, e->id);
+        if (!net_addr_eq(&e->key, &am->entries[e->id].addr.svc.addr))
+            IV_ERR("index slot %zu: id=%d key mismatch", s, e->id);
+    }
+
+#undef IV_ERR
     return 0;
 }
 
@@ -1004,6 +1252,16 @@ bool addrman_deserialize(struct addr_man *am, struct byte_stream *s)
                 }
             }
         }
+    }
+
+    /* Rebuild the in-memory address index from the loaded entries (the index
+     * is never serialized). addrman_clear() above emptied it; size it to hold
+     * every loaded id at < 50% load, then fold in all used entries. */
+    {
+        size_t want = ADDRMAN_INDEX_INITIAL_SLOTS;
+        while ((size_t)(am->id_count + 1) * 2 >= want)
+            want *= 2;
+        addr_index_rebuild(am, want);
     }
 
     return true;

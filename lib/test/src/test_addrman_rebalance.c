@@ -9,6 +9,7 @@
 #include "test/test_helpers.h"
 #include "net/addrman.h"
 #include "core/random.h"
+#include "core/serialize.h"
 #include "util/timedata.h"
 #include <string.h>
 #include <stdio.h>
@@ -416,6 +417,234 @@ int test_addrman_rebalance(void)
         else {
             printf("FAIL (b=%d/%d p=%d/%d tb=%d/%d)\n",
                    b1, b2, p1, p2, tb1, tb2);
+            failures++;
+        }
+        addrman_free(&am);
+    }
+
+    /* ── 13. O(1) index: dedup — same address never creates two entries ── */
+    printf("addrman_rebalance: index dedup... ");
+    {
+        struct addr_man am;
+        addrman_init(&am);
+        struct net_addr src = make_pub_source(92, 1, 0, 1);
+        struct net_address addr = make_pub_addr(93, 2, 3, 4, 8033);
+
+        addrman_add(&am, &addr, &src, 0);
+        size_t after_first = addrman_size(&am);
+        /* Add the SAME address 50 more times — must stay one entry. */
+        for (int i = 0; i < 50; i++)
+            addrman_add(&am, &addr, &src, 0);
+
+        char err[256] = {0};
+        bool ok = (after_first == 1);
+        ok = ok && (addrman_size(&am) == 1);
+        ok = ok && (addrman_index_verify(&am, err, sizeof(err)) == 0);
+        ok = ok && (addrman_consistency_check(&am, NULL, 0) == 0);
+
+        if (ok)
+            printf("OK\n");
+        else {
+            printf("FAIL (size=%zu err=%s)\n", addrman_size(&am), err);
+            failures++;
+        }
+        addrman_free(&am);
+    }
+
+    /* ── 14. O(1) index agrees with brute-force scan on a full table ── */
+    printf("addrman_rebalance: index == brute-force scan... ");
+    {
+        struct addr_man am;
+        addrman_init(&am);
+
+        /* Populate from many sources so both new and delete/evict paths
+         * (clear_new → delete_entry) run and churn the index. */
+        for (int s = 0; s < 20; s++) {
+            struct net_addr src = make_pub_source((uint8_t)(94 + s), 1, 0, 1);
+            for (int i = 0; i < 60; i++) {
+                struct net_address addr = make_pub_addr(
+                    (uint8_t)(120 + s),
+                    (uint8_t)(i * 3 + 1),
+                    (uint8_t)(s * 5 + i + 1),
+                    (uint8_t)(i + 1), 8033);
+                addrman_add(&am, &addr, &src, 0);
+            }
+        }
+        /* Promote a chunk to tried to force new-bucket evictions/deletes. */
+        for (int s = 0; s < 20; s++) {
+            for (int i = 0; i < 30; i++) {
+                struct net_address addr = make_pub_addr(
+                    (uint8_t)(120 + s),
+                    (uint8_t)(i * 3 + 1),
+                    (uint8_t)(s * 5 + i + 1),
+                    (uint8_t)(i + 1), 8033);
+                addrman_good(&am, &addr.svc,
+                             (int64_t)platform_time_wall_time_t());
+            }
+        }
+
+        char err[256] = {0};
+        /* addrman_index_verify cross-checks index lookups against a
+         * brute-force scan for every used entry, plus live-slot integrity. */
+        bool ok = (addrman_index_verify(&am, err, sizeof(err)) == 0);
+        ok = ok && (addrman_consistency_check(&am, NULL, 0) == 0);
+        ok = ok && (addrman_size(&am) > 0);
+
+        if (ok)
+            printf("OK (size=%zu)\n", addrman_size(&am));
+        else {
+            printf("FAIL (size=%zu err=%s)\n", addrman_size(&am), err);
+            failures++;
+        }
+        addrman_free(&am);
+    }
+
+    /* ── 15. Serialize → deserialize rebuilds the index (dedup survives) ── */
+    printf("addrman_rebalance: serialize round-trip dedup... ");
+    {
+        struct addr_man am;
+        addrman_init(&am);
+        struct net_addr src = make_pub_source(150, 1, 0, 1);
+
+        for (int i = 1; i <= 80; i++) {
+            struct net_address addr = make_pub_addr(
+                151, (uint8_t)(i / 256 + 1), (uint8_t)(i % 256),
+                (uint8_t)((i * 7) % 254 + 1), 8033);
+            addrman_add(&am, &addr, &src, 0);
+        }
+        /* Promote some to tried so the serialized image has both sections. */
+        for (int i = 1; i <= 20; i++) {
+            struct net_address addr = make_pub_addr(
+                151, (uint8_t)(i / 256 + 1), (uint8_t)(i % 256),
+                (uint8_t)((i * 7) % 254 + 1), 8033);
+            addrman_good(&am, &addr.svc, (int64_t)platform_time_wall_time_t());
+        }
+        size_t size_before = addrman_size(&am);
+
+        struct byte_stream s;
+        stream_init(&s, 4096);
+        bool ser = addrman_serialize(&am, &s);
+
+        struct addr_man am2;
+        addrman_init(&am2);
+        struct byte_stream rs;
+        stream_init_from_data(&rs, s.data, s.size);
+        bool deser = addrman_deserialize(&am2, &rs);
+
+        char err[256] = {0};
+        /* Index must be rebuilt on load and agree with the entries. */
+        bool ok = ser && deser;
+        ok = ok && (addrman_index_verify(&am2, err, sizeof(err)) == 0);
+        ok = ok && (addrman_consistency_check(&am2, NULL, 0) == 0);
+        ok = ok && (addrman_size(&am2) == size_before);
+
+        /* Re-adding a known address into the reloaded table must dedup via
+         * the rebuilt index, not create a phantom second entry. */
+        size_t before_readd = addrman_size(&am2);
+        struct net_address known = make_pub_addr(
+            151, 1, 40, (uint8_t)((40 * 7) % 254 + 1), 8033);
+        addrman_add(&am2, &known, &src, 0);
+        ok = ok && (addrman_size(&am2) == before_readd);
+        ok = ok && (addrman_index_verify(&am2, err, sizeof(err)) == 0);
+
+        if (ok)
+            printf("OK (size=%zu)\n", addrman_size(&am2));
+        else {
+            printf("FAIL (ser=%d deser=%d before=%zu after=%zu err=%s)\n",
+                   ser, deser, size_before, addrman_size(&am2), err);
+            failures++;
+        }
+        stream_free(&s);
+        stream_free(&rs);
+        addrman_free(&am);
+        addrman_free(&am2);
+    }
+
+    /* ── 16. Delete path: churn that deletes entries keeps index in sync ── */
+    printf("addrman_rebalance: delete-then-readd index sync... ");
+    {
+        struct addr_man am;
+        addrman_init(&am);
+
+        /* A single source flooding 400 addresses drives repeated bucket
+         * collisions; failed inserts of fresh entries hit the
+         * `!inserted && ref_count==0` delete_entry path, and evictions run
+         * clear_new → delete_entry. If delete_entry failed to remove the
+         * address from the index, a later re-add would either find a stale
+         * id (index/scan disagree) or leave idx_live overcounting — both
+         * caught by addrman_index_verify below. */
+        struct net_addr attacker = make_pub_source(200, 2, 3, 4);
+        for (int i = 0; i < 400; i++) {
+            struct net_address addr = make_pub_addr(
+                (uint8_t)(201 + i / 65536),
+                (uint8_t)((i / 256) % 256),
+                (uint8_t)(i % 256),
+                (uint8_t)((i * 3) % 254 + 1), 8033);
+            addrman_add(&am, &addr, &attacker, 0);
+        }
+
+        char err[256] = {0};
+        bool ok = (addrman_index_verify(&am, err, sizeof(err)) == 0);
+        ok = ok && (addrman_consistency_check(&am, NULL, 0) == 0);
+
+        /* Re-add the whole flood: every currently-present address must
+         * dedup (size cannot exceed the live count), index stays coherent. */
+        size_t size_before_readd = addrman_size(&am);
+        for (int i = 0; i < 400; i++) {
+            struct net_address addr = make_pub_addr(
+                (uint8_t)(201 + i / 65536),
+                (uint8_t)((i / 256) % 256),
+                (uint8_t)(i % 256),
+                (uint8_t)((i * 3) % 254 + 1), 8033);
+            addrman_add(&am, &addr, &attacker, 0);
+        }
+        ok = ok && (addrman_size(&am) >= size_before_readd);
+        ok = ok && (addrman_index_verify(&am, err, sizeof(err)) == 0);
+        ok = ok && (addrman_consistency_check(&am, NULL, 0) == 0);
+
+        if (ok)
+            printf("OK (size=%zu)\n", addrman_size(&am));
+        else {
+            printf("FAIL (size=%zu err=%s)\n", addrman_size(&am), err);
+            failures++;
+        }
+        addrman_free(&am);
+    }
+
+    /* ── 17. Index grows correctly past its initial slot count ──────── */
+    printf("addrman_rebalance: index grow/rebuild... ");
+    {
+        struct addr_man am;
+        addrman_init(&am);
+
+        /* > 4096 distinct live entries forces addr_index_reserve_one to
+         * grow the table at least once (initial 8192 slots, grow at 50%
+         * load). Spread across many sources so they actually land. */
+        int added = 0;
+        for (int s = 0; s < 90; s++) {
+            struct net_addr src = make_pub_source(
+                (uint8_t)(60 + s % 90), (uint8_t)(s / 90 + 1), 0, 1);
+            for (int i = 0; i < 60; i++) {
+                struct net_address addr = make_pub_addr(
+                    (uint8_t)(64 + s % 128),
+                    (uint8_t)(s),
+                    (uint8_t)(i),
+                    (uint8_t)(i + 1), 8033);
+                if (addrman_add(&am, &addr, &src, 0))
+                    added++;
+            }
+        }
+
+        char err[256] = {0};
+        bool ok = (addrman_size(&am) > 4096);   /* crossed the grow line */
+        ok = ok && (addrman_index_verify(&am, err, sizeof(err)) == 0);
+        ok = ok && (addrman_consistency_check(&am, NULL, 0) == 0);
+
+        if (ok)
+            printf("OK (added=%d size=%zu)\n", added, addrman_size(&am));
+        else {
+            printf("FAIL (added=%d size=%zu err=%s)\n",
+                   added, addrman_size(&am), err);
             failures++;
         }
         addrman_free(&am);

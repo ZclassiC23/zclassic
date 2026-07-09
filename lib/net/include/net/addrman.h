@@ -39,6 +39,11 @@ struct addr_info {
     bool used;
 };
 
+/* O(1) address→entry-id index slot. Defined privately in addrman.c;
+ * struct addr_man holds only a pointer, so a forward declaration is
+ * enough here. See "address index" in addrman.c. */
+struct addr_index_slot;
+
 struct addr_man {
     zcl_mutex_t cs;
     struct uint256 nKey;
@@ -46,6 +51,14 @@ struct addr_man {
     struct addr_info *entries;
     size_t entries_cap;
     int id_count;
+
+    /* In-memory O(1) net_addr→id index (open addressing, tombstoned).
+     * NOT serialized — rebuilt from `entries` on load. Keeps addrman_add's
+     * per-address dedup off the old O(id_count) linear scan. */
+    struct addr_index_slot *idx;
+    size_t idx_slots;   /* capacity, power of 2 */
+    size_t idx_live;    /* live slots == number of used entries */
+    size_t idx_tombs;   /* tombstoned slots */
 
     int *random_order;
     size_t random_size;
@@ -100,6 +113,14 @@ double addr_info_get_chance(const struct addr_info *info, int64_t nNow);
  * err_buf (if non-NULL) receives a description of the first error found. */
 int addrman_consistency_check(const struct addr_man *am,
                               char *err_buf, size_t err_cap);
+
+/* Verify the in-memory address index agrees with a brute-force scan of
+ * `entries` (find-by-index == find-by-scan for every used entry, live-slot
+ * count matches, every live slot points at a matching used entry).
+ * Returns 0 on success, -1 on the first discrepancy (described in err_buf).
+ * A NULL index (OOM fallback to linear scan) verifies trivially. */
+int addrman_index_verify(const struct addr_man *am,
+                         char *err_buf, size_t err_cap);
 
 /* Bucket distribution stats for monitoring/debugging. */
 struct addrman_bucket_stats {
