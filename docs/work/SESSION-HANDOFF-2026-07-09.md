@@ -117,7 +117,10 @@ State is a RAM-only `coins_view_cache`.
   worth investigating. After a recovery boot the dev RPC returns empty for a
   while (rebuilding chainstate) — expected, not a regression.
 - **Session/API limits** were hit repeatedly; large parallel swarms burn budget
-  fast. Pace at ~3 concurrent agents and prefer verified single slices.
+  fast. Pace at ~3 concurrent agents and prefer verified single slices. To cut
+  Claude token use, see **[`DEV-WORKFLOW-CODEX.md`](DEV-WORKFLOW-CODEX.md)** —
+  add a GPT/Codex executor tier (Claude orchestrates + reviews, Codex
+  implements) and verify its output through the same gates.
 
 ## Live node state
 
