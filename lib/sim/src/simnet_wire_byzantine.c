@@ -85,7 +85,14 @@ static bool byz_seed_wire_tip(struct simnet_wire *wire)
     if (!wire || !wire->byz_sim_ready)
         LOG_FAIL("simnet.wire.byz", "invalid tip seed request");
 
-    struct block_index *tip = &wire->byz_sim.tip;
+    /* Snapshot byz_sim's tip into wire-owned storage so subsequent byz_sim
+     * mutations cannot alias into the node-under-test's chain. phashBlock
+     * must be re-pointed at the COPY's own hash after the struct copy. */
+    wire->byz_wire_tip = wire->byz_sim.tip;
+    wire->byz_wire_tip.phashBlock = &wire->byz_wire_tip.hashBlock;
+    wire->byz_wire_tip_ready = true;
+
+    struct block_index *tip = &wire->byz_wire_tip;
     if (!block_map_find(&wire->ms.map_block_index, &tip->hashBlock) &&
         !block_map_insert(&wire->ms.map_block_index, &tip->hashBlock, tip))
         return false;
@@ -408,7 +415,8 @@ bool simnet_wire_byzantine_submit_block(struct block *block,
     block_index_init(&idx);
     idx.hashBlock = block_hash;
     idx.phashBlock = &idx.hashBlock;
-    idx.pprev = &wire->byz_sim.tip;
+    idx.pprev = wire->byz_wire_tip_ready ? &wire->byz_wire_tip
+                                         : &wire->byz_sim.tip;
     idx.nHeight = wire->byz_block.height;
     idx.nVersion = block->header.nVersion;
     idx.nTime = block->header.nTime;
@@ -513,6 +521,16 @@ void simnet_wire_byzantine_free(struct simnet_wire *wire)
     if (!wire)
         return;
     if (wire->byz_block_ready) {
+        /* The p2p intake path marks a rejected block "seen" in a PROCESS-
+         * global dedup ring (g_recent_blocks in msgprocessor.c). Two runs
+         * with the same seed produce the byte-identical block, so leaving
+         * the hash in the ring makes the second run's block get silently
+         * dropped by block_already_seen() before it ever reaches
+         * block_submit — breaking determinism. Clear it on teardown so
+         * every fresh wire re-observes the reject from a clean slate. */
+        struct uint256 seen_hash;
+        block_get_hash(&wire->byz_block.block, &seen_hash);
+        msg_processor_clear_seen_block(&seen_hash);
         simnet_byzantine_block_case_free(&wire->byz_block);
         wire->byz_block_ready = false;
     }

@@ -158,6 +158,13 @@ struct simnet_wire {
 
     struct simnet byz_sim;
     bool byz_sim_ready;
+    /* Wire-owned stable copy of the byzantine parent tip. The NUT's active
+     * chain and the injected block's pprev point HERE, never into byz_sim,
+     * so that mutating byz_sim (e.g. the honest-recovery mint in
+     * simnet_wire_byzantine_after_tick) can never change the node-under-
+     * test's observed tip hash — the consensus-unchanged invariant. */
+    struct block_index byz_wire_tip;
+    bool byz_wire_tip_ready;
     struct simnet_byzantine_block_case byz_block;
     bool byz_block_ready;
     struct simnet_byzantine_header_case byz_header;

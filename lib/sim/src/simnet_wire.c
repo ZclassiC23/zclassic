@@ -1010,6 +1010,12 @@ static bool simnet_wire_idle(const struct simnet_wire *wire)
         if (wire->peers[i].kind == SIMNET_WIRE_PEER_SLOWLORIS &&
             !wire->peers[i].adversary_done)
             return false;
+        if ((wire->peers[i].kind == SIMNET_WIRE_PEER_INVALID_BLOCK ||
+             wire->peers[i].kind == SIMNET_WIRE_PEER_INVALID_HEADER) &&
+            !wire->peers[i].byz_injected &&
+            !wire->peers[i].adversary_done &&
+            wire->nut && !wire->nut->disconnect)
+            return false;
         if (ring_available(&wire->peers[i].link.to_nut) > 0 ||
             ring_available(&wire->peers[i].link.to_peer) > 0)
             return false;
