@@ -82,14 +82,6 @@ bool legacy_rpc_call(const char *host, int port,
                      char **out_resp,
                      char *err, size_t err_sz);
 
-/* Explicit-credential spelling of legacy_rpc_call for callers that
- * already own host/port/user/pass rather than reading zclassic.conf. */
-bool legacy_rpc_call_with_explicit_creds(const char *host, int port,
-                                         const char *user, const char *pass,
-                                         const char *body_json,
-                                         char **out_resp,
-                                         char *err, size_t err_sz);
-
 /* Extract the HTTP body (after the first "\r\n\r\n") from a raw
  * response. Returns NULL if no separator found. */
 const char *legacy_rpc_http_body(const char *raw);

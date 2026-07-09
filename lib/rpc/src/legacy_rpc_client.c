@@ -252,16 +252,6 @@ bool legacy_rpc_call(const char *host, int port,
     return true;
 }
 
-bool legacy_rpc_call_with_explicit_creds(const char *host, int port,
-                                         const char *user, const char *pass,
-                                         const char *body_json,
-                                         char **out_resp,
-                                         char *err, size_t err_sz)
-{
-    return legacy_rpc_call(host, port, user, pass, body_json, out_resp,
-                           err, err_sz);
-}
-
 /* ── HTTP body locator ─────────────────────────────────────────── */
 
 const char *legacy_rpc_http_body(const char *raw)
