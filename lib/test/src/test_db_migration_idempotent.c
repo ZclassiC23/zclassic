@@ -114,6 +114,15 @@ static bool db_mig_seed_v20_wallet_notes_db(const char *dbpath)
         "witness_data BLOB,witness_height INTEGER DEFAULT 0,"
         "PRIMARY KEY (txid,output_index))");
     ok = ok && db_mig_exec_raw(raw,
+        "CREATE TABLE znam_names ("
+        "name TEXT PRIMARY KEY,"
+        "owner_address TEXT NOT NULL,"
+        "target_type INTEGER NOT NULL,"
+        "target_value TEXT NOT NULL,"
+        "reg_txid BLOB NOT NULL,"
+        "reg_height INTEGER NOT NULL,"
+        "last_update_txid BLOB NOT NULL)");
+    ok = ok && db_mig_exec_raw(raw,
         "INSERT INTO wallet_sapling_notes"
         "(txid,output_index,value,rcm,ivk,diversifier,pk_d,cm,"
         "nullifier,block_height,address,witness_height) "

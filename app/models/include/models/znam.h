@@ -31,6 +31,11 @@ struct znam_entry {
     uint8_t reg_txid[32];
     int32_t reg_height;
     uint8_t last_update_txid[32];
+    /* Overlay bookkeeping (path A / node.db only): registration term
+     * granted at REGISTER (reg_height + ZNAM_REGISTRATION_TERM_BLOCKS) and
+     * extended by each RENEW. 0 for rows created before the expiry column
+     * existed. Not enforced by resolution today — see znam.h. */
+    int32_t expiry_height;
 };
 
 /* Text record (ENS TextResolver equivalent) */

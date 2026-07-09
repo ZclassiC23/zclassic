@@ -374,8 +374,12 @@ static bool znam_owner_address(struct node_db *ndb,
 }
 
 /* Apply one parsed ZNAM op into the node.db registry tables (path A).
- * Stateful commands (REGISTER FCFS, TRANSFER) are correct only under the
- * genesis-ascending walk the catchup driver guarantees. Failures are
+ * Stateful commands (REGISTER FCFS, UPDATE, TRANSFER, RENEW, SET_RECORD,
+ * SET_TEXT) are correct only under the genesis-ascending walk the catchup
+ * driver guarantees. Every mutation of an existing name (UPDATE, TRANSFER,
+ * SET_RECORD, SET_TEXT) is authorized against the current owner — the first
+ * input's P2PKH signer — so only the owner can change a name's records.
+ * RENEW is permissionless and only extends expiry_height. Failures are
  * logged and skipped — never fatal. */
 static void apply_znam(struct node_db *ndb, const struct transaction *tx,
                        const struct znam_message *zm, int height)
@@ -403,6 +407,7 @@ static void apply_znam(struct node_db *ndb, const struct transaction *tx,
         memcpy(e.reg_txid, tx->hash.data, 32);
         e.reg_height = height;
         memcpy(e.last_update_txid, tx->hash.data, 32);
+        e.expiry_height = height + ZNAM_REGISTRATION_TERM_BLOCKS;
         if (!db_znam_save(ndb, &e))
             LOG_WARN("explorer", "apply_znam: REGISTER %s save failed",
                      zm->name);
@@ -437,20 +442,50 @@ static void apply_znam(struct node_db *ndb, const struct transaction *tx,
                      zm->name);
         break;
     }
-    case ZNAM_CMD_SET_RECORD:
+    case ZNAM_CMD_SET_RECORD: {
+        /* Records resolve the identity, so only the current owner may set
+         * them — same auth as UPDATE/TRANSFER. Without this guard anyone
+         * could post a coin address under any name (identity spoofing). */
+        struct znam_entry e;
+        if (!db_znam_find(ndb, zm->name, &e))
+            return;   /* name must exist */
+        if (!have_owner || strcmp(e.owner_address, owner) != 0)
+            return;   /* only the current owner may set records */
         if (!db_znam_addr_save(ndb, zm->name, zm->target_type,
                                zm->target_value))
             LOG_WARN("explorer", "apply_znam: SET_RECORD %s save failed",
                      zm->name);
         break;
-    case ZNAM_CMD_SET_TEXT:
+    }
+    case ZNAM_CMD_SET_TEXT: {
+        /* Same owner authorization as SET_RECORD — text records (onion,
+         * pubkey, url, ...) are identity-bearing. */
+        struct znam_entry e;
+        if (!db_znam_find(ndb, zm->name, &e))
+            return;   /* name must exist */
+        if (!have_owner || strcmp(e.owner_address, owner) != 0)
+            return;   /* only the current owner may set text records */
         if (!db_znam_text_save(ndb, zm->name, zm->text_key, zm->text_value))
             LOG_WARN("explorer", "apply_znam: SET_TEXT %s save failed",
                      zm->name);
         break;
-    case ZNAM_CMD_RENEW:
-        /* No expiry column in path A — no-op. */
+    }
+    case ZNAM_CMD_RENEW: {
+        /* Extend the registration term. Renewal is permissionless
+         * (ENS-style): extending expiry can only benefit the owner, so no
+         * owner check — anyone may keep a name alive. Extend from the later
+         * of the current expiry or the anchor height, by one term. */
+        struct znam_entry e;
+        if (!db_znam_find(ndb, zm->name, &e))
+            return;   /* name must exist */
+        int32_t base = e.expiry_height > height ? e.expiry_height : height;
+        e.expiry_height = base + ZNAM_REGISTRATION_TERM_BLOCKS;
+        memcpy(e.last_update_txid, tx->hash.data, 32);
+        if (!db_znam_save(ndb, &e))
+            LOG_WARN("explorer", "apply_znam: RENEW %s save failed",
+                     zm->name);
         break;
+    }
     case ZNAM_CMD_INVALID:
     default:
         break;
