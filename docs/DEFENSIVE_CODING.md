@@ -420,6 +420,7 @@ add/remove a gate.
 - `check-zclassicd-reach-allowlist`
 - `check-no-csr-lock-on-finalize-drive`
 - `check-mint-skip-crypto-offline-only`
+- `check-wire-harness-security-gate`
 <!-- LINT-GATES-END -->
 
 (`check-consensus-parity` [E13, the parity mechanism — see
