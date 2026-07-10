@@ -15,8 +15,11 @@
 # `make chaos` is deliberately NOT part of `make ci` (build-cost, not
 # run-cost — the corpus itself replays in ~1.6s once the binary exists).
 #
-# TODO(B2-followup): once lane B1's `byzantine honest=` cluster-sweep DSL
-# verb lands, add a step here (and in `simnet-nightly:` in the Makefile).
+# The byzantine `honest=` cluster-sweep step, the ZCL_UTXO_LADDER_HEAVY
+# dense-MMB recompute, and the golden-table tip-coverage-lag check all live
+# inside `make simnet-nightly` itself (see the Makefile comment above
+# `simnet-nightly:`) — nothing extra needed here, this driver just calls
+# that one target.
 
 set -eu
 

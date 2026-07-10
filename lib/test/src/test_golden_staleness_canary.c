@@ -40,7 +40,7 @@
  * deliberately re-minted (tools/gen_sha3_windows / tools/gen_utxo_root_
  * ladder) to extend coverage. A silent drop below this value is exactly
  * the coverage-decay class this canary exists to catch. */
-#define SHA3_WINDOWS_EXPECTED_COUNT   3111
+#define SHA3_WINDOWS_EXPECTED_COUNT   3176
 #define UTXO_ROOT_LADDER_EXPECTED_MIN 1
 
 int test_golden_staleness_canary(void)

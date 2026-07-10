@@ -916,35 +916,94 @@ simnet-replay: wire_sweep
 # the very first step, with the clearest per-scenario PASS/FAIL line, before
 # the slower composite steps even start.
 #
-# TODO(B2-followup): add a `byzantine honest=` cluster sweep step here once
-# lane B1's DSL verb lands (it does not exist on this base yet — B1 is a
-# parallel in-flight lane, do not block this target on it).
+# Byzantine cluster sweep (step 4): lane B1's `simnet_nodes N honest=P` DSL
+# verb has landed (tools/sim/chaos.c handle_simnet_nodes /
+# simnet_cluster_byzantine_mint_on) and the detective scenario corpus
+# (tools/sim/scenarios/detective_*.scenario) already exercises it. `make
+# chaos` in step 1 already runs every *.scenario file including these three
+# via its glob, so this step is deliberately-duplicate — same doctrine as
+# sim-fast re-running `make chaos` internally (see the comment block above):
+# a byzantine-cluster regression gets its OWN named PASS/FAIL line instead of
+# being buried inside the generic "full corpus" step, and the perf/mixed
+# smoke (ZCL_SIMNET_PERF=1) is opt-in-cheap (sub-second, N=100 nodes) and
+# otherwise SKIPped by test_parallel itself — see fz_perf_smoke /
+# fz_byz_perf_smoke in lib/test/src/test_simnet_fuzz.c.
+DETECTIVE_SCENARIOS = \
+    tools/sim/scenarios/detective_100_80.scenario \
+    tools/sim/scenarios/detective_66_honest_partition.scenario \
+    tools/sim/scenarios/detective_51_honest_edge.scenario
+
+# ZCL_UTXO_LADDER_HEAVY dense-MMB recompute (step 5): re-folds mmb_root()
+# from a REAL mmb_leaves.bin copy (millions of leaves) to prove the compiled
+# dense anchor (g_utxo_root_ladder_dense_mmb_root) still reproduces
+# bit-for-bit — see test_utxo_root_ladder.c's HEAVY section. The fixture is
+# ~100 MB and only exists on a box that has actually synced/self-folded to
+# the dense anchor height, so this step SKIPs (not FAILs) when it is absent
+# — a fresh checkout or a CI runner has no such fixture and that is not a
+# regression signal.
+UTXO_LADDER_LEAF_STORE ?= $(HOME)/.zclassic-c23/mmb_leaves.bin
+
 .PHONY: simnet-nightly
 simnet-nightly:
-	@echo "══ simnet-nightly: step 1/3 — full .scenario corpus (make chaos) ══"
+	@echo "══ simnet-nightly: step 1/6 — full .scenario corpus (make chaos) ══"
 	@if $(MAKE) --no-print-directory chaos; then \
 	    step1=PASS; \
 	else \
 	    step1=FAIL; \
 	fi; \
-	echo "══ simnet-nightly: step 2/3 — bounded wire_sweep seed range (make wire-sweep) ══"; \
+	echo "══ simnet-nightly: step 2/6 — bounded wire_sweep seed range (make wire-sweep) ══"; \
 	if $(MAKE) --no-print-directory wire-sweep; then \
 	    step2=PASS; \
 	else \
 	    step2=FAIL; \
 	fi; \
-	echo "══ simnet-nightly: step 3/3 — sim-fast (chaos_harness unit slice + churn sweep) ══"; \
+	echo "══ simnet-nightly: step 3/6 — sim-fast (chaos_harness unit slice + churn sweep) ══"; \
 	if $(MAKE) --no-print-directory sim-fast; then \
 	    step3=PASS; \
 	else \
 	    step3=FAIL; \
 	fi; \
+	echo "══ simnet-nightly: step 4/6 — byzantine detective cluster sweep ══"; \
+	if $(MAKE) --no-print-directory zclassic23-chaos test_parallel >/dev/null; then \
+	    step4=PASS; \
+	    for s in $(DETECTIVE_SCENARIOS); do \
+	        echo "  ==> $$s"; \
+	        if ! $(ZCLASSIC23_CHAOS_BIN) --scenario="$$s"; then step4=FAIL; fi; \
+	    done; \
+	    echo "  ==> ZCL_SIMNET_PERF=1 mixed smoke (simnet_fuzz + simnet_byzantine_cluster)"; \
+	    if ! ZCL_SIMNET_PERF=1 $(TEST_PARALLEL_BIN) --only=simnet_fuzz; then step4=FAIL; fi; \
+	    if ! ZCL_SIMNET_PERF=1 $(TEST_PARALLEL_BIN) --only=simnet_byzantine_cluster; then step4=FAIL; fi; \
+	else \
+	    step4=FAIL; \
+	fi; \
+	echo "══ simnet-nightly: step 5/6 — ZCL_UTXO_LADDER_HEAVY dense-MMB recompute ══"; \
+	if [ -f "$(UTXO_LADDER_LEAF_STORE)" ]; then \
+	    if $(MAKE) --no-print-directory test_parallel >/dev/null && \
+	        ZCL_UTXO_LADDER_HEAVY=1 ZCL_UTXO_LADDER_LEAF_STORE="$(UTXO_LADDER_LEAF_STORE)" \
+	        $(TEST_PARALLEL_BIN) --only=utxo_root_ladder; then \
+	        step5=PASS; \
+	    else \
+	        step5=FAIL; \
+	    fi; \
+	else \
+	    step5="SKIP (no fixture at $(UTXO_LADDER_LEAF_STORE))"; \
+	fi; \
+	echo "══ simnet-nightly: step 6/6 — golden-table tip-coverage-lag check ══"; \
+	if bash tools/scripts/check_golden_freshness.sh; then \
+	    step6=PASS; \
+	else \
+	    step6=FAIL; \
+	fi; \
 	echo ""; \
 	echo "══ simnet-nightly SUMMARY ══"; \
-	echo "  1. chaos (full corpus) ....... $$step1"; \
-	echo "  2. wire-sweep ($(WIRE_SWEEP_SEEDS) seeds) .. $$step2"; \
-	echo "  3. sim-fast .................. $$step3"; \
-	if [ "$$step1" = PASS ] && [ "$$step2" = PASS ] && [ "$$step3" = PASS ]; then \
+	echo "  1. chaos (full corpus) ................. $$step1"; \
+	echo "  2. wire-sweep ($(WIRE_SWEEP_SEEDS) seeds) .......... $$step2"; \
+	echo "  3. sim-fast ............................. $$step3"; \
+	echo "  4. byzantine detective cluster sweep .... $$step4"; \
+	echo "  5. utxo-ladder dense-MMB heavy recompute . $$step5"; \
+	echo "  6. golden-table tip-coverage-lag check ... $$step6"; \
+	if [ "$$step1" = PASS ] && [ "$$step2" = PASS ] && [ "$$step3" = PASS ] && \
+	   [ "$$step4" = PASS ] && [ "$$step5" != FAIL ] && [ "$$step6" = PASS ]; then \
 	    echo "==> simnet-nightly PASSED"; \
 	else \
 	    echo "==> simnet-nightly FAILED"; \
