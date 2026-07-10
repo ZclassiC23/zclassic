@@ -962,6 +962,7 @@ int main(int argc, char **argv)
     failures += test_core();
     failures += test_znam();
     failures += test_htlc();
+    failures += test_swap_settlement();
     failures += test_file_market();
     failures += test_strong_params();
     { extern int test_wallet_funds_safety(void);
