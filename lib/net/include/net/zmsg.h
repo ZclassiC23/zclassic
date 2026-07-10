@@ -1,13 +1,20 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * ZCL Messaging (ZMSG) — Encrypted P2P messaging.
+ * ZCL Messaging (ZMSG) — P2P + on-chain messaging.
  *
  * Two modes:
- *   Off-chain: direct P2P messages between connected nodes (instant, free)
- *   On-chain:  Sapling memo field in shielded transaction (permanent, paid)
+ *   Off-chain: direct P2P messages between connected nodes (instant, free).
+ *              PLAINTEXT on the wire — zmsg_serialize writes a plain
+ *              length-prefixed struct and rpc_msg_send hands the body
+ *              straight to the socket; transport encryption is not yet
+ *              implemented.
+ *   On-chain:  rides inside the 512-byte encrypted Sapling memo field of a
+ *              shielded transaction (permanent, paid) — the memo encryption
+ *              is real (Sapling note encryption), the payload itself is not
+ *              separately encrypted.
  *
  * P2P messages:
- *   zmsg    — encrypted message delivery
+ *   zmsg    — plaintext message delivery
  *   zmsgack — delivery acknowledgment */
 
 #ifndef ZCL_NET_ZMSG_H
