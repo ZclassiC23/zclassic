@@ -13,6 +13,7 @@
 
 #include "tip_finalize_post_step.h"
 #include "jobs/stage_helpers.h"
+#include "utxo_root_ladder_tripwire.h"   /* OBSERVE-ONLY golden ladder caller */
 
 #include "chain/chain.h"
 #include "chain/mmb.h"
@@ -384,6 +385,11 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
      * and NEVER rejects a block, raises a HOLD, or changes the tip. Consensus
      * parity with zclassicd is bit-identical whether or not it fires. */
     sha3_window_tripwire_at_boundary(pindex_new, datadir);
+
+    /* OBSERVE-ONLY golden UTXO-root ladder corroboration tripwire (same
+     * posture as the SHA3 tripwire directly above). See
+     * utxo_root_ladder_tripwire.h for the full contract. */
+    utxo_root_ladder_tripwire_at_boundary(pindex_new->nHeight);
 
     block_free(&blk);
 }
