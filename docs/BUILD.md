@@ -35,8 +35,11 @@ Release builds intentionally use one whole-program LTO link. For day-to-day C
 development, use the non-release dev binary instead:
 
 ```bash
+make dev-watch
 make agent-loop
 make fast-rebuild
+make agent-index
+make dev-loop-bench
 make agent-mcp-call TOOL=zcl_tools_list
 make agent-mcp-call-hot TOOL=zcl_status
 make agent-mcp-call-dev TOOL=zcl_status
@@ -47,9 +50,53 @@ make agent-stage-dev
 build/bin/zclassic23-dev agentbuild
 ```
 
-`make agent-loop` is the default AI/operator edit loop. It runs the cache-aware
-fast checks; set `ZCL_AGENT_LOOP_BIN=1` to also link the local dev binary, or
-`ZCL_AGENT_LOOP_DEPLOY=dev` to hot-swap the dev lane with the fast dev build.
+`make dev-watch` is the save-driven AI/operator loop. It debounces and
+coalesces changed files, asks the shared `agentimpact` rules for the smallest
+focused verification set, and chooses one of five explicit modes:
+
+- `MODE=auto` selects the smallest proven-safe path. An exact
+  `config/hotswap_eligible.def` match can use the running dev node's
+  authenticated `dev_hotswap` RPC bridge through the default
+  `tools/dev/hotswap-running-dev.sh` transport. Transport-unavailable exit 69
+  falls back to process reload; ABI, manifest, self-test, commit, or probe
+  rejection remains a visible failed cycle. Mixed changes and header/dependency
+  fan-out use reload.
+- `MODE=hotswap` requires every changed translation unit to satisfy the v2
+  stateless MCP contract. Missing eligibility or transport is a rejection, not
+  an unsafe fallback.
+- `MODE=reload` builds and transactionally activates an immutable dev binary
+  generation.
+- `MODE=stage` builds and preflights an immutable generation without stopping
+  the running process.
+- `MODE=check` runs classification and focused checks without activation.
+
+Each attempted save writes one authoritative `zcl.dev_cycle.v1` record under
+`~/.local/state/zclassic23-dev/cycles/`, atomically refreshes
+`latest-cycle.json`, and updates the watcher heartbeat. The record contains the
+changed files, impact plan, selected path/reason, per-phase timings, candidate,
+running, and last-good generations, test/probe results, rollback result, a
+failure capsule, resident hot-swap response/provenance when applicable, and one
+executable `agent_next_action`. `make dev-watch` uses
+`inotifywait` when available and otherwise retains a stock-toolchain polling
+fallback. `make dev-watch-selftest` is the deterministic, node-free contract
+test.
+
+Process reloads are content-addressed under
+`~/.local/lib/zclassic23-dev/<generation>/`. Candidate `agentbuild`, tool
+catalog, MCP self-test, and build identity are checked before the old process is
+disturbed. Activation takes a nonblocking lock and flips atomic `current` and
+`last-good` links. The bounded warm probe verifies the exact `/proc` executable,
+RPC, agent/operator contracts, and MCP health. A failed candidate is
+quarantined; the activator restores `last-good`, restarts once, and verifies the
+recovery. Canonical and soak services, ports, and datadirs are rejected by the
+dev-lane guards. For a production-flag candidate in the same isolated lane use
+`ZCL_DEV_DEPLOY_BUILD=strict make deploy-dev`; this does not relax release,
+consensus, or full-suite gates.
+
+`make agent-loop` remains the manual one-shot loop. It runs the cache-aware fast
+checks; set `ZCL_AGENT_LOOP_BIN=1` to also link the local dev binary, or
+`ZCL_AGENT_LOOP_DEPLOY=dev` to transactionally reload the dev lane with the
+fast dev build.
 `make agent-mcp-call` is the fresh source-tree typed MCP path; it refreshes
 `build/bin/zclassic23-dev` before calling `mcpcall`, so API smoke checks after a
 code edit use the current local code without paying the release LTO link. For
@@ -65,8 +112,11 @@ next safe command. Use `make agent-doctor ARGS=--json` for
 explicit `worker_lane` contract (`role=worker`,
 `mutation_policy=noncanonical_dev_only`, and
 `canonical_guard=never_touches_live_or_soak`), source/staged binaries, linger
-service PID, RPC readiness, saved deploy state, auto-reindex marker, deploy
-blocker/reason, stale-marker candidate, and next safe action. Use
+service PID, RPC readiness, the current/running/last-good/staged generations,
+activation lock, rejected generations, rollback availability, saved deploy
+state, current cycle and watcher heartbeat, background-quality freshness,
+latency-SLO status, auto-reindex marker, deploy blocker/reason, stale-marker
+candidate, and next safe action. Use
 `make agent-dev-status ARGS=--json`, native `zclassic23 agentdevstatus`, or MCP
 `zcl_agent_dev_status` for the machine-readable `zcl.agent_dev_status.v1` form.
 When that status reports `auto_reindex_stale_candidate=true`, run
@@ -74,8 +124,57 @@ When that status reports `auto_reindex_stale_candidate=true`, run
 the dev RPC serves at or above the marker anchor, and never touches canonical or
 soak.
 When the dev service is busy and should not be restarted, `make agent-stage-dev`
-builds the fast dev binary and atomically stages it at
-`~/.local/bin/zclassic23-dev` for the next `zcl23-dev` restart.
+builds, preflights, and stages an immutable generation without restarting the
+`zcl23-dev` service.
+
+Foreground candidate preflight uses `zcl_self_test {"mode":"registry"}`. It
+validates every route and generated input schema inside the candidate without
+depending on the health of the process being replaced. The exhaustive
+handler-dispatch self-test remains a background/live diagnostic.
+
+`make agent-index` generates root `compile_commands.json` by dry-running the
+real `DEV_OBJS` recipes. It therefore preserves generated-header prerequisites,
+the exact C23 flags, compiler/cache wrapper, and the normal `-Og` versus hot
+consensus/crypto/script/validation `-O2` split. It atomically records hash and
+freshness metadata under `.cache/zcl-agent-index/`; clangd is an optional
+consumer, not a build requirement. `zclassic23 agentbuild` /
+`zcl_agent_build` embeds the current indexing status and an executable refresh
+command.
+
+`make dev-loop-bench` runs controlled no-op, controller, service, header,
+hot-swap, and process-reload cases and writes `zcl.dev_loop_bench.v1` with raw
+samples plus p50/p95 values. Hot-swap and reload are skipped unless the operator
+explicitly opts into activation, so an SLO is never claimed from build-only
+timings. `zclassic23 agentbuild` also exposes the latest benchmark status.
+
+In-process generation v2 is deliberately narrower than process reload. It
+admits only manifest-eligible, stateless MCP route providers; it stages the
+whole route batch, validates ABI/capabilities/provenance, runs the generation
+self-test, and atomically publishes one resident router snapshot. REST,
+diagnostics, services, models, storage, events, conditions, supervisors,
+network/wallet/crypto state, reducers, consensus, and bootstrap ownership remain
+`reload_required`. A committed hot-swap is process-local and disappears on
+restart. The watcher schedules an asynchronous `fast-rebuild` after success so
+the source-tree binary converges, then preflights it into an immutable `staged`
+generation; it does not silently flip `current`. A verified process reload is
+still the durable activation boundary. Inspect provenance with
+`zcl_state subsystem=hotswap` (`zcl.hotswap_generation.v2`). The dev-only
+`dev_hotswap` and non-destructive `dev_mcp_call` JSON-RPC methods dispatch
+through the resident router only on the exact isolated dev datadir; release,
+canonical, and soak nodes never register them. The normal persistent command is:
+
+```bash
+make hotswap FILES=tools/mcp/controllers/app_controller.c PROBE=zcl_name_list
+```
+
+It builds the generation and sends `dev_hotswap` to the already-running
+isolated dev node; it does not create or restart a service. The watcher's
+default `tools/dev/hotswap-running-dev.sh` transport uses the same bridge. Its
+exit 69 means only that the persistent RPC transport is unavailable, permitting
+`MODE=auto` to fall back to transactional reload; any generation/probe failure
+returns a different status and is never hidden by fallback. Run
+`make hotswap-sim` for the focused deterministic simulated-network proof, and
+`make sim-fast` for the broader checked-in scenarios plus seeded replay sweep.
 
 `make fast-rebuild` is an alias for the local dev binary (`make dev-bin`). It
 writes cached per-file objects under `build/dev-obj/`, links without LTO, keeps

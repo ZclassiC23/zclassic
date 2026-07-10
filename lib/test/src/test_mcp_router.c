@@ -789,6 +789,84 @@ static int test_router_replace_schema_visible(void)
     return failures;
 }
 
+static int test_router_batch_all_or_zero(void)
+{
+    int failures = 0;
+    TEST("transactional route batch publishes all replacements or zero") {
+        setup_routes();
+        const struct mcp_tool_route *echo_before = mcp_router_find("t.echo");
+        const struct mcp_tool_route *required_before =
+            mcp_router_find("t.required");
+        uint32_t generation_before = mcp_router_active_generation();
+        char why[256];
+
+        /* The first entry is valid and the second is malformed. Validation
+         * must finish before publication, leaving BOTH original pointers. */
+        const struct mcp_router_replacement bad_batch[] = {
+            { "t.echo", &r_echo_repl },
+            { "t.required", &r_other },
+        };
+        ASSERT(!mcp_router_replace_batch(41, bad_batch,
+                                         sizeof(bad_batch) /
+                                             sizeof(bad_batch[0]),
+                                         why, sizeof(why)));
+        ASSERT(mcp_router_find("t.echo") == echo_before);
+        ASSERT(mcp_router_find("t.required") == required_before);
+        ASSERT(mcp_router_active_generation() == generation_before);
+
+        const struct mcp_router_replacement good_batch[] = {
+            { "t.echo", &r_echo_repl },
+            { "t.required", &r_required_repl },
+        };
+        ASSERT(mcp_router_replace_batch(41, good_batch,
+                                        sizeof(good_batch) /
+                                            sizeof(good_batch[0]),
+                                        why, sizeof(why)));
+        ASSERT(mcp_router_find("t.echo") == &r_echo_repl);
+        ASSERT(mcp_router_find("t.required") == &r_required_repl);
+        ASSERT(mcp_router_active_generation() == 41);
+        setup_routes();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_router_snapshot_inflight_visibility(void)
+{
+    int failures = 0;
+    TEST("captured old route remains callable while new readers see committed snapshot") {
+        setup_routes();
+        const struct mcp_tool_route *captured = mcp_router_find("t.echo");
+        ASSERT(captured == &r_echo);
+
+        const struct mcp_router_replacement replacement = {
+            "t.echo", &r_echo_repl
+        };
+        char why[256];
+        ASSERT(mcp_router_replace_batch(7, &replacement, 1,
+                                        why, sizeof(why)));
+        ASSERT(mcp_router_find("t.echo") == &r_echo_repl);
+
+        /* Models a dispatch that acquired the old immutable snapshot before
+         * the commit. Its route/code remains valid for the process lifetime. */
+        struct mcp_request request = { .tool = "t.echo", .args = NULL };
+        struct mcp_response response = {0};
+        ASSERT(captured->handler(&request, &response) == 0);
+        ASSERT(response.body != NULL);
+        ASSERT(contains(response.body, "\"tool\":\"t.echo\""));
+        ASSERT(!contains(response.body, "echo2"));
+        free(response.body);
+
+        char *new_body = mcp_router_dispatch("t.echo", NULL);
+        ASSERT(new_body != NULL);
+        ASSERT(contains(new_body, "\"handler\":\"echo2\""));
+        free(new_body);
+        setup_routes();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ────────────────────────────────────────────── */
 
 int test_mcp_router(void);
@@ -833,6 +911,8 @@ int test_mcp_router(void)
     failures += test_router_replace_dispatch();
     failures += test_router_replace_unknown_fails();
     failures += test_router_replace_schema_visible();
+    failures += test_router_batch_all_or_zero();
+    failures += test_router_snapshot_inflight_visibility();
 
     return failures;
 }

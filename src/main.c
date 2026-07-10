@@ -61,6 +61,7 @@
 #include "mcp/middleware.h"
 #include "mcp/router.h"
 #include "mcp/rpc_client.h"
+#include "devloop.h"
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -1461,6 +1462,12 @@ static int cli_main(int argc, char **argv)
         return 1;
     }
 
+    /* The dev command tree is checkout-local and intentionally independent of
+     * any running node. Dispatch before service/cookie discovery so menu,
+     * planning, and watcher startup stay constant-time and token-light. */
+    if (zcl_devloop_is_method(method))
+        return zcl_devloop_cli_main(params_storage, nparams);
+
     if (!datadir_set && !cli_cookie_exists(datadir)) {
         char service_datadir[512];
         if (cli_service_exec_arg("datadir", service_datadir,
@@ -1651,6 +1658,7 @@ static void print_usage(const char *prog)
     printf("  %s --agent                 Same compact status\n", prog);
     printf("  %s -mcp                    Run MCP server (stdio)\n", prog);
     printf("  %s mcpcall <tool> [json]   Call one typed MCP tool\n", prog);
+    printf("  %s dev [branch...]         Native shallow LLM development tree\n", prog);
     printf("  %s <method> [params...]    RPC client\n\n", prog);
     printf("Node options:\n");
     printf("  -datadir=<dir>      Data directory\n");

@@ -12,6 +12,7 @@
 #include "util/trace.h"
 
 #include <stdatomic.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -22,17 +23,41 @@
 
 #define MCP_ROUTER_MAX_ROUTES 256
 
-/* Slots are atomic so an in-process hot-swap (mcp_router_replace, dev-only)
- * can re-point a route with a release store while dispatch/find/tools-list
- * readers on RPC/HTTP worker threads observe it with an acquire load — no
- * torn pointer, no lock on the hot path. Registration only grows the table
- * at boot (single-threaded), so g_num_routes itself stays a plain size_t. */
-static const struct mcp_tool_route *_Atomic g_routes[MCP_ROUTER_MAX_ROUTES];
-static size_t g_num_routes = 0;
+/* One immutable snapshot, not one atomic per route. A v2 generation is built
+ * from the currently active snapshot and published with ONE release-store, so
+ * readers observe the entire old or entire new route set. Published snapshots
+ * are never freed: a dispatch that acquired an older snapshot and an older .so
+ * route must be allowed to finish without a lease/UAF race. */
+struct mcp_router_snapshot {
+    uint32_t generation;
+    size_t num_routes;
+    const struct mcp_tool_route *routes[MCP_ROUTER_MAX_ROUTES];
+};
 
-static inline const struct mcp_tool_route *route_load(size_t i)
+static struct mcp_router_snapshot g_boot_snapshot;
+static struct mcp_router_snapshot *_Atomic g_active_snapshot = &g_boot_snapshot;
+static pthread_mutex_t g_router_write_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static inline const struct mcp_router_snapshot *snapshot_load(void)
 {
-    return atomic_load_explicit(&g_routes[i], memory_order_acquire);
+    return atomic_load_explicit(&g_active_snapshot, memory_order_acquire);
+}
+
+static const struct mcp_tool_route *snapshot_find(
+    const struct mcp_router_snapshot *snapshot, const char *name,
+    size_t *index_out)
+{
+    if (!snapshot || !name)
+        return NULL;
+    for (size_t i = 0; i < snapshot->num_routes; i++) {
+        const struct mcp_tool_route *route = snapshot->routes[i];
+        if (route && strcmp(route->name, name) == 0) {
+            if (index_out)
+                *index_out = i;
+            return route;
+        }
+    }
+    return NULL;
 }
 
 /* ── Helpers ─────────────────────────────────────────────────── */
@@ -103,25 +128,30 @@ static bool csv_contains(const char *csv, const char *s)
 
 void mcp_router_reset(void)
 {
-    for (size_t i = 0; i < MCP_ROUTER_MAX_ROUTES; i++)
-        atomic_store_explicit(&g_routes[i], NULL, memory_order_release);
-    g_num_routes = 0;
+    pthread_mutex_lock(&g_router_write_lock);
+    memset(&g_boot_snapshot, 0, sizeof(g_boot_snapshot));
+    atomic_store_explicit(&g_active_snapshot, &g_boot_snapshot,
+                          memory_order_release);
+    pthread_mutex_unlock(&g_router_write_lock);
 }
 
 bool mcp_router_register(const struct mcp_tool_route *route)
 {
     if (!route || !route->name || !route->handler)
         return false;
-    if (g_num_routes >= MCP_ROUTER_MAX_ROUTES)
+    pthread_mutex_lock(&g_router_write_lock);
+    struct mcp_router_snapshot *snapshot =
+        atomic_load_explicit(&g_active_snapshot, memory_order_acquire);
+    /* Registration is a boot-only operation. Never mutate an immutable
+     * published generation in place. */
+    if (snapshot != &g_boot_snapshot ||
+        snapshot->num_routes >= MCP_ROUTER_MAX_ROUTES ||
+        snapshot_find(snapshot, route->name, NULL)) {
+        pthread_mutex_unlock(&g_router_write_lock);
         return false;
-    /* Reject duplicate names */
-    for (size_t i = 0; i < g_num_routes; i++) {
-        if (strcmp(route_load(i)->name, route->name) == 0)
-            return false;
     }
-    atomic_store_explicit(&g_routes[g_num_routes], route,
-                          memory_order_release);
-    g_num_routes++;
+    snapshot->routes[snapshot->num_routes++] = route;
+    pthread_mutex_unlock(&g_router_write_lock);
     return true;
 }
 
@@ -134,7 +164,8 @@ void mcp_router_register_required(const struct mcp_tool_route *route)
         fprintf(stderr,
                 "[mcp_router] FATAL: malformed required route "
                 "name=%s domain=%s count=%zu capacity=%zu\n",
-                name, domain, g_num_routes, (size_t)MCP_ROUTER_MAX_ROUTES);
+                name, domain, mcp_router_count(),
+                (size_t)MCP_ROUTER_MAX_ROUTES);
         abort();
     }
 
@@ -147,7 +178,8 @@ void mcp_router_register_required(const struct mcp_tool_route *route)
                 "existing_domain=%s new_domain=%s count=%zu capacity=%zu\n",
                 route->name,
                 existing->domain ? existing->domain : "(null)",
-                domain, g_num_routes, (size_t)MCP_ROUTER_MAX_ROUTES);
+                domain, mcp_router_count(),
+                (size_t)MCP_ROUTER_MAX_ROUTES);
         abort();
     }
 
@@ -155,25 +187,20 @@ void mcp_router_register_required(const struct mcp_tool_route *route)
         fprintf(stderr,
                 "[mcp_router] FATAL: required route registration failed "
                 "name=%s domain=%s count=%zu capacity=%zu\n",
-                name, domain, g_num_routes, (size_t)MCP_ROUTER_MAX_ROUTES);
+                name, domain, mcp_router_count(),
+                (size_t)MCP_ROUTER_MAX_ROUTES);
         abort();
     }
 }
 
 const struct mcp_tool_route *mcp_router_find(const char *name)
 {
-    if (!name) return NULL;
-    for (size_t i = 0; i < g_num_routes; i++) {
-        const struct mcp_tool_route *r = route_load(i);
-        if (r && strcmp(r->name, name) == 0)
-            return r;
-    }
-    return NULL;
+    return snapshot_find(snapshot_load(), name, NULL);
 }
 
 size_t mcp_router_count(void)
 {
-    return g_num_routes;
+    return snapshot_load()->num_routes;
 }
 
 size_t mcp_router_capacity(void)
@@ -183,8 +210,9 @@ size_t mcp_router_capacity(void)
 
 const struct mcp_tool_route *mcp_router_at(size_t idx)
 {
-    if (idx >= g_num_routes) return NULL;
-    return route_load(idx);
+    const struct mcp_router_snapshot *snapshot = snapshot_load();
+    if (idx >= snapshot->num_routes) return NULL;
+    return snapshot->routes[idx];
 }
 
 /* ── In-process route swap (dev-only caller; harmless + tested always) ──
@@ -197,25 +225,117 @@ const struct mcp_tool_route *mcp_router_at(size_t idx)
  * on any failure. Nothing calls this outside the dev hot-swap loader + tests. */
 bool mcp_router_replace(const char *name, const struct mcp_tool_route *new_route)
 {
-    if (!name || !name[0])
-        LOG_FAIL("mcp.router", "mcp_router_replace: null/empty name");
-    if (!new_route || !new_route->name || !new_route->handler)
-        LOG_FAIL("mcp.router",
-                 "mcp_router_replace: malformed route for '%s'", name);
-    if (strcmp(new_route->name, name) != 0)
-        LOG_FAIL("mcp.router",
-                 "mcp_router_replace: route name '%s' != slot '%s'",
-                 new_route->name, name);
-    for (size_t i = 0; i < g_num_routes; i++) {
-        const struct mcp_tool_route *r = route_load(i);
-        if (r && strcmp(r->name, name) == 0) {
-            atomic_store_explicit(&g_routes[i], new_route,
-                                  memory_order_release);
-            return true;
+    struct mcp_router_replacement replacement = {
+        .name = name,
+        .route = new_route,
+    };
+    char why[256] = {0};
+    if (mcp_router_replace_batch(0, &replacement, 1, why, sizeof(why)))
+        return true;
+    LOG_FAIL("mcp.router", "mcp_router_replace: %s",
+             why[0] ? why : "batch replacement failed");
+}
+
+static bool replacement_is_structurally_valid(
+    const struct mcp_router_replacement *replacement,
+    char *why, size_t why_sz)
+{
+    if (!replacement || !replacement->name || !replacement->name[0]) {
+        if (why) snprintf(why, why_sz, "null/empty replacement name");
+        return false;
+    }
+    if (!replacement->route || !replacement->route->name ||
+        !replacement->route->handler) {
+        if (why)
+            snprintf(why, why_sz, "malformed route for '%s'",
+                     replacement->name);
+        return false;
+    }
+    if (strcmp(replacement->route->name, replacement->name) != 0) {
+        if (why)
+            snprintf(why, why_sz, "route name '%s' != slot '%s'",
+                     replacement->route->name, replacement->name);
+        return false;
+    }
+    return true;
+}
+
+bool mcp_router_replace_batch(uint32_t generation,
+                              const struct mcp_router_replacement *replacements,
+                              size_t replacement_count,
+                              char *why,
+                              size_t why_sz)
+{
+    if (why && why_sz)
+        why[0] = '\0';
+    if (!replacements || replacement_count == 0 ||
+        replacement_count > MCP_ROUTER_MAX_ROUTES) {
+        if (why)
+            snprintf(why, why_sz, "invalid replacement count: %zu",
+                     replacement_count);
+        return false;
+    }
+
+    pthread_mutex_lock(&g_router_write_lock);
+    const struct mcp_router_snapshot *old =
+        atomic_load_explicit(&g_active_snapshot, memory_order_acquire);
+
+    /* Validate the ENTIRE batch against exactly one source snapshot before
+     * allocating or publishing anything. */
+    size_t indexes[MCP_ROUTER_MAX_ROUTES];
+    for (size_t i = 0; i < replacement_count; i++) {
+        if (!replacement_is_structurally_valid(&replacements[i], why, why_sz)) {
+            pthread_mutex_unlock(&g_router_write_lock);
+            return false;
+        }
+        if (!snapshot_find(old, replacements[i].name, &indexes[i])) {
+            if (why)
+                snprintf(why, why_sz, "no route named '%s'",
+                         replacements[i].name);
+            pthread_mutex_unlock(&g_router_write_lock);
+            return false;
+        }
+        for (size_t j = 0; j < i; j++) {
+            if (indexes[j] == indexes[i]) {
+                if (why)
+                    snprintf(why, why_sz, "duplicate replacement '%s'",
+                             replacements[i].name);
+                pthread_mutex_unlock(&g_router_write_lock);
+                return false;
+            }
         }
     }
-    LOG_FAIL("mcp.router",
-             "mcp_router_replace: no route named '%s'", name);
+
+    uint32_t next_generation = generation ? generation : old->generation + 1u;
+    if (next_generation <= old->generation) {
+        if (why)
+            snprintf(why, why_sz,
+                     "generation %u is not newer than active generation %u",
+                     next_generation, old->generation);
+        pthread_mutex_unlock(&g_router_write_lock);
+        return false;
+    }
+
+    struct mcp_router_snapshot *next =
+        zcl_malloc(sizeof(*next), "mcp router generation snapshot");
+    if (!next) {
+        if (why) snprintf(why, why_sz, "snapshot allocation failed");
+        pthread_mutex_unlock(&g_router_write_lock);
+        return false;
+    }
+    memcpy(next, old, sizeof(*next));
+    next->generation = next_generation;
+    for (size_t i = 0; i < replacement_count; i++)
+        next->routes[indexes[i]] = replacements[i].route;
+
+    atomic_store_explicit(&g_active_snapshot, next, memory_order_release);
+    pthread_mutex_unlock(&g_router_write_lock);
+    return true;
+}
+
+uint32_t mcp_router_active_generation(void)
+{
+    return snapshot_load()->generation;
 }
 
 /* ── Type / code naming ──────────────────────────────────────── */
@@ -478,11 +598,12 @@ size_t mcp_router_input_schema_json(const struct mcp_tool_route *route,
 size_t mcp_router_tools_list_json(char *buf, size_t buflen)
 {
     if (!buf || buflen == 0) return 0;
+    const struct mcp_router_snapshot *snapshot = snapshot_load();
     size_t pos = 0;
     if (pos + 1 >= buflen) return pos;
     buf[pos++] = '[';
-    for (size_t i = 0; i < g_num_routes; i++) {
-        const struct mcp_tool_route *r = route_load(i);
+    for (size_t i = 0; i < snapshot->num_routes; i++) {
+        const struct mcp_tool_route *r = snapshot->routes[i];
         if (i > 0) {
             if (pos + 1 >= buflen) return pos;
             buf[pos++] = ',';
@@ -598,14 +719,15 @@ static void replay_record_if_enabled(const char *tool,
     mcp_replay_record(tool, args_buf, response, dur_us, is_error);
 }
 
-char *mcp_router_dispatch(const char *tool_name,
-                          const struct json_value *args)
+static char *mcp_router_dispatch_resolved(
+    const char *tool_name,
+    const struct json_value *args,
+    const struct mcp_tool_route *route)
 {
     uint64_t t0 = now_us();
     struct trace_span *span = trace_start("mcp.dispatch");
     trace_attr_str(span, "tool", tool_name ? tool_name : "(null)");
 
-    const struct mcp_tool_route *route = mcp_router_find(tool_name);
     if (!route) {
         char msg[200];
         snprintf(msg, sizeof(msg), "unknown tool: %s",
@@ -674,4 +796,18 @@ char *mcp_router_dispatch(const char *tool_name,
     trace_attr_int(span, "dur_us", (int64_t)dur);
     trace_end(span);
     return res.body;
+}
+
+char *mcp_router_dispatch(const char *tool_name,
+                          const struct json_value *args)
+{
+    return mcp_router_dispatch_resolved(tool_name, args,
+                                        mcp_router_find(tool_name));
+}
+
+char *mcp_router_dispatch_route(const struct mcp_tool_route *route,
+                                const struct json_value *args)
+{
+    return mcp_router_dispatch_resolved(route ? route->name : NULL,
+                                        args, route);
 }

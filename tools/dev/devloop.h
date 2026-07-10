@@ -1,0 +1,77 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0 */
+
+#ifndef ZCL_TOOLS_DEVLOOP_H
+#define ZCL_TOOLS_DEVLOOP_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#define ZCL_DEVLOOP_MAX_FILES 256
+#define ZCL_DEVLOOP_PATH_MAX 1024
+#define ZCL_DEVLOOP_OUTPUT_MAX 65536
+
+enum zcl_devloop_action {
+    ZCL_DEVLOOP_CHECK = 0,
+    ZCL_DEVLOOP_HOTSWAP,
+    ZCL_DEVLOOP_RELOAD,
+};
+
+struct zcl_devloop_plan {
+    enum zcl_devloop_action action;
+    const char *action_name;
+    const char *reason;
+    const char *probe_tool;
+    const char *proof_group;
+    char proof_group_storage[64];
+    bool consensus_risk;
+    bool docs_only;
+    size_t file_count;
+};
+
+struct zcl_devloop_process_result {
+    int exit_code;
+    int term_signal;
+    bool timed_out;
+    int64_t elapsed_ms;
+    char output[ZCL_DEVLOOP_OUTPUT_MAX];
+    size_t output_len;
+};
+
+bool zcl_devloop_is_method(const char *method);
+int zcl_devloop_cli_main(const char **args, int nargs);
+
+bool zcl_devloop_plan_files(const char *const *files, size_t file_count,
+                            struct zcl_devloop_plan *out);
+size_t zcl_devloop_plan_json(const char *const *files, size_t file_count,
+                             char *out, size_t out_sz);
+
+size_t zcl_devloop_menu_json(const char *path, char *out, size_t out_sz);
+size_t zcl_devloop_menu_search_json(const char *query,
+                                    char *out, size_t out_sz);
+
+bool zcl_devloop_process_run(const char *cwd,
+                             const char *const argv[],
+                             int timeout_ms,
+                             struct zcl_devloop_process_result *out);
+
+int zcl_devloop_run_cycle(const char *repo_root,
+                          const char *const *files,
+                          size_t file_count);
+int zcl_devloop_watch(const char *repo_root);
+int zcl_devloop_print_status(void);
+int zcl_devloop_run_sim(const char *repo_root);
+int zcl_devloop_app_describe(const char *repo_root, const char *app_id);
+int zcl_devloop_app_plan(const char *repo_root, const char *app_id,
+                         const char *resource);
+int zcl_devloop_app_simulate(const char *app_id, uint64_t seed);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* ZCL_TOOLS_DEVLOOP_H */

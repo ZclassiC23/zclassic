@@ -132,6 +132,25 @@ const struct mcp_tool_route *mcp_router_find(const char *name);
  * mcp_router_register / mcp_router_register_required. */
 bool mcp_router_replace(const char *name, const struct mcp_tool_route *new_route);
 
+/* Transactional sibling used by hot-swap v2. Every replacement is validated
+ * against one immutable source snapshot first; a single release-store then
+ * publishes the complete generation. On any error the active snapshot is
+ * unchanged. `generation == 0` asks the router to assign current+1 (used by
+ * the compatibility single-route API). Successful snapshots are intentionally
+ * retained for the process lifetime so in-flight readers remain valid. */
+struct mcp_router_replacement {
+    const char *name;
+    const struct mcp_tool_route *route;
+};
+
+bool mcp_router_replace_batch(uint32_t generation,
+                              const struct mcp_router_replacement *replacements,
+                              size_t replacement_count,
+                              char *why,
+                              size_t why_sz);
+
+uint32_t mcp_router_active_generation(void);
+
 size_t mcp_router_count(void);
 size_t mcp_router_capacity(void);
 const struct mcp_tool_route *mcp_router_at(size_t idx);
@@ -166,6 +185,14 @@ enum mcp_error_code mcp_router_validate(const struct mcp_tool_route *route,
  * returns NULL.  Caller frees. */
 char *mcp_router_dispatch(const char *tool_name,
                           const struct json_value *args);
+
+/* Dispatch an already-resolved immutable route without looking its name up
+ * again. Validation, envelopes, events, and replay recording are identical to
+ * mcp_router_dispatch(). Policy-checking callers use this after inspecting a
+ * captured route so a concurrent generation commit cannot create a check/use
+ * race. Published hot-swap snapshots keep captured routes mapped. */
+char *mcp_router_dispatch_route(const struct mcp_tool_route *route,
+                                const struct json_value *args);
 
 /* ── JSON output ─────────────────────────────────────────────── */
 

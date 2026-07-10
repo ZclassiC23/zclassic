@@ -1,0 +1,38 @@
+/* Dynamic application mounts. App-specific children come from app.def. */
+
+ZCL_COMMAND_READY_READ(
+    "app.list", "app", "", "List installed App manifests",
+    "apps,manifest,installed", "zcl.command.empty_input.v1",
+    "zcl.app_index.v1", "", "", "zclassic23 app list",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_APP_MANIFEST_READ,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_app_list)
+
+ZCL_COMMAND_READY_READ(
+    "app.inspect", "app", "", "Inspect one App manifest and bindings",
+    "app,manifest,capabilities,bindings", "zcl.app_ref_input.v1",
+    "zcl.app_manifest_summary.v1", "app_id", "app_id",
+    "zclassic23 app inspect social",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_APP_MANIFEST_READ,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_app_inspect)
+
+ZCL_COMMAND_COMPAT_READ(
+    "app.protocols", "app", "appprotocols", "List App protocol contracts",
+    "protocols,events,p2p,wire", "zcl.command.empty_input.v1",
+    "zcl.app_protocols.v1", "", "", "zclassic23 app protocols",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_ALL_NODE, ZCL_COMMAND_CAP_CHAIN_READ,
+    ZCL_COMMAND_TRANSPORT_NATIVE | ZCL_COMMAND_TRANSPORT_RPC |
+        ZCL_COMMAND_TRANSPORT_MCP_LEGACY,
+    "zclassic23 appprotocols")
+
+ZCL_COMMAND_BRANCH("app.invoke", "app", "Invoke a manifest-owned App route",
+                   ZCL_COMMAND_LAYER_APP)

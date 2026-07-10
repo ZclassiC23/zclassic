@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# Build one admitted stateless generation and commit it inside the running,
+# isolated dev node through the dev-only RPC bridge.  Exit 69 means the
+# persistent transport is unavailable, allowing `dev-watch auto` to fall back
+# to a transactional process reload.  Any generation/ABI/probe rejection is a
+# real failure (exit 1) and must not be hidden by a reload.
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="${ZCL_DEV_WATCH_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
+FILES_FILE="${ZCL_DEV_HOTSWAP_FILES_FILE:-}"
+PROBE="${ZCL_DEV_HOTSWAP_PROBE:-zcl_name_list}"
+STATE_DIR="${ZCL_DEV_WATCH_STATE_DIR:-$HOME/.local/state/zclassic23-dev}"
+RESULT_FILE="${ZCL_DEV_HOTSWAP_RESULT:-$STATE_DIR/hotswap-latest.json}"
+CYCLE_ID="${ZCL_DEV_CYCLE_ID:-standalone-$(date +%s)-$$}"
+
+fail()
+{
+    printf '[dev-hotswap] FATAL: %s\n' "$*" >&2
+    exit 2
+}
+
+json_escape()
+{
+    printf '%s' "$1" | sed \
+        -e 's/\\/\\\\/g' -e 's/"/\\"/g' \
+        -e ':a;N;$!ba;s/\n/\\n/g' -e 's/\r/\\r/g' -e 's/\t/\\t/g'
+}
+
+[ -n "$FILES_FILE" ] && [ -r "$FILES_FILE" ] ||
+    fail 'ZCL_DEV_HOTSWAP_FILES_FILE must name a readable changed-file list'
+
+mapfile -t files < <(sed '/^[[:space:]]*$/d' "$FILES_FILE")
+[ "${#files[@]}" -eq 1 ] ||
+    fail "v2 pilot requires exactly one admitted provider (got ${#files[@]})"
+source_file="${files[0]}"
+case "$source_file" in
+    *[!A-Za-z0-9_./-]*|/*|*..*) fail "unsafe source path: $source_file" ;;
+esac
+case "$PROBE" in
+    "") ;;
+    *[!A-Za-z0-9_]*) fail "unsafe probe tool name: $PROBE" ;;
+esac
+
+cd "$ROOT" || fail "cannot enter repository: $ROOT"
+so="$(make --no-print-directory hotswap-so FILES="$source_file")" || exit 1
+[ -n "$so" ] && [ -r "$so" ] || fail 'hotswap-so produced no readable artifact'
+case "$so" in /*) ;; *) so="$ROOT/$so" ;; esac
+
+bin="$ROOT/build/bin/zclassic23-dev"
+[ -x "$bin" ] || {
+    printf '[dev-hotswap] persistent RPC client binary is not built: %s\n' "$bin" >&2
+    exit 69
+}
+
+err_file="$(mktemp "${TMPDIR:-/tmp}/zcl-dev-hotswap.XXXXXX")" ||
+    fail 'could not allocate RPC stderr capture'
+trap 'rm -f "$err_file"' EXIT HUP INT TERM
+
+# Exercise the same artifact in a short-lived dispatcher first. This runs the
+# generation probe before the resident process can publish anything. A probe
+# or manifest failure therefore leaves the running node untouched.
+args="{\"so_path\":\"$(json_escape "$so")\""
+if [ -n "$PROBE" ]; then
+    args="$args,\"probe_tool\":\"$PROBE\""
+fi
+args="$args}"
+set +e
+smoke_output="$("$bin" -datadir="$HOME/.zclassic-c23-dev" -rpcport=18252 \
+    mcpcall zcl_agent_hotswap "$args" 2>"$err_file")"
+smoke_rc=$?
+set -e
+[ ! -s "$err_file" ] || sed 's/^/[dev-hotswap-preflight] /' "$err_file" >&2
+if [ "$smoke_rc" -ne 0 ] ||
+   ! printf '%s' "$smoke_output" |
+       grep -q '"ok"[[:space:]]*:[[:space:]]*true' ||
+   printf '%s' "$smoke_output" | grep -q '"probe_error"[[:space:]]*:' ||
+   { [ -n "$PROBE" ] &&
+     ! printf '%s' "$smoke_output" | grep -q '"probe"[[:space:]]*:'; }; then
+    printf '%s\n' "$smoke_output"
+    printf '[dev-hotswap] pre-commit generation/probe smoke failed; resident node was untouched\n' >&2
+    exit 1
+fi
+
+: > "$err_file"
+set +e
+output="$("$bin" -datadir="$HOME/.zclassic-c23-dev" -rpcport=18252 \
+    dev_hotswap "$so" 2>"$err_file")"
+rc=$?
+set -e
+printf '%s\n' "$output"
+[ ! -s "$err_file" ] || sed 's/^/[dev-hotswap-rpc] /' "$err_file" >&2
+
+# Persist the exact resident response for the enclosing zcl.dev_cycle.v1.
+# stdout from the RPC CLI is one JSON value; if it is not, fail closed and do
+# not publish a misleading provenance record.
+if printf '%s' "$output" | grep -q '^[[:space:]]*{' &&
+   printf '%s' "$output" | grep -q '}[[:space:]]*$'; then
+    mkdir -p "$(dirname "$RESULT_FILE")"
+    result_tmp="$(mktemp "$(dirname "$RESULT_FILE")/.hotswap-result.XXXXXX")" ||
+        fail 'could not allocate hot-swap result record'
+    {
+        printf '{"schema":"zcl.dev_hotswap_result.v1","cycle_id":"%s",' \
+            "$(json_escape "$CYCLE_ID")"
+        printf '"captured_at_utc":"%s","artifact":"%s","response":' \
+            "$(date -u +%FT%TZ)" "$(json_escape "$so")"
+        printf '%s,"precommit_probe":%s}\n' "$output" "$smoke_output"
+    } > "$result_tmp"
+    mv -f "$result_tmp" "$RESULT_FILE"
+fi
+
+if [ "$rc" -ne 0 ]; then
+    combined="$output $(cat "$err_file")"
+    if printf '%s' "$combined" | grep -Eqi \
+        'method not found|"code"[[:space:]]*:[[:space:]]*-32601|could not connect|connection refused|rpc server unavailable|failed to connect'; then
+        printf '[dev-hotswap] persistent dev-node RPC unavailable; reload fallback is permitted\n' >&2
+        exit 69
+    fi
+    printf '[dev-hotswap] RPC transport failed rc=%s; generation was not accepted\n' "$rc" >&2
+    exit 1
+fi
+
+if ! printf '%s' "$output" |
+     grep -q '"ok"[[:space:]]*:[[:space:]]*true'; then
+    printf '[dev-hotswap] generation rejected; refusing to hide it behind a reload\n' >&2
+    exit 1
+fi
+printf '[dev-hotswap] committed persistent generation artifact=%s\n' "$so"

@@ -3091,6 +3091,20 @@ static int test_zcl_agent_dev_tools_dispatch(void)
         ASSERT(dev_bin != NULL);
         ASSERT_STR_EQ(json_get_str(json_get(dev_bin, "status_command")),
                       "make agent-dev-status");
+        const struct json_value *indexing = json_get(&root, "indexing");
+        ASSERT(indexing != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(indexing, "schema")),
+                      "zcl.agent_index_runtime.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(indexing, "command")),
+                      "make agent-index");
+        ASSERT(json_get(indexing, "freshness") != NULL);
+        ASSERT(json_get(indexing, "clangd_optional") != NULL);
+        const struct json_value *bench =
+            json_get(&root, "dev_loop_benchmark");
+        ASSERT(bench != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(bench, "schema")),
+                      "zcl.dev_loop_bench.v1");
+        ASSERT(json_get(bench, "slo") != NULL);
         json_free(&root);
         free(body);
 
@@ -5339,6 +5353,7 @@ static int test_destructive_tools_registered(void)
 
 static int g_self_test_taddr_rpc_calls;
 static int g_self_test_zaddr_rpc_calls;
+static int g_registry_self_test_rpc_calls;
 
 static char *mock_self_test_address_rpc(const char *method,
                                         const char *params_json)
@@ -5349,6 +5364,41 @@ static char *mock_self_test_address_rpc(const char *method,
     if (strcmp(method, "z_getnewaddress") == 0)
         g_self_test_zaddr_rpc_calls++;
     return strdup("null");
+}
+
+static char *mock_registry_self_test_rpc(const char *method,
+                                         const char *params_json)
+{
+    (void)method;
+    (void)params_json;
+    g_registry_self_test_rpc_calls++;
+    return strdup("null");
+}
+
+static int test_self_test_registry_mode_is_candidate_local(void)
+{
+    int failures = 0;
+    TEST("controllers: registry self-test is bounded and candidate-local") {
+        register_all();
+        g_registry_self_test_rpc_calls = 0;
+        mcp_rpc_client_set_test_hook(mock_registry_self_test_rpc);
+
+        struct json_value args = {0};
+        ASSERT(json_read(&args, "{\"mode\":\"registry\"}",
+                         strlen("{\"mode\":\"registry\"}")));
+        char *body = mcp_router_dispatch("zcl_self_test", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+        ASSERT(contains(body, "\"mode\":\"registry\""));
+        ASSERT(contains(body, "\"fail\":0"));
+        ASSERT(g_registry_self_test_rpc_calls == 0);
+
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
 }
 
 static int test_self_test_skips_address_generation(void)
@@ -6075,6 +6125,7 @@ int test_mcp_controllers(void)
     failures += test_tools_list_json_well_formed();
     failures += test_input_schema_for_zcl_getblock();
     failures += test_destructive_tools_registered();
+    failures += test_self_test_registry_mode_is_candidate_local();
     failures += test_self_test_skips_address_generation();
     failures += test_duplicate_register_rejected();
     failures += test_reset_clears_and_reregister_restores();

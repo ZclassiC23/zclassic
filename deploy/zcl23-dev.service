@@ -3,14 +3,19 @@ Description=ZClassic23 DEV lane (fresh-build binary, isolated datadir+ports)
 After=network-online.target
 Wants=network-online.target
 # The DEV lane: every commit I work on gets built and deployed HERE so the
-# code is actually exercised live, never rotting unrun in git. It runs a copy
-# of the freshly-built binary (%h/.local/bin/zclassic23-dev), redeployed by
-# tools/dev/deploy-dev-lane.sh on every build. It is fully isolated from the
+# code is actually exercised live, never rotting unrun in git. It runs the
+# immutable generation selected by the atomic `current` link under
+# %h/.local/lib/zclassic23-dev, transactionally activated by
+# tools/dev/deploy-dev-lane.sh. It is fully isolated from the
 # operator-gated live node (%h/.zclassic-c23, ports 8033/18232) and from the
 # pinned-binary soak lane (%h/.zclassic-c23-soak, 8043/18242): separate datadir
 # (%h/.zclassic-c23-dev) and ports (P2P 8053, RPC 18252). `make deploy` never
 # touches this unit; this unit never touches the live datadir.
-StartLimitIntervalSec=0
+# A dead-on-arrival candidate may retry briefly while the activator is probing,
+# but it must not loop forever. The activator quarantines a rejected generation,
+# restores last-good, resets this bounded failure counter, and starts once.
+StartLimitIntervalSec=60
+StartLimitBurst=3
 
 [Service]
 Type=simple
@@ -23,7 +28,7 @@ Type=simple
 # localhost-only node pins at its seed whenever announce-stream holes need
 # body_fetch backfill (proven on the soak lane 2026-06-12). Same external
 # set as the soak unit.
-ExecStart=%h/.local/bin/zclassic23-dev \
+ExecStart=%h/.local/lib/zclassic23-dev/current/zclassic23-dev \
     -datadir=%h/.zclassic-c23-dev \
     -operator-lane=dev \
     -port=8053 \
@@ -42,10 +47,9 @@ ExecStart=%h/.local/bin/zclassic23-dev \
     $ZCL_LANE_SNAPSHOT_LOADER_FLAG \
     -showmetrics=0
 
-# Restart=always so the binary's self-recovery escape hatches (boot_crashonly
-# auto-reindex, the 10-consecutive-UTXO-failure shutdown) actually fire and the
-# lane stays up across a deploy/crash. Stepped backoff so a dead-on-arrival
-# build loops visibly but cheaply.
+# Restart=always keeps the binary's self-recovery escape hatches effective, but
+# the unit-level StartLimit above bounds a dead candidate. Transactional deploy
+# then restores and verifies last-good instead of leaving the bad binary active.
 Restart=always
 RestartSec=5
 RestartSteps=8

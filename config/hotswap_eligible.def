@@ -27,13 +27,11 @@
  *
  * Keep this DATA ONLY (no C tokens beyond the macro invocations). */
 
-/* MCP tool router pilot: re-points its k_routes[] via host->mcp_replace. */
+/* Stateless MCP router pilot: stages k_routes[] via host->mcp_stage; the
+ * resident router validates all entries and commits one immutable snapshot. */
 HOTSWAP_ELIGIBLE("tools/mcp/controllers/app_controller.c")
 
-/* REST resource dispatch: re-points the resident provider consulted by
- * api_resource_route_dispatch_dynamic (trampoline in api_controller_dispatch.c). */
-HOTSWAP_ELIGIBLE("app/controllers/src/api_controller_routes.c")
-
-/* Diagnostics `dumpstate` / zcl_state dumpers: re-points the resident provider
- * consulted by diag_rpc_dumpstate (trampoline in diagnostics_dispatch.c). */
-HOTSWAP_ELIGIBLE("app/controllers/src/diagnostics_registry.c")
+/* REST and diagnostics are intentionally reload-required in manifest v2.
+ * Their legacy direct-provider atomics cannot join the MCP router's single
+ * immutable-snapshot commit, so admitting either would reintroduce mixed
+ * generations. Re-enable only behind one unified resident provider table. */

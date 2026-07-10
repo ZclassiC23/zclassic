@@ -2480,7 +2480,8 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(script, "ZCL_DEV_DEPLOY_BUILD") != NULL);
         ASSERT(strstr(script, "make fast-rebuild") != NULL);
         ASSERT(strstr(script, "build/bin/zclassic23-dev") != NULL);
-        ASSERT(strstr(script, "ZCL_DEV_DEPLOY_BUILD=strict") != NULL);
+        ASSERT(strstr(script, "case \"$DEV_DEPLOY_BUILD\"") != NULL);
+        ASSERT(strstr(script, "strict)") != NULL);
         ASSERT(strstr(makefile, "deploy-dev-fast agent-deploy-fast") != NULL);
         ASSERT(strstr(script, "probe_agent_contract") != NULL);
         ASSERT(strstr(script, "ZCL_DEV_AGENT_TIMEOUT") != NULL);
@@ -2798,8 +2799,10 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "tools/dev/agent-dev-status.sh") != NULL);
         ASSERT(strstr(buf, "tools/dev/agent-doctor.sh") != NULL);
         ASSERT(strstr(buf, "stage-dev-bin agent-stage-dev") != NULL);
+        ASSERT(strstr(buf, "ZCL_DEV_USE_PREBUILT=1") != NULL);
+        ASSERT(strstr(buf, "deploy-dev-lane.sh --stage") != NULL);
         ASSERT(strstr(buf, "mktemp \"$(ZCL_AGENT_DEV_BIN).next.XXXXXX\"")
-               != NULL);
+               == NULL);
         ASSERT(strstr(buf, "mcpcall") != NULL);
         ASSERT(strstr(buf, "ZCL_AGENT_BIN") != NULL);
         ASSERT(strstr(buf, "ZCL_AGENT_DEV_BIN") != NULL);

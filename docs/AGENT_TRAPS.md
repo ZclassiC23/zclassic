@@ -44,6 +44,51 @@ historical fixture passes, then deploy/restart intentionally.
   `tools/scripts/public_explorer_smoke.sh`; it checks both `/api/v1/hodl` and
   `/explorer/hodl` without `jq` and fails on "refresh", "not processed",
   "retry", or "waiting" user-visible states.
+- **`deploy-dev` does not overwrite/hot-swap one installed binary anymore.** It
+  stages a content-addressed generation below
+  `~/.local/lib/zclassic23-dev/`, preflights it while the old process serves,
+  atomically flips `current`, and verifies exact `/proc` identity plus
+  RPC/agent/MCP health. Failure quarantines the candidate and restores and
+  verifies `last-good` once. Do not bypass this with a direct copy plus
+  `systemctl restart`; that discards the rollback proof.
+- **“Non-consensus” does not automatically mean hot-swappable.** The v2 loader
+  admits only exact `config/hotswap_eligible.def` entries that export a
+  stateless MCP route manifest with the required ABI, capabilities, hashes,
+  tests, probes, self-test, and no-quiescence contract. REST, diagnostics,
+  services, models, storage, events, conditions, supervisors, networking,
+  wallet/key/crypto state, reducers, and process ownership are
+  `reload_required`. Never widen the allowlist to silence that blocker.
+- **Do not substitute a one-shot `mcpcall` for the persistent bridge.**
+  `make hotswap FILES=tools/mcp/controllers/app_controller.c` sends the
+  authenticated `dev_hotswap` JSON-RPC to the already-running isolated dev
+  node, so that resident process changes. By contrast, direct
+  `mcpcall zcl_agent_hotswap` loads the `.so` into a short-lived helper and then
+  exits. The dev-only `dev_hotswap` / non-destructive `dev_mcp_call` methods are
+  absent from release, canonical, and soak nodes. Read
+  `zcl_state subsystem=hotswap` in the same resident process before claiming a
+  generation is active.
+- **Exit 69 is a transport signal, not a generic hot-swap failure.** The
+  watcher defaults to `tools/dev/hotswap-running-dev.sh`. Only “resident bridge
+  unavailable” returns 69 and allows `MODE=auto` to fall back to transactional
+  reload. Manifest/ABI/capability/hash/self-test/commit/probe rejection returns
+  a different status and must remain a visible failed cycle; do not hide a bad
+  generation behind a successful reload.
+- **Hot-swap success is ephemeral.** It disappears on process restart. The
+  watcher's asynchronous `fast-rebuild` converges the source-tree binary and
+  preflights an immutable `staged` generation, but it does not flip `current`
+  or turn the in-memory generation into a durable activation; the next
+  transactional process reload is still the boundary. Successful old generation
+  text deliberately remains mapped so in-flight calls can finish safely.
+- **Do not infer latency SLOs from a safe/default benchmark run.**
+  `make dev-loop-bench` skips hot-swap and process-reload activation unless the
+  operator explicitly opts in. Only the `zcl.dev_loop_bench.v1` p95 fields from
+  measured activation cases can support the ≤1 s hot-swap or ≤8 s reload
+  claims; a miss remains a miss.
+- **Do not hand-maintain `compile_commands.json`.** Run `make agent-index`.
+  It derives commands from the real `DEV_OBJS` recipes, including generated
+  headers and the target-specific `-Og`/hot-bucket `-O2` split, then records
+  hash/freshness metadata. clangd is optional and its absence is not an index
+  generation failure.
 
 ---
 

@@ -83,8 +83,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(protocols) \
     X(chain_restore_planner) X(chain_restore_service) \
     X(chain_activation_controller) \
-    X(mcp_router) X(mcp_controllers) X(mcp_middleware) X(mcp_metrics) \
-    X(mcp_baseline) X(hotswap_loader) \
+    X(mcp_router) X(dev_mcp_rpc_bridge) X(mcp_controllers) X(mcp_middleware) X(mcp_metrics) \
+    X(mcp_baseline) X(hotswap_loader) X(hotswap_simnet) X(dev_platform) \
     X(metric_alerts) \
     X(mcp_inproc_equiv) \
     X(mcp_e2e) X(mcp_notify) X(db_validators) X(peer_scoring) X(peer_bandwidth) \
@@ -716,13 +716,16 @@ int main(int argc, char **argv)
             }
         }
 
-        /* Wait for any child to finish, with a 1-second poll ceiling
-         * so the timeout sweep above runs on a regular cadence even
-         * when children are long-running. */
+        /* Wait for any child to finish with a 10 ms poll ceiling. Focused
+         * simulator groups commonly finish in under 1 ms; the old one-second
+         * sleep made their public `make t-fast ONLY=...` path three orders of
+         * magnitude slower than the test itself. 100 wakeups/s is negligible
+         * beside compilation/crypto work and keeps timeout enforcement more
+         * responsive for the full suite too. */
         int status = 0;
         pid_t done = waitpid(-1, &status, WNOHANG);
         if (done == 0) {
-            struct timespec ts = {.tv_sec = 1, .tv_nsec = 0};
+            struct timespec ts = {.tv_sec = 0, .tv_nsec = 10 * 1000 * 1000};
             nanosleep(&ts, NULL);
             continue;
         }

@@ -1,5 +1,4 @@
 #define _GNU_SOURCE  /* pthread_timedjoin_np */
-
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Runtime service initialization: mempool, P2P, RPC, Tor, HTTPS,
  * mining, wallet sync, shutdown, and utility functions. */
@@ -99,6 +98,7 @@
 #include "rpc/httpserver.h"
 #include "rpc/legacy_chain_oracle.h"
 #include "rpc/server.h"
+#include "mcp/dev_rpc_bridge.h"
 #include "json/json.h"
 #include "net/https_server.h"
 #include "net/fast_sync.h"
@@ -119,7 +119,6 @@
 #include "sapling/params_init.h"
 #include <netdb.h>
 #include <errno.h>
-
 #include <stdatomic.h>
 #include <time.h>
 #include <stdio.h>
@@ -128,7 +127,6 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
-#include <time.h>
 #include <sys/stat.h>
 #include <pthread.h>
 #include <signal.h>
@@ -1267,6 +1265,8 @@ bool app_init_services(struct app_context *ctx,
 
     zslp_rpc_set_datadir(ctx->datadir);
     register_zslp_rpc_commands(svc->rpc_table);
+
+    if (!register_dev_mcp_rpc_commands(svc->rpc_table, ctx->datadir, ctx->rpc_port)) return false;
 
     /* Pre-compute fast sync snapshot offer in background */
     {
