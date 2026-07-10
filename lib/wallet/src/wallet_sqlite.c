@@ -792,6 +792,13 @@ bool wallet_sqlite_write_sapling_seed(struct wallet_sqlite *ws,
     sqlite3_reset(ws->stmt_seed_read);
     if (AR_STEP_ROW_READONLY(ws->stmt_seed_read) == SQLITE_ROW)
         next_child = sqlite3_column_int(ws->stmt_seed_read, 1);
+    /* Release the cursor immediately. A cached SELECT left parked on
+     * SQLITE_ROW keeps an implicit read transaction (WAL snapshot) open on
+     * this shared connection; every later write on the same handle (wallet
+     * flush, node_db state_set, catchup) then fails forever with
+     * SQLITE_BUSY_SNAPSHOT ("database is locked"). See node_db lock-holder
+     * fix. */
+    sqlite3_reset(ws->stmt_seed_read);
 
     uint8_t *enc_blob = NULL;
     size_t enc_len = 0;
@@ -817,35 +824,57 @@ bool wallet_sqlite_read_sapling_seed(struct wallet_sqlite *ws,
                                        uint8_t seed[32])
 {
     if (!ws || !ws->open) return false;
+
+    /* Copy the row out, then reset the cursor IMMEDIATELY and unconditionally.
+     * A cached SELECT left parked on SQLITE_ROW keeps an implicit read
+     * transaction (WAL snapshot) open on this shared connection; every later
+     * write on the same handle (wallet flush's BEGIN IMMEDIATE, node_db
+     * state_set, catchup COMMIT) then fails forever with SQLITE_BUSY_SNAPSHOT
+     * ("database is locked"). The column pointer is invalidated by reset, so
+     * the blob is memcpy'd into a local buffer before the reset. */
+    uint8_t blob[512];
+    size_t blob_len = 0;
+    bool have_row = false;
+
     sqlite3_reset(ws->stmt_seed_read);
     if (AR_STEP_ROW_READONLY(ws->stmt_seed_read) == SQLITE_ROW) {
         const void *data = sqlite3_column_blob(ws->stmt_seed_read, 0);
         int data_len = sqlite3_column_bytes(ws->stmt_seed_read, 0);
-        if (!data || data_len < 32) return false;
-
-        if (is_wks1_blob(data, (size_t)data_len)) {
-            uint8_t *plain = NULL;
-            size_t plain_len = 0;
-            if (!wallet_decrypt_blob(data, (size_t)data_len,
-                                     &plain, &plain_len) ||
-                plain_len < 32) {
-                if (plain) { memory_cleanse(plain, plain_len); free(plain); }
-                /* Encrypted seed present but undecryptable — almost always a
-                 * wrong/missing ZCL_WALLET_PASSPHRASE.  Surface it so the
-                 * operator doesn't see a silent empty-wallet. */
-                LOG_WARN("wallet_sqlite",
-                         "read_sapling_seed: decrypt failed (wrong passphrase?)");
-                return false;
-            }
-            memcpy(seed, plain, 32);
-            memory_cleanse(plain, plain_len);
-            free(plain);
-            return true;
+        if (data && data_len >= 32 && (size_t)data_len <= sizeof(blob)) {
+            memcpy(blob, data, (size_t)data_len);
+            blob_len = (size_t)data_len;
+            have_row = true;
         }
-        memcpy(seed, data, 32);
-        return true;
     }
-    return false;
+    sqlite3_reset(ws->stmt_seed_read);
+
+    if (!have_row) {
+        memory_cleanse(blob, sizeof(blob));
+        return false;
+    }
+
+    bool ok = false;
+    if (is_wks1_blob(blob, blob_len)) {
+        uint8_t *plain = NULL;
+        size_t plain_len = 0;
+        if (wallet_decrypt_blob(blob, blob_len, &plain, &plain_len) &&
+            plain_len >= 32) {
+            memcpy(seed, plain, 32);
+            ok = true;
+        } else {
+            /* Encrypted seed present but undecryptable — almost always a
+             * wrong/missing ZCL_WALLET_PASSPHRASE.  Surface it so the
+             * operator doesn't see a silent empty-wallet. */
+            LOG_WARN("wallet_sqlite",
+                     "read_sapling_seed: decrypt failed (wrong passphrase?)");
+        }
+        if (plain) { memory_cleanse(plain, plain_len); free(plain); }
+    } else {
+        memcpy(seed, blob, 32);
+        ok = true;
+    }
+    memory_cleanse(blob, sizeof(blob));
+    return ok;
 }
 
 bool wallet_sqlite_write_sapling_key(struct wallet_sqlite *ws,
