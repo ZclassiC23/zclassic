@@ -23,6 +23,7 @@ app/controllers/src/agent_controller.c 909
 app/controllers/src/api_controller_status.c 902
 app/controllers/src/diagnostics_registry.c 843
 app/controllers/src/name_controller.c 1034
+app/controllers/src/swap_controller.c 1013
 app/jobs/src/reducer_frontier.c 806
 app/jobs/src/stage_repair_reducer_frontier.c 814
 app/jobs/src/tip_finalize_stage.c 819

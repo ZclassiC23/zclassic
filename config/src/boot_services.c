@@ -144,7 +144,6 @@
 
 extern _Atomic int g_deferred_proof_validation_below_height;
 
-
 /* Boot context accessors. The handle is threaded explicitly by every caller;
  * the boot svc is owned by boot.c's g_svc, reached via boot_active_svc(). */
 static struct app_runtime_context *boot_runtime(struct boot_svc_ctx *svc)
@@ -1239,14 +1238,13 @@ bool app_init_services(struct app_context *ctx,
                         svc->coins_tip);
     register_name_rpc_commands(svc->rpc_table);
 
-    /* ZCL Messaging — encrypted P2P messages */
+    /* ZCL Messaging — P2P messages (plaintext on the wire) */
     rpc_msg_set_state(boot_node_db(svc), svc->connman);
     register_msg_rpc_commands(svc->rpc_table);
 
-    /* Atomic Swaps — HTLC contracts for BTC/LTC/DOGE */
-    rpc_swap_set_state(boot_node_db(svc));
-    rpc_swap_set_wallet(svc->wallet, svc->mempool, svc->state,
-                        svc->coins_tip, svc->connman);
+    /* Atomic Swaps — HTLC contracts (settlement is ZCL-leg only) */
+    rpc_swap_set_context(boot_node_db(svc), svc->wallet, svc->mempool,
+                         svc->state, svc->coins_tip, svc->connman);
     register_swap_rpc_commands(svc->rpc_table);
 
     /* blk_sync.dat from file service is on disk. P2P will re-request

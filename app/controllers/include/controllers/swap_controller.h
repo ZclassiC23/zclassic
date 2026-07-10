@@ -22,17 +22,15 @@ struct main_state;
 struct coins_view_cache;
 struct connman;
 
-void rpc_swap_set_state(struct node_db *ndb);
-
-/* Wire the chain/wallet context needed to settle (redeem/refund) a funded
- * HTLC on the local ZCL chain: the wallet (keys + fee), the mempool + coins
- * tip (funding lookup + acceptance), the chain tip (height for CLTV), and
- * connman (relay). Any NULL leaves the corresponding settlement RPC returning
- * a clear "node context unavailable" error rather than crashing. */
-void rpc_swap_set_wallet(struct wallet *w, struct tx_mempool *mp,
-                         struct main_state *ms,
-                         struct coins_view_cache *coins_tip,
-                         struct connman *cm);
+/* Wire the persistence + chain/wallet context for the swap RPCs: the node_db
+ * (contract persistence), the wallet (keys + fee), the mempool + coins tip
+ * (funding lookup + acceptance), the chain tip (height for CLTV + locktime
+ * anchoring), and connman (relay). Any NULL leaves the corresponding RPC
+ * returning a clear "node context unavailable" error rather than crashing. */
+void rpc_swap_set_context(struct node_db *ndb, struct wallet *w,
+                          struct tx_mempool *mp, struct main_state *ms,
+                          struct coins_view_cache *coins_tip,
+                          struct connman *cm);
 
 void register_swap_rpc_commands(struct rpc_table *t);
 

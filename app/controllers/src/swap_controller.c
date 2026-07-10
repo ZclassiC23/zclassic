@@ -49,16 +49,12 @@ static struct main_state *g_swap_main_state = NULL;
 static struct coins_view_cache *g_swap_coins_tip = NULL;
 static struct connman *g_swap_connman = NULL;
 
-void rpc_swap_set_state(struct node_db *ndb)
+void rpc_swap_set_context(struct node_db *ndb, struct wallet *w,
+                          struct tx_mempool *mp, struct main_state *ms,
+                          struct coins_view_cache *coins_tip,
+                          struct connman *cm)
 {
     g_swap_ndb = ndb;
-}
-
-void rpc_swap_set_wallet(struct wallet *w, struct tx_mempool *mp,
-                         struct main_state *ms,
-                         struct coins_view_cache *coins_tip,
-                         struct connman *cm)
-{
     g_swap_wallet = w;
     g_swap_mempool = mp;
     g_swap_main_state = ms;
@@ -304,7 +300,7 @@ static bool rpc_swap_initiate(const struct json_value *params, bool help,
 
     uint32_t locktime_abs = 0;
     if (!swap_locktime_to_absolute(locktime, chain, &locktime_abs, result))
-        return false;
+        return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
 
     /* Generate secret */
     uint8_t secret[32], secret_hash[32];
@@ -368,7 +364,7 @@ static bool rpc_swap_participate(const struct json_value *params, bool help,
 
     uint32_t locktime_abs = 0;
     if (!swap_locktime_to_absolute(locktime, chain, &locktime_abs, result))
-        return false;
+        return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
 
     /* Parse secret hash */
     uint8_t secret_hash[32];
