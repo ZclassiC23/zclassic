@@ -961,6 +961,7 @@ int main(int argc, char **argv)
     failures += test_sapling_tree();
     failures += test_bn254();
     failures += test_merkle_tree();
+    { extern int test_merkle_malleability(void); failures += test_merkle_malleability(); }
     failures += test_slp();
     failures += test_models();
     failures += test_core();

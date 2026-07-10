@@ -60,7 +60,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(pprev_walk) X(chain_tip) X(checkpoint) X(keys) \
     X(script) X(net) X(transaction) X(mempool) X(accept_to_mempool) X(rpc) X(sqlite) \
     X(activerecord) X(validation) X(sapling_lazy_init) X(sapling) X(sapling_crypto) \
-    X(bn254) X(merkle_tree) X(slp) X(models) X(core) X(znam) X(htlc) \
+    X(bn254) X(merkle_tree) X(merkle_malleability) X(slp) X(models) X(core) X(znam) X(htlc) \
     X(file_market) X(strong_params) X(json) X(robustness) X(wallet) \
     X(primitives) X(bloom) X(coins) X(store) X(blog) X(api) \
     X(explorer) X(explorer_rpc_call) X(explorer_index) X(mining) X(utxo_commitment) X(mmr) X(mmb) X(sha3_windows) \
