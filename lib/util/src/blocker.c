@@ -329,6 +329,28 @@ bool blocker_dump_state_json(struct json_value *out, const char *key)
     }
     json_push_kv(out, "blockers", &arr);
     json_free(&arr);
+
+    /* Reserved `_health` key (see docs/work "Adding state introspection" +
+     * app/controllers/src/diagnostics_health_rollup.c): { ok, reason }.
+     * Maps the active-blocker registry above — any active blocker (of any
+     * class) marks this subsystem unhealthy; no new health logic. */
+    {
+        struct json_value health;
+        json_init(&health);
+        json_set_object(&health);
+        json_push_kv_bool(&health, "ok", n == 0);
+        char reason_buf[192] = "";
+        if (n > 0) {
+            snprintf(reason_buf, sizeof(reason_buf),
+                     "%d active blocker(s); first: %s owner=%s class=%s (%s)",
+                     n, snaps[0].id, snaps[0].owner_subsystem,
+                     blocker_class_name((enum blocker_class)snaps[0].class),
+                     snaps[0].reason);
+        }
+        json_push_kv_str(&health, "reason", reason_buf);
+        json_push_kv(out, "_health", &health);
+        json_free(&health);
+    }
     return true;
 }
 

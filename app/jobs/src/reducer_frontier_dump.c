@@ -640,6 +640,25 @@ bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "window_extend_slow",
                      (int64_t)active_chain_extend_window_have_data_slow_count());
 
+    /* Reserved `_health` key (see docs/work "Adding state introspection" +
+     * app/controllers/src/diagnostics_health_rollup.c): { ok, reason }.
+     * Maps the already-computed first_hstar_blocker fields above — no new
+     * health logic, just a uniform shape the rollup can walk. */
+    {
+        struct json_value health = {0};
+        json_set_object(&health);
+        json_push_kv_bool(&health, "ok", !blocker.found);
+        char reason_buf[192] = "";
+        if (blocker.found) {
+            snprintf(reason_buf, sizeof(reason_buf),
+                     "h*+1 blocked: %s at stage=%s (%s)",
+                     blocker.kind, blocker.stage, blocker.reason);
+        }
+        json_push_kv_str(&health, "reason", reason_buf);
+        json_push_kv(out, "_health", &health);
+        json_free(&health);
+    }
+
     progress_store_tx_unlock();
     return true;
 }

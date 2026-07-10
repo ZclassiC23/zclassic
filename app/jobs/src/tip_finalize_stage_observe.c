@@ -390,5 +390,34 @@ bool tip_finalize_observe_dump_state_json(struct json_value *out,
                      db ? stage_log_row_count(db, STAGE_NAME,
                                               "tip_finalize_log") : 0);
     stage_dump_counters(out, stage);
+
+    /* Reserved `_health` key (see docs/work "Adding state introspection" +
+     * app/controllers/src/diagnostics_health_rollup.c): { ok, reason }.
+     * Maps the already-computed "initialised" + accumulated error_count
+     * counters above — no new health logic. */
+    {
+        bool initialised = (stage != NULL);
+        uint64_t errors = initialised ? stage_error_count(stage) : 0;
+        bool ok = initialised && errors == 0;
+        char reason_buf[128] = "";
+        if (!initialised) {
+            snprintf(reason_buf, sizeof(reason_buf),
+                     "tip_finalize stage not initialised");
+        } else if (errors > 0) {
+            int cls = atomic_load(&g_last_blocked_class);
+            if (cls < 0 || cls >= TIP_FINALIZE_BLOCKED_CLASS_N)
+                cls = TIP_FINALIZE_BLOCKED_NONE;
+            snprintf(reason_buf, sizeof(reason_buf),
+                     "tip_finalize recorded %llu step error(s); "
+                     "last_blocked_reason=%s",
+                     (unsigned long long)errors, k_blocked_name[cls]);
+        }
+        struct json_value health = {0};
+        json_set_object(&health);
+        json_push_kv_bool(&health, "ok", ok);
+        json_push_kv_str(&health, "reason", reason_buf);
+        json_push_kv(out, "_health", &health);
+        json_free(&health);
+    }
     return true;
 }

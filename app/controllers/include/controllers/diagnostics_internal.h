@@ -102,4 +102,10 @@ bool diag_rpc_probezclassicd(const struct json_value *params, bool help,
 bool diag_rpc_getmirrorstatus(const struct json_value *params, bool help,
                               struct json_value *result);
 
+/* diagnostics_health_rollup.c — unhealthy-only rollup, registered in
+ * g_dumpers as subsystem "unhealthy". Walks every OTHER dumper's `_health`
+ * key (see the file header for the { ok, reason } convention) and reports
+ * only the ones with ok == false. */
+bool unhealthy_dump_state_json(struct json_value *out, const char *key);
+
 #endif /* ZCL_DIAGNOSTICS_INTERNAL_H */

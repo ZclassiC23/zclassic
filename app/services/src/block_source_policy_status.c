@@ -371,5 +371,19 @@ bool block_source_policy_dump_state_json(struct json_value *out,
     }
     json_push_kv(out, "sources", &arr);
     json_free(&arr);
+
+    /* Reserved `_health` key (see docs/work "Adding state introspection" +
+     * app/controllers/src/diagnostics_health_rollup.c): { ok, reason }.
+     * Maps the already-computed decision result above — CAC_DECISION_BLOCKED
+     * means no advance source is currently usable; no new health logic. */
+    {
+        bool blocked = (d.result == CAC_DECISION_BLOCKED);
+        struct json_value health = {0};
+        json_set_object(&health);
+        json_push_kv_bool(&health, "ok", !blocked);
+        json_push_kv_str(&health, "reason", blocked ? d.blocker : "");
+        json_push_kv(out, "_health", &health);
+        json_free(&health);
+    }
     return true;
 }

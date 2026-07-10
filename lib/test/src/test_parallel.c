@@ -284,7 +284,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(wallet_funds_safety) \
     X(bundle_staleness) \
     X(block_parse_cache) \
-    X(storage_reclaim)
+    X(storage_reclaim) \
+    X(health_rollup)
 
 #define SPEC_LIST(X) \
     X(wallet_dashboard) X(wallet_send) X(wallet_receive) \

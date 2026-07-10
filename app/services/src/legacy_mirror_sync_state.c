@@ -644,6 +644,27 @@ bool legacy_mirror_sync_dump_state_json(struct json_value *out,
     json_push_kv_int(out, "lag_critical_since", s.lag_critical_since);
     json_push_kv_int(out, "lag_critical_seconds", s.lag_critical_seconds);
     json_push_kv_str(out, "lag_breach_severity", s.lag_breach_severity);
+
+    /* Reserved `_health` key (see docs/work "Adding state introspection" +
+     * app/controllers/src/diagnostics_health_rollup.c): { ok, reason }.
+     * Mirrors the already-computed mirror_contract.operator_action_required
+     * signal above (advisory-only: local consensus stays authoritative even
+     * when this reports unhealthy). */
+    {
+        const char *blocker_code = legacy_mirror_sync_blocker_code(&s);
+        bool blocker_active = blocker_code && blocker_code[0] &&
+                              !s.blocker_recovered_by_tip_agreement;
+        bool operator_action_required =
+            blocker_active &&
+            legacy_mirror_sync_blocker_should_surface(&s, false);
+        struct json_value health = {0};
+        json_set_object(&health);
+        json_push_kv_bool(&health, "ok", !operator_action_required);
+        json_push_kv_str(&health, "reason",
+                         operator_action_required ? blocker_code : "");
+        json_push_kv(out, "_health", &health);
+        json_free(&health);
+    }
     return true;
 }
 

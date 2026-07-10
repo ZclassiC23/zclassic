@@ -564,11 +564,9 @@ bool diag_rpc_getmirrorstatus(const struct json_value *params, bool help,
 
 static const struct diagnostics_dump_entry g_dumpers[] = {
     { "supervisor", supervisor_dump_state_json,
-                    "root supervisor: registered liveness contracts, "
-                    "ticks_run, stall_fires, deadlines" },
+                    "root supervisor: registered liveness contracts, ticks_run, stall_fires, deadlines" },
     { "blocker",    blocker_dump_state_json,
-                    "typed blocker registry: active blockers by class "
-                    "{permanent,transient,dependency,resource}, "
+                    "typed blocker registry: active blockers by class {permanent,transient,dependency,resource}, "
                     "deadlines, escape actions, fire counts" },
     { "watchdog",    condition_engine_dump_state_json,
                      "compat alias for condition_engine status" },
@@ -724,6 +722,8 @@ static const struct diagnostics_dump_entry g_dumpers[] = {
     { "agent_copy_prove", agent_copy_prove_dump_state_json,
                      "copy-prove run launched via agentcopyprove: queued/running/done state, verdict, "
                      "h_star before/after, tip_regression, copy_path (key = the run's slug)" },
+    { "unhealthy",   unhealthy_dump_state_json,
+                     "unhealthy-only rollup: all_ok/checked/reporting + unhealthy subsystems (name+reason) from `_health`" },
 };
 
 int diagnostics_subsystems_csv(char *out, size_t out_sz)
