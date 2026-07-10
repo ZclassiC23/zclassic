@@ -16,6 +16,7 @@
 #include "net/download.h"
 #include "net/peer_scoring.h"
 #include "core/uint256.h"
+#include "core/utiltime.h"
 #include "util/log_macros.h"
 #include <stdio.h>
 #include <string.h>
@@ -77,6 +78,16 @@ bool mp_handle_notfound(struct msg_processor *mp, struct p2p_node *node,
     return process_notfound(mp, node, s);
 }
 
+/* A single addr message is already bounded at MAX_ADDR_TO_SEND (1000)
+ * entries by the check above, but nothing previously stopped a peer from
+ * repeating max-legal-size batches back-to-back forever for free — cheap
+ * CPU/addrman-churn amplification with zero score cost. Fixed 60s window,
+ * cap generous enough for legitimate bursts (an unsolicited self-announce
+ * plus a getaddr response, each up to MAX_ADDR_TO_SEND) while still
+ * catching sustained repetition. */
+#define ADDR_RATE_WINDOW_SECS 60
+#define ADDR_RATE_MAX_PER_WINDOW (MAX_ADDR_TO_SEND * 3)
+
 static bool process_addr(struct msg_processor *mp, struct p2p_node *node,
                           struct byte_stream *s)
 {
@@ -97,6 +108,28 @@ static bool process_addr(struct msg_processor *mp, struct p2p_node *node,
                node->addr_name, (unsigned long long)count);
         node->disconnect = true;
         return false;
+    }
+
+    /* Per-peer addr rate limit: a fixed window over TOTAL addresses
+     * received (not message count), so one giant batch and many small
+     * batches are both bounded the same way. */
+    {
+        int64_t now = GetTime();
+        if (node->addr_rate_window_start == 0 ||
+            now - node->addr_rate_window_start >= ADDR_RATE_WINDOW_SECS) {
+            node->addr_rate_window_start = now;
+            node->addr_rate_window_count = 0;
+        }
+        node->addr_rate_window_count += (uint32_t)count;
+        if (node->addr_rate_window_count > ADDR_RATE_MAX_PER_WINDOW) {
+            peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
+                                "addr rate limit exceeded");
+            printf("Peer %s: addr rate limit exceeded (%u in %ds)\n",
+                   node->addr_name, node->addr_rate_window_count,
+                   ADDR_RATE_WINDOW_SECS);
+            node->disconnect = true;
+            return false;
+        }
     }
 
     struct net_addr source;

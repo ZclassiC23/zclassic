@@ -197,6 +197,57 @@ int test_net_msg_dos(void)
         }
     }
 
+    /* ── A5. addr: repeated max-legal-size batches -> rate limited ──
+     * A single addr message under MAX_ADDR_TO_SEND (1000) is legal and
+     * free of any per-message penalty (see A3 for the oversized-count
+     * case). Nothing previously stopped a peer from repeating
+     * max-legal-size batches back-to-back forever though — this pins
+     * the ADDR_RATE_WINDOW_SECS/ADDR_RATE_MAX_PER_WINDOW fixed-window
+     * limiter in msgprocessor_inv.c::process_addr(): the first three
+     * 1000-entry batches (3000 total, AT the cap) are free; the fourth
+     * (4000 total) crosses ADDR_RATE_MAX_PER_WINDOW and scores +
+     * disconnects, same as any other flood category. */
+    {
+        const struct msg_dispatch_entry *e = dos_find_entry("addr");
+        DOS_CHECK("addr dispatch entry found (rate-limit case)", e != NULL);
+        if (e) {
+            struct p2p_node node;
+            dos_setup_stack_node(&node);
+            bool saw_disconnect_early = false;
+
+            for (int batch = 0; batch < 4; batch++) {
+                struct byte_stream s;
+                stream_init(&s, 1000 * 30 + 16);
+                stream_write_compact_size(&s, 1000); /* == MAX_ADDR_TO_SEND, legal */
+                for (int i = 0; i < 1000; i++) {
+                    struct net_address addr;
+                    net_address_init(&addr);
+                    unsigned char ip4[4] = {10, 1,
+                                            (unsigned char)(i >> 8),
+                                            (unsigned char)i};
+                    net_addr_set_ipv4(&addr.svc.addr, ip4);
+                    addr.svc.port = 8033;
+                    net_address_serialize(&addr, &s, true);
+                }
+                bool ret = e->handler(&mp, &node, &s);
+                stream_free(&s);
+                if (batch < 3) {
+                    if (!ret || node.disconnect)
+                        saw_disconnect_early = true;
+                } else {
+                    DOS_CHECK("addr rate limit: 4th max-size batch rejected",
+                             ret == false);
+                    DOS_CHECK("addr rate limit: peer disconnected",
+                             node.disconnect == true);
+                    DOS_CHECK("addr rate limit: peer scored PEER_OFFENCE_FLOOD (20)",
+                             atomic_load(&node.misbehavior) == 20);
+                }
+            }
+            DOS_CHECK("addr rate limit: first three max-size batches were free",
+                     !saw_disconnect_early);
+        }
+    }
+
     /* ── B1. inv: truncated mid-item -> clean failure, no crash ── */
     {
         struct p2p_node node;

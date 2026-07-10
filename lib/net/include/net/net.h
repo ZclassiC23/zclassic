@@ -212,6 +212,18 @@ struct p2p_node {
     struct rolling_bloom_filter addr_known;
     bool get_addr;
 
+    /* Per-peer addr-message rate limit (msgprocessor_inv.c::process_addr).
+     * A single "addr" message is already capped at MAX_ADDR_TO_SEND
+     * entries (oversized -> PEER_OFFENCE_FLOOD + disconnect), but nothing
+     * stopped a peer from repeating max-legal-size batches back-to-back
+     * for free. Fixed window: addr_rate_window_count accumulates entries
+     * received since addr_rate_window_start; once the window rolls over
+     * (ADDR_RATE_WINDOW_SECS) it resets. Zero-initialised (memset in
+     * p2p_node_create) so window_start==0 correctly reads as "no window
+     * yet" on the very first addr message. */
+    int64_t addr_rate_window_start;
+    uint32_t addr_rate_window_count;
+
     struct inv_item *inventory_to_send;
     size_t inventory_to_send_count;
     size_t inventory_to_send_cap;
