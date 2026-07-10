@@ -657,7 +657,7 @@ bool node_db_sync_set_tip(struct node_db *ndb,
      * rows); a hash resolving to a DIFFERENT height refuses the write —
      * the blocker + page already fired inside the check. Crash-only. */
     if (!invariant_sentinel_check_pair(ndb, hash, height, "sync_set_tip"))
-        return false;
+        return false; // raw-return-ok:invariant_sentinel_check_pair already pages+logs internally
 
     memset(&ctx, 0, sizeof(ctx));
     memcpy(ctx.hash, hash, sizeof(ctx.hash));

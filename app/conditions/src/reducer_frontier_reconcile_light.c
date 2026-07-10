@@ -231,9 +231,12 @@ static bool detect_reducer_frontier_reconcile_light(void)
     /* The read-only dry-run runs BEFORE the peer gate so a durable
      * internal tear can bypass it. No new steady-state cost: it already ran
      * on every detect tick whenever a peer was ahead. */
+    /* Steady-state dry-run result — "nothing to reconcile" on a healthy
+     * tip, polled every 5s. Actionable findings below already log via
+     * g_gate_suppress; logging here would storm node.log. */
     struct stage_reducer_frontier_reconcile_result rr;
     if (!stage_reducer_frontier_reconcile_light_needed(db, ms, &rr))
-        return false;
+        return false; // raw-return-ok:steady-state-nothing-to-reconcile
     rfrl_snapshot_reconcile_result(RFRL_RR_PHASE_DETECT, &rr);
     if (rr.refused_coin_unknown)
         return false;

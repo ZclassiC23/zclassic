@@ -57,7 +57,7 @@ static bool digit4(const char *s, int *out)
 {
     int hi = 0, lo = 0;
     if (!digit2(s, &hi) || !digit2(s + 2, &lo))
-        return false;
+        return false; // raw-return-ok:format-probe-not-a-mismatch-error
     *out = hi * 100 + lo;
     return true;
 }
@@ -112,7 +112,7 @@ static bool make_unix_current_year(int year, int month, int day,
                                    int64_t now, int64_t *out)
 {
     if (!make_unix_utc(year, month, day, hour, minute, second, out))
-        return false;
+        return false; // raw-return-ok:invalid-calendar-date-not-a-mismatch-error
 
     if (*out > now + 86400 &&
         make_unix_utc(year - 1, month, day, hour, minute, second, out))

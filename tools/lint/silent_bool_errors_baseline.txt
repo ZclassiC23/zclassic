@@ -2,28 +2,6 @@
 # Stable key = <relpath>::<guarded_call>. A swallowed call failure:
 #   if (!call(...)) return false;   with no LOG_* and no // raw-return-ok:
 # Regenerate after fixing some: ZCL_LINT_MODE=UPDATE ./tools/lint/check_silent_bool_errors.sh
-app/conditions/src/block_failed_mask_at_tip.c::validate_repairable_mode
-app/conditions/src/body_fetch_missing_have_data.c::target_missing_data
-app/conditions/src/chain_integrity_failed.c::check_integrity
-app/conditions/src/orphan_utxo_above_tip.c::any_utxo_above
-app/conditions/src/reducer_frontier_reconcile_light.c::stage_reducer_frontier_reconcile_light_needed
-app/conditions/src/snapshot_complete_resume.c::snapshot_complete_status
-app/conditions/src/snapshot_offer_ready.c::snapshot_offer_is_active
-app/conditions/src/snapshot_offer_ready.c::sync_state_can_receive_snapshot
-app/conditions/src/tip_stall_oracle_rebuild.c::g_oracle_height_fn
-app/conditions/src/utxo_drift_detected.c::read_drift_flags
-app/controllers/src/nodelog_controller.c::digit2
-app/controllers/src/nodelog_controller.c::make_unix_utc
-app/controllers/src/snapshot_controller_txindex.c::snapshot_tx_begin_checked
-app/controllers/src/store_controller.c::node_db_open
-app/controllers/src/store_controller.c::parse_form_field
-app/controllers/src/store_controller.c::store_parse_query_field
-app/controllers/src/sync_controller_writers.c::invariant_sentinel_check_pair
-app/controllers/src/zslp_controller.c::zslp_parse_addr_param
-app/controllers/src/zslp_controller.c::zslp_parse_create_request
-app/controllers/src/zslp_controller.c::zslp_parse_token_param
-app/controllers/src/zslp_controller.c::zslp_parse_transfer_request
-app/controllers/src/zslp_controller.c::zslp_rpc_require_context
 app/jobs/src/header_admit_stage.c::log_row_active_match
 app/jobs/src/header_admit_stage.c::stage_cursor_read_or_zero
 app/jobs/src/reducer_frontier.c::cursor_at

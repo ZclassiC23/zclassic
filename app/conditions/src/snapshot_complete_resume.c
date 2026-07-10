@@ -66,7 +66,7 @@ static bool detect_snapshot_complete_resume(void)
     struct snapshot_sync_service *svc = runtime_snapsync();
     struct snapsync_status st;
     if (!snapshot_complete_status(svc, &st))
-        return false;
+        return false; // raw-return-ok:snapsync-service-not-active-is-normal-steady-state
     if (st.state != SNAPSYNC_COMPLETE ||
         sync_get_state() != SYNC_SNAPSHOT_RECEIVE ||
         st.offered_height <= 0)

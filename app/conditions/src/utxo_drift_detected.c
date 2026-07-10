@@ -61,7 +61,7 @@ static bool detect_utxo_drift_detected(void)
     int64_t utxo = 0;
     int64_t bh = 0;
     if (!read_drift_flags(ndb, &utxo, &bh))
-        return false;
+        return false; // raw-return-ok:no-drift-is-the-healthy-steady-state
 
     int64_t height = -1;
     if (utxo != 0)

@@ -231,7 +231,7 @@ static bool store_parse_access_query(const char *path,
     token[0] = '\0';
 
     if (!store_parse_query_field(path, "addr", addr, addr_max))
-        return false;
+        return false; // raw-return-ok:malformed-client-query-not-a-server-error
     if (!store_parse_query_field(path, "token", token, token_max))
         snprintf(token, token_max, "%s", "ZCL23ACCESS");
 
@@ -253,7 +253,8 @@ static bool store_mark_order_paid(const char *datadir,
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
     memset(&ndb, 0, sizeof(ndb));
     if (!node_db_open(&ndb, db_path))
-        return false;
+        LOG_FAIL("store", "store_mark_order_paid: node_db_open failed path=%s order=%lld",
+                 db_path, (long long)order_id);
 
     ok = db_store_order_mark_paid(&ndb, order_id, status);
     if (!ok) {
@@ -390,7 +391,7 @@ static bool parse_positive_form_id(const char *body, size_t body_len,
         return false;
     *id_out = -1;
     if (!parse_form_field(body, body_len, field, raw, sizeof(raw)))
-        return false;
+        return false; // raw-return-ok:form-field-absent-not-a-server-error
     value = strtoll(raw, &end, 10);
     if (!end || *end != '\0' || value <= 0)
         return false;

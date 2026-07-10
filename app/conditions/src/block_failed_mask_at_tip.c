@@ -114,8 +114,12 @@ static bool repairable_validate_frontier_owns_stall(int64_t stall_target,
 
     enum stage_repair_header_solution_poison mode =
         stage_repair_header_solution_poison_mode(db, repair_height);
-    if (!validate_repairable_mode(mode))
+    if (!validate_repairable_mode(mode)) {
+        LOG_WARN("condition",
+                 "block_failed_mask_at_tip: repair_height=%d poison_mode=%d not repairable",
+                 repair_height, (int)mode);
         return false;
+    }
 
     if (out_height)
         *out_height = repair_height;
