@@ -338,15 +338,56 @@ Existing examples:
 ## From Capsule To Scenario
 
 When a postmortem capsule exposes a replayable failure, convert it into the
-smallest scenario that preserves the causal shape:
+smallest scenario that preserves the causal shape. Steps 1-2 are automated by
+`tools/postmortem_to_scenario.c`; steps 3-5 stay manual.
 
-1. Use the capsule seed as the scenario `seed`.
-2. Map the boot state to `boot_phase`.
-3. Convert peer disconnects, clock movement, malformed inputs, OOM labels, and
-   network stalls into chaos commands.
-4. Add the assertion that would have caught the bug, usually `expect no_crash`
-   plus a specific metric.
-5. Check in the scenario as a permanent regression.
+1. **[automated]** Use the capsule's recorded tape state as the scenario
+   `seed`.
+2. **[automated, best-effort]** Map the boot state to `boot_phase`, when
+   derivable from the capsule's `log.txt`.
+3. **[manual]** Convert peer disconnects, clock movement, malformed inputs,
+   OOM labels, and network stalls into chaos commands.
+4. **[manual]** Add the assertion that would have caught the bug, usually
+   `expect no_crash` plus a specific metric.
+5. **[manual]** Check in the scenario as a permanent regression.
+
+Run the automated half of the conversion:
+
+```bash
+make postmortem-to-scenario CAP=<capsule-dir> [OUT=<path>]
+```
+
+`CAP` is an **unpacked** `.cap` directory (`tape.bin` + `manifest.json` +
+`log.txt` + ...) as written by `postmortem_capture_write()` — a live
+capsule directory listed by `zcl_postmortem_list`, or one built by hand for
+testing. `OUT` defaults to `tools/sim/scenarios/repro_<seed_hex>.scenario`.
+The tool (also runnable directly as `build/bin/postmortem_to_scenario
+--cap=DIR [--out=PATH]`) writes a `.scenario` file that:
+
+- Sets `seed 0x<hex>` from the tape's recorded state and `boot_phase` (derived
+  from a `[boot-stage]` trace line in `log.txt` when present, else defaulted
+  to `idb_complete` and marked `UNDETECTED`).
+- Documents crash signal, crash time, reason, capsule path, and the tape's
+  event counts (rng draws, clock advances, injected events) in a comment
+  header.
+- Lists the capsule's injected-event log in order (type + payload length,
+  walked read-only via `seed_tape_next_event`), bounded to the first 200
+  events with an overflow note beyond that, plus a category summary by event
+  type.
+- Emits a `# TODO (manual steps 3-5)` block pointing at the event list above
+  and a placeholder `expect no_crash` so the file **parses** immediately —
+  it is not yet a regression test.
+
+**Honest scope**: a postmortem capsule records ONE node's RNG stream, clock,
+and injected-event log. A `.scenario` (especially `mode simnet`) can describe
+an N-node cluster. Reconstructing a full multi-node scenario from a
+single-node capsule is lossy by construction, so the tool's output is a
+labeled starting point for the manual steps below, not a proven repro. The
+emitted `seed` line is the tape's informational xoshiro register snapshot,
+not the original scalar seed — it will not reproduce the capsule's exact RNG
+stream in a fresh run (see the generated file's own comment, and
+`examples/09_seed_replay.c` for the exact-replay path via
+`postmortem_capsule_load_tape()` / `zcl_postmortem_replay`).
 
 ## Reproducing a failure
 
