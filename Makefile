@@ -1652,7 +1652,7 @@ FUZZ_CFLAGS = -std=c23 -O1 -g -Wall -Wextra -Wno-unused-result \
 	-fno-sanitize=alignment
 FUZZ_LIBS = $(TOR_LIBS) $(LIBS)
 
-FUZZ_TARGETS = $(BIN_DIR)/fuzz_block $(BIN_DIR)/fuzz_script $(BIN_DIR)/fuzz_p2p $(BIN_DIR)/fuzz_http
+FUZZ_TARGETS = $(BIN_DIR)/fuzz_block $(BIN_DIR)/fuzz_script $(BIN_DIR)/fuzz_p2p $(BIN_DIR)/fuzz_http $(BIN_DIR)/fuzz_tx_bundle
 FUZZ_CI_TIME ?= 60
 FUZZ_CI_WALL_TIME ?= 120
 
@@ -1671,11 +1671,12 @@ check-fuzz-ci-tools: check-fuzz-toolchain
 
 fuzz: check-fuzz-toolchain $(FUZZ_TARGETS)
 
-.PHONY: fuzz_block fuzz_script fuzz_p2p fuzz_http
+.PHONY: fuzz_block fuzz_script fuzz_p2p fuzz_http fuzz_tx_bundle
 fuzz_block: $(BIN_DIR)/fuzz_block
 fuzz_script: $(BIN_DIR)/fuzz_script
 fuzz_p2p: $(BIN_DIR)/fuzz_p2p
 fuzz_http: $(BIN_DIR)/fuzz_http
+fuzz_tx_bundle: $(BIN_DIR)/fuzz_tx_bundle
 
 $(BIN_DIR)/fuzz_block: tools/fuzz/fuzz_block.c $(TMPL_GEN) $(ALL_SRCS)
 	@mkdir -p $(dir $@)
@@ -1715,6 +1716,16 @@ $(BIN_DIR)/fuzz_http: tools/fuzz/fuzz_http.c $(TMPL_GEN) $(ALL_SRCS)
 	else \
 		echo "$(FUZZ_CC) ... -o $@"; \
 		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_http.c $(ALL_SRCS) $(FUZZ_LIBS); \
+	fi
+
+$(BIN_DIR)/fuzz_tx_bundle: tools/fuzz/fuzz_tx_bundle.c $(TMPL_GEN) $(ALL_SRCS)
+	@mkdir -p $(dir $@)
+	@if ! command -v $(FUZZ_CC) >/dev/null 2>&1; then \
+		echo "fuzz_tx_bundle: ERROR: $(FUZZ_CC) not found (install clang/libFuzzer)"; \
+		exit 2; \
+	else \
+		echo "$(FUZZ_CC) ... -o $@"; \
+		$(FUZZ_CC) $(FUZZ_CFLAGS) -o $@ tools/fuzz/fuzz_tx_bundle.c $(ALL_SRCS) $(FUZZ_LIBS); \
 	fi
 
 fuzz-ci: check-fuzz-ci-tools $(FUZZ_TARGETS)
@@ -2117,7 +2128,7 @@ clean:
 	    zclassic23-chaos p2_invariant_check crash_recovery_test rebuild_recent \
 	    shadow_replay_proof wallet_check spec_zcl session bot wallet_dump \
 	    wallet_sim wallet-wireframes mock_rpc export_snapshot bench_fresh_sync \
-	    fuzz_block fuzz_script fuzz_p2p fuzz_http test_zcl_cov
+	    fuzz_block fuzz_script fuzz_p2p fuzz_http fuzz_tx_bundle test_zcl_cov
 	rm -f tools/gen_templates tools/inspect_html tools/wal_checkpoint \
 	    tools/check_observability_pairing tools/gen_sha3_windows \
 	    tools/soak/soak_runner
