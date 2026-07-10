@@ -14,6 +14,7 @@
 #include "net/msg_bounds_guard.h"
 #include "net/addrman.h"
 #include "net/download.h"
+#include "net/peer_scoring.h"
 #include "core/uint256.h"
 #include "util/log_macros.h"
 #include <stdio.h>
@@ -31,7 +32,8 @@ bool mp_handle_getdata(struct msg_processor *mp, struct p2p_node *node,
     return process_getdata(mp, node, s);
 }
 
-static bool process_notfound(struct p2p_node *node, struct byte_stream *s)
+static bool process_notfound(struct msg_processor *mp, struct p2p_node *node,
+                             struct byte_stream *s)
 {
     uint64_t count;
     if (!stream_read_compact_size(s, &count))
@@ -43,6 +45,11 @@ static bool process_notfound(struct p2p_node *node, struct byte_stream *s)
      * discipline is auditable and uniform across inv-bearing handlers). */
     if (msg_count_exceeds("net", "notfound", count, MAX_INV_SZ,
                           node->addr_name)) {
+        /* Score like every other oversized-count flood (inv/getdata/addr/
+         * headers) — see msg_tx.c::process_inv for why disconnect alone
+         * lets a hostile peer repeat this forever across reconnects. */
+        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
+                            "notfound count exceeds MAX_INV_SZ");
         node->disconnect = true;
         return false;
     }
@@ -67,8 +74,7 @@ static bool process_notfound(struct p2p_node *node, struct byte_stream *s)
 bool mp_handle_notfound(struct msg_processor *mp, struct p2p_node *node,
                         struct byte_stream *s)
 {
-    (void)mp;
-    return process_notfound(node, s);
+    return process_notfound(mp, node, s);
 }
 
 static bool process_addr(struct msg_processor *mp, struct p2p_node *node,
@@ -81,6 +87,12 @@ static bool process_addr(struct msg_processor *mp, struct p2p_node *node,
 
     if (msg_count_exceeds("net", "addr", count, MAX_ADDR_TO_SEND,
                           node->addr_name)) {
+        /* Score like every other oversized-count flood (inv/getdata/
+         * notfound/headers) — see msg_tx.c::process_inv for why
+         * disconnect alone lets a hostile peer repeat this forever
+         * across reconnects. */
+        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
+                            "addr count exceeds MAX_ADDR_TO_SEND");
         printf("Peer %s: addr message too large (%llu)\n",
                node->addr_name, (unsigned long long)count);
         node->disconnect = true;

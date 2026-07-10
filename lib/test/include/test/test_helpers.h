@@ -507,6 +507,7 @@ int test_rpc_auth_hardening(void);
 int test_disk_block_io(void);
 int test_msg_handlers(void);
 int test_process_headers_adversarial(void);
+int test_net_msg_dos(void);
 int test_zclassicd_oracle(void);
 int test_header_probe(void);
 int test_syncdiag_rpc(void);

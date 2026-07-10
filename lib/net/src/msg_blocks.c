@@ -119,6 +119,13 @@ bool process_getdata(struct msg_processor *mp, struct p2p_node *node,
                  node->addr_name);
 
     if (count > MAX_INV_SZ) {
+        /* Score this like every other oversized-count flood (inv, addr,
+         * headers, notfound) so a peer that repeats this specific abuse
+         * across reconnects still accrues toward the ban threshold —
+         * without this, disconnect-only rejection let a hostile peer
+         * repeat the flood forever with no persistent consequence. */
+        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
+                            "getdata count exceeds MAX_INV_SZ");
         node->disconnect = true;
         LOG_FAIL("net", "getdata count %llu exceeds MAX_INV_SZ from %s",
                  (unsigned long long)count, node->addr_name);
