@@ -185,6 +185,7 @@ static void register_all_controllers(void)
     mcp_register_wallet();
     mcp_register_app();
     mcp_register_meta();
+    mcp_register_dev_hotswap();
 }
 
 /* Live event source — polls the node's eventlog RPC. Defined in

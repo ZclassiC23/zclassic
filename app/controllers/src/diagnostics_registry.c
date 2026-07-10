@@ -67,6 +67,7 @@
 #include "storage/znam_projection.h"
 #include "storage/wallet_projection.h"
 #include "crypto_registry/crypto_registry.h"
+#include "hotswap/hotswap.h"
 #include "services/ibd_throttle.h"
 #include "services/mempool_limits.h"
 #include "health/heartbeat.h"
@@ -402,10 +403,7 @@ static const char *bundle_freshness_name(enum bundle_freshness f)
     return "unknown";
 }
 
-/* sapling_checkpoint_dump_state_json lives in
- * diagnostics_sapling_checkpoint.c (kept in its own file so this registry
- * stays a routing table, not a home for every dumper's full body);
- * declared in diagnostics_internal.h. */
+/* sapling_checkpoint_dump_state_json lives in diagnostics_sapling_checkpoint.c (its own file; decl in diagnostics_internal.h). */
 
 static bool bundle_staleness_dump_state_json(struct json_value *out,
                                              const char *key)
@@ -696,6 +694,8 @@ static const struct diagnostics_dump_entry g_dumpers[] = {
                      "(key = \"<kind>-<name>\", kind = test_group|scenario)" },
     { "unhealthy",   unhealthy_dump_state_json,
                      "unhealthy-only rollup: all_ok/checked/reporting + unhealthy subsystems (name+reason) from `_health`" },
+    { "hotswap",     hotswap_dump_state_json,
+                     "DEV-ONLY in-process hot-swap loader: availability + per-generation {gen, so_path, loaded_at, replaced_count, ok}; 'unavailable' in release" },
 };
 
 int diagnostics_subsystems_csv(char *out, size_t out_sz)

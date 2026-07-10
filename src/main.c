@@ -1288,6 +1288,7 @@ static void cli_mcp_register_all(void)
     mcp_register_wallet();
     mcp_register_app();
     mcp_register_meta();
+    mcp_register_dev_hotswap();
 }
 
 static bool cli_mcp_parse_args_object(const char *raw,
