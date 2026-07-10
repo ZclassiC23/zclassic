@@ -87,31 +87,14 @@
 #include <unistd.h>
 #include <dirent.h>
 
-/* ── Controller-level state ─────────────────────────────────────── */
-
-static struct {
-    struct main_state *main_state;
-    char datadir[1024];
-} g_diag = {0};
-
-void diagnostics_controller_set_state(struct main_state *ms,
-                                      const char *datadir)
-{
-    g_diag.main_state = ms;
-    if (datadir) {
-        snprintf(g_diag.datadir, sizeof(g_diag.datadir), "%s", datadir);
-    }
-}
-
-const char *diag_datadir(void)
-{
-    return g_diag.datadir;
-}
-
-struct main_state *diag_main_state(void)
-{
-    return g_diag.main_state;
-}
+/* ── Controller-level state ─────────────────────────────────────────
+ *
+ * The boot-populated main_state + datadir (diagnostics_controller_set_state /
+ * diag_datadir / diag_main_state) moved to the RESIDENT diagnostics_dispatch.c.
+ * This TU is Tier-1 hot-swap eligible (config/hotswap_eligible.def), so it must
+ * hold NO mutable file-scope statics: a recompiled generation .so would get its
+ * own zero-initialized copy and lose the live boot state. The dumpers here reach
+ * that state through the resident accessors declared in diagnostics_internal.h. */
 
 static void push_evidence_record_json(struct json_value *out, const char *key,
                                       const struct chain_evidence_record *e)
@@ -451,7 +434,7 @@ static bool bundle_staleness_dump_state_json(struct json_value *out,
     /* (3) network tip proxy = best known PoW header height (tracks the network
      * on a connected node); the active validated tip is reported alongside. */
     long long header_tip = -1, active_tip = -1;
-    struct main_state *ms = g_diag.main_state;
+    struct main_state *ms = diag_main_state();
     if (ms) {
         zcl_mutex_lock(&ms->cs_main);
         if (ms->pindex_best_header)
@@ -751,8 +734,8 @@ static bool diagnostics_dumpstate_unknown(struct json_value *result,
     LOG_FAIL("diag", "%s", msg);
 }
 
-bool diag_rpc_dumpstate(const struct json_value *params, bool help,
-                        struct json_value *result)
+bool diag_rpc_dumpstate_builtin(const struct json_value *params, bool help,
+                                struct json_value *result)
 {
     if (help) {
         diagnostics_dumpstate_help(result);
@@ -813,3 +796,18 @@ bool diag_rpc_dumpstate(const struct json_value *params, bool help,
     json_free(&state);
     return true;
 }
+
+/* ── Hot-swap generation entrypoint ─────────────────────────────────
+ *
+ * This TU (the g_dumpers[] table + the dumpers defined here) is Tier-1
+ * hot-swap eligible (config/hotswap_eligible.def). Under a generation .so build
+ * (-DZCL_HOTSWAP_GEN) the macro emits zcl_hotswap_gen_init, which re-points the
+ * resident `dumpstate` provider at THIS TU's freshly-compiled
+ * diag_rpc_dumpstate_builtin (and its recompiled g_dumpers[] + dumpers).
+ * diag_dumpstate_replace lives in the resident diagnostics_dispatch.c, so it
+ * binds to the executable's copy and mutates the provider the live read path
+ * reads; the boot-populated main_state/datadir are reached through the resident
+ * accessors, never a stale .so-local copy. In the node build and in release the
+ * macro expands to nothing (no trailing semicolon by design). */
+ZCL_HOTSWAP_EXPORT_PROVIDER(
+    diag_dumpstate_replace(diag_rpc_dumpstate_builtin))

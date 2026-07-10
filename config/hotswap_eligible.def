@@ -1,0 +1,39 @@
+/* Tier-1 hot-swap eligibility manifest (DEV-ONLY surface).
+ *
+ * Consumer must define:
+ *   HOTSWAP_ELIGIBLE(path)   // repo-relative .c path of a swap-eligible TU
+ *
+ * A translation unit listed here may be recompiled into a generation .so
+ * (`make hotswap-so FILES=...`) and dlopen'd into a RUNNING dev node to
+ * re-point its atomic route/provider slots with no restart. See
+ * docs/work/HOTSWAP.md and ZCL_HOTSWAP_EXPORT_ROUTES /
+ * ZCL_HOTSWAP_EXPORT_PROVIDER in lib/hotswap/include/hotswap/hotswap.h.
+ *
+ * Two lint gates keep this list honest (both wired into `make lint`, both
+ * self-tested in lib/test/src/test_make_lint_gates.c):
+ *
+ *   check-hotswap-eligible-scope   Every path must be an app-layer surface,
+ *       NEVER under lib/consensus, lib/validation, lib/storage, lib/net,
+ *       lib/coins, or app/jobs (reducer stages) — consensus/state code is
+ *       never hot-swappable, not even in dev.
+ *
+ *   check-hotswap-static-state     Every listed TU must define NO mutable
+ *       file-scope statics: a generation .so gets its own zero-initialized
+ *       copy of any such static and would lose the live process state. The
+ *       resident half (atomic provider slot, boot-populated main_state, ...)
+ *       lives in a sibling NON-eligible trampoline TU. A file-scope static
+ *       that is provably swap-safe may be annotated on the SAME line with an
+ *       allowlist marker comment reading  hotswap-static-ok: <reason>.
+ *
+ * Keep this DATA ONLY (no C tokens beyond the macro invocations). */
+
+/* MCP tool router pilot: re-points its k_routes[] via host->mcp_replace. */
+HOTSWAP_ELIGIBLE("tools/mcp/controllers/app_controller.c")
+
+/* REST resource dispatch: re-points the resident provider consulted by
+ * api_resource_route_dispatch_dynamic (trampoline in api_controller_dispatch.c). */
+HOTSWAP_ELIGIBLE("app/controllers/src/api_controller_routes.c")
+
+/* Diagnostics `dumpstate` / zcl_state dumpers: re-points the resident provider
+ * consulted by diag_rpc_dumpstate (trampoline in diagnostics_dispatch.c). */
+HOTSWAP_ELIGIBLE("app/controllers/src/diagnostics_registry.c")

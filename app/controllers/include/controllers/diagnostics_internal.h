@@ -67,9 +67,29 @@ enum bundle_freshness bundle_classify(long long seed_h, long long header_tip,
 
 /* RPC handlers, one per concern file. Signatures match rpc_handler_fn. */
 
-/* diagnostics_registry.c */
+/* diagnostics_registry.c / diagnostics_dispatch.c.
+ *
+ * diag_rpc_dumpstate is a hot-swap TRAMPOLINE (resident, in
+ * diagnostics_dispatch.c): it acquire-loads an atomic provider and delegates
+ * to it when a dev generation .so has installed one, else calls the resident
+ * built-in below (which owns g_dumpers[], in the swap-eligible
+ * diagnostics_registry.c). See docs/work/HOTSWAP.md. */
 bool diag_rpc_dumpstate(const struct json_value *params, bool help,
                         struct json_value *result);
+bool diag_rpc_dumpstate_builtin(const struct json_value *params, bool help,
+                                struct json_value *result);
+
+/* Matches diag_rpc_dumpstate_builtin — the swap unit for `dumpstate`. */
+typedef bool (*diag_dumpstate_fn)(const struct json_value *params, bool help,
+                                  struct json_value *result);
+
+#ifdef ZCL_DEV_BUILD
+/* DEV-ONLY: atomically re-point the resident `dumpstate` provider at `fn`
+ * (release store; the trampoline reads it with an acquire load). Resident in
+ * diagnostics_dispatch.c so a generation .so reaches it as an undefined symbol
+ * bound to the executable's copy. Returns false on a NULL fn. */
+bool diag_dumpstate_replace(diag_dumpstate_fn fn);
+#endif
 bool diag_rpc_statecatalog(const struct json_value *params, bool help,
                            struct json_value *result);
 size_t diagnostics_dumper_count(void);
