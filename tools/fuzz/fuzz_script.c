@@ -68,5 +68,66 @@ int LLVMFuzzerTestOneInput(const uint8_t *data, size_t size)
     ScriptError serror = SCRIPT_ERR_OK;
     (void)eval_script(&stack, &script, flags, NULL, 0, &serror);
 
+    /* ── Stateless structural parsing on the SAME untrusted bytes ──
+     * A malicious peer's scriptPubKey/scriptSig hits these parsers
+     * before (and independently of) full evaluation: the opcode walk
+     * (script_get_op), the CScriptNum decoder, the sigop counters, and
+     * the pattern classifiers. eval_script can short-circuit on the
+     * first error and never traverse the tail, so driving these
+     * directly reaches bounds logic eval alone may skip. All are pure
+     * reads over `script` and must never index past script.size. */
+
+    /* Full opcode walk with a real 520-byte payload sink, mirroring the
+     * interpreter's per-op GetOp loop. script_get_op returns false at a
+     * truncated/oversized push; we stop there exactly like the VM. */
+    {
+        size_t pc = 0;
+        enum opcodetype opcode;
+        unsigned char pushbuf[MAX_SCRIPT_ELEMENT_SIZE];
+        size_t pushlen;
+        while (script_get_op(&script, &pc, &opcode, pushbuf, &pushlen)) {
+            /* Interpret each pushed payload as a CScriptNum, both with
+             * and without the BIP62 minimal-encoding rule and at both
+             * the default (4) and extended (CLTV, 5) width bounds. This
+             * is how the VM turns a stack element into a locktime /
+             * count / arithmetic operand. */
+            if (pushlen > 0) {
+                struct script_num n;
+                if (script_num_from_bytes(&n, pushbuf, pushlen,
+                                          /*require_minimal=*/true,
+                                          SCRIPT_NUM_DEFAULT_MAX_SIZE)) {
+                    /* Round-trip a decoded number back to bytes. */
+                    unsigned char rt[SCRIPT_NUM_MAX_SIZE];
+                    (void)script_num_serialize(&n, rt, sizeof(rt));
+                    (void)script_num_get_int(&n);
+                }
+                (void)script_num_from_bytes(&n, pushbuf, pushlen,
+                                            /*require_minimal=*/false,
+                                            /*max_size=*/5);
+            }
+        }
+    }
+
+    /* Also walk data-less (data==NULL), the path script_get_sig_op_count
+     * uses — it traverses oversized pushes faithfully rather than
+     * rejecting them, a distinct branch in script_get_op. */
+    {
+        size_t pc = 0;
+        enum opcodetype opcode;
+        while (script_get_op(&script, &pc, &opcode, NULL, NULL))
+            ;
+    }
+
+    /* Sigop counters (consensus-relevant walks) + the pattern
+     * classifiers. Each is a bounded scan over the raw bytes. */
+    (void)script_get_sig_op_count(&script, flags, /*accurate=*/true);
+    (void)script_get_sig_op_count(&script, flags, /*accurate=*/false);
+    (void)script_get_sig_op_count_p2sh(&script, &script, flags);
+    (void)script_is_p2sh(&script);
+    (void)script_is_p2pkh(&script);
+    (void)script_is_pay_to_script_hash(&script);
+    (void)script_is_push_only(&script);
+    (void)script_is_unspendable(&script);
+
     return 0;
 }
