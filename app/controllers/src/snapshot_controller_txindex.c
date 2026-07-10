@@ -172,7 +172,7 @@ static bool snapshot_tx_index_maybe_commit(struct node_db *ndb,
      * for chain evidence, tip cursors, and other liveness writes to drain. */
     platform_sleep_ms(TX_INDEX_BATCH_YIELD_MS);
     if (!snapshot_tx_begin_checked(ndb, "tx_index batch reopen"))
-        return false;
+        return false; // raw-return-ok:snapshot_tx_begin_checked already LOG_FAILs with label+errmsg
     *tx_open = true;
     return true;
 }

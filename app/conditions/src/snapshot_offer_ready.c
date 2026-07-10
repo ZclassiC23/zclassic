@@ -94,7 +94,7 @@ static bool detect_snapshot_offer_ready(void)
         return false;
 
     if (!sync_state_can_receive_snapshot(sync_get_state()))
-        return false;
+        return false; // raw-return-ok:sync-state-already-past-receive-window
 
     atomic_store(&g_local_height_at_detect, local_h);
     atomic_store(&g_snapshot_height_at_detect, status.offered_height);
@@ -212,8 +212,14 @@ static bool witness_snapshot_offer_ready(int64_t target_at_detect)
         snapsync_get_status_snapshot(svc, &status);
     }
 
-    if (!snapshot_offer_is_active(status.state))
+    if (!snapshot_offer_is_active(status.state)) {
+        LOG_WARN("condition",
+                 "[condition:snapshot_offer_ready] witness: snapsync offer "
+                 "no longer active (state=%d) — remedy's FSM move to "
+                 "SYNC_SNAPSHOT_RECEIVE was a remedy echo, not proof",
+                 (int)status.state);
         return false;
+    }
 
     int64_t staged_at_detect = atomic_load(&g_staged_at_detect);
     return status.staged_row_count >= staged_at_detect;

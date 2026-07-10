@@ -88,8 +88,13 @@ static bool detect_body_fetch_missing_have_data(void)
     if (gap.body_observed)
         return false;
 
-    if (!target_missing_data(ms, gap.target_height))
+    if (!target_missing_data(ms, gap.target_height)) {
+        LOG_WARN("condition",
+                 "[condition:body_fetch_missing_have_data] target h=%d "
+                 "already has data or is unindexable; skipping",
+                 gap.target_height);
         return false;
+    }
 
     atomic_store(&g_target_at_detect, gap.target_height);
     return true;

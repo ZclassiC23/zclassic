@@ -95,8 +95,12 @@ static bool check_integrity(struct chain_integrity_result *out)
 static bool detect_chain_integrity_failed(void)
 {
     struct chain_integrity_result r;
-    if (!check_integrity(&r))
+    if (!check_integrity(&r)) {
+        LOG_WARN("condition",
+                 "[condition:chain_integrity_failed] detect: no main_state; "
+                 "skipping integrity check");
         return false;
+    }
     return chain_integrity_classify(&r) != CHAIN_INTEGRITY_CLEAN;
 }
 
@@ -199,8 +203,12 @@ static enum condition_remedy_result remedy_chain_integrity_failed(void)
     atomic_fetch_add(&g_remedy_calls, 1);
 
     struct chain_integrity_result r;
-    if (!check_integrity(&r))
+    if (!check_integrity(&r)) {
+        LOG_WARN("condition",
+                 "[condition:chain_integrity_failed] remedy: no main_state; "
+                 "skipping integrity check");
         return COND_REMEDY_SKIP;
+    }
     enum chain_integrity_class cls = chain_integrity_classify(&r);
 
     LOG_WARN("condition", "[condition:chain_integrity_failed] zero_nbits=%d " "tip_window_holes=%d total_holes=%d mismatches=%d tip_h=%d class=%s " "action=chain_restore_finalize", r.zero_nbits_count, r.tip_window_holes, r.active_chain_holes, r.active_chain_mismatches, r.tip_height, integrity_class_name((int)cls));

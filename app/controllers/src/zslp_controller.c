@@ -475,7 +475,7 @@ static bool zslp_parse_transfer_request(const struct json_value *params,
     const char *validation_error;
 
     if (!zslp_parse_token_param(params, 0, &req->token_id, result))
-        return false;
+        return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
     if (!zslp_parse_addr_param(params, 1, strict_chain_addr,
                                &req->recipient_addr, result))
         return false;
@@ -528,9 +528,9 @@ static bool rpc_zslp_createtoken(const struct json_value *params,
         return !help;
     }
     if (!zslp_rpc_require_context(result))
-        return false;
+        return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
     if (!zslp_parse_create_request(params, &req, result))
-        return false;
+        return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
 
     const char *token_id = zslp_create_token(NULL, req.ticker, req.name,
         req.decimals, req.initial_supply);
@@ -555,10 +555,10 @@ static bool rpc_zslp_send(const struct json_value *params,
         return !help;
     }
     if (!zslp_rpc_require_context(result))
-        return false;
+        return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
     strict_chain_addr = (zslp_wallet() != NULL && zslp_mempool() != NULL);
     if (!zslp_parse_transfer_request(params, strict_chain_addr, &req, result))
-        return false;
+        return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
 
     bool ok = zslp_send(NULL, req.token_id, req.recipient_addr, req.amount);
     json_set_bool(result, ok);
@@ -578,11 +578,11 @@ static bool rpc_zslp_balance(const struct json_value *params,
     }
 
     if (!zslp_rpc_require_context(result))
-        return false;
+        return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
     if (!zslp_parse_token_param(params, 0, &token_id, result))
-        return false;
+        return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
     if (!zslp_parse_addr_param(params, 1, false, &addr, result))
-        return false;
+        return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
 
     uint64_t bal = zslp_balance(NULL, token_id, addr);
     json_set_int(result, (int64_t)bal);
@@ -601,10 +601,10 @@ static bool rpc_zslp_mint(const struct json_value *params,
         return !help;
     }
     if (!zslp_rpc_require_context(result))
-        return false;
+        return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
     strict_chain_addr = (zslp_wallet() != NULL && zslp_mempool() != NULL);
     if (!zslp_parse_transfer_request(params, strict_chain_addr, &req, result))
-        return false;
+        return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
 
     bool ok = zslp_mint(NULL, req.token_id, req.recipient_addr, req.amount);
     json_set_bool(result, ok);
@@ -624,9 +624,9 @@ static bool rpc_zslp_gettoken(const struct json_value *params,
         return !help;
     }
     if (!zslp_rpc_require_context(result))
-        return false;
+        return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
     if (!zslp_parse_token_param(params, 0, &token_id, result))
-        return false;
+        return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
     if (!zslp_open_runtime_db(NULL, &db, &owns_db)) {
         json_set_str(result, "zslp database unavailable");
         return false;
@@ -656,7 +656,7 @@ static bool rpc_zslp_listtokens(const struct json_value *params,
         return false;
     }
     if (!zslp_rpc_require_context(result))
-        return false;
+        return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
     if (params && json_size(params) > 0) {
         limit = json_get_int(json_at(params, 0));
         if (limit <= 0 || limit > 64) {
@@ -696,9 +696,9 @@ static bool rpc_zslp_listtransfers(const struct json_value *params,
         return !help;
     }
     if (!zslp_rpc_require_context(result))
-        return false;
+        return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
     if (!zslp_parse_token_param(params, 0, &token_id, result))
-        return false;
+        return false; // raw-return-ok:RPC error body already set via json_set_str(result,...)
     if (json_size(params) > 1) {
         limit = json_get_int(json_at(params, 1));
         if (limit <= 0 || limit > 64) {

@@ -103,7 +103,7 @@ static bool detect_orphan_utxo_above_tip(void)
     }
 
     if (!any_utxo_above(tip_h))
-        return false;
+        return false; // raw-return-ok:no-orphans-is-the-healthy-steady-state
     atomic_store(&g_tip_at_detect, tip_h);
     return true;
 }

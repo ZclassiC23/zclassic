@@ -171,8 +171,13 @@ static bool detect_tip_stall_oracle_rebuild(void)
 
     /* (d) the local oracle is reachable AND strictly ahead by the margin. */
     int remote = 0;
-    if (!g_oracle_height_fn(&remote))
+    if (!g_oracle_height_fn(&remote)) {
+        LOG_WARN("condition",
+                 "[condition:tip_stall_oracle_rebuild] tip_h=%lld stalled but "
+                 "oracle unreachable; native sync owns recovery",
+                 (long long)tip_h);
         return false; /* no trusted oracle -> native sync owns recovery */
+    }
     if ((int64_t)remote < tip_h + MIN_GAP)
         return false;
 
