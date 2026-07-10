@@ -5,6 +5,7 @@
  * mining, wallet sync, shutdown, and utility functions. */
 #include "platform/time_compat.h"
 #include "config/boot_internal.h"
+#include "config/boot_shutdown_marker.h"
 #include "config/boot_background_workers.h"
 #include "config/boot_flyclient.h"
 #include "config/boot_snapshot_offer.h"
@@ -1161,6 +1162,10 @@ bool app_init_services(struct app_context *ctx,
             }
         }
     }
+    printf("[boot]   %-28s %lldms\n", "svc.mmr_mmb_catchup",
+           (long long)(svc_clock_ms() - t_svc));
+    t_svc = svc_clock_ms();
+
     register_blockchain_rpc_commands(svc->rpc_table);
 
     rpc_hodl_set_state(svc->state, svc->coins_tip, boot_node_db(svc),
@@ -1285,7 +1290,7 @@ bool app_init_services(struct app_context *ctx,
     /* Initialize metrics observers for Prometheus /metrics */
     mcp_metrics_init();
 
-    printf("[boot]   %-28s %lldms\n", "svc.rpc_mmb_register",
+    printf("[boot]   %-28s %lldms\n", "svc.register_rpc_cmds",
            (long long)(svc_clock_ms() - t_svc));
     t_svc = svc_clock_ms();
 
@@ -1342,6 +1347,10 @@ bool app_init_services(struct app_context *ctx,
             printf("\n");
         }
     }
+
+    printf("[boot]   %-28s %lldms\n", "svc.peer_discover_self",
+           (long long)(svc_clock_ms() - t_svc));
+    t_svc = svc_clock_ms();
 
     if (svc->want_address_backfill) {
         /* Re-enabled: SIGSEGV was caused by SQLite memory pressure from
@@ -1426,7 +1435,7 @@ bool app_init_services(struct app_context *ctx,
         }
     }
 
-    printf("[boot]   %-28s %lldms\n", "svc.peers_supervisors_runtime",
+    printf("[boot]   %-28s %lldms\n", "svc.runtime_and_catchup",
            (long long)(svc_clock_ms() - t_svc));
 
     return true;
@@ -1655,6 +1664,13 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
     shutdown_stop_frontend_services(svc);
     shutdown_quiesce_network_and_flush_coins(svc);
     shutdown_persist_runtime_state(svc);
+    /* Write the verified-clean shutdown marker HERE — node.db is now
+     * WAL-checkpointed and closed, so its on-disk identity is final and binds
+     * the next boot's quick_check-skip. This point is reached on BOTH the
+     * straggler _exit(0) path below AND the normal completion, whereas
+     * app_shutdown()'s later write is skipped when the straggler path _exit()s.
+     * Idempotent: app_shutdown() may re-write the identical marker. */
+    boot_shutdown_marker_write_clean(svc->datadir);
     {
         int stragglers = thread_registry_join_all(2);
         if (stragglers > 0) {

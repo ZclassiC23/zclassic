@@ -90,6 +90,16 @@ struct node_db {
 bool node_db_open(struct node_db *ndb, const char *path);
 void node_db_close(struct node_db *ndb);
 
+/* Optional quick_check-skip probe (Tier-2 fast restart). When registered,
+ * node_db_open() calls it with the db path BEFORE opening the sqlite handle;
+ * a true return means "the previous shutdown proved this file clean — skip the
+ * expensive PRAGMA quick_check on this open". Default (unset) = quick_check
+ * always runs, identical to prior behavior. The probe must be a cheap, pure
+ * read of on-disk state; it must never mutate the file. Registered by the boot
+ * layer (config/boot_shutdown_marker.c) to keep app/models decoupled. */
+typedef bool (*node_db_quick_check_skip_probe_fn)(const char *path);
+void node_db_set_quick_check_skip_probe(node_db_quick_check_skip_probe_fn fn);
+
 /* Execute raw SQL (for migrations, debugging). */
 bool node_db_exec(struct node_db *ndb, const char *sql);
 bool node_db_prepare_readonly_query(struct node_db *ndb, const char *sql,

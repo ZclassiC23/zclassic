@@ -443,6 +443,14 @@ static int db_exec_checked_progress(sqlite3 *db, const char *sql,
     return rc;
 }
 
+/* Tier-2 fast restart: optional quick_check-skip probe (see database.h). */
+static node_db_quick_check_skip_probe_fn g_quick_check_skip_probe;
+
+void node_db_set_quick_check_skip_probe(node_db_quick_check_skip_probe_fn fn)
+{
+    g_quick_check_skip_probe = fn;
+}
+
 static bool db_quick_check_ok(sqlite3 *db, const char *path)
 {
     sqlite3_stmt *stmt = NULL;
@@ -556,19 +564,37 @@ bool node_db_open(struct node_db *ndb, const char *path)
     if (path)
         snprintf(ndb->path, sizeof(ndb->path), "%s", path);
     node_db_state_init(ndb);
+
+    /* Tier-2 fast restart: consult the quick_check-skip probe on the PRISTINE
+     * on-disk file, BEFORE db_open_raw touches it (WAL-mode open + pragmas can
+     * mutate the header). A true return means the previous shutdown proved this
+     * exact file clean; skip the ~9s PRAGMA quick_check on this open. Any
+     * ambiguity → probe returns false → quick_check runs exactly as before. */
+    bool skip_quick_check = g_quick_check_skip_probe && path &&
+                            g_quick_check_skip_probe(path);
+
     if (!db_open_raw(&ndb->db, path)) {
         node_db_state_destroy(ndb);
         return false;
     }
 
-    if (!db_quick_check_ok(ndb->db, path)) {
-        LOG_INFO("db", "db: %s is malformed; rebuilding fresh SQLite state", path);
-        sqlite3_close(ndb->db);
-        ndb->db = NULL;
-        db_quarantine_files(path);
-        if (!db_open_raw(&ndb->db, path)) {
-            node_db_state_destroy(ndb);
-            return false;
+    if (skip_quick_check) {
+        printf("[boot] quick_check skipped (verified-clean shutdown)\n");
+    } else {
+        int64_t t_qc = db_now_ms();
+        bool qc_ok = db_quick_check_ok(ndb->db, path);
+        printf("[boot]   %-28s %lldms\n", "sqlite.quick_check",
+               (long long)(db_now_ms() - t_qc));
+        if (!qc_ok) {
+            LOG_INFO("db", "db: %s is malformed; rebuilding fresh SQLite state",
+                     path);
+            sqlite3_close(ndb->db);
+            ndb->db = NULL;
+            db_quarantine_files(path);
+            if (!db_open_raw(&ndb->db, path)) {
+                node_db_state_destroy(ndb);
+                return false;
+            }
         }
     }
 

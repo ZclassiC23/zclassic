@@ -12,6 +12,7 @@
 #include "config/boot_memory_guard.h"
 #include "config/boot_postmortem.h"
 #include "config/boot_shutdown_marker.h"
+#include "config/boot_fast_restart.h"
 #include "config/boot_snapshot_failure_memory.h"
 #include "config/boot_snapshot_import.h"
 #include "config/boot_stale_locks.h"
@@ -319,6 +320,14 @@ static int64_t boot_clock_ms(void)
     struct timespec ts;
     platform_time_monotonic_timespec(&ts);
     return ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+}
+
+/* Emit an indented [boot] sub-phase marker (timing only) and return a fresh
+ * clock reading so the caller can chain: t = boot_submark("x", t). */
+static int64_t boot_submark(const char *name, int64_t since)
+{
+    printf("[boot]   %-28s %lldms\n", name, (long long)(boot_clock_ms() - since));
+    return boot_clock_ms();
 }
 
 /* ── boot.c decomposition ──────────────────────────────────────────
@@ -1090,6 +1099,9 @@ bool app_init(struct app_context *ctx)
 
     boot_postmortem_start(ctx->datadir);
     boot_shutdown_marker_detect_unclean(ctx->datadir);
+    /* Tier-2 fast restart: arm node_db_open's quick_check-skip probe BEFORE
+     * node.db opens (consumes the binding detect_unclean just cached). */
+    boot_fast_restart_arm_quick_check_skip_probe();
     boot_step_start_disk_and_ibd_guards(ctx->datadir);
 
     if (!boot_step_init_crypto_and_state(ctx, params))
@@ -1132,6 +1144,10 @@ bool app_init(struct app_context *ctx)
             event_emitf(EV_BOOT_DB_OPEN, 0, "schema=%d tip=%d",
                         node_db_schema_version(&g_node_db), db_tip);
         }
+        /* Bake the current schema version into the next clean-shutdown marker
+         * (advisory field in the quick_check-skip binding). */
+        boot_shutdown_marker_set_schema_version(
+            node_db_schema_version(&g_node_db));
     } else {
         fprintf(stderr, "Warning: SQLite database unavailable\n");
         event_emitf(EV_DB_ERROR, 0, "SQLite open failed at %s/node.db",
@@ -1424,6 +1440,10 @@ bool app_init(struct app_context *ctx)
      * holds the snapshot's contents (handled by checking the source
      * file's integrity + size; a re-run with utxos>1000 is a no-op via
      * the export guard in consensus_snapshot_export_service_run). */
+    /* Timing only: the stretch to the block_index_load marker (~1.3–13s warm)
+     * had no markers — attribute its heaviest steps via boot_submark(). */
+    int64_t t_sub = boot_clock_ms();
+
     if (g_node_db.open) {
         char snap_path[PATH_MAX];
         int sp_n = snprintf(snap_path, sizeof(snap_path),
@@ -1476,6 +1496,8 @@ bool app_init(struct app_context *ctx)
             }
         }
     }
+
+    t_sub = boot_submark("coins.snapshot_first", t_sub);
 
     /* -snapshot: Create snapshot of legacy data dir, import in parallel,
      * then start normally with P2P sync to catch up any delta. */
@@ -1623,6 +1645,8 @@ bool app_init(struct app_context *ctx)
         }
     }
 
+    t_sub = boot_submark("coins.view_open_gate", t_sub);
+
     /* One-time migration: import UTXOs from LevelDB chainstate into SQLite.
      * The old LevelDB had the authoritative UTXO set; SQLite's utxos table
      * may be incomplete. Check for migration flag in node_state. */
@@ -1768,6 +1792,8 @@ bool app_init(struct app_context *ctx)
      * The full index is saved on shutdown/save, enabling instant restart
      * without the 10-15s LevelDB scan. */
 
+    t_sub = boot_submark("coins.readview_csr", t_sub);
+
     /* OOM protection: estimate block index memory before loading.
      * Warn if it would exceed 50% of system RAM. */
     {
@@ -1776,6 +1802,8 @@ bool app_init(struct app_context *ctx)
             : 0;
         boot_block_index_memory_warn(est_count);
     }
+
+    (void)boot_submark("blkidx.mem_estimate", t_sub);
 
     /* Block index load: flat file first (mmap, <2s), then SQLite, then LevelDB.
      * Jeff Dean rule: use the fastest data structure available. */
@@ -2419,6 +2447,7 @@ bool app_init(struct app_context *ctx)
      * sat between the utxo_import and sapling_tree_load markers and was
      * part of the warm-start unattributed gap. */
     int64_t t_reconcile_blockindex = boot_clock_ms();
+    int64_t t_reconcile_sub = t_reconcile_blockindex;
 
     /* Resolve -deferproofvalidationbelow=<hash> now that block index is loaded */
     if (ctx->defer_proof_validation_below && strcmp(ctx->defer_proof_validation_below, "0") != 0) {
@@ -2502,6 +2531,8 @@ bool app_init(struct app_context *ctx)
         printf("Block index has %d HAVE_DATA entries with missing headers; "
                "will hydrate from block files\n",
                scan_missing_header_data);
+
+    t_reconcile_sub = boot_submark("blkidx.scan", t_reconcile_sub);
 
     /* Restore chain tip from coins DB best block hash */
     if (ctx->reindex_chainstate) {
@@ -2662,6 +2693,8 @@ bool app_init(struct app_context *ctx)
             }
         }
     }
+
+    t_reconcile_sub = boot_submark("blkidx.restore_tip", t_reconcile_sub);
 
     /* Repair block index from SQLite.
      * After legacy import, blocks in the LevelDB index may lack BLOCK_VALID_SCRIPTS
@@ -3031,6 +3064,7 @@ bool app_init(struct app_context *ctx)
         }
     }
 
+    (void)boot_submark("blkidx.repair_relink", t_reconcile_sub);
     printf("[boot] %-30s %lldms\n", "block_index_reconcile",
            (long long)(boot_clock_ms() - t_reconcile_blockindex));
 
@@ -3811,6 +3845,9 @@ sapling_tree_boot_check_done:
     if (svc_ok) {
         boot_stage_advance_to(BOOT_STAGE_READY);
         boot_step_start_maintenance_services();
+        /* Tier-2 fast restart: if this boot SKIPPED quick_check, run one in the
+         * background now (failure raises OPERATOR_NEEDED — never silent). */
+        boot_fast_restart_start_bg_quick_check(g_datadir);
     }
     return svc_ok;
 }
