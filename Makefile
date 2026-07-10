@@ -743,8 +743,31 @@ $(BIN_DIR)/gen_sha3_windows: tools/gen_sha3_windows.c \
 	    -Wno-stringop-overflow -Wno-unused-result \
 	    -Ilib/chain/include -Ilib/crypto/include -Ilib/encoding/include \
 	    -Ilib/json/include -Ilib/platform/include -Ilib/util/include \
+	    -Ilib/support/include \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -pthread
+
+# gen_utxo_root_ladder: one-shot tool that reads a COPY of a zclassic23
+# node.db (never the live datadir) and overwrites
+# lib/chain/{include/chain,src}/utxo_root_ladder.{h,c} with the golden-height
+# UTXO root ladder — cross-checked SHA3 UTXO-set commitments at fixed stride
+# heights plus the zclassicd-verified checkpoint rung (re-stated as a local
+# constant in the tool — see the comment above g_checkpoint_anchor — so this
+# standalone tool avoids pulling in the full chain.h/block_index header
+# graph just for chain/checkpoints.h). Standalone build: lib/chain/src/mmb.c
+# (pure, no DB) for the dense layer + libsqlite3.a for the node.db reads.
+# No node libs, no Tor, no RPC.
+.PHONY: tools/gen_utxo_root_ladder
+tools/gen_utxo_root_ladder: $(BIN_DIR)/gen_utxo_root_ladder
+$(BIN_DIR)/gen_utxo_root_ladder: tools/gen_utxo_root_ladder.c \
+		lib/chain/src/mmb.c lib/crypto/src/sha3.c lib/support/src/cleanse.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    -Wno-unused-result -Wno-stringop-overflow \
+	    -Ilib/chain/include -Ilib/crypto/include -Ilib/support/include \
+	    -Ilib/util/include -Ivendor/include \
+	    -D_POSIX_C_SOURCE=200809L \
+	    -o $@ $^ -Lvendor/lib -l:libsqlite3.a -lpthread -lm
 
 # gen_utxo_snapshot: build-time tool that walks a legacy zclassicd
 # chainstate LevelDB and emits a canonical UTXO sidecar file ready
@@ -2154,7 +2177,7 @@ clean:
 	    fuzz_snapshot fuzz_tx_bundle test_zcl_cov
 	rm -f tools/gen_templates tools/inspect_html tools/wal_checkpoint \
 	    tools/check_observability_pairing tools/gen_sha3_windows \
-	    tools/soak/soak_runner
+	    tools/gen_utxo_root_ladder tools/soak/soak_runner
 
 # ── Coverage (wave 5 #8) ──────────────────────────────────────
 #

@@ -1017,6 +1017,8 @@ int main(int argc, char **argv)
       failures += test_self_folded_anchor(); }
     { extern int test_sha3_windows(void);
       failures += test_sha3_windows(); }
+    { extern int test_utxo_root_ladder(void);
+      failures += test_utxo_root_ladder(); }
     failures += test_flyclient();
     { extern int test_flyclient_chainwork_floor(void);
       failures += test_flyclient_chainwork_floor(); }
