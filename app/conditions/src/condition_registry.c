@@ -33,6 +33,7 @@ void register_replay_canary_failed(void);
 
 void register_disk_full_pause(void);
 void register_clock_skew_reconcile(void);
+void register_sapling_anchor_frontier_unavailable(void);
 
 void condition_registry_register_all(void)
 {
@@ -66,4 +67,5 @@ void condition_registry_register_all(void)
     register_replay_canary_failed();
     register_disk_full_pause();
     register_clock_skew_reconcile();
+    register_sapling_anchor_frontier_unavailable();
 }

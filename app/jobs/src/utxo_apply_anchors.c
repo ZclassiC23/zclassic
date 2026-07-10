@@ -242,10 +242,13 @@ void utxo_apply_anchor_gap_blocker_refresh(sqlite3 *db)
     char reason[BLOCKER_REASON_MAX];
     snprintf(reason, sizeof(reason),
              "shielded anchor history is incomplete below reducer cursor %lld; "
-             "unknown Sprout/Sapling roots FAIL CLOSED and hold H*. Run the "
-             "owner-gated genesis-to-cursor anchor backfill/from-genesis "
-             "refold before serving shielded spends.",
-             (long long)max_activation);
+             "unknown Sprout/Sapling roots FAIL CLOSED and hold H*. Auto-remedy: "
+             "condition %s seeds a header-verified frontier (empty-table case) "
+             "or arms the bounded refold; a genuine below-cursor historical gap "
+             "stays owner-gated (genesis-to-cursor anchor backfill/from-genesis "
+             "refold).",
+             (long long)max_activation,
+             SAPLING_ANCHOR_FRONTIER_CONDITION_NAME);
     if (!blocker_init(&rec, UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID,
                       ANCHOR_STAGE_SUBSYS, BLOCKER_PERMANENT, reason))
         return;

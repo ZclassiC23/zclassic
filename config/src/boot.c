@@ -30,6 +30,7 @@
 #include "services/utxo_recovery_service.h"
 #include "supervisors/staged_sync_supervisor.h"
 #include "storage/progress_store.h"
+#include "storage/anchor_kv.h"  /* seed the verified Sapling anchor frontier at boot */
 #include "jobs/reducer_frontier.h"
 #include "jobs/refold_progress.h"  /* refold_progress_mark_started_from_anchor (B2) */
 #include "jobs/stage_repair.h"
@@ -1017,6 +1018,60 @@ static bool boot_park_until_shutdown(const char *gate_name)
     while (!thread_registry_shutdown_requested())
         sleep(2);
     return false;
+}
+
+/* Birth-defect fix for the empty Sapling anchor-frontier stall.  A
+ * nonzero-activation seed (-refold-from-anchor / -load-snapshot-at-own-height)
+ * resets the sapling anchor table via anchor_kv_reset_in_tx WITHOUT an initial
+ * frontier row (config/src/boot_refold_staged.c), so the first shielded-output
+ * block above the seed finds an empty table and fails closed.  The general
+ * runtime cure is condition sapling_anchor_frontier_unavailable (it knows the
+ * stall height and seeds a header-verified frontier there).  This boot pre-seed
+ * closes the defect eagerly at the seed/activation cursor itself: the node
+ * already holds a header-verified Sapling frontier in RAM at boot (loaded from
+ * the flat-file checkpoint on the snapshot path, or re-derived + verified by
+ * sapling_tree_rebuild on the refold path).  Seeding at `activation` is always
+ * boot-safe — the first shielded block above the seed is strictly greater than
+ * activation, so this frontier is the correct starting frontier and below any
+ * later shielded block.  anchor_kv_seed_frontier_row re-verifies the frontier's
+ * root against block[activation].hashFinalSaplingRoot and writes NOTHING on any
+ * mismatch (e.g. the snapshot-path frontier sits at a different height), so an
+ * unaligned datadir simply defers to the runtime condition — never a bad seed. */
+static void boot_seed_sapling_anchor_frontier_after_reset(void)
+{
+    if (!g_state.sapling_tree_loaded)
+        return;
+    sqlite3 *rpdb = progress_store_db();
+    if (!rpdb)
+        return;
+    int64_t activation = 0;
+    bool found = false;
+    if (!anchor_kv_activation_cursor(rpdb, ANCHOR_POOL_SAPLING, &activation,
+                                     &found) ||
+        !found || activation <= 0)
+        return;
+    bool empty = false;
+    if (!anchor_kv_table_is_empty(rpdb, ANCHOR_POOL_SAPLING, &empty) || !empty)
+        return;
+    const struct block_index *bi =
+        active_chain_at(&g_state.chain_active, (int)activation);
+    static const uint8_t zeros32[32] = {0};
+    if (!bi || memcmp(bi->hashFinalSaplingRoot.data, zeros32, 32) == 0)
+        return;   /* header root unknown at the seed height — cannot verify */
+    progress_store_tx_lock();
+    bool ok = anchor_kv_seed_frontier_row(rpdb, ANCHOR_POOL_SAPLING,
+                                          &g_state.sapling_tree,
+                                          activation,
+                                          &bi->hashFinalSaplingRoot);
+    progress_store_tx_unlock();
+    if (ok)
+        printf("[boot] seeded verified Sapling anchor frontier at seed h=%lld "
+               "— no anchor-frontier stall on the first shielded block\n",
+               (long long)activation);
+    /* A refusal (in-RAM frontier not at the seed height) is expected on the
+     * snapshot path when the checkpoint sits elsewhere; the runtime condition
+     * sapling_anchor_frontier_unavailable seeds it at the first shielded block.
+     * anchor_kv_seed_frontier_row already logged the refused root check. */
 }
 
 bool app_init(struct app_context *ctx)
@@ -3261,6 +3316,11 @@ sapling_tree_boot_check_done:
                                                ctx->datadir,
                                                &g_state,
                                                !ctx->no_legacy_auto_import);
+    /* The reset above ran anchor_kv_reset_in_tx(seed_h) with no initial
+     * frontier; pre-seed the verified Sapling frontier at the seed cursor when
+     * the in-RAM frontier aligns (else the runtime condition seeds it). */
+    if (ctx->load_snapshot_at_own_height)
+        boot_seed_sapling_anchor_frontier_after_reset();
     /* The snapshot seed returned cleanly (the loader _exit()s on failure, so
      * reaching here means success) — drop the failure-memory marker (autodetect
      * OR explicit) so a later deliberate re-seed of the same bundle is allowed. */
@@ -3369,6 +3429,12 @@ sapling_tree_boot_check_done:
                     set_sapling_tree_for_flush(&g_state.sapling_tree);
             }
         }
+        /* The from-anchor reset ran anchor_kv_reset_in_tx(anchor) with no
+         * initial frontier; sapling_tree_rebuild just re-derived + verified the
+         * Sapling frontier to the anchor (== activation cursor), so seed it now
+         * and the first shielded block above the anchor folds without stalling
+         * (else the runtime condition is the backstop). */
+        boot_seed_sapling_anchor_frontier_after_reset();
         (void)refold_progress_mark_started_from_anchor(progress_store_db(),
                                                        resume_target);
     }
