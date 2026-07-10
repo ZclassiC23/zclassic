@@ -14,6 +14,7 @@
 
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
+#include "util/db_txn_trace.h"
 #include "models/database.h"
 #include "models/database_internal.h"
 #include "models/database_validators.h"
@@ -613,6 +614,8 @@ bool node_db_open(struct node_db *ndb, const char *path)
     ndb->open = true;
     /* Register model validators once per process.  Idempotent. */
     db_register_all_validators();
+    /* Opt-in txn diagnostics (ZCL_DB_TXN_TRACE=1); no-op otherwise. */
+    zcl_db_txn_trace_register(ndb->db, "node_db");
     node_db_note_activity(ndb, "open", SQLITE_OK);
     return true;
 }
@@ -626,8 +629,31 @@ void node_db_close(struct node_db *ndb)
         return;
     }
     node_db_note_activity(ndb, "close", SQLITE_OK);
+    zcl_db_txn_trace_unregister(ndb->db);
     finalize_statements(ndb);
-    sqlite3_close(ndb->db);
+    /* sqlite3_close() returns SQLITE_BUSY if any prepared statement or backup
+     * on this handle is still un-finalized. A silently-leaked handle keeps its
+     * open transaction (and WAL write/read lock) alive for the rest of the
+     * process — the exact "unreachable silent halt" this project forbids. Log
+     * loudly, finalize every leftover statement via sqlite3_next_stmt(), and
+     * retry the close so the handle is actually released. */
+    int close_rc = sqlite3_close(ndb->db);
+    if (close_rc == SQLITE_BUSY) {
+        int leaked = 0;
+        sqlite3_stmt *s;
+        while ((s = sqlite3_next_stmt(ndb->db, NULL)) != NULL) {
+            const char *sql = sqlite3_sql(s);
+            LOG_WARN("db",
+                "node_db_close: leaked prepared statement blocked close: %s",
+                sql ? sql : "(null)");
+            sqlite3_finalize(s);
+            leaked++;
+        }
+        close_rc = sqlite3_close(ndb->db);
+        LOG_WARN("db",
+            "node_db_close: SQLITE_BUSY on close (%d leaked stmt(s) finalized); "
+            "retry rc=%d", leaked, close_rc);
+    }
     ndb->open = false;
     node_db_state_destroy(ndb);
 }

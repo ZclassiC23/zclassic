@@ -34,6 +34,7 @@
 #include "event/event.h"
 #include "script/standard.h"
 #include "util/ar_step_readonly.h"
+#include "util/db_txn_trace.h"
 #include "util/log_macros.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -725,6 +726,8 @@ bool coins_view_sqlite_open(struct coins_view_sqlite *cvs, sqlite3 *db)
             cvs->db = cdb;
             cvs->owns_db = true;
             opened_dedicated = true;
+            /* Opt-in txn diagnostics (ZCL_DB_TXN_TRACE=1); no-op otherwise. */
+            zcl_db_txn_trace_register(cdb, "coins_view");
             printf("coins_view_sqlite: dedicated connection "
                    "(path=%s, BEGIN IMMEDIATE mode)\n", fname);
         } else {
@@ -829,6 +832,7 @@ void coins_view_sqlite_close(struct coins_view_sqlite *cvs)
     if (cvs->stmt_commit_get) { sqlite3_finalize(cvs->stmt_commit_get); cvs->stmt_commit_get = NULL; }
     if (cvs->stmt_commit_set) { sqlite3_finalize(cvs->stmt_commit_set); cvs->stmt_commit_set = NULL; }
     if (cvs->owns_db && cvs->db) {
+        zcl_db_txn_trace_unregister(cvs->db);
         sqlite3_close(cvs->db);
     }
     cvs->db = NULL;
