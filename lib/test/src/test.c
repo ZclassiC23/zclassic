@@ -1351,6 +1351,7 @@ int main(int argc, char **argv)
     failures += test_seal_kv();
     failures += test_seal_ratify();
     failures += test_nullifier_kv();
+    failures += test_sapling_nullifier_adversarial();
     failures += test_stage_repair();
     failures += test_script_validate_stage();
     failures += test_script_validate_contextual_gate();
