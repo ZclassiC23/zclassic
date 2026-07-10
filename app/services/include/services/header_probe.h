@@ -76,11 +76,60 @@ void header_probe_tick_once(void);
 struct zcl_result header_probe_pull_range(int start_height, int max_headers,
                                           int *out_added);
 
+/* ── Detective lane A2: repair-source accounting ──────────────────
+ *
+ * A corrupted / solutionless stored header is repaired from one of two
+ * sources, in explicit priority order:
+ *   ORACLE — the co-located zclassicd legacy RPC (cheap, local; tried first).
+ *   P2P    — the connected peer set, via the EXISTING getdata block-refetch
+ *            machinery (used when the oracle is unreachable / absent — the
+ *            zclassicd oracle is being retired, so header repair must not
+ *            depend on it).
+ * The stale_validate_headers_repair Condition orchestrates the ordering and
+ * records which source acted via the note_* functions below, so the
+ * zcl_state subsystem=header_probe dump reports the last repair source and
+ * per-source counters (which source served the last repair, how many repairs
+ * each source served, how many P2P re-fetches were requested, and how many of
+ * those fired with zero connected peers = a missing-input event). */
+enum header_probe_repair_source {
+    HEADER_PROBE_SRC_NONE = 0,
+    HEADER_PROBE_SRC_ORACLE,
+    HEADER_PROBE_SRC_P2P,
+};
+
+const char *header_probe_repair_source_name(enum header_probe_repair_source s);
+
+/* Record that the header-solution repair for `height` was served (the correct
+ * canonical solution is now durably present) by `src`. Bumps the per-source
+ * served counter and latches last_repair_source / last_repair_height. NONE is
+ * ignored. */
+void header_probe_note_repair_served(enum header_probe_repair_source src,
+                                     int height);
+
+/* Record that a P2P getdata re-fetch of the canonical block for `height` was
+ * requested because the oracle could not serve it. `peers_available` is the
+ * connected-peer count at request time; <= 0 means no source can serve the
+ * repair right now (missing input) and is counted separately. */
+void header_probe_note_p2p_request(int height, int peers_available);
+
 /* zcl_state subsystem=header_probe dispatcher entry. See CLAUDE.md
  * "Adding state introspection". Reentrant-safe. */
 bool header_probe_dump_state_json(struct json_value *out, const char *key);
 
 /* Test hooks — reset state between unit tests. */
 void header_probe_reset_for_test(void);
+
+#ifdef ZCL_TESTING
+/* Snapshot of the repair-source counters for hermetic tests. */
+struct header_probe_repair_stats {
+    int64_t oracle_repairs;
+    int64_t p2p_requests;
+    int64_t p2p_repairs;
+    int64_t p2p_no_peer_events;
+    int     last_repair_source;   /* enum header_probe_repair_source */
+    int     last_repair_height;
+};
+void header_probe_test_get_repair_stats(struct header_probe_repair_stats *out);
+#endif
 
 #endif /* ZCL_SERVICES_HEADER_PROBE_H */
