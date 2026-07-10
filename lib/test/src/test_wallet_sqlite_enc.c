@@ -338,6 +338,59 @@ static int test_seed_plaintext_still_works(void)
     return failures;
 }
 
+/* Regression: the sapling-seed read/write paths must NEVER leave the cached
+ * stmt_seed_read cursor parked on a row. A cached SELECT stepped to SQLITE_ROW
+ * and not reset keeps an implicit read transaction (WAL snapshot) open on the
+ * shared node.db connection; on the live node every subsequent write on that
+ * handle (wallet flush BEGIN IMMEDIATE, node_db state_set, catchup COMMIT) then
+ * failed forever with SQLITE_BUSY_SNAPSHOT ("database is locked"). Assert the
+ * connection returns to SQLITE_TXN_NONE after each seed op, on both the
+ * row-found and no-row paths, encrypted and plaintext. */
+static int test_seed_ops_leave_no_open_txn(void)
+{
+    int failures = 0;
+    TEST("wallet_sqlite_enc: seed read/write leave no open read txn") {
+        set_passphrase(NULL);
+        sqlite3 *db = open_mem_db();
+        ASSERT(db);
+
+        struct wallet_sqlite ws;
+        ASSERT(wallet_sqlite_open(&ws, db));
+
+        /* No-row read: table empty -> false, and no cursor left open. */
+        uint8_t got[32];
+        memset(got, 0, 32);
+        ASSERT(!wallet_sqlite_read_sapling_seed(&ws, got));
+        ASSERT(sqlite3_txn_state(db, NULL) == SQLITE_TXN_NONE);
+
+        /* Write path reads next_child via stmt_seed_read first. */
+        uint8_t seed[32];
+        memset(seed, 0xEE, 32);
+        ASSERT(wallet_sqlite_write_sapling_seed(&ws, seed));
+        ASSERT(sqlite3_txn_state(db, NULL) == SQLITE_TXN_NONE);
+
+        /* Row-found read: the historically leaky path. */
+        ASSERT(wallet_sqlite_read_sapling_seed(&ws, got));
+        ASSERT(memcmp(seed, got, 32) == 0);
+        ASSERT(sqlite3_txn_state(db, NULL) == SQLITE_TXN_NONE);
+
+        /* Same, encrypted envelope. */
+        set_passphrase("leak-pass");
+        memset(seed, 0x11, 32);
+        ASSERT(wallet_sqlite_write_sapling_seed(&ws, seed));
+        ASSERT(sqlite3_txn_state(db, NULL) == SQLITE_TXN_NONE);
+        ASSERT(wallet_sqlite_read_sapling_seed(&ws, got));
+        ASSERT(memcmp(seed, got, 32) == 0);
+        ASSERT(sqlite3_txn_state(db, NULL) == SQLITE_TXN_NONE);
+        set_passphrase(NULL);
+
+        wallet_sqlite_close(&ws);
+        sqlite3_close(db);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ─────────────────────────────────────────────── */
 
 int test_wallet_sqlite_enc(void);
@@ -353,6 +406,7 @@ int test_wallet_sqlite_enc(void)
     failures += test_mixed_plaintext_and_encrypted();
     failures += test_seed_encrypted_roundtrip();
     failures += test_seed_plaintext_still_works();
+    failures += test_seed_ops_leave_no_open_txn();
 
     /* Cleanup: ensure passphrase env is unset. */
     set_passphrase(NULL);
