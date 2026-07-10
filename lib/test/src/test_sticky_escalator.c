@@ -784,6 +784,203 @@ int test_sticky_escalator(void)
         reducer_frontier_provable_tip_reset();
     }
 
+    /* ── T9/T10: the widen_peers rung ───────────────────────────────────────
+     * A hermetic connman with directly-injected p2p_node entries (never
+     * started — no sockets/threads), mirroring
+     * test_connman_addnode_fallback.c's add_test_peer, so
+     * connman_outbound_healthy_count() reflects exactly the peers we
+     * inject. g_connect_only forces connman_kick_seed_discovery /
+     * connman_kick_onion_seeds to no-op (both check it — lib/net/src/
+     * connman.c) so the rung's real dispatch never touches DNS/onion
+     * network I/O in-test; the dispatch itself is observed via the
+     * sticky_escalator_test_widen_kicks() counter, not its side effects. */
+
+    /* T9 — peers below the widen-peers floor: driving the real ladder all
+     * the way down (retry -> targeted_rederive -> resnapshot -> reindex ->
+     * self_mint_refold -> widen_peers, the same unexecutable-reindex shape
+     * as T3) must NOT report NOT_IMPLEMENTED at widen_peers: it dispatches
+     * connman_kick_seed_discovery (+ onion, zero outbound) and HOLDS the
+     * rung for its witness window, same shape as T1's real curative rung. */
+    {
+        extern bool g_connect_only; /* lib/net/src/connman.c */
+        bool saved_connect_only = g_connect_only;
+        g_connect_only = true; /* force kick_* no-ops: no DNS/onion I/O */
+
+        chain_params_select(CHAIN_MAIN);
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&sigs, 0, sizeof(sigs));
+        SE_CHECK("T9: connman_init",
+                 connman_init(&cm, chain_params_get(), &sigs));
+        /* One healthy outbound peer — below STICKY_WIDEN_PEERS_MIN_HEALTHY
+         * (3), but NOT zero, so the seed kick fires without the onion
+         * peer-of-last-resort kick. */
+        cm.manager.nodes = zcl_calloc(4, sizeof(*cm.manager.nodes),
+                                      "test_sticky_widen_nodes");
+        cm.manager.nodes_cap = 4;
+        struct net_address addr;
+        memset(&addr, 0, sizeof(addr));
+        net_address_init(&addr);
+        addr.svc.addr.ip[10] = 0xff;
+        addr.svc.addr.ip[11] = 0xff;
+        addr.svc.addr.ip[12] = 203;
+        addr.svc.addr.ip[13] = 0;
+        addr.svc.addr.ip[14] = 113;
+        addr.svc.addr.ip[15] = 5;
+        addr.svc.port = 8033;
+        struct p2p_node *peer = p2p_node_create(
+            &cm.manager, ZCL_INVALID_SOCKET, &addr, "widen-test", false);
+        SE_CHECK("T9: inject one healthy outbound peer", peer != NULL);
+        if (peer) {
+            peer->state = PEER_HANDSHAKE_COMPLETE;
+            peer->disconnect = false;
+            peer->services = NODE_NETWORK;
+            peer->starting_height = 100;
+            cm.manager.nodes[cm.manager.num_nodes++] = peer;
+        }
+        SE_CHECK("T9: exactly one healthy outbound peer counted",
+                 connman_outbound_healthy_count(&cm) == 1);
+
+        struct se_fixture fx;
+        SE_CHECK("T9: setup fixture", setup_fixture(&fx, "t9_widen"));
+        sqlite3 *db = progress_store_db();
+        SE_CHECK("T9: make rederive rung an honest no-op",
+                 put_tip_log(db, A + 2, 1, &fx.hashes[2]) &&
+                 put_tip_log(db, A + 3, 1, &fx.hashes[3]) &&
+                 seed_coins_applied(db, A + 4) &&
+                 seed_cursor(db, "tip_finalize", A + 3));
+
+        sync_monitor_set_context(&cm, NULL, &fx.ms);
+        sticky_escalator_test_reset();
+        stage_reducer_frontier_reset_detect_memo_for_testing();
+        sticky_escalator_set_datadir(fx.dir); /* unexecutable -> escalates */
+
+        sticky_escalator_note_stall("test_widen_below_floor");
+        int64_t t9 = (int64_t)platform_time_wall_time_t();
+        SE_CHECK("T9: retry -> targeted_rederive",
+                 sticky_escalator_test_drive(0, t9 + 31) ==
+                     STICKY_RUNG_TARGETED_REDERIVE);
+        SE_CHECK("T9: no-op rederive -> resnapshot",
+                 sticky_escalator_test_drive(0, t9 + 32) ==
+                     STICKY_RUNG_RESNAPSHOT);
+        SE_CHECK("T9: resnapshot stub -> reindex",
+                 sticky_escalator_test_drive(0, t9 + 33) ==
+                     STICKY_RUNG_REINDEX);
+        SE_CHECK("T9: unexecutable reindex -> self_mint_refold",
+                 sticky_escalator_test_drive(0, t9 + 34) ==
+                     STICKY_RUNG_SELF_MINT_REFOLD);
+        /* Entering the widen_peers rung does not dispatch it — the rung
+         * action runs on the NEXT drive. So no kick has fired yet here. */
+        SE_CHECK("T9: self_mint_refold stub -> widen_peers (not yet dispatched)",
+                 sticky_escalator_test_drive(0, t9 + 35) ==
+                     STICKY_RUNG_WIDEN_PEERS &&
+                 sticky_escalator_test_widen_kicks() == 0);
+        /* First dispatch of the rung: it kicks seed discovery and HOLDS the
+         * rung within its witness window — never NOT_IMPLEMENTED (which would
+         * have advanced instead of holding). */
+        SE_CHECK("T9: widen_peers dispatches the real kick and HOLDS",
+                 sticky_escalator_test_drive(0, t9 + 36) ==
+                     STICKY_RUNG_WIDEN_PEERS &&
+                 sticky_escalator_test_widen_kicks() == 1);
+        /* Thrash guard: re-driving within the kick cooldown holds the rung
+         * WITHOUT re-dispatching the discovery kick. */
+        SE_CHECK("T9: thrash guard: re-drive within cooldown did NOT re-kick",
+                 sticky_escalator_test_drive(0, t9 + 50) ==
+                     STICKY_RUNG_WIDEN_PEERS &&
+                 sticky_escalator_test_widen_kicks() == 1);
+
+        sticky_escalator_set_datadir(NULL);
+        teardown_fixture(&fx);
+        connman_free(&cm);
+        g_connect_only = saved_connect_only;
+    }
+
+    /* T10 — peers already at/above the floor when the ladder reaches
+     * widen_peers: nothing for THIS rung to widen, so it must honestly
+     * FAIL (not hold, not NOT_IMPLEMENTED) and advance straight to
+     * rebootstrap without dispatching any kick. */
+    {
+        extern bool g_connect_only;
+        bool saved_connect_only = g_connect_only;
+        g_connect_only = true;
+
+        chain_params_select(CHAIN_MAIN);
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&sigs, 0, sizeof(sigs));
+        SE_CHECK("T10: connman_init",
+                 connman_init(&cm, chain_params_get(), &sigs));
+        cm.manager.nodes = zcl_calloc(4, sizeof(*cm.manager.nodes),
+                                      "test_sticky_widen_healthy_nodes");
+        cm.manager.nodes_cap = 4;
+        for (uint8_t i = 0; i < 3; i++) {
+            struct net_address addr;
+            memset(&addr, 0, sizeof(addr));
+            net_address_init(&addr);
+            addr.svc.addr.ip[10] = 0xff;
+            addr.svc.addr.ip[11] = 0xff;
+            addr.svc.addr.ip[12] = 203;
+            addr.svc.addr.ip[13] = 0;
+            addr.svc.addr.ip[14] = 113;
+            addr.svc.addr.ip[15] = (uint8_t)(10 + i);
+            addr.svc.port = 8033;
+            struct p2p_node *peer = p2p_node_create(
+                &cm.manager, ZCL_INVALID_SOCKET, &addr, "widen-test", false);
+            if (peer) {
+                peer->state = PEER_HANDSHAKE_COMPLETE;
+                peer->disconnect = false;
+                peer->services = NODE_NETWORK;
+                peer->starting_height = 100;
+                cm.manager.nodes[cm.manager.num_nodes++] = peer;
+            }
+        }
+        SE_CHECK("T10: three healthy outbound peers counted (at floor)",
+                 connman_outbound_healthy_count(&cm) == 3);
+
+        struct se_fixture fx;
+        SE_CHECK("T10: setup fixture", setup_fixture(&fx, "t10_healthy"));
+        sqlite3 *db = progress_store_db();
+        SE_CHECK("T10: make rederive rung an honest no-op",
+                 put_tip_log(db, A + 2, 1, &fx.hashes[2]) &&
+                 put_tip_log(db, A + 3, 1, &fx.hashes[3]) &&
+                 seed_coins_applied(db, A + 4) &&
+                 seed_cursor(db, "tip_finalize", A + 3));
+
+        sync_monitor_set_context(&cm, NULL, &fx.ms);
+        sticky_escalator_test_reset();
+        stage_reducer_frontier_reset_detect_memo_for_testing();
+        sticky_escalator_set_datadir(fx.dir);
+
+        sticky_escalator_note_stall("test_widen_already_healthy");
+        int64_t t10 = (int64_t)platform_time_wall_time_t();
+        SE_CHECK("T10: retry -> targeted_rederive",
+                 sticky_escalator_test_drive(0, t10 + 31) ==
+                     STICKY_RUNG_TARGETED_REDERIVE);
+        SE_CHECK("T10: no-op rederive -> resnapshot",
+                 sticky_escalator_test_drive(0, t10 + 32) ==
+                     STICKY_RUNG_RESNAPSHOT);
+        SE_CHECK("T10: resnapshot stub -> reindex",
+                 sticky_escalator_test_drive(0, t10 + 33) ==
+                     STICKY_RUNG_REINDEX);
+        SE_CHECK("T10: unexecutable reindex -> self_mint_refold",
+                 sticky_escalator_test_drive(0, t10 + 34) ==
+                     STICKY_RUNG_SELF_MINT_REFOLD);
+        SE_CHECK("T10: self_mint_refold stub -> widen_peers",
+                 sticky_escalator_test_drive(0, t10 + 35) ==
+                     STICKY_RUNG_WIDEN_PEERS);
+        SE_CHECK("T10: already-healthy widen_peers advances immediately "
+                 "to rebootstrap (FAILED, not a hold)",
+                 sticky_escalator_test_drive(0, t10 + 36) ==
+                     STICKY_RUNG_REBOOTSTRAP);
+        SE_CHECK("T10: no kick dispatched — nothing to widen",
+                 sticky_escalator_test_widen_kicks() == 0);
+
+        sticky_escalator_set_datadir(NULL);
+        teardown_fixture(&fx);
+        connman_free(&cm);
+        g_connect_only = saved_connect_only;
+    }
+
     reducer_frontier_test_set_compiled_anchor(-1); /* restore production floor */
 
     printf("sticky_escalator: %d failures\n", failures);

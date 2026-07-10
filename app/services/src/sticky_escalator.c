@@ -24,6 +24,7 @@
 #include "services/sync_monitor.h"
 #include "config/boot.h"
 #include "config/runtime.h"
+#include "net/connman.h"
 #include "storage/boot_auto_reindex.h"
 #include "storage/boot_auto_refold.h"
 #include "storage/disk_block_io.h"
@@ -71,10 +72,21 @@ static sticky_rung_fn g_rung_fn[STICKY_RUNG_COUNT];
  * boot_auto_reindex_request seconds after the cure landed. */
 static _Atomic int64_t g_rederive_last_repair_unix = 0;
 
+/* Wall-unix of the last widen_peers discovery kick. Guards against
+ * re-kicking every ~30s supervisor tick while the rung holds its witness
+ * window: a fresh dial/DNS/onion pass needs real wall time to land peers,
+ * and connman_kick_onion_seeds is a blocking per-seed 60s fetch. Reset on
+ * episode clear so the next episode kicks immediately. */
+static _Atomic int64_t g_widen_last_kick_unix = 0;
+
 #ifdef ZCL_TESTING
 /* Refold seams: suppress shutdown/respawn; override the artifact gate. */
 static _Atomic bool g_test_suppress_refold_restart = false;
 static _Atomic int  g_test_refold_artifact_override = -1;
+/* widen_peers seam: counts actual dispatches of the kick functions (as
+ * opposed to the early-out "already healthy" / "no connman" paths), so a
+ * hermetic test can assert the rung genuinely solicited peers. */
+static _Atomic uint64_t g_test_widen_kicks = 0;
 #endif
 
 /* Per-rung witness windows (seconds): the slow re-derivation rungs get a long
@@ -126,11 +138,14 @@ static int64_t observe_tip(void)
 
 /* ── Default rung actions ──────────────────────────────────────────────
  *
- * Rungs 0/1/3 have real in-process surfaces and run them (rung 1 runs the
- * reducer-frontier reconcile apply pass, ungated). Rungs 2/4/5/6 are stubs
- * that emit a typed EV_RECOVERY_ACTION (another lane's worker consumes it)
- * and report NOT_IMPLEMENTED so the ladder advances. A lane can plug a real
- * action via sticky_escalator_register_rung() with no edit here. */
+ * Rungs 0/1/3/5/7 have real in-process surfaces and run them (rung 1 runs the
+ * reducer-frontier reconcile apply pass, ungated; rung 5 widens peer
+ * discovery via connman_kick_seed_discovery/connman_kick_onion_seeds, the
+ * same entry points conditions/peer_floor_violated.c's remedy calls; rung 7
+ * arms the anchor refold + self-respawn). Rungs 2/4/6 are stubs that emit a
+ * typed EV_RECOVERY_ACTION (another lane's worker consumes it) and report
+ * NOT_IMPLEMENTED so the ladder advances. A lane can plug a real action via
+ * sticky_escalator_register_rung() with no edit here. */
 
 static enum sticky_rung_result rung_retry_default(void)
 {
@@ -361,10 +376,73 @@ static enum sticky_rung_result rung_self_mint_refold_default(void)
     return STICKY_RUNG_NOT_IMPLEMENTED;
 }
 
+/* Peer-count floor mirrored from conditions/peer_floor_violated.c's
+ * PEER_FLOOR_MIN_HEALTHY: same "not enough block-serving outbound peers"
+ * symptom. That Condition owns its own detect+cooldown schedule and is
+ * P2P-only; THIS rung is reached only after retry/targeted_rederive already
+ * failed to clear a stall, so it solicits immediately. */
+#define STICKY_WIDEN_PEERS_MIN_HEALTHY 3
+#define STICKY_WIDEN_PEERS_KICK_COOLDOWN_SECS 60
+
 static enum sticky_rung_result rung_widen_peers_default(void)
 {
-    event_emitf(EV_RECOVERY_ACTION, 0, "action=sticky-widen-peer-discovery");
-    return STICKY_RUNG_NOT_IMPLEMENTED;
+    struct connman *cm = sync_monitor_connman();
+    if (!cm) {
+        /* NOT LOG_FAIL: it returns false == STICKY_RUNG_RESOLVED here. */
+        LOG_WARN("sticky_escalator",
+                 "[sticky_escalator] widen_peers: no connman — cannot solicit");
+        event_emitf(EV_RECOVERY_ACTION, 0,
+                    "action=sticky-widen-peers-skip reason=no_connman");
+        return STICKY_RUNG_FAILED;
+    }
+
+    size_t healthy = connman_outbound_healthy_count(cm);
+    if (healthy >= STICKY_WIDEN_PEERS_MIN_HEALTHY) {
+        /* Peers are not the deficit: fail honestly so the ladder advances to
+         * a rung addressing whatever else is stalling the tip. */
+        event_emitf(EV_RECOVERY_ACTION, 0,
+                    "action=sticky-widen-peers-skip reason=already_healthy "
+                    "healthy=%zu min=%d", healthy,
+                    STICKY_WIDEN_PEERS_MIN_HEALTHY);
+        return STICKY_RUNG_FAILED;
+    }
+
+    int64_t now = now_unix();
+    int64_t last_kick = atomic_load(&g_widen_last_kick_unix);
+    if (last_kick != 0 &&
+        now - last_kick < STICKY_WIDEN_PEERS_KICK_COOLDOWN_SECS) {
+        /* Kicked this episode + still within cooldown: hold, don't re-thrash
+         * seed/onion discovery every supervisor tick. */
+        event_emitf(EV_RECOVERY_ACTION, 0,
+                    "action=sticky-widen-peers-hold healthy=%zu "
+                    "since_kick_secs=%lld", healthy,
+                    (long long)(now - last_kick));
+        return STICKY_RUNG_PROGRESSING;
+    }
+
+    /* Reuse the SAME entry points peer_floor_violated's remedy calls: re-add
+     * fixed seeds + retry DNS resolve, and — with zero healthy outbound — the
+     * onion-directory peer-of-last-resort fetch (harvests clearnet IPs from
+     * /directory.json on known .onion seeds; the eclipsed/partitioned path). */
+    bool zero_outbound = healthy == 0;
+    connman_kick_seed_discovery(cm);
+    if (zero_outbound)
+        connman_kick_onion_seeds(cm);
+    atomic_store(&g_widen_last_kick_unix, now);
+#ifdef ZCL_TESTING
+    atomic_fetch_add(&g_test_widen_kicks, 1u);
+#endif
+
+    LOG_WARN("sticky_escalator",
+             "[sticky_escalator] widen_peers: healthy=%zu below floor=%d — "
+             "kicked seed discovery%s",
+             healthy, STICKY_WIDEN_PEERS_MIN_HEALTHY,
+             zero_outbound ? "+onion-directory (zero outbound)" : "");
+    event_emitf(EV_RECOVERY_ACTION, 0,
+                "action=sticky-widen-peer-discovery healthy=%zu min=%d "
+                "onion_kick=%d", healthy, STICKY_WIDEN_PEERS_MIN_HEALTHY,
+                (int)zero_outbound);
+    return STICKY_RUNG_PROGRESSING;
 }
 
 static enum sticky_rung_result rung_rebootstrap_default(void)
@@ -524,6 +602,7 @@ static void clear_episode(int64_t now, int64_t tip)
     atomic_store(&g_tip_at_rung, -1);
     atomic_store(&g_rearm_until_unix, 0);
     atomic_store(&g_rederive_last_repair_unix, 0);
+    atomic_store(&g_widen_last_kick_unix, 0);
     atomic_fetch_add(&g_episodes_cleared, 1u);
     withdraw_stale_reindex_request(tip);
     /* Release any operator_needed latch this episode raised: the tip
@@ -761,8 +840,10 @@ void sticky_escalator_test_reset(void)
     atomic_store(&g_episodes_cleared, 0u);
     atomic_store(&g_ladder_cycles, 0u);
     atomic_store(&g_rederive_last_repair_unix, (int64_t)0);
+    atomic_store(&g_widen_last_kick_unix, (int64_t)0);
     atomic_store(&g_test_suppress_refold_restart, false);
     atomic_store(&g_test_refold_artifact_override, -1);
+    atomic_store(&g_test_widen_kicks, 0u);
     for (int i = 0; i < STICKY_RUNG_COUNT; i++) {
         atomic_store(&g_rung_dispatches[i], 0u);
         g_rung_fn[i] = NULL;
@@ -796,4 +877,7 @@ void sticky_escalator_test_set_suppress_refold_restart(bool s)
 
 void sticky_escalator_test_set_refold_artifact_available(int v)
 { atomic_store(&g_test_refold_artifact_override, v); }
+
+uint64_t sticky_escalator_test_widen_kicks(void)
+{ return atomic_load(&g_test_widen_kicks); }
 #endif

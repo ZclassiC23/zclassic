@@ -110,6 +110,10 @@ uint64_t sticky_escalator_test_fires_operator_needed(void);
  * so the arm and the no-artifact-blocker paths are both exercisable. */
 void sticky_escalator_test_set_suppress_refold_restart(bool suppress);
 void sticky_escalator_test_set_refold_artifact_available(int override_value);
+/* widen_peers rung test seam: count of actual connman_kick_seed_discovery/
+ * connman_kick_onion_seeds dispatches (excludes the no-connman / already-
+ * healthy / cooldown-hold early-outs). */
+uint64_t sticky_escalator_test_widen_kicks(void);
 #endif
 
 #endif /* SERVICES_STICKY_ESCALATOR_H */
