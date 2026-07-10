@@ -109,7 +109,7 @@ static bool detect_sapling_anchor_frontier(void)
 
     /* Only engage while the reducer actually declares the anchor gap. */
     if (!blocker_exists(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID))
-        return false;
+        return false;  // raw-return-ok:healthy no-detect path on every engine tick, not an error
     if (sapling_anchor_frontier_classify(db) != SAPLING_ANCHOR_GAP_EMPTY_TABLE)
         return false;
 

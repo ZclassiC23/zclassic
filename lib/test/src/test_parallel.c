@@ -227,7 +227,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(mint_proof_harness) \
     X(reducer_ingest_e2e) X(stage_reducer_unwedge) X(stage_repair) \
     X(stage_repair_coin_backfill) \
-    X(stage_anchor_frontier_cap) X(stage_repair_script_refill) \
+    X(stage_anchor_frontier_cap) X(sapling_anchor_frontier_condition) \
+    X(stage_repair_script_refill) \
     X(validate_script_hash_split_repair) \
     X(stage_repair_tipfin_backfill) X(reorg_residue_tipfin_replace) \
     X(utxo_apply_upstream_hole) \

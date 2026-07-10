@@ -510,6 +510,7 @@ int test_condition_engine(void)
             "replay_canary_failed",
             "disk_full_pause",
             "clock_skew_reconcile",
+            "sapling_anchor_frontier_unavailable",
         };
         const int expected_count =
             (int)(sizeof(expected) / sizeof(expected[0]));

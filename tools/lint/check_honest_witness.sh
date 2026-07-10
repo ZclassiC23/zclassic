@@ -52,7 +52,7 @@ cd "$ROOT"
 # Deliberately NOT here: sync_get_state()/current_state() FSM reads and
 # poison-flag reads (read_drift_flag, *_paused_height, snapsync *.failed) —
 # those observe FSM/poison-absence, not that the symptom moved.
-OBSERVABLE_RE='active_chain_height|active_chain_tip|current_tip_height|reducer_frontier_compute_hstar|block_map_next|block_map_get|pindex_best_header|->nHeight|\.nHeight|connman_max_peer_height|connman_outbound_healthy_count|dl_get_stats|\.local_height|s\.local_height|stage_repair_body_fetch_observed|block_index_have_data_readable|any_utxo_above|target_has_readable_data|sync_monitor_active_next_child_exists|sqlite3_step|sqlite3_prepare|[[:space:]]SELECT[[:space:]]|offered_height|offered_utxos|staged_row_count|received_utxos|\brequested\b'
+OBSERVABLE_RE='active_chain_height|active_chain_tip|current_tip_height|reducer_frontier_compute_hstar|reducer_frontier_provable_tip_cached|block_map_next|block_map_get|pindex_best_header|->nHeight|\.nHeight|connman_max_peer_height|connman_outbound_healthy_count|dl_get_stats|\.local_height|s\.local_height|stage_repair_body_fetch_observed|block_index_have_data_readable|any_utxo_above|target_has_readable_data|sync_monitor_active_next_child_exists|sqlite3_step|sqlite3_prepare|[[:space:]]SELECT[[:space:]]|offered_height|offered_utxos|staged_row_count|received_utxos|\brequested\b'
 
 # Load baseline (set of witness names allowed to be dishonest, grandfathered).
 declare -A BASELINED=()
