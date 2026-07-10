@@ -483,6 +483,7 @@ int test_workpool(void);
 int test_app_context(void);
 int test_service_kernel(void);
 int test_bip113_bip65(void);
+int test_block_timestamp_adversarial(void);
 int test_mempool_orphan(void);
 int test_fee_estimation(void);
 int test_header_sync(void);
