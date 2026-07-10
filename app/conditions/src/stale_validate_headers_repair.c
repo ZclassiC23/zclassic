@@ -6,7 +6,10 @@
 #include "jobs/block_header_emit.h"
 #include "jobs/stage_repair.h"
 #include "services/header_probe.h"
+#include "services/sync_monitor.h"
+#include "net/connman.h"
 #include "storage/progress_store.h"
+#include "util/blocker.h"
 #include "util/log_macros.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -15,18 +18,64 @@
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <limits.h>
+#include <stdio.h>
 
 static _Atomic int g_target_at_detect = -1;
 static _Atomic int g_hstar_at_detect = -1;
 static _Atomic int g_remedy_calls = 0;
 static _Atomic int g_mode_at_detect = STAGE_REPAIR_POISON_NONE;
 
-/* LANE D / #3b — file-scope forward declaration; defined after the remedy.
- * Drops BLOCK_HAVE_DATA on the canonical block_index entry at `height` so the
- * normal P2P getheaders/getdata sync path re-downloads the canonical
- * header+body when the zclassicd oracle is unreachable (oracle-independent
- * always-terminating fallback). */
-static void cure_request_peer_refetch(int height);
+/* Detective A2 — which source (oracle vs P2P) the in-flight repair attempt last
+ * fired, so the completion tick can attribute the served repair. The oracle
+ * pull is synchronous (attributed inline), the P2P getdata is async (its
+ * solution appears on a later tick and is attributed there). Reset when the
+ * episode target changes (detect) or on test reset. */
+static _Atomic int g_repair_pending_source = HEADER_PROBE_SRC_NONE;
+
+/* Typed blocker id: names the missing input when NEITHER the oracle NOR any
+ * peer can serve the header-solution repair. TRANSIENT class — the Condition's
+ * unbounded cooldown re-arm (cooldown_secs>0, cooldown_max_rearms=0) governs
+ * retry, so this never latches into a human dead-end on a recoverable cause. */
+#define STALE_HEADER_NO_SOURCE_BLOCKER_ID "header_repair_no_source"
+
+#ifdef ZCL_TESTING
+/* Test-only override of the connected-peer count seen by the P2P fallback, so
+ * a hermetic fixture can exercise both the peers-available and the
+ * missing-input (0 peers) branches without wiring the net stack. -1 = use the
+ * real connman via sync_monitor_connman(). */
+static _Atomic int g_test_peer_count_override = -1;
+void stale_validate_headers_repair_test_set_peer_count(int n);
+void stale_validate_headers_repair_test_set_peer_count(int n)
+{
+    atomic_store(&g_test_peer_count_override, n);
+}
+#endif
+
+/* LANE D / #3b + Detective A2 — file-scope forward declaration; defined after
+ * the remedy. Oracle-independent P2P re-fetch of the canonical block at
+ * `height`: clears BLOCK_HAVE_DATA on the canonical block_index entry AND
+ * actively enqueues a getdata via the existing download-manager machinery.
+ * Returns the count of connected peers available to serve the re-fetch (0 =>
+ * missing input), or -1 if the height is unindexed (nothing to re-fetch). */
+static int cure_request_peer_refetch(int height);
+
+static void raise_stale_header_no_source_blocker(int height)
+{
+    struct blocker_record r;
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+             "header-solution repair h=%d: zclassicd oracle unreachable and "
+             "no connected peer can serve a P2P getdata re-fetch", height);
+    if (!blocker_init(&r, STALE_HEADER_NO_SOURCE_BLOCKER_ID, "header_probe",
+                      BLOCKER_TRANSIENT, reason))
+        return; // raw-return-ok:blocker-init-failed-already-logged
+    (void)blocker_set(&r);
+}
+
+static void clear_stale_header_no_source_blocker(void)
+{
+    blocker_clear(STALE_HEADER_NO_SOURCE_BLOCKER_ID);
+}
 
 #ifdef ZCL_TESTING
 static _Atomic int g_test_hstar_override = -1;
@@ -121,7 +170,10 @@ static bool detect_stale_validate_headers_repair(void)
      * and lets validate_headers' non-destructive recheck flip the row forward;
      * keeping detect=true makes a stuck recheck page instead of going quiet. */
 
-    atomic_store(&g_target_at_detect, target);
+    /* New episode (target moved) → forget any stale source attribution so the
+     * next served solution is credited to the source THIS episode fires. */
+    if (atomic_exchange(&g_target_at_detect, target) != target)
+        atomic_store(&g_repair_pending_source, HEADER_PROBE_SRC_NONE);
     atomic_store(&g_hstar_at_detect, reducer_frontier_height(db));
     atomic_store(&g_mode_at_detect, (int)mode);
     return true;
@@ -149,64 +201,94 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
             : (mode == STAGE_REPAIR_POISON_VALIDATE_SOLUTIONLESS &&
                stage_repair_header_solution_available(db, target, NULL));
 
-        /* Step 1 — backfill the CORRECT (canonical) solution from the oracle if
-         * it is not already present. header_probe_pull_range re-validates the
-         * fetched header and writes it hash-bound into header_solution_repair
-         * (INSERT OR REPLACE by height — it OVERWRITES any stale wrong-block
-         * row, which the hash-aware availability check above does not accept). */
-        if (!solution_present) {
-            int added = 0;
-            struct zcl_result r = header_probe_pull_range(target, 128, &added);
-            if (!r.ok) {
-                cure_request_peer_refetch(target);
-                LOG_WARN("condition",
-                         "[condition:stale_validate_headers_repair] "
-                         "header probe failed h=%d code=%d msg=%s — "
-                         "requested P2P re-fetch, deferring",
-                         target, r.code, r.message);
-                return COND_REMEDY_SKIP;
-            }
-            LOG_WARN("condition",
-                     "[condition:stale_validate_headers_repair] "
-                     "header probe h=%d added=%d",
-                     target, added);
-        }
-        solution_present = canon
-            ? stage_repair_header_solution_available(db, target, canon)
-            : (mode == STAGE_REPAIR_POISON_VALIDATE_SOLUTIONLESS &&
-               stage_repair_header_solution_available(db, target, NULL));
-
-        /* Step 2 — if the correct solution is now present, DEFER to the
-         * non-destructive validate_headers recheck. Do NOT poison_rewind: the
-         * recheck flips the ok=0 row forward (recheck floor pinned at the lowest
-         * repairable height) while preserving all downstream
-         * progress. A destructive rewind here would delete forward validate work
-         * and re-starve the recheck (forcing a long forward re-drain that parks
-         * the recheck) — the precise churn that produced the 5x-unwitnessed
-         * poison_rewind → operator_needed loop. Return SKIP and let the witness
-         * (H* advanced past the frontier) govern success; detect()
-         * deactivates next tick and resets the attempt counter. */
+        /* Already repaired (e.g. an async P2P getdata re-fetch fired on an
+         * earlier tick has now delivered + saved the canonical solution).
+         * Attribute the served repair to whichever source we last fired, then
+         * DEFER to the non-destructive validate_headers recheck (see the long
+         * rationale at the bottom of this block — no poison_rewind here). */
         if (solution_present) {
+            int pending = atomic_exchange(&g_repair_pending_source,
+                                          HEADER_PROBE_SRC_NONE);
+            if (pending != HEADER_PROBE_SRC_NONE)
+                header_probe_note_repair_served(
+                    (enum header_probe_repair_source)pending, target);
+            clear_stale_header_no_source_blocker();
             LOG_WARN("condition",
                      "[condition:stale_validate_headers_repair] "
-                     "solution present h=%d — deferring to non-destructive "
-                     "validate_headers recheck (no poison_rewind)",
-                     target);
+                     "solution present h=%d source=%s — deferring to "
+                     "non-destructive validate_headers recheck (no "
+                     "poison_rewind)",
+                     target, header_probe_repair_source_name(
+                         (enum header_probe_repair_source)pending));
             return COND_REMEDY_SKIP;
         }
 
-        /* Solution still unavailable after a backfill attempt. A poison_rewind
-         * cannot help a solutionless row (the forward re-drain would re-yield
-         * ok=0), so do not rewind — fail this attempt and retry backfill next
-         * tick. With the oracle DEAD this would never recover via RPC, so fall
-         * back to a P2P re-fetch of the canonical bytes (LANE D / #3b) and SKIP
-         * rather than accrue toward the operator page — an always-terminating
-         * remedy given any honest peer. */
-        cure_request_peer_refetch(target);
-        LOG_WARN("condition",
-                 "[condition:stale_validate_headers_repair] "
-                 "no durable repair header h=%d via oracle — requested P2P "
-                 "re-fetch, deferring (no operator page)", target);
+        /* Step 1 — ORACLE FIRST (cheap, local). header_probe_pull_range
+         * re-validates the fetched header and writes it hash-bound into
+         * header_solution_repair (INSERT OR REPLACE by height — it OVERWRITES
+         * any stale wrong-block row, which the hash-aware availability check
+         * above does not accept). */
+        struct zcl_result r = header_probe_pull_range(target, 128, NULL);
+        if (r.ok) {
+            solution_present = canon
+                ? stage_repair_header_solution_available(db, target, canon)
+                : (mode == STAGE_REPAIR_POISON_VALIDATE_SOLUTIONLESS &&
+                   stage_repair_header_solution_available(db, target, NULL));
+            if (solution_present) {
+                /* Oracle served it synchronously — attribute inline. */
+                atomic_store(&g_repair_pending_source, HEADER_PROBE_SRC_NONE);
+                header_probe_note_repair_served(HEADER_PROBE_SRC_ORACLE, target);
+                clear_stale_header_no_source_blocker();
+                LOG_WARN("condition",
+                         "[condition:stale_validate_headers_repair] "
+                         "solution present h=%d source=oracle — deferring to "
+                         "non-destructive validate_headers recheck", target);
+                return COND_REMEDY_SKIP;
+            }
+            /* Oracle reachable but did not supply the canonical solution
+             * (remote behind / missing the row) — fall through to P2P. */
+        } else {
+            LOG_WARN("condition",
+                     "[condition:stale_validate_headers_repair] "
+                     "header probe (oracle) failed h=%d code=%d msg=%s — "
+                     "falling back to P2P", target, r.code, r.message);
+        }
+
+        /* Step 2 — P2P FALLBACK (oracle-independent, the zclassicd oracle is
+         * being retired). Actively re-request the canonical block for `target`
+         * from connected peers via the EXISTING getdata machinery. The arriving
+         * block is re-validated by check_block (PoW/Equihash) on ingest and its
+         * solution is saved hash-bound into header_solution_repair
+         * (reducer_cache_ingested_solution); validate_headers then INDEPENDENTLY
+         * re-verifies the replacement before H* can advance — the detective
+         * never swaps a page for an unverified one. The solution arrives async,
+         * so this tick only fires the request and defers; the "solution
+         * present" branch above attributes + completes on a later tick. */
+        int peers = cure_request_peer_refetch(target);
+        atomic_store(&g_repair_pending_source, HEADER_PROBE_SRC_P2P);
+        header_probe_note_p2p_request(target, peers);
+        if (peers <= 0) {
+            /* Missing input: no oracle, no peer can serve the repair right now.
+             * Name it with a typed blocker and SKIP. condition.c increments
+             * attempts unconditionally, but cooldown_secs>0 +
+             * cooldown_max_rearms==0 re-arm the remedy forever, so this is an
+             * always-terminating remedy on a recoverable cause — never a latch
+             * to EV_OPERATOR_NEEDED. */
+            raise_stale_header_no_source_blocker(target);
+            LOG_WARN("condition",
+                     "[condition:stale_validate_headers_repair] "
+                     "no durable repair header h=%d via oracle AND no peers "
+                     "(peers=%d) — named blocker %s, deferring (cooldown "
+                     "re-arms, no operator page)", target, peers,
+                     STALE_HEADER_NO_SOURCE_BLOCKER_ID);
+        } else {
+            clear_stale_header_no_source_blocker();
+            LOG_WARN("condition",
+                     "[condition:stale_validate_headers_repair] "
+                     "no durable repair header h=%d via oracle — requested P2P "
+                     "getdata re-fetch (peers=%d), deferring (no operator page)",
+                     target, peers);
+        }
         return COND_REMEDY_SKIP;
     }
 
@@ -228,31 +310,62 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
     return rr.repaired ? COND_REMEDY_OK : COND_REMEDY_SKIP;
 }
 
-/* LANE D / #3b — drop BLOCK_HAVE_DATA on the canonical block_index entry at
- * `height` so the normal P2P getheaders/getdata sync path re-downloads the
- * canonical header+body (oracle-independent). Same discipline as
- * body_persist_stage.c:requeue_body_for_refetch: clear the bit, re-emit the
- * header event so the cleared state persists across restarts, and let the sync
- * scheduler re-request. No-op if the height/entry is unknown (nothing to
- * re-fetch — the witness still governs and the next tick retries). */
-static void cure_request_peer_refetch(int height)
+/* LANE D / #3b + Detective A2 — oracle-independent P2P re-fetch of the
+ * canonical block at `height`. Two coordinated steps, both through EXISTING
+ * machinery (Law: one way in — no second header/body fetch stack):
+ *   1. Drop BLOCK_HAVE_DATA on the canonical block_index entry and re-emit the
+ *      header event, so the cleared re-fetch state persists across restarts
+ *      (same discipline as body_persist_stage.c:requeue_body_for_refetch).
+ *   2. ACTIVELY enqueue a getdata for that exact block via
+ *      sync_monitor_queue_active_frontier_body → dl_queue_priority → the
+ *      download-manager getdata loop, rather than passively waiting for a
+ *      background scan to notice the cleared bit.
+ * Returns the count of connected peers available to serve the re-fetch (0 =>
+ * missing input; the caller names a typed blocker), or -1 if the height is
+ * unindexed (nothing to re-fetch — the witness still governs and the next tick
+ * retries). */
+static int cure_request_peer_refetch(int height)
 {
     if (height < 0)
-        return; // raw-return-ok:nothing-to-refetch
+        return -1; // raw-return-ok:nothing-to-refetch
     struct main_state *ms = condition_engine_main_state();
     if (!ms)
-        return; // raw-return-ok:no-main-state
+        return -1; // raw-return-ok:no-main-state
     struct block_index *bi = active_chain_at(&ms->chain_active, height);
     if (!bi || !bi->phashBlock)
-        return; // raw-return-ok:height-unindexed
-    if (!(bi->nStatus & BLOCK_HAVE_DATA))
-        return; // raw-return-ok:already-cleared-refetch-pending
-    bi->nStatus &= ~(unsigned)BLOCK_HAVE_DATA;
-    block_index_emit_header_event(bi, "stale_validate_headers_repair",
-                                  NULL, NULL);
-    LOG_WARN("condition",
-             "[condition:stale_validate_headers_repair] cleared HAVE_DATA "
-             "h=%d — normal P2P sync will re-download canonical body", height);
+        return -1; // raw-return-ok:height-unindexed
+
+    if (bi->nStatus & BLOCK_HAVE_DATA) {
+        bi->nStatus &= ~(unsigned)BLOCK_HAVE_DATA;
+        block_index_emit_header_event(bi, "stale_validate_headers_repair",
+                                      NULL, NULL);
+        LOG_WARN("condition",
+                 "[condition:stale_validate_headers_repair] cleared HAVE_DATA "
+                 "h=%d — P2P getdata will re-download canonical body", height);
+    }
+
+    /* Active getdata via the existing sync machinery. A non-ok result just
+     * means the sync context is not wired yet (e.g. an isolated fixture, or
+     * pre-context boot) — not an error; the next tick retries. */
+    struct zcl_result qr =
+        sync_monitor_queue_active_frontier_body(height, "header_repair_p2p");
+    if (!qr.ok)
+        LOG_WARN("condition",
+                 "[condition:stale_validate_headers_repair] P2P body queue "
+                 "h=%d not accepted (code=%d msg=%s) — sync context may be "
+                 "unset; retrying next tick", height, qr.code, qr.message);
+
+    /* Connected-peer count = whether P2P can serve the re-fetch at all. */
+    int peers = 0;
+    struct connman *cm = sync_monitor_connman();
+    if (cm)
+        peers = (int)connman_get_node_count(cm);
+#ifdef ZCL_TESTING
+    int ov = atomic_load(&g_test_peer_count_override);
+    if (ov >= 0)
+        peers = ov;
+#endif
+    return peers;
 }
 
 static bool witness_stale_validate_headers_repair(int64_t target_at_detect)
@@ -347,9 +460,12 @@ void stale_validate_headers_repair_test_reset(void)
     atomic_store(&g_hstar_at_detect, -1);
     atomic_store(&g_remedy_calls, 0);
     atomic_store(&g_mode_at_detect, STAGE_REPAIR_POISON_NONE);
+    atomic_store(&g_repair_pending_source, HEADER_PROBE_SRC_NONE);
 #ifdef ZCL_TESTING
     atomic_store(&g_test_hstar_override, -1);
+    atomic_store(&g_test_peer_count_override, -1);
 #endif
+    clear_stale_header_no_source_blocker();
     condition_reset_state(&c_stale_validate_headers_repair);
     /* Zero last_remedy_unix so condition_due_for_remedy treats the next tick
      * as due (last==0 bypasses the wall-clock backoff). There is no

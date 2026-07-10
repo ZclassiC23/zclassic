@@ -522,6 +522,7 @@ int test_net_msg_dos(void);
 int test_net_handshake_adversarial(void);
 int test_zclassicd_oracle(void);
 int test_header_probe(void);
+int test_header_probe_p2p_fallback(void);
 int test_syncdiag_rpc(void);
 int test_rpc_safety(void);
 int test_failed_child_cap(void);

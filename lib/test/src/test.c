@@ -906,6 +906,14 @@ int main(int argc, char **argv)
                failures);
         return failures ? 1 : 0;
     }
+    if (only && strcmp(only, "header_probe_p2p_fallback") == 0) {
+        printf("[test] ZCL_TEST_ONLY=header_probe_p2p_fallback — running "
+               "Detective A2 P2P header-repair fallback only\n");
+        failures += test_header_probe_p2p_fallback();
+        printf("\n=== header_probe_p2p_fallback subset complete: %d "
+               "failure(s) ===\n", failures);
+        return failures ? 1 : 0;
+    }
     if (only && strcmp(only, "header_probe_poll") == 0) {
         printf("[test] ZCL_TEST_ONLY=header_probe_poll — running header probe poll only\n");
         failures += test_header_probe_poll();
@@ -1447,6 +1455,7 @@ int main(int argc, char **argv)
     failures += test_net_handshake_adversarial();
     failures += test_zclassicd_oracle();
     failures += test_header_probe();
+    failures += test_header_probe_p2p_fallback();
     { extern int test_lag_slo(void); failures += test_lag_slo(); }
     { extern int test_soak_attestation(void); failures += test_soak_attestation(); }
     { extern int test_replay_canary_verdict(void); failures += test_replay_canary_verdict(); }

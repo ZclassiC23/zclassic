@@ -574,6 +574,26 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                                                    : "unknown");
             }
         }
+
+        /* Detective A2 — score the peer for an objectively-forged header page.
+         * accept_block_header admits header-first and defers the PoW/Equihash
+         * verdict to the validate_headers stage, so it returns true even for a
+         * bad-solution / high-hash header; check_block_header still computes the
+         * DoS grade into `state`. A dos>0 here is an objective PoW/Equihash
+         * failure (invalid-solution=100, high-hash=50) — penalize INVALID_HEADER
+         * so a peer forging the header range (e.g. while a stale-header repair
+         * is fetching the canonical bytes) is scored and eventually
+         * disconnected, and the forged page never fools the repair. Gated on
+         * dos>0 so orphans / failed-parent / obsolete-version (dos 0) — all
+         * normal during sync — are never penalized. Trusted/localhost peers are
+         * exempted inside peer_misbehaving. Mirrors msg_blocks.c grading. */
+        int hdr_dos = 0;
+        if (validation_state_get_dos(&state, &hdr_dos) && hdr_dos > 0) {
+            peer_scoring_record(mp->net_mgr, node,
+                                PEER_OFFENCE_INVALID_HEADER,
+                                state.reject_reason[0] ? state.reject_reason
+                                                       : "invalid header");
+        }
     }
 
     /* Update diagnostic counters */

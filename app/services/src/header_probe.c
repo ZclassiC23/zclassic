@@ -71,6 +71,17 @@ static struct {
     _Atomic int64_t rpc_errors;
     _Atomic int     last_remote_height;
     _Atomic int     last_local_height;
+
+    /* Repair-source accounting (Detective lane A2). oracle_repairs and
+     * p2p_repairs count header-solution repairs served by each source;
+     * p2p_requests counts getdata re-fetches fired at peers; p2p_no_peer_events
+     * counts P2P requests fired with zero connected peers (missing input). */
+    _Atomic int64_t oracle_repairs;
+    _Atomic int64_t p2p_requests;
+    _Atomic int64_t p2p_repairs;
+    _Atomic int64_t p2p_no_peer_events;
+    _Atomic int     last_repair_source;   /* enum header_probe_repair_source */
+    _Atomic int     last_repair_height;
 } g_hp = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
 };
@@ -391,8 +402,64 @@ void header_probe_reset_for_test(void)
     atomic_store(&g_hp.rpc_errors, 0);
     atomic_store(&g_hp.last_remote_height, 0);
     atomic_store(&g_hp.last_local_height, 0);
+    atomic_store(&g_hp.oracle_repairs, 0);
+    atomic_store(&g_hp.p2p_requests, 0);
+    atomic_store(&g_hp.p2p_repairs, 0);
+    atomic_store(&g_hp.p2p_no_peer_events, 0);
+    atomic_store(&g_hp.last_repair_source, HEADER_PROBE_SRC_NONE);
+    atomic_store(&g_hp.last_repair_height, -1);
     pthread_mutex_unlock(&g_hp.lock);
 }
+
+/* ── Repair-source accounting (Detective lane A2) ──────────────── */
+
+const char *header_probe_repair_source_name(enum header_probe_repair_source s)
+{
+    switch (s) {
+    case HEADER_PROBE_SRC_ORACLE: return "oracle";
+    case HEADER_PROBE_SRC_P2P:    return "p2p";
+    case HEADER_PROBE_SRC_NONE:   return "none";
+    }
+    return "none";
+}
+
+void header_probe_note_repair_served(enum header_probe_repair_source src,
+                                     int height)
+{
+    if (src == HEADER_PROBE_SRC_ORACLE) {
+        atomic_fetch_add(&g_hp.oracle_repairs, 1);
+    } else if (src == HEADER_PROBE_SRC_P2P) {
+        atomic_fetch_add(&g_hp.p2p_repairs, 1);
+    } else {
+        return;  /* NONE — nothing to record */
+    }
+    atomic_store(&g_hp.last_repair_source, (int)src);
+    atomic_store(&g_hp.last_repair_height, height);
+    LOG_INFO("header_probe",
+             "[header_probe] header repair served h=%d source=%s", height,
+             header_probe_repair_source_name(src));
+}
+
+void header_probe_note_p2p_request(int height, int peers_available)
+{
+    atomic_fetch_add(&g_hp.p2p_requests, 1);
+    atomic_store(&g_hp.last_repair_height, height);
+    if (peers_available <= 0)
+        atomic_fetch_add(&g_hp.p2p_no_peer_events, 1);
+}
+
+#ifdef ZCL_TESTING
+void header_probe_test_get_repair_stats(struct header_probe_repair_stats *out)
+{
+    if (!out) return;
+    out->oracle_repairs     = atomic_load(&g_hp.oracle_repairs);
+    out->p2p_requests       = atomic_load(&g_hp.p2p_requests);
+    out->p2p_repairs        = atomic_load(&g_hp.p2p_repairs);
+    out->p2p_no_peer_events = atomic_load(&g_hp.p2p_no_peer_events);
+    out->last_repair_source = atomic_load(&g_hp.last_repair_source);
+    out->last_repair_height = atomic_load(&g_hp.last_repair_height);
+}
+#endif
 
 /* ── State dump (see CLAUDE.md "Adding state introspection") ───── */
 
@@ -419,5 +486,20 @@ bool header_probe_dump_state_json(struct json_value *out, const char *key)
                       atomic_load(&g_hp.last_remote_height));
     json_push_kv_int (out, "last_local_height",
                       atomic_load(&g_hp.last_local_height));
+
+    /* Repair-source accounting (Detective lane A2). */
+    json_push_kv_int (out, "oracle_repairs",
+                      atomic_load(&g_hp.oracle_repairs));
+    json_push_kv_int (out, "p2p_requests",
+                      atomic_load(&g_hp.p2p_requests));
+    json_push_kv_int (out, "p2p_repairs",
+                      atomic_load(&g_hp.p2p_repairs));
+    json_push_kv_int (out, "p2p_no_peer_events",
+                      atomic_load(&g_hp.p2p_no_peer_events));
+    json_push_kv_str (out, "last_repair_source",
+                      header_probe_repair_source_name(
+                          atomic_load(&g_hp.last_repair_source)));
+    json_push_kv_int (out, "last_repair_height",
+                      atomic_load(&g_hp.last_repair_height));
     return true;
 }
