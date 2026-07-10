@@ -133,6 +133,39 @@ bool hotswap_dump_state_json(struct json_value *out, const char *key);
 #define ZCL_HOTSWAP_EXPORT_ROUTES(routes_arr, routes_count) /* node/release: omitted */
 #endif
 
+/* ── Provider-trampoline entrypoint emitter ────────────────────────────
+ *
+ * The generic sibling of ZCL_HOTSWAP_EXPORT_ROUTES for swap-eligible TUs
+ * that publish a single atomic PROVIDER function pointer (REST resource
+ * dispatch, diagnostics `dumpstate`) rather than an MCP route table. Invoke
+ * ONCE at file scope, passing a boolean install EXPRESSION that re-points the
+ * resident provider at this TU's freshly-compiled implementation, e.g.:
+ *
+ *     ZCL_HOTSWAP_EXPORT_PROVIDER(
+ *         api_resource_dispatch_replace(api_resource_route_dispatch_builtin))
+ *
+ * (no trailing semicolon). Under a generation .so build (-DZCL_HOTSWAP_GEN)
+ * it emits the well-known `zcl_hotswap_gen_init` that evaluates the install
+ * expression. CORRECTNESS CONTRACT: the install function named in the
+ * expression MUST live in a RESIDENT (non-swap-eligible) TU — it is an
+ * undefined symbol in the .so and so binds to the executable's resident copy
+ * (RTLD_LOCAL), which mutates the resident provider the live read path reads.
+ * The implementation it installs (e.g. the *_builtin) is defined in THIS TU,
+ * so it resolves to the .so's own freshly-compiled copy. In the node build
+ * AND in release the macro expands to nothing (symbol lives only inside a
+ * gen .so, never in the shipped binary). */
+#ifdef ZCL_HOTSWAP_GEN
+#define ZCL_HOTSWAP_EXPORT_PROVIDER(install_expr)                            \
+    bool zcl_hotswap_gen_init(const struct zcl_hotswap_host *host);          \
+    bool zcl_hotswap_gen_init(const struct zcl_hotswap_host *host)           \
+    {                                                                        \
+        (void)host;                                                          \
+        return (install_expr);                                               \
+    }
+#else
+#define ZCL_HOTSWAP_EXPORT_PROVIDER(install_expr) /* node/release: omitted */
+#endif
+
 #ifdef __cplusplus
 }
 #endif
