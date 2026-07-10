@@ -278,7 +278,7 @@ if [ "$LIGHT" = "1" ]; then
         [ -e "$f" ] && cp -a "$f" "$DEST/" || true
     done
     # control/marker files that influence boot, all tiny
-    for f in last_reimport_attempted file_manifest.bin; do
+    for f in last_reimport_attempted file_manifest.bin sapling_tree_ckpt.dat; do
         [ -e "$SRC/$f" ] && cp -a "$SRC/$f" "$DEST/" || true
     done
 else
