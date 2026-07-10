@@ -77,6 +77,15 @@ static enum condition_remedy_result remedy_peer_floor_violated(void)
     if (!cm)
         return COND_REMEDY_SKIP;
 
+    /* Re-verified 2026-07-10 (sticky-node-plan.md P1 #9a): this recovery
+     * decision is P2P-only — block_source_policy_peer_floor_recovery_needed()
+     * below populates ONLY in.sources[CAC_SOURCE_P2P]; the mirror/oracle
+     * source slot is left zeroed/unavailable, so whether the legacy
+     * zclassicd mirror/oracle is up or down never gates `recover` here. The
+     * remedy (peer kicks, addnode backoff clear, seed-discovery kick, and
+     * the zero_outbound onion-directory last-resort below) fires purely off
+     * "healthy outbound < PEER_FLOOR_MIN_HEALTHY for
+     * PEER_FLOOR_TRIGGER_SECS", oracle reachability irrelevant. */
     struct cac_decision decision;
     bool recover = block_source_policy_peer_floor_recovery_needed(
         atomic_load(&g_outbound_at_detect),
