@@ -81,6 +81,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(chain_restore_planner) X(chain_restore_service) \
     X(chain_activation_controller) \
     X(mcp_router) X(mcp_controllers) X(mcp_middleware) X(mcp_metrics) \
+    X(mcp_baseline) \
     X(mcp_inproc_equiv) \
     X(mcp_e2e) X(mcp_notify) X(db_validators) X(peer_scoring) X(peer_bandwidth) \
     X(secrets_hygiene) X(block_index_integrity) \

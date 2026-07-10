@@ -12,6 +12,7 @@ AGENT_IMPACT_RULE("docs/HANDOFF.md|docs/work/SESSION-HANDOFF-*.md|docs/work/sove
 AGENT_IMPACT_RULE("app/controllers/src/explorer_*.c|app/controllers/include/controllers/explorer_*.h|app/views/src/explorer_*.c|app/views/src/explorer_*.css|app/views/include/views/explorer_*.h|lib/test/src/test_explorer*.c", "explorer")
 
 AGENT_IMPACT_RULE("tools/mcp/*|tools/mcp_server.c|app/controllers/src/*mcp*|lib/test/src/test_mcp_controllers.c", "mcp_controllers")
+AGENT_IMPACT_RULE("tools/mcp/baseline.c|tools/mcp/baseline.h|lib/test/src/test_mcp_baseline.c", "mcp_baseline mcp_controllers")
 AGENT_IMPACT_RULE("lib/mcp/*|lib/util/src/mcp_*|lib/test/src/test_mcp_*|app/controllers/src/diagnostics_registry.c", "mcp_controllers rpc")
 AGENT_IMPACT_RULE("app/controllers/src/diagnostics_*.c|app/controllers/include/controllers/diagnostics_*.h", "syncdiag_rpc mcp_controllers make_lint_gates rpc")
 
