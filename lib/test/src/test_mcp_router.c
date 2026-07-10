@@ -714,6 +714,7 @@ static int test_router_replace_dispatch(void)
     int failures = 0;
     TEST("replace re-points a slot and dispatch runs the new handler") {
         setup_routes();
+        size_t n_before = mcp_router_count();
         /* Before: t.echo runs h_echo (reports its own tool name). */
         char *before = mcp_router_dispatch("t.echo", NULL);
         ASSERT(before != NULL);
@@ -733,7 +734,7 @@ static int test_router_replace_dispatch(void)
         free(after);
 
         /* Count is unchanged by a replace (no new slot). */
-        ASSERT(mcp_router_count() == 8);
+        ASSERT(mcp_router_count() == n_before);
         setup_routes();
         PASS();
     } _test_next:;

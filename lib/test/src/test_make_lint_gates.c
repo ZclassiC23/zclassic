@@ -3741,8 +3741,11 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(agent_operator_buf,
                       "suppressed_by_mirror_contract") != NULL);
+        /* Conditions are captured in one registry pass (operator-snapshot
+         * refactor) — the summary reads condition_engine_get_summary, not
+         * the per-count getters. */
         ASSERT(strstr(agent_summary_buf,
-                      "condition_engine_get_active_count") != NULL);
+                      "condition_engine_get_summary") != NULL);
         ASSERT(strstr(agent_summary_buf, "agent_fast_collect") != NULL);
         ASSERT(strstr(agent_summary_buf, "agent_summary_push_detail_json")
                != NULL);
@@ -5320,7 +5323,9 @@ static int t_net_sync_planners_are_lib_owned(void)
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "activation_clear_anchor") != NULL);
         ASSERT(strstr(buf, "bii_repair_post_activation_anchor") != NULL);
-        ASSERT(strstr(buf, "csr_commit_header_tip") != NULL);
+        /* Header-tip mutation routes through the chain-state repository's
+         * validated promote (operator-snapshot refactor). */
+        ASSERT(strstr(buf, "csr_promote_header_tip") != NULL);
         ASSERT(strstr(buf, "chain_set_active_tip") != NULL);
         free(buf);
         buf = NULL;
