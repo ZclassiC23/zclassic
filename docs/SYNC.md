@@ -28,12 +28,15 @@ source and trust class only. Any `unsafe_overrides_total > 0` is fail-loud.
 
 ---
 
-## Method 1 (native): P2P Fast Sync (~60 s)
+## Method 1 (native): P2P Fast Sync (~60 s design target, not yet the proven everyday path)
 
 A fresh node downloads a verified UTXO snapshot from another zclassic23 peer,
 then catches up the tail via standard P2P. Activation is automatic — any peer
 advertising service bit `NODE_ZCL23` (`lib/net/include/net/fast_sync.h`)
-becomes a snapshot candidate.
+becomes a snapshot candidate. The machinery below is built and code-tested;
+a full fresh zclassic23-to-zclassic23 sync-to-tip run has not yet been proven
+end-to-end on a live network (see `docs/HANDOFF.md` C3 status) — today's
+proven cold-start is Method 3 below.
 
 ```bash
 build/bin/zclassic23 -addnode=<zclassic23_peer>
@@ -270,8 +273,10 @@ The node re-syncs via Method 1 or 2 from its configured peers.
 ┌──────────────────────┬──────────────────┐  ┌────────────────────┐
 │  Method 1: fastsync  │ Method 2: full   │  │ Method 3: from     │
 │  zclassic23 peer     │ P2P from genesis │  │ zclassicd          │
-│  ~60 s               │ ~7 h             │  │ chainstate → SQLite│
-│  NODE_ZCL23 + chunks │ headers + blocks │  │ ~20 s, dev-only    │
+│  ~60 s design target │ ~7 h             │  │ chainstate → SQLite│
+│  (unproven — see     │                  │  │ ~20 s, dev-only    │
+│  HANDOFF.md C3)      │                  │  │                    │
+│  NODE_ZCL23 + chunks │ headers + blocks │  │                    │
 └──────────┬───────────┴────────┬─────────┘  └─────────┬──────────┘
            │                    │                      │
            ▼                    ▼                      ▼
