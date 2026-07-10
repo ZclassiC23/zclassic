@@ -16,7 +16,11 @@
 
 #include "chain/chain.h"
 #include "chain/mmb.h"
+#include "chain/sha3_windows.h"          /* golden-window corroboration table */
 #include "config/runtime.h"
+#include "core/serialize.h"              /* byte_stream for window re-serialize */
+#include "event/event.h"                 /* EV_BLOCK_INDEX_CORRUPT telemetry */
+#include "util/blocker.h"                /* typed evidence blocker */
 #include "controllers/blockchain_controller.h"
 #include "controllers/sync_controller.h"
 #include "core/uint256.h"
@@ -40,6 +44,130 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+/* Memory ceiling for the transient per-window re-serialize buffer. A 1000-block
+ * window of small historical blocks is a few MB; this caps a pathologically
+ * large window so the OBSERVE-ONLY tripwire can never spike RAM on the fold
+ * path. Over the cap → skip the window (no evidence, no false positive). */
+#define SHA3_WINDOW_TRIPWIRE_MAX_BYTES (128u * 1024u * 1024u)
+
+enum sha3_window_tripwire_result
+sha3_window_tripwire_report(int window_index, bool matched)
+{
+    if (window_index < 0 || (size_t)window_index >= g_sha3_windows_count)
+        return SHA3_WINDOW_TRIPWIRE_SKIP;
+
+    if (matched)
+        return SHA3_WINDOW_TRIPWIRE_MATCH;   /* corroborated — silent, cheap */
+
+    /* MISMATCH. OBSERVE-ONLY: the golden table is an immutable commitment over
+     * frozen history, so a divergence is never transient — re-running cannot
+     * clear it. It means a peer served a bad body or the local body is
+     * corrupt, and only an operator repair (re-fetch / rebuild) resolves it.
+     * That is exactly BLOCKER_PERMANENT ("malformed block / consensus reject —
+     * never auto-retry; only operator clears"). We give it NO escape action and
+     * NO deadline: it is pure evidence surfaced by zcl_blockers, never a
+     * pipeline HOLD. The fold continues; the tip is untouched. */
+    int start = window_index * SHA3_WINDOW_SIZE;
+    int end   = start + SHA3_WINDOW_SIZE - 1;
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+             "sha3 golden-window mismatch wi=%d h=%d..%d: recomputed digest != "
+             "locked commitment (bad body from a peer or local corruption)",
+             window_index, start, end);
+
+    struct blocker_record r;
+    if (!blocker_init(&r, "sha3_window_mismatch", "sha3_window_tripwire",
+                      BLOCKER_PERMANENT, reason))
+        return SHA3_WINDOW_TRIPWIRE_MISMATCH;  /* blocker_init logged the why */
+    r.escape_deadline_secs = 0;   /* evidence only — never auto-escaped */
+    r.escape_action[0] = '\0';
+    if (blocker_set(&r) == 0)
+        event_emitf(EV_BLOCK_INDEX_CORRUPT, 0,
+                    "verdict=sha3_window_mismatch wi=%d h=%d..%d observe_only=1",
+                    window_index, start, end);
+
+    return SHA3_WINDOW_TRIPWIRE_MISMATCH;
+}
+
+enum sha3_window_tripwire_result
+sha3_window_tripwire_eval(int window_index, const uint8_t *concat, size_t len)
+{
+    if (window_index < 0 || (size_t)window_index >= g_sha3_windows_count)
+        return SHA3_WINDOW_TRIPWIRE_SKIP;
+
+    bool matched = sha3_windows_verify_window(window_index, concat, len);
+    return sha3_window_tripwire_report(window_index, matched);
+}
+
+/* Run the corroboration tripwire iff `pindex_new` closes a golden-covered
+ * 1000-block window. Called at the very END of the post-finalize step (tip
+ * already published), so it is structurally observe-only. Cost is bounded to
+ * once per 1000 blocks and only for covered heights (< ~3.11M) — in daily
+ * snapshot-boot operation the tip is above the table so this never runs; it is
+ * armed for the genesis replay / refold path where a bad body would appear. */
+static void sha3_window_tripwire_at_boundary(const struct block_index *pindex_new,
+                                             const char *datadir)
+{
+    /* Operator kill-switch (self-contained; no config surface). Checked only
+     * at the once-per-1000-blocks boundary, so its cost is nil. */
+    if (getenv("ZCL_DISABLE_SHA3_WINDOW_TRIPWIRE"))
+        return;
+
+    int h = pindex_new->nHeight;
+    if (h < 0)
+        return;
+    /* Only the block that CLOSES a window (last height of the 1000-run). */
+    if ((h % SHA3_WINDOW_SIZE) != (SHA3_WINDOW_SIZE - 1))
+        return;
+    int wi = h / SHA3_WINDOW_SIZE;
+    if (wi < 0 || (size_t)wi >= g_sha3_windows_count)
+        return;   /* window not covered by the golden table */
+
+    int start = wi * SHA3_WINDOW_SIZE;   /* == h - (SHA3_WINDOW_SIZE - 1) */
+
+    /* Collect the window's block_index list by walking pprev from the tip.
+     * Any gap / mislabel aborts (observe-only: skip, never false-fire). */
+    const struct block_index *chain[SHA3_WINDOW_SIZE];
+    const struct block_index *bi = pindex_new;
+    for (int i = SHA3_WINDOW_SIZE - 1; i >= 0; i--) {
+        if (!bi || bi->nHeight != start + i)
+            return;
+        chain[i] = bi;
+        bi = bi->pprev;
+    }
+
+    /* Re-serialize each body into the canonical wire form (block_serialize —
+     * byte-identical to `getblock <hash> 0`, the exact bytes the golden table
+     * was generated from) and concatenate in height order. */
+    struct byte_stream s;
+    stream_init(&s, 1u << 20);
+    if (s.error) {
+        stream_free(&s);
+        return;
+    }
+    for (int i = 0; i < SHA3_WINDOW_SIZE; i++) {
+        struct block b;
+        block_init(&b);
+        if (!stage_read_block(&b, chain[i], chain[i]->nHeight, datadir,
+                              NULL, NULL)) {
+            block_free(&b);
+            stream_free(&s);
+            return;   /* missing body — skip this window */
+        }
+        bool ok = block_serialize(&b, &s);
+        block_free(&b);
+        if (!ok || s.error || s.size > SHA3_WINDOW_TRIPWIRE_MAX_BYTES) {
+            stream_free(&s);
+            return;   /* serialize failure / over cap — skip */
+        }
+    }
+
+    (void)sha3_window_tripwire_eval(wi, s.data, s.size);
+    stream_free(&s);
+}
 
 void tip_finalize_run_post_finalize(struct block_index *pindex_new)
 {
@@ -248,6 +376,14 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
             utxo_root);
         rpc_blockchain_mmb_append(&leaf);
     }
+
+    /* OBSERVE-ONLY SHA3 golden-window corroboration tripwire. Runs at most once
+     * per 1000-block window, only for windows covered by the locked golden
+     * table, and only HERE — after the tip is already published above. It emits
+     * evidence (a typed blocker + EV_BLOCK_INDEX_CORRUPT) on a digest mismatch
+     * and NEVER rejects a block, raises a HOLD, or changes the tip. Consensus
+     * parity with zclassicd is bit-identical whether or not it fires. */
+    sha3_window_tripwire_at_boundary(pindex_new, datadir);
 
     block_free(&blk);
 }
