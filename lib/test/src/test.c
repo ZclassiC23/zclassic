@@ -1036,6 +1036,7 @@ int main(int argc, char **argv)
       failures += test_soak_harness(); }
     /* Consensus edge-case coverage (boundary / overflow / known-CVE patterns) */
     { extern int test_script_interp_edge(void);  failures += test_script_interp_edge(); }
+    { extern int test_script_interp_edges(void); failures += test_script_interp_edges(); }
     { extern int test_sighash_edge(void);         failures += test_sighash_edge(); }
     { extern int test_sigops_edge(void);          failures += test_sigops_edge(); }
     { extern int test_check_tx_edge(void);        failures += test_check_tx_edge(); }
