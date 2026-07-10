@@ -2929,3 +2929,40 @@ audit:
 
 check-restart-follow:
 	$(ZCL_NODECTL_BIN) verify-follow --restart
+
+# ── postmortem_to_scenario: capsule -> chaos-scenario skeleton bridge ─────
+# (Super-Reliability / Detective Node program, lane B5). Converts an
+# unpacked postmortem crash capsule (lib/sim/include/sim/postmortem.h)
+# into a .scenario SKELETON for the chaos DSL (tools/sim/chaos.c,
+# docs/CHAOS_HARNESS.md "From Capsule To Scenario"). Automates ONLY the
+# seed + best-effort boot-phase steps; translating the recorded events
+# into chaos commands and adding the assertion that would have caught the
+# bug stays manual — see the TODO block the tool emits. Standalone build:
+# only the libs it directly uses (sim/postmortem + sim/seed_tape,
+# platform/clock + platform/rng, util/signal_handler + util/clientversion
+# + util/safe_alloc, lib/json) — no DB, no node libs, no Tor, same
+# discipline as tools/gen_sha3_windows.c. Appended as a single
+# self-contained block at the end of this file to minimize merge conflict
+# surface with other in-flight sim/* lanes.
+.PHONY: tools/postmortem_to_scenario
+tools/postmortem_to_scenario: $(BIN_DIR)/postmortem_to_scenario
+$(BIN_DIR)/postmortem_to_scenario: tools/postmortem_to_scenario.c \
+		lib/sim/src/postmortem.c lib/sim/src/seed_tape.c \
+		lib/platform/src/clock.c lib/platform/src/rng.c \
+		lib/util/src/signal_handler.c lib/util/src/clientversion.c \
+		lib/util/src/safe_alloc.c lib/json/src/json.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    -Wno-unused-result -Wno-format-truncation \
+	    -Ilib/sim/include -Ilib/platform/include -Ilib/util/include \
+	    -Ilib/json/include \
+	    -D_POSIX_C_SOURCE=200809L \
+	    -o $@ $^ -Lvendor/lib -l:libz.a -lpthread -lm
+
+.PHONY: postmortem-to-scenario
+postmortem-to-scenario: tools/postmortem_to_scenario
+	@if [ -z "$(CAP)" ]; then \
+	    echo "usage: make postmortem-to-scenario CAP=<capsule-dir> [OUT=<path>]"; \
+	    exit 2; \
+	fi
+	$(BIN_DIR)/postmortem_to_scenario --cap=$(CAP) $(if $(OUT),--out=$(OUT),)
