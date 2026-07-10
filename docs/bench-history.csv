@@ -15,3 +15,5 @@ date,commit,bench,value,unit,notes
 2026-05-25T10:01:12Z,43d6d6d46,#3 stay-in-sync MTBF,,s,pending soak after P0 deploy
 2026-05-25T10:01:12Z,43d6d6d46,#4 RAM steady-state,,MB,pending seeded datadir; sample RSS after isolated node boot
 2026-05-25T10:01:12Z,43d6d6d46,#5 kill-9 recovery,,s,pending seeded datadir; measure RPC-ready recovery histogram
+2026-07-10T00:30:00Z,de89ee8d4,consensus-verify equihash-200-9,120645.000,ns/op,"baseline; `make bench-crypto-verify` on AMD Ryzen 9 7950X3D; check_equihash_solution on baked real 200,9 witness; HOST-RELATIVE (re-baseline per host); gated +-20% by -bench-regress"
+2026-07-10T00:30:00Z,de89ee8d4,consensus-verify groth16-bls12-381-output,7846524.000,ns/op,"baseline; `make bench-crypto-verify` on AMD Ryzen 9 7950X3D; sapling_check_output full BLS12-381 pairing on a real prover output proof; HOST-RELATIVE (re-baseline per host); gated +-20% by -bench-regress"

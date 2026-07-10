@@ -228,7 +228,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
 .PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy deploy-dev remote-node-update remote-node-update-json lane-health lane-recover check-agent-cli check-restart-follow \
         background-fuzz background-coverage background-tests install-quality-linger quality-linger-status pre-push-ci \
         coverage coverage-clean docs-mcp docs-mcp-check ci audit release \
-        bench bench-regress \
+        bench bench-crypto-verify bench-regress \
         lint check-malloc check-silent-errors check-raw-sqlite check-raw-malloc \
         check-coins-lookup-nullcheck check-observability-pairing \
         check-silent-errors-services check-silent-errors-controllers \
@@ -1804,6 +1804,15 @@ $(BIN_DIR)/bench_fresh_sync: tools/bench_fresh_sync.c
 
 bench: zclassic23
 	@$(ZCLASSIC23_BIN) -bench
+
+# Consensus-verify microbenchmark: times the two dominant per-block verify
+# primitives (BLS12-381 Groth16 pairing + Equihash 200,9 solution check) and
+# APPENDS ns/op rows to docs/bench-history.csv. `bench-regress` then gates
+# those rows at ±20% vs the prior recorded run (ns/op is lower-is-better).
+# Groth16 row is skipped if ~/.zcash-params is absent (VK not vendored).
+.PHONY: bench-crypto-verify
+bench-crypto-verify: zclassic23
+	@$(ZCLASSIC23_BIN) -bench-crypto-verify
 
 bench-regress: zclassic23
 	@$(ZCLASSIC23_BIN) -bench-regress

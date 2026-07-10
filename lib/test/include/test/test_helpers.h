@@ -415,6 +415,7 @@ int test_sprout_phgr13_kat(void);
 int test_rescanwitnesses_diverge_guard(void);
 int test_gap_fill_frontier_window(void);
 int test_snark_kat(void);
+int test_verify_bench_selftest(void);
 int test_unclean_shutdown_advance(void);
 int test_cookie_rotation(void);
 int test_reorg_safety(void);
