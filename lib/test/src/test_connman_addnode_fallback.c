@@ -687,5 +687,131 @@ int test_connman_addnode_fallback(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("connman_addnode_fallback: IPv6 /32 and onion outbound "
+          "diversity caps enforced... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&sigs, 0, sizeof(sigs));
+        bool ok = connman_init(&cm, params, &sigs);
+
+        if (ok) {
+            cm.manager.nodes = zcl_calloc(8, sizeof(*cm.manager.nodes),
+                                          "connman_test_nodes_diversity");
+            cm.manager.nodes_cap = 8;
+        }
+
+        /* Two already-connected outbound peers in the SAME IPv6 /32
+         * group (2600:0100::/32 — a real ARIN-allocated GUA range, NOT
+         * the RFC 3849 documentation prefix 2001:0db8::/32, which
+         * net_addr_is_valid() deliberately rejects as non-routable and
+         * would make every addrman_add() below silently fail) saturate
+         * MAX_OUTBOUND_IPV6_GROUP32 (2). Two already-connected outbound
+         * onion peers saturate the flat MAX_OUTBOUND_ONION (2) bucket —
+         * onion has no sub-grouping, see
+         * connman_outbound_diversity_capped()'s doc comment. */
+        if (ok) {
+            const unsigned char ipv6_prefix[4] = {0x26, 0x00, 0x01, 0x00};
+            for (int i = 0; i < 2 && ok; i++) {
+                struct net_address a;
+                net_address_init(&a);
+                memcpy(a.svc.addr.ip, ipv6_prefix, 4);
+                a.svc.addr.ip[15] = (unsigned char)(i + 1);
+                a.svc.port = 8033;
+                struct p2p_node *n = p2p_node_create(
+                    &cm.manager, ZCL_INVALID_SOCKET, &a, "ipv6-peer", false);
+                ok = ok && n != NULL;
+                if (n) cm.manager.nodes[cm.manager.num_nodes++] = n;
+            }
+            for (int i = 0; i < 2 && ok; i++) {
+                struct net_address a;
+                net_address_init(&a);
+                a.svc.addr.has_torv3 = true;
+                memset(a.svc.addr.torv3, (int)(0xA0 + i), TORV3_ADDR_SIZE);
+                a.svc.port = 8033;
+                struct p2p_node *n = p2p_node_create(
+                    &cm.manager, ZCL_INVALID_SOCKET, &a, "onion-peer", false);
+                ok = ok && n != NULL;
+                if (n) cm.manager.nodes[cm.manager.num_nodes++] = n;
+            }
+        }
+
+        struct net_addr src;
+        net_addr_init(&src);
+
+        /* An addrman candidate in the SAME (already-capped) IPv6 group
+         * must never be picked. */
+        if (ok) {
+            struct net_address cand;
+            net_address_init(&cand);
+            cand.svc.addr.ip[0] = 0x26; cand.svc.addr.ip[1] = 0x00;
+            cand.svc.addr.ip[2] = 0x01; cand.svc.addr.ip[3] = 0x00;
+            cand.svc.addr.ip[15] = 3;
+            cand.svc.port = 8033;
+            ok = ok && addrman_add(&cm.manager.addrman, &cand, &src, 0);
+        }
+        if (ok) {
+            struct addr_info pick;
+            enum connman_outbound_target_source source = CONNMAN_TARGET_NONE;
+            memset(&pick, 0, sizeof(pick));
+            bool got = connman_pick_next_outbound_target(
+                &cm, &cm.next_addnode_cursor, &pick, &source, NULL);
+            ok = ok && !got; /* capped IPv6 group -> no usable candidate */
+        }
+
+        /* An addrman candidate in a DIFFERENT (uncapped) IPv6 group IS
+         * pickable — proves the rejection above was the cap, not some
+         * unrelated addrman/connman fixture bug. */
+        if (ok) {
+            struct net_address cand2;
+            net_address_init(&cand2);
+            cand2.svc.addr.ip[0] = 0x26; cand2.svc.addr.ip[1] = 0x00;
+            cand2.svc.addr.ip[2] = 0x02; cand2.svc.addr.ip[3] = 0x00; /* different /32 */
+            cand2.svc.addr.ip[15] = 9;
+            cand2.svc.port = 8033;
+            ok = ok && addrman_add(&cm.manager.addrman, &cand2, &src, 0);
+        }
+        if (ok) {
+            struct addr_info pick;
+            enum connman_outbound_target_source source = CONNMAN_TARGET_NONE;
+            memset(&pick, 0, sizeof(pick));
+            bool got = connman_pick_next_outbound_target(
+                &cm, &cm.next_addnode_cursor, &pick, &source, NULL);
+            ok = ok && got && source == CONNMAN_TARGET_ADDRMAN &&
+                net_addr_is_ipv6(&pick.addr.svc.addr);
+        }
+
+        /* An addrman candidate that is onion (already-capped flat
+         * bucket) must never be picked either. */
+        if (ok) {
+            struct net_address cand3;
+            net_address_init(&cand3);
+            cand3.svc.addr.has_torv3 = true;
+            memset(cand3.svc.addr.torv3, 0xCC, TORV3_ADDR_SIZE);
+            cand3.svc.port = 8033;
+            ok = ok && addrman_add(&cm.manager.addrman, &cand3, &src, 0);
+        }
+        if (ok) {
+            struct addr_info pick;
+            enum connman_outbound_target_source source = CONNMAN_TARGET_NONE;
+            memset(&pick, 0, sizeof(pick));
+            bool got = connman_pick_next_outbound_target(
+                &cm, &cm.next_addnode_cursor, &pick, &source, NULL);
+            /* Only the still-pickable cand2 (a different IPv6 group) or
+             * nothing should ever come back — never the capped onion
+             * candidate. addrman_select() is random, so we can't assert
+             * "nothing" outright if cand2 already got consumed above;
+             * assert the STRONGER invariant instead: whatever (if
+             * anything) comes back is never onion. */
+            ok = ok && (!got || !net_addr_is_tor(&pick.addr.svc.addr));
+        }
+
+        connman_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

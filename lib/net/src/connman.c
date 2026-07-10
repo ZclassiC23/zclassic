@@ -490,6 +490,116 @@ static int connman_outbound_group_count(struct connman *cm, uint16_t group)
     return count;
 }
 
+/* ── Sybil diversity: IPv6 and onion outbound caps ───────────────────
+ *
+ * count_outbound_in_group() above only ever inspects IPv4-mapped peers
+ * (net_addr_is_ipv4() guard) — a real IPv6 or .onion outbound peer was
+ * invisible to the /16 diversity cap entirely, so an attacker with many
+ * distinct IPv6 addresses or (far cheaper) many distinct ephemeral
+ * .onion identities could fill every outbound slot with sock-puppets
+ * and eclipse the node, bypassing MAX_OUTBOUND_PER_GROUP16 completely.
+ *
+ * IPv6: group by the /32 prefix (first 4 bytes of the real, non-mapped
+ * 16-byte address — net_addr_is_ipv6() already excludes the IPv4-mapped
+ * ::ffff:a.b.c.d form, so `ip[0..3]` here is a genuine IPv6 prefix, not
+ * an IPv4 octet pair). /32 is a coarser allocation unit than IPv4's /16
+ * convention but mirrors it: cheap for an attacker to acquire ONE real
+ * /32, expensive to acquire MANY.
+ *
+ * Onion: a v3 onion address is a self-generated Ed25519 public key —
+ * free and unlimited to mint, with no ISP/RIR allocation cost at all.
+ * There is no "group" to diversify within; the only meaningful bound is
+ * a flat cap on TOTAL outbound onion connections. MAX_OUTBOUND_ONION=2
+ * matches MAX_OUTBOUND_PER_GROUP16 (the existing IPv4 per-subnet cap) —
+ * enough that a normal mixed clearnet+onion peer set keeps some onion
+ * diversity, but a wall of attacker-minted .onion identities cannot
+ * consume more than 2 of the (default 8) outbound slots.
+ *
+ * connman_kick_onion_seeds() / run_onion_seed_pass() is UNAFFECTED by
+ * this cap: it fetches /directory.json directly over Tor via
+ * tor_integration_fetch_onion_blocking() to discover CLEARNET peers —
+ * it never dials an outbound P2P connection through
+ * connman_pick_next_outbound_target(), so eclipse-recovery via onion
+ * seeds still works even when the onion outbound bucket is full. */
+#define MAX_OUTBOUND_IPV6_GROUP32 2
+#define MAX_OUTBOUND_ONION 2
+
+static uint32_t ipv6_group32(const unsigned char ip[16])
+{
+    return ((uint32_t)ip[0] << 24) | ((uint32_t)ip[1] << 16) |
+           ((uint32_t)ip[2] << 8) | (uint32_t)ip[3];
+}
+
+/* Count outbound peers in the same IPv6 /32 group. Caller holds cs_nodes. */
+static int count_outbound_in_ipv6_group(const struct net_manager *nm,
+                                        uint32_t group)
+{
+    int count = 0;
+    for (size_t i = 0; i < nm->num_nodes; i++) {
+        const struct p2p_node *n = nm->nodes[i];
+        if (n->inbound || n->disconnect) continue;
+        if (!net_addr_is_ipv6(&n->addr.svc.addr)) continue;
+        if (ipv6_group32(n->addr.svc.addr.ip) == group)
+            count++;
+    }
+    return count;
+}
+
+/* Count ALL outbound onion peers (no sub-grouping — see the cap doc
+ * comment above). Caller holds cs_nodes. */
+static int count_outbound_onion(const struct net_manager *nm)
+{
+    int count = 0;
+    for (size_t i = 0; i < nm->num_nodes; i++) {
+        const struct p2p_node *n = nm->nodes[i];
+        if (n->inbound || n->disconnect) continue;
+        if (net_addr_is_tor(&n->addr.svc.addr))
+            count++;
+    }
+    return count;
+}
+
+static int connman_outbound_ipv6_group_count(struct connman *cm, uint32_t group)
+{
+    int count = 0;
+    if (!cm) return 0;
+    zcl_mutex_lock(&cm->manager.cs_nodes);
+    count = count_outbound_in_ipv6_group(&cm->manager, group);
+    zcl_mutex_unlock(&cm->manager.cs_nodes);
+    return count;
+}
+
+static int connman_outbound_onion_count(struct connman *cm)
+{
+    int count = 0;
+    if (!cm) return 0;
+    zcl_mutex_lock(&cm->manager.cs_nodes);
+    count = count_outbound_onion(&cm->manager);
+    zcl_mutex_unlock(&cm->manager.cs_nodes);
+    return count;
+}
+
+/* True if `addr` would push its (IPv4 /16, IPv6 /32, or onion-flat)
+ * outbound diversity bucket at/over its cap. Shared by the addrman
+ * candidate filter and the final pre-connect gate so both enforce the
+ * identical rule for all three network kinds. */
+static bool connman_outbound_diversity_capped(struct connman *cm,
+                                              const struct net_addr *addr)
+{
+    if (net_addr_is_ipv4(addr)) {
+        uint16_t group = ipv4_group16(addr->ip);
+        return connman_outbound_group_count(cm, group) >= MAX_OUTBOUND_PER_GROUP16;
+    }
+    if (net_addr_is_tor(addr))
+        return connman_outbound_onion_count(cm) >= MAX_OUTBOUND_ONION;
+    if (net_addr_is_ipv6(addr)) {
+        uint32_t group = ipv6_group32(addr->ip);
+        return connman_outbound_ipv6_group_count(cm, group) >=
+               MAX_OUTBOUND_IPV6_GROUP32;
+    }
+    return false;
+}
+
 static bool connman_addnode_is_connected(struct connman *cm, size_t addnode_index)
 {
     bool connected = false;
@@ -641,12 +751,11 @@ static bool connman_addrman_candidate_usable(struct connman *cm,
     if (connman_addr_is_connected(cm, &info->addr))
         return false;
 
-    if (net_addr_is_ipv4(&info->addr.svc.addr)) {
-        uint16_t group = ipv4_group16(info->addr.svc.addr.ip);
-        if (connman_outbound_group_count(cm, group) >=
-                MAX_OUTBOUND_PER_GROUP16)
-            return false;
-    }
+    /* Eclipse/sybil diversity cap — IPv4 /16, IPv6 /32, and the flat
+     * onion bucket are all enforced here so no network kind bypasses
+     * the diversity gate that IPv4 alone used to get. */
+    if (connman_outbound_diversity_capped(cm, &info->addr.svc.addr))
+        return false;
 
     return true;
 }
@@ -1043,16 +1152,16 @@ static void *thread_open_connections(void *arg)
                 continue;
             }
 
-            /* Eclipse attack defense: limit outbound peers per /16 subnet */
+            /* Eclipse/sybil attack defense: limit outbound peers per
+             * IPv4 /16 subnet, IPv6 /32 prefix, or the flat onion bucket
+             * (see connman_outbound_diversity_capped()'s doc comment).
+             * This is the final re-check right before dialing — a
+             * candidate can pass connman_addrman_candidate_usable() at
+             * selection time and still lose the race if another
+             * connection to the same bucket completed in between. */
             if (source == CONNMAN_TARGET_ADDRMAN &&
-                net_addr_is_ipv4(&info.addr.svc.addr)) {
-                uint16_t group = ipv4_group16(info.addr.svc.addr.ip);
-                zcl_mutex_lock(&cm->manager.cs_nodes);
-                int in_group = count_outbound_in_group(&cm->manager, group);
-                zcl_mutex_unlock(&cm->manager.cs_nodes);
-                if (in_group >= MAX_OUTBOUND_PER_GROUP16)
-                    continue;
-            }
+                connman_outbound_diversity_capped(cm, &info.addr.svc.addr))
+                continue;
 
             s_last_addrman_attempt = now_oc;
             char dest[64];
