@@ -9,6 +9,33 @@ to exercise a real but fully isolated node. For the isolation contract, build
 caveat, output/verdict reading, and the operational forms (`make soak-7day` =
 MVP #6, C7 `--with-peer` = MVP #7), see [`CHAOS_HARNESS.md`](./CHAOS_HARNESS.md).
 
+### Nightly simulator sweep (Wave-2 lane B2)
+
+`make chaos` (the 13-file `tools/sim/scenarios/*.scenario` corpus) is
+deliberately NOT part of `make ci` — see the comment beside the `ci:` target
+in the Makefile for the measured build-cost reasoning (the corpus itself
+replays in ~1.6s once built; the cost is the extra whole-program LTO link,
+~1m33s clean). Instead it is covered nightly by `make simnet-nightly` (full
+corpus + bounded `make wire-sweep` + `make sim-fast`) and, optionally, the
+longer `make simnet-fuzz-sweep` seed tail, both driven by
+`tools/scripts/simnet_nightly.sh` — same status-JSON/log-dir convention as
+`tools/scripts/background_quality_lane.sh`.
+
+Not installed by default (owner-gated deploy step). To enable:
+
+```bash
+systemctl --user enable --now zclassic23-simnet-nightly.timer
+```
+
+installs `deploy/zclassic23-simnet-nightly.timer` +
+`deploy/zclassic23-simnet-nightly.service`, mirroring the existing
+`zclassic23-fuzz.timer` / `zclassic23-test-suite.timer` pattern. Runs daily
+at 03:10 (jittered up to 5 min), distinct from the hourly fuzz timer and the
+`*:20:00` test-suite timer. Set `Environment=ZCL_SIMNET_NIGHTLY_FUZZ_SWEEP=1`
+in a drop-in to also run `make simnet-fuzz-sweep` every night. Check the
+latest verdict at `~/.local/state/zclassic23-quality/status/simnet_nightly.json`
+(or `$ZCL_QUALITY_STATE_DIR/status/simnet_nightly.json` if overridden).
+
 ---
 
 ## High-Availability First Check

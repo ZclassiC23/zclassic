@@ -896,6 +896,77 @@ simnet-replay: wire_sweep
 	@bash tools/scripts/simnet_replay_capsule.sh "$(CAP)" \
 	    $(BIN_DIR)/wire_sweep $(SIMNET_REPRO_ARTIFACT_DIR)
 
+# ── simnet-nightly / simnet-fuzz-sweep: Wave-2 lane B2 (nightly automation) ──
+# No new harness, no new binary — this composes the EXISTING chaos/wire-sweep/
+# sim-fast machinery so the checked-in .scenario corpus (tools/sim/scenarios/,
+# currently 13 files) plus a bounded simnet_wire seed sweep stop being caught
+# "only by developer discipline" (`make ci` does not run `make chaos` today —
+# see the ci-gate decision recorded beside the `ci:` target below). Both
+# targets are fixed/seeded and MUST terminate; wire_sweep_run_one(seed) is a
+# pure function of the scalar seed (docs/work/sim-phase2-plan.md), so every
+# run here is exactly reproducible via `make simnet-repro SEED=0x<hex>`.
+#
+# simnet-nightly: the bounded default the nightly timer runs every night —
+# whole scenario corpus (make chaos) + the wire_sweep nightly-default seed
+# count (make wire-sweep, WIRE_SWEEP_SEEDS=2000) + the sim-fast unit-test +
+# 64-seed churn slice. sim-fast re-runs `make chaos` internally too — that's
+# deliberate, harmless duplication (both runs are deterministic and each is
+# sub-2s once built): it means a scenario-corpus regression is reported at
+# the very first step, with the clearest per-scenario PASS/FAIL line, before
+# the slower composite steps even start.
+#
+# TODO(B2-followup): add a `byzantine honest=` cluster sweep step here once
+# lane B1's DSL verb lands (it does not exist on this base yet — B1 is a
+# parallel in-flight lane, do not block this target on it).
+.PHONY: simnet-nightly
+simnet-nightly:
+	@echo "══ simnet-nightly: step 1/3 — full .scenario corpus (make chaos) ══"
+	@if $(MAKE) --no-print-directory chaos; then \
+	    step1=PASS; \
+	else \
+	    step1=FAIL; \
+	fi; \
+	echo "══ simnet-nightly: step 2/3 — bounded wire_sweep seed range (make wire-sweep) ══"; \
+	if $(MAKE) --no-print-directory wire-sweep; then \
+	    step2=PASS; \
+	else \
+	    step2=FAIL; \
+	fi; \
+	echo "══ simnet-nightly: step 3/3 — sim-fast (chaos_harness unit slice + churn sweep) ══"; \
+	if $(MAKE) --no-print-directory sim-fast; then \
+	    step3=PASS; \
+	else \
+	    step3=FAIL; \
+	fi; \
+	echo ""; \
+	echo "══ simnet-nightly SUMMARY ══"; \
+	echo "  1. chaos (full corpus) ....... $$step1"; \
+	echo "  2. wire-sweep ($(WIRE_SWEEP_SEEDS) seeds) .. $$step2"; \
+	echo "  3. sim-fast .................. $$step3"; \
+	if [ "$$step1" = PASS ] && [ "$$step2" = PASS ] && [ "$$step3" = PASS ]; then \
+	    echo "==> simnet-nightly PASSED"; \
+	else \
+	    echo "==> simnet-nightly FAILED"; \
+	    exit 1; \
+	fi
+
+# simnet-fuzz-sweep: the LONGER seed sweep for the nightly timer (bigger
+# --count than the default `make wire-sweep`, same wire_sweep binary/CLI —
+# no new harness). Kept as its own target/artifact-dir so it composes
+# independently of simnet-nightly's bounded default (a slow night can run
+# both back-to-back via the driver script without artifact collisions).
+WIRE_SWEEP_NIGHTLY_SEEDS ?= 20000
+WIRE_SWEEP_NIGHTLY_ARTIFACT_DIR ?= build/wire-sweep-nightly-output
+
+.PHONY: simnet-fuzz-sweep
+simnet-fuzz-sweep: wire_sweep
+	@mkdir -p $(WIRE_SWEEP_NIGHTLY_ARTIFACT_DIR)
+	@echo "══ simnet-fuzz-sweep: $(WIRE_SWEEP_NIGHTLY_SEEDS) wire_sweep seeds ══"
+	$(BIN_DIR)/wire_sweep --start=$(WIRE_SWEEP_START) \
+	    --count=$(WIRE_SWEEP_NIGHTLY_SEEDS) \
+	    --artifact-dir=$(WIRE_SWEEP_NIGHTLY_ARTIFACT_DIR)
+	@echo "==> simnet-fuzz-sweep PASSED ($(WIRE_SWEEP_NIGHTLY_SEEDS) seeds)"
+
 # Gate: the simnet_wire harness must be pure in-memory — no real sockets.
 # See tools/scripts/check_wire_harness_security_gate.sh.
 .PHONY: check-wire-harness-security-gate
@@ -2887,6 +2958,21 @@ ci-symbol-floor: zclassic23
 # reproducible. This is the gate CLAUDE.md said was missing ("byte-identity is
 # not yet proven by a build-twice-and-compare gate"). Does NOT set ZCL_NATIVE,
 # so the test reflects the portable x86-64-v3 release baseline exactly.
+# DECISION (Wave-2 lane B2, measured 2026-07-10): `make chaos` deliberately
+# does NOT gate `make ci`. The 13-scenario corpus itself runs in ~1.6s once
+# built — that part is cheap. The cost that matters is building the
+# zclassic23-chaos binary in the first place: it is its own whole-program
+# LTO link over $(ALL_SRCS) (same shape as zclassic23/test_parallel), and a
+# clean build of it alone measured 1m33s. `make ci` already pays for two
+# whole-program LTO links (zclassic23 + test_parallel); a THIRD full link
+# to cover 13 scenario replays that already run in every dev's `make
+# sim-fast` would tax the hot CI path by roughly 50% for marginal coverage,
+# the same "too slow for the hot path" reasoning that already keeps
+# ci-reproducible (two links) and wire_sweep's nightly seed sweep
+# ("never gates the normal build or make ci/make test", see wire-sweep
+# above) out of `make ci`. The corpus regressions this lane exists to catch
+# are covered instead by `make simnet-nightly` via the
+# zclassic23-simnet-nightly.timer (deploy/), not by the hot loop.
 .PHONY: ci-reproducible
 ci-reproducible:
 	@bash tools/scripts/check_reproducible_build.sh
