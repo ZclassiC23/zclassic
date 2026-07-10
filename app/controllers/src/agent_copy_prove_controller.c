@@ -247,16 +247,19 @@ static bool cp_write_queued_status(const char *status_file, const char *slug,
             fclose(f);
             ok = (rename(tmp_path, status_file) == 0);
             if (!ok)
+                // obs-ok:agent-copy-prove-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
                 fprintf(stderr, "[agent_copy_prove] %s:%d %s(): rename "
                         "%s -> %s failed: %s\n", __FILE__, __LINE__,
                         __func__, tmp_path, status_file, strerror(errno));
         } else {
+            // obs-ok:agent-copy-prove-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
             fprintf(stderr, "[agent_copy_prove] %s:%d %s(): fopen %s "
                     "failed: %s\n", __FILE__, __LINE__, __func__,
                     tmp_path, strerror(errno));
         }
         free(buf);
     } else {
+        // obs-ok:agent-copy-prove-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
         fprintf(stderr, "[agent_copy_prove] %s:%d %s(): zcl_malloc(%zu) "
                 "failed for slug=%s\n", __FILE__, __LINE__, __func__,
                 need, slug ? slug : "(null)");
@@ -318,6 +321,7 @@ bool rpc_agent_copy_prove(const struct json_value *params, bool help,
         json_push_kv_str(result, "error", "invalid_slug");
         json_push_kv_str(result, "detail",
             "slug must match ^[a-z0-9][a-z0-9-]{0,63}$ and not end with '-'");
+        // obs-ok:agent-copy-prove-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
         fprintf(stderr, "[agent_copy_prove] %s:%d %s(): refused invalid "
                 "slug\n", __FILE__, __LINE__, __func__);
         return true;
@@ -327,6 +331,7 @@ bool rpc_agent_copy_prove(const struct json_value *params, bool help,
         json_push_kv_str(result, "error", "invalid_src");
         json_push_kv_str(result, "detail",
             "src must be an absolute path using only [A-Za-z0-9_./-]");
+        // obs-ok:agent-copy-prove-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
         fprintf(stderr, "[agent_copy_prove] %s:%d %s(): refused invalid "
                 "src for slug=%s\n", __FILE__, __LINE__, __func__, slug);
         return true;
@@ -337,6 +342,7 @@ bool rpc_agent_copy_prove(const struct json_value *params, bool help,
         json_push_kv_str(result, "detail",
             "args must be space-separated flags starting with '-' using "
             "only [A-Za-z0-9_.:=,/-]");
+        // obs-ok:agent-copy-prove-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
         fprintf(stderr, "[agent_copy_prove] %s:%d %s(): refused invalid "
                 "args for slug=%s\n", __FILE__, __LINE__, __func__, slug);
         return true;
@@ -344,6 +350,7 @@ bool rpc_agent_copy_prove(const struct json_value *params, bool help,
     if (expect_climb_past < -1) {
         json_push_kv_str(result, "status", "error");
         json_push_kv_str(result, "error", "invalid_expect_climb_past");
+        // obs-ok:agent-copy-prove-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
         fprintf(stderr, "[agent_copy_prove] %s:%d %s(): refused negative "
                 "expect_climb_past for slug=%s\n", __FILE__, __LINE__,
                 __func__, slug);
@@ -365,6 +372,7 @@ bool rpc_agent_copy_prove(const struct json_value *params, bool help,
         json_push_kv_str(result, "status", "error");
         json_push_kv_str(result, "error", "status_file_write_failed");
         json_push_kv_str(result, "status_file", status_file);
+        // obs-ok:agent-copy-prove-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
         fprintf(stderr, "[agent_copy_prove] %s:%d %s(): could not write "
                 "queued status for slug=%s at %s\n", __FILE__, __LINE__,
                 __func__, slug, status_file);
@@ -377,6 +385,7 @@ bool rpc_agent_copy_prove(const struct json_value *params, bool help,
         json_push_kv_str(result, "status", "error");
         json_push_kv_str(result, "error", "script_not_found");
         json_push_kv_str(result, "detail", script);
+        // obs-ok:agent-copy-prove-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
         fprintf(stderr, "[agent_copy_prove] %s:%d %s(): script not "
                 "executable: %s (%s)\n", __FILE__, __LINE__, __func__,
                 script, strerror(errno));
@@ -417,6 +426,7 @@ bool rpc_agent_copy_prove(const struct json_value *params, bool help,
     if (n < 0 || (size_t)n >= sizeof(cmd)) {
         json_push_kv_str(result, "status", "error");
         json_push_kv_str(result, "error", "command_too_long");
+        // obs-ok:agent-copy-prove-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
         fprintf(stderr, "[agent_copy_prove] %s:%d %s(): command exceeded "
                 "%zu bytes for slug=%s\n", __FILE__, __LINE__, __func__,
                 sizeof(cmd), slug);
@@ -428,6 +438,7 @@ bool rpc_agent_copy_prove(const struct json_value *params, bool help,
         json_push_kv_str(result, "status", "error");
         json_push_kv_str(result, "error", "spawn_failed");
         json_push_kv_int(result, "spawn_exit_code", rc);
+        // obs-ok:agent-copy-prove-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
         fprintf(stderr, "[agent_copy_prove] %s:%d %s(): system() launch "
                 "failed rc=%d for slug=%s cmd=%s\n", __FILE__, __LINE__,
                 __func__, rc, slug, cmd);
@@ -503,6 +514,7 @@ bool agent_copy_prove_dump_state_json(struct json_value *out, const char *key)
         json_push_kv_str(out, "error", "status_file_invalid_json");
         json_push_kv_str(out, "slug", key);
         json_push_kv_str(out, "status_file", status_file);
+        // obs-ok:agent-copy-prove-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
         fprintf(stderr, "[agent_copy_prove] %s:%d %s(): status file did "
                 "not parse as a JSON object: %s\n", __FILE__, __LINE__,
                 __func__, status_file);
@@ -515,6 +527,7 @@ bool agent_copy_prove_dump_state_json(struct json_value *out, const char *key)
     const char *copy_path = json_get_str(json_get(&parsed, "copy_path"));
     if (copy_path && copy_path[0] && !cp_path_safety_ok(copy_path)) {
         /* Log BEFORE freeing parsed — copy_path points into it. */
+        // obs-ok:agent-copy-prove-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
         fprintf(stderr, "[agent_copy_prove] %s:%d %s(): SAFETY: refusing "
                 "to report status for slug=%s, copy_path=%s aliases a "
                 "live datadir or lacks the throwaway marker\n", __FILE__,
