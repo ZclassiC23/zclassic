@@ -266,9 +266,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(check_tx_edge) X(check_block_edge) X(amount_subsidy_edge) \
     X(locktime_edge) X(tx_expiry_locktime_adversarial) \
     X(pow_diffadj_precedence) X(bip34_coinbase_height_parity) \
-    X(locktime_edge) \
-    X(pow_diffadj_precedence) X(difficulty_adjustment_adversarial) \
-    X(bip34_coinbase_height_parity) \
+    X(difficulty_adjustment_adversarial) \
     X(reducer_block_ingest_gate) \
     X(onion_bootstrap_slice) X(shielded_receive_slice) X(shielded_receive_persist) \
     X(reducer_forward_progress_gate) X(parity_slice) \
