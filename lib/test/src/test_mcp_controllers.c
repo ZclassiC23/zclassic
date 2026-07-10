@@ -1034,7 +1034,11 @@ static char *mock_target_blocker_dump(void)
 static char *mock_operator_healthy_rpc(const char *method,
                                        const char *params_json);
 
-static const char k_native_operator_snapshot_json[] =
+/* ISO C caps a single string constant at 4095 chars, and the full node
+ * build compiles tests with -pedantic -Werror(-Woverlength-strings) — the
+ * ~5.6KB fixture is stored as two halves and joined at runtime via
+ * native_operator_snapshot_json_dup(). */
+static const char k_native_operator_snapshot_json_p1[] =
     "{\"schema\":\"zcl.operator_snapshot.v1\",\"schema_version\":1,"
     "\"api_version\":\"v1\",\"execution_locus\":\"target_node\","
     "\"producer\":\"event_operator_snapshot_controller\","
@@ -1124,7 +1128,8 @@ static const char k_native_operator_snapshot_json[] =
     "\"blocker_counts\":{\"status\":\"pass\","
     "\"detail\":\"counts match entries\"},"
     "\"peer_direction_sum\":{\"status\":\"pass\","
-    "\"detail\":\"directions sum to total\"}},"
+    "\"detail\":\"directions sum to total\"}},";
+static const char k_native_operator_snapshot_json_p2[] =
     "\"summary\":{\"schema\":\"zcl.operator_summary.v1\","
     "\"schema_version\":1,\"api_version\":\"v1\","
     "\"execution_locus\":\"target_node\","
@@ -1165,6 +1170,20 @@ static const char k_native_operator_snapshot_json[] =
     "\"summary\":\"healthy native snapshot\","
     "\"future_field\":{\"kept\":true}}}";
 
+/* Join the two fixture halves into one malloc'd string (caller frees). */
+static char *native_operator_snapshot_json_dup(void)
+{
+    size_t n1 = sizeof(k_native_operator_snapshot_json_p1) - 1u;
+    size_t n2 = sizeof(k_native_operator_snapshot_json_p2) - 1u;
+    char *s = malloc(n1 + n2 + 1u);
+    if (!s)
+        return NULL;
+    memcpy(s, k_native_operator_snapshot_json_p1, n1);
+    memcpy(s + n1, k_native_operator_snapshot_json_p2, n2);
+    s[n1 + n2] = '\0';
+    return s;
+}
+
 static int g_native_operator_snapshot_calls;
 static int g_native_operator_legacy_calls;
 
@@ -1174,7 +1193,7 @@ static char *mock_native_operator_rpc(const char *method,
     (void)params_json;
     if (strcmp(method, "operatorsnapshot") == 0) {
         g_native_operator_snapshot_calls++;
-        return strdup(k_native_operator_snapshot_json);
+        return native_operator_snapshot_json_dup();
     }
     g_native_operator_legacy_calls++;
     return mock_operator_healthy_rpc(method, params_json);
@@ -2414,7 +2433,10 @@ static int test_native_operator_snapshot_single_rpc(void)
         ASSERT(snapshot_body != NULL);
         ASSERT(g_native_operator_snapshot_calls == 1);
         ASSERT(g_native_operator_legacy_calls == 0);
-        ASSERT_STR_EQ(snapshot_body, k_native_operator_snapshot_json);
+        char *snapshot_expect = native_operator_snapshot_json_dup();
+        ASSERT(snapshot_expect != NULL);
+        ASSERT_STR_EQ(snapshot_body, snapshot_expect);
+        free(snapshot_expect);
 
         free(snapshot_body);
         json_free(&args);
