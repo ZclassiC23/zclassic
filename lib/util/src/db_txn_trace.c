@@ -91,7 +91,8 @@ static int trace_cb(unsigned type, void *ctx, void *p, void *x)
     if (!is_txn_control_sql(sql))
         return 0;
     const struct txn_trace_entry *e = (const struct txn_trace_entry *)ctx;
-    fprintf(stderr, "[db-txn-trace] STMT owner=%s db=%p tid=%lu sql=\"%s\"\n",
+    fprintf(stderr,  // obs-ok:opt-in-debug-tracer (ZCL_DB_TXN_TRACE=1 only)
+            "[db-txn-trace] STMT owner=%s db=%p tid=%lu sql=\"%s\"\n",
             e ? e->label : "?", (void *)e->db,
             (unsigned long)pthread_self(), sql ? sql : "(null)");
     fflush(stderr);
@@ -118,7 +119,7 @@ static void *dumper_main(void *arg)
             int st = sqlite3_txn_state(db, NULL);
             /* Loud when a connection is holding a transaction open; quiet
              * (but still logged) when NONE so the timeline shows liveness. */
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:opt-in-debug-tracer (ZCL_DB_TXN_TRACE=1 only)
                     "[db-txn-trace] STATE owner=%s db=%p txn=%s autocommit=%d%s\n",
                     g_entries[i].label, (void *)db, txn_state_name(st),
                     sqlite3_get_autocommit(db),
@@ -136,7 +137,7 @@ static void *dumper_main(void *arg)
                 while ((s = sqlite3_next_stmt(db, s)) != NULL) {
                     if (sqlite3_stmt_busy(s)) {
                         const char *sql = sqlite3_sql(s);
-                        fprintf(stderr,
+                        fprintf(stderr,  // obs-ok:opt-in-debug-tracer (ZCL_DB_TXN_TRACE=1 only)
                                 "[db-txn-trace]   BUSY-STMT owner=%s db=%p "
                                 "stmt=%p sql=\"%s\"\n",
                                 g_entries[i].label, (void *)db, (void *)s,
@@ -161,10 +162,10 @@ static void ensure_dumper_started_locked(void)
         /* raw-pthread-ok: opt-in diagnostic dumper, off the supervisor tree */
         if (pthread_create(&g_dumper_thread, NULL, dumper_main, NULL) != 0) {
             atomic_store(&g_dumper_started, false);
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:opt-in-debug-tracer (ZCL_DB_TXN_TRACE=1 only)
                     "[db-txn-trace] failed to start dumper thread\n");
         } else {
-            fprintf(stderr,
+            fprintf(stderr,  // obs-ok:opt-in-debug-tracer (ZCL_DB_TXN_TRACE=1 only)
                     "[db-txn-trace] enabled (dump every %ds)\n",
                     ZCL_DB_TXN_TRACE_DUMP_SECS);
         }
@@ -187,7 +188,8 @@ void zcl_db_txn_trace_register(sqlite3 *db, const char *label)
     }
     if (slot < 0) {
         pthread_mutex_unlock(&g_lock);
-        fprintf(stderr, "[db-txn-trace] registry full; %s not tracked\n",
+        fprintf(stderr,  // obs-ok:opt-in-debug-tracer (ZCL_DB_TXN_TRACE=1 only)
+                "[db-txn-trace] registry full; %s not tracked\n",
                 label ? label : "?");
         fflush(stderr);
         return;
@@ -202,7 +204,8 @@ void zcl_db_txn_trace_register(sqlite3 *db, const char *label)
 
     ensure_dumper_started_locked();
 
-    fprintf(stderr, "[db-txn-trace] registered owner=%s db=%p\n",
+    fprintf(stderr,  // obs-ok:opt-in-debug-tracer (ZCL_DB_TXN_TRACE=1 only)
+            "[db-txn-trace] registered owner=%s db=%p\n",
             g_entries[slot].label, (void *)db);
     fflush(stderr);
 
@@ -217,7 +220,8 @@ void zcl_db_txn_trace_unregister(sqlite3 *db)
     pthread_mutex_lock(&g_lock);
     for (int i = 0; i < ZCL_DB_TXN_TRACE_MAX_CONNS; i++) {
         if (g_entries[i].db == db) {
-            fprintf(stderr, "[db-txn-trace] unregistered owner=%s db=%p\n",
+            fprintf(stderr,  // obs-ok:opt-in-debug-tracer (ZCL_DB_TXN_TRACE=1 only)
+                    "[db-txn-trace] unregistered owner=%s db=%p\n",
                     g_entries[i].label, (void *)db);
             fflush(stderr);
             g_entries[i].db = NULL;
