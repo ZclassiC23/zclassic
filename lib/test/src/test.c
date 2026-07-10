@@ -1434,6 +1434,7 @@ int main(int argc, char **argv)
     failures += test_disk_block_io();
     failures += test_msg_handlers();
     failures += test_process_headers_adversarial();
+    failures += test_net_handshake_adversarial();
     failures += test_zclassicd_oracle();
     failures += test_header_probe();
     { extern int test_lag_slo(void); failures += test_lag_slo(); }
