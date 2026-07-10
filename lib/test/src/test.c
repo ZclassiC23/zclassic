@@ -1370,6 +1370,8 @@ int main(int argc, char **argv)
     failures += test_refold_progress_floor();
     { extern int test_reindex_epilogue(void);
       failures += test_reindex_epilogue(); }
+    { extern int test_snapshot_boot_seed(void);
+      failures += test_snapshot_boot_seed(); }
     failures += test_chain_linkage_check();
     failures += test_invariant_sentinel();
     failures += test_seed_integrity_gate();
