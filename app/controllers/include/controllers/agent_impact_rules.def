@@ -181,3 +181,26 @@ AGENT_IMPACT_RULE("lib/test/src/test_merkle_tree.c", "merkle_tree")
 AGENT_IMPACT_RULE("lib/bloom/src/merkle.c|lib/bloom/include/bloom/merkle.h|lib/test/src/test_merkle_malleability.c", "merkle_malleability bloom")
 AGENT_IMPACT_RULE("lib/test/src/test_parity_lockin_anchor_membership.c", "parity_lockin_anchor_membership")
 AGENT_IMPACT_RULE("lib/test/src/test_sync_service.c", "sync_service")
+
+/* Wave 3 (2026-07-10): sapling anchor-frontier cure condition. */
+AGENT_IMPACT_RULE("app/conditions/src/sapling_anchor_frontier_unavailable.c|app/conditions/include/conditions/sapling_anchor_frontier_unavailable.h|app/conditions/src/condition_registry.c", "sapling_anchor_frontier_condition condition_engine make_lint_gates")
+
+/* Wave 3: agent test runner (MCP-triggerable focused tests/scenarios). */
+AGENT_IMPACT_RULE("app/controllers/src/agent_test_controller.c|app/controllers/include/controllers/agent_test_controller.h|lib/test/src/test_agent_test.c", "agent_test mcp_controllers make_lint_gates")
+
+/* Wave 3: golden UTXO-ladder live tripwire. */
+AGENT_IMPACT_RULE("app/jobs/src/utxo_root_ladder_tripwire.c|app/jobs/src/utxo_root_ladder_tripwire.h|app/jobs/src/tip_finalize_post_step.h|lib/test/src/test_utxo_root_ladder_tripwire.c", "utxo_root_ladder_tripwire sha3_windows make_lint_gates")
+
+/* Wave 3: golden staleness canary + sha3 windows table refresh. */
+AGENT_IMPACT_RULE("lib/test/src/test_golden_staleness_canary.c|lib/test/src/test_sha3_windows.c", "golden_staleness_canary sha3_windows")
+
+/* Wave 3: metric alert rules + external gauge plumbing. */
+AGENT_IMPACT_RULE("lib/metrics/src/metrics.c|lib/metrics/include/metrics/metrics.h|config/src/boot_node_utilities.c|lib/test/src/test_metric_alerts.c", "metric_alerts mcp_baseline make_lint_gates")
+
+/* Wave 3: banlist persistence + net hardening. */
+AGENT_IMPACT_RULE("lib/net/src/net.c|lib/test/src/test_net_ban_persistence.c", "net_ban_persistence net_msg_dos net_framing_dos msg_handlers make_lint_gates")
+
+/* Wave 3: _health seeding across stage/projection dumpers. */
+AGENT_IMPACT_RULE("app/jobs/include/jobs/stage_helpers.h|app/jobs/src/header_admit_stage.c|app/jobs/src/body_fetch_stage.c|app/jobs/src/body_persist_stage.c|app/jobs/src/script_validate_stage_dump.c|app/jobs/src/proof_validate_stage_dump.c|lib/util/src/blocker.c|lib/test/src/test_health_rollup.c", "health_rollup reducer_forward_progress_gate make_lint_gates")
+AGENT_IMPACT_RULE("lib/storage/src/mempool_projection.c|lib/storage/src/utxo_projection.c|lib/storage/src/znam_projection.c|lib/storage/src/wallet_projection.c|lib/storage/src/contacts_projection.c|lib/storage/src/onion_announcements_projection.c|lib/storage/src/hodl_history_projection.c|lib/storage/src/peers_projection.c", "health_rollup projections make_lint_gates")
+AGENT_IMPACT_RULE("app/services/src/db_maintenance.c|app/services/src/disk_monitor.c", "health_rollup make_lint_gates")
