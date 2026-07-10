@@ -663,6 +663,19 @@ static enum sticky_rung arm_and_run_rederive(struct stm_fixture *fx,
     return sticky_escalator_test_drive(0, t0 + 32);
 }
 
+/* Provable-tip H* over the fixture's progress.kv logs — the MIN-fold the node
+ * serves as getblockcount. Used to prove a repair CLIMBS H* (not merely returns
+ * true): a rowless hole caps it below the hole; the re-fold the repair unblocks
+ * lifts it past. Re-entrant-safe lock (compute_hstar re-takes it internally). */
+static int32_t stm_compute_hstar(sqlite3 *db)
+{
+    int32_t h = -1, served = -1;
+    progress_store_tx_lock();
+    bool ok = reducer_frontier_compute_hstar(db, &h, &served);
+    progress_store_tx_unlock();
+    return ok ? h : -1;
+}
+
 int test_stall_totality_matrix(void);
 int test_stall_totality_matrix(void)
 {
@@ -918,6 +931,147 @@ int test_stall_totality_matrix(void)
                   cursor_value(db, "body_persist") == A + 4 &&
                   cursor_value(db, "tip_finalize") == A + 3 &&
                   total_log_rows(db) == rows_before);
+
+        teardown_fixture(&fx);
+    }
+
+    /* ── A3: ROW-ABSENT (rowless-page) shapes — the fourth detector match
+     * (fail-safe-architecture.md §4 item 0a). The three pre-existing replay
+     * detectors all require an EXISTING row (ok=0 status hole, ok=1 wrong-hash
+     * split, ok=0 proof internal_error); the refill clamps rowless holes AT OR
+     * ABOVE the coins frontier but REFUSES those strictly below it
+     * (refill.c:385-391) — so a purely rowless span below the frontier fell
+     * through to escalation (the live 3166989 gap). K7/K8/K9 pin the new
+     * absent_script_hole detector that closes it by routing the ROWLESS hole to
+     * the SAME stale_script_replay_tx. ──────────────────────────────────── */
+
+    /* K7 — ROW-ABSENT verdict below the cursor with the canonical body present:
+     * the detector re-derives from the PoW-mined on-disk body (deletes the stale
+     * span rows, rewinds script/proof/tip cursors in ONE tx), and H* CLIMBS once
+     * the unblocked stages re-fold. */
+    {
+        struct stm_fixture fx;
+        STM_CHECK("K7: setup fixture", setup_fixture(&fx, "k7_absent_row"));
+        sqlite3 *db = progress_store_db();
+
+        STM_CHECK("K7: canonical body mined + readable on disk",
+                  make_fixture_block_readable(&fx, 2));
+        STM_CHECK("K7: delete verdict rows -> a ROWLESS hole below the cursor",
+                  seed_cursor(db, "body_persist", A + 3) &&
+                  seed_cursor(db, "utxo_apply", A + 2) &&
+                  delete_height(db, "script_validate_log", A + 2) &&
+                  delete_height(db, "proof_validate_log", A + 2));
+
+        int32_t hstar_before = stm_compute_hstar(db);
+        STM_CHECK("K7: H* is capped below the rowless hole before repair",
+                  hstar_before == A + 1);
+
+        STM_CHECK("K7: rederive repairs the ROW-ABSENT hole and HOLDS the rung",
+                  arm_and_run_rederive(&fx, "k7_absent_verdict_row", NULL) ==
+                      STICKY_RUNG_TARGETED_REDERIVE &&
+                  sticky_escalator_test_armed());
+        STM_CHECK("K7: stale span rows deleted, validate kept (no header rewind)",
+                  count_range(db, "script_validate_log", A + 2, A + 4) == 0 &&
+                  count_range(db, "proof_validate_log", A + 2, A + 4) == 0 &&
+                  count_range(db, "validate_headers_log", A + 2, A + 4) == 2);
+        STM_CHECK("K7: script/proof/tip/utxo cursors rewound to the hole",
+                  cursor_value(db, "script_validate") == A + 2 &&
+                  cursor_value(db, "proof_validate") == A + 2 &&
+                  cursor_value(db, "tip_finalize") == A + 2 &&
+                  cursor_value(db, "utxo_apply") == A + 2 &&
+                  cursor_value(db, "body_persist") == A + 3);
+
+        /* Simulate the forward fold the rewind unblocked, then H* CLIMBS past
+         * the old cap (proves the repair enables progress, not just returns). */
+        STM_CHECK("K7: simulate the unblocked re-fold over the rewound span",
+                  put_upstream_ok(db, A + 2, &fx.hashes[2]) &&
+                  put_upstream_ok(db, A + 3, &fx.hashes[3]) &&
+                  put_tip_log(db, A + 2, 1, &fx.hashes[2]) &&
+                  put_tip_log(db, A + 3, 1, &fx.hashes[3]) &&
+                  seed_coins_applied(db, A + 4) &&
+                  seed_all_cursors(db, A + 4));
+        int32_t hstar_after = stm_compute_hstar(db);
+        STM_CHECK("K7: H* CLIMBS after the re-fold (not merely repair==true)",
+                  hstar_after == A + 3 && hstar_after > hstar_before);
+
+        teardown_fixture(&fx);
+    }
+
+    /* K8 — ROW-ABSENT hole STRICTLY BELOW the coins frontier: the exact class
+     * the refill REFUSES ("replay domain", refill.c:385-391) and the three
+     * row-requiring detectors miss — the live 3166989 gap. The new detector now
+     * OWNS it: the reconcile dry-run reports the hole height with NO false coin
+     * tear, routing it to the replay instead of escalation. Detection pin; the
+     * coins-rewinding heal is the same stale_script_replay_tx K2/K7 exercise. */
+    {
+        struct stm_fixture fx;
+        STM_CHECK("K8: setup fixture",
+                  setup_fixture(&fx, "k8_below_coins_absent"));
+        sqlite3 *db = progress_store_db();
+        stage_reducer_frontier_reset_detect_memo_for_testing();
+
+        STM_CHECK("K8: rowless hole at A+2 with coins applied ABOVE it (A+3)",
+                  delete_height(db, "script_validate_log", A + 2) &&
+                  delete_height(db, "proof_validate_log", A + 2) &&
+                  seed_coins_applied(db, A + 3));
+
+        struct stage_reducer_frontier_reconcile_result dry;
+        STM_CHECK("K8: reconcile dry-run succeeds",
+                  stage_reducer_frontier_reconcile_light_needed(db, &fx.ms,
+                                                                &dry));
+        STM_CHECK("K8: below-coins rowless hole DETECTED + owned by the replay",
+                  dry.repaired &&
+                  dry.stale_script_repair_height == A + 2 &&
+                  !dry.refused_coin_tear);
+
+        teardown_fixture(&fx);
+    }
+
+    /* K9 — ROW-ABSENT hole below the coins frontier whose canonical body is NOT
+     * on disk: the detector MATCHES (the class is no longer invisible) but the
+     * replay HONESTLY DEFERS (cannot read the body) and the ladder ESCALATES —
+     * no fake heal, no crash-loop, no cursor rewind on an unreadable body. */
+    {
+        struct stm_fixture fx;
+        STM_CHECK("K9: setup fixture",
+                  setup_fixture(&fx, "k9_absent_no_body"));
+        sqlite3 *db = progress_store_db();
+        stage_reducer_frontier_reset_detect_memo_for_testing();
+
+        STM_CHECK("K9: rowless hole below coins frontier, no body on disk",
+                  delete_height(db, "script_validate_log", A + 2) &&
+                  delete_height(db, "proof_validate_log", A + 2) &&
+                  seed_coins_applied(db, A + 3));
+
+        struct stage_reducer_frontier_reconcile_result dry;
+        STM_CHECK("K9: dry-run DETECTS the rowless hole",
+                  stage_reducer_frontier_reconcile_light_needed(db, &fx.ms,
+                                                                &dry) &&
+                  dry.stale_script_repair_height == A + 2);
+
+        /* APPLY: the detector matched (height set) but HONESTLY DEFERRED — the
+         * canonical body is unreadable, so it never rewinds a cursor or writes a
+         * verdict for the rowless hole (stale_script_repaired stays false). Any
+         * incidental tip_finalize clamp is a separate, legitimate repair; it does
+         * NOT fake-fill the hole. */
+        struct stage_reducer_frontier_reconcile_result rr;
+        STM_CHECK("K9: apply pass succeeds",
+                  stage_reducer_frontier_reconcile_light(db, &fx.ms, &rr));
+        STM_CHECK("K9: detector matched but honestly DEFERRED (no fake heal)",
+                  rr.stale_script_repair_height == A + 2 &&
+                  !rr.stale_script_repaired);
+        STM_CHECK("K9: rowless hole NOT filled + script/proof cursors not rewound",
+                  count_range(db, "script_validate_log", A + 2, A + 3) == 0 &&
+                  count_range(db, "proof_validate_log", A + 2, A + 3) == 0 &&
+                  cursor_value(db, "script_validate") == A + 4 &&
+                  cursor_value(db, "proof_validate") == A + 4);
+
+        /* The ladder still engages its always-terminating rung and stays armed —
+         * a deferred rowless hole is handed forward, never a crash-loop. */
+        STM_CHECK("K9: ladder engages the terminating rung + stays armed",
+                  arm_and_run_rederive(&fx, "k9_absent_no_body", NULL) !=
+                      STICKY_RUNG_COUNT &&
+                  sticky_escalator_test_armed());
 
         teardown_fixture(&fx);
     }
