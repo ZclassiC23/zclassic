@@ -4777,24 +4777,28 @@ static int t_boot_shutdown_persistence_order_contract(void)
 {
     int failures = 0;
     char *buf = NULL;
-    TEST("shutdown persists block index after network quiesce") {
+    TEST("shutdown writes clean marker before the block-index flat save") {
+        /* Durability-first ordering: node.db is WAL-checkpointed + closed, then
+         * the verified-clean marker is written, and ONLY THEN the best-effort
+         * block-index flat save runs. A kill during the slow flat save must not
+         * be able to strand the marker, so the marker write must precede the
+         * flat-save call. (This replaces the older "fast < connman_join"
+         * contract, which required the flat save before the checkpoint.) */
         char path[PATH_MAX];
         ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         char *network_stop = strstr(buf, "zcl_service_kernel_stop_all(&svc->network_kernel);");
-        char *replay_join = strstr(buf, "boot_join_replay_service(svc);");
-        char *coins_flushed = strstr(buf, "Coins cache flushed.");
+        char *wal_checkpoint = strstr(buf, "node_db_wal_checkpoint(svc->node_db)");
+        char *marker = strstr(buf, "boot_shutdown_marker_write_clean(svc->datadir);");
         char *fast = strstr(buf, "shutdown_persist_fast_restart_state(svc);");
-        char *connman_join = strstr(buf, "connman_join(svc->connman);");
         ASSERT(network_stop != NULL);
-        ASSERT(replay_join != NULL);
-        ASSERT(coins_flushed != NULL);
+        ASSERT(wal_checkpoint != NULL);
+        ASSERT(marker != NULL);
         ASSERT(fast != NULL);
-        ASSERT(connman_join != NULL);
-        ASSERT(network_stop < fast);
-        ASSERT(replay_join < fast);
-        ASSERT(coins_flushed < fast);
-        ASSERT(fast < connman_join);
+        /* checkpoint precedes the marker (marker binds a checkpointed DB) */
+        ASSERT(wal_checkpoint < marker);
+        /* marker precedes the slow flat save (durability before optimization) */
+        ASSERT(marker < fast);
         PASS();
     } _test_next:;
     free(buf);

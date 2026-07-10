@@ -51,7 +51,16 @@ RestartSec=5
 RestartSteps=8
 RestartMaxDelaySec=600
 
-ExecStop=/bin/sh -c 'for i in 1 2 3; do /bin/kill -TERM "$MAINPID" 2>/dev/null || exit 0; sleep 2; done'
+# No ExecStop: standard systemd stop is one SIGTERM to the main process, then a
+# TimeoutStopSec wait, then SIGKILL. The node's SIGTERM handler
+# (src/main.c signal_handler) sets the shutdown flag on the first SIGTERM and
+# absorbs every later one idempotently, so the old 3-pulse ExecStop added
+# nothing but moving parts. Durability no longer depends on the stop signal
+# cadence: shutdown WAL-checkpoints node.db and writes the verified-clean
+# marker BEFORE the slow best-effort teardown (see app_shutdown_svc), so a
+# SIGKILL at the TimeoutStopSec deadline can only cost the block-index boot
+# cache, never the marker. (Live/soak units carry the same 3-pulse ExecStop;
+# dropping it there is an owner-gated follow-up.)
 TimeoutStopSec=300
 KillMode=control-group
 
