@@ -1005,6 +1005,24 @@ static int h_zcl_agent_deploy_guard(const struct mcp_request *req,
     return mcp_return_rpc_body(res, body, "agentdeployguard", "mcp.ops");
 }
 
+static int h_zcl_agent_copy_prove(const struct mcp_request *req,
+                                  struct mcp_response *res)
+{
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, json_get_str_or(req->args, "slug", ""));
+    mcp_params_push_str(&p, json_get_str_or(req->args, "src", ""));
+    mcp_params_push_str(&p, json_get_str_or(req->args, "args", ""));
+    mcp_params_push_int(&p, json_get_int_or(req->args, "expect_climb_past", -1));
+    mcp_params_push_int(&p, json_get_int_or(req->args, "deadline_secs", 180));
+    mcp_params_push_bool(&p, json_get_bool_or(req->args, "full", false));
+    mcp_params_push_bool(&p, json_get_bool_or(req->args, "no_run", false));
+    char *params = mcp_params_to_json(&p);
+    char *body = params ? mcp_node_rpc("agentcopyprove", params) : NULL;
+    free(params);
+    return mcp_return_rpc_body(res, body, "agentcopyprove", "mcp.ops");
+}
+
 static int h_zcl_agent_liveness(const struct mcp_request *req,
                                 struct mcp_response *res)
 {
@@ -1521,6 +1539,33 @@ static const struct mcp_param_spec p_agent_deploy_guard[] = {
       "Action to evaluate: canonical-deploy, canonical-restart, deploy, or restart",
       0, 0, 0, 64, NULL, "\"canonical-deploy\"" },
 };
+static const struct mcp_param_spec p_agent_copy_prove[] = {
+    { "slug", MCP_PARAM_STR, true,
+      "Run label; lowercase alnum + '-', <= 64 chars",
+      0, 0, 1, 64, NULL, NULL },
+    { "src", MCP_PARAM_STR, false,
+      "Source datadir to copy FROM; empty uses the script's own default "
+      "(never a caller-chosen destination — the copy target is always "
+      "chosen by the script)",
+      0, 0, 0, 900, NULL, "\"\"" },
+    { "args", MCP_PARAM_STR, false,
+      "Space-separated extra node flags passed through to the copy's node",
+      0, 0, 0, 2000, NULL, "\"\"" },
+    { "expect_climb_past", MCP_PARAM_INT, false,
+      "H* CLIMB gate height the copy must climb strictly past; -1 = unset",
+      -1, 100000000, 0, 0, NULL, "-1" },
+    { "deadline_secs", MCP_PARAM_INT, false,
+      "How long the detached background run watches the tip before "
+      "writing its final status; clamped to 1..3600",
+      1, 3600, 0, 0, NULL, "180" },
+    { "full", MCP_PARAM_BOOL, false,
+      "Copy the whole datadir (blocks/ + snapshot) instead of the light "
+      "cursor set",
+      0, 0, 0, 0, NULL, "false" },
+    { "no_run", MCP_PARAM_BOOL, false,
+      "Snapshot + manifest only; do not launch the node",
+      0, 0, 0, 0, NULL, "false" },
+};
 static const struct mcp_param_spec p_agent_liveness[] = {
     { "mode", MCP_PARAM_STR, false,
       "Detail mode: brief/compact/summary returns bounded counts; full embeds availability methods, supervisor domains, and quality lanes",
@@ -1696,6 +1741,14 @@ static const struct agent_mcp_binding k_agent_mcp_bindings[] = {
     { "agentdeployguard", p_agent_deploy_guard,
       PARAM_COUNT(p_agent_deploy_guard), h_zcl_agent_deploy_guard, 0,
       "{\"action\":\"canonical-deploy\"}" },
+    { "agentcopyprove", p_agent_copy_prove, PARAM_COUNT(p_agent_copy_prove),
+      h_zcl_agent_copy_prove,
+      /* Spawns a node process + copies GBs of datadir; rate-gated like
+       * every other tool that fires off real work (zcl_send,
+       * zcl_invalidateblock, ...). self_test always skips destructive
+       * tools (see mcp_router_dispatch guard above), so no example args
+       * are needed here. */
+      MCP_TOOL_FLAG_DESTRUCTIVE, NULL },
 };
 
 static struct mcp_tool_route

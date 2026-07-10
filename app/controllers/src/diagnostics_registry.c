@@ -9,6 +9,7 @@
  */
 
 #include "platform/time_compat.h"
+#include "controllers/agent_copy_prove_controller.h"
 #include "controllers/block_intake_json.h"
 #include "controllers/diagnostics_controller.h"
 #include "controllers/diagnostics_internal.h"
@@ -591,8 +592,7 @@ static const struct diagnostics_dump_entry g_dumpers[] = {
                      "onion_enabled + onion_address. Diagnoses why the explorer is "
                      "or isn't serving on clearnet" },
     { "bundle_staleness", bundle_staleness_dump_state_json,
-                     "fast-sync starter-pack freshness: seed height, "
-                     "block_index presence, network-tip gap, catch-up estimate, remint recommendation" },
+                     "fast-sync starter-pack freshness: seed height, block_index presence, network-tip gap, catch-up estimate, remint recommendation" },
     { "oracle",      zclassicd_oracle_dump_state_json,
                      "zclassicd oracle: drift-probe stats + RPC config" },
     { "header_probe", header_probe_dump_state_json,
@@ -610,15 +610,13 @@ static const struct diagnostics_dump_entry g_dumpers[] = {
     { "rolling_anchor", rolling_anchor_dump_state_json,
                      "rolling SHA3 anchor extension: runtime windows past compile-time prefix" },
     { "seal", seal_dump_state_json,
-                     "seal ring (last 4): candidate/ratified state seals — height, "
-                     "coins_sha3, utxo_count, supply, block_hash, ratified, sealed_at, "
-                     "self_sha3 valid" },
+                     "seal ring (last 4): candidate/ratified state seals — height, coins_sha3, "
+                     "utxo_count, supply, block_hash, ratified, sealed_at, self_sha3 valid" },
     { "progress",    progress_store_dump_state_json,
                      "progress.kv: open/path/stage_cursor row count" },
     { "refold",      refold_progress_dump_state_json,
-                     "refold/mint mode: in_progress + from_anchor cached "
-                     "flags, compiled trusted_anchor, durable progress.kv keys "
-                     "(durable_in_progress/from_anchor), from_anchor_target_tip" },
+                     "refold/mint mode: in_progress + from_anchor cached flags, compiled trusted_anchor, "
+                     "durable progress.kv keys (durable_in_progress/from_anchor), from_anchor_target_tip" },
     { "reducer_frontier", reducer_frontier_dump_state_json,
                      "reducer L0 authority: H*, served_floor, stage cursors, "
                      "success-checked frontiers, coins frontier, first "
@@ -721,9 +719,11 @@ static const struct diagnostics_dump_entry g_dumpers[] = {
                      "WAL/ANALYZE/VACUUM worker: last-run times + durations, "
                      "total runs/failures, last error" },
     { "sapling_checkpoint", sapling_checkpoint_dump_state_json,
-                     "flat-file Sapling note-commitment tree cache: periodic "
-                     "write height/count/fails + boot load outcome "
-                     "(absent/loaded_verified/discarded)" },
+                     "flat-file Sapling note-commitment tree cache: periodic write "
+                     "height/count/fails + boot load outcome (absent/loaded_verified/discarded)" },
+    { "agent_copy_prove", agent_copy_prove_dump_state_json,
+                     "copy-prove run launched via agentcopyprove: queued/running/done state, verdict, "
+                     "h_star before/after, tip_regression, copy_path (key = the run's slug)" },
 };
 
 int diagnostics_subsystems_csv(char *out, size_t out_sz)
