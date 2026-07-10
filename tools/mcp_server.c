@@ -24,6 +24,7 @@
 #include "mcp/middleware.h"
 #include "mcp/metrics.h"
 #include "mcp/replay.h"
+#include "mcp/baseline.h"
 #include "mcp/controllers.h"
 #include "mcp/rpc_client.h"
 #include "mcp/mcp_notify.h"
@@ -198,6 +199,7 @@ int mcp_server_main(const char *datadir, int rpc_port)
     mcp_middleware_init_global();
     mcp_metrics_init();
     mcp_replay_init();
+    mcp_baseline_init();
 
     bool notify_started = false;
     const char *notify_env = getenv("ZCL_MCP_NOTIFY");

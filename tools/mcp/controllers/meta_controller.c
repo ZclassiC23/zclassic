@@ -7,12 +7,16 @@
  *   zcl_tools_list — dump the routing table as JSON
  *   zcl_self_test  — call every tool with safe defaults, report pass/fail
  *   zcl_logtail    — tail the structured event log, optional domain filter
+ *   zcl_metrics_baseline_{set,list,diff} — label a metrics snapshot and
+ *     diff it against the live snapshot ("what changed since X"); see
+ *     tools/mcp/baseline.c
  */
 
 #include "../controllers.h"
 #include "../router.h"
 #include "../rpc_client.h"
 #include "../metrics.h"
+#include "../baseline.h"
 
 #include "json/json.h"
 #include "net/peer_scoring.h"
@@ -367,6 +371,128 @@ static int h_zcl_metrics_reset(const struct mcp_request *req,
     return 0;
 }
 
+/* ── Metrics baseline (labeled snapshot + diff) ──────────────────
+ *
+ * zcl_metrics_baseline_set labels the CURRENT metrics render (the
+ * same data zcl_metrics dumps) and stores it in a 16-entry ring
+ * (tools/mcp/baseline.c). zcl_metrics_baseline_diff compares a
+ * chosen baseline against a freshly rendered live snapshot and
+ * returns only the numeric leaves that changed — "what changed in
+ * the last hour" answered by set-then-diff, or set-once and let
+ * zcl_admin's `since` resolve the nearest baseline automatically. */
+
+static const struct mcp_param_spec p_baseline_set[] = {
+    { "label", MCP_PARAM_STR, false,
+      "Optional label for this snapshot; auto-generated (\"b<seq>\") "
+      "when omitted. Re-using a label does not error — the newest "
+      "entry with that label wins on lookup.",
+      0, 0, 0, MCP_BASELINE_LABEL_MAX - 1, NULL, NULL },
+};
+
+static int h_zcl_metrics_baseline_set(const struct mcp_request *req,
+                                       struct mcp_response *res)
+{
+    const char *label = json_get_str_or(req->args, "label", NULL);
+
+    char assigned[MCP_BASELINE_LABEL_MAX];
+    uint64_t ts_us = 0;
+    if (!mcp_baseline_set(label, assigned, sizeof(assigned), &ts_us)) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message),
+                 "baseline capture failed (metrics render returned empty)");
+        LOG_ERR("mcp.meta", "mcp_baseline_set failed for label=%s",
+                label ? label : "(auto)");
+    }
+
+    struct json_value root;
+    json_init(&root);
+    json_set_object(&root);
+    json_push_kv_bool(&root, "ok", true);
+    json_push_kv_str(&root, "label", assigned);
+    json_push_kv_int(&root, "timestamp_us", (int64_t)ts_us);
+    json_push_kv_int(&root, "count", (int64_t)mcp_baseline_count());
+    json_push_kv_int(&root, "ring_size", MCP_BASELINE_RING_SIZE);
+
+    size_t need = json_write(&root, NULL, 0);
+    char *out = zcl_malloc(need + 1, "baseline_set_body");
+    if (!out) {
+        json_free(&root);
+        return mcp_res_set_oom(res, need + 1, "mcp.meta",
+                               "baseline set response");
+    }
+    json_write(&root, out, need + 1);
+    json_free(&root);
+    res->body = out;
+    return 0;
+}
+
+static int h_zcl_metrics_baseline_list(const struct mcp_request *req,
+                                        struct mcp_response *res)
+{
+    (void)req;
+    char *out = mcp_baseline_list_json();
+    if (!out)
+        return mcp_res_set_oom(res, 0, "mcp.meta", "baseline list response");
+    res->body = out;
+    return 0;
+}
+
+static const struct mcp_param_spec p_baseline_diff[] = {
+    { "label", MCP_PARAM_STR, false,
+      "Diff against the most recent baseline with this exact label.",
+      0, 0, 0, MCP_BASELINE_LABEL_MAX - 1, NULL, NULL },
+    { "since", MCP_PARAM_INT, false,
+      "Diff against the most recent baseline captured at or before this "
+      "unix-seconds timestamp. Ignored when \"label\" is given; when "
+      "neither is given, diffs against the most recently set baseline.",
+      0, INT32_MAX, 0, 0, NULL, NULL },
+};
+
+static int h_zcl_metrics_baseline_diff(const struct mcp_request *req,
+                                        struct mcp_response *res)
+{
+    const char *label = json_get_str_or(req->args, "label", NULL);
+    int64_t since = json_get_int_or(req->args, "since", 0);
+
+    int idx = -1;
+    if (label && label[0]) {
+        idx = mcp_baseline_find(label);
+        if (idx < 0) {
+            res->error = MCP_ERR_HANDLER_FAILED;
+            snprintf(res->error_message, sizeof(res->error_message),
+                     "no baseline with label \"%s\"; call "
+                     "zcl_metrics_baseline_set or zcl_metrics_baseline_list",
+                     label);
+            LOG_ERR("mcp.meta", "baseline label not found: %s", label);
+        }
+    } else if (since > 0) {
+        idx = mcp_baseline_find_nearest_before((uint64_t)since * 1000000ULL);
+        if (idx < 0) {
+            res->error = MCP_ERR_HANDLER_FAILED;
+            snprintf(res->error_message, sizeof(res->error_message),
+                     "no baseline at or before since=%lld; call "
+                     "zcl_metrics_baseline_set first", (long long)since);
+            LOG_ERR("mcp.meta", "no baseline before since=%lld",
+                    (long long)since);
+        }
+    } else {
+        idx = mcp_baseline_latest();
+        if (idx < 0) {
+            res->error = MCP_ERR_HANDLER_FAILED;
+            snprintf(res->error_message, sizeof(res->error_message),
+                     "no baselines recorded yet; call "
+                     "zcl_metrics_baseline_set first");
+            LOG_ERR("mcp.meta", "baseline diff requested with an empty ring");
+        }
+    }
+
+    char *out = mcp_baseline_diff_json(idx);
+    if (!out)
+        return mcp_res_set_oom(res, 0, "mcp.meta", "baseline diff response");
+    res->body = out;
+    return 0;
+}
+
 /* zcl_rpc_report — HTTP RPC middleware summary.
  * Live config + stat counters + tracked IPs + active bans from the
  * global rpc_http_middleware registered by httpserver.c. The report
@@ -439,10 +565,19 @@ static int h_zcl_consensus_report(const struct mcp_request *req,
  * zcl_admin with no live RPC backend and still get back a parseable
  * document.
  *
- * The `since` parameter is accepted for API stability but currently
- * has no runtime effect: the nested counters are cumulative since
- * boot, not windowed.  A future session can add a baseline-snapshot
- * layer to make `since` meaningful.
+ * The `since` parameter resolves to the nearest labeled metrics
+ * baseline captured at or before that unix-seconds timestamp (see
+ * tools/mcp/baseline.c) and embeds its delta view under
+ * "since_baseline" — the nested kpi/peer_report/rpc_report counters
+ * stay cumulative-since-boot (unwinding THEM into a windowed view
+ * would mean re-deriving each of their own internal tallies, which
+ * belongs in each subsystem, not here); the metrics delta is the
+ * general-purpose "what changed" answer for the whole MCP counter
+ * surface. When no baseline exists at/before `since` (including
+ * since=0, the default), "since_baseline" is a small explanatory
+ * object pointing at zcl_metrics_baseline_set / _diff rather than a
+ * bare null — honest about why the window is missing instead of
+ * silently omitting it.
  */
 
 /* Write `body` into dst as an embedded JSON value.  If body is NULL,
@@ -605,6 +740,16 @@ static int h_zcl_admin(const struct mcp_request *req,
 {
     int64_t since = json_get_int_or(req->args, "since", 0);
 
+    /* Resolve `since` to the nearest metrics baseline at or before
+     * that unix-seconds timestamp, if any. Computed up front so the
+     * dispatch/free block below stays a single symmetric list. */
+    char *since_diff = NULL;
+    if (since > 0) {
+        int idx = mcp_baseline_find_nearest_before((uint64_t)since * 1000000ULL);
+        if (idx >= 0)
+            since_diff = mcp_baseline_diff_json(idx);
+    }
+
     /* Dispatch each sub-tool.  Each returns a malloc'd body or an
      * error envelope — we treat both identically via embed_or_null. */
     char *kpi   = mcp_router_dispatch("zcl_kpi",        NULL);
@@ -623,7 +768,7 @@ static int h_zcl_admin(const struct mcp_request *req,
     size_t cap = 131072;
     char *out = zcl_malloc(cap, "admin_body");
     if (!out) {
-        free(kpi); free(peer); free(rpc); free(events);
+        free(kpi); free(peer); free(rpc); free(events); free(since_diff);
         return mcp_res_set_oom(res, cap, "mcp.meta", "admin dashboard response");
     }
     size_t pos = 0;
@@ -637,6 +782,18 @@ static int h_zcl_admin(const struct mcp_request *req,
     pos += embed_or_null(rpc,   out + pos, cap - pos);
     pos += (size_t)snprintf(out + pos, cap - pos, ",\"events\":");
     pos += embed_or_null(events, out + pos, cap - pos);
+
+    pos += (size_t)snprintf(out + pos, cap - pos, ",\"since_baseline\":");
+    if (since <= 0) {
+        pos += (size_t)snprintf(out + pos, cap - pos, "null");
+    } else if (since_diff) {
+        pos += embed_or_null(since_diff, out + pos, cap - pos);
+    } else {
+        pos += (size_t)snprintf(out + pos, cap - pos,
+            "{\"error\":\"no baseline at or before since=%lld; call "
+            "zcl_metrics_baseline_set, or diff explicitly via "
+            "zcl_metrics_baseline_diff\"}", (long long)since);
+    }
 
     /* ── Alerts: simple threshold heuristics over the embedded JSON
      * counters.  Anything flagged as a non-zero problem gets a
@@ -679,7 +836,7 @@ static int h_zcl_admin(const struct mcp_request *req,
     #undef PUSH_ALERT
     pos += (size_t)snprintf(out + pos, cap - pos, "]}");
 
-    free(kpi); free(peer); free(rpc); free(events);
+    free(kpi); free(peer); free(rpc); free(events); free(since_diff);
 
     if (pos < cap) out[pos] = '\0';
     res->body = out;
@@ -697,10 +854,11 @@ static const struct mcp_param_spec p_logtail[] = {
 };
 
 static const struct mcp_param_spec p_admin[] = {
-    /* Accepted for API stability; currently echoed back but the
-     * embedded counters are cumulative since boot. */
     { "since", MCP_PARAM_INT, false,
-      "Unix-seconds baseline for future windowed counters (unused).",
+      "Unix-seconds timestamp: resolves to the nearest metrics baseline "
+      "at or before it and embeds its delta view as \"since_baseline\" "
+      "(see zcl_metrics_baseline_set/_diff). The nested kpi/peer_report/"
+      "rpc_report counters stay cumulative-since-boot regardless.",
       0, INT32_MAX, 0, 0, NULL, "0" },
 };
 
@@ -730,6 +888,24 @@ static const struct mcp_tool_route k_routes[] = {
       "Reset all MCP metric counters. Destructive — gated by the "
       "middleware rate limiter.",
       NULL, 0, h_zcl_metrics_reset, .flags = MCP_TOOL_FLAG_DESTRUCTIVE },
+    { "zcl_metrics_baseline_set", "ops",
+      "Label the current metrics snapshot (the same data zcl_metrics "
+      "dumps) and store it in a 16-entry ring for later diffing. "
+      "Optional label; auto-generated (\"b<seq>\") when omitted.",
+      p_baseline_set, PARAM_COUNT(p_baseline_set),
+      h_zcl_metrics_baseline_set, 0, NULL },
+    { "zcl_metrics_baseline_list", "ops",
+      "List every live metrics baseline (label, capture time, age, "
+      "captured byte size), oldest to newest.",
+      NULL, 0, h_zcl_metrics_baseline_list, 0, NULL },
+    { "zcl_metrics_baseline_diff", "ops",
+      "Diff a labeled metrics baseline against the live snapshot: "
+      "\"what changed since X\" in one call. Select the baseline by "
+      "\"label\", or by \"since\" (nearest baseline at or before a "
+      "unix-seconds timestamp), or omit both for the most recent "
+      "baseline. Returns only the numeric leaves whose value changed.",
+      p_baseline_diff, PARAM_COUNT(p_baseline_diff),
+      h_zcl_metrics_baseline_diff, 0, NULL },
     { "zcl_rpc_report", "ops",
       "HTTP RPC middleware report: live rate-limit / ban config plus "
       "allowed/rate-limited/banned/auth-failure counters and current "
