@@ -175,6 +175,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(condition_engine) X(utxo_activation_paused) \
     X(sync_watchdog_conditions) X(sticky_conditions) X(sticky_escalator) \
     X(stall_totality_matrix) \
+    X(blocker_meta_detector) \
     X(peer_snapshot_conditions) \
     X(snapshot_receive_stalled_condition) \
     X(snapshot_negotiation_stalled_condition) X(snapshot_failed_reset_condition) \
