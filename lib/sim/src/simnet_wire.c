@@ -485,6 +485,22 @@ bool simnet_wire_set_link_bandwidth(struct simnet_wire *wire, size_t peer_id,
     return true;
 }
 
+bool simnet_wire_inject_message(struct simnet_wire *wire, size_t peer_id,
+                                const char *command, const uint8_t *payload,
+                                size_t payload_len)
+{
+    if (!wire || peer_id >= wire->peer_count || !command ||
+        (!payload && payload_len > 0))
+        LOG_FAIL("simnet.wire", "invalid inject peer=%zu len=%zu", peer_id,
+                 payload_len);
+    /* Open the ingress link so the frame is deliverable even for an
+     * ingress-only adversary slot that never ran a handshake — mirrors the
+     * direct link.open set in simnet_wire_start_honest_peer(). */
+    wire->peers[peer_id].link.open = true;
+    return simnet_wire_enqueue_frame(wire, peer_id, command, payload,
+                                     payload_len);
+}
+
 bool simnet_wire_deliver_raw_now(struct simnet_wire *wire, size_t peer_id,
                                  const uint8_t *bytes, size_t len)
 {
