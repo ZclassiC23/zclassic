@@ -2871,6 +2871,16 @@ new-controller:
 	@test -n "$(NAME)" || { echo "usage: make new-controller NAME=foo"; exit 1; }
 	@./tools/new_shape.sh controller "$(NAME)"
 
+#   make scenario NAME=foo -> tools/sim/scenarios/foo.scenario (chaos DSL
+#   skeleton: mode simnet + a small honest cluster + a mint/relay/deliver
+#   round + the standard simnet_converged/simnet_tip_monotonic expects; see
+#   docs/CHAOS_HARNESS.md. Picked up automatically by `make chaos` — no
+#   registry edit needed.
+.PHONY: scenario
+scenario:
+	@test -n "$(NAME)" || { echo "usage: make scenario NAME=foo_bar"; exit 1; }
+	@./tools/new_shape.sh scenario "$(NAME)"
+
 # Gate E3 — shape source files include their shape contract header
 # (conditions -> framework/condition.h, models -> models/ header,
 # supervisors -> supervisor header). HARD: the tree already complies.

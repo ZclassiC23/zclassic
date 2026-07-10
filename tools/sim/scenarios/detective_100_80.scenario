@@ -1,0 +1,131 @@
+# Flagship byzantine-role scenario: 100 nodes, 80% honest.
+#
+# Demonstrates the detective-node thesis: an honest majority converges to the
+# longest VALID chain even while a byzantine minority is actively feeding
+# forged blocks into the same fully-connected network. `simnet_nodes 100
+# honest=800` marks ~20% of the 99 non-zero-indexed nodes byzantine (node 0
+# is always honest, per docs/CHAOS_HARNESS.md); a byzantine node's
+# `simnet_mint` forges an INVALID block (bad merkle root / bad coinbase
+# amount / negative or overflowing output) instead of mining honestly. Every
+# forged block still flows through `simnet_relay`/`simnet_deliver` exactly
+# like a real one, so this exercises the real accept path: honest peers must
+# reject it on delivery (real `connect_block` validation, not a scenario-side
+# skip), while the real chain built by the honest miners keeps advancing.
+#
+# The mint/relay/deliver rounds below cycle through the first 30 node
+# indices one at a time. Whichever of those happen to be byzantine (drawn
+# deterministically from this seed) produce a rejected forged block that
+# does not touch anyone's live chain; whichever are honest extend the one
+# real chain that every node — honest AND byzantine — eventually converges
+# on. The scenario does not need to know in advance which indices are
+# byzantine: the DSL routes `simnet_mint` through the right builder either
+# way (see `handle_simnet_mint` in tools/sim/chaos.c).
+
+seed 0xD37EC7100080BEEF
+mode simnet
+simnet_nodes 100 honest=800
+
+simnet_mint node=0
+simnet_relay node=0
+simnet_deliver
+expect simnet_converged == 1
+expect simnet_tip_monotonic == 1
+
+simnet_mint node=1
+simnet_relay node=1
+simnet_deliver
+simnet_mint node=2
+simnet_relay node=2
+simnet_deliver
+simnet_mint node=3
+simnet_relay node=3
+simnet_deliver
+simnet_mint node=4
+simnet_relay node=4
+simnet_deliver
+simnet_mint node=5
+simnet_relay node=5
+simnet_deliver
+simnet_mint node=6
+simnet_relay node=6
+simnet_deliver
+simnet_mint node=7
+simnet_relay node=7
+simnet_deliver
+simnet_mint node=8
+simnet_relay node=8
+simnet_deliver
+simnet_mint node=9
+simnet_relay node=9
+simnet_deliver
+simnet_mint node=10
+simnet_relay node=10
+simnet_deliver
+
+expect simnet_converged == 1
+expect simnet_tip_monotonic == 1
+
+simnet_mint node=11
+simnet_relay node=11
+simnet_deliver
+simnet_mint node=12
+simnet_relay node=12
+simnet_deliver
+simnet_mint node=13
+simnet_relay node=13
+simnet_deliver
+simnet_mint node=14
+simnet_relay node=14
+simnet_deliver
+simnet_mint node=15
+simnet_relay node=15
+simnet_deliver
+simnet_mint node=16
+simnet_relay node=16
+simnet_deliver
+simnet_mint node=17
+simnet_relay node=17
+simnet_deliver
+simnet_mint node=18
+simnet_relay node=18
+simnet_deliver
+simnet_mint node=19
+simnet_relay node=19
+simnet_deliver
+simnet_mint node=20
+simnet_relay node=20
+simnet_deliver
+simnet_mint node=21
+simnet_relay node=21
+simnet_deliver
+simnet_mint node=22
+simnet_relay node=22
+simnet_deliver
+simnet_mint node=23
+simnet_relay node=23
+simnet_deliver
+simnet_mint node=24
+simnet_relay node=24
+simnet_deliver
+simnet_mint node=25
+simnet_relay node=25
+simnet_deliver
+simnet_mint node=26
+simnet_relay node=26
+simnet_deliver
+simnet_mint node=27
+simnet_relay node=27
+simnet_deliver
+simnet_mint node=28
+simnet_relay node=28
+simnet_deliver
+simnet_mint node=29
+simnet_relay node=29
+simnet_deliver
+
+# Final convergence proof: every one of the 100 nodes — including whichever
+# ~20 turned out byzantine — has an identical tip hash + coins-view digest,
+# and no node's height ever regressed across the whole run.
+expect simnet_converged == 1
+expect simnet_tip_monotonic == 1
+expect no_crash

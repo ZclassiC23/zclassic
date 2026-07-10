@@ -1,0 +1,77 @@
+# Byzantine-role edge case: honest=510 permille — a bare majority (just over
+# half) of a 20-node cluster is honest, the rest byzantine. This is the
+# tightest ratio the DSL supports where "the honest majority converges" is
+# still the operative claim (below 500 there is no honest majority at all).
+# Node 0 is always honest (docs/CHAOS_HARNESS.md), so the real chain always
+# has at least one legitimate origin to build from.
+#
+# Mints are driven across a wide sample of node indices (0..17) so close to
+# half of them hit byzantine nodes at this ratio — each such attempt forges
+# an INVALID block that must be rejected by every honest peer on delivery
+# without corrupting anyone's chain state, while the honest half keeps the
+# one real chain advancing. Final convergence must hold across all 20 nodes.
+
+seed 0x51100E17
+mode simnet
+simnet_nodes 20 honest=510
+
+simnet_mint node=0
+simnet_relay node=0
+simnet_deliver
+expect simnet_converged == 1
+
+simnet_mint node=1
+simnet_relay node=1
+simnet_deliver
+simnet_mint node=2
+simnet_relay node=2
+simnet_deliver
+simnet_mint node=3
+simnet_relay node=3
+simnet_deliver
+simnet_mint node=4
+simnet_relay node=4
+simnet_deliver
+simnet_mint node=5
+simnet_relay node=5
+simnet_deliver
+simnet_mint node=6
+simnet_relay node=6
+simnet_deliver
+simnet_mint node=7
+simnet_relay node=7
+simnet_deliver
+simnet_mint node=8
+simnet_relay node=8
+simnet_deliver
+simnet_mint node=9
+simnet_relay node=9
+simnet_deliver
+simnet_mint node=10
+simnet_relay node=10
+simnet_deliver
+simnet_mint node=11
+simnet_relay node=11
+simnet_deliver
+simnet_mint node=12
+simnet_relay node=12
+simnet_deliver
+simnet_mint node=13
+simnet_relay node=13
+simnet_deliver
+simnet_mint node=14
+simnet_relay node=14
+simnet_deliver
+simnet_mint node=15
+simnet_relay node=15
+simnet_deliver
+simnet_mint node=16
+simnet_relay node=16
+simnet_deliver
+simnet_mint node=17
+simnet_relay node=17
+simnet_deliver
+
+expect simnet_converged == 1
+expect simnet_tip_monotonic == 1
+expect no_crash

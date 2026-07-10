@@ -1,0 +1,87 @@
+# Byzantine-role scenario: 66% honest cluster, composed with a real
+# partition/heal — proves the two fault classes compose. honest=660 permille
+# marks a minority of the 12 nodes byzantine (node 0 always honest, per
+# docs/CHAOS_HARNESS.md). Phase 1 mints across every node index in the fully
+# connected network: whichever indices are byzantine forge invalid blocks
+# that every peer must reject on delivery; whichever are honest extend the
+# one real chain. Phase 2 severs node 6 from node 0 and keeps node 0 (always
+# honest) mining in isolation, so node 6 falls behind the real chain while
+# the byzantine minority is still, separately, part of the already-converged
+# cluster. Healing node 6 must catch it up exactly, and the run-wide
+# convergence check at the end must hold across ALL 12 nodes.
+#
+# Note: only node 0 mints during the partition window (matching
+# simnet_partition_heal.scenario's proven pattern) — a peer OTHER than the
+# partitioned pair minting during the window would relay a block whose
+# parent is the very block node 6 is missing, producing an unresolvable
+# "delivery queue stuck" orphan at node 6 until the heal. Isolating the mint
+# source to the anchor node during the window keeps the causal chain sane;
+# the byzantine-role mixing happens in phase 1, before any partition exists.
+
+seed 0x66B0BEEF12
+mode simnet
+simnet_nodes 12 honest=660
+
+# Phase 1: open-network byzantine-mixed round. Whichever of these 12 indices
+# are byzantine forge-and-get-rejected; whichever are honest build the one
+# real chain everyone converges on.
+simnet_mint node=0
+simnet_relay node=0
+simnet_deliver
+simnet_mint node=1
+simnet_relay node=1
+simnet_deliver
+simnet_mint node=2
+simnet_relay node=2
+simnet_deliver
+simnet_mint node=3
+simnet_relay node=3
+simnet_deliver
+simnet_mint node=4
+simnet_relay node=4
+simnet_deliver
+simnet_mint node=5
+simnet_relay node=5
+simnet_deliver
+simnet_mint node=6
+simnet_relay node=6
+simnet_deliver
+simnet_mint node=7
+simnet_relay node=7
+simnet_deliver
+simnet_mint node=8
+simnet_relay node=8
+simnet_deliver
+simnet_mint node=9
+simnet_relay node=9
+simnet_deliver
+simnet_mint node=10
+simnet_relay node=10
+simnet_deliver
+simnet_mint node=11
+simnet_relay node=11
+simnet_deliver
+
+expect simnet_converged == 1
+expect simnet_tip_monotonic == 1
+
+# Phase 2: sever node 6 from node 0 and keep node 0 (always honest) mining
+# in isolation — node 6 falls behind the real chain.
+simnet_partition a=0 b=6
+
+simnet_mint node=0
+simnet_relay node=0
+simnet_deliver
+simnet_mint node=0
+simnet_relay node=0
+simnet_deliver
+
+simnet_heal a=0 b=6
+simnet_deliver
+
+# Final convergence proof: node 6 caught all the way up, every one of the 12
+# nodes (byzantine ones included) has an identical tip + coins-view digest,
+# and no node's height ever regressed across the whole run.
+expect simnet_converged == 1
+expect simnet_tip_monotonic == 1
+expect no_crash

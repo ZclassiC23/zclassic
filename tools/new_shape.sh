@@ -19,11 +19,16 @@
 #                  cursor reference)
 #   controller -> app/controllers/src/<name>_controller.c
 #                 (parse -> one service call -> return; route table)
+#   scenario   -> tools/sim/scenarios/<name>.scenario
+#                 (chaos DSL skeleton: mode simnet + a small honest cluster +
+#                  a mint/relay/deliver round + the standard convergence
+#                  expects; see docs/CHAOS_HARNESS.md and `make chaos`)
 #
 # Usage (normally via the Makefile targets, but callable directly):
 #   tools/new_shape.sh <shape> <NAME>
-#     shape = condition | model | job | controller
+#     shape = condition | model | job | controller | scenario
 #     NAME  = lowercase snake_case entity, e.g. utxo_drift_detected, peer
+#             (for scenario: the .scenario basename, e.g. detective_80_honest)
 #
 # It refuses to overwrite an existing file. After writing it prints the one
 # manual wiring step (add to the shape's registry) — the generator never edits
@@ -458,10 +463,58 @@ NEXT — wire the controller into RPC registration:
 EOF
 }
 
+emit_scenario() {
+    local out="$ROOT/tools/sim/scenarios/${NAME}.scenario"
+    guard_new "$out"
+    mkdir -p "$(dirname "$out")"
+    cat > "$out" <<EOF
+# Scenario: ${NAME}
+#
+# TODO: describe what this scenario demonstrates — which invariant, which
+# honest/byzantine mix, which fault (partition/heal, reorg, ...), and what
+# convergence property is being proven. See docs/CHAOS_HARNESS.md and the
+# checked-in examples (simnet_partition_heal.scenario,
+# simnet_competing_reorg.scenario, detective_100_80.scenario) for the
+# real-cluster (mode simnet) verb set:
+#   simnet_nodes N [honest=<permille>]   create an N-node cluster; permille
+#                                         0..1000 (1000=all honest, default);
+#                                         node 0 is always honest
+#   simnet_mint node=I                   mint on node I (byzantine nodes
+#                                         forge an invalid block instead)
+#   simnet_relay node=I                  broadcast node I's un-relayed mints
+#   simnet_deliver                       drain the deterministic delivery queue
+#   simnet_partition a=I b=J             sever the I<->J link
+#   simnet_heal a=I b=J                  restore I<->J + resync both ways
+
+seed 0xDEADBEEF00000000
+mode simnet
+simnet_nodes 4 honest=1000
+
+simnet_mint node=0
+simnet_relay node=0
+simnet_deliver
+
+expect simnet_converged == 1
+expect simnet_tip_monotonic == 1
+expect no_crash
+EOF
+    echo "wrote $out"
+    cat <<EOF
+
+NEXT — fill in the TODO header, tune simnet_nodes/honest= and the
+mint/relay/deliver/partition/heal sequence for what you're proving, then
+run it standalone:
+  build/bin/zclassic23-chaos --scenario="$out"
+It is picked up automatically by \`make chaos\` (every
+tools/sim/scenarios/*.scenario must pass) — no registry edit needed.
+EOF
+}
+
 case "$SHAPE" in
     condition)  emit_condition ;;
     model)      emit_model ;;
     job)        emit_job ;;
     controller) emit_controller ;;
-    *) die "unknown shape '$SHAPE' (expected: condition | model | job | controller)" ;;
+    scenario)   emit_scenario ;;
+    *) die "unknown shape '$SHAPE' (expected: condition | model | job | controller | scenario)" ;;
 esac
