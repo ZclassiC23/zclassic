@@ -73,6 +73,7 @@
 #include "sim/simnet_byzantine.h"
 #include "sim/simnet_cluster.h"
 #include "util/blocker.h"
+#include "util/safe_alloc.h"
 
 #include <errno.h>
 #include <inttypes.h>
@@ -81,6 +82,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 /* ── harness scaffolding ───────────────────────────────────────────── */
@@ -158,8 +160,20 @@ static void fz_save_capsule(uint64_t seed)
 
 /* ── the scenario runner ───────────────────────────────────────────── */
 
-#define FZ_MAX_NODES  4
-#define FZ_MAX_HASHES 64   /* rounds(<=5) * mints/round(<=3) = <=15 per node */
+/* FZ_MAX_NODES is the capacity of the per-node chain array in the default
+ * scenario (and is available to any future large-N scenario). It is NO LONGER
+ * the node-count draw ceiling: the default sweep draws from
+ * FZ_DEFAULT_NODE_DRAW_MAX so raising this does not slow `make ci`. The opt-in
+ * perf smoke (ZCL_SIMNET_PERF) allocates its own per-node state and can go
+ * wider than FZ_MAX_NODES. */
+#define FZ_MAX_NODES  32
+/* Per-node hash capacity for the default scenario. The default per-node max is
+ * rounds(<=5) * mints/round(<=3) = <=15 blocks — 64 leaves ~4x headroom and is
+ * independent of node count (the round/mint draws do not scale with nodes). */
+#define FZ_MAX_HASHES 64
+/* Node-count ceiling for the DEFAULT sweep's per-seed draw. Kept small so the
+ * `make ci` sweep stays fast regardless of FZ_MAX_NODES. */
+#define FZ_DEFAULT_NODE_DRAW_MAX 4
 
 struct fz_node_chain {
     struct uint256 hashes[FZ_MAX_HASHES];
@@ -194,7 +208,7 @@ static bool fz_run_scenario(uint64_t seed,
                             bool *out_converged)
 {
     uint64_t rng = seed;                       /* schedule stream */
-    size_t node_count = (size_t)sm_range(&rng, 2, FZ_MAX_NODES);
+    size_t node_count = (size_t)sm_range(&rng, 2, FZ_DEFAULT_NODE_DRAW_MAX);
 
     struct simnet_cluster *cluster = simnet_cluster_init(node_count, seed);
     if (!cluster)
@@ -335,6 +349,143 @@ static void fz_teeth(void)
     simnet_cluster_free(c);
 }
 
+/* ── opt-in perf smoke: the scheduler is O(N log N), not O(N^2) ──────── */
+
+/* Wall-clock milliseconds from a raw monotonic read. A cluster installs its
+ * seed-tape virtual clock over the platform clock_iface, so clock_now_*() is
+ * virtual time during a run; this benchmark needs REAL elapsed time, so it
+ * reads the syscall clock directly (the tape hook does not intercept a direct
+ * clock_gettime). */
+static double perf_wall_ms(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC, &ts);  // platform-ok:simnet-perf-smoke-realtime
+    return (double)ts.tv_sec * 1000.0 + (double)ts.tv_nsec / 1.0e6;
+}
+
+/* One N-node scenario: every node mints one block (round 0), then re-relays
+ * its whole chain across `relay_rounds` broadcast rounds and heals. The heavy
+ * axis is the number of QUEUED DELIVERIES per drain (N*(N-1) each round), which
+ * is exactly what the old whole-queue rescan made quadratic. Returns the
+ * delivery fingerprint (via out_fp) and whether all N nodes converged. */
+static bool fz_perf_scenario(size_t n_nodes, int relay_rounds, uint64_t seed,
+                             uint64_t *out_fp, bool *out_converged)
+{
+    struct simnet_cluster *c = simnet_cluster_init(n_nodes, seed);
+    if (!c)
+        return false;
+
+    /* Heap-allocated so N is not bounded by FZ_MAX_NODES / the stack. */
+    struct fz_node_chain *chains =
+        zcl_calloc(n_nodes, sizeof(*chains), "fz_perf_chains");
+    if (!chains) {
+        simnet_cluster_free(c);
+        return false;
+    }
+
+    bool ok = true;
+    for (size_t nnode = 0; nnode < n_nodes && ok; nnode++) {
+        struct uint256 h;
+        if (!simnet_cluster_mint_on(c, nnode, &h))
+            ok = false;
+        else
+            chains[nnode].hashes[chains[nnode].count++] = h;
+    }
+
+    for (int r = 0; r < relay_rounds && ok; r++) {
+        for (size_t nnode = 0; nnode < n_nodes && ok; nnode++) {
+            if (chains[nnode].count > 0 &&
+                !fz_relay_full_chain(c, nnode, &chains[nnode]))
+                ok = false;
+        }
+        if (ok && !simnet_cluster_deliver_pending(c))
+            ok = false;
+    }
+    /* final heal (redundant after the first drain, but proves quiescence). */
+    for (size_t nnode = 0; nnode < n_nodes && ok; nnode++)
+        if (chains[nnode].count > 0 &&
+            !fz_relay_full_chain(c, nnode, &chains[nnode]))
+            ok = false;
+    if (ok && !simnet_cluster_deliver_pending(c))
+        ok = false;
+
+    bool converged = false;
+    if (ok) {
+        struct uint256 tip0;
+        struct utxo_commitment dig0;
+        if (simnet_cluster_tip_hash(c, 0, &tip0) &&
+            simnet_cluster_coins_digest(c, 0, &dig0)) {
+            converged = true;
+            for (size_t nnode = 1; nnode < n_nodes; nnode++) {
+                struct uint256 tn;
+                struct utxo_commitment dn;
+                if (!simnet_cluster_tip_hash(c, nnode, &tn) ||
+                    !simnet_cluster_coins_digest(c, nnode, &dn) ||
+                    !uint256_eq(&tip0, &tn) ||
+                    !utxo_commitment_equal(&dig0, &dn)) {
+                    converged = false;
+                    break;
+                }
+            }
+        }
+    }
+
+    *out_fp = simnet_cluster_delivery_fingerprint(c);
+    *out_converged = converged;
+    free(chains);
+    simnet_cluster_free(c);
+    return ok;
+}
+
+/* Opt-in (ZCL_SIMNET_PERF=1) N=100 smoke test. Not part of the default sweep:
+ * it exists so an O(N^2)-scheduler regression is caught, and to eyeball
+ * before/after wall-clock numbers. Asserts convergence, determinism (same seed
+ * => identical delivery fingerprint), and a LOOSE wall-clock ceiling (generous
+ * enough that ASan/CI variance never trips it, tight enough that a genuine
+ * quadratic blowup at N=100 would). */
+static void fz_perf_smoke(void)
+{
+    if (!getenv("ZCL_SIMNET_PERF")) {
+        printf("simnet_fuzz: perf smoke SKIPPED "
+               "(set ZCL_SIMNET_PERF=1 to run)\n");
+        return;
+    }
+
+    const size_t n_nodes = 100;
+    const int relay_rounds = 6;
+    const uint64_t seed = 0x5152C0FFEE5EED01ULL;
+
+    double t0 = perf_wall_ms();
+    uint64_t fp_a = 0;
+    bool conv_a = false;
+    bool ran_a = fz_perf_scenario(n_nodes, relay_rounds, seed, &fp_a, &conv_a);
+    double wall_ms = perf_wall_ms() - t0;
+
+    /* Determinism: an identical replay must produce the identical fingerprint. */
+    uint64_t fp_b = 0;
+    bool conv_b = false;
+    bool ran_b = fz_perf_scenario(n_nodes, relay_rounds, seed, &fp_b, &conv_b);
+
+    /* Loose ceiling. At N=100 with 6 relay rounds the old whole-queue rescan
+     * was ~1e9+ readiness checks; the heap scheduler is sub-second. A ceiling
+     * of 30 s trips only on a true quadratic regression, not on normal or
+     * ASan-slowed variance. */
+    const double perf_ceiling_ms = 30000.0;
+
+    printf("simnet_fuzz: perf smoke N=%zu relay_rounds=%d wall=%.1f ms "
+           "(loose ceiling %.0f ms) fp=0x%016llx\n",
+           n_nodes, relay_rounds, wall_ms, perf_ceiling_ms,
+           (unsigned long long)fp_a);
+
+    FZ_CHECK("perf: scenario ran to completion", ran_a && ran_b);
+    FZ_CHECK("perf: all N nodes converge (tip + coins digest)",
+             conv_a && conv_b);
+    FZ_CHECK("perf: same seed => identical delivery fingerprint",
+             fp_a == fp_b);
+    FZ_CHECK("perf: drain wall-clock under loose ceiling",
+             wall_ms < perf_ceiling_ms);
+}
+
 /* ── entry point ───────────────────────────────────────────────────── */
 
 int test_simnet_fuzz(void)
@@ -413,6 +564,9 @@ int test_simnet_fuzz(void)
         if (g_failures > fails_before)
             fz_save_capsule(seed);
     }
+
+    /* Opt-in N=100 perf/scale smoke (skipped fast unless ZCL_SIMNET_PERF=1). */
+    fz_perf_smoke();
 
     printf("simnet_fuzz: %d failures (%d seeds)\n", g_failures, seeds);
     return g_failures;
