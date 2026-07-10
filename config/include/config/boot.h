@@ -246,6 +246,17 @@ void boot_refold_staged_reset(struct node_db *ndb);
  * the resume target. */
 void boot_refold_from_anchor_reset(struct node_db *ndb);
 
+/* Read-only probe: is a SHA3-checkpoint-bound anchor snapshot artifact reachable
+ * for boot_refold_from_anchor_reset to load? True iff the compiled SHA3 UTXO
+ * checkpoint exists AND a verified minted snapshot reproduces it (the exact
+ * "usable verified anchor" predicate the reset applies before it trusts a
+ * snapshot). On true, *anchor_height_out (when non-NULL) receives the checkpoint
+ * height. Used by the sticky escalator's terminal refold rung to gate: fire only
+ * when an anchor artifact exists, else name the missing clue. No coins_kv
+ * mutation. */
+bool boot_refold_from_anchor_artifact_available(struct node_db *ndb,
+                                                int32_t *anchor_height_out);
+
 /* -load-snapshot-at-own-height=PATH (impl in config/src/boot_refold_staged.c):
  * EXPLICIT-ONLY recovery loader. Sibling of boot_refold_from_anchor_reset EXCEPT
  * the snapshot is SELF-verified against its OWN header SHA3 (uss_open

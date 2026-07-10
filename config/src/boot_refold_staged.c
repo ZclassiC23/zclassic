@@ -343,6 +343,23 @@ static bool anchor_snapshot_verified_reachable(struct node_db *ndb,
     return ok;
 }
 
+/* Public gate for the runtime refold rung (config/boot.h): the compiled
+ * checkpoint AND its verified minted snapshot must both be reachable so
+ * boot_refold_from_anchor_reset can load a proven anchor set (it FATAL-refuses
+ * otherwise). Reports the checkpoint height so the rung can name the anchor. */
+bool boot_refold_from_anchor_artifact_available(struct node_db *ndb,
+                                                int32_t *anchor_height_out)
+{
+    if (anchor_height_out)
+        *anchor_height_out = -1;
+    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+    if (!cp)
+        return false;
+    if (anchor_height_out)
+        *anchor_height_out = cp->height;
+    return anchor_snapshot_verified_reachable(ndb, cp);
+}
+
 /* uss_iter callback: insert one snapshot record into coins_kv. The caller holds
  * the progress.kv handle in an open BEGIN IMMEDIATE so every coins_kv_add
  * commits atomically with the rest. Stops the iteration (returns false) on a

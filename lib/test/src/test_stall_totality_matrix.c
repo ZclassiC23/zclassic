@@ -68,6 +68,7 @@
 #include "script/script.h"
 #include "services/sticky_escalator.h"
 #include "services/sync_monitor.h"
+#include "storage/boot_auto_refold.h"
 #include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
 #include "storage/utxo_projection.h"
@@ -1073,6 +1074,113 @@ int test_stall_totality_matrix(void)
                       STICKY_RUNG_COUNT &&
                   sticky_escalator_test_armed());
 
+        teardown_fixture(&fx);
+    }
+
+    /* ── A1: RUNG-3 REAL — runtime refold-from-anchor as the escalator's
+     * TERMINAL rung (fail-safe-architecture.md §1 rung 3 / §4 item 5). The
+     * shallower rungs fail-forward on a clean fixture; the deepest rung
+     * (STICKY_RUNG_REFOLD_FROM_ANCHOR) ARMS a durable one-shot
+     * boot_auto_refold_request + requests a self-respawn (both suppressed
+     * in-test) so the fresh boot runs the SAME boot_refold_from_anchor_reset —
+     * automatic end-to-end, honestly named ("armed", never a fake "done"). The
+     * live coins re-seed + H* climb from the anchor is the copy-prove fixture
+     * run (orchestrator-owned); here we pin the ARM and the no-artifact blocker.
+     * R1/R2 drive the REAL ladder to the deepest rung. ──────────────────── */
+
+    /* R1 — an anchor artifact is reachable: the rung ARMS a durable refold and
+     * HOLDS (PROGRESSING) for the restart to consume it. */
+    {
+        struct stm_fixture fx;
+        STM_CHECK("R1: setup fixture", setup_fixture(&fx, "r1_refold_arm"));
+        sqlite3 *db = progress_store_db();
+        STM_CHECK("R1: complete a clean store (shallower rungs find nothing)",
+                  put_tip_log(db, A + 2, 1, &fx.hashes[2]) &&
+                  put_tip_log(db, A + 3, 1, &fx.hashes[3]) &&
+                  seed_coins_applied(db, A + 4) &&
+                  seed_cursor(db, "tip_finalize", A + 3));
+
+        sync_monitor_set_context(NULL, NULL, &fx.ms);
+        sticky_escalator_test_reset();
+        sticky_escalator_set_datadir(fx.dir);
+        sticky_escalator_test_set_suppress_refold_restart(true);
+        sticky_escalator_test_set_refold_artifact_available(1); /* present */
+        stage_reducer_frontier_reset_detect_memo_for_testing();
+        boot_auto_refold_clear(fx.dir);
+
+        sticky_escalator_note_stall("r1_force_refold");
+        int64_t t0 = (int64_t)platform_time_wall_time_t();
+        enum sticky_rung r = STICKY_RUNG_RETRY;
+        int64_t last = t0 + 1;
+        for (int i = 0; i < 40 && r != STICKY_RUNG_REFOLD_FROM_ANCHOR; i++) {
+            last = t0 + 1 + (int64_t)i * 4000;
+            r = sticky_escalator_test_drive(0, last);
+        }
+        STM_CHECK("R1: ladder fails-forward to the DEEPEST refold rung",
+                  r == STICKY_RUNG_REFOLD_FROM_ANCHOR);
+        /* Entering a rung != dispatching it: one more drive WITHIN the rung
+         * window runs the refold action (arms + would self-respawn) and HOLDS. */
+        r = sticky_escalator_test_drive(0, last + 10);
+        STM_CHECK("R1: refold rung holds after arming",
+                  r == STICKY_RUNG_REFOLD_FROM_ANCHOR &&
+                  sticky_escalator_test_armed());
+        int32_t anchor = -1;
+        int count = -1;
+        STM_CHECK("R1: rung ARMED a durable refold-from-anchor request",
+                  boot_auto_refold_pending(fx.dir) &&
+                  boot_auto_refold_status(fx.dir, &anchor, &count) &&
+                  anchor == A && count == 0);
+
+        boot_auto_refold_clear(fx.dir);
+        teardown_fixture(&fx);
+    }
+
+    /* R2 — NO anchor artifact reachable: the rung must NOT arm a doomed refold
+     * (boot_refold_from_anchor_reset FATAL-refuses an unproven set). It names
+     * exactly the missing clue as a typed blocker (detective doctrine) and the
+     * ladder stays armed + auto-terminating — never a crash-loop. */
+    {
+        struct stm_fixture fx;
+        STM_CHECK("R2: setup fixture", setup_fixture(&fx, "r2_no_artifact"));
+        sqlite3 *db = progress_store_db();
+        STM_CHECK("R2: complete a clean store",
+                  put_tip_log(db, A + 2, 1, &fx.hashes[2]) &&
+                  put_tip_log(db, A + 3, 1, &fx.hashes[3]) &&
+                  seed_coins_applied(db, A + 4) &&
+                  seed_cursor(db, "tip_finalize", A + 3));
+
+        sync_monitor_set_context(NULL, NULL, &fx.ms);
+        sticky_escalator_test_reset();
+        sticky_escalator_set_datadir(fx.dir);
+        sticky_escalator_test_set_suppress_refold_restart(true);
+        sticky_escalator_test_set_refold_artifact_available(0); /* absent */
+        stage_reducer_frontier_reset_detect_memo_for_testing();
+        boot_auto_refold_clear(fx.dir);
+
+        sticky_escalator_note_stall("r2_no_artifact");
+        int64_t t0 = (int64_t)platform_time_wall_time_t();
+        enum sticky_rung r = STICKY_RUNG_RETRY;
+        int64_t last = t0 + 1;
+        for (int i = 0; i < 40 && r != STICKY_RUNG_REFOLD_FROM_ANCHOR; i++) {
+            last = t0 + 1 + (int64_t)i * 4000;
+            r = sticky_escalator_test_drive(0, last);
+        }
+        STM_CHECK("R2: ladder reaches the deepest refold rung",
+                  r == STICKY_RUNG_REFOLD_FROM_ANCHOR);
+        /* Dispatch the refold rung: no artifact -> names the blocker + FAILED
+         * (deepest rung exhausted -> cycles, never arms a doomed refold). */
+        (void)sticky_escalator_test_drive(0, last + 10);
+        STM_CHECK("R2: no artifact -> typed blocker named, NOT armed",
+                  blocker_exists("sticky_escalator.refold_no_anchor_artifact") &&
+                  !boot_auto_refold_pending(fx.dir));
+        /* Drive past the re-arm cooldown: the ladder re-cycles, never latches a
+         * terminal give-up, never crashes. */
+        (void)sticky_escalator_test_drive(0, last + 10 +
+                                          STICKY_REARM_COOLDOWN_SECS + 5);
+        STM_CHECK("R2: ladder stays armed (auto-terminating, no crash-loop)",
+                  sticky_escalator_test_armed());
+
+        boot_auto_refold_clear(fx.dir);
         teardown_fixture(&fx);
     }
 

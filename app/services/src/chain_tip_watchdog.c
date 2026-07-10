@@ -263,6 +263,14 @@ bool chain_tip_watchdog_respawn_requested(void)
     return atomic_load(&g_respawn_requested);
 }
 
+void chain_tip_watchdog_request_respawn(void)
+{
+    /* The sticky escalator's terminal refold rung armed a durable refold and is
+     * about to request an orderly shutdown; latch the same self-respawn flag the
+     * watchdog uses so main() re-execs off-systemd and the fresh boot runs it. */
+    atomic_store(&g_respawn_requested, true);
+}
+
 /* ── Cause probe ───────────────────────────────────────────────────────
  *
  * A tip that has been constant for thr_restart seconds is not, by itself,

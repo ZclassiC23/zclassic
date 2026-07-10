@@ -20,13 +20,18 @@
 #include "jobs/reducer_frontier.h"
 #include "jobs/refold_progress.h"
 #include "jobs/stage_repair.h"
+#include "services/chain_tip_watchdog.h"
 #include "services/sync_monitor.h"
+#include "config/boot.h"
+#include "config/runtime.h"
 #include "storage/boot_auto_reindex.h"
+#include "storage/boot_auto_refold.h"
 #include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
 #include "util/supervisor.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
+#include "util/thread_registry.h"
 #include "event/event.h"
 #include "json/json.h"
 
@@ -66,6 +71,12 @@ static sticky_rung_fn g_rung_fn[STICKY_RUNG_COUNT];
  * boot_auto_reindex_request seconds after the cure landed. */
 static _Atomic int64_t g_rederive_last_repair_unix = 0;
 
+#ifdef ZCL_TESTING
+/* Refold seams: suppress shutdown/respawn; override the artifact gate. */
+static _Atomic bool g_test_suppress_refold_restart = false;
+static _Atomic int  g_test_refold_artifact_override = -1;
+#endif
+
 /* Per-rung witness windows (seconds): the slow re-derivation rungs get a long
  * window so a legitimately multi-minute reindex/refold is not prematurely
  * advanced. */
@@ -77,6 +88,8 @@ static const int g_rung_window_secs[STICKY_RUNG_COUNT] = {
     [STICKY_RUNG_SELF_MINT_REFOLD] = 1800,
     [STICKY_RUNG_WIDEN_PEERS]      = 120,
     [STICKY_RUNG_REBOOTSTRAP]      = 3600,
+    /* Long: arms + self-respawns, then HOLDS for the restart (fold on next boot). */
+    [STICKY_RUNG_REFOLD_FROM_ANCHOR] = 1800,
 };
 
 const char *sticky_rung_name(enum sticky_rung r)
@@ -89,6 +102,7 @@ const char *sticky_rung_name(enum sticky_rung r)
     case STICKY_RUNG_SELF_MINT_REFOLD:  return "self_mint_refold";
     case STICKY_RUNG_WIDEN_PEERS:       return "widen_peers";
     case STICKY_RUNG_REBOOTSTRAP:       return "rebootstrap";
+    case STICKY_RUNG_REFOLD_FROM_ANCHOR: return "refold_from_anchor";
     case STICKY_RUNG_COUNT:             break;
     }
     return "unknown";
@@ -359,6 +373,87 @@ static enum sticky_rung_result rung_rebootstrap_default(void)
     return STICKY_RUNG_NOT_IMPLEMENTED;
 }
 
+/* DEEPEST rung — runtime refold from the newest verified anchor
+ * (fail-safe-architecture.md §1 rung 3 / §4 item 5). Design = ARM + supervised
+ * self-respawn: the fresh boot runs the SAME boot_refold_from_anchor_reset
+ * (Law 2). Honest PROGRESSING ("armed"), never a fake "done"; bounded; GATED on
+ * an anchor artifact (absent -> name the missing clue). */
+static enum sticky_rung_result rung_refold_from_anchor_default(void)
+{
+    if (!g_datadir || !g_datadir[0]) {
+        event_emitf(EV_RECOVERY_ACTION, 0,
+                    "action=sticky-refold-skip reason=no_datadir");
+        return STICKY_RUNG_FAILED;
+    }
+    /* Budget exhausted (prior attempts FATAL-looped to terminal): do NOT re-arm. */
+    if (boot_auto_refold_is_terminal(g_datadir)) {
+        event_emitf(EV_RECOVERY_ACTION, 0,
+                    "action=sticky-refold-skip reason=budget_terminal");
+        return STICKY_RUNG_FAILED;
+    }
+    /* Already armed: HOLD for the restart to consume it (budget counts BOOTS). */
+    if (boot_auto_refold_pending(g_datadir)) {
+        event_emitf(EV_RECOVERY_ACTION, 0,
+                    "action=sticky-refold-hold reason=request_pending");
+        return STICKY_RUNG_PROGRESSING;
+    }
+
+    /* GATE: a verified anchor snapshot must be reachable (else the boot reset
+     * FATAL-refuses) — name the missing clue, never arm a doomed refold. */
+    int32_t anchor_h = -1;
+    bool artifact =
+        boot_refold_from_anchor_artifact_available(app_runtime_node_db(),
+                                                   &anchor_h);
+#ifdef ZCL_TESTING
+    int ov = atomic_load(&g_test_refold_artifact_override);
+    if (ov >= 0) {
+        artifact = (ov != 0);
+        if (anchor_h < 0)
+            anchor_h = (int32_t)reducer_frontier_provable_tip_cached();
+    }
+#endif
+    if (!artifact) {
+        char reason[BLOCKER_REASON_MAX];
+        snprintf(reason, sizeof(reason),
+                 "refold_from_anchor: no verified anchor snapshot reachable "
+                 "(anchor_h=%d) — provide the SHA3-checkpoint-bound "
+                 "utxo-anchor.snapshot", anchor_h);
+        struct blocker_record b;
+        if (blocker_init(&b, "sticky_escalator.refold_no_anchor_artifact",
+                         "sticky_escalator", BLOCKER_DEPENDENCY, reason)) {
+            b.retry_budget = -1;
+            (void)blocker_set(&b);
+        }
+        event_emitf(EV_RECOVERY_ACTION, 0,
+                    "action=sticky-refold-skip reason=no_anchor_artifact "
+                    "anchor_h=%d", anchor_h);
+        return STICKY_RUNG_FAILED;   /* named the clue -> cycle */
+    }
+
+    /* Arm the durable refold + request a self-respawn (systemd re-consumes it). */
+    int rc = boot_auto_refold_request(g_datadir, anchor_h);
+    if (rc <= 0 || rc == BOOT_AUTO_REFOLD_TERMINAL) {
+        event_emitf(EV_RECOVERY_ACTION, 0,
+                    "action=sticky-refold-arm-failed anchor=%d rc=%d",
+                    anchor_h, rc);
+        return STICKY_RUNG_FAILED;
+    }
+    LOG_WARN("sticky_escalator",
+             "[sticky_escalator] refold_from_anchor ARMED anchor=%d — requesting "
+             "self-respawn; the fresh boot re-seeds + re-folds anchor->tip",
+             anchor_h);
+    event_emitf(EV_RECOVERY_ACTION, 0,
+                "action=sticky-refold-arm anchor=%d rc=%d", anchor_h, rc);
+#ifdef ZCL_TESTING
+    if (!atomic_load(&g_test_suppress_refold_restart))
+#endif
+    {
+        chain_tip_watchdog_request_respawn();
+        thread_registry_request_shutdown();
+    }
+    return STICKY_RUNG_PROGRESSING;   /* armed; the restart consumes it */
+}
+
 static const sticky_rung_fn g_rung_default[STICKY_RUNG_COUNT] = {
     [STICKY_RUNG_RETRY]            = rung_retry_default,
     [STICKY_RUNG_TARGETED_REDERIVE]= rung_targeted_rederive_default,
@@ -367,6 +462,7 @@ static const sticky_rung_fn g_rung_default[STICKY_RUNG_COUNT] = {
     [STICKY_RUNG_SELF_MINT_REFOLD] = rung_self_mint_refold_default,
     [STICKY_RUNG_WIDEN_PEERS]      = rung_widen_peers_default,
     [STICKY_RUNG_REBOOTSTRAP]      = rung_rebootstrap_default,
+    [STICKY_RUNG_REFOLD_FROM_ANCHOR] = rung_refold_from_anchor_default,
 };
 
 static sticky_rung_fn rung_action(enum sticky_rung r)
@@ -665,6 +761,8 @@ void sticky_escalator_test_reset(void)
     atomic_store(&g_episodes_cleared, 0u);
     atomic_store(&g_ladder_cycles, 0u);
     atomic_store(&g_rederive_last_repair_unix, (int64_t)0);
+    atomic_store(&g_test_suppress_refold_restart, false);
+    atomic_store(&g_test_refold_artifact_override, -1);
     for (int i = 0; i < STICKY_RUNG_COUNT; i++) {
         atomic_store(&g_rung_dispatches[i], 0u);
         g_rung_fn[i] = NULL;
@@ -692,4 +790,10 @@ uint64_t sticky_escalator_test_fires_operator_needed(void)
 {
     return atomic_load(&g_fires_operator_needed);
 }
+
+void sticky_escalator_test_set_suppress_refold_restart(bool s)
+{ atomic_store(&g_test_suppress_refold_restart, s); }
+
+void sticky_escalator_test_set_refold_artifact_available(int v)
+{ atomic_store(&g_test_refold_artifact_override, v); }
 #endif
