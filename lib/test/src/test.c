@@ -1407,6 +1407,7 @@ int main(int argc, char **argv)
     failures += test_domain_consensus_coins_math();
     failures += test_domain_consensus_checkpoints();
     failures += test_domain_consensus_locktime();
+    failures += test_tx_expiry_locktime_adversarial();
     failures += test_domain_consensus_upgrades();
     failures += test_domain_consensus_coinbase();
     failures += test_domain_consensus_header_accept();
