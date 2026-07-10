@@ -36,16 +36,31 @@ Root cause chain (verified in code, live via MCP, and by the Opus planner):
 - Parity guardrails held: `sapling_frontier_mismatch` untouched, unknown anchors still
   rejected, `activation_cursor` never zeroed; `check-consensus-parity` + parity groups green.
 
-**⚠ Known open question:** on the live datadir the checkpoint has been REWRITTEN at
-h=3,176,326 (== stall height, outside tier 1's safe window), so tier 1 may honestly refuse
-there and fall to tier 2 (needs `utxo-anchor.snapshot`, which live doesn't have) → tier 3
-page. **The copy-prove (`sapling-anchor-cure2`, `--full -paramsdir=~/.zcash-params`,
-gate: H\* CLIMB past 3,176,326) was running when this doc was written — read its verdict
-before deploying.** If it tier-3s, the cure candidate is a tier-1b: reconstruct the
-frontier at stall−1 (the safe-window root equals the seed-height root when the table is
-empty — check whether an older checkpoint or the in-binary state can source it), or make
-the checkpoint writer ALSO persist a fold-consistent (utxo_apply-cursor) checkpoint, not
-just the header-tip one.
+**⚠ COPY-PROVE VERDICT (run this session, `sapling-anchor-cure2`, `--full
+-paramsdir=~/.zcash-params`):** exactly the predicted honest failure — tier 1 REFUSED
+(the flat checkpoint was rewritten at h=3,176,326 == stall height, outside the safe
+window `[activation, stall)`), tier 2 found no `utxo-anchor.snapshot`, tier 3 PAGED
+(`operator_needed` within ~140s of boot, re-paging on backoff). **The silent-stall class
+is dead** (named refusal + page instead of 4.6h of nothing), **but the node does not yet
+self-cure this instance → DO NOT deploy expecting an unwedge.**
+
+**Tier-1b findings (verified this session, build on these):**
+- The uss seed snapshot (`utxo-seed-3155842.snapshot`) carries NO sapling tree — no
+  verified frontier exists anywhere on the live datadir. A frontier cannot be derived
+  from a root; rebuilding from bodies lacks a verified base below the seed.
+- zclassicd has NO `z_gettreestate` RPC (probed, -32601). The viable **stopgap**: read
+  the sapling anchor trees from zclassicd's chainstate LevelDB directly (the legacy
+  import machinery already reads that datadir; zcashd-lineage chainstate stores every
+  historical sapling anchor tree). Borrow the tree at a safe-window height, VERIFY its
+  root == the PoW-committed `hashFinalSaplingRoot` header field (fail-closed, same trust
+  model as the legacy bootstrap), then `anchor_kv_seed_frontier_row`. Copy-prove gated
+  on H\* CLIMB past 3,176,326.
+- The **terminal cure is the sovereign anchor artifact** (the long-running
+  `utxo-anchor.snapshot` mint, see the anchor-mint sections of this file's parent
+  HANDOFF): the artifact carries the anchor frontier
+  (`boot_anchor_seed_from_snapshot`), and the merged tier 2 then fires AUTOMATICALLY
+  (arm → respawn → refold). Finishing the mint cures this P0 with zero new code — the
+  P0's terminal cure and the sovereign-cure critical path are the same work.
 
 ## What landed on main this session (all gated: lint clean + full test_parallel 0/540)
 
