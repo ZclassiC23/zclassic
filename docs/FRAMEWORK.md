@@ -324,7 +324,7 @@ with the work they guard:
 | **health-is-the-gap** | one `tip_not_advancing` Condition is the sole liveness authority; others don't emit `EV_OPERATOR_NEEDED` for liveness (Directive, Law 10) | ratchet |
 | **operator-needed-has-a-sink** | every `EV_OPERATOR_NEEDED` emit pairs with a registered subscriber (Law 7) | hard |
 | **shape-is-content-checked** | a shape file includes its shape header (closes the "mislabeled Service" hole) | ratchet → hard |
-| **file-size-ceiling** | no `app/` file over the cap; mega-modules can't hide under <500-LOC functions (Law 1) | ratchet down |
+| **file-size-ceiling** | no `app/**/*.c` or `config/src/*.c` over 800 lines; mega-modules can't hide under <500-LOC functions (Law 1) | enforced ratchet (fails the build; baseline `file_size_ceiling_baseline.txt`, 18 grandfathered files as of this write, shrink-only) |
 | **one-result-type** | services return `zcl_result`, not bare `bool`/`int` (Law 2) | ratchet |
 
 Both strategic gates (`framework-shape`, `controller-SQL`) have graduated

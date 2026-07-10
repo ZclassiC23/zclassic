@@ -1092,10 +1092,11 @@ static void unlink_rel(const char *rel)
         (void)unlink(path);
 }
 
-/* E1 — file-size ceiling is now an ADVISORY WARN (not a hard FAIL): a NEW
- * (non-baselined) app/.c file over the 800-line ceiling WARNS (still prints
- * the report, but exits 0); removing it returns to a clean WARN-free run.
- * The hard correctness gate is check_long_functions.sh (<=500/function). */
+/* E1 — file-size ceiling is an ENFORCED RATCHET (hard FAIL, not advisory):
+ * a NEW (non-baselined) app/.c file over the 800-line ceiling trips the
+ * gate (nonzero exit) and prints the violation report; removing it returns
+ * to a clean, zero-exit run. This complements (does not replace) the hard
+ * correctness gate check_long_functions.sh (<=500 lines/function). */
 static int t_e1_file_size_ceiling(void)
 {
     int failures = 0;
@@ -1103,31 +1104,31 @@ static int t_e1_file_size_ceiling(void)
     int baseline_rc = run_gate_script(E1_SCRIPT_REL, NULL);
     int planted = plant_oversized_file(E1_FIXTURE_DST, 900);
     int trip_rc = planted == 0 ? run_gate_script(E1_SCRIPT_REL, NULL) : -1;
-    /* Capture the WARN run's stdout so we can prove the report still PRINTS
-     * (the advisory must remain visible even though it no longer blocks). */
-    char *warn_out = NULL;
-    char warn_path[PATH_MAX];
-    int warn_read = (planted == 0 &&
-                     repo_path(warn_path, sizeof(warn_path),
+    /* Capture the FAIL run's stdout so we can prove the report still PRINTS
+     * the violation detail alongside the nonzero exit. */
+    char *fail_out = NULL;
+    char fail_path[PATH_MAX];
+    int fail_read = (planted == 0 &&
+                     repo_path(fail_path, sizeof(fail_path),
                                "test-tmp/zcl_gate_lint.out") == 0)
-                        ? read_entire_file(warn_path, &warn_out)
+                        ? read_entire_file(fail_path, &fail_out)
                         : -1;
     unlink_rel(E1_FIXTURE_DST);
     int recover_rc = run_gate_script(E1_SCRIPT_REL, NULL);
-    TEST("[lint-gate] E1 file-size ceiling: clean, WARNS (exit 0) on oversized, recovers") {
+    TEST("[lint-gate] E1 file-size ceiling: clean, FAILS (exit != 0) on oversized, recovers") {
         ASSERT(baseline_rc == 0);
         ASSERT(planted == 0);
-        /* WARN, not FAIL: oversized file now exits 0 (advisory). */
-        ASSERT(trip_rc == 0);
-        /* ...but the advisory report must still be printed. */
-        ASSERT(warn_read == 0);
-        ASSERT(warn_out != NULL && strstr(warn_out, "WARN:") != NULL);
-        ASSERT(warn_out != NULL &&
-               strstr(warn_out, "NEW oversized file") != NULL);
+        /* FAIL, not WARN: oversized file now exits nonzero (enforced). */
+        ASSERT(trip_rc != 0);
+        /* ...and the violation report must be printed alongside the fail. */
+        ASSERT(fail_read == 0);
+        ASSERT(fail_out != NULL && strstr(fail_out, "FAIL") != NULL);
+        ASSERT(fail_out != NULL &&
+               strstr(fail_out, "NEW oversized file") != NULL);
         ASSERT(recover_rc == 0);
         PASS();
     } _test_next:;
-    free(warn_out);
+    free(fail_out);
     return failures;
 }
 
