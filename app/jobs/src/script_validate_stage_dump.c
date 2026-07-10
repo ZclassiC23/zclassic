@@ -157,5 +157,6 @@ bool script_validate_dump_state_json(struct json_value *out, const char *key)
      * reason (status + txid + vin) so zcl_state pinpoints the blocker. */
     dump_blocking_failure(out, db);
     stage_dump_counters(out, stage);
+    stage_dump_health(out, STAGE_NAME, stage);
     return true;
 }

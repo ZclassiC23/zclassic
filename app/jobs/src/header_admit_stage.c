@@ -753,5 +753,6 @@ bool header_admit_stage_dump_state_json(struct json_value *out,
                       atomic_load(&g_last_blocked_unix));
     json_push_kv_str(out, "authority", "authoritative");
     stage_dump_counters(out, g_stage);
+    stage_dump_health(out, STAGE_NAME, g_stage);
     return true;
 }

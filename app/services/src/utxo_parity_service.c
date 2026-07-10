@@ -653,5 +653,28 @@ bool utxo_parity_dump_state_json(struct json_value *out, const char *key)
         json_push_kv_str(out, "last_skip_reason", skip_reason);
     json_push_kv_bool(out, "drift_flag", drift_flag);
     json_push_kv_bool(out, "bh_drift_latched", bh_drift_latched);
+
+    /* Reserved `_health` key (see docs/work "Adding state introspection" +
+     * app/controllers/src/diagnostics_health_rollup.c): { ok, reason }.
+     * Maps the already-computed drift_flag above (the file's own "is
+     * anything paging" summary, comment a few lines up) — no new health
+     * logic. */
+    {
+        struct json_value health = {0};
+        json_set_object(&health);
+        json_push_kv_bool(&health, "ok", !drift_flag);
+        char reason_buf[160] = "";
+        if (drift_flag) {
+            snprintf(reason_buf, sizeof(reason_buf),
+                     "utxo drift detected (bh_drift_latched=%s, "
+                     "mismatches=%lld, last_mismatch_height=%lld)",
+                     bh_drift_latched ? "true" : "false",
+                     (long long)atomic_load(&g_parity.mismatches),
+                     (long long)atomic_load(&g_parity.last_mismatch_height));
+        }
+        json_push_kv_str(&health, "reason", reason_buf);
+        json_push_kv(out, "_health", &health);
+        json_free(&health);
+    }
     return true;
 }

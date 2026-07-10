@@ -3,6 +3,7 @@
 #ifndef ZCL_SERVICES_SYNC_MONITOR_H
 #define ZCL_SERVICES_SYNC_MONITOR_H
 
+#include "json/json.h"
 #include "net/connman.h"
 #include "net/download.h"
 #include "sync/sync_state.h"
@@ -11,6 +12,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 
 enum watchdog_recovery_type {
     WATCHDOG_NONE = 0,
@@ -110,8 +112,30 @@ const char *watchdog_recovery_type_name(enum watchdog_recovery_type type);
 /* zcl_state subsystem=sync_monitor — watchdog recovery counters + local
  * recovery sub-state. See CLAUDE.md "Adding state introspection".
  * Reentrant-safe. */
-struct json_value;
 bool sync_monitor_dump_state_json(struct json_value *out, const char *key);
+
+/* `_health` (CLAUDE.md "Adding state introspection" +
+ * app/controllers/src/diagnostics_health_rollup.c): maps the existing
+ * local_recovery active+retries_exhausted "stuck" signal — no new health
+ * logic. static inline (not shared elsewhere) purely to keep this line of
+ * logic out of sync_monitor.c's own line-count budget. */
+static inline void sync_monitor_push_local_recovery_health_json(
+    struct json_value *out, const struct watchdog_local_recovery_stats *lr)
+{
+    bool stuck = lr->active && lr->retries_exhausted;
+    char reason_buf[220] = "";
+    if (stuck)
+        snprintf(reason_buf, sizeof(reason_buf),
+                 "local recovery mode=%s retries_exhausted at "
+                 "missing_height=%d retry_count=%d: %s", lr->mode,
+                 lr->missing_height, lr->retry_count, lr->last_reason);
+    struct json_value health = {0};
+    json_set_object(&health);
+    json_push_kv_bool(&health, "ok", !stuck);
+    json_push_kv_str(&health, "reason", reason_buf);
+    json_push_kv(out, "_health", &health);
+    json_free(&health);
+}
 
 #ifdef ZCL_TESTING
 void sync_monitor_test_set_local_recovery(bool active,

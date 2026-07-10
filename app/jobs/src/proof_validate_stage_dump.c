@@ -112,5 +112,6 @@ bool proof_validate_dump_state_json(struct json_value *out, const char *key)
                                               "proof_validate_log") : 0);
     dump_first_failure(out, db);
     stage_dump_counters(out, stage);
+    stage_dump_health(out, STAGE_NAME, stage);
     return true;
 }

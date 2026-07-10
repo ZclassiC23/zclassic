@@ -7,16 +7,30 @@
  * the file header of diagnostics_health_rollup.c), and aggregates only the
  * unhealthy ones.
  *
- * Coverage, using two of the real subsystems that already seed `_health`
- * (lib/util/src/blocker.c and app/jobs/src/tip_finalize_stage_observe.c),
- * not a synthetic stand-in:
- *   (a) with the seeded dumpers in a healthy state, all_ok == true and the
- *       unhealthy array is empty.
+ * Coverage, using real subsystems that seed `_health` (not a synthetic
+ * stand-in). Adoption is now well past the original five exemplars — most
+ * of the newly-seeded ones are reducer stages / storage projections that
+ * report ok=false in THIS minimal fixture simply because this file never
+ * initialises them (their real "not initialised" / "not open" condition,
+ * not a bug), so a blanket "everything is healthy" baseline would be
+ * fragile and dishonest. Instead:
+ *   (a) the rollup runs cleanly (dump returns true) and `reporting` covers
+ *       at least the original five exemplars; the SPECIFIC subsystems this
+ *       fixture actually brings up healthy (legacy_mirror,
+ *       chain_advance_coordinator, tip_finalize) are absent from the
+ *       unhealthy array — see (c).
  *   (b) seeding one dumper (the typed blocker registry) into an unhealthy
  *       state makes it appear in the unhealthy array with its subsystem
- *       name + reason, and flips all_ok to false.
+ *       name + reason, and all_ok stays false with unhealthy_count >= 1.
  *   (c) subsystems that stayed healthy (legacy_mirror, tip_finalize,
  *       chain_advance_coordinator) are NOT included in the unhealthy array.
+ *   (d) a dumper seeded in THIS round (mempool_projection — one of the
+ *       storage projection dumpers whose `_health` maps the existing
+ *       "open" signal, see lib/storage/src/mempool_projection.c) flips
+ *       from healthy to unhealthy when its real "not open" condition is
+ *       synthesized via the projection's own close() API — proving a
+ *       newly-seeded dumper actually surfaces through the rollup, not just
+ *       the five pre-existing exemplars above.
  *
  * tip_finalize's `_health` reports ok=false ("stage not initialised") until
  * tip_finalize_stage_init() runs, so this file pays the same minimal setup
@@ -28,6 +42,8 @@
 #include "test/test_helpers.h"
 #include "controllers/diagnostics_internal.h"
 #include "jobs/tip_finalize_stage.h"
+#include "storage/event_log.h"
+#include "storage/mempool_projection.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "validation/main_state.h"
@@ -75,26 +91,27 @@ int test_health_rollup(void)
     main_state_init(&ms);
     bool tf_ok = tip_finalize_stage_init(&ms);
 
-    /* ── (a) baseline: seeded dumpers healthy ──────────────────────── */
+    /* ── (a) baseline: dump is well-formed; known-healthy exemplars
+     * stay absent (see the file header for why this no longer asserts a
+     * blanket all_ok==true — adoption has grown well past the five
+     * subsystems this minimal fixture can bring up healthy) ──────────── */
     {
         struct json_value v = {0};
         json_set_object(&v);
         bool ok = unhealthy_dump_state_json(&v, NULL);
         HR_CHECK("baseline: dump returns true", ok);
 
-        const struct json_value *all_ok = json_get(&v, "all_ok");
-        HR_CHECK("baseline: all_ok present and true",
-                 all_ok && json_get_bool(all_ok));
-
         const struct json_value *unhealthy = json_get(&v, "unhealthy");
-        HR_CHECK("baseline: unhealthy array present and empty",
-                 unhealthy && unhealthy->type == JSON_ARR &&
-                 json_size(unhealthy) == 0);
-
-        const struct json_value *unhealthy_count =
-            json_get(&v, "unhealthy_count");
-        HR_CHECK("baseline: unhealthy_count == 0",
-                 unhealthy_count && json_get_int(unhealthy_count) == 0);
+        HR_CHECK("baseline: unhealthy array present",
+                 unhealthy && unhealthy->type == JSON_ARR);
+        HR_CHECK("baseline: legacy_mirror (healthy) absent from array",
+                 hr_find_by_subsystem(unhealthy, "legacy_mirror") == NULL);
+        HR_CHECK("baseline: tip_finalize (healthy) absent from array",
+                 hr_find_by_subsystem(unhealthy, "tip_finalize") == NULL);
+        HR_CHECK("baseline: chain_advance_coordinator (healthy) absent "
+                 "from array",
+                 hr_find_by_subsystem(unhealthy,
+                                      "chain_advance_coordinator") == NULL);
 
         /* Sanity: the seeded subsystems this test controls really did
          * report `_health` this cycle (guards against a silent regression
@@ -108,7 +125,7 @@ int test_health_rollup(void)
                      (int64_t)diagnostics_dumper_count() - 1);
         HR_CHECK("baseline: reporting >= 4 seeded subsystems "
                  "(blocker, legacy_mirror, chain_advance_coordinator, "
-                 "tip_finalize)",
+                 "tip_finalize; many more now report too)",
                  reporting && json_get_int(reporting) >= 4);
 
         json_free(&v);
@@ -143,8 +160,17 @@ int test_health_rollup(void)
 
         const struct json_value *unhealthy_count =
             json_get(&v, "unhealthy_count");
-        HR_CHECK("seeded: unhealthy_count == 1",
-                 unhealthy_count && json_get_int(unhealthy_count) == 1);
+        /* >= 1, not == 1: this fixture only initialises tip_finalize (and
+         * now seeds `_health` on many more subsystems than the original 5
+         * exemplars — reducer stages, projections, etc. — most of which
+         * report ok=false here simply because THIS test never initialises
+         * them, not because anything is actually broken). The one
+         * assertion this test owns is that the blocker we just seeded is
+         * IN the array (checked above) — see also (d) below for a
+         * dedicated before/after flip on one specific newly-seeded
+         * dumper. */
+        HR_CHECK("seeded: unhealthy_count >= 1",
+                 unhealthy_count && json_get_int(unhealthy_count) >= 1);
         HR_CHECK("seeded: unhealthy array length matches unhealthy_count",
                  unhealthy && unhealthy_count &&
                  (int64_t)json_size(unhealthy) ==
@@ -165,6 +191,52 @@ int test_health_rollup(void)
 
         json_free(&v);
         blocker_clear("hr_test_blocker");
+    }
+
+    /* ── (d) a newly-seeded dumper (mempool_projection) surfaces too ─── */
+    {
+        char proj_dir[300], elog_path[360], proj_path[360];
+        test_make_tmpdir(proj_dir, sizeof(proj_dir), "health_rollup", "proj");
+        test_projection_paths(proj_dir, "mempool", elog_path,
+                              sizeof(elog_path), proj_path, sizeof(proj_path));
+        event_log_t *log = event_log_open(elog_path);
+        mempool_projection_t *p = mempool_projection_open(proj_path, log);
+        HR_CHECK("(d) setup: mempool_projection opened", log && p);
+
+        struct json_value v = {0};
+        json_set_object(&v);
+        unhealthy_dump_state_json(&v, NULL);
+        const struct json_value *unhealthy = json_get(&v, "unhealthy");
+        HR_CHECK("(d) mempool_projection healthy (open, no fails) -> "
+                 "absent from array",
+                 hr_find_by_subsystem(unhealthy, "mempool_projection") ==
+                     NULL);
+        json_free(&v);
+
+        /* Synthesize the real "not open" condition via the projection's
+         * own close() API (no new health logic — see
+         * lib/storage/src/mempool_projection.c's `_health` block). */
+        mempool_projection_close(p);
+
+        json_init(&v);
+        json_set_object(&v);
+        unhealthy_dump_state_json(&v, NULL);
+        const struct json_value *all_ok = json_get(&v, "all_ok");
+        HR_CHECK("(d) all_ok is false once mempool_projection closes",
+                 all_ok && !json_get_bool(all_ok));
+        unhealthy = json_get(&v, "unhealthy");
+        const struct json_value *mp_entry =
+            hr_find_by_subsystem(unhealthy, "mempool_projection");
+        HR_CHECK("(d) mempool_projection appears in unhealthy array once "
+                 "closed", mp_entry != NULL);
+        HR_CHECK("(d) reason names the not-open condition",
+                 mp_entry && json_get(mp_entry, "reason") &&
+                 strstr(json_get_str(json_get(mp_entry, "reason")),
+                        "not open") != NULL);
+        json_free(&v);
+
+        event_log_close(log);
+        test_rm_rf_recursive(proj_dir);
     }
 
     tip_finalize_stage_shutdown();

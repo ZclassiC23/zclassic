@@ -255,6 +255,27 @@ bool db_maintenance_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int (out, "total_runs", total_runs);
     json_push_kv_int (out, "total_failures", total_failures);
     json_push_kv_str (out, "last_error", last_error);
+
+    /* Reserved `_health` key (see docs/work "Adding state introspection" +
+     * app/controllers/src/diagnostics_health_rollup.c): { ok, reason }.
+     * Maps the already-computed total_failures/last_error above — no new
+     * health logic. Not emitted on the `busy` early-return above (a VACUUM
+     * holding the lock is not itself a failure signal); the rollup
+     * tolerates a dumper skipping `_health` on a given cycle. */
+    {
+        bool ok = total_failures == 0;
+        struct json_value health = {0};
+        json_set_object(&health);
+        json_push_kv_bool(&health, "ok", ok);
+        char reason_buf[300] = "";
+        if (!ok)
+            snprintf(reason_buf, sizeof(reason_buf),
+                     "total_failures=%lld last_error=%s",
+                     (long long)total_failures, last_error);
+        json_push_kv_str(&health, "reason", reason_buf);
+        json_push_kv(out, "_health", &health);
+        json_free(&health);
+    }
     return true;
 }
 

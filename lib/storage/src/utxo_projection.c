@@ -1010,6 +1010,30 @@ bool utxo_projection_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "emit_fail_total",
                      (int64_t)atomic_load_explicit(&g_emit_fail_total,
                                                    memory_order_relaxed));
+
+    /* Reserved `_health` key (see docs/work "Adding state introspection" +
+     * app/controllers/src/diagnostics_health_rollup.c): { ok, reason }.
+     * Maps the already-computed open + emit_fail_total fields above — no
+     * new health logic. */
+    {
+        uint64_t fails = atomic_load_explicit(&g_emit_fail_total,
+                                              memory_order_relaxed);
+        bool ok = p != NULL && fails == 0;
+        struct json_value health = {0};
+        json_set_object(&health);
+        json_push_kv_bool(&health, "ok", ok);
+        char reason_buf[128] = "";
+        if (!p)
+            snprintf(reason_buf, sizeof(reason_buf),
+                     "utxo_projection not open");
+        else if (fails > 0)
+            snprintf(reason_buf, sizeof(reason_buf),
+                     "utxo_projection emit_fail_total=%llu",
+                     (unsigned long long)fails);
+        json_push_kv_str(&health, "reason", reason_buf);
+        json_push_kv(out, "_health", &health);
+        json_free(&health);
+    }
     if (!p) return true;
 
     json_push_kv_str(out, "path", p->path);

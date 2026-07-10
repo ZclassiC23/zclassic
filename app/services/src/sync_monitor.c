@@ -724,8 +724,7 @@ bool sync_monitor_dump_state_json(struct json_value *out, const char *key)
                       wd.last_recovery_peer_count);
     json_push_kv_int (out, "last_recovery_target_height",
                       wd.last_recovery_target_height);
-    json_push_kv_int (out, "last_recovery_manifest_height",
-                      wd.last_recovery_manifest_height);
+    json_push_kv_int (out, "last_recovery_manifest_height", wd.last_recovery_manifest_height);
     json_push_kv_str (out, "last_recovery_reason", wd.last_recovery_reason);
     json_push_kv_str (out, "last_recovery_trigger", wd.last_recovery_trigger);
 
@@ -781,6 +780,7 @@ bool sync_monitor_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int (out, "peer_rotation_count", lr.peer_rotation_count);
     json_push_kv_str (out, "local_recovery_mode", lr.mode);
     json_push_kv_str (out, "local_recovery_last_reason", lr.last_reason);
+    sync_monitor_push_local_recovery_health_json(out, &lr);
     return true;
 }
 

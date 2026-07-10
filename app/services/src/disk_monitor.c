@@ -406,5 +406,27 @@ bool disk_monitor_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int (out, "warn_free_bytes", st.warn_free_bytes);
     json_push_kv_int (out, "refuse_free_bytes", st.refuse_free_bytes);
     json_push_kv_str (out, "datadir", st.datadir);
+
+    /* Reserved `_health` key (see docs/work "Adding state introspection" +
+     * app/controllers/src/diagnostics_health_rollup.c): { ok, reason }.
+     * Maps the already-computed level above (DISK_MONITOR_OK vs LOW/
+     * CRITICAL) — no new health logic. */
+    {
+        bool ok = st.level == DISK_MONITOR_OK;
+        struct json_value health = {0};
+        json_set_object(&health);
+        json_push_kv_bool(&health, "ok", ok);
+        char reason_buf[192] = "";
+        if (!ok)
+            snprintf(reason_buf, sizeof(reason_buf),
+                     "level=%s last_free_bytes=%lld warn_free_bytes=%lld "
+                     "refuse_free_bytes=%lld",
+                     dm_level_name(st.level), (long long)st.last_free_bytes,
+                     (long long)st.warn_free_bytes,
+                     (long long)st.refuse_free_bytes);
+        json_push_kv_str(&health, "reason", reason_buf);
+        json_push_kv(out, "_health", &health);
+        json_free(&health);
+    }
     return true;
 }

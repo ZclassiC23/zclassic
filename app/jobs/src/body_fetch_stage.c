@@ -244,5 +244,6 @@ bool body_fetch_stage_dump_state_json(struct json_value *out,
     json_push_kv_int (out, "last_blocked_unix",
                       atomic_load(&g_last_blocked_unix));
     stage_dump_counters(out, g_stage);
+    stage_dump_health(out, STAGE_NAME, g_stage);
     return true;
 }

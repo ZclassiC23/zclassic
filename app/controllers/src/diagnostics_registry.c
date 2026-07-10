@@ -402,43 +402,10 @@ static const char *bundle_freshness_name(enum bundle_freshness f)
     return "unknown";
 }
 
-static const char *sapling_ckpt_load_result_str(int r)
-{
-    switch (r) {
-    case SAPLING_CKPT_LOAD_NONE:      return "none";
-    case SAPLING_CKPT_LOAD_ABSENT:    return "absent";
-    case SAPLING_CKPT_LOAD_VERIFIED:  return "loaded_verified";
-    case SAPLING_CKPT_LOAD_DISCARDED: return "discarded";
-    }
-    return "unknown";
-}
-
-/* `sapling_checkpoint`: flat-file Sapling note-commitment-tree cache. Shows
- * the last periodic write (height/count/fails) and the boot-time load
- * outcome (absent/loaded_verified/discarded) so an operator can confirm the
- * fast-resume path fired instead of the ~16-min full replay. */
-static bool sapling_checkpoint_dump_state_json(struct json_value *out,
-                                               const char *key)
-{
-    (void)key;
-    if (!out)
-        return false;
-    json_set_object(out);
-
-    struct sapling_ckpt_stats st;
-    sapling_ckpt_get_stats(&st);
-
-    json_push_kv_str(out, "path", st.path);
-    json_push_kv_bool(out, "enabled", st.path[0] != '\0');
-    json_push_kv_int(out, "writes", st.writes);
-    json_push_kv_int(out, "write_fails", st.write_fails);
-    json_push_kv_int(out, "last_write_height", st.last_write_height);
-    json_push_kv_str(out, "last_load_result",
-                     sapling_ckpt_load_result_str(st.last_load_result));
-    json_push_kv_int(out, "last_load_height", st.last_load_height);
-    json_push_kv_str(out, "last_load_detail", st.last_load_detail);
-    return true;
-}
+/* sapling_checkpoint_dump_state_json lives in
+ * diagnostics_sapling_checkpoint.c (kept in its own file so this registry
+ * stays a routing table, not a home for every dumper's full body);
+ * declared in diagnostics_internal.h. */
 
 static bool bundle_staleness_dump_state_json(struct json_value *out,
                                              const char *key)

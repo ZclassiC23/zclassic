@@ -744,6 +744,17 @@ bool block_index_projection_dump_state_json(struct json_value *out,
         json_push_kv_int (out, "events_consumed_total", 0);
         json_push_kv_int (out, "replace_collisions_total", 0);
         json_push_kv_int (out, "last_catch_up_ms", 0);
+        /* Reserved `_health` key — see the non-NULL branch below for the
+         * rationale; maps the same "open" signal. */
+        {
+            struct json_value health = {0};
+            json_set_object(&health);
+            json_push_kv_bool(&health, "ok", false);
+            json_push_kv_str(&health, "reason",
+                             "block_index_projection not open");
+            json_push_kv(out, "_health", &health);
+            json_free(&health);
+        }
         return true;
     }
 
@@ -769,5 +780,19 @@ bool block_index_projection_dump_state_json(struct json_value *out,
     json_push_kv_int (out, "replace_collisions_total", (int64_t)replace_collisions);
     json_push_kv_int (out, "last_catch_up_ms", last_catch_up_ms);
     json_push_kv_int (out, "opened_at", p->opened_at);
+
+    /* Reserved `_health` key (see docs/work "Adding state introspection" +
+     * app/controllers/src/diagnostics_health_rollup.c): { ok, reason }.
+     * Maps the already-computed is_open signal above — no new health
+     * logic. */
+    {
+        struct json_value health = {0};
+        json_set_object(&health);
+        json_push_kv_bool(&health, "ok", is_open);
+        json_push_kv_str(&health, "reason",
+                         is_open ? "" : "block_index_projection not open");
+        json_push_kv(out, "_health", &health);
+        json_free(&health);
+    }
     return true;
 }

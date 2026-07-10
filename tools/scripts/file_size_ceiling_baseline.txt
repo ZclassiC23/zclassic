@@ -21,7 +21,7 @@
 app/controllers/src/agent_anchor_status_controller.c 861
 app/controllers/src/agent_controller.c 909
 app/controllers/src/api_controller_status.c 902
-app/controllers/src/diagnostics_registry.c 843
+app/controllers/src/diagnostics_registry.c 815
 app/controllers/src/name_controller.c 1034
 app/controllers/src/swap_controller.c 1013
 app/jobs/src/reducer_frontier.c 806

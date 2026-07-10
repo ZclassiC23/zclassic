@@ -684,5 +684,31 @@ bool coin_backfill_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "pages_suppressed_total",
                      (int64_t)atomic_load(&g_pages_suppressed_total));
     json_push_kv_bool(out, "owner_ack", coin_backfill_owner_ack());
+
+    /* Reserved `_health` key (see docs/work "Adding state introspection" +
+     * app/controllers/src/diagnostics_health_rollup.c): { ok, reason }.
+     * Maps the already-computed last_status above — the four REFUSED/
+     * OWNER_REFUSED/MARKER_SEEN outcomes mean the repair could not proceed
+     * and is paging or stuck, vs. NOT_APPLICABLE/SCANNING/REPAIRED which are
+     * normal no-op-or-progressing outcomes. No new health logic. */
+    {
+        bool blocked = r.status == COIN_BACKFILL_OWNER_REFUSED ||
+                       r.status == COIN_BACKFILL_REFUSED_SPENT ||
+                       r.status == COIN_BACKFILL_REFUSED_UNPROVABLE ||
+                       r.status == COIN_BACKFILL_MARKER_SEEN;
+        struct json_value health = {0};
+        json_set_object(&health);
+        json_push_kv_bool(&health, "ok", !blocked);
+        char reason_buf[192] = "";
+        if (blocked) {
+            snprintf(reason_buf, sizeof(reason_buf),
+                     "last_status=%s hole_height=%d: %s",
+                     coin_backfill_status_name(r.status), r.hole_height,
+                     r.refuse_reason);
+        }
+        json_push_kv_str(&health, "reason", reason_buf);
+        json_push_kv(out, "_health", &health);
+        json_free(&health);
+    }
     return true;
 }

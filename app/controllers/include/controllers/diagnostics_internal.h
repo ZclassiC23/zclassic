@@ -84,6 +84,8 @@ bool diag_block_index_dump_state_json(struct json_value *out,
                                       const char *key);
 bool diag_header_band_dump_state_json(struct json_value *out,
                                       const char *key);
+bool sapling_checkpoint_dump_state_json(struct json_value *out,
+                                        const char *key);
 
 /* nodelog_controller.c */
 bool diag_rpc_getnodelog(const struct json_value *params, bool help,

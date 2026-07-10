@@ -771,5 +771,6 @@ bool validate_headers_stage_dump_state_json(struct json_value *out,
     json_push_kv_int(out, "last_failed_height", failures.last_height);
     json_push_kv_str(out, "last_fail_reason", failures.last_reason);
     stage_dump_counters(out, g_stage);
+    stage_dump_health(out, STAGE_NAME, g_stage);
     return true;
 }

@@ -333,6 +333,39 @@ static inline void stage_dump_header(struct json_value *out, const char *name,
     json_push_kv_int (out, "cursor", (int64_t)(s ? stage_cursor(s) : 0));
 }
 
+/* Emit the reserved `_health` { ok, reason } key (see CLAUDE.md "Adding
+ * state introspection" + app/controllers/src/diagnostics_health_rollup.c):
+ * maps the stage's own `initialised` flag (stage_dump_header above) plus
+ * its accumulated error_count (stage_dump_counters above) — no new health
+ * logic, just a uniform shape the `unhealthy` rollup can walk. Shared
+ * across the stage-machine dumpers (header_admit, validate_headers,
+ * body_fetch, body_persist, script_validate, proof_validate) since they
+ * all already compute these identical two signals via stage_t. Call this
+ * AFTER stage_dump_counters so error_count has already been read once (not
+ * load-bearing, just matches call-site reading order). */
+static inline void stage_dump_health(struct json_value *out, const char *name,
+                                     const stage_t *s)
+{
+    bool initialised = (s != NULL);
+    uint64_t errors = initialised ? stage_error_count(s) : 0;
+    bool ok = initialised && errors == 0;
+    char reason_buf[160] = "";
+    if (!initialised) {
+        snprintf(reason_buf, sizeof(reason_buf),
+                 "%s stage not initialised", name);
+    } else if (errors > 0) {
+        snprintf(reason_buf, sizeof(reason_buf),
+                 "%s recorded %llu step error(s)", name,
+                 (unsigned long long)errors);
+    }
+    struct json_value health = {0};
+    json_set_object(&health);
+    json_push_kv_bool(&health, "ok", ok);
+    json_push_kv_str(&health, "reason", reason_buf);
+    json_push_kv(out, "_health", &health);
+    json_free(&health);
+}
+
 /* Define the shared step_once entry point for a stage whose step body is the
  * uniform shape: bail to JOB_IDLE if the stage or progress.kv handle is not up,
  * extend the active-chain window to the best candidate, then run one cursor-

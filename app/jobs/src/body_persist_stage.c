@@ -454,5 +454,6 @@ bool body_persist_dump_state_json(struct json_value *out, const char *key)
                       db ? stage_log_row_count(db, STAGE_NAME,
                                                "body_persist_log") : 0);
     stage_dump_counters(out, g_stage);
+    stage_dump_health(out, STAGE_NAME, g_stage);
     return true;
 }

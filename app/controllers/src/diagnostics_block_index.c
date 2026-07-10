@@ -178,6 +178,8 @@ bool diag_block_index_dump_state_json(struct json_value *out, const char *key)
     const char *lookup_source = "missing";
     struct block_index *bi = find_block_index_by_key(ms, key, &lookup_source);
     json_set_object(out);
+    bool integrity_degraded = false;
+    char integrity_reason[192] = "";
     {
         struct bii_recovery_status status;
         struct json_value integrity = {0};
@@ -195,6 +197,23 @@ bool diag_block_index_dump_state_json(struct json_value *out, const char *key)
             json_push_kv_str(&integrity, "reason", status.reason);
         json_push_kv(out, "integrity", &integrity);
         json_free(&integrity);
+        integrity_degraded = status.degraded;
+        snprintf(integrity_reason, sizeof(integrity_reason), "%s",
+                 status.reason);
+    }
+
+    /* Reserved `_health` key (see docs/work "Adding state introspection" +
+     * app/controllers/src/diagnostics_health_rollup.c): { ok, reason }.
+     * Maps the already-computed integrity.degraded field above (the
+     * block-index-integrity recovery verdict) — no new health logic. */
+    {
+        struct json_value health = {0};
+        json_set_object(&health);
+        json_push_kv_bool(&health, "ok", !integrity_degraded);
+        json_push_kv_str(&health, "reason",
+                         integrity_degraded ? integrity_reason : "");
+        json_push_kv(out, "_health", &health);
+        json_free(&health);
     }
     if (!bi) {
         json_push_kv_bool(out, "found", false);
