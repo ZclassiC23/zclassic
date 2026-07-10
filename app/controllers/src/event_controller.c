@@ -5,6 +5,7 @@
 
 #include "controllers/event_controller.h"
 #include "controllers/agent_controller.h"
+#include "controllers/agent_copy_prove_controller.h"
 #include "controllers/event_healthcheck_controller.h"
 #include "controllers/event_timeline_controller.h"
 #include "controllers/strong_params.h"
@@ -654,6 +655,7 @@ void register_event_rpc_commands(struct rpc_table *t)
         { "control", "agentops",          rpc_agent_ops,         true },
         { "control", "agentdiagnose",     rpc_agent_diagnose,    true },
         { "control", "agentdeployguard",  rpc_agent_deploy_guard, true },
+        { "control", "agentcopyprove",    rpc_agent_copy_prove,  true },
         { "control", "milestone",         rpc_milestone_status,  true },
         { "control", "mvpstatus",         rpc_milestone_status,  true },
         { "control", "refold",            rpc_refold_status,     true },
