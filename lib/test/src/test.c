@@ -1038,6 +1038,7 @@ int main(int argc, char **argv)
     { extern int test_script_interp_edge(void);  failures += test_script_interp_edge(); }
     { extern int test_script_interp_edges(void); failures += test_script_interp_edges(); }
     { extern int test_sighash_edge(void);         failures += test_sighash_edge(); }
+    { extern int test_sighash_malleability(void); failures += test_sighash_malleability(); }
     { extern int test_sigops_edge(void);          failures += test_sigops_edge(); }
     { extern int test_check_tx_edge(void);        failures += test_check_tx_edge(); }
     { extern int test_check_block_edge(void);     failures += test_check_block_edge(); }
