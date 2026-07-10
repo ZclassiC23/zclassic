@@ -97,16 +97,16 @@ populated at runtime via `uint256_set_hex`).
 
 ## In flight / next steps (ordered)
 
-1. **Read the copy-prove verdict** (`~/.zclassic-c23-COPY-*-sapling-anchor-cure2`,
-   summary JSON at end of the run log). PASS → deploy is owner-approved: `make deploy`,
-   then verify H\* climbs to network tip, `zcl_state subsystem=blocker` clears the anchor
-   blockers, `header_gap_growing` alert armed. FAIL/tier-3 → build tier-1b (see above),
-   copy-prove again. **Never deploy on a red or unread copy-prove.**
-2. **Merge Lane 5** if not already merged: worktree branch has `db3839a84` (**zcl_agent_test**
-   MCP-triggerable allow-listed test/scenario runner, destructive-tier, clones the
-   agentcopyprove async pattern) + `79307fcd8` (**`_health` seeded in 22 more dumpers**).
-   Reconcile: test-group count (main is at 544), `mcp_router_count` / EXPECTED_TOTAL in
-   `test_mcp_controllers.c`/`test_mcp_e2e`, condition/doc counts. Full gates after.
+1. **Copy-prove verdict: RECORDED — FAIL on the climb gate** (first=max=3,176,325 over
+   1200s; tier 1 refused, tier 3 paged, exactly the honest outcome described above).
+   **Deploy therefore stays BLOCKED** until tier-1b (legacy-chainstate-borrowed verified
+   frontier) or the sovereign anchor artifact exists. The wedged copy is preserved as the
+   tier-1b test fixture: `~/.zclassic-c23-COPY-20260710-135017-sapling-anchor-cure2`
+   (boot it with `-paramsdir=$HOME/.zcash-params`; gate on H\* CLIMB past 3,176,326).
+   Note: deploying the pushed build ANYWAY would not unwedge but WOULD convert the silent
+   wedge into a paged, named, alert-visible one — an owner call.
+2. ~~Merge Lane 5~~ **DONE** — merged + pushed (`zcl_agent_test` runner, `_health` in 22
+   more dumpers; counts reconciled, full gates green on merged main).
 3. **Enable the nightly timer** (owner-gated, one command):
    `systemctl --user enable --now zclassic23-simnet-nightly.timer` (units in `deploy/`).
 4. **Lane 2 (approved, not started):** at-tip invariant hardening — audit every
