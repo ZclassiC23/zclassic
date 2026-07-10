@@ -348,6 +348,107 @@ static int test_dl_check_timeouts(void)
     return failures;
 }
 
+/* Lane 3 hardening: dl_last_forced_settle_time() is the disambiguation
+ * signal msg_blocks.c's PEER_OFFENCE_UNREQUESTED call-site consults —
+ * both dl_drain_for_backpressure() and a dl_check_timeouts() reassignment
+ * clear an in-flight slot the exact same way a truly-never-requested hash
+ * would look, so the call-site withholds scoring for DL_STALL_TIMEOUT_SECS
+ * after either event fires. Pin the underlying signal here so a future
+ * refactor of drain/timeout internals can't silently stop stamping it. */
+static int test_dl_last_forced_settle_time_initial(void)
+{
+    int failures = 0;
+    TEST("dl_last_forced_settle_time: 0 until a drain or timeout reassign fires") {
+        struct download_manager dm;
+        dl_init(&dm);
+        ASSERT(dl_last_forced_settle_time(&dm) == 0);
+        ASSERT(dl_last_forced_settle_time(NULL) == 0); /* NULL-safe */
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_dl_last_forced_settle_time_drain(void)
+{
+    int failures = 0;
+    TEST("dl_last_forced_settle_time: stamped by dl_drain_for_backpressure") {
+        struct download_manager dm;
+        dl_init(&dm);
+        struct uint256 h1 = make_hash(1);
+        dl_mark_requested(&dm, &h1, 100, 1);
+
+        int64_t before = (int64_t)platform_time_wall_time_t();
+        ASSERT(dl_drain_for_backpressure(&dm) == 1);
+        int64_t after = (int64_t)platform_time_wall_time_t();
+
+        int64_t stamped = dl_last_forced_settle_time(&dm);
+        ASSERT(stamped >= before);
+        ASSERT(stamped <= after);
+
+        /* The drain wipes the slot without settling the peer — a late
+         * "received" for the same hash looks exactly like an unrequested
+         * push (returns 0), which is precisely the ambiguity the grace
+         * window exists to cover. */
+        ASSERT(dl_mark_received(&dm, &h1) == 0);
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_dl_last_forced_settle_time_timeout(void)
+{
+    int failures = 0;
+    TEST("dl_last_forced_settle_time: stamped by a timeout reassignment") {
+        struct download_manager dm;
+        dl_init(&dm);
+        struct uint256 h1 = make_hash(2);
+        dl_mark_requested(&dm, &h1, 200, 1);
+        ASSERT(dl_last_forced_settle_time(&dm) == 0);
+
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        int timeout = dl_get_request_timeout_secs();
+        ASSERT(dl_check_timeouts(&dm, now + timeout + 1) == 1);
+        ASSERT(dl_last_forced_settle_time(&dm) >= now);
+
+        /* Same trace as the drain case: the original (slow) peer's late
+         * reply, if it ever arrives, is indistinguishable from unsolicited. */
+        ASSERT(dl_mark_received(&dm, &h1) == 0);
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_dl_last_forced_settle_time_untouched(void)
+{
+    int failures = 0;
+    TEST("dl_last_forced_settle_time: untouched when nothing times out") {
+        struct download_manager dm;
+        dl_init(&dm);
+        struct uint256 h1 = make_hash(3);
+        dl_mark_requested(&dm, &h1, 300, 1);
+
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        ASSERT(dl_check_timeouts(&dm, now) == 0); /* nothing stale yet */
+        ASSERT(dl_last_forced_settle_time(&dm) == 0);
+
+        /* A hash genuinely never seen by this download manager still
+         * reads as provably unrequested — the grace window only fires
+         * around an ACTUAL drain/timeout event. */
+        struct uint256 never_asked = make_hash(99);
+        ASSERT(dl_mark_received(&dm, &never_asked) == 0);
+        ASSERT(dl_last_forced_settle_time(&dm) == 0);
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_dl_timeout_retry_failover(void)
 {
     int failures = 0;
@@ -1089,6 +1190,10 @@ int test_download(void)
     failures += test_dl_peer_disconnected();
     failures += test_dl_settle_accounting();
     failures += test_dl_check_timeouts();
+    failures += test_dl_last_forced_settle_time_initial();
+    failures += test_dl_last_forced_settle_time_drain();
+    failures += test_dl_last_forced_settle_time_timeout();
+    failures += test_dl_last_forced_settle_time_untouched();
     failures += test_dl_timeout_retry_failover();
     failures += test_dl_timeout_retry_failover_peer_zero();
     failures += test_dl_timeout_retry_avoid_expiry();

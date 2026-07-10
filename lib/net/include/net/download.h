@@ -188,6 +188,22 @@ struct download_manager {
     /* Byte throughput tracking */
     uint64_t total_bytes_received;   /* total block bytes downloaded */
     int64_t  sync_start_time;        /* epoch seconds when first block received */
+
+    /* Epoch seconds of the most recent event that force-cleared an
+     * in-flight slot WITHOUT the body ever arriving — either
+     * dl_drain_for_backpressure() (tip-stall backpressure) or
+     * dl_check_timeouts() reassigning a slow peer's request to someone
+     * else. 0 if neither has ever happened. Both leave the exact same
+     * trace as "never requested": the slot's `active` flag goes false,
+     * so a legitimately-requested block body that arrives late (the
+     * original peer was just slow, or we were under backpressure) is
+     * indistinguishable from a truly unsolicited push by inspecting the
+     * hash alone — dl_mark_received() returns 0 for both. See
+     * dl_last_forced_settle_time() / the PEER_OFFENCE_UNREQUESTED
+     * call-site in msg_blocks.c, which withholds scoring for
+     * DL_STALL_TIMEOUT_SECS after either event rather than risk
+     * banning an honest-but-slow peer. */
+    int64_t  last_forced_settle_time;
 };
 
 /* Initialize the download manager. Call once at startup. */
@@ -285,5 +301,10 @@ struct download_manager *msg_get_download_mgr(void);
  * normal net_message_free / block_already_seen paths. The header
  * chain in main_state is untouched. Safe to call from any thread. */
 size_t dl_drain_for_backpressure(struct download_manager *dm);
+
+/* Epoch seconds of the last forced settle-without-body event (backpressure
+ * drain OR timeout reassignment), or 0 if neither has ever happened. See
+ * the field comment on download_manager::last_forced_settle_time. */
+int64_t dl_last_forced_settle_time(struct download_manager *dm);
 
 #endif /* ZCL_DOWNLOAD_H */

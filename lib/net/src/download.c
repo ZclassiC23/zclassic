@@ -630,6 +630,12 @@ size_t dl_check_timeouts(struct download_manager *dm, int64_t now)
         reassigned++;
     }
 
+    /* Same trace as a backpressure drain (see the field comment on
+     * last_forced_settle_time): the original peer's late reply — if it
+     * ever arrives — will look identical to an unsolicited push. */
+    if (reassigned > 0)
+        dm->last_forced_settle_time = now;
+
     /* Compact hash table if it has many dead gaps */
     maybe_grow(dm);
 
@@ -1154,10 +1160,20 @@ void dl_get_diagnostics(struct download_manager *dm,
     zcl_mutex_unlock(&dm->cs);
 }
 
+int64_t dl_last_forced_settle_time(struct download_manager *dm)
+{
+    if (!dm) return 0;
+    zcl_mutex_lock(&dm->cs);
+    int64_t t = dm->last_forced_settle_time;
+    zcl_mutex_unlock(&dm->cs);
+    return t;
+}
+
 size_t dl_drain_for_backpressure(struct download_manager *dm)
 {
     if (!dm) return 0;
     zcl_mutex_lock(&dm->cs);
+    dm->last_forced_settle_time = (int64_t)platform_time_wall_time_t();
     size_t drained = dm->queue_len + dm->num_active;
 
     /* Drop pending hashes outright — peers won't be re-asked until

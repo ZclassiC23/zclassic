@@ -16,6 +16,8 @@
 #include "core/hash.h"
 #include "net/msgprocessor.h"
 #include "net/msg_internal.h"
+#include "net/download.h"
+#include "net/peer_scoring.h"
 #include "consensus/validation.h"
 #include "core/uint256.h"
 #include "primitives/block.h"
@@ -372,6 +374,183 @@ static int test_process_block_msg_reducer_pending_stays_retryable(void)
     return failures;
 }
 
+/* ── Lane 3 hardening: PEER_OFFENCE_UNREQUESTED wiring ─────────────
+ *
+ * process_block_msg() (msg_blocks.c) scores PEER_OFFENCE_UNREQUESTED
+ * when dl_mark_received() finds no in-flight slot for the delivered
+ * hash from ANY peer — a plain "block" message is only ever a getdata
+ * response in this protocol (unsolicited fast-relay goes through
+ * process_cmpctblock(), a different message entirely), so that is
+ * normally a provable unsolicited push. These three tests pin: scored
+ * when never requested, NOT scored when it was requested, and NOT
+ * scored inside the drain/timeout grace window (the one case where
+ * "never in-flight" does not prove "never requested" — see
+ * lib/test/src/test_download.c::test_dl_last_forced_settle_time). */
+
+static void unreq_setup_node(struct p2p_node *node, uint32_t id)
+{
+    memset(node, 0, sizeof(*node));
+    node->id = id;
+    snprintf(node->addr_name, sizeof(node->addr_name), "unreq-peer-%u", id);
+    /* Non-localhost, non-whitelisted so is_trusted_peer() doesn't exempt
+     * it from scoring (mirrors test_peer_scoring.c's setup_node()). */
+    node->addr.svc.addr.ip[10] = 0xff;
+    node->addr.svc.addr.ip[11] = 0xff;
+    node->addr.svc.addr.ip[12] = 198;
+    node->addr.svc.addr.ip[13] = 51;
+    node->addr.svc.addr.ip[14] = 100;
+    node->addr.svc.addr.ip[15] = (unsigned char)id;
+}
+
+static int test_process_block_msg_scores_unrequested(void)
+{
+    int failures = 0;
+    TEST("msg_handlers: process_block_msg scores PEER_OFFENCE_UNREQUESTED "
+         "when the block was never requested from anyone") {
+        peer_scoring_init();
+        /* Hermetic: the download manager is a process-wide singleton —
+         * a prior test in this SAME forked group process may have left
+         * a drain/timeout grace window active, which would silently
+         * suppress the very assertion under test. */
+        dl_init(get_download_mgr());
+
+        struct block blk;
+        block_init(&blk);
+        blk.header.nVersion = 4;
+        blk.header.nTime = 1700000010u;
+        blk.header.nBits = 0x1f00ffffu;
+        blk.header.nNonce.data[0] = 21;
+
+        struct uint256 hash;
+        block_get_hash(&blk, &hash);
+        block_clear_seen(&hash);
+
+        struct byte_stream s;
+        stream_init(&s, 256);
+        ASSERT(block_serialize(&blk, &s));
+
+        int submit_calls = 0;
+        struct net_manager nm;
+        memset(&nm, 0, sizeof(nm));
+        struct msg_processor mp;
+        memset(&mp, 0, sizeof(mp));
+        mp.block_submit = submit_reducer_pending_block;
+        mp.block_submit_ctx = &submit_calls;
+        mp.net_mgr = &nm;
+
+        struct p2p_node node;
+        unreq_setup_node(&node, 501);
+
+        ASSERT(process_block_msg(&mp, &node, &s));
+        ASSERT(atomic_load(&node.misbehavior) ==
+              peer_offence_weight(PEER_OFFENCE_UNREQUESTED));
+
+        stream_free(&s);
+        block_free(&blk);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_process_block_msg_no_score_when_requested(void)
+{
+    int failures = 0;
+    TEST("msg_handlers: process_block_msg does NOT score a block we "
+         "actually asked this peer for") {
+        peer_scoring_init();
+        dl_init(get_download_mgr());
+
+        struct block blk;
+        block_init(&blk);
+        blk.header.nVersion = 4;
+        blk.header.nTime = 1700000011u;
+        blk.header.nBits = 0x1f00ffffu;
+        blk.header.nNonce.data[0] = 22;
+
+        struct uint256 hash;
+        block_get_hash(&blk, &hash);
+        block_clear_seen(&hash);
+
+        struct p2p_node node;
+        unreq_setup_node(&node, 502);
+
+        /* We DID ask this peer for it before it arrived. */
+        ASSERT(dl_mark_requested(get_download_mgr(), &hash, 1, node.id));
+
+        struct byte_stream s;
+        stream_init(&s, 256);
+        ASSERT(block_serialize(&blk, &s));
+
+        int submit_calls = 0;
+        struct net_manager nm;
+        memset(&nm, 0, sizeof(nm));
+        struct msg_processor mp;
+        memset(&mp, 0, sizeof(mp));
+        mp.block_submit = submit_reducer_pending_block;
+        mp.block_submit_ctx = &submit_calls;
+        mp.net_mgr = &nm;
+
+        ASSERT(process_block_msg(&mp, &node, &s));
+        ASSERT(atomic_load(&node.misbehavior) == 0);
+
+        stream_free(&s);
+        block_free(&blk);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_process_block_msg_no_score_within_settle_grace(void)
+{
+    int failures = 0;
+    TEST("msg_handlers: process_block_msg withholds scoring inside the "
+         "post-drain/timeout grace window (honest-but-late delivery)") {
+        peer_scoring_init();
+        struct download_manager *dm = get_download_mgr();
+        dl_init(dm);
+        /* A drain (or a timeout reassignment — see test_download.c)
+         * force-clears in-flight state without telling the peer, so a
+         * legitimately-requested body can still arrive afterward with
+         * no trace it was ever asked for. */
+        (void)dl_drain_for_backpressure(dm);
+
+        struct block blk;
+        block_init(&blk);
+        blk.header.nVersion = 4;
+        blk.header.nTime = 1700000012u;
+        blk.header.nBits = 0x1f00ffffu;
+        blk.header.nNonce.data[0] = 23;
+
+        struct uint256 hash;
+        block_get_hash(&blk, &hash);
+        block_clear_seen(&hash);
+
+        struct byte_stream s;
+        stream_init(&s, 256);
+        ASSERT(block_serialize(&blk, &s));
+
+        int submit_calls = 0;
+        struct net_manager nm;
+        memset(&nm, 0, sizeof(nm));
+        struct msg_processor mp;
+        memset(&mp, 0, sizeof(mp));
+        mp.block_submit = submit_reducer_pending_block;
+        mp.block_submit_ctx = &submit_calls;
+        mp.net_mgr = &nm;
+
+        struct p2p_node node;
+        unreq_setup_node(&node, 503);
+
+        ASSERT(process_block_msg(&mp, &node, &s));
+        ASSERT(atomic_load(&node.misbehavior) == 0);
+
+        stream_free(&s);
+        block_free(&blk);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 struct async_block_submit_ctx {
     atomic_int entered;
     atomic_int release;
@@ -611,6 +790,9 @@ int test_msg_handlers(void)
     failures += test_p148_should_mark_seen_accepts_active();
     failures += test_block_validation_retryable_classifier();
     failures += test_process_block_msg_reducer_pending_stays_retryable();
+    failures += test_process_block_msg_scores_unrequested();
+    failures += test_process_block_msg_no_score_when_requested();
+    failures += test_process_block_msg_no_score_within_settle_grace();
     failures += test_process_block_msg_queues_reducer_during_catchup();
     failures += test_msg_block_intake_full_stays_retryable();
     failures += test_msg_process_messages_yields_after_bounded_batch();

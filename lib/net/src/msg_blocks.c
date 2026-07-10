@@ -534,9 +534,39 @@ bool process_block_msg(struct msg_processor *mp, struct p2p_node *node,
     struct uint256 hash;
     block_get_hash(&blk, &hash);
 
-    /* Mark received in download manager (removes from in-flight) */
+    /* Mark received in download manager (removes from in-flight) and
+     * capture who (if anyone) we asked for it. A plain "block" message
+     * is ONLY ever a getdata response in this protocol — the compact-
+     * block fast-relay path (BIP152 "sendcmpct"/"cmpctblock") is the
+     * one place a peer legitimately pushes block data unsolicited, and
+     * that goes through process_cmpctblock() in msg_compact.c, never
+     * here. So requester_id == 0 (no in-flight slot for this hash, from
+     * ANY peer) is normally a provable unsolicited push.
+     *
+     * Two honest sources can produce the exact same "requester_id == 0"
+     * signal though, so this is NOT simply "never in-flight == ban":
+     * dl_drain_for_backpressure() (tip-stall backpressure) and
+     * dl_check_timeouts() reassigning a slow peer's block to someone
+     * else BOTH force-clear the in-flight slot without telling the
+     * peer — a legitimately-requested body (the original peer was just
+     * slow, or we were briefly overloaded) can still arrive afterward
+     * with no trace it was ever asked for. We can't tell that apart
+     * from a truly-unsolicited push by inspecting this hash alone, so
+     * we withhold scoring for DL_STALL_TIMEOUT_SECS after either event
+     * (ample time for an already-in-transit reply to land) rather than
+     * risk banning an honest-but-slow peer. */
     struct download_manager *dm = get_download_mgr();
-    dl_mark_received(dm, &hash);
+    uint32_t requester_id = dl_mark_received(dm, &hash);
+    if (requester_id == 0) {
+        int64_t now_s = (int64_t)platform_time_wall_time_t();
+        int64_t last_settle = dl_last_forced_settle_time(dm);
+        bool within_settle_grace =
+            last_settle != 0 && (now_s - last_settle) < DL_STALL_TIMEOUT_SECS;
+        if (!within_settle_grace) {
+            peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_UNREQUESTED,
+                                "block body we never requested");
+        }
+    }
 
     /* Track block bytes for MB/s throughput reporting */
     dl_add_bytes_received(dm, s->size);
