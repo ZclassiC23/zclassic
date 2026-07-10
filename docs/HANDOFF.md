@@ -1,4 +1,15 @@
-> **▶ NEXT DEV START HERE: [`docs/work/SESSION-HANDOFF-2026-07-10-DETECTIVE.md`](work/SESSION-HANDOFF-2026-07-10-DETECTIVE.md)**
+> **▶ NEXT DEV START HERE: [`docs/work/SESSION-HANDOFF-2026-07-10-WAVE3.md`](work/SESSION-HANDOFF-2026-07-10-WAVE3.md)**
+> — 2026-07-10 Detective Wave 3 ("always strongly syncing to tip"): diagnosed + cured the
+> live P0 (empty Sapling anchor-frontier stall — the node held 216 blocks behind headers
+> for 4.6h with no auto-remedy), extended SHA3 golden windows to h=3,175,999 (+ fixed a
+> partial-trailing-window latent bug), 4 new watchtower alert rules incl.
+> header_gap_growing, golden UTXO-ladder tripwire wired live, banlist persistence +
+> onion/IPv6 sybil caps + UNREQUESTED scoring, nightly byzantine sweep. **Deploy is gated
+> on the sapling-anchor copy-prove verdict — read that handoff §"In flight" FIRST.**
+> Lane 5 (zcl_agent_test MCP runner + _health sweep) may still need merging; Lane 2
+> (at-tip meta-detector) approved but not started.
+>
+> **▶ PRIOR: [`docs/work/SESSION-HANDOFF-2026-07-10-DETECTIVE.md`](work/SESSION-HANDOFF-2026-07-10-DETECTIVE.md)**
 > — 2026-07-10 detective-node reliability wave: local `main` `3b0de63b0` → `82c128c62`
 > (26 commits). Landed 7 lanes — rung-3 runtime refold (escalator terminal rung),
 > row-absent rowless-hole detector, P2P header-repair fallback (oracle-dead
