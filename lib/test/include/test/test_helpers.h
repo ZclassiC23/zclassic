@@ -463,6 +463,7 @@ int test_connect_block_sapling_root(void);
 int test_connect_block_checkdatasig_sigops(void);
 int test_utxo_apply_coinbase_maturity(void);
 int test_pow_diffadj_precedence(void);
+int test_difficulty_adjustment_adversarial(void);
 int test_bip34_coinbase_height_parity(void);
 int test_key_scrub(void);
 int test_block_index_loader(void);
