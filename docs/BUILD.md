@@ -96,6 +96,52 @@ This binary is for local AI/operator iteration only. `make zclassic23`,
 `make deploy`, reproducible builds, and releases continue to use
 `build/bin/zclassic23` with the release flag profile.
 
+## Cached full test suite (`test_parallel`)
+
+`build/bin/test_parallel` — the binary `make t`, `make test`, and `make ci`
+run — is built from a **cached per-TU object tree** (`build/test-rel-obj/`),
+not one whole-program `cc`. Each of the
+~1,300 node + test `.c` files compiles to its own `.o` with `-MMD -MP`
+depfiles, and the binary is one plain link over those objects. Consequences:
+
+- **One-file edit → one recompile + one link** (≈2 s here), not a full
+  ~1,300-TU rebuild (≈90 s). Repeated full-suite gate runs with no edits
+  re-link nothing (`make test_parallel` is a no-op when up to date).
+- **Header/`.def` edits are tracked.** The retired whole-program rule listed
+  only `.c` files as prerequisites, so a header-only edit did **not** rebuild
+  `test_parallel` at all (a false green). The per-TU depfiles now recompile
+  exactly the dependents of any changed header.
+- **`ccache` makes it cacheable.** A giant multi-source `cc` invocation cannot
+  be cached; per-TU `.o` compiles hit the cache, so a clean object tree with a
+  warm cache rebuilds in a few seconds. `ccache` stays optional (auto-detected
+  via `ZCL_USE_CCACHE`); everything works without it, just slower on the first
+  build.
+
+**Flag profile.** The cached objects use the identical release flags of the old
+whole-program `test_parallel` (`-O3 -Werror -pedantic`, the hardening flags,
+`-DZCL_TESTING`) with two documented, semantics-neutral deltas: `-flto=auto` is
+dropped (LTO is a link-time whole-program optimization — caching per-TU GIMPLE
+would still force the slow whole-program codegen at every link; dropping it lets
+each TU be cached and code-generated independently), and the `-O3`+FORTIFY
+heuristic-warning family (`-Wformat-truncation`/`-overflow`, `-Warray-bounds`,
+`-Wstringop-truncation`/`-overread`, `-Wrestrict`, `-Wnonnull`,
+`-Wmaybe-uninitialized`) is `-Wno`'d — those fire only once real per-TU codegen
+runs at `-O3`, and no other build in the tree enforces them (release and
+`build-only` defer codegen to the LTO link; `test_parallel_fast` runs at `-O1`),
+so excluding them keeps the enforced warning set a superset-or-equal of the
+retired monolith's. Neither delta can change test behavior.
+
+**Whole-program variant for debugging.** `make test_parallel_wpo` still builds
+the original monolithic whole-program LTO binary at
+`build/bin/test_parallel_wpo`. Use it to rule out any per-TU-vs-LTO divergence
+if a test ever behaves differently between the two (it should not). `test_zcl`
+(the serial runner) also remains a whole-program build.
+
+**Fast inner-loop variant.** `make t-fast ONLY=<group>` uses the separate
+`build/bin/test_parallel_fast` object tree (`build/test-obj/`, `-O1`, non-
+`-Werror`) for the tightest edit loop; run strict `make t` / `make test` before
+commit.
+
 ## Prerequisites
 
 - **gcc 14+** (or clang with working `-std=c23`) and **GNU make**.
@@ -177,7 +223,8 @@ make zclassic23     # full link
 ```bash
 make -j"$(nproc)"   # test_zcl + zclassic23 + zclassic-cli
 make dev-bin        # fast local node executable, not for deploy/release
-make test           # full suite (498 parallel groups)
+make test           # full parallel suite via the cached per-TU test_parallel
+make test_parallel_wpo  # whole-program LTO test binary (debug per-TU/LTO divergence)
 make lint           # 40 defensive-coding gates
 make ci             # local gate: lint + tests + MVP slices (runs locally, not on GitHub Actions)
 make deploy         # force-fresh rebuild + restart the live service + verify build_commit
