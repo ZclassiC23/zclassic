@@ -12,6 +12,7 @@
 #include "controllers/strong_params.h"
 #include "api_controller_internal.h"
 #include "event_agent_summary.h"
+#include "controllers/event_operator_snapshot_controller.h"
 #include "config/boot.h"
 #include "services/bg_validation_service.h"
 #include "services/block_index_integrity.h"
@@ -643,6 +644,7 @@ void register_event_rpc_commands(struct rpc_table *t)
         { "control", "status",            rpc_agent_summary,     true },
         { "control", "summary",           rpc_agent_summary,     true },
         { "control", "operatorsummary",   rpc_agent_summary,     true },
+        { "control", "operatorsnapshot",  rpc_operator_snapshot, true },
         { "control", "agentmap",          rpc_agent_map,         true },
         { "control", "agentlanes",        rpc_agent_lanes,       true },
         { "control", "agentliveness",     rpc_agent_liveness,    true },

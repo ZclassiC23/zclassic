@@ -86,15 +86,13 @@ static void tf_warm_provable_tip_once(sqlite3 *db, const char *reason)
 /* Cross-TU seam for tip_finalize_anchor.c (tip_finalize_anchor_internal.h):
  * the anchor/seed TU reads the live stage handle at call time and publishes
  * the served tip through the same single update path as the step body. */
-stage_t *tip_finalize_stage_handle(void)
-{
-    return g_stage;
-}
+stage_t *tip_finalize_stage_handle(void) { return g_stage; }
 
 void tip_finalize_publish_last_advance(int height, const uint8_t hash[32])
-{
-    tip_finalize_observe_update_last_advance(height, hash);
-}
+{ tip_finalize_observe_update_last_advance(height, hash); }
+
+bool tip_finalize_stage_authority_snapshot(int64_t *height, uint8_t hash[32])
+{ return tip_finalize_observe_get_last_advance(height, hash); }
 
 static int reorg_depth_from(struct block_index *old_tip,
                             struct block_index *new_tip)

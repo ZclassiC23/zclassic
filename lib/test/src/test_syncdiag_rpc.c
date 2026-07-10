@@ -26,6 +26,7 @@
 #include "controllers/event_controller.h"
 #include "controllers/health_controller.h"
 #include "controllers/network_controller.h"
+#include "core/arith_uint256.h"
 #include "framework/condition.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/tip_finalize_stage.h"
@@ -34,6 +35,8 @@
 #include "services/block_source_policy.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/node_health_service.h"
+#include "services/operator_snapshot_service.h"
+#include "services/chain_state_service.h"
 #include "services/sync_monitor.h"
 #include "storage/boot_auto_reindex.h"
 #include "storage/coins_kv.h"
@@ -51,9 +54,12 @@
 #include "rpc/server.h"
 #include "json/json.h"
 #include "util/alerts.h"
+#include "util/blocker.h"
 #include "util/clientversion.h"
 #include "validation/main_state.h"
 #include <string.h>
+#include <pthread.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <sys/stat.h>
@@ -71,6 +77,23 @@ static __attribute__((noinline)) void dirty_stack_region(void)
         junk[i] = 0xCC;
     /* Force the compiler to materialize the writes. */
     __asm__ volatile("" : : "r"(junk) : "memory");
+}
+
+struct syncdiag_peer_lock_hold {
+    struct connman *connman;
+    _Atomic bool ready;
+    _Atomic bool release;
+};
+
+static void *syncdiag_hold_peer_lock(void *arg)
+{
+    struct syncdiag_peer_lock_hold *hold = arg;
+    zcl_mutex_lock(&hold->connman->manager.cs_nodes);
+    atomic_store(&hold->ready, true);
+    while (!atomic_load(&hold->release))
+        platform_sleep_ms(1);
+    zcl_mutex_unlock(&hold->connman->manager.cs_nodes);
+    return NULL;
 }
 
 static const struct json_value *find_service(const struct json_value *arr,
@@ -221,6 +244,39 @@ static bool syncdiag_exec_sql(sqlite3 *db, const char *sql)
     if (err)
         sqlite3_free(err);
     return false;
+}
+
+static bool syncdiag_seed_durable_tip_authority(
+    int height, const uint8_t hash[32])
+{
+    sqlite3 *db = progress_store_db();
+    sqlite3_stmt *stmt = NULL;
+    if (!db || height < 0 || !hash)
+        return false;
+    progress_store_tx_lock();
+    bool ok = syncdiag_exec_sql(db,
+        "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
+        "height INTEGER PRIMARY KEY, status TEXT NOT NULL, "
+        "ok INTEGER NOT NULL, work_delta_high INTEGER NOT NULL, "
+        "work_delta_low INTEGER NOT NULL, utxo_size_after INTEGER NOT NULL, "
+        "reorg_depth INTEGER NOT NULL, finalized_at INTEGER NOT NULL, "
+        "tip_hash BLOB)");
+    if (ok) {
+        ok = sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO tip_finalize_log"
+            "(height,status,ok,work_delta_high,work_delta_low,"
+            "utxo_size_after,reorg_depth,finalized_at,tip_hash) "
+            "VALUES(?,'anchor',1,0,0,0,0,1,?)",
+            -1, &stmt, NULL) == SQLITE_OK;
+    }
+    if (ok) {
+        sqlite3_bind_int(stmt, 1, height);
+        sqlite3_bind_blob(stmt, 2, hash, 32, SQLITE_TRANSIENT);
+        ok = sqlite3_step(stmt) == SQLITE_DONE; /* raw-sql-ok:test-fixture */
+    }
+    sqlite3_finalize(stmt);
+    progress_store_tx_unlock();
+    return ok;
 }
 
 static bool syncdiag_seed_cursor(sqlite3 *db, const char *name, int cursor)
@@ -3373,6 +3429,296 @@ syncdiag_net_split_done:
         else    { printf("FAIL\n"); failures++; }
     }
 
+    printf("api: native operator snapshot is coherent, authoritative, and pure... ");
+    {
+        char authority_dir[256];
+        struct connman cm;
+        struct node_signals sigs;
+        struct main_state ms;
+        struct block_index tip;
+        struct uint256 tip_hash;
+        struct rpc_table tbl;
+        struct json_value params;
+        struct json_value result;
+        const int served_height = 100;
+
+        chain_params_select(CHAIN_MAIN);
+        memset(&cm, 0, sizeof(cm));
+        memset(&sigs, 0, sizeof(sigs));
+        memset(&ms, 0, sizeof(ms));
+        memset(&tip, 0, sizeof(tip));
+        memset(&tip_hash, 0, sizeof(tip_hash));
+        progress_store_close();
+        test_make_tmpdir(authority_dir, sizeof(authority_dir),
+                         "syncdiag", "operator_authority");
+        bool ok = progress_store_open(authority_dir);
+        ok = ok && connman_init(&cm, chain_params_get(), &sigs);
+        main_state_init(&ms);
+        block_index_init(&tip);
+        syncdiag_set_hash(&tip_hash, 0x91);
+        tip.phashBlock = &tip_hash;
+        tip.nHeight = served_height;
+        tip.nTime = (uint32_t)platform_time_wall_time_t();
+        tip.nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_SCRIPTS;
+        arith_uint256_set_u64(&tip.nChainWork, 100);
+        ok = ok && block_map_insert(&ms.map_block_index, tip.phashBlock,
+                                    &tip);
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
+        ms.pindex_best_header = &tip;
+        csr_init(csr_instance(), &ms.map_block_index, &ms.chain_active,
+                 &ms.pindex_best_header, NULL, NULL, NULL);
+        ok = ok && syncdiag_seed_durable_tip_authority(
+            served_height, tip_hash.data);
+
+        struct p2p_node *peer =
+            syncdiag_add_peer(&cm, 91, false, PEER_HANDSHAKE_COMPLETE);
+        ok = ok && peer != NULL;
+        if (peer)
+            peer->starting_height = 2000000000;
+
+        struct download_manager *dm = msg_get_download_mgr();
+        dl_drain_for_backpressure(dm);
+        rpc_table_init(&tbl);
+        register_event_rpc_commands(&tbl);
+        if (rpc_is_in_warmup(NULL, 0))
+            set_rpc_warmup_finished();
+        rpc_net_set_connman(&cm);
+        sync_monitor_set_context(&cm, dm, &ms);
+        reducer_frontier_provable_tip_set(served_height);
+        sync_set_state(SYNC_FINDING_PEERS, "operator snapshot baseline");
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "operator snapshot baseline");
+        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "operator snapshot baseline");
+        sync_set_state(SYNC_AT_TIP, "operator snapshot baseline");
+
+        alerts_shutdown();
+        unsetenv("ZCL_ALERTS_DISABLE");
+        event_log_init();
+        alerts_init();
+        alerts_reset();
+        blocker_module_shutdown();
+        ok = ok && blocker_module_init();
+
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "operatorsnapshot",
+                                     &params, &result);
+        const struct json_value *capture = json_get(&result, "capture");
+        const struct json_value *chain = json_get(&result, "chain");
+        const struct json_value *header =
+            chain ? json_get(chain, "validated_header") : NULL;
+        const struct json_value *peers = json_get(&result, "peers");
+        const struct json_value *blockers = json_get(&result, "blockers");
+        const struct json_value *summary = json_get(&result, "summary");
+        const struct json_value *invariants = json_get(&result, "invariants");
+        ok = ok && result.type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
+                          "zcl.operator_snapshot.v1") == 0;
+        ok = ok && json_get_int(json_get(&result, "schema_version")) == 1;
+        ok = ok && strcmp(json_get_str(json_get(&result,
+                                                "execution_locus")),
+                          "target_node") == 0;
+        ok = ok && capture && capture->type == JSON_OBJ;
+        ok = ok && !json_get_bool(json_get(capture,
+                                           "globally_linearizable"));
+        ok = ok && json_get_bool(json_get(capture,
+                                           "critical_frontier_stable"));
+        ok = ok && json_get_bool(json_get(capture,
+                                           "verdict_inputs_complete"));
+        ok = ok && !json_get_bool(json_get(capture, "partial"));
+        ok = ok && json_get_int(json_get(capture, "duration_us")) >= 0;
+        ok = ok && header && header->type == JSON_OBJ;
+        ok = ok && json_get_int(json_get(header, "height")) == served_height;
+        ok = ok && json_get_str(json_get(header, "hash"))[0] != '\0';
+        ok = ok && json_get_str(json_get(header, "chain_work"))[0] != '\0';
+        ok = ok && peers && peers->type == JSON_OBJ;
+        ok = ok && json_get_int(json_get(peers,
+                                         "advertised_max_height")) ==
+                       2000000000;
+        ok = ok && strcmp(json_get_str(json_get(peers,
+                                                "peer_height_trust")),
+                          "untrusted_peer_advertisement") == 0;
+        ok = ok && blockers && blockers->type == JSON_OBJ;
+        ok = ok && json_get_int(json_get(blockers, "active_count")) == 0;
+        ok = ok && json_get(blockers, "generation") != NULL;
+        ok = ok && summary && summary->type == JSON_OBJ;
+        ok = ok && json_get_int(json_get(summary, "target_height")) ==
+                       served_height;
+        ok = ok && json_get_int(json_get(summary, "gap")) == 0;
+        ok = ok && strcmp(json_get_str(json_get(summary, "status")),
+                          "healthy") == 0;
+        ok = ok && invariants && invariants->type == JSON_OBJ;
+        ok = ok && strcmp(json_get_str(json_get(
+                              json_get(invariants, "frontier_order"),
+                              "status")), "pass") == 0;
+        struct agent_peer_snapshot live_peer_snapshot;
+        struct agent_peer_snapshot cached_peer_snapshot;
+        agent_peer_snapshot_collect(&live_peer_snapshot, &cm);
+        struct syncdiag_peer_lock_hold hold = { .connman = &cm };
+        pthread_t hold_thread;
+        bool hold_started = pthread_create(&hold_thread, NULL,
+                                           syncdiag_hold_peer_lock,
+                                           &hold) == 0;
+        for (int wait = 0; hold_started && !atomic_load(&hold.ready) &&
+             wait < 1000; wait++)
+            platform_sleep_ms(1);
+        memset(&cached_peer_snapshot, 0, sizeof(cached_peer_snapshot));
+        if (hold_started && atomic_load(&hold.ready))
+            agent_peer_snapshot_collect(&cached_peer_snapshot, &cm);
+        atomic_store(&hold.release, true);
+        if (hold_started)
+            pthread_join(hold_thread, NULL);
+        bool cache_ok = hold_started && atomic_load(&hold.ready) &&
+            live_peer_snapshot.available &&
+            cached_peer_snapshot.available && cached_peer_snapshot.stale &&
+            cached_peer_snapshot.generation == live_peer_snapshot.generation &&
+            cached_peer_snapshot.peer_count == live_peer_snapshot.peer_count &&
+            cached_peer_snapshot.inbound_count ==
+                live_peer_snapshot.inbound_count &&
+            cached_peer_snapshot.outbound_count ==
+                live_peer_snapshot.outbound_count &&
+            cached_peer_snapshot.ready_count == live_peer_snapshot.ready_count &&
+            cached_peer_snapshot.peer_best_height ==
+                live_peer_snapshot.peer_best_height;
+        if (!cache_ok) {
+            printf(" peer-cache mismatch live(gen=%llu stale=%d n=%zu) "
+                   "cached(gen=%llu stale=%d n=%zu)",
+                   (unsigned long long)live_peer_snapshot.generation,
+                   live_peer_snapshot.stale,
+                   live_peer_snapshot.peer_count,
+                   (unsigned long long)cached_peer_snapshot.generation,
+                   cached_peer_snapshot.stale,
+                   cached_peer_snapshot.peer_count);
+        }
+        ok = ok && cache_ok;
+        json_free(&result);
+
+        event_emitf(EV_OPERATOR_NEEDED, 0,
+                    "condition=operator_snapshot_purity attempts=9");
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "operatorsnapshot",
+                                     &params, &result);
+        char latch_detail[ALERT_OPERATOR_NEEDED_DETAIL_LEN] = {0};
+        ok = ok && alerts_operator_needed(latch_detail,
+                                          sizeof(latch_detail), NULL);
+        ok = ok && strstr(latch_detail, "operator_snapshot_purity") != NULL;
+        ok = ok && strcmp(json_get_str(json_get(&result, "status")),
+                          "operator_needed") == 0;
+        json_free(&result);
+
+        alerts_operator_needed_clear();
+        struct blocker_record resource;
+        ok = ok && blocker_init(&resource, "test.operator.disk_full",
+                                "operator_snapshot", BLOCKER_RESOURCE,
+                                "test resource blocker");
+        ok = ok && blocker_set(&resource) == 0;
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "operatorsnapshot",
+                                     &params, &result);
+        blockers = json_get(&result, "blockers");
+        ok = ok && strcmp(json_get_str(json_get(&result, "status")),
+                          "operator_needed") == 0;
+        ok = ok && json_get_int(json_get(blockers, "active_count")) == 1;
+        ok = ok && json_get_int(json_get(blockers, "resource_count")) == 1;
+        ok = ok && strcmp(json_get_str(json_get(
+                              json_get(blockers, "dominant"), "id")),
+                          "test.operator.disk_full") == 0;
+
+        json_free(&result);
+        json_free(&params);
+        blocker_clear("test.operator.disk_full");
+        blocker_module_shutdown();
+        alerts_shutdown();
+        dl_drain_for_backpressure(dm);
+        sync_monitor_set_context(NULL, NULL, NULL);
+        rpc_net_set_connman(NULL);
+        reducer_frontier_provable_tip_reset();
+        sync_set_state(SYNC_IDLE, "operator snapshot cleanup");
+        csr_free(csr_instance());
+        main_state_free(&ms);
+        connman_free(&cm);
+        progress_store_close();
+        test_cleanup_tmpdir(authority_dir);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: operator snapshot classifier fails closed on edge states... ");
+    {
+        struct operator_capture capture;
+        memset(&capture, 0, sizeof(capture));
+        capture.critical_frontier_stable = true;
+        capture.chain.context_known = true;
+        capture.chain.hstar_published = true;
+        capture.chain.served.height_known = true;
+        capture.chain.served.binding_known = true;
+        capture.chain.served.height = 100;
+        snprintf(capture.chain.served.hash,
+                 sizeof(capture.chain.served.hash), "served-hash");
+        snprintf(capture.chain.served.chain_work,
+                 sizeof(capture.chain.served.chain_work), "served-work");
+        capture.chain.indexed = capture.chain.served;
+        capture.chain.header = capture.chain.served;
+        capture.chain.authority_pair_known = true;
+        capture.chain.durable_authority_known = true;
+        capture.chain.authority_matches_served = true;
+        capture.chain.ancestry_known = true;
+        capture.chain.served_ancestor_indexed = true;
+        capture.chain.indexed_ancestor_header = true;
+        capture.chain.work_known = true;
+        capture.chain.work_monotone = true;
+        capture.chain.validity_known = true;
+        capture.chain.validity_sufficient = true;
+        capture.chain.failure_free = true;
+        capture.peers.available = true;
+        capture.peers.direction_known = true;
+        capture.peers.ready_known = true;
+        capture.peers.peer_count = 1;
+        capture.peers.outbound_count = 1;
+        capture.peers.ready_count = 1;
+        capture.download_known = true;
+        capture.sync_state_known = true;
+        capture.sync_state = SYNC_AT_TIP;
+
+        struct operator_verdict verdict =
+            operator_snapshot_classify(&capture);
+        bool ok = verdict.healthy && verdict.complete &&
+                  strcmp(verdict.status, "healthy") == 0;
+
+        capture.peers.peer_count = 0;
+        capture.peers.outbound_count = 0;
+        capture.peers.ready_count = 0;
+        verdict = operator_snapshot_classify(&capture);
+        ok = ok && !verdict.healthy &&
+             strcmp(verdict.status, "blocked") == 0 &&
+             strcmp(verdict.primary, "no_peers") == 0;
+
+        capture.peers.peer_count = 1;
+        capture.peers.outbound_count = 1;
+        capture.peers.ready_count = 1;
+        capture.sync_state = SYNC_BLOCKS_DOWNLOAD;
+        verdict = operator_snapshot_classify(&capture);
+        ok = ok && !verdict.healthy &&
+             strcmp(verdict.status, "degraded") == 0 &&
+             strcmp(verdict.primary, "sync_not_at_tip") == 0;
+
+        capture.sync_state = SYNC_AT_TIP;
+        capture.chain.served.height = 101;
+        verdict = operator_snapshot_classify(&capture);
+        ok = ok && !verdict.healthy && !verdict.frontier_order_ok &&
+             strcmp(verdict.primary, "chain_evidence_inconsistent") == 0;
+
+        capture.chain.served.height = 100;
+        capture.peers.stale = true;
+        verdict = operator_snapshot_classify(&capture);
+        ok = ok && !verdict.healthy && !verdict.complete &&
+             strcmp(verdict.primary, "peer_state_unavailable") == 0;
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
     printf("api: native RPC agent bounds optional detail when budget is spent... ");
     {
         struct rpc_table tbl;
@@ -3832,7 +4178,7 @@ syncdiag_net_split_done:
             served_height;
         ok = ok && json_get_int(json_get(&result, "index_gap")) == 0;
         ok = ok && strcmp(json_get_str(json_get(&result, "sync_state")),
-                          "at_tip") == 0;
+                          "idle") == 0;
         const struct json_value *readiness = json_get(&result, "readiness");
         ok = ok && readiness && readiness->type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(readiness, "schema")),
@@ -3911,7 +4257,7 @@ syncdiag_net_split_done:
             served_height;
         ok = ok && json_get_int(json_get(&result, "index_gap")) == 0;
         ok = ok && strcmp(json_get_str(json_get(&result, "sync_state")),
-                          "at_tip") == 0;
+                          "headers_download") == 0;
         ok = ok && indexer && indexer->type == JSON_OBJ;
         ok = ok && !json_get_bool(json_get(indexer,
                                            "block_source_status_cached"));

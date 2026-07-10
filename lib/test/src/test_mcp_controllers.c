@@ -50,7 +50,7 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL     137  /* +3 metrics baseline tools:
+#define EXPECTED_TOTAL     138  /* +3 metrics baseline tools:
                                  *   zcl_metrics_baseline_set/_list/_diff
                                  *   (lane C2, "what changed since X");
                                  * +5 ZNAM write RPCs: zcl_name_update,
@@ -78,6 +78,7 @@
                                  * +1 service catalog: zcl_service_catalog
                                  * +1 service operation catalog: zcl_service_operations
                                  * +1 semantic timeline: zcl_timeline
+                                 * +1 native operator snapshot
                                  * +2 wallet backup tools: zcl_wallet_backup_status,
                                  *   zcl_wallet_backup_now
                                  * +1 wallet receive intent
@@ -85,7 +86,7 @@
                                  *   zcl_agent_copy_prove (destructive-tier)
                                  * +1 async test launch: zcl_agent_test
                                  *   (destructive-tier) */
-#define EXPECTED_OPS        63  /* + zcl_metrics_baseline_set/_list/_diff
+#define EXPECTED_OPS        64  /* + zcl_metrics_baseline_set/_list/_diff
                                  *   (lane C2, tools/mcp/baseline.c);
                                  * + zcl_agent_copy_prove (async copy-prove);
                                  * + zcl_agent_test (async test launch);
@@ -104,7 +105,8 @@
                                  * + mirror status and zclassicd probe,
                                  * + mempool_inspect (fee+age histograms)
                                  * + zcl_postmortem_list/replay (Phase 6b)
-                                 * + zcl_operator_summary + zcl_agent
+                                 * + zcl_operator_summary,
+                                 *   zcl_operator_snapshot + zcl_agent
                                  *   (simple MCP status)
                                  * + zcl_refold_status
                                  * +10 zcl_agent_* development/proof tools
@@ -462,6 +464,7 @@ static int test_specific_flagship_tools_registered(void)
          * the compat contract is broken. */
         const char *k[] = {
             "zcl_agent", "zcl_status", "zcl_operator_summary",
+            "zcl_operator_snapshot",
             "zcl_agent_map", "zcl_agent_lanes", "zcl_agent_impact",
             "zcl_agent_contracts", "zcl_agent_build",
             "zcl_agent_dev_status", "zcl_agent_interface", "zcl_agent_ops",
@@ -632,6 +635,21 @@ static int test_zcl_status_no_params(void)
     return failures;
 }
 
+static int g_target_only_state_rpc_calls;
+
+static char *mock_target_only_state_rpc(const char *method,
+                                        const char *params_json)
+{
+    if (method && params_json && strcmp(method, "dumpstate") == 0 &&
+        strcmp(params_json, "[\"target_only_future_subsystem\"]") == 0) {
+        g_target_only_state_rpc_calls++;
+        return strdup("{\"subsystem\":\"target_only_future_subsystem\","
+                      "\"captured_at\":1782240014,"
+                      "\"state\":{\"generation\":2}}");
+    }
+    return strdup("{\"code\":-32601,\"message\":\"unexpected RPC\"}");
+}
+
 static int test_zcl_state_catalog_shape(void)
 {
     int failures = 0;
@@ -649,8 +667,40 @@ static int test_zcl_state_catalog_shape(void)
         ASSERT(state->params[0].enum_csv != NULL);
         ASSERT(contains(state->params[0].enum_csv, "reducer_frontier"));
         ASSERT(contains(state->params[0].enum_csv, "block_index"));
+        ASSERT(contains(state->params[0].description,
+                        "target zcl_state_catalog is authoritative"));
+        ASSERT(state->flags & MCP_TOOL_FLAG_ADVISORY_ENUMS);
+
+        char schema[8192];
+        size_t schema_len =
+            mcp_router_input_schema_json(state, schema, sizeof(schema));
+        ASSERT(schema_len > 0);
+        ASSERT(contains(schema, "\"x-advisoryEnum\":"));
+        ASSERT(!contains(schema, "\"enum\":"));
+
+        g_target_only_state_rpc_calls = 0;
+        mcp_rpc_client_set_test_hook(mock_target_only_state_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        json_push_kv_str(&args, "subsystem",
+                         "target_only_future_subsystem");
+        char *body = mcp_router_dispatch("zcl_state", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+        ASSERT(g_target_only_state_rpc_calls == 1);
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "subsystem")),
+                      "target_only_future_subsystem");
+        ASSERT(json_get_int(json_get(json_get(&root, "state"),
+                                     "generation")) == 2);
+        json_free(&root);
+        json_free(&args);
+        free(body);
         PASS();
     } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
     return failures;
 }
 
@@ -937,6 +987,247 @@ static int test_postmortem_tools_list_and_replay(void)
     return failures;
 }
 
+static bool mock_is_blocker_dump(const char *method, const char *params_json)
+{
+    return method && strcmp(method, "dumpstate") == 0 && params_json &&
+           strcmp(params_json, "[\"blocker\"]") == 0;
+}
+
+static char *mock_empty_blocker_dump(void)
+{
+    return strdup("{\"subsystem\":\"blocker\","
+                  "\"captured_at\":1782240005,"
+                  "\"state\":{\"active_count\":0,"
+                  "\"permanent_count\":0,\"transient_count\":0,"
+                  "\"dependency_count\":0,\"resource_count\":0,"
+                  "\"escape_dispatched_total\":0,\"rate_limit_ms\":1000,"
+                  "\"blockers\":[],"
+                  "\"_health\":{\"ok\":true,\"reason\":\"\"}}}");
+}
+
+static char *mock_target_blocker_dump(void)
+{
+    return strdup("{\"subsystem\":\"blocker\","
+                  "\"captured_at\":1782240010,"
+                  "\"state\":{\"active_count\":2,"
+                  "\"permanent_count\":0,\"transient_count\":1,"
+                  "\"dependency_count\":0,\"resource_count\":1,"
+                  "\"escape_dispatched_total\":7,\"rate_limit_ms\":250,"
+                  "\"blockers\":[{"
+                  "\"id\":\"target-peer-slow\",\"owner\":\"net\","
+                  "\"class\":\"transient\",\"age_us\":9000000,"
+                  "\"deadline_remaining_us\":21000000,"
+                  "\"escape_action\":\"retry_peer\","
+                  "\"retry_count\":1,\"retry_budget\":3,"
+                  "\"fire_count\":4,\"reason\":\"peer timeout\"},{"
+                  "\"id\":\"target-disk-full\",\"owner\":\"storage\","
+                  "\"class\":\"resource\",\"age_us\":5000000,"
+                  "\"deadline_remaining_us\":0,"
+                  "\"escape_action\":\"page_operator\","
+                  "\"retry_count\":0,\"retry_budget\":0,"
+                  "\"fire_count\":2,"
+                  "\"reason\":\"disk \\\"full\\\"\\nmanual check\"}],"
+                  "\"_health\":{\"ok\":false,"
+                  "\"reason\":\"2 active target blockers\"}}}");
+}
+
+static char *mock_operator_healthy_rpc(const char *method,
+                                       const char *params_json);
+
+static const char k_native_operator_snapshot_json[] =
+    "{\"schema\":\"zcl.operator_snapshot.v1\",\"schema_version\":1,"
+    "\"api_version\":\"v1\",\"execution_locus\":\"target_node\","
+    "\"producer\":\"event_operator_snapshot_controller\","
+    "\"authority\":\"target_node_internal_state\","
+    "\"trust\":\"target_owned_evidence\","
+    "\"build_commit\":\"nativecafe1\",\"network\":\"main\","
+    "\"process_id\":42,\"node_instance_id\":\"fixture-node-a1\","
+    "\"identity_initialized_at_unix_us\":999000,"
+    "\"snapshot_sequence\":9,"
+    "\"status\":\"healthy\",\"healthy\":true,"
+    "\"verdict_complete\":true,\"primary_blocker\":\"none\","
+    "\"next_action\":\"none\","
+    "\"capture\":{\"model\":\"single_target_bounded_component_snapshots\","
+    "\"globally_linearizable\":false,\"started_at_unix_us\":1000000,"
+    "\"completed_at_unix_us\":1000100,\"duration_us\":100,"
+    "\"component_skew_upper_bound_us\":100,\"attempts\":1,"
+    "\"critical_frontier_stable\":true,"
+    "\"verdict_inputs_complete\":true,\"partial\":false},"
+    "\"chain\":{\"status\":\"ok\","
+    "\"authority\":\"local_consensus_validation\","
+    "\"trust\":\"authoritative\",\"authority_pair_known\":true,"
+    "\"durable_authority_known\":true,"
+    "\"authority_matches_served\":true,"
+    "\"served_authority_source\":\"durable_tip_finalize_log\","
+    "\"ancestry_known\":true,\"served_ancestor_indexed\":true,"
+    "\"indexed_ancestor_header\":true,\"work_known\":true,"
+    "\"work_monotone\":true,\"validity_known\":true,"
+    "\"validity_sufficient\":true,\"failure_free\":true,"
+    "\"consistent\":true,"
+    "\"served\":{\"height_known\":true,\"binding_known\":true,"
+    "\"status_known\":true,\"validity_sufficient\":true,"
+    "\"failure_free\":true,\"height\":112,"
+    "\"hash\":\"1111111111111111111111111111111111111111111111111111111111111111\","
+    "\"chain_work\":\"1111111111111111111111111111111111111111111111111111111111111111\","
+    "\"block_status\":13,\"source\":\"reducer_frontier_hstar\","
+    "\"authority\":\"durable_tip_finalize_log\"},"
+    "\"indexed\":{\"height_known\":true,\"binding_known\":true,"
+    "\"status_known\":true,\"validity_sufficient\":true,"
+    "\"failure_free\":true,\"height\":112,"
+    "\"hash\":\"1111111111111111111111111111111111111111111111111111111111111111\","
+    "\"chain_work\":\"1111111111111111111111111111111111111111111111111111111111111111\","
+    "\"block_status\":13,\"source\":\"active_chain_window\","
+    "\"authority\":\"raw_indexed_window\"},"
+    "\"validated_header\":{\"height_known\":true,"
+    "\"binding_known\":true,\"status_known\":true,"
+    "\"validity_sufficient\":true,\"failure_free\":true,"
+    "\"height\":112,"
+    "\"hash\":\"1111111111111111111111111111111111111111111111111111111111111111\","
+    "\"chain_work\":\"1111111111111111111111111111111111111111111111111111111111111111\","
+    "\"block_status\":13,\"source\":\"pindex_best_header\","
+    "\"authority\":\"local_header_validation\"},"
+    "\"gap\":0,\"index_gap\":0},"
+    "\"peers\":{\"known\":true,\"stale\":false,"
+    "\"direction_known\":true,\"ready_known\":true,"
+    "\"advertised_max_height_known\":true,\"status\":\"ok\","
+    "\"authority\":\"live_connman_snapshot\","
+    "\"peer_height_trust\":\"untrusted_peer_advertisement\","
+    "\"generation\":3,\"age_seconds\":0,\"total\":1,"
+    "\"inbound\":0,\"outbound\":1,\"ready\":1,"
+    "\"advertised_max_height\":112},"
+    "\"download\":{\"status\":\"ok\","
+    "\"capture_model\":\"single_leaf_lock\",\"requested\":0,"
+    "\"received\":0,\"timed_out\":0,\"in_flight\":0,"
+    "\"queued\":0},"
+    "\"blockers\":{\"known\":true,\"execution_locus\":\"target_node\","
+    "\"authority\":\"typed_blocker_registry\","
+    "\"trust\":\"authoritative_local_state\",\"generation\":4,"
+    "\"active_count\":0,\"permanent_count\":0,\"transient_count\":0,"
+    "\"dependency_count\":0,\"resource_count\":0,"
+    "\"escape_dispatched_total\":0,\"rate_limit_ms\":12000,"
+    "\"blockers\":[],\"dominant\":null},"
+    "\"conditions\":{\"status\":\"ok\","
+    "\"capture_model\":\"single_registry_pass_per_condition_atomic_fields\","
+    "\"registered_count\":0,\"active_count\":0,"
+    "\"unresolved_count\":0,\"unresolved_critical_count\":0},"
+    "\"operator_latch\":{\"status\":\"ok\",\"active\":false,"
+    "\"since_unix\":0,\"detail\":\"\",\"read_only_capture\":true},"
+    "\"invariants\":{"
+    "\"critical_frontier_stable\":{\"status\":\"pass\","
+    "\"detail\":\"fixture chain tuple stable\"},"
+    "\"frontier_order\":{\"status\":\"pass\","
+    "\"detail\":\"served <= indexed <= header\"},"
+    "\"chain_lineage_and_work\":{\"status\":\"pass\","
+    "\"detail\":\"durable ancestry and work agree\"},"
+    "\"frontier_validity\":{\"status\":\"pass\","
+    "\"detail\":\"frontiers satisfy validation floors\"},"
+    "\"blocker_counts\":{\"status\":\"pass\","
+    "\"detail\":\"counts match entries\"},"
+    "\"peer_direction_sum\":{\"status\":\"pass\","
+    "\"detail\":\"directions sum to total\"}},"
+    "\"summary\":{\"schema\":\"zcl.operator_summary.v1\","
+    "\"schema_version\":1,\"api_version\":\"v1\","
+    "\"execution_locus\":\"target_node\","
+    "\"source_rpc\":\"operatorsnapshot\",\"captured_at\":1,"
+    "\"build_commit\":\"nativecafe1\",\"network\":\"main\","
+    "\"process_id\":42,"
+    "\"node_instance_id\":\"fixture-node-a1\","
+    "\"identity_initialized_at_unix_us\":999000,"
+    "\"snapshot_sequence\":9,\"capture_started_at_unix_us\":1000000,"
+    "\"capture_completed_at_unix_us\":1000100,"
+    "\"component_skew_upper_bound_us\":100,"
+    "\"critical_frontier_stable\":true,\"atomic\":false,"
+    "\"compatibility_fallback\":false,\"verdict_complete\":true,"
+    "\"status\":\"healthy\",\"healthy\":true,\"serving\":true,"
+    "\"operator_needed\":false,\"primary_blocker\":\"none\","
+    "\"blocking_reason\":\"none\",\"next_action\":\"none\","
+    "\"next_tool\":\"\",\"recommended_tools\":[],"
+    "\"height\":112,\"served_height\":112,\"indexed_height\":112,"
+    "\"header_height\":112,\"target_height\":112,"
+    "\"target_height_source\":\"target_node.validated_header_tip\","
+    "\"gap\":0,\"served_gap\":0,\"index_gap\":0,"
+    "\"chain_evidence_consistent\":true,\"sync_state\":\"at_tip\","
+    "\"active_conditions\":0,\"unresolved_conditions\":0,"
+    "\"peers\":{\"known\":true,\"stale\":false,\"generation\":3,"
+    "\"direction_known\":true,\"ready_known\":true,\"total\":1,"
+    "\"inbound\":0,\"outbound\":1,\"ready\":1,\"max_height\":112,"
+    "\"max_height_known\":true,"
+    "\"max_height_trust\":\"untrusted_peer_advertisement\"},"
+    "\"download\":{\"known\":true,\"in_flight\":0,\"queued\":0,"
+    "\"sync_state\":\"at_tip\"},"
+    "\"blockers\":{\"known\":true,\"execution_locus\":\"target_node\","
+    "\"authority\":\"typed_blocker_registry\","
+    "\"trust\":\"authoritative_local_state\",\"generation\":4,"
+    "\"active_count\":0,\"permanent_count\":0,\"transient_count\":0,"
+    "\"dependency_count\":0,\"resource_count\":0,"
+    "\"escape_dispatched_total\":0,\"rate_limit_ms\":12000,"
+    "\"blockers\":[],\"dominant\":null},"
+    "\"summary\":\"healthy native snapshot\","
+    "\"future_field\":{\"kept\":true}}}";
+
+static int g_native_operator_snapshot_calls;
+static int g_native_operator_legacy_calls;
+
+static char *mock_native_operator_rpc(const char *method,
+                                      const char *params_json)
+{
+    (void)params_json;
+    if (strcmp(method, "operatorsnapshot") == 0) {
+        g_native_operator_snapshot_calls++;
+        return strdup(k_native_operator_snapshot_json);
+    }
+    g_native_operator_legacy_calls++;
+    return mock_operator_healthy_rpc(method, params_json);
+}
+
+enum mock_native_operator_failure_mode {
+    MOCK_NATIVE_INVALID_JSON,
+    MOCK_NATIVE_INTERNAL_ERROR,
+    MOCK_NATIVE_MIXED_METHOD_NOT_FOUND,
+    MOCK_NATIVE_WRONG_VERSION,
+};
+
+static enum mock_native_operator_failure_mode g_native_operator_failure_mode;
+
+static char *mock_native_operator_failure_rpc(const char *method,
+                                              const char *params_json)
+{
+    (void)params_json;
+    if (strcmp(method, "operatorsnapshot") != 0) {
+        g_native_operator_legacy_calls++;
+        return mock_operator_healthy_rpc(method, params_json);
+    }
+    g_native_operator_snapshot_calls++;
+    switch (g_native_operator_failure_mode) {
+    case MOCK_NATIVE_INVALID_JSON:
+        return strdup("{");
+    case MOCK_NATIVE_INTERNAL_ERROR:
+        return strdup("{\"error\":{\"code\":-32603,"
+                      "\"message\":\"snapshot failed\"}}");
+    case MOCK_NATIVE_MIXED_METHOD_NOT_FOUND:
+        return strdup("{\"error\":{\"code\":-32601,"
+                      "\"message\":\"Method not found\"},"
+                      "\"schema\":\"zcl.operator_snapshot.v1\"}");
+    case MOCK_NATIVE_WRONG_VERSION:
+        return strdup("{\"schema\":\"zcl.operator_snapshot.v1\","
+                      "\"schema_version\":2,"
+                      "\"execution_locus\":\"target_node\"}");
+    }
+    return strdup("null");
+}
+
+static char *mock_native_operator_fallback_rpc(const char *method,
+                                               const char *params_json)
+{
+    if (strcmp(method, "operatorsnapshot") == 0) {
+        g_native_operator_snapshot_calls++;
+        return strdup("{\"error\":{\"code\":-32601,"
+                      "\"message\":\"Method not found\"}}");
+    }
+    g_native_operator_legacy_calls++;
+    return mock_operator_healthy_rpc(method, params_json);
+}
+
 static char *mock_status_rpc(const char *method, const char *params_json)
 {
     if (strcmp(method, "getblockcount") == 0)
@@ -952,6 +1243,8 @@ static char *mock_status_rpc(const char *method, const char *params_json)
                       "\"memory_rss_mb\":128,\"uptime_seconds\":9}");
     if (strcmp(method, "getblockchaininfo") == 0)
         return strdup("{\"best_header_height\":3117074}");
+    if (mock_is_blocker_dump(method, params_json))
+        return mock_empty_blocker_dump();
     if (strcmp(method, "dumpstate") == 0 &&
         params_json && strstr(params_json, "reducer_frontier") != NULL)
         return strdup("{\"subsystem\":\"reducer_frontier\","
@@ -1052,10 +1345,177 @@ static char *mock_status_rpc(const char *method, const char *params_json)
     return strdup("null");
 }
 
+static int g_target_blocker_rpc_calls;
+
+static char *mock_status_rpc_with_target_blockers(const char *method,
+                                                   const char *params_json)
+{
+    if (mock_is_blocker_dump(method, params_json)) {
+        g_target_blocker_rpc_calls++;
+        return mock_target_blocker_dump();
+    }
+    return mock_status_rpc(method, params_json);
+}
+
+static char *mock_status_rpc_blocker_error(const char *method,
+                                           const char *params_json)
+{
+    if (mock_is_blocker_dump(method, params_json))
+        return strdup("{\"code\":-32603,"
+                      "\"message\":\"target blocker state unavailable\","
+                      "\"method\":\"dumpstate\"}");
+    return mock_status_rpc(method, params_json);
+}
+
+enum mock_blocker_failure_mode {
+    MOCK_BLOCKER_WRAPPED_ERROR,
+    MOCK_BLOCKER_MALFORMED,
+    MOCK_BLOCKER_WRONG_SUBSYSTEM,
+    MOCK_BLOCKER_MISSING_ARRAY,
+    MOCK_BLOCKER_COUNT_CONTRADICTION,
+    MOCK_BLOCKER_MIXED_ERROR_STATE,
+    MOCK_BLOCKER_NULL_RESULT,
+};
+
+static enum mock_blocker_failure_mode g_mock_blocker_failure_mode;
+
+static char *mock_status_rpc_blocker_failure_matrix(
+    const char *method, const char *params_json)
+{
+    if (!mock_is_blocker_dump(method, params_json))
+        return mock_status_rpc(method, params_json);
+    switch (g_mock_blocker_failure_mode) {
+    case MOCK_BLOCKER_WRAPPED_ERROR:
+        return strdup("{\"error\":{\"code\":-32603,"
+                      "\"message\":\"wrapped blocker failure\"}}");
+    case MOCK_BLOCKER_MALFORMED:
+        return strdup("{not-json");
+    case MOCK_BLOCKER_WRONG_SUBSYSTEM:
+        return strdup("{\"subsystem\":\"supervisor\","
+                      "\"captured_at\":1782240011,"
+                      "\"state\":{\"active_count\":0,"
+                      "\"permanent_count\":0,\"transient_count\":0,"
+                      "\"dependency_count\":0,\"resource_count\":0,"
+                      "\"escape_dispatched_total\":0,\"blockers\":[]}}");
+    case MOCK_BLOCKER_MISSING_ARRAY:
+        return strdup("{\"subsystem\":\"blocker\","
+                      "\"captured_at\":1782240012,"
+                      "\"state\":{\"active_count\":0,"
+                      "\"permanent_count\":0,\"transient_count\":0,"
+                      "\"dependency_count\":0,\"resource_count\":0,"
+                      "\"escape_dispatched_total\":0}}");
+    case MOCK_BLOCKER_COUNT_CONTRADICTION:
+        return strdup("{\"subsystem\":\"blocker\","
+                      "\"captured_at\":1782240013,"
+                      "\"state\":{\"active_count\":0,"
+                      "\"permanent_count\":0,\"transient_count\":0,"
+                      "\"dependency_count\":0,\"resource_count\":0,"
+                      "\"escape_dispatched_total\":0,\"blockers\":[{"
+                      "\"id\":\"hidden\",\"class\":\"permanent\"}]}}");
+    case MOCK_BLOCKER_MIXED_ERROR_STATE:
+        return strdup("{\"code\":-32603,"
+                      "\"message\":\"must not be hidden by state\","
+                      "\"subsystem\":\"blocker\","
+                      "\"captured_at\":1782240014,"
+                      "\"state\":{\"active_count\":0,"
+                      "\"permanent_count\":0,\"transient_count\":0,"
+                      "\"dependency_count\":0,\"resource_count\":0,"
+                      "\"escape_dispatched_total\":0,\"blockers\":[]}}");
+    case MOCK_BLOCKER_NULL_RESULT:
+        return strdup("null");
+    }
+    return strdup("null");
+}
+
+static char *mock_status_rpc_lagged(const char *method,
+                                    const char *params_json)
+{
+    if (strcmp(method, "getblockcount") == 0)
+        return strdup("1000");
+    if (strcmp(method, "getpeerinfo") == 0)
+        return strdup("[{\"inbound\":false,\"startingheight\":1300}]");
+    if (strcmp(method, "getblockchaininfo") == 0)
+        return strdup("{\"best_header_height\":1300}");
+    return mock_status_rpc(method, params_json);
+}
+
+static char *mock_status_rpc_spoofed_peer_height(const char *method,
+                                                 const char *params_json)
+{
+    if (strcmp(method, "getpeerinfo") == 0)
+        return strdup("[{\"inbound\":false,"
+                      "\"startingheight\":2000000000}]");
+    return mock_status_rpc_lagged(method, params_json);
+}
+
+static char *mock_status_rpc_sync_inputs_failed(const char *method,
+                                                const char *params_json)
+{
+    if (strcmp(method, "getblockcount") == 0)
+        return strdup("{\"code\":-32603,"
+                      "\"message\":\"height unavailable\"}");
+    if (strcmp(method, "getpeerinfo") == 0)
+        return strdup("{\"error\":{\"code\":-32603,"
+                      "\"message\":\"peers unavailable\"}}");
+    if (strcmp(method, "getblockchaininfo") == 0)
+        return strdup("{\"code\":-32603,"
+                      "\"message\":\"headers unavailable\"}");
+    return mock_status_rpc(method, params_json);
+}
+
+static char *mock_status_rpc_without_node_commit(const char *method,
+                                                 const char *params_json)
+{
+    if (strcmp(method, "healthcheck") == 0)
+        return strdup("{\"ok\":true,\"memory_rss_mb\":128,"
+                      "\"uptime_seconds\":9}");
+    return mock_status_rpc(method, params_json);
+}
+
+static char *mock_status_rpc_negative_health_metrics(
+    const char *method, const char *params_json)
+{
+    if (strcmp(method, "healthcheck") == 0)
+        return strdup("{\"ok\":true,\"build_commit\":\"nodecafe123\","
+                      "\"memory_rss_mb\":-1,\"uptime_seconds\":-2}");
+    return mock_status_rpc(method, params_json);
+}
+
+static char *mock_status_rpc_inconsistent_frontier(
+    const char *method, const char *params_json)
+{
+    if (strcmp(method, "getblockcount") == 0)
+        return strdup("111");
+    if (strcmp(method, "getblockchaininfo") == 0)
+        return strdup("{\"best_header_height\":110}");
+    return mock_status_rpc(method, params_json);
+}
+
+static char *mock_status_rpc_peer_without_height(
+    const char *method, const char *params_json)
+{
+    if (strcmp(method, "getpeerinfo") == 0)
+        return strdup("[{\"inbound\":false,"
+                      "\"state\":\"handshake_complete\"}]");
+    return mock_status_rpc(method, params_json);
+}
+
+static char *mock_status_rpc_peer_without_direction(
+    const char *method, const char *params_json)
+{
+    if (strcmp(method, "getpeerinfo") == 0)
+        return strdup("[{\"state\":\"handshake_complete\","
+                      "\"startingheight\":3117074}]");
+    return mock_status_rpc(method, params_json);
+}
+
 static char *mock_operator_degraded_rpc(const char *method,
                                         const char *params_json)
 {
-    (void)params_json;
+    if (strcmp(method, "operatorsnapshot") == 0)
+        return strdup("{\"code\":-32601,\"message\":\"Method not found\"}");
+    if (mock_is_blocker_dump(method, params_json))
+        return mock_empty_blocker_dump();
     if (strcmp(method, "getblockchaininfo") == 0)
         return strdup("{\"blocks\":100,\"best_header_height\":110}");
     if (strcmp(method, "getpeerinfo") == 0)
@@ -1114,7 +1574,11 @@ static char *mock_operator_degraded_rpc(const char *method,
 static char *mock_operator_healthy_rpc(const char *method,
                                        const char *params_json)
 {
-    (void)params_json;
+    if (strcmp(method, "operatorsnapshot") == 0)
+        return strdup("{\"error\":{\"code\":-32601,"
+                      "\"message\":\"Method not found\"}}");
+    if (mock_is_blocker_dump(method, params_json))
+        return mock_empty_blocker_dump();
     if (strcmp(method, "getblockchaininfo") == 0)
         return strdup("{\"blocks\":112,\"best_header_height\":112}");
     if (strcmp(method, "getpeerinfo") == 0)
@@ -1193,6 +1657,160 @@ static char *mock_operator_healthy_rpc(const char *method,
     return strdup("null");
 }
 
+static char *mock_operator_healthy_with_target_blockers(
+    const char *method, const char *params_json)
+{
+    if (mock_is_blocker_dump(method, params_json))
+        return mock_target_blocker_dump();
+    return mock_operator_healthy_rpc(method, params_json);
+}
+
+static char *mock_operator_healthy_with_blocker_error(
+    const char *method, const char *params_json)
+{
+    if (mock_is_blocker_dump(method, params_json))
+        return strdup("{\"code\":-32603,"
+                      "\"message\":\"blocker telemetry unavailable\"}");
+    return mock_operator_healthy_rpc(method, params_json);
+}
+
+static char *mock_operator_invalid_core_evidence(
+    const char *method, const char *params_json)
+{
+    if (mock_is_blocker_dump(method, params_json))
+        return mock_empty_blocker_dump();
+    if (strcmp(method, "getblockchaininfo") == 0)
+        return strdup("{\"code\":-32603,"
+                      "\"message\":\"chain evidence unavailable\"}");
+    if (strcmp(method, "getsyncdiag") == 0)
+        return strdup("{\"error\":{\"code\":-32603,"
+                      "\"message\":\"sync evidence unavailable\"}}");
+    if (strcmp(method, "getpeerinfo") == 0)
+        return strdup("{\"code\":-32603,"
+                      "\"message\":\"peer evidence unavailable\"}");
+    return mock_operator_healthy_rpc(method, params_json);
+}
+
+static char *mock_operator_nonobject_peer_rpc(const char *method,
+                                              const char *params_json)
+{
+    if (strcmp(method, "getpeerinfo") == 0)
+        return strdup("[null]");
+    return mock_operator_healthy_rpc(method, params_json);
+}
+
+static char *mock_operator_zero_peers_rpc(const char *method,
+                                          const char *params_json)
+{
+    if (strcmp(method, "getpeerinfo") == 0)
+        return strdup("[]");
+    return mock_operator_healthy_rpc(method, params_json);
+}
+
+static char *mock_operator_inconsistent_frontier_rpc(
+    const char *method, const char *params_json)
+{
+    if (strcmp(method, "getblockchaininfo") == 0)
+        return strdup("{\"blocks\":111,\"best_header_height\":110}");
+    if (strcmp(method, "getsyncdiag") == 0)
+        return strdup("{\"sync_state\":\"at_tip\","
+                      "\"chain_height\":111,"
+                      "\"best_header_height\":110,"
+                      "\"watchdog\":{\"active_conditions\":0}}");
+    return mock_operator_healthy_rpc(method, params_json);
+}
+
+static char *mock_operator_non_tip_zero_gap_rpc(
+    const char *method, const char *params_json)
+{
+    if (strcmp(method, "getsyncdiag") == 0)
+        return strdup("{\"sync_state\":\"blocks_download\","
+                      "\"chain_height\":112,"
+                      "\"best_header_height\":112,"
+                      "\"watchdog\":{\"active_conditions\":0}}");
+    return mock_operator_healthy_rpc(method, params_json);
+}
+
+static char *mock_operator_not_serving_with_blocker_error(
+    const char *method, const char *params_json)
+{
+    if (mock_is_blocker_dump(method, params_json))
+        return strdup("{\"code\":-32603,"
+                      "\"message\":\"blocker telemetry unavailable\"}");
+    if (strcmp(method, "healthcheck") == 0)
+        return strdup("{\"healthy\":false,\"serving\":false,"
+                      "\"checks\":{\"operator_needed\":false,"
+                      "\"blocking_reason\":\"database_read_only\","
+                      "\"condition_engine\":{\"active_count\":0,"
+                      "\"unresolved_count\":0}}}");
+    if (strcmp(method, "getblockchaininfo") == 0)
+        return strdup("{\"code\":-32603,"
+                      "\"message\":\"chain RPC unavailable\"}");
+    if (strcmp(method, "getpeerinfo") == 0)
+        return strdup("{\"error\":{\"code\":-32603,"
+                      "\"message\":\"peer RPC unavailable\"}}");
+    return mock_operator_healthy_rpc(method, params_json);
+}
+
+static char *mock_operator_served_lag_rpc(const char *method,
+                                          const char *params_json)
+{
+    if (mock_is_blocker_dump(method, params_json))
+        return mock_empty_blocker_dump();
+    if (strcmp(method, "getblockchaininfo") == 0)
+        return strdup("{\"blocks\":100,\"best_header_height\":110}");
+    if (strcmp(method, "getpeerinfo") == 0)
+        return strdup("[{\"inbound\":false,"
+                      "\"state\":\"handshake_complete\","
+                      "\"startingheight\":110}]");
+    if (strcmp(method, "getsyncdiag") == 0)
+        return strdup("{\"sync_state\":\"blocks_download\","
+                      "\"chain_height\":100,"
+                      "\"best_header_height\":110,"
+                      "\"watchdog\":{\"active_conditions\":0}}");
+    if (strcmp(method, "downloadstats") == 0)
+        return strdup("{\"in_flight\":0,\"queued\":0,"
+                      "\"sync_state\":\"blocks_download\"}");
+    if (strcmp(method, "healthcheck") == 0)
+        return strdup("{\"healthy\":true,\"serving\":true,"
+                      "\"chain_advance\":{\"local_height\":110},"
+                      "\"chain_evidence\":{\"active_tip\":110},"
+                      "\"checks\":{\"operator_needed\":false,"
+                      "\"condition_engine\":{\"active_count\":0,"
+                      "\"unresolved_count\":0}}}");
+    return mock_operator_healthy_rpc(method, params_json);
+}
+
+enum mock_download_failure_mode {
+    MOCK_DOWNLOAD_MISSING_COUNTERS,
+    MOCK_DOWNLOAD_WRONG_TYPES,
+    MOCK_DOWNLOAD_NEGATIVE_COUNTER,
+};
+
+static enum mock_download_failure_mode g_mock_download_failure_mode;
+
+static char *mock_operator_invalid_download_rpc(
+    const char *method, const char *params_json)
+{
+    if (strcmp(method, "downloadstats") != 0)
+        return mock_operator_served_lag_rpc(method, params_json);
+    if (g_mock_download_failure_mode == MOCK_DOWNLOAD_MISSING_COUNTERS)
+        return strdup("{}");
+    if (g_mock_download_failure_mode == MOCK_DOWNLOAD_WRONG_TYPES)
+        return strdup("{\"in_flight\":\"0\",\"queued\":\"0\"}");
+    return strdup("{\"in_flight\":-1,\"queued\":0}");
+}
+
+static char *mock_operator_max_download_rpc(const char *method,
+                                            const char *params_json)
+{
+    if (strcmp(method, "downloadstats") == 0)
+        return strdup("{\"in_flight\":9223372036854775807,"
+                      "\"queued\":9223372036854775807,"
+                      "\"sync_state\":\"blocks_download\"}");
+    return mock_operator_served_lag_rpc(method, params_json);
+}
+
 static char *mock_operator_recovered_mirror_rpc(const char *method,
                                                 const char *params_json)
 {
@@ -1225,7 +1843,10 @@ static char *mock_operator_recovered_mirror_rpc(const char *method,
 static char *mock_operator_needed_rpc(const char *method,
                                       const char *params_json)
 {
-    (void)params_json;
+    if (strcmp(method, "operatorsnapshot") == 0)
+        return strdup("{\"code\":-32601,\"message\":\"Method not found\"}");
+    if (mock_is_blocker_dump(method, params_json))
+        return mock_empty_blocker_dump();
     if (strcmp(method, "getblockchaininfo") == 0)
         return strdup("{\"blocks\":112,\"best_header_height\":112}");
     if (strcmp(method, "getpeerinfo") == 0)
@@ -1603,14 +2224,17 @@ static int test_zcl_operator_summary_degraded_shape(void)
         ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "degraded");
         ASSERT(!json_get_bool(json_get(&root, "healthy")));
         ASSERT(json_get_int(json_get(&root, "height")) == 100);
-        ASSERT(json_get_int(json_get(&root, "target_height")) == 112);
-        ASSERT(json_get_int(json_get(&root, "gap")) == 12);
+        ASSERT(json_get_int(json_get(&root, "target_height")) == 110);
+        ASSERT_STR_EQ(json_get_str(json_get(&root,
+                                            "target_height_source")),
+                      "target_node.validated_header_tip");
+        ASSERT(json_get_int(json_get(&root, "gap")) == 10);
         ASSERT_STR_EQ(json_get_str(json_get(&root, "sync_state")),
                       "blocks_download");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
-                      "download_queue_idle");
+                      "condition_active");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "next_tool")),
-                      "zcl_syncdiag");
+                      "zcl_conditions");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "operator_lane_name")),
                       "dev");
         ASSERT(json_get_bool(json_get(&root, "automation_restart_ok")));
@@ -1647,15 +2271,16 @@ static int test_zcl_operator_summary_degraded_shape(void)
         const struct json_value *tools =
             json_get(&root, "recommended_tools");
         ASSERT(tools != NULL);
-        ASSERT(json_size(tools) == 2);
-        ASSERT_STR_EQ(json_get_str(json_at(tools, 0)), "zcl_syncdiag");
-        ASSERT_STR_EQ(json_get_str(json_at(tools, 1)), "zcl_node_log");
+        ASSERT(json_size(tools) == 1);
+        ASSERT_STR_EQ(json_get_str(json_at(tools, 0)), "zcl_conditions");
 
         const struct json_value *peers = json_get(&root, "peers");
         ASSERT(peers != NULL);
         ASSERT(json_get_int(json_get(peers, "total")) == 2);
         ASSERT(json_get_int(json_get(peers, "ready")) == 1);
         ASSERT(json_get_int(json_get(peers, "max_height")) == 112);
+        ASSERT_STR_EQ(json_get_str(json_get(peers, "max_height_trust")),
+                      "untrusted_peer_advertisement");
 
         const struct json_value *mirror = json_get(&root, "mirror");
         ASSERT(mirror != NULL);
@@ -1676,10 +2301,10 @@ static int test_zcl_operator_summary_degraded_shape(void)
     return failures;
 }
 
-static int test_zcl_operator_summary_healthy_shape(void)
+static int test_zcl_operator_summary_compat_shape(void)
 {
     int failures = 0;
-    TEST("controllers: zcl_operator_summary keeps advisory mirror separate") {
+    TEST("controllers: legacy operator summary is explicit and never green") {
         register_all();
         mcp_rpc_client_set_test_hook(mock_operator_healthy_rpc);
         struct json_value args;
@@ -1691,13 +2316,19 @@ static int test_zcl_operator_summary_healthy_shape(void)
 
         struct json_value root;
         ASSERT(json_read(&root, body, strlen(body)));
-        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "healthy");
-        ASSERT(json_get_bool(json_get(&root, "healthy")));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "degraded");
+        ASSERT(!json_get_bool(json_get(&root, "healthy")));
         ASSERT(json_get_int(json_get(&root, "gap")) == 0);
         ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
-                      "none");
-        ASSERT_STR_EQ(json_get_str(json_get(&root, "next_action")), "none");
-        ASSERT(json_size(json_get(&root, "recommended_tools")) == 0);
+                      "compatibility_snapshot_non_atomic");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "next_action")),
+                      "upgrade target for native operatorsnapshot support");
+        ASSERT(json_size(json_get(&root, "recommended_tools")) == 1);
+        ASSERT(json_get_bool(json_get(&root, "compatibility_fallback")));
+        ASSERT(!json_get_bool(json_get(&root, "atomic")));
+        ASSERT(!json_get_bool(json_get(&root, "verdict_complete")));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "capture_model")),
+                      "multi_rpc_compat");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "operator_lane_name")),
                       "canonical");
         ASSERT(!json_get_bool(json_get(&root, "automation_restart_ok")));
@@ -1747,6 +2378,526 @@ static int test_zcl_operator_summary_healthy_shape(void)
     return failures;
 }
 
+static int test_native_operator_snapshot_single_rpc(void)
+{
+    int failures = 0;
+    TEST("controllers: native operator snapshot is one target call") {
+        register_all();
+        g_native_operator_snapshot_calls = 0;
+        g_native_operator_legacy_calls = 0;
+        mcp_rpc_client_set_test_hook(mock_native_operator_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+
+        char *summary_body =
+            mcp_router_dispatch("zcl_operator_summary", &args);
+        ASSERT(summary_body != NULL);
+        ASSERT(g_native_operator_snapshot_calls == 1);
+        ASSERT(g_native_operator_legacy_calls == 0);
+        struct json_value summary;
+        ASSERT(json_read(&summary, summary_body, strlen(summary_body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&summary, "schema")),
+                      "zcl.operator_summary.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(&summary, "execution_locus")),
+                      "target_node");
+        ASSERT(!json_get_bool(json_get(&summary, "compatibility_fallback")));
+        ASSERT(json_get_bool(json_get(json_get(&summary, "future_field"),
+                                      "kept")));
+        json_free(&summary);
+        free(summary_body);
+
+        g_native_operator_snapshot_calls = 0;
+        g_native_operator_legacy_calls = 0;
+        char *snapshot_body =
+            mcp_router_dispatch("zcl_operator_snapshot", &args);
+        ASSERT(snapshot_body != NULL);
+        ASSERT(g_native_operator_snapshot_calls == 1);
+        ASSERT(g_native_operator_legacy_calls == 0);
+        ASSERT_STR_EQ(snapshot_body, k_native_operator_snapshot_json);
+
+        free(snapshot_body);
+        json_free(&args);
+        mcp_rpc_client_set_test_hook(NULL);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_native_operator_snapshot_failure_never_falls_back(void)
+{
+    int failures = 0;
+    TEST("controllers: malformed supported snapshot never downgrades") {
+        register_all();
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        for (int mode = MOCK_NATIVE_INVALID_JSON;
+             mode <= MOCK_NATIVE_WRONG_VERSION; mode++) {
+            g_native_operator_failure_mode =
+                (enum mock_native_operator_failure_mode)mode;
+            g_native_operator_snapshot_calls = 0;
+            g_native_operator_legacy_calls = 0;
+            mcp_rpc_client_set_test_hook(mock_native_operator_failure_rpc);
+            char *body = mcp_router_dispatch("zcl_operator_summary", &args);
+            ASSERT(body != NULL);
+            ASSERT(g_native_operator_snapshot_calls == 1);
+            ASSERT(g_native_operator_legacy_calls == 0);
+            ASSERT(strstr(body, "operatorsnapshot rejected") != NULL);
+            free(body);
+        }
+        json_free(&args);
+        mcp_rpc_client_set_test_hook(NULL);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_native_operator_snapshot_exact_fallback(void)
+{
+    int failures = 0;
+    TEST("controllers: exact method-not-found uses marked compatibility") {
+        register_all();
+        g_native_operator_snapshot_calls = 0;
+        g_native_operator_legacy_calls = 0;
+        mcp_rpc_client_set_test_hook(mock_native_operator_fallback_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_operator_summary", &args);
+        ASSERT(body != NULL);
+        ASSERT(g_native_operator_snapshot_calls == 1);
+        ASSERT(g_native_operator_legacy_calls == 8);
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT(json_get_bool(json_get(&root, "compatibility_fallback")));
+        ASSERT(!json_get_bool(json_get(&root, "atomic")));
+        ASSERT(!json_get_bool(json_get(&root, "verdict_complete")));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "degraded");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
+                      "compatibility_snapshot_non_atomic");
+        json_free(&root);
+        free(body);
+        json_free(&args);
+        mcp_rpc_client_set_test_hook(NULL);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_operator_summary_target_blockers_override_cached_healthy(void)
+{
+    int failures = 0;
+    TEST("controllers: target blockers override cached healthy summary") {
+        register_all();
+        mcp_rpc_client_set_test_hook(
+            mock_operator_healthy_with_target_blockers);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_operator_summary", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")),
+                      "operator_needed");
+        ASSERT(!json_get_bool(json_get(&root, "healthy")));
+        ASSERT(json_get_bool(json_get(&root, "operator_needed")));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
+                      "typed_blocker:target-disk-full");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "next_tool")),
+                      "zcl_blockers");
+        const struct json_value *blockers = json_get(&root, "blockers");
+        ASSERT(blockers != NULL && blockers->type == JSON_OBJ);
+        ASSERT(json_get_int(json_get(blockers, "active_count")) == 2);
+        ASSERT(json_get_int(json_get(blockers, "resource_count")) == 1);
+        ASSERT(!contains(body, "\"status\":\"healthy\""));
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_operator_summary_unknown_blockers_cannot_be_healthy(void)
+{
+    int failures = 0;
+    TEST("controllers: unavailable blocker evidence prevents healthy verdict") {
+        register_all();
+        mcp_rpc_client_set_test_hook(
+            mock_operator_healthy_with_blocker_error);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_operator_summary", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "degraded");
+        ASSERT(!json_get_bool(json_get(&root, "healthy")));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
+                      "blocker_state_unavailable");
+        const struct json_value *blockers = json_get(&root, "blockers");
+        const struct json_value *error = json_get(&root, "blockers_error");
+        ASSERT(blockers != NULL && blockers->type == JSON_NULL);
+        ASSERT(error != NULL && error->type == JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(error, "message")),
+                      "blocker telemetry unavailable");
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_operator_summary_invalid_core_evidence_cannot_be_healthy(void)
+{
+    int failures = 0;
+    TEST("controllers: invalid core evidence stays unknown in operator summary") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_operator_invalid_core_evidence);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_operator_summary", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "degraded");
+        ASSERT(!json_get_bool(json_get(&root, "healthy")));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
+                      "chain_evidence_unavailable");
+        const struct json_value *height = json_get(&root, "height");
+        const struct json_value *target = json_get(&root, "target_height");
+        const struct json_value *gap = json_get(&root, "gap");
+        ASSERT(height != NULL && height->type == JSON_NULL);
+        ASSERT(target != NULL && target->type == JSON_NULL);
+        ASSERT(gap != NULL && gap->type == JSON_NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(&root,
+                                            "target_height_source")),
+                      "unavailable");
+        const struct json_value *peers = json_get(&root, "peers");
+        ASSERT(peers != NULL && peers->type == JSON_OBJ);
+        ASSERT(!json_get_bool(json_get(peers, "known")));
+        const struct json_value *peer_total = json_get(peers, "total");
+        ASSERT(peer_total != NULL && peer_total->type == JSON_NULL);
+        ASSERT(json_get(&root, "chain_error") != NULL);
+        ASSERT(json_get(&root, "syncdiag_error") != NULL);
+        ASSERT(json_get(&root, "peers_error") != NULL);
+        ASSERT(contains(json_get_str(json_get(&root, "summary")),
+                        "height=unknown"));
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_operator_summary_nonobject_peer_is_unknown(void)
+{
+    int failures = 0;
+    TEST("controllers: non-object peer entries are not known peers") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_operator_nonobject_peer_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_operator_summary", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "degraded");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
+                      "peer_state_unavailable");
+        const struct json_value *peers = json_get(&root, "peers");
+        ASSERT(peers != NULL && peers->type == JSON_OBJ);
+        ASSERT(!json_get_bool(json_get(peers, "known")));
+        const struct json_value *total = json_get(peers, "total");
+        ASSERT(total != NULL && total->type == JSON_NULL);
+        ASSERT(json_get(&root, "peers_error") != NULL);
+        ASSERT(contains(json_get_str(json_get(&root, "summary")),
+                        "peers=unknown"));
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_operator_summary_zero_peers_at_tip_is_blocked(void)
+{
+    int failures = 0;
+    TEST("controllers: zero peers blocks even when cached health says synced") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_operator_zero_peers_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_operator_summary", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "blocked");
+        ASSERT(!json_get_bool(json_get(&root, "healthy")));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
+                      "no_peers");
+        const struct json_value *peers = json_get(&root, "peers");
+        ASSERT(peers != NULL && peers->type == JSON_OBJ);
+        ASSERT(json_get_bool(json_get(peers, "known")));
+        ASSERT(json_get_int(json_get(peers, "total")) == 0);
+        ASSERT(!json_get_bool(json_get(peers, "max_height_known")));
+        const struct json_value *max_height = json_get(peers, "max_height");
+        ASSERT(max_height != NULL && max_height->type == JSON_NULL);
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_operator_summary_inconsistent_frontier_is_not_healthy(void)
+{
+    int failures = 0;
+    TEST("controllers: contradictory frontier ordering cannot be healthy") {
+        register_all();
+        mcp_rpc_client_set_test_hook(
+            mock_operator_inconsistent_frontier_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_operator_summary", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "degraded");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
+                      "chain_evidence_inconsistent");
+        ASSERT(!json_get_bool(json_get(&root,
+                                       "chain_evidence_consistent")));
+        const struct json_value *gap = json_get(&root, "gap");
+        const struct json_value *index_gap = json_get(&root, "index_gap");
+        ASSERT(gap != NULL && gap->type == JSON_NULL);
+        ASSERT(index_gap != NULL && index_gap->type == JSON_NULL);
+        ASSERT(json_get(&root, "chain_evidence_error") != NULL);
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_operator_summary_non_tip_state_cannot_be_healthy(void)
+{
+    int failures = 0;
+    TEST("controllers: non-tip sync state cannot be healthy at zero gap") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_operator_non_tip_zero_gap_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_operator_summary", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT(json_get_int(json_get(&root, "gap")) == 0);
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "sync_state")),
+                      "blocks_download");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "degraded");
+        ASSERT(!json_get_bool(json_get(&root, "healthy")));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
+                      "sync_not_at_tip");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "next_tool")),
+                      "zcl_syncdiag");
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_operator_summary_known_blocker_beats_telemetry_outage(void)
+{
+    int failures = 0;
+    TEST("controllers: known not-serving reason beats blocker telemetry outage") {
+        register_all();
+        mcp_rpc_client_set_test_hook(
+            mock_operator_not_serving_with_blocker_error);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_operator_summary", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "blocked");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
+                      "database_read_only");
+        ASSERT(json_get(&root, "chain_error") != NULL);
+        ASSERT(json_get(&root, "peers_error") != NULL);
+        const struct json_value *blockers = json_get(&root, "blockers");
+        const struct json_value *error = json_get(&root, "blockers_error");
+        ASSERT(blockers != NULL && blockers->type == JSON_NULL);
+        ASSERT(error != NULL && error->type == JSON_OBJ);
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_operator_summary_served_gap_cannot_be_hidden_by_index_tip(void)
+{
+    int failures = 0;
+    TEST("controllers: indexed tip cannot hide a lagging served H-star") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_operator_served_lag_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_operator_summary", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "degraded");
+        ASSERT(!json_get_bool(json_get(&root, "healthy")));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
+                      "download_queue_idle");
+        ASSERT(json_get_int(json_get(&root, "served_height")) == 100);
+        ASSERT(json_get_int(json_get(&root, "indexed_height")) == 110);
+        ASSERT(json_get_int(json_get(&root, "target_height")) == 110);
+        ASSERT(json_get_int(json_get(&root, "gap")) == 10);
+        ASSERT(json_get_int(json_get(&root, "served_gap")) == 10);
+        ASSERT(json_get_int(json_get(&root, "index_gap")) == 0);
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_operator_summary_invalid_download_is_unknown(void)
+{
+    int failures = 0;
+    TEST("controllers: invalid download counters never mean idle") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_operator_invalid_download_rpc);
+        for (int mode = MOCK_DOWNLOAD_MISSING_COUNTERS;
+             mode <= MOCK_DOWNLOAD_NEGATIVE_COUNTER; mode++) {
+            g_mock_download_failure_mode =
+                (enum mock_download_failure_mode)mode;
+            struct json_value args;
+            json_init(&args);
+            json_set_object(&args);
+            char *body = mcp_router_dispatch("zcl_operator_summary", &args);
+            ASSERT(body != NULL);
+
+            struct json_value root;
+            ASSERT(json_read(&root, body, strlen(body)));
+            ASSERT_STR_EQ(json_get_str(json_get(&root, "status")),
+                          "degraded");
+            ASSERT_STR_EQ(json_get_str(json_get(&root,
+                                                "primary_blocker")),
+                          "download_state_unavailable");
+            const struct json_value *download = json_get(&root, "download");
+            ASSERT(download != NULL && download->type == JSON_OBJ);
+            ASSERT(!json_get_bool(json_get(download, "known")));
+            ASSERT(json_get(&root, "download_error") != NULL);
+            ASSERT(!contains(body, "\"primary_blocker\":"
+                                   "\"download_queue_idle\""));
+
+            json_free(&root);
+            json_free(&args);
+            free(body);
+        }
+        mcp_rpc_client_set_test_hook(NULL);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_operator_summary_max_download_counters_do_not_overflow(void)
+{
+    int failures = 0;
+    TEST("controllers: max download counters classify without overflow") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_operator_max_download_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_operator_summary", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")),
+                      "catching_up");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
+                      "chain_gap");
+        const struct json_value *download = json_get(&root, "download");
+        ASSERT(download != NULL && download->type == JSON_OBJ);
+        ASSERT(json_get_bool(json_get(download, "known")));
+        ASSERT(json_get_int(json_get(download, "in_flight")) == INT64_MAX);
+        ASSERT(json_get_int(json_get(download, "queued")) == INT64_MAX);
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
 static int test_zcl_operator_summary_honors_mirror_contract(void)
 {
     int failures = 0;
@@ -1762,9 +2913,9 @@ static int test_zcl_operator_summary_honors_mirror_contract(void)
 
         struct json_value root;
         ASSERT(json_read(&root, body, strlen(body)));
-        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "healthy");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "degraded");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "primary_blocker")),
-                      "none");
+                      "compatibility_snapshot_non_atomic");
 
         const struct json_value *mirror = json_get(&root, "mirror");
         ASSERT(mirror && mirror->type == JSON_OBJ);
@@ -2439,13 +3590,30 @@ static int test_zcl_getblockcount_uses_node_hstar_rpc(void)
     return failures;
 }
 
+enum mock_dumpstate_failure_mode {
+    MOCK_DUMPSTATE_WRAPPED_ERROR,
+    MOCK_DUMPSTATE_BARE_ERROR,
+    MOCK_DUMPSTATE_WRONG_SUBSYSTEM,
+};
+
+static enum mock_dumpstate_failure_mode g_mock_dumpstate_failure_mode;
+
 static char *mock_status_rpc_dumpstate_error(const char *method,
                                              const char *params_json)
 {
-    if (strcmp(method, "dumpstate") == 0 &&
-        params_json && strstr(params_json, "reducer_frontier") != NULL)
-        return strdup("{\"error\":{\"code\":-32603,"
-                      "\"message\":\"reducer frontier unavailable\"}}");
+    if (strcmp(method, "dumpstate") == 0 && params_json &&
+        strstr(params_json, "reducer_frontier") != NULL) {
+        if (g_mock_dumpstate_failure_mode == MOCK_DUMPSTATE_WRAPPED_ERROR)
+            return strdup("{\"error\":{\"code\":-32603,"
+                          "\"message\":\"reducer frontier unavailable\"}}");
+        if (g_mock_dumpstate_failure_mode == MOCK_DUMPSTATE_BARE_ERROR)
+            return strdup("{\"code\":-32603,"
+                          "\"message\":\"reducer frontier unavailable\","
+                          "\"method\":\"dumpstate\"}");
+        return strdup("{\"subsystem\":\"supervisor\","
+                      "\"captured_at\":1782240015,"
+                      "\"state\":{\"healthy\":true}}");
+    }
     return mock_status_rpc(method, params_json);
 }
 
@@ -2471,6 +3639,10 @@ static int test_zcl_status_includes_chain_advance_dump(void)
                       "nodecafe123");
         ASSERT_STR_EQ(json_get_str(json_get(&root, "mcp_build_commit")),
                       zcl_build_commit());
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "build_commit_source")),
+                      "target_node.healthcheck");
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "execution_locus")),
+                      "composite");
         const struct json_value *blockers = json_get(&root, "blockers");
         ASSERT(blockers != NULL);
         ASSERT(json_get_int(json_get(blockers, "active_count")) == 0);
@@ -2478,8 +3650,22 @@ static int test_zcl_status_includes_chain_advance_dump(void)
         ASSERT(json_get_int(json_get(blockers, "transient_count")) == 0);
         ASSERT(json_get_int(json_get(blockers, "dependency_count")) == 0);
         ASSERT(json_get_int(json_get(blockers, "resource_count")) == 0);
-        ASSERT(json_is_null(json_get(blockers, "dominant")));
-        ASSERT(json_is_null(json_get(&root, "dominant_blocker")));
+        ASSERT_STR_EQ(json_get_str(json_get(blockers, "execution_locus")),
+                      "target_node");
+        ASSERT_STR_EQ(json_get_str(json_get(blockers, "source_rpc")),
+                      "dumpstate:blocker");
+        ASSERT(json_get_int(json_get(blockers, "captured_at")) ==
+               1782240005);
+        ASSERT(json_get(blockers, "blockers") == NULL);
+        ASSERT(json_get(blockers, "_health") == NULL);
+        const struct json_value *empty_dominant =
+            json_get(blockers, "dominant");
+        const struct json_value *empty_top_dominant =
+            json_get(&root, "dominant_blocker");
+        ASSERT(empty_dominant != NULL &&
+               empty_dominant->type == JSON_NULL);
+        ASSERT(empty_top_dominant != NULL &&
+               empty_top_dominant->type == JSON_NULL);
         const struct json_value *connections = json_get(&root, "connections");
         ASSERT(connections != NULL);
         ASSERT(json_get_int(json_get(connections, "total")) == 1);
@@ -2488,7 +3674,18 @@ static int test_zcl_status_includes_chain_advance_dump(void)
         ASSERT(json_get_int(json_get(connections, "zcl23")) == 1);
         ASSERT(json_get_int(json_get(connections, "magicbean")) == 0);
         ASSERT(json_get_int(json_get(&root, "max_peer_height")) == 3117074);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &root, "max_peer_height_trust")),
+                      "untrusted_peer_advertisement");
         ASSERT(json_get_int(json_get(&root, "header_gap")) == 0);
+        ASSERT(!json_get_bool(json_get(&root, "header_sync_behind")));
+        ASSERT(json_get_int(json_get(&root, "target_height")) == 3117074);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &root, "target_height_source")),
+                      "target_node.validated_header_tip");
+        ASSERT(json_get_int(json_get(&root, "sync_gap")) == 1);
+        ASSERT(json_get_int(json_get(
+                   &root, "sync_behind_threshold_blocks")) == 144);
         ASSERT(!json_get_bool(json_get(&root, "sync_behind")));
         const struct json_value *chain_advance =
             json_get(&root, "chain_advance");
@@ -2658,9 +3855,180 @@ static int test_zcl_status_includes_chain_advance_dump(void)
 static int test_zcl_status_reports_dumpstate_error(void)
 {
     int failures = 0;
-    TEST("controllers: zcl_status reports dumpstate error metadata") {
+    TEST("controllers: zcl_status rejects dumpstate errors and wrong locus") {
         register_all();
         mcp_rpc_client_set_test_hook(mock_status_rpc_dumpstate_error);
+        for (int mode = MOCK_DUMPSTATE_WRAPPED_ERROR;
+             mode <= MOCK_DUMPSTATE_WRONG_SUBSYSTEM; mode++) {
+            g_mock_dumpstate_failure_mode =
+                (enum mock_dumpstate_failure_mode)mode;
+            struct json_value args;
+            json_init(&args);
+            json_set_object(&args);
+            char *body = mcp_router_dispatch("zcl_status", &args);
+            ASSERT(body != NULL);
+
+            struct json_value root;
+            ASSERT(json_read(&root, body, strlen(body)));
+            const struct json_value *frontier =
+                json_get(&root, "reducer_frontier");
+            const struct json_value *err =
+                json_get(&root, "reducer_frontier_error");
+            ASSERT(frontier != NULL && frontier->type == JSON_NULL);
+            ASSERT(err != NULL && err->type == JSON_OBJ);
+            if (mode != MOCK_DUMPSTATE_WRONG_SUBSYSTEM) {
+                ASSERT(json_get_int(json_get(err, "code")) == -32603);
+                ASSERT_STR_EQ(json_get_str(json_get(err, "message")),
+                              "reducer frontier unavailable");
+            } else {
+                ASSERT(contains(json_get_str(json_get(err, "message")),
+                                "invalid subsystem envelope"));
+            }
+            json_free(&root);
+            json_free(&args);
+            free(body);
+        }
+        mcp_rpc_client_set_test_hook(NULL);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_target_blocker_failure_never_falls_back_to_proxy(void)
+{
+    int failures = 0;
+    TEST("controllers: target blocker failure never becomes proxy zero/local") {
+        register_all();
+        blocker_module_init();
+        blocker_reset_for_testing();
+        blocker_set_rate_limit_ms_for_testing(0);
+        blocker_set_clock_for_testing(1000000);
+
+        struct blocker_record proxy_only;
+        ASSERT(blocker_init(&proxy_only, "proxy-only", "mcp",
+                            BLOCKER_RESOURCE,
+                            "must not mask target RPC failure"));
+        ASSERT(blocker_set(&proxy_only) == 0);
+
+        mcp_rpc_client_set_test_hook(mock_status_rpc_blocker_error);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_status", &args);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        const struct json_value *missing_blockers =
+            json_get(&root, "blockers");
+        const struct json_value *missing_dominant =
+            json_get(&root, "dominant_blocker");
+        ASSERT(missing_blockers != NULL &&
+               missing_blockers->type == JSON_NULL);
+        ASSERT(missing_dominant != NULL &&
+               missing_dominant->type == JSON_NULL);
+        const struct json_value *error = json_get(&root, "blockers_error");
+        ASSERT(error != NULL);
+        ASSERT(json_get_int(json_get(error, "code")) == -32603);
+        ASSERT_STR_EQ(json_get_str(json_get(error, "message")),
+                      "target blocker state unavailable");
+        ASSERT(!contains(body, "proxy-only"));
+
+        char *blockers_body = mcp_router_dispatch("zcl_blockers", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(blockers_body != NULL);
+        struct json_value blockers_error_root;
+        ASSERT(json_read(&blockers_error_root, blockers_body,
+                         strlen(blockers_body)));
+        const struct json_value *blockers_error =
+            json_get(&blockers_error_root, "error");
+        ASSERT(blockers_error != NULL &&
+               blockers_error->type == JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(blockers_error, "code")),
+                      "HANDLER_FAILED");
+        ASSERT_STR_EQ(json_get_str(json_get(blockers_error, "tool")),
+                      "zcl_blockers");
+        ASSERT(contains(json_get_str(json_get(blockers_error, "message")),
+                        "target blocker state unavailable"));
+        ASSERT(json_get(&blockers_error_root, "active_count") == NULL);
+        ASSERT(!contains(blockers_body, "proxy-only"));
+
+        json_free(&blockers_error_root);
+        json_free(&root);
+        json_free(&args);
+        free(blockers_body);
+        free(body);
+        blocker_reset_for_testing();
+        blocker_set_clock_for_testing(0);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    blocker_reset_for_testing();
+    blocker_set_clock_for_testing(0);
+    return failures;
+}
+
+static int test_target_blocker_failure_matrix_fails_closed(void)
+{
+    int failures = 0;
+    TEST("controllers: malformed target blocker evidence always fails closed") {
+        register_all();
+        blocker_module_init();
+        blocker_reset_for_testing();
+        blocker_set_rate_limit_ms_for_testing(0);
+        blocker_set_clock_for_testing(1000000);
+        struct blocker_record proxy_only;
+        ASSERT(blocker_init(&proxy_only, "proxy-only", "mcp",
+                            BLOCKER_RESOURCE, "must never be fallback"));
+        ASSERT(blocker_set(&proxy_only) == 0);
+
+        mcp_rpc_client_set_test_hook(
+            mock_status_rpc_blocker_failure_matrix);
+        for (int mode = MOCK_BLOCKER_WRAPPED_ERROR;
+             mode <= MOCK_BLOCKER_NULL_RESULT; mode++) {
+            g_mock_blocker_failure_mode =
+                (enum mock_blocker_failure_mode)mode;
+            struct json_value args;
+            json_init(&args);
+            json_set_object(&args);
+            char *body = mcp_router_dispatch("zcl_status", &args);
+            ASSERT(body != NULL);
+
+            struct json_value root;
+            ASSERT(json_read(&root, body, strlen(body)));
+            const struct json_value *blockers = json_get(&root, "blockers");
+            const struct json_value *dominant =
+                json_get(&root, "dominant_blocker");
+            const struct json_value *error =
+                json_get(&root, "blockers_error");
+            ASSERT(blockers != NULL && blockers->type == JSON_NULL);
+            ASSERT(dominant != NULL && dominant->type == JSON_NULL);
+            ASSERT(error != NULL && error->type == JSON_OBJ);
+            ASSERT(!contains(body, "proxy-only"));
+
+            json_free(&root);
+            json_free(&args);
+            free(body);
+        }
+
+        mcp_rpc_client_set_test_hook(NULL);
+        blocker_reset_for_testing();
+        blocker_set_clock_for_testing(0);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    blocker_reset_for_testing();
+    blocker_set_clock_for_testing(0);
+    return failures;
+}
+
+static int test_zcl_status_sync_gap_uses_served_tip(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_status sync lag is target minus served H-star") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_status_rpc_lagged);
         struct json_value args;
         json_init(&args);
         json_set_object(&args);
@@ -2670,16 +4038,14 @@ static int test_zcl_status_reports_dumpstate_error(void)
 
         struct json_value root;
         ASSERT(json_read(&root, body, strlen(body)));
-        const struct json_value *frontier =
-            json_get(&root, "reducer_frontier");
-        const struct json_value *err =
-            json_get(&root, "reducer_frontier_error");
-        ASSERT(frontier != NULL);
-        ASSERT(json_is_null(frontier));
-        ASSERT(err != NULL);
-        ASSERT(json_get_int(json_get(err, "code")) == -32603);
-        ASSERT_STR_EQ(json_get_str(json_get(err, "message")),
-                      "reducer frontier unavailable");
+        ASSERT(json_get_int(json_get(&root, "height")) == 1000);
+        ASSERT(json_get_int(json_get(&root, "header_height")) == 1300);
+        ASSERT(json_get_int(json_get(&root, "target_height")) == 1300);
+        ASSERT(json_get_int(json_get(&root, "header_gap")) == 0);
+        ASSERT(!json_get_bool(json_get(&root, "header_sync_behind")));
+        ASSERT(json_get_int(json_get(&root, "sync_gap")) == 300);
+        ASSERT(json_get_bool(json_get(&root, "sync_behind")));
+
         json_free(&root);
         json_free(&args);
         free(body);
@@ -2689,33 +4055,286 @@ static int test_zcl_status_reports_dumpstate_error(void)
     return failures;
 }
 
-static int test_zcl_status_includes_dominant_blocker(void)
+static int test_zcl_status_peer_claim_cannot_set_target(void)
 {
     int failures = 0;
-    TEST("controllers: zcl_status includes dominant typed blocker") {
+    TEST("controllers: peer-advertised height cannot set sync target") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_status_rpc_spoofed_peer_height);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_status", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT(json_get_int(json_get(&root, "max_peer_height")) ==
+               2000000000);
+        ASSERT(json_get_int(json_get(&root, "header_height")) == 1300);
+        ASSERT(json_get_int(json_get(&root, "target_height")) == 1300);
+        ASSERT(json_get_int(json_get(&root, "sync_gap")) == 300);
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &root, "max_peer_height_trust")),
+                      "untrusted_peer_advertisement");
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &root, "target_height_source")),
+                      "target_node.validated_header_tip");
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_zcl_status_failed_sync_inputs_are_unknown(void)
+{
+    int failures = 0;
+    TEST("controllers: failed sync RPCs stay null, never authoritative zero") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_status_rpc_sync_inputs_failed);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_status", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        const char *const unknown_keys[] = {
+            "height", "header_height", "max_peer_height", "header_gap",
+            "header_sync_behind", "target_height", "sync_gap",
+            "sync_behind", "peers",
+        };
+        for (size_t i = 0;
+             i < sizeof(unknown_keys) / sizeof(unknown_keys[0]); i++) {
+            const struct json_value *v = json_get(&root, unknown_keys[i]);
+            ASSERT(v != NULL);
+            ASSERT(v->type == JSON_NULL);
+        }
+        const struct json_value *height_error =
+            json_get(&root, "height_error");
+        const struct json_value *peers_error =
+            json_get(&root, "peers_error");
+        const struct json_value *header_error =
+            json_get(&root, "header_height_error");
+        ASSERT(height_error != NULL && height_error->type == JSON_OBJ);
+        ASSERT(peers_error != NULL && peers_error->type == JSON_OBJ);
+        ASSERT(header_error != NULL && header_error->type == JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(height_error, "message")),
+                      "height unavailable");
+        ASSERT_STR_EQ(json_get_str(json_get(peers_error, "message")),
+                      "peers unavailable");
+        ASSERT_STR_EQ(json_get_str(json_get(header_error, "message")),
+                      "headers unavailable");
+        const struct json_value *connections =
+            json_get(&root, "connections");
+        ASSERT(connections != NULL && connections->type == JSON_OBJ);
+        ASSERT(!json_get_bool(json_get(connections, "known")));
+        const struct json_value *total = json_get(connections, "total");
+        ASSERT(total != NULL && total->type == JSON_NULL);
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_zcl_status_labels_build_commit_fallback(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_status labels proxy build fallback honestly") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_status_rpc_without_node_commit);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_status", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        const struct json_value *build_commit =
+            json_get(&root, "build_commit");
+        ASSERT(build_commit != NULL);
+        ASSERT(build_commit->type == JSON_NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "mcp_build_commit")),
+                      zcl_build_commit());
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "build_commit_source")),
+                      "target_node.unavailable");
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_zcl_status_negative_health_metrics_are_unknown(void)
+{
+    int failures = 0;
+    TEST("controllers: negative health metrics are unknown, not evidence") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_status_rpc_negative_health_metrics);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_status", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        const struct json_value *memory = json_get(&root, "memory_rss_mb");
+        const struct json_value *uptime = json_get(&root, "uptime_secs");
+        ASSERT(memory != NULL && memory->type == JSON_NULL);
+        ASSERT(uptime != NULL && uptime->type == JSON_NULL);
+        ASSERT(json_get(&root, "memory_rss_mb_error") != NULL);
+        ASSERT(json_get(&root, "uptime_secs_error") != NULL);
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_zcl_status_inconsistent_frontier_is_not_zero_gap(void)
+{
+    int failures = 0;
+    TEST("controllers: served height above header is inconsistent, not synced") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_status_rpc_inconsistent_frontier);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_status", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT(json_get_int(json_get(&root, "height")) == 111);
+        ASSERT(json_get_int(json_get(&root, "header_height")) == 110);
+        ASSERT(!json_get_bool(json_get(&root,
+                                       "chain_evidence_consistent")));
+        const struct json_value *gap = json_get(&root, "sync_gap");
+        const struct json_value *behind = json_get(&root, "sync_behind");
+        ASSERT(gap != NULL && gap->type == JSON_NULL);
+        ASSERT(behind != NULL && behind->type == JSON_NULL);
+        ASSERT(json_get(&root, "chain_evidence_error") != NULL);
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_zcl_status_missing_peer_height_is_unknown(void)
+{
+    int failures = 0;
+    TEST("controllers: absent peer height claim is unknown, not zero") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_status_rpc_peer_without_height);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_status", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT(json_get_int(json_get(&root, "peers")) == 1);
+        ASSERT(!json_get_bool(json_get(&root, "max_peer_height_known")));
+        const struct json_value *peer_height =
+            json_get(&root, "max_peer_height");
+        const struct json_value *header_gap = json_get(&root, "header_gap");
+        ASSERT(peer_height != NULL && peer_height->type == JSON_NULL);
+        ASSERT(header_gap != NULL && header_gap->type == JSON_NULL);
+        ASSERT(json_get(&root, "max_peer_height_error") != NULL);
+        ASSERT(json_get(&root, "header_gap_error") != NULL);
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_zcl_status_missing_peer_direction_is_unknown(void)
+{
+    int failures = 0;
+    TEST("controllers: missing peer direction never means outbound") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_status_rpc_peer_without_direction);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_status", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        const struct json_value *connections =
+            json_get(&root, "connections");
+        ASSERT(connections != NULL && connections->type == JSON_OBJ);
+        ASSERT(!json_get_bool(json_get(connections, "known")));
+        ASSERT(json_get_bool(json_get(connections, "total_known")));
+        ASSERT(!json_get_bool(json_get(connections, "direction_known")));
+        ASSERT(json_get_int(json_get(connections, "total")) == 1);
+        const struct json_value *inbound = json_get(connections, "inbound");
+        const struct json_value *outbound = json_get(connections, "outbound");
+        ASSERT(inbound != NULL && inbound->type == JSON_NULL);
+        ASSERT(outbound != NULL && outbound->type == JSON_NULL);
+        ASSERT(json_get(connections, "direction_error") != NULL);
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_zcl_status_uses_target_blockers_not_proxy_registry(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_status uses target blockers, not proxy globals") {
         register_all();
         blocker_module_init();
         blocker_reset_for_testing();
         blocker_set_rate_limit_ms_for_testing(0);
         blocker_set_clock_for_testing(1000000);
 
-        struct blocker_record transient;
-        ASSERT(blocker_init(&transient, "peer-slow", "net",
-                            BLOCKER_TRANSIENT, "peer timeout"));
-        transient.escape_deadline_secs = 30;
-        snprintf(transient.escape_action, sizeof(transient.escape_action),
-                 "%s", "retry_peer");
-        ASSERT(blocker_set(&transient) == 0);
+        struct blocker_record proxy_only;
+        ASSERT(blocker_init(&proxy_only, "proxy-only", "mcp",
+                            BLOCKER_PERMANENT,
+                            "must never leak into target status"));
+        ASSERT(blocker_set(&proxy_only) == 0);
 
-        struct blocker_record resource;
-        ASSERT(blocker_init(&resource, "disk-full", "storage",
-                            BLOCKER_RESOURCE, "disk \"full\""));
-        snprintf(resource.escape_action, sizeof(resource.escape_action),
-                 "%s", "page_operator");
-        ASSERT(blocker_set(&resource) == 0);
-        blocker_advance_clock_for_testing(5000000);
-
-        mcp_rpc_client_set_test_hook(mock_status_rpc);
+        g_target_blocker_rpc_calls = 0;
+        mcp_rpc_client_set_test_hook(mock_status_rpc_with_target_blockers);
         struct json_value args;
         json_init(&args);
         json_set_object(&args);
@@ -2730,26 +4349,33 @@ static int test_zcl_status_includes_dominant_blocker(void)
         ASSERT(json_get_int(json_get(blockers, "active_count")) == 2);
         ASSERT(json_get_int(json_get(blockers, "transient_count")) == 1);
         ASSERT(json_get_int(json_get(blockers, "resource_count")) == 1);
+        ASSERT(json_get_int(json_get(blockers,
+                                     "escape_dispatched_total")) == 7);
+        ASSERT(json_get_int(json_get(blockers, "rate_limit_ms")) == 250);
+        ASSERT_STR_EQ(json_get_str(json_get(blockers, "execution_locus")),
+                      "target_node");
+        ASSERT(g_target_blocker_rpc_calls == 1);
+        ASSERT(!contains(body, "proxy-only"));
 
         const struct json_value *dominant =
             json_get(&root, "dominant_blocker");
         ASSERT(dominant != NULL);
         ASSERT(!json_is_null(dominant));
         ASSERT_STR_EQ(json_get_str(json_get(dominant, "id")),
-                      "disk-full");
+                      "target-disk-full");
         ASSERT_STR_EQ(json_get_str(json_get(dominant, "owner")),
                       "storage");
         ASSERT_STR_EQ(json_get_str(json_get(dominant, "class")),
                       "resource");
         ASSERT_STR_EQ(json_get_str(json_get(dominant, "reason")),
-                      "disk \"full\"");
+                      "disk \"full\"\nmanual check");
         ASSERT(json_get_int(json_get(dominant, "age_us")) == 5000000);
 
         const struct json_value *summary_dom =
             json_get(blockers, "dominant");
         ASSERT(summary_dom != NULL);
         ASSERT_STR_EQ(json_get_str(json_get(summary_dom, "id")),
-                      "disk-full");
+                      "target-disk-full");
 
         json_free(&root);
         json_free(&args);
@@ -2764,53 +4390,94 @@ static int test_zcl_status_includes_dominant_blocker(void)
     return failures;
 }
 
-static int test_zcl_blockers_escapes_blocker_strings(void)
+static int test_zcl_blockers_matches_target_state(void)
 {
     int failures = 0;
-    TEST("controllers: zcl_blockers escapes typed blocker strings") {
+    TEST("controllers: zcl_blockers matches target zcl_state payload") {
         register_all();
         blocker_module_init();
         blocker_reset_for_testing();
         blocker_set_rate_limit_ms_for_testing(0);
         blocker_set_clock_for_testing(1000000);
 
-        struct blocker_record resource;
-        ASSERT(blocker_init(&resource, "disk-full", "storage",
-                            BLOCKER_RESOURCE,
-                            "disk \"full\"\nmanual check"));
-        snprintf(resource.escape_action, sizeof(resource.escape_action),
-                 "%s", "page_operator");
-        ASSERT(blocker_set(&resource) == 0);
-        blocker_advance_clock_for_testing(5000000);
+        struct blocker_record proxy_only;
+        ASSERT(blocker_init(&proxy_only, "proxy-only", "mcp",
+                            BLOCKER_PERMANENT,
+                            "must never leak into target blocker tool"));
+        ASSERT(blocker_set(&proxy_only) == 0);
 
+        g_target_blocker_rpc_calls = 0;
+        mcp_rpc_client_set_test_hook(mock_status_rpc_with_target_blockers);
         struct json_value args;
         json_init(&args);
         json_set_object(&args);
         char *body = mcp_router_dispatch("zcl_blockers", &args);
         ASSERT(body != NULL);
 
+        struct json_value state_args;
+        json_init(&state_args);
+        json_set_object(&state_args);
+        json_push_kv_str(&state_args, "subsystem", "blocker");
+        char *state_body = mcp_router_dispatch("zcl_state", &state_args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(state_body != NULL);
+
         struct json_value root;
         ASSERT(json_read(&root, body, strlen(body)));
-        ASSERT(json_get_int(json_get(&root, "active_count")) == 1);
+        struct json_value state_root;
+        ASSERT(json_read(&state_root, state_body, strlen(state_body)));
+        const struct json_value *target_state =
+            json_get(&state_root, "state");
+        ASSERT(target_state != NULL);
+
+        ASSERT(json_get_int(json_get(&root, "active_count")) == 2);
         ASSERT(json_get_int(json_get(&root, "resource_count")) == 1);
+        ASSERT(json_get_int(json_get(&root, "escape_dispatched_total")) ==
+               json_get_int(json_get(target_state,
+                                     "escape_dispatched_total")));
+        ASSERT(json_get_int(json_get(&root, "rate_limit_ms")) ==
+               json_get_int(json_get(target_state, "rate_limit_ms")));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "execution_locus")),
+                      "target_node");
+        ASSERT(g_target_blocker_rpc_calls == 2);
+        ASSERT(!contains(body, "proxy-only"));
+        ASSERT(!contains(state_body, "proxy-only"));
 
         const struct json_value *blockers = json_get(&root, "blockers");
         ASSERT(blockers != NULL);
         ASSERT(blockers->type == JSON_ARR);
-        ASSERT(json_size(blockers) == 1);
-        const struct json_value *first = json_at(blockers, 0);
-        ASSERT(first != NULL);
-        ASSERT_STR_EQ(json_get_str(json_get(first, "id")), "disk-full");
-        ASSERT_STR_EQ(json_get_str(json_get(first, "reason")),
+        ASSERT(json_size(blockers) == 2);
+        ASSERT(json_size(blockers) ==
+               json_size(json_get(target_state, "blockers")));
+        const struct json_value *disk = json_at(blockers, 1);
+        ASSERT(disk != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(disk, "id")),
+                      "target-disk-full");
+        ASSERT_STR_EQ(json_get_str(json_get(disk, "reason")),
                       "disk \"full\"\nmanual check");
+        const struct json_value *root_health = json_get(&root, "_health");
+        const struct json_value *target_health =
+            json_get(target_state, "_health");
+        ASSERT(root_health != NULL && root_health->type == JSON_OBJ);
+        ASSERT(target_health != NULL && target_health->type == JSON_OBJ);
+        ASSERT(!json_get_bool(json_get(root_health, "ok")));
+        ASSERT(!json_get_bool(json_get(target_health, "ok")));
+        ASSERT_STR_EQ(json_get_str(json_get(root_health, "reason")),
+                      "2 active target blockers");
+        ASSERT_STR_EQ(json_get_str(json_get(target_health, "reason")),
+                      "2 active target blockers");
 
+        json_free(&state_root);
         json_free(&root);
+        json_free(&state_args);
         json_free(&args);
+        free(state_body);
         free(body);
         blocker_reset_for_testing();
         blocker_set_clock_for_testing(0);
         PASS();
     } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
     blocker_reset_for_testing();
     blocker_set_clock_for_testing(0);
     return failures;
@@ -2846,6 +4513,28 @@ static char *mock_composite_invalid_child_rpc(const char *method,
     return strdup("null");
 }
 
+static char *mock_kpi_peer_error_rpc(const char *method,
+                                     const char *params_json)
+{
+    if (strcmp(method, "getpeerinfo") == 0)
+        return strdup("{\"error\":{\"code\":-32603,"
+                      "\"message\":\"peer RPC unavailable\"}}");
+    return mock_composite_invalid_child_rpc(method, params_json);
+}
+
+static char *mock_syncdiag_peer_without_height_rpc(
+    const char *method, const char *params_json)
+{
+    (void)params_json;
+    if (strcmp(method, "getpeerinfo") == 0)
+        return strdup("[{\"inbound\":false}]");
+    if (strcmp(method, "getsyncdiag") == 0)
+        return strdup("{\"sync_state\":\"at_tip\"}");
+    if (strcmp(method, "downloadstats") == 0)
+        return strdup("{\"in_flight\":0,\"queued\":0}");
+    return strdup("null");
+}
+
 static int test_zcl_kpi_invalid_child_stays_parseable(void)
 {
     int failures = 0;
@@ -2863,11 +4552,44 @@ static int test_zcl_kpi_invalid_child_stays_parseable(void)
         ASSERT(json_read(&root, body, strlen(body)));
         ASSERT(json_get_int(json_get(&root, "height")) == 3157703);
         ASSERT(json_get_int(json_get(&root, "peer_count")) == 2);
-        ASSERT(json_is_null(json_get(&root, "mempool")));
+        const struct json_value *mempool = json_get(&root, "mempool");
+        ASSERT(mempool != NULL && mempool->type == JSON_NULL);
         const struct json_value *err = json_get(&root, "mempool_error");
         ASSERT(err != NULL);
         ASSERT(contains(json_get_str(json_get(err, "message")),
                         "getmempoolinfo RPC returned invalid JSON"));
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_zcl_kpi_peer_error_never_becomes_brace_count(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_kpi peer RPC error never becomes a peer count") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_kpi_peer_error_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_kpi", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        const struct json_value *peer_count = json_get(&root, "peer_count");
+        const struct json_value *peers = json_get(&root, "peers");
+        ASSERT(peer_count != NULL && peer_count->type == JSON_NULL);
+        ASSERT(!json_get_bool(json_get(&root, "peer_count_known")));
+        ASSERT(peers != NULL && peers->type == JSON_NULL);
+        ASSERT(json_get(&root, "peer_count_error") != NULL);
+        ASSERT(json_get(&root, "peers_error") != NULL);
 
         json_free(&root);
         json_free(&args);
@@ -2896,7 +4618,12 @@ static int test_zcl_syncdiag_invalid_children_stay_parseable(void)
         ASSERT_STR_EQ(json_get_str(json_get(&root, "error")),
                       "getsyncdiag RPC failed");
         ASSERT(json_get_int(json_get(&root, "peer_max_height")) == 3157901);
-        ASSERT(json_is_null(json_get(&root, "download")));
+        ASSERT(json_get_bool(json_get(&root, "peer_max_height_known")));
+        ASSERT_STR_EQ(json_get_str(json_get(&root,
+                                            "peer_max_height_trust")),
+                      "untrusted_peer_advertisement");
+        const struct json_value *download = json_get(&root, "download");
+        ASSERT(download != NULL && download->type == JSON_NULL);
         const struct json_value *diag_err =
             json_get(&root, "getsyncdiag_error");
         const struct json_value *dl_err =
@@ -2904,9 +4631,82 @@ static int test_zcl_syncdiag_invalid_children_stay_parseable(void)
         ASSERT(diag_err != NULL);
         ASSERT(dl_err != NULL);
         ASSERT(contains(json_get_str(json_get(diag_err, "message")),
-                        "getsyncdiag RPC returned invalid JSON"));
+                        "getsyncdiag RPC returned invalid data"));
         ASSERT(contains(json_get_str(json_get(dl_err, "message")),
                         "downloadstats RPC returned invalid JSON"));
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_zcl_syncdiag_rpc_errors_stay_unknown(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_syncdiag RPC errors never become state or zero") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_operator_invalid_core_evidence);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_syncdiag", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "error")),
+                      "getsyncdiag RPC failed");
+        ASSERT(json_get(&root, "code") == NULL);
+        const struct json_value *peer_height =
+            json_get(&root, "peer_max_height");
+        ASSERT(peer_height != NULL && peer_height->type == JSON_NULL);
+        ASSERT(!json_get_bool(json_get(&root,
+                                       "peer_max_height_known")));
+        const struct json_value *diag_error =
+            json_get(&root, "getsyncdiag_error");
+        const struct json_value *peer_error =
+            json_get(&root, "peer_max_height_error");
+        ASSERT(diag_error != NULL && diag_error->type == JSON_OBJ);
+        ASSERT(peer_error != NULL && peer_error->type == JSON_OBJ);
+        ASSERT(json_get_int(json_get(diag_error, "code")) == -32603);
+        ASSERT(json_get_int(json_get(peer_error, "code")) == -32603);
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_zcl_syncdiag_missing_peer_height_is_unknown(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_syncdiag needs an actual peer height claim") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_syncdiag_peer_without_height_rpc);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_syncdiag", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "sync_state")), "at_tip");
+        ASSERT(!json_get_bool(json_get(&root,
+                                       "peer_max_height_known")));
+        const struct json_value *peer_height =
+            json_get(&root, "peer_max_height");
+        ASSERT(peer_height != NULL && peer_height->type == JSON_NULL);
+        ASSERT(json_get(&root, "peer_max_height_error") != NULL);
 
         json_free(&root);
         json_free(&args);
@@ -4203,7 +6003,21 @@ int test_mcp_controllers(void)
     failures += test_postmortem_tools_list_and_replay();
     failures += test_zcl_getblockcount_uses_node_hstar_rpc();
     failures += test_zcl_operator_summary_degraded_shape();
-    failures += test_zcl_operator_summary_healthy_shape();
+    failures += test_zcl_operator_summary_compat_shape();
+    failures += test_native_operator_snapshot_single_rpc();
+    failures += test_native_operator_snapshot_failure_never_falls_back();
+    failures += test_native_operator_snapshot_exact_fallback();
+    failures += test_operator_summary_target_blockers_override_cached_healthy();
+    failures += test_operator_summary_unknown_blockers_cannot_be_healthy();
+    failures += test_operator_summary_invalid_core_evidence_cannot_be_healthy();
+    failures += test_operator_summary_nonobject_peer_is_unknown();
+    failures += test_operator_summary_zero_peers_at_tip_is_blocked();
+    failures += test_operator_summary_inconsistent_frontier_is_not_healthy();
+    failures += test_operator_summary_non_tip_state_cannot_be_healthy();
+    failures += test_operator_summary_known_blocker_beats_telemetry_outage();
+    failures += test_operator_summary_served_gap_cannot_be_hidden_by_index_tip();
+    failures += test_operator_summary_invalid_download_is_unknown();
+    failures += test_operator_summary_max_download_counters_do_not_overflow();
     failures += test_zcl_operator_summary_honors_mirror_contract();
     failures += test_zcl_agent_contract_shape();
     failures += test_zcl_agent_dev_tools_dispatch();
@@ -4212,10 +6026,23 @@ int test_mcp_controllers(void)
     failures += test_zcl_refold_status_shape();
     failures += test_zcl_status_includes_chain_advance_dump();
     failures += test_zcl_status_reports_dumpstate_error();
-    failures += test_zcl_status_includes_dominant_blocker();
-    failures += test_zcl_blockers_escapes_blocker_strings();
+    failures += test_target_blocker_failure_never_falls_back_to_proxy();
+    failures += test_target_blocker_failure_matrix_fails_closed();
+    failures += test_zcl_status_sync_gap_uses_served_tip();
+    failures += test_zcl_status_peer_claim_cannot_set_target();
+    failures += test_zcl_status_failed_sync_inputs_are_unknown();
+    failures += test_zcl_status_labels_build_commit_fallback();
+    failures += test_zcl_status_negative_health_metrics_are_unknown();
+    failures += test_zcl_status_inconsistent_frontier_is_not_zero_gap();
+    failures += test_zcl_status_missing_peer_height_is_unknown();
+    failures += test_zcl_status_missing_peer_direction_is_unknown();
+    failures += test_zcl_status_uses_target_blockers_not_proxy_registry();
+    failures += test_zcl_blockers_matches_target_state();
     failures += test_zcl_kpi_invalid_child_stays_parseable();
+    failures += test_zcl_kpi_peer_error_never_becomes_brace_count();
     failures += test_zcl_syncdiag_invalid_children_stay_parseable();
+    failures += test_zcl_syncdiag_rpc_errors_stay_unknown();
+    failures += test_zcl_syncdiag_missing_peer_height_is_unknown();
     failures += test_zcl_networkinfo_exposes_reachability_fields();
     failures += test_zcl_peer_incidents_exposes_duplicate_host_view();
     failures += test_zcl_peer_incidents_falls_back_to_dumpstate();

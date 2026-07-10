@@ -339,7 +339,7 @@ test-parallel: test_parallel
 # the default `all`), so running build/bin/test_parallel directly after editing a test
 # can false-green an old binary or report "matched no groups" for a new test.
 # `make t ONLY=<group>` always rebuilds the harness first, closing that trap.
-.PHONY: t t-fast syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop immutable-history-canaries historical-canaries agent-mcp-call agent-mcp-call-hot agent-mcp-call-dev agent-dev-status agent-clear-stale-dev-reindex agent-doctor stage-dev-bin agent-stage-dev deploy-dev-fast agent-deploy-fast
+.PHONY: t t-fast syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop dev-watch dev-watch-once dev-watch-selftest immutable-history-canaries historical-canaries agent-mcp-call agent-mcp-call-hot agent-mcp-call-dev agent-dev-status agent-clear-stale-dev-reindex agent-doctor stage-dev-bin agent-stage-dev deploy-dev-fast agent-deploy-fast
 
 # Run ONE test group, always rebuilding the harness first:
 #   make t ONLY=service_state_driver
@@ -453,6 +453,19 @@ agent-loop agent-dev-loop:
 	    echo "agent-loop: unsupported ZCL_AGENT_LOOP_DEPLOY=$${ZCL_AGENT_LOOP_DEPLOY} (use stage, dev, or unset)"; \
 	    exit 2 ;; \
 	esac
+
+# JavaScript-like save loop for C: debounce relevant source changes, run the
+# existing changed-file/focused checks, link the non-LTO dev binary, and update
+# ONLY the isolated zcl23-dev lane.  Use MODE=stage to avoid a restart or
+# MODE=off for build/test feedback only.  Canonical and soak are never targets.
+dev-watch:
+	@ZCL_DEV_WATCH_MODE="$${MODE:-$${ZCL_DEV_WATCH_MODE:-deploy}}" tools/dev/watch-dev-lane.sh
+
+dev-watch-once:
+	@ZCL_DEV_WATCH_ONCE=1 ZCL_DEV_WATCH_MODE="$${MODE:-$${ZCL_DEV_WATCH_MODE:-deploy}}" tools/dev/watch-dev-lane.sh
+
+dev-watch-selftest:
+	@tools/dev/watch-dev-lane.sh --self-test
 
 remote-node-update:
 	@if [ -n "$${ZCL_REMOTE_HOST:-}" ]; then \

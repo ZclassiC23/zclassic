@@ -177,8 +177,15 @@ int test_blocker(void)
         blocker_set(&r);
 
         struct blocker_snapshot snaps[8];
-        int n = blocker_snapshot_all(snaps, 8);
+        uint64_t generation = 0;
+        int dispatched = -1;
+        int rate_limit_ms = -1;
+        int n = blocker_snapshot_all_with_meta(
+            snaps, 8, &generation, &dispatched, &rate_limit_ms);
         BCK_CHECK("snapshot returns 1", n == 1);
+        BCK_CHECK("snapshot generation present", generation > 0);
+        BCK_CHECK("snapshot dispatched metadata", dispatched >= 0);
+        BCK_CHECK("snapshot rate metadata", rate_limit_ms == 0);
         BCK_CHECK("snap id matches", strcmp(snaps[0].id, "snap-a") == 0);
         BCK_CHECK("snap owner matches",
                   strcmp(snaps[0].owner_subsystem, "owner") == 0);
@@ -189,6 +196,13 @@ int test_blocker(void)
                   snaps[0].deadline_remaining_us > 0);
         BCK_CHECK("snap escape_action copied",
                   strcmp(snaps[0].escape_action, "fake_action") == 0);
+        uint64_t before_retry = generation;
+        blocker_record_retry("snap-a");
+        n = blocker_snapshot_all_with_meta(
+            snaps, 8, &generation, &dispatched, &rate_limit_ms);
+        BCK_CHECK("observable retry advances generation",
+                  n == 1 && generation > before_retry &&
+                  snaps[0].retry_count == 1);
 
         /* Advance past deadline */
         blocker_advance_clock_for_testing(61 * 1000000);
@@ -221,6 +235,8 @@ int test_blocker(void)
                   json_get_int(json_get(&v, "transient_count")) == 1);
         BCK_CHECK("rate_limit_ms exposed",
                   json_get(&v, "rate_limit_ms") != NULL);
+        BCK_CHECK("generation exposed",
+                  json_get_int(json_get(&v, "generation")) > 0);
         const struct json_value *arr = json_get(&v, "blockers");
         BCK_CHECK("blockers array present", arr != NULL);
         BCK_CHECK("blockers array len 2", arr && json_size(arr) == 2);

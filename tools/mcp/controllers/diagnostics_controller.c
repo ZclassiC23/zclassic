@@ -569,11 +569,13 @@ static const struct mcp_param_spec p_replay_exec[] = {
 
 static const struct mcp_tool_route k_routes[] = {
     { "zcl_state", "ops",
-      "Generic in-process state dump. See params.subsystem.enum for the "
-      "live list (derived from g_dumpers in diagnostics_controller.c). "
+      "Generic target-node state dump over native dumpstate RPC. See "
+      "params.subsystem.x-advisoryEnum for values known to this proxy; "
+      "zcl_state_catalog on the target is authoritative. "
       "For block_index, pass `key`=height or hex hash. New subsystems "
       "plug in via *_dump_state_json (see CLAUDE.md).",
-      p_state, PARAM_COUNT(p_state), h_zcl_state, 0, NULL },
+      p_state, PARAM_COUNT(p_state), h_zcl_state,
+      MCP_TOOL_FLAG_ADVISORY_ENUMS, NULL },
     { "zcl_state_catalog", "ops",
       "Machine-readable zcl_state catalog generated from the native "
       "diagnostics registry: subsystem names, descriptions, key hints, "
@@ -628,14 +630,18 @@ static const struct mcp_tool_route k_routes[] = {
 
 void mcp_register_diagnostics(void)
 {
-    /* Derive p_state.subsystem schema from the live g_dumpers registry so
+    /* Derive advisory p_state.subsystem hints from this proxy's g_dumpers
+     * registry so
      * adding a new *_dump_state_json subsystem in
      * app/controllers/src/diagnostics_controller.c automatically updates
-     * the MCP-visible enum with zero further plumbing. */
+     * the MCP-visible examples with zero further plumbing. The target
+     * statecatalog remains authoritative. */
     diagnostics_subsystems_csv(g_state_subsystems_csv,
                                sizeof(g_state_subsystems_csv));
     snprintf(g_state_subsystem_desc, sizeof(g_state_subsystem_desc),
-             "Subsystem name (one of: %s)", g_state_subsystems_csv);
+             "Subsystem name; proxy-known examples: %s. The target "
+             "zcl_state_catalog is authoritative.",
+             g_state_subsystems_csv);
     p_state[0].enum_csv    = g_state_subsystems_csv;
     p_state[0].description = g_state_subsystem_desc;
 

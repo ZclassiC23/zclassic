@@ -157,6 +157,15 @@ struct blocker_snapshot {
 /* Copy up to `max` snapshots into `out`. Returns count actually written. */
 int blocker_snapshot_all(struct blocker_snapshot *out, int max);
 
+/* Same locked registry copy with the metadata that belongs to that exact
+ * snapshot.  `generation_out` advances on every observable registry change;
+ * consumers can bind counts/rendering to one captured generation instead of
+ * combining independent read calls.  Optional metadata pointers may be NULL. */
+int blocker_snapshot_all_with_meta(struct blocker_snapshot *out, int max,
+                                   uint64_t *generation_out,
+                                   int *escape_dispatched_out,
+                                   int *rate_limit_ms_out);
+
 /* Count of active blockers in a class. */
 int blocker_count_by_class(enum blocker_class c);
 

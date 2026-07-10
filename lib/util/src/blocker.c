@@ -49,6 +49,7 @@ static int g_rate_limit_ms = BLOCKER_DEFAULT_RATE_LIMIT_MS;
 static _Atomic bool      g_module_inited = false;
 static _Atomic int       g_dispatched_count = 0;  /* test diagnostic */
 static _Atomic int64_t   g_test_clock_us = 0;     /* 0 = use real clock */
+static _Atomic uint64_t  g_generation = 0;
 
 /* ── Time ──────────────────────────────────────────────────────────── */
 
@@ -130,6 +131,7 @@ int blocker_set(const struct blocker_record *r)
     if (idx >= 0) {
         struct blocker_slot *s = &g_slots[idx];
         s->fire_count++;
+        atomic_fetch_add(&g_generation, 1);
         /* Rate limit: same id within rate-limit window → suppress field
          * update (still counts the fire). */
         int64_t since_last = now - s->last_set_us;
@@ -175,6 +177,7 @@ int blocker_set(const struct blocker_record *r)
     s->escape_deadline_us = (r->escape_deadline_secs > 0)
         ? now + r->escape_deadline_secs * 1000000
         : 0;
+    atomic_fetch_add(&g_generation, 1);
     pthread_mutex_unlock(&g_lock);
     return 0;
 }
@@ -186,6 +189,7 @@ void blocker_record_retry(const char *id)
     int idx = find_slot_locked(id);
     if (idx >= 0) {
         g_slots[idx].retry_count++;
+        atomic_fetch_add(&g_generation, 1);
     }
     pthread_mutex_unlock(&g_lock);
 }
@@ -197,6 +201,7 @@ void blocker_clear(const char *id)
     int idx = find_slot_locked(id);
     if (idx >= 0) {
         memset(&g_slots[idx], 0, sizeof(g_slots[idx]));
+        atomic_fetch_add(&g_generation, 1);
     }
     pthread_mutex_unlock(&g_lock);
 }
@@ -242,7 +247,10 @@ static void fill_snapshot(struct blocker_snapshot *out,
     memcpy(out->reason, s->reason, BLOCKER_REASON_MAX);
 }
 
-int blocker_snapshot_all(struct blocker_snapshot *out, int max)
+int blocker_snapshot_all_with_meta(struct blocker_snapshot *out, int max,
+                                   uint64_t *generation_out,
+                                   int *escape_dispatched_out,
+                                   int *rate_limit_ms_out)
 {
     if (!out || max <= 0) return 0;
     pthread_mutex_lock(&g_lock);
@@ -253,8 +261,19 @@ int blocker_snapshot_all(struct blocker_snapshot *out, int max)
         fill_snapshot(&out[n], &g_slots[i], now);
         n++;
     }
+    if (generation_out)
+        *generation_out = atomic_load(&g_generation);
+    if (escape_dispatched_out)
+        *escape_dispatched_out = atomic_load(&g_dispatched_count);
+    if (rate_limit_ms_out)
+        *rate_limit_ms_out = g_rate_limit_ms;
     pthread_mutex_unlock(&g_lock);
     return n;
+}
+
+int blocker_snapshot_all(struct blocker_snapshot *out, int max)
+{
+    return blocker_snapshot_all_with_meta(out, max, NULL, NULL, NULL);
 }
 
 int blocker_count_by_class(enum blocker_class c)
@@ -288,7 +307,11 @@ bool blocker_dump_state_json(struct json_value *out, const char *key)
     json_set_object(out);
 
     struct blocker_snapshot snaps[BLOCKER_CAP];
-    int n = blocker_snapshot_all(snaps, BLOCKER_CAP);
+    uint64_t generation = 0;
+    int escape_dispatched = 0;
+    int rate_limit_ms = 0;
+    int n = blocker_snapshot_all_with_meta(
+        snaps, BLOCKER_CAP, &generation, &escape_dispatched, &rate_limit_ms);
 
     int counts[4] = {0, 0, 0, 0};
     for (int i = 0; i < n; i++) {
@@ -301,9 +324,9 @@ bool blocker_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "transient_count",  counts[BLOCKER_TRANSIENT]);
     json_push_kv_int(out, "dependency_count", counts[BLOCKER_DEPENDENCY]);
     json_push_kv_int(out, "resource_count",   counts[BLOCKER_RESOURCE]);
-    json_push_kv_int(out, "escape_dispatched_total",
-                     atomic_load(&g_dispatched_count));
-    json_push_kv_int(out, "rate_limit_ms", g_rate_limit_ms);
+    json_push_kv_int(out, "generation", (int64_t)generation);
+    json_push_kv_int(out, "escape_dispatched_total", escape_dispatched);
+    json_push_kv_int(out, "rate_limit_ms", rate_limit_ms);
 
     struct json_value arr;
     json_init(&arr);
@@ -447,7 +470,14 @@ int blocker_supervisor_sweep(void)
         batch[i].fn(&batch[i].snap);
     }
     if (batch_n > 0) {
+        /* Keep snapshot metadata on the same registry-lock timeline as the
+         * copied entries.  Atomic types preserve legacy lock-free readers;
+         * the lock prevents a with-meta reader from observing half of this
+         * two-field publication. */
+        pthread_mutex_lock(&g_lock);
         atomic_fetch_add(&g_dispatched_count, batch_n);
+        atomic_fetch_add(&g_generation, 1);
+        pthread_mutex_unlock(&g_lock);
     }
     return batch_n;
 }
@@ -457,17 +487,18 @@ int blocker_supervisor_sweep(void)
 bool blocker_module_init(void)
 {
     if (atomic_exchange(&g_module_inited, true)) return true;
-    pthread_mutex_lock(&g_lock);
-    memset(g_slots, 0, sizeof(g_slots));
-    memset(g_escapes, 0, sizeof(g_escapes));
-    g_rate_limit_ms = BLOCKER_DEFAULT_RATE_LIMIT_MS;
-    pthread_mutex_unlock(&g_lock);
-    /* Env override for rate limit (testing/operations). */
+    int configured_rate_limit_ms = BLOCKER_DEFAULT_RATE_LIMIT_MS;
     const char *env = getenv("ZCL_BLOCKER_RATE_LIMIT_MS");
     if (env) {
         int v = atoi(env);
-        if (v >= 0) g_rate_limit_ms = v;
+        if (v >= 0) configured_rate_limit_ms = v;
     }
+    pthread_mutex_lock(&g_lock);
+    memset(g_slots, 0, sizeof(g_slots));
+    memset(g_escapes, 0, sizeof(g_escapes));
+    g_rate_limit_ms = configured_rate_limit_ms;
+    atomic_fetch_add(&g_generation, 1);
+    pthread_mutex_unlock(&g_lock);
     return true;
 }
 
@@ -477,6 +508,7 @@ void blocker_module_shutdown(void)
     pthread_mutex_lock(&g_lock);
     memset(g_slots, 0, sizeof(g_slots));
     memset(g_escapes, 0, sizeof(g_escapes));
+    atomic_fetch_add(&g_generation, 1);
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -528,6 +560,9 @@ int blocker_escape_dispatched_count(void)
 void blocker_set_rate_limit_ms_for_testing(int ms)
 {
     pthread_mutex_lock(&g_lock);
-    if (ms >= 0) g_rate_limit_ms = ms;
+    if (ms >= 0 && ms != g_rate_limit_ms) {
+        g_rate_limit_ms = ms;
+        atomic_fetch_add(&g_generation, 1);
+    }
     pthread_mutex_unlock(&g_lock);
 }

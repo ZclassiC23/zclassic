@@ -346,10 +346,28 @@ controller `k_routes[]` arrays.
   nested `operator_proofs` (`zcl.mvp_operator_proofs.v1`) that names each
   criterion's proof command, CI regression floor, and current blocker. REST
   serves the same contract at `GET /api/v1/milestone`.
-- `zcl_status` — full diagnostic tree: height, peers, sync, onion, health,
-  reducer frontier, tip-finalize, condition engine, and chain source scoring.
+- `zcl_status` — full composite diagnostic tree: served H* height, target/lag,
+  peers, sync, onion, health, reducer frontier, tip-finalize, condition engine,
+  typed blockers, and chain source scoring. It labels the composite execution
+  locus; blocker data comes from the target node's native `dumpstate blocker`
+  snapshot and fails closed (`blockers=null` + `blockers_error`) if that
+  snapshot is unavailable or internally contradictory. Never read node-owned
+  globals from the detached MCP proxy.
+- `zcl_operator_summary` — compact fail-closed composite. `gap` and
+  `served_gap` are validated-header target minus served H*; `index_gap` is
+  separately target minus the corroborating indexed/active frontier. Known
+  adverse evidence wins over missing ancillary telemetry, while any evidence
+  still required for a healthy verdict is typed or returned as `null` with an
+  error. It rejects contradictory `served <= indexed <= header` ordering and
+  treats an authoritative empty peer array as `no_peers` even at gap zero.
+- `zcl_blockers` — target-node blocker state with target execution provenance
+  and a derived dominant entry. It preserves the native
+  `zcl_state(subsystem=blocker).state` fields; it is not byte-identical to that
+  nested object.
 - `zcl_kpi` — aggregated KPIs (height, peer_count, sync, validation, mempool,
-  wallet, chain, network).
+  wallet, chain, network). Peer counts come from a parsed object array;
+  malformed/error responses yield `peer_count=null` and
+  `peer_count_known=false`.
 
 `tools/z` is a deprecated compatibility shim for terminal scripts. Keep it
 working, but do not add new operator logic there; add native C JSON contracts
@@ -359,9 +377,11 @@ and expose them through MCP/REST instead.
 - `zcl_state_catalog()` — discover the `zcl_state` subsystem list and metadata
   before drilling into a subsystem. Same payload as native
   `zclassic23 statecatalog` (`zcl.state_catalog.v1`).
-- `zcl_state(subsystem=X)` — generic state dump. Subsystem CSV is
-  auto-populated at runtime from the diagnostics registry. Currently ~56
-  subsystems wired (supervisor, watchdog, boot, block_index, health,
+- `zcl_state(subsystem=X)` — generic target state dump. The proxy-known
+  subsystem CSV is auto-populated as an advisory schema hint; it does not
+  reject a newer target-only subsystem. `zcl_state_catalog` on the target is
+  authoritative. Currently ~56 subsystems wired (supervisor, watchdog, boot,
+  block_index, health,
   chain_evidence, chain_advance_coordinator, legacy_mirror, oracle,
   header_probe, verify_engine, ...).
 - `zcl_node_log(pattern, since_secs, max_lines, level)` — server-side reverse

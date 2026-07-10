@@ -474,8 +474,18 @@ void cec_reconcile_startup(struct chain_evidence_controller *authority)
      * required manual node.db surgery to clear. */
     if (csv.header_height >= 0 && csv.header_height < active_tip->nHeight) {
         LOG_INFO("cec", "[cec] reconcile_startup: pindex_best_header h=%d behind " "active_tip h=%d — advancing in-memory tracker", csv.header_height, active_tip->nHeight);
-        if (authority->csr && authority->csr->pindex_best_hdr)
-            *authority->csr->pindex_best_hdr = active_tip;
+        struct chain_state_header_commit header_commit = {
+            .new_header_tip = active_tip,
+            .reason = "cec_startup_reconcile",
+        };
+        enum csr_result header_rc = csr_commit_header_tip(
+            authority->csr, &header_commit);
+        if (header_rc != CSR_OK) {
+            LOG_WARN("cec",
+                     "reconcile_startup: header promotion refused h=%d code=%s",
+                     active_tip->nHeight, csr_result_name(header_rc));
+            drift_refused = true;
+        }
     }
     if (csv.sql_max_height >= 0 && csv.sql_max_height < active_tip->nHeight) {
         LOG_INFO("cec", "[cec] reconcile_startup: blocks.max_height=%lld behind " "active_tip h=%d — projection will backfill", (long long)csv.sql_max_height, active_tip->nHeight);

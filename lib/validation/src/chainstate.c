@@ -304,6 +304,31 @@ struct block_index *active_chain_at(const struct active_chain *c, int height)
     return arr[height];
 }
 
+bool active_chain_capture_window(struct active_chain *c,
+                                 int requested_height,
+                                 struct active_chain_window_snapshot *out)
+{
+    if (!c || !out)
+        return false;
+    struct active_chain_window_snapshot snapshot = {
+        .height = -1,
+        .requested_height = requested_height,
+    };
+    zcl_mutex_lock(&c->write_lock);
+    int height = c->height;
+    int capacity = c->capacity;
+    struct block_index **arr = c->chain;
+    snapshot.height = height;
+    if (arr && height >= 0 && height < capacity)
+        snapshot.tip = arr[height];
+    if (arr && requested_height >= 0 && requested_height <= height &&
+        requested_height < capacity)
+        snapshot.requested = arr[requested_height];
+    zcl_mutex_unlock(&c->write_lock);
+    *out = snapshot;
+    return true;
+}
+
 bool active_chain_contains(const struct active_chain *c,
                            const struct block_index *bi)
 {
@@ -411,7 +436,11 @@ static bool active_chain_fill_window(struct active_chain *c,
 bool active_chain_move_window_tip(struct active_chain *c, struct block_index *bi)
 {
     if (!bi) {
+        if (!c)
+            return false;
+        zcl_mutex_lock(&c->write_lock);
         c->height = -1;
+        zcl_mutex_unlock(&c->write_lock);
         return true;
     }
 

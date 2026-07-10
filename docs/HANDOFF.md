@@ -1,3 +1,10 @@
+> **▶ NEXT DEV START HERE (latest): [`docs/work/SESSION-HANDOFF-2026-07-10-OPERATOR-SNAPSHOT.md`](work/SESSION-HANDOFF-2026-07-10-OPERATOR-SNAPSHOT.md)**
+> — target-owned native operator truth, fail-closed MCP projection, durable
+> chain/peer/blocker/condition evidence, focused regression proof, and the P0
+> plan for a JavaScript-like C dev watcher with transactional last-good rollback.
+> **No canonical deploy/restart was performed; existing Wave 3 copy-prove and
+> owner gates remain in force.**
+>
 > **▶ NEXT DEV START HERE: [`docs/work/SESSION-HANDOFF-2026-07-10-WAVE3.md`](work/SESSION-HANDOFF-2026-07-10-WAVE3.md)**
 > — 2026-07-10 Detective Wave 3 ("always strongly syncing to tip"): diagnosed + cured the
 > live P0 (empty Sapling anchor-frontier stall — the node held 216 blocks behind headers

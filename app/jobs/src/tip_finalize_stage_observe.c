@@ -91,6 +91,11 @@ void tip_finalize_observe_init(void)
 
 void tip_finalize_observe_shutdown(void)
 {
+    ensure_mutexes_ready();
+    zcl_mutex_lock(&g_last_advance_hash_mu);
+    atomic_store(&g_last_advance_height, (int64_t)-1);
+    memset(g_last_advance_hash, 0, sizeof(g_last_advance_hash));
+    zcl_mutex_unlock(&g_last_advance_hash_mu);
     atomic_store(&g_finalized_total, (uint64_t)0);
     atomic_store(&g_upstream_failed_total, (uint64_t)0);
     atomic_store(&g_reorg_detected_total, (uint64_t)0);
@@ -105,7 +110,6 @@ void tip_finalize_observe_shutdown(void)
     atomic_store(&g_last_blocked_class, TIP_FINALIZE_BLOCKED_NONE);
     for (int i = 0; i < TIP_FINALIZE_BLOCKED_CLASS_N; i++)
         atomic_store(&g_blocked_class_total[i], (uint64_t)0);
-    atomic_store(&g_last_advance_height, (int64_t)-1);
     atomic_store(&g_last_precondition_height, (int64_t)-1);
     log_throttle_reset(&g_precondition_throttle);
     log_throttle_reset(&g_cursor_gap_throttle);
@@ -188,9 +192,10 @@ void tip_finalize_observe_update_last_advance(int height,
                                               const uint8_t hash[32])
 {
     ensure_mutexes_ready();
-    atomic_store(&g_last_advance_height, (int64_t)height);
     zcl_mutex_lock(&g_last_advance_hash_mu);
     memcpy(g_last_advance_hash, hash, 32);
+    /* Height publishes last under the same lock the pair-reader takes. */
+    atomic_store(&g_last_advance_height, (int64_t)height);
     zcl_mutex_unlock(&g_last_advance_hash_mu);
 }
 
@@ -199,14 +204,13 @@ bool tip_finalize_observe_get_last_advance(int64_t *height,
 {
     if (!height || !hash)
         return false;
-    *height = atomic_load(&g_last_advance_height);
-    if (*height < 0)
-        return false;
     ensure_mutexes_ready();
     zcl_mutex_lock(&g_last_advance_hash_mu);
-    memcpy(hash, g_last_advance_hash, 32);
+    *height = atomic_load(&g_last_advance_height);
+    if (*height >= 0)
+        memcpy(hash, g_last_advance_hash, 32);
     zcl_mutex_unlock(&g_last_advance_hash_mu);
-    return true;
+    return *height >= 0;
 }
 
 int64_t tip_finalize_observe_last_height(void)
@@ -216,7 +220,11 @@ int64_t tip_finalize_observe_last_height(void)
 
 void tip_finalize_observe_reset_last_height(void)
 {
+    ensure_mutexes_ready();
+    zcl_mutex_lock(&g_last_advance_hash_mu);
     atomic_store(&g_last_advance_height, (int64_t)-1);
+    memset(g_last_advance_hash, 0, sizeof(g_last_advance_hash));
+    zcl_mutex_unlock(&g_last_advance_hash_mu);
 }
 
 void tip_finalize_observe_inc_finalized(void)

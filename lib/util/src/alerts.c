@@ -150,12 +150,12 @@ static void check_rule(struct rule_state *rs)
  * payload (e.g. "condition=tip_not_advancing attempts=5"). */
 static void operator_needed_set(const char *detail)
 {
-    atomic_store(&g_operator_needed, true);
+    pthread_mutex_lock(&g_lock);
     if (atomic_load(&g_operator_needed_since_unix) == 0)
         atomic_store(&g_operator_needed_since_unix, (int64_t)GetTime());
-    pthread_mutex_lock(&g_lock);
     snprintf(g_operator_needed_detail, sizeof(g_operator_needed_detail),
              "%s", detail && *detail ? detail : "(unspecified)");
+    atomic_store(&g_operator_needed, true);
     pthread_mutex_unlock(&g_lock);
     /* Make it impossible to miss: a STATUS= line systemd/operators see. */
     if (sd_notify_is_active()) {
@@ -339,10 +339,10 @@ void alerts_shutdown(void)
     g_webhook_enabled = false;
     g_webhook_url[0] = '\0';
     g_operator_needed_detail[0] = '\0';
-    g_initialized = false;
-    pthread_mutex_unlock(&g_lock);
     atomic_store(&g_operator_needed, false);
     atomic_store(&g_operator_needed_since_unix, 0);
+    g_initialized = false;
+    pthread_mutex_unlock(&g_lock);
 }
 
 bool alerts_add_rule(const struct alert_rule *rule)
@@ -410,22 +410,21 @@ void alerts_reset(void)
         g_rules[i].window_start_us = GetTimeMicros();
     }
     g_operator_needed_detail[0] = '\0';
-    pthread_mutex_unlock(&g_lock);
     atomic_store(&g_operator_needed, false);
     atomic_store(&g_operator_needed_since_unix, 0);
+    pthread_mutex_unlock(&g_lock);
 }
 
 bool alerts_operator_needed(char *detail_out, size_t detail_cap,
                             int64_t *since_unix_out)
 {
+    pthread_mutex_lock(&g_lock);
     bool active = atomic_load(&g_operator_needed);
     if (since_unix_out)
         *since_unix_out = atomic_load(&g_operator_needed_since_unix);
-    if (detail_out && detail_cap > 0) {
-        pthread_mutex_lock(&g_lock);
+    if (detail_out && detail_cap > 0)
         snprintf(detail_out, detail_cap, "%s", g_operator_needed_detail);
-        pthread_mutex_unlock(&g_lock);
-    }
+    pthread_mutex_unlock(&g_lock);
     return active;
 }
 
@@ -464,9 +463,9 @@ bool alerts_operator_needed_clear_if_chain_advance_recovered(
 
 void alerts_operator_needed_clear(void)
 {
+    pthread_mutex_lock(&g_lock);
     atomic_store(&g_operator_needed, false);
     atomic_store(&g_operator_needed_since_unix, 0);
-    pthread_mutex_lock(&g_lock);
     g_operator_needed_detail[0] = '\0';
     pthread_mutex_unlock(&g_lock);
 }

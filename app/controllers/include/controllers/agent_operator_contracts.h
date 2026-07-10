@@ -21,6 +21,7 @@ struct agent_operator_latch_contract_view {
 struct agent_condition_summary_contract_view {
     int active_count;
     int unresolved_count;
+    int unresolved_critical_count;
 };
 
 bool agent_operator_latch_suppressed_by_mirror(

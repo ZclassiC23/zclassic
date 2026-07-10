@@ -18,6 +18,7 @@
 #include "jobs/mint_fold_ceiling.h"
 #include "models/header_admit_log.h"
 #include "platform/time_compat.h"
+#include "services/chain_state_service.h"
 #include "services/header_admit_inbox.h"
 #include "header_admit_forward_rewind.h"
 #include "storage/event_log.h"
@@ -518,24 +519,40 @@ static job_result_t step_admit(struct stage_step_ctx *c)
         return JOB_FATAL;
     }
 
-    /* L2.5: advance the best-header frontier to this admitted block when it is
-     * the most-WORK header. The network path does this in msg_headers.c; the
-     * reducer PRODUCER path (self-mined / submitblock / rebuild) has no other
-     * writer of pindex_best_header, and the downstream stages resolve a block
-     * above the finalized window ONLY via pindex_best_header (vh_resolve_bi),
-     * so without this the pipeline stalls. Chainwork-ranked, advance-only;
-     * idempotent for the network path (best_header already at/past bi). */
-    {
-        struct block_index *cb = ms->pindex_best_header;
-        bool adv = (cb == NULL);
-        if (cb && bi != cb) {
-            if (!arith_uint256_is_zero(&bi->nChainWork) &&
-                !arith_uint256_is_zero(&cb->nChainWork))
-                adv = arith_uint256_compare(&bi->nChainWork, &cb->nChainWork) > 0;
-            else
-                adv = bi->nHeight > cb->nHeight;
+    /* L2.5: the reducer producer path must advance the best-header frontier,
+     * but the comparison and assignment belong to the CSR's single-writer
+     * lock.  A stale stage observation can therefore never overwrite a newer
+     * network header. */
+    bool promoted = false;
+    enum csr_result promote_rc = csr_promote_header_tip(
+        csr_instance(), &ms->chain_active, &ms->pindex_best_header, bi,
+        "header_admit", &promoted);
+#ifdef ZCL_TESTING
+    /* Isolated stage fixtures intentionally do not boot the process-wide CSR.
+     * Keep that seam explicit and test-only; production has no raw writer. */
+    if (promote_rc == CSR_REJECTED_NOT_INITIALIZED) {
+        struct block_index *current = ms->pindex_best_header;
+        bool advance = current == NULL;
+        if (current && current != bi) {
+            bool have_work = !arith_uint256_is_zero(&bi->nChainWork) &&
+                             !arith_uint256_is_zero(&current->nChainWork);
+            advance = have_work
+                ? arith_uint256_compare(&bi->nChainWork,
+                                        &current->nChainWork) > 0
+                : bi->nHeight > current->nHeight;
         }
-        if (adv) ms->pindex_best_header = bi;
+        if (advance)
+            ms->pindex_best_header = bi;
+        promote_rc = CSR_OK;
+        promoted = advance;
+    }
+#endif
+    (void)promoted;
+    if (promote_rc != CSR_OK) {
+        LOG_WARN("header_admit",
+                 "header promotion failed height=%d code=%s",
+                 bi->nHeight, csr_result_name(promote_rc));
+        return JOB_FATAL;
     }
 
     /* Idempotent block-index projection update; best-effort, never fatal.

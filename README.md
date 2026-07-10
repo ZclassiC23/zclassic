@@ -141,7 +141,8 @@ The key fields:
 | `height` | `0`, then rising | network tip height |
 | `peers` | `0`, then climbing | several connected |
 | `sync.state` | `finding_peers` → `headers_download` → `blocks_download` | `at_tip` |
-| `header_gap` / `sync_behind` | large / `true` | `0` / `false` |
+| `sync_gap` / `sync_behind` | validated-header gap / thresholded boolean | `0` / `false` |
+| `header_gap` | peer-advertised header hint (untrusted; `null` without a claim) | normally `0` |
 | `health.healthy` | `false` while catching up | `true` |
 | `health.checks.has_peers` | `false` | `true` |
 | `health.checks.onion_address` | absent until Tor onion is up | present (`…onion`) |
@@ -153,8 +154,9 @@ large diagnostic subtrees trimmed):
 ```jsonc
 // Fresh node, still finding peers:
 {
-  "height": 0, "header_gap": 0, "sync_behind": false, "peers": 0,
-  "connections": {"total":0,"inbound":0,"outbound":0,"zcl23":0,"magicbean":0},
+  "height": 0, "target_height": 0, "sync_gap": 0,
+  "sync_behind": false, "header_gap": null, "peers": 0,
+  "connections": {"known":true,"total":0,"inbound":0,"outbound":0,"zcl23":0,"magicbean":0},
   "sync":   {"state":"finding_peers","state_id":1},
   "health": {"healthy":false,
              "checks":{"synced":false,"has_peers":false,"tor_ready":false,
@@ -164,8 +166,9 @@ large diagnostic subtrees trimmed):
 
 // Synced node at tip, onion up:
 {
-  "height": 3160247, "header_gap": 0, "sync_behind": false, "peers": 8,
-  "connections": {"total":8,"inbound":2,"outbound":6,"zcl23":3,"magicbean":5},
+  "height": 3160247, "target_height": 3160247, "sync_gap": 0,
+  "sync_behind": false, "header_gap": 0, "peers": 8,
+  "connections": {"known":true,"total":8,"inbound":2,"outbound":6,"zcl23":3,"magicbean":5},
   "sync":   {"state":"at_tip","state_id":5},
   "health": {"healthy":true,
              "checks":{"synced":true,"has_peers":true,"tor_ready":true,
@@ -177,7 +180,10 @@ large diagnostic subtrees trimmed):
 
 A healthy node is **`sync.state: at_tip`, `health.healthy: true`,
 `peers > 0`, `blockers.active_count: 0`**. A stall is never silent: it surfaces
-as a growing `header_gap` or a named entry in `blockers` / `dominant_blocker`.
+as a growing authoritative `sync_gap` or a named entry in `blockers` /
+`dominant_blocker`. A single peer can influence `header_gap`, so treat that
+field only as an explicitly untrusted download hint. Missing target evidence is
+reported as `null` plus an error, never as a synthetic zero.
 
 ## Bootstrapping to tip
 
@@ -365,7 +371,7 @@ the node can harvest peers without DNS or fixed IPs.
 **Stuck height (height frozen, not at tip).** A stall is never silent — it is
 either a growing tip gap or a named blocker:
 ```bash
-# MCP: zcl_status → check sync.state, header_gap, health.checks, blockers
+# MCP: zcl_status → check sync.state, sync_gap, health.checks, blockers
 # MCP: zcl_syncstate (sync phase), zcl_blockers / zcl_state subsystem=supervisor
 build/bin/zclassic23 agent             # compact status and named blocker
 build/bin/zclassic23 agentops          # no-jq command center and next work

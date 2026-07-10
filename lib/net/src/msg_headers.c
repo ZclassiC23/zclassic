@@ -684,37 +684,13 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
             }
         }
 
-        /* Update pindex_best_header if the batch's last header is the
-         * most-WORK header we know of. Chainwork-ranked (mirrors Bitcoin
-         * Core's pindexBestHeader): the body-downloader must follow the
-         * most-WORK header chain, not the highest-HEIGHT one, so a taller-
-         * but-lighter fork never displaces a heavier chain.
-         *
-         * Conservative fallback: if either side's nChainWork has not been
-         * stamped yet (still zero), fall back to the historical height
-         * comparison so a valid higher header is never dropped just
-         * because its work is not yet computed. The boot-owned chain-state
-         * callback enforces the same promotion gate. */
-        struct block_index *cur_best = mp->main_state->pindex_best_header;
-        bool best_header_advances = false;
+        /* The CSR owns both ranking and publication. Always submit the batch
+         * candidate; a valid non-winning header is an idempotent no-op. */
         if (pindex_last) {
-            if (!cur_best) {
-                best_header_advances = true;
-            } else if (!arith_uint256_is_zero(&pindex_last->nChainWork) &&
-                       !arith_uint256_is_zero(&cur_best->nChainWork)) {
-                best_header_advances =
-                    arith_uint256_compare(&pindex_last->nChainWork,
-                                          &cur_best->nChainWork) > 0;
-            } else {
-                best_header_advances =
-                    pindex_last->nHeight > cur_best->nHeight;
-            }
-        }
-        if (best_header_advances) {
             if (!msg_processor_commit_header_tip(mp, pindex_last)) {
                 LOG_WARN("sync",
-                        "best-header promotion rejected h=%d",
-                        pindex_last->nHeight);
+                         "best-header promotion rejected h=%d",
+                         pindex_last->nHeight);
             }
         }
 

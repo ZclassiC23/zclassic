@@ -157,13 +157,10 @@ struct askfor_entry {
 };
 
 struct p2p_node {
-    /* Cross-thread: transitioned from the msg-handler thread (no cs_nodes,
-     * via peer_set_state_checked) and from the self_heal thread (under
-     * cs_nodes). _Atomic + relaxed removes the torn read in
-     * peer_set_state_checked that caused spurious "BUG: illegal transition"
-     * stderr. The read-validate-write there is still not one CAS, but that
-     * residual race only mis-prints / loses a transition; it never corrupts
-     * memory — see peer_set_state_checked() in lib/event/src/event.c. */
+    /* Cross-thread publication barrier: writers release-store state after
+     * filling handshake metadata; diagnostic readers acquire-load it before
+     * copying services/version/height/subversion.  Transition validation is
+     * serialized in peer_set_state_checked(). */
     _Atomic enum peer_state state; /* explicit state machine — use peer_set_state_checked() */
     uint64_t services;
     zcl_socket_t socket;
@@ -197,7 +194,7 @@ struct p2p_node {
     bool client;
     bool inbound;
     bool network_node;
-    bool disconnect;
+    _Atomic bool disconnect;
     bool relay_txes;
     bool sent_addr;
     int ref_count;

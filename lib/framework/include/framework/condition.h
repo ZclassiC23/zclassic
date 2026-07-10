@@ -128,6 +128,16 @@ bool condition_engine_get_registered_snapshot(
     const char *name, struct condition_runtime_snapshot *out);
 void condition_engine_tick(void);
 bool condition_engine_dump_state_json(struct json_value *out, const char *key);
+
+struct condition_engine_summary {
+    int registered_count;
+    int active_count;
+    int unresolved_count;
+    int unresolved_critical_count;
+};
+
+/* One registry-lock pass over the verdict-critical condition counts. */
+void condition_engine_get_summary(struct condition_engine_summary *out);
 int condition_engine_get_active_count(void);
 /* Count active episodes that have reached operator-needed state. This includes
  * max-attempt exhaustion and age-budget pages whose attempts remain below max. */

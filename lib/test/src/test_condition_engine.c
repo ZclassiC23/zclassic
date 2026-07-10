@@ -125,6 +125,12 @@ int test_condition_engine(void)
         condition_engine_tick();
         ok = ok && atomic_load(&g_remedy_calls) == 1;
         ok = ok && condition_engine_get_active_count() == 1;
+        struct condition_engine_summary summary;
+        condition_engine_get_summary(&summary);
+        ok = ok && summary.registered_count == 1;
+        ok = ok && summary.active_count == 1;
+        ok = ok && summary.unresolved_count == 0;
+        ok = ok && summary.unresolved_critical_count == 0;
         CE_CHECK("register + first remedy", ok);
     }
 

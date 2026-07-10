@@ -3,7 +3,10 @@
  * Chain state repository — implementation. See header for the design
  * rationale and the incident class that motivated this service. */
 
+// one-result-type-ok:legacy-csr-enum-contract-with-zcl-result-adapter
+
 #include "services/chain_state_service.h"
+#include "chain_state_internal.h"
 
 #include "config/db_service.h"
 #include "event/event.h"
@@ -28,7 +31,7 @@
  * boot phases). All helpers return false / -1 when there is no DB,
  * and the caller treats that as "skip this cross-check". */
 
-static int64_t csr_sqlite_max_block_height(struct node_db *ndb)
+int64_t csr_internal_sqlite_max_block_height(struct node_db *ndb)
 {
     if (!ndb || !ndb->open || !ndb->db)
         LOG_RETURN(-1, "csr", "ndb not available (null or closed)");
@@ -75,7 +78,7 @@ static int csr_sqlite_block_height(struct node_db *ndb,
     return result;
 }
 
-static int64_t csr_sqlite_utxo_count(struct node_db *ndb)
+int64_t csr_internal_sqlite_utxo_count(struct node_db *ndb)
 {
     if (!ndb || !ndb->open)
         LOG_RETURN(-1, "csr", "ndb not available");
@@ -303,7 +306,7 @@ static enum csr_result csr_validate_locked(
      * h=N+1 must not be rejected as stale_index merely because sql_max
      * sits above it; the disaster shape requires new_tip < active_tip,
      * so allowing new_tip > active_tip cannot reproduce it. */
-    int64_t sql_max = csr_sqlite_max_block_height(csr->ndb);
+    int64_t sql_max = csr_internal_sqlite_max_block_height(csr->ndb);
     if (sql_max >= 0 &&
         sql_max - (int64_t)new_tip->nHeight > csr->stale_index_height_gap) {
         bool forward_from_active_tip = false;
@@ -314,7 +317,7 @@ static enum csr_result csr_validate_locked(
         }
 
         if (!forward_from_active_tip) {
-            int64_t cur_utxos = csr_sqlite_utxo_count(csr->ndb);
+            int64_t cur_utxos = csr_internal_sqlite_utxo_count(csr->ndb);
             if (cur_utxos > csr->max_utxo_orphan_rows &&
                 !csr_commit_has_rollback_authorization(commit)) {
                 return CSR_REJECTED_STALE_INDEX;
@@ -326,7 +329,7 @@ static enum csr_result csr_validate_locked(
      * pass the count it believes the new tip should imply; if the
      * SQLite count differs by more than 50% we refuse. */
     if (commit->expected_utxo_count > 0) {
-        int64_t actual = csr_sqlite_utxo_count(csr->ndb);
+        int64_t actual = csr_internal_sqlite_utxo_count(csr->ndb);
         if (actual >= 0) {
             int64_t diff = actual - commit->expected_utxo_count;
             if (diff < 0) diff = -diff;
@@ -345,7 +348,7 @@ static enum csr_result csr_validate_locked(
     if (csr->chain_active && !csr_commit_has_rollback_authorization(commit)) {
         int cur_h = active_chain_height(csr->chain_active);
         if (cur_h >= 0 && new_tip->nHeight < cur_h) {
-            int64_t cur_utxos = csr_sqlite_utxo_count(csr->ndb);
+            int64_t cur_utxos = csr_internal_sqlite_utxo_count(csr->ndb);
             if (cur_utxos > csr->max_utxo_orphan_rows) {
                 return CSR_REJECTED_UTXO_DELTA_TOO_BIG;
             }
@@ -355,16 +358,13 @@ static enum csr_result csr_validate_locked(
     return CSR_OK;
 }
 
-static enum csr_result csr_validate_header_locked(
+enum csr_result csr_internal_validate_header_identity_locked(
     struct chain_state_repository *csr,
-    const struct chain_state_header_commit *commit)
+    struct block_index *new_tip,
+    const char *reason)
 {
-    if (!commit || !commit->new_header_tip)
+    if (!new_tip || !reason || !*reason)
         return CSR_REJECTED_NULL_INPUT;
-    if (!commit->reason || !*commit->reason)
-        return CSR_REJECTED_NULL_INPUT;
-
-    struct block_index *new_tip = commit->new_header_tip;
     if (!new_tip->phashBlock)
         return CSR_REJECTED_NULL_INPUT;
     if (new_tip->nHeight < 0)
@@ -387,6 +387,22 @@ static enum csr_result csr_validate_header_locked(
         if (prev != new_tip->pprev)
             return CSR_REJECTED_MISSING_PREV;
     }
+
+    return CSR_OK;
+}
+
+static enum csr_result csr_validate_header_locked(
+    struct chain_state_repository *csr,
+    const struct chain_state_header_commit *commit)
+{
+    if (!commit)
+        return CSR_REJECTED_NULL_INPUT;
+    enum csr_result identity = csr_internal_validate_header_identity_locked(
+        csr, commit->new_header_tip, commit->reason);
+    if (identity != CSR_OK)
+        return identity;
+
+    struct block_index *new_tip = commit->new_header_tip;
 
     /* Header-tip promotion is chainwork-ranked, mirroring Bitcoin Core's
      * pindexBestHeader semantics: the body-downloader must follow the
@@ -730,8 +746,9 @@ enum csr_result csr_commit_tip(struct chain_state_repository *csr,
          * keep the forward-only ratchet — pindex_best_header legitimately
          * runs AHEAD of the validated frontier during header-first sync,
          * so do NOT frontier-gate this publish. */
-        if (!cur_hdr || commit->new_tip->nHeight >= cur_hdr->nHeight ||
-            csr_commit_has_rollback_authorization(commit)) {
+        if (csr_commit_has_rollback_authorization(commit) ||
+            csr_internal_header_candidate_strictly_better(commit->new_tip,
+                                                           cur_hdr)) {
             *csr->pindex_best_hdr = commit->new_tip;
         }
     }
@@ -746,65 +763,4 @@ enum csr_result csr_commit_tip(struct chain_state_repository *csr,
     printf("csr: tip committed from=%d to=%d reason=%s\n",
            from_height, commit->new_tip->nHeight, commit->reason);
     return CSR_OK;
-}
-
-struct zcl_result csr_commit_tip_result(
-    struct chain_state_repository *csr,
-    const struct chain_state_commit *commit)
-{
-    enum csr_result rc = csr_commit_tip(csr, commit);
-    if (rc == CSR_OK) return ZCL_OK;
-    return ZCL_ERR(-(1000 + (int)rc), "csr_commit_tip: %s reason=%s",
-                   csr_result_name(rc),
-                   commit && commit->reason ? commit->reason : "");
-}
-
-void csr_snapshot(struct chain_state_repository *csr,
-                   struct chain_state_view *out)
-{
-    if (!out) return;
-    memset(out, 0, sizeof(*out));
-    out->tip_height    = -1;
-    out->header_height = -1;
-    out->utxo_count    = -1;
-    out->sql_max_height = -1;
-    if (!csr || !csr->initialized) return;
-
-    pthread_mutex_lock(&csr->lock);
-    if (csr->chain_active) {
-        out->tip_height = active_chain_height(csr->chain_active);
-        struct block_index *tip = active_chain_tip(csr->chain_active);
-        if (tip && tip->phashBlock) out->tip_hash = *tip->phashBlock;
-    }
-    if (csr->pindex_best_hdr && *csr->pindex_best_hdr) {
-        out->header_height = (*csr->pindex_best_hdr)->nHeight;
-    }
-    if (csr->coins_tip) {
-        coins_view_cache_get_best_block(csr->coins_tip, &out->coins_best_block);
-    }
-    out->utxo_count    = csr_sqlite_utxo_count(csr->ndb);
-    out->sql_max_height = csr_sqlite_max_block_height(csr->ndb);
-    out->consistent = (memcmp(out->tip_hash.data,
-                              out->coins_best_block.data, 32) == 0);
-    out->commits_ok = csr->commits_ok;
-    out->commits_rejected_total = 0;
-    for (int i = 0; i < CSR_NUM_RESULTS; i++)
-        out->commits_rejected_total += csr->commits_rejected[i];
-    pthread_mutex_unlock(&csr->lock);
-}
-
-int64_t csr_header_height(struct chain_state_repository *csr)
-{
-    /* In-process, in-memory read of the header tip: just the pindex_best_hdr
-     * pointer under the repository lock. Deliberately does NOT go through
-     * csr_snapshot(), which also runs two SQLite queries (blocks MAX(height),
-     * UTXO count) — too expensive for a caller that only wants the header
-     * height on a frequent tick (e.g. utxo_mirror_sync_service's 5s poll). */
-    int64_t h = -1;
-    if (!csr || !csr->initialized) return -1; // raw-return-ok:sentinel
-    pthread_mutex_lock(&csr->lock);
-    if (csr->pindex_best_hdr && *csr->pindex_best_hdr)
-        h = (*csr->pindex_best_hdr)->nHeight;
-    pthread_mutex_unlock(&csr->lock);
-    return h;
 }

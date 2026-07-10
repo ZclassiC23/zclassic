@@ -154,12 +154,11 @@ bool boot_header_block_index_heights_repaired(void *ctx)
 bool boot_commit_header_tip(struct block_index *header_tip, void *ctx)
 {
     struct boot_svc_ctx *svc = ctx;
-    struct chain_state_header_commit commit = {
-        .new_header_tip = header_tip,
-        .rollback_auth = NULL,
-        .reason = "msg_headers.best_header",
-    };
-    enum csr_result rc = csr_commit_header_tip(csr_instance(), &commit);
+    bool promoted = false;
+    enum csr_result rc = csr_promote_header_tip(
+        csr_instance(), svc && svc->state ? &svc->state->chain_active : NULL,
+        svc && svc->state ? &svc->state->pindex_best_header : NULL,
+        header_tip, "msg_headers.best_header", &promoted);
 
 #ifdef ZCL_TESTING
     if (rc == CSR_REJECTED_NOT_INITIALIZED && svc && svc->state && header_tip) {
@@ -174,6 +173,7 @@ bool boot_commit_header_tip(struct block_index *header_tip, void *ctx)
                  csr_result_name(rc), header_tip ? header_tip->nHeight : -1);
         return false;
     }
+    (void)promoted;
     return true;
 }
 

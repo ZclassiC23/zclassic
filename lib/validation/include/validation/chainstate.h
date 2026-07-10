@@ -94,6 +94,18 @@ struct active_chain_retired {
     struct block_index **arr;
 };
 
+/* One writer-lock snapshot of the raw active-chain window.  This deliberately
+ * does not consult the reducer's served-tip authority: `tip` is chain[height],
+ * and `requested` is chain[requested_height].  Block-index objects and retired
+ * arrays have process lifetime, so the returned pointers remain readable after
+ * the short lock is released. */
+struct active_chain_window_snapshot {
+    int height;
+    int requested_height;
+    struct block_index *tip;
+    struct block_index *requested;
+};
+
 /* Concurrency contract: readers are lock-free. `chain`, `height` and
  * `capacity` are _Atomic; writers publish a grow as fully-populated array,
  * then capacity, then height LAST, so a reader that bounds-checks against
@@ -116,6 +128,9 @@ void active_chain_free(struct active_chain *c);
 struct block_index *active_chain_cached_tip(const struct active_chain *c);
 struct block_index *active_chain_tip(const struct active_chain *c);
 struct block_index *active_chain_at(const struct active_chain *c, int height);
+bool active_chain_capture_window(struct active_chain *c,
+                                 int requested_height,
+                                 struct active_chain_window_snapshot *out);
 bool active_chain_contains(const struct active_chain *c,
                            const struct block_index *bi);
 /* Move the in-memory active-chain cache/window. This is not public tip

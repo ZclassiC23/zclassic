@@ -49,8 +49,8 @@ static const struct agent_contract_schema_surface g_agent_schema_surfaces[] = {
       "nested in zcl.agent_interface.v1 runtime_identity",
       "running binary identity for the interface contract producer" },
     { 13, "zcl.operator_summary.v1",
-      "zcl_operator_summary",
-      "long MCP operator summary with raw drill-down" },
+      "nested in zclassic23 operatorsnapshot / zcl_operator_snapshot and exposed by zcl_operator_summary",
+      "native target-owned operator verdict projection" },
     { 14, "zcl.operator_lane.v1",
       "zclassic23 agent / GET /api/v1/agent",
       "declared or exact-topology-inferred canonical/soak/dev lane and restart policy" },
@@ -87,6 +87,9 @@ static const struct agent_contract_schema_surface g_agent_schema_surfaces[] = {
     { 25, "zcl.operator_proof_bundle.v1",
       "zclassic23 proofbundle / zcl_proof_bundle",
       "one read-only evidence artifact tying live status, MVP proofs, sovereign anchor status, refold readiness, lanes, and dev status together" },
+    { 26, "zcl.operator_snapshot.v1",
+      "zclassic23 operatorsnapshot / zcl_operator_snapshot",
+      "single-target bounded component snapshots, capture coherence, typed evidence, invariants, and native summary" },
 };
 
 static const size_t g_agent_schema_surface_count =

@@ -488,6 +488,36 @@ static bool condition_is_unresolved(const struct condition *c)
     return active && (operator_needed || exhausted);
 }
 
+void condition_engine_get_summary(struct condition_engine_summary *out)
+{
+    struct condition_engine_summary summary = {0};
+    if (!out)
+        return;
+    pthread_mutex_lock(&g_condition_mu);
+    summary.registered_count = g_condition_count;
+    for (int i = 0; i < g_condition_count; i++) {
+        const struct condition *condition = g_conditions[i];
+        bool active = atomic_load(&condition->state.currently_active);
+        bool operator_needed =
+            atomic_load(&condition->state.operator_needed_emitted) ||
+            atomic_load(&condition->state.last_operator_needed_unix) > 0;
+        int attempts = atomic_load(&condition->state.attempts);
+        int max_attempts = condition->max_attempts > 0
+            ? condition->max_attempts : 1;
+        bool unresolved = active &&
+            (operator_needed || attempts >= max_attempts);
+        if (active)
+            summary.active_count++;
+        if (unresolved) {
+            summary.unresolved_count++;
+            if (condition->severity == COND_CRITICAL)
+                summary.unresolved_critical_count++;
+        }
+    }
+    pthread_mutex_unlock(&g_condition_mu);
+    *out = summary;
+}
+
 int condition_engine_get_unresolved_count(void)
 {
     int n = 0;

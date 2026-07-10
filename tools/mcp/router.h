@@ -133,6 +133,11 @@ enum mcp_tool_flag {
     /* Tool writes state on the node, network, or wallet — skipped by
      * zcl_self_test, treated as destructive by middleware (rate-gated). */
     MCP_TOOL_FLAG_DESTRUCTIVE = 1u << 0,
+    /* String enums describe values known to this proxy build, but the
+     * target node is authoritative and may support newer values.  Keep
+     * the values in schema output as x-advisoryEnum, and do not reject
+     * other well-typed values during proxy-side validation. */
+    MCP_TOOL_FLAG_ADVISORY_ENUMS = 1u << 1,
 };
 
 /* ── Validation / dispatch ───────────────────────────────────── */

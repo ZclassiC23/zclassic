@@ -26,7 +26,7 @@ app/controllers/src/name_controller.c 1034
 app/controllers/src/swap_controller.c 1013
 app/jobs/src/reducer_frontier.c 806
 app/jobs/src/stage_repair_reducer_frontier.c 814
-app/jobs/src/tip_finalize_stage.c 819
+app/jobs/src/tip_finalize_stage.c 817
 app/jobs/src/utxo_apply_stage.c 949
 app/services/src/chain_state_service.c 810
 app/services/src/node_db_catchup_service.c 904

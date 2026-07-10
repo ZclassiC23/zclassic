@@ -14,7 +14,7 @@
 #include "controllers/network_controller.h"
 #include "controllers/strong_params.h"
 #include "controllers/sync_controller.h"
-#include "event_agent_peers.h"
+#include "services/operator_peer_snapshot_service.h"
 #include "event_agent_readiness.h"
 #include "event/event.h"
 #include "framework/condition.h"
@@ -54,6 +54,19 @@ struct agent_fast_budget {
     bool partial_result;
     char partial_reason[96];
 };
+
+static int agent_fast_served_height(bool *published_out, bool *known_out)
+{
+    bool published = reducer_frontier_provable_tip_is_published();
+    int32_t served = reducer_frontier_provable_tip_cached();
+    if (published_out)
+        *published_out = published;
+    if (known_out)
+        *known_out = published && served >= 0 && served <= INT_MAX;
+    if (served < 0 || served > INT_MAX)
+        return 0;
+    return (int)served;
+}
 
 #ifdef ZCL_TESTING
 static int64_t agent_fast_test_elapsed_offset_ms(void)
@@ -104,17 +117,6 @@ static bool agent_fast_optional_detail_allowed(
     return false;
 }
 
-static int agent_fast_served_height(bool *published_out)
-{
-    bool published = reducer_frontier_provable_tip_is_published();
-    int32_t served = reducer_frontier_provable_tip_cached();
-    if (published_out)
-        *published_out = published;
-    if (served < 0 || served > INT_MAX)
-        return 0;
-    return (int)served;
-}
-
 static void agent_fast_add_warning(struct agent_fast_snapshot *s,
                                    const char *reason)
 {
@@ -140,15 +142,6 @@ static int agent_fast_tip_finalize_log_head(void)
     if (live > 0 && live <= INT_MAX)
         return (int)live;
     return -1; // raw-return-ok:sentinel
-}
-
-static int agent_fast_clamp_nonnegative_i64(int64_t value)
-{
-    if (value < 0)
-        return -1; // raw-return-ok:sentinel
-    if (value > INT_MAX)
-        return INT_MAX;
-    return (int)value;
 }
 
 static void agent_fast_collect_errors(struct agent_fast_snapshot *s)
@@ -211,11 +204,10 @@ static void agent_fast_collect_indexer(struct agent_fast_snapshot *s)
             agent_fast_add_warning(s, "block_source_status_stale");
         } else {
             s->block_source_status_cached = true;
-            if (decision.target_height > s->target_height)
-                s->target_height = decision.target_height;
             if (decision.projection_height >= 0) {
                 s->projection_height = decision.projection_height;
                 s->indexed_height = decision.projection_height;
+                s->indexed_height_known = true;
             }
             s->projection_lag = decision.projection_lag;
             s->projection_deferred = decision.projection_deferred;
@@ -281,8 +273,12 @@ static void agent_fast_collect(struct agent_fast_snapshot *s,
     s->validation_pack_ok = true;
     s->operator_needed_since_unix = 0;
     legacy_mirror_sync_stats_cached_snapshot(&s->mirror);
-    s->active_condition_count = condition_engine_get_active_count();
-    s->unresolved_condition_count = condition_engine_get_unresolved_count();
+    struct condition_engine_summary condition_summary;
+    condition_engine_get_summary(&condition_summary);
+    s->active_condition_count = condition_summary.active_count;
+    s->unresolved_condition_count = condition_summary.unresolved_count;
+    s->unresolved_critical_condition_count =
+        condition_summary.unresolved_critical_count;
     if (agent_fast_optional_detail_allowed(budget, "resources")) {
         agent_resource_snapshot_collect(&s->resources);
         s->resources_collected = true;
@@ -291,32 +287,57 @@ static void agent_fast_collect(struct agent_fast_snapshot *s,
     }
 
     s->sync_state = sync_get_state();
-    s->served_height =
-        agent_fast_served_height(&s->provable_tip_published);
+    s->served_height = agent_fast_served_height(
+        &s->provable_tip_published, &s->served_height_known);
     if (!s->provable_tip_published)
         agent_fast_add_warning(s, "provable_tip_unpublished");
 
     struct main_state *ms = sync_monitor_main_state();
     if (ms) {
-        struct block_index *tip = active_chain_tip(&ms->chain_active);
-        if (tip)
+        /* This legacy summary is already called beneath cs_main in some
+         * paths. Read the lock-protected cache directly so observation can
+         * never recurse through the authority resolver and ABBA deadlock. */
+        struct block_index *tip = active_chain_cached_tip(&ms->chain_active);
+        if (tip) {
             s->tip_height = tip->nHeight;
-        if (ms->pindex_best_header)
+            s->tip_height_known = true;
+        }
+        if (ms->pindex_best_header) {
             s->header_height = ms->pindex_best_header->nHeight;
+            s->header_height_known = true;
+        }
     }
-    if (s->tip_height < 0)
+    if (!s->tip_height_known && s->served_height_known) {
         s->tip_height = s->served_height;
+        s->tip_height_known = true;
+    }
     s->indexed_height = s->tip_height;
-    if (s->header_height < 0)
+    s->indexed_height_known = s->tip_height_known;
+    if (!s->header_height_known && s->tip_height_known) {
         s->header_height = s->tip_height;
+        s->header_height_known = true;
+    }
+    s->chain_evidence_consistent =
+        s->served_height_known && s->tip_height_known &&
+        s->header_height_known &&
+        s->served_height <= s->tip_height &&
+        s->tip_height <= s->header_height;
     snprintf(s->projection_state, sizeof(s->projection_state), "unknown");
 
     {
         struct agent_peer_snapshot peers;
         agent_peer_snapshot_collect(&peers, rpc_net_get_connman());
         s->peer_count = peers.peer_count;
-        s->has_peers = peers.peer_count > 0;
+        s->peer_inbound_count = peers.inbound_count;
+        s->peer_outbound_count = peers.outbound_count;
+        s->peer_ready_count = peers.ready_count;
+        s->has_peers = peers.available && !peers.stale &&
+            peers.direction_known && peers.ready_known &&
+            peers.ready_count > 0;
         s->peer_best_height = peers.peer_best_height;
+        s->peer_best_height_known = peers.peer_best_height_known;
+        s->peer_direction_known = peers.direction_known;
+        s->peer_ready_known = peers.ready_known;
         s->magicbean_peer_count = peers.magicbean_peer_count;
         s->zclassic_c23_peer_count = peers.zclassic_c23_peer_count;
         s->peer_snapshot_available = peers.available;
@@ -409,44 +430,34 @@ static void agent_fast_collect(struct agent_fast_snapshot *s,
         agent_fast_add_warning(s, s->validation_pack_detail[0]
                                   ? s->validation_pack_detail
                                   : "validation_pack");
+    /* Only local frontiers are authoritative. Peer starting heights remain
+     * an explicitly advisory availability hint. */
     s->target_height = s->tip_height > s->served_height
         ? s->tip_height : s->served_height;
     if (s->header_height > s->target_height)
         s->target_height = s->header_height;
-    if (s->peer_best_height > s->target_height)
-        s->target_height = s->peer_best_height;
+    s->target_height_known = s->served_height_known ||
+        s->tip_height_known || s->header_height_known;
     agent_fast_collect_indexer(s);
-    s->gap = s->target_height > s->served_height
+    s->gap = s->chain_evidence_consistent &&
+        s->target_height > s->served_height
         ? s->target_height - s->served_height : 0;
-    if (s->projection_lag >= 0) {
-        s->index_gap = agent_fast_clamp_nonnegative_i64(s->projection_lag);
-    } else if (s->target_height > s->indexed_height &&
-               s->indexed_height >= 0) {
+    if (!s->chain_evidence_consistent) {
+        s->index_gap = 0;
+        agent_fast_add_warning(s, "chain_evidence_inconsistent");
+    } else if (s->target_height > s->indexed_height) {
         s->index_gap = s->target_height - s->indexed_height;
     } else {
         s->index_gap = 0;
     }
-    s->serving = s->served_height > 0;
-    if (s->sync_state != SYNC_AT_TIP &&
-        s->serving && s->has_peers && s->gap <= 1 &&
-        (s->log_head_gap < 0 || s->log_head_gap <= 1)) {
-        s->sync_state = SYNC_AT_TIP;
-    }
+    s->serving = s->served_height_known && s->served_height > 0;
     if (s->tip_advance_age_seconds > 600 &&
         s->sync_state != SYNC_AT_TIP)
         agent_fast_add_warning(s, "tip_advance_stale");
 
-    bool frontier_recovered =
-        s->serving && s->has_peers && s->gap <= 1 &&
-        s->index_gap <= 1 &&
-        (s->log_head_gap < 0 || s->log_head_gap <= 1);
-    s->operator_latch_recovered =
-        alerts_operator_needed_clear_if_chain_advance_recovered(
-            frontier_recovered, s->operator_needed_detail,
-            sizeof(s->operator_needed_detail),
-            &s->operator_needed_since_unix);
-    if (s->operator_latch_recovered)
-        agent_fast_add_warning(s, "operator_latch_recovered");
+    /* Observation is pure. Latch recovery belongs to supervised health
+     * transition work; an RPC read must never clear operator evidence. */
+    s->operator_latch_recovered = false;
     s->operator_needed =
         alerts_operator_needed(s->operator_needed_detail,
                                sizeof(s->operator_needed_detail),
@@ -457,7 +468,8 @@ static void agent_fast_collect(struct agent_fast_snapshot *s,
     if (s->operator_latch_suppressed_by_mirror)
         agent_fast_add_warning(s, "operator_latch_suppressed_by_mirror");
     s->operator_action_required =
-        s->operator_needed && !s->operator_latch_suppressed_by_mirror;
+        (s->operator_needed && !s->operator_latch_suppressed_by_mirror) ||
+        s->unresolved_critical_condition_count > 0;
 
     s->catchup_active = s->in_flight > 0 || s->queued > 0;
     s->catchup_stalled =
@@ -481,6 +493,7 @@ static void agent_fast_collect(struct agent_fast_snapshot *s,
         agent_fast_add_warning(s, "download_timeouts_overdue");
 
     s->healthy = s->serving && s->has_peers &&
+                 s->chain_evidence_consistent &&
                  !s->operator_action_required &&
                  s->gap <= ZCL_NODE_HEALTH_LAG_WARN_BLOCKS &&
                  s->index_gap <= ZCL_NODE_HEALTH_LAG_WARN_BLOCKS &&
@@ -638,6 +651,8 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     struct agent_condition_summary_contract_view condition_view = {
         .active_count = health.active_condition_count,
         .unresolved_count = health.unresolved_condition_count,
+        .unresolved_critical_count =
+            health.unresolved_critical_condition_count,
     };
     agent_push_condition_summary_contract_json(result, &condition_view);
     legacy_mirror_sync_push_status_contract_json(result, &health.mirror);
@@ -647,10 +662,26 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
         health.log_head_gap);
     json_push_kv_int(result, "height", health.served_height);
     json_push_kv_int(result, "served_height", health.served_height);
+    json_push_kv_bool(result, "served_height_known",
+                      health.served_height_known);
     json_push_kv_int(result, "indexed_height", health.indexed_height);
+    json_push_kv_bool(result, "indexed_height_known",
+                      health.indexed_height_known);
     json_push_kv_int(result, "header_height", health.header_height);
+    json_push_kv_bool(result, "header_height_known",
+                      health.header_height_known);
     json_push_kv_int(result, "peer_best_height", health.peer_best_height);
+    json_push_kv_bool(result, "peer_best_height_known",
+                      health.peer_best_height_known);
     json_push_kv_int(result, "target_height", health.target_height);
+    json_push_kv_bool(result, "target_height_known",
+                      health.target_height_known);
+    json_push_kv_str(result, "target_height_source",
+                     health.target_height_known
+                         ? "local_validated_header"
+                         : "unavailable");
+    json_push_kv_bool(result, "chain_evidence_consistent",
+                      health.chain_evidence_consistent);
     json_push_kv_int(result, "gap", health.gap);
     json_push_kv_int(result, "index_gap", health.index_gap);
     json_push_kv_bool(result, "provable_tip_published",

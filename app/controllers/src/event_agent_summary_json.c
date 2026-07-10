@@ -93,6 +93,8 @@ static void agent_summary_push_health_json(
                      h->active_condition_count);
     json_push_kv_int(&health_obj, "unresolved_condition_count",
                      h->unresolved_condition_count);
+    json_push_kv_int(&health_obj, "unresolved_critical_condition_count",
+                     h->unresolved_critical_condition_count);
     json_push_kv(result, "health", &health_obj);
     json_free(&health_obj);
 }
@@ -104,6 +106,16 @@ static void agent_summary_push_peers_json(
     struct json_value peers = {0};
     json_set_object(&peers);
     json_push_kv_int(&peers, "total", (int64_t)h->peer_count);
+    json_push_kv_bool(&peers, "direction_known", h->peer_direction_known);
+    json_push_kv_bool(&peers, "ready_known", h->peer_ready_known);
+    json_push_kv_int(&peers, "inbound", (int64_t)h->peer_inbound_count);
+    json_push_kv_int(&peers, "outbound", (int64_t)h->peer_outbound_count);
+    json_push_kv_int(&peers, "ready", (int64_t)h->peer_ready_count);
+    json_push_kv_bool(&peers, "max_height_known",
+                      h->peer_best_height_known);
+    json_push_kv_int(&peers, "max_height", h->peer_best_height);
+    json_push_kv_str(&peers, "max_height_trust",
+                     "untrusted_peer_advertisement");
     json_push_kv_bool(&peers, "has_peers", h->has_peers);
     json_push_kv_bool(&peers, "snapshot_available",
                       h->peer_snapshot_available);

@@ -94,6 +94,11 @@ static const struct mcp_tool_route r_enum = {
     "t.enum", "test", "Enum", p_enum_str,
     sizeof(p_enum_str) / sizeof(p_enum_str[0]), h_echo, 0, NULL
 };
+static const struct mcp_tool_route r_advisory_enum = {
+    "t.advisory_enum", "test", "Advisory enum", p_enum_str,
+    sizeof(p_enum_str) / sizeof(p_enum_str[0]), h_echo,
+    MCP_TOOL_FLAG_ADVISORY_ENUMS, NULL
+};
 static const struct mcp_tool_route r_mixed = {
     "t.mixed", "test", "Mixed params", p_mixed,
     sizeof(p_mixed) / sizeof(p_mixed[0]), h_echo, 0, NULL
@@ -118,6 +123,7 @@ static void setup_routes(void)
     mcp_router_register(&r_required);
     mcp_router_register(&r_int);
     mcp_router_register(&r_enum);
+    mcp_router_register(&r_advisory_enum);
     mcp_router_register(&r_mixed);
     mcp_router_register(&r_strlen);
     mcp_router_register(&r_fail);
@@ -151,7 +157,7 @@ static int test_router_register_and_count(void)
 {
     int failures = 0;
     TEST("router registers and counts routes") {
-        ASSERT(mcp_router_count() == 8);
+        ASSERT(mcp_router_count() == 9);
         ASSERT(mcp_router_find("t.echo") != NULL);
         ASSERT(mcp_router_find("t.required") != NULL);
         ASSERT(mcp_router_find("t.nonexistent") == NULL);
@@ -166,7 +172,7 @@ static int test_router_duplicate_rejected(void)
     TEST("duplicate route registration is rejected") {
         bool ok = mcp_router_register(&r_echo);
         ASSERT(!ok);
-        ASSERT(mcp_router_count() == 8);
+        ASSERT(mcp_router_count() == 9);
         PASS();
     } _test_next:;
     return failures;
@@ -416,6 +422,23 @@ static int test_router_enum_match(void)
     return failures;
 }
 
+static int test_router_advisory_enum_accepts_unknown(void)
+{
+    int failures = 0;
+    TEST("advisory enum forwards values unknown to this proxy") {
+        struct json_value v;
+        parse_args(&v, "{\"action\": \"future-action\"}");
+        char *r = mcp_router_dispatch("t.advisory_enum", &v);
+        ASSERT(r != NULL);
+        ASSERT(!contains(r, "\"error\""));
+        ASSERT(contains(r, "\"tool\":\"t.advisory_enum\""));
+        free(r);
+        json_free(&v);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_router_optional_omitted(void)
 {
     int failures = 0;
@@ -512,6 +535,22 @@ static int test_router_schema_enum(void)
         size_t n = mcp_router_input_schema_json(&r_enum, buf, sizeof(buf));
         ASSERT(n > 0);
         ASSERT(contains(buf, "\"enum\":[\"add\",\"remove\",\"onetry\"]"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_router_schema_advisory_enum(void)
+{
+    int failures = 0;
+    TEST("input schema marks proxy-known enum values advisory") {
+        char buf[2048];
+        size_t n = mcp_router_input_schema_json(&r_advisory_enum,
+                                                buf, sizeof(buf));
+        ASSERT(n > 0);
+        ASSERT(contains(buf,
+                        "\"x-advisoryEnum\":[\"add\",\"remove\",\"onetry\"]"));
+        ASSERT(!contains(buf, "\"enum\":"));
         PASS();
     } _test_next:;
     return failures;
@@ -626,7 +665,7 @@ static int test_router_reset_clears(void)
         ASSERT(mcp_router_count() == 0);
         ASSERT(mcp_router_find("t.echo") == NULL);
         setup_routes();
-        ASSERT(mcp_router_count() == 8);
+        ASSERT(mcp_router_count() == 9);
         PASS();
     } _test_next:;
     return failures;
@@ -657,6 +696,7 @@ int test_mcp_router(void)
     failures += test_router_str_too_long();
     failures += test_router_enum_mismatch();
     failures += test_router_enum_match();
+    failures += test_router_advisory_enum_accepts_unknown();
     failures += test_router_optional_omitted();
     failures += test_router_handler_failure();
     failures += test_router_handler_null_body();
@@ -664,6 +704,7 @@ int test_mcp_router(void)
     failures += test_router_schema_required();
     failures += test_router_schema_int();
     failures += test_router_schema_enum();
+    failures += test_router_schema_advisory_enum();
     failures += test_router_tools_list();
     failures += test_router_envelope_escape();
     failures += test_router_error_names();

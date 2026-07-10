@@ -935,7 +935,7 @@ bool peer_set_state_checked(uint32_t peer_id, _Atomic enum peer_state *current,
      * single CAS, so two concurrent transitions can still race the validate
      * (documented-benign: mis-print / lost transition only, no memory
      * corruption, no change to which transitions are legal). */
-    enum peer_state old = atomic_load_explicit(current, memory_order_relaxed);
+    enum peer_state old = atomic_load_explicit(current, memory_order_acquire);
 
     if (!peer_transition_valid(old, new_state)) {
         /* Illegal transition — this is always a bug */
@@ -951,7 +951,9 @@ bool peer_set_state_checked(uint32_t peer_id, _Atomic enum peer_state *current,
         return false;
     }
 
-    atomic_store_explicit(current, new_state, memory_order_relaxed);
+    /* Release-publish immutable version/handshake metadata written before the
+     * transition; diagnostic readers acquire-load state before copying it. */
+    atomic_store_explicit(current, new_state, memory_order_release);
 
     char buf[EVENT_PAYLOAD_SIZE];
     int n = snprintf(buf, sizeof(buf), "%s->%s: %s",

@@ -16,6 +16,13 @@ AGENT_CONTRACT("agent", "runtime_status", "zcl.public_status.v1",
                "direct", 2, "live_status",
                "serving state, heights, peers, blockers, lane, readiness",
                "bounded live status: build, lane safety, heights, peers, blocker, and next action")
+AGENT_CONTRACT("operatorsnapshot", "authoritative_operator_snapshot",
+               "zcl.operator_snapshot.v1",
+               "zclassic23 operatorsnapshot", "zcl_operator_snapshot", "",
+               "", "",
+               "direct", 4, "operator_snapshot",
+               "one target-owned bounded capture with typed evidence and invariants",
+               "observationally pure target snapshot with native operator-summary projection")
 AGENT_CONTRACT("status", "runtime_status_alias", "zcl.public_status.v1",
                "zclassic23 status", "zcl_agent", "GET /api/v1/agent",
                "", "",

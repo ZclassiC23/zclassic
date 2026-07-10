@@ -67,9 +67,9 @@ void agent_push_operator_latch_contract_json(
     json_push_kv_str(&obj, "native_state_command",
                      "zclassic23 dumpstate condition_engine");
     json_push_kv_str(&obj, "semantics",
-                     "active means EV_OPERATOR_NEEDED is latched; "
-                     "operator_action_required is false for mirror-only "
-                     "latches cleared by zcl.mirror_status.v1 semantics");
+                     "active means EV_OPERATOR_NEEDED is latched; mirror "
+                     "classification is advisory and never clears the "
+                     "operator-action requirement on an observation path");
     json_push_kv(out, "operator_latch", &obj);
     json_free(&obj);
 }
@@ -87,6 +87,8 @@ void agent_push_condition_summary_contract_json(
     json_push_kv_int(&obj, "schema_version", 1);
     json_push_kv_int(&obj, "active_count", view->active_count);
     json_push_kv_int(&obj, "unresolved_count", view->unresolved_count);
+    json_push_kv_int(&obj, "unresolved_critical_count",
+                     view->unresolved_critical_count);
     json_push_kv_str(&obj, "state_tool",
                      "zcl_state subsystem=condition_engine");
     json_push_kv_str(&obj, "native_state_command",

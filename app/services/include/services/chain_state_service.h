@@ -115,6 +115,17 @@ struct chain_state_view {
     uint64_t        commits_rejected_total;
 };
 
+/* Cheap, no-SQL frontier view for health/agent surfaces.  The repository lock
+ * and the active-window writer lock are held in that order while the three
+ * pointers are copied.  `bound_to_expected_state` prevents a detached or
+ * stale singleton binding from being mistaken for the caller's node. */
+struct chain_state_frontier_view {
+    bool initialized;
+    bool bound_to_expected_state;
+    struct active_chain_window_snapshot window;
+    struct block_index *header_tip;
+};
+
 enum chain_state_rollback_source {
     CSR_ROLLBACK_SOURCE_NONE = 0,
     CSR_ROLLBACK_SOURCE_VALIDATION,
@@ -203,6 +214,17 @@ struct zcl_result csr_commit_tip_result(
 enum csr_result csr_commit_header_tip(
     struct chain_state_repository *csr,
     const struct chain_state_header_commit *commit);
+/* Advance-only best-header publication.  Candidate identity is validated and
+ * the work/height comparison plus assignment happen under one CSR lock, so a
+ * stale caller can never overwrite a newer header.  A valid non-winning
+ * candidate returns CSR_OK with *promoted=false. */
+enum csr_result csr_promote_header_tip(
+    struct chain_state_repository *csr,
+    struct active_chain *expected_chain,
+    struct block_index **expected_header_slot,
+    struct block_index *candidate,
+    const char *reason,
+    bool *promoted);
 enum csr_result csr_clear_active_tip(
     struct chain_state_repository *csr,
     const struct chain_state_clear_commit *commit);
@@ -234,6 +256,13 @@ void csr_snapshot(struct chain_state_repository *csr,
  * or no header tip is set yet. Prefer this over csr_snapshot() for callers
  * on a frequent tick that only need the header height. */
 int64_t csr_header_height(struct chain_state_repository *csr);
+
+bool csr_capture_frontiers(
+    struct chain_state_repository *csr,
+    struct active_chain *expected_chain,
+    struct block_index **expected_header_slot,
+    int requested_height,
+    struct chain_state_frontier_view *out);
 
 /* ── Tunables ─────────────────────────────────────────────────── */
 

@@ -104,6 +104,11 @@ int tip_finalize_stage_drain(int max_steps);
 
 uint64_t tip_finalize_stage_cursor(void);
 int64_t  tip_finalize_stage_last_height(void);
+/* One coherent runtime publication of the reducer's served authority pair.
+ * The pair is published only after the tip-finalize durable path accepts it;
+ * returns false when no authority has been published in this process. */
+bool tip_finalize_stage_authority_snapshot(int64_t *height,
+                                           uint8_t hash[32]);
 /* Test-only: reset the published served-tip height to -1 (see .c). */
 void     tip_finalize_stage_test_reset(void);
 uint64_t tip_finalize_stage_finalized_total(void);

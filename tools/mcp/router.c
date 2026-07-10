@@ -283,7 +283,9 @@ enum mcp_error_code mcp_router_validate(const struct mcp_tool_route *route,
                              p->name, len, p->max_len);
                 return MCP_ERR_STRING_TOO_LONG;
             }
-            if (p->enum_csv && s && !csv_contains(p->enum_csv, s)) {
+            if (p->enum_csv && s &&
+                !(route->flags & MCP_TOOL_FLAG_ADVISORY_ENUMS) &&
+                !csv_contains(p->enum_csv, s)) {
                 if (err_param) snprintf(err_param, err_param_sz, "%s", p->name);
                 if (err_msg)
                     snprintf(err_msg, err_msg_sz,
@@ -377,7 +379,11 @@ size_t mcp_router_input_schema_json(const struct mcp_tool_route *route,
             pos += (size_t)n;
         }
         if (p->type == MCP_PARAM_STR && p->enum_csv) {
-            n = snprintf(buf + pos, buflen - pos, ",\"enum\":");
+            const char *enum_key =
+                (route->flags & MCP_TOOL_FLAG_ADVISORY_ENUMS)
+                    ? "x-advisoryEnum"
+                    : "enum";
+            n = snprintf(buf + pos, buflen - pos, ",\"%s\":", enum_key);
             if (n < 0 || (size_t)n >= buflen - pos) return pos;
             pos += (size_t)n;
             pos = append_enum_array(buf, buflen, pos, p->enum_csv);

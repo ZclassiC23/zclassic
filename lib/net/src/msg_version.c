@@ -381,6 +381,17 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
     if (node->inbound)
         push_version(mp, node);
 
+    /* Publish immutable handshake metadata before the release transition to
+     * HANDSHAKE_COMPLETE.  Diagnostic readers use an acquire state load as
+     * the publication barrier for services/version/height/subversion. */
+    bool is_magicbean = false;
+    bool is_zcl23 = false;
+    msg_version_classify_peer(node->sub_ver, node->services,
+                              &is_magicbean, &is_zcl23);
+    (void)is_magicbean;
+    if (is_zcl23)
+        node->services |= NODE_ZCL23;
+
     /* For outbound connections, we already sent version; now we received
      * their version and sent verack. Mark connected once we also get their
      * verack (handled in process_verack). For inbound, the peer initiated,
@@ -422,13 +433,7 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
 
     /* Detect zclassic23 peers via subversion string.
      * Service bit detection is secondary — some peers filter unknown bits. */
-    bool is_magicbean = false;
-    bool is_zcl23 = false;
-    msg_version_classify_peer(node->sub_ver, node->services,
-                              &is_magicbean, &is_zcl23);
-    (void)is_magicbean;
     if (is_zcl23) {
-        node->services |= NODE_ZCL23; /* mark for fast sync */
         node->swarm_inflight_chunk = -1;
         for (int pi = 0; pi < PIECE_PIPELINE_DEPTH; pi++)
             node->blk_pipeline[pi].piece_index = -1;
