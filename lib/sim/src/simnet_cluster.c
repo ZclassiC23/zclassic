@@ -317,6 +317,37 @@ bool simnet_cluster_broadcast(struct simnet_cluster *cluster,
     return true;
 }
 
+bool simnet_cluster_relay_subset(struct simnet_cluster *cluster,
+                                 size_t from_node,
+                                 const struct uint256 *block_hash,
+                                 const size_t *targets, size_t target_count)
+{
+    if (!cluster || from_node >= cluster->node_count || !block_hash ||
+        (target_count > 0 && !targets))
+        LOG_FAIL("simnet.cluster", "invalid relay-subset request");
+    if (!simnet_chain_has_block(cluster->nodes[from_node], block_hash))
+        LOG_FAIL("simnet.cluster", "relay-subset block unknown");
+
+    uint64_t first_seen = 0;
+    if (!simnet_chain_block_first_seen(cluster->nodes[from_node], block_hash,
+                                       &first_seen)) {
+        return false;
+    }
+
+    for (size_t i = 0; i < target_count; i++) {
+        size_t to = targets[i];
+        if (to == from_node)
+            continue;
+        if (to >= cluster->node_count)
+            LOG_FAIL("simnet.cluster", "relay-subset target %zu out of range",
+                     to);
+        if (!simnet_cluster_enqueue(cluster, from_node, to, block_hash,
+                                    first_seen))
+            return false;
+    }
+    return true;
+}
+
 bool simnet_cluster_deliver_pending(struct simnet_cluster *cluster)
 {
     if (!cluster)
