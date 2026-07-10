@@ -29,7 +29,6 @@ bool simnet_cluster_mint_on(struct simnet_cluster *cluster, size_t node_id,
 bool simnet_cluster_broadcast(struct simnet_cluster *cluster,
                               size_t from_node,
                               const struct uint256 *block_hash);
-
 /* Same as simnet_cluster_broadcast, but skips any destination node whose
  * index is marked true in exclude_to (an array of cluster->node_count
  * bools). Lets a caller model a network partition without a per-link
@@ -40,6 +39,15 @@ bool simnet_cluster_broadcast_except(struct simnet_cluster *cluster,
                                      size_t from_node,
                                      const struct uint256 *block_hash,
                                      const bool *exclude_to);
+
+/* Relay a single known block from from_node to only the listed target nodes
+ * (self entries in the list are skipped). Lets a test model a network
+ * partition: enqueue deliveries within a subset now, across the whole
+ * cluster later (a heal). Identical latency/reorder model as broadcast. */
+bool simnet_cluster_relay_subset(struct simnet_cluster *cluster,
+                                 size_t from_node,
+                                 const struct uint256 *block_hash,
+                                 const size_t *targets, size_t target_count);
 bool simnet_cluster_deliver_pending(struct simnet_cluster *cluster);
 
 bool simnet_cluster_tip_hash(const struct simnet_cluster *cluster,
