@@ -81,7 +81,7 @@ CONFIG_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard config/src/*.c))
 
 # Library layer
-LIB_MODULES = bloom chain coins consensus core crypto crypto_registry encoding event framework health kernel \
+LIB_MODULES = bloom chain coins consensus core crypto crypto_registry encoding event framework health hotswap kernel \
 	json keys metrics mining net platform policy primitives rpc script sim storage \
 	support sync util validation wallet sapling zslp znam
 LIB_INCLUDES = $(foreach m,$(LIB_MODULES),-Ilib/$(m)/include)
@@ -397,6 +397,69 @@ $(ZCLASSIC23_DEV_BIN): $(VIEW_GEN_HEADERS) $(BUILD_COMMIT_STAMP) $(DEV_OBJS) | $
 	$(CC) $(DEV_CFLAGS) $(DEV_LDFLAGS) -o $@ $(DEV_OBJS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
 	@touch $(DEV_OBJ_COMPLETE)
 	@echo "dev-bin: $@ (non-LTO, unstripped; not for release/deploy)"
+
+# ── Tier-1 in-process hot-swap (DEV-ONLY) ──────────────────────────────
+# Compile named app-layer MCP controller TUs into a "generation" .so and
+# dlopen it into a running dev node via the zcl_agent_hotswap MCP tool — the
+# edited handler goes live with no restart. Uses ONLY the stock toolchain:
+# a plain `$(CC) -shared` link and libc dlopen (-ldl, already in LIBS). The
+# RELEASE binary never links any of this (every dlopen sits behind
+# ZCL_DEV_BUILD). See docs/work/HOTSWAP.md.
+HOTSWAP_OBJ_DIR = $(BUILD_DIR)/hotswap-obj
+HOTSWAP_SO_DIR  = $(BUILD_DIR)/hotswap
+
+# Per-generation object: dev cflags + -fPIC + -DZCL_HOTSWAP_GEN so a pilot
+# controller's ZCL_HOTSWAP_EXPORT_ROUTES(...) macro emits zcl_hotswap_gen_init.
+$(HOTSWAP_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS)
+	@mkdir -p $(dir $@)
+	$(CC) $(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_GEN -c -o $@ $<
+
+.PHONY: hotswap-so hotswap
+# make hotswap-so FILES="tools/mcp/controllers/app_controller.c ..."
+# Compiles the named TU(s) to hotswap objects and links a timestamped
+# generation .so. The .so path is the LAST line printed.
+hotswap-so: $(VIEW_GEN_HEADERS)
+	@if [ -z "$(FILES)" ]; then \
+	  echo "usage: make hotswap-so FILES=\"tools/mcp/controllers/app_controller.c\"" >&2; \
+	  exit 2; fi
+	@mkdir -p $(HOTSWAP_SO_DIR)
+	@objs=""; for f in $(FILES); do \
+	  o="$(HOTSWAP_OBJ_DIR)/$${f%.c}.o"; \
+	  $(MAKE) --no-print-directory "$$o" >&2 || exit 1; \
+	  objs="$$objs $$o"; \
+	done; \
+	so="$(HOTSWAP_SO_DIR)/gen-$$(date +%s).so"; \
+	$(CC) -shared -o "$$so" $$objs >&2 || exit 1; \
+	echo "hotswap-so: linked $$so" >&2; \
+	echo "$$so"
+
+# make hotswap FILES="..." [PROBE=zcl_tool]
+# Build the generation .so, then hand it to zcl_agent_hotswap. NOTE: a
+# `mcpcall` runs a one-shot in-process dispatcher, so this proves the
+# load+replace end to end and is the smoke-test path; a swap that PERSISTS in
+# the long-running node happens when the tool is dispatched through that node's
+# own MCP server (see docs/work/HOTSWAP.md). This target never starts/stops any
+# service: it only runs the command if a dev node process is already up,
+# otherwise it just prints the exact command for you to run.
+hotswap: $(VIEW_GEN_HEADERS)
+	@so=$$($(MAKE) --no-print-directory hotswap-so FILES="$(FILES)"); \
+	[ -n "$$so" ] || exit 1; \
+	if [ -n "$(PROBE)" ]; then \
+	  argj="{\"so_path\":\"$$so\",\"probe_tool\":\"$(PROBE)\"}"; \
+	else \
+	  argj="{\"so_path\":\"$$so\"}"; \
+	fi; \
+	cmd="$(ZCLASSIC23_DEV_BIN) mcpcall zcl_agent_hotswap '$$argj'"; \
+	running=0; \
+	for c in /proc/[0-9]*/cmdline; do \
+	  tr '\0' ' ' < "$$c" 2>/dev/null | grep -q 'zclassic23-dev' && { running=1; break; }; \
+	done; \
+	if [ "$$running" = 1 ] && [ -x "$(ZCLASSIC23_DEV_BIN)" ]; then \
+	  echo "hotswap: dev node detected — dispatching:"; echo "  $$cmd"; \
+	  eval "$$cmd"; \
+	else \
+	  echo "hotswap: no running dev node detected; run:"; echo "  $$cmd"; \
+	fi
 
 # Full no-link syntax check across every TU in one shot (no incremental state).
 syntax-check: $(VIEW_GEN_HEADERS)
@@ -2532,6 +2595,36 @@ check-raw-sqlite:
 	@echo "══ LINT: raw sqlite3_step in app code ══"
 	@tools/scripts/check_raw_sqlite.sh
 
+# Release purity for the Tier-1 hot-swap loader (HARD). Two invariants:
+#   (1) no dlopen/dlsym/dlclose CALL in any .c outside lib/hotswap/ + vendor/;
+#   (2) inside lib/hotswap sources, every such call sits within a
+#       `#ifdef ZCL_DEV_BUILD` region (a pragmatic toggle scan — see below),
+# so a release build links zero dynamic-loading code.
+check-hotswap-dev-only:
+	@echo "══ LINT: hot-swap dlopen confined to lib/hotswap under ZCL_DEV_BUILD ══"
+	@HITS=$$(grep -rnE --include='*.c' \
+	    'dlopen[[:space:]]*\(|dlsym[[:space:]]*\(|dlclose[[:space:]]*\(' \
+	    app tools lib config src domain application adapters 2>/dev/null \
+	    | grep -v '^lib/hotswap/'); \
+	if [ -n "$$HITS" ]; then \
+	    echo "$$HITS"; \
+	    echo "FAIL: dlopen/dlsym/dlclose outside lib/hotswap/ (release must be static)"; \
+	    exit 1; \
+	fi
+	@for f in $$(ls lib/hotswap/src/*.c 2>/dev/null); do \
+	    BAD=$$(awk ' \
+	        /#ifdef[[:space:]]+ZCL_DEV_BUILD/ { dev=1; next } \
+	        /#else|#endif/                    { dev=0; next } \
+	        /dl(open|sym|close)[[:space:]]*\(/ { if (dev!=1) print FILENAME ":" NR ": " $$0 } \
+	    ' "$$f"); \
+	    if [ -n "$$BAD" ]; then \
+	        echo "$$BAD"; \
+	        echo "FAIL: dl* call outside a #ifdef ZCL_DEV_BUILD region in $$f"; \
+	        exit 1; \
+	    fi; \
+	done
+	@echo "  OK: hot-swap dynamic loading is dev-only"
+
 check-raw-malloc:
 	@echo "══ LINT: raw malloc/calloc/realloc in production code ══"
 	@tools/scripts/check_raw_malloc.sh
@@ -2990,7 +3083,7 @@ check-honest-witness:
 	@echo "══ LINT: honest witness (E12) ══"
 	@ZCL_LINT_MODE=FAIL ./tools/lint/check_honest_witness.sh
 
-lint: check-git-hooks-installed check-malloc check-silent-errors check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vendor-provenance
+lint: check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vendor-provenance
 	@echo "══ LINT: all checks passed ══"
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the
