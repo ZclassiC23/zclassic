@@ -112,6 +112,7 @@ AGENT_IMPACT_RULE("lib/validation/src/process_block_flush_policy.c|app/services/
 AGENT_IMPACT_RULE("lib/test/src/test_groth16_selfverify.c", "snark_kat make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_simnet_doublespend.c", "simnet_doublespend make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_simnet_chained_tx.c", "simnet_chained_tx make_lint_gates")
+AGENT_IMPACT_RULE("lib/test/src/test_simnet_mempool_adv.c", "simnet_mempool_adv make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_simnet_block_sigops.c", "simnet_block_sigops make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_simnet_duplicate_input.c", "simnet_duplicate_input make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_simnet_value_inflation.c", "simnet_value_inflation make_lint_gates")
