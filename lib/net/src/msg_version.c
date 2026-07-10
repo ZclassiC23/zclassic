@@ -299,14 +299,19 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
     if (node->version != 0) {
         event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
                     "duplicate version from %s", node->addr_name);
+        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_PROTOCOL_VIOLATION,
+                            "duplicate version");
         LOG_FAIL("net", "duplicate version from peer %s", node->addr_name);
     }
 
     struct version_message ver;
     version_message_init(&ver);
-    if (!version_message_deserialize(&ver, s))
+    if (!version_message_deserialize(&ver, s)) {
+        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_PROTOCOL_VIOLATION,
+                            "undeserialisable version");
         LOG_FAIL("net", "failed to deserialize version message from %s",
                  node->addr_name);
+    }
 
     if (ver.protocol_version < MIN_PEER_PROTO_VERSION) {
         event_emitf(EV_PEER_MISBEHAVE, (uint32_t)node->id,
@@ -315,6 +320,8 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
                     node->addr_name);
         node->disconnect = true;
         peer_lifecycle_note_reject(node, "protocol-too-old");
+        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_PROTOCOL_VIOLATION,
+                            "protocol version too old");
         LOG_FAIL("net", "proto version %d too old (min %d) from %s",
                  ver.protocol_version, MIN_PEER_PROTO_VERSION,
                  node->addr_name);
@@ -328,6 +335,8 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
                     "self-connection %s", node->addr_name);
         node->disconnect = true;
         peer_lifecycle_note_reject(node, "self-connection");
+        peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_PROTOCOL_VIOLATION,
+                            "self-connection nonce");
         LOG_FAIL("net", "self-connection detected for %s", node->addr_name);
     }
 

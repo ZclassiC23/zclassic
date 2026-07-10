@@ -466,6 +466,17 @@ bool p2p_node_receive_bytes(struct p2p_node *node, const char *data,
             handled = net_message_read_data(msg, data, nbytes);
 
         if (handled < 0) {
+            /* Tag the framing offence for peer scoring. The parse functions
+             * have no net_manager back-pointer, so classification happens here
+             * from the message phase: read_header returns -1 BEFORE setting
+             * msg->in_data (bad start-magic / size > MAX_SIZE => a header-level
+             * offence, weight 50), whereas read_data returns -1 with in_data
+             * already set (payload over MAX_PROTOCOL_MESSAGE_LENGTH / budget /
+             * realloc => a payload offence, weight 20). The connman receive
+             * caller drains + scores this exactly once. */
+            atomic_store(&node->framing_offence,
+                         msg->in_data ? (int)PEER_OFFENCE_INVALID_PAYLOAD
+                                      : (int)PEER_OFFENCE_INVALID_HEADER);
             printf("  PARSE FAIL at msg_idx=%d offset=%u/%u in_data=%d "
                    "hdr_pos=%u data_pos=%u nMessageSize=%u "
                    "next4: %02x%02x%02x%02x\n",
@@ -480,6 +491,10 @@ bool p2p_node_receive_bytes(struct p2p_node *node, const char *data,
         }
 
         if (msg->in_data && msg->hdr.nMessageSize > MAX_PROTOCOL_MESSAGE_LENGTH) {
+            /* Belt-and-suspenders post-parse oversize check: the payload
+             * exceeds the 2 MB protocol cap. Tag it as a payload offence so
+             * the connman drain scores the peer before we drop the frame. */
+            atomic_store(&node->framing_offence, (int)PEER_OFFENCE_INVALID_PAYLOAD);
             char dcmd[COMMAND_SIZE + 1];
             msg_header_get_command(&msg->hdr, dcmd, sizeof(dcmd));
             printf("Dropped oversized '%s' message: %u bytes > %u\n",
@@ -496,6 +511,21 @@ bool p2p_node_receive_bytes(struct p2p_node *node, const char *data,
         }
     }
     return true;
+}
+
+void p2p_node_score_framing_offence(struct net_manager *nm,
+                                    struct p2p_node *node)
+{
+    if (!nm || !node)
+        return;
+    /* Atomic exchange: read-and-clear so a single abusive frame is scored
+     * exactly once and a reconnecting peer that repeats the abuse keeps
+     * accruing toward the ban threshold. */
+    int offence = atomic_exchange(&node->framing_offence,
+                                  (int)PEER_OFFENCE_NONE);
+    if (offence != (int)PEER_OFFENCE_NONE)
+        peer_scoring_record(nm, node, (enum peer_offence)offence,
+                            "framing layer");
 }
 
 void p2p_node_copy_stats(const struct p2p_node *node, struct node_stats *stats)

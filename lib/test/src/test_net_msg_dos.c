@@ -425,3 +425,190 @@ int test_net_msg_dos(void)
            failures ? "FAILED" : "PASSED");
     return failures;
 }
+
+/* ── net_framing_dos ──────────────────────────────────────────────────
+ * The message FRAMING layer (net_message_read_header / read_data and the
+ * p2p_node_receive_bytes reassembler) sees a hostile peer's bytes before any
+ * command dispatch. It runs without a net_manager back-pointer, so it cannot
+ * score the peer directly: it TAGS node->framing_offence, and the connman
+ * receive caller drains + scores it once via p2p_node_score_framing_offence().
+ * These cases pin that tag→drain→score contract for the concrete free abuse
+ * vectors (bad start-magic, oversize headers, oversize payloads) plus the
+ * handshake-level protocol violations scored in msg_version.c. Before this
+ * group these paths disconnected (or not) but never moved the per-connection
+ * misbehavior score, so a flooder never crossed the ban threshold. */
+int test_net_framing_dos(void);
+int test_net_framing_dos(void)
+{
+    int failures = 0;
+    printf("\n=== net_framing_dos framing + handshake DoS scoring ===\n");
+
+    chain_params_select(CHAIN_REGTEST);
+    const struct chain_params *cp = chain_params_get();
+    peer_scoring_init();
+    enum sync_state sync0 = sync_get_state();
+
+    char dir[256];
+    test_make_tmpdir(dir, sizeof(dir), "net_framing_dos", "main");
+    SetDataDir(dir);
+
+    struct main_state ms;
+    main_state_init(&ms);
+
+    struct net_manager nm;
+    net_manager_init(&nm);
+
+    struct msg_processor mp;
+    msg_processor_init(&mp, &ms, NULL, NULL, cp, dir, &nm, NULL);
+
+    /* Canonical regtest start-magic (matches dos_setup section C). */
+    unsigned char magic[MESSAGE_START_SIZE] = {0x24, 0xe9, 0x27, 0x64};
+
+    /* Build a routable, non-localhost peer address: localhost/whitelisted
+     * peers are exempt from scoring via is_trusted_peer(), so the score would
+     * never move for a 127.x node. */
+    struct net_address paddr;
+    net_address_init(&paddr);
+    unsigned char ip4[4] = {203, 0, 113, 91};
+    net_addr_set_ipv4(&paddr.svc.addr, ip4);
+    paddr.svc.port = 8033;
+
+    /* ── a) bad start-magic: header-phase offence => INVALID_HEADER (50) ── */
+    {
+        struct p2p_node *node = p2p_node_create(&nm, ZCL_INVALID_SOCKET,
+                                                &paddr, "framing-badmagic",
+                                                true);
+        DOS_CHECK("badmagic: node created", node != NULL);
+        if (node) {
+            unsigned char wrong[MESSAGE_START_SIZE] = {0xde, 0xad, 0xbe, 0xef};
+            struct msg_header hdr;
+            msg_header_init_full(&hdr, wrong, "ping", 0);
+            bool ok = p2p_node_receive_bytes(node, (const char *)&hdr,
+                                             MSG_HEADER_SIZE, magic);
+            DOS_CHECK("badmagic: frame rejected (returns false)", ok == false);
+            DOS_CHECK("badmagic: framing_offence tagged INVALID_HEADER",
+                     atomic_load(&node->framing_offence) ==
+                         (int)PEER_OFFENCE_INVALID_HEADER);
+            p2p_node_score_framing_offence(&nm, node);
+            DOS_CHECK("badmagic: peer scored +50 (INVALID_HEADER)",
+                     atomic_load(&node->misbehavior) == 50);
+            DOS_CHECK("badmagic: tag drained to none after scoring",
+                     atomic_load(&node->framing_offence) ==
+                         (int)PEER_OFFENCE_NONE);
+            p2p_node_free(node);
+        }
+    }
+
+    /* ── b) oversize header (nMessageSize > MAX_SIZE) => INVALID_HEADER (50)  */
+    {
+        struct p2p_node *node = p2p_node_create(&nm, ZCL_INVALID_SOCKET,
+                                                &paddr, "framing-oversize-hdr",
+                                                true);
+        DOS_CHECK("oversize-hdr: node created", node != NULL);
+        if (node) {
+            struct msg_header hdr;
+            /* One byte over the 32 MiB header ceiling: rejected in
+             * net_message_read_header before in_data is set. */
+            msg_header_init_full(&hdr, magic, "block", (uint32_t)MAX_SIZE + 1u);
+            bool ok = p2p_node_receive_bytes(node, (const char *)&hdr,
+                                             MSG_HEADER_SIZE, magic);
+            DOS_CHECK("oversize-hdr: frame rejected", ok == false);
+            DOS_CHECK("oversize-hdr: tagged INVALID_HEADER",
+                     atomic_load(&node->framing_offence) ==
+                         (int)PEER_OFFENCE_INVALID_HEADER);
+            p2p_node_score_framing_offence(&nm, node);
+            DOS_CHECK("oversize-hdr: peer scored +50 (INVALID_HEADER)",
+                     atomic_load(&node->misbehavior) == 50);
+            p2p_node_free(node);
+        }
+    }
+
+    /* ── c) oversize payload (2 MiB < size < MAX_SIZE) => INVALID_PAYLOAD (20) */
+    {
+        struct p2p_node *node = p2p_node_create(&nm, ZCL_INVALID_SOCKET,
+                                                &paddr, "framing-oversize-pay",
+                                                true);
+        DOS_CHECK("oversize-pay: node created", node != NULL);
+        if (node) {
+            struct msg_header hdr;
+            /* 3 MiB: passes the header ceiling but trips the data-phase
+             * MAX_PROTOCOL_MESSAGE_LENGTH (2 MiB) check in read_data. */
+            msg_header_init_full(&hdr, magic, "block", 3u * 1024 * 1024);
+            unsigned char buf[MSG_HEADER_SIZE + 4];
+            memcpy(buf, &hdr, MSG_HEADER_SIZE);
+            memset(buf + MSG_HEADER_SIZE, 0x11, 4);
+            bool ok = p2p_node_receive_bytes(node, (const char *)buf,
+                                             sizeof(buf), magic);
+            DOS_CHECK("oversize-pay: frame rejected", ok == false);
+            DOS_CHECK("oversize-pay: tagged INVALID_PAYLOAD",
+                     atomic_load(&node->framing_offence) ==
+                         (int)PEER_OFFENCE_INVALID_PAYLOAD);
+            p2p_node_score_framing_offence(&nm, node);
+            DOS_CHECK("oversize-pay: peer scored +20 (INVALID_PAYLOAD)",
+                     atomic_load(&node->misbehavior) == 20);
+            p2p_node_free(node);
+        }
+    }
+
+    /* ── d) duplicate/replayed version => PROTOCOL_VIOLATION (100) => ban ── */
+    {
+        struct p2p_node node;
+        dos_setup_stack_node(&node);
+        node.version = PROTOCOL_VERSION; /* nonzero => this is a duplicate */
+        struct byte_stream s;
+        stream_init(&s, 8); /* body is never read: duplicate check is first */
+        bool ok = process_version(&mp, &node, &s);
+        DOS_CHECK("dupversion: handler returns false", ok == false);
+        DOS_CHECK("dupversion: scored +100 (PROTOCOL_VIOLATION)",
+                 atomic_load(&node.misbehavior) == 100);
+        DOS_CHECK("dupversion: crosses ban threshold (should_ban)",
+                 peer_scoring_should_ban(&node));
+        stream_free(&s);
+    }
+
+    /* ── e) repeated framing abuse on ONE connection crosses the ban
+     *      threshold: two bad-magic frames (50 + 50) => should_ban ── */
+    {
+        struct net_address baddr;
+        net_address_init(&baddr);
+        unsigned char bip[4] = {203, 0, 113, 92};
+        net_addr_set_ipv4(&baddr.svc.addr, bip);
+        baddr.svc.port = 8033;
+
+        struct p2p_node *node = p2p_node_create(&nm, ZCL_INVALID_SOCKET,
+                                                &baddr, "framing-ban", true);
+        DOS_CHECK("ban-accrual: node created", node != NULL);
+        if (node) {
+            unsigned char wrong[MESSAGE_START_SIZE] = {0xde, 0xad, 0xbe, 0xef};
+            struct msg_header hdr;
+            msg_header_init_full(&hdr, wrong, "ping", 0);
+
+            (void)p2p_node_receive_bytes(node, (const char *)&hdr,
+                                         MSG_HEADER_SIZE, magic);
+            p2p_node_score_framing_offence(&nm, node);
+            DOS_CHECK("ban-accrual: after 1 offence score=50, not yet bannable",
+                     atomic_load(&node->misbehavior) == 50 &&
+                     !peer_scoring_should_ban(node));
+
+            (void)p2p_node_receive_bytes(node, (const char *)&hdr,
+                                         MSG_HEADER_SIZE, magic);
+            p2p_node_score_framing_offence(&nm, node);
+            DOS_CHECK("ban-accrual: after 2 offences score=100, should_ban",
+                     atomic_load(&node->misbehavior) == 100 &&
+                     peer_scoring_should_ban(node));
+            p2p_node_free(node);
+        }
+    }
+
+    net_manager_free(&nm);
+    sync_set_state(sync0, "net_framing_dos restore");
+    main_state_free(&ms);
+    SetDataDir("");
+    ClearDataDirCache();
+    test_rm_rf(dir);
+    chain_params_select(CHAIN_MAIN);
+
+    printf("net_framing_dos framing + handshake DoS scoring: %s\n",
+           failures ? "FAILED" : "PASSED");
+    return failures;
+}

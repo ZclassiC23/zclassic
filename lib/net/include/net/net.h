@@ -260,6 +260,17 @@ struct p2p_node {
      * score drop. */
     _Atomic int_least64_t peer_score_last_good_ms;
 
+    /* Framing-layer offence tag (holds an enum peer_offence value; 0 =
+     * PEER_OFFENCE_NONE). The message framing parse functions
+     * (net_message_read_header / net_message_read_data) and
+     * p2p_node_receive_bytes run WITHOUT a net_manager back-pointer, so they
+     * cannot call peer_scoring_record() directly. Instead p2p_node_receive_bytes
+     * tags the offence here; the connman receive caller (which holds nm) drains
+     * it exactly once via p2p_node_score_framing_offence() — the single scoring
+     * point, disjoint from the pure parse code. Atomic because the tag is set
+     * on the recv path and drained by the same thread but must never tear. */
+    _Atomic int framing_offence;
+
     /* connection quality metrics */
     int64_t last_block_time;  /* timestamp of last valid block received */
     int64_t avg_latency_us;   /* rolling average ping latency in microseconds */
@@ -388,6 +399,16 @@ int p2p_node_get_ref(struct p2p_node *node);
 bool p2p_node_receive_bytes(struct p2p_node *node, const char *data,
                              unsigned int nbytes,
                              const unsigned char msgstart[MESSAGE_START_SIZE]);
+
+/* Drain the framing-layer offence tag set by p2p_node_receive_bytes and, if
+ * non-zero, score the peer once via peer_scoring_record(). Resets the tag to
+ * PEER_OFFENCE_NONE so a reconnecting peer that repeats the abuse keeps
+ * accruing toward the ban threshold. This is the SINGLE scoring point for the
+ * framing layer — the pure parse functions stay free of any net_manager
+ * dependency. Safe to call after every receive (no-op when the tag is zero). */
+void p2p_node_score_framing_offence(struct net_manager *nm,
+                                    struct p2p_node *node);
+
 void p2p_node_close_socket(struct p2p_node *node);
 
 void p2p_node_copy_stats(const struct p2p_node *node, struct node_stats *stats);

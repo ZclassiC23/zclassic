@@ -1228,6 +1228,13 @@ static void *thread_socket_handler(void *arg)
                             cm, node, "message-parse");
                         node->disconnect = true;
                     }
+                    /* Single framing-layer scoring point: the parse path has
+                     * no net_manager back-pointer, so it only TAGS abuse
+                     * (bad start-magic / oversize / parse-fail). Drain the tag
+                     * here where nm is in scope, scoring the peer once so a
+                     * reconnecting flooder still accrues toward the ban
+                     * threshold. No-op when nothing was tagged. */
+                    p2p_node_score_framing_offence(&cm->manager, node);
                     node->last_recv = GetTime();
                     node->recv_bytes += (uint64_t)n;
                     /* Consume download tokens post-recv. */
