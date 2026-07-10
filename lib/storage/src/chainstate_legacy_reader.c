@@ -29,6 +29,8 @@
 #include "storage/chainstate_legacy_reader.h"
 
 #include "coins_record_codec.h"
+#include "core/serialize.h"
+#include "sapling/incremental_merkle_tree.h"
 #include "script/script.h"
 #include "storage/dbwrapper.h"
 #include "util/log_macros.h"
@@ -205,6 +207,68 @@ bool chainstate_legacy_get_best_block(void *handle, struct uint256 *out)
     memcpy(out->data, val, 32);
     free(val);
     return true;
+}
+
+/* ── Historical Sapling anchor lookup ─────────────────────────────────
+ *
+ * ATTRIBUTION.  The zcashd/zclassicd chainstate anchor key schema
+ * (DB_SAPLING_ANCHOR = 'Z', value = serialized SaplingMerkleTree) is
+ * derived from the Zcash reference implementation:
+ *   Copyright (c) The Zcash developers / Electric Coin Company
+ *   zcash/src/txdb.cpp (`static const char DB_SAPLING_ANCHOR = 'Z';`)
+ *   MIT / Apache-2.0.
+ * This is a clean-room C23 reader over our own dbwrapper + the
+ * boost::optional-compatible incremental_tree_deserialize; the reference
+ * C++ is a format oracle only and is never linked into the binary. */
+enum chainstate_anchor_result chainstate_legacy_get_sapling_anchor(
+    void *handle, const struct uint256 *root,
+    struct incremental_merkle_tree *tree_out)
+{
+    if (!handle || !root || !tree_out) {
+        LOG_ERR("chainstate_legacy", "get_sapling_anchor: NULL arg");
+        return CHAINSTATE_ANCHOR_ERROR;
+    }
+    struct chainstate_legacy_handle *h = handle;
+
+    /* key = 'Z' || root (raw 32 bytes) */
+    char key[33];
+    key[0] = 'Z';
+    memcpy(key + 1, root->data, 32);
+
+    char *val = NULL;
+    size_t vlen = 0;
+    if (!db_read(&h->db, key, sizeof(key), &val, &vlen)) {
+        if (val) free(val);
+        return CHAINSTATE_ANCHOR_MISSING;   /* absent root, not an error */
+    }
+    if (!val || vlen == 0) {
+        if (val) free(val);
+        return CHAINSTATE_ANCHOR_MISSING;
+    }
+
+    struct byte_stream s;
+    stream_init_from_data(&s, (const unsigned char *)val, vlen);
+    sapling_tree_init(tree_out);
+    if (!incremental_tree_deserialize(tree_out, &s)) {
+        free(val);
+        LOG_ERR("chainstate_legacy",
+                "get_sapling_anchor: deserialize failed (vlen=%zu)", vlen);
+        return CHAINSTATE_ANCHOR_ERROR;
+    }
+    free(val);
+
+    /* Fail-closed: the deserialized tree's own computed root MUST equal the
+     * key we looked it up under.  A borrowed tree is never returned unless
+     * it hashes back to the requested anchor. */
+    struct uint256 computed;
+    incremental_tree_root(tree_out, &computed);
+    if (memcmp(computed.data, root->data, 32) != 0) {
+        LOG_ERR("chainstate_legacy",
+                "get_sapling_anchor: root mismatch (stored tree does not hash "
+                "back to key) — refusing");
+        return CHAINSTATE_ANCHOR_ERROR;
+    }
+    return CHAINSTATE_ANCHOR_FOUND;
 }
 
 int64_t chainstate_legacy_iter(void *handle,
