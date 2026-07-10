@@ -63,3 +63,6 @@ TAGS
 
 # Claude Code scratch space — never track
 .claude/tmp/
+
+# chaos harness run artifacts
+chaos-output/
