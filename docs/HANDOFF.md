@@ -1303,8 +1303,10 @@ embedded Tor, MCP/RPC, P2P ping/latency.
   no chain monitoring, no settlement.
 - **File market** — offer cache + P2P serialize exist; `root_hash` is a SHA3 of
   `path:size` PLACEHOLDER; `zmarket_buy` parks forever; no transfer/payment.
-- **On-chain ZMSG** — persists a record labeled ONCHAIN; no Sapling memo
-  build/broadcast/scan. (Off-chain P2P ZMSG is real, plaintext on wire.)
+- ~~On-chain ZMSG~~ — **no longer a stub**: `msg_send_onchain()` composes
+  `z_sendmany` with the 38-byte memo codec, receive-side ingestion wired at
+  tip-finalize; sending gated on Sapling params + prover self-test.
+  (Off-chain P2P ZMSG is real, plaintext on wire.)
 - **TicTacToe** — correct logic + tests, but no P2P wiring; not playable.
 
 ---
