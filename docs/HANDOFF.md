@@ -1,4 +1,14 @@
-> **▶ NEXT DEV START HERE: [`docs/work/SESSION-HANDOFF-2026-07-10-P2P.md`](work/SESSION-HANDOFF-2026-07-10-P2P.md)**
+> **▶ NEXT DEV START HERE: [`docs/work/SESSION-HANDOFF-2026-07-10-DETECTIVE.md`](work/SESSION-HANDOFF-2026-07-10-DETECTIVE.md)**
+> — 2026-07-10 detective-node reliability wave: local `main` `3b0de63b0` → `82c128c62`
+> (26 commits). Landed 7 lanes — rung-3 runtime refold (escalator terminal rung),
+> row-absent rowless-hole detector, P2P header-repair fallback (oracle-dead
+> self-heal), golden-height UTXO ladder + divergence tripwire, simnet_cluster
+> O(N log N) drain + 128-node caps, metrics baseline/delta, one-call copy-prove
+> contract, capsule→scenario bridge. Groth16 SPEND circuit counts stage exact
+> (on-branch, unmerged). Follow-ups: boundary-root backfill gap (blocks ladder
+> population), Groth16 spend stages b-d, live copy-proves, Track-B/C wave 2.
+>
+> **▶ PRIOR: [`docs/work/SESSION-HANDOFF-2026-07-10-P2P.md`](work/SESSION-HANDOFF-2026-07-10-P2P.md)**
 > — 2026-07-10 P2P-services + Groth16-cure wave: `origin/main` @ `720547d73`.
 > Landed the librustzcash proving bridge (interim, C23-verifier-gated), the full
 > t→z shielded path, Lane C merge, simnet_fuzz, examples 1–11, ZNAM write RPCs.
