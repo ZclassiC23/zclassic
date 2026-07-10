@@ -1245,6 +1245,8 @@ bool app_init_services(struct app_context *ctx,
 
     /* Atomic Swaps — HTLC contracts for BTC/LTC/DOGE */
     rpc_swap_set_state(boot_node_db(svc));
+    rpc_swap_set_wallet(svc->wallet, svc->mempool, svc->state,
+                        svc->coins_tip, svc->connman);
     register_swap_rpc_commands(svc->rpc_table);
 
     /* blk_sync.dat from file service is on disk. P2P will re-request
