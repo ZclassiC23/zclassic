@@ -4,6 +4,7 @@
  */
 
 #include "mcp/metrics.h"
+#include "core/utiltime.h"
 #include "event/event.h"
 #include "net/peer_scoring.h"
 #include "rpc/http_middleware.h"
@@ -258,6 +259,8 @@ void mcp_metrics_reset(void)
     g_reject_overflow_tx = 0;
     g_reject_overflow_block = 0;
     pthread_mutex_unlock(&g_lock);
+
+    mcp_metrics_alerts_reset();
 }
 
 /* ── Node-level gauge setter ────────────────────────────────── */
@@ -292,6 +295,234 @@ void mcp_metrics_set_peer_kinds(int64_t magicbean_count,
 {
     atomic_store(&g_node_magicbean_peer_count, magicbean_count);
     atomic_store(&g_node_zcl23_peer_count, zcl23_count);
+
+    /* Last of the four gauge setters lib/metrics's 1-second thread calls
+     * each tick (set_node_gauges, set_tip_advance_age, set_mirror_lag,
+     * set_peer_kinds — see lib/metrics/src/metrics.c ~:375-387) — so by
+     * this point every gauge the alert rules read is fresh for this
+     * tick. Piggy-backing here means the rule engine runs on the node's
+     * existing periodic tick with no new thread. */
+    mcp_metrics_evaluate_alert_rules();
+}
+
+/* ── Metric-threshold alert rules (C3) ──────────────────────────────
+ *
+ * Declarative rule table over the SAME gauges rendered in
+ * mcp_metrics_render_prometheus() above — no re-parsing of the
+ * rendered text, no re-enumeration of metric names. Edge-triggered:
+ * a rule fires the instant its gauge crosses the threshold, then
+ * stays silent until either the value drops back below threshold
+ * (clearing the latch) or `cooldown_sec` elapses while still crossed
+ * (a "still broken" reminder — the blocker escape-dispatch rate limit,
+ * util/blocker.h BLOCKER_DEFAULT_RATE_LIMIT_MS, is the same idea at a
+ * faster cadence). Firing emits EV_CONDITION_DETECTED — the generic
+ * "name=... severity=..." vehicle the condition-engine healers already
+ * use (lib/framework/src/condition.c) — with a `metric_alert.` name
+ * prefix so it is distinguishable from a healer's own detection. That
+ * event type must be present in mcp_notify.c's k_operator_events[]
+ * allow-list for it to reach the push channel; see that file. */
+
+enum mcp_alert_cmp { MCP_ALERT_GT, MCP_ALERT_LT, MCP_ALERT_GE, MCP_ALERT_LE };
+
+struct mcp_alert_rule {
+    const char        *gauge_name;    /* Prometheus metric name (display only) */
+    enum mcp_alert_cmp  cmp;
+    double              threshold;
+    const char        *event_name;    /* rule id: "name=metric_alert.<event_name>" */
+    const char        *severity;      /* "severity=<severity>" in the payload */
+    int                 cooldown_sec; /* min seconds between repeat fires while crossed */
+};
+
+#define MCP_METRICS_ALERT_MAX_RULES 8
+
+struct mcp_alert_rule_state {
+    bool     active;           /* latched true while the gauge stays crossed */
+    int64_t  last_fired_unix;
+    uint64_t fire_count;
+};
+
+static struct mcp_alert_rule       g_alert_rules[MCP_METRICS_ALERT_MAX_RULES];
+static struct mcp_alert_rule_state g_alert_state[MCP_METRICS_ALERT_MAX_RULES];
+static size_t                      g_alert_rule_count;
+static bool                        g_alert_rules_seeded;
+static pthread_mutex_t             g_alert_lock = PTHREAD_MUTEX_INITIALIZER;
+
+/* Env override for a threshold, trivial cases only (numeric knobs an
+ * operator may reasonably want to tune without a rebuild). Malformed or
+ * absent env values fall back to `def`. */
+static double alert_env_double(const char *name, double def)
+{
+    const char *v = getenv(name);
+    if (!v || !*v) return def;
+    char *end = NULL;
+    double d = strtod(v, &end);
+    if (end == v) return def;  /* not parseable — keep the default */
+    return d;
+}
+
+/* Seeded once (lazily, so ZCL_ALERT_* env vars set before the first
+ * evaluation are honored). Idempotent. */
+static void alert_rules_seed_locked(void)
+{
+    if (g_alert_rules_seeded) return;
+
+    g_alert_rule_count = 0;
+    g_alert_rules[g_alert_rule_count++] = (struct mcp_alert_rule){
+        .gauge_name   = "zcl_tip_advance_age_seconds",
+        .cmp          = MCP_ALERT_GT,
+        .threshold    = alert_env_double("ZCL_ALERT_TIP_STALL_SECS", 600.0),
+        .event_name   = "tip_stalled",
+        .severity     = "critical",
+        .cooldown_sec = 300,
+    };
+    g_alert_rules[g_alert_rule_count++] = (struct mcp_alert_rule){
+        .gauge_name   = "zcl_mirror_lag_blocks",
+        .cmp          = MCP_ALERT_GT,
+        .threshold    = alert_env_double("ZCL_ALERT_MIRROR_LAG_BLOCKS", 50.0),
+        .event_name   = "mirror_lag_high",
+        .severity     = "warning",
+        .cooldown_sec = 300,
+    };
+    g_alert_rules[g_alert_rule_count++] = (struct mcp_alert_rule){
+        .gauge_name   = "zcl_mirror_lag_critical_seconds",
+        .cmp          = MCP_ALERT_GT,
+        .threshold    = 0.0,
+        .event_name   = "mirror_lag_critical",
+        .severity     = "critical",
+        .cooldown_sec = 300,
+    };
+    g_alert_rules[g_alert_rule_count++] = (struct mcp_alert_rule){
+        /* Mirrors the comment at the zcl_blockers_active render site
+         * above: "permanent>0 is always an operator-escalation event". */
+        .gauge_name   = "zcl_blockers_active{class=\"permanent\"}",
+        .cmp          = MCP_ALERT_GT,
+        .threshold    = 0.0,
+        .event_name   = "blocker_permanent_active",
+        .severity     = "critical",
+        .cooldown_sec = 300,
+    };
+    g_alert_rules[g_alert_rule_count++] = (struct mcp_alert_rule){
+        .gauge_name   = "zcl_rss_mb",
+        .cmp          = MCP_ALERT_GT,
+        .threshold    = alert_env_double("ZCL_ALERT_RSS_MB_CEILING", 6000.0),
+        .event_name   = "rss_high",
+        .severity     = "warning",
+        .cooldown_sec = 300,
+    };
+
+    memset(g_alert_state, 0, sizeof(g_alert_state));
+    g_alert_rules_seeded = true;
+}
+
+/* Current value for one rule's gauge. Reads the same in-process source
+ * mcp_metrics_render_prometheus() reads — atomics fed by the metrics
+ * tick, or a direct live call for the blocker registry. */
+static double alert_rule_fetch_value(const struct mcp_alert_rule *r)
+{
+    if (strcmp(r->event_name, "tip_stalled") == 0)
+        return (double)atomic_load(&g_node_tip_advance_age);
+    if (strcmp(r->event_name, "mirror_lag_high") == 0)
+        return (double)atomic_load(&g_mirror_lag_blocks);
+    if (strcmp(r->event_name, "mirror_lag_critical") == 0)
+        return (double)atomic_load(&g_mirror_lag_critical_seconds);
+    if (strcmp(r->event_name, "blocker_permanent_active") == 0)
+        return (double)blocker_count_by_class(BLOCKER_PERMANENT);
+    if (strcmp(r->event_name, "rss_high") == 0)
+        return (double)atomic_load(&g_node_rss_mb_x100) / 100.0;
+    return 0.0;
+}
+
+static bool alert_cmp_crossed(enum mcp_alert_cmp cmp, double value, double threshold)
+{
+    switch (cmp) {
+    case MCP_ALERT_GT: return value >  threshold;
+    case MCP_ALERT_LT: return value <  threshold;
+    case MCP_ALERT_GE: return value >= threshold;
+    case MCP_ALERT_LE: return value <= threshold;
+    }
+    return false;
+}
+
+static const char *alert_cmp_symbol(enum mcp_alert_cmp cmp)
+{
+    switch (cmp) {
+    case MCP_ALERT_GT: return ">";
+    case MCP_ALERT_LT: return "<";
+    case MCP_ALERT_GE: return ">=";
+    case MCP_ALERT_LE: return "<=";
+    }
+    return "?";
+}
+
+void mcp_metrics_evaluate_alert_rules(void)
+{
+    pthread_mutex_lock(&g_alert_lock);
+    alert_rules_seed_locked();
+
+    int64_t now = GetTime();
+    for (size_t i = 0; i < g_alert_rule_count; i++) {
+        const struct mcp_alert_rule *r = &g_alert_rules[i];
+        struct mcp_alert_rule_state *st = &g_alert_state[i];
+
+        double value = alert_rule_fetch_value(r);
+        bool crossed = alert_cmp_crossed(r->cmp, value, r->threshold);
+
+        if (!crossed) {
+            st->active = false;  /* clears the latch — next crossing fires fresh */
+            continue;
+        }
+
+        bool rising_edge   = !st->active;
+        bool cooldown_over = st->last_fired_unix == 0 ||
+                             (now - st->last_fired_unix) >= r->cooldown_sec;
+        bool should_fire   = rising_edge || cooldown_over;
+
+        st->active = true;
+
+        if (should_fire) {
+            st->last_fired_unix = now;
+            st->fire_count++;
+            event_emitf(EV_CONDITION_DETECTED, 0,
+                        "name=metric_alert.%s severity=%s gauge=%s "
+                        "value=%.2f threshold=%s%.2f",
+                        r->event_name, r->severity, r->gauge_name,
+                        value, alert_cmp_symbol(r->cmp), r->threshold);
+        }
+    }
+    pthread_mutex_unlock(&g_alert_lock);
+}
+
+size_t mcp_metrics_alert_rule_count(void)
+{
+    pthread_mutex_lock(&g_alert_lock);
+    alert_rules_seed_locked();
+    size_t n = g_alert_rule_count;
+    pthread_mutex_unlock(&g_alert_lock);
+    return n;
+}
+
+uint64_t mcp_metrics_alert_fire_count(const char *rule_event_name)
+{
+    if (!rule_event_name) return 0;
+    pthread_mutex_lock(&g_alert_lock);
+    alert_rules_seed_locked();
+    uint64_t v = 0;
+    for (size_t i = 0; i < g_alert_rule_count; i++) {
+        if (strcmp(g_alert_rules[i].event_name, rule_event_name) == 0) {
+            v = g_alert_state[i].fire_count;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_alert_lock);
+    return v;
+}
+
+void mcp_metrics_alerts_reset(void)
+{
+    pthread_mutex_lock(&g_alert_lock);
+    alert_rules_seed_locked();
+    memset(g_alert_state, 0, sizeof(g_alert_state));
+    pthread_mutex_unlock(&g_alert_lock);
 }
 
 /* ── Peer scoring counters ──────────────────────────────────── */

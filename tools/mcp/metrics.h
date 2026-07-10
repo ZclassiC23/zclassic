@@ -218,6 +218,37 @@ void mcp_metrics_set_mirror_lag(int64_t lag_blocks,
 void mcp_metrics_set_peer_kinds(int64_t magicbean_count,
                                 int64_t zcl23_count);
 
+/* ── Metric-threshold alert rules (C3) ────────────────────────────
+ *
+ * A small declarative table of {gauge, comparator, threshold} rules
+ * evaluated against the SAME in-process gauges the Prometheus dump
+ * reads (no re-parsing of rendered text, no new metric enumeration).
+ * On a rising edge (value crosses the threshold after being clear)
+ * the rule fires immediately; while the value stays crossed it can
+ * re-fire only after its cooldown elapses (mirrors the blocker
+ * escape-dispatch rate-limit idea in util/blocker.h). Firing raises
+ * EV_CONDITION_DETECTED (payload "name=metric_alert.<rule> severity=..
+ * gauge=.. value=.. threshold=.."), the same generic event type the
+ * condition-engine healers use, so it flows through the existing
+ * mcp_notify push channel once "condition.detected" is allow-listed
+ * there — no new event type, no new thread.
+ *
+ * Evaluated once per metrics tick from mcp_metrics_set_peer_kinds()
+ * (the last of the four gauge setters lib/metrics's 1-second thread
+ * calls each tick), so it runs automatically whenever the node's
+ * metrics thread is active (default: on, see `-showmetrics`). Also
+ * callable directly — tests call it after seeding gauges via the
+ * setters above to drive one evaluation pass deterministically. */
+void mcp_metrics_evaluate_alert_rules(void);
+
+/* Introspection (tests). */
+size_t mcp_metrics_alert_rule_count(void);
+uint64_t mcp_metrics_alert_fire_count(const char *rule_event_name);
+
+/* Reset per-rule edge/cooldown state and fire counters. Tests call
+ * this to isolate; folded into mcp_metrics_reset() for `zcl_metrics_reset`. */
+void mcp_metrics_alerts_reset(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -1108,6 +1108,7 @@ int main(int argc, char **argv)
     failures += test_mcp_middleware();
     failures += test_mcp_metrics();
     failures += test_mcp_baseline();
+    failures += test_metric_alerts();
     failures += test_mcp_e2e();
     failures += test_mcp_notify();
     failures += test_db_validators();

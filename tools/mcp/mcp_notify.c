@@ -25,10 +25,21 @@
  * the named operator signals plus the loudest integrity alarms: a
  * suspected fork, a violated anchor, a halted chain, a lag-SLO breach,
  * a needed operator action, a failed boot validation, a critical disk,
- * a UTXO drift, a coins-flush failure, an oracle disagreement, and a
- * crash. Add a string here to push a new class. */
+ * a UTXO drift, a coins-flush failure, an oracle disagreement, a
+ * crash, and a detected condition. Add a string here to push a new class.
+ *
+ * "condition.detected" (EV_CONDITION_DETECTED) is the generic
+ * "name=... severity=..." vehicle the framework condition-engine
+ * healers already emit on every new detection episode
+ * (lib/framework/src/condition.c) AND the vehicle the metrics
+ * threshold-alert rule table uses (tools/mcp/metrics.c
+ * mcp_metrics_evaluate_alert_rules(), payload name prefixed
+ * "metric_alert."). Both producers are edge-triggered — one push per
+ * detection episode, not per poll — so allow-listing the type does not
+ * reintroduce the routine-chatter flood this list exists to avoid. */
 static const char *const k_operator_events[] = {
     "condition.operator_needed",   /* EV_OPERATOR_NEEDED */
+    "condition.detected",          /* EV_CONDITION_DETECTED */
     "oracle.chain_halted",         /* EV_CHAIN_HALTED */
     "oracle.fork_suspected",       /* EV_FORK_SUSPECTED */
     "oracle.anchor_panic",         /* EV_ANCHOR_PANIC */
@@ -55,7 +66,15 @@ bool mcp_notify_is_operator_event(const char *event_type)
 /* MCP "logging" severity for an operator event. A halted chain, a
  * violated anchor, a fatal lag breach, a crash, or a failed boot
  * validation are errors; the rest are warnings worth surfacing. The
- * agent renders level to decide how loudly to react. */
+ * agent renders level to decide how loudly to react.
+ *
+ * This is a per-TYPE bucket, not per-payload: "condition.detected" and
+ * "mirror.lag_slo_breach" both carry a finer-grained severity string
+ * inside their own payload ("severity=warning|critical|..."), but every
+ * instance of the type still gets the same top-level MCP level here
+ * (warning) — same precedent as mirror.lag_slo_breach below, which
+ * stays "warning" even for its own payload's "severity=critical|fatal".
+ * The agent can still branch on the embedded field for finer handling. */
 static const char *severity_for(const char *event_type)
 {
     if (strcmp(event_type, "oracle.chain_halted") == 0 ||
