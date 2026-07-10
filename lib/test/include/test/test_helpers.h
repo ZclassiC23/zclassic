@@ -257,6 +257,7 @@ int test_bloom(void);
 int test_compact_blocks(void);
 int test_dandelion(void);
 int test_addrman_rebalance(void);
+int test_addrman_eclipse(void);
 int test_coins(void);
 int test_chainstate_legacy_reader(void);
 int test_utxo_import_pipeline(void);
