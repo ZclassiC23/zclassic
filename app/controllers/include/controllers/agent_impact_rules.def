@@ -155,5 +155,6 @@ AGENT_IMPACT_RULE("config/include/config/runtime.h", "boot_phase make_lint_gates
 AGENT_IMPACT_RULE("lib/test/src/test_accept_to_mempool.c", "accept_to_mempool")
 AGENT_IMPACT_RULE("lib/test/src/test_mempool.c", "mempool")
 AGENT_IMPACT_RULE("lib/test/src/test_merkle_tree.c", "merkle_tree")
+AGENT_IMPACT_RULE("lib/bloom/src/merkle.c|lib/bloom/include/bloom/merkle.h|lib/test/src/test_merkle_malleability.c", "merkle_malleability bloom")
 AGENT_IMPACT_RULE("lib/test/src/test_parity_lockin_anchor_membership.c", "parity_lockin_anchor_membership")
 AGENT_IMPACT_RULE("lib/test/src/test_sync_service.c", "sync_service")
