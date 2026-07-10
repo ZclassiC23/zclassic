@@ -255,7 +255,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(unclean_shutdown_advance) X(utxo_audit) X(utxo_parity_service) \
     X(soak_attestation) \
     X(zclassicd_oracle) X(oracle_policy) \
-    X(script_interp_edge) X(sighash_edge) X(sigops_edge) \
+    X(script_interp_edge) X(script_interp_edges) X(sighash_edge) X(sigops_edge) \
     X(check_tx_edge) X(check_block_edge) X(amount_subsidy_edge) \
     X(locktime_edge) \
     X(pow_diffadj_precedence) X(bip34_coinbase_height_parity) \
