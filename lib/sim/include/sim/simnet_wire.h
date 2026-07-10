@@ -176,6 +176,21 @@ bool simnet_wire_partition_peer(struct simnet_wire *wire, size_t peer_id,
 bool simnet_wire_set_link_bandwidth(struct simnet_wire *wire, size_t peer_id,
                                     size_t down_cap, size_t up_cap);
 
+/* Inject a single well-formed P2P frame (valid magic + checksum over
+ * `payload`) onto peer_id's ingress link, opening the link if it was
+ * closed. Unlike the honest/adversary generators this lets a test author
+ * hand-craft an arbitrary command + payload — e.g. a `headers` message
+ * that trips a real receive-side guard in process_headers() — for a
+ * multi-peer IBD / header-sync scenario. The frame is enqueued through
+ * the same latency/reorder transport as every other event, so a given
+ * seed replays byte-identically (no wall-clock, no extra entropy). The
+ * wire-layer framing is always valid; only the *payload* is under the
+ * caller's control, so this exercises the message handler, never the
+ * lower-layer p2p_node_receive_bytes() parser. */
+bool simnet_wire_inject_message(struct simnet_wire *wire, size_t peer_id,
+                                const char *command, const uint8_t *payload,
+                                size_t payload_len);
+
 bool simnet_wire_run(struct simnet_wire *wire, uint64_t max_ticks,
                      uint64_t stuck_guard);
 
