@@ -147,7 +147,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(utxo_recovery_service) X(utxo_reimport_flag) \
     X(self_heal_scan_fallback) \
     X(rpc_error_envelope) X(tx_property) \
-    X(workpool) X(bip113_bip65) X(mempool_orphan) X(fee_estimation) \
+    X(workpool) X(bip113_bip65) X(block_timestamp_adversarial) \
+    X(mempool_orphan) X(fee_estimation) \
     X(header_sync) X(header_sync_stall) X(hd_keychain) X(mnemonic) \
     X(bip44) X(compact_blocks) X(dandelion) X(addrman_rebalance) \
     X(addrman_eclipse) \

@@ -1258,6 +1258,7 @@ int main(int argc, char **argv)
     { extern int test_thread_registry(void);
       failures += test_thread_registry(); }
     failures += test_bip113_bip65();
+    failures += test_block_timestamp_adversarial();
     failures += test_mempool_orphan();
     failures += test_fee_estimation();
     failures += test_header_sync();
