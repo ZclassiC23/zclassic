@@ -34,6 +34,25 @@ Format: `date | commit | benchmark | value | how measured / notes`
 
 > RSS / cold-sync / warm-restart rows above are 2026-05-24 snapshots against tip 3,123,688; the node has been recovered/rebuilt several times since (see `HANDOFF.md`). Treat as history, re-measure on the current binary before quoting.
 
+## Consensus-verify microbenchmark (`make bench-crypto-verify`)
+
+The two dominant per-block consensus-VERIFY costs, timed in isolation with
+the mandated monotonic clock (`clock_now_monotonic_ns`; `gettimeofday` is
+banned). `make bench-crypto-verify` appends `ns/op` rows to
+`docs/bench-history.csv`; `make bench-regress` (run in `make ci`) fails if a
+new run is >20% slower than the prior recorded run for that primitive (ns/op
+is lower-is-better). The numbers are **HOST-RELATIVE** — re-baseline on your
+host. The benchmark is protected against going hollow-fast by the
+`verify_bench_selftest` test group AND an in-harness teeth check: each
+primitive must return TRUE on a valid fixture and FALSE on a one-bit-flipped
+copy before any number is recorded, so a broken/always-true/no-op verifier
+cannot "get fast" and pass the gate.
+
+| date | commit | primitive | value | how / notes |
+|---|---|---|---|---|
+| 2026-07-10 | de89ee8d4 | Equihash 200,9 solution verify | **~120.6 µs/op** (~8,300 ops/s) | `check_equihash_solution` on a baked real (200,9) witness (`lib/test/include/test/verify_bench_fixture.h`); AMD Ryzen 9 7950X3D. |
+| 2026-07-10 | de89ee8d4 | Groth16 BLS12-381 output-proof verify | **~7.85 ms/op** (~127 ops/s) | `sapling_check_output` (full pure-C23 BLS12-381 pairing) on a real prover output proof; needs `~/.zcash-params`; AMD Ryzen 9 7950X3D. |
+
 ## Native rebuild benchmark (`rebuild_recent` tool)
 
 | date | commit | N blocks | rebuild ms | blocks/s | bytes | notes |

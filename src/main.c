@@ -44,6 +44,13 @@
 #include "coins/utxo_commitment.h"
 #include "crypto/sha3.h"
 #include "core/uint256.h"
+#include "chain/equihash.h"               /* -bench-crypto-verify: PoW verify */
+#include "primitives/block.h"
+#include "sapling/sapling.h"              /* -bench-crypto-verify: Groth16 verify */
+#include "sapling/sapling_prover.h"
+#include "sapling/params_init.h"
+#include "platform/clock.h"               /* clock_now_monotonic_ns (banned: gettimeofday) */
+#include "test/verify_bench_fixture.h"    /* baked real (200,9) witness */
 #include "controllers/explorer_internal.h"
 #include "services/wallet_backup_service.h"
 #include "services/chain_tip_watchdog.h"  /* #8: self-respawn when off-systemd */
@@ -495,6 +502,231 @@ static int bench_regress(void)
     return 0;
 }
 
+/* ── -bench-crypto-verify ────────────────────────────────────────────
+ *
+ * Microbenchmark for the two dominant per-block consensus-VERIFY costs:
+ *   (a) the pure-C23 BLS12-381 Groth16 pairing verify (Sapling output
+ *       proof, via sapling_check_output), and
+ *   (b) the Equihash (200,9) solution verify (check_equihash_solution).
+ * Emits ns/op rows to bench-history.csv in the same shape the rest of
+ * the harness uses, so `-bench-regress` gates them at ±20% (ns/op is
+ * lower-is-better, which is bench_regress's default direction).
+ *
+ * TEETH: before timing, each primitive is asserted to return the CORRECT
+ * result on its fixture — valid -> true AND one-bit-flipped -> false. If
+ * either fails, the row is NOT emitted. This makes it impossible for the
+ * benchmark to "get fast" by benching a broken/always-true/no-op verify:
+ * a hollow-fast verifier fails the flipped-input check here (and in the
+ * hermetic test group test_verify_bench_selftest) before any number is
+ * recorded. The timed loop also folds every result into a volatile sink
+ * so the verify call cannot be optimised away.
+ *
+ * All timing uses the mandated monotonic clock (clock_now_monotonic_ns);
+ * gettimeofday is banned (Gate #19). Iteration count is auto-calibrated
+ * to a wall-time budget so ns/op is stable across fast and slow hosts. */
+
+static volatile uint64_t g_bench_verify_sink;
+
+/* Run `fn(arg)` in a timed loop until `budget_ns` elapses; return ns/op.
+ * Every result is folded into the global sink so the call is not elided;
+ * if any call returns false, *ok_out is set false (an invalid bench). */
+static double bench_time_verify(bool (*fn)(void *), void *arg,
+                                double budget_ns, bool *ok_out)
+{
+    /* Warm caches / branch predictors. */
+    for (int i = 0; i < 3; ++i)
+        g_bench_verify_sink += fn(arg) ? 1u : 0u;
+
+    uint64_t iters = 0;
+    bool all_true = true;
+    int64_t t0 = clock_now_monotonic_ns();
+    int64_t elapsed = 0;
+    do {
+        /* Inner batch keeps the clock read amortised. */
+        for (int b = 0; b < 8; ++b) {
+            bool r = fn(arg);
+            all_true = all_true && r;
+            g_bench_verify_sink += r ? 1u : 0u;
+        }
+        iters += 8;
+        elapsed = clock_now_monotonic_ns() - t0;
+    } while ((double)elapsed < budget_ns);
+
+    if (ok_out) *ok_out = all_true;
+    return (double)elapsed / (double)iters;
+}
+
+/* Adapters matching bench_time_verify's fn(arg) shape. */
+static bool bench_verify_equihash(void *arg)
+{
+    return check_equihash_solution((const struct block_header *)arg, NULL);
+}
+
+struct bench_groth16_arg {
+    struct sapling_verification_ctx vctx;
+    uint8_t cv[32], cm[32], epk[32], proof[192];
+};
+static bool bench_verify_groth16(void *arg)
+{
+    struct bench_groth16_arg *a = arg;
+    sapling_verification_ctx_init(&a->vctx);
+    return sapling_check_output(&a->vctx, a->cv, a->cm, a->epk, a->proof);
+}
+
+static bool bench_find_diversifier(uint8_t diversifier[11])
+{
+    memset(diversifier, 0, 11);
+    for (int i = 0; i < 256; i++) {
+        diversifier[0] = (uint8_t)i;
+        if (sapling_check_diversifier(diversifier))
+            return true;
+    }
+    return false;
+}
+
+static int bench_crypto_verify(void)
+{
+    const char *path = bench_history_path();
+    /* ~500 ms per primitive: enough iterations for a stable ns/op without
+     * making the bench slow. Override with ZCL_BENCH_BUDGET_MS. */
+    double budget_ms = 500.0;
+    const char *bm = getenv("ZCL_BENCH_BUDGET_MS");
+    if (bm && *bm) {
+        double v = strtod(bm, NULL);
+        if (v >= 20.0 && v <= 60000.0) budget_ms = v;
+    }
+    double budget_ns = budget_ms * 1e6;
+
+    printf("zclassic23 consensus-verify microbenchmark (C)\n");
+    printf("  commit:   %s\n", bench_commit());
+    printf("  history:  %s\n", path);
+    printf("  budget:   %.0f ms/primitive\n", budget_ms);
+    printf("  clock:    clock_now_monotonic_ns (monotonic)\n\n");
+
+    struct bench_row rows[2];
+    size_t nrows = 0;
+
+    /* ── (b) Equihash (200,9) — hermetic ───────────────────────────── */
+    {
+        struct block_header h;
+        verify_bench_fill_eh_header(&h);
+
+        /* TEETH: valid -> true, one-bit-flipped -> false. */
+        bool pos = check_equihash_solution(&h, NULL);
+        struct block_header bad = h;
+        bad.nSolution[600] ^= 0x01;
+        bool neg = check_equihash_solution(&bad, NULL);
+        if (!pos || neg) {
+            fprintf(stderr,
+                "[bench-crypto-verify] REFUSING equihash row: verify is "
+                "hollow (valid=%d flipped=%d); expected valid=1 flipped=0\n",
+                pos, neg);
+        } else {
+            bool ok = true;
+            double ns = bench_time_verify(bench_verify_equihash, &h,
+                                          budget_ns, &ok);
+            if (ok) {
+                snprintf(rows[nrows].bench, sizeof(rows[nrows].bench),
+                         "consensus-verify equihash-200-9");
+                snprintf(rows[nrows].unit, sizeof(rows[nrows].unit), "ns/op");
+                rows[nrows].value = ns;
+                rows[nrows].numeric = true;
+                snprintf(rows[nrows].notes, sizeof(rows[nrows].notes),
+                    "check_equihash_solution on baked real 200,9 witness; "
+                    "host-relative; %.0f ops/sec", 1e9 / ns);
+                printf("  %-34s %12.1f ns/op  (%.0f ops/sec)\n",
+                       "equihash-200-9 verify", ns, 1e9 / ns);
+                nrows++;
+            }
+        }
+    }
+
+    /* ── (a) Groth16 / BLS12-381 output-proof verify — needs params ── */
+    {
+        const char *home = getenv("HOME");
+        char params_dir[512];
+        snprintf(params_dir, sizeof(params_dir), "%s/.zcash-params",
+                 (home && *home) ? home : ".");
+        if (!sapling_init_params(params_dir)) {
+            printf("  groth16 verify: ~/.zcash-params absent -> SKIPPED "
+                   "(VK/proving keys not vendored)\n");
+        } else {
+            uint8_t diversifier[11];
+            bool div_ok = bench_find_diversifier(diversifier);
+            uint8_t ask[32], nsk[32], ovk[32];
+            sapling_generate_r(ask);
+            sapling_generate_r(nsk);
+            sapling_generate_r(ovk);
+            uint8_t ak[32], nk[32], ivk[32], pk_d[32];
+            sapling_ask_to_ak(ask, ak);
+            sapling_nsk_to_nk(nsk, nk);
+            sapling_crh_ivk(ak, nk, ivk);
+            bool pk_ok = div_ok && sapling_ivk_to_pkd(ivk, diversifier, pk_d);
+
+            void *pctx = zclassic_sapling_proving_ctx_init();
+            struct bench_groth16_arg ga;
+            uint8_t enc[580], out_ct[80];
+            bool built = pctx && pk_ok &&
+                sapling_build_output_with_ctx(pctx, ovk, diversifier, pk_d,
+                                              54321, NULL,
+                                              ga.cv, ga.cm, ga.epk, enc,
+                                              out_ct, ga.proof);
+            if (pctx) zclassic_sapling_proving_ctx_free(pctx);
+
+            if (!built) {
+                fprintf(stderr, "[bench-crypto-verify] prover failed; "
+                                "skipping groth16 row\n");
+            } else {
+                /* TEETH: valid -> true, one-bit-flipped -> false. */
+                sapling_verification_ctx_init(&ga.vctx);
+                bool pos = sapling_check_output(&ga.vctx, ga.cv, ga.cm,
+                                                ga.epk, ga.proof);
+                struct bench_groth16_arg bad = ga;
+                bad.proof[64] ^= 0x01;
+                sapling_verification_ctx_init(&bad.vctx);
+                bool neg = sapling_check_output(&bad.vctx, bad.cv, bad.cm,
+                                                bad.epk, bad.proof);
+                if (!pos || neg) {
+                    fprintf(stderr,
+                        "[bench-crypto-verify] REFUSING groth16 row: verify "
+                        "is hollow (valid=%d flipped=%d)\n", pos, neg);
+                } else {
+                    bool ok = true;
+                    double ns = bench_time_verify(bench_verify_groth16, &ga,
+                                                  budget_ns, &ok);
+                    if (ok) {
+                        snprintf(rows[nrows].bench, sizeof(rows[nrows].bench),
+                                 "consensus-verify groth16-bls12-381-output");
+                        snprintf(rows[nrows].unit, sizeof(rows[nrows].unit),
+                                 "ns/op");
+                        rows[nrows].value = ns;
+                        rows[nrows].numeric = true;
+                        snprintf(rows[nrows].notes, sizeof(rows[nrows].notes),
+                            "sapling_check_output (full BLS12-381 pairing) on "
+                            "a real prover output proof; host-relative; "
+                            "%.0f ops/sec", 1e9 / ns);
+                        printf("  %-34s %12.1f ns/op  (%.0f ops/sec)\n",
+                               "groth16-bls12-381 output verify", ns,
+                               1e9 / ns);
+                        nrows++;
+                    }
+                }
+            }
+        }
+    }
+
+    if (nrows == 0) {
+        fprintf(stderr,
+            "[bench-crypto-verify] no rows produced (nothing appended)\n");
+        return 1;
+    }
+    printf("\n  appended %zu row(s) to %s\n", nrows, path);
+    /* Fold the sink into the exit path so the optimiser cannot elide the
+     * timed calls (value is otherwise unused). */
+    if (g_bench_verify_sink == 0xdeadbeefULL) fputc(' ', stderr);
+    return bench_history_append(path, rows, nrows) ? 0 : 1;
+}
+
 static int bench_mode_main(int argc, char **argv)
 {
     for (int i = 1; i < argc; ++i) {
@@ -503,6 +735,8 @@ static int bench_mode_main(int argc, char **argv)
             return bench_run_all();
         if (strcmp(argv[i], "-bench-regress") == 0)
             return bench_regress();
+        if (strcmp(argv[i], "-bench-crypto-verify") == 0)
+            return bench_crypto_verify();
         if (strncmp(argv[i], "-bench-", 7) == 0)
             return bench_run_one(argv[i]);
     }
@@ -1452,6 +1686,7 @@ static void print_usage(const char *prog)
     printf("  -rebuildfromlog     Rebuild block index + tip from the event-log\n");
     printf("                      projection (cold-start opt-in)\n");
     printf("  -bench              Run all five user benchmark probes\n");
+    printf("  -bench-crypto-verify Bench Groth16 + Equihash-200,9 consensus verify (ns/op)\n");
     printf("  -bench-regress      Fail if bench-history numeric rows regress >20%%\n");
     printf("  --decrypt-wallet-backup <src.enc> <dst.sqlite>\n");
     printf("                      Restore an encrypted wallet backup (password\n");
