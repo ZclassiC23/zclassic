@@ -2918,8 +2918,25 @@ int main(int argc, char **argv)
 
     setvbuf(stdout, NULL, _IOLBF, 0);
     setvbuf(stderr, NULL, _IOLBF, 0);
-    signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
+    /* Install SIGINT/SIGTERM via sigaction, NOT signal(). Under this build's
+     * feature-test macros (_POSIX_C_SOURCE without _DEFAULT_SOURCE) glibc's
+     * signal() gives System V ONE-SHOT semantics: the disposition resets to
+     * SIG_DFL the instant the handler fires. signal_handler() never re-armed
+     * it, so the FIRST SIGTERM ran the handler AND reverted SIGTERM to default —
+     * and the SECOND SIGTERM (systemd ExecStop sends pulses 2 s apart) then
+     * killed the process with default disposition, silently, mid-shutdown,
+     * before the WAL checkpoint + clean-shutdown marker. sigaction without
+     * SA_RESETHAND keeps the handler installed so repeated SIGTERMs are
+     * absorbed idempotently (the handler's own g_shutdown_requested guard). */
+    {
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = signal_handler;
+        sigemptyset(&sa.sa_mask);
+        sa.sa_flags = SA_RESTART; /* persistent; restart interrupted syscalls */
+        sigaction(SIGINT, &sa, NULL);
+        sigaction(SIGTERM, &sa, NULL);
+    }
 
     /* -connect mode: only connect to specified peers, no seeds */
     if (ctx.connect_only) {
