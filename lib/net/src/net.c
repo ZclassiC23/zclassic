@@ -17,6 +17,8 @@
 #include "core/utiltime.h"
 #include "core/serialize.h"
 #include "crypto/sha256.h"
+#include "crypto/sha3.h"
+#include "storage/sha3_sidecar_io.h"
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -955,18 +957,37 @@ bool is_banned(struct net_manager *nm, const struct net_addr *addr)
 
     zcl_mutex_lock(&nm->cs_banned);
     int64_t now = GetTime();
-    for (size_t i = 0; i < nm->num_banned; i++) {
-        if (net_addr_eq(&nm->banned[i].addr, addr) && now < nm->banned[i].ban_until) {
-            zcl_mutex_unlock(&nm->cs_banned);
-            return true;
+    bool found = false;
+    /* Lazy prune: while scanning for `addr`, swap-remove any entry whose
+     * ban_until has already passed. No separate sweep thread/timer is
+     * needed — every is_banned() call (the accept-inbound and outbound-
+     * candidate paths both call it) gradually shrinks the table. This
+     * does NOT rewrite banlist.dat on disk; the file self-heals to drop
+     * expired rows the next time ban_addr()/unban_addr()/clear_banned()
+     * calls ban_db_write(), which already filters by ban_until > now. */
+    size_t i = 0;
+    while (i < nm->num_banned) {
+        if (now >= nm->banned[i].ban_until) {
+            nm->banned[i] = nm->banned[nm->num_banned - 1];
+            nm->num_banned--;
+            continue; /* re-check the swapped-in entry at the same index */
         }
+        if (net_addr_eq(&nm->banned[i].addr, addr)) {
+            found = true;
+            break;
+        }
+        i++;
     }
     zcl_mutex_unlock(&nm->cs_banned);
-    return false;
+    return found;
 }
 
-void ban_addr(struct net_manager *nm, const struct net_addr *addr,
-              int64_t ban_offset, bool since_epoch)
+/* Shared implementation behind ban_addr() (external/manual bans, score=0)
+ * and peer_misbehaving()'s auto-ban (real score + offence reason). Persists
+ * to banlist.dat when nm->datadir is set (see connman_load_addrman()). */
+static void ban_addr_ex(struct net_manager *nm, const struct net_addr *addr,
+                        int64_t ban_offset, bool since_epoch,
+                        int32_t score_at_ban, const char *reason)
 {
     int64_t ban_time = GetTime() + 24 * 60 * 60;
     if (ban_offset > 0)
@@ -977,7 +998,11 @@ void ban_addr(struct net_manager *nm, const struct net_addr *addr,
         if (net_addr_eq(&nm->banned[i].addr, addr)) {
             if (nm->banned[i].ban_until < ban_time)
                 nm->banned[i].ban_until = ban_time;
+            nm->banned[i].score_at_ban = score_at_ban;
+            snprintf(nm->banned[i].reason, sizeof(nm->banned[i].reason),
+                     "%s", reason ? reason : "");
             zcl_mutex_unlock(&nm->cs_banned);
+            if (nm->datadir) ban_db_write(nm, nm->datadir);
             return;
         }
     }
@@ -992,8 +1017,19 @@ void ban_addr(struct net_manager *nm, const struct net_addr *addr,
     nm->banned[nm->num_banned].addr = *addr;
     nm->banned[nm->num_banned].prefix_len = net_addr_is_ipv4(addr) ? 32 : 128;
     nm->banned[nm->num_banned].ban_until = ban_time;
+    nm->banned[nm->num_banned].score_at_ban = score_at_ban;
+    snprintf(nm->banned[nm->num_banned].reason,
+             sizeof(nm->banned[nm->num_banned].reason), "%s", reason ? reason : "");
     nm->num_banned++;
     zcl_mutex_unlock(&nm->cs_banned);
+
+    if (nm->datadir) ban_db_write(nm, nm->datadir);
+}
+
+void ban_addr(struct net_manager *nm, const struct net_addr *addr,
+              int64_t ban_offset, bool since_epoch)
+{
+    ban_addr_ex(nm, addr, ban_offset, since_epoch, 0, "manual");
 }
 
 /* Check if a peer is a trusted local node (localhost or whitelisted).
@@ -1042,8 +1078,9 @@ void peer_misbehaving(struct net_manager *nm, struct p2p_node *node,
                   "\"addr\":\"%s\",\"score\":%d,\"reason\":\"%s\","
                   "\"ban_hours\":%d",
                   addr_safe, new_score, reason_safe, hours);
-        ban_addr(nm, &node->addr.svc.addr,
-                 (int64_t)hours * 60 * 60, false);
+        ban_addr_ex(nm, &node->addr.svc.addr,
+                   (int64_t)hours * 60 * 60, false,
+                   new_score, reason ? reason : "threshold reached");
         node->disconnect = true;
     }
 }
@@ -1056,6 +1093,7 @@ bool unban_addr(struct net_manager *nm, const struct net_addr *addr)
             nm->banned[i] = nm->banned[nm->num_banned - 1];
             nm->num_banned--;
             zcl_mutex_unlock(&nm->cs_banned);
+            if (nm->datadir) ban_db_write(nm, nm->datadir);
             return true;
         }
     }
@@ -1068,6 +1106,183 @@ void clear_banned(struct net_manager *nm)
     zcl_mutex_lock(&nm->cs_banned);
     nm->num_banned = 0;
     zcl_mutex_unlock(&nm->cs_banned);
+    if (nm->datadir) ban_db_write(nm, nm->datadir);
+}
+
+/* ── Ban persistence: <datadir>/banlist.dat ──────────────────────────
+ * One self-verifying file — see the doc comment on ban_db_write()/
+ * ban_db_read() in net.h for the format rationale. Reuses
+ * EV_ADDRMAN_CORRUPT for the (rare) quarantine event since a corrupt
+ * banlist.dat is the same class of datadir-tampering concern as a
+ * corrupt peers.dat, and adding a dedicated event type would require
+ * touching lib/event/src (outside this module's file set). */
+#define BAN_DB_MAGIC "ZBAN"
+#define BAN_DB_VERSION 1u
+
+static const struct ssio_spec g_ban_db_spec = {
+    .body_name     = "banlist.dat",
+    .sidecar_name  = "banlist.dat.sha3", /* unused on the embedded path;
+                                          * kept so ssio_quarantine() can
+                                          * sweep aside a stray legacy
+                                          * sidecar if one is ever found */
+    .magic         = BAN_DB_MAGIC,
+    .version       = BAN_DB_VERSION,
+    .domain        = "net_ban",
+    .malloc_label  = "ban_db_hash_buf",
+    .corrupt_event = EV_ADDRMAN_CORRUPT,
+};
+
+struct ban_db_payload_ctx {
+    const uint8_t *data;
+    size_t size;
+};
+
+static bool ban_db_emit_payload(FILE *f, void *ctx_, uint64_t *out_payload_size,
+                                uint8_t out_payload_sha3[32])
+{
+    struct ban_db_payload_ctx *ctx = (struct ban_db_payload_ctx *)ctx_;
+    if (ctx->size > 0 && fwrite(ctx->data, 1, ctx->size, f) != ctx->size)
+        return false;
+    zcl_sha3_256(ctx->data, ctx->size, out_payload_sha3);
+    *out_payload_size = (uint64_t)ctx->size;
+    return true;
+}
+
+bool ban_db_write(struct net_manager *nm, const char *datadir)
+{
+    if (!nm || !datadir) return false;
+
+    /* Two-pass: serialize entries first (count unknown up front since
+     * expired rows are skipped), then prepend the count. Avoids patching
+     * raw bytes into an already-written buffer (endian-fragile). */
+    struct byte_stream entries;
+    stream_init(&entries, 4096);
+
+    int64_t now = GetTime();
+    uint32_t live = 0;
+    zcl_mutex_lock(&nm->cs_banned);
+    for (size_t i = 0; i < nm->num_banned; i++) {
+        const struct ban_entry *b = &nm->banned[i];
+        if (b->ban_until <= now)
+            continue; /* lazy prune: never persist an already-expired ban */
+        stream_write(&entries, b->addr.ip, 16);
+        stream_write(&entries, b->addr.torv3, TORV3_ADDR_SIZE);
+        stream_write_u8(&entries, b->addr.has_torv3 ? 1 : 0);
+        stream_write_u8(&entries, b->prefix_len);
+        stream_write_i64_le(&entries, b->ban_until);
+        stream_write_i32_le(&entries, b->score_at_ban);
+        stream_write(&entries, (const unsigned char *)b->reason, sizeof(b->reason));
+        live++;
+    }
+    zcl_mutex_unlock(&nm->cs_banned);
+
+    struct byte_stream s;
+    stream_init(&s, entries.size + 8);
+    stream_write_u32_le(&s, live);
+    stream_write(&s, entries.data, entries.size);
+    stream_free(&entries);
+
+    struct ban_db_payload_ctx ctx = { .data = s.data, .size = s.size };
+    struct zcl_result wr = ssio_write_embedded(datadir, &g_ban_db_spec,
+                                               ban_db_emit_payload, &ctx);
+    stream_free(&s);
+    if (!wr.ok) {
+        LOG_WARN("net", "ban_db_write: %s", wr.message);
+        return false;
+    }
+    return true;
+}
+
+bool ban_db_read(struct net_manager *nm, const char *datadir)
+{
+    if (!nm || !datadir) return false;
+
+    struct ssio_sidecar_header hdr;
+    uint64_t payload_off = 0;
+    enum ssio_read_verdict v = ssio_verify_embedded(datadir, &g_ban_db_spec,
+                                                    &hdr, &payload_off);
+    if (v == SSIO_READ_MISSING)
+        return false; /* clean first-run/no persisted bans yet */
+    if (v != SSIO_READ_OK) {
+        LOG_WARN("net", "ban_db_read: integrity check failed (verdict=%d) — "
+                 "quarantining banlist.dat and starting with no persisted bans",
+                 (int)v);
+        ssio_quarantine(datadir, &g_ban_db_spec, "verify_failed");
+        return false;
+    }
+
+    char path[512];
+    snprintf(path, sizeof(path), "%s/%s", datadir, g_ban_db_spec.body_name);
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return false; }
+    long total = ftell(f);
+    if (total < 0 || (uint64_t)total < payload_off) { fclose(f); return false; }
+    size_t payload_size = (size_t)total - (size_t)payload_off;
+    if (fseek(f, (long)payload_off, SEEK_SET) != 0) { fclose(f); return false; }
+
+    uint8_t *buf = zcl_malloc(payload_size > 0 ? payload_size : 1, "ban_db_read_buf");
+    if (!buf) { fclose(f); return false; }
+    size_t rd = payload_size > 0 ? fread(buf, 1, payload_size, f) : 0;
+    fclose(f);
+    if (rd != payload_size) { free(buf); return false; }
+
+    struct byte_stream s;
+    stream_init_from_data(&s, buf, payload_size);
+
+    uint32_t count = 0;
+    bool ok = stream_read_u32_le(&s, &count);
+    if (ok && count > MAX_BAN_ENTRIES) {
+        LOG_WARN("net", "ban_db_read: count %u exceeds MAX_BAN_ENTRIES (%d) — refusing",
+                 count, MAX_BAN_ENTRIES);
+        ok = false;
+    }
+
+    int64_t now = GetTime();
+    uint32_t loaded = 0, expired_skipped = 0;
+    for (uint32_t i = 0; ok && i < count; i++) {
+        struct ban_entry b;
+        memset(&b, 0, sizeof(b));
+        uint8_t has_torv3 = 0;
+        ok = ok && stream_read(&s, b.addr.ip, 16);
+        ok = ok && stream_read(&s, b.addr.torv3, TORV3_ADDR_SIZE);
+        ok = ok && stream_read_u8(&s, &has_torv3);
+        ok = ok && stream_read_u8(&s, &b.prefix_len);
+        ok = ok && stream_read_i64_le(&s, &b.ban_until);
+        ok = ok && stream_read_i32_le(&s, &b.score_at_ban);
+        ok = ok && stream_read(&s, (unsigned char *)b.reason, sizeof(b.reason));
+        if (!ok) break;
+        b.addr.has_torv3 = has_torv3 != 0;
+        b.reason[sizeof(b.reason) - 1] = '\0';
+
+        if (b.ban_until <= now) {
+            expired_skipped++;
+            continue; /* lazy prune at load time too */
+        }
+
+        zcl_mutex_lock(&nm->cs_banned);
+        if (nm->num_banned >= nm->banned_cap) {
+            size_t newcap = nm->banned_cap ? nm->banned_cap * 2 : 64;
+            struct ban_entry *tmp = zcl_realloc(nm->banned, newcap * sizeof(*tmp), "ban_list");
+            if (tmp) { nm->banned = tmp; nm->banned_cap = newcap; }
+        }
+        if (nm->num_banned < nm->banned_cap) {
+            nm->banned[nm->num_banned++] = b;
+            loaded++;
+        }
+        zcl_mutex_unlock(&nm->cs_banned);
+    }
+
+    stream_free(&s);
+    free(buf);
+
+    if (!ok) {
+        LOG_WARN("net", "ban_db_read: malformed payload (loaded %u entries "
+                 "before the parse error) — keeping what loaded", loaded);
+    }
+    LOG_INFO("net", "ban_db_read: loaded %u bans (%u expired skipped) from %s",
+             loaded, expired_skipped, path);
+    return true;
 }
 
 /* --- local address management --- */

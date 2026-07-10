@@ -1873,6 +1873,14 @@ void connman_stop(struct connman *cm)
 void connman_save_addrman(struct connman *cm)
 {
     if (!cm->datadir) return;
+
+    /* Remember the datadir on net_manager itself so ban_addr()/
+     * unban_addr()/clear_banned() (which only see a net_manager*, not
+     * this connman*) can persist bans the moment they mutate, not just
+     * at whatever cadence connman_save_addrman() is called. */
+    cm->manager.datadir = cm->datadir;
+    (void)ban_db_write(&cm->manager, cm->datadir);
+
     char path[512];
     snprintf(path, sizeof(path), "%s/peers.dat", cm->datadir);
 
@@ -1915,6 +1923,13 @@ void connman_save_addrman(struct connman *cm)
 void connman_load_addrman(struct connman *cm)
 {
     if (!cm->datadir) return;
+
+    /* Set BEFORE ban_db_read() so a ban recorded moments after boot (e.g.
+     * an immediately-hostile inbound peer) persists too, and before any
+     * connection is accepted so nm->banned[] is populated first. */
+    cm->manager.datadir = cm->datadir;
+    (void)ban_db_read(&cm->manager, cm->datadir);
+
     char path[512];
     snprintf(path, sizeof(path), "%s/peers.dat", cm->datadir);
 

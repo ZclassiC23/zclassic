@@ -166,6 +166,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(net_msg_dos) \
     X(net_framing_dos) \
     X(net_handshake_adversarial) \
+    X(net_ban_persistence) \
     X(chain_advance_coordinator) \
     X(chain_advance_atomicity) \
     X(lag_slo) X(boot_phase) X(path_check) X(supervisor) \

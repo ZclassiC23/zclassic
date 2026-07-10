@@ -132,10 +132,17 @@ size_t net_send_total_bytes_cap(void);
 size_t net_send_peer_bytes_cap(void);
 bool net_send_over_budget(const struct p2p_node *node);
 
+/* reason is a short human-readable label ("threshold reached: <offence>"
+ * etc, truncated) captured at ban time purely for operator diagnosis
+ * (zcl_peer_incidents / node.log) — it is NEVER matched against on
+ * reload, so a future rename of an offence string cannot break restore. */
+#define BAN_ENTRY_REASON_MAX 32
 struct ban_entry {
     struct net_addr addr;
     uint8_t prefix_len;
     int64_t ban_until;
+    int32_t score_at_ban;
+    char reason[BAN_ENTRY_REASON_MAX];
 };
 
 #define MAX_BAN_ENTRIES 4096
@@ -356,6 +363,14 @@ struct net_manager {
     struct ban_entry *banned;
     size_t num_banned;
     size_t banned_cap;
+    /* Borrowed pointer (owned by boot/connman context), NULL until the
+     * owner wires it — see connman_load_addrman()/connman_save_addrman().
+     * When set, ban_addr()/unban_addr()/clear_banned() persist the ban
+     * table to <datadir>/banlist.dat on every mutation so a restart does
+     * not amnesty banned attackers. NULL is the safe default: every
+     * existing net_manager_init() caller (tests included) simply gets
+     * no persistence, unchanged from before this field existed. */
+    const char *datadir;
 
     struct net_addr *whitelisted;
     uint8_t *whitelist_prefix;
@@ -443,6 +458,27 @@ void peer_misbehaving(struct net_manager *nm, struct p2p_node *node,
                       int howmuch, const char *reason);
 bool unban_addr(struct net_manager *nm, const struct net_addr *addr);
 void clear_banned(struct net_manager *nm);
+
+/* Ban persistence — <datadir>/banlist.dat, one self-verifying file (a
+ * 48-byte embedded SHA3 integrity header shared with peers.dat /
+ * block_index.bin via storage/sha3_sidecar_io.h prefixes the serialized
+ * ban entries; one fsync, one rename, no separate sidecar file so a
+ * crash mid-write can never strand a body under a stale commitment).
+ *
+ * ban_db_write() serializes every currently-live (non-expired) entry in
+ * nm->banned[]. Called automatically by ban_addr()/unban_addr()/
+ * clear_banned() whenever nm->datadir is set (see connman_load_addrman())
+ * — callers do not need to invoke it directly in normal operation.
+ *
+ * ban_db_read() loads the persisted table into nm->banned[], skipping
+ * (lazily pruning) any entry whose ban_until has already passed. Call
+ * once at boot BEFORE the first inbound/outbound connection is accepted
+ * (see connman_load_addrman()). A missing file is a clean cold-start
+ * miss (returns false, not an error); a corrupt file is quarantined
+ * (renamed aside) and treated the same as missing — bans are advisory
+ * hardening, never fatal to boot. */
+bool ban_db_write(struct net_manager *nm, const char *datadir);
+bool ban_db_read(struct net_manager *nm, const char *datadir);
 
 bool add_local(struct net_manager *nm, const struct net_service *addr,
                int score);

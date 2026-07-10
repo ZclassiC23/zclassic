@@ -1462,6 +1462,7 @@ int main(int argc, char **argv)
     failures += test_msg_handlers();
     failures += test_process_headers_adversarial();
     failures += test_net_handshake_adversarial();
+    failures += test_net_ban_persistence();
     failures += test_zclassicd_oracle();
     failures += test_header_probe();
     failures += test_header_probe_p2p_fallback();

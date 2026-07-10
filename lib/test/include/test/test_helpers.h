@@ -523,6 +523,7 @@ int test_msg_handlers(void);
 int test_process_headers_adversarial(void);
 int test_net_msg_dos(void);
 int test_net_handshake_adversarial(void);
+int test_net_ban_persistence(void);
 int test_zclassicd_oracle(void);
 int test_header_probe(void);
 int test_header_probe_p2p_fallback(void);
