@@ -36,7 +36,7 @@
 #define CHAOS_MAX_EXPECTS 64
 #define CHAOS_TMP_PATH 256
 #define CHAOS_SIMNET_MIN_NODES 2
-#define CHAOS_SIMNET_MAX_NODES 16
+#define CHAOS_SIMNET_MAX_NODES 128
 
 /* Per-node bookkeeping the chaos DSL keeps ON TOP of simnet_cluster so
  * `simnet_relay`/`simnet_heal` can target specific peers without the
@@ -1050,7 +1050,7 @@ static int handle_simnet_nodes(struct chaos_ctx *ctx, int argc, char **argv,
     uint64_t n = 0;
     if (!parse_u64_auto(argv[1], &n) || n < CHAOS_SIMNET_MIN_NODES ||
         n > CHAOS_SIMNET_MAX_NODES) {
-        return fail_line(line_no, "simnet_nodes must be 2..16");
+        return fail_line(line_no, "simnet_nodes must be 2..128");
     }
 
     ctx->simnet = simnet_cluster_init((size_t)n, ctx->seed);
