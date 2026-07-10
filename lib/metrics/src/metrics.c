@@ -366,6 +366,7 @@ static void *metrics_thread_fn(void *arg)
                 .mirror_lag_critical_seconds = 0,
                 .magicbean_peer_count = 0,
                 .zclassic_c23_peer_count = 0,
+                .header_gap_blocks = -1,
             };
             snprintf(ext.sync_state_name, sizeof(ext.sync_state_name), "%s",
                      sync_state_name(gss));
@@ -375,6 +376,11 @@ static void *metrics_thread_fn(void *arg)
             mcp_metrics_set_node_gauges(gh, gpc, grss, ext.utxo_count, gup);
 
             mcp_metrics_set_sync_state(ext.sync_state, ext.sync_state_name);
+
+            /* Must run after set_node_gauges (uptime) and set_sync_state
+             * (sync state) above — mcp_metrics_set_header_gap reads both
+             * as same-tick context for its breach-seconds hysteresis. */
+            mcp_metrics_set_header_gap(ext.header_gap_blocks);
 
             mcp_metrics_set_tip_advance_age(
                 ext.tip_advance_age_seconds);

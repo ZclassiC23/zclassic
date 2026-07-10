@@ -16,6 +16,7 @@
 #include "mcp/metrics.h"
 #include "mcp/mcp_notify.h"
 #include "event/event.h"
+#include "sync/sync_state.h"
 #include "util/blocker.h"
 
 #include <stdatomic.h>
@@ -79,13 +80,17 @@ static int test_rule_count_and_names(void)
     int failures = 0;
     TEST("metric_alerts: seeds the expected rule set") {
         ma_reset_all();
-        ASSERT(mcp_metrics_alert_rule_count() == 5);
+        ASSERT(mcp_metrics_alert_rule_count() == 9);
         /* Every seeded rule name is queryable (starts at 0 fires). */
         ASSERT(mcp_metrics_alert_fire_count("tip_stalled") == 0);
         ASSERT(mcp_metrics_alert_fire_count("mirror_lag_high") == 0);
         ASSERT(mcp_metrics_alert_fire_count("mirror_lag_critical") == 0);
         ASSERT(mcp_metrics_alert_fire_count("blocker_permanent_active") == 0);
         ASSERT(mcp_metrics_alert_fire_count("rss_high") == 0);
+        ASSERT(mcp_metrics_alert_fire_count("header_gap_growing") == 0);
+        ASSERT(mcp_metrics_alert_fire_count("peer_count_collapsed") == 0);
+        ASSERT(mcp_metrics_alert_fire_count("sync_state_stuck") == 0);
+        ASSERT(mcp_metrics_alert_fire_count("consensus_reject_spike") == 0);
         /* An unknown rule name is simply absent, not an error. */
         ASSERT(mcp_metrics_alert_fire_count("no_such_rule") == 0);
         PASS();
@@ -293,6 +298,187 @@ static int test_rss_high_rule(void)
     return failures;
 }
 
+/* ── Lane 1a: header_gap_growing, peer_count_collapsed,
+ * sync_state_stuck, consensus_reject_spike ─────────────────────
+ *
+ * All four hysteresis gauges use the node's own uptime counter as
+ * their clock basis (not wall-clock GetTime()), specifically so a
+ * hermetic test can drive "time" deterministically by passing
+ * increasing `uptime_seconds` values to mcp_metrics_set_node_gauges()
+ * instead of sleeping — see tools/mcp/metrics.c's "New (Lane 1a)
+ * hysteresis gauges" comment. */
+
+static int test_header_gap_growing_rule(void)
+{
+    int failures = 0;
+    TEST("metric_alerts: header_gap_growing fires only after a sustained "
+         "post-headers-download breach, and never during header download") {
+        ma_reset_all();
+        ma_install_observer();
+
+        /* Under the 144-block threshold: no breach. */
+        mcp_metrics_set_node_gauges(0, 0, 0, 0, 100);
+        mcp_metrics_set_sync_state(SYNC_BLOCKS_DOWNLOAD, "blocks_download");
+        mcp_metrics_set_header_gap(50);
+        mcp_metrics_evaluate_alert_rules();
+        ASSERT(mcp_metrics_alert_fire_count("header_gap_growing") == 0);
+
+        /* Over threshold: breach timer starts, but 0s elapsed so far. */
+        mcp_metrics_set_header_gap(200);
+        mcp_metrics_evaluate_alert_rules();
+        ASSERT(mcp_metrics_alert_fire_count("header_gap_growing") == 0);
+
+        /* 950s later, still over threshold and still not header-download:
+         * crosses the 900s sustain window. */
+        mcp_metrics_set_node_gauges(0, 0, 0, 0, 1050);
+        mcp_metrics_set_sync_state(SYNC_BLOCKS_DOWNLOAD, "blocks_download");
+        mcp_metrics_set_header_gap(200);
+        mcp_metrics_evaluate_alert_rules();
+        ASSERT(mcp_metrics_alert_fire_count("header_gap_growing") == 1);
+        ASSERT(ma_captured_contains("name=metric_alert.header_gap_growing"));
+        ASSERT(ma_captured_contains("severity=critical"));
+
+        /* A fresh episode during SYNC_HEADERS_DOWNLOAD never breaches,
+         * however long the gap persists — that phase's header/served
+         * gap is the normal shape of initial block download. */
+        ma_reset_all();
+        mcp_metrics_set_node_gauges(0, 0, 0, 0, 100);
+        mcp_metrics_set_sync_state(SYNC_HEADERS_DOWNLOAD, "headers_download");
+        mcp_metrics_set_header_gap(5000);
+        mcp_metrics_evaluate_alert_rules();
+        ASSERT(mcp_metrics_alert_fire_count("header_gap_growing") == 0);
+
+        mcp_metrics_set_node_gauges(0, 0, 0, 0, 10000);
+        mcp_metrics_set_sync_state(SYNC_HEADERS_DOWNLOAD, "headers_download");
+        mcp_metrics_set_header_gap(5000);
+        mcp_metrics_evaluate_alert_rules();
+        ASSERT(mcp_metrics_alert_fire_count("header_gap_growing") == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_peer_count_collapsed_rule(void)
+{
+    int failures = 0;
+    TEST("metric_alerts: peer_count_collapsed respects the boot grace "
+         "window and the sustain duration, and re-fires on a fresh episode") {
+        ma_reset_all();
+        ma_install_observer();
+
+        /* Still inside the default 120s boot grace: no breach even
+         * though peer_count is under the collapse floor. */
+        mcp_metrics_set_node_gauges(0, 1, 0, 0, 50);
+        mcp_metrics_evaluate_alert_rules();
+        ASSERT(mcp_metrics_alert_fire_count("peer_count_collapsed") == 0);
+
+        /* Past grace, under floor: breach timer starts at 0s. */
+        mcp_metrics_set_node_gauges(0, 1, 0, 0, 150);
+        mcp_metrics_evaluate_alert_rules();
+        ASSERT(mcp_metrics_alert_fire_count("peer_count_collapsed") == 0);
+
+        /* 350s later, still under floor: crosses the 300s sustain window. */
+        mcp_metrics_set_node_gauges(0, 1, 0, 0, 500);
+        mcp_metrics_evaluate_alert_rules();
+        ASSERT(mcp_metrics_alert_fire_count("peer_count_collapsed") == 1);
+        ASSERT(ma_captured_contains("name=metric_alert.peer_count_collapsed"));
+        ASSERT(ma_captured_contains("severity=critical"));
+
+        /* Recovers above the floor: clears the latch, no further fire. */
+        mcp_metrics_set_node_gauges(0, 5, 0, 0, 550);
+        mcp_metrics_evaluate_alert_rules();
+        ASSERT(mcp_metrics_alert_fire_count("peer_count_collapsed") == 1);
+
+        /* A fresh collapse episode fires again once sustained. */
+        mcp_metrics_set_node_gauges(0, 1, 0, 0, 600);
+        mcp_metrics_evaluate_alert_rules();
+        mcp_metrics_set_node_gauges(0, 1, 0, 0, 950);
+        mcp_metrics_evaluate_alert_rules();
+        ASSERT(mcp_metrics_alert_fire_count("peer_count_collapsed") == 2);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_sync_state_stuck_rule(void)
+{
+    int failures = 0;
+    TEST("metric_alerts: sync_state_stuck fires only once unchanged for "
+         "3600s while not at_tip, resets on a state change, and never "
+         "fires at_tip") {
+        ma_reset_all();
+        ma_install_observer();
+
+        /* First observation just anchors the "changed at" timestamp. */
+        mcp_metrics_set_node_gauges(0, 0, 0, 0, 100);
+        mcp_metrics_set_sync_state(SYNC_BLOCKS_DOWNLOAD, "blocks_download");
+        mcp_metrics_evaluate_alert_rules();
+        ASSERT(mcp_metrics_alert_fire_count("sync_state_stuck") == 0);
+
+        /* Same state id, 3900s later: crosses the 3600s threshold. */
+        mcp_metrics_set_node_gauges(0, 0, 0, 0, 4000);
+        mcp_metrics_set_sync_state(SYNC_BLOCKS_DOWNLOAD, "blocks_download");
+        mcp_metrics_evaluate_alert_rules();
+        ASSERT(mcp_metrics_alert_fire_count("sync_state_stuck") == 1);
+        ASSERT(ma_captured_contains("name=metric_alert.sync_state_stuck"));
+        ASSERT(ma_captured_contains("severity=warning"));
+
+        /* A state change resets the "changed at" timer — no immediate
+         * re-fire even though a lot of uptime has already elapsed. */
+        mcp_metrics_set_sync_state(SYNC_CONNECTING_BLOCKS, "connecting_blocks");
+        mcp_metrics_evaluate_alert_rules();
+        ASSERT(mcp_metrics_alert_fire_count("sync_state_stuck") == 1);
+
+        /* at_tip never counts as stuck, no matter how much uptime passes
+         * while the state id stays the same. */
+        ma_reset_all();
+        mcp_metrics_set_node_gauges(0, 0, 0, 0, 100);
+        mcp_metrics_set_sync_state(SYNC_AT_TIP, "at_tip");
+        mcp_metrics_evaluate_alert_rules();
+        mcp_metrics_set_node_gauges(0, 0, 0, 0, 999999);
+        mcp_metrics_set_sync_state(SYNC_AT_TIP, "at_tip");
+        mcp_metrics_evaluate_alert_rules();
+        ASSERT(mcp_metrics_alert_fire_count("sync_state_stuck") == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_consensus_reject_spike_rule(void)
+{
+    int failures = 0;
+    TEST("metric_alerts: consensus_reject_spike fires on a large delta "
+         "within a rolling window, not on the raw cumulative total") {
+        ma_reset_all();
+        ma_install_observer();
+
+        /* First tick just establishes the window baseline — never a
+         * spurious fire off the pre-existing cumulative total. */
+        mcp_metrics_set_node_gauges(0, 0, 0, 0, 1000);
+        mcp_metrics_evaluate_alert_rules();
+        ASSERT(mcp_metrics_alert_fire_count("consensus_reject_spike") == 0);
+
+        /* Small delta (5), window elapses (100s > default 60s): under
+         * the default threshold of 20 — no fire. */
+        for (int i = 0; i < 5; i++)
+            mcp_metrics_record_consensus_reject("tx", "small_delta_probe");
+        mcp_metrics_set_node_gauges(0, 0, 0, 0, 1100);
+        mcp_metrics_evaluate_alert_rules();
+        ASSERT(mcp_metrics_alert_fire_count("consensus_reject_spike") == 0);
+
+        /* Large delta (25) in the next window: crosses the threshold. */
+        for (int i = 0; i < 25; i++)
+            mcp_metrics_record_consensus_reject("block", "large_delta_probe");
+        mcp_metrics_set_node_gauges(0, 0, 0, 0, 1200);
+        mcp_metrics_evaluate_alert_rules();
+        ASSERT(mcp_metrics_alert_fire_count("consensus_reject_spike") == 1);
+        ASSERT(ma_captured_contains("name=metric_alert.consensus_reject_spike"));
+        ASSERT(ma_captured_contains("severity=warning"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── mcp_metrics_reset() also clears alert state ────────────────── */
 
 static int test_metrics_reset_clears_alert_state(void)
@@ -331,6 +517,11 @@ int test_metric_alerts(void)
     failures += test_mirror_lag_critical_rule();
     failures += test_blocker_permanent_active_rule();
     failures += test_rss_high_rule();
+
+    failures += test_header_gap_growing_rule();
+    failures += test_peer_count_collapsed_rule();
+    failures += test_sync_state_stuck_rule();
+    failures += test_consensus_reject_spike_rule();
 
     failures += test_metrics_reset_clears_alert_state();
 

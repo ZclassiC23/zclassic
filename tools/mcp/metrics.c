@@ -8,6 +8,7 @@
 #include "event/event.h"
 #include "net/peer_scoring.h"
 #include "rpc/http_middleware.h"
+#include "sync/sync_state.h"
 #include "util/blocker.h"
 
 #include <pthread.h>
@@ -134,6 +135,39 @@ static bool                 g_observer_installed = false;
 /* Sync state gauge (set atomically alongside node gauges) */
 static _Atomic int          g_node_sync_state;
 static const char          *g_node_sync_state_name = "unknown";
+
+/* ── New (Lane 1a) hysteresis gauges ───────────────────────────────
+ *
+ * These follow the same "breach seconds" shape as g_mirror_lag_breach_
+ * seconds above (a duration gauge that a threshold alert compares
+ * against, e.g. `> 0`), but the hysteresis is computed HERE instead of
+ * in an owning service, using the node's own uptime counter (already
+ * threaded through mcp_metrics_set_node_gauges) as the clock basis
+ * rather than wall-clock GetTime(). That makes every one of them
+ * deterministically testable: a hermetic test drives "time" by simply
+ * passing increasing `uptime_seconds` values, with no real sleep. */
+
+/* header_gap_growing: best-known header height minus served height H*.
+ * Raw magnitude fed by mcp_metrics_set_header_gap(); -1 = unknown. */
+static _Atomic int64_t g_header_gap_blocks = -1;
+static _Atomic int64_t g_header_gap_breach_seconds;
+static _Atomic int64_t g_header_gap_breach_since_uptime = -1; /* -1 = not currently breaching */
+
+/* peer_count_collapsed: connected peers under the floor, post-boot-grace. */
+static _Atomic int64_t g_peer_collapse_breach_seconds;
+static _Atomic int64_t g_peer_collapse_since_uptime = -1; /* -1 = not currently collapsed */
+
+/* sync_state_stuck: seconds the sync-state id has been unchanged while
+ * not at_tip. */
+static _Atomic int     g_sync_state_prev = -1; /* -1 = never observed */
+static _Atomic int64_t g_sync_state_changed_at_uptime;
+static _Atomic int64_t g_sync_state_stuck_seconds;
+
+/* consensus_reject_spike: delta of total (tx+block) consensus rejects
+ * over a rolling window aligned to node uptime. */
+static _Atomic int64_t g_reject_spike_delta;
+static _Atomic int64_t g_reject_spike_baseline_total = -1; /* -1 = not yet baselined */
+static _Atomic int64_t g_reject_spike_baseline_uptime;
 
 /* ── Parsers ────────────────────────────────────────────────── */
 
@@ -265,6 +299,12 @@ void mcp_metrics_reset(void)
 
 /* ── Node-level gauge setter ────────────────────────────────── */
 
+/* Forward declaration: full definition lives in the "Metric-threshold
+ * alert rules" section below (it reads ZCL_ALERT_* env overrides), but
+ * the gauge setters above that section also need it for their own
+ * env-tunable hysteresis thresholds (peer_count_collapsed etc.). */
+static double alert_env_double(const char *name, double def);
+
 void mcp_metrics_set_node_gauges(int64_t block_height, int64_t peer_count,
                                  double rss_mb, int64_t utxo_count,
                                  int64_t uptime_seconds)
@@ -274,6 +314,26 @@ void mcp_metrics_set_node_gauges(int64_t block_height, int64_t peer_count,
     atomic_store(&g_node_rss_mb_x100, (int64_t)(rss_mb * 100.0));
     atomic_store(&g_node_utxo_count, utxo_count);
     atomic_store(&g_node_uptime_seconds, uptime_seconds);
+
+    /* peer_count_collapsed hysteresis: grace period after boot (so a
+     * fresh node still dialing peers never fires), then accrue breach
+     * seconds using uptime — NOT wall-clock — as the clock, so a
+     * hermetic test can drive it without sleeping. */
+    double grace_sec  = alert_env_double("ZCL_ALERT_PEER_COLLAPSE_GRACE_SECS", 120.0);
+    double min_peers  = alert_env_double("ZCL_ALERT_PEER_COLLAPSE_MIN_PEERS", 2.0);
+    bool   past_grace = (double)uptime_seconds >= grace_sec;
+    if (past_grace && (double)peer_count < min_peers) {
+        int64_t since = atomic_load(&g_peer_collapse_since_uptime);
+        if (since < 0) {
+            atomic_store(&g_peer_collapse_since_uptime, uptime_seconds);
+            since = uptime_seconds;
+        }
+        int64_t breach = uptime_seconds - since;
+        atomic_store(&g_peer_collapse_breach_seconds, breach > 0 ? breach : 0);
+    } else {
+        atomic_store(&g_peer_collapse_since_uptime, -1);
+        atomic_store(&g_peer_collapse_breach_seconds, 0);
+    }
 }
 
 void mcp_metrics_set_tip_advance_age(int64_t seconds)
@@ -296,11 +356,12 @@ void mcp_metrics_set_peer_kinds(int64_t magicbean_count,
     atomic_store(&g_node_magicbean_peer_count, magicbean_count);
     atomic_store(&g_node_zcl23_peer_count, zcl23_count);
 
-    /* Last of the four gauge setters lib/metrics's 1-second thread calls
-     * each tick (set_node_gauges, set_tip_advance_age, set_mirror_lag,
-     * set_peer_kinds — see lib/metrics/src/metrics.c ~:375-387) — so by
-     * this point every gauge the alert rules read is fresh for this
-     * tick. Piggy-backing here means the rule engine runs on the node's
+    /* Last of the gauge setters lib/metrics's 1-second thread calls each
+     * tick (set_node_gauges, set_sync_state, set_header_gap,
+     * set_tip_advance_age, set_mirror_lag, set_peer_kinds — see
+     * lib/metrics/src/metrics.c's metrics_thread_fn) — so by this point
+     * every gauge the alert rules read is fresh for this tick.
+     * Piggy-backing here means the rule engine runs on the node's
      * existing periodic tick with no new thread. */
     mcp_metrics_evaluate_alert_rules();
 }
@@ -333,7 +394,7 @@ struct mcp_alert_rule {
     int                 cooldown_sec; /* min seconds between repeat fires while crossed */
 };
 
-#define MCP_METRICS_ALERT_MAX_RULES 8
+#define MCP_METRICS_ALERT_MAX_RULES 12
 
 struct mcp_alert_rule_state {
     bool     active;           /* latched true while the gauge stays crossed */
@@ -409,6 +470,55 @@ static void alert_rules_seed_locked(void)
         .severity     = "warning",
         .cooldown_sec = 300,
     };
+    g_alert_rules[g_alert_rule_count++] = (struct mcp_alert_rule){
+        /* zcl_header_gap_breach_seconds already folds in the magnitude
+         * threshold (ZCL_ALERT_HEADER_GAP_BLOCKS, default 144) and the
+         * SYNC_HEADERS_DOWNLOAD exclusion — see mcp_metrics_set_header_gap.
+         * This is the rule that would have paged the 2026-07-10 incident
+         * (node held 216 blocks behind headers for 4.6h with tip_stalled
+         * as the only signal, because tip_advance_age only fires on a
+         * total block-connect stall, not a growing header/served gap). */
+        .gauge_name   = "zcl_header_gap_breach_seconds",
+        .cmp          = MCP_ALERT_GT,
+        .threshold    = alert_env_double("ZCL_ALERT_HEADER_GAP_BREACH_SECS", 900.0),
+        .event_name   = "header_gap_growing",
+        .severity     = "critical",
+        .cooldown_sec = 300,
+    };
+    g_alert_rules[g_alert_rule_count++] = (struct mcp_alert_rule){
+        /* zcl_peer_collapse_breach_seconds already folds in the peer
+         * floor (ZCL_ALERT_PEER_COLLAPSE_MIN_PEERS, default 2) and the
+         * post-boot grace window (ZCL_ALERT_PEER_COLLAPSE_GRACE_SECS,
+         * default 120s) — see mcp_metrics_set_node_gauges. */
+        .gauge_name   = "zcl_peer_collapse_breach_seconds",
+        .cmp          = MCP_ALERT_GT,
+        .threshold    = alert_env_double("ZCL_ALERT_PEER_COLLAPSE_SECS", 300.0),
+        .event_name   = "peer_count_collapsed",
+        .severity     = "critical",
+        .cooldown_sec = 300,
+    };
+    g_alert_rules[g_alert_rule_count++] = (struct mcp_alert_rule){
+        /* zcl_sync_state_stuck_seconds is 0 whenever at_tip or the state
+         * id last changed — see mcp_metrics_set_sync_state. */
+        .gauge_name   = "zcl_sync_state_stuck_seconds",
+        .cmp          = MCP_ALERT_GT,
+        .threshold    = alert_env_double("ZCL_ALERT_SYNC_STUCK_SECS", 3600.0),
+        .event_name   = "sync_state_stuck",
+        .severity     = "warning",
+        .cooldown_sec = 300,
+    };
+    g_alert_rules[g_alert_rule_count++] = (struct mcp_alert_rule){
+        /* zcl_consensus_reject_delta is the rolling-window delta of the
+         * existing zcl_consensus_rejects_total{kind="all",reason="all"}
+         * counter — see the windowing step at the top of
+         * mcp_metrics_evaluate_alert_rules(). */
+        .gauge_name   = "zcl_consensus_reject_delta",
+        .cmp          = MCP_ALERT_GT,
+        .threshold    = alert_env_double("ZCL_ALERT_CONSENSUS_REJECT_DELTA", 20.0),
+        .event_name   = "consensus_reject_spike",
+        .severity     = "warning",
+        .cooldown_sec = 300,
+    };
 
     memset(g_alert_state, 0, sizeof(g_alert_state));
     g_alert_rules_seeded = true;
@@ -429,6 +539,14 @@ static double alert_rule_fetch_value(const struct mcp_alert_rule *r)
         return (double)blocker_count_by_class(BLOCKER_PERMANENT);
     if (strcmp(r->event_name, "rss_high") == 0)
         return (double)atomic_load(&g_node_rss_mb_x100) / 100.0;
+    if (strcmp(r->event_name, "header_gap_growing") == 0)
+        return (double)atomic_load(&g_header_gap_breach_seconds);
+    if (strcmp(r->event_name, "peer_count_collapsed") == 0)
+        return (double)atomic_load(&g_peer_collapse_breach_seconds);
+    if (strcmp(r->event_name, "sync_state_stuck") == 0)
+        return (double)atomic_load(&g_sync_state_stuck_seconds);
+    if (strcmp(r->event_name, "consensus_reject_spike") == 0)
+        return (double)atomic_load(&g_reject_spike_delta);
     return 0.0;
 }
 
@@ -454,10 +572,42 @@ static const char *alert_cmp_symbol(enum mcp_alert_cmp cmp)
     return "?";
 }
 
+/* consensus_reject_spike input: advance the rolling window (aligned to
+ * node uptime, not wall-clock — see the file-header comment on the
+ * "New (Lane 1a) hysteresis gauges" block) and, once a full window has
+ * elapsed, publish the delta since the last window boundary as
+ * g_reject_spike_delta. First call just establishes the baseline so a
+ * cumulative-since-boot total never reads as a false "spike". Called
+ * from mcp_metrics_evaluate_alert_rules() so it advances once per tick
+ * alongside every other rule, using mcp_metrics_consensus_rejects_total()
+ * — the same accessor `zcl_consensus_report` uses. */
+static void consensus_reject_spike_tick(void)
+{
+    double  window_sec      = alert_env_double("ZCL_ALERT_CONSENSUS_REJECT_WINDOW_SECS", 60.0);
+    int64_t uptime          = atomic_load(&g_node_uptime_seconds);
+    int64_t total           = (int64_t)mcp_metrics_consensus_rejects_total();
+    int64_t baseline_total  = atomic_load(&g_reject_spike_baseline_total);
+    int64_t baseline_uptime = atomic_load(&g_reject_spike_baseline_uptime);
+
+    if (baseline_total < 0) {
+        atomic_store(&g_reject_spike_baseline_total, total);
+        atomic_store(&g_reject_spike_baseline_uptime, uptime);
+        return;
+    }
+    if ((double)(uptime - baseline_uptime) < window_sec)
+        return;  /* window still open — keep reporting the last delta */
+
+    int64_t delta = total - baseline_total;
+    atomic_store(&g_reject_spike_delta, delta > 0 ? delta : 0);
+    atomic_store(&g_reject_spike_baseline_total, total);
+    atomic_store(&g_reject_spike_baseline_uptime, uptime);
+}
+
 void mcp_metrics_evaluate_alert_rules(void)
 {
     pthread_mutex_lock(&g_alert_lock);
     alert_rules_seed_locked();
+    consensus_reject_spike_tick();
 
     int64_t now = GetTime();
     for (size_t i = 0; i < g_alert_rule_count; i++) {
@@ -523,6 +673,20 @@ void mcp_metrics_alerts_reset(void)
     alert_rules_seed_locked();
     memset(g_alert_state, 0, sizeof(g_alert_state));
     pthread_mutex_unlock(&g_alert_lock);
+
+    /* Isolate the Lane 1a hysteresis gauges between tests too — each
+     * mirrors an "active episode" latch the same way g_alert_state does. */
+    atomic_store(&g_header_gap_blocks, -1);
+    atomic_store(&g_header_gap_breach_seconds, 0);
+    atomic_store(&g_header_gap_breach_since_uptime, -1);
+    atomic_store(&g_peer_collapse_breach_seconds, 0);
+    atomic_store(&g_peer_collapse_since_uptime, -1);
+    atomic_store(&g_sync_state_prev, -1);
+    atomic_store(&g_sync_state_changed_at_uptime, 0);
+    atomic_store(&g_sync_state_stuck_seconds, 0);
+    atomic_store(&g_reject_spike_delta, 0);
+    atomic_store(&g_reject_spike_baseline_total, -1);
+    atomic_store(&g_reject_spike_baseline_uptime, 0);
 }
 
 /* ── Peer scoring counters ──────────────────────────────────── */
@@ -737,6 +901,49 @@ void mcp_metrics_set_sync_state(int state, const char *name)
 {
     atomic_store(&g_node_sync_state, state);
     g_node_sync_state_name = name ? name : "unknown";
+
+    /* sync_state_stuck hysteresis: uses the same-tick uptime gauge (set
+     * by mcp_metrics_set_node_gauges, which lib/metrics's tick always
+     * calls first — see its ordering) as the clock basis, not
+     * wall-clock, so a hermetic test can drive it deterministically. */
+    int64_t uptime = atomic_load(&g_node_uptime_seconds);
+    int     prev   = atomic_load(&g_sync_state_prev);
+    if (prev != state) {
+        atomic_store(&g_sync_state_prev, state);
+        atomic_store(&g_sync_state_changed_at_uptime, uptime);
+    }
+    int64_t changed_at = atomic_load(&g_sync_state_changed_at_uptime);
+    bool    at_tip     = (state == SYNC_AT_TIP);
+    int64_t stuck = (!at_tip && uptime >= changed_at) ? uptime - changed_at : 0;
+    atomic_store(&g_sync_state_stuck_seconds, stuck);
+}
+
+void mcp_metrics_set_header_gap(int64_t gap_blocks)
+{
+    atomic_store(&g_header_gap_blocks, gap_blocks);
+
+    double  blocks_threshold = alert_env_double("ZCL_ALERT_HEADER_GAP_BLOCKS", 144.0);
+    int64_t uptime = atomic_load(&g_node_uptime_seconds);
+    int     state  = atomic_load(&g_node_sync_state);
+
+    /* A large header/served gap is the normal, expected shape of initial
+     * header download (peers race ahead on headers before any block
+     * bodies are fetched) — only accrue breach time outside that phase,
+     * so a fresh IBD node never spuriously fires this rule. */
+    bool eligible = gap_blocks >= 0 && state != SYNC_HEADERS_DOWNLOAD;
+
+    if (eligible && (double)gap_blocks > blocks_threshold) {
+        int64_t since = atomic_load(&g_header_gap_breach_since_uptime);
+        if (since < 0) {
+            atomic_store(&g_header_gap_breach_since_uptime, uptime);
+            since = uptime;
+        }
+        int64_t breach = uptime - since;
+        atomic_store(&g_header_gap_breach_seconds, breach > 0 ? breach : 0);
+    } else {
+        atomic_store(&g_header_gap_breach_since_uptime, -1);
+        atomic_store(&g_header_gap_breach_seconds, 0);
+    }
 }
 
 void mcp_metrics_init(void)
@@ -1021,6 +1228,39 @@ size_t mcp_metrics_render_prometheus(char *buf, size_t cap)
         "# TYPE zcl_mirror_lag_critical_seconds gauge\n"
         "zcl_mirror_lag_critical_seconds %lld\n",
         (long long)mlag, (long long)mbreach, (long long)mcrit);
+
+    /* ── Lane 1a hysteresis gauges ────────────────────────────── */
+    int64_t hgap        = atomic_load(&g_header_gap_blocks);
+    int64_t hgap_breach = atomic_load(&g_header_gap_breach_seconds);
+    pos = append(buf, cap, pos,
+        "# HELP zcl_header_gap_blocks Best-known header height minus served height H* (-1 unknown)\n"
+        "# TYPE zcl_header_gap_blocks gauge\n"
+        "zcl_header_gap_blocks %lld\n"
+        "# HELP zcl_header_gap_breach_seconds Seconds the header gap has exceeded its threshold outside header-download (0 when under or ineligible)\n"
+        "# TYPE zcl_header_gap_breach_seconds gauge\n"
+        "zcl_header_gap_breach_seconds %lld\n",
+        (long long)hgap, (long long)hgap_breach);
+
+    int64_t pcollapse = atomic_load(&g_peer_collapse_breach_seconds);
+    pos = append(buf, cap, pos,
+        "# HELP zcl_peer_collapse_breach_seconds Seconds spent with connected peers under the collapse floor, past the post-boot grace window (0 when under/in grace)\n"
+        "# TYPE zcl_peer_collapse_breach_seconds gauge\n"
+        "zcl_peer_collapse_breach_seconds %lld\n",
+        (long long)pcollapse);
+
+    int64_t sstuck = atomic_load(&g_sync_state_stuck_seconds);
+    pos = append(buf, cap, pos,
+        "# HELP zcl_sync_state_stuck_seconds Seconds the sync-state id has been unchanged while not at_tip (0 when at_tip or just changed)\n"
+        "# TYPE zcl_sync_state_stuck_seconds gauge\n"
+        "zcl_sync_state_stuck_seconds %lld\n",
+        (long long)sstuck);
+
+    int64_t rdelta = atomic_load(&g_reject_spike_delta);
+    pos = append(buf, cap, pos,
+        "# HELP zcl_consensus_reject_delta Consensus reject count delta over the last completed rolling window\n"
+        "# TYPE zcl_consensus_reject_delta gauge\n"
+        "zcl_consensus_reject_delta %lld\n",
+        (long long)rdelta);
 
     /* ── Typed blocker block (Round 6 C5) ──────────────────────
      *

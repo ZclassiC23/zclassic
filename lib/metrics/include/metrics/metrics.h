@@ -24,6 +24,11 @@ struct metrics_external_gauges {
     int64_t mirror_lag_critical_seconds;
     int64_t magicbean_peer_count;
     int64_t zclassic_c23_peer_count;
+    /* Best-known header height minus served height H* (reducer_frontier
+     * provable tip). -1 when the header tip is not yet known (cold boot
+     * before the chain-state repository initializes). Feeds the
+     * `header_gap_growing` MCP metric alert — see tools/mcp/metrics.c. */
+    int64_t header_gap_blocks;
 };
 
 typedef void (*metrics_external_gauges_fn)(

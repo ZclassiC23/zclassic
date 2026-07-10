@@ -218,6 +218,19 @@ void mcp_metrics_set_mirror_lag(int64_t lag_blocks,
 void mcp_metrics_set_peer_kinds(int64_t magicbean_count,
                                 int64_t zcl23_count);
 
+/* Header-height vs served-height (H*) gap, in blocks. Pass
+ * `header_height - served_height`, or -1 when the header tip is not yet
+ * known. Rendered as `zcl_header_gap_blocks`; internally accrues a
+ * companion `zcl_header_gap_breach_seconds` hysteresis gauge (using the
+ * node's own uptime counter as the clock basis, not wall-clock) once the
+ * gap exceeds `ZCL_ALERT_HEADER_GAP_BLOCKS` (default 144) OUTSIDE
+ * SYNC_HEADERS_DOWNLOAD — a large gap during initial header download is
+ * the normal shape of IBD, not a stall. Must be called after
+ * mcp_metrics_set_node_gauges() (uptime) and mcp_metrics_set_sync_state()
+ * (sync state) in the same tick — see lib/metrics/src/metrics.c's
+ * ordering. Feeds the `header_gap_growing` alert rule. */
+void mcp_metrics_set_header_gap(int64_t gap_blocks);
+
 /* ── Metric-threshold alert rules (C3) ────────────────────────────
  *
  * A small declarative table of {gauge, comparator, threshold} rules

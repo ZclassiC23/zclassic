@@ -19,6 +19,8 @@
 #include "services/node_health_service.h"
 #include "services/legacy_mirror_sync_service.h"
 #include "services/sync_monitor.h"
+#include "services/chain_state_service.h"
+#include "jobs/reducer_frontier.h"
 #include "chain/chainparams.h"
 #include "sync/sync_state.h"
 #include "event/event.h"
@@ -64,6 +66,21 @@ static void boot_metrics_external_gauges(
         node_health_collect(&nhs, svc->node_db, svc->state);
         out->magicbean_peer_count = (int64_t)nhs.magicbean_peer_count;
         out->zclassic_c23_peer_count = (int64_t)nhs.zclassic_c23_peer_count;
+    }
+
+    /* header_gap_growing input: best-known header height minus served
+     * height H*. csr_header_height() is a cheap in-memory, lock-guarded
+     * read (see its doc comment — deliberately not csr_snapshot(), which
+     * also runs SQLite queries); reducer_frontier_provable_tip_cached()
+     * is a lock-free atomic. Both are safe to call from the metrics
+     * thread. -1 until the chain-state repository has a header tip. */
+    out->header_gap_blocks = -1;
+    {
+        int64_t hh = csr_header_height(csr_instance());
+        if (hh >= 0) {
+            int64_t served = (int64_t)reducer_frontier_provable_tip_cached();
+            out->header_gap_blocks = hh - served;
+        }
     }
 }
 
