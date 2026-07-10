@@ -50,7 +50,7 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL     132  /* +5 ZNAM write RPCs: zcl_name_update,
+#define EXPECTED_TOTAL     133  /* +5 ZNAM write RPCs: zcl_name_update,
                                  *   zcl_name_transfer, zcl_name_renew,
                                  *   zcl_name_set_record, zcl_name_set_text;
                                  * +3 recovery: zcl_invalidateblock, zcl_reconsiderblock, zcl_rebuild_recent;
@@ -77,8 +77,10 @@
                                  * +1 semantic timeline: zcl_timeline
                                  * +2 wallet backup tools: zcl_wallet_backup_status,
                                  *   zcl_wallet_backup_now
-                                 * +1 wallet receive intent */
-#define EXPECTED_OPS        58  /* + zcl_rebuild_recent (bounded recovery);
+                                 * +1 wallet receive intent
+                                 * +1 async copy-prove launch:
+                                 *   zcl_agent_copy_prove (destructive-tier) */
+#define EXPECTED_OPS        59  /* + zcl_rebuild_recent (bounded recovery);
                                  * status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,
                                  * rpc, state + node_log + sql (round 6.5 MCP primitives),
