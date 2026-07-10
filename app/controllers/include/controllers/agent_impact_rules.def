@@ -110,6 +110,7 @@ AGENT_IMPACT_RULE("lib/sim/src/seed_tape.c|lib/sim/include/sim/seed_tape.h|lib/s
 AGENT_IMPACT_RULE("lib/sapling/*|lib/test/src/test_sapling*.c|lib/test/src/test_simnet_sapling*.c|lib/test/src/test_snark_kat.c|lib/test/src/test_shielded_*.c", "sapling sapling_tree sapling_ckpt_persist simnet_sapling_activation make_lint_gates")
 AGENT_IMPACT_RULE("lib/validation/src/process_block_flush_policy.c|app/services/src/node_db_catchup_service.c", "sapling_ckpt_persist sapling_tree make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_groth16_selfverify.c", "snark_kat make_lint_gates")
+AGENT_IMPACT_RULE("lib/sapling/src/bls12_381.c|lib/test/src/test_bls12_381_adversarial.c", "bls12_381_adversarial snark_kat make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_simnet_doublespend.c", "simnet_doublespend make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_simnet_chained_tx.c", "simnet_chained_tx make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_simnet_mempool_adv.c", "simnet_mempool_adv make_lint_gates")
