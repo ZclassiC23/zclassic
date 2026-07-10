@@ -1048,6 +1048,7 @@ int main(int argc, char **argv)
     /* Consensus-parity round-3 lock-in pins (assert CURRENT zcl23-vs-zclassicd
      * behavior so a future tightening flips a test deliberately). */
     { extern int test_pow_diffadj_precedence(void);       failures += test_pow_diffadj_precedence(); }
+    { extern int test_difficulty_adjustment_adversarial(void); failures += test_difficulty_adjustment_adversarial(); }
     { extern int test_bip34_coinbase_height_parity(void); failures += test_bip34_coinbase_height_parity(); }
     /* MVP "it works" gate: one mined block through the reducer front door */
     { extern int test_reducer_block_ingest_gate(void); failures += test_reducer_block_ingest_gate(); }
