@@ -256,6 +256,8 @@ struct cli {
     const char *out_c;
     int max_height;     /* -1 = use chain tip */
     int check_window;   /* -1 = generate table */
+    bool extend;        /* keep compiled rows, append new full windows */
+    int confirm_depth;  /* min blocks a window must be buried below tip */
 };
 
 static void load_conf_auth(char user[128], char pass[128])
@@ -299,6 +301,8 @@ static bool parse_cli(int argc, char **argv, struct cli *c)
     c->out_c = DEFAULT_OUT_C;
     c->max_height = -1;
     c->check_window = -1;
+    c->extend = false;
+    c->confirm_depth = 240;
 
     for (int i = 1; i < argc; i++) {
         const char *a = argv[i];
@@ -318,11 +322,19 @@ static bool parse_cli(int argc, char **argv, struct cli *c)
                 return false;
             }
         }
+        else if (strcmp(a, "--extend") == 0) c->extend = true;
+        else if (strncmp(a, "--confirm-depth=", 16) == 0) {
+            if (!parse_nonnegative_int(a + 16, &c->confirm_depth)) {
+                fprintf(stderr, "--confirm-depth must be >= 0\n");
+                return false;
+            }
+        }
         else if (strcmp(a, "-h") == 0 || strcmp(a, "--help") == 0) {
             printf("Usage: %s [--rpc-host=H] [--rpc-port=N] "
                    "[--rpc-user=U] [--rpc-pass=P] [--out-h=PATH] "
                    "[--out-c=PATH] [--max-height=H] "
-                   "[--check-window=N]\n", argv[0]);
+                   "[--check-window=N] [--extend] "
+                   "[--confirm-depth=N]\n", argv[0]);
             return false;
         }
         else {
@@ -598,6 +610,117 @@ static double now_secs(void)
     return (double)ts.tv_sec + (double)ts.tv_nsec / 1e9;
 }
 
+/* Extend the compiled table in place: keep every locked row verbatim,
+ * recompute the trailing row as a FULL window (the original generator
+ * could emit a partial trailing window when minted mid-window — a latent
+ * false-tripwire), and append new full windows buried at least
+ * confirm_depth blocks below the source tip.
+ *
+ * Fail-closed: before trusting the source for ANY new evidence, the row
+ * adjacent to the recompute boundary is recomputed and must match the
+ * locked table byte-for-byte. On mismatch nothing is written. */
+static int run_extend(struct rpc_ctx *r, const struct cli *c, int tip)
+{
+    size_t compiled = g_sha3_windows_count;
+    if (compiled < 2) {
+        fprintf(stderr, "[extend] compiled table too small (%zu rows); "
+                        "run a full generate instead\n", compiled);
+        return 1;
+    }
+
+    size_t full = (size_t)(tip + 1) / SHA3_WINDOW_SIZE;
+    while (full > 0 &&
+           (int64_t)full * SHA3_WINDOW_SIZE - 1 + c->confirm_depth >
+               (int64_t)tip)
+        full--;
+    if (full < compiled) {
+        fprintf(stderr, "[extend] source tip=%d yields %zu confirmable "
+                        "full windows < compiled %zu; refusing\n",
+                tip, full, compiled);
+        return 1;
+    }
+
+    /* Continuity proof against the deepest row we keep verbatim. */
+    size_t probe = compiled - 2;
+    {
+        int start = (int)(probe * SHA3_WINDOW_SIZE);
+        int end = start + SHA3_WINDOW_SIZE - 1;
+        uint8_t digest[32];
+        if (!compute_window_digest(r, start, end, digest)) return 1;
+        if (memcmp(digest, g_sha3_windows[probe].hash, 32) != 0) {
+            char want[65], got[65];
+            hex32(g_sha3_windows[probe].hash, want);
+            hex32(digest, got);
+            fprintf(stderr, "[extend] continuity FAILED at window %zu "
+                            "(h=%d..%d): locked=%s source=%s — the source "
+                            "node disagrees with locked history; refusing "
+                            "to emit anything\n",
+                    probe, start, end, want, got);
+            return 1;
+        }
+        printf("[extend] continuity OK at window %zu (h=%d..%d)\n",
+               probe, start, end);
+    }
+
+    /* Recompute the trailing compiled row as a full window. */
+    uint8_t last_digest[32];
+    bool last_replaced = false;
+    {
+        size_t wi = compiled - 1;
+        int start = (int)(wi * SHA3_WINDOW_SIZE);
+        int end = start + SHA3_WINDOW_SIZE - 1;
+        if (!compute_window_digest(r, start, end, last_digest)) return 1;
+        last_replaced =
+            memcmp(last_digest, g_sha3_windows[wi].hash, 32) != 0;
+        if (last_replaced) {
+            char want[65], got[65];
+            hex32(g_sha3_windows[wi].hash, want);
+            hex32(last_digest, got);
+            printf("[extend] REPLACING trailing window %zu (h=%d..%d): "
+                   "locked=%s (partial-window mint) full=%s\n",
+                   wi, start, end, want, got);
+        }
+    }
+
+    if (!emit_header(c->out_h)) return 1;
+    FILE *fc = NULL;
+    if (!emit_c_open(&fc, c->out_c)) return 1;
+
+    for (size_t i = 0; i + 1 < compiled; i++)
+        emit_c_row(fc, g_sha3_windows[i].start_height,
+                   g_sha3_windows[i].hash);
+    emit_c_row(fc, (int32_t)((compiled - 1) * SHA3_WINDOW_SIZE),
+               last_digest);
+
+    double t0 = now_secs();
+    for (size_t wi = compiled; wi < full; wi++) {
+        int start = (int)(wi * SHA3_WINDOW_SIZE);
+        int end = start + SHA3_WINDOW_SIZE - 1;
+        uint8_t digest[32];
+        if (!compute_window_digest(r, start, end, digest)) {
+            fclose(fc);
+            return 1;
+        }
+        emit_c_row(fc, (int32_t)start, digest);
+        size_t done = wi - compiled + 1, todo = full - compiled;
+        if ((done % 5u) == 0u || done == todo) {
+            double dt = now_secs() - t0;
+            double rate = done / (dt > 0 ? dt : 1.0);
+            printf("[extend] %zu/%zu new windows, ETA %.0fs\n",
+                   done, todo, (todo - done) / (rate > 0 ? rate : 1.0));
+            fflush(stdout);
+        }
+    }
+
+    emit_c_close(fc, full);
+    printf("[extend] wrote %s and %s: %zu rows (%zu kept, trailing row "
+           "%s, %zu appended), coverage h=0..%zu\n",
+           c->out_h, c->out_c, full, compiled - 1,
+           last_replaced ? "REPLACED (was partial)" : "unchanged",
+           full - compiled, full * SHA3_WINDOW_SIZE - 1);
+    return 0;
+}
+
 int main(int argc, char **argv)
 {
     struct cli c;
@@ -637,6 +760,22 @@ int main(int argc, char **argv)
         int rc = check_one_window(&r, c.check_window, tip);
         rpc_free(&r);
         return rc;
+    }
+
+    if (c.extend) {
+        int rc = run_extend(&r, &c, tip);
+        rpc_free(&r);
+        return rc;
+    }
+
+    /* Full windows only: a partial trailing window has no end marker in
+     * the emitted struct and false-fires the runtime tripwire once the
+     * window completes on-chain. */
+    if (num_windows * SHA3_WINDOW_SIZE > (size_t)tip + 1u) {
+        num_windows--;
+        printf("[gen_sha3_windows] dropping partial trailing window "
+               "(coverage capped at h=%zu, tip=%d)\n",
+               num_windows * SHA3_WINDOW_SIZE - 1, tip);
     }
 
     if (!emit_header(c.out_h)) { rpc_free(&r); return 1; }

@@ -737,7 +737,8 @@ tools/gen_sha3_windows: $(BIN_DIR)/gen_sha3_windows
 $(BIN_DIR)/gen_sha3_windows: tools/gen_sha3_windows.c \
 		lib/chain/src/sha3_windows.c \
 		lib/crypto/src/sha3.c lib/encoding/src/utilstrencodings.c \
-		lib/json/src/json.c lib/platform/src/clock.c
+		lib/json/src/json.c lib/platform/src/clock.c \
+		lib/util/src/safe_alloc.c lib/support/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O3 -march=native -Wall -Wextra -Werror -pedantic \
 	    -Wno-stringop-overflow -Wno-unused-result \
