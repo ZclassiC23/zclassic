@@ -325,6 +325,7 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
     }
 
     int64_t t0 = (int64_t)platform_time_wall_time_t();
+    int64_t t0_ms = platform_time_monotonic_ms();  /* ms-resolution split timer */
     const struct block_index_flat *entries =
         (const struct block_index_flat *)(data + payload_off + 8);
 
@@ -434,6 +435,13 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
     }
     free(by_height);
 
+    /* Timing only (no behavior change): the qsort + forward pass below is a
+     * distinct cost class from the parse/insert loop above (it sorts and walks
+     * all ~3M entries a second time). Split them so the warm-start profile can
+     * tell parse/insert time from forward-pass time. Cheap monotonic reads. */
+    int64_t t_parse_ms = platform_time_monotonic_ms() - t0_ms;
+    int64_t t_fwd_ms = platform_time_monotonic_ms();
+
     /* Recompute every pointer-graph-derived field through the canonical
      * forward pass (nChainWork, nChainTx, skip links, cached branch id,
      * failed-child propagation) — the same helper the LevelDB loader and
@@ -465,6 +473,12 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
     }
 
     munmap(data, file_size);
+
+    t_fwd_ms = platform_time_monotonic_ms() - t_fwd_ms;
+    printf("[boot]   %-28s %lldms\n", "blkidx.flat_parse_insert",
+           (long long)t_parse_ms);
+    printf("[boot]   %-28s %lldms\n", "blkidx.flat_forward_pass",
+           (long long)t_fwd_ms);
 
     int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
     LOG_INFO("block_index_flat",
