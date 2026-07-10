@@ -50,7 +50,7 @@
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
  * contract for "how big is the MCP surface." */
-#define EXPECTED_TOTAL     136  /* +3 metrics baseline tools:
+#define EXPECTED_TOTAL     137  /* +3 metrics baseline tools:
                                  *   zcl_metrics_baseline_set/_list/_diff
                                  *   (lane C2, "what changed since X");
                                  * +5 ZNAM write RPCs: zcl_name_update,
@@ -82,10 +82,13 @@
                                  *   zcl_wallet_backup_now
                                  * +1 wallet receive intent
                                  * +1 async copy-prove launch:
-                                 *   zcl_agent_copy_prove (destructive-tier) */
-#define EXPECTED_OPS        62  /* + zcl_metrics_baseline_set/_list/_diff
+                                 *   zcl_agent_copy_prove (destructive-tier)
+                                 * +1 async test launch: zcl_agent_test
+                                 *   (destructive-tier) */
+#define EXPECTED_OPS        63  /* + zcl_metrics_baseline_set/_list/_diff
                                  *   (lane C2, tools/mcp/baseline.c);
                                  * + zcl_agent_copy_prove (async copy-prove);
+                                 * + zcl_agent_test (async test launch);
                                  * + zcl_rebuild_recent (bounded recovery);
                                  * status, health, kpi, self_heal_stats, mempool*, mininginfo,
                                  * benchmark, dbstats, filemanifest, events,

@@ -1023,6 +1023,19 @@ static int h_zcl_agent_copy_prove(const struct mcp_request *req,
     return mcp_return_rpc_body(res, body, "agentcopyprove", "mcp.ops");
 }
 
+static int h_zcl_agent_test(const struct mcp_request *req,
+                            struct mcp_response *res)
+{
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, json_get_str_or(req->args, "kind", ""));
+    mcp_params_push_str(&p, json_get_str_or(req->args, "name", ""));
+    char *params = mcp_params_to_json(&p);
+    char *body = params ? mcp_node_rpc("agenttest", params) : NULL;
+    free(params);
+    return mcp_return_rpc_body(res, body, "agenttest", "mcp.ops");
+}
+
 static int h_zcl_agent_liveness(const struct mcp_request *req,
                                 struct mcp_response *res)
 {
@@ -1566,6 +1579,18 @@ static const struct mcp_param_spec p_agent_copy_prove[] = {
       "Snapshot + manifest only; do not launch the node",
       0, 0, 0, 0, NULL, "false" },
 };
+static const struct mcp_param_spec p_agent_test[] = {
+    { "kind", MCP_PARAM_STR, true,
+      "Test surface kind: \"test_group\" (build/bin/test_parallel --only=name) "
+      "or \"scenario\" (build/bin/zclassic23-chaos --scenario=tools/sim/"
+      "scenarios/name.scenario)",
+      0, 0, 1, 20, "test_group,scenario", NULL },
+    { "name", MCP_PARAM_STR, true,
+      "Test group name (must be a compiled test_parallel group) or "
+      "scenario basename (must exist under tools/sim/scenarios/); "
+      "lowercase alnum + '_', <= 64 chars",
+      0, 0, 1, 64, NULL, NULL },
+};
 static const struct mcp_param_spec p_agent_liveness[] = {
     { "mode", MCP_PARAM_STR, false,
       "Detail mode: brief/compact/summary returns bounded counts; full embeds availability methods, supervisor domains, and quality lanes",
@@ -1748,6 +1773,12 @@ static const struct agent_mcp_binding k_agent_mcp_bindings[] = {
        * zcl_invalidateblock, ...). self_test always skips destructive
        * tools (see mcp_router_dispatch guard above), so no example args
        * are needed here. */
+      MCP_TOOL_FLAG_DESTRUCTIVE, NULL },
+    { "agenttest", p_agent_test, PARAM_COUNT(p_agent_test),
+      h_zcl_agent_test,
+      /* Spawns build/bin/test_parallel or build/bin/zclassic23-chaos as a
+       * real background process, same rate-gating rationale as
+       * agentcopyprove above. self_test always skips destructive tools. */
       MCP_TOOL_FLAG_DESTRUCTIVE, NULL },
 };
 

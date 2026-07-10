@@ -10,6 +10,7 @@
 
 #include "platform/time_compat.h"
 #include "controllers/agent_copy_prove_controller.h"
+#include "controllers/agent_test_controller.h"
 #include "controllers/block_intake_json.h"
 #include "controllers/diagnostics_controller.h"
 #include "controllers/diagnostics_internal.h"
@@ -722,6 +723,10 @@ static const struct diagnostics_dump_entry g_dumpers[] = {
     { "agent_copy_prove", agent_copy_prove_dump_state_json,
                      "copy-prove run launched via agentcopyprove: queued/running/done state, verdict, "
                      "h_star before/after, tip_regression, copy_path (key = the run's slug)" },
+    { "agent_test", agent_test_dump_state_json,
+                     "allowlisted test run launched via agenttest: queued/running/done state, "
+                     "verdict (PASS/FAIL/NO_MATCH/ERROR), exit_code, output tail "
+                     "(key = \"<kind>-<name>\", kind = test_group|scenario)" },
     { "unhealthy",   unhealthy_dump_state_json,
                      "unhealthy-only rollup: all_ok/checked/reporting + unhealthy subsystems (name+reason) from `_health`" },
 };
