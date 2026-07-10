@@ -261,9 +261,14 @@ Commands:
 : Switches the scenario into simnet mode. No other simnet_* command is
   valid before this line.
 
-`simnet_nodes N`
-: Creates an N-node cluster (2..16) seeded with the scenario's `seed`.
-  Must run exactly once, after `seed` and `mode simnet`.
+`simnet_nodes N [honest=<permille>]`
+: Creates an N-node cluster (2..128) seeded with the scenario's `seed`.
+  Must run exactly once, after `seed` and `mode simnet`. Optional
+  `honest=<permille>` (0..1000; default 1000 = all honest) marks a fraction
+  of nodes byzantine: a byzantine node forges INVALID blocks that honest
+  peers reject on delivery. Node 0 is always honest. Roles are drawn from a
+  sub-stream disjoint from the scenario RNG, so `honest=1000` (or omitting it)
+  is byte-identical to the pre-role harness.
 
 `simnet_mint node=I`
 : Mints one block on node `I`'s own local view. Mining is independent per

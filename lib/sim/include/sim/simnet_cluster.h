@@ -21,8 +21,41 @@ extern "C" {
 
 struct simnet_cluster;
 
+/* Per-node role. Default (unset) is honest, so a cluster that never calls
+ * simnet_cluster_set_role behaves byte-for-byte like the pre-role cluster. */
+enum simnet_node_role {
+    SIMNET_ROLE_HONEST = 0,
+    SIMNET_ROLE_BYZANTINE = 1,
+};
+
 struct simnet_cluster *simnet_cluster_init(size_t node_count, uint64_t seed);
 void simnet_cluster_free(struct simnet_cluster *cluster);
+
+/* Tag node_id honest or byzantine. Lazily allocates the per-node role table on
+ * the first byzantine tag, so an all-honest cluster allocates nothing and its
+ * delivery fingerprint is unchanged. Returns false (and logs) on a bad node. */
+bool simnet_cluster_set_role(struct simnet_cluster *cluster, size_t node_id,
+                             enum simnet_node_role role);
+enum simnet_node_role simnet_cluster_node_role(
+    const struct simnet_cluster *cluster, size_t node_id);
+
+/* A byzantine node forges an INVALID block (adversarial class chosen from
+ * byz_seed via a splitmix64 draw) that links to the shared cluster base as a
+ * DEPTH-1 LEAF, stores it in the cluster's byzantine outbox so the delivery
+ * scheduler's "sender holds the block" invariant is satisfied, and returns its
+ * hash. Broadcasting the returned hash with simnet_cluster_broadcast delivers
+ * it to peers; an honest receiver rejects it through the real validator — a
+ * COUNTED observation (see simnet_cluster_byzantine_rejected), never a fatal.
+ * Returns false (and logs) on build/store failure. */
+bool simnet_cluster_byzantine_mint_on(struct simnet_cluster *cluster,
+                                      size_t node_id, uint64_t byz_seed,
+                                      struct uint256 *out_block_hash);
+
+/* Count of byzantine-origin deliveries a receiver observed-and-rejected over
+ * this cluster's lifetime. > 0 proves adversarial blocks were seen and refused
+ * by the real validator, not silently absent. */
+uint64_t simnet_cluster_byzantine_rejected(
+    const struct simnet_cluster *cluster);
 
 bool simnet_cluster_mint_on(struct simnet_cluster *cluster, size_t node_id,
                             struct uint256 *out_block_hash);

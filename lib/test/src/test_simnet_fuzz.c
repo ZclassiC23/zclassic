@@ -486,6 +486,304 @@ static void fz_perf_smoke(void)
              wall_ms < perf_ceiling_ms);
 }
 
+/* ── byzantine cluster axis: node roles + honest-ratio + convergence ── */
+
+/* The FIXED sub-stream tag. ALL byzantine randomness (which nodes are
+ * byzantine, which forged class each mints) is drawn from
+ * splitmix64(seed ^ FZ_BYZ_SUBSTREAM_TAG), a stream DISJOINT from the schedule
+ * stream `rng = seed`. That disjointness is what makes honest_permille=1000
+ * reproduce the legacy all-honest delivery fingerprint bit-for-bit. */
+#define FZ_BYZ_SUBSTREAM_TAG 0x42595A4E4F444531ULL  /* ASCII "BYZNODE1" */
+
+/* Structural mirror of fz_run_scenario, made role-aware. At
+ * honest_permille=1000 every node is honest and this draws the schedule stream
+ * (`rng`) EXACTLY as fz_run_scenario does — same draws, same order — so it must
+ * produce the identical delivery fingerprint. Byzantine nodes (permille<1000)
+ * forge invalid blocks from the DISJOINT byz sub-stream and never touch `rng`.
+ * Node 0 is always honest (the convergence reference). Convergence is checked
+ * over honest nodes only. */
+static bool fz_run_byz_parity(uint64_t seed, int honest_permille,
+                              uint64_t *out_fp, bool *out_honest_converged,
+                              uint64_t *out_byz_rejected)
+{
+    uint64_t rng = seed;                       /* schedule stream (as legacy) */
+    size_t node_count = (size_t)sm_range(&rng, 2, FZ_DEFAULT_NODE_DRAW_MAX);
+
+    uint64_t byz_rng = seed ^ FZ_BYZ_SUBSTREAM_TAG;  /* disjoint sub-stream */
+
+    struct simnet_cluster *cluster = simnet_cluster_init(node_count, seed);
+    if (!cluster)
+        return false;
+
+    bool is_byz[FZ_MAX_NODES];
+    memset(is_byz, 0, sizeof(is_byz));
+    for (size_t n = 0; n < node_count; n++) {
+        bool byz = (n != 0) &&
+                   ((int)(sm_u32(&byz_rng) % 1000u) >= honest_permille);
+        is_byz[n] = byz;
+        if (!simnet_cluster_set_role(cluster, n,
+                byz ? SIMNET_ROLE_BYZANTINE : SIMNET_ROLE_HONEST)) {
+            simnet_cluster_free(cluster);
+            return false;
+        }
+    }
+
+    struct fz_node_chain chain[FZ_MAX_NODES];
+    struct fz_node_chain byz[FZ_MAX_NODES];
+    memset(chain, 0, sizeof(chain));
+    memset(byz, 0, sizeof(byz));
+
+    bool ok = true;
+    int rounds = sm_range(&rng, 2, 5);         /* SAME draw as legacy */
+
+    for (int r = 0; r < rounds && ok; r++) {
+        for (size_t n = 0; n < node_count && ok; n++) {
+            if (!is_byz[n]) {
+                int mints = sm_range(&rng, 0, 3);   /* SAME draw as legacy */
+                for (int m = 0; m < mints; m++) {
+                    if (chain[n].count >= FZ_MAX_HASHES)
+                        break;
+                    struct uint256 h;
+                    if (!simnet_cluster_mint_on(cluster, n, &h)) {
+                        ok = false;
+                        break;
+                    }
+                    chain[n].hashes[chain[n].count++] = h;
+                }
+            } else if (byz[n].count < FZ_MAX_HASHES) {
+                struct uint256 h;
+                uint64_t bs = sm_next(&byz_rng);
+                if (!simnet_cluster_byzantine_mint_on(cluster, n, bs, &h))
+                    ok = false;
+                else
+                    byz[n].hashes[byz[n].count++] = h;
+            }
+        }
+        for (size_t n = 0; n < node_count && ok; n++) {
+            if (!is_byz[n]) {
+                bool relays = sm_range(&rng, 0, 3) != 0;  /* SAME as legacy */
+                if (relays && chain[n].count > 0)
+                    if (!fz_relay_full_chain(cluster, n, &chain[n]))
+                        ok = false;
+            } else {
+                for (size_t i = 0; i < byz[n].count && ok; i++)
+                    if (!simnet_cluster_broadcast(cluster, n, &byz[n].hashes[i]))
+                        ok = false;
+            }
+        }
+        if (ok && !simnet_cluster_deliver_pending(cluster))
+            ok = false;
+    }
+
+    for (size_t n = 0; n < node_count && ok; n++) {
+        struct fz_node_chain *src = is_byz[n] ? &byz[n] : &chain[n];
+        if (src->count > 0 && !fz_relay_full_chain(cluster, n, src))
+            ok = false;
+    }
+    if (ok && !simnet_cluster_deliver_pending(cluster))
+        ok = false;
+
+    bool honest_conv = false;
+    if (ok) {
+        struct uint256 tip0;
+        struct utxo_commitment dig0;
+        if (simnet_cluster_tip_hash(cluster, 0, &tip0) &&
+            simnet_cluster_coins_digest(cluster, 0, &dig0)) {
+            honest_conv = true;
+            for (size_t n = 1; n < node_count; n++) {
+                if (is_byz[n])
+                    continue;             /* only honest nodes must agree */
+                struct uint256 tn;
+                struct utxo_commitment dn;
+                if (!simnet_cluster_tip_hash(cluster, n, &tn) ||
+                    !simnet_cluster_coins_digest(cluster, n, &dn) ||
+                    !uint256_eq(&tip0, &tn) ||
+                    !utxo_commitment_equal(&dig0, &dn)) {
+                    honest_conv = false;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (out_fp)
+        *out_fp = simnet_cluster_delivery_fingerprint(cluster);
+    if (out_honest_converged)
+        *out_honest_converged = honest_conv;
+    if (out_byz_rejected)
+        *out_byz_rejected = simnet_cluster_byzantine_rejected(cluster);
+    simnet_cluster_free(cluster);
+    return ok;
+}
+
+/* Wider fixed-N byzantine cluster for the convergence + perf axes. Node 0 is
+ * honest; the rest are byzantine per the sub-stream at `honest_permille`. If
+ * the draw yields NO byzantine node, one is forced so the "observed-and-
+ * rejected" assertion always has something to observe. Heap-allocated so N is
+ * not bounded by FZ_MAX_NODES. */
+static bool fz_byz_wide(uint64_t seed, size_t n_nodes, int honest_permille,
+                        bool *out_converged, uint64_t *out_byz_rejected,
+                        uint64_t *out_fp)
+{
+    uint64_t rng = seed;
+    uint64_t byz_rng = seed ^ FZ_BYZ_SUBSTREAM_TAG;
+
+    struct simnet_cluster *c = simnet_cluster_init(n_nodes, seed);
+    if (!c)
+        return false;
+
+    struct fz_node_chain *chain =
+        zcl_calloc(n_nodes, sizeof(*chain), "fz_byz_chain");
+    struct fz_node_chain *byz =
+        zcl_calloc(n_nodes, sizeof(*byz), "fz_byz_out");
+    bool *is_byz = zcl_calloc(n_nodes, sizeof(*is_byz), "fz_byz_roles");
+    if (!chain || !byz || !is_byz) {
+        free(chain);
+        free(byz);
+        free(is_byz);
+        simnet_cluster_free(c);
+        return false;
+    }
+
+    size_t byz_total = 0;
+    for (size_t n = 0; n < n_nodes; n++) {
+        bool b = (n != 0) &&
+                 ((int)(sm_u32(&byz_rng) % 1000u) >= honest_permille);
+        is_byz[n] = b;
+        if (b)
+            byz_total++;
+    }
+    if (byz_total == 0 && n_nodes >= 2) {
+        is_byz[n_nodes - 1] = true;       /* guarantee an adversary to observe */
+        byz_total = 1;
+    }
+    bool ok = true;
+    for (size_t n = 0; n < n_nodes && ok; n++)
+        if (!simnet_cluster_set_role(c, n,
+                is_byz[n] ? SIMNET_ROLE_BYZANTINE : SIMNET_ROLE_HONEST))
+            ok = false;
+
+    int rounds = 4;
+    for (int r = 0; r < rounds && ok; r++) {
+        for (size_t n = 0; n < n_nodes && ok; n++) {
+            if (!is_byz[n]) {
+                int mints = sm_range(&rng, 1, 2);
+                for (int m = 0; m < mints && chain[n].count < FZ_MAX_HASHES;
+                     m++) {
+                    struct uint256 h;
+                    if (!simnet_cluster_mint_on(c, n, &h)) {
+                        ok = false;
+                        break;
+                    }
+                    chain[n].hashes[chain[n].count++] = h;
+                }
+            } else if (byz[n].count < FZ_MAX_HASHES) {
+                struct uint256 h;
+                uint64_t bs = sm_next(&byz_rng);
+                if (!simnet_cluster_byzantine_mint_on(c, n, bs, &h))
+                    ok = false;
+                else
+                    byz[n].hashes[byz[n].count++] = h;
+            }
+        }
+        for (size_t n = 0; n < n_nodes && ok; n++) {
+            struct fz_node_chain *src = is_byz[n] ? &byz[n] : &chain[n];
+            for (size_t i = 0; i < src->count && ok; i++)
+                if (!simnet_cluster_broadcast(c, n, &src->hashes[i]))
+                    ok = false;
+        }
+        if (ok && !simnet_cluster_deliver_pending(c))
+            ok = false;
+    }
+    for (size_t n = 0; n < n_nodes && ok; n++) {
+        struct fz_node_chain *src = is_byz[n] ? &byz[n] : &chain[n];
+        for (size_t i = 0; i < src->count && ok; i++)
+            if (!simnet_cluster_broadcast(c, n, &src->hashes[i]))
+                ok = false;
+    }
+    if (ok && !simnet_cluster_deliver_pending(c))
+        ok = false;
+
+    bool converged = false;
+    if (ok) {
+        struct uint256 tip0;
+        struct utxo_commitment dig0;
+        if (simnet_cluster_tip_hash(c, 0, &tip0) &&
+            simnet_cluster_coins_digest(c, 0, &dig0)) {
+            converged = true;
+            for (size_t n = 1; n < n_nodes; n++) {
+                if (is_byz[n])
+                    continue;             /* only honest nodes must converge */
+                struct uint256 tn;
+                struct utxo_commitment dn;
+                if (!simnet_cluster_tip_hash(c, n, &tn) ||
+                    !simnet_cluster_coins_digest(c, n, &dn) ||
+                    !uint256_eq(&tip0, &tn) ||
+                    !utxo_commitment_equal(&dig0, &dn)) {
+                    converged = false;
+                    break;
+                }
+            }
+        }
+    }
+
+    if (out_converged)
+        *out_converged = converged;
+    if (out_byz_rejected)
+        *out_byz_rejected = simnet_cluster_byzantine_rejected(c);
+    if (out_fp)
+        *out_fp = simnet_cluster_delivery_fingerprint(c);
+    free(chain);
+    free(byz);
+    free(is_byz);
+    simnet_cluster_free(c);
+    return ok;
+}
+
+/* Opt-in (ZCL_SIMNET_PERF=1) byzantine-mixed N=100 smoke: honest majority must
+ * still converge, an adversary must be observed-and-rejected, the run must be
+ * deterministic, and the scheduler must stay sub-second (loose ceiling). */
+static void fz_byz_perf_smoke(void)
+{
+    if (!getenv("ZCL_SIMNET_PERF")) {
+        printf("simnet_byzantine_cluster: perf smoke SKIPPED "
+               "(set ZCL_SIMNET_PERF=1 to run)\n");
+        return;
+    }
+
+    const size_t n_nodes = 100;
+    const int honest_permille = 800;        /* 80% honest */
+    const uint64_t seed = 0x5B0BADC0DEB47E01ULL;
+
+    double t0 = perf_wall_ms();
+    bool conv_a = false;
+    uint64_t rej_a = 0;
+    uint64_t fp_a = 0;
+    bool ran_a = fz_byz_wide(seed, n_nodes, honest_permille,
+                             &conv_a, &rej_a, &fp_a);
+    double wall_ms = perf_wall_ms() - t0;
+
+    bool conv_b = false;
+    uint64_t rej_b = 0;
+    uint64_t fp_b = 0;
+    bool ran_b = fz_byz_wide(seed, n_nodes, honest_permille,
+                             &conv_b, &rej_b, &fp_b);
+
+    const double perf_ceiling_ms = 30000.0;
+    printf("simnet_byzantine_cluster: perf N=%zu honest_permille=%d wall=%.1f ms "
+           "(loose ceiling %.0f ms) byz_rejected=%llu fp=0x%016llx\n",
+           n_nodes, honest_permille, wall_ms, perf_ceiling_ms,
+           (unsigned long long)rej_a, (unsigned long long)fp_a);
+
+    FZ_CHECK("byz perf: scenario ran", ran_a && ran_b);
+    FZ_CHECK("byz perf: honest majority converges at N=100", conv_a && conv_b);
+    FZ_CHECK("byz perf: adversary observed-and-rejected (count>0)", rej_a > 0);
+    FZ_CHECK("byz perf: same seed => identical fingerprint", fp_a == fp_b);
+    FZ_CHECK("byz perf: same seed => identical reject count", rej_a == rej_b);
+    FZ_CHECK("byz perf: drain wall-clock under loose ceiling",
+             wall_ms < perf_ceiling_ms);
+}
+
 /* ── entry point ───────────────────────────────────────────────────── */
 
 int test_simnet_fuzz(void)
@@ -569,5 +867,99 @@ int test_simnet_fuzz(void)
     fz_perf_smoke();
 
     printf("simnet_fuzz: %d failures (%d seeds)\n", g_failures, seeds);
+    return g_failures;
+}
+
+/* ── byzantine-mix cluster group ────────────────────────────────────── */
+
+int test_simnet_byzantine_cluster(void)
+{
+    printf("\n=== simnet_byzantine_cluster — N-node honest/byzantine mix ===\n");
+    g_failures = 0;
+
+    if (!blocker_module_init()) {
+        printf("simnet_byzantine_cluster: blocker_module_init failed\n");
+        return 1;
+    }
+
+    uint64_t base_seed = 0x5B0BADC0DEBABE01ULL;
+    const char *seed_env = getenv("ZCL_SIMNET_FUZZ_SEED");
+    if (seed_env && *seed_env)
+        base_seed = strtoull(seed_env, NULL, 0);
+
+    printf("simnet_byzantine_cluster: base_seed=0x%016llx tag=0x%016llx\n",
+           (unsigned long long)base_seed,
+           (unsigned long long)FZ_BYZ_SUBSTREAM_TAG);
+
+    /* (b) THE HARD GATE — determinism / non-perturbation. A byzantine-capable
+     * run with honest_permille=1000 must reproduce the LEGACY all-honest
+     * delivery fingerprint bit-for-bit: it proves the byzantine machinery
+     * draws from a disjoint sub-stream and never perturbs the schedule stream.
+     * Also (a): re-running the same seed is deterministic. */
+    for (int i = 0; i < 6; i++) {
+        uint64_t seed = base_seed ^ ((uint64_t)i * 0x100000001B3ULL);
+        seed = sm_next(&seed);
+        g_seed = seed;
+
+        struct uint256 tip;
+        struct utxo_commitment dig;
+        uint64_t fp_legacy = 0;
+        bool conv_legacy = false;
+        bool ran_legacy =
+            fz_run_scenario(seed, &tip, &dig, &fp_legacy, &conv_legacy);
+
+        uint64_t fp_h1000 = 0;
+        bool honest_conv = false;
+        uint64_t rej1000 = 0;
+        bool ran_h1000 =
+            fz_run_byz_parity(seed, 1000, &fp_h1000, &honest_conv, &rej1000);
+
+        /* (a) same-seed determinism of the byzantine-capable runner itself. */
+        uint64_t fp_h1000_b = 0;
+        bool ran_h1000_b =
+            fz_run_byz_parity(seed, 1000, &fp_h1000_b, NULL, NULL);
+
+        FZ_CHECK("parity runs (legacy + permille=1000)",
+                 ran_legacy && ran_h1000 && ran_h1000_b);
+        FZ_CHECK("permille=1000 => byte-identical to legacy fingerprint",
+                 fp_legacy == fp_h1000);
+        FZ_CHECK("permille=1000 => deterministic re-run",
+                 fp_h1000 == fp_h1000_b);
+        FZ_CHECK("permille=1000 => zero byzantine rejections", rej1000 == 0);
+    }
+
+    /* (convergence) 80% honest over a wider cluster: the honest majority
+     * converges to one honest tip + coins digest, and adversarial blocks were
+     * observed-and-rejected (count > 0), not silently absent. Plus (a)
+     * same-seed determinism of the delivery fingerprint and reject count. */
+    for (int i = 0; i < 6; i++) {
+        uint64_t seed = base_seed ^ ((uint64_t)(i + 41) * 0x100000001B3ULL);
+        seed = sm_next(&seed);
+        g_seed = seed;
+
+        bool conv_a = false;
+        bool conv_b = false;
+        uint64_t rej_a = 0;
+        uint64_t rej_b = 0;
+        uint64_t fp_a = 0;
+        uint64_t fp_b = 0;
+        bool ran_a = fz_byz_wide(seed, 10, 800, &conv_a, &rej_a, &fp_a);
+        bool ran_b = fz_byz_wide(seed, 10, 800, &conv_b, &rej_b, &fp_b);
+
+        FZ_CHECK("byz N=10: scenario ran", ran_a && ran_b);
+        FZ_CHECK("byz N=10: honest majority converges (tip + coins digest)",
+                 conv_a && conv_b);
+        FZ_CHECK("byz N=10: adversarial blocks observed-and-rejected (count>0)",
+                 rej_a > 0 && rej_b > 0);
+        FZ_CHECK("byz N=10: same seed => identical delivery fingerprint",
+                 fp_a == fp_b);
+        FZ_CHECK("byz N=10: same seed => identical reject count",
+                 rej_a == rej_b);
+    }
+
+    /* Opt-in byzantine-mixed N=100 perf/scale smoke. */
+    fz_byz_perf_smoke();
+
+    printf("simnet_byzantine_cluster: %d failures\n", g_failures);
     return g_failures;
 }

@@ -49,7 +49,21 @@ struct chaos_simnet_node {
     size_t mint_count;
     size_t mint_cap;
     size_t relayed_count;
+    bool byzantine;   /* forges invalid blocks instead of honest mints */
 };
+
+/* Fixed sub-stream tag: byzantine role/class draws come from
+ * splitmix64(seed ^ CHAOS_SIMNET_BYZ_TAG), disjoint from the scenario RNG, so
+ * an all-honest cluster (no `honest=`) runs exactly as it did before roles. */
+#define CHAOS_SIMNET_BYZ_TAG 0x42595A4E4F444531ULL  /* ASCII "BYZNODE1" */
+
+static uint64_t chaos_splitmix64(uint64_t *s)
+{
+    uint64_t z = (*s += 0x9E3779B97F4A7C15ULL);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ULL;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBULL;
+    return z ^ (z >> 31);
+}
 
 struct chaos_ctx {
     const char *scenario_path;
@@ -106,6 +120,8 @@ struct chaos_ctx {
     bool *simnet_partitioned;    /* node_count*node_count, row-major */
     int32_t *simnet_last_height; /* per node; INT32_MIN = unobserved */
     bool simnet_monotonic_ok;
+    int simnet_honest_permille;  /* 1000 = all honest (the default) */
+    uint64_t simnet_byz_rng;     /* byzantine role/class sub-stream state */
 };
 
 typedef int (*chaos_handler_fn)(struct chaos_ctx *ctx, int argc, char **argv,
@@ -1046,11 +1062,25 @@ static int handle_simnet_nodes(struct chaos_ctx *ctx, int argc, char **argv,
         return fail_line(line_no, "simnet_nodes requires 'mode simnet' first");
     if (ctx->simnet)
         return fail_line(line_no, "simnet_nodes already created a cluster");
-    if (argc != 2) return fail_line(line_no, "simnet_nodes requires one value");
+    if (argc != 2 && argc != 3)
+        return fail_line(line_no,
+                         "simnet_nodes requires N [honest=<permille>]");
     uint64_t n = 0;
     if (!parse_u64_auto(argv[1], &n) || n < CHAOS_SIMNET_MIN_NODES ||
         n > CHAOS_SIMNET_MAX_NODES) {
         return fail_line(line_no, "simnet_nodes must be 2..128");
+    }
+
+    /* honest=<permille> (0..1000; 1000=all honest, the default). Integer
+     * permille — NOT a float — for exact deterministic reproducibility. */
+    int honest_permille = 1000;
+    if (argc == 3) {
+        const char *hv = arg_value(argc, argv, "honest");
+        uint64_t permille = 0;
+        if (!hv || !parse_u64_auto(hv, &permille) || permille > 1000)
+            return fail_line(line_no,
+                             "simnet_nodes honest= must be 0..1000 (permille)");
+        honest_permille = (int)permille;
     }
 
     ctx->simnet = simnet_cluster_init((size_t)n, ctx->seed);
@@ -1074,6 +1104,25 @@ static int handle_simnet_nodes(struct chaos_ctx *ctx, int argc, char **argv,
     for (uint64_t i = 0; i < n; i++)
         ctx->simnet_last_height[i] = INT32_MIN;
     ctx->simnet_monotonic_ok = true;
+
+    /* Assign roles from the disjoint byzantine sub-stream. permille=1000 draws
+     * nothing and tags nothing, so an all-honest cluster runs exactly as it did
+     * before roles existed. Node 0 is always honest (convergence reference). */
+    ctx->simnet_honest_permille = honest_permille;
+    ctx->simnet_byz_rng = ctx->seed ^ CHAOS_SIMNET_BYZ_TAG;
+    for (uint64_t i = 0; i < n; i++) {
+        bool byz = false;
+        if (i != 0 && honest_permille < 1000) {
+            uint64_t r = chaos_splitmix64(&ctx->simnet_byz_rng);
+            byz = (int)(r % 1000u) >= honest_permille;
+        }
+        ctx->simnet_nodes[i].byzantine = byz;
+        if (byz && !simnet_cluster_set_role(ctx->simnet, (size_t)i,
+                                            SIMNET_ROLE_BYZANTINE)) {
+            chaos_simnet_cleanup(ctx);
+            return fail_line(line_no, "simnet_nodes set_role failed");
+        }
+    }
     return 0;
 }
 
@@ -1102,11 +1151,19 @@ static int handle_simnet_mint(struct chaos_ctx *ctx, int argc, char **argv,
                                      "simnet_mint node must be a valid index");
     if (rc != 0) return rc;
 
-    struct uint256 hash;
-    if (!simnet_cluster_mint_on(ctx->simnet, (size_t)node_id, &hash))
-        return fail_line(line_no, "simnet_mint failed");
-
     struct chaos_simnet_node *ns = &ctx->simnet_nodes[node_id];
+    struct uint256 hash;
+    if (ns->byzantine) {
+        /* Forge an invalid block; honest peers reject it on delivery. The hash
+         * still flows through the mint history so relay/heal broadcast it. */
+        uint64_t bs = chaos_splitmix64(&ctx->simnet_byz_rng);
+        if (!simnet_cluster_byzantine_mint_on(ctx->simnet, (size_t)node_id, bs,
+                                              &hash))
+            return fail_line(line_no, "simnet_byzantine_mint failed");
+    } else if (!simnet_cluster_mint_on(ctx->simnet, (size_t)node_id, &hash)) {
+        return fail_line(line_no, "simnet_mint failed");
+    }
+
     if (ns->mint_count == ns->mint_cap) {
         size_t new_cap = ns->mint_cap ? ns->mint_cap * 2 : 4;
         struct uint256 *grown = zcl_realloc(ns->mints,
