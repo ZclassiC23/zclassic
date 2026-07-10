@@ -93,6 +93,72 @@ static bool repair_read_block_thunk(void *user, int height, struct block *blk,
     return stage_repair_read_active_block_checked(user, height, blk, hash);
 }
 
+/* Lowest height strictly below `cursor` where script_validate_log has NO row at
+ * all, yet validate_headers AND body_persist recorded ok=1 there — a ROWLESS
+ * (row-ABSENT) script hole below the cursor. The fourth detector match
+ * (fail-safe-architecture.md §4 item 0a): the three replay detectors in
+ * reducer_frontier_replay.c all require an EXISTING row (ok=0 status hole, ok=1
+ * wrong-hash split, ok=0 proof internal_error), so a genuinely rowless span
+ * matched NONE. The refill clamps rowless holes AT OR ABOVE the coins frontier
+ * but REFUSES those strictly below it (refill.c:385-391, "replay domain
+ * (inverse-delta)") and hands them "to the stale-script replay" — which never
+ * actually owned a rowless hole. That was the live 3166989-class gap. The
+ * `height < cursor` bound makes it SOUND (never a false match on normal pipeline
+ * progress): the script cursor advances only when a row is written, so a height
+ * below it with no row is genuinely a hole the cursor already passed. Caller
+ * holds the progress_store tx lock. */
+static bool absent_script_hole_unlocked(sqlite3 *db, int cursor,
+                                        int *out_height)
+{
+    return stage_reducer_frontier_log_hole_below_unlocked(db,
+        "SELECT v.height FROM validate_headers_log v "
+        "JOIN body_persist_log b ON b.height = v.height "
+        "WHERE v.height < ? AND v.ok = 1 AND b.ok = 1 "
+        "  AND NOT EXISTS (SELECT 1 FROM script_validate_log s "
+        "                  WHERE s.height = v.height) "
+        "ORDER BY v.height LIMIT 1",
+        "absent script hole", cursor, out_height);
+}
+
+/* ROW-ABSENT rowless-hole replay: re-derive the missing verdict from the
+ * canonical body via the SAME stale_script_replay_tx (rewind_headers=false — the
+ * validate_headers verdict IS the canonical evidence, keep it). Routes to the
+ * SAME remedy as the ok=0 path (no second repair path, Law 2). */
+bool stage_reducer_frontier_try_absent_script_hole_replay(
+    sqlite3 *db,
+    struct main_state *ms,
+    bool apply,
+    struct stage_reducer_frontier_reconcile_result *out)
+{
+    /* PEEK the detector before descending into the shared body — mandatory
+     * because this is the LAST replay step: maybe_replay_stale_script_via
+     * unconditionally stamps out->stale_script_repair_height (to -1 on a
+     * no-match), which would CLOBBER a height an earlier dispatch step already
+     * reported. The stale_proof / hash_split wrappers peek for the same reason. */
+    int script_cursor = -1;
+    int hole = -1;
+    progress_store_tx_lock();
+    bool ok = stage_repair_cursor_at_unlocked(db, "script_validate",
+                                              &script_cursor) &&
+              absent_script_hole_unlocked(db, script_cursor, &hole);
+    progress_store_tx_unlock();
+    if (!ok)
+        return false;
+    if (hole < 0)
+        return true; /* no rowless hole — leave *out untouched (no clobber) */
+
+    /* An earlier replay step already reported an equal/lower owner into the
+     * shared stale_script_* fields: the lowest hole keeps ownership this pass
+     * (the same guard the hash-split wrapper applies). */
+    if (out && out->stale_script_repair_height >= 0 &&
+        out->stale_script_repair_height <= hole)
+        return true;
+
+    return maybe_replay_stale_script_via(db, ms, apply, out,
+                                         absent_script_hole_unlocked,
+                                         /*rewind_headers=*/false);
+}
+
 bool stage_reducer_frontier_try_replay_repairs(
     sqlite3 *db,
     struct main_state *ms,
@@ -208,6 +274,30 @@ bool stage_reducer_frontier_try_replay_repairs(
                  "[stage_repair] reducer_frontier repaired transient proof "
                  "internal_error hole h=%d; proof_validate must re-derive the "
                  "verdict before L1 continues",
+                 out->stale_script_repair_height);
+        *handled = true;
+        return true;
+    }
+
+    /* ROW-ABSENT rowless-hole match (fail-safe-architecture.md §4 item 0a). Runs
+     * LAST, after the three row-requiring detectors found nothing: a genuinely
+     * rowless script hole below the cursor (no ok=0 row, no wrong-hash split, no
+     * proof internal_error) that the refill refuses when it sits below the coins
+     * frontier. Re-derive it from the canonical body via the SAME
+     * stale_script_replay_tx — closing the 3166989-class below-coins gap without
+     * a second repair path. Deferring (canonical body not yet on disk) leaves
+     * *handled false so the caller falls through to the refill / escalation,
+     * exactly like the ok=0 path. */
+    if (!stage_reducer_frontier_try_absent_script_hole_replay(db, ms, apply,
+                                                              out))
+        LOG_RETURN(false, "stage_repair",
+                   "[stage_repair] reducer_frontier absent script hole replay "
+                   "step failed");
+    if (out->stale_script_repaired) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] reducer_frontier repaired ROW-ABSENT script "
+                 "hole h=%d (rowless below cursor); script_validate must "
+                 "re-derive the verdict before L1 continues",
                  out->stale_script_repair_height);
         *handled = true;
         return true;

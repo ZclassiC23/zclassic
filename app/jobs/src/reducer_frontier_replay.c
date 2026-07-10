@@ -131,10 +131,10 @@ static bool stale_script_hash_split_unlocked(sqlite3 *db, int cursor,
         "validate-script hash split", cursor, out_height);
 }
 
-/* Detector signature shared by the ok=0 stale-script-hole path and the ok=1
- * hash-split path so maybe_replay_stale_script_via runs ONE body for both. */
-typedef bool (*stale_script_detector_fn)(sqlite3 *db, int cursor,
-                                         int *out_height);
+/* Detector signature shared by the ok=0 stale-script-hole path, the ok=1
+ * hash-split path and the row-ABSENT rowless-hole path so
+ * maybe_replay_stale_script_via runs ONE body for all three. Declared in the
+ * internal header (the absent-hole match lives in the dispatch TU). */
 
 bool stage_repair_read_active_block_checked(struct main_state *ms, int height,
                                             struct block *blk,
@@ -257,7 +257,7 @@ enum rf_hash_split_side stage_repair_classify_hash_split(
  * (STEP 3) — there is NO write-once marker; the rewind + STEP-1's dry==real
  * guarantee make each pass end as progress (rewind/rewrite) XOR named
  * escalation. */
-static bool maybe_replay_stale_script_via(
+bool maybe_replay_stale_script_via(
     sqlite3 *db,
     struct main_state *ms,
     bool apply,

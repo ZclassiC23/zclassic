@@ -33,7 +33,7 @@ app/services/src/node_db_catchup_service.c 904
 app/services/src/sync_monitor.c 811
 app/views/src/explorer_pages_hodl.c 1853
 app/views/src/explorer_pages_view.c 823
-config/src/boot.c 3808
+config/src/boot.c 3823
 config/src/boot_background_workers.c 862
-config/src/boot_refold_staged.c 2090
+config/src/boot_refold_staged.c 2107
 config/src/boot_services.c 1682

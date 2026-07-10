@@ -40,6 +40,9 @@ enum sticky_rung {
     STICKY_RUNG_SELF_MINT_REFOLD,   /* self-mint anchor + refold (lane: Act 3) */
     STICKY_RUNG_WIDEN_PEERS,        /* peer-discovery of last resort (lane #9) */
     STICKY_RUNG_REBOOTSTRAP,        /* re-bootstrap from genesis (floor rung) */
+    STICKY_RUNG_REFOLD_FROM_ANCHOR, /* DEEPEST: runtime refold from the newest
+                                     * verified anchor (arm + self-respawn) —
+                                     * fail-safe-architecture.md §1 rung 3 */
     STICKY_RUNG_COUNT
 };
 
@@ -101,6 +104,12 @@ enum sticky_rung sticky_escalator_test_drive(int64_t injected_tip,
 enum sticky_rung sticky_escalator_test_current_rung(void);
 bool sticky_escalator_test_armed(void);
 uint64_t sticky_escalator_test_fires_operator_needed(void);
+/* Refold rung test seams: suppress the real shutdown/self-respawn syscalls (so a
+ * unit test drives the rung without killing the test process) and force the
+ * anchor-artifact gate (-1 = real probe, 0 = no artifact, 1 = artifact present)
+ * so the arm and the no-artifact-blocker paths are both exercisable. */
+void sticky_escalator_test_set_suppress_refold_restart(bool suppress);
+void sticky_escalator_test_set_refold_artifact_available(int override_value);
 #endif
 
 #endif /* SERVICES_STICKY_ESCALATOR_H */

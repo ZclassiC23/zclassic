@@ -36,6 +36,7 @@
 #include "jobs/tip_finalize_stage.h"
 #include "storage/utxo_reimport_flag.h"
 #include "storage/boot_auto_reindex.h"   /* #6 B1: terminal mark on dead-end */
+#include "storage/boot_auto_refold.h"    /* A1: consume the escalator's armed refold */
 #include "config/boot_crashonly.h"
 #include "services/header_probe.h"
 #include "services/block_index_integrity.h"
@@ -3276,8 +3277,17 @@ sapling_tree_boot_check_done:
      * the loader AND hard-asserts the re-seeded set, so a mismatched/forged
      * snapshot can NEVER seed coins_kv and a from-genesis re-fold is never reached
      * as a silent fallback. */
+    /* A1 — the sticky escalator's TERMINAL refold rung arms a durable one-shot
+     * boot_auto_refold_request + self-respawn on a wedged-but-alive node; THIS
+     * boot consumes it to run the same boot_refold_from_anchor_reset. Consume
+     * increments a bounded, fsync-durable attempt count so a FATAL-looping anchor
+     * is capped then boots normally (never an unbounded crash-loop). */
+    bool consumed_auto_refold = false;
+    if (!ctx->refold_from_anchor && boot_auto_refold_pending(ctx->datadir))
+        consumed_auto_refold = boot_auto_refold_consume(ctx->datadir);
     bool do_from_anchor =
         ctx->refold_from_anchor ||
+        consumed_auto_refold ||
         (ctx->load_verify_boot &&
          boot_load_verify_snapshot_eligible(&g_node_db, progress_store_db()));
     if (do_from_anchor) {
@@ -3308,6 +3318,11 @@ sapling_tree_boot_check_done:
             }
         }
         boot_refold_from_anchor_reset(&g_node_db);
+        /* The reset committed the verified anchor set (it _exit()s on mismatch,
+         * so reaching here = success) — clear the consumed refold request so a
+         * future healthy boot does not re-run it. */
+        if (consumed_auto_refold)
+            boot_auto_refold_clear(ctx->datadir);
         /* The from-anchor reset cleared node_state["sapling_tree"] to NULL.
          * Carry the fail-closed guard from the snapshot-loader path: re-derive
          * + VERIFY the Sapling commitment tree against the chain BEFORE the

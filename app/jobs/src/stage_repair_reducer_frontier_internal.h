@@ -68,6 +68,40 @@ bool stage_reducer_frontier_try_stale_proof_replay(
     bool apply,
     struct stage_reducer_frontier_reconcile_result *out);
 
+/* Detector signature shared by the stale-script replay paths: given the
+ * script_validate cursor, pick the lowest height strictly below it to re-derive
+ * (an ok=0 status hole, an ok=1 wrong-hash split, or a row-ABSENT rowless hole).
+ * Caller holds the progress_store tx lock. */
+typedef bool (*stale_script_detector_fn)(struct sqlite3 *db, int cursor,
+                                          int *out_height);
+
+/* Shared body for the stale-script replay paths (reducer_frontier_replay.c):
+ * `detect` picks the height; re-derive its verdict from the canonical body and,
+ * in ONE transaction, delete the stale span rows + rewind script/proof/tip
+ * cursors (+ inverse-delta coins rewind below the coins frontier). Exposed so
+ * the ROW-ABSENT match in the dispatch TU reuses the SAME remedy (Law 2 — one
+ * write path). `rewind_headers` is true ONLY for the hash-split path. */
+bool maybe_replay_stale_script_via(
+    struct sqlite3 *db,
+    struct main_state *ms,
+    bool apply,
+    struct stage_reducer_frontier_reconcile_result *out,
+    stale_script_detector_fn detect,
+    bool rewind_headers);
+
+/* Fourth replay match (fail-safe-architecture.md §4 item 0a): a ROW-ABSENT
+ * script hole below the cursor (no script_validate_log row at all, with
+ * validate_headers ok=1 + body_persist ok=1 evidence there). Routes to the SAME
+ * stale_script_replay_tx as the ok=0 path. Closes the below-coins rowless-hole
+ * gap the refill refuses (refill.c:385-391) and the three row-requiring
+ * detectors miss. Defined in stage_repair_reducer_frontier_coin.c (the replay
+ * dispatch TU). */
+bool stage_reducer_frontier_try_absent_script_hole_replay(
+    struct sqlite3 *db,
+    struct main_state *ms,
+    bool apply,
+    struct stage_reducer_frontier_reconcile_result *out);
+
 /* Shared one-shot progress_meta marker helpers for reducer-frontier repairs.
  * Key shape:
  *   reducer_frontier.<repair_name>_repair.<height>.<block_hash_hex>

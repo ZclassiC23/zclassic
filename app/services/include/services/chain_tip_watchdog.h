@@ -108,6 +108,16 @@ void chain_tip_watchdog_get_stats(struct chain_tip_watchdog_stats *out);
  * cannot loop unbounded any more than a systemd restart could. */
 bool chain_tip_watchdog_respawn_requested(void);
 
+/* Request an in-process self-respawn from OUTSIDE the watchdog (the sticky
+ * escalator's terminal refold rung). Sets the SAME flag
+ * chain_tip_watchdog_respawn_requested() reports, so after the rung arms a
+ * durable refold + requests an orderly shutdown, main() re-execs /proc/self/exe
+ * (off-systemd) and the fresh boot consumes the armed refold — the armed deep
+ * rung executes with no human step. Under systemd the flag is a no-op (main()
+ * gates the re-exec on !sd_notify_is_active() and Restart=always brings it back).
+ * Idempotent; race-safe. */
+void chain_tip_watchdog_request_respawn(void);
+
 /* `zcl_state subsystem=chain_tip_watchdog` dumper. `out` is an
  * already-initialized json object; `key` is ignored. */
 bool chain_tip_watchdog_dump_state_json(struct json_value *out, const char *key);
