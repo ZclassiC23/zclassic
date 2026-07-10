@@ -133,6 +133,12 @@ void set_sapling_tree_for_flush(struct incremental_merkle_tree *tree);
  * checkpoint (used by unit tests). */
 void set_sapling_checkpoint_datadir(const char *datadir);
 
+/* Read back the configured flat-file sapling checkpoint path (the
+ * `<datadir>/sapling_tree_ckpt.dat` derived by the setter above), or NULL when
+ * no datadir was set.  Lets a recovery path load the verified frontier the node
+ * already maintains without re-deriving the datadir. */
+const char *sapling_checkpoint_path(void);
+
 /* ── Flat-file sapling checkpoint: write + introspection ─────────
  *
  * The load/resume path already existed (boot + sapling_tree_rebuild);

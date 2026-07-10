@@ -106,6 +106,11 @@ void set_sapling_checkpoint_datadir(const char *datadir)
         g_sapling_ckpt_path[0] = '\0';
 }
 
+const char *sapling_checkpoint_path(void)
+{
+    return g_sapling_ckpt_path[0] ? g_sapling_ckpt_path : NULL;
+}
+
 /* ── Flat-file checkpoint write wiring + diagnostics ─────────────
  *
  * The load/resume side already existed; this is the previously-missing

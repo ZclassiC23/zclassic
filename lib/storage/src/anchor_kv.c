@@ -485,3 +485,73 @@ bool anchor_kv_reset_in_tx(sqlite3 *db, int64_t activation_cursor)
     if (err) sqlite3_free(err);
     return anchor_kv_initialize_history(db, activation_cursor);
 }
+
+bool anchor_kv_table_is_empty(sqlite3 *db, int pool, bool *empty_out)
+{
+    if (empty_out) *empty_out = false;
+    if (!db || !anchor_pool_valid(pool) || !empty_out) {
+        LOG_WARN(ANCHOR_SUBSYS, "table_is_empty: invalid args");
+        return false;
+    }
+    char sql[96];
+    int n = snprintf(sql, sizeof(sql), "SELECT 1 FROM %s LIMIT 1",
+                     anchor_table(pool));
+    if (n <= 0 || (size_t)n >= sizeof(sql))
+        return false;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &s, NULL) != SQLITE_OK) {
+        LOG_WARN(ANCHOR_SUBSYS, "table_is_empty prepare failed: %s",
+                 sqlite3_errmsg(db));
+        return false;
+    }
+    bool ok = true;
+    int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_DONE) {
+        *empty_out = true;
+    } else if (rc == SQLITE_ROW) {
+        *empty_out = false;
+    } else {
+        LOG_WARN(ANCHOR_SUBSYS, "table_is_empty step rc=%d: %s", rc,
+                 sqlite3_errmsg(db));
+        ok = false;
+    }
+    sqlite3_finalize(s);
+    return ok;
+}
+
+bool anchor_kv_seed_frontier_row(sqlite3 *db, int pool,
+                                 const struct incremental_merkle_tree *tree,
+                                 int64_t height,
+                                 const struct uint256 *expected_root)
+{
+    if (!db || !anchor_pool_valid(pool) || !tree || height < 0 ||
+        !expected_root) {
+        LOG_WARN(ANCHOR_SUBSYS,
+                 "seed_frontier_row: invalid args pool=%d height=%lld",
+                 pool, (long long)height);
+        return false;
+    }
+    /* Recompute the frontier's own root and REFUSE unless it equals the
+     * header-bound expected root.  This is the sole guard that keeps an
+     * unverified frontier out of the store: a mismatch writes nothing, so the
+     * fold keeps failing closed (consensus accept/reject unchanged) rather than
+     * threading against a forged/wrong frontier. */
+    struct uint256 got;
+    incremental_tree_root(tree, &got);
+    if (!uint256_eq(&got, expected_root)) {
+        LOG_WARN(ANCHOR_SUBSYS,
+                 "seed_frontier_row REFUSED pool=%d height=%lld: computed root "
+                 "!= expected header root — writing nothing (fail-closed)",
+                 pool, (long long)height);
+        return false;
+    }
+    /* anchor_kv_add_tree is idempotent and treats the empty tree as an
+     * implicit no-op success (matching zclassicd's implicit empty root). */
+    if (!anchor_kv_add_tree(db, pool, tree, height)) {
+        LOG_WARN(ANCHOR_SUBSYS,
+                 "seed_frontier_row: add_tree failed pool=%d height=%lld",
+                 pool, (long long)height);
+        return false;
+    }
+    return true;
+}

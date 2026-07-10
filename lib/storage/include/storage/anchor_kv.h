@@ -84,4 +84,29 @@ bool anchor_kv_delete_range(struct sqlite3 *db, int64_t first_height,
  * transaction: boot/refold callers already own one. */
 bool anchor_kv_reset_in_tx(struct sqlite3 *db, int64_t activation_cursor);
 
+/* Report whether `pool`'s anchor table has zero rows.  Distinguishes the
+ * birth-defect state (a nonzero activation cursor over an EMPTY table — no
+ * initial frontier was ever seeded) from a genuine historical gap (rows exist
+ * but a specific below-cursor root is absent).  Returns false on store error
+ * (and leaves *empty_out false). */
+bool anchor_kv_table_is_empty(struct sqlite3 *db, int pool, bool *empty_out);
+
+/* Seed ONE frontier row for `pool` at `height`, but ONLY after verifying the
+ * frontier's own computed root equals `expected_root` (the block's
+ * hashFinalSaplingRoot / hashFinalSproutRoot at that height).  This is the
+ * auto-terminating cure for a snapshot/refold seed that reset the adoption
+ * cursor above genesis WITHOUT an initial frontier: the first shielded-output
+ * block then finds an empty table and fails closed forever.  A verified insert
+ * makes anchor_kv_latest_tree return ANCHOR_KV_FOUND so the fold resumes.
+ *
+ * NEVER inserts an unverified frontier: on any root mismatch it returns false,
+ * logs, and writes nothing (fail-closed, so consensus accept/reject is
+ * unchanged).  An empty tree whose root already matches `expected_root` is a
+ * no-op success (the empty frontier is protocol-implicit).  Participates in the
+ * caller's transaction scope (autocommit for a single-statement caller). */
+bool anchor_kv_seed_frontier_row(struct sqlite3 *db, int pool,
+                                 const struct incremental_merkle_tree *tree,
+                                 int64_t height,
+                                 const struct uint256 *expected_root);
+
 #endif /* STORAGE_ANCHOR_KV_H */
