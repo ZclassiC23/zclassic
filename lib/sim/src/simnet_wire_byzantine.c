@@ -7,7 +7,6 @@
 
 #include "coins/utxo_commitment.h"
 #include "core/serialize.h"
-#include "net/peer_scoring.h"
 #include "primitives/block.h"
 #include "sync/sync_state.h"
 #include "util/log_macros.h"
@@ -470,9 +469,21 @@ void simnet_wire_byzantine_observe_event(struct simnet_wire *wire,
                 wire, simnet_byzantine_expected_reason(wire->byz_obs.kind),
                 true);
             (void)byz_record_unchanged(wire);
-            peer_scoring_record(&wire->nm, wire->nut,
-                                PEER_OFFENCE_INVALID_HEADER,
-                                wire->byz_obs.reject_reason);
+            /* NOTE: no manual peer_scoring_record here. Production
+             * process_headers() (lib/net/src/msg_headers.c, lane A2) now
+             * scores an objectively-forged header page itself
+             * (PEER_OFFENCE_INVALID_HEADER, dos>0), mirroring how
+             * msg_blocks.c has always scored invalid blocks. This harness
+             * observer only WATCHES the reject; it must not also score, or
+             * the offence is double-counted (50+50=100) and the single
+             * forged-header injection crosses the 100-point ban threshold —
+             * a peer/ban state that leaks across test groups (event
+             * observers + the score are global), which is why the group
+             * passed standalone (one path counted) but failed in isolation
+             * (both counted → banned). A single invalid header page is
+             * weight 50: the peer is scored/misbehaved but NOT yet banned,
+             * which is exactly what test_simnet_wire_peer_invalid_header
+             * asserts (peer_misbehaved && !peer_banned). */
         }
     } else if (type == EV_PEER_MISBEHAVE &&
                wire->byz_obs.kind == SIMNET_BYZ_OVERSIZE_VTX &&
