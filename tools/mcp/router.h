@@ -121,6 +121,17 @@ bool mcp_router_register(const struct mcp_tool_route *route);
 void mcp_router_register_required(const struct mcp_tool_route *route);
 
 const struct mcp_tool_route *mcp_router_find(const char *name);
+
+/* Atomically re-point an already-registered route slot at `new_route`.
+ * Same structural checks as mcp_router_register (name + handler present, and
+ * new_route->name must equal `name`). Dispatch readers on other threads see
+ * either the old or the new pointer, never a torn one. Returns false (with
+ * logged context) if the name is unknown or the route is malformed; the
+ * table is left unchanged. Used only by the dev in-process hot-swap loader
+ * and its tests — production registration still goes through
+ * mcp_router_register / mcp_router_register_required. */
+bool mcp_router_replace(const char *name, const struct mcp_tool_route *new_route);
+
 size_t mcp_router_count(void);
 size_t mcp_router_capacity(void);
 const struct mcp_tool_route *mcp_router_at(size_t idx);

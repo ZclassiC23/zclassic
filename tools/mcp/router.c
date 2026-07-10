@@ -8,8 +8,10 @@
 
 #include "event/event.h"
 #include "json/json.h"
+#include "util/log_macros.h"
 #include "util/trace.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,8 +22,18 @@
 
 #define MCP_ROUTER_MAX_ROUTES 256
 
-static const struct mcp_tool_route *g_routes[MCP_ROUTER_MAX_ROUTES];
+/* Slots are atomic so an in-process hot-swap (mcp_router_replace, dev-only)
+ * can re-point a route with a release store while dispatch/find/tools-list
+ * readers on RPC/HTTP worker threads observe it with an acquire load — no
+ * torn pointer, no lock on the hot path. Registration only grows the table
+ * at boot (single-threaded), so g_num_routes itself stays a plain size_t. */
+static const struct mcp_tool_route *_Atomic g_routes[MCP_ROUTER_MAX_ROUTES];
 static size_t g_num_routes = 0;
+
+static inline const struct mcp_tool_route *route_load(size_t i)
+{
+    return atomic_load_explicit(&g_routes[i], memory_order_acquire);
+}
 
 /* ── Helpers ─────────────────────────────────────────────────── */
 
@@ -91,8 +103,9 @@ static bool csv_contains(const char *csv, const char *s)
 
 void mcp_router_reset(void)
 {
+    for (size_t i = 0; i < MCP_ROUTER_MAX_ROUTES; i++)
+        atomic_store_explicit(&g_routes[i], NULL, memory_order_release);
     g_num_routes = 0;
-    memset(g_routes, 0, sizeof(g_routes));
 }
 
 bool mcp_router_register(const struct mcp_tool_route *route)
@@ -103,10 +116,12 @@ bool mcp_router_register(const struct mcp_tool_route *route)
         return false;
     /* Reject duplicate names */
     for (size_t i = 0; i < g_num_routes; i++) {
-        if (strcmp(g_routes[i]->name, route->name) == 0)
+        if (strcmp(route_load(i)->name, route->name) == 0)
             return false;
     }
-    g_routes[g_num_routes++] = route;
+    atomic_store_explicit(&g_routes[g_num_routes], route,
+                          memory_order_release);
+    g_num_routes++;
     return true;
 }
 
@@ -149,8 +164,9 @@ const struct mcp_tool_route *mcp_router_find(const char *name)
 {
     if (!name) return NULL;
     for (size_t i = 0; i < g_num_routes; i++) {
-        if (strcmp(g_routes[i]->name, name) == 0)
-            return g_routes[i];
+        const struct mcp_tool_route *r = route_load(i);
+        if (r && strcmp(r->name, name) == 0)
+            return r;
     }
     return NULL;
 }
@@ -168,7 +184,38 @@ size_t mcp_router_capacity(void)
 const struct mcp_tool_route *mcp_router_at(size_t idx)
 {
     if (idx >= g_num_routes) return NULL;
-    return g_routes[idx];
+    return route_load(idx);
+}
+
+/* ── In-process route swap (dev-only caller; harmless + tested always) ──
+ *
+ * Re-point the slot named `name` at `new_route` with a release store. The
+ * new route passes the SAME structural checks as registration (name +
+ * handler present). Readers on other threads see either the old or the new
+ * route pointer, never a torn one. Returns false (with logged context) if
+ * the name is unknown or the new route is malformed; the table is unchanged
+ * on any failure. Nothing calls this outside the dev hot-swap loader + tests. */
+bool mcp_router_replace(const char *name, const struct mcp_tool_route *new_route)
+{
+    if (!name || !name[0])
+        LOG_FAIL("mcp.router", "mcp_router_replace: null/empty name");
+    if (!new_route || !new_route->name || !new_route->handler)
+        LOG_FAIL("mcp.router",
+                 "mcp_router_replace: malformed route for '%s'", name);
+    if (strcmp(new_route->name, name) != 0)
+        LOG_FAIL("mcp.router",
+                 "mcp_router_replace: route name '%s' != slot '%s'",
+                 new_route->name, name);
+    for (size_t i = 0; i < g_num_routes; i++) {
+        const struct mcp_tool_route *r = route_load(i);
+        if (r && strcmp(r->name, name) == 0) {
+            atomic_store_explicit(&g_routes[i], new_route,
+                                  memory_order_release);
+            return true;
+        }
+    }
+    LOG_FAIL("mcp.router",
+             "mcp_router_replace: no route named '%s'", name);
 }
 
 /* ── Type / code naming ──────────────────────────────────────── */
@@ -435,7 +482,7 @@ size_t mcp_router_tools_list_json(char *buf, size_t buflen)
     if (pos + 1 >= buflen) return pos;
     buf[pos++] = '[';
     for (size_t i = 0; i < g_num_routes; i++) {
-        const struct mcp_tool_route *r = g_routes[i];
+        const struct mcp_tool_route *r = route_load(i);
         if (i > 0) {
             if (pos + 1 >= buflen) return pos;
             buf[pos++] = ',';

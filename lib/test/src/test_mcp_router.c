@@ -671,6 +671,123 @@ static int test_router_reset_clears(void)
     return failures;
 }
 
+/* ── Route hot-swap (mcp_router_replace) ────────────────────────────
+ *
+ * Self-contained: each test calls setup_routes() first for a clean table,
+ * then restores it, so these can be appended without perturbing the tests
+ * above. mcp_router_replace backs the dev in-process hot-swap loader. */
+
+static int g_echo2_calls = 0;
+
+static int h_echo2(const struct mcp_request *req, struct mcp_response *res)
+{
+    (void)req;
+    g_echo2_calls++;
+    char *buf = zcl_malloc(64, "mcp_echo2_buf");
+    if (!buf) return -1;
+    snprintf(buf, 64, "{\"handler\":\"echo2\"}");
+    res->body = buf;
+    return 0;
+}
+
+/* Replacement for the "t.echo" slot: same name, different handler. */
+static const struct mcp_tool_route r_echo_repl = {
+    "t.echo", "test", "Echo REPLACED", NULL, 0, h_echo2, 0, NULL
+};
+/* Replacement for the "t.required" slot: different description + a wider
+ * maxLength so the swap is visible in the emitted schema. */
+static const struct mcp_param_spec p_required_repl[] = {
+    { "name", MCP_PARAM_STR, true, "A replaced name",
+      0, 0, 1, 99, NULL, NULL },
+};
+static const struct mcp_tool_route r_required_repl = {
+    "t.required", "test", "Requires name REPLACED", p_required_repl,
+    sizeof(p_required_repl) / sizeof(p_required_repl[0]), h_echo2, 0, NULL
+};
+/* A well-formed route whose name does NOT match the target slot. */
+static const struct mcp_tool_route r_other = {
+    "t.other", "test", "Other", NULL, 0, h_echo2, 0, NULL
+};
+
+static int test_router_replace_dispatch(void)
+{
+    int failures = 0;
+    TEST("replace re-points a slot and dispatch runs the new handler") {
+        setup_routes();
+        /* Before: t.echo runs h_echo (reports its own tool name). */
+        char *before = mcp_router_dispatch("t.echo", NULL);
+        ASSERT(before != NULL);
+        ASSERT(contains(before, "\"tool\":\"t.echo\""));
+        ASSERT(!contains(before, "echo2"));
+        free(before);
+
+        ASSERT(mcp_router_replace("t.echo", &r_echo_repl) == true);
+        /* find() returns the new route pointer. */
+        ASSERT(mcp_router_find("t.echo") == &r_echo_repl);
+
+        int e2 = g_echo2_calls;
+        char *after = mcp_router_dispatch("t.echo", NULL);
+        ASSERT(after != NULL);
+        ASSERT(contains(after, "\"handler\":\"echo2\""));
+        ASSERT(g_echo2_calls == e2 + 1);
+        free(after);
+
+        /* Count is unchanged by a replace (no new slot). */
+        ASSERT(mcp_router_count() == 8);
+        setup_routes();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_router_replace_unknown_fails(void)
+{
+    int failures = 0;
+    TEST("replace of an unknown name / mismatched route fails") {
+        setup_routes();
+        /* Unknown slot name. */
+        static const struct mcp_tool_route r_missing = {
+            "t.nonexistent", "test", "x", NULL, 0, h_echo2, 0, NULL
+        };
+        ASSERT(mcp_router_replace("t.nonexistent", &r_missing) == false);
+        /* Name mismatch: slot exists but route->name differs. */
+        ASSERT(mcp_router_replace("t.echo", &r_other) == false);
+        /* Malformed (NULL) route. */
+        ASSERT(mcp_router_replace("t.echo", NULL) == false);
+        /* NULL name. */
+        ASSERT(mcp_router_replace(NULL, &r_echo_repl) == false);
+        /* The table is untouched: t.echo still runs the original handler. */
+        ASSERT(mcp_router_find("t.echo") == &r_echo);
+        setup_routes();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_router_replace_schema_visible(void)
+{
+    int failures = 0;
+    TEST("a replaced route's new schema/description is visible") {
+        setup_routes();
+        ASSERT(mcp_router_replace("t.required", &r_required_repl) == true);
+
+        char buf[2048];
+        size_t n = mcp_router_input_schema_json(
+            mcp_router_find("t.required"), buf, sizeof(buf));
+        ASSERT(n > 0);
+        ASSERT(contains(buf, "\"maxLength\":99"));
+        ASSERT(!contains(buf, "\"maxLength\":32"));
+
+        char list[16384];
+        size_t ln = mcp_router_tools_list_json(list, sizeof(list));
+        ASSERT(ln > 0);
+        ASSERT(contains(list, "Requires name REPLACED"));
+        setup_routes();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Entry point ────────────────────────────────────────────── */
 
 int test_mcp_router(void);
@@ -712,6 +829,9 @@ int test_mcp_router(void)
     failures += test_router_at_order();
     failures += test_router_mixed_ok();
     failures += test_router_reset_clears();
+    failures += test_router_replace_dispatch();
+    failures += test_router_replace_unknown_fails();
+    failures += test_router_replace_schema_visible();
 
     return failures;
 }

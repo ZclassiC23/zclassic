@@ -8,6 +8,7 @@
 #include "../rpc_client.h"
 #include "../rpc_params.h"
 
+#include "hotswap/hotswap.h"
 #include "json/json.h"
 #include "util/log_macros.h"
 #include "util/path_check.h"
@@ -502,3 +503,12 @@ void mcp_register_app(void)
     for (size_t i = 0; i < PARAM_COUNT(k_routes); i++)
         mcp_router_register_required(&k_routes[i]);
 }
+
+/* ── Hot-swap pilot ─────────────────────────────────────────────────
+ *
+ * This controller is the Tier-1 hot-swap pilot. Under a generation .so
+ * build (-DZCL_HOTSWAP_GEN) the macro emits `zcl_hotswap_gen_init`, which
+ * re-points every route above at this TU's freshly-compiled handlers when
+ * the .so is dlopen'd into a running dev node. In the node build and in
+ * release it expands to nothing (no trailing semicolon by design). */
+ZCL_HOTSWAP_EXPORT_ROUTES(k_routes, PARAM_COUNT(k_routes))

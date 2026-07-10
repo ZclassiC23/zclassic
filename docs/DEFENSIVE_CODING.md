@@ -422,6 +422,7 @@ add/remove a gate.
 - `check-no-csr-lock-on-finalize-drive`
 - `check-mint-skip-crypto-offline-only`
 - `check-wire-harness-security-gate`
+- `check-hotswap-dev-only`
 <!-- LINT-GATES-END -->
 
 (`check-consensus-parity` [E13, the parity mechanism — see
