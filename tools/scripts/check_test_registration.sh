@@ -107,7 +107,18 @@ for f in "$TEST_DIR"/test_*.c; do
     fi
     [ "$grc" -eq 0 ] || continue    # no filename-matching entry point in this file
     entry_count=$((entry_count + 1))
-    if ! printf '%s\n' "$runs" | grep -qxF "$name"; then
+    # rc 1 = genuinely unregistered; rc >=2 (fork failure under load, etc.)
+    # must FATAL, not masquerade as an orphan — seen misreporting a
+    # registered test right after a 32-worker suite run (2026-07-10).
+    set +e
+    printf '%s\n' "$runs" | grep -qxF "$name"
+    grc=$?
+    set -e
+    if [ "$grc" -ge 2 ]; then
+        echo "check_test_registration: FATAL — membership grep for $name failed (exit $grc)" >&2
+        exit 2
+    fi
+    if [ "$grc" -eq 1 ]; then
         orphans="${orphans}${name}\t${f}\n"
     fi
 done
