@@ -450,6 +450,7 @@ int test_simnet_wire_peer_invalid_header(void);
 int test_simnet_txkit(void);
 int test_simnet_doublespend(void);
 int test_simnet_chained_tx(void);
+int test_simnet_mempool_adv(void);
 int test_simnet_block_sigops(void);
 int test_simnet_duplicate_input(void);
 int test_simnet_value_inflation(void);
