@@ -229,6 +229,43 @@ static bool rpc_swap_chains(const struct json_value *params, bool help,
 
 /* ── swap_initiate ──────────────────────────────────────────────── */
 
+static int swap_current_height(void);
+
+/* Convert the user-supplied lock DURATION (blocks from the current tip)
+ * into the absolute CLTV height embedded in the HTLC script. The script
+ * and swap_refund compare against absolute chain height, so storing the
+ * duration verbatim would make a "10 blocks from now" contract refundable
+ * immediately (CLTV height 10 is ancient history) — the refunder could
+ * reclaim before the recipient's claim window ever opened. Fails closed:
+ * an unknown tip (height 0) or a non-ZCL chain (whose height this node
+ * cannot observe) must not mint a contract with a wrong locktime. */
+static bool swap_locktime_to_absolute(int64_t duration_blocks,
+                                      enum swap_chain chain,
+                                      uint32_t *out_abs,
+                                      struct json_value *result)
+{
+    if (chain != SWAP_CHAIN_ZCL) {
+        json_set_str(result, "locktime anchoring is ZCL-only for now: this "
+                             "node cannot observe the counterparty chain's "
+                             "height, so it cannot embed a correct absolute "
+                             "CLTV for btc/ltc/doge contracts");
+        return false;
+    }
+    if (duration_blocks <= 0 || duration_blocks > 1000000) {
+        json_set_str(result, "locktime_blocks must be 1..1000000 (a duration "
+                             "in blocks from the current tip)");
+        return false;
+    }
+    int height = swap_current_height();
+    if (height <= 0) {
+        json_set_str(result, "chain tip unknown — cannot anchor the CLTV "
+                             "locktime; retry once the node has a synced tip");
+        return false;
+    }
+    *out_abs = (uint32_t)((int64_t)height + duration_blocks);
+    return true;
+}
+
 static bool rpc_swap_initiate(const struct json_value *params, bool help,
                               struct json_value *result)
 {
@@ -240,7 +277,9 @@ static bool rpc_swap_initiate(const struct json_value *params, bool help,
             "1. my_address      (string) Your address (refund path)\n"
             "2. counter_address (string) Counterparty address (claim path)\n"
             "3. amount          (number) Amount in coins\n"
-            "4. locktime_blocks (number) Lock duration in blocks\n"
+            "4. locktime_blocks (number) Lock duration in blocks from the\n"
+            "                   current tip (stored as absolute CLTV height\n"
+            "                   = tip + N; ZCL chain only)\n"
             "5. chain           (string, optional) Chain: zcl, btc, ltc, doge (default: zcl)\n"
             "\nResult: swap contract with secret, secret_hash, P2SH address.\n");
         return true;
@@ -263,18 +302,24 @@ static bool rpc_swap_initiate(const struct json_value *params, bool help,
         return false;
     }
 
+    uint32_t locktime_abs = 0;
+    if (!swap_locktime_to_absolute(locktime, chain, &locktime_abs, result))
+        return false;
+
     /* Generate secret */
     uint8_t secret[32], secret_hash[32];
     htlc_generate_secret(secret, secret_hash);
 
-    if (!swap_build_and_persist(my_addr, counter_addr, amount, locktime, chain,
-                                secret_hash, secret, SWAP_INITIATOR,
+    if (!swap_build_and_persist(my_addr, counter_addr, amount, locktime_abs,
+                                chain, secret_hash, secret, SWAP_INITIATOR,
                                 /*strict_build_fail=*/true, result))
         return false;
 
     const struct swap_chain_params *cp = swap_get_chain_params(chain);
-    printf("swap: initiated %s swap for %.8f %s (locktime %u blocks)\n",
-           cp->ticker, amount, cp->ticker, (unsigned)locktime);
+    printf("swap: initiated %s swap for %.8f %s (CLTV unlock height %u = "
+           "tip + %lld)\n",
+           cp->ticker, amount, cp->ticker, (unsigned)locktime_abs,
+           (long long)locktime);
     printf("swap: Fund the P2SH address to activate the swap.\n");
 
     return true;
@@ -293,7 +338,10 @@ static bool rpc_swap_participate(const struct json_value *params, bool help,
             "1. my_address      (string) Your address (refund path)\n"
             "2. counter_address (string) Initiator's address (claim path)\n"
             "3. amount          (number) Amount in coins\n"
-            "4. locktime_blocks (number) Lock duration (should be SHORTER than initiator)\n"
+            "4. locktime_blocks (number) Lock duration in blocks from the\n"
+            "                   current tip (should be SHORTER than the\n"
+            "                   initiator's; stored as absolute CLTV height\n"
+            "                   = tip + N; ZCL chain only)\n"
             "5. secret_hash     (string) 64-char hex secret hash from initiator\n"
             "6. chain           (string, optional) Chain: zcl, btc, ltc, doge (default: zcl)\n");
         return true;
@@ -312,10 +360,15 @@ static bool rpc_swap_participate(const struct json_value *params, bool help,
         if (c >= 0) chain = (enum swap_chain)c;
     }
 
-    if (!my_addr || !counter_addr || !zcl_is_hex_string(hash_hex, 64)) {
+    if (!my_addr || !counter_addr || amount <= 0 || locktime <= 0 ||
+        !zcl_is_hex_string(hash_hex, 64)) {
         json_set_str(result, "Invalid arguments");
         return false;
     }
+
+    uint32_t locktime_abs = 0;
+    if (!swap_locktime_to_absolute(locktime, chain, &locktime_abs, result))
+        return false;
 
     /* Parse secret hash */
     uint8_t secret_hash[32];
@@ -324,8 +377,8 @@ static bool rpc_swap_participate(const struct json_value *params, bool help,
         return false;
     }
 
-    return swap_build_and_persist(my_addr, counter_addr, amount, locktime, chain,
-                                  secret_hash, /*secret_or_null=*/NULL,
+    return swap_build_and_persist(my_addr, counter_addr, amount, locktime_abs,
+                                  chain, secret_hash, /*secret_or_null=*/NULL,
                                   SWAP_PARTICIPANT, /*strict_build_fail=*/false,
                                   result);
 }
