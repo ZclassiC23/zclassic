@@ -296,6 +296,57 @@ build/bin/zclassic23 dumpstate peer_lifecycle
 
 ---
 
+## Onion-Seed Bootstrap (extending peer-discovery-of-last-resort)
+
+**What it's for:** when DNS seeds (`nSeeds=0` today — see
+`lib/chain/src/chainparams.c`) and the hardcoded clearnet fixed-IP seeds are
+both unreachable (churn, firewall, ISP blackhole), the node's remaining
+bootstrap path is Tor: fetch `/directory.json` (its own .onion + advertised
+clearnet IP/height) from one or more onion-directory seed nodes. Today the
+binary ships exactly **one** hardcoded first-party onion seed
+(`lib/chain/src/chainparams.c` — search `kOnionSeeds`), a known single point
+of failure re-verified 2026-07-10 with no second first-party address
+currently available in this repo/docs/deploy — do not add a fabricated one;
+adding a dead hostname wastes a recovering node's bootstrap budget on a dead
+lookup instead of helping.
+
+**Operator zero-rebuild path (works today):** list additional `.onion` hosts
+in `~/.config/zclassic23/onion-seeds`, one per line:
+
+```
+# comments start with '#'; blank lines are skipped
+somepeersonion1234567890123456789012345678901234567890123.onion
+# a second/community-run zclassic23 directory node:
+anotherpeersonionabcdefghijklmnopqrstuvwxyz0123456789abcde.onion
+```
+
+Format rules: one hostname per line, `#`-prefixed comment lines and blank
+lines are skipped, max 32 entries loaded. This file is read **before** the
+hardcoded `kOnionSeeds` array, requires no rebuild, and takes effect on the
+next onion-seed pass (boot-time discovery, and any time the
+`peer_floor_violated` condition's peer-of-last-resort remedy fires — see
+`app/conditions/src/peer_floor_violated.c` / `connman_kick_onion_seeds()` in
+`lib/net/src/connman.c`).
+
+**When this fires automatically:** the `peer_floor_violated` condition
+(`app/conditions/src/peer_floor_violated.c`) detects when healthy outbound
+peers stay below 3 for 60+ seconds. Its remedy is independent of whether the
+legacy `zclassicd` oracle/mirror is reachable — that source is not consulted
+by this decision at all. When healthy outbound is exactly zero it additionally
+calls `connman_kick_onion_seeds()` (the operator file above, then the
+hardcoded `kOnionSeeds`, then any `.onion` peers discovered via on-chain ZSLP
+scan). After 5 fast attempts without the tip resuming, the condition pages
+once, then keeps re-arming the same remedy every 10 minutes indefinitely
+(`cooldown_secs=600`, `cooldown_max_rearms=0`) — it never permanently gives up
+while peers stay below the floor.
+
+**Operator action:** if a node is repeatedly hitting `peer_floor_violated`
+with no recovery, populate `~/.config/zclassic23/onion-seeds` with any known
+reachable zclassic23 .onion address(es) — no restart or rebuild required, the
+next onion-seed pass picks the file up.
+
+---
+
 ## RPC 429 (Rate Limited)
 
 **Symptoms:** RPC clients get HTTP 429. `EV_RPC_TIMEOUT`. `zcl_rpc_rate_limited_*` counters climbing.

@@ -200,8 +200,27 @@ static void init_main_params(void)
      * so even ONE reachable onion seed re-seeds clearnet addrman. More
      * than one removes the single-point-of-failure: a recovering or
      * partitioned node still finds a supplier if any one seed is up.
-     * Operators can extend this set at runtime via
-     * ~/.config/zclassic23/onion-seeds (loaded first, no rebuild). */
+     *
+     * KNOWN GAP (docs/work/sticky-node-plan.md P1 #9b, re-verified
+     * 2026-07-10): this array carries exactly ONE first-party seed today.
+     * No second verified, currently-reachable first-party .onion address
+     * exists anywhere in this repo/docs/deploy/ as of this check — do not
+     * fabricate one here; a made-up hostname is worse than a short array
+     * (it wastes a recovering node's bootstrap budget on a dead lookup).
+     * Add a second entry ONLY after confirming (a) it is a zclassic23
+     * onion-directory node the project controls and (b) it answers
+     * /directory.json over Tor at the time of the change — re-verify
+     * before every release, same discipline as the fixed_ip4[] set above.
+     *
+     * Zero-rebuild path in the meantime (works today, no code change):
+     * operators — including a second/third project node — list additional
+     * .onion hosts, one per line ('#' comments allowed, blank lines
+     * skipped, 32-line cap), in ~/.config/zclassic23/onion-seeds. It is
+     * loaded before this hardcoded array by both the boot-time discovery
+     * pass and the peer-of-last-resort kick
+     * (connman_kick_onion_seeds() <- app/conditions/src/peer_floor_violated.c,
+     * run_onion_seed_pass() in lib/net/src/connman.c). See "Onion-Seed
+     * Bootstrap" in docs/RUNBOOK.md for the operator-facing writeup. */
     {
         static const char *const kOnionSeeds[] = {
             "zc23kenfdqqkgamthif3m7lbbdsyrotsl2dlw35qrh3iuzopozmpjnad.onion",
