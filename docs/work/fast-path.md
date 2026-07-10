@@ -61,8 +61,9 @@ that deleted tip_finalize_log rows, shipped without a reset-safe test).
 
 | command | what |
 |---|---|
-| `make t ONLY=<group>` | run ONE test group, rebuilding the harness first (closes the stale-`test_parallel` rebuild trap) |
-| `make t-fast ONLY=<group>` | hot-path ONE test group via cached per-file test objects and a non-LTO harness |
+| `make t ONLY=<group>` | run ONE test group, rebuilding the harness first (closes the stale-`test_parallel` rebuild trap). The harness is now a cached per-TU build (`build/test-rel-obj/`, strict `-O3 -Werror -pedantic -DZCL_TESTING`, non-LTO), so this rebuild is one changed-TU recompile + one link (~2 s), not a ~1,300-TU whole-program recompile (~90 s) — and header/`.def` edits are depfile-tracked, so they can no longer false-green |
+| `make t-fast ONLY=<group>` | hot-path ONE test group via cached per-file test objects and a non-LTO, non-`-Werror`, `-O1` harness (`build/test-obj/`); loosest/fastest loop |
+| `make test_parallel_wpo` | rebuild the original whole-program LTO test binary at `build/bin/test_parallel_wpo` — only to debug a suspected per-TU-vs-LTO divergence |
 | `make fast-changed-compile` | cheapest guarded compile check: direct changed `.c` dev-object compile, direct `.h`/`.def` depfile dependents after warm-up, safe fallback for graph-wide edits |
 | `make fast-compile` | fastest no-link dev compile check using cached non-LTO `build/dev-obj` objects |
 | `make build-only` | strict release-flag incremental compile-check of the whole node (no link) |
@@ -82,7 +83,7 @@ that deleted tip_finalize_log rows, shipped without a reset-safe test).
 | `make pre-push-ci` | bounded push gate: cached focused fast-ci for changed files with `ZCL_FAST_COMPILE=strict` |
 | `make install-quality-linger` | install background full-test, fuzz, and coverage user timers |
 | `make quality-linger-status` | show latest background tests/fuzz/coverage JSON verdicts |
-| `make test` | the fast fork-based parallel suite (~1 min); `make test-full` is the slow single-process binary |
+| `make test` | the fast fork-based parallel suite (~1 min), now built from the cached per-TU `test_parallel` (incremental after the first build); `make test-full` is the slow single-process binary |
 | `make ci-reproducible` | build-twice byte-identity proof in isolated build dirs |
 
 `make agent-plan` is the read-only preview of the loop: it emits

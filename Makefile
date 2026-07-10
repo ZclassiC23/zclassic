@@ -269,6 +269,49 @@ TEST_FAST_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS))
 
 -include $(TEST_PARALLEL_FAST_OBJS:.o=.d)
 
+# ── Cached STRICT test_parallel (per-TU, depfile-tracked) ────────────────────
+# `test_parallel` (what `make t`/`make test` run) was one whole-program `cc`
+# over ~1,300 .c files, so ccache could never cache it and EVERY full-suite gate
+# paid a full recompile (~90s here) even for a one-line edit — and, worse, the
+# monolith rule listed only .c files as prerequisites, so a header-only edit did
+# not rebuild at all (false green). Both are fixed by compiling into a dedicated
+# per-TU object tree with -MMD -MP depfiles and linking the cached objects.
+#
+# Flags are IDENTICAL to the old whole-program test_parallel rule with ONE
+# deliberate delta: `-flto=auto` is dropped. LTO is a *link-time* whole-program
+# optimization — caching per-TU GIMPLE objects would still force the expensive
+# whole-program optimize+codegen at every link, defeating the cache. Dropping it
+# makes each TU independently compiled AND code-generated (so ccache hits and a
+# one-file edit costs one -O3 recompile + one plain link). This cannot change
+# test semantics: -O3, -Werror, -pedantic, the hardening flags and -DZCL_TESTING
+# are all preserved byte-for-byte; LTO only alters cross-TU inlining, never
+# observable behavior. The whole-program LTO build remains as `test_parallel_wpo`
+# (below) for the rare case of chasing an optimizer/LTO-dependent divergence.
+TEST_REL_OBJ_DIR = $(BUILD_DIR)/test-rel-obj
+# Second (documented) delta: the -O3 + _FORTIFY_SOURCE heuristic-warning family
+# (-Wformat-truncation/-Wformat-overflow, -Warray-bounds, -Wstringop-truncation,
+# -Wstringop-overread, -Wrestrict, -Wnonnull, -Wmaybe-uninitialized) is off. These
+# fire ONLY once real per-TU codegen runs at -O3; every other build in the tree
+# defers codegen and never emits them
+# — the release binary and `make build-only` both compile with -flto=auto (LTO
+# defers codegen to link, which does not re-emit these), and test_parallel_fast
+# runs at -O1 (below the level that enables -Warray-bounds). So NO build in the
+# repo enforces this family today; excluding it here keeps the ENFORCED warning
+# set a superset-or-equal of the retired whole-program test_parallel's — every
+# warning the old monolith would have failed on, this pipeline still fails on.
+# Each is a conservative worst-case estimate on intentionally-bounded snprintf /
+# memcpy / guarded locals (verified: the flagged sites are all safe), not a real
+# defect. -Werror and -pedantic remain in force for every other warning.
+TEST_REL_CFLAGS = $(filter-out -flto=auto,$(CFLAGS)) -DZCL_TESTING \
+	-Wno-deprecated-declarations -Wno-format-truncation -Wno-format-overflow \
+	-Wno-array-bounds -Wno-stringop-truncation -Wno-stringop-overread \
+	-Wno-restrict -Wno-nonnull -Wno-maybe-uninitialized
+TEST_REL_LDFLAGS = $(filter-out -flto=auto,$(LDFLAGS))
+TEST_PARALLEL_REL_SRCS = $(TEST_SRCS_NO_MAIN) lib/test/src/test_parallel.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS) $(ALL_SRCS)
+TEST_PARALLEL_REL_OBJS = $(patsubst %.c,$(TEST_REL_OBJ_DIR)/%.o,$(TEST_PARALLEL_REL_SRCS))
+
+-include $(TEST_PARALLEL_REL_OBJS:.o=.d)
+
 # Generate templates from .chtml and .ccss files
 TMPL_GEN = app/views/include/views/wallet_templates_gen.h
 TMPL_SRC = $(wildcard app/views/templates/*.chtml) $(wildcard app/views/css/*.ccss)
@@ -318,7 +361,19 @@ $$(BIN_DIR)/$(1): $$(VIEW_GEN_HEADERS) $$(BUILD_COMMIT_STAMP) $(2) $$(ALL_SRCS)
 endef
 
 $(eval $(call BUILD_NODE_TOOL,test_zcl,$(TEST_SRCS_NO_MAIN) lib/test/src/test.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS),,-DZCL_TESTING))
-$(eval $(call BUILD_NODE_TOOL,test_parallel,$(TEST_SRCS_NO_MAIN) lib/test/src/test_parallel.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS),,-DZCL_TESTING))
+# Whole-program LTO test_parallel, kept for debugging any per-TU-vs-LTO
+# divergence. `make t`/`make test` no longer build this — they use the cached
+# per-TU $(TEST_PARALLEL_BIN) rule below — but `make test_parallel_wpo` still
+# produces the original monolithic binary at build/bin/test_parallel_wpo.
+$(eval $(call BUILD_NODE_TOOL,test_parallel_wpo,$(TEST_SRCS_NO_MAIN) lib/test/src/test_parallel.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS),,-DZCL_TESTING))
+
+# test_parallel is now built from the cached per-TU objects + one plain link.
+.PHONY: test_parallel
+test_parallel: $(TEST_PARALLEL_BIN)
+
+$(TEST_PARALLEL_BIN): $(VIEW_GEN_HEADERS) $(TEST_PARALLEL_REL_OBJS) | $(VENDOR_LIBS)
+	@mkdir -p $(dir $@)
+	$(CC) $(TEST_REL_CFLAGS) $(TEST_REL_LDFLAGS) -o $@ $(TEST_PARALLEL_REL_OBJS) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS)
 
 .PHONY: test_parallel_fast
 test_parallel_fast: $(TEST_PARALLEL_FAST_BIN)
@@ -2130,6 +2185,16 @@ $(TEST_FAST_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS)
 # refreshed when HEAD changes.
 $(TEST_FAST_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_COMMIT_STAMP)
 
+# Strict cached test_parallel object tree: same flags as the old whole-program
+# test_parallel minus -flto=auto (see the TEST_REL_* comment above). -MMD -MP so
+# a header/.def edit recompiles exactly its dependents — no false green.
+$(TEST_REL_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS)
+	@mkdir -p $(dir $@)
+	$(CC) $(TEST_REL_CFLAGS) -MMD -MP -c -o $@ $<
+
+# The strict test tree also needs the commit TU refreshed when HEAD changes.
+$(TEST_REL_OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_COMMIT_STAMP)
+
 # Deploy: lint → WAL checkpoint → install service → restart → RPC verify.
 #
 # `make deploy` used to print "Deployed." whenever systemd held the unit
@@ -3138,10 +3203,11 @@ ci-symbol-floor: zclassic23
 # does NOT gate `make ci`. The 13-scenario corpus itself runs in ~1.6s once
 # built — that part is cheap. The cost that matters is building the
 # zclassic23-chaos binary in the first place: it is its own whole-program
-# LTO link over $(ALL_SRCS) (same shape as zclassic23/test_parallel), and a
-# clean build of it alone measured 1m33s. `make ci` already pays for two
-# whole-program LTO links (zclassic23 + test_parallel); a THIRD full link
-# to cover 13 scenario replays that already run in every dev's `make
+# LTO link over $(ALL_SRCS) (same shape as zclassic23; test_parallel is now a
+# cached per-TU non-LTO build, so it is no longer in this class), and a clean
+# build of it alone measured 1m33s. `make ci` already pays for the whole-program
+# LTO link of zclassic23 plus the cached test_parallel build; a THIRD full LTO
+# link to cover 13 scenario replays that already run in every dev's `make
 # sim-fast` would tax the hot CI path by roughly 50% for marginal coverage,
 # the same "too slow for the hot path" reasoning that already keeps
 # ci-reproducible (two links) and wire_sweep's nightly seed sweep
