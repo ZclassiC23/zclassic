@@ -229,6 +229,33 @@ controller→probe tables, `ZCL_DEVLOOP_HOTSWAP`), `test_make_lint_gates.c` (ass
 - `app/controllers/src/agent_controller.c:197-203` — impact rule mapping
   `tools/mcp/` → `mcp_agent_api`, sets `acc->mcp_changed`.
 
+### 1.8 Verified consumer worklist (2026-07-11 sweep)
+
+A 4-modality sweep verified this inventory against live code and found **114
+unique consumers — 27 of them NOT in §1.1–§1.7**. The authoritative,
+line-accurate execution list for W1/W2/W3 is
+**[`MCP-REMOVAL-WORKLIST.md`](./MCP-REMOVAL-WORKLIST.md)** (W1=15, W2=47,
+W3=52). Execute waves from the worklist, not from this section's prose.
+The five gaps that would have broken the program as originally written
+(all spot-verified in code):
+
+1. `config/src/boot_services.c:100,141,1219,1241` — boot-path includes of
+   `mcp/dev_rpc_bridge.h` + `mcp/metrics.h`, `register_dev_mcp_rpc_commands()`
+   and `mcp_metrics_init()` calls — **build break at boot wiring** if W1/W3
+   skip this file.
+2. `src/main.c:2664-2675,2735,2849,3063-3064` — the REAL `-mcp` /
+   `-mcp-inprocess` flag-parse + server/thread launch sites (§1.1's cited
+   range `1637-1665` covers only the extern + thread fn).
+3. `lib/test/src/test_api.c:2833,3024,4803` — API-contract asserts on
+   `mcp_tool` / `mcp_callable_count` / `mcp_controllers` (file absent from §1.5).
+4. `lib/test/src/test_metric_alerts.c:17,104-107` — consumer of
+   `mcp_notify_is_operator_event()`; deleting `mcp_notify.*` without a native
+   operator-event allow-list drops real notify coverage.
+   `lib/test/src/test_secrets_hygiene.c:151-157` similarly hits
+   `mcp_router_tools_list_json()`.
+5. `README.md:10,244,251,302` — the whole "Claude integration (MCP)" section;
+   README was absent from §1.6's doc list.
+
 ---
 
 ## 2. Wave table
