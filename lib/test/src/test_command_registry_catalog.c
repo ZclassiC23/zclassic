@@ -12,6 +12,7 @@
 #include "kernel/command_registry.h"
 #include "command/native_command.h"
 #include "json/json.h"
+#include "mcp/rpc_client.h"
 
 #include <string.h>
 
@@ -190,6 +191,113 @@ static int test_bridge_bindings_reverse(void)
         }
         PASS();
     } _test_next:;
+    return failures;
+}
+
+/* Stubs the six read-only RPCs core.status.brief composes from, so the
+ * envelope test below runs without a live node (mcp_node_rpc's ZCL_TESTING
+ * hook wins over both RPC backends — see tools/mcp/rpc_client.c). */
+static char *status_brief_mock_rpc(const char *method,
+                                   const char *params_json)
+{
+    (void)params_json;
+    if (strcmp(method, "getblockcount") == 0)
+        return strdup("3117073");
+    if (strcmp(method, "getblockchaininfo") == 0)
+        return strdup("{\"best_header_height\":3117074}");
+    if (strcmp(method, "syncstate") == 0)
+        return strdup("{\"state\":\"at_tip\"}");
+    if (strcmp(method, "healthcheck") == 0)
+        return strdup("{\"healthy\":true,\"serving\":true,"
+                      "\"checks\":{\"tip_advance_age_seconds\":3}}");
+    if (strcmp(method, "getpeerinfo") == 0)
+        return strdup("[{\"inbound\":false,\"startingheight\":3117074}]");
+    if (strcmp(method, "dumpstate") == 0)
+        return strdup("{\"subsystem\":\"blocker\","
+                      "\"captured_at\":1782240000,"
+                      "\"state\":{\"active_count\":0,"
+                      "\"permanent_count\":0,\"transient_count\":0,"
+                      "\"dependency_count\":0,\"resource_count\":0,"
+                      "\"escape_dispatched_total\":0,"
+                      "\"blockers\":[]}}");
+    return strdup("null");
+}
+
+/* core.status.brief exists so an operator/AI never has to pipe the ~55KB
+ * core.status body through grep/tr for the handful of fields that answer
+ * "is the node serving and caught up" — see docs/NATIVE_COMMAND_INTERFACE.md
+ * §9 (default budgets) and status_native_handlers.c. This proves the leaf
+ * is READY-bridged, dispatches to a real zcl.result.v1 envelope, and that
+ * `data` stays flat (no nested containers besides the universal `_page`
+ * pagination sidecar every bridged leaf carries) with exactly the nine
+ * documented sync/serving keys. */
+static int test_status_brief_flat_lean_envelope(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+    TEST("core.status.brief: flat lean zcl.result.v1 body, nine sync/serving "
+        "fields") {
+        const struct zcl_command_spec *s =
+            find_spec(reg, "core.status.brief");
+        ASSERT(s != NULL);
+        ASSERT_EQ(s->availability, ZCL_COMMAND_READY);
+        ASSERT(s->handler == zcl_native_bridge_command);
+        ASSERT(zcl_native_bridge_tool_for_path("core.status.brief") != NULL);
+
+        mcp_rpc_client_set_test_hook(status_brief_mock_rpc);
+        enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+        bool dispatched = exec_leaf(reg, s, out, sizeof(out), &code);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(dispatched);
+        ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+
+        struct json_value root;
+        ASSERT(json_read(&root, out, strlen(out)) && root.type == JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "schema")),
+                      "zcl.result.v1");
+        ASSERT(json_get_bool(json_get(&root, "ok")));
+        ASSERT_STR_EQ(json_get_str(json_get(&root, "status")), "passed");
+
+        const struct json_value *data = json_get(&root, "data");
+        ASSERT(data != NULL && data->type == JSON_OBJ);
+
+        static const char *const expected_keys[] = {
+            "served_height", "header_height", "gap", "sync_state",
+            "serving", "healthy", "peer_count", "primary_blocker",
+            "tip_advance_age_seconds",
+        };
+        size_t expected_count =
+            sizeof(expected_keys) / sizeof(expected_keys[0]);
+        /* The nine documented fields plus the universal `_page` sidecar
+         * every bridged leaf's envelope carries — nothing else. */
+        ASSERT(data->num_children == expected_count + 1);
+        for (size_t i = 0; i < expected_count; i++) {
+            const struct json_value *v = json_get(data, expected_keys[i]);
+            ASSERT(v != NULL);
+            ASSERT(v->type != JSON_OBJ && v->type != JSON_ARR);
+        }
+        const struct json_value *page = json_get(data, "_page");
+        ASSERT(page != NULL && page->type == JSON_OBJ);
+        ASSERT(!json_get_bool(json_get(page, "truncated")));
+
+        ASSERT_EQ(json_get_int(json_get(data, "served_height")),
+                  (int64_t)3117073);
+        ASSERT_EQ(json_get_int(json_get(data, "header_height")),
+                  (int64_t)3117074);
+        ASSERT_EQ(json_get_int(json_get(data, "gap")), (int64_t)1);
+        ASSERT_STR_EQ(json_get_str(json_get(data, "sync_state")), "at_tip");
+        ASSERT(json_get_bool(json_get(data, "serving")));
+        ASSERT(json_get_bool(json_get(data, "healthy")));
+        ASSERT_EQ(json_get_int(json_get(data, "peer_count")), (int64_t)1);
+        ASSERT_STR_EQ(json_get_str(json_get(data, "primary_blocker")),
+                      "none");
+        ASSERT_EQ(json_get_int(json_get(data, "tip_advance_age_seconds")),
+                  (int64_t)3);
+        json_free(&root);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
     return failures;
 }
 
@@ -625,6 +733,7 @@ int test_command_registry_catalog(void)
     failures += test_search_bounded();
     failures += test_ready_leaves_bound();
     failures += test_bridge_bindings_reverse();
+    failures += test_status_brief_flat_lean_envelope();
     failures += test_bridge_mcp_free_bindings();
     failures += test_planned_fail_closed();
     failures += test_envelope_vectors();

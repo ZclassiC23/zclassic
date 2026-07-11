@@ -69,6 +69,7 @@ static const struct {
     const char *tool;
 } g_bridge_tools[] = {
     { "core.status", "zcl_status" },
+    { "core.status.brief", "zcl_status_brief" },
     { "core.chain.tip", "zcl_chain_tip" },
     { "core.chain.block.get", "zcl_getblock" },
     { "core.chain.transaction.get", "zcl_getrawtransaction" },
@@ -136,6 +137,7 @@ static const struct {
     zcl_native_body_fn body;
 } g_bridge_native_body[] = {
     { "core.status", zcl_native_status_body },
+    { "core.status.brief", zcl_native_status_brief_body },
     { "core.chain.block.get", zcl_native_getblock_body },
     { "core.chain.transaction.get", zcl_native_getrawtransaction_body },
     { "core.sync.blockers", zcl_native_blockers_body },
