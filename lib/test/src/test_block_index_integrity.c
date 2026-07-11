@@ -438,6 +438,37 @@ static int t_recovery_status(void)
     return failures;
 }
 
+/* ── 11b. dump_state_json (zcl_state subsystem=block_index_integrity) ── */
+
+static int t_dump_state_json(void)
+{
+    int failures = 0;
+
+    bii_record_recovery_status(BII_HASH_MISMATCH,
+                               BII_RECOVERY_QUARANTINED,
+                               "body sha3 mismatch",
+                               true, false);
+
+    struct json_value v = {0};
+    json_set_object(&v);
+    bool ok = block_index_integrity_dump_state_json(&v, NULL);
+    const struct json_value *verdict = json_get(&v, "verdict");
+    const struct json_value *action = json_get(&v, "action");
+    const struct json_value *degraded = json_get(&v, "degraded");
+    const struct json_value *reason = json_get(&v, "reason");
+    bool shape_ok = ok && verdict &&
+                    strcmp(json_get_str(verdict), "hash_mismatch") == 0 &&
+                    action &&
+                    strcmp(json_get_str(action), "quarantined") == 0 &&
+                    degraded && json_get_bool(degraded) == true &&
+                    reason &&
+                    strcmp(json_get_str(reason), "body sha3 mismatch") == 0;
+    json_free(&v);
+    BII_RUN("bii: dump_state_json reports verdict/action/degraded/reason",
+            shape_ok);
+    return failures;
+}
+
 /* ── 12. Bulk height repair fixes scrambled heights ──────────── */
 
 static int t_height_repair(void)
@@ -708,6 +739,7 @@ int test_block_index_integrity(void)
     failures += t_quarantine_missing_is_noop();
     failures += t_verdict_names();
     failures += t_recovery_status();
+    failures += t_dump_state_json();
     failures += t_height_repair();
     failures += t_height_repair_empty();
     failures += t_height_repair_cycle();

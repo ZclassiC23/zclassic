@@ -63,6 +63,11 @@ int mirror_divergence_locate(int disagree_height);
  * an identical chain below it, so the located divergence resolved. */
 void mirror_divergence_note_agreement(int height);
 
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe. */
+struct json_value;
+bool mirror_divergence_dump_state_json(struct json_value *out,
+                                       const char *key);
+
 #ifdef ZCL_TESTING
 /* Probe injection: local/remote hash-at-height (65-byte hex out).
  * NULL restores the production probes. */

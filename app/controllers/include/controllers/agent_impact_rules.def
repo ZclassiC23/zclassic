@@ -82,7 +82,7 @@ AGENT_IMPACT_RULE("config/src/app_context.c|config/include/config/boot.h|lib/tes
 AGENT_IMPACT_RULE("app/services/src/node_health_service.c|app/services/include/services/node_health_service.h|lib/test/src/test_node_health_service.c", "node_health_service syncdiag_rpc api mcp_controllers")
 AGENT_IMPACT_RULE("app/services/src/chain_evidence_live_advance.c|app/services/include/services/chain_evidence_authority_service.h|lib/test/src/test_chain_evidence_live_advance.c", "chain_evidence_live_advance chain_evidence_controller node_health_service api make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/chain_evidence_persistence_service.c|app/services/src/chain_evidence_snapshot.c|app/services/include/services/chain_evidence_persistence_service.h|app/services/src/chain_evidence_reconstruct.c", "chain_evidence_controller chain_evidence_live_advance node_health_service make_lint_gates")
-AGENT_IMPACT_RULE("app/services/src/utxo_mirror_sync_service.c|app/services/src/utxo_mirror_delta.c|app/services/include/services/utxo_mirror_delta.h|lib/test/src/test_utxo_mirror_sync.c", "sqlite node_db_catchup_service make_lint_gates utxo_mirror_sync")
+AGENT_IMPACT_RULE("app/services/src/utxo_mirror_sync_service.c|app/services/include/services/utxo_mirror_sync_service.h|app/services/src/utxo_mirror_delta.c|app/services/include/services/utxo_mirror_delta.h|lib/test/src/test_utxo_mirror_sync.c", "sqlite node_db_catchup_service make_lint_gates utxo_mirror_sync")
 AGENT_IMPACT_RULE("app/services/src/block_source_policy*.c|app/services/include/services/block_source_policy.h|lib/test/src/test_chain_advance_coordinator.c", "chain_advance_coordinator mcp_controllers make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/legacy_mirror_sync_*.c|app/services/include/services/legacy_mirror_sync_service.h|lib/validation/src/mirror_consensus.c|lib/validation/include/validation/mirror_consensus.h|lib/test/src/test_*oracle.c", "oracle_policy mirror_divergence_locator syncdiag_rpc lag_slo make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/health_controller.c|app/controllers/include/controllers/health_controller.h|lib/test/src/test_lag_slo.c", "syncdiag_rpc lag_slo make_lint_gates")
@@ -233,7 +233,7 @@ AGENT_IMPACT_RULE("lib/vcs/src/vcs.c|lib/vcs/include/vcs/vcs.h|lib/vcs/src/vcs_c
 AGENT_IMPACT_RULE("tools/dev/dev_activation*.c|tools/dev/dev_activation*.h|lib/test/src/test_dev_activation.c", "dev_activation dev_platform make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/consensus_reject_index.c|app/services/include/services/consensus_reject_index.h|lib/test/src/test_consensus_reject_index.c", "consensus_reject_index make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/rolling_anchor_service.c|app/services/include/services/rolling_anchor_service.h|lib/test/src/test_rolling_anchor_service.c", "rolling_anchor_service make_lint_gates")
-AGENT_IMPACT_RULE("app/services/src/mirror_divergence_locator.c", "mirror_divergence_locator oracle_policy make_lint_gates")
+AGENT_IMPACT_RULE("app/services/src/mirror_divergence_locator.c|app/services/include/services/mirror_divergence_locator.h", "mirror_divergence_locator oracle_policy make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/block_pruning_service.c", "block_pruning make_lint_gates")
 AGENT_IMPACT_RULE("app/supervisors/src/legacy_mirror_supervisor.c", "supervisor supervisor_production_tree oracle_policy make_lint_gates")
 
@@ -252,6 +252,8 @@ AGENT_IMPACT_RULE("app/controllers/src/api_controller_dispatch.c|app/controllers
 /* Instant dev loop Wave 1/2: Tier-2 fast restart (clean-shutdown marker + skip). */
 AGENT_IMPACT_RULE("config/src/boot_shutdown_marker.c|config/include/config/boot_shutdown_marker.h|config/src/boot_fast_restart.c|config/include/config/boot_fast_restart.h|lib/test/src/test_shutdown_marker.c", "shutdown_marker unclean_shutdown_advance boot_phase make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/block_index_loader.c|app/services/src/block_index_loader_rebuild.c|app/services/include/services/block_index_loader.h|lib/test/src/test_block_index_loader.c|lib/test/src/test_block_index_rebuild.c", "load_verify_boot block_index_loader block_index_rebuild block_index_integrity make_lint_gates")
+AGENT_IMPACT_RULE("app/services/src/block_index_integrity.c|app/services/include/services/block_index_integrity.h|lib/test/src/test_block_index_integrity.c", "block_index_integrity make_lint_gates")
+AGENT_IMPACT_RULE("app/services/src/wallet_backup_service.c|app/services/include/services/wallet_backup_service.h|app/services/src/wallet_backup_crypto.c|app/services/src/wallet_backup_rotation.c|lib/test/src/test_wallet_backup.c", "wallet_backup wallet_backup_port make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/chain_restore_*.c|app/services/include/services/chain_restore_*.h|lib/test/src/test_boot_shutdown_marker.c", "boot_shutdown_marker load_verify_boot chain_state_repo make_lint_gates")
 
 /* Lane 2 (2026-07-10): empty-escape blocker stall meta-detector. */

@@ -102,6 +102,21 @@ int test_gap_fill_frontier_window(void)
     free(blocks);
     free(hashes);
 
+    /* Smoke-test the diagnostics dumper (zcl_state subsystem=gap_fill):
+     * the service was never started in this test, so it must still report
+     * a well-formed, not-running snapshot instead of crashing. */
+    {
+        struct json_value v = {0};
+        json_set_object(&v);
+        bool ok = gap_fill_dump_state_json(&v, NULL);
+        const struct json_value *running = json_get(&v, "running");
+        const struct json_value *passes = json_get(&v, "passes");
+        GF_CHECK("dump_state_json returns true and reports running+passes",
+                 ok && running && json_get_bool(running) == false &&
+                     passes && json_get_int(passes) == 0);
+        json_free(&v);
+    }
+
     printf("gap_fill_frontier_window: %s (%d failures)\n",
            failures == 0 ? "OK" : "FAIL", failures);
     return failures;

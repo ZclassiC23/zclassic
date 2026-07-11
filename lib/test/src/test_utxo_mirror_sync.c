@@ -246,6 +246,28 @@ int test_utxo_mirror_sync(void)
     UMS_CHECK("pass2 no-op (0 rows)", written2 == 0);
     UMS_CHECK("mirror count still 4", db_utxo_count(&ndb) == 4);
 
+    /* dump_state_json (zcl_state subsystem=utxo_mirror_sync) reads the
+     * boot-owned global instance pointer — temporarily point it at this
+     * test's local `svc` (already carries pass1's counters) to prove the
+     * dumper surfaces them, then restore NULL so later groups see "not
+     * started" as before. */
+    {
+        g_utxo_mirror_sync = &svc;
+        struct json_value v = {0};
+        json_set_object(&v);
+        bool ok = utxo_mirror_sync_dump_state_json(&v, NULL);
+        const struct json_value *present = json_get(&v, "instance_present");
+        const struct json_value *rebuilds = json_get(&v, "rebuilds_run");
+        const struct json_value *rows = json_get(&v, "rows_written");
+        bool shape_ok = ok && present && json_get_bool(present) == true &&
+                        rebuilds && json_get_int(rebuilds) >= 1 &&
+                        rows && json_get_int(rows) >= 4;
+        json_free(&v);
+        g_utxo_mirror_sync = NULL;
+        UMS_CHECK("dump_state_json reports instance + rebuilds_run + rows_written",
+                  shape_ok);
+    }
+
     /* ── Spend one coin in coins_kv + advance the frontier. The next pass must
      * REMOVE it from the mirror (count back to 3) — proves spends propagate. */
     {

@@ -9,11 +9,19 @@
  * existing utxo_apply nullifier writer, then clears the diagnostics blocker
  * marker when the bounded historical gap has been populated. */
 // repair-rung-ok:test_nullifier_backfill_service
+// one-result-type-ok:dump-state-json-typedef — the sole legacy bool export,
+// nullifier_backfill_dump_state_json, implements the diagnostics_dump_fn
+// typedef (CLAUDE.md "Adding state introspection": `bool
+// <name>_dump_state_json(...)`) mandated by the g_dumpers[] dispatch table
+// in app/controllers/src/diagnostics_registry.c; every other dumper in the
+// codebase has the same bool signature for the same reason, so this is not
+// a candidate for struct zcl_result conversion.
 
 #include "services/nullifier_backfill_service.h"
 
 #include "jobs/utxo_apply_delta.h"
 #include "jobs/utxo_apply_nullifiers.h"
+#include "json/json.h"
 #include "models/block.h"
 #include "primitives/block.h"
 #include "storage/disk_block_io.h"
@@ -339,4 +347,54 @@ struct zcl_result nullifier_backfill_service_run(
     ZCL_CHECK(nbf_finish_complete(db));
     report->completed = true;
     return ZCL_OK;
+}
+
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe: reads the
+ * two durable progress.kv markers this owner-gated one-shot job leaves
+ * behind (present == a backfill was started and NULLIFIER_BACKFILL_RESUME_KEY
+ * < NULLIFIER_BACKFILL_ACTIVATION_KEY means it is still mid-run; both
+ * absent means either "never needed" or "already completed" — the
+ * companion `utxo_apply.nullifier_backfill_gap` blocker, visible via
+ * `zcl_state subsystem=blocker`, distinguishes those two). No allocation;
+ * progress_store_tx_lock is the same brief lock nbf_read_meta_i64 always
+ * takes. */
+bool nullifier_backfill_dump_state_json(struct json_value *out,
+                                        const char *key)
+{
+    (void)key;
+    if (!out)
+        return false;
+    json_set_object(out);
+
+    sqlite3 *db = progress_store_db();
+    json_push_kv_bool(out, "progress_store_open", db != NULL);
+    if (!db) {
+        json_push_kv_bool(out, "gap_blocker_active",
+                          blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID));
+        return true;
+    }
+
+    int64_t activation = 0, resume = 0;
+    bool activation_found = false, resume_found = false;
+    (void)nbf_read_meta_i64(db, NULLIFIER_BACKFILL_ACTIVATION_KEY,
+                            &activation, &activation_found);
+    (void)nbf_read_meta_i64(db, NULLIFIER_BACKFILL_RESUME_KEY,
+                            &resume, &resume_found);
+
+    json_push_kv_bool(out, "activation_cursor_present", activation_found);
+    json_push_kv_int(out, "activation_cursor", activation);
+    json_push_kv_bool(out, "resume_cursor_present", resume_found);
+    json_push_kv_int(out, "resume_cursor", resume);
+    json_push_kv_bool(out, "gap_blocker_active",
+                      blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID));
+
+    const char *status;
+    if (!activation_found)
+        status = "not_needed_or_complete";
+    else if (resume_found && resume < activation)
+        status = "in_progress";
+    else
+        status = "pending_start";
+    json_push_kv_str(out, "status", status);
+    return true;
 }

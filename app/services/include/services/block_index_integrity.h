@@ -129,6 +129,11 @@ void bii_record_recovery_status(enum bii_verdict verdict,
 
 void bii_get_recovery_status(struct bii_recovery_status *out);
 
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe. */
+struct json_value;
+bool block_index_integrity_dump_state_json(struct json_value *out,
+                                           const char *key);
+
 /* ── Verification entry point ─────────────────────────────────
  * Reads `<datadir>/block_index.bin.sha3` and re-hashes
  * `<datadir>/block_index.bin`, then optionally cross-checks the

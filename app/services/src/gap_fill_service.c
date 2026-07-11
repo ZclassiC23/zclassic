@@ -22,6 +22,7 @@
 #include "chain/chain.h"
 #include "net/download.h"
 #include "jobs/body_fetch_stage.h"
+#include "json/json.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/supervisor.h"
@@ -235,6 +236,36 @@ void gap_fill_get_stats(struct gap_fill_stats *out)
     pthread_mutex_lock(&g_gf.mu);
     *out = g_gf.stats;
     pthread_mutex_unlock(&g_gf.mu);
+}
+
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe: reuses the
+ * same lock-guarded snapshot the supervisor heartbeat and RPC/agent paths
+ * already read. */
+bool gap_fill_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out)
+        return false;
+    json_set_object(out);
+
+    json_push_kv_bool(out, "running", atomic_load(&g_gf.running));
+
+    struct gap_fill_stats st;
+    gap_fill_get_stats(&st);
+    json_push_kv_int(out, "passes", (int64_t)st.passes);
+    json_push_kv_int(out, "blocks_enqueued", (int64_t)st.blocks_enqueued);
+    json_push_kv_int(out, "passes_idle", (int64_t)st.passes_idle);
+    json_push_kv_int(out, "passes_corrupt_walk",
+                     (int64_t)st.passes_corrupt_walk);
+    json_push_kv_int(out, "timeout_sweeps", (int64_t)st.timeout_sweeps);
+    json_push_kv_int(out, "timeouts_requeued",
+                     (int64_t)st.timeouts_requeued);
+    json_push_kv_int(out, "dispatch_wakes", (int64_t)st.dispatch_wakes);
+    json_push_kv_int(out, "last_tip_h", (int64_t)st.last_tip_h);
+    json_push_kv_int(out, "last_best_h", (int64_t)st.last_best_h);
+    json_push_kv_int(out, "last_window_lo", (int64_t)st.last_window_lo);
+    json_push_kv_int(out, "last_window_hi", (int64_t)st.last_window_hi);
+    return true;
 }
 
 size_t gap_fill_sweep_download_timeouts(struct download_manager *dm,

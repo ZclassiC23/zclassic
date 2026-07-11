@@ -65,6 +65,11 @@ enum bundle_freshness {
 enum bundle_freshness bundle_classify(long long seed_h, long long header_tip,
                                       long long *gap_out, long long *secs_out);
 
+/* The "bundle_staleness" g_dumpers[] entry itself; implementation lives in
+ * diagnostics_registry_bundle.c alongside the two helpers above. */
+bool bundle_staleness_dump_state_json(struct json_value *out,
+                                      const char *key);
+
 /* RPC handlers, one per concern file. Signatures match rpc_handler_fn. */
 
 /* diagnostics_registry.c / diagnostics_dispatch.c.

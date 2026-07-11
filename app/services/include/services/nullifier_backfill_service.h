@@ -49,4 +49,9 @@ struct zcl_result nullifier_backfill_service_run(
     const struct nullifier_backfill_config *cfg,
     struct nullifier_backfill_report *report);
 
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe. */
+struct json_value;
+bool nullifier_backfill_dump_state_json(struct json_value *out,
+                                        const char *key);
+
 #endif /* ZCL_SERVICES_NULLIFIER_BACKFILL_SERVICE_H */

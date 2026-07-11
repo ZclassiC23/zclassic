@@ -201,6 +201,27 @@ int test_mirror_divergence_locator(void)
         mirror_divergence_reset_for_testing();
     }
 
+    /* 9. dump_state_json (zcl_state subsystem=mirror_divergence) reflects
+     * a located-and-latched divergence. */
+    {
+        mirror_divergence_reset_for_testing();
+        g_div_height = 3137373;
+        int r = mirror_divergence_locate(3143355);
+        MDL_CHECK("dump setup: located k", r == 3137373);
+
+        struct json_value v = {0};
+        json_set_object(&v);
+        bool ok = mirror_divergence_dump_state_json(&v, NULL);
+        const struct json_value *latched = json_get(&v, "divergence_latched");
+        const struct json_value *first_div = json_get(&v, "last_first_div");
+        bool shape_ok = ok && latched && json_get_bool(latched) == true &&
+                        first_div && json_get_int(first_div) == 3137373;
+        json_free(&v);
+        MDL_CHECK("dump_state_json reports divergence_latched + last_first_div",
+                  shape_ok);
+        mirror_divergence_reset_for_testing();
+    }
+
     /* crash-only: all outcomes above were return codes; reaching here is
      * the alive proof. */
     mirror_divergence_set_probes_for_testing(NULL, NULL);

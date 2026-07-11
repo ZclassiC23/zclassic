@@ -29,6 +29,7 @@
 
 #include "encoding/utilstrencodings.h"
 #include "event/event.h"
+#include "json/json.h"
 #include "platform/time_compat.h"
 
 #include <pthread.h>
@@ -332,4 +333,66 @@ void consensus_reject_index_record(const struct cri_entry *e)
     pthread_mutex_lock(&g_cri.lock);
     if (g_cri.running) cri_write_locked(e);
     pthread_mutex_unlock(&g_cri.lock);
+}
+
+static const char *cri_kind_name(enum cri_kind k)
+{
+    return k == CRI_KIND_BLOCK ? "block" : "tx";
+}
+
+/* Cap on entries returned by the dumper — independent of the ring's own
+ * (up to CRI_MAX_CAPACITY) capacity, so this function's stack frame stays
+ * small regardless of how the service was started. */
+#define CRI_DUMP_MAX_RECENT 64
+
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe: every field
+ * read goes through the existing mutex-guarded accessors. `key`, if given,
+ * is parsed as the max number of recent entries to return (default 20,
+ * clamped to CRI_DUMP_MAX_RECENT); NULL uses the default. */
+bool consensus_reject_index_dump_state_json(struct json_value *out,
+                                            const char *key)
+{
+    if (!out)
+        return false;
+    json_set_object(out);
+
+    bool running = consensus_reject_index_running();
+    json_push_kv_bool(out, "running", running);
+    json_push_kv_int(out, "total", (int64_t)consensus_reject_index_total());
+    json_push_kv_int(out, "count", (int64_t)consensus_reject_index_count());
+    json_push_kv_int(out, "capacity",
+                     (int64_t)consensus_reject_index_capacity());
+
+    size_t want = 20;
+    if (key && *key) {
+        long v = strtol(key, NULL, 10);
+        if (v > 0)
+            want = (size_t)v;
+    }
+    if (want > CRI_DUMP_MAX_RECENT)
+        want = CRI_DUMP_MAX_RECENT;
+
+    struct cri_entry entries[CRI_DUMP_MAX_RECENT];
+    size_t n = want > 0 ? consensus_reject_index_recent(entries, want) : 0;
+
+    struct json_value arr;
+    json_init(&arr);
+    json_set_array(&arr);
+    for (size_t i = 0; i < n; i++) {
+        char hex[65];
+        uint256_get_hex(&entries[i].hash, hex);
+        struct json_value child;
+        json_init(&child);
+        json_set_object(&child);
+        json_push_kv_str(&child, "hash", hex);
+        json_push_kv_str(&child, "kind", cri_kind_name(entries[i].kind));
+        json_push_kv_int(&child, "dos", (int64_t)entries[i].dos);
+        json_push_kv_int(&child, "ts_us", entries[i].ts_us);
+        json_push_kv_str(&child, "reason", entries[i].reason);
+        json_push_back(&arr, &child);
+        json_free(&child);
+    }
+    json_push_kv(out, "recent", &arr);
+    json_free(&arr);
+    return true;
 }

@@ -14,6 +14,7 @@
 
 #include "config/runtime.h"
 #include "event/event.h"
+#include "json/json.h"
 #include "legacy_mirror_sync_internal.h"
 #include "models/database.h"
 #include "platform/time_compat.h"
@@ -322,6 +323,38 @@ void mirror_divergence_note_agreement(int height)
                  "resolved by mirror agreement at h=%d (healthy fork)",
                  height);
     }
+}
+
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe: g_last_locate_unix
+ * / g_last_first_div / g_probes_last_run / g_divergence_latched are atomics;
+ * the pending (unconfirmed tip-window) record is guarded by g_pending_lock,
+ * the same lock mirror_divergence_locate/note_agreement already take. */
+bool mirror_divergence_dump_state_json(struct json_value *out,
+                                       const char *key)
+{
+    (void)key;
+    if (!out)
+        return false;
+    json_set_object(out);
+
+    json_push_kv_int(out, "last_locate_unix",
+                     atomic_load(&g_last_locate_unix));
+    json_push_kv_int(out, "last_first_div",
+                     (int64_t)atomic_load(&g_last_first_div));
+    json_push_kv_int(out, "probes_last_run",
+                     (int64_t)atomic_load(&g_probes_last_run));
+    json_push_kv_bool(out, "divergence_latched",
+                      atomic_load(&g_divergence_latched));
+
+    pthread_mutex_lock(&g_pending_lock);
+    int pending_first_div = g_pending_first_div;
+    int64_t pending_first_seen_unix = g_pending_first_seen_unix;
+    pthread_mutex_unlock(&g_pending_lock);
+    json_push_kv_bool(out, "pending_present", pending_first_div >= 0);
+    json_push_kv_int(out, "pending_first_div", (int64_t)pending_first_div);
+    json_push_kv_int(out, "pending_first_seen_unix",
+                     pending_first_seen_unix);
+    return true;
 }
 
 #ifdef ZCL_TESTING

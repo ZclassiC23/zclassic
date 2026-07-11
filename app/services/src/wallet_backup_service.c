@@ -1,3 +1,11 @@
+// one-result-type-ok:dump-state-json-typedef — the sole legacy bool export,
+// wallet_backup_dump_state_json, implements the diagnostics_dump_fn typedef
+// (CLAUDE.md "Adding state introspection": `bool <name>_dump_state_json(...)`)
+// mandated by the g_dumpers[] dispatch table in
+// app/controllers/src/diagnostics_registry.c; every other dumper in the
+// codebase has the same bool signature for the same reason, so this is not
+// a candidate for struct zcl_result conversion.
+
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Wallet Backup Service — see header for rationale.
@@ -35,6 +43,7 @@
 #include "services/wallet_backup_service.h"
 
 #include "event/event.h"
+#include "json/json.h"
 #include "supervisors/domains.h"
 
 #include <errno.h>
@@ -261,6 +270,29 @@ void wallet_backup_status_snapshot(struct wallet_backup_status *out)
     snprintf(out->last_path,  sizeof(out->last_path),  "%s", g_wbs.last_path);
     snprintf(out->last_error, sizeof(out->last_error), "%s", g_wbs.last_error);
     pthread_mutex_unlock(&g_wbs.lock);
+}
+
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe: reuses the
+ * lock-guarded snapshot that RPC/agent callers already read. */
+bool wallet_backup_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out)
+        return false;
+    json_set_object(out);
+
+    struct wallet_backup_status st;
+    wallet_backup_status_snapshot(&st);
+    json_push_kv_bool(out, "running", st.running);
+    json_push_kv_int(out, "total_runs", st.total_runs);
+    json_push_kv_int(out, "total_failures", st.total_failures);
+    json_push_kv_int(out, "last_run_unix", st.last_run_unix);
+    json_push_kv_int(out, "last_size_bytes", st.last_size_bytes);
+    json_push_kv_int(out, "last_key_count", st.last_key_count);
+    json_push_kv_int(out, "last_duration_ms", st.last_duration_ms);
+    json_push_kv_str(out, "last_path", st.last_path);
+    json_push_kv_str(out, "last_error", st.last_error);
+    return true;
 }
 
 /* Create backup_dir with mode 0700 if missing. Returns true if the
