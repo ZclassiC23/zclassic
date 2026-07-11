@@ -30,6 +30,9 @@ enum vcs_result {
     VCS_ERR       = -1,
     VCS_ENOTIMPL  = -2,
     VCS_REFUSED   = 3,   /* sealed-path change without a valid unseal token */
+    VCS_EPARTIAL  = 4,   /* vcs_revert: the source revert + forward commit
+                          * already landed (append-only, never undone), but a
+                          * requested relink activation refused or failed */
 };
 
 struct vcs_repo;
@@ -75,14 +78,44 @@ typedef bool (*vcs_log_cb)(const struct vcs_commit *c,
                            const uint8_t commit_id[32], void *user);
 int vcs_log(struct vcs_repo *r, size_t limit, vcs_log_cb cb, void *user);
 
+/* Relink callback for vcs_revert's binary-generation half (Wave 3.3). vcs.c
+ * stays policy-free: it only decides WHEN to call activate_generation (the
+ * target commit bound a non-zero generation_sha256) and how to interpret the
+ * result, never HOW to activate a generation — that policy lives entirely in
+ * the ops implementation supplied by the caller (kept out of lib/vcs/ so the
+ * ZVCS sovereignty lint gate stays green: this directory never spawns a
+ * process or names the external version-control tool it replaces).
+ *
+ * activate_generation must return true on a successful activation and false
+ * otherwise. For a hotswap-anchored commit — one whose generation_sha256
+ * addresses a standalone .so artifact rather than a full binary-generation
+ * directory — the activator is expected to REFUSE (return false) rather than
+ * guess at a restore recipe; vcs_revert then reports VCS_EPARTIAL while the
+ * already-landed source revert + forward commit stand untouched
+ * (append-only, never undone). */
+struct vcs_revert_relink_ops {
+    bool (*activate_generation)(const uint8_t gen_sha256[32], void *ctx);
+    void *ctx;
+};
+
 /* Restore the worktree to the manifest of target_commit (overwrite differing
  * tracked files atomically, delete files absent from the target), then record
  * the restoration as a forward commit (history stays append-only) whose id is
- * written to out_new_commit. If relink_generation is true the binary-generation
- * relink is NOT wired in v1 (Wave 3.3): the source revert + forward commit are
- * still performed, and the call returns VCS_ENOTIMPL to signal the relink half
- * did not run. Returns VCS_OK, VCS_ENOTIMPL, VCS_REFUSED, or VCS_ERR. */
+ * written to out_new_commit.
+ *
+ * relink controls the binary-generation half:
+ *   - NULL: source-only revert. Returns VCS_OK once the forward commit lands
+ *     (no ENOTIMPL — a plain source revert is always fully implemented).
+ *   - non-NULL: after the forward commit lands, if the target commit's
+ *     generation_sha256 is non-zero, relink->activate_generation() is called
+ *     with it. Activation success => VCS_OK. Activation failure/refusal =>
+ *     VCS_EPARTIAL (the source revert + forward commit already stand; never
+ *     undone). An all-zero generation_sha256 has nothing to relink => VCS_OK
+ *     without calling activate_generation.
+ *
+ * Returns VCS_OK, VCS_EPARTIAL, VCS_REFUSED, or VCS_ERR. */
 int vcs_revert(struct vcs_repo *r, const uint8_t target_commit[32],
-               bool relink_generation, uint8_t out_new_commit[32]);
+               const struct vcs_revert_relink_ops *relink,
+               uint8_t out_new_commit[32]);
 
 #endif /* ZCL_VCS_H */

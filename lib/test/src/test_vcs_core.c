@@ -230,6 +230,58 @@ static void seed_worktree(const char *dir)
     vc_write(dir, "docs/notes.md", "# notes\n");
 }
 
+/* ── fake vcs_revert_relink_ops activators for the relink-half tests ── */
+struct fake_activator {
+    int     calls;
+    uint8_t seen_hash[32];
+};
+
+static bool fake_activate_ok(const uint8_t gen_sha256[32], void *ctx)
+{
+    struct fake_activator *fa = ctx;
+    fa->calls++;
+    memcpy(fa->seen_hash, gen_sha256, 32);
+    return true;
+}
+
+static bool fake_activate_fail(const uint8_t gen_sha256[32], void *ctx)
+{
+    struct fake_activator *fa = ctx;
+    fa->calls++;
+    memcpy(fa->seen_hash, gen_sha256, 32);
+    return false;
+}
+
+/* Collect every commit id vcs_log() walks, to prove a relink revert is
+ * append-only (nothing already in commits.log is ever overwritten or
+ * dropped). */
+#define LOG_ID_COLLECT_MAX 64
+struct log_id_collect {
+    uint8_t ids[LOG_ID_COLLECT_MAX][32];
+    size_t  count;
+};
+
+static bool log_id_collect_cb(const struct vcs_commit *c,
+                              const uint8_t commit_id[32], void *user)
+{
+    (void)c;
+    struct log_id_collect *lc = user;
+    if (lc->count < LOG_ID_COLLECT_MAX)
+        memcpy(lc->ids[lc->count], commit_id, 32);
+    lc->count++;
+    return true;
+}
+
+static bool log_ids_contains(const struct log_id_collect *lc,
+                             const uint8_t id[32])
+{
+    size_t n = lc->count < LOG_ID_COLLECT_MAX ? lc->count : LOG_ID_COLLECT_MAX;
+    for (size_t i = 0; i < n; i++)
+        if (memcmp(lc->ids[i], id, 32) == 0)
+            return true;
+    return false;
+}
+
 /* ── test 4/5/9: snapshot / status / revert / timing ────────────── */
 static int t_snapshot_status_revert(const char *dir)
 {
@@ -320,7 +372,7 @@ static int t_snapshot_status_revert(const char *dir)
 
     /* revert to c1: worktree must byte-match the seed state */
     uint8_t cr[32];
-    VC_CHECK("revert to c1", vcs_revert(r, c1, false, cr) == VCS_OK);
+    VC_CHECK("revert to c1", vcs_revert(r, c1, NULL, cr) == VCS_OK);
     VC_CHECK("revert restored main.c", vc_file_matches(dir, "src/main.c",
              "int main(void){return 0;}\n"));
     VC_CHECK("revert restored notes.md", vc_file_matches(dir, "docs/notes.md",
@@ -328,13 +380,95 @@ static int t_snapshot_status_revert(const char *dir)
     VC_CHECK("revert deleted new.c", access(
              (snprintf(rmpath, sizeof(rmpath), "%s/src/new.c", dir), rmpath), F_OK) != 0);
 
-    /* revert with relink flag => not implemented, but source revert still done */
+    /* NULL relink => source-only revert, no longer ENOTIMPL. */
     vc_write(dir, "src/main.c", "int main(void){return 7;}\n");
     uint8_t cr2[32];
-    VC_CHECK("revert relink returns ENOTIMPL",
-             vcs_revert(r, c1, true, cr2) == VCS_ENOTIMPL);
-    VC_CHECK("revert relink still restored source",
+    VC_CHECK("revert with NULL relink is VCS_OK",
+             vcs_revert(r, c1, NULL, cr2) == VCS_OK);
+    VC_CHECK("revert NULL relink still restored source",
              vc_file_matches(dir, "src/main.c", "int main(void){return 0;}\n"));
+
+    /* ── relink half: fake activator ops ─────────────────────────── */
+    /* Snapshot a commit that binds a non-zero generation_sha256. */
+    uint8_t gen[32];
+    for (int i = 0; i < 32; i++) gen[i] = (uint8_t)(0xa0 + i);
+    struct vcs_snapshot_meta meta_gen = meta;
+    meta_gen.generation_sha256 = gen;
+    vc_write(dir, "src/main.c", "int main(void){return 99;}\n");
+    uint8_t c_gen[32];
+    VC_CHECK("snapshot with bound generation",
+             vcs_snapshot(r, &meta_gen, c_gen) == VCS_OK);
+
+    /* Collect the HEAD-before-relink id and the full set of commit ids seen
+     * so far, to prove the relink revert below is append-only (nothing is
+     * ever overwritten or dropped from commits.log). */
+    struct log_id_collect before = {0};
+    VC_CHECK("log walk before relink revert",
+             vcs_log(r, 0, log_id_collect_cb, &before) == VCS_OK);
+    VC_CHECK("log has c1 before relink revert", log_ids_contains(&before, c1));
+    VC_CHECK("log has c_gen before relink revert",
+             log_ids_contains(&before, c_gen));
+
+    /* Succeeding activator: records the hash it was called with. */
+    struct fake_activator fa = {0};
+    struct vcs_revert_relink_ops ok_ops = { fake_activate_ok, &fa };
+    uint8_t cr3[32];
+    VC_CHECK("revert+relink to a generation-bound commit is VCS_OK",
+             vcs_revert(r, c_gen, &ok_ops, cr3) == VCS_OK);
+    VC_CHECK("activator invoked exactly once", fa.calls == 1);
+    VC_CHECK("activator saw the target commit's generation_sha256",
+             memcmp(fa.seen_hash, gen, 32) == 0);
+    VC_CHECK("revert+relink restored the generation commit's source",
+             vc_file_matches(dir, "src/main.c", "int main(void){return 99;}\n"));
+
+    /* Append-only: every id seen before is still present, plus the new
+     * forward commit, and HEAD advanced to it. */
+    struct log_id_collect after = {0};
+    VC_CHECK("log walk after relink revert",
+             vcs_log(r, 0, log_id_collect_cb, &after) == VCS_OK);
+    VC_CHECK("relink revert appended (didn't shrink) the log",
+             after.count == before.count + 1);
+    for (size_t i = 0; i < before.count; i++)
+        VC_CHECK("old commit id still present after relink revert",
+                 log_ids_contains(&after, before.ids[i]));
+    VC_CHECK("log has the new forward commit", log_ids_contains(&after, cr3));
+    uint8_t head_id[32];
+    bool have_head = false;
+    VC_CHECK("HEAD readable after relink revert",
+             vcs_index_ref_get(vcs_repo_index(r), "HEAD", head_id, &have_head));
+    VC_CHECK("HEAD advanced to the relink revert's forward commit",
+             have_head && memcmp(head_id, cr3, 32) == 0);
+
+    /* Failing/refusing activator: target c_gen again (non-zero generation,
+     * so activate_generation is actually invoked). The source revert +
+     * forward commit still stand (append-only, never undone) but the call
+     * reports VCS_EPARTIAL. */
+    vc_write(dir, "src/main.c", "int main(void){return 123;}\n");
+    struct fake_activator fb = {0};
+    struct vcs_revert_relink_ops fail_ops = { fake_activate_fail, &fb };
+    uint8_t cr4[32];
+    VC_CHECK("revert+relink with a refusing activator is VCS_EPARTIAL",
+             vcs_revert(r, c_gen, &fail_ops, cr4) == VCS_EPARTIAL);
+    VC_CHECK("refusing activator was still invoked", fb.calls == 1);
+    VC_CHECK("refusing activator saw the target's generation_sha256",
+             memcmp(fb.seen_hash, gen, 32) == 0);
+    VC_CHECK("VCS_EPARTIAL: source revert still stood",
+             vc_file_matches(dir, "src/main.c", "int main(void){return 99;}\n"));
+    uint8_t head_id2[32];
+    have_head = false;
+    VC_CHECK("HEAD advanced past VCS_EPARTIAL's forward commit too",
+             vcs_index_ref_get(vcs_repo_index(r), "HEAD", head_id2, &have_head) &&
+             have_head && memcmp(head_id2, cr4, 32) == 0);
+
+    /* relink with an all-zero-generation target: nothing to activate, the
+     * activator must never be called, and the result is still VCS_OK. */
+    struct fake_activator fc = {0};
+    struct vcs_revert_relink_ops unused_ops = { fake_activate_fail, &fc };
+    uint8_t cr5[32];
+    VC_CHECK("revert+relink to a zero-generation commit skips activation",
+             vcs_revert(r, c1, &unused_ops, cr5) == VCS_OK);
+    VC_CHECK("activator never called for an all-zero generation_sha256",
+             fc.calls == 0);
 
     /* log newest-first: at least the commits we made, HEAD first. */
     vcs_close(r);

@@ -489,7 +489,8 @@ static void revert_diff_cb(enum vcs_diff_kind kind, const struct vcs_entry *a,
 }
 
 int vcs_revert(struct vcs_repo *r, const uint8_t target_commit[32],
-               bool relink_generation, uint8_t out_new_commit[32])
+               const struct vcs_revert_relink_ops *relink,
+               uint8_t out_new_commit[32])
 {
     if (!r || !target_commit || !out_new_commit)
         LOG_ERR("vcs", "null arg to revert");
@@ -531,7 +532,15 @@ int vcs_revert(struct vcs_repo *r, const uint8_t target_commit[32],
     if (sr != VCS_OK)
         return sr;  /* propagate VCS_REFUSED / VCS_ERR */
 
-    if (relink_generation)
-        return VCS_ENOTIMPL;  /* binary-generation relink lands in Wave 3.3 */
+    /* Binary-generation relink half (Wave 3.3). The source revert + forward
+     * commit above already stand — append-only, never undone — regardless of
+     * what happens below. */
+    if (relink && relink->activate_generation) {
+        static const uint8_t zero32[32] = {0};
+        if (memcmp(tc.generation_sha256, zero32, 32) != 0) {
+            if (!relink->activate_generation(tc.generation_sha256, relink->ctx))
+                return VCS_EPARTIAL;
+        }
+    }
     return VCS_OK;
 }
