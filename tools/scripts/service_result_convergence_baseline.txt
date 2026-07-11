@@ -26,4 +26,3 @@
 # struct zcl_result (ZCL_OK / ZCL_ERR), then delete its line.
 #
 # One '<path> <count>' entry per line, repo-relative, sorted by path.
-app/services/src/header_sync_service.c 17
