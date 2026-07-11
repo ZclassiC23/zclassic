@@ -54,6 +54,18 @@ bool vcs_seal_grant_unseal(struct vcs_index *idx,
 enum vcs_seal_result vcs_seal_check(struct vcs_index *idx,
                                     const uint8_t new_sealset[32]);
 
+/* Read-only variant of vcs_seal_check: identical OK/REFUSED decision (same
+ * pin-vs-new_sealset comparison, same token-match rule) but NEVER consumes a
+ * matching one-shot token, and never mutates the index. Intended for a
+ * caller that must decide whether an operation WOULD be refused before it
+ * has done anything irreversible (vcs_revert uses this to refuse a
+ * sealed-path change before touching a single worktree file, leaving the
+ * later, authoritative — and consuming — vcs_seal_check() inside
+ * vcs_snapshot() to actually spend the token once the change really lands).
+ * Calling vcs_seal_peek() any number of times has no side effects. */
+enum vcs_seal_result vcs_seal_peek(struct vcs_index *idx,
+                                   const uint8_t new_sealset[32]);
+
 #define VCS_SEAL_TOKEN_KEY "vcs_unseal_token"
 
 #endif /* ZCL_VCS_SEAL_H */
