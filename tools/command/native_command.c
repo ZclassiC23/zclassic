@@ -542,6 +542,192 @@ void zcl_native_handle_app_inspect(const struct zcl_command_request *request,
     (void)json_push_kv_str(&reply->data, "status", "checkout-only");
 }
 
+/* ── ops.state / ops.selftest native leaves (W0 §3) ──────────────────────
+ * These two leaves are the native successors of the MCP `zcl_state` and
+ * `zcl_self_test` tools. They do NOT enter mcp_middleware / mcp_router:
+ *   - ops.state calls the `dumpstate` RPC method directly (the same path
+ *     h_zcl_state used, minus the router), so the generic subsystem dump is
+ *     reachable natively with the MCP dispatch table uninvoked;
+ *   - ops.selftest is a node-free, deterministic well-formedness sweep of the
+ *     registry (the native analogue of `zcl_self_test mode=registry`), so the
+ *     dev-lane deploy verify can gate on `fail == 0` without a running node. */
+static bool g_bridge_rpc_ready;
+
+static void bridge_ensure_rpc_client(void)
+{
+    if (g_bridge_rpc_ready)
+        return;
+    /* A one-shot native process has no app_init(); the HTTP RPC backend only
+     * needs the datadir (cookie) + port. No router/middleware registration. */
+    mcp_rpc_client_init(g_bridge_datadir, g_bridge_rpc_port);
+    g_bridge_rpc_ready = true;
+}
+
+void zcl_native_handle_ops_state(const struct zcl_command_request *request,
+                                 struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+    const char *sub = json_get_str(json_get(request->input, "subsystem"));
+    if (!sub || !sub[0]) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "MISSING_SUBSYSTEM",
+                               "normalize", false, false,
+                               "subsystem is required", "ops.state");
+        (void)zcl_command_reply_add_next(reply, "ops.state",
+                                         "{\"subsystem\":\"supervisor\"}",
+                                         "name a subsystem to dump");
+        return;
+    }
+    const char *key = json_get_str(json_get(request->input, "key"));
+
+    /* dumpstate params: [subsystem] or [subsystem, key]. Build via JSON so the
+     * subsystem/key strings are correctly escaped, never printf-spliced. */
+    struct json_value params, item;
+    json_init(&params);
+    json_set_array(&params);
+    json_init(&item);
+    json_set_str(&item, sub);
+    (void)json_push_back(&params, &item);
+    json_free(&item);
+    if (key && key[0]) {
+        json_init(&item);
+        json_set_str(&item, key);
+        (void)json_push_back(&params, &item);
+        json_free(&item);
+    }
+    char params_json[512];
+    size_t pn = json_write(&params, params_json, sizeof(params_json));
+    json_free(&params);
+    if (pn == 0 || pn >= sizeof(params_json)) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "ARG_BUILD_FAILED",
+                               "normalize", false, false,
+                               "could not encode dumpstate params", sub);
+        return;
+    }
+
+    bridge_ensure_rpc_client();
+    /* Call the RPC layer directly — the MCP router/middleware is never entered
+     * (W0: nothing native depends on the MCP dispatch path). */
+    char *result = mcp_node_rpc("dumpstate", params_json);
+    if (!result) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                               ZCL_COMMAND_EXIT_TRANSIENT, "NODE_UNAVAILABLE",
+                               "dispatch", true, false,
+                               "the node did not return a state body", sub);
+        (void)zcl_command_reply_add_next(reply, "core.status", "{}",
+                                         "confirm the node is running");
+        return;
+    }
+    struct json_value body;
+    if (!json_read(&body, result, strlen(result)) || body.type != JSON_OBJ) {
+        json_free(&body);
+        free(result);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "BAD_STATE_BODY",
+                               "serialize", false, false,
+                               "dumpstate returned a non-object body", sub);
+        return;
+    }
+    free(result);
+    /* mcp_node_rpc surfaces a JSON-RPC failure as either {"error":{...}}
+     * (transport) or a bare {"code":..,"message":..} (RPC-level). Treat both
+     * as a failed dump — e.g. an unknown subsystem. */
+    const struct json_value *err = json_get(&body, "error");
+    const struct json_value *ecode = json_get(&body, "code");
+    const struct json_value *emsg = json_get(&body, "message");
+    if ((err && !json_is_null(err)) ||
+        (ecode && ecode->type == JSON_INT && emsg && emsg->type == JSON_STR)) {
+        const char *msg = NULL;
+        if (err && err->type == JSON_OBJ)
+            msg = json_get_str(json_get(err, "message"));
+        else if (emsg && emsg->type == JSON_STR)
+            msg = json_get_str(emsg);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_FAILED, "STATE_ERROR",
+                               "execute", false, false,
+                               msg && msg[0] ? msg
+                                             : "dumpstate reported an error",
+                               sub);
+        json_free(&body);
+        return;
+    }
+    /* Success: project the state body into the envelope (view/budget bounded). */
+    zcl_native_bridge_project(request, &body, reply);
+    json_free(&body);
+}
+
+void zcl_native_handle_ops_selftest(const struct zcl_command_request *request,
+                                    struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+    const struct zcl_command_registry *reg = catalog();
+    size_t total = 0, passed = 0, failed = 0, skipped = 0;
+
+    struct json_value failures;
+    json_init(&failures);
+    json_set_array(&failures);
+
+    for (size_t i = 0; i < reg->count; i++) {
+        const struct zcl_command_spec *s = &reg->commands[i];
+        if (s->mode == ZCL_COMMAND_MODE_BRANCH)
+            continue;
+        total++;
+        /* PLANNED / COMPAT leaves are intentionally non-executable — they are
+         * skips, never failures (discovery already fails them closed). */
+        if (s->availability != ZCL_COMMAND_READY) {
+            skipped++;
+            continue;
+        }
+        /* A READY leaf must be dispatchable: a non-NULL handler plus the
+         * schema/example/effect-risk guarantees zcl_command_registry_validate
+         * enforces. This is a static, node-free contract check. */
+        const char *reason = NULL;
+        if (!s->handler)
+            reason = "ready-leaf-missing-handler";
+        else if (!s->input_schema || !s->input_schema[0] ||
+                 !s->output_schema || !s->output_schema[0] ||
+                 !s->example || !s->example[0])
+            reason = "missing-schema-or-example";
+        else if (s->effect == ZCL_COMMAND_EFFECT_READ &&
+                 s->risk != ZCL_COMMAND_RISK_READ)
+            reason = "read-effect-risk-conflict";
+        else if (s->handler == zcl_native_bridge_command &&
+                 !zcl_native_bridge_tool_for_path(s->path))
+            reason = "bridge-leaf-without-binding";
+
+        if (reason) {
+            failed++;
+            if (failures.num_children < 32) {
+                struct json_value f;
+                json_init(&f);
+                json_set_object(&f);
+                (void)json_push_kv_str(&f, "path", s->path);
+                (void)json_push_kv_str(&f, "reason", reason);
+                (void)json_push_back(&failures, &f);
+                json_free(&f);
+            }
+        } else {
+            passed++;
+        }
+    }
+
+    (void)json_push_kv_str(&reply->data, "mode", "registry");
+    (void)json_push_kv_int(&reply->data, "total", (int64_t)total);
+    (void)json_push_kv_int(&reply->data, "pass", (int64_t)passed);
+    (void)json_push_kv_int(&reply->data, "fail", (int64_t)failed);
+    (void)json_push_kv_int(&reply->data, "skip", (int64_t)skipped);
+    (void)json_push_kv(&reply->data, "failures", &failures);
+    json_free(&failures);
+
+    reply->status = failed == 0 ? ZCL_COMMAND_STATUS_PASSED
+                                : ZCL_COMMAND_STATUS_FAILED;
+    reply->exit_code = failed == 0 ? ZCL_COMMAND_EXIT_OK
+                                   : ZCL_COMMAND_EXIT_FAILED;
+}
+
 /* ── argv normalization + dispatch ─────────────────────────────────── */
 enum { NC_MAX_WORDS = 64 };
 

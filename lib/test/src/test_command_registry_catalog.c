@@ -509,6 +509,60 @@ static int test_dev_vcs_seal_grant_release_stub(void)
     return failures;
 }
 
+/* W0: ops.selftest is the native, node-free successor of the MCP
+ * `zcl_self_test mode=registry`. It sweeps the catalog for the static
+ * well-formedness the registry guarantees. Because test_catalog_wellformed
+ * already proves the whole catalog validates, ops.selftest MUST report
+ * fail == 0 with a passing envelope, so the dev-lane deploy verify can gate
+ * on it without a running node. */
+static int test_ops_selftest_registry(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    char out[ZCL_COMMAND_LIST_BUDGET + 1];
+    TEST("ops.selftest sweeps the registry and reports fail:0") {
+        const struct zcl_command_spec *s = find_spec(reg, "ops.selftest");
+        ASSERT(s != NULL);
+        ASSERT_EQ(s->availability, ZCL_COMMAND_READY);
+        ASSERT(s->handler != NULL);
+        enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+        ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+        ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(strstr(out, "\"ok\":true") != NULL);
+        ASSERT(strstr(out, "\"mode\":\"registry\"") != NULL);
+        ASSERT(strstr(out, "\"fail\":0") != NULL);
+        /* At least the READY read/discovery leaves pass. */
+        ASSERT(strstr(out, "\"pass\":0") == NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* W0: ops.state is the native successor of the MCP `zcl_state` primitive.
+ * Its node-contacting path (dumpstate RPC) needs a live node, but its input
+ * guard is node-free: a missing `subsystem` must fail INVALID before any RPC,
+ * naming MISSING_SUBSYSTEM and offering an executable next command. */
+static int test_ops_state_requires_subsystem(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+    TEST("ops.state fails INVALID without a subsystem, before any node call") {
+        const struct zcl_command_spec *s = find_spec(reg, "ops.state");
+        ASSERT(s != NULL);
+        ASSERT_EQ(s->availability, ZCL_COMMAND_READY);
+        ASSERT(s->handler != NULL);
+        ASSERT_STR_EQ(s->input_keys, "subsystem,key");
+        enum zcl_command_exit code = ZCL_COMMAND_EXIT_OK;
+        ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+        ASSERT_EQ(code, ZCL_COMMAND_EXIT_INVALID);
+        ASSERT(strstr(out, "\"ok\":false") != NULL);
+        ASSERT(strstr(out, "MISSING_SUBSYSTEM") != NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_is_root_ownership(void)
 {
     int failures = 0;
@@ -542,6 +596,8 @@ int test_command_registry_catalog(void)
     failures += test_dev_branch_leaves();
     failures += test_response_budget_views();
     failures += test_typo_stays_branch();
+    failures += test_ops_selftest_registry();
+    failures += test_ops_state_requires_subsystem();
     failures += test_dev_vcs_revert_release_stub();
     failures += test_dev_vcs_seal_grant_release_stub();
     failures += test_is_root_ownership();

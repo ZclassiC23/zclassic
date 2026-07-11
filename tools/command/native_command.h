@@ -95,6 +95,25 @@ void zcl_native_handle_app_inspect(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* ops.state — generic subsystem state dump (the native successor of the MCP
+ * `zcl_state` primitive). Dispatches the `dumpstate` RPC method directly; the
+ * MCP router/middleware is never entered. `subsystem` (required) selects the
+ * owning module's *_dump_state_json; `key` is subsystem-specific (e.g. a
+ * block_index height/hash). Bound by config/src/command_catalog.c. */
+void zcl_native_handle_ops_state(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
+/* ops.selftest — node-free registry self-test (the native successor of the MCP
+ * `zcl_self_test mode=registry`). Sweeps every catalog leaf for the static
+ * well-formedness the registry guarantees (READY ⇒ dispatchable handler +
+ * schema/example + read-effect/risk agreement + a bound bridge tool) and
+ * reports total/pass/fail/skip + the failing paths. Deterministic and
+ * node-independent so the dev-lane deploy verify can gate on fail == 0. */
+void zcl_native_handle_ops_selftest(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* Dev-build-only executors.  The catalog binds these only when
  * ZCL_DEV_BUILD is set; release objects neither reference nor link them. */
 #ifdef ZCL_DEV_BUILD
