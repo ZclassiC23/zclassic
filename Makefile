@@ -2879,17 +2879,20 @@ core-unseal:
 	echo "core-unseal: token minted ($(CORE_UNSEAL_TOKEN)); seal lifted for one commit."; \
 	echo "  Make the core/ edit, then 'make core-seal' + 'make lint && make test_parallel' before commit."
 
-# WARN/ratchet lint gate for the seal (HARD-flipped by a later lane at W5).
-# In WARN mode a drift is reported but does not fail the build.
+# HARD lint gate for the seal (frozen at W5 — the whole W0–W4 split has landed).
+# core/ drift now FAILS the build unless an owner unseal token is active. A
+# deliberate consensus-core change goes through `make core-unseal REASON=…`
+# (records the reason in the append-only core/UNSEAL.md + mints the one-shot
+# token), lands green on the parity + domain-consensus groups, then re-freezes
+# with `make core-seal`.
 check-core-seal: tools/core_seal
-	@echo "══ LINT: consensus-core seal (WARN/ratchet until W5) ══"
+	@echo "══ LINT: consensus-core seal (HARD) ══"
 	@if [ -f "$(CORE_UNSEAL_TOKEN)" ]; then \
 	    echo "check-core-seal: unseal token present — seal check lifted for this commit"; \
-	elif git ls-files -z core/ | $(BIN_DIR)/core_seal check $(CORE_MANIFEST); then \
-	    :; \
+	    echo "  (owner unseal ritual active; re-run 'make core-seal' to refreeze before commit.)"; \
+	    git ls-files -z core/ | $(BIN_DIR)/core_seal check $(CORE_MANIFEST) || true; \
 	else \
-	    echo "check-core-seal: WARN — core/ drifts from its seal. Run 'make core-seal' to refreeze."; \
-	    echo "  (WARN/ratchet: not failing the build yet; a later lane flips this HARD at W5.)"; \
+	    git ls-files -z core/ | $(BIN_DIR)/core_seal check $(CORE_MANIFEST); \
 	fi
 
 # Sealed-core include boundary: core/ may not depend upward/sideways (esp. not
