@@ -8,18 +8,19 @@ One line per doc. Start with the entry points, in order.
 - [`MVP.md`](./MVP.md) — the v1 contract: 8 binary acceptance criteria (v1 = MRS 8/8).
 - [`work/FORWARD_PLAN.md`](./work/FORWARD_PLAN.md) — THE plan, MVP-anchored.
 
+## Develop here — the fast loop (read before making changes)
+
+- [`.claude/skills/zclassic23-dev/SKILL.md`](../.claude/skills/zclassic23-dev/SKILL.md) — **the efficient-AI-C23-developer playbook**: the native dev loop (drop-in-C watcher, `dev change apply`), hot-swap tiers, typed-commands-over-bash, workflows of tiered subagents, the push traps (impact-rules mapping, pre-push SIGPIPE), and the inviolable rules. Auto-loads as the `zclassic23-dev` skill; start here for any change.
+- [`NATIVE_COMMAND_INTERFACE.md`](./NATIVE_COMMAND_INTERFACE.md) — the native command registry (`core.*`/`app.*`/`ops.*`/`dev.*`/`discover.*`), the only agent interface going forward.
+- [`work/HOTSWAP.md`](./work/HOTSWAP.md) — Tier-1 hot-swap (`config/hotswap_eligible.def`) + the dev loop + ZVCS auto-anchor.
+- [`ZVCS.md`](./ZVCS.md) — in-binary VCS; `dev vcs` one-command source+binary revert.
+
 ## Mental model (read before touching code)
 
 - [`HOW_THE_NODE_WORKS.md`](./HOW_THE_NODE_WORKS.md) — the node as a state machine: append-only log → reducer stages → projections → health.
 - [`CODEBASE_MAP.md`](./CODEBASE_MAP.md) — where things live + how to do each thing.
 - [`AGENT_TRAPS.md`](./AGENT_TRAPS.md) — things that look broken but are intentional or already-done; read before "fixing" or re-proposing anything.
 - [`AGENT_ARCHITECTURE.md`](./AGENT_ARCHITECTURE.md) — the required feature-slice recipe: REST resources, ActiveRecord models, validations, relationships, schema, services, MCP/native surfaces.
-
-## Agent surface (active migration)
-
-- [`NATIVE_COMMAND_INTERFACE.md`](./NATIVE_COMMAND_INTERFACE.md) — the durable agent interface: native CLI commands, the command registry.
-- [`ZVCS.md`](./ZVCS.md) — the in-binary content-addressed VCS (source-tree snapshots bound to dev-loop verdicts).
-- [`work/HOTSWAP.md`](./work/HOTSWAP.md) — the dev-loop, Tier-1 hot-swap, and ZVCS-auto-anchor integration.
 
 ## Active plans
 

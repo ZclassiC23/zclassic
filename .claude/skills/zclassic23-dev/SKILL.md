@@ -1,7 +1,7 @@
 ---
 name: zclassic23-dev
-description: Use when developing on the ZClassic23 codebase (this repo) — onboarding, understanding the architecture, or making any code change. Covers the node's state-machine model, the eight code shapes / where things live, the inviolable rules (consensus parity, copy-prove before live, defensive-coding gates), build/test/deploy, the parallel-worktree workflow, and the don't-re-chase traps. Invoke for "how does this codebase work", "how do I add or change X here", "be a zclassic23 developer", or before editing zclassic23 source.
-version: 1.0.0
+description: Use when developing on the ZClassic23 codebase (this repo) — onboarding, understanding the architecture, or making any code change. Covers the fast native dev loop (drop-in-C watcher, hot-swap tiers, dev change apply, typed-commands-over-bash, workflows of tiered subagents, the push traps), the node's state-machine model, the eight code shapes / where things live, the inviolable rules (consensus parity, copy-prove before live, defensive-coding gates), build/test/deploy, and the don't-re-chase traps. Invoke for "how does this codebase work", "how do I develop efficiently here", "how do I add or change X here", "be a zclassic23 developer", or before editing zclassic23 source.
+version: 1.1.0
 ---
 
 # Being a ZClassic23 developer
@@ -21,6 +21,18 @@ don't trust this page's specifics blindly (code moves; docs rot):
 - `docs/HANDOFF.md` — current live state (what's fixed, what's in flight). Read before acting.
 - `docs/DEFENSIVE_CODING.md` — the mandatory coding gates.
 - `docs/CONSENSUS_PARITY_DOCTRINE.md` — the inviolable parity rule.
+- `docs/NATIVE_COMMAND_INTERFACE.md` — the native command registry (the dev + agent interface).
+
+## Develop fast — the native dev loop (this is how you stay efficient)
+
+The platform exists so you **drop in C and let the machine build+test+run it.** Do not hand-run every step or drop to bash to inspect — that is the slow path the platform was built to remove.
+
+1. **Persistent watcher (default loop):** `zclassic23-dev dev loop ensure` (or `make dev-watch [MODE=auto|hotswap|reload]`) once. Then just **Edit `.c`** — it auto-runs classify→prove→build→publish per save; read the verdict with `zclassic23-dev dev status` (`dev.status`) or block on `dev loop wait`. One-shot alternative: `dev change plan --input='{"files":[...]}'` (classify + smallest proof) then `dev change apply --input='{"files":[...]}'` (the whole cycle in one transaction, ~60 s).
+2. **Two speed tiers — know which you're on:** **hot-swap (sub-second)** `dlopen`s a `.so` into the running dev node, no restart — ONLY the handler/controller TUs in `config/hotswap_eligible.def` (~9: MCP controllers + `*_native_handlers.c`); land presentation-layer work there to stay fast. **reload (~60 s)** is any boot/service-state or ABI change (`dev change apply` → `action:reload`) — correct, just slower.
+3. **Typed commands over bash — always.** `zclassic23 status` (compact status), `dumpstate <subsystem>` (= old `zcl_state`), `discover help|search <q>`, `dev status` — instead of `ss`/`ps`/`tail`/`grep`. **Every reach for bash to inspect the node is a missing typed command — add it** (a read leaf in the hot-swap-eligible handler layer = a sub-second build). The registry is the ONLY agent interface going forward (zero-MCP; MCP is deleted in W3).
+4. **Big refactor/test campaigns → workflows of tiered subagents.** Author a `Workflow` (Opus for hard lanes, Sonnet for scoped, to save tokens); each lane runs in an isolated worktree (`isolation:'worktree'`), self-gates (build + focused test + `make lint`), and commits its green work to a `wf/<name>` branch. You then merge the green branches to main and push. Orchestrate + review; the fleet does the volume.
+5. **Push flow + its two traps:** `make lint && make build-only`, run the mapped focused tests, then `git push` (hook runs `make pre-push-ci`). **Trap A (impact-rules):** every changed `.c` must map to a focused group in `app/controllers/include/controllers/agent_impact_rules.def` or the push is BLOCKED ("no focused test mapping") — add the mapping. **Trap B (pre-push SIGPIPE):** git may not drain the hook's stdout, so a GREEN `make pre-push-ci` can die with `make[2]: write error: stdout` and spuriously block — confirm green out-of-band (`make pre-push-ci >log 2>&1; echo $?` → 0) then `git push --no-verify` (verified, not skipped).
+6. **ZVCS:** each green cycle auto-anchors a source+binary snapshot; `dev vcs` = one-command source+binary revert; sealed-core changes are refused before publish (`check-core-seal`).
 
 ## The model in four lines
 
@@ -81,14 +93,17 @@ model / healer / MCP tool / reducer stage / lint gate" is in `docs/CODEBASE_MAP.
   first (a stale binary was a real multi-day outage) and verifies `build_commit`.
 - Gate every change: `make` + `make lint` + `make test-parallel` (read the `N passed, M failed` line).
 
-## The agent surface (MCP)
+## The agent surface — native command registry (MCP is being removed)
 
-Start with `zcl_status` / `zcl_kpi`. Three primitives cover most diagnostics: `zcl_state(subsystem=...)`
-(generic state dump — ~56 subsystems incl. the 8 stage names + `blocker`, `reducer_frontier`,
-`condition_engine`, `service_state`), `zcl_node_log` (regex tail of node.log), `zcl_sql` (SELECT-only).
-Escape hatch: `zcl_rpc(method,...)`. Discover all tools with `zcl_tools_list`. Add introspection by
-registering one `*_dump_state_json` in `app/controllers/src/diagnostics_registry.c` — no new tool needed.
-Note: `mcp__zcl23-dev__*` hit the DEV node; `mcp__zcl23-live__*` / curl 18232 hit LIVE — confirm the target.
+The interface is the native registry: `zclassic23 <path>` under `core.*` / `app.*` / `ops.*` / `dev.*` /
+`discover.*`. Start with `zclassic23 status`. Three diagnostic primitives cover most questions:
+`dumpstate <subsystem>` (generic state dump — ~56 subsystems incl. the 8 stage names + `blocker`,
+`reducer_frontier`, `condition_engine`), the node-log tail, and SELECT-only SQL. Discover everything with
+`discover help` / `discover search <q>`. Add introspection by registering one `*_dump_state_json` in
+`app/controllers/src/diagnostics_registry.c` — no new command needed. The `mcp__zcl23-*` tools and
+`zclassic23 mcpcall <tool>` are the **legacy** MCP surface (`zcl_status`, `zcl_state`, `zcl_rpc`, …),
+still live until zero-MCP **W3** deletes `tools/mcp/**` — prefer native. When using MCP: `mcp__zcl23-dev__*`
+hit the DEV node, `mcp__zcl23-live__*` hit LIVE — confirm the target.
 
 ## Hosting & recovering the clearnet block explorer
 
