@@ -30,6 +30,15 @@ int zcl_native_command_main(const char *root_word,
 void zcl_native_bridge_command(const struct zcl_command_request *request,
                                struct zcl_command_reply *reply);
 
+/* Project a bridged tool body into reply->data bounded by request->view
+ * (summary|normal|full), request->budget_bytes, request->max_items, and
+ * request->cursor, emitting an explicit `_page` descriptor and — when
+ * truncated — one structured retrieval next-command. Exposed for golden tests
+ * so progressive disclosure can be proven without contacting a node. */
+void zcl_native_bridge_project(const struct zcl_command_request *request,
+                               const struct json_value *body,
+                               struct zcl_command_reply *reply);
+
 /* Return the MCP tool name bound to a canonical READ-ONLY leaf path, or NULL
  * when the path has no bridge binding. Pure lookup — no node contact. Used by
  * the golden catalog test to prove every bridged READY leaf has a binding. */

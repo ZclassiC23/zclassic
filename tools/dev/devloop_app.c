@@ -1,4 +1,11 @@
-/* Copyright 2026 Rhett Creighton - Apache License 2.0 */
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Read-only App-manifest inspection for the dev tree (describe / plan /
+ * simulate). Each operation has a bounded JSON *buffer producer* — the single
+ * source of truth — plus a thin stdout print wrapper used by the checkout-local
+ * devloop dispatcher. The producers are release-safe (no process spawn, no
+ * mutation), so the Wave 2.2 registry handlers in
+ * tools/command/native_dev_command.c bind straight to them. */
 
 #define _GNU_SOURCE
 #include "devloop.h"
@@ -8,10 +15,58 @@
 
 #include <ctype.h>
 #include <limits.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+
+/* ── bounded JSON appender ─────────────────────────────────────────────── */
+struct devbuf {
+    char *out;
+    size_t cap;
+    size_t len;
+    bool ok;
+};
+
+static void devbuf_init(struct devbuf *b, char *out, size_t cap)
+{
+    b->out = out;
+    b->cap = cap;
+    b->len = 0;
+    b->ok = out != NULL && cap != 0;
+    if (b->ok)
+        out[0] = 0;
+}
+
+static void devbuf_addf(struct devbuf *b, const char *fmt, ...)
+{
+    if (!b->ok || b->len >= b->cap)
+        return;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(b->out + b->len, b->cap - b->len, fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= b->cap - b->len) {
+        b->ok = false;
+        return;
+    }
+    b->len += (size_t)n;
+}
+
+static void devbuf_addstr(struct devbuf *b, const char *s)
+{
+    devbuf_addf(b, "\"");
+    for (const unsigned char *p = (const unsigned char *)(s ? s : ""); *p; p++) {
+        if (*p == '"' || *p == '\\')
+            devbuf_addf(b, "\\%c", *p);
+        else if (*p < 0x20)
+            devbuf_addf(b, "\\u%04x", *p);
+        else
+            devbuf_addf(b, "%c", *p);
+    }
+    devbuf_addf(b, "\"");
+}
 
 static bool token_ok(const char *s)
 {
@@ -27,19 +82,6 @@ static bool token_ok(const char *s)
 static bool resolve_root(const char *requested, char out[PATH_MAX])
 {
     return requested && realpath(requested, out) != NULL;
-}
-
-static void emit_string(const char *s)
-{
-    putchar('"');
-    for (const unsigned char *p = (const unsigned char *)(s ? s : "");
-         *p; p++) {
-        if (*p == '"' || *p == '\\')
-            putchar('\\');
-        if (*p >= 0x20)
-            putchar(*p);
-    }
-    putchar('"');
 }
 
 static bool macro_arg(const char *line, const char *macro,
@@ -62,23 +104,27 @@ static bool macro_arg(const char *line, const char *macro,
     return true;
 }
 
-int zcl_devloop_app_describe(const char *repo_root, const char *app_id)
+/* ── describe ──────────────────────────────────────────────────────────── */
+size_t zcl_devloop_app_describe_json(const char *repo_root, const char *app_id,
+                                     char *out, size_t out_sz)
 {
     char root[PATH_MAX], path[PATH_MAX];
-    if (!token_ok(app_id) || !resolve_root(repo_root, root)) {
-        fprintf(stderr, "[devloop] app describe: invalid app or root\n");
-        return 2;
-    }
+    if (!token_ok(app_id) || !resolve_root(repo_root, root))
+        return 0;
     int pn = snprintf(path, sizeof(path), "%s/apps/%s/app.def", root, app_id);
     if (pn <= 0 || (size_t)pn >= sizeof(path))
-        return 2;
+        return 0;
+
+    struct devbuf b;
+    devbuf_init(&b, out, out_sz);
     FILE *f = fopen(path, "r");
     if (!f) {
-        printf("{\"schema\":\"zcl.dev_app.v1\",\"status\":\"not_found\","
-               "\"app_id\":");
-        emit_string(app_id);
-        printf(",\"agent_next_action\":\"dev app plan <app> <resource>\"}\n");
-        return 1;
+        devbuf_addf(&b, "{\"schema\":\"zcl.dev_app.v1\",\"status\":"
+                        "\"not_found\",\"app_id\":");
+        devbuf_addstr(&b, app_id);
+        devbuf_addf(&b, ",\"agent_next_action\":"
+                        "\"dev app plan <app> <resource>\"}");
+        return b.ok ? b.len : 0;
     }
 
     char caps[32][64], resources[32][64], sims[32][96];
@@ -105,75 +151,109 @@ int zcl_devloop_app_describe(const char *repo_root, const char *app_id)
     }
     fclose(f);
 
-    printf("{\"schema\":\"zcl.dev_app.v1\",\"status\":\"ok\",\"app_id\":");
-    emit_string(app_id);
-    printf(",\"boundary\":\"core_owns_truth_apps_consume_capabilities\","
-           "\"capabilities\":[");
+    devbuf_addf(&b, "{\"schema\":\"zcl.dev_app.v1\",\"status\":\"ok\","
+                    "\"app_id\":");
+    devbuf_addstr(&b, app_id);
+    devbuf_addf(&b, ",\"boundary\":"
+                    "\"core_owns_truth_apps_consume_capabilities\","
+                    "\"capabilities\":[");
     for (size_t i = 0; i < cap_count; i++) {
-        if (i) putchar(',');
-        emit_string(caps[i]);
+        if (i) devbuf_addf(&b, ",");
+        devbuf_addstr(&b, caps[i]);
     }
-    printf("],\"resources\":[");
+    devbuf_addf(&b, "],\"resources\":[");
     for (size_t i = 0; i < resource_count; i++) {
-        if (i) putchar(',');
-        emit_string(resources[i]);
+        if (i) devbuf_addf(&b, ",");
+        devbuf_addstr(&b, resources[i]);
     }
-    printf("],\"bindings\":{\"web\":");
-    emit_string(web);
-    printf(",\"onion\":%s,\"znam\":", onion ? "true" : "false");
-    emit_string(znam);
-    printf("},\"simulations\":[");
+    devbuf_addf(&b, "],\"bindings\":{\"web\":");
+    devbuf_addstr(&b, web);
+    devbuf_addf(&b, ",\"onion\":%s,\"znam\":", onion ? "true" : "false");
+    devbuf_addstr(&b, znam);
+    devbuf_addf(&b, "},\"simulations\":[");
     for (size_t i = 0; i < sim_count; i++) {
-        if (i) putchar(',');
-        emit_string(sims[i]);
+        if (i) devbuf_addf(&b, ",");
+        devbuf_addstr(&b, sims[i]);
     }
-    printf("],\"agent_next_action\":\"edit apps/%s; native watch owns proof and publish\"}\n",
-           app_id);
-    return 0;
+    devbuf_addf(&b, "],\"agent_next_action\":"
+                    "\"edit apps/%s; native watch owns proof and publish\"}",
+                app_id);
+    return b.ok ? b.len : 0;
 }
 
-int zcl_devloop_app_plan(const char *repo_root, const char *app_id,
-                         const char *resource)
+int zcl_devloop_app_describe(const char *repo_root, const char *app_id)
+{
+    char body[8192];
+    size_t n = zcl_devloop_app_describe_json(repo_root, app_id, body,
+                                             sizeof(body));
+    if (n == 0) {
+        fprintf(stderr, "[devloop] app describe: invalid app or root\n");
+        return 2;
+    }
+    printf("%s\n", body);
+    return strstr(body, "\"status\":\"ok\"") ? 0 : 1;
+}
+
+/* ── plan ──────────────────────────────────────────────────────────────── */
+size_t zcl_devloop_app_plan_json(const char *repo_root, const char *app_id,
+                                 const char *resource, char *out, size_t out_sz)
 {
     char root[PATH_MAX];
     if (!resolve_root(repo_root, root) || !token_ok(app_id) ||
-        !token_ok(resource)) {
-        fprintf(stderr, "[devloop] app plan: invalid app, resource, or root\n");
-        return 2;
-    }
+        !token_ok(resource))
+        return 0;
     (void)root;
-    printf("{\"schema\":\"zcl.dev_app_plan.v1\",\"status\":\"planned\","
-           "\"app_id\":");
-    emit_string(app_id);
-    printf(",\"resource\":");
-    emit_string(resource);
-    printf(",\"files\":[");
+
+    struct devbuf b;
+    devbuf_init(&b, out, out_sz);
+    devbuf_addf(&b, "{\"schema\":\"zcl.dev_app_plan.v1\",\"status\":"
+                    "\"planned\",\"app_id\":");
+    devbuf_addstr(&b, app_id);
+    devbuf_addf(&b, ",\"resource\":");
+    devbuf_addstr(&b, resource);
+    devbuf_addf(&b, ",\"files\":[");
     const char *shapes[] = {
         "models", "controllers", "services", "events", "jobs",
         "projections", "views", "sim"
     };
     for (size_t i = 0; i < sizeof(shapes) / sizeof(shapes[0]); i++) {
-        if (i) putchar(',');
+        if (i) devbuf_addf(&b, ",");
         char path[256];
         snprintf(path, sizeof(path), "apps/%s/%s/%s.c",
                  app_id, shapes[i], resource);
-        emit_string(path);
+        devbuf_addstr(&b, path);
     }
-    printf("],\"bindings\":[\"web\",\"onion\",\"znam\"],"
-           "\"required_proofs\":[\"same_seed_replay\","
-           "\"partition_rejoin_convergence\",\"invalid_signature_rejection\"],"
-           "\"forbidden\":[\"consensus_mutation\",\"wallet_keys\","
-           "\"raw_storage\",\"raw_sockets\",\"boot_ownership\"],"
-           "\"agent_next_action\":\"materialize this conventional slice through dev app scaffold\"}\n");
+    devbuf_addf(&b, "],\"bindings\":[\"web\",\"onion\",\"znam\"],"
+                    "\"required_proofs\":[\"same_seed_replay\","
+                    "\"partition_rejoin_convergence\","
+                    "\"invalid_signature_rejection\"],"
+                    "\"forbidden\":[\"consensus_mutation\",\"wallet_keys\","
+                    "\"raw_storage\",\"raw_sockets\",\"boot_ownership\"],"
+                    "\"agent_next_action\":\"materialize this conventional "
+                    "slice through dev app scaffold\"}");
+    return b.ok ? b.len : 0;
+}
+
+int zcl_devloop_app_plan(const char *repo_root, const char *app_id,
+                         const char *resource)
+{
+    char body[4096];
+    size_t n = zcl_devloop_app_plan_json(repo_root, app_id, resource, body,
+                                         sizeof(body));
+    if (n == 0) {
+        fprintf(stderr, "[devloop] app plan: invalid app, resource, or root\n");
+        return 2;
+    }
+    printf("%s\n", body);
     return 0;
 }
 
-int zcl_devloop_app_simulate(const char *app_id, uint64_t seed)
+/* ── simulate ──────────────────────────────────────────────────────────── */
+size_t zcl_devloop_app_simulate_json(const char *app_id, uint64_t seed,
+                                     char *out, size_t out_sz)
 {
-    if (!app_id || strcmp(app_id, "social") != 0 || seed == 0) {
-        fprintf(stderr, "[devloop] app simulate: unknown app or invalid seed\n");
-        return 2;
-    }
+    if (!app_id || strcmp(app_id, "social") != 0 || seed == 0)
+        return 0;
     int64_t started_us = platform_time_monotonic_us();
     struct zcl_social_sim_report first, replay;
     bool first_ok = zcl_social_app_sim_run(seed, &first);
@@ -183,20 +263,37 @@ int zcl_devloop_app_simulate(const char *app_id, uint64_t seed)
                      first.rejected_invalid == replay.rejected_invalid;
     int64_t elapsed_us = platform_time_monotonic_us() - started_us;
     bool ok = first_ok && identical;
-    printf("{\"schema\":\"zcl.dev_app_sim.v1\",\"app_id\":\"social\","
-           "\"status\":\"%s\",\"seed\":\"0x%016llx\","
-           "\"transcript\":\"0x%016llx\",\"two_run_wall_us\":%lld,"
-           "\"deliveries\":%u,\"rejected_invalid\":%u,"
-           "\"proofs\":{\"censorship_bypassed\":%s,"
-           "\"partition_rejoin_converged\":%s,\"late_joiner_caught_up\":%s,"
-           "\"invalid_signature_rejected\":%s,\"same_seed_replay\":%s}}\n",
-           ok ? "passed" : "failed", (unsigned long long)seed,
-           (unsigned long long)first.transcript, (long long)elapsed_us,
-           first.deliveries, first.rejected_invalid,
-           first.censorship_bypassed ? "true" : "false",
-           first.partition_rejoin_converged ? "true" : "false",
-           first.late_joiner_caught_up ? "true" : "false",
-           first.invalid_signature_rejected ? "true" : "false",
-           identical ? "true" : "false");
-    return ok ? 0 : 1;
+
+    struct devbuf b;
+    devbuf_init(&b, out, out_sz);
+    devbuf_addf(&b, "{\"schema\":\"zcl.dev_app_sim.v1\",\"app_id\":\"social\","
+                    "\"status\":\"%s\",\"seed\":\"0x%016llx\","
+                    "\"transcript\":\"0x%016llx\",\"two_run_wall_us\":%lld,"
+                    "\"deliveries\":%u,\"rejected_invalid\":%u,"
+                    "\"proofs\":{\"censorship_bypassed\":%s,"
+                    "\"partition_rejoin_converged\":%s,"
+                    "\"late_joiner_caught_up\":%s,"
+                    "\"invalid_signature_rejected\":%s,"
+                    "\"same_seed_replay\":%s}}",
+                ok ? "passed" : "failed", (unsigned long long)seed,
+                (unsigned long long)first.transcript, (long long)elapsed_us,
+                first.deliveries, first.rejected_invalid,
+                first.censorship_bypassed ? "true" : "false",
+                first.partition_rejoin_converged ? "true" : "false",
+                first.late_joiner_caught_up ? "true" : "false",
+                first.invalid_signature_rejected ? "true" : "false",
+                identical ? "true" : "false");
+    return b.ok ? b.len : 0;
+}
+
+int zcl_devloop_app_simulate(const char *app_id, uint64_t seed)
+{
+    char body[4096];
+    size_t n = zcl_devloop_app_simulate_json(app_id, seed, body, sizeof(body));
+    if (n == 0) {
+        fprintf(stderr, "[devloop] app simulate: unknown app or invalid seed\n");
+        return 2;
+    }
+    printf("%s\n", body);
+    return strstr(body, "\"status\":\"passed\"") ? 0 : 1;
 }

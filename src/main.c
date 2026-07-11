@@ -1465,9 +1465,15 @@ static int cli_main(int argc, char **argv)
 
     /* The dev command tree is checkout-local and intentionally independent of
      * any running node. Dispatch before service/cookie discovery so menu,
-     * planning, and watcher startup stay constant-time and token-light. */
+     * planning, and watcher startup stay constant-time and token-light. The
+     * dispatcher (and its mutating cycle/watch/process executors) is DEV-ONLY:
+     * the release binary links none of it, so the whole seam is compiled out
+     * under ZCL_DEV_BUILD — a release `zclassic23 dev` is simply not a command
+     * (proved absent by check-release-no-dev-symbols). */
+#ifdef ZCL_DEV_BUILD
     if (zcl_devloop_is_method(method))
         return zcl_devloop_cli_main(params_storage, nparams);
+#endif
 
     if (!datadir_set && !cli_cookie_exists(datadir)) {
         char service_datadir[512];

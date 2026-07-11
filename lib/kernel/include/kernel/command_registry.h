@@ -184,8 +184,10 @@ struct zcl_command_request {
     const struct zcl_command_spec *spec;
     const struct zcl_command_context *context;
     const struct json_value *input;
-    const char *view;
-    size_t budget_bytes;
+    const char *view;         /* "summary" | "normal" | "full" (default) */
+    size_t budget_bytes;      /* 0 = contract default (never raises the cap) */
+    size_t max_items;         /* 0 = unbounded; bounds a --view=full page */
+    const char *cursor;       /* opaque page cursor for --view=full, or NULL */
     bool invoked_by_alias;
     const char *invoked_name;
 };
@@ -298,6 +300,7 @@ size_t zcl_command_registry_execute_json(
     const struct json_value *input,
     bool invoked_by_alias, const char *invoked_name,
     const char *view, size_t budget_bytes,
+    size_t max_items, const char *cursor,
     char *out, size_t out_size, enum zcl_command_exit *exit_code);
 
 const char *zcl_command_layer_name(enum zcl_command_layer value);

@@ -193,7 +193,7 @@ ZCL_COMMAND_PLANNED_READ(
     "dev.loop.wait", "dev.loop", "", "Wait for one verdict after a source epoch",
     "loop,wait,epoch,verdict", "zcl.dev_loop_wait_input.v1",
     "zcl.dev_cycle.v1", "after_epoch,timeout_ms,view", "",
-    "zclassic23 dev loop wait --input='{"after_epoch":41}'",
+    "zclassic23 dev loop wait --input='{\"after_epoch\":41}'",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_PERSISTENT,
     ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,

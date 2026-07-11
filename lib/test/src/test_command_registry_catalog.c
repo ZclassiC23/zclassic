@@ -38,6 +38,7 @@ static bool exec_leaf(const struct zcl_command_registry *reg,
     json_set_object(&input);
     size_t n = zcl_command_registry_execute_json(reg, spec, &ctx, &input,
                                                  false, spec->path, "normal", 0,
+                                                 0, NULL,
                                                  out, out_size, exit_code);
     json_free(&input);
     return n > 0;
@@ -236,8 +237,8 @@ static int test_envelope_vectors(void)
         (void)json_push_kv_str(&input, "path", "core.status");
         enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
         size_t n = zcl_command_registry_execute_json(
-            reg, s, &ctx, &input, false, "discover.describe", "normal", 0, out,
-            sizeof(out), &code);
+            reg, s, &ctx, &input, false, "discover.describe", "normal", 0, 0,
+            NULL, out, sizeof(out), &code);
         json_free(&input);
         ASSERT(n > 0);
         ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
@@ -276,6 +277,130 @@ static int test_typo_stays_branch(void)
     return failures;
 }
 
+static int test_dev_branch_leaves(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    TEST("dev branch carries the expected ready/planned leaf availability") {
+        const struct zcl_command_spec *dev = find_spec(reg, "dev");
+        ASSERT(dev != NULL);
+        ASSERT_EQ(dev->mode, ZCL_COMMAND_MODE_BRANCH);
+
+        const char *ready[] = {
+            "dev.status", "dev.core.boundary", "dev.app.describe",
+            "dev.app.plan", "dev.app.simulate", "dev.change.plan",
+        };
+        for (size_t i = 0; i < sizeof(ready) / sizeof(ready[0]); i++) {
+            const struct zcl_command_spec *s = find_spec(reg, ready[i]);
+            ASSERT(s != NULL);
+            ASSERT_EQ(s->availability, ZCL_COMMAND_READY);
+            ASSERT(s->handler != NULL);
+        }
+        /* Unfinished dev operations are explicitly planned + handlerless, so
+         * discovery can never advertise a dev command that cannot dispatch. */
+        const char *planned[] = {
+            "dev.core.proof", "dev.app.list", "dev.app.inspect",
+            "dev.generation.current", "dev.loop.wait", "dev.test.replay",
+        };
+        for (size_t i = 0; i < sizeof(planned) / sizeof(planned[0]); i++) {
+            const struct zcl_command_spec *s = find_spec(reg, planned[i]);
+            ASSERT(s != NULL);
+            ASSERT_EQ(s->availability, ZCL_COMMAND_PLANNED);
+            ASSERT(s->handler == NULL);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Build a body larger than the ordinary-result budget: several long scalar
+ * fields plus one nested container, so projection must drop or page. */
+static void make_large_body(struct json_value *body)
+{
+    char big[420];
+    memset(big, 'x', sizeof(big) - 1);
+    big[sizeof(big) - 1] = 0;
+    json_init(body);
+    json_set_object(body);
+    for (int i = 0; i < 8; i++) {
+        char key[16];
+        (void)snprintf(key, sizeof(key), "s%d", i);
+        (void)json_push_kv_str(body, key, big);
+    }
+    struct json_value nested;
+    json_init(&nested);
+    json_set_object(&nested);
+    (void)json_push_kv_str(&nested, "a", big);
+    (void)json_push_kv_str(&nested, "b", big);
+    (void)json_push_kv(body, "nested", &nested);
+    json_free(&nested);
+}
+
+static int test_response_budget_views(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    const struct zcl_command_spec *s = find_spec(reg, "core.status");
+    char scratch[ZCL_COMMAND_LIST_BUDGET + 1];
+
+    TEST("bridge projection: summary/normal/full page a too-large body") {
+        ASSERT(s != NULL);
+
+        /* summary: drop containers, fit the ordinary-result budget. */
+        struct json_value body;
+        make_large_body(&body);
+        struct zcl_command_request req = { .spec = s, .view = "summary" };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, s->output_schema);
+        zcl_native_bridge_project(&req, &body, &reply);
+        size_t n = json_write(&reply.data, scratch, sizeof(scratch));
+        ASSERT(n > 0 && n <= ZCL_COMMAND_RESULT_BUDGET);
+        ASSERT(json_get(&reply.data, "nested") == NULL);
+        const struct json_value *page = json_get(&reply.data, "_page");
+        ASSERT(page != NULL && page->type == JSON_OBJ);
+        ASSERT_STR_EQ(json_get_str(json_get(page, "view")), "summary");
+        ASSERT(json_get(page, "truncated") != NULL);
+        zcl_command_reply_free(&reply);
+        json_free(&body);
+
+        /* normal: truncate with an explicit retrieval next command. */
+        make_large_body(&body);
+        req = (struct zcl_command_request){ .spec = s, .view = "normal" };
+        zcl_command_reply_init(&reply, s->output_schema);
+        zcl_native_bridge_project(&req, &body, &reply);
+        n = json_write(&reply.data, scratch, sizeof(scratch));
+        ASSERT(n > 0 && n <= ZCL_COMMAND_RESULT_BUDGET);
+        page = json_get(&reply.data, "_page");
+        ASSERT(page != NULL);
+        const struct json_value *trunc = json_get(page, "truncated");
+        ASSERT(trunc != NULL && trunc->type == JSON_BOOL && trunc->val.b);
+        ASSERT(json_get(page, "next_cursor") != NULL);
+        ASSERT(reply.next_count >= 1);
+        ASSERT(strstr(reply.next[0].input_json, "full") != NULL);
+        zcl_command_reply_free(&reply);
+        json_free(&body);
+
+        /* full: honor --max-items and page via an advancing cursor. */
+        make_large_body(&body);
+        req = (struct zcl_command_request){
+            .spec = s, .view = "full", .max_items = 3, .cursor = "0",
+        };
+        zcl_command_reply_init(&reply, s->output_schema);
+        zcl_native_bridge_project(&req, &body, &reply);
+        page = json_get(&reply.data, "_page");
+        ASSERT(page != NULL);
+        ASSERT_EQ(json_get_int(json_get(page, "included")), (int64_t)3);
+        const struct json_value *nc = json_get(page, "next_cursor");
+        ASSERT(nc != NULL);
+        ASSERT_EQ(json_get_int(nc), (int64_t)3);
+        zcl_command_reply_free(&reply);
+        json_free(&body);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_is_root_ownership(void)
 {
     int failures = 0;
@@ -306,6 +431,8 @@ int test_command_registry_catalog(void)
     failures += test_bridge_bindings_reverse();
     failures += test_planned_fail_closed();
     failures += test_envelope_vectors();
+    failures += test_dev_branch_leaves();
+    failures += test_response_budget_views();
     failures += test_typo_stays_branch();
     failures += test_is_root_ownership();
     printf("=== command_registry_catalog: %d failures ===\n", failures);

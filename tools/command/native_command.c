@@ -188,6 +188,136 @@ static bool bridge_build_args(const char *path,
     return true; /* pass-through: caller uses `input` directly */
 }
 
+/* ── progressive-disclosure projection (contract §8/§9) ──────────────────
+ * A bridged tool body can exceed the 4096-byte ordinary-result budget. Rather
+ * than fail with RESPONSE_BUDGET_EXCEEDED, project the top-level object to fit:
+ *   summary — scalar top-level fields only (containers dropped);
+ *   normal  — greedy top-level fields in order until the budget (default);
+ *   full    — greedy from --cursor, honoring --max-items, paging via a cursor.
+ * Truncation is always explicit: a `_page` object records it and the envelope
+ * gets one structured retrieval command (same leaf, --view=full --cursor=N). */
+enum { NC_ENVELOPE_RESERVE = 768 };
+
+static bool nc_is_scalar(const struct json_value *v)
+{
+    return v && v->type <= JSON_STR; /* NULL/BOOL/INT/REAL/STR */
+}
+
+static size_t nc_obj_size(const struct json_value *obj)
+{
+    char scratch[ZCL_COMMAND_LIST_BUDGET + 1];
+    size_t n = json_write(obj, scratch, sizeof(scratch));
+    return (n == 0 || n >= sizeof(scratch)) ? sizeof(scratch) : n;
+}
+
+void zcl_native_bridge_project(const struct zcl_command_request *request,
+                               const struct json_value *body,
+                               struct zcl_command_reply *reply)
+{
+    const char *view = request->view && request->view[0] ? request->view
+                                                          : "normal";
+    bool summary = strcmp(view, "summary") == 0;
+    bool full = strcmp(view, "full") == 0;
+
+    size_t contract = ZCL_COMMAND_RESULT_BUDGET;
+    if (request->budget_bytes > 0 && request->budget_bytes < contract)
+        contract = request->budget_bytes;
+    size_t data_budget = contract > NC_ENVELOPE_RESERVE
+                             ? contract - NC_ENVELOPE_RESERVE
+                             : contract / 2;
+
+    size_t start = 0;
+    if (full && request->cursor && request->cursor[0]) {
+        char *end = NULL;
+        unsigned long long c = strtoull(request->cursor, &end, 10);
+        if (end && !*end)
+            start = (size_t)c;
+    }
+    size_t total = body->num_children;
+
+    struct json_value acc;
+    json_init(&acc);
+    json_set_object(&acc);
+    size_t included = 0, omitted = 0, next_cursor = total;
+    bool truncated = false;
+    const char *oversize_key = NULL;
+    for (size_t i = (summary ? 0 : start); i < total; i++) {
+        const struct json_value *val = &body->children[i];
+        if (summary && !nc_is_scalar(val)) {
+            omitted++;
+            continue;
+        }
+        if (full && request->max_items > 0 && included >= request->max_items) {
+            truncated = true;
+            next_cursor = i;
+            break;
+        }
+        /* Measure a copy with the candidate member before committing it. */
+        struct json_value probe, copy;
+        json_init(&probe);
+        json_init(&copy);
+        json_copy(&probe, &acc);
+        json_copy(&copy, val);
+        (void)json_push_kv(&probe, body->keys[i], &copy);
+        size_t sz = nc_obj_size(&probe);
+        json_free(&probe);
+        if (sz <= data_budget) {
+            (void)json_push_kv(&acc, body->keys[i], &copy);
+            included++;
+            json_free(&copy);
+        } else {
+            json_free(&copy);
+            truncated = true;
+            /* A single field larger than the whole page budget must not stall
+             * the cursor: advance past it and name it so the caller can fetch
+             * it narrowly (a wider budget, --fields, or the tool directly). */
+            if (included == 0) {
+                next_cursor = i + 1;
+                oversize_key = body->keys[i];
+            } else {
+                next_cursor = i;
+            }
+            break;
+        }
+    }
+    if (summary && omitted > 0)
+        truncated = true;
+
+    /* Attach the explicit page descriptor. */
+    struct json_value page;
+    json_init(&page);
+    json_set_object(&page);
+    (void)json_push_kv_str(&page, "view", view);
+    (void)json_push_kv_int(&page, "total_fields", (int64_t)total);
+    (void)json_push_kv_int(&page, "included", (int64_t)included);
+    (void)json_push_kv_bool(&page, "truncated", truncated);
+    if (truncated && !summary)
+        (void)json_push_kv_int(&page, "next_cursor", (int64_t)next_cursor);
+    if (oversize_key)
+        (void)json_push_kv_str(&page, "skipped_oversize", oversize_key);
+    (void)json_push_kv(&acc, "_page", &page);
+    json_free(&page);
+
+    json_free(&reply->data);
+    json_init(&reply->data);
+    json_copy(&reply->data, &acc);
+    json_free(&acc);
+    reply->status = ZCL_COMMAND_STATUS_PASSED;
+    reply->exit_code = ZCL_COMMAND_EXIT_OK;
+
+    if (truncated) {
+        char input_json[128];
+        if (summary)
+            (void)snprintf(input_json, sizeof(input_json), "{\"view\":\"full\"}");
+        else
+            (void)snprintf(input_json, sizeof(input_json),
+                           "{\"view\":\"full\",\"cursor\":%zu}", next_cursor);
+        (void)zcl_command_reply_add_next(
+            reply, request->spec->path, input_json,
+            summary ? "retrieve full fields" : "retrieve the remaining fields");
+    }
+}
+
 void zcl_native_bridge_command(const struct zcl_command_request *request,
                                struct zcl_command_reply *reply)
 {
@@ -270,13 +400,10 @@ void zcl_native_bridge_command(const struct zcl_command_request *request,
         return;
     }
 
-    /* Success: the tool body becomes the result envelope's data. */
-    json_free(&reply->data);
-    json_init(&reply->data);
-    json_copy(&reply->data, &body);
+    /* Success: project the tool body into the result envelope's data, bounded
+     * by view + budget so a large read pages instead of overflowing (§8/§9). */
+    zcl_native_bridge_project(request, &body, reply);
     json_free(&body);
-    reply->status = ZCL_COMMAND_STATUS_PASSED;
-    reply->exit_code = ZCL_COMMAND_EXIT_OK;
 }
 
 /* ── discovery + app handlers (bound by the catalog) ───────────────── */
@@ -710,7 +837,9 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
     const char *input_flag = NULL;
     const char *view = NULL;
     const char *side = NULL;
+    const char *cursor = NULL;
     size_t budget = 0;
+    size_t max_items = 0;
     bool flag_error = false;
     char flag_key[128];
     for (size_t i = consumed; i < count; i++) {
@@ -734,8 +863,13 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
         } else if (strcmp(flag_key, "budget-bytes") == 0) {
             if (value && nc_is_integer(value))
                 budget = (size_t)strtoull(value, NULL, 10);
+        } else if (strcmp(flag_key, "max-items") == 0) {
+            if (value && nc_is_integer(value))
+                max_items = (size_t)strtoull(value, NULL, 10);
+        } else if (strcmp(flag_key, "cursor") == 0) {
+            cursor = value;
         } else if (nc_reserved_control(flag_key)) {
-            /* accepted, no effect in Wave 1.2 */
+            /* accepted, no effect */
         } else if (!nc_set_typed_value(&flags, flag_key, value)) {
             flag_error = true;
             break;
@@ -883,8 +1017,8 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
     char out[ZCL_COMMAND_LIST_BUDGET + 1];
     enum zcl_command_exit exit_code = ZCL_COMMAND_EXIT_INTERNAL;
     size_t n = zcl_command_registry_execute_json(
-        reg, spec, &ctx, &input, was_alias, invoked, view, budget, out,
-        sizeof(out), &exit_code);
+        reg, spec, &ctx, &input, was_alias, invoked, view, budget, max_items,
+        cursor, out, sizeof(out), &exit_code);
     json_free(&input);
     if (n == 0) {
         nc_print_error(spec->path, "EXECUTE_FAILED", "serialize",

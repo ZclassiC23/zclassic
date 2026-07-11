@@ -95,6 +95,16 @@ int zcl_devloop_app_plan(const char *repo_root, const char *app_id,
                          const char *resource);
 int zcl_devloop_app_simulate(const char *app_id, uint64_t seed);
 
+/* Release-safe bounded JSON buffer producers backing both the stdout print
+ * wrappers above and the Wave 2.2 registry dev handlers. Return bytes written,
+ * or 0 on invalid arguments / overflow. */
+size_t zcl_devloop_app_describe_json(const char *repo_root, const char *app_id,
+                                     char *out, size_t out_sz);
+size_t zcl_devloop_app_plan_json(const char *repo_root, const char *app_id,
+                                 const char *resource, char *out, size_t out_sz);
+size_t zcl_devloop_app_simulate_json(const char *app_id, uint64_t seed,
+                                     char *out, size_t out_sz);
+
 #ifdef __cplusplus
 }
 #endif

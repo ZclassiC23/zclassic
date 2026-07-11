@@ -146,8 +146,18 @@ MCP_SRCS = $(call zcl_filter_ephemeral_sources,\
 # save -> classify -> prove -> publish loop; tools/dev/*.sh remain temporary
 # compatibility/self-test fixtures, not the primary interface.
 DEVLOOP_INCLUDES = -Itools/dev
-DEVLOOP_SRCS = $(call zcl_filter_ephemeral_sources,\
+# tools/dev/*.c splits into two groups. The read-only helpers (registry-driven
+# menu/help/search, App-manifest describe/plan/simulate, source-change
+# classification) are release-safe and back the registry dev handlers, so they
+# stay in ALL_SRCS. The mutating executors (the checkout-local dispatcher, the
+# hot-swap/reload cycle, the persistent inotify watcher, and the subprocess
+# runner) are DEV_ONLY_SRCS: linked only into the DEV binary, never the release
+# binary. `check-release-no-dev-symbols` proves their entry points are absent.
+DEVLOOP_ALL_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard tools/dev/*.c))
+DEV_ONLY_SRCS = tools/dev/devloop_cli.c tools/dev/devloop_cycle.c \
+	tools/dev/devloop_watch.c tools/dev/devloop_process.c
+DEVLOOP_SRCS = $(filter-out $(DEV_ONLY_SRCS),$(DEVLOOP_ALL_SRCS))
 
 # Stable public Core -> App ABI. App generations compile against this include
 # root only; it deliberately exposes no consensus, storage, wallet-key, socket,
@@ -164,7 +174,9 @@ NODE_ENTRY_SRCS = src/main.c tools/mcp_server.c
 ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS) $(CORE_SRCS) $(DOMAIN_SRCS) $(APPLICATION_SRCS) $(ADAPTERS_SRCS) $(MCP_SRCS) $(DEVLOOP_SRCS) $(COMMAND_SRCS)
 ALL_OBJS = $(patsubst %.c,$(OBJ_DIR)/%.o,$(ALL_SRCS))
 
-DEV_SRCS = $(NODE_ENTRY_SRCS) $(ALL_SRCS)
+# The DEV binary keeps everything: the release source set plus the dev-only
+# executors excluded from ALL_SRCS above.
+DEV_SRCS = $(NODE_ENTRY_SRCS) $(ALL_SRCS) $(DEV_ONLY_SRCS)
 DEV_OBJS = $(patsubst %.c,$(DEV_OBJ_DIR)/%.o,$(DEV_SRCS))
 DEV_OBJ_COMPLETE = $(DEV_OBJ_DIR)/.complete
 
@@ -2801,6 +2813,12 @@ check-hotswap-eligible-scope:
 check-hotswap-static-state:
 	@tools/lint/check_hotswap_static_state.sh
 
+# Prove the RELEASE binary links none of the dev-only mutation entry points
+# (dispatcher, cycle, watcher, subprocess runner). Structural proof always
+# runs; the nm -D artifact proof runs when a fresh release binary is present.
+check-release-no-dev-symbols:
+	@tools/lint/check_release_no_dev_symbols.sh
+
 check-raw-malloc:
 	@echo "══ LINT: raw malloc/calloc/realloc in production code ══"
 	@tools/scripts/check_raw_malloc.sh
@@ -3337,7 +3355,7 @@ check-honest-witness:
 	@echo "══ LINT: honest witness (E12) ══"
 	@ZCL_LINT_MODE=FAIL ./tools/lint/check_honest_witness.sh
 
-lint: check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vendor-provenance
+lint: check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-release-no-dev-symbols check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vendor-provenance
 	@echo "══ LINT: all checks passed ══"
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the

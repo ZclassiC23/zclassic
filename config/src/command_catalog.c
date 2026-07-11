@@ -7,12 +7,15 @@
  * build. Metadata is transport-neutral; the handler column is the single
  * explicitly injected native binding per leaf.
  *
- * Wave 1.2 activates root + core + apps + ops. The `dev` subtree is declared
- * as a branch in root.def but its leaves stay owned by the checkout-local
- * devloop dispatcher (tools/dev/devloop_cli.c); Wave 2.2 replaces the hardcoded
- * devloop menu with registry wrappers (handoff item 5) and expands dev.def
- * here. Do NOT include dev.def before that binding exists — its READY leaves
- * name handlers this catalog does not define.
+ * Wave 1.2 activated root + core + apps + ops. Wave 2.2 expands the `dev`
+ * subtree here (dev.def) and binds its six READY read-only leaves to
+ * release-safe handlers in tools/command/native_dev_command.c. The devloop
+ * DISPATCH (cycle/watch/focused) still lives in the dev-only
+ * tools/dev/devloop_cli.c; only the dev menu/help/search and planned-leaf
+ * fail-closed behaviour are registry-driven now. The READY dev handlers are
+ * read-only (describe/plan/simulate/change-plan/status/boundary) and therefore
+ * compile into the release binary; every mutating dev leaf is COMPAT or
+ * PLANNED with a NULL handler.
  */
 
 #include "config/command_catalog.h"
@@ -115,11 +118,35 @@
       .traits = (traits_), .transports = ZCL_COMMAND_TRANSPORT_NATIVE,         \
       .handler = NULL },
 
+/* A mutating leaf whose canonical native adapter is not executable yet: it is
+ * COMPAT (NULL handler, points at a compatibility target) but carries the full
+ * effect/risk/mode policy of the mutation it will one day own. Used by dev.def
+ * for `dev.change.apply` (the cycle still shells out to Make targets). */
+#define ZCL_COMMAND_COMPAT_COMMAND(path_, parent_, aliases_, summary_, tags_,  \
+                                   in_, out_, in_keys_, pos_keys_, example_,   \
+                                   layer_, effect_, risk_, scope_,             \
+                                   authority_, mode_, latency_, cost_,         \
+                                   confirmation_, lanes_, caps_, traits_,      \
+                                   reason_, compat_)                           \
+    { .path = (path_), .parent = (parent_), .aliases = (aliases_),             \
+      .summary = (summary_), .tags = (tags_), .input_schema = (in_),          \
+      .output_schema = (out_), .input_keys = (in_keys_),                       \
+      .positional_keys = (pos_keys_), .example = (example_),                   \
+      .availability_reason = (reason_), .compat_target = (compat_),            \
+      .layer = (layer_), .effect = (effect_), .risk = (risk_),                 \
+      .scope = (scope_), .authority = (authority_),                            \
+      .availability = ZCL_COMMAND_COMPAT, .mode = (mode_),                     \
+      .latency = (latency_), .cost = (cost_), .confirmation = (confirmation_), \
+      .allowed_lanes = (lanes_), .required_capabilities = (caps_),             \
+      .traits = (traits_), .transports = ZCL_COMMAND_TRANSPORT_NATIVE,         \
+      .handler = NULL },
+
 static const struct zcl_command_spec g_catalog_commands[] = {
 #include "../commands/root.def"
 #include "../commands/core.def"
 #include "../commands/apps.def"
 #include "../commands/ops.def"
+#include "../commands/dev.def"
 };
 
 #undef ZCL_COMMAND_BRANCH
@@ -127,6 +154,7 @@ static const struct zcl_command_spec g_catalog_commands[] = {
 #undef ZCL_COMMAND_COMPAT_READ
 #undef ZCL_COMMAND_PLANNED_READ
 #undef ZCL_COMMAND_PLANNED_COMMAND
+#undef ZCL_COMMAND_COMPAT_COMMAND
 
 static const struct zcl_command_registry g_catalog_registry = {
     .commands = g_catalog_commands,

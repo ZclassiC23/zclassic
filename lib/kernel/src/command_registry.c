@@ -983,6 +983,7 @@ size_t zcl_command_registry_execute_json(
     const struct json_value *input,
     bool invoked_by_alias, const char *invoked_name,
     const char *view, size_t budget_bytes,
+    size_t max_items, const char *cursor,
     char *out, size_t out_size, enum zcl_command_exit *exit_code)
 {
     (void)registry;
@@ -1037,6 +1038,8 @@ size_t zcl_command_registry_execute_json(
             .input = input,
             .view = view && view[0] ? view : "normal",
             .budget_bytes = budget_bytes,
+            .max_items = max_items,
+            .cursor = cursor,
             .invoked_by_alias = invoked_by_alias,
             .invoked_name = invoked_name,
         };

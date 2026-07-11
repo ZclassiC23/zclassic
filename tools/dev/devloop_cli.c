@@ -3,6 +3,9 @@
 #define _GNU_SOURCE
 #include "devloop.h"
 
+#include "config/command_catalog.h"
+#include "kernel/command_registry.h"
+
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -194,8 +197,39 @@ int zcl_devloop_cli_main(const char **args, int nargs)
         return 0;
     }
 
-    char path[512];
     int start = strcmp(args[0], "help") == 0 ? 1 : 0;
+
+    /* Registry-driven fail-closed: a leaf the registry marks PLANNED has no
+     * executable handler here. Resolve the longest registered dev path and, if
+     * it is a planned leaf, block with exit 3 instead of printing a menu that
+     * would imply the command works. */
+    const char *words[64];
+    size_t wc = 0;
+    words[wc++] = "dev";
+    for (int i = start; i < nargs && wc < 64; i++)
+        words[wc++] = args[i];
+    size_t consumed = 0;
+    bool was_alias = false;
+    char invoked[ZCL_COMMAND_MAX_PATH];
+    const struct zcl_command_spec *spec = zcl_command_registry_resolve_words(
+        zcl_command_catalog(), words, wc, &consumed, &was_alias, invoked,
+        sizeof(invoked));
+    if (spec && spec->mode != ZCL_COMMAND_MODE_BRANCH &&
+        spec->availability == ZCL_COMMAND_PLANNED) {
+        printf("{\"schema\":\"zcl.result.v1\",\"command\":\"%s\",\"ok\":false,"
+               "\"status\":\"blocked\",\"exit_code\":3,"
+               "\"error\":{\"code\":\"COMMAND_PLANNED\",\"message\":"
+               "\"command is declared but not implemented\",\"evidence\":\"%s\"},"
+               "\"next\":[{\"command\":\"discover.describe\",\"input\":"
+               "{\"path\":\"%s\"},\"reason\":"
+               "\"inspect availability and replacement\"}]}\n",
+               spec->path,
+               spec->availability_reason ? spec->availability_reason : "",
+               spec->path);
+        return 3;
+    }
+
+    char path[512];
     if (!menu_path(path, args, start, nargs)) {
         fprintf(stderr, "[devloop] help: invalid tree path\n");
         return 2;

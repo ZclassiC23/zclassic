@@ -44,24 +44,43 @@ registry digests, shallow bounded menus, deterministic five-result search,
 leaf descriptions, common result envelopes, exit codes, lane/capability checks,
 and planned-command fail-closed behavior. Its strict release object compiles.
 
-Still missing before any claim that the new registry is active:
+Phase B is now landed. Items 1–4 landed in Wave 1.2; items 5–7 landed in
+Wave 2.2 (`dev/registry-phase-b2`):
 
-1. Author `config/commands/core.def` and `config/commands/ops.def`.
-2. Implement `config/src/command_catalog.c` to expand the `.def` files into
-   immutable metadata plus separate common/dev bindings.
-3. Implement the native adapter and normalized `--input`/stdin/typed-flag
-   parser under `tools/command/`.
-4. Route canonical resolution before the arbitrary RPC fallback in
-   `src/main.c`; a typo under a canonical branch must never become an RPC.
-5. Replace `tools/dev/devloop_menu.c`'s hardcoded tree with registry wrappers.
-6. Add golden registry tests: exactly six root children, shallow menus, byte
-   budgets, maximum five ranked search results, unique aliases, every ready
-   leaf dispatchable, every planned leaf blocked, and common envelope/exit-code
-   vectors.
-7. Split metadata from bindings and split release/common sources from dev-only
-   executors. Today `tools/dev/*.c` is still in `ALL_SRCS`; `#ifdef` prevents
-   mutation but does not prove the release binary lacks the code. Add an `nm`
-   release proof before Phase B is called complete.
+1. DONE — `config/commands/core.def` and `config/commands/ops.def` authored.
+2. DONE — `config/src/command_catalog.c` expands the `.def` files into immutable
+   metadata; the native handler column is the single injected binding per leaf.
+   Wave 2.2 folds in `dev.def` (adds the `ZCL_COMMAND_COMPAT_COMMAND` macro).
+3. DONE — native adapter + normalized `--input`/stdin/typed-flag parser under
+   `tools/command/native_command.c`.
+4. DONE — canonical resolution routes before the RPC fallback in `src/main.c`; a
+   typo under a canonical branch returns the structured unknown-command error.
+5. DONE (Wave 2.2) — `tools/dev/devloop_menu.c` is now a thin registry wrapper
+   (`zcl_command_registry_menu_json` / `_search_json` over the one catalog);
+   the devloop DISPATCH stays in the dev-only `devloop_cli.c`. The six READY
+   read-only dev leaves bind to release-safe handlers in
+   `tools/command/native_dev_command.c`; every mutating dev leaf is COMPAT or
+   PLANNED (NULL handler) and a planned leaf fails closed with exit 3.
+6. DONE — golden registry tests in
+   `lib/test/src/test_command_registry_catalog.c`: six root children, shallow
+   budgeted menus, ≤5 ranked search results, every ready leaf dispatchable,
+   every planned leaf blocked, envelope/exit-code vectors, the dev
+   ready/planned availability matrix, and the response-budget view vectors.
+7. DONE (Wave 2.2) — release/dev source split: the mutating executors
+   (`devloop_cli.c`, `devloop_cycle.c`, `devloop_watch.c`, `devloop_process.c`)
+   are `DEV_ONLY_SRCS`, excluded from the release `ALL_SRCS` and linked only into
+   the DEV binary; `src/main.c` guards the dispatch under `ZCL_DEV_BUILD`. The
+   lint gate `check-release-no-dev-symbols` proves the dev-mutation entry points
+   are absent from the release binary (structural source proof + `nm -D`
+   artifact proof).
+
+Remaining (Phase C and later, NOT this wave):
+
+- `--view=full` pagination beyond the bridge path (only the READ-ONLY MCP-bridge
+  Core/Ops leaves project summary/normal/full + cursor today; native handlers
+  return their whole bounded body).
+- `dev loop ensure/wait/events`, native jobs, resumable streams, and the native
+  compile/activation engine (still shell-backed compatibility targets).
 
 Do not promote the current prototype's handlerless menu nodes to `ready`.
 `dev.core.proof`, generation current/history/rollback, and the old hardcoded

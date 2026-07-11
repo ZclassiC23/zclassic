@@ -75,19 +75,25 @@ static int test_menu_and_search(void)
     int failures = 0;
     TEST("dev platform: shallow menu and semantic search are compact JSON") {
         char body[32768];
+        /* Wave 2.2: menu/help/search are now registry-driven, so the schema is
+         * the canonical zcl.command_menu.v1 and the shape comes from the single
+         * command catalog rather than a hardcoded dev tree. */
         size_t n = zcl_devloop_menu_json("dev", body, sizeof(body));
         ASSERT(n > 0 && n < sizeof(body));
         struct json_value root = {0};
         ASSERT(json_read(&root, body, n));
         ASSERT(strcmp(json_get_str(json_get(&root, "schema")),
-                      "zcl.dev_menu.v1") == 0);
+                      "zcl.command_menu.v1") == 0);
+        /* Shallow: dev's immediate children appear, deep social nodes do not. */
         ASSERT(strstr(body, "dev.app") != NULL);
+        ASSERT(strstr(body, "dev.app.describe") == NULL);
         ASSERT(strstr(body, "dev.app.social.resources") == NULL);
         json_free(&root);
 
+        /* "censorship" is a registry tag on the deterministic App simulator. */
         n = zcl_devloop_menu_search_json("censorship", body, sizeof(body));
         ASSERT(n > 0);
-        ASSERT(strstr(body, "dev.app.social") != NULL);
+        ASSERT(strstr(body, "dev.app.simulate") != NULL);
         PASS();
     } _test_next:;
     return failures;
