@@ -38,4 +38,4 @@ app/views/src/explorer_pages_hodl.c 1853
 app/views/src/explorer_pages_view.c 823
 config/src/boot.c 3949
 config/src/boot_refold_staged.c 2107
-config/src/boot_services.c 1704
+config/src/boot_services.c 1682

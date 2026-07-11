@@ -17,14 +17,11 @@
 #include "services/chain_tip.h"
 #include "services/hodl_history_service.h"
 #include "services/quorum_oracle_service.h"
-#include "jobs/header_admit_stage.h"
-#include "jobs/validate_headers_stage.h"
-#include "jobs/body_fetch_stage.h"
-#include "jobs/body_persist_stage.h"
-#include "jobs/script_validate_stage.h"
-#include "jobs/proof_validate_stage.h"
-#include "jobs/utxo_apply_stage.h"
-#include "jobs/tip_finalize_stage.h"
+/* The eight staged-sync stage Job headers are no longer included here: the
+ * stage teardown that used them relocated to the staged-sync supervisor unit
+ * (staged_sync_supervisor_shutdown_stages), which owns the stages' init +
+ * registration too. boot_services.c reaches the pipeline only through
+ * supervisors/staged_sync_supervisor.h now. */
 #include "jobs/refold_progress.h"      /* refold_from_anchor_active (-load-verify-boot skip) */
 #include "config/boot_fast_restart.h"  /* boot_fast_restart_capture_shutdown_facts (P2) */
 #include "services/chain_tip_watchdog.h"
@@ -1580,37 +1577,18 @@ static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
     zcl_service_kernel_reset(&svc->runtime_kernel);
     zcl_service_kernel_reset(&svc->network_kernel);
     zcl_service_kernel_reset(&svc->service_kernel);
-    /* Staged-sync shutdown order: bottom-up (a stage's upstream stays alive while it drains), and
-     * BEFORE the frees below — a straggler drain ticked after the join sweep must see cleared
-     * bindings, not freed chainstate. tip_finalize reads utxo_apply_log; tear it down first. */
-    tip_finalize_stage_shutdown();
-
-    /* utxo_apply reads from proof_validate_log; tear it down before
-     * proof_validate. */
-    utxo_apply_stage_shutdown();
-
-    /* proof_validate reads from script_validate_log; tear it down first. */
-    proof_validate_stage_shutdown();
-
-    /* script_validate reads from body_persist_log; tear it down before
-     * body_persist. */
-    script_validate_stage_shutdown();
-
-    /* body_persist reads from body_fetch_log; tear it down before
-     * body_fetch. */
-    body_persist_stage_shutdown();
-
-    /* body_fetch reads from validate_headers_log; tear it down
-     * before validate_headers. */
-    body_fetch_stage_shutdown();
-
-    /* Stop validate_headers next so its workers do not outlive the
-     * disk_block_io cache. */
-    validate_headers_stage_shutdown();
-
-    /* Stop header_admit before closing progress.kv so any in-flight step
-     * finishes. */
-    header_admit_stage_shutdown();
+    /* Staged-sync stage teardown — the bottom-up (tip_finalize → utxo_apply →
+     * … → header_admit) reverse-dependency shutdown the at-tip kill-9 ordering
+     * invariant requires, BEFORE the frees below: a straggler drain ticked
+     * after the join sweep must see cleared bindings, not freed chainstate
+     * (each stage's shutdown reads the log the next-lower stage still owns, so
+     * they must quiesce top-of-pipeline first). This lifecycle belongs to the
+     * staged-sync supervisor unit that also registers the eight stages and
+     * lists them in the supervisor tree; delegate to it instead of re-listing
+     * every per-stage shutdown here. Behaviour is identical: each
+     * *_stage_shutdown() is null-safe, so the unit's per-stage init_ok guard
+     * only ever skips a no-op, in the same bottom-up order. */
+    staged_sync_supervisor_shutdown_stages();
 
     /* Stages quiesced; the state they read can go. proof_validate uses the Sapling params. */
     wallet_free(svc->wallet);
