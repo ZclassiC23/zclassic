@@ -586,7 +586,7 @@ void utxo_mirror_sync_init(struct utxo_mirror_sync_service *svc,
 {
     memset(svc, 0, sizeof(*svc));
     svc->ndb = ndb;
-    svc->thread_started = false;
+    atomic_store(&svc->thread_started, false);
     svc->ready = false;
     pthread_mutex_init(&svc->ready_mutex, NULL);
     pthread_cond_init(&svc->ready_cond, NULL);
@@ -613,7 +613,7 @@ struct zcl_result utxo_mirror_sync_start(struct utxo_mirror_sync_service *svc)
 {
     if (!svc || !svc->ndb)
         return ZCL_ERR(-1, "utxo_mirror: start: null svc or ndb");
-    if (svc->thread_started)
+    if (atomic_load(&svc->thread_started))
         return ZCL_ERR(-2, "utxo_mirror: start: thread already running");
 
     atomic_store(&svc->stop_requested, false);
@@ -622,7 +622,7 @@ struct zcl_result utxo_mirror_sync_start(struct utxo_mirror_sync_service *svc)
                                   &svc->thread) != 0)
         return ZCL_ERR(-3, "utxo_mirror: failed to create thread: %s",
                        strerror(errno));
-    svc->thread_started = true;
+    atomic_store(&svc->thread_started, true);
 
     /* Bounded ready handshake (same shape as block_pruning_start): don't block
      * app_init indefinitely if the thread wedges before signalling ready. */
@@ -644,7 +644,7 @@ struct zcl_result utxo_mirror_sync_start(struct utxo_mirror_sync_service *svc)
     if (!ready_ok) {
         atomic_store(&svc->stop_requested, true);
         pthread_detach(svc->thread);
-        svc->thread_started = false;
+        atomic_store(&svc->thread_started, false);
         return ZCL_ERR(-4,
             "utxo_mirror: thread did not signal ready within 30 s — aborted start");
     }
@@ -653,7 +653,7 @@ struct zcl_result utxo_mirror_sync_start(struct utxo_mirror_sync_service *svc)
     if (!sup_r.ok) {
         atomic_store(&svc->stop_requested, true);
         pthread_join(svc->thread, NULL);
-        svc->thread_started = false;
+        atomic_store(&svc->thread_started, false);
         return sup_r;
     }
 
@@ -663,13 +663,13 @@ struct zcl_result utxo_mirror_sync_start(struct utxo_mirror_sync_service *svc)
 
 void utxo_mirror_sync_stop(struct utxo_mirror_sync_service *svc)
 {
-    if (!svc || !svc->thread_started) return;
+    if (!svc || !atomic_load(&svc->thread_started)) return;
     supervisor_child_id id = atomic_load(&g_mirror_supervisor_id);
     if (id != SUPERVISOR_INVALID_ID)
         supervisor_set_deadline(id, 0);
     atomic_store(&svc->stop_requested, true);
     pthread_join(svc->thread, NULL);
-    svc->thread_started = false;
+    atomic_store(&svc->thread_started, false);
 #ifdef ZCL_TESTING
     id = atomic_exchange(&g_mirror_supervisor_id, SUPERVISOR_INVALID_ID);
     if (id != SUPERVISOR_INVALID_ID)
@@ -690,9 +690,15 @@ static const char *utxo_mirror_sync_state_name(int state)
     }
 }
 
-/* See CLAUDE.md "Adding state introspection". Reentrant-safe: every field
- * is an _Atomic member of the boot-owned g_utxo_mirror_sync instance, read
- * with atomic_load. g_utxo_mirror_sync is NULL before the service starts. */
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe: g_utxo_mirror_sync
+ * is NULL before the service starts. Most fields are _Atomic members of the
+ * boot-owned instance, read with atomic_load. The two exceptions:
+ *   - thread_started is _Atomic bool (flipped cross-thread by start()/stop());
+ *     read with atomic_load like the rest.
+ *   - tick_seconds is a plain int, written exactly once by
+ *     utxo_mirror_sync_init() before the background thread is spawned and
+ *     never mutated again — pthread_create's happens-before guarantee makes
+ *     a plain read here race-free without atomics. */
 bool utxo_mirror_sync_dump_state_json(struct json_value *out, const char *key)
 {
     (void)key;
@@ -707,7 +713,7 @@ bool utxo_mirror_sync_dump_state_json(struct json_value *out, const char *key)
 
     json_push_kv_str(out, "state",
                      utxo_mirror_sync_state_name(atomic_load(&svc->state)));
-    json_push_kv_bool(out, "thread_started", svc->thread_started);
+    json_push_kv_bool(out, "thread_started", atomic_load(&svc->thread_started));
     json_push_kv_int(out, "tick_seconds", (int64_t)svc->tick_seconds);
     json_push_kv_int(out, "rebuilds_run",
                      atomic_load(&svc->rebuilds_run));

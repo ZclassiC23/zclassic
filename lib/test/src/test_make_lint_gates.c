@@ -1750,6 +1750,41 @@ static int t_service_result_convergence_ratchet(void)
             ? read_entire_file(clean_out_path, &clean_out)
             : -1;
 
+    /* Case F — one-line-brace regression fixture: a signature whose opening
+     * brace shares the (possibly wrapped) signature's last line instead of
+     * sitting alone, e.g. `bool foo(void) {` or a multi-arg wrap ending
+     * `) {`. Before the awk fix, count_legacy_bool_exports() only matched a
+     * line that was EXACTLY `{` after trimming, so both styles below were
+     * silently uncounted — a regression could slip past the shrinking-floor
+     * gate. With an EMPTY baseline this must trip as a NEW unlisted file. */
+    int wrote_fixture_oneline = write_file(fixture_path,
+        "#include <stdbool.h>\n"
+        "bool svc_conv_fixture_oneline(void) {\n"
+        "    return false;\n"
+        "}\n"
+        "\n"
+        "bool svc_conv_fixture_wrapped(int a,\n"
+        "    int b) {\n"
+        "    return false;\n"
+        "}\n");
+    int wrote_baseline_empty3 = write_file(baseline_path, "");
+    int oneline_rc =
+        (wrote_fixture_oneline == 0 && wrote_baseline_empty3 == 0)
+            ? run_gate_script_with_env2(SVC_CONV_SCRIPT_REL,
+                  "ZCL_SERVICE_RESULT_CONVERGENCE_SCAN_DIR",
+                  SVC_CONV_SCAN_DIR_REL,
+                  "ZCL_SERVICE_RESULT_CONVERGENCE_BASELINE",
+                  SVC_CONV_BASELINE_REL)
+            : -999;
+    char oneline_out_path[PATH_MAX];
+    char *oneline_out = NULL;
+    int oneline_read =
+        (oneline_rc >= 0 &&
+         repo_path(oneline_out_path, sizeof(oneline_out_path),
+                   "test-tmp/zcl_gate_lint.out") == 0)
+            ? read_entire_file(oneline_out_path, &oneline_out)
+            : -1;
+
     /* Recovery: remove fixture.c and the baseline entry entirely — only
      * keep.c (0 legacy exports, unbaselined) remains, so the gate must
      * report clean again. */
@@ -1769,7 +1804,7 @@ static int t_service_result_convergence_ratchet(void)
     (void)unlink(baseline_path);
     (void)rmdir(scan_dir);
 
-    TEST("[lint-gate] service-result-convergence shrinking-floor: matched clean, grown/new/stale/clean-stale all trip, recovers") {
+    TEST("[lint-gate] service-result-convergence shrinking-floor: matched clean, grown/new/stale/clean-stale/oneline-brace all trip, recovers") {
         ASSERT(matched_rc == 0);
         ASSERT(grown_rc != 0);
         ASSERT(grown_read == 0);
@@ -1785,6 +1820,10 @@ static int t_service_result_convergence_ratchet(void)
         ASSERT(clean_read == 0);
         ASSERT(clean_out != NULL &&
                strstr(clean_out, "fully converted") != NULL);
+        ASSERT(oneline_rc != 0);
+        ASSERT(oneline_read == 0);
+        ASSERT(oneline_out != NULL &&
+               strstr(oneline_out, "has 2 legacy bool export") != NULL);
         ASSERT(recover_rc == 0);
         PASS();
     } _test_next:;
@@ -1793,6 +1832,7 @@ static int t_service_result_convergence_ratchet(void)
     free(new_out);
     free(stale_out);
     free(clean_out);
+    free(oneline_out);
     return failures;
 }
 
