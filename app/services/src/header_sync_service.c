@@ -2,6 +2,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
+// one-result-type-ok:header-sync-planner-predicates — every remaining exported bool is a pure header-sync decision (should_/is_/peer_is_behind/headers_chain_from_tip/begin_peer_sync-declines), an ANSWER not a fallible op; the sole fallible surface (syncsvc_build_getheaders_locator, malloc/null path) is already struct zcl_result. Cf. seed_integrity_gate.c / chain_tip_watchdog.c.
 #include "platform/time_compat.h"
 #include "sync/sync_planner.h"
 #include "net/snapshot_sync_contract.h"
@@ -14,7 +15,6 @@
 #include <stdlib.h>
 #include <time.h>
 #include <stdatomic.h>
-#include "platform/time_compat.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
