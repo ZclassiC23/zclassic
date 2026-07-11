@@ -202,7 +202,10 @@ int node_db_migrate(struct node_db *ndb, const char *datadir)
 
     int applied = 0;
     int current_ver = node_db_schema_version(ndb);
-    printf("db: current schema version %d\n", current_ver);
+    /* Boot prints the version banner; a runtime reopen suppresses it so the
+     * reopen cannot be mistaken for a boot in a filtered log. */
+    if (!ndb->suppress_migrate_banner)
+        printf("db: current schema version %d\n", current_ver);
 
     /* Campaign C3: schema-downgrade detection.
      *

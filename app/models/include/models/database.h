@@ -83,11 +83,32 @@ struct node_db {
     int64_t last_activity_time;
     int last_sqlite_rc;
     char last_op[64];
+    /* Transient: set for a runtime reopen so node_db_migrate() suppresses the
+     * boot-only "current schema version" banner. Never mistake a background
+     * reopen for a boot. See node_db_open_runtime(). */
+    bool suppress_migrate_banner;
 };
 
 /* Open or create the node database at path (e.g. ~/.zclassic-c23/node.db).
- * Creates all tables and indexes if they don't exist. */
+ * Runs the BOOT ceremony: PRAGMA quick_check (integrity), schema migration
+ * (with the version banner), and crash-recovery staging cleanup. This is the
+ * one-time-per-process boot open. Creates all tables/indexes if absent. */
 bool node_db_open(struct node_db *ndb, const char *path);
+
+/* Open the node database for an IN-PROCESS RUNTIME REOPEN (a background worker
+ * or request handler after boot already opened + verified the file once).
+ *
+ * Skips the boot-only ceremony — the ~280 ms PRAGMA quick_check, the
+ * snapshot-staging crash-recovery DELETEs, and the schema-version banner — none
+ * of which are meaningful on a reopen and all of which, emitted every cycle,
+ * make a periodic reopen indistinguishable from a boot loop in a filtered log
+ * (the exact "silent halt looks like a restart" trap this project forbids).
+ *
+ * `reason` is MANDATORY and must be a short, non-empty label naming the opener
+ * (e.g. "store.payment_scan"); it is logged once per open so no DB open is ever
+ * anonymous. A NULL/empty reason is a programming error and is refused. */
+bool node_db_open_runtime(struct node_db *ndb, const char *path,
+                          const char *reason);
 void node_db_close(struct node_db *ndb);
 
 /* Optional quick_check-skip probe (Tier-2 fast restart). When registered,
