@@ -2831,8 +2831,11 @@ check-hotswap-static-state:
 	@tools/lint/check_hotswap_static_state.sh
 
 # Prove the RELEASE binary links none of the dev-only mutation entry points
-# (dispatcher, cycle, watcher, subprocess runner). Structural proof always
-# runs; the nm -D artifact proof runs when a fresh release binary is present.
+# (dispatcher, cycle, watcher, subprocess runner) NOR the native dev-lane
+# activation engine (tools/dev/dev_activation*.c: stop/start the unit, flip
+# the `current` generation symlink, exec `systemctl --user ...`). Structural
+# proof always runs; the nm -D artifact proof runs when a fresh release
+# binary is present.
 check-release-no-dev-symbols:
 	@tools/lint/check_release_no_dev_symbols.sh
 

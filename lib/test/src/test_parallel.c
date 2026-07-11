@@ -85,6 +85,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(chain_activation_controller) \
     X(mcp_router) X(dev_mcp_rpc_bridge) X(mcp_controllers) X(mcp_middleware) X(mcp_metrics) \
     X(mcp_baseline) X(hotswap_loader) X(hotswap_simnet) X(dev_platform) \
+    X(dev_activation) \
     X(command_registry_catalog) \
     X(metric_alerts) \
     X(mcp_inproc_equiv) \
