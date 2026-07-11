@@ -250,7 +250,7 @@ AGENT_IMPACT_RULE("app/controllers/src/api_controller_dispatch.c|app/controllers
 
 /* Instant dev loop Wave 1/2: Tier-2 fast restart (clean-shutdown marker + skip). */
 AGENT_IMPACT_RULE("config/src/boot_shutdown_marker.c|config/include/config/boot_shutdown_marker.h|config/src/boot_fast_restart.c|config/include/config/boot_fast_restart.h|lib/test/src/test_shutdown_marker.c", "shutdown_marker unclean_shutdown_advance boot_phase make_lint_gates")
-AGENT_IMPACT_RULE("app/services/src/block_index_loader.c|app/services/src/block_index_loader_rebuild.c|app/services/include/services/block_index_loader.h|lib/test/src/test_block_index_rebuild.c", "load_verify_boot block_index_loader block_index_rebuild block_index_integrity make_lint_gates")
+AGENT_IMPACT_RULE("app/services/src/block_index_loader.c|app/services/src/block_index_loader_rebuild.c|app/services/include/services/block_index_loader.h|lib/test/src/test_block_index_loader.c|lib/test/src/test_block_index_rebuild.c", "load_verify_boot block_index_loader block_index_rebuild block_index_integrity make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/chain_restore_*.c|app/services/include/services/chain_restore_*.h|lib/test/src/test_boot_shutdown_marker.c", "boot_shutdown_marker load_verify_boot chain_state_repo make_lint_gates")
 
 /* Lane 2 (2026-07-10): empty-escape blocker stall meta-detector. */
