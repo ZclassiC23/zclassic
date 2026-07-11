@@ -14,6 +14,8 @@
  *   8. seal refusal + one-shot token accept + forged/mismatched token reject.
  *   9. timing: warm status < 20 ms, 1-file snapshot < 50 ms.
  *  10. owner-ritual primitives: grant, non-consuming peek, snapshot consumes.
+ *  11. revert atomicity: a forced mid-restore failure leaves the worktree
+ *      byte-identical to its pre-revert state and leaves no staging temps.
  *
  * All work happens under ./test-tmp/ (project no-/tmp convention). */
 
@@ -102,6 +104,21 @@ static int vc_count_objects(const char *repo)
     snprintf(cmd, sizeof(cmd),
              "find '%s/.zvcs/objects' -type f ! -path '*/tmp/*' 2>/dev/null | wc -l",
              repo);
+    FILE *p = popen(cmd, "r");
+    if (!p) return -1;
+    int c = -1;
+    if (fscanf(p, "%d", &c) != 1) c = -1;
+    pclose(p);
+    return c;
+}
+
+/* Count leftover ZVCS staging temp files (<...>.zvcstmp.<pid>.<seq>) anywhere
+ * under the worktree — a two-phase revert must leave none behind on failure. */
+static int vc_count_temps(const char *dir)
+{
+    char cmd[4096];
+    snprintf(cmd, sizeof(cmd),
+             "find '%s' -name '*.zvcstmp.*' 2>/dev/null | wc -l", dir);
     FILE *p = popen(cmd, "r");
     if (!p) return -1;
     int c = -1;
@@ -514,6 +531,79 @@ static int t_snapshot_status_revert(const char *dir)
     return failures;
 }
 
+/* ── test 11: revert atomicity — a mid-restore failure is all-or-nothing ──
+ *
+ * Proves the two-phase restore contract: if any target file cannot be staged,
+ * the revert fails WITHOUT touching the live worktree (no file matches the
+ * target, no delete is applied, no staging temp is left behind), and the same
+ * revert then succeeds once the fault is cleared. */
+static int t_revert_atomic_failure(const char *dir)
+{
+    int failures = 0;
+    vc_write(dir, "aaa.c", "AAA-A\n");
+    vc_write(dir, "keep.c", "KEEP\n");
+    vc_write(dir, "zzz/inner.c", "INNER-A\n");
+
+    struct vcs_repo *r = vcs_open(dir);
+    VC_CHECK("atomic: vcs_open", r != NULL);
+    if (!r) return failures + 1;
+
+    struct vcs_snapshot_meta meta = {0};
+    meta.verdict_status = 1;
+    meta.phase = "green";
+    meta.task_ref = "atomic-seed";
+    uint8_t c1[32];
+    VC_CHECK("atomic: snapshot c1", vcs_snapshot(r, &meta, c1) == VCS_OK);
+
+    /* Mutate the worktree away from c1, and poison the restore of one target
+     * file by replacing its parent directory ("zzz") with a regular file — so
+     * staging "zzz/inner.c" fails with ENOTDIR. This is deterministic
+     * regardless of uid (unlike a read-only parent, which root bypasses).
+     * "aaa.c" is a separate modified file that stages cleanly BEFORE the
+     * poisoned one, so the failure must also unwind aaa.c's staged temp. */
+    vc_write(dir, "aaa.c", "AAA-CHANGED\n");
+    char p[4096];
+    snprintf(p, sizeof(p), "%s/zzz/inner.c", dir); unlink(p);
+    snprintf(p, sizeof(p), "%s/zzz", dir); rmdir(p);
+    vc_write(dir, "zzz", "BLOCKER\n");
+
+    /* Pre-revert snapshot of the worktree bytes. */
+    VC_CHECK("atomic: pre aaa.c", vc_file_matches(dir, "aaa.c", "AAA-CHANGED\n"));
+    VC_CHECK("atomic: pre keep.c", vc_file_matches(dir, "keep.c", "KEEP\n"));
+    VC_CHECK("atomic: pre zzz(file)", vc_file_matches(dir, "zzz", "BLOCKER\n"));
+
+    /* Revert must FAIL and leave the worktree exactly as it was — matching
+     * neither a clean revert nor a half-applied hybrid. */
+    uint8_t cr[32];
+    int rc = vcs_revert(r, c1, NULL, cr);
+    VC_CHECK("atomic: revert reports error (not VCS_OK)", rc != VCS_OK);
+    VC_CHECK("atomic: phase-1 failure returns VCS_ERR", rc == VCS_ERR);
+
+    VC_CHECK("atomic: aaa.c NOT flipped (still pre-revert bytes)",
+             vc_file_matches(dir, "aaa.c", "AAA-CHANGED\n"));
+    VC_CHECK("atomic: keep.c unchanged",
+             vc_file_matches(dir, "keep.c", "KEEP\n"));
+    VC_CHECK("atomic: zzz delete NOT applied (still the blocker file)",
+             vc_file_matches(dir, "zzz", "BLOCKER\n"));
+    VC_CHECK("atomic: no .zvcstmp left behind after failure",
+             vc_count_temps(dir) == 0);
+
+    /* Recoverable: clear the blocker and the same revert now succeeds cleanly. */
+    snprintf(p, sizeof(p), "%s/zzz", dir); unlink(p);
+    uint8_t cr2[32];
+    VC_CHECK("atomic: revert succeeds after clearing the blocker",
+             vcs_revert(r, c1, NULL, cr2) == VCS_OK);
+    VC_CHECK("atomic: recovered aaa.c restored to c1",
+             vc_file_matches(dir, "aaa.c", "AAA-A\n"));
+    VC_CHECK("atomic: recovered zzz/inner.c restored to c1",
+             vc_file_matches(dir, "zzz/inner.c", "INNER-A\n"));
+    VC_CHECK("atomic: no .zvcstmp after successful recovery",
+             vc_count_temps(dir) == 0);
+
+    vcs_close(r);
+    return failures;
+}
+
 /* ── test 6: index delete -> rebuild identity ───────────────────── */
 static int t_index_rebuild(const char *dir)
 {
@@ -794,6 +884,10 @@ int test_vcs_core(void)
 
     test_make_tmpdir(dir, sizeof(dir), "vcs_core", "snap");
     failures += t_snapshot_status_revert(dir);
+    test_rm_rf_recursive(dir);
+
+    test_make_tmpdir(dir, sizeof(dir), "vcs_core", "atomicrevert");
+    failures += t_revert_atomic_failure(dir);
     test_rm_rf_recursive(dir);
 
     test_make_tmpdir(dir, sizeof(dir), "vcs_core", "rebuild");

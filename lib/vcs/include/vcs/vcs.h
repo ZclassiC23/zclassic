@@ -30,9 +30,16 @@ enum vcs_result {
     VCS_ERR       = -1,
     VCS_ENOTIMPL  = -2,
     VCS_REFUSED   = 3,   /* sealed-path change without a valid unseal token */
-    VCS_EPARTIAL  = 4,   /* vcs_revert: the source revert + forward commit
-                          * already landed (append-only, never undone), but a
-                          * requested relink activation refused or failed */
+    VCS_EPARTIAL  = 4,   /* vcs_revert: a partial, honestly-named state. Either
+                          * (a) the source revert + forward commit already
+                          * landed (append-only, never undone) but a requested
+                          * relink activation refused or failed, or (b) the
+                          * two-phase worktree restore failed during phase 2
+                          * (a near-impossible same-filesystem rename/unlink),
+                          * leaving some paths flipped — the failing call names
+                          * exactly which on stderr. Phase-1 failures never
+                          * reach here: they leave the worktree untouched and
+                          * return VCS_ERR. */
 };
 
 struct vcs_repo;
