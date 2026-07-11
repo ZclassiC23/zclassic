@@ -1029,7 +1029,7 @@ static int t_git_hooks_gate_rejects_noop_pre_push(void)
 /* Gate #45 — domain/ source purity (HARD). The fixture is a domain/ src file
  * carrying a forbidden include; clean tree → exit 0, fixture → exit != 0. */
 #define DOMAIN_PURITY_SCRIPT_REL  "tools/scripts/check_domain_purity.sh"
-#define DOMAIN_PURITY_FIXTURE_DST "domain/consensus/src/_domain_purity_fixture_tmp.c"
+#define DOMAIN_PURITY_FIXTURE_DST "domain/wallet/src/_domain_purity_fixture_tmp.c"
 #define E5_SCRIPT_REL    "tools/scripts/check_stage_advances_or_blocks.sh"
 #define E5_FIXTURE_DST   "app/jobs/src/_e5_stage_fixture_tmp_stage.c"
 #define E6_SCRIPT_REL    "tools/scripts/check_one_write_path.sh"
@@ -1078,7 +1078,7 @@ static int t_git_hooks_gate_rejects_noop_pre_push(void)
 #define COIN_BACKFILL_CALLER_FIXTURE_DST \
     "app/services/src/_coin_backfill_caller_fixture_tmp.c"
 #define COIN_BACKFILL_CALLER_DOMAIN_FIXTURE_DST \
-    "domain/consensus/src/_coin_backfill_caller_fixture_tmp.c"
+    "domain/wallet/src/_coin_backfill_caller_fixture_tmp.c"
 
 static int plant_oversized_file(const char *rel, int n_lines)
 {
@@ -3009,7 +3009,7 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(rules, "app/models/include/models/*.h") != NULL);
         ASSERT(strstr(rules, "lib/test/src/test_models*.c") != NULL);
         ASSERT(strstr(rules, "\"models make_lint_gates\"") != NULL);
-        ASSERT(strstr(rules, "domain/consensus/*") != NULL);
+        ASSERT(strstr(rules, "core/consensus/*") != NULL);
         ASSERT(strstr(rules, "lib/consensus/*") != NULL);
         ASSERT(strstr(rules,
                       "\"consensus_parity domain_consensus_tx_structural chain\"")

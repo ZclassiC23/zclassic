@@ -6,10 +6,12 @@
 #
 #   (1) its own domain headers   — #include "domain/<sub>/<x>.h"
 #   (2) C / POSIX system headers — #include <...>
-#   (3) two domain-LOCAL sibling files reached without a path prefix —
-#       "reject_out.h" and "oversize_grandfather_table.inc" (both physically
-#       under domain/consensus/src/). Any quoted include with NO slash is a
-#       bare sibling and is allowed.
+#   (3) a domain-LOCAL sibling file reached without a path prefix — any quoted
+#       include with NO slash (e.g. a bare "foo.h" or "table.inc" that sits in
+#       the same src/ dir) is a bare sibling and is allowed. (The consensus
+#       predicates and their siblings "reject_out.h" /
+#       "oversize_grandfather_table.inc" moved to the sealed core/consensus/ in
+#       the Wave 1.1 split; that tree is governed by check-core-include-boundary.)
 #   (4) a fixed set of 12 lib/ subsystem prefixes, each of which resolves to
 #       lib/<x>/include/<x>/... :
 #         bloom chain coins consensus core crypto keys primitives

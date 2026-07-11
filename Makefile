@@ -95,10 +95,22 @@ PORTS_INCLUDES = -Iports/include
 
 # Domain layer (pure, framework-free, no I/O).
 # Bounded contexts under domain/<context>/ each expose include/domain/<context>/.
-DOMAIN_CONTEXTS = consensus wallet encoding
+DOMAIN_CONTEXTS = wallet encoding
 DOMAIN_INCLUDES = $(foreach c,$(DOMAIN_CONTEXTS),-Idomain/$(c)/include)
 DOMAIN_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(foreach c,$(DOMAIN_CONTEXTS),$(wildcard domain/$(c)/src/*.c)))
+
+# Sealed consensus core (Wave 1.1 split). Bounded contexts under core/<context>/
+# hold the consensus predicates + static parameter tables. Include TOKENS are
+# preserved across the physical move (core/consensus keeps the "domain/consensus/"
+# token via -Icore/consensus/include), so no consumer #include changes. core/ is
+# a source/gate/seal unit that stays IN the whole-program LTO link — NOT a
+# separate archive (a libzclcore.a would sever hot-path inlining). Sealed by
+# core/MANIFEST.sha3; boundary-gated by check-core-include-boundary.
+CORE_CONTEXTS = consensus
+CORE_INCLUDES = $(foreach c,$(CORE_CONTEXTS),-Icore/$(c)/include)
+CORE_SRCS = $(call zcl_filter_ephemeral_sources,\
+	$(foreach c,$(CORE_CONTEXTS),$(wildcard core/$(c)/src/*.c)))
 
 # Application layer (use cases / service objects).
 # May depend on domain/, ports/, primitives, util — never on adapters or I/O.
@@ -134,7 +146,7 @@ DEVLOOP_SRCS = $(call zcl_filter_ephemeral_sources,\
 APP_SDK_INCLUDES = -Isdk/include
 
 NODE_ENTRY_SRCS = src/main.c tools/mcp_server.c
-ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS) $(DOMAIN_SRCS) $(APPLICATION_SRCS) $(ADAPTERS_SRCS) $(MCP_SRCS) $(DEVLOOP_SRCS)
+ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS) $(CORE_SRCS) $(DOMAIN_SRCS) $(APPLICATION_SRCS) $(ADAPTERS_SRCS) $(MCP_SRCS) $(DEVLOOP_SRCS)
 ALL_OBJS = $(patsubst %.c,$(OBJ_DIR)/%.o,$(ALL_SRCS))
 
 DEV_SRCS = $(NODE_ENTRY_SRCS) $(ALL_SRCS)
@@ -162,7 +174,7 @@ HARDEN_LDFLAGS = -pie -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack -fcf-protection
 CFLAGS = -std=c23 -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) -flto=auto -Wall -Wextra -Werror -pedantic \
 	$(HARDEN_CFLAGS) \
 	-Wno-stringop-overflow -Wno-unused-result \
-	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(MCP_INCLUDES) $(DEVLOOP_INCLUDES) $(APP_SDK_INCLUDES) \
+	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(MCP_INCLUDES) $(DEVLOOP_INCLUDES) $(APP_SDK_INCLUDES) \
 	-Ilib/test/include \
 	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE -DZCL_BUILD_COMMIT=\"$(BUILD_COMMIT)\" -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
 	$(WEBKIT_DEF) $(WEBKIT_CFLAGS)
@@ -1975,7 +1987,7 @@ mvp: test_zcl zclassic23 zcl-rpc
 FUZZ_CC ?= clang
 FUZZ_CFLAGS = -std=c23 -O1 -g -Wall -Wextra -Wno-unused-result \
 	-Wno-deprecated-declarations \
-	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) \
+	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) \
 	$(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) \
 	$(ADAPTERS_INCLUDES) $(MCP_INCLUDES) \
 	-Ilib/test/include -D_POSIX_C_SOURCE=200809L -Ivendor/include \

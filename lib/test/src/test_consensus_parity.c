@@ -31,7 +31,7 @@
  * the predicate. consensus/consensus.h is NOT included (its unguarded
  * MAX_BLOCK_SIGOPS collides with validation/main_constants.h via
  * test_helpers.h); the 102000 cap is pinned as a literal below. */
-#include "../../../domain/consensus/src/oversize_grandfather_table.inc"
+#include "../../../core/consensus/src/oversize_grandfather_table.inc"
 
 #include <stdio.h>
 #include <string.h>

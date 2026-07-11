@@ -29,7 +29,7 @@ cd "$(dirname "$0")/../.."
 # Consensus-critical source surface. docs/ and lib/test/ are intentionally
 # NOT scanned — the doctrine and the parity test may name these tokens
 # defensively without being a real mechanism.
-PATHS=(lib/consensus lib/validation lib/chain lib/mining app/jobs domain/consensus)
+PATHS=(lib/consensus lib/validation lib/chain lib/mining app/jobs core/consensus)
 
 # FAIL-LOUD preflight (never report "clean" off a silently-empty scan).
 # If a consensus dir was renamed/moved/deleted, grep would scan a SMALLER
