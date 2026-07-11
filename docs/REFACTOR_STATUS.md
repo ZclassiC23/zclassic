@@ -1,12 +1,41 @@
 # Refactor Status — Purpose-Per-File Finish Board
 
-> Updated 2026-06-03. This file is the current debt board for finishing the
-> framework refactor. `docs/FRAMEWORK.md` remains the architecture.
+> Updated 2026-07-11 (date stamp + the two entries below verified against
+> code this session; the rest of this file is the 2026-06-03 board,
+> unaudited beyond those two points — treat other specific line counts as
+> potentially stale until re-verified). This file is the current debt board
+> for finishing the framework refactor. `docs/FRAMEWORK.md` remains the
+> architecture.
 >
 > ⚠️ **This is the ARCHITECTURE-AXIS board (~90% done). It is NOT the v1 path.**
 > The v1 bar is [`docs/MVP.md`](./MVP.md); THE plan is
 > [`docs/work/FORWARD_PLAN.md`](./work/FORWARD_PLAN.md). Do not start
 > architecture work until the v1 buckets are clear.
+>
+> **2026-07-11 addendum — verified this session, not yet folded into the
+> table below:**
+> - The **file-size baseline is no longer 2 entries.** The "Verified-clean
+>   facts" bullet below (from 2026-06-03) is stale: as of this session,
+>   `tools/scripts/file_size_ceiling_baseline.txt` carries **21 grandfathered
+>   entries** — 17 under `app/` (e.g. `app/views/src/explorer_pages_hodl.c`
+>   at 1853 lines, `app/controllers/src/name_controller.c` at 1034) and 4
+>   under `config/src/` (`boot.c` 3949, `boot_refold_staged.c` 2107,
+>   `boot_services.c` 1704, `boot_background_workers.c` 862). `app/` having
+>   "no file-size baseline entry" is no longer true; do not repeat that claim
+>   without re-checking the baseline file.
+> - **The sealed `core/` tree has landed** since this board was last written
+>   and is not reflected in the table below: `domain/consensus/`,
+>   `lib/consensus/`, the pure-math subset of `lib/core/`, and the pure
+>   params/verify subset of `lib/chain/` were absorbed into a single sealed
+>   `core/` tree (`core/consensus/`, `core/params/`, `core/math/`,
+>   `core/chainparams/`), pinned by `core/MANIFEST.sha3` and the now-HARD
+>   `check-core-seal` gate. See
+>   [`docs/adr/0002-sealed-consensus-core.md`](adr/0002-sealed-consensus-core.md)
+>   for the full rationale and verification notes. This directly touches
+>   Rank 3 of the table below ("`domain/` fronted by thin `lib/` wrappers")
+>   and should be re-scoped against the new `core/` layout rather than the
+>   pre-split `domain/`/`lib/` paths next time this board is revised in
+>   full.
 
 ## 2026-06-03 — Architecture conformance board (the "everything has a place" axis)
 

@@ -1,3 +1,110 @@
+# START HERE (2026-07-11)
+
+## Power-station program state
+
+Verified against code + git history this session (`main` at `cfc9df77c` in
+the worktree that wrote this update — re-check `git log --oneline -1 main`
+before trusting exact commit hashes below, they rot):
+
+- **Sealed consensus core — LANDED.** `core/{consensus,params,chainparams,math}`
+  is a physical tree split (pure renames, include tokens preserved, still in
+  the single whole-program LTO link), pinned by `core/MANIFEST.sha3`, with
+  `check-core-seal` **HARD** since commit `7ae4ab55e`. The autonomous dev
+  loop refuses to auto-publish a sealed-path change before any hot-swap/reload
+  step (`tools/dev/devloop_cycle.c`, exit code 3, structured refusal
+  envelope), landed at `070849e7f`. Full writeup:
+  [`docs/adr/0002-sealed-consensus-core.md`](adr/0002-sealed-consensus-core.md).
+- **ZVCS v1 + auto-anchor — LANDED.** The in-binary content-addressed VCS
+  (`lib/vcs/`) is live: every green `zcl.dev_cycle.v1` verdict auto-commits a
+  source-tree snapshot bound to its verdict and binary generation
+  (`vcs_devloop_anchor_cycle()`, called from `devloop_cycle.c:finish_cycle()`),
+  fail-open by design, with its own sealed-path refusal (advisory at this
+  integration point — the dev-loop's own pre-publish refusal above is what
+  actually blocks the binary). No `dev vcs` CLI or MCP surface exists yet —
+  reading history means walking `.zvcs/commits.log` directly (see
+  `docs/work/HOTSWAP.md` §"Reading the anchor log today"). Full writeup:
+  [`docs/ZVCS.md`](ZVCS.md).
+- **Tier-2 P2 fast restart — LANDED.** Verify-then-trust warm boot
+  (`33ac8a177`).
+- **Hot-swap — 5 TUs eligible, probe-gated.** `config/hotswap_eligible.def`
+  lists exactly 5 `HOTSWAP_ELIGIBLE()` translation units (the MCP `app`,
+  `meta`, `chain`, `net`, and `wallet` controllers); `zcl_agent_hotswap`
+  returns a `probe:{…}` field per `docs/work/HOTSWAP.md`. Dev-only by
+  construction (`check-hotswap-dev-only`, `check-hotswap-eligible-scope`,
+  `check-hotswap-static-state` all HARD).
+- **Registry-driven dev tree — NOT on `main` as of this session.** The
+  command-registry files (`config/commands/{root,core,apps,ops,dev}.def`)
+  exist and `root.def`/`core.def`/`apps.def`/`ops.def` ARE wired into real
+  dispatch via `config/src/command_catalog.c` →
+  `tools/command/native_command.c` → `src/main.c`. But `dev.def`'s leaves
+  are **explicitly not yet bound** — `command_catalog.c`'s own header
+  comment says the `dev` subtree still routes through the checkout-local
+  `tools/dev/devloop_cli.c` dispatcher, and a commit that finishes that
+  binding (`native-cmd: registry-drive the dev tree, split dev-only
+  executors, page bridge reads`, seen as `2c191d42b` on a branch named
+  `dev/service-refactor-finish`) was **not reachable from `main`** in this
+  worktree at verification time. **Do not write "registry-driven dev tree
+  landed" into a doc without re-checking `git merge-base --is-ancestor
+  <that commit> main` first** — treat it as in flight until confirmed
+  merged. Current state: [`config/commands/README.md`](../config/commands/README.md),
+  [`docs/NATIVE_COMMAND_INTERFACE.md`](NATIVE_COMMAND_INTERFACE.md) §"Phase B."
+- **"Waves 3.2/3.3"** — only "Wave 3.3" is a real, findable label in this
+  tree (`lib/vcs/include/vcs/vcs.h`, `vcs.c`: `vcs_revert()`'s
+  `relink_generation` argument returns `VCS_ENOTIMPL` — the binary-generation
+  relink half of a ZVCS revert is not wired yet). No "Wave 3.2" label was
+  found anywhere in code, `docs/work/HOTSWAP.md`, or this file as of this
+  session — do not assume it names a specific landed or in-flight unit of
+  work without finding the actual reference first.
+- **This wave (Wave 4.4): docs.** This session added
+  [`docs/ZVCS.md`](ZVCS.md) and
+  [`docs/adr/0002-sealed-consensus-core.md`](adr/0002-sealed-consensus-core.md),
+  closed the lint-gate-hollowness audit
+  (`docs/work/lint-gate-hollowness-audit.md`), and corrected stale claims in
+  `config/commands/README.md`, `docs/REFACTOR_STATUS.md`,
+  `docs/NATIVE_COMMAND_INTERFACE.md`, and this file. "Golden tests" for any
+  of the above were not part of this docs-only lane — check the relevant
+  lane's own handoff for test status.
+
+## Live-node state (checked via MCP this session, both nodes reachable)
+
+**Both the dev node (`mcp__zcl23-dev`, `~/.zclassic-c23-dev:18252`) and the
+public/live node (`mcp__zcl23-live`) are blocked on the same permanent
+blocker: `utxo_apply.anchor_backfill_gap`.** At check time: dev node
+H\*=3,169,464 (header tip 3,177,793, gap 8,329); live node H\*=3,176,325
+(header tip 3,177,790, gap 1,465). `zcl_status`'s `dominant_blocker.reason`
+on both: *"shielded anchor history is incomplete below reducer cursor
+3,161,499 (dev) / similar; unknown Sprout/Sapling roots FAIL CLOSED and hold
+H\*. Auto-remedy: condition `sapling_anchor_frontier_unavailable` seeds a
+header-verified frontier..."* — this is the same class of gap named
+`project_nullifier_backfill_gap_2026-07-09` in the memory index, still
+open. For the **dev** lane specifically, the documented bounded-recovery
+entry point is `make lane-recover LANE=dev` (`tools/scripts/lane_recover.sh`
+— plans recovery by default; `ZCL_LANE_RECOVERY_APPLY=1` or `--apply`
+installs/restarts the noncanonical unit; canonical/live/main is always
+refused by that script — use `make lane-health` for read-only status on any
+lane). **Correction:** an earlier note in this program referred to a
+`make agent-dev-recover` target — no such target exists in the `Makefile`;
+`lane-recover` is the real one. Verify current blocker state with
+`zcl_status` / `zcl_blockers` before acting — this is a live snapshot, not a
+standing fact.
+
+## Pointers
+
+- [`docs/ZVCS.md`](ZVCS.md) — the in-binary VCS, canonical doc.
+- [`docs/adr/0002-sealed-consensus-core.md`](adr/0002-sealed-consensus-core.md)
+  — why `core/` is physically split and sealed.
+- [`docs/work/HOTSWAP.md`](work/HOTSWAP.md) — the dev-loop, hot-swap, and
+  ZVCS-auto-anchor integration (owned by another lane this session; read,
+  do not edit, until that lane hands it back).
+- [`docs/MVP.md`](MVP.md) / [`docs/work/FORWARD_PLAN.md`](work/FORWARD_PLAN.md)
+  — the v1 bar and THE plan; the power-station program above is
+  off the v1 critical path per `CLAUDE.md`; do not let it jump the queue
+  over an open live-node blocker.
+
+---
+
+## Prior handoffs (history — read for context, not current state)
+
 > **▶ NEXT DEV START HERE (latest): [`docs/work/SESSION-HANDOFF-2026-07-10-OPERATOR-SNAPSHOT.md`](work/SESSION-HANDOFF-2026-07-10-OPERATOR-SNAPSHOT.md)**
 > — target-owned native operator truth, fail-closed MCP projection, durable
 > chain/peer/blocker/condition evidence, focused regression proof, and the P0
