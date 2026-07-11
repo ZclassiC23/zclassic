@@ -2,6 +2,7 @@
 
 #include "platform/time_compat.h"
 #include "util/boot_phase.h"
+#include "util/boot_status.h"
 #include "health/heartbeat.h"
 
 #include <stdio.h>
@@ -130,6 +131,7 @@ void boot_stage_advance_to(enum boot_stage next)
             boot_stage_name(g_boot_stage));
         fflush(stderr);
         g_boot_stage = next;
+        boot_status_note_stage((int)next);
         return;
     }
 
@@ -152,6 +154,7 @@ void boot_stage_advance_to(enum boot_stage next)
             boot_stage_name(g_boot_stage), boot_stage_name(next));
         fflush(stderr);
         g_boot_stage = next;
+        boot_status_note_stage((int)next);
         return;
     }
 
@@ -166,6 +169,7 @@ void boot_stage_advance_to(enum boot_stage next)
         (int)(next - g_boot_stage - 1));
     fflush(stderr);
     g_boot_stage = next;
+    boot_status_note_stage((int)next);
 }
 
 #ifdef ZCL_TESTING

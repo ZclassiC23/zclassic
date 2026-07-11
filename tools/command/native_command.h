@@ -160,6 +160,19 @@ void zcl_native_handle_ops_selftest(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* core.node.bootstatus / core.node.bootwait — pre-RPC boot observability. Both
+ * read <datadir>/boot_status.json directly off disk (util/boot_status.h): no
+ * node contact, no RPC. bootstatus returns the current beacon (or BLOCKED when
+ * none exists yet); bootwait polls until phase=serving or a bounded timeout.
+ * This is the typed replacement for ss/ps/tail node.log boot watching. Bound
+ * by config/src/command_catalog.c. */
+void zcl_native_handle_core_node_bootstatus(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_core_node_bootwait(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* Dev-build-only executors.  The catalog binds these only when
  * ZCL_DEV_BUILD is set; release objects neither reference nor link them. */
 #ifdef ZCL_DEV_BUILD

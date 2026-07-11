@@ -186,6 +186,7 @@ AGENT_IMPACT_RULE("lib/chain/src/utxo_root_ladder.c|lib/chain/include/chain/utxo
 /* Misc unmapped singles. */
 AGENT_IMPACT_RULE("lib/net/src/msg_tx.c", "msg_handlers mempool accept_to_mempool net_msg_dos")
 AGENT_IMPACT_RULE("config/include/config/runtime.h", "boot_phase make_lint_gates")
+AGENT_IMPACT_RULE("lib/util/src/boot_status.c|lib/util/include/util/boot_status.h|lib/util/src/boot_phase.c|lib/util/include/util/boot_phase.h|lib/test/src/test_boot_status.c", "boot_status boot_phase command_registry_catalog make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_accept_to_mempool.c", "accept_to_mempool")
 AGENT_IMPACT_RULE("core/consensus/src/locktime.c|core/consensus/include/domain/consensus/locktime.h|lib/validation/include/validation/contextual_check_tx.h|lib/validation/src/contextual_check_tx.c|lib/validation/src/accept_to_mempool.c|lib/validation/src/check_block.c|lib/test/src/test_tx_expiry_locktime_adversarial.c", "tx_expiry_locktime_adversarial domain_consensus_locktime locktime_edge bip113_bip65 accept_to_mempool check_block_edge")
 AGENT_IMPACT_RULE("lib/test/src/test_mempool.c", "mempool")
