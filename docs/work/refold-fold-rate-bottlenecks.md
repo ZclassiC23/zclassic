@@ -1,12 +1,22 @@
 # From-genesis refold: fold-rate bottlenecks + fix plan
 
-> **STATUS (2026-06-22): PARTIALLY LANDED.** The parse-dedup + batch-apply work
-> (`block_parse_cache` + `coins_kv` batch apply) has SHIPPED, bit-identical —
-> addressing the repeated per-block re-decode. The dominant per-block 3.1M-node
-> pprev-walk window (#1) and the mint acceleration are STILL OPEN (HANDOFF P0-2:
-> measure the real fold bottleneck — on disk it is ~74% commit-fsync, on tmpfs
-> it is CPU-bound on the serial `coins_kv` apply). The ~3.3 blk/s / ~12-day
-> figures below **predate the speedup — re-measure before quoting them.**
+> **STATUS (2026-07-11): #1 + #3 LANDED — verified in code this session.**
+> - **#1 (dominant pprev-walk window) is LANDED.** `tip_finalize` no longer
+>   retracts the active-chain coverage window during a refold — the
+>   `active_chain_move_window_tip` call is gated on `!refold_in_progress()` at
+>   `app/jobs/src/tip_finalize_stage.c:586`. The first extend fills the window
+>   once; later extends are O(1) no-ops. Do NOT re-implement this.
+> - **#3 (utxo_mirror full wipe+reinsert) is LANDED.** `utxo_mirror_sync_run_once`
+>   early-returns `if (refold_in_progress())` at
+>   `app/services/src/utxo_mirror_sync_service.c:446` (rebuild once post-refold).
+> - Earlier parse-dedup + `coins_kv` batch-apply also shipped (bit-identical).
+> - **STILL OPEN: #2 (scheduler ceiling ~50 blk/s) and #4 (latent O(height²)
+>   sums scan).** #2 is now the rate ceiling: one supervisor thread, 2s tail
+>   period, batch 100 → ~50 blk/s → ~17h ideal to the checkpoint (real-world
+>   with the utxo_apply serial gate + overheads: observed a ~67h mint). The
+>   tail-period/batch refold override in #2 below is NOT yet wired.
+> - The ~3.3 blk/s / ~12-day figures below **predate the speedups — do not quote
+>   them.** Re-measure against HEAD before relying on any number here.
 >
 > Built 2026-06-20 from a live `-refold-staged` run (folding the fixture from
 > genesis, no peers) + a source-grounded bottleneck pass. All fixes below are
@@ -23,7 +33,7 @@ active-chain window to a target 3.1M above the fold frontier.
 
 ## Ranked bottlenecks (dominant first)
 
-### #1 DOMINANT — per-block ~3.1M-node `pprev` walk (CPU/cache-bound)
+### #1 DOMINANT — per-block ~3.1M-node `pprev` walk (CPU/cache-bound) · ✅ LANDED (`tip_finalize_stage.c:586`)
 Every stage step calls `reducer_extend_window_to_candidate(ms, true)`
 (`app/jobs/include/jobs/stage_helpers.h:139-150`) → `active_chain_extend_window(
 &ms->chain_active, ms->pindex_best_header)` → `active_chain_fill_window`
@@ -80,7 +90,7 @@ the tail batch (100→~2000). Compile-time consts in `app/jobs/include/jobs/*_st
 today; thread a refold-gated override. Needs batched commits (io-speedups) so a
 big batch is one fsync, not 2000.
 
-### #3 — utxo_mirror_sync full wipe+reinsert every 5s (O(n), goes quadratic)
+### #3 — utxo_mirror_sync full wipe+reinsert every 5s (O(n), goes quadratic) · ✅ LANDED (`utxo_mirror_sync_service.c:446`)
 `utxo_mirror_sync_run_once` (`app/services/src/utxo_mirror_sync_service.c:307`,
 tick 5s) sees drift on every pass during the fold, so `mirror_rebuild_from_coins_kv`
 (line 170) does `DELETE FROM utxos` + per-row reinsert of EVERY live coin + a

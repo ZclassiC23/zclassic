@@ -73,7 +73,17 @@ a borrowed copy.**
 
 ---
 
-## ACT 0 — Discharge the detective (make a bootable copy) · **NOT-STARTED, gates everything**
+## ACT 0 — Discharge the detective (make a bootable copy) · **✅ LANDED (`9fef4f683`, verified 2026-07-11)**
+
+> The sapling-tree rebuild resolves its endpoint from coins-applied state
+> (`app/controllers/src/sync_controller_sapling_tree.c:46-71`: caps `chain_tip`
+> to `coins_best = coins_applied_height − 1`), so a copy boots without the
+> pre-fold sapling FATAL. Minting (`-mint-anchor`, `config/src/boot_mint_anchor.c:62`)
+> and the #1/#3 fold-rate wins are also LANDED — see
+> [`refold-fold-rate-bottlenecks.md`](./refold-fold-rate-bottlenecks.md). The
+> remaining sovereign-cure gate is producing a verified `utxo-anchor.snapshot`
+> (mint in flight) then the refold cutover; the #2 scheduler ceiling (~50 blk/s)
+> is what makes both slow.
 
 - **Detective beat:** before re-interviewing anyone, he has to get back in the
   room — the door is locked.
