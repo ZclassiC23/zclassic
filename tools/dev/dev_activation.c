@@ -18,6 +18,7 @@
 
 #include "crypto/sha256.h"
 #include "platform/time_compat.h"
+#include "storage/boot_auto_reindex.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -460,7 +461,9 @@ static bool dev_derive_paths(struct dev_activation_txn *txn)
         !dev_activation_join(txn->rejected_dir, sizeof(txn->rejected_dir),
                   txn->gen_root, "rejected") ||
         !dev_activation_join(txn->lock_path, sizeof(txn->lock_path),
-                  txn->gen_root, "activation.lock"))
+                  txn->gen_root, "activation.lock") ||
+        !dev_activation_join(txn->inprogress_path, sizeof(txn->inprogress_path),
+                  txn->gen_root, "activation.in_progress"))
         return false;
     n = snprintf(txn->compat_bin, sizeof(txn->compat_bin),
                  "%s/.local/bin/zclassic23-dev", txn->home);
@@ -527,6 +530,143 @@ static void dev_release_lock(struct dev_activation_txn *txn)
     txn->lock_held = false;
 }
 
+/* ── pending crash-only auto-reindex guard ───────────────────────────────
+ *
+ * Port of deploy-dev-lane.sh:guard_pending_auto_reindex(). Runs BEFORE the
+ * activation lock is taken (same transaction point as the shell). If boot has
+ * armed a pending crash-only auto-reindex request on the dev datadir, a native
+ * activation would stop/flip/restart the service and the next boot would
+ * consume the marker — silently burning one of the bounded
+ * BOOT_AUTO_REINDEX_MAX crash-recovery attempts before RPC is available. We
+ * refuse with a distinct code unless ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY=1.
+ *
+ * Missing, malformed, or TERMINAL (count == -1, operator already paged) markers
+ * are NOT pending — they allow the deploy, exactly like the shell. */
+static int dev_guard_pending_auto_reindex(struct dev_activation_txn *txn)
+{
+    struct dev_activation_result *r = txn->result;
+    int32_t anchor = 0;
+    int count = 0;
+    if (!boot_auto_reindex_status(txn->req->datadir, &anchor, &count))
+        return DEV_ACTIVATION_OK; /* no marker / malformed => allow */
+    if (count == BOOT_AUTO_REINDEX_TERMINAL) {
+        fprintf(stderr,
+                "[dev-activation] NOTE: terminal auto-reindex marker present "
+                "anchor=%d; not a pending rebuild\n", (int)anchor);
+        return DEV_ACTIVATION_OK;
+    }
+    if (count <= 0)
+        return DEV_ACTIVATION_OK; /* zero/malformed count => allow */
+
+    const char *force = getenv("ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY");
+    if (force && strcmp(force, "1") == 0) {
+        fprintf(stderr,
+                "[dev-activation] WARN: pending crash-only auto-reindex request "
+                "anchor=%d count=%d; next boot will rebuild chainstate\n",
+                (int)anchor, count);
+        return DEV_ACTIVATION_OK;
+    }
+
+    dev_set_status(r, "refused", "auto_reindex_pending",
+                   "pending crash-only auto-reindex request; boot would consume "
+                   "the marker and rebuild chainstate before RPC is available");
+    snprintf(r->failure_capsule, sizeof(r->failure_capsule),
+             "pending auto-reindex anchor=%d count=%d; let recovery finish, or "
+             "set ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY=1 to force this deploy",
+             (int)anchor, count);
+    LOG_RETURN(DEV_ACTIVATION_E_AUTO_REINDEX_PENDING, "dev-activation",
+               "BLOCKED: pending crash-only auto-reindex request anchor=%d "
+               "count=%d; refusing to start or hot-swap the dev lane (boot would "
+               "consume the marker and rebuild chainstate before RPC). Let "
+               "recovery finish, clear a proven-stale marker, or set "
+               "ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY=1 to force", (int)anchor, count);
+}
+
+/* ── crash-recovery in-progress marker ───────────────────────────────────
+ *
+ * The shell activator arms `trap emergency_rollback EXIT` while
+ * ACTIVATION_IN_PROGRESS=1 so an unexpected exit mid-flip restores the previous
+ * generation. A native in-process bool cannot survive a crash of this very
+ * process, so instead we persist a durable on-disk marker at the point the
+ * transaction becomes non-trivially reversible (the service is stopped and the
+ * `current` link has been flipped to the candidate) and clear it on completion
+ * OR rollback. The NEXT activation — which necessarily holds the activation
+ * flock, so no live run is racing us — detects a leftover marker as a crashed
+ * prior transaction and refuses, pointing the operator at `make
+ * agent-dev-recover`. We deliberately do NOT auto-roll-back another run's
+ * half-finished state. */
+static void dev_write_in_progress(struct dev_activation_txn *txn)
+{
+    int fd = open(txn->inprogress_path, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC,
+                  0644);
+    if (fd < 0) {
+        LOG_WARN("dev-activation", "in-progress marker open %s: %s",
+                 txn->inprogress_path, strerror(errno));
+        return;
+    }
+    char now[32];
+    dev_activation_iso_utc_now(now);
+    char esc[96];
+    dev_activation_json_escape(txn->candidate_generation, esc, sizeof(esc));
+    char line[256];
+    int n = snprintf(line, sizeof(line),
+                     "{\"schema\":\"zcl.dev_activation_in_progress.v1\","
+                     "\"pid\":%ld,\"candidate_generation\":\"%s\","
+                     "\"started_at_utc\":\"%s\"}\n",
+                     (long)getpid(), esc, now);
+    if (n > 0 && (size_t)n < sizeof(line))
+        (void)!write(fd, line, (size_t)n);
+    (void)fsync(fd); /* the marker MUST survive a crash to be useful */
+    close(fd);
+    int dfd = open(txn->gen_root, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dfd >= 0) {
+        (void)fsync(dfd);
+        close(dfd);
+    }
+    txn->activation_in_progress = true;
+}
+
+void dev_activation_clear_in_progress(const struct dev_activation_txn *txn)
+{
+    (void)unlink(txn->inprogress_path);
+}
+
+/* With the activation flock held, a surviving in-progress marker can only come
+ * from a prior activation that died mid-transaction. Refuse and point at the
+ * recovery command; never touch the mixed on-disk state. */
+static int dev_check_stale_in_progress(struct dev_activation_txn *txn)
+{
+    struct stat st;
+    if (stat(txn->inprogress_path, &st) != 0)
+        return DEV_ACTIVATION_OK; /* no marker => clean */
+
+    char buf[256] = {0};
+    FILE *f = fopen(txn->inprogress_path, "r");
+    if (f) {
+        size_t rn = fread(buf, 1, sizeof(buf) - 1, f);
+        buf[rn] = 0;
+        fclose(f);
+    }
+    char stale_gen[96] = {0};
+    (void)dev_activation_json_first_string(buf, "candidate_generation", stale_gen,
+                                           sizeof(stale_gen));
+
+    struct dev_activation_result *r = txn->result;
+    dev_set_status(r, "refused", "activation_in_progress",
+                   "a prior activation crashed mid-transaction; run "
+                   "`make agent-dev-recover` to reconcile before retrying");
+    snprintf(r->failure_capsule, sizeof(r->failure_capsule),
+             "stale in-progress marker%s%s from a dead activation; the lane may "
+             "be mixed — run `make agent-dev-recover`",
+             stale_gen[0] ? " candidate=" : "", stale_gen);
+    (void)dev_activation_write_deploy_state(txn);
+    LOG_RETURN(DEV_ACTIVATION_E_STALE_IN_PROGRESS, "dev-activation",
+               "REFUSED: stale activation-in-progress marker %s (%s) from a "
+               "crashed prior activation; the dev lane may be in a mixed state — "
+               "run `make agent-dev-recover` to reconcile. Not auto-rolling back.",
+               txn->inprogress_path, buf[0] ? buf : "(empty)");
+}
+
 /* ── the activation transaction ──────────────────────────────────────── */
 
 static void dev_mark_failed(struct dev_activation_result *r)
@@ -570,7 +710,10 @@ static int dev_activate_candidate(struct dev_activation_txn *txn)
     }
     (void)dev_activation_refresh_compat_link(txn);
     dev_activation_write_build_identity(txn, txn->candidate_generation);
-    txn->activation_in_progress = true;
+    /* Point of no trivial return: the old service is stopped and `current` now
+     * points at the candidate. Persist the crash-recovery marker so a crash
+     * before we finish is detectable by the next run. */
+    dev_write_in_progress(txn);
 
     if (ops->service_daemon_reload(ops->ctx) != 0) {
         snprintf(reason, sizeof(reason), "daemon-reload failed mid-activation");
@@ -604,6 +747,7 @@ static int dev_activate_candidate(struct dev_activation_txn *txn)
                                          txn->candidate_generation);
     (void)unlink(txn->staged_link);
     txn->activation_in_progress = false;
+    dev_activation_clear_in_progress(txn);
     dev_set_status(r, "active", "ready",
                    "exact candidate generation is active and verified");
     snprintf(r->rollback_status, sizeof(r->rollback_status), "not_needed");
@@ -616,6 +760,12 @@ static int dev_run_locked(struct dev_activation_txn *txn, bool already_staged)
 {
     struct dev_activation_result *r = txn->result;
     const struct dev_activation_ops *ops = txn->ops;
+
+    /* With the flock held, a leftover in-progress marker is a crashed prior
+     * run — refuse before touching anything (no stage, no stop/flip). */
+    int stale = dev_check_stale_in_progress(txn);
+    if (stale != DEV_ACTIVATION_OK)
+        return stale;
 
     if (!already_staged) {
         int st = dev_activation_stage_candidate(txn);
@@ -727,6 +877,13 @@ int dev_activation_run(const struct dev_activation_request *req,
         result->status = st;
         return st;
     }
+    /* Guard the pending crash-only auto-reindex request BEFORE the lock, at the
+     * same transaction point as deploy-dev-lane.sh:guard_pending_auto_reindex. */
+    st = dev_guard_pending_auto_reindex(&txn);
+    if (st != DEV_ACTIVATION_OK) {
+        result->status = st;
+        return st;
+    }
     st = dev_acquire_lock(&txn);
     if (st != DEV_ACTIVATION_OK) {
         dev_set_status(result, "lock_busy", "lock_busy",
@@ -748,6 +905,13 @@ int dev_activation_activate_generation(const uint8_t gen_sha256[32],
     struct dev_activation_txn txn;
     struct dev_activation_ops default_ops;
     int st = dev_prepare(&txn, req, ops, result, &default_ops);
+    if (st != DEV_ACTIVATION_OK) {
+        result->status = st;
+        return st;
+    }
+    /* Same pre-lock auto-reindex guard as dev_activation_run(): the revert hook
+     * also stops/flips/restarts the lane, so a pending reindex must block it. */
+    st = dev_guard_pending_auto_reindex(&txn);
     if (st != DEV_ACTIVATION_OK) {
         result->status = st;
         return st;
