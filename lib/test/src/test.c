@@ -1308,6 +1308,7 @@ int main(int argc, char **argv)
     failures += test_failed_child_cap();
     failures += test_power_node_contract_spec();
     failures += test_boot_phase();
+    failures += test_boot_status();
     failures += test_path_check();
     failures += test_supervisor();
     failures += test_supervisor_domains();

@@ -25,7 +25,9 @@
 #include "json/json.h"
 
 #include "chain/chainparams.h"
+#include "platform/time_compat.h"
 #include "util/safe_alloc.h"
+#include "util/boot_status.h"
 #include "controllers/native_handler_body.h"
 #include "controllers/status_native_handlers.h"
 #include "controllers/chain_native_handlers.h"
@@ -41,6 +43,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 /* ── root recognition ──────────────────────────────────────────────── */
@@ -826,6 +829,156 @@ void zcl_native_handle_ops_selftest(const struct zcl_command_request *request,
                                 : ZCL_COMMAND_STATUS_FAILED;
     reply->exit_code = failed == 0 ? ZCL_COMMAND_EXIT_OK
                                    : ZCL_COMMAND_EXIT_FAILED;
+}
+
+/* ── core.node.bootstatus / core.node.bootwait native leaves ───────────────
+ * Pre-RPC boot observability. Both read <datadir>/boot_status.json directly
+ * off disk (util/boot_status.h) — NO node contact, NO RPC — so they answer
+ * "what boot stage are we at, is it serving yet?" during the exact window
+ * (snapshot load / refold / index rebuild) when RPC has not bound and the only
+ * alternative was ss/ps/tail node.log. bootstatus is a single read; bootwait
+ * polls until serving or a timeout. */
+
+/* Resolve the target datadir: explicit input.datadir wins, else the CLI's
+ * --datadir (g_bridge_datadir). Returns NULL when neither is set. */
+static const char *nc_bootstatus_datadir(const struct zcl_command_request *req)
+{
+    const char *dd = json_get_str(json_get(req->input, "datadir"));
+    if (dd && dd[0])
+        return dd;
+    if (g_bridge_datadir[0])
+        return g_bridge_datadir;
+    return NULL;
+}
+
+/* Project a parsed boot_status snapshot into reply->data. */
+static void nc_bootstatus_fill(struct zcl_command_reply *reply,
+                               const struct boot_status_snapshot *s)
+{
+    (void)json_push_kv_str(&reply->data, "phase", s->phase);
+    (void)json_push_kv_str(&reply->data, "stage", s->stage);
+    (void)json_push_kv_int(&reply->data, "stage_ordinal", s->stage_ordinal);
+    (void)json_push_kv_int(&reply->data, "height", s->height);
+    (void)json_push_kv_bool(&reply->data, "rpc_bound", s->rpc_bound);
+    (void)json_push_kv_bool(&reply->data, "serving", s->serving);
+    (void)json_push_kv_int(&reply->data, "started_unix", s->started_unix);
+    (void)json_push_kv_int(&reply->data, "updated_unix", s->updated_unix);
+    (void)json_push_kv_int(&reply->data, "elapsed_s", s->elapsed_s);
+}
+
+void zcl_native_handle_core_node_bootstatus(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+    const char *datadir = nc_bootstatus_datadir(request);
+    if (!datadir) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "MISSING_DATADIR",
+                               "normalize", false, false,
+                               "no datadir given and no --datadir default",
+                               "core.node.bootstatus");
+        (void)zcl_command_reply_add_next(
+            reply, "core.node.bootstatus",
+            "{\"datadir\":\"/home/you/.zclassic-c23\"}",
+            "name the datadir to inspect");
+        return;
+    }
+
+    struct boot_status_snapshot snap;
+    char why[192];
+    if (!boot_status_read(datadir, &snap, why, sizeof(why))) {
+        /* No beacon yet: the node has not started booting (or is a build
+         * without the writer). Fail closed (exit 3) — never invent a status. */
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                               ZCL_COMMAND_EXIT_BLOCKED, "NO_BOOT_STATUS",
+                               "execute", true, false,
+                               why[0] ? why : "no boot_status.json yet",
+                               datadir);
+        (void)zcl_command_reply_add_next(reply, "core.node.bootwait",
+                                         "{\"datadir\":\"\"}",
+                                         "wait for the beacon to appear");
+        return;
+    }
+    (void)json_push_kv_str(&reply->data, "datadir", datadir);
+    nc_bootstatus_fill(reply, &snap);
+    reply->status = ZCL_COMMAND_STATUS_PASSED;
+    reply->exit_code = ZCL_COMMAND_EXIT_OK;
+}
+
+void zcl_native_handle_core_node_bootwait(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+    const char *datadir = nc_bootstatus_datadir(request);
+    if (!datadir) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "MISSING_DATADIR",
+                               "normalize", false, false,
+                               "no datadir given and no --datadir default",
+                               "core.node.bootwait");
+        return;
+    }
+
+    /* Bounded poll: default 60s budget, 500ms cadence. The validator already
+     * range-checks these (timeout_ms 1..300000, heartbeat_ms 100..60000). */
+    int64_t timeout_ms = 60000;
+    int64_t poll_ms = 500;
+    const struct json_value *tmo = json_get(request->input, "timeout_ms");
+    if (tmo && tmo->type == JSON_INT)
+        timeout_ms = json_get_int(tmo);
+    const struct json_value *hb = json_get(request->input, "heartbeat_ms");
+    if (hb && hb->type == JSON_INT)
+        poll_ms = json_get_int(hb);
+
+    int64_t t0_ms = platform_time_monotonic_ms();
+    struct boot_status_snapshot snap;
+    memset(&snap, 0, sizeof(snap));
+    snap.stage_ordinal = -1;
+    snap.height = -1;
+    bool ever_seen = false;
+    int polls = 0;
+
+    for (;;) {
+        char why[192];
+        if (boot_status_read(datadir, &snap, why, sizeof(why))) {
+            ever_seen = true;
+            if (snap.serving) {
+                (void)json_push_kv_str(&reply->data, "datadir", datadir);
+                (void)json_push_kv_int(&reply->data, "polls", polls);
+                nc_bootstatus_fill(reply, &snap);
+                reply->status = ZCL_COMMAND_STATUS_PASSED;
+                reply->exit_code = ZCL_COMMAND_EXIT_OK;
+                return;
+            }
+        }
+        polls++;
+
+        int64_t elapsed_ms = platform_time_monotonic_ms() - t0_ms;
+        if (elapsed_ms >= timeout_ms)
+            break;
+
+        int64_t remain = timeout_ms - elapsed_ms;
+        int64_t sleep_ms = poll_ms < remain ? poll_ms : remain;
+        struct timespec ts = { .tv_sec = sleep_ms / 1000,
+                               .tv_nsec = (sleep_ms % 1000) * 1000000L };
+        (void)nanosleep(&ts, NULL);
+    }
+
+    /* Timed out: report the last observed state (transiently unavailable). */
+    (void)json_push_kv_str(&reply->data, "datadir", datadir);
+    (void)json_push_kv_int(&reply->data, "polls", polls);
+    if (ever_seen)
+        nc_bootstatus_fill(reply, &snap);
+    zcl_command_reply_fail(
+        reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_TRANSIENT,
+        "BOOT_WAIT_TIMEOUT", "execute", true, false,
+        ever_seen ? "boot not serving before the timeout"
+                  : "no boot_status.json before the timeout",
+        datadir);
 }
 
 /* ── argv normalization + dispatch ─────────────────────────────────── */

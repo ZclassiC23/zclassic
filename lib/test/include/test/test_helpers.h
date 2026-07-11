@@ -542,6 +542,7 @@ int test_rpc_safety(void);
 int test_failed_child_cap(void);
 int test_power_node_contract_spec(void);
 int test_boot_phase(void);
+int test_boot_status(void);
 int test_boot_datadir_lock(void);
 int test_boot_shutdown_marker(void);
 int test_boot_stale_locks(void);

@@ -606,3 +606,33 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+/* core.node — local node lifecycle. Pre-RPC boot observability: unlike every
+ * other core leaf these do NOT contact a running node. They read
+ * <datadir>/boot_status.json straight off disk (tools/command/native_command.c),
+ * so they answer "what boot stage / is it serving?" during the window before
+ * RPC binds — the typed replacement for ss/ps/tail node.log boot watching.
+ * Core owns boot + process ownership (NATIVE_COMMAND_INTERFACE §2). */
+ZCL_COMMAND_BRANCH("core.node", "core", "Local node lifecycle",
+                   ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_READ(
+    "core.node.bootstatus", "core.node", "", "Pre-RPC boot status",
+    "boot,bootstatus,startup,progress,phase,stage,serving",
+    "zcl.core_bootstatus.input.v1", "zcl.core_bootstatus.v1", "datadir", "",
+    "zclassic23 core node bootstatus --datadir=/home/you/.zclassic-c23",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_core_node_bootstatus)
+ZCL_COMMAND_READY_READ(
+    "core.node.bootwait", "core.node", "", "Wait for boot to serve",
+    "boot,bootwait,wait,startup,serving,ready",
+    "zcl.core_bootwait.input.v1", "zcl.core_bootstatus.v1",
+    "datadir,timeout_ms,heartbeat_ms", "",
+    "zclassic23 core node bootwait --datadir=/home/you/.zclassic-c23 --timeout_ms=120000",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_core_node_bootwait)
