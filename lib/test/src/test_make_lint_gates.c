@@ -3126,6 +3126,14 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "deploy-dev-lane.sh --stage") != NULL);
         ASSERT(strstr(buf, "mktemp \"$(ZCL_AGENT_DEV_BIN).next.XXXXXX\"")
                == NULL);
+        /* zero-MCP note (docs/work/MCP-REMOVAL-WORKLIST.md W2, "no native
+         * analog" case): `mcpcall` here is the Makefile's use of the CLI
+         * subcommand main.c dispatches to mcp_server code (src/main.c's
+         * "mcpcall"/"mcp" branch, itself deleted in W3 per
+         * MCP-REMOVAL-WORKLIST.md's W3 table). No native command Makefile
+         * target references this today to rewrite to — deferred to W3,
+         * where this assert (and the Makefile targets it checks) are
+         * deleted together, not migrated. */
         ASSERT(strstr(buf, "mcpcall") != NULL);
         ASSERT(strstr(buf, "ZCL_AGENT_BIN") != NULL);
         ASSERT(strstr(buf, "ZCL_AGENT_DEV_BIN") != NULL);
@@ -3148,6 +3156,12 @@ static int t_agent_fast_ci_contract(void)
         free(buf);
         buf = NULL;
 
+        /* zero-MCP note (docs/work/MCP-REMOVAL-WORKLIST.md W2, "no native
+         * analog" case): cli_run_mcp_call/mcp_register_ops are MCP-only
+         * symbols with no native-registry equivalent to migrate to — they
+         * are deleted wholesale from src/main.c in W3, at which point
+         * these asserts get deleted with them (not rewritten). Left as-is
+         * because they still guard real, currently-wired code. */
         ASSERT(repo_path(path, sizeof(path), "src/main.c") == 0);
         ASSERT(read_entire_file(path, &main_src) == 0);
         ASSERT(strstr(main_src, "cli_run_mcp_call") != NULL);
@@ -3177,12 +3191,20 @@ static int t_agent_fast_ci_contract(void)
                != NULL);
         ASSERT(strstr(arch_doc, "database_schema.c") != NULL);
         ASSERT(strstr(arch_doc, "api_controller_routes.c") != NULL);
-        ASSERT(strstr(arch_doc, "make agent-mcp-call TOOL=<tool>")
+        /* zero-MCP note (docs/work/MCP-REMOVAL-WORKLIST.md W2): the doc
+         * was already migrated to native-first (commit fc897377f,
+         * "migrate agent command-examples to native-first"), collapsing
+         * the three literal `TOOL=<tool>` examples into one
+         * `make agent-mcp-call*` glob and leading with the native
+         * commands. This assert follows that rewrite. */
+        ASSERT(strstr(arch_doc, "Terminal agents should prefer native "
+                                "commands") != NULL);
+        ASSERT(strstr(arch_doc, "`zclassic23 status`") != NULL);
+        ASSERT(strstr(arch_doc, "zclassic23 dumpstate <subsystem>")
                != NULL);
-        ASSERT(strstr(arch_doc, "make agent-mcp-call-hot TOOL=<tool>")
-               != NULL);
-        ASSERT(strstr(arch_doc, "make agent-mcp-call-dev TOOL=<tool>")
-               != NULL);
+        ASSERT(strstr(arch_doc, "zclassic23 discover help") != NULL);
+        ASSERT(strstr(arch_doc, "zclassic23-dev status") != NULL);
+        ASSERT(strstr(arch_doc, "make agent-mcp-call*") != NULL);
         ASSERT(strstr(arch_doc, "make agent-dev-status") != NULL);
         ASSERT(strstr(arch_doc, "zclassic23 mcpcall <tool> [json]")
                != NULL);
@@ -3195,6 +3217,12 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "zcl.agent_fast_ci.cache.v1") != NULL);
         ASSERT(strstr(buf, "emit_plan_json") != NULL);
         ASSERT(strstr(buf, "recommended_command") != NULL);
+        /* zero-MCP note (docs/work/MCP-REMOVAL-WORKLIST.md W2, "no native
+         * analog" case): mcp_shortcuts is an agent_fast_ci.sh-only JSON
+         * key describing `make agent-mcp-call*` targets; it is removed
+         * from the script in W3 along with those targets, at which point
+         * this assert is deleted (not rewritten). Left as-is — still
+         * accurate today. */
         ASSERT(strstr(buf, "mcp_shortcuts") != NULL);
         ASSERT(strstr(buf, "green_input_cache") != NULL);
         ASSERT(strstr(buf, "sccache cc") != NULL);
@@ -3296,6 +3324,13 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(rules, "AGENT_IMPACT_RULE") != NULL);
         ASSERT(strstr(rules, "node_health_service") != NULL);
         ASSERT(strstr(rules, "mcp_controllers") != NULL);
+        /* zero-MCP native analog (docs/work/MCP-REMOVAL-WORKLIST.md W2):
+         * command_registry_catalog is the native successor group already
+         * wired alongside mcp_controllers for *_native_handlers.c rows
+         * (":234"); asserted here in addition to, not instead of,
+         * mcp_controllers above, which stays accurate until W3 deletes
+         * tools/mcp/ (entire tree) and the rows that name it. */
+        ASSERT(strstr(rules, "command_registry_catalog") != NULL);
         ASSERT(strstr(rules, "src/main.c") != NULL);
         ASSERT(strstr(rules, "app/controllers/src/agent_controller.c") != NULL);
         ASSERT(strstr(rules, "app/controllers/src/agent_contract_registry.c")
@@ -4849,8 +4884,16 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "zcl_agent_deploy_guard") != NULL);
         ASSERT(strstr(agent_doc_buf, "No Python is required") != NULL);
         ASSERT(strstr(agent_doc_buf, "docs/AGENT_ARCHITECTURE.md") != NULL);
-        ASSERT(strstr(agent_doc_buf, "make agent-mcp-call TOOL=zcl_status")
+        /* zero-MCP note (docs/work/MCP-REMOVAL-WORKLIST.md W2): the
+         * literal "TOOL=zcl_status" example was already replaced by the
+         * generic "TOOL=<tool>" placeholder plus an explicit native
+         * preference (commit fc897377f, "migrate agent command-examples
+         * to native-first") — this assert follows that rewrite and adds
+         * the native-command companion check so this stays true forward. */
+        ASSERT(strstr(agent_doc_buf, "make agent-mcp-call TOOL=<tool>")
                != NULL);
+        ASSERT(strstr(agent_doc_buf, "prefer native commands like "
+                                     "`zclassic23 status`") != NULL);
         ASSERT(strstr(agent_doc_buf, "make agent-mcp-call-hot") != NULL);
         ASSERT(strstr(agent_doc_buf, "make agent-mcp-call-dev") != NULL);
         ASSERT(strstr(agent_doc_buf, "make agent-dev-status") != NULL);
@@ -4862,7 +4905,17 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "auto_reindex_stale_candidate")
                != NULL);
         ASSERT(strstr(agent_doc_buf, "make agent-stage-dev") != NULL);
-        ASSERT(strstr(agent_doc_buf, "zclassic23 mcpcall zcl_status")
+        /* zero-MCP note (docs/work/MCP-REMOVAL-WORKLIST.md W2): the
+         * concrete "zclassic23 mcpcall zcl_status" example was already
+         * replaced by the generic "zclassic23 mcpcall <tool>" placeholder
+         * plus explicit native-first framing (commit fc897377f). This
+         * assert follows that rewrite and checks the native command
+         * examples that replaced it. */
+        ASSERT(strstr(agent_doc_buf, "zclassic23 mcpcall <tool>")
+               != NULL);
+        ASSERT(strstr(agent_doc_buf, "build/bin/zclassic23 status")
+               != NULL);
+        ASSERT(strstr(agent_doc_buf, "build/bin/zclassic23 discover help")
                != NULL);
         ASSERT(strstr(agent_doc_buf, "make agent-loop") != NULL);
         ASSERT(strstr(agent_doc_buf, "ZCL_AGENT_LOOP_BIN=1") != NULL);

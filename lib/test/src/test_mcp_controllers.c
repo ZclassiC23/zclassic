@@ -49,7 +49,17 @@
 
 /* Expected tool counts.  If a future commit intentionally adds or
  * removes tools, bump these numbers in the same commit — they are the
- * contract for "how big is the MCP surface." */
+ * contract for "how big is the MCP surface."
+ *
+ * zero-MCP note (docs/work/MCP-REMOVAL-WORKLIST.md W2): this whole file
+ * tests the MCP router itself and is deleted wholesale in W3 alongside
+ * tools/mcp/ (entire tree) (see lib/test/src/test.c:1118, test_parallel.c). The native
+ * analog of these per-domain counts now lives in
+ * lib/test/src/test_command_registry_catalog.c:test_domain_leaf_counts()
+ * — a floor-style assertion over zcl_command_catalog() per root domain
+ * (core/dev/ops/app/code/discover/status). Left in place here (not
+ * rewritten) because it still guards real, currently-running -mcp
+ * behavior until W3's delete. */
 #define EXPECTED_TOTAL     138  /* +3 metrics baseline tools:
                                  *   zcl_metrics_baseline_set/_list/_diff
                                  *   (lane C2, "what changed since X");

@@ -58,6 +58,53 @@ static int test_catalog_wellformed(void)
     return failures;
 }
 
+/* Count registry entries (branches + leaves) rooted at or under `root`
+ * (either path == root, or path starts with "root."). This is the native
+ * command-registry analog of the old MCP-router per-domain tool counts
+ * (see lib/test/src/test_mcp_controllers.c EXPECTED_TOTAL / EXPECTED_*):
+ * as the zero-MCP migration (docs/work/MCP-REMOVAL-WORKLIST.md, W2) moves
+ * agent-facing surface off the MCP router and onto this registry, this is
+ * the "how big is the native surface, per domain" contract going forward.
+ * Floors are set with headroom below the live count so routine additions
+ * don't require bumping this file every commit (unlike the old
+ * EXPECTED_TOTAL, which pinned an exact number). */
+static size_t count_domain(const struct zcl_command_registry *reg,
+                           const char *root)
+{
+    size_t n = 0;
+    size_t len = strlen(root);
+    for (size_t i = 0; i < reg->count; i++) {
+        const char *p = reg->commands[i].path;
+        if (strcmp(p, root) == 0) {
+            n++;
+            continue;
+        }
+        if (strncmp(p, root, len) == 0 && p[len] == '.')
+            n++;
+    }
+    return n;
+}
+
+static int test_domain_leaf_counts(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    TEST("native registry per-domain counts meet the zero-MCP floor "
+         "(replaces MCP router EXPECTED_TOTAL/EXPECTED_* — see "
+         "docs/work/MCP-REMOVAL-WORKLIST.md W2)") {
+        ASSERT(reg->count >= 120);
+        ASSERT(count_domain(reg, "core") >= 60);
+        ASSERT(count_domain(reg, "dev") >= 35);
+        ASSERT(count_domain(reg, "ops") >= 15);
+        ASSERT(count_domain(reg, "app") >= 3);
+        ASSERT(count_domain(reg, "code") >= 5);
+        ASSERT(count_domain(reg, "discover") >= 4);
+        ASSERT(count_domain(reg, "status") >= 1);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_six_roots(void)
 {
     int failures = 0;
@@ -619,6 +666,7 @@ int test_command_registry_catalog(void)
 {
     int failures = 0;
     failures += test_catalog_wellformed();
+    failures += test_domain_leaf_counts();
     failures += test_six_roots();
     failures += test_root_menu_budget();
     failures += test_branch_menus_shallow();
