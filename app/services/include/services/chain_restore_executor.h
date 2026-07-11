@@ -6,6 +6,7 @@
 #define ZCL_CHAIN_RESTORE_EXECUTOR_H
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "util/result.h"
 
@@ -38,5 +39,19 @@ struct block_index *chain_restore_create_anchor(
 struct block_index *chain_restore_execute(
     const struct chain_restore_plan *plan,
     struct main_state *ms);
+
+/* Boot-path wrapper around chain_restore_finalize. When the block-index
+ * repair passes just proved the in-memory index fully consistent
+ * (index_repaired == 0 over a non-trivial index, index_size > 1000), trust
+ * it for this finalize call: finalize takes the O(tip) in-memory pprev walk
+ * instead of a ~74s disk header re-read + block-file rescan. The post-restore
+ * integrity check inside finalize stays the fail-safe; the trust flag is
+ * scoped to this call so the chain_integrity_failed remedy keeps its
+ * authoritative disk rebuild. Falls straight through to a plain finalize when
+ * the index was NOT verified clean. */
+struct zcl_result chain_restore_finalize_verified(struct main_state *ms,
+                                                  const char *datadir,
+                                                  int index_repaired,
+                                                  size_t index_size);
 
 #endif /* ZCL_CHAIN_RESTORE_EXECUTOR_H */

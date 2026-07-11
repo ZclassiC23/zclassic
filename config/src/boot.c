@@ -3617,8 +3617,8 @@ sapling_tree_boot_check_done:
         boot_phase_begin(&bp_fin, "chain_restore_finalize");
         service_state_advance(SERVICE_STATE_RECONCILE,
                               "post-restore finalize gate");
-        struct zcl_result finalize_r =
-            chain_restore_finalize(&g_state, ctx->datadir);
+        struct zcl_result finalize_r = chain_restore_finalize_verified(
+            &g_state, ctx->datadir, index_repaired, g_state.map_block_index.size);
         bool finalize_ok = finalize_r.ok;
         if (!finalize_ok)
             fprintf(stderr,
