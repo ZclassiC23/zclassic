@@ -2,7 +2,6 @@
  *
  * MCP net controller: peers, network info, peer discovery, ping, games. */
 
-#include "platform/time_compat.h"
 #include "../controllers.h"
 #include "../router.h"
 #include "../rpc_client.h"
@@ -13,19 +12,13 @@
  * owns; the #define MUST precede hotswap.h. */
 #define ZCL_HOTSWAP_PROBE_TOOLS "zcl_networkinfo"
 #include "hotswap/hotswap.h"
-#include "controllers/network_controller.h"
+#include "controllers/net_native_handlers.h"
 #include "json/json.h"
 #include "mcp/metrics.h"
-#include "net/onion_service.h"
-#include "rpc/protocol.h"
-#include "util/log_macros.h"
-#include "util/path_check.h"
-#include "util/safe_alloc.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <time.h>
 
 DEFINE_PT(h_zcl_peers,        "getpeerinfo",    "mcp.net")
 DEFINE_PT(h_zcl_networkinfo,  "getnetworkinfo", "mcp.net")
@@ -34,76 +27,24 @@ DEFINE_PT(h_zcl_onion_status, "healthcheck",    "mcp.net")
 DEFINE_PT(h_zcl_gametypes,    "gametypes",      "mcp.net")
 DEFINE_PT(h_zcl_peerlatency,  "getpeerlatency", "mcp.net")
 
-static bool rpc_body_is_method_not_found(const char *body,
-                                         char *message,
-                                         size_t message_len)
-{
-    if (message && message_len)
-        message[0] = '\0';
-    if (!body || !body[0])
-        return false;
-
-    struct json_value root;
-    json_init(&root);
-    if (!json_read(&root, body, strlen(body)) || root.type != JSON_OBJ) {
-        json_free(&root);
-        return false;
-    }
-
-    const struct json_value *err = json_get(&root, "error");
-    const struct json_value *obj =
-        err && err->type == JSON_OBJ ? err : &root;
-    int64_t code = json_get_int(json_get(obj, "code"));
-    const char *msg = json_get_str(json_get(obj, "message"));
-    if (message && message_len)
-        snprintf(message, message_len, "%s", msg);
-    json_free(&root);
-    return code == RPC_METHOD_NOT_FOUND;
-}
-
-static char *peer_incidents_dumpstate_fallback_body(const char *reason)
-{
-    char *raw = mcp_node_rpc("dumpstate",
-                             "[\"peer_lifecycle\",\"incidents\"]");
-    if (!raw)
-        return NULL;
-
-    struct json_value dumpstate;
-    json_init(&dumpstate);
-    char *out = NULL;
-    if (json_read(&dumpstate, raw, strlen(raw)) &&
-        dumpstate.type == JSON_OBJ) {
-        struct json_value normalized;
-        json_init(&normalized);
-        if (peer_incidents_from_dumpstate_result_json(&dumpstate, &normalized,
-                                                      reason)) {
-            size_t need = json_write(&normalized, NULL, 0) + 1;
-            out = zcl_malloc(need, "peer_incidents_fallback_json");
-            if (out)
-                json_write(&normalized, out, need);
-        }
-        json_free(&normalized);
-    }
-    json_free(&dumpstate);
-    free(raw);
-    return out;
-}
-
+/* zcl_peer_incidents — body function re-homed to
+ * app/controllers/src/net_native_handlers.c (ZERO-MCP W0-A). This wrapper
+ * maps a NULL return back onto the historical MCP_ERR_HANDLER_FAILED /
+ * "RPC peerincidents returned null" envelope; the body function already
+ * logged the failure (mcp.net tag), so this wrapper does not re-log. */
 static int h_zcl_peer_incidents(const struct mcp_request *req,
                                 struct mcp_response *res)
 {
     (void)req;
-    char *out = mcp_node_rpc("peerincidents", NULL);
-    char message[192];
-    if (rpc_body_is_method_not_found(out, message, sizeof(message))) {
-        char *fallback = peer_incidents_dumpstate_fallback_body(message);
-        if (fallback) {
-            free(out);
-            return mcp_return_rpc_body(res, fallback, "peerincidents",
-                                       "mcp.net");
-        }
+    struct zcl_native_body_err e = { 0 };
+    char *body = zcl_native_peer_incidents_body(req->args, &e);
+    if (!body) {
+        res->error = MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message), "%s",
+                 e.message);
     }
-    return mcp_return_rpc_body(res, out, "peerincidents", "mcp.net");
+    res->body = body;
+    return 0;
 }
 
 static int h_zcl_addnode(const struct mcp_request *req, struct mcp_response *res)
@@ -144,84 +85,34 @@ static int h_zcl_peer_report(const struct mcp_request *req,
     return mcp_return_rpc_body(res, out, "peer_report", "mcp.net");
 }
 
-/* zcl_onion_health — probe the in-process onion service by calling
- * `onion_service_handle_request()` directly and measuring the
- * response size + wall-clock latency.  Synchronous: one call per
- * invocation.  Bypasses Tor and the SOCKS layer entirely (dynhost
- * has no SOCKS per the project memory), so this is a cheap
- * liveness check, not a full end-to-end test — the latter would
- * require an actual Tor circuit roundtrip and can't run from a
- * trusted-peer tool.
+/* zcl_onion_health — body function re-homed to
+ * app/controllers/src/net_native_handlers.c (ZERO-MCP W0-A).
  *
  * Returns:
  *   { onion_address, path, ok, latency_ms, response_bytes, error? }
  * When onion service is not started:
  *   { ok: false, error: "not_started" }
- */
+ *
+ * Byte-compat note: the body function reports a bad `path` arg as
+ * ZCL_NATIVE_BODY_INVALID (the generic "caller input failed validation"
+ * status), but this tool's *historical* MCP envelope used
+ * MCP_ERR_HANDLER_FAILED for that case — so this wrapper maps INVALID to
+ * HANDLER_FAILED here specifically, overriding the usual INVALID mapping.
+ * An allocation failure (ZCL_NATIVE_BODY_INTERNAL) maps to MCP_ERR_INTERNAL
+ * as usual. The body function already logged the failure; this wrapper
+ * does not re-log. */
 static int h_zcl_onion_health(const struct mcp_request *req,
                                struct mcp_response *res)
 {
-    const char *probe_path = json_get_str_or(req->args, "path", "/directory.json");
-    if (!probe_path || !*probe_path) probe_path = "/directory.json";
-    if (!path_check_url_arg(probe_path, 256)) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "path: must start with '/', "
-                 "be 1..256 chars, contain no control chars or '..' segments");
-        LOG_WARN("mcp.net", "onion_health: %s", res->error_message);
-        return 0;
+    struct zcl_native_body_err e = { 0 };
+    char *body = zcl_native_onion_health_body(req->args, &e);
+    if (!body) {
+        res->error = (e.status == ZCL_NATIVE_BODY_INTERNAL)
+                          ? MCP_ERR_INTERNAL
+                          : MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message), "%s",
+                 e.message);
     }
-
-    const char *addr = onion_service_get_address();
-
-    char *body = zcl_malloc(512, "onion_health_body");
-    if (!body)
-        return mcp_res_set_oom(res, 512, "mcp.net", "onion health response");
-
-    if (!addr) {
-        snprintf(body, 512,
-            "{\"ok\":false,\"error\":\"not_started\","
-             "\"onion_address\":null,\"path\":\"%s\","
-             "\"latency_ms\":0,\"response_bytes\":0}",
-            probe_path);
-        res->body = body;
-        return 0;
-    }
-
-    struct timespec t0, t1;
-    platform_time_monotonic_timespec(&t0);
-
-    /* Heap, NOT a function-static buffer: the middleware runs handlers on a
-     * detached worker thread and abandons it on timeout, so two invocations
-     * could race a shared static. 64 KB is also borderline for the stack —
-     * allocate per call and free before return. */
-    const size_t resp_cap = 65536;
-    uint8_t *resp = zcl_malloc(resp_cap, "onion_health_resp");
-    if (!resp) {
-        free(body);
-        return mcp_res_set_oom(res, resp_cap, "mcp.net",
-                               "onion health probe buffer");
-    }
-    size_t n = onion_service_handle_request("GET", probe_path, NULL, 0,
-                                              resp, resp_cap);
-
-    platform_time_monotonic_timespec(&t1);
-    free(resp);  /* only the byte count `n` is needed past this point */
-    int64_t latency_us =
-        (t1.tv_sec - t0.tv_sec) * 1000000LL +
-        (t1.tv_nsec - t0.tv_nsec) / 1000LL;
-    int64_t latency_ms = latency_us / 1000;
-
-    bool ok = (n > 0);
-
-    snprintf(body, 512,
-        "{\"ok\":%s,\"onion_address\":\"%s\",\"path\":\"%s\","
-         "\"latency_ms\":%lld,\"response_bytes\":%zu%s}",
-        ok ? "true" : "false",
-        addr, probe_path,
-        (long long)latency_ms, n,
-        ok ? "" : ",\"error\":\"empty_response\"");
-
     res->body = body;
     return 0;
 }

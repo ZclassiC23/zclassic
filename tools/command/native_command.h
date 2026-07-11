@@ -4,6 +4,7 @@
 #define ZCL_TOOLS_NATIVE_COMMAND_H
 
 #include "kernel/command_registry.h"
+#include "controllers/native_handler_body.h"
 
 #include <stdbool.h>
 
@@ -24,9 +25,12 @@ int zcl_native_command_main(const char *root_word,
                             const char *datadir, int rpc_port);
 
 /* Generic transport binding for READ-ONLY Core/Ops leaves. Resolves the
- * leaf's canonical path to exactly one live MCP tool and proxies the call
- * through the in-process MCP middleware, then wraps the tool body in the
- * common zcl.result.v1 envelope. Bound by config/src/command_catalog.c. */
+ * leaf's canonical path to exactly one MCP-free dispatch (W0-A): either a
+ * re-homed transport-neutral body function (the same composition the MCP
+ * controller now wraps — app/controllers *_native_handlers.c) or, for a
+ * pure pass-through leaf, the backing JSON-RPC method directly. The MCP
+ * router/middleware is never entered. The body is wrapped in the common
+ * zcl.result.v1 envelope. Bound by config/src/command_catalog.c. */
 void zcl_native_bridge_command(const struct zcl_command_request *request,
                                struct zcl_command_reply *reply);
 
@@ -41,8 +45,17 @@ void zcl_native_bridge_project(const struct zcl_command_request *request,
 
 /* Return the MCP tool name bound to a canonical READ-ONLY leaf path, or NULL
  * when the path has no bridge binding. Pure lookup — no node contact. Used by
- * the golden catalog test to prove every bridged READY leaf has a binding. */
+ * the golden catalog test to prove every bridged READY leaf has a binding.
+ * (Kept as dual-run equivalence metadata: it names which MCP tool a native
+ * leaf mirrors; the native dispatch itself no longer routes through it.) */
 const char *zcl_native_bridge_tool_for_path(const char *path);
+
+/* MCP-free dispatch lookups (W0-A). Every bridged leaf resolves to exactly
+ * one of the two: a re-homed body function OR a direct JSON-RPC method.
+ * Pure lookups — no node contact. The golden catalog test proves the union
+ * covers every bridged leaf and never overlaps. */
+zcl_native_body_fn zcl_native_bridge_body_for_path(const char *path);
+const char *zcl_native_bridge_rpc_for_path(const char *path);
 
 void zcl_native_handle_discover_help(
     const struct zcl_command_request *request,

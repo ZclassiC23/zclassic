@@ -12,6 +12,7 @@
  * owns; the #define MUST precede hotswap.h. */
 #define ZCL_HOTSWAP_PROBE_TOOLS "zcl_balance"
 #include "hotswap/hotswap.h"
+#include "controllers/wallet_native_handlers.h"
 #include "json/json.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -187,89 +188,56 @@ static int h_zcl_sendtoaddress(const struct mcp_request *req,
 static int h_zcl_listunspent(const struct mcp_request *req,
                               struct mcp_response *res)
 {
-    char params[128];
-    snprintf(params, sizeof(params), "[%lld,%lld]",
-             (long long)json_get_int_or(req->args, "minconf", 1),
-             (long long)json_get_int_or(req->args, "maxconf", 9999999));
-    return mcp_return_rpc_body(res, mcp_node_rpc("listunspent", params),
-                                "listunspent", "mcp.wallet");
+    struct zcl_native_body_err e = { 0 };
+    char *body = zcl_native_listunspent_body(req->args, &e);
+    if (!body) {
+        res->error = (e.status == ZCL_NATIVE_BODY_INTERNAL)
+                         ? MCP_ERR_INTERNAL : MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message), "%s", e.message);
+    }
+    res->body = body;
+    return 0;
 }
 
 static int h_zcl_listtransactions(const struct mcp_request *req,
                                     struct mcp_response *res)
 {
-    char params[128];
-    snprintf(params, sizeof(params), "[\"\",%lld,%lld]",
-             (long long)json_get_int_or(req->args, "count", 10),
-             (long long)json_get_int_or(req->args, "skip",   0));
-    return mcp_return_rpc_body(res, mcp_node_rpc("listtransactions", params),
-                                "listtransactions", "mcp.wallet");
+    struct zcl_native_body_err e = { 0 };
+    char *body = zcl_native_listtransactions_body(req->args, &e);
+    if (!body) {
+        res->error = (e.status == ZCL_NATIVE_BODY_INTERNAL)
+                         ? MCP_ERR_INTERNAL : MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message), "%s", e.message);
+    }
+    res->body = body;
+    return 0;
 }
 
-DEFINE_PT_STR(h_zcl_gettransaction, "txid", "gettransaction", "mcp.wallet")
+static int h_zcl_gettransaction(const struct mcp_request *req,
+                                 struct mcp_response *res)
+{
+    struct zcl_native_body_err e = { 0 };
+    char *body = zcl_native_gettransaction_body(req->args, &e);
+    if (!body) {
+        res->error = (e.status == ZCL_NATIVE_BODY_INTERNAL)
+                         ? MCP_ERR_INTERNAL : MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message), "%s", e.message);
+    }
+    res->body = body;
+    return 0;
+}
 
 static int h_zcl_listaddresses(const struct mcp_request *req,
                                 struct mcp_response *res)
 {
-    (void)req;
-    /* The node RPC `listwalletkeys` returns {transparent_keys:[{address,...}],
-     * sapling_keys:[...]}.  Call it without private keys and project just
-     * the addresses so the caller gets a clean list. */
-    char *raw = mcp_node_rpc("listwalletkeys", "[false]");
-    if (!raw)
-        return mcp_return_rpc_body(res, raw, "listwalletkeys", "mcp.wallet");
-
-    struct json_value root;
-    if (!json_read(&root, raw, strlen(raw))) { res->body = raw; return 0; }
-    free(raw);
-
-    size_t cap = 65536;
-    char *out = zcl_malloc(cap, "listaddresses_body");
-    if (!out) {
-        json_free(&root);
-        return mcp_res_set_oom(res, cap, "mcp.wallet", "listaddresses response");
+    struct zcl_native_body_err e = { 0 };
+    char *body = zcl_native_listaddresses_body(req->args, &e);
+    if (!body) {
+        res->error = (e.status == ZCL_NATIVE_BODY_INTERNAL)
+                         ? MCP_ERR_INTERNAL : MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message), "%s", e.message);
     }
-    size_t pos = 0;
-    pos += (size_t)snprintf(out + pos, cap - pos, "{\"t_addresses\":[");
-
-    const struct json_value *tk = json_get(&root, "transparent_keys");
-    bool first = true;
-    if (tk && tk->type == JSON_ARR) {
-        for (size_t i = 0; i < tk->num_children; i++) {
-            const struct json_value *k = &tk->children[i];
-            const struct json_value *av = json_get(k, "address");
-            const char *addr = av ? json_get_str(av) : NULL;
-            if (!addr || !addr[0]) continue;
-            if (pos + strlen(addr) + 8 >= cap) break;
-            if (!first) out[pos++] = ',';
-            first = false;
-            out[pos++] = '"';
-            for (const char *c = addr; *c && pos + 2 < cap; c++) out[pos++] = *c;
-            out[pos++] = '"';
-        }
-    }
-    pos += (size_t)snprintf(out + pos, cap - pos, "],\"z_addresses\":[");
-
-    const struct json_value *sk = json_get(&root, "sapling_keys");
-    first = true;
-    if (sk && sk->type == JSON_ARR) {
-        for (size_t i = 0; i < sk->num_children; i++) {
-            const struct json_value *k = &sk->children[i];
-            const struct json_value *av = json_get(k, "address");
-            const char *addr = av ? json_get_str(av) : NULL;
-            if (!addr || !addr[0]) continue;
-            if (pos + strlen(addr) + 8 >= cap) break;
-            if (!first) out[pos++] = ',';
-            first = false;
-            out[pos++] = '"';
-            for (const char *c = addr; *c && pos + 2 < cap; c++) out[pos++] = *c;
-            out[pos++] = '"';
-        }
-    }
-    if (pos + 2 < cap) { out[pos++] = ']'; out[pos++] = '}'; out[pos] = 0; }
-
-    json_free(&root);
-    res->body = out;
+    res->body = body;
     return 0;
 }
 

@@ -8,10 +8,13 @@
  * executable next action and NEVER becomes an arbitrary RPC method.
  *
  * READ-ONLY Core/Ops leaves execute through zcl_native_bridge_command, which
- * proxies the one canonical MCP tool for the leaf via the in-process MCP
- * middleware. Discovery leaves (help/search/describe/schema) render the native
- * discovery document directly. The `dev` subtree uses this same resolver; its
- * process and watcher handlers are injected only in a ZCL_DEV_BUILD catalog.
+ * dispatches WITHOUT the MCP router/middleware (ZERO-MCP W0-A): a leaf either
+ * calls its re-homed transport-neutral body function (app/controllers/
+ * *_native_handlers.c — the same composition the MCP controller now wraps) or,
+ * for a pure 1:1 proxy, calls the backing JSON-RPC method directly. Discovery
+ * leaves (help/search/describe/schema) render the native discovery document
+ * directly. The `dev` subtree uses this same resolver; its process and watcher
+ * handlers are injected only in a ZCL_DEV_BUILD catalog.
  */
 
 #define _GNU_SOURCE
@@ -23,9 +26,13 @@
 
 #include "chain/chainparams.h"
 #include "util/safe_alloc.h"
-#include "mcp/controllers.h"
-#include "mcp/middleware.h"
-#include "mcp/router.h"
+#include "controllers/native_handler_body.h"
+#include "controllers/status_native_handlers.h"
+#include "controllers/chain_native_handlers.h"
+#include "controllers/wallet_native_handlers.h"
+#include "controllers/diagnostics_native_handlers.h"
+#include "controllers/net_native_handlers.h"
+#include "controllers/meta_native_handlers.h"
 #include "mcp/rpc_client.h"
 
 #include <ctype.h>
@@ -116,35 +123,108 @@ const char *zcl_native_bridge_tool_for_path(const char *path)
     return NULL;
 }
 
-/* ── in-process MCP middleware for the bridge ──────────────────────── */
+/* ── MCP-free dispatch bindings for the bridge (W0-A) ─────────────────
+ * Every bridged leaf resolves to exactly ONE of:
+ *   - a re-homed transport-neutral body function (the same composition the
+ *     MCP controller now wraps — app/controllers *_native_handlers.c), or
+ *   - a direct JSON-RPC method (the leaf's legacy MCP handler was a pure
+ *     DEFINE_PT pass-through, so the composition already lives in the RPC
+ *     layer and the tool added nothing but transport).
+ * The golden catalog test proves the union covers g_bridge_tools[] exactly. */
+static const struct {
+    const char *path;
+    zcl_native_body_fn body;
+} g_bridge_native_body[] = {
+    { "core.status", zcl_native_status_body },
+    { "core.chain.block.get", zcl_native_getblock_body },
+    { "core.chain.transaction.get", zcl_native_getrawtransaction_body },
+    { "core.sync.blockers", zcl_native_blockers_body },
+    { "core.sync.diagnose", zcl_native_syncdiag_body },
+    { "core.consensus.report", zcl_native_consensus_report_body },
+    { "core.consensus.utxo.audit", zcl_native_utxo_audit_body },
+    { "core.network.peers.incidents", zcl_native_peer_incidents_body },
+    { "core.network.onion.health", zcl_native_onion_health_body },
+    { "core.wallet.address.list", zcl_native_listaddresses_body },
+    { "core.wallet.utxo.list", zcl_native_listunspent_body },
+    { "core.wallet.transaction.list", zcl_native_listtransactions_body },
+    { "core.wallet.transaction.get", zcl_native_gettransaction_body },
+    { "core.storage.query", zcl_native_sql_body },
+    { "ops.diagnose", zcl_native_agent_diagnose_body },
+    { "ops.logs", zcl_native_node_log_body },
+    { "ops.timeline", zcl_native_timeline_body },
+    { "ops.metrics", zcl_native_metrics_body },
+    { "ops.postmortem.list", zcl_native_postmortem_list_body },
+};
+
+static const struct {
+    const char *path;
+    const char *rpc_method;
+} g_bridge_rpc_direct[] = {
+    { "core.chain.tip", "getchaintip" },
+    { "core.chain.mempool.status", "getmempoolinfo" },
+    { "core.chain.mempool.list", "getrawmempool" },
+    { "core.sync.status", "syncstate" },
+    { "core.sync.validation", "validationstatus" },
+    { "core.consensus.integrity", "getdataintegrity" },
+    { "core.consensus.utxo.commitment", "getutxocommitment" },
+    { "core.consensus.mmb", "getmmrroot" },
+    { "core.network.status", "getnetworkinfo" },
+    { "core.network.peers.list", "getpeerinfo" },
+    { "core.network.peers.latency", "getpeerlatency" },
+    { "core.network.onion.status", "healthcheck" },
+    { "core.wallet.status", "getwalletinfo" },
+    { "core.wallet.balance", "z_gettotalbalance" },
+    { "core.wallet.backup.status", "walletbackupstatus" },
+    { "core.wallet.audit", "walletaudit" },
+    { "core.storage.stats", "db_info" },
+    { "core.mining.status", "getmininginfo" },
+    { "core.mining.benchmark", "benchmark" },
+    { "ops.health", "healthcheck" },
+    { "ops.lanes", "agentlanes" },
+    { "ops.recovery.status", "refold" },
+};
+
+zcl_native_body_fn zcl_native_bridge_body_for_path(const char *path)
+{
+    if (!path)
+        return NULL;
+    for (size_t i = 0;
+         i < sizeof(g_bridge_native_body) / sizeof(g_bridge_native_body[0]);
+         i++) {
+        if (strcmp(g_bridge_native_body[i].path, path) == 0)
+            return g_bridge_native_body[i].body;
+    }
+    return NULL;
+}
+
+const char *zcl_native_bridge_rpc_for_path(const char *path)
+{
+    if (!path)
+        return NULL;
+    for (size_t i = 0;
+         i < sizeof(g_bridge_rpc_direct) / sizeof(g_bridge_rpc_direct[0]);
+         i++) {
+        if (strcmp(g_bridge_rpc_direct[i].path, path) == 0)
+            return g_bridge_rpc_direct[i].rpc_method;
+    }
+    return NULL;
+}
+
+/* ── one-shot RPC client bootstrap ──────────────────────────────────── */
 static char g_bridge_datadir[512];
 static int g_bridge_rpc_port;
-static struct mcp_middleware g_bridge_mw;
-static bool g_bridge_mw_ready;
+static bool g_bridge_rpc_ready;
 
-static void bridge_ensure_middleware(void)
+static void bridge_ensure_rpc_client(void)
 {
-    if (g_bridge_mw_ready)
+    if (g_bridge_rpc_ready)
         return;
-    /* Same construction as the mcpcall CLI path: a one-shot process has no
-     * app_init(), so select chain params and register controllers before any
-     * route can dispatch. */
+    /* A one-shot native process has no app_init(): initialize the JSON-RPC
+     * client (datadir cookie + port) and select mainnet chain params for any
+     * body function that consults them. No MCP router/middleware is built. */
     mcp_rpc_client_init(g_bridge_datadir, g_bridge_rpc_port);
     chain_params_select(CHAIN_MAIN);
-    mcp_router_reset();
-    mcp_register_ops();
-    mcp_register_diagnostics();
-    mcp_register_chain();
-    mcp_register_net();
-    mcp_register_wallet();
-    mcp_register_app();
-    mcp_register_meta();
-    mcp_register_dev_hotswap();
-    mcp_middleware_init(&g_bridge_mw);
-    mcp_middleware_load_from_env(&g_bridge_mw);
-    /* No detached timeout worker for a one-shot dispatch. */
-    g_bridge_mw.default_timeout_ms = 0;
-    g_bridge_mw_ready = true;
+    g_bridge_rpc_ready = true;
 }
 
 /* Translate the CLI leaf input into the exact argument object the bound MCP
@@ -323,16 +403,20 @@ void zcl_native_bridge_command(const struct zcl_command_request *request,
     if (!request || !request->spec || !reply)
         return;
     const char *tool = zcl_native_bridge_tool_for_path(request->spec->path);
-    if (!tool) {
+    zcl_native_body_fn body_fn =
+        zcl_native_bridge_body_for_path(request->spec->path);
+    const char *rpc_method =
+        zcl_native_bridge_rpc_for_path(request->spec->path);
+    if (!tool || (!body_fn && !rpc_method)) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL, "NO_BRIDGE_BINDING",
                                "dispatch", false, false,
-                               "ready leaf has no MCP tool binding",
+                               "ready leaf has no MCP-free bridge binding",
                                request->spec->path);
         return;
     }
 
-    bridge_ensure_middleware();
+    bridge_ensure_rpc_client();
 
     struct json_value translated;
     bool use_translated = false;
@@ -348,24 +432,30 @@ void zcl_native_bridge_command(const struct zcl_command_request *request,
     const struct json_value *args =
         use_translated ? &translated : request->input;
 
-    const char *bearer = getenv("ZCL_MCP_CALL_BEARER_TOKEN");
-    if (!bearer || !bearer[0]) {
-        if (mcp_middleware_is_destructive(&g_bridge_mw, tool))
-            bearer = getenv("ZCL_MCP_DESTRUCTIVE_BEARER_TOKEN");
-        if (!bearer || !bearer[0])
-            bearer = getenv("ZCL_MCP_BEARER_TOKEN");
-    }
-
-    char *result = mcp_middleware_dispatch(&g_bridge_mw, tool, args,
-                                           bearer && bearer[0] ? bearer : NULL);
+    /* Dispatch WITHOUT the MCP router/middleware: the re-homed body function
+     * (identical composition to the MCP tool) or the backing RPC directly. */
+    struct zcl_native_body_err body_err = { 0 };
+    char *result = body_fn ? body_fn(args, &body_err)
+                           : mcp_node_rpc(rpc_method, NULL);
     if (use_translated)
         json_free(&translated);
 
     if (!result) {
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
-                               ZCL_COMMAND_EXIT_TRANSIENT, "NODE_UNAVAILABLE",
-                               "dispatch", true, false,
-                               "the node did not return a result body", tool);
+        /* Match the legacy surface: a failed dispatch produced an error
+         * envelope whose message the bridge surfaced as TOOL_ERROR. */
+        char msgbuf[224];
+        const char *msg;
+        if (body_fn) {
+            msg = body_err.message[0] ? body_err.message
+                                      : "tool reported an error";
+        } else {
+            (void)snprintf(msgbuf, sizeof(msgbuf), "RPC %s returned null",
+                           rpc_method);
+            msg = msgbuf;
+        }
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_FAILED, "TOOL_ERROR",
+                               "execute", false, false, msg, tool);
         (void)zcl_command_reply_add_next(reply, "core.status", "{}",
                                          "confirm the node is running");
         return;
@@ -551,18 +641,6 @@ void zcl_native_handle_app_inspect(const struct zcl_command_request *request,
  *   - ops.selftest is a node-free, deterministic well-formedness sweep of the
  *     registry (the native analogue of `zcl_self_test mode=registry`), so the
  *     dev-lane deploy verify can gate on `fail == 0` without a running node. */
-static bool g_bridge_rpc_ready;
-
-static void bridge_ensure_rpc_client(void)
-{
-    if (g_bridge_rpc_ready)
-        return;
-    /* A one-shot native process has no app_init(); the HTTP RPC backend only
-     * needs the datadir (cookie) + port. No router/middleware registration. */
-    mcp_rpc_client_init(g_bridge_datadir, g_bridge_rpc_port);
-    g_bridge_rpc_ready = true;
-}
-
 void zcl_native_handle_ops_state(const struct zcl_command_request *request,
                                  struct zcl_command_reply *reply)
 {

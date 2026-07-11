@@ -1,0 +1,560 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Transport-neutral operator read compositions (ZERO-MCP W0-A).
+ *
+ * The re-homed composition bodies of the operator read tools (zcl_status,
+ * zcl_kpi, zcl_syncdiag, zcl_blockers, zcl_timeline, zcl_agent_diagnose,
+ * zcl_postmortem_list). Each takes the tool's argument object and returns
+ * one heap-allocated JSON body (caller frees) — exactly the bytes the
+ * legacy MCP handler set as res->body. On failure it returns NULL and
+ * fills struct zcl_native_body_err with the legacy MCP error tier + the
+ * byte-identical error_message text, having already logged the failure
+ * (LOG_NULL, same tag/text as the legacy LOG_ERR). Both transports call
+ * these: the MCP wrapper in ops_controller.c maps the failure onto its
+ * historical MCP error code, and the native command bridge wraps the body
+ * in the zcl.result.v1 envelope — the MCP router is never entered. */
+
+#include "controllers/status_native_handlers.h"
+#include "controllers/native_handler_body.h"
+#include "controllers/status_native_helpers.h"
+
+#include "json/json.h"
+#include "mcp/rpc_client.h"
+#include "mcp/rpc_params.h"
+#include "sim/postmortem.h"
+#include "util/clientversion.h"
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
+
+#include <errno.h>
+#include <limits.h>
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+char *zcl_native_status_body(const struct json_value *args,
+                             struct zcl_native_body_err *err)
+{
+    (void)args;
+    char *h  = mcp_node_rpc("getblockcount", NULL);
+    char *p  = mcp_node_rpc("getpeerinfo", NULL);
+    char *s  = mcp_node_rpc("syncstate", NULL);
+    char *v  = mcp_node_rpc("validationstatus", NULL);
+    char *hc = mcp_node_rpc("healthcheck", NULL);
+    char *ci = mcp_node_rpc("getblockchaininfo", NULL);
+    char *cac = mcp_node_rpc("dumpstate", "[\"chain_advance_coordinator\"]");
+    char *rf = mcp_node_rpc("dumpstate", "[\"reducer_frontier\"]");
+    char *tf = mcp_node_rpc("dumpstate", "[\"tip_finalize\"]");
+    char *ce = mcp_node_rpc("dumpstate", "[\"condition_engine\"]");
+    char *bl = mcp_node_rpc("dumpstate", "[\"blocker\"]");
+
+    int pc = 0, inbound = 0, outbound = 0, zcl23_cnt = 0, magicbean_cnt = 0;
+    int max_peer_height = 0;
+    bool max_peer_height_known = false;
+    bool peer_direction_known = false;
+    struct json_value height_j, peers_j, chain_j, health_j;
+    bool height_ok = status_parse_rpc_json(&height_j, h, JSON_INT) &&
+                     height_j.val.i >= 0 && height_j.val.i <= INT_MAX;
+    bool peers_ok = status_parse_rpc_json(&peers_j, p, JSON_ARR) &&
+                    status_peer_array_is_valid(&peers_j);
+    bool chain_ok = status_parse_rpc_json(&chain_j, ci, JSON_OBJ);
+    const struct json_value *header_value =
+        chain_ok ? json_get(&chain_j, "best_header_height") : NULL;
+    bool header_ok = header_value && header_value->type == JSON_INT &&
+                     header_value->val.i >= 0 &&
+                     header_value->val.i <= INT_MAX;
+    bool health_ok = status_parse_rpc_json(&health_j, hc, JSON_OBJ);
+    if (peers_ok) {
+        struct peer_survey ps;
+        status_peer_survey(&peers_j, &ps);
+        pc = ps.total;
+        inbound = ps.inbound;
+        outbound = ps.outbound;
+        zcl23_cnt = ps.zcl23;
+        magicbean_cnt = ps.magicbean;
+        max_peer_height = ps.max_height;
+        max_peer_height_known = ps.max_height_known;
+        peer_direction_known = ps.direction_known;
+    }
+
+    int block_height = height_ok ? (int)height_j.val.i : 0;
+    int header_height = header_ok ? (int)header_value->val.i : 0;
+    const int sync_behind_threshold_blocks = 144;
+    int header_gap = max_peer_height - header_height;
+    if (header_gap < 0) header_gap = 0;
+    bool header_gap_known = max_peer_height_known && header_ok;
+    bool header_sync_behind =
+        header_gap > sync_behind_threshold_blocks;
+    /* Only locally validated headers define the synchronization target.
+     * max_peer_height is an untrusted availability hint; one lying peer must
+     * never manufacture an authoritative node gap. */
+    int target_height = header_height;
+    bool chain_evidence_known = height_ok && header_ok;
+    bool chain_evidence_consistent =
+        chain_evidence_known && block_height <= header_height;
+    int sync_gap = chain_evidence_consistent
+        ? target_height - block_height : 0;
+    bool sync_gap_known = chain_evidence_consistent;
+    bool sync_behind = sync_gap > sync_behind_threshold_blocks;
+
+    const struct json_value *memory_value =
+        health_ok ? json_get(&health_j, "memory_rss_mb") : NULL;
+    const struct json_value *uptime_value =
+        health_ok ? json_get(&health_j, "uptime_seconds") : NULL;
+    bool memory_known = memory_value && memory_value->type == JSON_INT &&
+                        memory_value->val.i >= 0;
+    bool uptime_known = uptime_value && uptime_value->type == JSON_INT &&
+                        uptime_value->val.i >= 0;
+    const struct json_value *commit_value =
+        health_ok ? json_get(&health_j, "build_commit") : NULL;
+    const char *node_commit = json_get_str(commit_value);
+    bool have_node_commit = node_commit && node_commit[0];
+
+    struct json_value root;
+    json_init(&root);
+    json_set_object(&root);
+    json_push_kv_str(&root, "execution_locus", "composite");
+    status_push_int_if_known(&root, "height", height_ok, block_height);
+    /* build_commit must describe the NODE. This MCP server is a separate
+     * long-lived process and can be running an older binary than the node
+     * it queries — stamping our own hash here can mis-report the deployed
+     * node version. Keep the proxy hash in mcp_build_commit unconditionally
+     * and leave the node field null when target evidence is unavailable. */
+    if (have_node_commit) {
+        json_push_kv_str(&root, "build_commit", node_commit);
+    } else {
+        struct json_value unknown;
+        json_init(&unknown);
+        json_set_null(&unknown);
+        json_push_kv(&root, "build_commit", &unknown);
+        json_free(&unknown);
+    }
+    json_push_kv_str(&root, "build_commit_source",
+                     have_node_commit ? "target_node.healthcheck"
+                                      : "target_node.unavailable");
+    json_push_kv_str(&root, "mcp_build_commit", zcl_build_commit());
+    status_push_int_if_known(&root, "header_height", header_ok,
+                             header_height);
+    status_push_int_if_known(&root, "max_peer_height",
+                             max_peer_height_known,
+                             max_peer_height);
+    json_push_kv_bool(&root, "max_peer_height_known",
+                      max_peer_height_known);
+    json_push_kv_str(&root, "max_peer_height_trust",
+                     "untrusted_peer_advertisement");
+    status_push_int_if_known(&root, "header_gap", header_gap_known,
+                             header_gap);
+    status_push_bool_if_known(&root, "header_sync_behind",
+                              header_gap_known, header_sync_behind);
+    status_push_int_if_known(&root, "target_height", header_ok,
+                             target_height);
+    json_push_kv_str(&root, "target_height_source",
+                     header_ok ? "target_node.validated_header_tip"
+                               : "unavailable");
+    status_push_int_if_known(&root, "sync_gap", sync_gap_known, sync_gap);
+    json_push_kv_int(&root, "sync_behind_threshold_blocks",
+                     sync_behind_threshold_blocks);
+    status_push_bool_if_known(&root, "sync_behind", sync_gap_known,
+                              sync_behind);
+    status_push_bool_if_known(&root, "chain_evidence_consistent",
+                              chain_evidence_known,
+                              chain_evidence_consistent);
+    status_push_int_if_known(&root, "peers", peers_ok, pc);
+
+    if (!height_ok)
+        status_push_rpc_parse_error(&root, "height", h,
+                                    "getblockcount returned invalid data");
+    if (!peers_ok)
+        status_push_rpc_parse_error(&root, "peers", p,
+                                    "getpeerinfo returned invalid data");
+    else if (!max_peer_height_known) {
+        status_push_json_error(&root, "max_peer_height",
+                               "no connected peer supplied a valid height claim",
+                               NULL);
+        status_push_json_error(&root, "header_gap",
+                               "peer height claim unavailable", NULL);
+    }
+    if (!header_ok)
+        status_push_rpc_parse_error(
+            &root, "header_height", ci,
+            "getblockchaininfo missing valid best_header_height");
+    if (chain_evidence_known && !chain_evidence_consistent)
+        status_push_json_error(
+            &root, "chain_evidence",
+            "served H* exceeds the locally validated header frontier",
+            NULL);
+
+    struct json_value conn;
+    json_init(&conn);
+    json_set_object(&conn);
+    json_push_kv_bool(&conn, "known", peers_ok && peer_direction_known);
+    json_push_kv_bool(&conn, "total_known", peers_ok);
+    json_push_kv_bool(&conn, "direction_known", peer_direction_known);
+    status_push_int_if_known(&conn, "total", peers_ok, pc);
+    status_push_int_if_known(&conn, "inbound", peer_direction_known,
+                             inbound);
+    status_push_int_if_known(&conn, "outbound", peer_direction_known,
+                             outbound);
+    status_push_int_if_known(&conn, "zcl23", peers_ok, zcl23_cnt);
+    status_push_int_if_known(&conn, "magicbean", peers_ok, magicbean_cnt);
+    if (peers_ok && !peer_direction_known)
+        status_push_json_error(&conn, "direction",
+                               "peer entry missing boolean inbound field",
+                               NULL);
+    json_push_kv(&root, "connections", &conn);
+    json_free(&conn);
+
+    status_push_int_if_known(&root, "memory_rss_mb", memory_known,
+                             memory_known ? memory_value->val.i : 0);
+    status_push_int_if_known(&root, "uptime_secs", uptime_known,
+                             uptime_known ? uptime_value->val.i : 0);
+    if (!memory_known)
+        status_push_json_error(&root, "memory_rss_mb",
+                               "healthcheck missing valid nonnegative memory",
+                               NULL);
+    if (!uptime_known)
+        status_push_json_error(&root, "uptime_secs",
+                               "healthcheck missing valid nonnegative uptime",
+                               NULL);
+    status_push_rpc_json(&root, "sync", s, "syncstate");
+    status_push_rpc_json(&root, "validation", v, "validationstatus");
+    status_push_rpc_json(&root, "health", hc, "healthcheck");
+    status_push_dumpstate_json(&root, "chain_advance",
+                               "chain_advance_coordinator", cac);
+    status_push_dumpstate_json(&root, "reducer_frontier",
+                               "reducer_frontier", rf);
+    status_push_dumpstate_json(&root, "tip_finalize", "tip_finalize", tf);
+    status_push_dumpstate_json(&root, "condition_engine",
+                               "condition_engine", ce);
+    bool blocker_fields_attached = status_push_blocker_summary(&root, bl);
+
+    char *out = blocker_fields_attached
+        ? zcl_json_value_to_body(&root, "status_body") : NULL;
+    json_free(&root);
+    json_free(&health_j);
+    json_free(&chain_j);
+    json_free(&peers_j);
+    json_free(&height_j);
+    free(h); free(p); free(s); free(v); free(hc); free(ci); free(cac);
+    free(rf); free(tf); free(ce); free(bl);
+    if (!out) {
+        err->status = ZCL_NATIVE_BODY_INTERNAL;
+        snprintf(err->message, sizeof(err->message),
+                 "malloc failed for %s", "status response");
+        LOG_NULL("mcp.ops", "malloc failed for %s", "status response");
+    }
+    return out;
+}
+
+char *zcl_native_kpi_body(const struct json_value *args,
+                          struct zcl_native_body_err *err)
+{
+    (void)args;
+    char *height    = mcp_node_rpc("getblockcount",     NULL);
+    char *peers     = mcp_node_rpc("getpeerinfo",       NULL);
+    char *sync      = mcp_node_rpc("syncstate",         NULL);
+    char *val       = mcp_node_rpc("validationstatus",  NULL);
+    char *health    = mcp_node_rpc("healthcheck",       NULL);
+    char *mempool   = mcp_node_rpc("getmempoolinfo",    NULL);
+    char *wallet    = mcp_node_rpc("getwalletinfo",     NULL);
+    char *chain     = mcp_node_rpc("getblockchaininfo", NULL);
+    char *network   = mcp_node_rpc("getnetworkinfo",    NULL);
+
+    struct json_value peers_j;
+    bool peers_ok = status_parse_rpc_json(&peers_j, peers, JSON_ARR) &&
+                    status_peer_array_is_valid(&peers_j);
+    int64_t peer_count = peers_ok ? (int64_t)json_size(&peers_j) : 0;
+
+    struct json_value root;
+    json_init(&root);
+    json_set_object(&root);
+    status_push_rpc_json(&root, "height", height, "getblockcount");
+    status_push_int_if_known(&root, "peer_count", peers_ok, peer_count);
+    json_push_kv_bool(&root, "peer_count_known", peers_ok);
+    status_push_rpc_json(&root, "peers", peers, "getpeerinfo");
+    if (!peers_ok)
+        status_push_rpc_parse_error(&root, "peer_count", peers,
+                                    "getpeerinfo returned invalid peer array");
+    status_push_rpc_json(&root, "sync", sync, "syncstate");
+    status_push_rpc_json(&root, "validation", val, "validationstatus");
+    status_push_rpc_json(&root, "health", health, "healthcheck");
+    status_push_rpc_json(&root, "mempool", mempool, "getmempoolinfo");
+    status_push_rpc_json(&root, "wallet", wallet, "getwalletinfo");
+    status_push_rpc_json(&root, "chain", chain, "getblockchaininfo");
+    status_push_rpc_json(&root, "network", network, "getnetworkinfo");
+
+    free(height); free(peers); free(sync); free(val); free(health);
+    free(mempool); free(wallet); free(chain); free(network);
+    char *out = zcl_json_value_to_body(&root, "kpi_body");
+    json_free(&root);
+    json_free(&peers_j);
+    if (!out) {
+        err->status = ZCL_NATIVE_BODY_INTERNAL;
+        snprintf(err->message, sizeof(err->message),
+                 "malloc failed for %s", "KPI response");
+        LOG_NULL("mcp.ops", "malloc failed for %s", "KPI response");
+    }
+    return out;
+}
+
+char *zcl_native_syncdiag_body(const struct json_value *args,
+                               struct zcl_native_body_err *err)
+{
+    (void)args;
+    char *diag = mcp_node_rpc("getsyncdiag", NULL);
+    char *dl   = mcp_node_rpc("downloadstats", NULL);
+    char *pi   = mcp_node_rpc("getpeerinfo", NULL);
+
+    /* Peer-advertised height is only an availability hint. Keep it unknown
+     * when the RPC/error shape is invalid; never turn an error into zero. */
+    int peer_max_height = 0;
+    bool peer_max_height_known = false;
+    struct json_value pi_j;
+    bool peers_ok = status_parse_rpc_json(&pi_j, pi, JSON_ARR) &&
+                    status_peer_array_is_valid(&pi_j);
+    if (peers_ok) {
+        struct peer_survey ps;
+        status_peer_survey(&pi_j, &ps);
+        peer_max_height = ps.max_height;
+        peer_max_height_known = ps.max_height_known;
+    }
+
+    struct json_value root;
+    struct json_value diag_json;
+    json_init(&root);
+    json_set_object(&root);
+
+    bool diag_ok = status_parse_rpc_json(&diag_json, diag, JSON_OBJ);
+    if (diag_ok) {
+        for (size_t i = 0; i < diag_json.num_children; i++) {
+            const char *key = diag_json.keys[i];
+            if (!key || strcmp(key, "peer_max_height") == 0 ||
+                strcmp(key, "download") == 0)
+                continue;
+            json_push_kv(&root, key, &diag_json.children[i]);
+        }
+    } else {
+        json_push_kv_str(&root, "error", "getsyncdiag RPC failed");
+        status_push_rpc_parse_error(
+            &root, "getsyncdiag", diag,
+            diag ? "getsyncdiag RPC returned invalid data"
+                 : "getsyncdiag RPC returned null");
+    }
+
+    status_push_int_if_known(&root, "peer_max_height",
+                             peer_max_height_known,
+                             peer_max_height);
+    json_push_kv_bool(&root, "peer_max_height_known",
+                      peer_max_height_known);
+    json_push_kv_str(&root, "peer_max_height_trust",
+                     "untrusted_peer_advertisement");
+    if (!peers_ok)
+        status_push_rpc_parse_error(&root, "peer_max_height", pi,
+                                    "getpeerinfo returned invalid peer array");
+    else if (!peer_max_height_known)
+        status_push_json_error(&root, "peer_max_height",
+                               "no connected peer supplied a valid height claim",
+                               NULL);
+    status_push_rpc_json(&root, "download", dl, "downloadstats");
+    json_free(&diag_json);
+    json_free(&pi_j);
+    free(diag); free(dl); free(pi);
+    char *out = zcl_json_value_to_body(&root, "syncdiag_body");
+    json_free(&root);
+    if (!out) {
+        err->status = ZCL_NATIVE_BODY_INTERNAL;
+        snprintf(err->message, sizeof(err->message),
+                 "malloc failed for %s", "syncdiag response");
+        LOG_NULL("mcp.ops", "malloc failed for %s", "syncdiag response");
+    }
+    return out;
+}
+
+char *zcl_native_blockers_body(const struct json_value *args,
+                               struct zcl_native_body_err *err)
+{
+    (void)args;
+
+    char *raw = mcp_node_rpc("dumpstate", "[\"blocker\"]");
+    struct json_value summary;
+    struct json_value dominant;
+    struct json_value error;
+    json_init(&summary);
+    json_init(&dominant);
+    json_init(&error);
+    if (!status_build_blocker_summary(raw, true, &summary, &dominant,
+                                      &error)) {
+        const char *message = json_get_str(json_get(&error, "message"));
+        err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
+        snprintf(err->message, sizeof(err->message),
+                 "target blocker state unavailable: %s",
+                 message ? message : "invalid dumpstate response");
+        free(raw);
+        json_free(&error);
+        json_free(&dominant);
+        json_free(&summary);
+        LOG_NULL("mcp.ops", "%s", err->message);
+    }
+
+    char *out = zcl_json_value_to_body(&summary, "zcl_blockers_body");
+    free(raw);
+    json_free(&error);
+    json_free(&dominant);
+    json_free(&summary);
+    if (!out) {
+        err->status = ZCL_NATIVE_BODY_INTERNAL;
+        snprintf(err->message, sizeof(err->message),
+                 "malloc failed for %s", "blockers body");
+        LOG_NULL("mcp.ops", "malloc failed for %s", "blockers body");
+    }
+    return out;
+}
+
+char *zcl_native_timeline_body(const struct json_value *args,
+                               struct zcl_native_body_err *err)
+{
+    const char *category = json_get_str_or(args, "category", "all");
+    int64_t count = json_get_int_or(args, "count", 50);
+
+    struct json_value arr, obj;
+    json_init(&arr);
+    json_set_array(&arr);
+    json_init(&obj);
+    json_set_object(&obj);
+    json_push_kv_str(&obj, "category",
+                     (category && category[0]) ? category : "all");
+    json_push_kv_int(&obj, "count", count);
+
+    const char *str_filters[] = {
+        "reducer_stage", "stage", "condition", "deploy", "lane",
+    };
+    const char *int_filters[] = {
+        "scan_count", "scan", "since_us", "since_secs", "peer", "height",
+    };
+    for (size_t i = 0; i < sizeof(str_filters) / sizeof(str_filters[0]); i++) {
+        const char *v = json_get_str(json_get(args, str_filters[i]));
+        if (v && v[0])
+            json_push_kv_str(&obj, str_filters[i], v);
+    }
+    for (size_t i = 0; i < sizeof(int_filters) / sizeof(int_filters[0]); i++) {
+        const struct json_value *v = json_get(args, int_filters[i]);
+        if (v && (v->type == JSON_INT || v->type == JSON_REAL))
+            json_push_kv_int(&obj, int_filters[i], json_get_int(v));
+    }
+    json_push_back(&arr, &obj);
+
+    size_t need = json_write(&arr, NULL, 0);
+    char *params = zcl_malloc(need + 1u, "mcp timeline params");
+    if (params)
+        json_write(&arr, params, need + 1u);
+    char *body = params ? mcp_node_rpc("timeline", params) : NULL;
+    free(params);
+    json_free(&obj);
+    json_free(&arr);
+    if (!body) {
+        err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
+        snprintf(err->message, sizeof(err->message),
+                 "RPC %s returned null", "timeline");
+        LOG_NULL("mcp.ops", "RPC %s returned null", "timeline");
+    }
+    return body;
+}
+
+char *zcl_native_agent_diagnose_body(const struct json_value *args,
+                                     struct zcl_native_body_err *err)
+{
+    struct mcp_params p;
+    mcp_params_init(&p);
+    mcp_params_push_str(&p, json_get_str_or(args, "mode", "brief"));
+    char *params = mcp_params_to_json(&p);
+    char *body = params ? mcp_node_rpc("agentdiagnose", params) : NULL;
+    free(params);
+    if (!body) {
+        err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
+        snprintf(err->message, sizeof(err->message),
+                 "RPC %s returned null", "agentdiagnose");
+        LOG_NULL("mcp.ops", "RPC %s returned null", "agentdiagnose");
+    }
+    return body;
+}
+
+char *zcl_native_postmortem_list_body(const struct json_value *args,
+                                      struct zcl_native_body_err *err)
+{
+    const char *dir = json_get_str_or(args, "dir", NULL);
+    char default_dir[512];
+    if (!dir || !*dir) {
+        if (zcl_postmortem_default_dir(default_dir, sizeof(default_dir)) != 0) {
+            err->status = ZCL_NATIVE_BODY_INTERNAL;
+            snprintf(err->message, sizeof(err->message),
+                     "default postmortem dir path too long");
+            LOG_NULL("mcp.ops", "default postmortem dir path too long");
+        }
+        dir = default_dir;
+    }
+
+    int64_t limit_i = json_get_int_or(args, "limit", 20);
+    if (limit_i < 1) limit_i = 1;
+    if (limit_i > 100) limit_i = 100;
+    size_t limit = (size_t)limit_i;
+
+    struct postmortem_summary *summaries =
+        zcl_malloc(sizeof(*summaries) * limit, "mcp.postmortem.list");
+    if (!summaries) {
+        err->status = ZCL_NATIVE_BODY_INTERNAL;
+        snprintf(err->message, sizeof(err->message),
+                 "malloc failed for %s", "postmortem summary list");
+        LOG_NULL("mcp.ops", "malloc failed for %s (%zu bytes)",
+                 "postmortem summary list", sizeof(*summaries) * limit);
+    }
+
+    size_t count = 0;
+    int rc = postmortem_list(dir, summaries, limit, &count);
+    if (rc != 0) {
+        free(summaries);
+        err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
+        snprintf(err->message, sizeof(err->message),
+                 "postmortem list failed for %s (rc=%d)", dir, rc);
+        LOG_NULL("mcp.ops", "postmortem list failed dir=%s rc=%d", dir, rc);
+    }
+
+    struct json_value root, arr;
+    json_init(&root); json_set_object(&root);
+    json_init(&arr);  json_set_array(&arr);
+    size_t returned = count < limit ? count : limit;
+    json_push_kv_str(&root, "dir", dir);
+    json_push_kv_int(&root, "total", (int64_t)count);
+    json_push_kv_int(&root, "returned", (int64_t)returned);
+    json_push_kv_int(&root, "limit", (int64_t)limit);
+
+    for (size_t i = 0; i < returned; i++) {
+        struct json_value item;
+        json_init(&item); json_set_object(&item);
+        json_push_kv_str(&item, "path", summaries[i].path);
+        json_push_kv_int(&item, "crash_unix", summaries[i].crash_unix);
+        json_push_kv_int(&item, "crash_signal",
+                         (int64_t)summaries[i].crash_signal);
+        json_push_kv_int(&item, "capsule_bytes",
+                         (int64_t)summaries[i].capsule_bytes);
+        json_push_kv_int(&item, "tape_size_bytes",
+                         (int64_t)summaries[i].tape_size_bytes);
+        json_push_back(&arr, &item);
+        json_free(&item);
+    }
+    json_push_kv(&root, "capsules", &arr);
+
+    char *body = zcl_json_value_to_body(&root, "mcp.postmortem.list.body");
+    json_free(&arr);
+    json_free(&root);
+    free(summaries);
+    if (!body) {
+        err->status = ZCL_NATIVE_BODY_INTERNAL;
+        snprintf(err->message, sizeof(err->message),
+                 "malloc failed for %s", "postmortem list response");
+        LOG_NULL("mcp.ops", "malloc failed for %s", "postmortem list response");
+    }
+    return body;
+}

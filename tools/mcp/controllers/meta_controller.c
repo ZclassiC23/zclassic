@@ -23,6 +23,7 @@
  * owns; the #define MUST precede hotswap.h. */
 #define ZCL_HOTSWAP_PROBE_TOOLS "zcl_tools_list"
 #include "hotswap/hotswap.h"
+#include "controllers/meta_native_handlers.h"
 #include "json/json.h"
 #include "net/peer_scoring.h"
 #include "net/peer_bandwidth.h"
@@ -356,45 +357,23 @@ static int h_zcl_openapi(const struct mcp_request *req,
 
 /* ── Prometheus metrics ─────────────────────────────────────── */
 
+/* zcl_metrics — body function re-homed to
+ * app/controllers/src/meta_native_handlers.c (ZERO-MCP W0-A). Both
+ * allocation-failure paths return ZCL_NATIVE_BODY_INTERNAL, which is the
+ * only failure this tool ever produced historically (MCP_ERR_INTERNAL).
+ * The body function already logged the failure; this wrapper does not
+ * re-log. */
 static int h_zcl_metrics(const struct mcp_request *req,
                           struct mcp_response *res)
 {
-    (void)req;
-    size_t cap = 131072;
-    char *raw = zcl_malloc(cap, "metrics_raw");
-    if (!raw)
-        return mcp_res_set_oom(res, cap, "mcp.meta", "metrics buffer");
-    size_t n = mcp_metrics_render_prometheus(raw, cap);
-
-    /* Wrap the Prometheus text in a JSON envelope so the stdio layer
-     * can shuttle it as a tool result.  Escape quotes + newlines. */
-    size_t out_cap = n * 2 + 128;
-    char *out = zcl_malloc(out_cap, "metrics_json_body");
-    if (!out) {
-        free(raw);
-        return mcp_res_set_oom(res, out_cap, "mcp.meta",
-                               "metrics JSON envelope");
+    struct zcl_native_body_err e = { 0 };
+    char *body = zcl_native_metrics_body(req->args, &e);
+    if (!body) {
+        res->error = MCP_ERR_INTERNAL;
+        snprintf(res->error_message, sizeof(res->error_message), "%s",
+                 e.message);
     }
-    size_t pos = 0;
-    pos += (size_t)snprintf(out + pos, out_cap - pos,
-        "{\"format\":\"prometheus\",\"text\":\"");
-    for (size_t i = 0; i < n && pos + 4 < out_cap; i++) {
-        char c = raw[i];
-        if (c == '"')       { out[pos++] = '\\'; out[pos++] = '"'; }
-        else if (c == '\\') { out[pos++] = '\\'; out[pos++] = '\\'; }
-        else if (c == '\n') { out[pos++] = '\\'; out[pos++] = 'n'; }
-        else if (c == '\r') { out[pos++] = '\\'; out[pos++] = 'r'; }
-        else if (c == '\t') { out[pos++] = '\\'; out[pos++] = 't'; }
-        else                { out[pos++] = c; }
-    }
-    pos += (size_t)snprintf(out + pos, out_cap - pos,
-        "\",\"total_requests\":%llu,\"total_errors\":%llu,\"counter_count\":%zu}",
-        (unsigned long long)mcp_metrics_total_requests(),
-        (unsigned long long)mcp_metrics_total_errors(),
-        mcp_metrics_counter_count());
-
-    free(raw);
-    res->body = out;
+    res->body = body;
     return 0;
 }
 
@@ -564,32 +543,30 @@ static int h_zcl_rpc_report(const struct mcp_request *req,
     return 0;
 }
 
-/* zcl_consensus_report — consensus-reject counter snapshot.
- * Surfaces the `EV_CONSENSUS_REJECT_TX`/`_BLOCK` ring as a bounded
- * (kind, reason) → count table plus per-kind totals and overflow
- * buckets. This is the dashboards/alerting view; the per-hash
- * `zcl_explain_reject` lookup is the targeted companion. */
+/* zcl_consensus_report — body function re-homed to
+ * app/controllers/src/meta_native_handlers.c (ZERO-MCP W0-A). Surfaces
+ * the `EV_CONSENSUS_REJECT_TX`/`_BLOCK` ring as a bounded (kind, reason)
+ * -> count table plus per-kind totals and overflow buckets. This is the
+ * dashboards/alerting view; the per-hash `zcl_explain_reject` lookup is
+ * the targeted companion.
+ *
+ * ZCL_NATIVE_BODY_UNAVAILABLE (empty report) maps to the historical
+ * MCP_ERR_HANDLER_FAILED; ZCL_NATIVE_BODY_INTERNAL (strdup failure) maps
+ * to MCP_ERR_INTERNAL, both as usual. The body function already logged
+ * the failure; this wrapper does not re-log. */
 static int h_zcl_consensus_report(const struct mcp_request *req,
                                    struct mcp_response *res)
 {
-    (void)req;
-    /* Cap large enough for the full 48-slot table plus overflow +
-     * totals envelope (worst case ≈ 48 × 80 bytes per entry). */
-    char body[8192];
-    size_t n = mcp_metrics_consensus_report_json(body, sizeof(body));
-    if (n == 0) {
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "consensus report generation returned empty");
-        LOG_ERR("mcp.meta", "consensus_report_json returned 0 bytes");
+    struct zcl_native_body_err e = { 0 };
+    char *body = zcl_native_consensus_report_body(req->args, &e);
+    if (!body) {
+        res->error = (e.status == ZCL_NATIVE_BODY_INTERNAL)
+                          ? MCP_ERR_INTERNAL
+                          : MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message), "%s",
+                 e.message);
     }
-    res->body = strdup(body);
-    if (!res->body) {
-        res->error = MCP_ERR_INTERNAL;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "strdup failed for consensus report");
-        LOG_ERR("mcp.meta", "strdup failed for consensus_report (%zu bytes)", n);
-    }
+    res->body = body;
     return 0;
 }
 
