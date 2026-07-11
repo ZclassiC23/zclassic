@@ -231,6 +231,28 @@ void save_block_index_flat(const char *datadir, struct main_state *ms)
 
 /* ── load_block_index_flat ───────────────────────────────── */
 
+/* Tier-2 P2 fast-restart arm (see header). Single-shot; consumed on the next
+ * load_block_index_flat. Boot-time only; not a hot-swappable TU. */
+static struct {
+    bool     armed;
+    int64_t  expected_count;
+    uint8_t  tip_hash[32];
+    int64_t  tip_height;
+} g_trust_flat_arm;
+
+void block_index_loader_arm_trust_flat_fields(int64_t expected_count,
+                                              const uint8_t tip_hash[32],
+                                              int64_t tip_height)
+{
+    memset(&g_trust_flat_arm, 0, sizeof(g_trust_flat_arm));
+    if (expected_count > 0 && tip_hash) {
+        g_trust_flat_arm.armed = true;
+        g_trust_flat_arm.expected_count = expected_count;
+        memcpy(g_trust_flat_arm.tip_hash, tip_hash, 32);
+        g_trust_flat_arm.tip_height = tip_height;
+    }
+}
+
 bool load_block_index_flat(const char *datadir, struct main_state *ms)
 {
     char path[1024];
@@ -442,6 +464,28 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
     int64_t t_parse_ms = platform_time_monotonic_ms() - t0_ms;
     int64_t t_fwd_ms = platform_time_monotonic_ms();
 
+    /* Tier-2 P2 fast restart: consume the trust-flat arm. Under a verified
+     * clean-shutdown binding the flat file's stored nChainWork/nChainTx/skip/
+     * branch-id already equal what the forward pass would recompute (payload
+     * SHA3 verified above), so skip the O(n log n) re-derivation — but ONLY
+     * when the file's count AND the marker's tip_hash@height both bind here;
+     * otherwise run the full pass (bit-identical to today). */
+    bool trust_flat = false;
+    if (g_trust_flat_arm.armed) {
+        bool count_ok = ((int64_t)count == g_trust_flat_arm.expected_count);
+        struct uint256 th;
+        memcpy(th.data, g_trust_flat_arm.tip_hash, 32);
+        struct block_index *fr_tip = count_ok ? block_map_find(bm, &th) : NULL;
+        trust_flat = count_ok && fr_tip &&
+                     (int64_t)fr_tip->nHeight == g_trust_flat_arm.tip_height;
+        if (!trust_flat)
+            LOG_WARN("block_index_flat",
+                     "fast-restart trust-flat arm did NOT bind (count %u vs "
+                     "%lld) — running full forward-pass re-derivation",
+                     count, (long long)g_trust_flat_arm.expected_count);
+        memset(&g_trust_flat_arm, 0, sizeof(g_trust_flat_arm)); /* single-shot */
+    }
+
     /* Recompute every pointer-graph-derived field through the canonical
      * forward pass (nChainWork, nChainTx, skip links, cached branch id,
      * failed-child propagation) — the same helper the LevelDB loader and
@@ -452,7 +496,10 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
      * this, wrongly-eligible entries reach find_most_work_chain.
      * Inserted entries are marked by phashBlock != NULL (dropped and
      * duplicate arena slots never get it set). */
-    {
+    if (trust_flat) {
+        printf("[boot]   %-28s %s\n", "blkidx.flat_forward_pass",
+               "skipped (fast-restart verified-clean binding)");
+    } else {
         struct block_index **sorted =
             zcl_malloc((size_t)count * sizeof(*sorted), "flat forward pass");
         if (sorted) {
@@ -477,8 +524,9 @@ bool load_block_index_flat(const char *datadir, struct main_state *ms)
     t_fwd_ms = platform_time_monotonic_ms() - t_fwd_ms;
     printf("[boot]   %-28s %lldms\n", "blkidx.flat_parse_insert",
            (long long)t_parse_ms);
-    printf("[boot]   %-28s %lldms\n", "blkidx.flat_forward_pass",
-           (long long)t_fwd_ms);
+    if (!trust_flat)
+        printf("[boot]   %-28s %lldms\n", "blkidx.flat_forward_pass",
+               (long long)t_fwd_ms);
 
     int64_t elapsed = (int64_t)platform_time_wall_time_t() - t0;
     LOG_INFO("block_index_flat",

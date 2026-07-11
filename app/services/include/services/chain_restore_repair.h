@@ -20,6 +20,16 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
                                        struct block_index *tip,
                                        const char *datadir);
 
+/* Tier-2 P2 fast restart: when set, chain_restore_rebuild_active_chain treats
+ * its `datadir` as NULL — it installs the tip and populates active_chain[0..tip]
+ * by an in-memory pprev walk of the (verified-clean, SHA3-checked) block index
+ * WITHOUT re-reading every block header from disk. Set true ONLY after the
+ * clean-shutdown bindings verify; the integrity check still runs afterward and
+ * falls the node to DEGRADED self-heal on any hole, so it is fail-safe. The
+ * dirty path (flag false, the default) is bit-identical to today. */
+void chain_restore_set_trust_index_fastpath(bool on);
+bool chain_restore_trust_index_fastpath(void);
+
 int chain_restore_backfill_nbits_from_disk(struct main_state *ms,
                                            const char *datadir);
 

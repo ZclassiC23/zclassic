@@ -3,6 +3,7 @@
 #include "test/test_helpers.h"
 
 #include "config/boot_shutdown_marker.h"
+#include "config/boot_fast_restart.h"
 #include "event/event.h"
 
 #include <stdatomic.h>
@@ -140,6 +141,180 @@ int test_boot_shutdown_marker(void)
     BSM_CHECK("invalid datadir fails closed",
               !boot_shutdown_marker_detect_unclean(NULL) &&
               !boot_shutdown_marker_write_clean(""));
+
+    /* ── Tier-2 P2 fast-restart binding: format/parse round-trip ───────── */
+    {
+        struct shutdown_clean_binding b;
+        memset(&b, 0, sizeof(b));
+        b.valid = true;
+        b.node_db_size = 123456789;
+        b.change_counter = 42;
+        b.version_valid_for = 7;
+        b.schema_version = 3;
+        b.fr_valid = true;
+        b.fr_tip_height = 3176325;
+        for (int i = 0; i < 32; i++) b.fr_tip_hash[i] = (uint8_t)(i + 1);
+        b.fr_coins_best_height = 3176324;
+        for (int i = 0; i < 32; i++) b.fr_coins_best_hash[i] = (uint8_t)(200 - i);
+        b.fr_block_index_count = 3176500;
+        b.fr_mmb_leaves = 3176326;
+        b.fr_sapling_ckpt_height = 3170000;
+
+        char buf[1024];
+        int n = boot_shutdown_marker_format(buf, sizeof(buf), 1713100000LL, &b);
+        struct shutdown_clean_binding got;
+        bool parsed = (n > 0 && (size_t)n < sizeof(buf)) &&
+                      boot_shutdown_marker_parse(buf, (size_t)n, &got);
+        BSM_CHECK("v3 fast-restart binding round-trips through format/parse",
+                  parsed && got.valid && got.fr_valid &&
+                  got.fr_tip_height == b.fr_tip_height &&
+                  memcmp(got.fr_tip_hash, b.fr_tip_hash, 32) == 0 &&
+                  got.fr_coins_best_height == b.fr_coins_best_height &&
+                  memcmp(got.fr_coins_best_hash, b.fr_coins_best_hash, 32) == 0 &&
+                  got.fr_block_index_count == b.fr_block_index_count &&
+                  got.fr_mmb_leaves == b.fr_mmb_leaves &&
+                  got.fr_sapling_ckpt_height == b.fr_sapling_ckpt_height &&
+                  /* v2 quick_check identity still parses */
+                  got.node_db_size == b.node_db_size &&
+                  got.change_counter == b.change_counter);
+    }
+
+    /* A v2-only marker (fr_valid=false) parses with no fast-restart binding. */
+    {
+        struct shutdown_clean_binding b;
+        memset(&b, 0, sizeof(b));
+        b.valid = true;
+        b.node_db_size = 555;
+        b.change_counter = 9;
+        b.version_valid_for = 1;
+        b.schema_version = 2;
+        char buf[1024];
+        int n = boot_shutdown_marker_format(buf, sizeof(buf), 1713100000LL, &b);
+        struct shutdown_clean_binding got;
+        bool parsed = (n > 0) &&
+                      boot_shutdown_marker_parse(buf, (size_t)n, &got);
+        BSM_CHECK("v2-only marker parses with fr_valid=false",
+                  parsed && got.valid && !got.fr_valid);
+    }
+
+    /* detect_unclean caches the fast-restart binding; peek returns it. */
+    {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "boot_shutdown_marker", "frpeek");
+        char marker[512];
+        snprintf(marker, sizeof(marker), "%s/.shutdown_clean", dir);
+
+        struct shutdown_clean_binding b;
+        memset(&b, 0, sizeof(b));
+        b.valid = true;
+        b.node_db_size = 100; b.change_counter = 3; b.version_valid_for = 3;
+        b.schema_version = 3; b.fr_valid = true;
+        b.fr_tip_height = 987654;
+        for (int i = 0; i < 32; i++) b.fr_tip_hash[i] = (uint8_t)i;
+        b.fr_coins_best_height = 987653;
+        for (int i = 0; i < 32; i++) b.fr_coins_best_hash[i] = (uint8_t)(i * 3);
+        b.fr_block_index_count = 987700;
+        char buf[1024];
+        int n = boot_shutdown_marker_format(buf, sizeof(buf), 1713100000LL, &b);
+        bool ok = (n > 0);
+        FILE *mf = fopen(marker, "wb");
+        ok = ok && mf && fwrite(buf, 1, (size_t)n, mf) == (size_t)n;
+        if (mf) fclose(mf);
+
+        boot_shutdown_marker_reset_for_test();
+        /* No node.db-wal in dir ⇒ clean path ⇒ parse + cache the fr binding. */
+        bool unclean = boot_shutdown_marker_detect_unclean(dir);
+        struct shutdown_clean_binding peeked;
+        bool have = boot_shutdown_marker_peek_fast_restart_binding(&peeked);
+        BSM_CHECK("detect_unclean caches fr binding, peek returns it",
+                  ok && !unclean && have && peeked.fr_valid &&
+                  peeked.fr_tip_height == b.fr_tip_height &&
+                  memcmp(peeked.fr_tip_hash, b.fr_tip_hash, 32) == 0 &&
+                  peeked.fr_block_index_count == b.fr_block_index_count &&
+                  access(marker, F_OK) != 0 /* consumed (unlinked) */);
+        boot_shutdown_marker_reset_for_test();
+        test_rm_rf_recursive(dir);
+    }
+
+    /* ── boot_fast_restart_evaluate: the verify-then-trust decision ─────── */
+    {
+        struct shutdown_clean_binding b;
+        memset(&b, 0, sizeof(b));
+        b.fr_valid = true;
+        b.fr_tip_height = 3000000;
+        for (int i = 0; i < 32; i++) b.fr_tip_hash[i] = (uint8_t)(i + 5);
+        b.fr_coins_best_height = 2999999;
+        for (int i = 0; i < 32; i++) b.fr_coins_best_hash[i] = (uint8_t)(i + 9);
+        b.fr_block_index_count = 3000100;
+
+        struct boot_fast_restart_facts f;
+        memset(&f, 0, sizeof(f));
+        f.node_db_clean = true;
+        f.block_index_count = 3000100;
+        f.tip_hash_found = true;
+        f.tip_height = 3000000;
+        f.coins_best_found = true;
+        f.coins_best_height = 2999999;
+        for (int i = 0; i < 32; i++) f.coins_best_hash[i] = (uint8_t)(i + 9);
+
+        struct boot_fast_restart_verdict v;
+
+        boot_fast_restart_evaluate(&b, &f, &v);
+        BSM_CHECK("evaluate: all bindings verified ⇒ fast_restart",
+                  v.fast_restart &&
+                  strcmp(v.reason, "all-bindings-verified") == 0);
+
+        /* node.db not clean ⇒ refuse. */
+        struct boot_fast_restart_facts f2 = f;
+        f2.node_db_clean = false;
+        boot_fast_restart_evaluate(&b, &f2, &v);
+        BSM_CHECK("evaluate: node.db not clean ⇒ refuse",
+                  !v.fast_restart &&
+                  strcmp(v.reason, "node_db_not_clean") == 0);
+
+        /* block_index_count mismatch ⇒ refuse. */
+        f2 = f; f2.block_index_count = 3000099;
+        boot_fast_restart_evaluate(&b, &f2, &v);
+        BSM_CHECK("evaluate: block_index_count mismatch ⇒ refuse",
+                  !v.fast_restart &&
+                  strncmp(v.reason, "block_index_count", 17) == 0);
+
+        /* tip hash absent ⇒ refuse. */
+        f2 = f; f2.tip_hash_found = false;
+        boot_fast_restart_evaluate(&b, &f2, &v);
+        BSM_CHECK("evaluate: tip hash absent ⇒ refuse",
+                  !v.fast_restart &&
+                  strcmp(v.reason, "tip_hash_absent") == 0);
+
+        /* tip height mismatch ⇒ refuse. */
+        f2 = f; f2.tip_height = 2999998;
+        boot_fast_restart_evaluate(&b, &f2, &v);
+        BSM_CHECK("evaluate: tip height mismatch ⇒ refuse",
+                  !v.fast_restart &&
+                  strncmp(v.reason, "tip_height", 10) == 0);
+
+        /* coins best height mismatch ⇒ refuse. */
+        f2 = f; f2.coins_best_height = 2999998;
+        boot_fast_restart_evaluate(&b, &f2, &v);
+        BSM_CHECK("evaluate: coins_best height mismatch ⇒ refuse",
+                  !v.fast_restart &&
+                  strncmp(v.reason, "coins_best_height", 17) == 0);
+
+        /* coins best hash mismatch ⇒ refuse. */
+        f2 = f; f2.coins_best_hash[0] ^= 0xFF;
+        boot_fast_restart_evaluate(&b, &f2, &v);
+        BSM_CHECK("evaluate: coins_best hash mismatch ⇒ refuse",
+                  !v.fast_restart &&
+                  strcmp(v.reason, "coins_best_hash_mismatch") == 0);
+
+        /* No fast-restart binding ⇒ refuse with the named reason. */
+        struct shutdown_clean_binding nob;
+        memset(&nob, 0, sizeof(nob));
+        boot_fast_restart_evaluate(&nob, &f, &v);
+        BSM_CHECK("evaluate: no fr binding ⇒ refuse",
+                  !v.fast_restart &&
+                  strcmp(v.reason, "no_fast_restart_binding") == 0);
+    }
 
     return failures;
 }

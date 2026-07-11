@@ -9,6 +9,11 @@
 #include "../rpc_client.h"
 #include "../rpc_params.h"
 
+/* Tier-1 hot-swap: this controller's route table is generation-exportable
+ * (see config/hotswap_eligible.def). The probe names a read-only route it
+ * owns; the #define MUST precede hotswap.h. */
+#define ZCL_HOTSWAP_PROBE_TOOLS "zcl_getblockcount"
+#include "hotswap/hotswap.h"
 #include "chain/chain.h"
 #include "json/json.h"
 #include "services/replay_verify_service.h"
@@ -65,8 +70,8 @@ static int h_zcl_replay_verify(const struct mcp_request *req,
     const char *legacy_dir =
         json_get_str_or(req->args, "legacy_datadir", NULL);
 
+    char def_legacy[1024];
     if (!legacy_dir || !legacy_dir[0]) {
-        static char def_legacy[1024];
         const char *home = getenv("HOME");
         if (home && home[0]) {
             snprintf(def_legacy, sizeof def_legacy, "%s/.zclassic", home);
@@ -436,3 +441,10 @@ void mcp_register_chain(void)
     for (size_t i = 0; i < PARAM_COUNT(k_routes); i++)
         mcp_router_register_required(&k_routes[i]);
 }
+
+/* ── Hot-swap: generation entrypoint (dev-only; no-op in node/release) ──
+ * Under -DZCL_HOTSWAP_GEN this emits the v2 manifest + zcl_hotswap_gen_init
+ * that re-points every route above at this TU's freshly-compiled handlers.
+ * Read-only chain/replay routes, all-const file scope — swap-safe. No
+ * trailing semicolon. */
+ZCL_HOTSWAP_EXPORT_ROUTES(k_routes, PARAM_COUNT(k_routes))

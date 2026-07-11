@@ -45,6 +45,12 @@ struct chain_restore_boot_snapshot {
     bool   snapshot_imported_pre_restore;
     int64_t snapshot_imported_utxos;
     int64_t snapshot_imported_height;
+
+    /* Tier-2 P2 fast restart: which boot path was taken this run and why. */
+    bool    fast_restart_evaluated;   /* the P2 gate ran this boot           */
+    bool    fast_restart_taken;       /* verify-then-trust skip fired         */
+    int64_t fast_restart_tip_height;  /* installed tip height (fast path)     */
+    char    fast_restart_reason[96];  /* named failing binding / "all-…"      */
 };
 
 void chain_restore_get_boot_snapshot(struct chain_restore_boot_snapshot *out);
@@ -60,6 +66,10 @@ void chain_restore_record_csr_consistency(bool consistent,
 void chain_restore_record_snapshot_import(bool ok,
                                           int64_t utxo_count,
                                           int64_t snap_height);
+/* Record the Tier-2 P2 fast-restart verdict for `zcl_state subsystem=boot`. */
+void chain_restore_record_fast_restart(bool taken,
+                                       int64_t tip_height,
+                                       const char *reason);
 bool chain_restore_dump_state_json(struct json_value *out, const char *key);
 
 #endif /* ZCL_CHAIN_RESTORE_BOOT_SNAPSHOT_H */

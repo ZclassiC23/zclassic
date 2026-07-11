@@ -7,6 +7,11 @@
 #include "../rpc_client.h"
 #include "../rpc_params.h"
 
+/* Tier-1 hot-swap: this controller's route table is generation-exportable
+ * (see config/hotswap_eligible.def). The probe names a read-only route it
+ * owns; the #define MUST precede hotswap.h. */
+#define ZCL_HOTSWAP_PROBE_TOOLS "zcl_balance"
+#include "hotswap/hotswap.h"
 #include "json/json.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -562,3 +567,13 @@ void mcp_register_wallet(void)
     for (size_t i = 0; i < PARAM_COUNT(k_routes); i++)
         mcp_router_register_required(&k_routes[i]);
 }
+
+/* ── Hot-swap: generation entrypoint (dev-only; no-op in node/release) ──
+ * Under -DZCL_HOTSWAP_GEN this emits the v2 manifest + zcl_hotswap_gen_init
+ * that re-points every route above at this TU's freshly-compiled handlers.
+ * Every handler is a stateless marshal-then-mcp_node_rpc call; file scope is
+ * all-const. The route table includes wallet-mutating tools (send, import),
+ * exactly as the app_controller pilot swaps its destructive routes — swap
+ * safety depends on statelessness, not read-vs-write, and the loader admits
+ * only the ephemeral ~/.zclassic-c23-dev node. No trailing semicolon. */
+ZCL_HOTSWAP_EXPORT_ROUTES(k_routes, PARAM_COUNT(k_routes))

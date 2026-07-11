@@ -24,6 +24,40 @@ static struct shutdown_clean_binding g_cached_binding;   /* valid=false at start
 static int                           g_schema_version = -1;
 static _Atomic bool                  g_quick_check_skipped;
 
+/* Tier-2 P2: the fast-restart binding parsed from THIS boot's marker (cached
+ * before detect_unclean unlinks the file). Separate from g_cached_binding so
+ * the quick_check probe's single-use consume of that cache does not wipe it —
+ * the P2 evaluate point runs AFTER node_db_open. */
+static struct shutdown_clean_binding g_cached_fr;        /* fr_valid=false start */
+/* Facts to bake into the NEXT clean-shutdown marker (set at shutdown). */
+static struct fast_restart_shutdown_facts g_fr_facts;    /* valid=false at start */
+
+static void marker_hex32(char *out /* >=65 */, const uint8_t *b)
+{
+    static const char h[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        out[i * 2]     = h[(b[i] >> 4) & 0xF];
+        out[i * 2 + 1] = h[b[i] & 0xF];
+    }
+    out[64] = '\0';
+}
+
+/* Parse exactly 64 lowercase/uppercase hex chars into out[32]. */
+static bool marker_unhex32(const char *s, uint8_t *out)
+{
+    for (int i = 0; i < 64; i++) {
+        char c = s[i];
+        int v;
+        if (c >= '0' && c <= '9') v = c - '0';
+        else if (c >= 'a' && c <= 'f') v = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') v = c - 'A' + 10;
+        else return false;
+        if (i & 1) out[i / 2] |= (uint8_t)v;
+        else       out[i / 2]  = (uint8_t)(v << 4);
+    }
+    return true;
+}
+
 static bool boot_shutdown_marker_path(char *out, size_t out_n,
                                       const char *datadir,
                                       const char *name)
@@ -46,7 +80,7 @@ int boot_shutdown_marker_format(char *buf, size_t n, int64_t unix_seconds,
         /* Legacy timestamp-only marker (node.db identity unavailable). */
         return snprintf(buf, n, "%lld\n", (long long)unix_seconds);
     }
-    return snprintf(buf, n,
+    int off = snprintf(buf, n,
                     "%lld\n"
                     "magic=ZCLSHUT\n"
                     "version=2\n"
@@ -60,6 +94,35 @@ int boot_shutdown_marker_format(char *buf, size_t n, int64_t unix_seconds,
                     b->change_counter,
                     b->version_valid_for,
                     b->schema_version);
+    if (off < 0 || (size_t)off >= n)
+        return off;
+
+    /* Tier-2 P2 fast-restart binding (optional; version stays 2 so a pre-P2
+     * binary still parses the quick_check identity and simply ignores these
+     * unknown keys). */
+    if (b->fr_valid) {
+        char tip_hex[65], coins_hex[65];
+        marker_hex32(tip_hex, b->fr_tip_hash);
+        marker_hex32(coins_hex, b->fr_coins_best_hash);
+        int off2 = snprintf(buf + off, n - (size_t)off,
+                    "fast_restart=1\n"
+                    "fr_tip_height=%lld\n"
+                    "fr_tip_hash=%s\n"
+                    "fr_coins_best_height=%lld\n"
+                    "fr_coins_best_hash=%s\n"
+                    "fr_block_index_count=%lld\n"
+                    "fr_mmb_leaves=%lld\n"
+                    "fr_sapling_ckpt_height=%lld\n",
+                    (long long)b->fr_tip_height, tip_hex,
+                    (long long)b->fr_coins_best_height, coins_hex,
+                    (long long)b->fr_block_index_count,
+                    (long long)b->fr_mmb_leaves,
+                    (long long)b->fr_sapling_ckpt_height);
+        if (off2 < 0)
+            return off2;
+        off += off2;
+    }
+    return off;
 }
 
 /* Return the value string for `key=` if present on any line of [text,text+len),
@@ -147,6 +210,59 @@ bool boot_shutdown_marker_parse(const char *text, size_t len,
     }
 
     out->valid = true;
+
+    /* Tier-2 P2 fast-restart binding (optional). Present iff `fast_restart=1`
+     * and every fr_* field parses; otherwise fr_valid stays false and only the
+     * v2 quick_check binding above is usable. */
+    if (marker_find_kv(text, len, "fast_restart", v, sizeof(v)) &&
+        strcmp(v, "1") == 0) {
+        char hx[80];
+        bool fr_ok = true;
+
+        if (marker_find_kv(text, len, "fr_tip_height", v, sizeof(v))) {
+            errno = 0; long long x = strtoll(v, &end, 10);
+            if (errno || end == v) fr_ok = false; else out->fr_tip_height = x;
+        } else fr_ok = false;
+
+        if (fr_ok && marker_find_kv(text, len, "fr_tip_hash", hx, sizeof(hx)) &&
+            strlen(hx) == 64 && marker_unhex32(hx, out->fr_tip_hash)) {
+            /* ok */
+        } else fr_ok = false;
+
+        if (fr_ok && marker_find_kv(text, len, "fr_coins_best_height",
+                                    v, sizeof(v))) {
+            errno = 0; long long x = strtoll(v, &end, 10);
+            if (errno || end == v) fr_ok = false;
+            else out->fr_coins_best_height = x;
+        } else fr_ok = false;
+
+        if (fr_ok &&
+            marker_find_kv(text, len, "fr_coins_best_hash", hx, sizeof(hx)) &&
+            strlen(hx) == 64 && marker_unhex32(hx, out->fr_coins_best_hash)) {
+            /* ok */
+        } else fr_ok = false;
+
+        if (fr_ok && marker_find_kv(text, len, "fr_block_index_count",
+                                    v, sizeof(v))) {
+            errno = 0; long long x = strtoll(v, &end, 10);
+            if (errno || end == v || x < 0) fr_ok = false;
+            else out->fr_block_index_count = x;
+        } else fr_ok = false;
+
+        if (fr_ok && marker_find_kv(text, len, "fr_mmb_leaves", v, sizeof(v))) {
+            errno = 0; long long x = strtoll(v, &end, 10);
+            if (errno || end == v) fr_ok = false; else out->fr_mmb_leaves = x;
+        } else fr_ok = false;
+
+        if (fr_ok && marker_find_kv(text, len, "fr_sapling_ckpt_height",
+                                    v, sizeof(v))) {
+            errno = 0; long long x = strtoll(v, &end, 10);
+            if (errno || end == v) fr_ok = false;
+            else out->fr_sapling_ckpt_height = x;
+        } else fr_ok = false;
+
+        out->fr_valid = fr_ok;
+    }
     return true;
 }
 
@@ -230,8 +346,28 @@ bool boot_shutdown_marker_quick_check_was_skipped(void)
 void boot_shutdown_marker_reset_for_test(void)
 {
     memset(&g_cached_binding, 0, sizeof(g_cached_binding));
+    memset(&g_cached_fr, 0, sizeof(g_cached_fr));
+    memset(&g_fr_facts, 0, sizeof(g_fr_facts));
     g_schema_version = -1;
     atomic_store(&g_quick_check_skipped, false);
+}
+
+void boot_shutdown_marker_set_fast_restart_facts(
+    const struct fast_restart_shutdown_facts *facts)
+{
+    if (facts)
+        g_fr_facts = *facts;
+    else
+        memset(&g_fr_facts, 0, sizeof(g_fr_facts));
+}
+
+bool boot_shutdown_marker_peek_fast_restart_binding(
+    struct shutdown_clean_binding *out)
+{
+    if (!out)
+        return false;
+    *out = g_cached_fr;
+    return g_cached_fr.fr_valid;
 }
 
 bool boot_shutdown_marker_quick_check_probe(const char *node_db_path)
@@ -274,17 +410,23 @@ bool boot_shutdown_marker_detect_unclean(const char *datadir)
 
     /* Cache the v2 content-binding (if any) BEFORE unlinking, so
      * node_db_open's quick_check-skip probe can consult it. A parse failure
-     * or a WAL present → no cached binding → quick_check runs as before. */
+     * or a WAL present → no cached binding → quick_check runs as before.
+     * The same parse also yields the Tier-2 fast-restart binding (g_cached_fr),
+     * kept separate so the quick_check probe's consume does not wipe it. */
     memset(&g_cached_binding, 0, sizeof(g_cached_binding));
+    memset(&g_cached_fr, 0, sizeof(g_cached_fr));
     if (marker_exists && !wal_exists) {
         FILE *mf = fopen(marker_path, "r");
         if (mf) {
-            char buf[512];
+            char buf[1024];
             size_t rd = fread(buf, 1, sizeof(buf) - 1, mf);
             fclose(mf);
             struct shutdown_clean_binding parsed;
-            if (boot_shutdown_marker_parse(buf, rd, &parsed))
+            if (boot_shutdown_marker_parse(buf, rd, &parsed)) {
                 g_cached_binding = parsed;
+                if (parsed.fr_valid)
+                    g_cached_fr = parsed;
+            }
         }
     }
 
@@ -336,7 +478,21 @@ bool boot_shutdown_marker_write_clean(const char *datadir)
         b.schema_version = g_schema_version;
     }
 
-    char content[512];
+    /* Fold in the Tier-2 fast-restart facts, if the shutdown path recorded a
+     * complete set. Requires the v2 identity too (b.valid): a fast restart
+     * always verifies node.db cleanliness first. */
+    if (b.valid && g_fr_facts.valid) {
+        b.fr_valid = true;
+        b.fr_tip_height = g_fr_facts.tip_height;
+        memcpy(b.fr_tip_hash, g_fr_facts.tip_hash, 32);
+        b.fr_coins_best_height = g_fr_facts.coins_best_height;
+        memcpy(b.fr_coins_best_hash, g_fr_facts.coins_best_hash, 32);
+        b.fr_block_index_count = g_fr_facts.block_index_count;
+        b.fr_mmb_leaves = g_fr_facts.mmb_leaves;
+        b.fr_sapling_ckpt_height = g_fr_facts.sapling_ckpt_height;
+    }
+
+    char content[1024];
     int clen = boot_shutdown_marker_format(content, sizeof(content),
                                            (int64_t)platform_time_wall_time_t(),
                                            &b);

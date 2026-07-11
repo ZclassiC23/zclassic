@@ -51,6 +51,21 @@ void save_block_index_flat(const char *datadir, struct main_state *ms);
  * recomputes nChainWork/nChainTx from pprev chain. */
 bool load_block_index_flat(const char *datadir, struct main_state *ms);
 
+/* Tier-2 P2 fast restart: arm the NEXT load_block_index_flat call to TRUST the
+ * flat file's stored pointer-graph-derived fields (nChainWork, nChainTx, skip
+ * links, cached branch id) and SKIP the O(n log n) forward-pass re-derivation,
+ * IFF the file's SHA3 payload verifies (always checked), its entry count ==
+ * `expected_count`, AND the `tip_hash` entry is present in the loaded map at
+ * `tip_height`. This is safe only under a matching clean-shutdown binding (the
+ * caller has verified node.db is byte-clean); the stored fields are then exactly
+ * what a re-derivation would produce. Single-shot: the arm is consumed by the
+ * next load_block_index_flat call regardless of whether the skip fired. Never
+ * called (or expected_count<=0) ⇒ the re-derivation runs (dirty-boot path,
+ * bit-identical to today). */
+void block_index_loader_arm_trust_flat_fields(int64_t expected_count,
+                                              const uint8_t tip_hash[32],
+                                              int64_t tip_height);
+
 /* ── SQLite cache (block_index_cache table) ──────────────── */
 
 /* Write all block_index entries to the block_index_cache table.

@@ -222,14 +222,18 @@ AGENT_IMPACT_RULE("lib/vcs/*|lib/test/src/test_vcs_core.c", "vcs_core event_log 
 /* Wave 2.3 (2026-07-11): ZVCS dev-loop auto-anchor glue. */
 AGENT_IMPACT_RULE("lib/vcs/include/vcs/vcs_devloop.h|lib/vcs/src/vcs_devloop.c|lib/test/src/test_vcs_devloop.c", "vcs_devloop vcs_core dev_platform make_lint_gates")
 
-/* Instant dev loop Wave 1/2 (2026-07-10): Tier-1 hot-swap surfaces. */
-AGENT_IMPACT_RULE("lib/hotswap/src/hotswap_loader.c|lib/hotswap/include/hotswap/hotswap.h|tools/mcp/controllers/dev_hotswap_controller.c|tools/mcp/router.c|tools/mcp/router.h|config/hotswap_eligible.def|lib/test/fixtures/hotswap_bad_static_fixture.c|lib/test/fixtures/hotswap_manifest_bad_scope.def|lib/test/fixtures/hotswap_manifest_bad_static.def|lib/test/src/test_hotswap_loader.c|lib/test/src/test_hotswap_simnet.c|lib/test/src/test_mcp_router.c", "hotswap_loader hotswap_simnet mcp_router mcp_controllers make_lint_gates")
+/* Instant dev loop Wave 1/2 (2026-07-10): Tier-1 hot-swap surfaces.
+ * Wave 3.1 (2026-07-11): the hot-swap-eligible MCP controller TUs — editing
+ * one must run the hot-swap groups (a bad edit can break its generation .so
+ * build) plus the eligibility-scope/static-state lint gates. */
+AGENT_IMPACT_RULE("lib/hotswap/src/hotswap_loader.c|lib/hotswap/include/hotswap/hotswap.h|tools/mcp/controllers/dev_hotswap_controller.c|tools/mcp/controllers/app_controller.c|tools/mcp/controllers/meta_controller.c|tools/mcp/controllers/chain_controller.c|tools/mcp/controllers/net_controller.c|tools/mcp/controllers/wallet_controller.c|tools/scripts/hotswap_demo.sh|tools/lint/check_hotswap_eligible_scope.sh|tools/lint/check_hotswap_static_state.sh|tools/mcp/router.c|tools/mcp/router.h|config/hotswap_eligible.def|lib/test/fixtures/hotswap_bad_static_fixture.c|lib/test/fixtures/hotswap_manifest_bad_scope.def|lib/test/fixtures/hotswap_manifest_bad_static.def|lib/test/fixtures/hotswap_manifest_no_macro.def|lib/test/src/test_hotswap_loader.c|lib/test/src/test_hotswap_simnet.c|lib/test/src/test_mcp_router.c", "hotswap_loader hotswap_simnet mcp_router mcp_controllers make_lint_gates")
 AGENT_IMPACT_RULE("tools/dev/*.c|tools/dev/devloop.h|sdk/include/zclassic23/app.h|lib/framework/src/app_platform.c|lib/framework/include/framework/app_platform.h|lib/sim/src/social_app_sim.c|lib/sim/include/sim/social_app_sim.h|lib/test/src/test_dev_platform.c|apps/*/*", "dev_platform hotswap_simnet vcs_devloop make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/api_controller_dispatch.c|app/controllers/src/diagnostics_dispatch.c", "hotswap_loader mcp_controllers make_lint_gates")
 
 /* Instant dev loop Wave 1/2: Tier-2 fast restart (clean-shutdown marker + skip). */
 AGENT_IMPACT_RULE("config/src/boot_shutdown_marker.c|config/include/config/boot_shutdown_marker.h|config/src/boot_fast_restart.c|config/include/config/boot_fast_restart.h|lib/test/src/test_shutdown_marker.c", "shutdown_marker unclean_shutdown_advance boot_phase make_lint_gates")
-AGENT_IMPACT_RULE("app/services/src/block_index_loader.c", "load_verify_boot block_index_loader block_index_integrity make_lint_gates")
+AGENT_IMPACT_RULE("app/services/src/block_index_loader.c|app/services/include/services/block_index_loader.h", "load_verify_boot block_index_loader block_index_integrity make_lint_gates")
+AGENT_IMPACT_RULE("app/services/src/chain_restore_*.c|app/services/include/services/chain_restore_*.h|lib/test/src/test_boot_shutdown_marker.c", "boot_shutdown_marker load_verify_boot chain_state_repo make_lint_gates")
 
 /* Lane 2 (2026-07-10): empty-escape blocker stall meta-detector. */
 AGENT_IMPACT_RULE("lib/util/include/util/blocker.h|lib/test/src/test_blocker.c", "blocker condition_engine make_lint_gates")

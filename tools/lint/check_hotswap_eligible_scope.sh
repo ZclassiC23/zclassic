@@ -38,7 +38,7 @@ mapfile -t PATHS < <(gate_grep -oE 'HOTSWAP_ELIGIBLE\("[^"]+"\)' "$MANIFEST" \
 gate_require_scanned "${#PATHS[@]}" 1 check_hotswap_eligible_scope \
     "no HOTSWAP_ELIGIBLE(\"...\") entries parsed from $MANIFEST"
 
-FORBIDDEN='^(lib/consensus|lib/validation|lib/storage|lib/net|lib/coins|app/jobs)/'
+FORBIDDEN='^(core|lib/consensus|lib/validation|lib/storage|lib/net|lib/coins|app/jobs)/'
 
 violations=""
 for p in "${PATHS[@]}"; do
@@ -52,13 +52,22 @@ for p in "${PATHS[@]}"; do
     esac
     if [ ! -f "$p" ]; then
         violations="${violations}  $p (manifest references a nonexistent file)"$'\n'
+        continue
+    fi
+    # Genuinely-exportable: an eligible TU MUST invoke ZCL_HOTSWAP_EXPORT_ROUTES,
+    # or `make hotswap-so` would build a .so with no zcl_hotswap_gen_init /
+    # zcl_hotswap_manifest_v2 and the loader would reject it at the manifest
+    # stage — a silently-unswapabble entry. Guards the multi-TU expansion.
+    if ! grep -qE '(^|[^_])ZCL_HOTSWAP_EXPORT_ROUTES[[:space:]]*\(' "$p"; then
+        violations="${violations}  $p (eligible TU does not invoke ZCL_HOTSWAP_EXPORT_ROUTES)"$'\n'
     fi
 done
 
 if [ -n "${violations//[[:space:]]/}" ]; then
     printf '%s' "$violations"
     echo "FAIL: hot-swap eligibility manifest lists an out-of-scope TU."
-    echo "  Eligible TUs must be app-layer .c files, NEVER under lib/consensus,"
+    echo "  Eligible TUs must be app-layer .c files that invoke"
+    echo "  ZCL_HOTSWAP_EXPORT_ROUTES, NEVER under core, lib/consensus,"
     echo "  lib/validation, lib/storage, lib/net, lib/coins, or app/jobs."
     exit 1
 fi
