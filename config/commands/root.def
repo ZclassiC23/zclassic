@@ -1,5 +1,5 @@
 /* Canonical root and discovery branch. Consumer defines ZCL_COMMAND_*.
- * Root order is a wire contract: status, core, app, dev, ops, discover. */
+ * Root order is a wire contract: status, core, app, dev, ops, discover, code. */
 
 ZCL_COMMAND_COMPAT_READ(
     "status", "", "agent", "Compact node status and next action",

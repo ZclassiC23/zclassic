@@ -62,20 +62,21 @@ static int test_six_roots(void)
 {
     int failures = 0;
     const struct zcl_command_registry *reg = zcl_command_catalog();
-    TEST("root exposes exactly six choices") {
+    TEST("root exposes exactly seven choices") {
         size_t roots = 0;
         for (size_t i = 0; i < reg->count; i++) {
             const char *p = reg->commands[i].parent;
             if (!p || !p[0])
                 roots++;
         }
-        ASSERT_EQ(roots, (size_t)6);
+        ASSERT_EQ(roots, (size_t)7);
         ASSERT(find_spec(reg, "status") != NULL);
         ASSERT(find_spec(reg, "core") != NULL);
         ASSERT(find_spec(reg, "app") != NULL);
         ASSERT(find_spec(reg, "dev") != NULL);
         ASSERT(find_spec(reg, "ops") != NULL);
         ASSERT(find_spec(reg, "discover") != NULL);
+        ASSERT(find_spec(reg, "code") != NULL);
         PASS();
     } _test_next:;
     return failures;
@@ -598,11 +599,12 @@ static int test_ops_state_requires_subsystem(void)
 static int test_is_root_ownership(void)
 {
     int failures = 0;
-    TEST("is_root owns core/app/dev/ops/discover but not status") {
+    TEST("is_root owns core/app/dev/ops/discover/code but not status") {
         ASSERT(zcl_native_command_is_root("core"));
         ASSERT(zcl_native_command_is_root("app"));
         ASSERT(zcl_native_command_is_root("ops"));
         ASSERT(zcl_native_command_is_root("discover"));
+        ASSERT(zcl_native_command_is_root("code"));
         ASSERT(zcl_native_command_is_root("help"));
         ASSERT(zcl_native_command_is_root("search"));
         ASSERT(!zcl_native_command_is_root("status"));

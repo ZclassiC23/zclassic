@@ -53,6 +53,30 @@ int codeindex_groups(struct codeindex *ci, struct ci_group *out, int cap)
     return ci_store_list_groups(ci->store, out, cap);
 }
 
+int codeindex_files_in_group(struct codeindex *ci, const char *group,
+                             struct ci_file *out, int cap)
+{
+    if (!ci || !ci->store || !group || !out || cap <= 0)
+        LOG_ERR("codeindex", "bad arg to codeindex_files_in_group");
+    return ci_store_files_in_group(ci->store, group, out, cap);
+}
+
+int codeindex_symbols_in_file(struct codeindex *ci, const char *path,
+                              struct ci_symbol *out, int cap)
+{
+    if (!ci || !ci->store || !path || !out || cap <= 0)
+        LOG_ERR("codeindex", "bad arg to codeindex_symbols_in_file");
+    return ci_store_symbols_in_file(ci->store, path, out, cap);
+}
+
+int codeindex_includes_of_file(struct codeindex *ci, const char *path,
+                               char (*out)[256], int cap)
+{
+    if (!ci || !ci->store || !path || !out || cap <= 0)
+        LOG_ERR("codeindex", "bad arg to codeindex_includes_of_file");
+    return ci_store_includes_of_file(ci->store, path, out, cap);
+}
+
 static const char *kind_name(char k)
 {
     switch (k) {

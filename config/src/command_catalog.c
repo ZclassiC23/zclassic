@@ -198,6 +198,7 @@ static const struct zcl_command_spec g_catalog_commands[] = {
 #include "../commands/apps.def"
 #include "../commands/ops.def"
 #include "../commands/dev.def"
+#include "../commands/code.def"
 };
 
 #undef ZCL_COMMAND_BRANCH

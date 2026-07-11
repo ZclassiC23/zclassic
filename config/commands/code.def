@@ -1,0 +1,77 @@
+/* Hierarchical source-code navigator. Local, read-only, deterministic leaves
+ * backed by the in-binary lib/codeindex index (self-rebuilds on open if the
+ * source tree is stale). Bounded output — a token-cheap alternative to reading
+ * whole files. Never bound to RPC/REST/MCP; native transport only. */
+
+ZCL_COMMAND_BRANCH("code", "", "Hierarchical source-code navigator",
+                   ZCL_COMMAND_LAYER_CODE)
+
+ZCL_COMMAND_READY_READ(
+    "code.group", "code", "",
+    "List the top source groups, or one group's subgroups and files",
+    "code,group,shape,module,map", "zcl.code_group_input.v1",
+    "zcl.code_group.v1", "group", "group",
+    "zclassic23 code group app/services",
+    ZCL_COMMAND_LAYER_CODE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_code_group)
+
+ZCL_COMMAND_READY_READ(
+    "code.file", "code", "",
+    "Show one file's symbol table and its in-tree include dependencies",
+    "code,file,symbols,includes,deps", "zcl.code_path_input.v1",
+    "zcl.code_file.v1", "path", "path",
+    "zclassic23 code file lib/vcs/src/vcs_index.c",
+    ZCL_COMMAND_LAYER_CODE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_code_file)
+
+ZCL_COMMAND_READY_READ(
+    "code.sym", "code", "",
+    "Show one symbol's card: kind, signature, def/decl, doc, guard, group",
+    "code,symbol,signature,definition,card", "zcl.code_name_input.v1",
+    "zcl.code_symbol.v1", "name", "name",
+    "zclassic23 code sym codeindex_open",
+    ZCL_COMMAND_LAYER_CODE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_code_sym)
+
+ZCL_COMMAND_READY_READ(
+    "code.refs", "code", "",
+    "List bounded call sites and references to one symbol",
+    "code,refs,callers,references,uses", "zcl.code_refs_input.v1",
+    "zcl.code_refs.v1", "name,limit", "name",
+    "zclassic23 code refs zcl_malloc",
+    ZCL_COMMAND_LAYER_CODE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_code_refs)
+
+ZCL_COMMAND_READY_READ(
+    "code.find", "code", "",
+    "Rank at most N symbols by name, with a one-line context per hit",
+    "code,find,search,grep,symbol", "zcl.code_find_input.v1",
+    "zcl.code_find.v1", "text,limit", "text",
+    "zclassic23 code find hotswap",
+    ZCL_COMMAND_LAYER_CODE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_code_find)

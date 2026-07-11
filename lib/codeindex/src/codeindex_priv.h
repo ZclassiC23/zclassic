@@ -67,6 +67,12 @@ int  ci_store_refs_by_callee(struct ci_store *s, const char *callee,
 bool ci_store_file_by_path(struct ci_store *s, const char *path,
                            struct ci_file *out, bool *found);
 int  ci_store_list_groups(struct ci_store *s, struct ci_group *out, int cap);
+int  ci_store_files_in_group(struct ci_store *s, const char *group,
+                             struct ci_file *out, int cap);
+int  ci_store_symbols_in_file(struct ci_store *s, const char *path,
+                              struct ci_symbol *out, int cap);
+int  ci_store_includes_of_file(struct ci_store *s, const char *path,
+                               char (*out)[256], int cap);
 
 /* Canonical per-symbol row hash used for verify-on-read. Deterministic over
  * all card fields. */

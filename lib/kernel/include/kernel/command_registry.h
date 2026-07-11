@@ -37,6 +37,7 @@ enum zcl_command_layer {
     ZCL_COMMAND_LAYER_DEV,
     ZCL_COMMAND_LAYER_OPS,
     ZCL_COMMAND_LAYER_DISCOVER,
+    ZCL_COMMAND_LAYER_CODE,
 };
 
 enum zcl_command_effect {

@@ -229,7 +229,7 @@ bool zcl_command_registry_replace_batch(
 }
 
 static const char *const g_layer_names[] = {
-    "root", "core", "app", "dev", "ops", "discover"
+    "root", "core", "app", "dev", "ops", "discover", "code"
 };
 static const char *const g_effect_names[] = {
     "read", "mutate", "destructive"
@@ -421,7 +421,7 @@ static bool csv_valid_paths(const char *csv)
 
 static bool enum_values_valid(const struct zcl_command_spec *spec)
 {
-    return spec->layer <= ZCL_COMMAND_LAYER_DISCOVER &&
+    return spec->layer <= ZCL_COMMAND_LAYER_CODE &&
            spec->effect <= ZCL_COMMAND_EFFECT_DESTRUCTIVE &&
            spec->risk <= ZCL_COMMAND_RISK_DEV_MUTATION &&
            spec->scope <= ZCL_COMMAND_SCOPE_OFFLINE_COPY &&

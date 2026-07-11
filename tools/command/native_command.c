@@ -51,7 +51,7 @@ bool zcl_native_command_is_root(const char *word)
     if (!word || !word[0])
         return false;
     static const char *const roots[] = {
-        "core", "app", "dev", "ops", "discover", "help", "search",
+        "core", "app", "dev", "ops", "discover", "code", "help", "search",
     };
     for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
         if (strcmp(word, roots[i]) == 0)

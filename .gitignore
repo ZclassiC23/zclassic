@@ -73,3 +73,4 @@ chaos-output/
 
 # Sealed consensus-core unseal token (owner ritual; never tracked)
 .core-unseal-token
+.codeindex/

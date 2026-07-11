@@ -612,3 +612,87 @@ int ci_store_list_groups(struct ci_store *s, struct ci_group *out, int cap)
     pthread_mutex_unlock(&s->lock);
     return n;
 }
+
+int ci_store_files_in_group(struct ci_store *s, const char *group,
+                            struct ci_file *out, int cap)
+{
+    if (!s || !group || !out || cap <= 0)
+        LOG_ERR("codeindex", "bad arg to files_in_group");
+    pthread_mutex_lock(&s->lock);
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db,
+        "SELECT path,\"group\",purpose FROM files WHERE \"group\"=?"
+        " ORDER BY path ASC",
+        -1, &stmt, NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&s->lock);
+        LOG_ERR("codeindex", "prepare files_in_group");
+    }
+    sqlite3_bind_text(stmt, 1, group, -1, SQLITE_TRANSIENT);
+    int n = 0;
+    int rc;
+    while (n < cap && (rc = sqlite3_step(stmt)) == SQLITE_ROW) {  // raw-sql-ok:codeindex-derived
+        memset(&out[n], 0, sizeof(out[n]));
+        cpy(out[n].path, sizeof(out[n].path), (const char *)sqlite3_column_text(stmt, 0));
+        cpy(out[n].group, sizeof(out[n].group), (const char *)sqlite3_column_text(stmt, 1));
+        cpy(out[n].purpose, sizeof(out[n].purpose), (const char *)sqlite3_column_text(stmt, 2));
+        n++;
+    }
+    sqlite3_finalize(stmt);
+    pthread_mutex_unlock(&s->lock);
+    return n;
+}
+
+int ci_store_symbols_in_file(struct ci_store *s, const char *path,
+                             struct ci_symbol *out, int cap)
+{
+    if (!s || !path || !out || cap <= 0)
+        LOG_ERR("codeindex", "bad arg to symbols_in_file");
+    pthread_mutex_lock(&s->lock);
+    sqlite3_stmt *stmt = NULL;
+    /* A .c file owns its definitions (def_path); a header owns declarations
+     * (decl_path). Match either, definitions first, then source order. */
+    if (sqlite3_prepare_v2(s->db,
+        "SELECT " CI_SYM_COLS " FROM symbols"
+        " WHERE def_path=?1 OR decl_path=?1"
+        " ORDER BY (def_path=?1) DESC, def_line ASC, decl_line ASC, name ASC",
+        -1, &stmt, NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&s->lock);
+        LOG_ERR("codeindex", "prepare symbols_in_file");
+    }
+    sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
+    int n = 0;
+    int rc;
+    while (n < cap && (rc = sqlite3_step(stmt)) == SQLITE_ROW) {  // raw-sql-ok:codeindex-derived
+        if (fill_symbol(stmt, &out[n]))
+            n++;  /* skip corrupted rows */
+    }
+    sqlite3_finalize(stmt);
+    pthread_mutex_unlock(&s->lock);
+    return n;
+}
+
+int ci_store_includes_of_file(struct ci_store *s, const char *path,
+                              char (*out)[256], int cap)
+{
+    if (!s || !path || !out || cap <= 0)
+        LOG_ERR("codeindex", "bad arg to includes_of_file");
+    pthread_mutex_lock(&s->lock);
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db,
+        "SELECT i.dep_path FROM includes i JOIN files f ON f.id=i.file_id"
+        " WHERE f.path=? ORDER BY i.dep_path ASC",
+        -1, &stmt, NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&s->lock);
+        LOG_ERR("codeindex", "prepare includes_of_file");
+    }
+    sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
+    int n = 0;
+    int rc;
+    while (n < cap && (rc = sqlite3_step(stmt)) == SQLITE_ROW) {  // raw-sql-ok:codeindex-derived
+        cpy(out[n], 256, (const char *)sqlite3_column_text(stmt, 0));
+        n++;
+    }
+    sqlite3_finalize(stmt);
+    pthread_mutex_unlock(&s->lock);
+    return n;
+}

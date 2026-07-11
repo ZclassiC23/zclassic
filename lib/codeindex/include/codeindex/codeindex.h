@@ -112,6 +112,23 @@ bool codeindex_file(struct codeindex *ci, const char *path,
 /* The full group hierarchy, ordered by path. */
 int codeindex_groups(struct codeindex *ci, struct ci_group *out, int cap);
 
+/* Files that belong to `group` (e.g. "app/services", "lib/net"), ordered by
+ * path. Fills up to `cap` rows, returns the count (>=0), -1 on error. */
+int codeindex_files_in_group(struct codeindex *ci, const char *group,
+                             struct ci_file *out, int cap);
+
+/* The symbol table of one file: symbols DEFINED in it (for a .c) or DECLARED in
+ * it (for a header), definitions first then source order. Fills up to `cap`
+ * rows, returns count (>=0), -1 on error. */
+int codeindex_symbols_in_file(struct codeindex *ci, const char *path,
+                              struct ci_symbol *out, int cap);
+
+/* In-tree include dependencies of `path`, ordered by dep path. Each out[i] is a
+ * NUL-terminated repo-relative path (up to 255 bytes). Fills up to `cap` rows,
+ * returns count (>=0), -1 on error. */
+int codeindex_includes_of_file(struct codeindex *ci, const char *path,
+                               char (*out)[256], int cap);
+
 /* Render a bounded, human-readable card for `name` into `buf` (NUL-terminated,
  * never exceeds `cap`). Returns the number of bytes written (excluding NUL),
  * or -1 on error / not found. */
