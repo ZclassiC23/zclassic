@@ -3,11 +3,157 @@
 
 #include "test/test_helpers.h"
 #include "models/file_service.h"
+#include "models/swap_contract.h"
+#include "models/zmsg.h"
+#include "models/hodl_wave.h"
 #include <unistd.h>
 
 int test_model_app(void)
 {
     int failures = 0;
+
+    printf("SwapContract model rejects an empty record and accepts a valid one... ");
+    {
+        struct swap_contract bad, good;
+        struct ar_errors e;
+
+        memset(&bad, 0, sizeof(bad));
+        ar_errors_clear(&e);
+        bool ok = !db_swap_contract_validate(&bad, &e) && ar_errors_any(&e);
+
+        memset(&good, 0, sizeof(good));
+        snprintf(good.swap_id, sizeof(good.swap_id), "%s",
+                 "deadbeef00112233445566778899aabbccddeeff0011223344556677889900");
+        good.role = SWAP_INITIATOR;
+        good.state = SWAP_PENDING;
+        good.chain = SWAP_CHAIN_ZCL;
+        memset(good.secret_hash, 0xAB, sizeof(good.secret_hash));
+        good.amount = 100000;
+        good.locktime = 500000;
+        snprintf(good.my_address, sizeof(good.my_address), "%s", "t1MyAddress");
+        snprintf(good.counter_address, sizeof(good.counter_address), "%s",
+                 "t1CounterAddress");
+        good.redeem_script_len = 97;
+        snprintf(good.p2sh_address, sizeof(good.p2sh_address), "%s", "t3P2shAddress");
+        good.created_at = 1700000000;
+        ar_errors_clear(&e);
+        ok = ok && db_swap_contract_validate(&good, &e) && !ar_errors_any(&e);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("SwapContract model rejects a non-hex swap_id and a zero amount... ");
+    {
+        struct swap_contract swap;
+        struct ar_errors e;
+
+        memset(&swap, 0, sizeof(swap));
+        snprintf(swap.swap_id, sizeof(swap.swap_id), "%s", "NOT-HEX-ID");
+        swap.role = SWAP_INITIATOR;
+        swap.state = SWAP_PENDING;
+        swap.chain = SWAP_CHAIN_ZCL;
+        memset(swap.secret_hash, 0xAB, sizeof(swap.secret_hash));
+        swap.amount = 100000;
+        swap.locktime = 500000;
+        snprintf(swap.my_address, sizeof(swap.my_address), "%s", "t1MyAddress");
+        snprintf(swap.counter_address, sizeof(swap.counter_address), "%s",
+                 "t1CounterAddress");
+        swap.redeem_script_len = 97;
+        snprintf(swap.p2sh_address, sizeof(swap.p2sh_address), "%s", "t3P2shAddress");
+        ar_errors_clear(&e);
+        bool ok = !db_swap_contract_validate(&swap, &e) &&
+                  strstr(ar_errors_full(&e), "swap_id") != NULL;
+
+        /* Fix the swap_id but zero the amount (must be positive). */
+        snprintf(swap.swap_id, sizeof(swap.swap_id), "%s",
+                 "deadbeef00112233445566778899aabbccddeeff0011223344556677889900");
+        swap.amount = 0;
+        ar_errors_clear(&e);
+        ok = ok && !db_swap_contract_validate(&swap, &e) &&
+             strstr(ar_errors_full(&e), "amount") != NULL;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("Zmsg model requires a precomputed msg_id and rejects an empty body... ");
+    {
+        struct zmsg_message msg;
+        struct ar_errors e;
+
+        memset(&msg, 0, sizeof(msg));
+        snprintf(msg.sender, sizeof(msg.sender), "%s", "alice");
+        snprintf(msg.recipient, sizeof(msg.recipient), "%s", "bob");
+        snprintf(msg.body, sizeof(msg.body), "%s", "hello");
+        msg.direction = ZMSG_OUTBOUND;
+        msg.channel = ZMSG_CHANNEL_P2P;
+        msg.timestamp = 1700000000;
+        ar_errors_clear(&e);
+        /* msg_id is all-zero: must fail with a msg_id complaint. */
+        bool ok = !db_zmsg_validate(&msg, &e) &&
+                  strstr(ar_errors_full(&e), "msg_id") != NULL;
+
+        memset(msg.msg_id, 0x42, sizeof(msg.msg_id));
+        ar_errors_clear(&e);
+        ok = ok && db_zmsg_validate(&msg, &e) && !ar_errors_any(&e);
+
+        /* validates_presence_of does a byte-exact all-zero check, not a
+         * string-emptiness check — zero the whole buffer, not just [0]. */
+        memset(msg.body, 0, sizeof(msg.body));
+        ar_errors_clear(&e);
+        ok = ok && !db_zmsg_validate(&msg, &e) &&
+             strstr(ar_errors_full(&e), "body") != NULL;
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("hodl_wave_age_seconds is monotone and clamps at zero... ");
+    {
+        /* Pre-Buttercup UTXO (height 100) at a pre-Buttercup tip: age grows
+         * purely from the 150s pre-Buttercup spacing. */
+        int64_t age_pre = hodl_wave_age_seconds(100, 600000);
+        bool ok = (age_pre == (int64_t)(707000 - 100) * 150);
+
+        /* Pre-Buttercup UTXO observed from a post-Buttercup tip: adds the
+         * 75s post-Buttercup segment on top of the fixed pre-Buttercup run. */
+        int64_t age_pre_post_tip = hodl_wave_age_seconds(100, 800000);
+        ok = ok && (age_pre_post_tip ==
+                    (int64_t)(707000 - 100) * 150 + (int64_t)(800000 - 707000) * 75);
+
+        /* Post-Buttercup UTXO: pure 75s spacing from mint height to tip. */
+        int64_t age_post = hodl_wave_age_seconds(800000, 900000);
+        ok = ok && (age_post == (int64_t)(900000 - 800000) * 75);
+
+        /* A UTXO minted at (or after) the tip never reports negative age. */
+        int64_t age_future = hodl_wave_age_seconds(900000, 800000);
+        ok = ok && (age_future == 0);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL (pre=%lld pre_post=%lld post=%lld future=%lld)\n",
+                       (long long)age_pre, (long long)age_pre_post_tip,
+                       (long long)age_post, (long long)age_future);
+               failures++; }
+    }
+
+    printf("hodl_wave_older_than_1y_percent computes a ratio and guards zero total... ");
+    {
+        struct hodl_wave_snapshot h;
+        memset(&h, 0, sizeof(h));
+        h.total_value = 0;
+        h.older_than_1y_value = 0;
+        bool ok = (hodl_wave_older_than_1y_percent(&h) == 0.0);
+        ok = ok && (hodl_wave_older_than_1y_percent(NULL) == 0.0);
+
+        h.total_value = 400;
+        h.older_than_1y_value = 100;
+        double pct = hodl_wave_older_than_1y_percent(&h);
+        ok = ok && (pct > 24.999 && pct < 25.001);
+
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
 
     printf("Contact model validates and orders recent contacts... ");
     {
