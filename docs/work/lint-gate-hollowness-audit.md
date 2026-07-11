@@ -1,5 +1,37 @@
 # Lint-gate hollowness audit (2026-06-19)
 
+> **Resolution (2026-07-11): CLOSED.** The six gates listed below under
+> "TODO — hollow under a GREEN build" (`check_one_write_path.sh`,
+> `check_no_secret_printf.sh`, `gate_stage_log_reorg_unsafe_ratchet.sh`,
+> `check_projections_pure.sh`, `check_supervisor_domain.sh`,
+> `check_supervisor_registration.sh`, `check_stage_advances_or_blocks.sh` —
+> seven files, six named gates) each now source `tools/lint/gate_lib.sh` and
+> call `gate_require_scanned <count> <floor> <gate-name> [hint]` before
+> reporting clean, verified by reading every script this session:
+>
+> | Gate script | `gate_require_scanned` call site |
+> |---|---|
+> | `tools/scripts/check_one_write_path.sh` | line 63 |
+> | `tools/scripts/check_no_secret_printf.sh` | line 85 |
+> | `tools/scripts/gate_stage_log_reorg_unsafe_ratchet.sh` | line 74 |
+> | `tools/scripts/check_projections_pure.sh` | line 50 |
+> | `tools/lint/check_supervisor_domain.sh` | line 20 |
+> | `tools/scripts/check_supervisor_registration.sh` | line 90 |
+> | `tools/scripts/check_stage_advances_or_blocks.sh` | lines 66 and 89 (two independent scan floors) |
+>
+> `gate_lib.sh` (`tools/lint/gate_lib.sh`) is the shared helper the
+> "Recommendation" section below called for: `gate_require_scanned` aborts
+> with exit 2 — loud, not silent — when a gate's realized scan count falls
+> below a known floor, closing exactly the "producer silently emptied →
+> pass" hole this audit named. The "TODO — hollow ONLY under a core-dir
+> rename (degenerate)" list (`check_one_result_type.sh`,
+> `framework_shape_check.sh`, `check_file_size_ceiling.sh`,
+> `check_no_new_repair_rung.sh`) was out of scope for this pass — those
+> failure modes coincide with a build break, so CI still catches them red,
+> just not via this specific loud-preflight pattern; they were not
+> re-verified this session. The historical audit body below is kept as the
+> record of the original finding and fix pattern.
+
 **Systemic finding:** many `make lint` gates can report **"clean" / exit 0 while
 a real violation is present** — a *fail-silent* (hollow) gate. A hollow gate is
 worse than no gate: it gives false "all green" confidence, the exact

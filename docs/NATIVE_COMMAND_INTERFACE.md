@@ -651,15 +651,36 @@ without renaming the grammar.
 
 ### Phase B — Native registry and discovery
 
-- Introduce the split `config/commands/*.def` registry.
-- Generate native dispatch, menu, help, search, and documentation checks.
-- Map every existing native, RPC, MCP, and service operation to a canonical ID;
-  fail the build on an unmapped route, duplicate alias, or conflicting effect
-  policy.
-- Map `status` and all read-only Core/operator commands first.
-- Enforce payload budgets in tests.
+**Status (verified 2026-07-11, read `config/commands/*.def` and
+`config/src/command_catalog.c` directly): partially landed.**
 
-Exit: an LLM can find and run every read-only operation without MCP discovery.
+- **Done:** the split `config/commands/*.def` registry exists —
+  `root.def`, `core.def`, `apps.def`, `ops.def`, and `dev.def`.
+  `config/src/command_catalog.c` `#include`s `root.def` + `core.def` +
+  `apps.def` + `ops.def`, expands them via the `ZCL_COMMAND_*` X-macros into
+  one immutable `g_catalog_commands[]` table, and binds native handler
+  pointers. This is wired to real dispatch:
+  `tools/command/native_command.c` calls `zcl_command_catalog()`, and
+  `src/main.c` reaches it through `zcl_native_command_main()` for any
+  method `zcl_native_command_is_root()` recognizes. `status` and the
+  read-only Core/operator commands in `core.def` are among the first
+  mapped leaves.
+- **Not done:** `dev.def`'s leaves are declared (a branch under `root.def`)
+  but deliberately **not yet included/bound** in `command_catalog.c` — its
+  own header comment says why: the `dev` subtree's leaves still belong to
+  the checkout-local `tools/dev/devloop_cli.c` dispatcher, and including
+  `dev.def` before that binding exists would name handlers the catalog
+  does not define. Generated menu/help/search output and a documentation
+  cross-check against every existing native/RPC/MCP/service operation
+  (the "fail the build on an unmapped route" goal) have not been verified
+  this session — check `config/src/command_catalog.c` and
+  `lib/kernel/src/command_registry.c` directly before assuming either
+  exists.
+
+Exit: an LLM can find and run every read-only operation without MCP
+discovery. **Not yet met** — `dev.def` (the native development-plane
+surface Phase C depends on) is still routed through the legacy devloop
+dispatcher, not the registry.
 
 ### Phase C — Native development plane
 
