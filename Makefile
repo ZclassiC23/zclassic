@@ -107,12 +107,16 @@ DOMAIN_SRCS = $(call zcl_filter_ephemeral_sources,\
 # via -Icore/params/include; core/math keeps the "core/" token via
 # -Icore/math/include over core/math/include/core/*.h — absorbing the pure
 # lib/core primitives resolves the core/ namespace collision, the reduced
-# lib/core keeps only the dirty leaves amount/random/utiltime), so no consumer
-# #include changes. core/ is a source/gate/seal unit that stays IN the
-# whole-program LTO link — NOT a separate archive (a libzclcore.a would sever
-# hot-path inlining). Sealed by core/MANIFEST.sha3; boundary-gated by
-# check-core-include-boundary.
-CORE_CONTEXTS = consensus params math
+# lib/core keeps only the dirty leaves amount/random/utiltime; core/chainparams
+# keeps the "chain/" token via -Icore/chainparams/include over
+# core/chainparams/include/chain/*.h — the pure params/verify subset
+# chainparams/chainparamsbase/equihash/pow/subsidy/checkpoints, with the
+# orchestration remainder chain/mmb/mmr/sha3_windows/utxo_* staying in lib/chain;
+# the two "chain/" -I paths serve disjoint headers), so no consumer #include
+# changes. core/ is a source/gate/seal unit that stays IN the whole-program LTO
+# link — NOT a separate archive (a libzclcore.a would sever hot-path inlining).
+# Sealed by core/MANIFEST.sha3; boundary-gated by check-core-include-boundary.
+CORE_CONTEXTS = consensus params math chainparams
 CORE_INCLUDES = $(foreach c,$(CORE_CONTEXTS),-Icore/$(c)/include)
 CORE_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(foreach c,$(CORE_CONTEXTS),$(wildcard core/$(c)/src/*.c)))
@@ -2241,6 +2245,7 @@ $(OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_COMMIT_STAMP)
 # LTO or making every unrelated edit slow.
 DEV_COMPILE_CFLAGS = $(DEV_CFLAGS)
 $(DEV_OBJ_DIR)/lib/chain/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
+$(DEV_OBJ_DIR)/core/chainparams/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
 $(DEV_OBJ_DIR)/core/params/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
 $(DEV_OBJ_DIR)/lib/crypto/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
 $(DEV_OBJ_DIR)/lib/primitives/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)

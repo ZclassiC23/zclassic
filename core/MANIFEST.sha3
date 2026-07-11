@@ -2,6 +2,18 @@
 # Do not edit by hand. `make core-seal-check` fails loud if core/ drifts from this.
 # Format: <sha3-256 hex>  <path>, one per sealed file (sorted), then a final ROOT line.
 9287004c29f09c75197233650c5284bb3e07d42a769b6ff00760e4ce1fccef02  core/UNSEAL.md
+9dde79a3f3a62cd347d126bd6b7a97df1a3026d3ebddf37b7084c695250503c0  core/chainparams/include/chain/chainparams.h
+d0b6a70dd59f8a3b4477f666da00a1a5af8395b3c2a60194a9b42bfef967a095  core/chainparams/include/chain/chainparamsbase.h
+f98a2d6d80a94ab21614cb132e745636cd2754549820b2bf3d725b5bcafc5109  core/chainparams/include/chain/checkpoints.h
+70a619096c7c98fb5bbb315b44916b4641ab50e4938b99e5be0e8a1e0b1306d7  core/chainparams/include/chain/equihash.h
+b26d0eeb2d74adef629479a9006a23954f057a795d970f2dd5b71a816ff75fa9  core/chainparams/include/chain/pow.h
+3235d5e1c2e14b9533c7016628e5ff89ee6e45456e7ff9b569afb0feb2f15fcc  core/chainparams/include/chain/subsidy.h
+5f21b5bab441bc94a7ca8cffdbf630afe55b8749d6a615b9324bbc51c5999e7f  core/chainparams/src/chainparams.c
+3a5d6b4243f758fdd4024614000e2d5ca30695abfc60f62db13c9a90791fa2da  core/chainparams/src/chainparamsbase.c
+f9841459233340f3d98c12e46e2f7d3330fe26cd5bf8a72cfc2dc86feb4ea79d  core/chainparams/src/checkpoints.c
+5edbb212e7fb9a1a559508766bae03d060e79d9b6411c553db108253d440f08c  core/chainparams/src/equihash.c
+fd64bbd76301b36af2dd1d46b85f7047d853e304a76204a2fff890b67fa4b22b  core/chainparams/src/pow.c
+30a41c589db675e71685937f80f58fadcad97f492b0d6fee5cedf569b9887234  core/chainparams/src/subsidy.c
 68daa9f0f4e7ced01de5d25382d04b19a8c95ef65e3b6c202546327cb3c47807  core/consensus/include/domain/consensus/check_block.h
 8159ecccc6c99197eb09c843bc728f116e096e6c06dd884c0b55a60c7efbfe53  core/consensus/include/domain/consensus/checkpoints.h
 858783ba02696dd3b0421d6475d318f01ee10a267aeeb5eeb8210aa0a7e9fbd1  core/consensus/include/domain/consensus/coinbase.h
@@ -55,4 +67,4 @@ e84a4566fb4a01985ccbec9a4d3136a278422e1efe4f00cb8d0cf01480531064  core/params/in
 5ed0e4562789e7ea0bd9ff1238a27172669074b3d26201195aafffe1f863558e  core/params/module.cfg
 4d62b9a9b8824925e2f7efebca536ff924a96c7464067472cb07b9dd57e356dc  core/params/src/params.c
 9907071da9b95e13d236ac70fe8fa95612c7873ff9a88102d988c83ba8492b89  core/params/src/upgrades.c
-ROOT  8c7f7cc444997720f04043159957a5c590fb3766e00ae1f3e92d74409207a39d
+ROOT  52151e2ffce4ae5c7526a3aa96c4a2fbe34b59cd272e6abaa3657217ace5786d

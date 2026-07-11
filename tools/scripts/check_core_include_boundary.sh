@@ -57,11 +57,14 @@ CORE_SUBDIRS=(core/consensus core/params core/chainparams core/math)
 # primitives depend DOWN on (uint256/core_io use encoding/utilstrencodings +
 # encoding/utilmoneystr for hex/money string conversion and json/json for
 # core_io serialization; both leaves themselves reach only core/encoding/util/
-# json, never validation or app — verified in W3).
+# json, never validation or app — verified in W3),
+# PLUS `platform` — the clock/rng leaf (lib/platform reaches only platform/util);
+# core/chainparams/checkpoints.c reads a single clock via platform/time_compat.h
+# (verified pure leaf in W4).
 # core/math keeps the `core` token (absorbed from lib/core in W3); core/params keeps `consensus`.
 declare -A allow
 for p in domain consensus core chainparams math \
-         bloom chain coins crypto encoding json keys primitives script support util; do
+         bloom chain coins crypto encoding json keys platform primitives script support util; do
     allow["$p"]=1
 done
 
@@ -69,6 +72,13 @@ done
 # Redirected by the Pre-W5 content-fix commit, not this lane.
 declare -A known_exception
 known_exception["core/consensus/src/check_block.c|validation/sigops.h"]=1
+# W4-introduced, W5-resolved: chainparams.h reaches into net/protocol.h purely
+# for the MESSAGE_START_SIZE (=4) network-magic array dimension. The Pre-W5
+# content fix defines that constant in the co-located chain/chainparamsbase.h
+# (benign identical redefinition — net/protocol.h keeps its own for net's many
+# consumers) and drops this include, after which BOTH exceptions are removed and
+# the gate is exception-free (W5 seals over the clean tree).
+known_exception["core/chainparams/include/chain/chainparams.h|net/protocol.h"]=1
 
 fail=0
 violations=()
