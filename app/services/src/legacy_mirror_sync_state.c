@@ -2,6 +2,14 @@
  *
  * Runtime state snapshots, lifecycle wiring, and test hooks for the legacy
  * mirror monitor. The catchup tick logic lives in legacy_mirror_sync_service.c. */
+// one-result-type-ok:predicate-and-json-dump-bool —
+// legacy_mirror_sync_blocker_should_surface is a pure decision predicate (an
+// answer, not a failure: "should this already-recorded blocker be surfaced
+// to the operator right now?"), consumed as a raw bool by
+// agent_operator_contracts.c, health_controller.c, and
+// event_healthcheck_controller.c; legacy_mirror_sync_dump_state_json is the
+// mandated *_dump_state_json bool contract (CLAUDE.md "Adding state
+// introspection"). Neither has a genuinely fallible surface to convert.
 
 #include "services/legacy_mirror_sync_service.h"
 #include "legacy_mirror_sync_internal.h"

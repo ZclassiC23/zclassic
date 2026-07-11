@@ -31,12 +31,8 @@ app/services/src/block_index_loader_rebuild.c 2
 app/services/src/block_source_policy_decisions.c 3
 app/services/src/chain_restore_repair.c 1
 app/services/src/consensus_reject_index.c 1
-app/services/src/disk_monitor.c 2
 app/services/src/gap_fill_service.c 3
 app/services/src/header_sync_service.c 17
-app/services/src/ibd_throttle.c 4
-app/services/src/legacy_mirror_sync_service.c 2
-app/services/src/legacy_mirror_sync_state.c 2
 app/services/src/mempool_limits.c 2
 app/services/src/rolling_anchor_service.c 1
 app/services/src/snapshot_fetch.c 2

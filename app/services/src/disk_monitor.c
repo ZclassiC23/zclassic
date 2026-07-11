@@ -10,6 +10,12 @@
  * when the level *changes*. That keeps EV_DISK_LOW from flooding
  * the log every 60 seconds on a sustained low-disk situation.
  */
+// one-result-type-ok:predicate-and-json-dump-bool — disk_monitor_is_critical
+// is a lock-free hot-path predicate (an answer — "is the disk critical right
+// now?" — not a failure) consumed as a raw bool gate by db_txn.c,
+// disk_full_pause.c, and ibd_throttle.c; disk_monitor_dump_state_json is the
+// mandated *_dump_state_json bool contract (CLAUDE.md "Adding state
+// introspection"). Neither has a genuinely fallible surface to convert.
 
 #include "platform/time_compat.h"
 #include "services/disk_monitor.h"
