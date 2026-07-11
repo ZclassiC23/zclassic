@@ -40,9 +40,10 @@
 # "Legacy bool export" = a function DEFINITION (not a forward declaration)
 # whose signature starts in column 0 with `bool <name>(` (i.e. non-static,
 # non-inline, top-level — a real exported symbol) in an app/services/src/
-# .c file, matching this project's brace-on-its-own-line C style. A
-# same-signature forward declaration (ends in `;` before the body) is not
-# counted.
+# .c file, whether the opening brace sits alone on its own line (this
+# project's usual style) or shares the (possibly wrapped) signature's last
+# line, e.g. `bool foo(void) {`. A same-signature forward declaration (ends
+# in `;` before the body) is not counted.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
@@ -61,8 +62,11 @@ SCAN_DIR="${ZCL_SERVICE_RESULT_CONVERGENCE_SCAN_DIR:-app/services/src}"
 # Count exported (non-static, top-level) bool-returning function
 # DEFINITIONS in a file. A signature is a definition when its header
 # (possibly wrapped across lines for multi-arg functions) is followed by a
-# line that is exactly `{` with no `;` seen first (a `;` first means it was
-# a forward declaration, not a body).
+# line that ENDS with `{` (after trimming trailing whitespace) with no `;`
+# seen first (a `;` first means it was a forward declaration, not a body).
+# This counts both the project's usual "brace alone on its own line" style
+# AND a brace sharing the (possibly wrapped) signature's last line, e.g.
+# `bool foo(void) {` or a multi-arg wrap whose final line ends `) {`.
 count_legacy_bool_exports() {
     awk '
     BEGIN { in_sig = 0; count = 0 }
@@ -89,7 +93,7 @@ count_legacy_bool_exports() {
         trimmed = line
         gsub(/^[ \t]+/, "", trimmed)
         gsub(/[ \t]+$/, "", trimmed)
-        if (trimmed == "{") {
+        if (trimmed ~ /\{$/) {
             count++
             in_sig = 0
         }

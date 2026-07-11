@@ -78,12 +78,19 @@ struct utxo_mirror_sync_service {
     /* References (not owned) */
     struct node_db *ndb;
 
-    /* Config */
+    /* Config: written once by utxo_mirror_sync_init() before the background
+     * thread is spawned and never mutated again — pthread_create's
+     * happens-before guarantee makes a plain read from the background
+     * thread (and from utxo_mirror_sync_dump_state_json on any thread)
+     * race-free without atomics. */
     int tick_seconds;
 
     /* Thread management */
     pthread_t thread;
-    bool thread_started;
+    /* Flipped by start()/stop() (boot/shutdown callers) and read from
+     * utxo_mirror_sync_dump_state_json() on the diagnostics/MCP thread —
+     * genuinely cross-thread, so _Atomic + atomic_store/atomic_load. */
+    _Atomic bool thread_started;
     _Atomic bool stop_requested;
 
     /* Startup synchronization: start() blocks until the thread is live. */
