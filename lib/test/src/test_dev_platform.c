@@ -2,6 +2,7 @@
 
 #include "test/test_helpers.h"
 
+#include "dev_activation.h"
 #include "devloop.h"
 #include "framework/app_platform.h"
 #include "json/json.h"
@@ -357,6 +358,164 @@ static int test_social_sim(void)
     return failures;
 }
 
+/* Wave 3.2 native activation engine wiring (devloop_cycle.c /
+ * native_dev_command.c). devloop_cycle.c's own transactional_reload branch
+ * and native_dev_command.c's dev.vcs.revert relink seam are both
+ * ZCL_DEV_BUILD-only (they exec `make`/`systemctl`), so this build
+ * (-DZCL_TESTING, no ZCL_DEV_BUILD -- see test_core_refusal_token() above)
+ * cannot reach them directly. What IS reachable and load-bearing here is the
+ * pure glue both call sites share (declared in devloop.h, defined in
+ * devloop_cycle.c, compiled under `ZCL_DEV_BUILD || ZCL_TESTING`): the
+ * ZCL_DEV_NATIVE_ACTIVATION switch itself, the dev-lane request builder, and
+ * the result mapper. Proving the switch defaults to false IS the
+ * "disabled-by-default path still uses the shell argv" case for a binary
+ * that never links the engine's process-exec half. */
+static int test_native_activation_switch(void)
+{
+    int failures = 0;
+    TEST("dev platform: native activation defaults OFF (shell path stays live)") {
+        char *saved = getenv("ZCL_DEV_NATIVE_ACTIVATION");
+        saved = saved ? strdup(saved) : NULL;
+
+        unsetenv("ZCL_DEV_NATIVE_ACTIVATION");
+        ASSERT(!dev_activation_native_enabled());
+
+        setenv("ZCL_DEV_NATIVE_ACTIVATION", "", 1);
+        ASSERT(!dev_activation_native_enabled());
+
+        setenv("ZCL_DEV_NATIVE_ACTIVATION", "0", 1);
+        ASSERT(!dev_activation_native_enabled());
+
+        setenv("ZCL_DEV_NATIVE_ACTIVATION", "nah", 1);
+        ASSERT(!dev_activation_native_enabled());
+
+        setenv("ZCL_DEV_NATIVE_ACTIVATION", "1", 1);
+        ASSERT(dev_activation_native_enabled());
+
+        setenv("ZCL_DEV_NATIVE_ACTIVATION", "true", 1);
+        ASSERT(dev_activation_native_enabled());
+
+        setenv("ZCL_DEV_NATIVE_ACTIVATION", "yes", 1);
+        ASSERT(dev_activation_native_enabled());
+
+        if (saved) {
+            setenv("ZCL_DEV_NATIVE_ACTIVATION", saved, 1);
+            free(saved);
+        } else {
+            unsetenv("ZCL_DEV_NATIVE_ACTIVATION");
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_native_activation_request_builder(void)
+{
+    int failures = 0;
+    TEST("dev platform: dev_activation_request_from_cycle builds dev-lane defaults") {
+        char dir[512];
+        test_make_tmpdir(dir, sizeof(dir), "native_activation", "request");
+        char *saved_home = getenv("HOME");
+        saved_home = saved_home ? strdup(saved_home) : NULL;
+        char *saved_gen_root = getenv("ZCL_DEV_GENERATION_ROOT");
+        saved_gen_root = saved_gen_root ? strdup(saved_gen_root) : NULL;
+        unsetenv("ZCL_DEV_GENERATION_ROOT");
+        setenv("HOME", dir, 1);
+
+        struct dev_activation_cycle_request creq;
+        ASSERT(dev_activation_request_from_cycle("/repo", "abc1234", &creq));
+        ASSERT(strcmp(creq.req.repo_root, "/repo") == 0);
+        ASSERT(strcmp(creq.req.artifact_path,
+                      "/repo/build/bin/zclassic23-dev") == 0);
+        ASSERT(strcmp(creq.req.build_commit, "abc1234") == 0);
+        ASSERT(strcmp(creq.req.build_type, "fast") == 0);
+        ASSERT(strcmp(creq.req.unit, "zcl23-dev.service") == 0);
+        ASSERT(creq.req.rpcport == 18252);
+        ASSERT(creq.req.mode == DEV_ACTIVATION_MODE_ACTIVATE);
+        char want_datadir[1024], want_gen_root[1024];
+        snprintf(want_datadir, sizeof(want_datadir), "%s/.zclassic-c23-dev", dir);
+        snprintf(want_gen_root, sizeof(want_gen_root),
+                "%s/.local/lib/zclassic23-dev", dir);
+        ASSERT(strcmp(creq.req.datadir, want_datadir) == 0);
+        ASSERT(strcmp(creq.req.gen_root, want_gen_root) == 0);
+
+        /* ZCL_DEV_GENERATION_ROOT overrides the default, same as
+         * deploy-dev-lane.sh and native_dev_command.c:dev_generation_root(). */
+        setenv("ZCL_DEV_GENERATION_ROOT", "/custom/gen-root", 1);
+        ASSERT(dev_activation_request_from_cycle("/repo", "abc1234", &creq));
+        ASSERT(strcmp(creq.req.gen_root, "/custom/gen-root") == 0);
+        unsetenv("ZCL_DEV_GENERATION_ROOT");
+
+        /* build_commit may be empty (the vcs.vcs.revert seam's use) but not
+         * NULL; repo_root/out must not be NULL either. */
+        ASSERT(dev_activation_request_from_cycle("/repo", "", &creq));
+        ASSERT(creq.req.build_commit[0] == '\0');
+        ASSERT(!dev_activation_request_from_cycle(NULL, "abc1234", &creq));
+        ASSERT(!dev_activation_request_from_cycle("/repo", NULL, &creq));
+        ASSERT(!dev_activation_request_from_cycle("/repo", "abc1234", NULL));
+
+        unsetenv("HOME");
+        ASSERT(!dev_activation_request_from_cycle("/repo", "abc1234", &creq));
+
+        if (saved_home) {
+            setenv("HOME", saved_home, 1);
+            free(saved_home);
+        } else {
+            unsetenv("HOME");
+        }
+        if (saved_gen_root) {
+            setenv("ZCL_DEV_GENERATION_ROOT", saved_gen_root, 1);
+            free(saved_gen_root);
+        } else {
+            unsetenv("ZCL_DEV_GENERATION_ROOT");
+        }
+        test_rm_rf_recursive(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_native_activation_result_mapping(void)
+{
+    int failures = 0;
+    TEST("dev platform: dev_activation_map_result maps status/capsule/generation") {
+        struct dev_activation_result r = {0};
+        r.status = DEV_ACTIVATION_OK;
+        snprintf(r.candidate_sha256, sizeof(r.candidate_sha256),
+                "%064x", 0);
+        struct dev_activation_cycle_outcome out;
+        dev_activation_map_result(&r, &out);
+        ASSERT(out.ok);
+        ASSERT(out.capsule[0] == '\0');
+        ASSERT(strcmp(out.generation_hex, r.candidate_sha256) == 0);
+
+        memset(&r, 0, sizeof(r));
+        r.status = DEV_ACTIVATION_E_PREFLIGHT;
+        snprintf(r.failure_capsule, sizeof(r.failure_capsule),
+                "candidate preflight failed");
+        dev_activation_map_result(&r, &out);
+        ASSERT(!out.ok);
+        ASSERT(strcmp(out.capsule, "candidate preflight failed") == 0);
+
+        /* When failure_capsule is empty, verify_detail is the fallback. */
+        memset(&r, 0, sizeof(r));
+        r.status = DEV_ACTIVATION_E_ACTIVATE;
+        snprintf(r.verify_detail, sizeof(r.verify_detail),
+                "activation probe did not become ready");
+        dev_activation_map_result(&r, &out);
+        ASSERT(!out.ok);
+        ASSERT(strcmp(out.capsule, "activation probe did not become ready") == 0);
+
+        /* NULL result -> zeroed, never-ok outcome, never a crash. */
+        dev_activation_map_result(NULL, &out);
+        ASSERT(!out.ok);
+        ASSERT(out.capsule[0] == '\0');
+        ASSERT(out.generation_hex[0] == '\0');
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_dev_platform(void)
 {
     int failures = 0;
@@ -368,6 +527,9 @@ int test_dev_platform(void)
     failures += test_core_refusal_token();
     failures += test_public_app_abi();
     failures += test_social_sim();
+    failures += test_native_activation_switch();
+    failures += test_native_activation_request_builder();
+    failures += test_native_activation_result_mapping();
     printf("=== dev_platform: %d failures ===\n", failures);
     return failures;
 }

@@ -309,6 +309,81 @@ static void hex_encode32(const uint8_t in[32], char out[65])
 }
 #endif
 
+/* ── Wave 3.2 native activation engine — dev-lane wiring (pure glue) ────
+ * These three functions are declared in devloop.h; the guard there matches
+ * this one (ZCL_DEV_BUILD || ZCL_TESTING) so the hermetic test harness can
+ * exercise them directly without a fake ops vtable — none of them execs a
+ * process or performs I/O beyond getenv(). The actual engine call
+ * (dev_activation_run / dev_activation_default_ops, both real-process-exec)
+ * stays confined to the ZCL_DEV_BUILD-only zcl_devloop_run_cycle() body
+ * below. */
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+bool dev_activation_native_enabled(void)
+{
+    const char *v = getenv("ZCL_DEV_NATIVE_ACTIVATION");
+    if (!v || !v[0])
+        return false;
+    return strcmp(v, "1") == 0 || strcmp(v, "true") == 0 ||
+           strcmp(v, "yes") == 0;
+}
+
+bool dev_activation_request_from_cycle(const char *repo_root,
+                                       const char *build_commit,
+                                       struct dev_activation_cycle_request *out)
+{
+    if (!repo_root || !repo_root[0] || !build_commit || !out)
+        return false;
+    const char *home = getenv("HOME");
+    if (!home || !home[0])
+        return false;
+
+    int n = snprintf(out->artifact_path, sizeof(out->artifact_path),
+                     "%s/build/bin/zclassic23-dev", repo_root);
+    if (n <= 0 || (size_t)n >= sizeof(out->artifact_path))
+        return false;
+
+    const char *gen_root_override = getenv("ZCL_DEV_GENERATION_ROOT");
+    n = (gen_root_override && gen_root_override[0])
+            ? snprintf(out->gen_root, sizeof(out->gen_root), "%s",
+                      gen_root_override)
+            : snprintf(out->gen_root, sizeof(out->gen_root),
+                      "%s/.local/lib/zclassic23-dev", home);
+    if (n <= 0 || (size_t)n >= sizeof(out->gen_root))
+        return false;
+
+    n = snprintf(out->datadir, sizeof(out->datadir), "%s/.zclassic-c23-dev",
+                home);
+    if (n <= 0 || (size_t)n >= sizeof(out->datadir))
+        return false;
+
+    memset(&out->req, 0, sizeof(out->req));
+    out->req.repo_root = repo_root;
+    out->req.artifact_path = out->artifact_path;
+    out->req.build_commit = build_commit;
+    out->req.build_type = "fast";
+    out->req.gen_root = out->gen_root;
+    out->req.datadir = out->datadir;
+    out->req.unit = "zcl23-dev.service";
+    out->req.rpcport = 18252;
+    out->req.mode = DEV_ACTIVATION_MODE_ACTIVATE;
+    return true;
+}
+
+void dev_activation_map_result(const struct dev_activation_result *r,
+                               struct dev_activation_cycle_outcome *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (!r)
+        return;
+    out->ok = (r->status == DEV_ACTIVATION_OK);
+    const char *capsule = r->failure_capsule[0] ? r->failure_capsule
+                          : r->verify_detail[0] ? r->verify_detail : "";
+    snprintf(out->capsule, sizeof(out->capsule), "%s", capsule);
+    snprintf(out->generation_hex, sizeof(out->generation_hex), "%s",
+            r->candidate_sha256);
+}
+#endif /* ZCL_DEV_BUILD || ZCL_TESTING */
+
 int zcl_devloop_run_sim(const char *repo_root)
 {
 #ifndef ZCL_DEV_BUILD
@@ -497,6 +572,56 @@ static int finish_cycle(const struct zcl_devloop_plan *plan,
  * path and the persistent watcher — both funnel through
  * zcl_devloop_run_cycle(). No subprocess is launched: the caller returns here
  * BEFORE any hotswap/reload publish step. */
+#ifdef ZCL_DEV_BUILD
+/* Recompute the build-commit stamp the exact way
+ * tools/dev/deploy-dev-lane.sh:build_candidate() does: refresh the index,
+ * take the short HEAD hash, append "-dirty" iff the tracked tree differs
+ * from HEAD. ZCL_DEV_BUILD_COMMIT_OVERRIDE takes precedence when set (same
+ * override name the shell path honors). Every step is a fixed-argv exec via
+ * zcl_devloop_process_run — never a shell string. Returns false when git is
+ * unavailable or its output cannot be parsed; the caller falls back to the
+ * shell transactional-reload path in that case. */
+static bool resolve_build_commit(const char *root, char out[128])
+{
+    const char *override = getenv("ZCL_DEV_BUILD_COMMIT_OVERRIDE");
+    if (override && override[0]) {
+        int n = snprintf(out, 128, "%s", override);
+        return n > 0 && n < 128;
+    }
+
+    struct zcl_devloop_process_result refresh = {0};
+    const char *refresh_argv[] = {
+        "git", "update-index", "-q", "--refresh", NULL
+    };
+    (void)zcl_devloop_process_run(root, refresh_argv, 15000, &refresh);
+
+    struct zcl_devloop_process_result rev = {0};
+    const char *rev_argv[] = { "git", "rev-parse", "--short", "HEAD", NULL };
+    if (!zcl_devloop_process_run(root, rev_argv, 15000, &rev) ||
+        !result_ok(&rev) || rev.output_len == 0)
+        return false;
+    char hash[64];
+    size_t hn = rev.output_len;
+    while (hn > 0 && (rev.output[hn - 1] == '\n' || rev.output[hn - 1] == '\r'))
+        hn--;
+    if (hn == 0 || hn >= sizeof(hash))
+        return false;
+    memcpy(hash, rev.output, hn);
+    hash[hn] = 0;
+
+    struct zcl_devloop_process_result dirty = {0};
+    const char *dirty_argv[] = {
+        "git", "diff-index", "--quiet", "HEAD", "--", NULL
+    };
+    bool is_dirty = !zcl_devloop_process_run(root, dirty_argv, 15000, &dirty) ||
+                    dirty.timed_out || dirty.term_signal != 0 ||
+                    dirty.exit_code != 0;
+
+    int n = snprintf(out, 128, "%s%s", hash, is_dirty ? "-dirty" : "");
+    return n > 0 && n < 128;
+}
+#endif /* ZCL_DEV_BUILD */
+
 static int emit_refusal(const char *const *files, size_t file_count)
 {
     char body[16384], path[PATH_MAX];
@@ -659,10 +784,63 @@ int zcl_devloop_run_cycle(const char *repo_root,
     }
 
 transactional_reload:
+    /* Wave 3.2: ZCL_DEV_NATIVE_ACTIVATION=1 routes this cycle through the
+     * native transactional activation engine (dev_activation_run()) instead
+     * of shelling out to deploy-dev-lane.sh. The build step is common to
+     * both paths (`make fast-rebuild`); only what happens to the freshly
+     * built artifact afterward differs. Default OFF — see
+     * dev_activation_native_enabled() in devloop.h for why this is a
+     * runtime env check rather than a second compile-time gate. */
+    if (dev_activation_native_enabled()) {
+        const char *build_argv[] = {
+            "make", "--no-print-directory", "fast-rebuild", NULL
+        };
+        if (!zcl_devloop_process_run(root, build_argv, 600000, &result) ||
+            !result_ok(&result)) {
+            output_capsule(&result, capsule);
+            return finish_cycle(&plan, files, file_count, "rejected",
+                                "transactional_reload", started_us,
+                                capsule[0] ? capsule : "fast-rebuild failed",
+                                root, NULL);
+        }
+
+        char build_commit[128];
+        struct dev_activation_cycle_request creq;
+        if (resolve_build_commit(root, build_commit) &&
+            dev_activation_request_from_cycle(root, build_commit, &creq)) {
+            struct dev_activation_ops ops;
+            dev_activation_default_ops(&creq.req, &ops);
+            struct dev_activation_result ar = {0};
+            dev_activation_run(&creq.req, &ops, &ar);
+
+            struct dev_activation_cycle_outcome outcome;
+            dev_activation_map_result(&ar, &outcome);
+            if (outcome.ok)
+                return finish_cycle(&plan, files, file_count, "passed",
+                                    "transactional_reload", started_us, "",
+                                    root, outcome.generation_hex[0]
+                                          ? outcome.generation_hex : NULL);
+            return finish_cycle(&plan, files, file_count, "rejected",
+                                "transactional_reload", started_us,
+                                outcome.capsule[0] ? outcome.capsule
+                                    : "native activation failed",
+                                root, NULL);
+        }
+        /* A precondition the native engine cannot itself satisfy (HOME
+         * unset, git unavailable/unparsable) — fall through to the proven
+         * shell path below, which re-derives the same inputs its own way
+         * and has its own fast-rebuild call (idempotent after the one just
+         * run above). */
+        fprintf(stderr,
+                "[devloop] native activation preconditions unmet; falling "
+                "back to the shell transactional-reload path\n");
+    }
+
     /* Compatibility backend during the native activation extraction.  The
      * LLM-facing plane is already C-only; this fixed argv is never a shell
      * interpolation surface and preserves the proven transactional rollback
-     * behavior until dev_activation.c owns it directly. */
+     * behavior until ZCL_DEV_NATIVE_ACTIVATION is the default (see
+     * docs/work/HOTSWAP.md). */
     const char *reload_argv[] = {
         "make", "--no-print-directory", "agent-deploy-fast", NULL
     };

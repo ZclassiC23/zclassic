@@ -115,6 +115,86 @@ size_t zcl_devloop_app_plan_json(const char *repo_root, const char *app_id,
 size_t zcl_devloop_app_simulate_json(const char *app_id, uint64_t seed,
                                      char *out, size_t out_sz);
 
+/* ── Wave 3.2 native activation engine — dev-lane wiring ───────────────
+ *
+ * devloop_cycle.c's transactional_reload site (the RELOAD action's finish
+ * line) and native_dev_command.c's dev.vcs.revert relink seam both need to
+ * decide, per cycle, whether to drive the native transactional activation
+ * engine (tools/dev/dev_activation.h: dev_activation_run() /
+ * dev_activation_activate_generation()) or keep shelling out to the proven
+ * `make agent-deploy-fast` path. The three helpers below are the shared,
+ * pure (no process exec, no disk I/O beyond getenv()) glue both call sites
+ * use to make that decision and build/interpret the engine's request and
+ * result -- see docs/work/HOTSWAP.md "Transactional reload: native engine".
+ *
+ * Guarded the same way dev_activation.h's own entry points are
+ * (ZCL_DEV_BUILD || ZCL_TESTING): a release build sees no declaration at
+ * all, and the hermetic ZCL_TESTING harness can unit-test the pure builders
+ * directly (no fake ops vtable needed -- they never call one). */
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+#include <limits.h>
+
+#include "dev_activation.h"
+
+#ifndef PATH_MAX
+#define PATH_MAX 4096
+#endif
+
+/* True iff ZCL_DEV_NATIVE_ACTIVATION selects the native engine for this
+ * process instead of the shell path. A RUNTIME env check, not a second
+ * compile-time gate: the whole engine already compiles only into
+ * ZCL_DEV_BUILD/ZCL_TESTING binaries, so gating it a second way at compile
+ * time would only let one flag value exist per already-built binary. A
+ * runtime check matches the idiom the dev lane already uses for adjacent
+ * A/B switches (ZCL_DEV_USE_PREBUILT, ZCL_DEV_SKIP_BUILD in
+ * deploy-dev-lane.sh) and lets one already-deployed zclassic23-dev flip
+ * between the native engine and the proven shell path with no rebuild.
+ * Default OFF (unset, empty, or any value other than "1"/"true"/"yes"):
+ * today's `make agent-deploy-fast` shell path runs byte-identically. */
+bool dev_activation_native_enabled(void);
+
+/* Caller-owned storage backing a struct dev_activation_request built by
+ * dev_activation_request_from_cycle() below -- the struct's string fields
+ * point directly into these buffers (and, for repo_root/build_commit, into
+ * the caller's own arguments), so `out` must outlive any use of out->req. */
+struct dev_activation_cycle_request {
+    struct dev_activation_request req;
+    char artifact_path[PATH_MAX];
+    char gen_root[PATH_MAX];
+    char datadir[PATH_MAX];
+};
+
+/* Build *out from the dev lane's fixed constants -- the exact values
+ * tools/dev/deploy-dev-lane.sh hard-codes (GEN_ROOT defaulting to
+ * ~/.local/lib/zclassic23-dev, DEV_DATADIR ~/.zclassic-c23-dev, UNIT
+ * zcl23-dev.service, DEV_RPCPORT 18252, build_type "fast") plus the
+ * fast-lane artifact at <repo_root>/build/bin/zclassic23-dev. Pure: reads
+ * only HOME and ZCL_DEV_GENERATION_ROOT, never touches disk beyond that and
+ * never spawns a process. `repo_root` and `build_commit` are stored by
+ * pointer (not copied) and must outlive `out`; `build_commit` may be ""
+ * (dev_activation's preflight skips the build-commit comparison when
+ * empty) but not NULL. Returns false, leaving *out unusable, iff HOME is
+ * unset/empty or an argument is NULL/oversized. */
+bool dev_activation_request_from_cycle(const char *repo_root,
+                                       const char *build_commit,
+                                       struct dev_activation_cycle_request *out);
+
+/* Outcome of a completed dev_activation_result, mapped into the shape
+ * finish_cycle()/the vcs.vcs.revert reply need: pass/fail plus a short
+ * human-readable failure capsule and the candidate's generation hex (the
+ * ZVCS auto-anchor's generation binding -- see devloop_cycle.c:finish_cycle
+ * and vcs.h's generation_sha256). */
+struct dev_activation_cycle_outcome {
+    bool ok;
+    char capsule[256];
+    char generation_hex[65];
+};
+
+/* Pure: maps `r` into `out`. `r` NULL => *out zeroed (ok=false). */
+void dev_activation_map_result(const struct dev_activation_result *r,
+                               struct dev_activation_cycle_outcome *out);
+#endif /* ZCL_DEV_BUILD || ZCL_TESTING */
+
 #ifdef __cplusplus
 }
 #endif
