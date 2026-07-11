@@ -229,6 +229,10 @@ AGENT_IMPACT_RULE("app/services/src/rolling_anchor_service.c|app/services/includ
 AGENT_IMPACT_RULE("app/services/src/mirror_divergence_locator.c", "mirror_divergence_locator oracle_policy make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/block_pruning_service.c", "block_pruning make_lint_gates")
 
+/* Wave 4 (2026-07-11): golden tests for the source+binary revert round-trip
+ * and the dev-cycle classify->prove->publish pipeline. */
+AGENT_IMPACT_RULE("lib/test/src/test_golden_*.c", "golden_revert_roundtrip golden_dev_cycle vcs_core vcs_devloop dev_activation dev_platform make_lint_gates")
+
 /* Instant dev loop Wave 1/2 (2026-07-10): Tier-1 hot-swap surfaces.
  * Wave 3.1 (2026-07-11): the hot-swap-eligible MCP controller TUs — editing
  * one must run the hot-swap groups (a bad edit can break its generation .so

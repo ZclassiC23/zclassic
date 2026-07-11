@@ -188,9 +188,17 @@ bool vcs_seal_grant_unseal(struct vcs_index *idx,
     return true;
 }
 
-enum vcs_seal_result vcs_seal_check(struct vcs_index *idx,
-                                    const uint8_t new_sealset[32])
+/* Shared read-only decision: OK when new_sealset==pin (or no pin yet), OK
+ * when a token authorizing exactly new_sealset exists, REFUSED otherwise.
+ * Never mutates the index. `*out_token_matched` (if non-NULL) reports
+ * whether the OK verdict came from a matching token that a caller wanting
+ * the consuming behavior (vcs_seal_check) still needs to spend. */
+static enum vcs_seal_result seal_decide(struct vcs_index *idx,
+                                        const uint8_t new_sealset[32],
+                                        bool *out_token_matched)
 {
+    if (out_token_matched)
+        *out_token_matched = false;
     if (!idx || !new_sealset)
         return VCS_SEAL_ERROR;
 
@@ -213,6 +221,19 @@ enum vcs_seal_result vcs_seal_check(struct vcs_index *idx,
     if (!have_token || tlen != 32 || memcmp(token, new_sealset, 32) != 0)
         return VCS_SEAL_REFUSED;
 
+    if (out_token_matched)
+        *out_token_matched = true;
+    return VCS_SEAL_OK;
+}
+
+enum vcs_seal_result vcs_seal_check(struct vcs_index *idx,
+                                    const uint8_t new_sealset[32])
+{
+    bool token_matched = false;
+    enum vcs_seal_result r = seal_decide(idx, new_sealset, &token_matched);
+    if (r != VCS_SEAL_OK || !token_matched)
+        return r;
+
     /* Valid one-shot token: consume it and allow. */
     if (!vcs_index_begin(idx))
         return VCS_SEAL_ERROR;
@@ -223,4 +244,10 @@ enum vcs_seal_result vcs_seal_check(struct vcs_index *idx,
     if (!vcs_index_commit(idx))
         return VCS_SEAL_ERROR;
     return VCS_SEAL_OK;
+}
+
+enum vcs_seal_result vcs_seal_peek(struct vcs_index *idx,
+                                   const uint8_t new_sealset[32])
+{
+    return seal_decide(idx, new_sealset, NULL);
 }

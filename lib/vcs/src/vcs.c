@@ -503,6 +503,41 @@ int vcs_revert(struct vcs_repo *r, const uint8_t target_commit[32],
     if (!manifest_load(r->root, tc.tree_hash, &target))
         LOG_ERR("vcs", "load target manifest");
 
+    /* Seal pre-check, BEFORE any worktree file is touched. A full revert
+     * converges the worktree to exactly the target manifest over tracked,
+     * non-ignored paths, so the sealset the target manifest produces is the
+     * same one vcs_snapshot() below will (authoritatively, and consuming any
+     * token) recompute once the write has happened. Without this pre-check a
+     * revert refused for touching a sealed path would still have silently
+     * overwritten that sealed file's on-disk bytes with unauthorized content
+     * before vcs_snapshot() got a chance to say no — this mirrors
+     * vcs_snapshot's own vcs_seal_check() guard (see there), just moved
+     * earlier and non-consuming (vcs_seal_peek) so a legitimately
+     * token-authorized revert still lets vcs_snapshot() spend the token
+     * exactly once. */
+    char **seal_globs = NULL;
+    size_t n_seal_globs = 0;
+    if (!vcs_seal_load_globs(r->root, &seal_globs, &n_seal_globs)) {
+        vcs_manifest_free(&target);
+        LOG_ERR("vcs", "load globs (revert seal pre-check)");
+    }
+    uint8_t target_sealset[32];
+    bool tsh = vcs_sealset_hash(&target, seal_globs, n_seal_globs, target_sealset);
+    vcs_seal_free_globs(seal_globs, n_seal_globs);
+    if (!tsh) {
+        vcs_manifest_free(&target);
+        LOG_ERR("vcs", "sealset_hash (revert seal pre-check)");
+    }
+    enum vcs_seal_result presr = vcs_seal_peek(r->idx, target_sealset);
+    if (presr == VCS_SEAL_REFUSED) {
+        vcs_manifest_free(&target);
+        return VCS_REFUSED;
+    }
+    if (presr != VCS_SEAL_OK) {
+        vcs_manifest_free(&target);
+        LOG_ERR("vcs", "seal pre-check error");
+    }
+
     /* Current worktree manifest. */
     struct vcs_manifest cur;
     if (!vcs_manifest_build(r->root, r->idx, &cur)) {
