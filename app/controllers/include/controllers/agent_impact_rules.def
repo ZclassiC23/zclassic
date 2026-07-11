@@ -224,8 +224,9 @@ AGENT_IMPACT_RULE("tools/dev/agent-dev-status.sh|tools/dev/agent-doctor.sh|app/c
 AGENT_IMPACT_RULE("tools/dev/generate-compdb.sh|tools/dev/dev-loop-bench.sh", "syncdiag_rpc mcp_controllers make_lint_gates")
 AGENT_IMPACT_RULE("tools/dev/hotswap-running-dev.sh", "dev_mcp_rpc_bridge hotswap_loader hotswap_simnet mcp_router mcp_controllers make_lint_gates")
 AGENT_IMPACT_RULE("tools/mcp/dev_rpc_bridge.c|tools/mcp/dev_rpc_bridge.h|config/src/boot_services.c|lib/test/src/test_dev_mcp_rpc_bridge.c", "dev_mcp_rpc_bridge hotswap_loader mcp_router mcp_controllers rpc make_lint_gates")
-AGENT_IMPACT_RULE("config/commands/*|config/include/config/command_catalog.h|config/src/command_catalog.c|lib/kernel/src/command_registry.c|lib/kernel/include/kernel/command_registry.h|tools/command/*|lib/test/src/test_command_registry_catalog.c", "command_registry_catalog command_handler_snapshot dev_platform make_lint_gates")
-AGENT_IMPACT_RULE("lib/test/src/test_command_handler_snapshot.c", "command_handler_snapshot command_registry_catalog make_lint_gates")
+AGENT_IMPACT_RULE("config/commands/*|config/include/config/command_catalog.h|config/src/command_catalog.c|lib/kernel/src/command_registry.c|lib/kernel/include/kernel/command_registry.h|tools/command/*|lib/test/src/test_command_registry_catalog.c", "command_registry_catalog native_api_contract command_handler_snapshot dev_platform make_lint_gates")
+AGENT_IMPACT_RULE("lib/test/src/test_command_handler_snapshot.c", "command_handler_snapshot command_registry_catalog native_api_contract make_lint_gates")
+AGENT_IMPACT_RULE("lib/test/src/test_native_api_contract.c|docs/API_REFERENCE.md", "native_api_contract command_registry_catalog make_lint_gates")
 
 /* W0-A (2026-07-11): re-homed transport-neutral handler bodies — the same
  * composition serves the MCP controllers (thin wrappers, byte-identical) and
