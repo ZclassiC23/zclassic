@@ -87,6 +87,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(mcp_baseline) X(hotswap_loader) X(hotswap_simnet) X(dev_platform) \
     X(dev_activation) \
     X(command_registry_catalog) \
+    X(command_handler_snapshot) \
     X(metric_alerts) \
     X(mcp_inproc_equiv) \
     X(mcp_e2e) X(mcp_notify) X(db_validators) X(peer_scoring) X(peer_bandwidth) \
