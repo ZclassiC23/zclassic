@@ -8,7 +8,9 @@
 #include "sim/social_app_sim.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 static int route_handler(const struct zcl_app_request_v1 *request,
                          struct zcl_app_mut_bytes *response,
@@ -115,6 +117,173 @@ static int test_change_classification(void)
     return failures;
 }
 
+/* Read the persisted native-cycle verdict from <home>/.local/state/... into
+ * buf; returns byte count or 0. */
+static size_t read_native_cycle(const char *home, char *buf, size_t cap)
+{
+    char path[1024];
+    int n = snprintf(path, sizeof(path),
+                     "%s/.local/state/zclassic23-dev/native-cycle.json", home);
+    if (n <= 0 || (size_t)n >= sizeof(path))
+        return 0;
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return 0;
+    size_t rn = fread(buf, 1, cap - 1, f);
+    fclose(f);
+    buf[rn] = 0;
+    return rn;
+}
+
+static int test_core_classification(void)
+{
+    int failures = 0;
+    TEST("dev platform: sealed core is classified sealed + heaviest-proof") {
+        struct zcl_devloop_plan plan;
+
+        /* A file under core/ is sealed AND consensus_risk (heaviest proof),
+         * routed reload — never hotswap. */
+        const char *core[] = { "core/consensus/src/check_block.c" };
+        ASSERT(zcl_devloop_plan_files(core, 1, &plan));
+        ASSERT(plan.sealed_core);
+        ASSERT(plan.consensus_risk);
+        ASSERT(plan.action == ZCL_DEVLOOP_RELOAD);
+
+        /* core/math is sealed too — broader than the legacy consensus_risk
+         * prefix list, which never named it. */
+        const char *math[] = { "core/math/src/uint256.c" };
+        ASSERT(zcl_devloop_plan_files(math, 1, &plan));
+        ASSERT(plan.sealed_core);
+        ASSERT(plan.consensus_risk);
+
+        /* A non-core consensus-risk file (lib/validation/...) is NOT sealed:
+         * today's behavior is unchanged — heavy proof, still auto-publishes. */
+        const char *val[] = { "lib/validation/src/sighash.c" };
+        ASSERT(zcl_devloop_plan_files(val, 1, &plan));
+        ASSERT(!plan.sealed_core);
+        ASSERT(plan.consensus_risk);
+        ASSERT(plan.action == ZCL_DEVLOOP_RELOAD);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_core_refusal_envelope(void)
+{
+    int failures = 0;
+    TEST("dev platform: refusal envelope names paths + elevated procedure") {
+        /* Mixed set: only the sealed member appears in "paths". */
+        const char *mixed[] = {
+            "core/consensus/src/check_block.c", "docs/notes.md"
+        };
+        char body[4096];
+        size_t n = zcl_devloop_refusal_json(mixed, 2, body, sizeof(body));
+        ASSERT(n > 0 && n < sizeof(body));
+
+        struct json_value root = {0};
+        ASSERT(json_read(&root, body, n));
+        ASSERT(strcmp(json_get_str(json_get(&root, "schema")),
+                      "zcl.dev_cycle.v1") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&root, "status")),
+                      "refused") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&root, "reason")),
+                      "sealed_consensus_core") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&root, "manifest")),
+                      "core/MANIFEST.sha3") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&root, "law")),
+                      "docs/CONSENSUS_PARITY_DOCTRINE.md") == 0);
+        /* Sealed != frozen: the unseal command + elevated procedure must be
+         * present so an agent is never dead-ended. */
+        ASSERT(strstr(json_get_str(json_get(&root, "unseal")),
+                      "make core-unseal") != NULL);
+        ASSERT(strstr(json_get_str(json_get(&root, "elevated_procedure")),
+                      "copy-prove") != NULL);
+        json_free(&root);
+
+        /* "paths" carries the sealed file, not the doc. */
+        ASSERT(strstr(body, "core/consensus/src/check_block.c") != NULL);
+        ASSERT(strstr(body, "docs/notes.md") == NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_core_refusal_cycle(void)
+{
+    int failures = 0;
+    TEST("dev platform: a core cycle refuses (exit 3), no token = no publish") {
+        char dir[512];
+        test_make_tmpdir(dir, sizeof(dir), "core_refusal", "notoken");
+        char *saved_home = getenv("HOME");
+        saved_home = saved_home ? strdup(saved_home) : NULL;
+        setenv("HOME", dir, 1);
+
+        const char *core[] = { "core/consensus/src/check_block.c" };
+        /* repo_root = dir, which has no .core-unseal-token -> refusal. */
+        ASSERT(!zcl_devloop_unseal_token_present(dir));
+        int rc = zcl_devloop_run_cycle(dir, core, 1);
+        ASSERT(rc == 3);  /* blocked-by-precondition, before any publish */
+
+        /* The refusal was persisted as the zcl.dev_cycle.v1 verdict. */
+        char verdict[4096];
+        size_t vn = read_native_cycle(dir, verdict, sizeof(verdict));
+        ASSERT(vn > 0);
+        struct json_value v = {0};
+        ASSERT(json_read(&v, verdict, vn));
+        ASSERT(strcmp(json_get_str(json_get(&v, "status")), "refused") == 0);
+        json_free(&v);
+
+        if (saved_home) {
+            setenv("HOME", saved_home, 1);
+            free(saved_home);
+        } else {
+            unsetenv("HOME");
+        }
+        test_rm_rf_recursive(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_core_refusal_token(void)
+{
+    int failures = 0;
+    TEST("dev platform: a valid unseal token lets a core cycle proceed") {
+        char dir[512];
+        test_make_tmpdir(dir, sizeof(dir), "core_refusal", "token");
+        char *saved_home = getenv("HOME");
+        saved_home = saved_home ? strdup(saved_home) : NULL;
+        setenv("HOME", dir, 1);
+
+        /* Mint the one-shot token the owner ritual writes. */
+        char tok[1024];
+        snprintf(tok, sizeof(tok), "%s/.core-unseal-token", dir);
+        FILE *tf = fopen(tok, "w");
+        ASSERT(tf != NULL);
+        if (tf) { fputs("unsealed test\n", tf); fclose(tf); }
+        ASSERT(zcl_devloop_unseal_token_present(dir));
+
+        const char *core[] = { "core/consensus/src/check_block.c" };
+        int rc = zcl_devloop_run_cycle(dir, core, 1);
+        /* Token present -> NOT refused. It proceeds to the heavy-proof reload
+         * path; in this (non-dev) test binary that path is compiled out and
+         * returns the dev_build_required rejection (exit 1). The load-bearing
+         * assertion is simply "did NOT refuse" (rc != 3). */
+        ASSERT(rc != 3);
+
+        if (saved_home) {
+            setenv("HOME", saved_home, 1);
+            free(saved_home);
+        } else {
+            unsetenv("HOME");
+        }
+        test_rm_rf_recursive(dir);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 static int test_public_app_abi(void)
 {
     int failures = 0;
@@ -166,6 +335,10 @@ int test_dev_platform(void)
     int failures = 0;
     failures += test_menu_and_search();
     failures += test_change_classification();
+    failures += test_core_classification();
+    failures += test_core_refusal_envelope();
+    failures += test_core_refusal_cycle();
+    failures += test_core_refusal_token();
     failures += test_public_app_abi();
     failures += test_social_sim();
     printf("=== dev_platform: %d failures ===\n", failures);

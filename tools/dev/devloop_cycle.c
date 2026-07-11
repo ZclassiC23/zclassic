@@ -4,6 +4,7 @@
 #include "devloop.h"
 
 #include "platform/time_compat.h"
+#include "vcs/vcs_devloop.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -209,6 +210,103 @@ static bool build_hotswap_args(const char *artifact, const char *probe,
                      artifact, probe);
     return n > 0 && n < PATH_MAX + 256;
 }
+
+/* Extract the value of a top-level `"field":"<64 hex chars>"` member from a
+ * JSON blob without pulling in a full parser — matches the string-scan idiom
+ * this file already uses (see the `strstr(result.output, ...)` checks
+ * above). Returns false (leaving out[0]=0) if the field is absent or is not
+ * exactly 64 hex characters. */
+static bool extract_hex64_field(const char *json, const char *field,
+                                char out[65])
+{
+    out[0] = 0;
+    if (!json || !field)
+        return false;
+    char key[96];
+    int kn = snprintf(key, sizeof(key), "\"%s\"", field);
+    if (kn <= 0 || (size_t)kn >= sizeof(key))
+        return false;
+    const char *p = strstr(json, key);
+    if (!p)
+        return false;
+    p = strchr(p + strlen(key), '"');
+    if (!p)
+        return false;
+    p++;
+    const char *end = strchr(p, '"');
+    if (!end || (size_t)(end - p) != 64)
+        return false;
+    memcpy(out, p, 64);
+    out[64] = 0;
+    return true;
+}
+
+/* Best-effort generation-id lookup for a RELOAD (transactional_reload)
+ * cycle: `make agent-deploy-fast` drives tools/dev/deploy-dev-lane.sh, which
+ * writes the zcl.agent_dev_deploy.v1 state file at
+ * $HOME/.zclassic-c23-dev/agent-deploy.json on every activation attempt.
+ * candidate_sha256 is a bare 64-hex sha256 of the built binary;
+ * running_generation is "gen-<64 hex>" or "legacy-<64 hex>" once activation
+ * verifies the running process matches. Absence of HOME, the file, or
+ * either field is not an error here — the cycle still anchors, just with an
+ * all-zero generation binding (finish_cycle passes NULL onward). */
+static bool read_reload_generation(char out[65])
+{
+    out[0] = 0;
+    const char *home = getenv("HOME");
+    if (!home || !home[0])
+        return false;
+    char path[PATH_MAX];
+    int n = snprintf(path, sizeof(path),
+                     "%s/.zclassic-c23-dev/agent-deploy.json", home);
+    if (n <= 0 || (size_t)n >= sizeof(path))
+        return false;
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return false;
+    char buf[8192];
+    size_t rn = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[rn] = 0;
+
+    if (extract_hex64_field(buf, "candidate_sha256", out))
+        return true;
+
+    /* running_generation carries a "gen-"/"legacy-" prefix, so it never
+     * matches extract_hex64_field's bare-64-hex expectation directly; strip
+     * the prefix by hand before comparing lengths. */
+    const char *key = "\"running_generation\"";
+    const char *p = strstr(buf, key);
+    if (!p)
+        return false;
+    p = strchr(p + strlen(key), '"');
+    if (!p)
+        return false;
+    p++;
+    const char *end = strchr(p, '"');
+    if (!end)
+        return false;
+    if ((size_t)(end - p) > 4 && memcmp(p, "gen-", 4) == 0)
+        p += 4;
+    else if ((size_t)(end - p) > 7 && memcmp(p, "legacy-", 7) == 0)
+        p += 7;
+    if ((size_t)(end - p) != 64)
+        return false;
+    memcpy(out, p, 64);
+    out[64] = 0;
+    return true;
+}
+
+/* Hex-encode a 32-byte commit id for the `"vcs_commit"` verdict field. */
+static void hex_encode32(const uint8_t in[32], char out[65])
+{
+    static const char digits[] = "0123456789abcdef";
+    for (size_t i = 0; i < 32; i++) {
+        out[2 * i]     = digits[(in[i] >> 4) & 0xf];
+        out[2 * i + 1] = digits[in[i] & 0xf];
+    }
+    out[64] = 0;
+}
 #endif
 
 int zcl_devloop_run_sim(const char *repo_root)
@@ -245,10 +343,22 @@ int zcl_devloop_run_sim(const char *repo_root)
 #endif
 }
 
+/* ZVCS auto-anchor outcome for this cycle's verdict JSON. Populated
+ * unconditionally (zero-valued when the anchor was never attempted — e.g. a
+ * non-"passed" verdict, or a release build), so cycle_json() needs no
+ * ZCL_DEV_BUILD conditional of its own. */
+struct vcs_anchor_fields {
+    bool attempted;
+    char commit_hex[65];  /* set iff the snapshot committed */
+    char error[256];      /* set iff attempted and not committed */
+    bool sealed_refusal;  /* true iff refused for touching a sealed path */
+};
+
 static size_t cycle_json(const struct zcl_devloop_plan *plan,
                          const char *const *files, size_t file_count,
                          const char *status, const char *phase,
                          int64_t elapsed_ms, const char *capsule,
+                         const struct vcs_anchor_fields *vcs,
                          char *out, size_t out_sz)
 {
     size_t pos = 0;
@@ -276,8 +386,22 @@ static size_t cycle_json(const struct zcl_devloop_plan *plan,
         !append_string(out, out_sz, &pos,
                        strcmp(status, "passed") == 0
                             ? "keep editing; native watch owns the next cycle"
-                            : "zclassic23-dev dev diagnose latest") ||
-        !appendf(out, out_sz, &pos, "}"))
+                            : "zclassic23-dev dev diagnose latest"))
+        return 0;
+    if (vcs && vcs->attempted) {
+        if (vcs->commit_hex[0] &&
+            (!appendf(out, out_sz, &pos, ",\"vcs_commit\":") ||
+             !append_string(out, out_sz, &pos, vcs->commit_hex)))
+            return 0;
+        if (vcs->error[0] &&
+            (!appendf(out, out_sz, &pos, ",\"vcs_error\":") ||
+             !append_string(out, out_sz, &pos, vcs->error)))
+            return 0;
+        if (vcs->sealed_refusal &&
+            !appendf(out, out_sz, &pos, ",\"vcs_sealed_refusal\":true"))
+            return 0;
+    }
+    if (!appendf(out, out_sz, &pos, "}"))
         return 0;
     return pos;
 }
@@ -285,12 +409,56 @@ static size_t cycle_json(const struct zcl_devloop_plan *plan,
 static int finish_cycle(const struct zcl_devloop_plan *plan,
                         const char *const *files, size_t file_count,
                         const char *status, const char *phase,
-                        int64_t started_us, const char *capsule)
+                        int64_t started_us, const char *capsule,
+                        const char *repo_root, const char *generation_hex)
 {
     char body[16384], path[PATH_MAX];
     int64_t elapsed_ms = (platform_time_monotonic_us() - started_us) / 1000;
+
+    /* Auto-anchor on green (Wave 2.3): every "passed" verdict gets a ZVCS
+     * snapshot binding the source tree to this verdict + the binary
+     * generation it produced. Fail-open by construction: vcs_devloop never
+     * uses a process-terminating LOG_* macro, so a ZVCS problem can only
+     * ever change what lands in the "vcs_commit"/"vcs_error" verdict
+     * fields below, never the cycle's own pass/fail outcome. */
+    struct vcs_anchor_fields vcsf = {0};
+#ifdef ZCL_DEV_BUILD
+    if (strcmp(status, "passed") == 0 && repo_root && repo_root[0]) {
+        struct vcs_devloop_verdict v = {0};
+        v.verdict_status = 0;
+        v.phase = phase;
+        v.elapsed_ms = elapsed_ms;
+        v.generation_hex = (generation_hex && generation_hex[0]) ? generation_hex : NULL;
+        v.agent_id = getenv("ZCL_AGENT_ID");
+        v.session_id = getenv("ZCL_SESSION_ID");
+        v.task_ref = getenv("ZCL_TASK_REF");
+
+        struct vcs_devloop_anchor_result ar;
+        vcs_devloop_anchor_cycle(repo_root, &v, &ar);
+        vcsf.attempted = true;
+        switch (ar.status) {
+        case VCS_DEVLOOP_ANCHOR_OK:
+            hex_encode32(ar.commit_id, vcsf.commit_hex);
+            break;
+        case VCS_DEVLOOP_ANCHOR_REFUSED:
+            vcsf.sealed_refusal = true;
+            snprintf(vcsf.error, sizeof(vcsf.error), "%s", ar.error);
+            break;
+        case VCS_DEVLOOP_ANCHOR_ERROR:
+        default:
+            snprintf(vcsf.error, sizeof(vcsf.error), "%s", ar.error);
+            fprintf(stderr, "[devloop] vcs auto-anchor failed (fail-open): %s\n",
+                    ar.error);
+            break;
+        }
+    }
+#else
+    (void)repo_root;
+    (void)generation_hex;
+#endif
+
     size_t len = cycle_json(plan, files, file_count, status, phase,
-                            elapsed_ms, capsule, body, sizeof(body));
+                            elapsed_ms, capsule, &vcsf, body, sizeof(body));
     if (len == 0) {
         fprintf(stderr, "[devloop] cycle verdict exceeded its bounded buffer\n");
         return 1;
@@ -304,6 +472,31 @@ static int finish_cycle(const struct zcl_devloop_plan *plan,
     return strcmp(status, "passed") == 0 ? 0 : 1;
 }
 
+/* Wave 2.4 core refusal: emit the structured sealed-core refusal envelope
+ * (stdout + the persisted zcl.dev_cycle.v1 verdict) and return CLI exit 3
+ * (blocked-by-precondition). Reused by both the one-shot `dev change cycle`
+ * path and the persistent watcher — both funnel through
+ * zcl_devloop_run_cycle(). No subprocess is launched: the caller returns here
+ * BEFORE any hotswap/reload publish step. */
+static int emit_refusal(const char *const *files, size_t file_count)
+{
+    char body[16384], path[PATH_MAX];
+    size_t len = zcl_devloop_refusal_json(files, file_count, body,
+                                          sizeof(body) - 2);
+    if (len == 0) {
+        fprintf(stderr,
+                "[devloop] sealed-core refusal envelope exceeded its buffer\n");
+        return 3;  /* still refuse — never fall through to publish */
+    }
+    body[len++] = '\n';
+    body[len] = 0;
+    if (native_state_path(path) && !write_atomic(path, body, len))
+        fprintf(stderr, "[devloop] could not persist refusal verdict\n");
+    fwrite(body, 1, len, stdout);
+    fflush(stdout);
+    return 3;
+}
+
 int zcl_devloop_run_cycle(const char *repo_root,
                           const char *const *files,
                           size_t file_count)
@@ -314,20 +507,49 @@ int zcl_devloop_run_cycle(const char *repo_root,
         fprintf(stderr, "[devloop] cycle: invalid changed-file set\n");
         return 2;
     }
+
+    /* Core refusal, BEFORE any publish and BEFORE the dev-build gate (a
+     * release binary refuses identically). A changed-file set touching the
+     * sealed consensus core (core/ — what core/MANIFEST.sha3 pins) is
+     * structurally refused from the autonomous fast path unless the owner
+     * unseal ritual left a valid one-shot .core-unseal-token at the repo root.
+     *
+     * Token semantics (see zcl_devloop_unseal_token_present): the token is
+     * checked read-only and NEVER consumed here. `make core-seal` consumes it
+     * when the sealed edit lands, so one `make core-unseal` authorizes exactly
+     * one landed commit — which may cover several iterative dev-cycles while
+     * the author converges the fix — not one dev-cycle. With the token
+     * present the cycle proceeds and (because zcl_devloop_plan_files marks any
+     * sealed file consensus_risk) routes to the heaviest proof path, exactly
+     * as a lib/validation edit does today. Sealed != frozen: the refusal
+     * envelope always names the elevated procedure. */
+    if (plan.sealed_core) {
+        if (!zcl_devloop_unseal_token_present(repo_root))
+            return emit_refusal(files, file_count);
+        fprintf(stderr,
+                "[devloop] sealed consensus core: unseal token present at "
+                "%s/.core-unseal-token — seal lifted for THIS cycle; routing "
+                "to the heaviest proof path. The token is consumed by "
+                "'make core-seal' when the edit lands, so one unseal = one "
+                "landed commit, not one dev-cycle.\n",
+                (repo_root && repo_root[0]) ? repo_root : ".");
+    }
 #ifndef ZCL_DEV_BUILD
     (void)repo_root;
     return finish_cycle(&plan, files, file_count, "rejected",
                         "dev_build_required", started_us,
-                        "native mutation is compiled out of release builds");
+                        "native mutation is compiled out of release builds",
+                        NULL, NULL);
 #else
     char root[PATH_MAX];
     if (!repo_root_resolve(repo_root, root))
         return finish_cycle(&plan, files, file_count, "rejected",
                             "confinement", started_us,
-                            "repository root is not a real zclassic23 checkout");
+                            "repository root is not a real zclassic23 checkout",
+                            NULL, NULL);
     if (plan.action == ZCL_DEVLOOP_CHECK)
         return finish_cycle(&plan, files, file_count, "passed", "check",
-                            started_us, "");
+                            started_us, "", root, NULL);
 
     struct zcl_devloop_process_result result = {0};
     char capsule[1024] = {0};
@@ -343,7 +565,8 @@ int zcl_devloop_run_cycle(const char *repo_root,
             output_capsule(&result, capsule);
             return finish_cycle(&plan, files, file_count, "rejected",
                                 "sim", started_us,
-                                capsule[0] ? capsule : "fast sim runner unavailable");
+                                capsule[0] ? capsule : "fast sim runner unavailable",
+                                root, NULL);
         }
 
         char files_arg[ZCL_DEVLOOP_PATH_MAX + 16];
@@ -355,13 +578,14 @@ int zcl_devloop_run_cycle(const char *repo_root,
             !result_ok(&result)) {
             output_capsule(&result, capsule);
             return finish_cycle(&plan, files, file_count, "rejected",
-                                "build", started_us, capsule);
+                                "build", started_us, capsule, root, NULL);
         }
         char artifact[PATH_MAX];
         if (!find_artifact(root, result.output, artifact))
             return finish_cycle(&plan, files, file_count, "rejected",
                                 "build", started_us,
-                                "generation builder returned no confined artifact");
+                                "generation builder returned no confined artifact",
+                                root, NULL);
 
         const char *home = getenv("HOME");
         char bin[PATH_MAX], datadir_flag[PATH_MAX], args_json[PATH_MAX + 256];
@@ -372,7 +596,8 @@ int zcl_devloop_run_cycle(const char *repo_root,
             !build_hotswap_args(artifact, plan.probe_tool, args_json))
             return finish_cycle(&plan, files, file_count, "rejected",
                                 "confinement", started_us,
-                                "could not construct exact dev-lane invocation");
+                                "could not construct exact dev-lane invocation",
+                                root, NULL);
 
         const char *smoke_argv[] = {
             bin, datadir_flag, "-rpcport=18252", "mcpcall",
@@ -383,7 +608,8 @@ int zcl_devloop_run_cycle(const char *repo_root,
             strstr(result.output, "\"probe_error\"")) {
             output_capsule(&result, capsule);
             return finish_cycle(&plan, files, file_count, "rejected",
-                                "precommit_probe", started_us, capsule);
+                                "precommit_probe", started_us, capsule,
+                                root, NULL);
         }
 
         const char *commit_argv[] = {
@@ -394,10 +620,20 @@ int zcl_devloop_run_cycle(const char *repo_root,
             !result_ok(&result) || !strstr(result.output, "\"ok\":true")) {
             output_capsule(&result, capsule);
             return finish_cycle(&plan, files, file_count, "rejected",
-                                "resident_commit", started_us, capsule);
+                                "resident_commit", started_us, capsule,
+                                root, NULL);
         }
+        /* The route-generation id for a hotswap cycle: dev_hotswap's JSON
+         * result (same shape as zcl_agent_hotswap's, see
+         * tools/mcp/controllers/dev_hotswap_controller.c) already carries
+         * artifact_sha256 — the sha256 of the exact .so this cycle dlopen'd.
+         * Best-effort: an empty/unparsable value just means the anchor binds
+         * a zero generation, never a cycle failure. */
+        char generation_hex[65];
+        extract_hex64_field(result.output, "artifact_sha256", generation_hex);
         return finish_cycle(&plan, files, file_count, "passed",
-                            "resident_commit", started_us, "");
+                            "resident_commit", started_us, "",
+                            root, generation_hex[0] ? generation_hex : NULL);
     }
 
     /* Compatibility backend during the native activation extraction.  The
@@ -411,10 +647,18 @@ int zcl_devloop_run_cycle(const char *repo_root,
         !result_ok(&result)) {
         output_capsule(&result, capsule);
         return finish_cycle(&plan, files, file_count, "rejected",
-                            "transactional_reload", started_us, capsule);
+                            "transactional_reload", started_us, capsule,
+                            root, NULL);
     }
+    /* The generation id for a RELOAD cycle: read it back from the
+     * zcl.agent_dev_deploy.v1 state file the just-run deploy-dev-lane.sh
+     * wrote (see read_reload_generation() above). Best-effort, same
+     * fail-open contract as the hotswap path. */
+    char generation_hex[65];
+    read_reload_generation(generation_hex);
     return finish_cycle(&plan, files, file_count, "passed",
-                        "transactional_reload", started_us, "");
+                        "transactional_reload", started_us, "",
+                        root, generation_hex[0] ? generation_hex : NULL);
 #endif
 }
 

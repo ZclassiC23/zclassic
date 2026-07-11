@@ -86,7 +86,7 @@ echo "══ PR security scan: $BASE...$HEAD ══"
 #    consensus SOURCE surface only (so docs/tests/tooling naming the tokens
 #    are never flagged) and to added lines so the report is contributor-actionable.
 PARITY_TOK='versionbits|VersionBitsState|ComputeBlockVersion|ehUpgrade|eh_upgrade|nSignalBit|vbits_|equihash_n_at|equihash_k_at|BIP9|BIP8'
-PARITY_PATHS='^(core/params|lib/validation|lib/chain|lib/mining|app/jobs|core/consensus)/'
+PARITY_PATHS='^(core/params|core/chainparams|lib/validation|lib/chain|lib/mining|app/jobs|core/consensus)/'
 PARITY_HITS="$(printf '%s\n' "$ADDED_SCAN" | grep -E "$PARITY_PATHS" | grep -E "$PARITY_TOK")"
 if [ -n "$PARITY_HITS" ]; then
     add HIGH "Consensus divergence from zclassicd: a versionbits/miner-signaled/dynamic-Equihash-override mechanism is introduced in the consensus path. zclassic23 must stay bit-for-bit with zclassicd (docs/CONSENSUS_PARITY_DOCTRINE.md)."

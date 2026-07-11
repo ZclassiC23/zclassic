@@ -151,3 +151,117 @@ PASS: manifest v2 validated and the complete app route generation committed
   reload fallback; generation rejection does not. After a successful swap the
   watcher asynchronously builds and preflights an immutable binary generation
   so source and process state can converge at the next transactional reload.
+
+## ZVCS auto-anchor (Wave 2.3, power-station Pillar 2)
+
+Every "passed" `zcl.dev_cycle.v1` verdict — whether the cycle resolved to a
+Tier-1 hot-swap (`resident_commit`), a native fast/transactional reload
+(`transactional_reload`), or a docs-only `check` — now auto-anchors: the dev
+loop's `finish_cycle()` (`tools/dev/devloop_cycle.c`) calls
+`vcs_devloop_anchor_cycle()` (`lib/vcs/src/vcs_devloop.c`), which opens (or,
+on the very first call, creates) the ZVCS repo at `.zvcs/` beside `.git/` and
+takes a snapshot. The commit binds the current source tree to this cycle's
+verdict (`status`/`phase`/`elapsed_ms`), the binary generation it produced,
+and (from `ZCL_AGENT_ID`/`ZCL_SESSION_ID`/`ZCL_TASK_REF`) the agent/session/
+task that drove it — no "remember to commit" step.
+
+**Generation binding, per cycle type:**
+- Hot-swap (`resident_commit`): the `artifact_sha256` field already returned
+  by `dev_hotswap` / `zcl_agent_hotswap` (see
+  `tools/mcp/controllers/dev_hotswap_controller.c`) — the sha256 of the exact
+  `.so` this cycle `dlopen`'d.
+- Reload (`transactional_reload`): `candidate_sha256` (falling back to the
+  hex suffix of `running_generation`) read back from the
+  `zcl.agent_dev_deploy.v1` state file `tools/dev/deploy-dev-lane.sh` just
+  wrote to `$HOME/.zclassic-c23-dev/agent-deploy.json`.
+- `check` (docs-only, no build): no generation is known, so the commit binds
+  an all-zero `generation_sha256` — the source-tree/verdict binding still
+  lands.
+
+**Fail-open, with one loud exception.** A ZVCS problem (a missing `HOME`, a
+blocked `.zvcs/`, a corrupt index, ...) never fails the dev cycle: `finish_cycle`
+still returns `passed`/`rejected` exactly as it would without ZVCS, and the
+`zcl.dev_cycle.v1` verdict JSON gains one extra field —
+`"vcs_commit":"<64-hex commit id>"` on success, or `"vcs_error":"<message>"`
+on failure. The one exception that is surfaced loudly is a **sealed-path
+refusal**: editing a file under a sealed glob (see `vcs/vcs_seal.h` —
+default set `core/`, `domain/consensus/`, `lib/consensus/`, `lib/validation/`,
+`lib/chain/`, `lib/mining/`, `app/jobs/`) without a granted one-shot unseal
+token adds `"vcs_sealed_refusal":true` alongside `"vcs_error"`. At this
+integration point the refusal is **advisory only** — by the time
+`finish_cycle` runs, the cycle's own hot-swap/reload publish has already
+happened, so a refused anchor means only "this cycle's source snapshot did
+not land," not "the running binary was blocked." This ZVCS-side check remains
+as a defense-in-depth backstop; the **pre-publish core refusal** below (Wave
+2.4) is the one that structurally blocks the running binary.
+
+## Core refusal — the fast loop cannot auto-publish sealed consensus (Wave 2.4)
+
+**What an agent sees when it edits `core/`.** The top-level `core/` tree is the
+sealed consensus core (the predicates + static, height-keyed parameter tables
+that decide block/tx validity — the exact surface `core/MANIFEST.sha3` pins).
+When a dev cycle's changed-file set touches any file under `core/`, the fast
+loop **stops before any hot-swap or reload publish** and emits a structured
+refusal envelope on stdout (also persisted as the `zcl.dev_cycle.v1` verdict at
+`$HOME/.local/state/zclassic23-dev/native-cycle.json`), exiting **3**
+(blocked-by-precondition):
+
+```json
+{"schema":"zcl.dev_cycle.v1","producer":"native","status":"refused",
+ "reason":"sealed_consensus_core",
+ "paths":["core/consensus/src/pow.c"],
+ "manifest":"core/MANIFEST.sha3",
+ "law":"docs/CONSENSUS_PARITY_DOCTRINE.md",
+ "unseal":"make core-unseal REASON=... (owner-gated; see core/UNSEAL.md)",
+ "elevated_procedure":"full make ci + copy-prove + owner-gated deploy",
+ "agent_next_action":"edit outside core/, or run the owner-gated unseal ritual (make core-unseal) for a consensus-parity fix"}
+```
+
+`"paths"` lists only the sealed members that triggered the refusal (a doc or
+app file in the same edit is not named). The refusal fires on **both** the
+one-shot `dev change cycle <files>` path and the persistent `dev loop watch`
+path — both funnel through `zcl_devloop_run_cycle()`
+(`tools/dev/devloop_cycle.c`), and the check precedes even the dev-build gate,
+so a release binary refuses identically.
+
+**Sealed ≠ frozen.** The refusal is not a wall — it always names the elevated
+procedure. Consensus-parity fixes still ship routinely; they just leave the
+autonomous fast path for the owner-gated route: `make core-unseal REASON=…`
+records the reason in the append-only `core/UNSEAL.md` and mints a one-shot
+`.core-unseal-token` at the repo root, then a full `make ci` + copy-prove +
+owner-gated deploy, then `make core-seal` re-freezes the manifest.
+
+**Token interaction (one unseal = one landed commit, not one dev-cycle).** The
+fast loop checks for `.core-unseal-token` **read-only** and never mints or
+consumes it. `make core-seal` is the sole consumer (it re-freezes the manifest
+when the sealed edit lands). So a single `make core-unseal` authorizes exactly
+one *landed commit* — which may span several iterative dev-cycles while the
+author converges the fix — rather than a single dev-cycle. While the token is
+present, a `core/` cycle **proceeds** (it is not refused) and routes to the
+heaviest proof path (`consensus_parity`), because `zcl_devloop_plan_files()`
+marks any sealed file `consensus_risk` — exactly as a `lib/validation/…` edit
+is proven today; the loop logs to stderr that the seal was lifted for that
+cycle. If the loop consumed the token itself, one owner unseal would cover only
+the first of the author's iteration cycles, breaking the "one unseal = one
+landed commit" contract — hence read-only.
+
+Tests: `make t ONLY=dev_platform` — sealed-core classification (incl. `core/math`,
+which the legacy `consensus_risk` prefix list never named), the refusal
+envelope fields (status/reason/manifest/law/unseal/elevated_procedure and the
+`paths` filtering), a real `zcl_devloop_run_cycle()` over a `core/` file
+returning exit 3 with the persisted refusal verdict and no publish, and a
+minted-token cycle proceeding (not refused).
+
+**Reading the anchor log today.** There is no `dev vcs log` CLI yet (that is
+Registry Phase B / Wave 3 CLI wiring, `dev vcs snapshot|status|log|diff|revert`
+per the power-station plan) — the durable record is the `.zvcs/` directory in
+the repo root you ran the dev loop from: `.zvcs/commits.log` (self-verifying,
+newest commits at the tail; walk it with `vcs_log()`) and
+`.zvcs/objects/<2-hex>/<62-hex>` (content-addressed blobs/manifests, one per
+distinct file version). `lib/test/src/test_vcs_devloop.c` shows the exact
+`vcs_open()` + `vcs_log()` call shape used to read a commit back out.
+
+Tests: `make t ONLY=vcs_devloop` — a finish_cycle-shaped anchor call lands a
+commit with the verdict/generation binding intact, fail-open on an unwritable
+`.zvcs/`, and the sealed-refusal path. `make t ONLY=vcs_core` covers the ZVCS
+foundation (object store, manifest, index, seal) this glue sits on.

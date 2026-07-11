@@ -288,12 +288,14 @@ assert green).
   preserved headers (`"domain/consensus/…"`, `"consensus/…"`, `"core/…"`,
   `"chainparams/…"`), C/system `<…>` headers, bare siblings, or a pure leaf lib
   subsystem — **never** `lib/validation` (validation *drives* consensus, it is
-  not consensus) or any app/ shape. One grandfathered exception
-  (`core/consensus/src/check_block.c` → `"validation/sigops.h"`) is a WARN
-  ratchet note until the Pre-W5 content fix redirects it. Override
+  not consensus) or any app/ shape. The gate is **exception-free** as of the
+  Pre-W5 content fix: `check_block.c` now calls the core sigops predicate
+  instead of `"validation/sigops.h"`, and `chainparams.h` gets
+  `MESSAGE_START_SIZE` from `chain/chainparamsbase.h` instead of
+  `"net/protocol.h"`. Any forbidden include now fails HARD. Override
   `// core-boundary-ok:<tag>`. Impl: `tools/scripts/check_core_include_boundary.sh`.
 
-- **Gate #47: `check-core-seal`** (WARN/ratchet → HARD at split wave W5) — pins
+- **Gate #47: `check-core-seal`** (HARD — frozen at split wave W5) — pins
   the byte-integrity of `core/` to the SHA3-256 manifest `core/MANIFEST.sha3`
   (per-file digest + a ROOT digest over the sorted `(path, filehash)` stream).
   Any change to a sealed file changes ROOT. Regenerate with `make core-seal`;

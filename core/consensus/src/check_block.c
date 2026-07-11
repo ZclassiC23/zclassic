@@ -28,7 +28,7 @@
 #include "primitives/transaction.h"
 #include "script/script_flags.h"
 #include "util/safe_alloc.h"
-#include "validation/sigops.h"
+#include "domain/consensus/sigops.h"
 
 #include <stddef.h>
 #include <stdlib.h>
@@ -177,8 +177,18 @@ struct zcl_result domain_consensus_check_block_sigops(
 
     unsigned int n_sig_ops = 0;
     for (size_t i = 0; i < block->num_vtx; i++) {
-        n_sig_ops += (unsigned int)get_legacy_sig_op_count(
-                &block->vtx[i], DOMAIN_CONSENSUS_SIGOP_COUNT_FLAGS);
+        /* Call the core sigops predicate directly (validation/sigops.h's
+         * get_legacy_sig_op_count is only a thin wrapper over this — see
+         * lib/validation/src/sigops.c — so this is byte-for-byte identical
+         * to the pre-W5 count). The wrapper's fail-safe returned 0 on a null
+         * tx; mirror that by contributing 0 on the (unreachable here — vtx[i]
+         * is a live struct and out_count is a stack local) error path. */
+        uint64_t tx_sig_ops = 0;
+        struct zcl_result r = domain_consensus_tx_legacy_sig_op_count(
+                &block->vtx[i], DOMAIN_CONSENSUS_SIGOP_COUNT_FLAGS,
+                &tx_sig_ops);
+        if (r.ok)
+            n_sig_ops += (unsigned int)tx_sig_ops;
     }
     if (n_sig_ops > DOMAIN_MAX_BLOCK_SIGOPS) {
         set_reject(out_reject_reason, out_reject_reason_size,
