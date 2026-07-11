@@ -1317,6 +1317,8 @@ int main(int argc, char **argv)
     failures += test_sync_watchdog_conditions();
     { extern int test_sticky_conditions(void);
       failures += test_sticky_conditions(); }
+    { extern int test_validation_pack_conditions(void);
+      failures += test_validation_pack_conditions(); }
     { extern int test_sticky_escalator(void);
       failures += test_sticky_escalator(); }
     { extern int test_stall_totality_matrix(void);
