@@ -440,8 +440,12 @@ NODE_ISO_ARGS="-fsport=$FSPORT -httpsport=$HTTPSPORT -connect=$CONNECT -nolegacy
 # writes back). Missing params otherwise parks the node before the code under
 # test; a missing chainstate silently disables the tier-1b borrow the gate
 # checks for.
+# Params are read-only and mainnet always needs them — link them in EVERY
+# mode (a --light run otherwise parks at crypto_params_missing before the
+# code under test ever runs). The zclassicd-chainstate borrow bridge stays
+# like-live-only: light runs should not silently exercise the tier-1b borrow.
+[ -e "$HOME/.zcash-params" ] && ln -sfn "$HOME/.zcash-params" "$ISO_HOME/.zcash-params"
 if [ "$LIKE_LIVE" = "1" ]; then
-    [ -e "$HOME/.zcash-params" ] && ln -sfn "$HOME/.zcash-params" "$ISO_HOME/.zcash-params"
     [ -e "$HOME/.zclassic" ]     && ln -sfn "$HOME/.zclassic"     "$ISO_HOME/.zclassic"
 fi
 
