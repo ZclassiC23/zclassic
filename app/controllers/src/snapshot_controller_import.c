@@ -24,6 +24,7 @@
 #include "storage/coins_db.h"
 #include "chain/chain.h"   /* BLOCK_HAVE_DATA / BLOCK_HAVE_UNDO */
 #include "models/block.h"
+#include "models/database.h"   /* node_db_state_set_int (fast-boot cursors) */
 #include "models/utxo.h"
 #include "wallet/wallet.h"
 #include "core/serialize.h"
@@ -76,6 +77,7 @@ static void *import_block_index_thread(void *arg)
     int64_t t_start = (int64_t)platform_time_wall_time_t();
     bool tx_open = false;
     bool ok = true;
+    int max_height = -1;  /* highest imported height — seeds fast-boot cursors */
 
     /* Turbo mode */
     if (!snapshot_sql_exec_checked(&ndb, "PRAGMA synchronous=OFF",
@@ -171,6 +173,16 @@ static void *import_block_index_thread(void *arg)
         db_blk.solution = dbi.nSolution;
         db_blk.solution_len = dbi.nSolutionSize;
         db_blk.num_tx = (int)dbi.nTx;
+        /* Per-block Sprout/Sapling value deltas travel in the source
+         * CDiskBlockIndex, so populate the projection columns here instead
+         * of forcing the boot-time backfill to re-read every block body from
+         * disk. These are display/projection values (not consensus); the
+         * boot backfill computes the identical per-block delta
+         * (sapling = Σ value_balance, sprout = Σ vpub_old − vpub_new). */
+        db_blk.sapling_value = dbi.nSaplingValue;
+        db_blk.sprout_value = dbi.has_sprout_value ? dbi.nSproutValue : 0;
+        if (dbi.nHeight > max_height)
+            max_height = dbi.nHeight;
         if (a->header_only) {
             /* We have the header (incl. nSolution, so validate_headers
              * passes) but NOT the source's block files — strip the
@@ -253,6 +265,20 @@ static void *import_block_index_thread(void *arg)
         db_wrapper_close(&dbw);
         node_db_close(&ndb);
         return NULL;
+    }
+
+    /* Fast-boot cursors: the imported index carries authoritative prev_hash
+     * and per-block shielded deltas, so the normal boot's pprev-repair disk
+     * walk and shielded backfill are redundant on this datadir. Stamp both
+     * "done-through" cursors to the imported tip so boot skips those O(chain)
+     * passes and RPC binds in seconds. A datadir NOT produced by this path
+     * leaves the cursors absent (-1) and does the full work once. */
+    if (max_height >= 0) {
+        node_db_state_set_int(&ndb, "pprev_repaired_height", max_height);
+        node_db_state_set_int(&ndb, "shielded_backfill_height", max_height);
+        printf("T1: fast-boot cursors set (pprev_repaired_height=%d, "
+               "shielded_backfill_height=%d)\n", max_height, max_height);
+        fflush(stdout);
     }
 
     db_wrapper_close(&dbw);

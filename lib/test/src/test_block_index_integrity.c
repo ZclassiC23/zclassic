@@ -723,6 +723,51 @@ static int t_anchor_repair_null_inputs(void)
 
 /* ── Aggregator ─────────────────────────────────────────────── */
 
+/* ── 19. pprev repair skips work the fast-boot cursor already covers ────
+ *
+ * The --importblockindex path writes authoritative pprev pointers + per-block
+ * shielded deltas straight from the source CDiskBlockIndex and stamps a
+ * "repaired-through" cursor, so a normal boot must NOT re-walk the whole index
+ * (the O(chain) disk read that used to delay RPC bind by minutes). Passing
+ * min_height at the tip selects nothing, so the function returns 0 WITHOUT
+ * reading any block file — proven here with a deliberately bogus datadir — while
+ * still reporting the true max height so boot can advance the persisted cursor. */
+static int t_pprev_repair_cursor_skip(void)
+{
+    int failures = 0;
+    struct main_state ms;
+    main_state_init(&ms);
+
+    enum { N = 8 };
+    struct block_index blocks[N];
+    struct uint256 hashes[N];
+    for (int i = 0; i < N; i++) {
+        memset(&blocks[i], 0, sizeof(blocks[i]));
+        memset(&hashes[i], 0, sizeof(hashes[i]));
+        hashes[i].data[0] = (uint8_t)(i + 1);
+        blocks[i].phashBlock = &hashes[i];
+        blocks[i].pprev = (i > 0) ? &blocks[i - 1] : NULL;
+        blocks[i].nHeight = i;
+        blocks[i].nBits = 0x2007ffff;
+        blocks[i].nStatus = BLOCK_HAVE_DATA;  /* would be selected but for the cursor */
+        blocks[i].nFile = 0;
+        blocks[i].nDataPos = 8;
+        block_map_insert(&ms.map_block_index, &hashes[i], &blocks[i]);
+    }
+
+    /* Cursor at the tip (min_height = N-1): every block is already covered. */
+    int max_out = -999;
+    int fixed = block_index_repair_pprev(&ms, "/nonexistent-fastboot-datadir",
+                                         N - 1, &max_out);
+    BII_RUN("bii: pprev repair skips (returns 0) when cursor covers the tip",
+            fixed == 0);
+    BII_RUN("bii: pprev repair reports max height so boot advances the cursor",
+            max_out == N - 1);
+
+    main_state_free(&ms);
+    return failures;
+}
+
 int test_block_index_integrity(void)
 {
     printf("\n=== block_index_integrity tests ===\n");
@@ -746,5 +791,6 @@ int test_block_index_integrity(void)
     failures += t_height_repair_single();
     failures += t_height_repair_detached_subtree();
     failures += t_anchor_repair_null_inputs();
+    failures += t_pprev_repair_cursor_skip();
     return failures;
 }

@@ -262,4 +262,16 @@ struct zcl_result utxo_recovery_backfill_shielded(struct node_db *ndb,
                                      const char *datadir,
                                      int *out_updated);
 
+/* Boot-time shielded-value backfill, cursor-gated. Ensures
+ * blocks.{sprout,sapling}_value are populated through tip_height, skipping the
+ * O(chain) disk walk when the persisted `shielded_backfill_height` cursor
+ * already covers it (the --importblockindex path stamps that cursor). Safe
+ * no-op for tip_height <= 1000 or a closed db. Keeps the walk off the RPC-bind
+ * critical path on a fresh 2-step datadir. */
+void utxo_recovery_backfill_shielded_if_needed(struct node_db *ndb,
+                                               struct db_service *dbsvc,
+                                               struct main_state *state,
+                                               const char *datadir,
+                                               int tip_height);
+
 #endif /* ZCL_SERVICES_UTXO_RECOVERY_SERVICE_H */

@@ -230,7 +230,13 @@ bool block_index_heights_repaired(void);
  * Also recomputes nChainWork and nChainTx after repair.
  *
  * Must be called AFTER block_index_repair_heights(), BEFORE header sync. */
-int block_index_repair_pprev(struct main_state *ms, const char *datadir);
+/* min_height: only re-scan blocks with nHeight > min_height (pass -1 for a
+ * full scan). Lets boot skip the O(chain) disk walk when a persisted
+ * "repaired-through" cursor already covers the index (fresh datadirs stamp
+ * -1 and do the full work once). out_max_height (optional) receives the
+ * highest nHeight present in the index so the caller can advance the cursor. */
+int block_index_repair_pprev(struct main_state *ms, const char *datadir,
+                             int min_height, int *out_max_height);
 
 /* ── Post-activation anchor repair ─────────────
  *

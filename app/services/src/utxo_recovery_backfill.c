@@ -174,3 +174,56 @@ struct zcl_result utxo_recovery_backfill_shielded(struct node_db *ndb,
     return ZCL_ERR(-52, "backfill: failed to persist shielded values "
                    "to blocks table");
 }
+
+void utxo_recovery_backfill_shielded_if_needed(struct node_db *ndb,
+                                               struct db_service *dbsvc,
+                                               struct main_state *state,
+                                               const char *datadir,
+                                               int tip_height)
+{
+    if (!ndb || !ndb->open || tip_height <= 1000)
+        return;
+
+    /* Fast-boot cursor: this backfill re-reads every block body from disk
+     * (3M+ mostly-empty pre-Sapling blocks) and runs on the boot critical
+     * path BEFORE RPC binds. The persisted `shielded_backfill_height` records
+     * the tip already covered; skip entirely once it reaches the current tip.
+     * The --importblockindex path stamps this cursor (and populates the
+     * per-block Sprout/Sapling deltas straight from the source
+     * CDiskBlockIndex), so a fresh 2-step datadir skips the walk and RPC binds
+     * in seconds. Deferring to a post-services background thread was rejected:
+     * this walks state->map_block_index, which the reducer mutates as blocks
+     * arrive once services are up, so a concurrent walk would race the map.
+     * The cursor keeps it a one-shot, single-threaded, pre-services pass that
+     * only runs on a datadir that needs it and never re-runs. */
+    int64_t done = -1;
+    node_db_state_get_int(ndb, "shielded_backfill_height", &done);
+    if (done >= tip_height) {
+        printf("Shielded backfill: skipped (already covered through h=%lld)\n",
+               (long long)done);
+        fflush(stdout);
+        return;
+    }
+
+    int64_t shielded_count = 0;
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT COUNT(*) FROM blocks WHERE sprout_value != 0 OR sapling_value != 0",
+            -1, &s, NULL) == SQLITE_OK) {
+        if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
+            shielded_count = sqlite3_column_int64(s, 0);
+        sqlite3_finalize(s);
+    }
+    if (!(shielded_count < 1000 && tip_height > 100000)) {
+        /* Already populated by a prior run/import — stamp the cursor so later
+         * boots skip even the COUNT query. */
+        node_db_state_set_int(ndb, "shielded_backfill_height", tip_height);
+        return;
+    }
+    if (!utxo_recovery_backfill_shielded(ndb, dbsvc, state, datadir, NULL).ok) {
+        LOG_WARN("utxo_recovery",
+                 "shielded backfill: persistence/validation failure");
+        return;
+    }
+    node_db_state_set_int(ndb, "shielded_backfill_height", tip_height);
+}

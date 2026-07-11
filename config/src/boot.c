@@ -425,26 +425,14 @@ static bool boot_step_select_chain_and_datadir(struct app_context *ctx)
 static void boot_step_backfill_shielded_if_needed(struct app_context *ctx,
                                                    struct block_index *tip)
 {
-    /* When the node has been running long enough to have a non-trivial
-     * chain (tip > 100k blocks) but the blocks table is missing
-     * sprout/sapling totals (< 1k rows with non-zero shielded value),
-     * backfill via utxo_recovery_service. This catches the case where
-     * an LDB import populated UTXOs but not the per-block shielded
-     * column. Skipped in no_services mode (speedrun / benchmarking). */
+    /* Populate blocks.{sprout,sapling}_value through the tip when an LDB import
+     * left them empty. The service is cursor-gated (`shielded_backfill_height`),
+     * so a fresh 2-step datadir skips the O(chain) disk walk and RPC binds
+     * fast. Skipped in no_services mode (speedrun / benchmarking). */
     if (!(g_node_db.open && tip && tip->nHeight > 1000 && !ctx->no_services))
         return;
-    int64_t shielded_count = 0;
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(g_node_db.db,
-            "SELECT COUNT(*) FROM blocks WHERE sprout_value != 0 OR sapling_value != 0",
-            -1, &s, NULL) == SQLITE_OK) {
-        if (AR_STEP_ROW_READONLY(s) == SQLITE_ROW)
-            shielded_count = sqlite3_column_int64(s, 0);
-        sqlite3_finalize(s);
-    }
-    if (shielded_count < 1000 && tip->nHeight > 100000 &&
-        !utxo_recovery_backfill_shielded(&g_node_db, boot_runtime_db_service(), &g_state, g_datadir, NULL).ok)
-        LOG_WARN("boot", "shielded backfill: persistence/validation failure (see service log)");
+    utxo_recovery_backfill_shielded_if_needed(&g_node_db,
+        boot_runtime_db_service(), &g_state, g_datadir, (int)tip->nHeight);
 }
 
 static void boot_step_build_svc_ctx(struct app_context *ctx,
@@ -2333,15 +2321,27 @@ bool app_init(struct app_context *ctx)
     if (g_state.map_block_index.size > 100)
         index_repaired += block_index_repair_heights(&g_state);
 
-    /* pprev chain repair: fix corrupted pprev pointers from LDB import.
-     * Reads hashPrevBlock from block data on disk and corrects pprev.
-     * Must run after height repair (needs correct heights for sort). */
+    /* pprev chain repair: fix corrupted pprev pointers from LDB import (reads
+     * hashPrevBlock from disk; must run after height repair). Cursor-gated on
+     * `pprev_repaired_height`: only rescan blocks above the verified cursor and
+     * re-stamp it, so a consistent index (e.g. right after --importblockindex)
+     * skips the O(chain) disk walk. A fresh datadir has no cursor (-1) and does
+     * the full walk once. */
     if (g_state.map_block_index.size > 100) {
-        int pprev_fixed = block_index_repair_pprev(&g_state, ctx->datadir);
+        int64_t pprev_done = -1;
+        if (g_node_db.open)
+            node_db_state_get_int(&g_node_db, "pprev_repaired_height",
+                                  &pprev_done);
+        int pprev_max = -1;
+        int pprev_fixed = block_index_repair_pprev(&g_state, ctx->datadir,
+                                                   (int)pprev_done, &pprev_max);
         if (pprev_fixed > 0) {
             index_repaired += pprev_fixed;
             index_repaired += block_index_repair_heights(&g_state);
         }
+        if (g_node_db.open && pprev_max > (int)pprev_done)
+            node_db_state_set_int(&g_node_db, "pprev_repaired_height",
+                                  pprev_max);
     }
 
     if (index_repaired > 0 && g_state.map_block_index.size > 1000) {

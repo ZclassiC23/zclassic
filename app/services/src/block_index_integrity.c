@@ -411,8 +411,10 @@ int block_index_repair_heights(struct main_state *ms)
  *
  * Call AFTER block_index_repair_heights() so heights are correct.
  * After pprev repair, recomputes nChainWork and nChainTx. */
-int block_index_repair_pprev(struct main_state *ms, const char *datadir)
+int block_index_repair_pprev(struct main_state *ms, const char *datadir,
+                             int min_height, int *out_max_height)
 {
+    if (out_max_height) *out_max_height = -1;
     if (!ms || !datadir) return 0;
 
     struct timespec t0;
@@ -431,14 +433,29 @@ int block_index_repair_pprev(struct main_state *ms, const char *datadir)
 
     size_t iter = 0, count = 0;
     struct block_index *pi;
+    int max_h = -1;
     while (block_map_next(&ms->map_block_index, &iter, NULL, &pi)) {
+        if (!pi) continue;
+        if (pi->nHeight > max_h) max_h = pi->nHeight;
         /* By hash, not by height: a detached root relabeled to 0 (or
          * loaded that way from a corrupted flat save) is EXACTLY the
          * entry this pass must relink — an `nHeight > 0` filter would
-         * exclude it forever. Only the true genesis has no parent. */
-        if (pi && !bii_is_genesis(pi) && (pi->nStatus & BLOCK_HAVE_DATA) &&
-            pi->nFile >= 0 && pi->nDataPos > 0)
+         * exclude it forever. Only the true genesis has no parent.
+         * min_height only skips blocks a prior verified run already
+         * covered; a detached root at height 0 is never skipped because
+         * min_height < 0 on any datadir that still has unrepaired roots. */
+        if (!bii_is_genesis(pi) && (pi->nStatus & BLOCK_HAVE_DATA) &&
+            pi->nFile >= 0 && pi->nDataPos > 0 && pi->nHeight > min_height)
             arr[count++] = pi;
+    }
+    if (out_max_height) *out_max_height = max_h;
+
+    if (count == 0) {
+        printf("[pprev-repair] index consistent through h=%d — nothing to "
+               "scan above min_height=%d\n", max_h, min_height);
+        fflush(stdout);
+        free(arr);
+        return 0;
     }
     qsort(arr, count, sizeof(*arr), bii_cmp_disk_pos);
 
