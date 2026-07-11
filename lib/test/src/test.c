@@ -1309,6 +1309,8 @@ int main(int argc, char **argv)
     failures += test_power_node_contract_spec();
     failures += test_boot_phase();
     failures += test_path_check();
+    failures += test_parse_num();
+    failures += test_boot_progress();
     failures += test_supervisor();
     failures += test_supervisor_domains();
     failures += test_condition_engine();
@@ -1380,6 +1382,7 @@ int main(int argc, char **argv)
     { extern int test_utxo_mirror_sync(void);
       failures += test_utxo_mirror_sync(); }
     failures += test_seal_kv();
+    failures += test_sha3_sidecar_io();
     failures += test_seal_ratify();
     { extern int test_vcs_core(void); failures += test_vcs_core(); }
     { extern int test_vcs_devloop(void); failures += test_vcs_devloop(); }
