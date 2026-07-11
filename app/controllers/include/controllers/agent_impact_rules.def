@@ -225,6 +225,10 @@ AGENT_IMPACT_RULE("lib/vcs/include/vcs/vcs_devloop.h|lib/vcs/src/vcs_devloop.c|l
 AGENT_IMPACT_RULE("lib/vcs/src/vcs.c|lib/vcs/include/vcs/vcs.h|lib/vcs/src/vcs_commit.c|lib/test/src/test_vcs_core.c", "vcs_core vcs_devloop command_registry_catalog make_lint_gates")
 AGENT_IMPACT_RULE("tools/dev/dev_activation*.c|tools/dev/dev_activation*.h|lib/test/src/test_dev_activation.c", "dev_activation dev_platform make_lint_gates")
 
+/* Wave 4 (2026-07-11): golden tests for the source+binary revert round-trip
+ * and the dev-cycle classify->prove->publish pipeline. */
+AGENT_IMPACT_RULE("lib/test/src/test_golden_*.c", "golden_revert_roundtrip golden_dev_cycle vcs_core vcs_devloop dev_activation dev_platform make_lint_gates")
+
 /* Instant dev loop Wave 1/2 (2026-07-10): Tier-1 hot-swap surfaces.
  * Wave 3.1 (2026-07-11): the hot-swap-eligible MCP controller TUs — editing
  * one must run the hot-swap groups (a bad edit can break its generation .so
