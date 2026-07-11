@@ -92,39 +92,6 @@ static bool mkdir_parents(const char *repo, const char *relpath)
     return true;
 }
 
-static bool write_file_atomic(const char *repo, const char *relpath,
-                              const uint8_t *content, size_t len, uint32_t mode)
-{
-    if (!mkdir_parents(repo, relpath))
-        return false;
-    char full[VCS_FA_PATH_MAX];
-    int n = snprintf(full, sizeof(full), "%s/%s", repo, relpath);
-    if (n <= 0 || (size_t)n >= sizeof(full))
-        LOG_FAIL("vcs", "path too long");
-    static _Atomic uint64_t g_seq = 0;
-    uint64_t seq = atomic_fetch_add(&g_seq, 1);
-    char tmp[VCS_FA_PATH_MAX];
-    int tn = snprintf(tmp, sizeof(tmp), "%s.zvcstmp.%ld.%llu", full,
-                      (long)getpid(), (unsigned long long)seq);
-    if (tn <= 0 || (size_t)tn >= sizeof(tmp))
-        LOG_FAIL("vcs", "tmp path too long");
-    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
-    if (fd < 0)
-        LOG_FAIL("vcs", "open tmp %s: %s", tmp, strerror(errno));
-    size_t off = 0;
-    while (off < len) {
-        ssize_t w = write(fd, content + off, len - off);
-        if (w < 0) { if (errno == EINTR) continue; close(fd); unlink(tmp); LOG_FAIL("vcs", "write tmp"); }
-        off += (size_t)w;
-    }
-    if (fsync(fd) != 0) { close(fd); unlink(tmp); LOG_FAIL("vcs", "fsync tmp"); }
-    close(fd);
-    if (rename(tmp, full) != 0) { unlink(tmp); LOG_FAIL("vcs", "rename tmp"); }
-    /* Restore permission bits (best-effort; a failure is non-fatal). */
-    if (chmod(full, (mode_t)(mode & 0777)) != 0) { /* tolerate */ }
-    return true;
-}
-
 /* ── manifest object store (addressed by structural tree_hash) ───── */
 
 static bool manifest_store(const char *repo, const struct vcs_manifest *m,
@@ -452,40 +419,164 @@ int vcs_log(struct vcs_repo *r, size_t limit, vcs_log_cb cb, void *user)
 
 /* ── revert ──────────────────────────────────────────────────────── */
 
-struct revert_ctx {
-    struct vcs_repo *r;
-    bool             err;
+/* One planned worktree mutation. For a write op, `tmp` names the phase-1
+ * staged temp file (heap, sitting beside `full` on the same filesystem) once
+ * staged, and is consumed (set NULL) when phase 2 renames it into place. For a
+ * delete op only `relpath`/`full` are used. Deferring application (rather than
+ * writing as the diff is walked) is what lets the restore be all-or-nothing:
+ * every target file's bytes are staged and validated before a single one is
+ * moved into the live worktree. */
+struct revert_op {
+    bool     is_delete;
+    char    *relpath;   /* tracked path relative to the repo root */
+    char    *full;      /* absolute destination path */
+    char    *tmp;       /* staged temp path (writes only; NULL until staged) */
+    uint32_t mode;      /* target file mode (writes only) */
+    uint8_t  blob[32];  /* target blob object id (writes only) */
 };
 
-static void revert_diff_cb(enum vcs_diff_kind kind, const struct vcs_entry *a,
-                           const struct vcs_entry *b, void *user)
+struct revert_plan {
+    struct vcs_repo  *r;
+    struct revert_op *ops;
+    size_t            count;
+    size_t            cap;
+    bool              err;    /* collection-time failure (alloc / bad path) */
+};
+
+/* Free the plan's heap. When unlink_temps is true, any still-staged temp (a
+ * write not yet renamed into place) is removed so a failure leaves nothing
+ * behind. Committed writes have already NULLed their tmp, so they are skipped. */
+static void revert_plan_free(struct revert_plan *p, bool unlink_temps)
 {
-    /* a = current, b = target. Restore the worktree to the target. */
-    struct revert_ctx *rc = user;
-    if (rc->err) return;
+    for (size_t i = 0; i < p->count; i++) {
+        struct revert_op *op = &p->ops[i];
+        if (unlink_temps && op->tmp)
+            (void)unlink(op->tmp);
+        free(op->tmp);
+        free(op->full);
+        free(op->relpath);
+    }
+    free(p->ops);
+    p->ops = NULL;
+    p->count = p->cap = 0;
+}
+
+/* Diff callback: a = current worktree, b = target. Records the mutation that
+ * moves the worktree toward the target WITHOUT applying it. */
+static void revert_collect_cb(enum vcs_diff_kind kind, const struct vcs_entry *a,
+                              const struct vcs_entry *b, void *user)
+{
+    struct revert_plan *p = user;
+    if (p->err) return;
+
+    const struct vcs_entry *e;    /* the path-bearing side */
+    bool is_delete;
     if (kind == VCS_DIFF_REMOVED) {
         /* present in current, absent in target -> delete (if tracked). */
         if (vcs_path_ignored(a->path))
             return;
-        char full[VCS_FA_PATH_MAX];
-        int n = snprintf(full, sizeof(full), "%s/%s", rc->r->root, a->path);
-        if (n > 0 && (size_t)n < sizeof(full))
-            if (unlink(full) != 0 && errno != ENOENT)
-                rc->err = true;
+        e = a;
+        is_delete = true;
+    } else {
+        /* ADDED or MODIFIED in target -> write target content. */
+        if (!b) { p->err = true; return; }
+        e = b;
+        is_delete = false;
+    }
+
+    if (p->count == p->cap) {
+        size_t ncap = p->cap ? p->cap * 2 : 32;
+        struct revert_op *no =
+            zcl_realloc(p->ops, ncap * sizeof(*no), "vcs_revert_ops");
+        if (!no) { p->err = true; return; }
+        p->ops = no;
+        p->cap = ncap;
+    }
+    struct revert_op *op = &p->ops[p->count];
+    memset(op, 0, sizeof(*op));
+    op->is_delete = is_delete;
+    op->relpath = zcl_strdup(e->path, "vcs_revert_relpath");
+    if (!op->relpath) { p->err = true; return; }
+    char full[VCS_FA_PATH_MAX];
+    int n = snprintf(full, sizeof(full), "%s/%s", p->r->root, e->path);
+    if (n <= 0 || (size_t)n >= sizeof(full)) {
+        free(op->relpath);
+        p->err = true;
         return;
     }
-    /* ADDED or MODIFIED in target -> write target content. */
-    const struct vcs_entry *t = b;
-    if (!t) { rc->err = true; return; }
+    op->full = zcl_strdup(full, "vcs_revert_full");
+    if (!op->full) { free(op->relpath); p->err = true; return; }
+    if (!is_delete) {
+        op->mode = e->mode;
+        memcpy(op->blob, e->blob, 32);
+    }
+    p->count++;   /* only after both allocations succeed */
+}
+
+/* Phase 1: stage a write op's target bytes into a temp file beside op->full
+ * (same filesystem) and fsync it, WITHOUT renaming into place. On success
+ * op->tmp names the staged temp. On ANY failure the temp is cleaned and false
+ * is returned with op->tmp left NULL — the live worktree is untouched. */
+static bool revert_stage_op(struct vcs_repo *r, struct revert_op *op)
+{
     uint8_t *content = NULL;
     size_t clen = 0;
-    if (vcs_object_get(rc->r->root, t->blob, VCS_TAG_BLOB, &content, &clen) != 0) {
-        rc->err = true;
-        return;
+    if (vcs_object_get(r->root, op->blob, VCS_TAG_BLOB, &content, &clen) != 0)
+        LOG_FAIL("vcs", "load blob for %s", op->relpath);
+    if (!mkdir_parents(r->root, op->relpath)) {
+        free(content);
+        LOG_FAIL("vcs", "mkdir parents for %s", op->relpath);
     }
-    if (!write_file_atomic(rc->r->root, t->path, content, clen, t->mode))
-        rc->err = true;
+
+    static _Atomic uint64_t g_seq = 0;
+    uint64_t seq = atomic_fetch_add(&g_seq, 1);
+    char tmp[VCS_FA_PATH_MAX];
+    int tn = snprintf(tmp, sizeof(tmp), "%s.zvcstmp.%ld.%llu", op->full,
+                      (long)getpid(), (unsigned long long)seq);
+    if (tn <= 0 || (size_t)tn >= sizeof(tmp)) {
+        free(content);
+        LOG_FAIL("vcs", "tmp path too long for %s", op->relpath);
+    }
+    int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        free(content);
+        LOG_FAIL("vcs", "open tmp %s: %s", tmp, strerror(errno));
+    }
+    size_t off = 0;
+    while (off < clen) {
+        ssize_t w = write(fd, content + off, clen - off);
+        if (w < 0) {
+            if (errno == EINTR) continue;
+            close(fd); unlink(tmp); free(content);
+            LOG_FAIL("vcs", "write tmp %s", tmp);
+        }
+        off += (size_t)w;
+    }
     free(content);
+    if (fsync(fd) != 0) { close(fd); unlink(tmp); LOG_FAIL("vcs", "fsync tmp %s", tmp); }
+    close(fd);
+    op->tmp = zcl_strdup(tmp, "vcs_revert_tmp");
+    if (!op->tmp) { unlink(tmp); LOG_FAIL("vcs", "strdup tmp path"); }
+    return true;
+}
+
+/* Phase 2: put a staged write into place (rename) or apply a delete. A
+ * same-filesystem rename is near-atomic and effectively cannot fail here; a
+ * failure returns false and leaves the caller to report VCS_EPARTIAL. */
+static bool revert_commit_op(struct revert_op *op)
+{
+    if (op->is_delete) {
+        if (unlink(op->full) != 0 && errno != ENOENT)
+            LOG_FAIL("vcs", "unlink %s: %s", op->full, strerror(errno));
+        return true;
+    }
+    if (rename(op->tmp, op->full) != 0)
+        LOG_FAIL("vcs", "rename %s -> %s: %s", op->tmp, op->full, strerror(errno));
+    free(op->tmp);
+    op->tmp = NULL;   /* consumed by the rename: no temp left to clean up */
+    /* Restore permission bits (best-effort; a failure is non-fatal). */
+    if (chmod(op->full, (mode_t)(op->mode & 0777)) != 0) { /* tolerate */ }
+    return true;
 }
 
 int vcs_revert(struct vcs_repo *r, const uint8_t target_commit[32],
@@ -545,13 +636,61 @@ int vcs_revert(struct vcs_repo *r, const uint8_t target_commit[32],
         LOG_ERR("vcs", "build current manifest");
     }
 
-    /* Rewrite only differing files; delete files absent from the target. */
-    struct revert_ctx rc = { r, false };
-    vcs_manifest_diff(&cur, &target, revert_diff_cb, &rc);
+    /* Plan the restore (writes + deletes), then apply it in two phases so it is
+     * all-or-nothing over the write set. A mid-restore failure must leave the
+     * worktree in its pre-revert state, never a half-applied hybrid matching
+     * neither the pre-revert tree nor the target.
+     *
+     * Phase 1 stages every target file's bytes to a temp beside its
+     * destination (same filesystem) and fsyncs; if ANY stage fails, the temps
+     * are removed and the worktree is returned untouched. Phase 2 renames each
+     * staged temp into place and applies deletes. A same-filesystem rename is
+     * near-atomic and effectively cannot fail after a successful stage; if one
+     * somehow does, the caller is told exactly which paths already flipped and
+     * the call reports VCS_EPARTIAL (a partial, honestly-named state) rather
+     * than pretending the revert was clean. */
+    struct revert_plan plan = { .r = r };
+    vcs_manifest_diff(&cur, &target, revert_collect_cb, &plan);
     vcs_manifest_free(&cur);
     vcs_manifest_free(&target);
-    if (rc.err)
-        LOG_ERR("vcs", "worktree restore failed");
+    if (plan.err) {
+        revert_plan_free(&plan, true);
+        LOG_ERR("vcs", "plan worktree restore");
+    }
+
+    /* Phase 1 — stage every write. The live worktree stays untouched until the
+     * whole write set has been staged and validated. */
+    for (size_t i = 0; i < plan.count; i++) {
+        if (plan.ops[i].is_delete) continue;
+        if (!revert_stage_op(r, &plan.ops[i])) {
+            revert_plan_free(&plan, true);   /* unlink every staged temp */
+            LOG_ERR("vcs", "stage worktree restore (worktree left untouched)");
+        }
+    }
+
+    /* Phase 2 — commit: rename staged temps into place, then apply deletes. */
+    size_t committed = 0;
+    for (size_t i = 0; i < plan.count; i++) {
+        if (!revert_commit_op(&plan.ops[i])) {
+            /* Near-impossible on a single filesystem. Name the mutations that
+             * already flipped [0,committed) plus the one that failed, so the
+             * partial state is recoverable and honestly reported. */
+            LOG_WARN("vcs", "partial worktree restore — %zu of %zu mutation(s) "
+                     "already applied before a phase-2 failure:",
+                     committed, plan.count);
+            for (size_t k = 0; k < committed; k++)
+                LOG_WARN("vcs", "  %s: %s",
+                         plan.ops[k].is_delete ? "deleted" : "wrote",
+                         plan.ops[k].relpath);
+            LOG_WARN("vcs", "  FAILED on %s: %s",
+                     plan.ops[i].is_delete ? "delete" : "write",
+                     plan.ops[i].relpath);
+            revert_plan_free(&plan, true);   /* unlink any not-yet-renamed temps */
+            return VCS_EPARTIAL;
+        }
+        committed++;
+    }
+    revert_plan_free(&plan, true);   /* frees heap; committed temps already NULL */
 
     /* Record the restoration as a forward commit. */
     char taskref[64];
