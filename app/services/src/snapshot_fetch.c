@@ -1,3 +1,15 @@
+// one-result-type-ok:db-service-write-fn-callbacks — the two remaining bool
+// exports (snapsync_discard_staging_write_internal, snapsync_rollback_receive_
+// write_internal) are db_service_write_fn callback adapters bound to the shared
+// `bool (*)(struct node_db*, void*)` typedef in config/db_service.h (consumed by
+// db_service_run_write / snapsync_run_write_internal, and cross-used by
+// sync_controller.c and utxo_mirror_sync_service.c). Their bool IS that shared
+// write-runner contract's answer, not a snapshot-specific fallible-service
+// return. The genuinely fallible receive surface here already returns struct
+// zcl_result (snapsync_discard_staging_internal / _txn_internal / _set_staging_
+// phase_internal / _exit_turbo_mode_internal / _begin_receive / _handle_end) —
+// the callbacks just forward .ok from those.
+
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * snapshot_fetch.c — snapshot chunk receive.

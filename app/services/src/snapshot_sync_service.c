@@ -25,6 +25,20 @@
  * The public API is declared by net/snapshot_sync_contract.h so app/config/net
  * callers share one contract header. */
 
+// one-result-type-ok:snapshot-predicates-conditions-and-write-runner — the
+// bool exports that remain here are NOT fallible-service surfaces:
+//   * pure predicates: snapsync_is_peer_blacklisted / snapsync_is_active /
+//     snapsync_awaiting_utxos — the bool IS the query answer.
+//   * condition-fired checks: snapsync_check_negotiation_stall /
+//     snapsync_check_failed_reset / snapsync_check_stall — the bool means
+//     "the condition fired and I acted (blacklist+reset)", never a failure;
+//     each is driven by an app/conditions/ predicate.
+//   * write-runner: snapsync_run_write_internal — returns the shared
+//     db_service_write_fn (config/db_service.h) callback's bool commit answer.
+// The genuinely fallible service surface returns struct zcl_result
+// (snapsync_bind_store_internal, snapsync_prepare_serve_step, and the
+// begin/verify/handle/finalize actions in the sibling snapshot_*.c files).
+
 #include "net/snapshot_sync_contract.h"
 #include "services/snapshot_manifest.h"
 #include "models/db_txn.h"
@@ -667,10 +681,10 @@ enum snapsync_serve_result snapsync_validate_serve_request(
     return SNAPSYNC_SERVE_OK;
 }
 
-bool snapsync_prepare_serve_step(struct snapsync_serve_step *step,
-                                 struct p2p_node *node,
-                                 const uint8_t *buf,
-                                 int64_t buf_size)
+struct zcl_result snapsync_prepare_serve_step(struct snapsync_serve_step *step,
+                                              struct p2p_node *node,
+                                              const uint8_t *buf,
+                                              int64_t buf_size)
 {
     int64_t pos;
     int64_t scan;
@@ -678,8 +692,9 @@ bool snapsync_prepare_serve_step(struct snapsync_serve_step *step,
     bool ok = true;
 
     if (!step || !node || !buf || buf_size <= 0)
-        LOG_FAIL("snapshot_sync", "prepare_serve_step: invalid args step=%p node=%p buf=%p size=%lld",
-                 (void*)step, (void*)node, (void*)buf, (long long)buf_size);
+        return ZCL_ERR(-1, "prepare_serve_step: invalid args step=%p node=%p "
+                       "buf=%p size=%lld", (void*)step, (void*)node,
+                       (void*)buf, (long long)buf_size);
 
     memset(step, 0, sizeof(*step));
     if (node->zsync_file_size == 0)
@@ -690,22 +705,24 @@ bool snapsync_prepare_serve_step(struct snapsync_serve_step *step,
      * message loop moves on to other peers before returning to pump more.
      * 8MB gives ~200 chunks of headroom. */
     if (node->send_size > 8 * 1024 * 1024)
-        return true;
+        return ZCL_OK;  /* step->action == SNAPSYNC_SERVE_ACTION_NONE (backpressure) */
 
     pos = node->zsync_file_offset;
     if (pos >= buf_size) {
         step->action = SNAPSYNC_SERVE_ACTION_SEND_END;
-        return true;
+        return ZCL_OK;
     }
 
     if (pos + 4 > buf_size)
-        LOG_FAIL("snapshot_sync", "prepare_serve_step: pos %lld + 4 > buf_size %lld", (long long)pos, (long long)buf_size);
+        return ZCL_ERR(-2, "prepare_serve_step: pos %lld + 4 > buf_size %lld",
+                       (long long)pos, (long long)buf_size);
 
     entries = buf[pos] | ((uint32_t)buf[pos + 1] << 8) |
               ((uint32_t)buf[pos + 2] << 16) |
               ((uint32_t)buf[pos + 3] << 24);
     if (entries == 0 || entries > 1000)
-        LOG_FAIL("snapshot_sync", "prepare_serve_step: bad entry count %u at pos %lld", entries, (long long)pos);
+        return ZCL_ERR(-3, "prepare_serve_step: bad entry count %u at pos %lld",
+                       entries, (long long)pos);
 
     scan = pos + 4;
     for (uint32_t i = 0; i < entries && ok; i++) {
@@ -739,8 +756,9 @@ bool snapsync_prepare_serve_step(struct snapsync_serve_step *step,
     }
 
     if (!ok || scan > buf_size)
-        LOG_FAIL("snapshot_sync", "prepare_serve_step: scan overflow scan=%lld buf_size=%lld entries=%u",
-                 (long long)scan, (long long)buf_size, entries);
+        return ZCL_ERR(-4, "prepare_serve_step: scan overflow scan=%lld "
+                       "buf_size=%lld entries=%u",
+                       (long long)scan, (long long)buf_size, entries);
 
     step->action = SNAPSYNC_SERVE_ACTION_SEND_CHUNK;
     step->chunk_offset = pos;
@@ -750,5 +768,5 @@ bool snapsync_prepare_serve_step(struct snapsync_serve_step *step,
     node->zsync_file_offset = scan;
     node->zsync_offset += entries;
     node->zsync_sent++;
-    return true;
+    return ZCL_OK;
 }

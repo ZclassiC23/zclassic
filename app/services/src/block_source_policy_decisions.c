@@ -1,4 +1,13 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
+// one-result-type-ok:pure-policy-decision-predicates — the three public
+// exports (block_source_policy_peer_floor_recovery_needed / _snapshot_offer_
+// allowed / _local_header_refill_needed) are pure decision predicates: their
+// bool return IS the policy answer (recover / allowed / proceed), a genuine
+// yes/no, never a success/failure. Callers consume them as `if (recover)` /
+// `bool proceed = ...` / test ASSERTs. The one fallible surface here —
+// persisting the decision to node.db — already returns struct zcl_result
+// (bsp_record_decision / bsp_persist_decision). Matches the sibling
+// block_source_policy.c "pure-policy" marker.
 
 /* Decision seam for the block-source policy stateful runtime. The three
  * public decision predicates (peer-floor recovery, snapshot-offer,

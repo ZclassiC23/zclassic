@@ -2230,7 +2230,7 @@ void mp_snapshot_send_tick(struct msg_processor *mp,
                 if (node->send_size > 8 * 1024 * 1024)
                     break;  /* backpressure: wait for drain */
                 struct snapsync_serve_step step;
-                if (!snapsync_prepare_serve_step(&step, node, buf, buf_size))
+                if (!snapsync_prepare_serve_step(&step, node, buf, buf_size).ok)
                     break;
                 if (step.action == SNAPSYNC_SERVE_ACTION_NONE)
                     break;

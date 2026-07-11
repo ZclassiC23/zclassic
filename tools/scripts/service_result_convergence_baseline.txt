@@ -28,7 +28,6 @@
 # One '<path> <count>' entry per line, repo-relative, sorted by path.
 app/services/src/block_index_loader.c 2
 app/services/src/block_index_loader_rebuild.c 2
-app/services/src/block_source_policy_decisions.c 3
 app/services/src/chain_restore_repair.c 1
 app/services/src/consensus_reject_index.c 1
 app/services/src/disk_monitor.c 2
@@ -39,7 +38,5 @@ app/services/src/legacy_mirror_sync_service.c 2
 app/services/src/legacy_mirror_sync_state.c 2
 app/services/src/mempool_limits.c 2
 app/services/src/rolling_anchor_service.c 1
-app/services/src/snapshot_fetch.c 2
-app/services/src/snapshot_sync_service.c 8
 app/services/src/utxo_recovery_service.c 1
 app/services/src/zslp_service.c 5
