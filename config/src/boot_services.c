@@ -129,7 +129,7 @@
 #include <pthread.h>
 #include <signal.h>
 #include <sqlite3.h>
-#include "services/mempool_limits.h"
+#include "config/boot_mempool_limits.h"
 #include "services/wallet_backup_service.h"
 #include "services/disk_monitor.h"
 #include "services/ibd_throttle.h"
@@ -219,33 +219,6 @@ static int64_t svc_clock_ms(void)
     struct timespec ts;
     platform_time_monotonic_timespec(&ts);
     return (int64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
-}
-
-static bool boot_mempool_limits_start(void *ctx)
-{
-    struct boot_svc_ctx *svc = ctx;
-    if (!svc || !svc->mempool)
-        return false;
-
-    struct mempool_limits_config ml_cfg;
-    mempool_limits_config_defaults(&ml_cfg);
-    struct zcl_result mr = mempool_limits_start(svc->mempool, &ml_cfg);
-    if (!mr.ok) {
-        fprintf(stderr, "[boot] %s:%d mempool_limits_start failed: code=%d %s\n",
-                mr.source_file, mr.source_line, mr.code, mr.message);
-        return false;
-    }
-
-    printf("Mempool limits started (max=%lldMB max_tx=%lld)\n",
-           (long long)(ml_cfg.max_bytes >> 20),
-           (long long)ml_cfg.max_tx_count);
-    return true;
-}
-
-static void boot_mempool_limits_stop(void *ctx)
-{
-    (void)ctx;
-    mempool_limits_stop();
 }
 
 static bool boot_connman_start(void *ctx)
@@ -552,24 +525,8 @@ bool app_init_services(struct app_context *ctx,
     zcl_service_kernel_init(&svc->network_kernel);
     zcl_service_kernel_init(&svc->runtime_kernel);
     zcl_service_kernel_init(&svc->frontend_kernel);
-    if (svc->db_service) {
-        const struct zcl_service_spec mempool_limits_spec = {
-            .name = "mempool_limits",
-            .start = boot_mempool_limits_start,
-            .stop = boot_mempool_limits_stop,
-            .ctx = svc,
-            .flags = ZCL_SERVICE_OPTIONAL,
-        };
-        if (!zcl_service_kernel_register(&svc->service_kernel,
-                                         &mempool_limits_spec)) {
-            fprintf(stderr, "FATAL: failed to register boot services\n");
-            return false;
-        }
-        if (!zcl_service_kernel_start_all(&svc->service_kernel)) {
-            fprintf(stderr, "FATAL: failed to start required boot services\n");
-            return false;
-        }
-    }
+    if (!boot_start_mempool_limits_service(svc))
+        return false;
     svc->runtime.db_service = svc->db_service;
     svc->runtime.snapshot_sync = &svc->snapshot_sync;
     svc->runtime.mempool = svc->mempool;
