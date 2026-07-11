@@ -290,6 +290,27 @@ int test_nullifier_backfill_service(void)
              nbf_seed_marker(db, NULLIFIER_BACKFILL_ACTIVATION_KEY, "3"));
     NB_CHECK("resume setup cursor marker",
              nbf_seed_marker(db, NULLIFIER_BACKFILL_RESUME_KEY, "2"));
+
+    /* dump_state_json (zcl_state subsystem=nullifier_backfill) while the
+     * two durable markers are seeded mid-run: status must read
+     * "in_progress" (resume_cursor 2 < activation_cursor 3). */
+    {
+        struct json_value v = {0};
+        json_set_object(&v);
+        bool ok = nullifier_backfill_dump_state_json(&v, NULL);
+        const struct json_value *status = json_get(&v, "status");
+        const struct json_value *activation =
+            json_get(&v, "activation_cursor");
+        const struct json_value *resume = json_get(&v, "resume_cursor");
+        bool shape_ok = ok && status &&
+                        strcmp(json_get_str(status), "in_progress") == 0 &&
+                        activation && json_get_int(activation) == 3 &&
+                        resume && json_get_int(resume) == 2;
+        json_free(&v);
+        NB_CHECK("dump_state_json reports in_progress with cursors",
+                 shape_ok);
+    }
+
     struct nullifier_backfill_report rep3;
     r = nullifier_backfill_service_run(&cfg, &rep3);
     NB_CHECK("resume run ok", r.ok);
@@ -301,6 +322,19 @@ int test_nullifier_backfill_service(void)
     NB_CHECK("resume run cleared markers",
              nbf_marker_absent(db, NULLIFIER_BACKFILL_ACTIVATION_KEY) &&
              nbf_marker_absent(db, NULLIFIER_BACKFILL_RESUME_KEY));
+
+    {
+        struct json_value v = {0};
+        json_set_object(&v);
+        bool ok = nullifier_backfill_dump_state_json(&v, NULL);
+        const struct json_value *status = json_get(&v, "status");
+        bool shape_ok = ok && status &&
+                        strcmp(json_get_str(status),
+                              "not_needed_or_complete") == 0;
+        json_free(&v);
+        NB_CHECK("dump_state_json reports not_needed_or_complete post-run",
+                 shape_ok);
+    }
 
     progress_store_close();
     blocker_clear(UTXO_APPLY_NF_GAP_BLOCKER_ID);

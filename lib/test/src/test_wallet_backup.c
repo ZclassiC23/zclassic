@@ -416,6 +416,50 @@ static int t_status_snapshot(void)
     return failures;
 }
 
+/* ── dump_state_json: zcl_state subsystem=wallet_backup ────────── */
+
+static int t_dump_state_json(void)
+{
+    int failures = 0;
+    wb_install_observer();
+
+    struct wb_fixture f;
+    wb_fixture_init(&f, "dumpjson");
+    wb_seed_keys(&f.ndb, 2);
+
+    struct wallet_backup_config cfg;
+    wallet_backup_config_defaults(&cfg);
+    cfg.backup_dir = f.backup_dir;
+    cfg.interval_seconds = 3600;
+
+    bool started = wallet_backup_start(&cfg, &f.ndb).ok;
+    for (int i = 0; i < 50; i++) {
+        struct wallet_backup_status s;
+        wallet_backup_status_snapshot(&s);
+        if (s.total_runs > 0) break;
+        struct timespec ts = { 0, 50000000L }; nanosleep(&ts, NULL);
+    }
+
+    struct json_value v = {0};
+    json_set_object(&v);
+    bool ok = wallet_backup_dump_state_json(&v, NULL);
+    const struct json_value *running = json_get(&v, "running");
+    const struct json_value *total_runs = json_get(&v, "total_runs");
+    const struct json_value *last_key_count = json_get(&v, "last_key_count");
+    bool shape_ok = ok && running && json_get_bool(running) == true &&
+                    total_runs && json_get_int(total_runs) >= 1 &&
+                    last_key_count && json_get_int(last_key_count) == 2;
+    json_free(&v);
+
+    wallet_backup_stop();
+    WB_RUN("wb: dump_state_json reports running + total_runs + last_key_count",
+           started && shape_ok);
+
+    wb_fixture_tear_down(&f);
+    supervisor_reset_for_testing();
+    return failures;
+}
+
 /* ── 9. wallet_backup_now is thread-safe across repeated calls ── */
 
 static int t_force_now_repeatable(void)
@@ -892,6 +936,7 @@ int test_wallet_backup(void)
     failures += t_list_newest_first();
     failures += t_refuses_same_dir();
     failures += t_status_snapshot();
+    failures += t_dump_state_json();
     failures += t_force_now_repeatable();
     failures += t_stop_safe();
     failures += t_roundtrip_verify();

@@ -401,6 +401,39 @@ int test_consensus_reject_index(void)
         consensus_reject_index_stop();
     }
 
+    /* ── 13b. dump_state_json (zcl_state subsystem=consensus_reject_index):
+     * running/total/count/capacity plus a `recent` array with the newest
+     * entry's fields intact. ─────────────────────────────────────────── */
+    {
+        consensus_reject_index_start(16);
+        struct cri_entry e = {0};
+        e.hash = make_hash(0x99);
+        e.kind = CRI_KIND_BLOCK;
+        e.dos = 42;
+        e.ts_us = 123456789;
+        snprintf(e.reason, sizeof(e.reason), "test dump reason");
+        consensus_reject_index_record(&e);
+
+        struct json_value v = {0};
+        json_set_object(&v);
+        bool ok = consensus_reject_index_dump_state_json(&v, NULL);
+        const struct json_value *running = json_get(&v, "running");
+        const struct json_value *count = json_get(&v, "count");
+        const struct json_value *recent = json_get(&v, "recent");
+        const struct json_value *first = recent ? json_at(recent, 0) : NULL;
+        bool shape_ok = ok && running && json_get_bool(running) == true &&
+                        count && json_get_int(count) == 1 &&
+                        recent && recent->type == JSON_ARR &&
+                        json_size(recent) == 1 && first &&
+                        strcmp(json_get_str(json_get(first, "kind")),
+                              "block") == 0 &&
+                        json_get_int(json_get(first, "dos")) == 42;
+        json_free(&v);
+        CRI_CHECK("cri: dump_state_json reports running/count/recent[0]",
+                  shape_ok);
+        consensus_reject_index_stop();
+    }
+
     /* ── 14. Ensure test cleanup — leaks would break later tests */
     consensus_reject_index_stop();
     event_clear_observers(EV_CONSENSUS_REJECT_TX);

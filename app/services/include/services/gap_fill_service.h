@@ -94,6 +94,10 @@ bool gap_fill_block_needs_queue(const struct block_index *bi);
 /* Copy cheap runtime counters for RPC/API/agent diagnostics. */
 void gap_fill_get_stats(struct gap_fill_stats *out);
 
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe. */
+struct json_value;
+bool gap_fill_dump_state_json(struct json_value *out, const char *key);
+
 /* Run the independent download timeout sweep owned by the supervised gap-fill
  * cadence. This is the redundant path for peers that keep in-flight slots
  * occupied while the peer send loop is not making timeout progress. */

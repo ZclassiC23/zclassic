@@ -30,6 +30,7 @@
 #include "services/chain_state_service.h"
 #include "util/safe_alloc.h"
 #include "event/event.h"
+#include "json/json.h"
 #include "core/uint256.h"
 #include "validation/main_state.h"
 #include "chain/chainparams.h"
@@ -136,6 +137,29 @@ static _Atomic bool g_heights_repaired = false;
 bool block_index_heights_repaired(void)
 {
     return atomic_load(&g_heights_repaired);
+}
+
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe: reuses the
+ * lock-guarded bii_get_recovery_status() snapshot. */
+bool block_index_integrity_dump_state_json(struct json_value *out,
+                                           const char *key)
+{
+    (void)key;
+    if (!out)
+        return false;
+    json_set_object(out);
+
+    struct bii_recovery_status st;
+    bii_get_recovery_status(&st);
+    json_push_kv_str(out, "verdict", bii_verdict_name(st.verdict));
+    json_push_kv_str(out, "action", bii_recovery_action_name(st.action));
+    json_push_kv_int(out, "unix_time", st.unix_time);
+    json_push_kv_bool(out, "degraded", st.degraded);
+    json_push_kv_bool(out, "unsafe_override", st.unsafe_override);
+    json_push_kv_str(out, "reason", st.reason);
+    json_push_kv_bool(out, "heights_repaired",
+                      block_index_heights_repaired());
+    return true;
 }
 
 /* Comparator for sorting block_index pointers by height (ascending). */

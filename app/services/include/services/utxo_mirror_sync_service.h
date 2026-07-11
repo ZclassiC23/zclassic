@@ -124,4 +124,9 @@ void utxo_mirror_sync_stop(struct utxo_mirror_sync_service *svc);
  * Exposed for tests and for an explicit one-shot from the diagnostics path. */
 int64_t utxo_mirror_sync_run_once(struct utxo_mirror_sync_service *svc);
 
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe. */
+struct json_value;
+bool utxo_mirror_sync_dump_state_json(struct json_value *out,
+                                      const char *key);
+
 #endif /* ZCL_SERVICES_UTXO_MIRROR_SYNC_SERVICE_H */

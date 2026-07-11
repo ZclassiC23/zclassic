@@ -127,6 +127,10 @@ struct wallet_backup_status {
 
 void wallet_backup_status_snapshot(struct wallet_backup_status *out);
 
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe. */
+struct json_value;
+bool wallet_backup_dump_state_json(struct json_value *out, const char *key);
+
 /* ── Lifecycle ──────────────────────────────────────────────── */
 
 /* Start the background backup thread. `db` is the opened node_db

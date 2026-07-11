@@ -136,6 +136,11 @@ struct zcl_result consensus_reject_index_lookup(const struct uint256 *hash,
  * `out`. Returns the number actually copied. */
 size_t consensus_reject_index_recent(struct cri_entry *out, size_t cap);
 
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe. */
+struct json_value;
+bool consensus_reject_index_dump_state_json(struct json_value *out,
+                                            const char *key);
+
 /* ── Internal hook (for tests / manual feeding) ───────────── */
 
 /* Record an entry directly without going through the event

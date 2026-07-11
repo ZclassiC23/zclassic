@@ -1,3 +1,11 @@
+// one-result-type-ok:dump-state-json-typedef — the sole legacy bool export,
+// utxo_mirror_sync_dump_state_json, implements the diagnostics_dump_fn
+// typedef (CLAUDE.md "Adding state introspection": `bool
+// <name>_dump_state_json(...)`) mandated by the g_dumpers[] dispatch table
+// in app/controllers/src/diagnostics_registry.c; every other dumper in the
+// codebase has the same bool signature for the same reason, so this is not
+// a candidate for struct zcl_result conversion.
+
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * utxo_mirror_sync_service — implementation. See header for design rationale.
@@ -22,6 +30,7 @@
 #include "script/script.h"
 #include "script/standard.h"
 #include "services/chain_state_service.h"
+#include "json/json.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "supervisors/domains.h"
@@ -670,4 +679,48 @@ void utxo_mirror_sync_stop(struct utxo_mirror_sync_service *svc)
     pthread_mutex_destroy(&svc->ready_mutex);
     pthread_cond_destroy(&svc->ready_cond);
     printf("[utxo_mirror] stopped\n");
+}
+
+static const char *utxo_mirror_sync_state_name(int state)
+{
+    switch (state) {
+    case UTXO_MIRROR_SYNC_IDLE:    return "idle";
+    case UTXO_MIRROR_SYNC_RUNNING: return "running";
+    case UTXO_MIRROR_SYNC_STOPPED: return "stopped";
+    default:                       return "unknown";
+    }
+}
+
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe: every field
+ * is an _Atomic member of the boot-owned g_utxo_mirror_sync instance, read
+ * with atomic_load. g_utxo_mirror_sync is NULL before the service starts. */
+bool utxo_mirror_sync_dump_state_json(struct json_value *out, const char *key)
+{
+    (void)key;
+    if (!out)
+        return false;
+    json_set_object(out);
+
+    struct utxo_mirror_sync_service *svc = g_utxo_mirror_sync;
+    json_push_kv_bool(out, "instance_present", svc != NULL);
+    if (!svc)
+        return true;
+
+    json_push_kv_str(out, "state",
+                     utxo_mirror_sync_state_name(atomic_load(&svc->state)));
+    json_push_kv_bool(out, "thread_started", svc->thread_started);
+    json_push_kv_int(out, "tick_seconds", (int64_t)svc->tick_seconds);
+    json_push_kv_int(out, "rebuilds_run",
+                     atomic_load(&svc->rebuilds_run));
+    json_push_kv_int(out, "rows_written",
+                     atomic_load(&svc->rows_written));
+    json_push_kv_int(out, "last_mirror_height",
+                     atomic_load(&svc->last_mirror_height));
+    json_push_kv_int(out, "last_frontier",
+                     atomic_load(&svc->last_frontier));
+    json_push_kv_int(out, "last_pass_unix",
+                     atomic_load(&svc->last_pass_unix));
+    json_push_kv_int(out, "last_error_unix",
+                     atomic_load(&svc->last_error_unix));
+    return true;
 }
