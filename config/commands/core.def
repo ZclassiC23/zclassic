@@ -20,6 +20,20 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 
+ZCL_COMMAND_READY_READ(
+    "core.status.brief", "core", "",
+    "Flat lean status: served_height, header_height, gap, sync_state, "
+    "serving, healthy, peer_count, primary_blocker, "
+    "tip_advance_age_seconds",
+    "status,brief,lean,flat,gap,serving,healthy", "zcl.command.empty_input.v1",
+    "zcl.core_status_brief.v1", "", "", "zclassic23 core status brief",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
 /* ── chain ─────────────────────────────────────────────────────────── */
 ZCL_COMMAND_BRANCH("core.chain", "core", "Blocks, transactions, and mempool",
                    ZCL_COMMAND_LAYER_CORE)
