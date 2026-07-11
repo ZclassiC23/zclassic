@@ -30,6 +30,12 @@ struct zcl_devloop_plan {
     char proof_group_storage[64];
     bool consensus_risk;
     bool docs_only;
+    /* True iff any changed file lives under the SEALED consensus core (core/
+     * — the surface core/MANIFEST.sha3 pins). Sealed files are always
+     * consensus_risk too (heaviest proof), and the fast loop structurally
+     * REFUSES to auto-publish them unless the owner unseal token is present.
+     * See zcl_devloop_path_is_sealed_core() / zcl_devloop_refusal_json(). */
+    bool sealed_core;
     size_t file_count;
 };
 
@@ -49,6 +55,25 @@ bool zcl_devloop_plan_files(const char *const *files, size_t file_count,
                             struct zcl_devloop_plan *out);
 size_t zcl_devloop_plan_json(const char *const *files, size_t file_count,
                              char *out, size_t out_sz);
+
+/* True iff `path` is under the sealed consensus core (the `core/` prefix —
+ * the exact surface `core/MANIFEST.sha3` seals). Broader than the
+ * consensus-risk prefix list: it covers ALL of core/ (incl. core/math). */
+bool zcl_devloop_path_is_sealed_core(const char *path);
+
+/* True iff an owner-minted one-shot unseal token (`.core-unseal-token`, the
+ * file `make core-unseal` writes) is present at `repo_root`. READ-ONLY: this
+ * never mints or consumes the token — `make core-seal` is the sole consumer,
+ * so one unseal authorizes one LANDED COMMIT, not one dev-cycle. */
+bool zcl_devloop_unseal_token_present(const char *repo_root);
+
+/* Build the structured sealed-core refusal envelope (a zcl.dev_cycle.v1
+ * document with status "refused") into `out`. `files` lists the full changed
+ * set; the envelope's "paths" array carries only the sealed-core members that
+ * triggered the refusal. Returns the byte count, or 0 on overflow/bad args.
+ * Sealed != frozen: the envelope always names the elevated procedure. */
+size_t zcl_devloop_refusal_json(const char *const *files, size_t file_count,
+                                char *out, size_t out_sz);
 
 size_t zcl_devloop_menu_json(const char *path, char *out, size_t out_sz);
 size_t zcl_devloop_menu_search_json(const char *query,

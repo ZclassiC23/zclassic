@@ -191,8 +191,66 @@ token adds `"vcs_sealed_refusal":true` alongside `"vcs_error"`. At this
 integration point the refusal is **advisory only** — by the time
 `finish_cycle` runs, the cycle's own hot-swap/reload publish has already
 happened, so a refused anchor means only "this cycle's source snapshot did
-not land," not "the running binary was blocked." Wave 2.4 moves the seal
-check earlier, before publish, so a sealed-path edit is refused outright.
+not land," not "the running binary was blocked." This ZVCS-side check remains
+as a defense-in-depth backstop; the **pre-publish core refusal** below (Wave
+2.4) is the one that structurally blocks the running binary.
+
+## Core refusal — the fast loop cannot auto-publish sealed consensus (Wave 2.4)
+
+**What an agent sees when it edits `core/`.** The top-level `core/` tree is the
+sealed consensus core (the predicates + static, height-keyed parameter tables
+that decide block/tx validity — the exact surface `core/MANIFEST.sha3` pins).
+When a dev cycle's changed-file set touches any file under `core/`, the fast
+loop **stops before any hot-swap or reload publish** and emits a structured
+refusal envelope on stdout (also persisted as the `zcl.dev_cycle.v1` verdict at
+`$HOME/.local/state/zclassic23-dev/native-cycle.json`), exiting **3**
+(blocked-by-precondition):
+
+```json
+{"schema":"zcl.dev_cycle.v1","producer":"native","status":"refused",
+ "reason":"sealed_consensus_core",
+ "paths":["core/consensus/src/pow.c"],
+ "manifest":"core/MANIFEST.sha3",
+ "law":"docs/CONSENSUS_PARITY_DOCTRINE.md",
+ "unseal":"make core-unseal REASON=... (owner-gated; see core/UNSEAL.md)",
+ "elevated_procedure":"full make ci + copy-prove + owner-gated deploy",
+ "agent_next_action":"edit outside core/, or run the owner-gated unseal ritual (make core-unseal) for a consensus-parity fix"}
+```
+
+`"paths"` lists only the sealed members that triggered the refusal (a doc or
+app file in the same edit is not named). The refusal fires on **both** the
+one-shot `dev change cycle <files>` path and the persistent `dev loop watch`
+path — both funnel through `zcl_devloop_run_cycle()`
+(`tools/dev/devloop_cycle.c`), and the check precedes even the dev-build gate,
+so a release binary refuses identically.
+
+**Sealed ≠ frozen.** The refusal is not a wall — it always names the elevated
+procedure. Consensus-parity fixes still ship routinely; they just leave the
+autonomous fast path for the owner-gated route: `make core-unseal REASON=…`
+records the reason in the append-only `core/UNSEAL.md` and mints a one-shot
+`.core-unseal-token` at the repo root, then a full `make ci` + copy-prove +
+owner-gated deploy, then `make core-seal` re-freezes the manifest.
+
+**Token interaction (one unseal = one landed commit, not one dev-cycle).** The
+fast loop checks for `.core-unseal-token` **read-only** and never mints or
+consumes it. `make core-seal` is the sole consumer (it re-freezes the manifest
+when the sealed edit lands). So a single `make core-unseal` authorizes exactly
+one *landed commit* — which may span several iterative dev-cycles while the
+author converges the fix — rather than a single dev-cycle. While the token is
+present, a `core/` cycle **proceeds** (it is not refused) and routes to the
+heaviest proof path (`consensus_parity`), because `zcl_devloop_plan_files()`
+marks any sealed file `consensus_risk` — exactly as a `lib/validation/…` edit
+is proven today; the loop logs to stderr that the seal was lifted for that
+cycle. If the loop consumed the token itself, one owner unseal would cover only
+the first of the author's iteration cycles, breaking the "one unseal = one
+landed commit" contract — hence read-only.
+
+Tests: `make t ONLY=dev_platform` — sealed-core classification (incl. `core/math`,
+which the legacy `consensus_risk` prefix list never named), the refusal
+envelope fields (status/reason/manifest/law/unseal/elevated_procedure and the
+`paths` filtering), a real `zcl_devloop_run_cycle()` over a `core/` file
+returning exit 3 with the persisted refusal verdict and no publish, and a
+minted-token cycle proceeding (not refused).
 
 **Reading the anchor log today.** There is no `dev vcs log` CLI yet (that is
 Registry Phase B / Wave 3 CLI wiring, `dev vcs snapshot|status|log|diff|revert`

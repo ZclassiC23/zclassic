@@ -7,6 +7,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 static const char *const g_hotswap_eligible[] = {
 #define HOTSWAP_ELIGIBLE(path) path,
@@ -51,6 +52,17 @@ static bool path_is_docs(const char *path)
          has_suffix(path, ".md"));
 }
 
+/* The SEALED consensus core: the exact surface `core/MANIFEST.sha3` pins
+ * (`git ls-files core/`). This is intentionally the whole `core/` tree —
+ * broader than path_is_consensus_risk()'s prefix list, which predates the
+ * core-split absorption and does not name core/math. Keeping this a single
+ * "core/" prefix keeps the fast-loop refusal aligned with the seal manifest
+ * by construction (there is no second list to drift). */
+bool zcl_devloop_path_is_sealed_core(const char *path)
+{
+    return path && strncmp(path, "core/", 5) == 0;
+}
+
 static bool path_is_consensus_risk(const char *path)
 {
     static const char *const prefixes[] = {
@@ -92,7 +104,11 @@ bool zcl_devloop_plan_files(const char *const *files, size_t file_count,
             return false;
         all_docs = all_docs && path_is_docs(files[i]);
         all_hotswap = all_hotswap && path_is_hotswap_eligible(files[i]);
-        out->consensus_risk = out->consensus_risk ||
+        bool sealed = zcl_devloop_path_is_sealed_core(files[i]);
+        out->sealed_core = out->sealed_core || sealed;
+        /* A sealed-core file is always heaviest-proof: even core/math (not in
+         * the legacy consensus_risk prefix list) decides block/tx validity. */
+        out->consensus_risk = out->consensus_risk || sealed ||
                               path_is_consensus_risk(files[i]);
         (void)agent_impact_apply_shared_rules(files[i], &impact);
     }
@@ -178,8 +194,10 @@ size_t zcl_devloop_plan_json(const char *const *files, size_t file_count,
         !appendf(out, out_sz, &pos, ",\"reason\":") ||
         !append_json_string(out, out_sz, &pos, plan.reason) ||
         !appendf(out, out_sz, &pos,
-                 ",\"consensus_risk\":%s,\"docs_only\":%s,\"files\":[",
+                 ",\"consensus_risk\":%s,\"sealed_core\":%s,\"docs_only\":%s,"
+                 "\"files\":[",
                  plan.consensus_risk ? "true" : "false",
+                 plan.sealed_core ? "true" : "false",
                  plan.docs_only ? "true" : "false"))
         return 0;
 
@@ -194,6 +212,66 @@ size_t zcl_devloop_plan_json(const char *const *files, size_t file_count,
         !append_json_string(out, out_sz, &pos, plan.probe_tool) ||
         !appendf(out, out_sz, &pos,
                  ",\"agent_next_action\":\"edit code; the native loop owns execution\"}"))
+        return 0;
+    return pos;
+}
+
+bool zcl_devloop_unseal_token_present(const char *repo_root)
+{
+    /* READ-ONLY presence check of <repo_root>/.core-unseal-token — the
+     * one-shot token `make core-unseal REASON=…` mints. We deliberately do
+     * NOT open, mint, or unlink it: `make core-seal` is the sole consumer, so
+     * one unseal authorizes exactly one landed commit (which may span several
+     * iterative dev-cycles while the author converges the sealed edit), never
+     * one dev-cycle. Path traversal is a non-issue: repo_root is the native
+     * source root, not attacker input. */
+    const char *root = (repo_root && repo_root[0]) ? repo_root : ".";
+    char path[ZCL_DEVLOOP_PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/.core-unseal-token", root);
+    if (n <= 0 || (size_t)n >= sizeof(path))
+        return false;
+    return access(path, F_OK) == 0;
+}
+
+size_t zcl_devloop_refusal_json(const char *const *files, size_t file_count,
+                                char *out, size_t out_sz)
+{
+    size_t pos = 0;
+    if (!out || out_sz == 0 || (file_count > 0 && !files))
+        return 0;
+
+    /* A zcl.dev_cycle.v1 verdict whose status is the new "refused" — the
+     * structured envelope the fast loop emits (stdout + persisted verdict)
+     * when a changed-file set touches the sealed consensus core with no valid
+     * unseal token. "Sealed != frozen": the envelope always names the
+     * elevated procedure, so it never dead-ends. */
+    if (!appendf(out, out_sz, &pos,
+                 "{\"schema\":\"zcl.dev_cycle.v1\",\"producer\":\"native\","
+                 "\"status\":\"refused\",\"reason\":\"sealed_consensus_core\","
+                 "\"paths\":["))
+        return 0;
+
+    /* Only the sealed members that actually triggered the refusal. */
+    bool first = true;
+    for (size_t i = 0; i < file_count; i++) {
+        if (!zcl_devloop_path_is_sealed_core(files[i]))
+            continue;
+        if ((!first && !appendf(out, out_sz, &pos, ",")) ||
+            !append_json_string(out, out_sz, &pos, files[i]))
+            return 0;
+        first = false;
+    }
+
+    if (!appendf(out, out_sz, &pos,
+                 "],\"manifest\":\"core/MANIFEST.sha3\","
+                 "\"law\":\"docs/CONSENSUS_PARITY_DOCTRINE.md\","
+                 "\"unseal\":\"make core-unseal REASON=... "
+                 "(owner-gated; see core/UNSEAL.md)\","
+                 "\"elevated_procedure\":\"full make ci + copy-prove + "
+                 "owner-gated deploy\","
+                 "\"agent_next_action\":\"edit outside core/, or run the "
+                 "owner-gated unseal ritual (make core-unseal) for a "
+                 "consensus-parity fix\"}"))
         return 0;
     return pos;
 }
