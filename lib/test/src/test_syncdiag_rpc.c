@@ -1135,6 +1135,10 @@ int test_syncdiag_rpc(void)
                           "zcl.peer_incidents.v1") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result, "method")),
                           "peerincidents") == 0;
+        /* native_command is the zero-MCP analog of mcp_tool below
+         * (docs/work/MCP-REMOVAL-WORKLIST.md W2) — already asserted here,
+         * so this site needs no rewrite; mcp_tool stays because it still
+         * describes real, currently-running -mcp behavior until W3. */
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "native_command")),
                           "zclassic23 peerincidents") == 0;
@@ -1220,6 +1224,10 @@ int test_syncdiag_rpc(void)
                           "zcl.peer_incidents.v1") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result, "method")),
                           "peerincidents") == 0;
+        /* native_command is the zero-MCP analog of mcp_tool below
+         * (docs/work/MCP-REMOVAL-WORKLIST.md W2) — already asserted here,
+         * so this site needs no rewrite; mcp_tool stays because it still
+         * describes real, currently-running -mcp behavior until W3. */
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "native_command")),
                           "zclassic23 peerincidents") == 0;
@@ -2488,6 +2496,12 @@ syncdiag_net_split_done:
                           "/api/v1/agent") == 0;
         ok = ok && resources && resources->type == JSON_ARR &&
             json_size(resources) >= 4;
+        /* zero-MCP note (docs/work/MCP-REMOVAL-WORKLIST.md W2): the `mcp`
+         * block below is mirrored field-for-field by the `cli` block
+         * further down (e.g. cli.map_command == "zclassic23 agentmap"),
+         * which is the native analog already asserted in this same test —
+         * no rewrite needed here; `mcp` stays truthful to the still-running
+         * -mcp binary until W3 deletes it. */
         ok = ok && mcp && mcp->type == JSON_OBJ &&
             strcmp(json_get_str(json_get(mcp, "first_tool")),
                    "zcl_agent") == 0;
@@ -5163,6 +5177,58 @@ syncdiag_net_split_done:
         json_free(&result);
     }
 
+    /* zero-MCP native analog of the "mcp_changed"/"mcp_controllers" test
+     * above (docs/work/MCP-REMOVAL-WORKLIST.md W2): a change to a
+     * *_native_handlers.c file (the command-registry's handler surface,
+     * app/controllers/include/controllers/agent_impact_rules.def:234)
+     * classifies into "command_registry_catalog" — the native successor
+     * group to "mcp_controllers" for this migration. mcp_changed / the
+     * mcp_controllers group above stay untouched: they still describe
+     * real, currently-running -mcp behavior (a tools/mcp/ file changed)
+     * until W3 deletes tools/mcp/ (entire tree) and this rule row. */
+    printf("api: native RPC maps a native-handlers file change to "
+           "command_registry_catalog... ");
+    {
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        register_event_rpc_commands(&tbl);
+        if (rpc_is_in_warmup(NULL, 0))
+            set_rpc_warmup_finished();
+
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+        struct json_value v;
+        json_init(&v);
+        json_set_str(&v, "app/controllers/src/chain_native_handlers.c");
+        json_push_back(&params, &v);
+        json_free(&v);
+
+        struct json_value result;
+        json_init(&result);
+
+        bool ok = rpc_table_execute(&tbl, "agentimpact", &params, &result);
+        const struct json_value *groups =
+            json_get(&result, "relevant_test_groups");
+        ok = ok && result.type == JSON_OBJ;
+        ok = ok && json_get_bool(json_get(&result, "code_changed"));
+        ok = ok && json_array_has_str(groups, "command_registry_catalog");
+        ok = ok && json_array_has_str(groups, "syncdiag_rpc");
+        ok = ok && json_array_has_str(groups, "make_lint_gates");
+
+        if (ok) {
+            printf("OK\n");
+        } else {
+            char dbg[4096];
+            json_write(&result, dbg, sizeof(dbg));
+            printf("FAIL result=%s\n", dbg);
+            failures++;
+        }
+
+        json_free(&params);
+        json_free(&result);
+    }
+
     printf("api: native RPC returns agent contracts and build contract... ");
     {
         struct rpc_table tbl;
@@ -5230,6 +5296,15 @@ syncdiag_net_split_done:
         ok = ok && contract_summary &&
             json_get_int(json_get(contract_summary, "mcp_declared_count"))
                 >= 20;
+        /* zero-MCP native analog (docs/work/MCP-REMOVAL-WORKLIST.md W2):
+         * native_declared_count counts contracts with a non-empty
+         * native_command, the same way mcp_declared_count counts non-empty
+         * mcp_tool (agent_contract_registry.c:agent_push_contract_summary_json).
+         * Asserted here rather than replacing mcp_declared_count, which
+         * still describes real, currently-running -mcp behavior until W3. */
+        ok = ok && contract_summary &&
+            json_get_int(json_get(contract_summary,
+                                  "native_declared_count")) >= 20;
         ok = ok && contract_summary &&
             strcmp(json_get_str(json_get(contract_summary,
                                          "registry_source")),

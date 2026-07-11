@@ -2829,6 +2829,14 @@ int test_api(void)
         ok = ok && bootstrap_status_op &&
              strcmp(json_get_str(json_get(bootstrap_status_op, "rest_route")),
                     "/api/v1/bootstrap") == 0;
+        /* zero-MCP native analog (docs/work/MCP-REMOVAL-WORKLIST.md W2):
+         * rpc_method is the native RPC/CLI surface for this operation
+         * (`zclassic23 bootstrapstatus`), asserted alongside mcp_tool
+         * rather than instead of it — mcp_tool stays accurate until W3. */
+        ok = ok && bootstrap_status_op &&
+             strcmp(json_get_str(json_get(bootstrap_status_op,
+                                          "rpc_method")),
+                    "bootstrapstatus") == 0;
         ok = ok && bootstrap_status_op &&
              strcmp(json_get_str(json_get(bootstrap_status_op, "mcp_tool")),
                     "zcl_bootstrapstatus") == 0;
@@ -3021,6 +3029,13 @@ int test_api(void)
              json_get_int(json_get(summary, "service_count")) ==
              (int64_t)json_size(service_facets);
         ok = ok && json_get_int(json_get(summary, "rest_callable_count")) > 0;
+        /* zero-MCP note (docs/work/MCP-REMOVAL-WORKLIST.md W2): no
+         * counterpart "native_callable_count"/"rpc_callable_count" field
+         * exists yet in api_controller_service_operations_index.c — adding
+         * one is a product-code change, out of scope for this
+         * test-assertion migration pass. Deferred to W3 (this assert dies
+         * with mcp_callable_count when tools/mcp/ (entire tree) is deleted), unless a
+         * native counter is added first, in which case migrate here then. */
         ok = ok && json_get_int(json_get(summary, "mcp_callable_count")) > 0;
         ok = ok && json_get_int(json_get(summary, "destructive_count")) > 0;
         const struct json_value *znam_facet =
@@ -4800,6 +4815,14 @@ int test_api(void)
             json_get(&result, "relevant_test_groups");
         ok = ok && api_test_array_has_str(groups,
                                           "chain_advance_coordinator");
+        /* zero-MCP note (docs/work/MCP-REMOVAL-WORKLIST.md W2): this
+         * asserts a real, still-accurate impact-rule row (block_source_
+         * policy* -> mcp_controllers, agent_impact_rules.def:86) — left
+         * as-is, it guards live classification behavior until W3 retires
+         * the row. The native successor shape (a *_native_handlers.c
+         * change classifying into command_registry_catalog) already has
+         * dedicated coverage: test_syncdiag_rpc.c "api: native RPC maps a
+         * native-handlers file change to command_registry_catalog". */
         ok = ok && api_test_array_has_str(groups, "mcp_controllers");
         ok = ok && api_test_array_has_str(groups, "make_lint_gates");
         const struct json_value *commands =
@@ -4867,6 +4890,9 @@ int test_api(void)
         ok = ok && api_test_array_has_str(groups, "rpc");
         ok = ok && api_test_array_has_str(groups, "api");
         ok = ok && api_test_array_has_str(groups, "syncdiag_rpc");
+        /* mcp_controllers here: same zero-MCP note as above (still-live
+         * impact rule, native-analog coverage lives in
+         * test_syncdiag_rpc.c). */
         ok = ok && api_test_array_has_str(groups, "mcp_controllers");
         ok = ok && api_test_array_has_str(groups, "make_lint_gates");
         json_free(&params);

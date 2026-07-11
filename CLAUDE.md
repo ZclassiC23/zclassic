@@ -2,9 +2,9 @@
 
 ## Vision — Personal Sovereignty Stack
 
-ZClassic23 is one ~15 MB self-contained C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, P2P messaging (plaintext P2P channel; on-chain Sapling-memo channel implemented — requires Sapling params + a passing prover self-test to send), cross-chain atomic swaps (BTC/LTC/DOGE; redeem/refund/settlement: in progress), a P2P game framework, and an MCP server. **Claude is a first-class operator via 100+ typed MCP tools** — not just an observer. Cold sync to tip in ~60 seconds via FlyClient + SHA3 UTXO snapshots (design target — see `docs/HANDOFF.md`; today's proven recovery is the two-step header-import + boot, ~25 min). Silent halts are unreachable by construction — a stall is always a named blocker or a growing tip gap, never a quiet stop (chain progress is a stage cursor on disk); the node can still halt, it just cannot do so without saying so. Bugs become 64-bit seeds in a deterministic simulator. Build flags for reproducibility are in place (pinned `-march`, `SOURCE_DATE_EPOCH`, dropped build-id, deterministic tarball) with optional GPG signing (sign optional, can be waived with --unsigned) — byte-identity is not yet proven by a build-twice-and-compare gate. **One binary, one onion, one stack — your sovereign personal computing surface.**
+ZClassic23 is one ~15 MB self-contained C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, P2P messaging (plaintext P2P channel; on-chain Sapling-memo channel implemented — requires Sapling params + a passing prover self-test to send), cross-chain atomic swaps (BTC/LTC/DOGE; redeem/refund/settlement: in progress), a P2P game framework, and a native command registry (with a legacy MCP server, removed in W3). **Claude is a first-class operator via 100+ typed native commands** — not just an observer. Cold sync to tip in ~60 seconds via FlyClient + SHA3 UTXO snapshots (design target — see `docs/HANDOFF.md`; today's proven recovery is the two-step header-import + boot, ~25 min). Silent halts are unreachable by construction — a stall is always a named blocker or a growing tip gap, never a quiet stop (chain progress is a stage cursor on disk); the node can still halt, it just cannot do so without saying so. Bugs become 64-bit seeds in a deterministic simulator. Build flags for reproducibility are in place (pinned `-march`, `SOURCE_DATE_EPOCH`, dropped build-id, deterministic tarball) with optional GPG signing (sign optional, can be waived with --unsigned) — byte-identity is not yet proven by a build-twice-and-compare gate. **One binary, one onion, one stack — your sovereign personal computing surface.**
 
-See [`docs/HOW_THE_NODE_WORKS.md`](./docs/HOW_THE_NODE_WORKS.md) for the plain-language mental model (the node as a state machine), [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) for the canonical architecture (the Prime Directive, the Ten Laws of Beauty, and the eight shapes), [`docs/AGENT_ARCHITECTURE.md`](./docs/AGENT_ARCHITECTURE.md) for the concrete future-agent feature slice (REST resources, ActiveRecord, validations, relationships, schema, services, MCP/native), [`docs/ARCHITECTURE_DIAGRAMS.md`](./docs/ARCHITECTURE_DIAGRAMS.md) for current subsystem/boot topology, and [`docs/adr/0001-personal-sovereignty-stack.md`](./docs/adr/0001-personal-sovereignty-stack.md) for the 2026-05-22 pivot rationale.
+See [`docs/HOW_THE_NODE_WORKS.md`](./docs/HOW_THE_NODE_WORKS.md) for the plain-language mental model (the node as a state machine), [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) for the canonical architecture (the Prime Directive, the Ten Laws of Beauty, and the eight shapes), [`docs/AGENT_ARCHITECTURE.md`](./docs/AGENT_ARCHITECTURE.md) for the concrete future-agent feature slice (REST resources, ActiveRecord, validations, relationships, schema, services, native surfaces), [`docs/ARCHITECTURE_DIAGRAMS.md`](./docs/ARCHITECTURE_DIAGRAMS.md) for current subsystem/boot topology, and [`docs/adr/0001-personal-sovereignty-stack.md`](./docs/adr/0001-personal-sovereignty-stack.md) for the 2026-05-22 pivot rationale.
 
 ## Security model for AI agents
 
@@ -128,7 +128,7 @@ Key rules enforced by the compiler and CI:
 - **Every write goes through the AR lifecycle** — `AR_BEGIN_SAVE` + `AR_FINISH_SAVE`, or the combined `AR_ADHOC_SAVE` (locally-prepared stmt) / `AR_CACHED_SAVE` (cached stmt). No raw `sqlite3_step()` in app code. See `app/models/include/models/activerecord.h`.
 - **Every error return must log context** — use `LOG_FAIL()`, `LOG_ERR()`, `LOG_NULL()` from `util/log_macros.h`
 - **Every malloc must be checked** — use `zcl_malloc(size, "label")` from `util/safe_alloc.h`
-- **Every MCP handler must set an error body** — never `return -1;` without explaining why
+- **Every native command handler must set an error body** (the legacy MCP handler rule still applies too, removed in W3) — never `return -1;` without explaining why
 - **Before/after save hooks** — wire them for wallet keys, UTXOs, blocks
 
 `make lint` checks for violations. `make ci` runs lint before tests.
@@ -189,9 +189,12 @@ regardless of which credential satisfied auth.
 
 ### Quick Reference
 
-There are 100+ typed tools (call `zcl_tools_list` for the exact live count). **This table lists only the ones you reach for
-daily** — it is deliberately not exhaustive. For the full catalog, call
-`zcl_tools_list` (live routing table) or read the source of truth:
+There are 100+ typed tools (native-first: `zclassic23 discover help` for the
+exact live count; the legacy MCP equivalent `zcl_tools_list` still works
+today, removed in W3). **This table lists only the ones you reach for
+daily** — it is deliberately not exhaustive. For the full catalog, run
+`zclassic23 discover search <q>` / `zcl_tools_list` (live routing table) or
+read the source of truth:
 `tools/mcp/controllers/{app,chain,meta,net,ops,wallet}_controller.c`.
 
 | Tool | When to use |
@@ -297,7 +300,7 @@ systemctl --user start zclassic23
 -rpcport=N            RPC port (default: 18232)
 -tor                  Enable embedded Tor onion service
 -nobgvalidation       Skip background proof verification (saves RAM)
--mcp                  Run as MCP server on stdio (for Claude Code)
+-mcp                  Run as legacy MCP server on stdio (for Claude Code; removed in W3 — prefer `zclassic23 <command>` native calls)
 -txindex              Enable full transaction index
 -addnode=IP:PORT      Connect to specific peer
 ```

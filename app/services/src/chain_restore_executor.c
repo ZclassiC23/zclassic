@@ -228,3 +228,37 @@ struct block_index *chain_restore_execute(
 
     return target;
 }
+
+struct zcl_result chain_restore_finalize_verified(struct main_state *ms,
+                                                  const char *datadir,
+                                                  int index_repaired,
+                                                  size_t index_size)
+{
+    /* Boot fast path: when the block-index repair passes just proved the
+     * in-memory index fully consistent (index_repaired == 0 over a
+     * non-trivial index) and the SHA3 sidecar has verified it, the disk-backed
+     * active_chain rebuild inside chain_restore_finalize is pure waste. That
+     * rebuild re-reads every block header from disk (3M+ reads) and, on any
+     * single stale read, falls all the way back to a full multi-GB block-file
+     * rescan — measured at ~74s of pre-RPC-bind wall time on a fresh 2-step
+     * datadir, over half the whole boot — only to re-confirm a chain the
+     * in-memory pprev walk can slot in O(tip). Enable the trust fastpath for
+     * THIS finalize call so it takes the pprev walk; the post-restore
+     * integrity check inside finalize stays the fail-safe. The flag is scoped
+     * to this call and cleared immediately, so the chain_integrity_failed
+     * remedy keeps its authoritative disk rebuild, and we never disturb a
+     * fast-restart binding that already set the flag. */
+    bool trust = (index_repaired == 0 && index_size > 1000 &&
+                  !chain_restore_trust_index_fastpath());
+    if (trust) {
+        printf("[chain-restore] index verified consistent (0 repairs, %zu "
+               "entries) — finalize trusting in-memory pprev walk, skipping "
+               "disk header re-read + block-file rescan\n", index_size);
+        fflush(stdout);
+        chain_restore_set_trust_index_fastpath(true);
+    }
+    struct zcl_result r = chain_restore_finalize(ms, datadir);
+    if (trust)
+        chain_restore_set_trust_index_fastpath(false);
+    return r;
+}

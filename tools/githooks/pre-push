@@ -19,10 +19,25 @@
 # Full `make ci` remains available for release-grade manual runs. The default
 # push path keeps long-running full-suite/fuzz/coverage evidence off the
 # critical path.
+#
+# SIGPIPE-safety: the gate's verbose stdout is redirected to a log file
+# (build/pre-push-ci.log), never streamed raw through this hook's own
+# stdout/stderr. Whatever ultimately reads this hook's output (a terminal,
+# `git push | head`, an agent harness that truncates long output, ...) may
+# stop draining before the gate finishes. If that verbose output were piped
+# straight through, a `make` recipe that gets EPIPE writing to ITS stdout
+# reports a fatal "write error" and dies non-zero — even though the actual
+# checks passed — spuriously blocking the push. Writing to a regular file
+# can never EPIPE, so the gate's real exit code is what decides the push,
+# never whether some downstream reader kept reading. SIGPIPE is ignored and
+# every informational echo/tail below is `|| true`-guarded so this hook's
+# own (much smaller) summary output can't trigger the same failure mode one
+# level up.
 set -euo pipefail
+trap '' PIPE
 
 if [ "${ZCL_SKIP_PREPUSH:-0}" = "1" ]; then
-    echo "pre-push: ZCL_SKIP_PREPUSH=1 — skipping the local CI gate." >&2
+    echo "pre-push: ZCL_SKIP_PREPUSH=1 — skipping the local CI gate." >&2 || true
     exit 0
 fi
 
@@ -38,7 +53,7 @@ while read -r _lref lsha rref rsha; do
     [ -n "${lsha:-}" ] || continue
     [ "$lsha" = "$z" ] && continue
     if [ "$rref" != "refs/heads/main" ]; then
-        echo "pre-push: only origin main is allowed (got remote ref $rref)." >&2
+        echo "pre-push: only origin main is allowed (got remote ref $rref)." >&2 || true
         exit 1
     fi
     have_update=1
@@ -62,15 +77,32 @@ done < "$updates"
 sort -u "$changed_files" -o "$changed_files"
 
 CMD="${ZCL_PREPUSH_CMD:-make pre-push-ci}"
-echo "pre-push: running local CI gate ($CMD) before push to origin…" >&2
-echo "pre-push: semantic changed-file count: $(wc -l < "$changed_files" | tr -d ' ')." >&2
-echo "pre-push: full-suite/fuzz/coverage lanes run via 'make install-quality-linger'." >&2
-echo "pre-push: bypass one push with 'git push --no-verify' if you must." >&2
-if ! ZCL_FAST_CHANGED_FILES_FILE="$changed_files" ZCL_FAST_CHANGED_FILES_ONLY=1 $CMD; then
-    echo "" >&2
-    echo "pre-push: LOCAL CI FAILED — push BLOCKED." >&2
-    echo "pre-push: fix it, or override this one push with 'git push --no-verify'." >&2
+LOG_FILE="$REPO_ROOT/build/pre-push-ci.log"
+mkdir -p "$REPO_ROOT/build" 2>/dev/null || true
+
+echo "pre-push: running local CI gate ($CMD) before push to origin…" >&2 || true
+echo "pre-push: semantic changed-file count: $(wc -l < "$changed_files" | tr -d ' ')." >&2 || true
+echo "pre-push: full-suite/fuzz/coverage lanes run via 'make install-quality-linger'." >&2 || true
+echo "pre-push: bypass one push with 'git push --no-verify' if you must." >&2 || true
+echo "pre-push: verbose CI output -> $LOG_FILE (only a summary prints here)." >&2 || true
+
+# Verbose CI output goes to a regular file, never straight to this hook's
+# own stdout/stderr — see the SIGPIPE-safety note at the top of this file.
+# A regular-file write can never EPIPE, so $CMD's real exit code is the
+# only thing that decides the push, regardless of how this hook's own
+# (small) output above/below gets consumed.
+rc=0
+ZCL_FAST_CHANGED_FILES_FILE="$changed_files" ZCL_FAST_CHANGED_FILES_ONLY=1 $CMD >"$LOG_FILE" 2>&1 || rc=$?
+
+if [ "$rc" -ne 0 ]; then
+    echo "" >&2 || true
+    echo "pre-push: LOCAL CI FAILED (exit $rc) — push BLOCKED." >&2 || true
+    echo "pre-push: last 60 lines of $LOG_FILE:" >&2 || true
+    tail -n 60 "$LOG_FILE" >&2 2>/dev/null || true
+    echo "" >&2 || true
+    echo "pre-push: full log: $LOG_FILE" >&2 || true
+    echo "pre-push: fix it, or override this one push with 'git push --no-verify'." >&2 || true
     exit 1
 fi
-echo "pre-push: local CI green — allowing push." >&2
+echo "pre-push: local CI green (log: $LOG_FILE) — allowing push." >&2 || true
 exit 0

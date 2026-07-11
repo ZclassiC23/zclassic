@@ -48,6 +48,7 @@
 #include "services/db_maintenance.h"
 #include "controllers/wallet_scan.h"
 #include "util/blocker.h"
+#include "util/boot_status.h"
 #include "util/ar_step_readonly.h"
 #include "util/signal_handler.h"
 #include "util/thread_registry.h"
@@ -413,6 +414,9 @@ static bool boot_step_select_chain_and_datadir(struct app_context *ctx)
         signal_handler_set_crash_log(crash_path);
     }
 
+    /* Arm the pre-RPC boot-progress beacon (util/boot_status.h). */
+    boot_status_init(ctx->datadir);
+
     /* Acquire data directory lock — prevents two instances from
      * corrupting SQLite / LevelDB by writing concurrently. */
     if (!boot_datadir_lock_acquire(ctx->datadir))
@@ -493,16 +497,12 @@ static void boot_step_finalize_chain_state(void)
         char hex[65];
         uint256_get_hex(tip->phashBlock, hex);
         printf("Chain tip: height=%d hash=%s\n", tip->nHeight, hex);
+        boot_status_set_height(tip->nHeight);
         event_emitf(EV_BOOT_ACTIVATE, 0, "done tip=%d", tip->nHeight);
 
-        /* Do not auto-extend deferred proof validation at startup.
-         * Everything already in the chainstate was observed from either:
-         * - zclassicd (via legacy import)
-         * - a previous run of zclassic23
-         * - the coins DB (hash-checked LevelDB state)
-         * Only blocks received via P2P AFTER startup need new validation.
-         * With Groth16 pairing fix deployed, all proofs above the checkpoint
-         * are now verified correctly — no need to extend deferred proof validation. */
+        /* Do not auto-extend deferred proof validation at startup: chainstate
+         * came from a trusted source (import / prior run / hash-checked coins
+         * DB); only blocks received via P2P AFTER startup need new validation. */
     } else {
         printf("Chain tip: genesis\n");
     }
@@ -3617,8 +3617,8 @@ sapling_tree_boot_check_done:
         boot_phase_begin(&bp_fin, "chain_restore_finalize");
         service_state_advance(SERVICE_STATE_RECONCILE,
                               "post-restore finalize gate");
-        struct zcl_result finalize_r =
-            chain_restore_finalize(&g_state, ctx->datadir);
+        struct zcl_result finalize_r = chain_restore_finalize_verified(
+            &g_state, ctx->datadir, index_repaired, g_state.map_block_index.size);
         bool finalize_ok = finalize_r.ok;
         if (!finalize_ok)
             fprintf(stderr,

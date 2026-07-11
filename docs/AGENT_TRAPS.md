@@ -58,14 +58,16 @@ historical fixture passes, then deploy/restart intentionally.
   services, models, storage, events, conditions, supervisors, networking,
   wallet/key/crypto state, reducers, and process ownership are
   `reload_required`. Never widen the allowlist to silence that blocker.
-- **Do not substitute a one-shot `mcpcall` for the persistent bridge.**
+- **Do not substitute a one-shot call for the persistent bridge.**
   `make hotswap FILES=tools/mcp/controllers/app_controller.c` sends the
   authenticated `dev_hotswap` JSON-RPC to the already-running isolated dev
   node, so that resident process changes. By contrast, direct
-  `mcpcall zcl_agent_hotswap` loads the `.so` into a short-lived helper and then
-  exits. The dev-only `dev_hotswap` / non-destructive `dev_mcp_call` methods are
-  absent from release, canonical, and soak nodes. Read
-  `zcl_state subsystem=hotswap` in the same resident process before claiming a
+  `zclassic23-dev dev change apply --input='{"files":[...]}'` (or the legacy,
+  removed-in-W3 `mcpcall zcl_agent_hotswap`) loads the `.so` into a
+  short-lived helper and then exits. The dev-only `dev_hotswap` / native
+  `dev change apply` methods are absent from release, canonical, and soak
+  nodes. Read `zclassic23-dev dumpstate hotswap` (legacy: `zcl_state
+  subsystem=hotswap`) in the same resident process before claiming a
   generation is active.
 - **Exit 69 is a transport signal, not a generic hot-swap failure.** The
   watcher defaults to `tools/dev/hotswap-running-dev.sh`. Only “resident bridge

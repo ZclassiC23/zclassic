@@ -7,8 +7,8 @@
 
 One self-contained ~15 MB pure-C23 binary: a full ZClassic node (Equihash 200,9
 PoW, Sapling shielded transactions), an embedded Tor onion service, a block
-explorer, a shielded wallet, and a built-in MCP server that lets an AI agent
-operate the node through ~100 typed tools.
+explorer, a shielded wallet, and a native command registry that lets an AI
+agent operate the node through ~100 typed commands (`zclassic23 <command>`).
 
 **One binary, one onion, one stack.**
 
@@ -241,21 +241,28 @@ For the live bootstrap posture and the in-flight sovereign cold-start cure (fold
 real bodies forward from a self-minted checkpoint, then delete the borrowed
 seed), see [`docs/HANDOFF.md`](docs/HANDOFF.md).
 
-## Claude integration (MCP)
+## Claude integration
 
-The differentiator: a built-in [MCP](https://modelcontextprotocol.io) server, so
-Claude Code queries and operates the node through typed tools — no curl, no log
-spelunking.
+The differentiator: a native command registry built into the binary, so an AI
+agent queries and operates the node through typed commands — no curl, no log
+spelunking, no separate server process.
 
 ```bash
-claude mcp add zcl23 -- build/bin/zclassic23 -mcp
+build/bin/zclassic23 status
+build/bin/zclassic23 dumpstate supervisor
+build/bin/zclassic23 discover help
 ```
 
-Restart Claude Code and the tools appear. Start with `zcl_status` (height,
-peers, sync, onion, health in one call); `zcl_tools_list` enumerates the full
-~100-tool catalog. The daily-driver reference is in [`CLAUDE.md`](CLAUDE.md).
-MCP is an operator interface (stdio, local client) — don't expose RPC/MCP to
-untrusted clients.
+Start with `status` (height, peers, sync, onion, health in one call);
+`discover help` / `discover search <q>` enumerates the full ~100-command
+catalog. The daily-driver reference is in [`CLAUDE.md`](CLAUDE.md).
+
+**Legacy MCP server (still runs today, removed in W3):** the owner directive
+is zero-MCP — see [`docs/work/MCP-REMOVAL-PLAN.md`](docs/work/MCP-REMOVAL-PLAN.md).
+Until then, `build/bin/zclassic23 -mcp` (or `claude mcp add zcl23 --
+build/bin/zclassic23 -mcp`) still exposes the same surface as typed MCP
+tools. MCP/native are both operator interfaces (stdio, local client) — don't
+expose RPC/MCP/native to untrusted clients.
 
 ## Block explorer
 
@@ -299,7 +306,7 @@ zclassic23 (~15 MB, static)
 ├── MVC            Models (SQLite) · Controllers (C23) · Views (HTML/JSON)
 ├── Fast sync      FlyClient + SHA3 UTXO snapshot
 ├── Wallet         transparent + Sapling
-└── MCP            ~100 typed tools on stdio (-mcp)
+└── Native cmds    ~100 typed commands (`zclassic23 <cmd>`; legacy MCP on stdio via -mcp, removed W3)
 ```
 
 ## Repository layout

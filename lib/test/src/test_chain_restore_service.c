@@ -1515,6 +1515,62 @@ static int test_finalize_null_datadir_skips_disk(void) {
     return failures;
 }
 
+/* The boot fast path (chain_restore_finalize_verified) enables the
+ * trust-index fastpath for ONE finalize call and must clear it again, so the
+ * chain_integrity_failed remedy keeps its authoritative disk rebuild. Assert
+ * the flag never leaks: taken on a verified index, not taken on an unverified
+ * one, and false after both. */
+static int test_finalize_verified_scopes_trust_flag(void) {
+    int failures = 0;
+    TEST("chain_restore_finalize_verified: trust flag is scoped, never leaks") {
+        struct main_state ms;
+        main_state_init(&ms);
+
+        const int N = 4;
+        struct uint256 hashes[4];
+        for (int h = 0; h < N; h++) {
+            memset(&hashes[h], 0, sizeof(hashes[h]));
+            hashes[h].data[0] = (uint8_t)(h & 0xFF);
+            hashes[h].data[3] = 0xCE;
+            struct block_index *pi = chainstate_insert_block_index(
+                (struct chainstate *)&ms, &hashes[h]);
+            pi->nHeight = h;
+            pi->nBits   = 0x1f07ffff;
+            pi->nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+            if (h > 0)
+                pi->pprev = block_map_find(&ms.map_block_index, &hashes[h-1]);
+            arith_uint256_set_u64(&pi->nChainWork, (uint64_t)(h + 1));
+        }
+        struct block_index *tip = block_map_find(
+            &ms.map_block_index, &hashes[N-1]);
+        ASSERT(active_chain_move_window_tip(&ms.chain_active, tip));
+
+        /* Precondition: flag must start clear. */
+        chain_restore_set_trust_index_fastpath(false);
+        ASSERT(chain_restore_trust_index_fastpath() == false);
+
+        /* Verified index (0 repairs, non-trivial size): wrapper trusts it and
+         * finalize succeeds on the clean chain — and the flag is cleared. */
+        ASSERT(chain_restore_finalize_verified(&ms, NULL, 0, 5000).ok == true);
+        ASSERT(chain_restore_trust_index_fastpath() == false);
+
+        /* Unverified index (repairs > 0): wrapper does NOT trust it; the flag
+         * stays clear and finalize still runs the disk-backed rebuild path. */
+        ASSERT(chain_restore_finalize_verified(&ms, NULL, 3, 5000).ok == true);
+        ASSERT(chain_restore_trust_index_fastpath() == false);
+
+        /* Tiny index guard: even at 0 repairs, a sub-threshold size is not
+         * trusted (flag stays clear). */
+        ASSERT(chain_restore_finalize_verified(&ms, NULL, 0, 10).ok == true);
+        ASSERT(chain_restore_trust_index_fastpath() == false);
+
+        block_map_free(&ms.map_block_index);
+        active_chain_free(&ms.chain_active);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_finalize_quarantine_preserves_served_floor(void) {
     int failures = 0;
     TEST("chain_restore_finalize: quarantine refuses below served finality") {
@@ -1628,6 +1684,7 @@ int test_chain_restore_service(void) {
     failures += test_connect_tip_hydrates_placeholder_from_disk();
     failures += test_backfill_nbits_skips_synthetic_anchor();
     failures += test_finalize_null_datadir_skips_disk();
+    failures += test_finalize_verified_scopes_trust_flag();
     failures += test_finalize_quarantine_preserves_served_floor();
     return failures;
 }

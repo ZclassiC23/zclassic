@@ -22,6 +22,8 @@ extern "C" {
 
 char *zcl_native_status_body(const struct json_value *args,
                              struct zcl_native_body_err *err);
+char *zcl_native_status_brief_body(const struct json_value *args,
+                                   struct zcl_native_body_err *err);
 char *zcl_native_kpi_body(const struct json_value *args,
                           struct zcl_native_body_err *err);
 char *zcl_native_syncdiag_body(const struct json_value *args,

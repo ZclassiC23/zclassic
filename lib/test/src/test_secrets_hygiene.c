@@ -29,6 +29,8 @@
 
 #include "test/test_helpers.h"
 #include "mcp/router.h"
+#include "config/command_catalog.h"
+#include "kernel/command_registry.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -164,6 +166,55 @@ static int test_mcp_tools_list_clean(void)
     return failures;
 }
 
+/* zero-MCP native analog (docs/work/MCP-REMOVAL-WORKLIST.md W2): the
+ * native command registry's menu/describe JSON is the successor to
+ * mcp_router_tools_list_json() as "the most widely inspected JSON
+ * surface" — added alongside test_mcp_tools_list_clean() above, not
+ * instead of it (mcp_router_tools_list_json still runs in the live -mcp
+ * binary until W3 deletes tools/mcp/ (entire tree)). */
+static int test_native_registry_clean(void)
+{
+    int failures = 0;
+    TEST("secrets_hygiene: native command registry JSON has no corpus "
+         "leaks") {
+        const struct zcl_command_registry *reg = zcl_command_catalog();
+        ASSERT(reg != NULL);
+        char *buf = zcl_malloc(256 * 1024, "test_native_registry_buf");
+        ASSERT(buf != NULL);
+        int hits = 0;
+
+        size_t n = zcl_command_registry_menu_json(reg, "root", buf,
+                                                   256 * 1024);
+        ASSERT(n > 0);
+        hits += scan_for_corpus(buf, n, "native_root_menu");
+
+        static const char *const branches[] = {
+            "core", "app", "dev", "ops", "discover", "code", "status",
+        };
+        for (size_t i = 0; i < sizeof(branches) / sizeof(branches[0]);
+             i++) {
+            n = zcl_command_registry_menu_json(reg, branches[i], buf,
+                                               256 * 1024);
+            if (n == 0)
+                continue;
+            hits += scan_for_corpus(buf, n, "native_branch_menu");
+        }
+
+        for (size_t i = 0; i < reg->count; i++) {
+            n = zcl_command_registry_describe_json(
+                reg, reg->commands[i].path, buf, 256 * 1024);
+            if (n == 0)
+                continue;
+            hits += scan_for_corpus(buf, n, "native_describe");
+        }
+
+        ASSERT_EQ(hits, 0);
+        free(buf);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_mcp_error_envelopes_clean(void)
 {
     int failures = 0;
@@ -284,6 +335,7 @@ int test_secrets_hygiene(void)
     failures += test_corpus_setup();
     failures += test_positive_control();
     failures += test_mcp_tools_list_clean();
+    failures += test_native_registry_clean();
     failures += test_mcp_error_envelopes_clean();
     failures += test_check_no_secret_printf_script();
     failures += test_recover_tool_path_documented();

@@ -60,7 +60,7 @@ repository ports are reserved-empty.
 <!--   port_interfaces      = ports/include/ports/*.h                                -->
 <!--   persistence_adapters = adapters/outbound/persistence/src/*.c                  -->
 <!--   condition_registrations = condition_register() calls in app/conditions/src    -->
-test_groups: 562
+test_groups: 568
 port_interfaces: 12
 persistence_adapters: 13
 condition_registrations: 32
@@ -75,7 +75,8 @@ job chain, plus `address_backfill`, `bg_workers`, `bg_verification`,
 
 ### Agent + dev tooling — `tools/`
 
-`mcp/` (MCP server, controllers in `tools/mcp/controllers/`), `lint/` (gate
+`mcp/` (MCP server — legacy dual-run surface, scheduled for removal in W3;
+controllers in `tools/mcp/controllers/`), `lint/` (gate
 shell scripts), `fuzz/`, `soak/`, `sim/` (deterministic replay), `dev/`,
 `githooks/`, `scripts/`, `data/` (fixtures).
 
@@ -119,9 +120,11 @@ Use `docs/AGENT_ARCHITECTURE.md` as the full checklist. The short path:
 5. Add REST route metadata in `app/controllers/src/api_controller_routes.c`
    or the relevant dynamic/member controller: method, path, resource, action,
    response schema, query filter contract, freshness, alias, privacy.
-6. Add typed MCP/native access only after the service/model contract exists.
-   MCP routes live in `tools/mcp/controllers/*_controller.c`; terminal agents
-   call them with `zclassic23 mcpcall <tool> [json]`.
+6. Add native command access only after the service/model contract exists.
+   Terminal agents call it directly with `zclassic23 <leaf> [--input=json]`
+   (e.g. `zclassic23 status`, `zclassic23 dumpstate <subsystem>`). MCP routes
+   in `tools/mcp/controllers/*_controller.c` (`zclassic23 mcpcall <tool>
+   [json]`) still work today but are legacy — removed in W3.
 7. Cover model validation, migration/schema, relationship failure, service
    success/failure, REST contract, and MCP controller behavior with focused
    tests before running `make build-only` and `make lint`.
@@ -195,9 +198,10 @@ actually fires.
 > this section documents the current dual-run surface (both still work
 > today), not the target.
 
-100+ typed tools. Discover them live with `zcl_tools_list`; smoke-test with
-`zcl_self_test`; dump schemas with `zcl_openapi`. Source of truth is the
-controller `k_routes[]` arrays.
+100+ typed tools. Discover them natively with `zclassic23 discover help` /
+`zclassic23 discover search <q>`; the legacy MCP equivalent (`zcl_tools_list`,
+smoke-test `zcl_self_test`, schema dump `zcl_openapi`) still works today but
+is removed in W3. Source of truth is the controller `k_routes[]` arrays.
 
 ### Start here
 - `zclassic23 agentinterface` / `zcl_agent_interface` — preferred AI operator
@@ -338,8 +342,9 @@ controller `k_routes[]` arrays.
 - `zclassic23 agentbuild` / `zcl_agent_build` — fast cached build contract:
   `make dev-watch`, `make agent-loop`, `make fast-compile`, `make build-only`,
   `make dev-bin`, `make agent-index`, `make dev-loop-bench`, `make t-fast`,
-  `make fast-ci`, cache knobs, strict gates, typed `mcpcall`, transactional dev
-  activation, dev-lane status commands, and `make ci-reproducible`. The
+  `make fast-ci`, cache knobs, strict gates, native command registry calls
+  (legacy typed `mcpcall`, removed in W3), transactional dev activation,
+  dev-lane status commands, and `make ci-reproducible`. The
   `indexing` and `dev_loop_benchmark` objects report current artifact freshness
   without requiring clangd or running an activation.
 - `zclassic23 statecatalog` / `zcl_state_catalog` — machine-readable catalog
@@ -585,11 +590,13 @@ Confirm the target before acting.
 | `make lane-health` | Read-only canonical/soak/dev lane status, lag, peers, listeners, memory pressure, and snapshot-loader hints. |
 | `make lane-recover LANE=dev` | Plan bounded noncanonical recovery as `zcl.lane_recovery_plan.v1`; set `ZCL_LANE_RECOVERY_APPLY=1` to restart only dev/soak. Canonical/live/main is refused. |
 | `build/bin/test_zcl` | Run all tests directly. |
-| `make agent-mcp-call TOOL=<tool> [ARGS='{}']` | Fresh source-tree typed MCP smoke call from a terminal agent; refreshes `build/bin/zclassic23-dev` first, for example `make agent-mcp-call TOOL=zcl_status` or `make agent-mcp-call TOOL=zcl_state ARGS='{"subsystem":"supervisor"}'`. |
-| `make agent-mcp-call-hot TOOL=<tool> [ARGS='{}']` | No-build typed MCP call through the existing `build/bin/zclassic23-dev`; use for routine read-only status/schema checks when the binary is already current enough. |
-| `make agent-mcp-call-dev TOOL=<tool> [ARGS='{}']` | No-build typed MCP call through the installed `~/.local/bin/zclassic23-dev` against the `zcl23-dev` linger lane (`~/.zclassic-c23-dev`, RPC `18252`). |
-| `build/bin/zclassic23 mcpcall <tool> [json]` | Direct release-binary typed MCP call after `make zclassic23` or deploy. |
-| `build/bin/zcl-rpc <method>` | Legacy/debug RPC helper. Do not build new agent workflows around it; prefer `zclassic23` native commands or `zclassic23 mcpcall`. |
+| `build/bin/zclassic23 status` / `zclassic23 dumpstate <subsystem>` | Native-first status/state calls against the release binary — no build, no MCP. |
+| `zclassic23 discover help` / `discover search <q>` | Native-first tool discovery — the `zcl_tools_list` replacement. |
+| `make agent-mcp-call TOOL=<tool> [ARGS='{}']` | Legacy (removed in W3): fresh source-tree typed MCP smoke call from a terminal agent; refreshes `build/bin/zclassic23-dev` first, for example `make agent-mcp-call TOOL=zcl_status` or `make agent-mcp-call TOOL=zcl_state ARGS='{"subsystem":"supervisor"}'`. |
+| `make agent-mcp-call-hot TOOL=<tool> [ARGS='{}']` | Legacy (removed in W3): no-build typed MCP call through the existing `build/bin/zclassic23-dev`; use for routine read-only status/schema checks when the binary is already current enough. |
+| `make agent-mcp-call-dev TOOL=<tool> [ARGS='{}']` | Legacy (removed in W3): no-build typed MCP call through the installed `~/.local/bin/zclassic23-dev` against the `zcl23-dev` linger lane (`~/.zclassic-c23-dev`, RPC `18252`). |
+| `build/bin/zclassic23 mcpcall <tool> [json]` | Legacy (removed in W3): direct release-binary typed MCP call after `make zclassic23` or deploy. |
+| `build/bin/zcl-rpc <method>` | Legacy/debug RPC helper. Do not build new agent workflows around it; prefer `zclassic23` native commands. |
 | `build/bin/zclassic-cli -rpcport=18232 <method>` | Explicit zclassic23 RPC without MCP. Avoid bare `zclassic-cli` for stability diagnosis because local defaults may target another lane. |
 
 ### Boot stages (`lib/util/include/util/boot_phase.h`)
