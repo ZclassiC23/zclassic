@@ -25,14 +25,10 @@
 #include "vcs/vcs_devloop.h"
 #include "vcs/vcs_index.h"
 
-#include <errno.h>
-#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/file.h>
 #include <sys/stat.h>
-#include <time.h>
 #include <unistd.h>
 
 #define VD_CHECK(name, expr) do {                                       \
@@ -190,24 +186,14 @@ static int t_anchor_ok(const char *dir)
     return failures;
 }
 
-static bool baseline_finished(const char *dir)
-{
-    char log_path[4096], lock_path[4096];
-    snprintf(log_path, sizeof(log_path), "%s/.zvcs/commits.log", dir);
-    snprintf(lock_path, sizeof(lock_path), "%s/.zvcs/bootstrap.lock", dir);
-    struct stat st;
-    if (stat(log_path, &st) != 0 || st.st_size <= 0)
-        return false;
-    int fd = open(lock_path, O_RDWR | O_CLOEXEC);
-    if (fd < 0)
-        return false;
-    bool done = flock(fd, LOCK_EX | LOCK_NB) == 0;
-    if (done)
-        (void)flock(fd, LOCK_UN);
-    close(fd);
-    return done;
-}
-
+/* lib/vcs never spawns a process to run the initial baseline (ZVCS
+ * sovereignty — check-vcs-no-git); the detach mechanics live only in the
+ * dev-only tools/dev/devloop_baseline.c, which this test suite does not
+ * link. So this test drives both halves in-process and hermetically: (1)
+ * the anchor path reports the baseline as REQUIRED without spawning
+ * anything, then (2) vcs_devloop_run_initial_baseline() is called directly
+ * to run it synchronously, and the next cycle anchors normally. No child
+ * process, no polling loop. */
 static int t_initial_anchor_deferred(const char *dir)
 {
     int failures = 0;
@@ -218,25 +204,45 @@ static int t_initial_anchor_deferred(const char *dir)
     v.defer_initial_snapshot = true;
     struct vcs_devloop_anchor_result first = {0};
     vcs_devloop_anchor_cycle(dir, &v, &first);
-    VD_CHECK("deferred: first baseline leaves foreground",
+    VD_CHECK("deferred: first cycle leaves foreground",
              first.status == VCS_DEVLOOP_ANCHOR_DEFERRED);
     VD_CHECK("deferred: result names unanchored cycle",
              strstr(first.error, "unanchored") != NULL);
+    VD_CHECK("deferred: caller told a baseline is required",
+             first.baseline_needed);
 
-    bool finished = false;
-    for (int i = 0; i < 500 && !finished; i++) {
-        finished = baseline_finished(dir);
-        if (!finished) {
-            const struct timespec pause = { .tv_nsec = 10 * 1000 * 1000 };
-            (void)nanosleep(&pause, NULL);
-        }
-    }
-    VD_CHECK("deferred: detached baseline completes", finished);
+    /* A second concurrent cycle before anyone has run the baseline still
+     * reports baseline_needed — nothing has claimed it yet (no lock is
+     * held, since lib/vcs never launches anything on its own). */
+    struct vcs_devloop_anchor_result concurrent = {0};
+    vcs_devloop_anchor_cycle(dir, &v, &concurrent);
+    VD_CHECK("deferred: second cycle also unanchored",
+             concurrent.status == VCS_DEVLOOP_ANCHOR_DEFERRED);
+    VD_CHECK("deferred: second cycle also told a baseline is required",
+             concurrent.baseline_needed);
 
+    /* Run the baseline synchronously, in-process — this is exactly what
+     * tools/dev/devloop_baseline.c's grandchild worker calls. */
+    struct vcs_devloop_anchor_result baseline = {0};
+    vcs_devloop_run_initial_baseline(dir, &baseline);
+    VD_CHECK("deferred: synchronous baseline completes",
+             baseline.status == VCS_DEVLOOP_ANCHOR_OK);
+
+    /* Once history exists, a defer_initial_snapshot cycle anchors normally
+     * rather than deferring again. */
     struct vcs_devloop_anchor_result next = {0};
     vcs_devloop_anchor_cycle(dir, &v, &next);
     VD_CHECK("deferred: next warm cycle anchors synchronously",
              next.status == VCS_DEVLOOP_ANCHOR_OK);
+
+    /* Once durable history exists, re-running the baseline directly is a
+     * clean no-op path (lock acquires immediately, snapshot lands — no
+     * "already running" collision since nothing else holds the lock). */
+    struct vcs_devloop_anchor_result rerun = {0};
+    vcs_devloop_run_initial_baseline(dir, &rerun);
+    VD_CHECK("deferred: re-running baseline after history exists still OK",
+             rerun.status == VCS_DEVLOOP_ANCHOR_OK);
+
     return failures;
 }
 

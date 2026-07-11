@@ -84,6 +84,16 @@ bool zcl_devloop_process_run(const char *cwd,
                              int timeout_ms,
                              struct zcl_devloop_process_result *out);
 
+/* Detach-launch the generation-neutral initial ZVCS baseline: double-fork +
+ * setsid, grandchild runs vcs_devloop_run_initial_baseline() with stdio
+ * redirected to <repo_root>/.zvcs/bootstrap.log, then _exit()s. Reaps the
+ * short-lived launcher child itself so a persistent dev-loop watcher never
+ * accumulates a zombie. Returns true iff the launcher was forked and
+ * exited 0 (the baseline itself may still have failed — check
+ * .zvcs/bootstrap.log or the next vcs_devloop_anchor_cycle() call). Dev-only
+ * (tools/dev/devloop_baseline.c); a release build never links this. */
+bool zcl_devloop_baseline_launch(const char *repo_root);
+
 int zcl_devloop_run_cycle(const char *repo_root,
                           const char *const *files,
                           size_t file_count);

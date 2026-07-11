@@ -156,7 +156,8 @@ DEVLOOP_INCLUDES = -Itools/dev
 DEVLOOP_ALL_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard tools/dev/*.c))
 DEV_ONLY_SRCS = tools/dev/devloop_cli.c tools/dev/devloop_cycle.c \
-	tools/dev/devloop_watch.c tools/dev/devloop_process.c
+	tools/dev/devloop_watch.c tools/dev/devloop_process.c \
+	tools/dev/devloop_baseline.c
 DEVLOOP_SRCS = $(filter-out $(DEV_ONLY_SRCS),$(DEVLOOP_ALL_SRCS))
 
 # Stable public Core -> App ABI. App generations compile against this include

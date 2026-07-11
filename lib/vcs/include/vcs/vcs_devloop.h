@@ -59,6 +59,17 @@ struct vcs_devloop_anchor_result {
     enum vcs_devloop_anchor_status status;
     uint8_t commit_id[32];  /* valid iff status == VCS_DEVLOOP_ANCHOR_OK */
     char    error[256];     /* human-readable detail iff status != OK */
+    /* True iff status == VCS_DEVLOOP_ANCHOR_DEFERRED because no baseline is
+     * running yet (durable history is absent and no other cycle holds
+     * .zvcs/bootstrap.lock). lib/vcs never launches anything to fill this
+     * in — it is a pure SELECT-only check (open/flock, no fork/exec) — so
+     * the CALLER decides how to run the baseline: synchronously via
+     * vcs_devloop_run_initial_baseline() below, or detached (see
+     * tools/dev/devloop_baseline.c for the dev-loop's double-fork
+     * launcher). When false and status == DEFERRED, a baseline started by
+     * some earlier caller is already in flight; this cycle just stays
+     * unanchored until it finishes. */
+    bool    baseline_needed;
 };
 
 /* Anchor one green dev-loop cycle: open (creating if absent) the ZVCS repo
@@ -67,11 +78,31 @@ struct vcs_devloop_anchor_result {
  * out->status rather than a boolean return. Safe to call from the hot
  * dev-loop path: the object store dedupes unchanged files, so steady-state
  * cost tracks the change set. Callers that set defer_initial_snapshot get a
- * detached, generation-neutral first baseline and a DEFERRED result; this
- * prevents checkout size or filesystem latency from delaying publication. */
+ * DEFERRED result instead of paying the first-snapshot cost inline; check
+ * out->baseline_needed to see whether THIS call is the one that should
+ * launch/run the baseline (see vcs_devloop_run_initial_baseline below) or
+ * whether one is already in flight. lib/vcs itself never spawns a process
+ * to do this — see docs/work/HOTSWAP.md and the ZVCS-sovereignty lint gate
+ * (lib/vcs is release-linkable and must stay process-spawn free). */
 void vcs_devloop_anchor_cycle(const char *repo_root,
                               const struct vcs_devloop_verdict *v,
                               struct vcs_devloop_anchor_result *out);
+
+/* Run the generation-neutral initial ZVCS baseline SYNCHRONOUSLY: take the
+ * .zvcs/bootstrap.lock flock singleton (open()/flock() only — no process
+ * spawned), and if acquired, take one snapshot binding a
+ * phase="bootstrap_baseline" verdict, then release the lock. If the lock is
+ * already held by another caller, returns immediately with
+ * VCS_DEVLOOP_ANCHOR_DEFERRED and baseline_needed=false (someone else is
+ * already running it). This is the same work the old in-process double-fork
+ * detach used to do in its grandchild; callers that want that off the
+ * foreground path (e.g. the interactive dev loop) are responsible for
+ * detaching it themselves — see tools/dev/devloop_baseline.c, which is
+ * ZCL_DEV_BUILD-only and lives outside lib/vcs precisely so lib/vcs can stay
+ * process-spawn free (the ZVCS-sovereignty lint gate). `out` is always
+ * fully populated. */
+void vcs_devloop_run_initial_baseline(const char *repo_root,
+                                      struct vcs_devloop_anchor_result *out);
 
 /* Decode exactly 64 hex characters (either case) into 32 bytes. Returns
  * false — and leaves *out unmodified — on a wrong length or any non-hex

@@ -452,6 +452,16 @@ static int finish_cycle(const struct zcl_devloop_plan *plan,
         case VCS_DEVLOOP_ANCHOR_DEFERRED:
             vcsf.deferred = true;
             snprintf(vcsf.error, sizeof(vcsf.error), "%s", ar.error);
+            /* lib/vcs never launches the baseline itself (ZVCS
+             * sovereignty — check-vcs-no-git). When this cycle is the one
+             * that discovered no baseline is running yet, the dev loop is
+             * responsible for detaching it so the baseline's first-snapshot
+             * cost doesn't block the edit->verdict latency path. */
+            if (ar.baseline_needed &&
+                !zcl_devloop_baseline_launch(repo_root))
+                fprintf(stderr,
+                        "[devloop] vcs baseline detach failed (fail-open): "
+                        "will retry next cycle\n");
             break;
         case VCS_DEVLOOP_ANCHOR_ERROR:
         default:

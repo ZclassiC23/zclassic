@@ -203,14 +203,29 @@ and (from `ZCL_AGENT_ID`/`ZCL_SESSION_ID`/`ZCL_TASK_REF`) the agent/session/
 task that drove it — no "remember to commit" step.
 
 The first-ever snapshot is different: it may need thousands of durable object
-writes, so it is never allowed to delay an edit verdict. The first green cycle
-queues a singleton detached, generation-neutral baseline and returns
-`"vcs_deferred":true` plus an explicit `vcs_error` saying that cycle is
-unanchored. Once the baseline completes, subsequent cycles synchronously bind
-their exact generation as above. Generated build trees, local agent worktrees,
-and caches are pruned from the tracked walk, and stale stat-cache rows are
-deleted during the background baseline so steady-state cost follows the real
-source change set.
+writes, so it is never allowed to delay an edit verdict. `vcs_devloop_anchor_cycle()`
+(`lib/vcs/src/vcs_devloop.c`) itself never spawns anything to run that
+baseline — lib/vcs is release-linkable and must stay process-spawn free
+(`check-vcs-no-git`, the ZVCS-sovereignty gate: no `git`, `fork()`, `exec*`,
+`system()`, or `popen()` anywhere under `lib/vcs/`). It just detects that no
+durable history exists yet and returns `"vcs_deferred":true` plus an explicit
+`vcs_error` saying that cycle is unanchored, with `out->baseline_needed` true
+for whichever cycle is the first to notice. The caller decides how to run the
+baseline: `vcs_devloop_run_initial_baseline(repo_root, out)` runs it
+synchronously (takes the `.zvcs/bootstrap.lock` flock singleton, snapshots,
+releases the lock — no process spawned), and the interactive dev loop instead
+wants it off its foreground path, so `finish_cycle()`
+(`tools/dev/devloop_cycle.c`) detaches it via
+`zcl_devloop_baseline_launch()` (`tools/dev/devloop_baseline.c`, dev-only —
+linked only into the dev binary, `check-release-no-dev-symbols`-proven absent
+from release): a double fork + `setsid()` so the grandchild worker calls
+`vcs_devloop_run_initial_baseline()` with stdio redirected to
+`.zvcs/bootstrap.log`, while the launcher reaps its short-lived child so a
+persistent dev-loop watcher never accumulates a zombie. Once the baseline
+completes, subsequent cycles synchronously bind their exact generation as
+above. Generated build trees, local agent worktrees, and caches are pruned
+from the tracked walk, and stale stat-cache rows are deleted during the
+background baseline so steady-state cost follows the real source change set.
 
 **Generation binding, per cycle type:**
 - Hot-swap (`resident_commit`): the `artifact_sha256` field already returned
