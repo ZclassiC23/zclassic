@@ -303,6 +303,56 @@ size_t zcl_command_registry_execute_json(
     size_t max_items, const char *cursor,
     char *out, size_t out_size, enum zcl_command_exit *exit_code);
 
+/* ── Hot-swap leaf-handler override layer ─────────────────────────────
+ *
+ * A lock-free, all-or-nothing snapshot layer that re-points a bounded set of
+ * READY read-only leaf handlers at runtime — the native analogue of the MCP
+ * router's mcp_router_replace_batch (tools/mcp/router.c). Dispatch
+ * (zcl_command_registry_execute_json) consults the active override snapshot
+ * for the resolved leaf path before falling back to the immutable catalog
+ * handler column; with no snapshot published the cost is a single atomic load
+ * + NULL check. Published snapshots are NEVER freed — an in-flight dispatch
+ * that acquired an older snapshot must be allowed to finish without a UAF
+ * race (same discipline as router.c).
+ */
+#define ZCL_COMMAND_HANDLER_OVERRIDE_MAX 64U
+
+struct zcl_command_handler_override {
+    const char *path;                 /* canonical READY read-only leaf path */
+    zcl_command_handler_fn handler;   /* replacement handler (must be non-NULL) */
+};
+
+/* Bind the canonical registry used to validate override paths. Idempotent;
+ * pass NULL to unbind. Must be set before zcl_command_registry_replace_batch
+ * can succeed. */
+void zcl_command_registry_set_active(const struct zcl_command_registry *registry);
+
+/* Atomically replace a batch of leaf handlers. All-or-nothing: every override
+ * path must resolve to an existing READY, read-only leaf in the bound registry
+ * (destructive/mutating leaves and aliases are rejected) BEFORE anything is
+ * cloned or published. On any failure the active snapshot is untouched and
+ * `why` (when non-NULL, size why_sz) carries a one-line reason. `generation`
+ * must be strictly greater than the active generation, or 0 to auto-increment.
+ * In-flight readers observe the entire old or entire new override set, never a
+ * torn one. Returns true on publish. */
+bool zcl_command_registry_replace_batch(
+    uint32_t generation,
+    const struct zcl_command_handler_override *overrides,
+    size_t count, char *why, size_t why_sz);
+
+/* Active override-snapshot generation (0 = none published). */
+uint32_t zcl_command_registry_active_generation(void);
+
+/* Effective handler for `spec`: the active override for spec->path when one is
+ * published, else spec->handler. NULL when neither exists. */
+zcl_command_handler_fn zcl_command_registry_effective_handler(
+    const struct zcl_command_spec *spec);
+
+/* Drop all overrides (revert to the immutable catalog). Reset hook; publishes
+ * an empty (NULL) snapshot. The previous snapshot is retired per the
+ * never-free discipline. */
+void zcl_command_registry_reset_overrides(void);
+
 const char *zcl_command_layer_name(enum zcl_command_layer value);
 const char *zcl_command_effect_name(enum zcl_command_effect value);
 const char *zcl_command_risk_name(enum zcl_command_risk value);

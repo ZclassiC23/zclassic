@@ -4,13 +4,220 @@
 
 #include "crypto/sha256.h"
 #include "platform/time_compat.h"
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 #include <ctype.h>
 #include <stdatomic.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static _Atomic uint64_t g_request_sequence = 1;
+
+/* ── Hot-swap leaf-handler override layer ─────────────────────────────
+ *
+ * Mirrors the proven mcp_router_replace_batch snapshot design one layer down
+ * (tools/mcp/router.c:263-334): a heap-cloned, immutable snapshot of
+ * {path,handler} overrides published with ONE release-store on a static
+ * _Atomic pointer. Readers acquire-load; a NULL active pointer is the zero-cost
+ * fast path (no override ever installed). Published snapshots are never freed —
+ * a dispatch that acquired an older snapshot must finish without a UAF race.
+ * Writes are rare (hot swaps) and serialized by a tiny spin lock; readers stay
+ * lock-free. */
+struct zcl_command_handler_snapshot {
+    uint32_t generation;
+    size_t count;
+    struct zcl_command_handler_override slots[ZCL_COMMAND_HANDLER_OVERRIDE_MAX];
+};
+
+static struct zcl_command_handler_snapshot *_Atomic g_active_handlers = NULL;
+static atomic_flag g_handler_write_lock = ATOMIC_FLAG_INIT;
+static const struct zcl_command_registry *_Atomic g_active_registry = NULL;
+
+static inline void handler_write_lock(void)
+{
+    while (atomic_flag_test_and_set_explicit(&g_handler_write_lock,
+                                             memory_order_acquire))
+        ; /* spin: writes are rare and short */
+}
+
+static inline void handler_write_unlock(void)
+{
+    atomic_flag_clear_explicit(&g_handler_write_lock, memory_order_release);
+}
+
+static zcl_command_handler_fn handler_override_lookup(const char *path)
+{
+    const struct zcl_command_handler_snapshot *snap =
+        atomic_load_explicit(&g_active_handlers, memory_order_acquire);
+    if (!snap || !path)
+        return NULL; /* zero-overhead fast path when no snapshot exists */
+    for (size_t i = 0; i < snap->count; i++) {
+        if (snap->slots[i].path && strcmp(snap->slots[i].path, path) == 0)
+            return snap->slots[i].handler;
+    }
+    return NULL;
+}
+
+void zcl_command_registry_set_active(const struct zcl_command_registry *registry)
+{
+    atomic_store_explicit(&g_active_registry, registry, memory_order_release);
+}
+
+uint32_t zcl_command_registry_active_generation(void)
+{
+    const struct zcl_command_handler_snapshot *snap =
+        atomic_load_explicit(&g_active_handlers, memory_order_acquire);
+    return snap ? snap->generation : 0u;
+}
+
+zcl_command_handler_fn zcl_command_registry_effective_handler(
+    const struct zcl_command_spec *spec)
+{
+    if (!spec)
+        return NULL;
+    zcl_command_handler_fn override = handler_override_lookup(spec->path);
+    return override ? override : spec->handler;
+}
+
+void zcl_command_registry_reset_overrides(void)
+{
+    handler_write_lock();
+    /* Retire the active snapshot per the never-free discipline (an in-flight
+     * reader may still hold it); just re-point at NULL under the write lock. */
+    atomic_store_explicit(&g_active_handlers, NULL, memory_order_release);
+    handler_write_unlock();
+}
+
+bool zcl_command_registry_replace_batch(
+    uint32_t generation,
+    const struct zcl_command_handler_override *overrides,
+    size_t count, char *why, size_t why_sz)
+{
+    if (why && why_sz)
+        why[0] = '\0';
+
+    if (!overrides || count == 0 || count > ZCL_COMMAND_HANDLER_OVERRIDE_MAX) {
+        if (why && why_sz)
+            snprintf(why, why_sz, "invalid override count: %zu", count);
+        LOG_FAIL("kernel.command", "invalid override count: %zu", count);
+    }
+
+    const struct zcl_command_registry *registry =
+        atomic_load_explicit(&g_active_registry, memory_order_acquire);
+    if (!registry) {
+        if (why && why_sz)
+            snprintf(why, why_sz, "no active registry bound");
+        LOG_FAIL("kernel.command", "no active registry bound for override batch");
+    }
+
+    /* ── Validate the ENTIRE batch against the immutable registry before
+     * touching the active snapshot (no lock needed — the registry is
+     * immutable). Any rejection leaves the active snapshot untouched. */
+    for (size_t i = 0; i < count; i++) {
+        const struct zcl_command_handler_override *ovr = &overrides[i];
+        if (!ovr->path || !ovr->path[0] || !ovr->handler) {
+            if (why && why_sz)
+                snprintf(why, why_sz, "override %zu: null/empty path or handler",
+                         i);
+            LOG_FAIL("kernel.command",
+                     "override %zu: null/empty path or handler", i);
+        }
+        bool was_alias = false;
+        const struct zcl_command_spec *spec =
+            zcl_command_registry_find(registry, ovr->path, &was_alias);
+        if (!spec || was_alias || strcmp(spec->path, ovr->path) != 0) {
+            if (why && why_sz)
+                snprintf(why, why_sz, "no canonical leaf named '%s'", ovr->path);
+            LOG_FAIL("kernel.command", "no canonical leaf named '%s'",
+                     ovr->path);
+        }
+        if (spec->availability != ZCL_COMMAND_READY) {
+            if (why && why_sz)
+                snprintf(why, why_sz, "leaf '%s' is not READY", ovr->path);
+            LOG_FAIL("kernel.command", "leaf '%s' is not READY", ovr->path);
+        }
+        if (spec->effect != ZCL_COMMAND_EFFECT_READ) {
+            if (why && why_sz)
+                snprintf(why, why_sz,
+                         "leaf '%s' is mutating/destructive (effect=%s)",
+                         ovr->path, zcl_command_effect_name(spec->effect));
+            LOG_FAIL("kernel.command",
+                     "refusing mutating/destructive leaf '%s' (effect=%s)",
+                     ovr->path, zcl_command_effect_name(spec->effect));
+        }
+        for (size_t j = 0; j < i; j++) {
+            if (strcmp(overrides[j].path, ovr->path) == 0) {
+                if (why && why_sz)
+                    snprintf(why, why_sz, "duplicate override '%s'", ovr->path);
+                LOG_FAIL("kernel.command", "duplicate override '%s'",
+                         ovr->path);
+            }
+        }
+    }
+
+    handler_write_lock();
+    const struct zcl_command_handler_snapshot *old =
+        atomic_load_explicit(&g_active_handlers, memory_order_acquire);
+    uint32_t old_gen = old ? old->generation : 0u;
+
+    uint32_t next_generation = generation ? generation : old_gen + 1u;
+    if (next_generation <= old_gen) {
+        handler_write_unlock();
+        if (why && why_sz)
+            snprintf(why, why_sz,
+                     "generation %u is not newer than active generation %u",
+                     next_generation, old_gen);
+        LOG_FAIL("kernel.command",
+                 "generation %u not newer than active generation %u",
+                 next_generation, old_gen);
+    }
+
+    struct zcl_command_handler_snapshot *next =
+        zcl_malloc(sizeof(*next), "command handler override snapshot");
+    if (!next) {
+        handler_write_unlock();
+        if (why && why_sz)
+            snprintf(why, why_sz, "snapshot allocation failed");
+        LOG_FAIL("kernel.command", "override snapshot allocation failed");
+    }
+    if (old)
+        memcpy(next, old, sizeof(*next));
+    else
+        memset(next, 0, sizeof(*next));
+    next->generation = next_generation;
+
+    /* Merge: overwrite an existing override slot with the same path, else
+     * append. Capacity is bounded by ZCL_COMMAND_HANDLER_OVERRIDE_MAX. */
+    for (size_t i = 0; i < count; i++) {
+        const struct zcl_command_handler_override *ovr = &overrides[i];
+        size_t idx = next->count;
+        for (size_t k = 0; k < next->count; k++) {
+            if (next->slots[k].path && strcmp(next->slots[k].path, ovr->path) == 0) {
+                idx = k;
+                break;
+            }
+        }
+        if (idx == next->count) {
+            if (next->count >= ZCL_COMMAND_HANDLER_OVERRIDE_MAX) {
+                handler_write_unlock();
+                /* next is a private, unpublished clone — safe to free. */
+                free(next);
+                if (why && why_sz)
+                    snprintf(why, why_sz, "override capacity exceeded");
+                LOG_FAIL("kernel.command", "override capacity exceeded (max %u)",
+                         (unsigned)ZCL_COMMAND_HANDLER_OVERRIDE_MAX);
+            }
+            next->count++;
+        }
+        next->slots[idx] = *ovr;
+    }
+
+    atomic_store_explicit(&g_active_handlers, next, memory_order_release);
+    handler_write_unlock();
+    return true;
+}
 
 static const char *const g_layer_names[] = {
     "root", "core", "app", "dev", "ops", "discover"
@@ -1066,6 +1273,13 @@ size_t zcl_command_registry_execute_json(
     if (!spec || command_is_branch(spec) || !input || input->type != JSON_OBJ)
         return 0;
 
+    /* Consult the hot-swap override snapshot for this resolved leaf before
+     * falling back to the immutable catalog handler column. When no snapshot
+     * is published this is a single atomic load + NULL check (zero overhead). */
+    zcl_command_handler_fn handler = handler_override_lookup(spec->path);
+    if (!handler)
+        handler = spec->handler;
+
     struct zcl_command_reply reply;
     zcl_command_reply_init(&reply, spec->output_schema);
     int64_t started_us = platform_time_monotonic_us();
@@ -1077,7 +1291,7 @@ size_t zcl_command_registry_execute_json(
                                spec->availability_reason);
         (void)zcl_command_reply_add_next(&reply, "discover.describe", "{}",
                                          "inspect availability and replacement");
-    } else if (!spec->handler) {
+    } else if (!handler) {
         zcl_command_reply_fail(&reply, ZCL_COMMAND_STATUS_BLOCKED,
                                ZCL_COMMAND_EXIT_BLOCKED,
                                "COMMAND_COMPAT_ONLY", "dispatch", false,
@@ -1117,7 +1331,7 @@ size_t zcl_command_registry_execute_json(
             .invoked_by_alias = invoked_by_alias,
             .invoked_name = invoked_name,
         };
-        spec->handler(&request, &reply);
+        handler(&request, &reply);
     }
 
     bool status_ok = reply.status == ZCL_COMMAND_STATUS_PASSED ||
