@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Regression test for the parse_script() stack buffer overflow in
- * lib/core/src/core_io.c.
+ * core/math/src/core_io.c.
  *
  * For a "0x..." hex token, parse_script derives byte_len = strlen(token+2)/2
  * from an UNBOUNDED token length, then formerly called

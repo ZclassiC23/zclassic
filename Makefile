@@ -104,11 +104,15 @@ DOMAIN_SRCS = $(call zcl_filter_ephemeral_sources,\
 # hold the consensus predicates + static parameter tables. Include TOKENS are
 # preserved across the physical move (core/consensus keeps the "domain/consensus/"
 # token via -Icore/consensus/include; core/params keeps the "consensus/" token
-# via -Icore/params/include), so no consumer #include changes. core/ is
-# a source/gate/seal unit that stays IN the whole-program LTO link — NOT a
-# separate archive (a libzclcore.a would sever hot-path inlining). Sealed by
-# core/MANIFEST.sha3; boundary-gated by check-core-include-boundary.
-CORE_CONTEXTS = consensus params
+# via -Icore/params/include; core/math keeps the "core/" token via
+# -Icore/math/include over core/math/include/core/*.h — absorbing the pure
+# lib/core primitives resolves the core/ namespace collision, the reduced
+# lib/core keeps only the dirty leaves amount/random/utiltime), so no consumer
+# #include changes. core/ is a source/gate/seal unit that stays IN the
+# whole-program LTO link — NOT a separate archive (a libzclcore.a would sever
+# hot-path inlining). Sealed by core/MANIFEST.sha3; boundary-gated by
+# check-core-include-boundary.
+CORE_CONTEXTS = consensus params math
 CORE_INCLUDES = $(foreach c,$(CORE_CONTEXTS),-Icore/$(c)/include)
 CORE_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(foreach c,$(CORE_CONTEXTS),$(wildcard core/$(c)/src/*.c)))
