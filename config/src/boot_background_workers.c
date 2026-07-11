@@ -31,6 +31,7 @@
 #include "services/chain_activation_service.h"
 #include "services/chain_state_service.h"
 #include "services/hodl_history_service.h"
+#include "services/node_db_catchup_service.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/refold_progress.h"  /* refold_in_progress — suppress projection
                                     * backfill while a mint/refold discards the
@@ -407,6 +408,12 @@ static void *projection_backfill_service_thread(void *arg)
             bool sparse_prefix =
                 projection_sparse_prefix_is_expected(projection_tip,
                                                      chain_tip);
+            bool tip_slot_present =
+                active_chain_at(&svc->state->chain_active, chain_tip) != NULL;
+            bool sparse_tip_pending =
+                node_db_catchup_sparse_tip_slot_pending(
+                    sparse_prefix, projection_tip, chain_tip,
+                    tip_slot_present);
             if (projection_block_tip >= 0 &&
                 projection_tip > projection_block_tip &&
                 projection_block_tip < chain_tip &&
@@ -477,7 +484,7 @@ static void *projection_backfill_service_thread(void *arg)
                 hole_rewind_attempts = 0;
                 hole_rewind_gave_up_reported = false;
             }
-            if (projection_tip < chain_tip) {
+            if (projection_tip < chain_tip && !sparse_tip_pending) {
                 if (last_start_height != chain_tip) {
                     event_emitf(EV_RECOVERY_ACTION, 0,
                                 "projection-backfill-start from=%d to=%d",

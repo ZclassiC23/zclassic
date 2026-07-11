@@ -21,29 +21,39 @@
 #ifndef ZCL_SERVICES_NODE_DB_CATCHUP_SERVICE_H
 #define ZCL_SERVICES_NODE_DB_CATCHUP_SERVICE_H
 
+#include <stdbool.h>
+
 struct node_db;
 struct active_chain;
 struct wallet;
 
+/* A verified body-less snapshot may publish its derived projection cursor up
+ * to the last resolvable active-chain slot. If exactly the next/tip slot is
+ * still absent, the backfill watcher waits instead of retrying the same
+ * one-row catchup transaction every loop. */
+bool node_db_catchup_sparse_tip_slot_pending(bool sparse_prefix,
+                                             int projection_tip,
+                                             int chain_tip,
+                                             bool tip_slot_present);
+
 #ifdef ZCL_TESTING
 #include <stddef.h>
-#include <stdbool.h>
 #include <stdint.h>
 uint8_t *node_db_catchup_test_mmap_block_file_quiet(const char *datadir,
                                                     int file_num,
                                                     size_t *out_size,
                                                     int *out_errno);
-bool node_db_catchup_test_sparse_prefix_can_advance(int indexed,
-                                                    int total,
-                                                    int lean_holes,
-                                                    int first_hole_h,
-                                                    int start,
-                                                    int chain_tip,
-                                                    int suspicious_holes,
-                                                    int missing_file_holes,
-                                                    int missing_index_holes,
-                                                    bool proven_authority,
-                                                    int32_t proven_applied);
+int node_db_catchup_test_sparse_prefix_target(int indexed,
+                                              int total,
+                                              int lean_holes,
+                                              int first_hole_h,
+                                              int start,
+                                              int chain_tip,
+                                              int suspicious_holes,
+                                              int missing_index_holes,
+                                              int first_missing_index_h,
+                                              bool proven_authority,
+                                              int32_t proven_applied);
 #endif
 
 /* Indexes blocks from (sqlite_tip+1) to chain_tip into SQLite. Also scans

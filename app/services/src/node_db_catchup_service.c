@@ -86,6 +86,15 @@ extern volatile sig_atomic_t g_shutdown_requested;
 #define SYNC_PROJECTION_TIP_HASH_KEY   "sync_projection_tip_hash"
 #define SYNC_PROJECTION_TIP_HEIGHT_KEY "sync_projection_tip_height"
 
+bool node_db_catchup_sparse_tip_slot_pending(bool sparse_prefix,
+                                             int projection_tip,
+                                             int chain_tip,
+                                             bool tip_slot_present)
+{
+    return sparse_prefix && projection_tip >= 0 &&
+           projection_tip + 1 == chain_tip && !tip_slot_present;
+}
+
 /* ── Sync-controller helpers reached by forward declaration ──
  * These are defined in the sync_controller_*.c siblings and declared in
  * the controller-private sync_controller_internal.h (which is not on the
@@ -231,50 +240,63 @@ static bool catchup_read_prev_receipt(struct node_db *ndb, int h,
     return found;
 }
 
-static bool catchup_sparse_prefix_can_advance(int indexed,
-                                              int total,
-                                              int lean_holes,
-                                              int first_hole_h,
-                                              int start,
-                                              int chain_tip,
-                                              int suspicious_holes,
-                                              int missing_file_holes,
-                                              int missing_index_holes,
-                                              bool proven_authority,
-                                              int32_t proven_applied)
+/* Return the highest projection cursor that a body-less, proven snapshot
+ * prefix may publish, or -1 when no safe prefix exists. A freshly seeded
+ * active-chain window can temporarily omit its FINAL slot while the durable
+ * reducer already proves the same height. Refusing the entire 3M-block sparse
+ * prefix in that shape makes the watcher rescan every missing body forever.
+ * Advance only to the slot immediately BEFORE the first missing index: every
+ * slot in [start..target] was observed, the proven coins authority covers the
+ * target, and no undecodable/hash-mismatched body was encountered. The
+ * unresolved suffix remains pending and is retried normally. */
+static int catchup_sparse_prefix_target(int indexed,
+                                         int total,
+                                         int lean_holes,
+                                         int first_hole_h,
+                                         int start,
+                                         int chain_tip,
+                                         int suspicious_holes,
+                                         int missing_index_holes,
+                                         int first_missing_index_h,
+                                         bool proven_authority,
+                                         int32_t proven_applied)
 {
-    (void)missing_file_holes; /* Quiet ENOENT/ENOTDIR files are sparse-bundle holes. */
-    return total > 0 &&
-           indexed == 0 &&
-           lean_holes == total &&
-           first_hole_h == start &&
-           start <= chain_tip &&
-           suspicious_holes == 0 &&
-           missing_index_holes == 0 &&
-           proven_authority &&
-           proven_applied >= chain_tip;
+    if (total <= 0 || indexed != 0 || lean_holes != total ||
+        first_hole_h != start || start > chain_tip ||
+        suspicious_holes != 0 || !proven_authority)
+        return -1; // raw-return-ok:pure classifier; -1 = no safe sparse prefix, a normal per-pass outcome
+
+    int target = chain_tip;
+    if (missing_index_holes > 0) {
+        if (first_missing_index_h < start ||
+            first_missing_index_h > chain_tip)
+            return -1; // raw-return-ok:pure classifier; caller logs the decision it acts on
+        target = first_missing_index_h - 1;
+    }
+    if (target < start || proven_applied < target)
+        return -1; // raw-return-ok:pure classifier; caller logs the decision it acts on
+    return target;
 }
 
 #ifdef ZCL_TESTING
-bool node_db_catchup_test_sparse_prefix_can_advance(int indexed,
-                                                    int total,
-                                                    int lean_holes,
-                                                    int first_hole_h,
-                                                    int start,
-                                                    int chain_tip,
-                                                    int suspicious_holes,
-                                                    int missing_file_holes,
-                                                    int missing_index_holes,
-                                                    bool proven_authority,
-                                                    int32_t proven_applied)
+int node_db_catchup_test_sparse_prefix_target(int indexed,
+                                               int total,
+                                               int lean_holes,
+                                               int first_hole_h,
+                                               int start,
+                                               int chain_tip,
+                                               int suspicious_holes,
+                                               int missing_index_holes,
+                                               int first_missing_index_h,
+                                               bool proven_authority,
+                                               int32_t proven_applied)
 {
-    return catchup_sparse_prefix_can_advance(indexed, total, lean_holes,
-                                             first_hole_h, start, chain_tip,
-                                             suspicious_holes,
-                                             missing_file_holes,
-                                             missing_index_holes,
-                                             proven_authority,
-                                             proven_applied);
+    return catchup_sparse_prefix_target(indexed, total, lean_holes,
+                                         first_hole_h, start, chain_tip,
+                                         suspicious_holes,
+                                         missing_index_holes,
+                                         first_missing_index_h,
+                                         proven_authority, proven_applied);
 }
 #endif
 
@@ -546,6 +568,7 @@ int node_db_catchup_service_run(struct node_db *ndb,
     int lean_holes = 0;
     int first_hole_h = -1;
     int missing_index_holes = 0;
+    int first_missing_index_h = -1;
     int missing_data_holes = 0;
     int missing_file_holes = 0;
     int first_missing_file_h = -1;
@@ -574,6 +597,8 @@ int node_db_catchup_service_run(struct node_db *ndb,
         if (!pindex) {
             if (++lean_holes == 1) first_hole_h = h;
             missing_index_holes++;
+            if (first_missing_index_h < 0)
+                first_missing_index_h = h;
             if (missing_index_holes <= 3)
                 LOG_INFO("catchup", "catchup: missing active-chain index at "
                          "height %d — recording lean hole", h);
@@ -794,30 +819,30 @@ int node_db_catchup_service_run(struct node_db *ndb,
                 failed = true;
             }
         } else {
-            const struct block_index *tip = active_chain_at(chain, chain_tip);
-            bool sparse_prefix =
-                catchup_sparse_prefix_can_advance(indexed, total, lean_holes,
-                                                  first_hole_h, start,
-                                                  chain_tip,
-                                                  suspicious_lean_holes,
-                                                  missing_file_holes,
-                                                  missing_index_holes,
-                                                  proven_authority,
-                                                  proven_applied);
-            if (sparse_prefix && tip && tip->phashBlock &&
-                catchup_set_sparse_projection_tip(ndb, tip->phashBlock->data,
-                                                  chain_tip)) {
-                last_indexed_height = chain_tip;
-                last_committed_height = chain_tip;
+            int sparse_target = catchup_sparse_prefix_target(
+                indexed, total, lean_holes, first_hole_h, start, chain_tip,
+                suspicious_lean_holes, missing_index_holes,
+                first_missing_index_h, proven_authority, proven_applied);
+            const struct block_index *sparse_tip = sparse_target >= start
+                ? active_chain_at(chain, sparse_target) : NULL;
+            if (sparse_tip && sparse_tip->phashBlock &&
+                catchup_set_sparse_projection_tip(ndb,
+                                                  sparse_tip->phashBlock->data,
+                                                  sparse_target)) {
+                last_indexed_height = sparse_target;
+                last_committed_height = sparse_target;
                 LOG_INFO("catchup",
                          "catchup: sparse proven prefix %d..%d has no block "
                          "bodies; advanced SQLite projection cursor to h=%d "
-                         "without writing block rows",
-                         start, chain_tip, chain_tip);
+                         "without writing block rows (first missing active "
+                         "slot=%d)",
+                         start, chain_tip, sparse_target,
+                         first_missing_index_h);
                 event_emitf(EV_RECOVERY_ACTION, 0,
                             "action=sparse_projection_tip_advance "
-                            "start=%d height=%d holes=%d",
-                            start, chain_tip, lean_holes);
+                            "start=%d height=%d holes=%d first_missing_index=%d",
+                            start, sparse_target, lean_holes,
+                            first_missing_index_h);
             } else {
                 LOG_WARN("catchup", "catchup: final commit missing tip hash");
                 failed = true;

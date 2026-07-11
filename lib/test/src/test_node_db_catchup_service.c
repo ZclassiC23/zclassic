@@ -59,26 +59,41 @@ int test_node_db_catchup_service(void)
     NDC_CHECK("valid block file maps", mapped);
 
     NDC_CHECK("sparse proven prefix may advance projection cursor",
-              node_db_catchup_test_sparse_prefix_can_advance(
-                  0, 3, 3, 0, 0, 2, 0, 0, 0, true, 2));
+              node_db_catchup_test_sparse_prefix_target(
+                  0, 3, 3, 0, 0, 2, 0, 0, -1, true, 2) == 2);
     NDC_CHECK("sparse prefix requires proven coins authority",
-              !node_db_catchup_test_sparse_prefix_can_advance(
-                  0, 3, 3, 0, 0, 2, 0, 0, 0, false, 2));
+              node_db_catchup_test_sparse_prefix_target(
+                  0, 3, 3, 0, 0, 2, 0, 0, -1, false, 2) == -1);
     NDC_CHECK("sparse prefix requires authority covering tip",
-              !node_db_catchup_test_sparse_prefix_can_advance(
-                  0, 3, 3, 0, 0, 2, 0, 0, 0, true, 1));
-    NDC_CHECK("sparse prefix allows quiet missing files",
-              node_db_catchup_test_sparse_prefix_can_advance(
-                  0, 3, 3, 0, 0, 2, 0, 1, 0, true, 2));
+              node_db_catchup_test_sparse_prefix_target(
+                  0, 3, 3, 0, 0, 2, 0, 0, -1, true, 1) == -1);
+    NDC_CHECK("sparse prefix allows quiet missing body files",
+              node_db_catchup_test_sparse_prefix_target(
+                  0, 3, 3, 0, 0, 2, 0, 0, -1, true, 2) == 2);
     NDC_CHECK("sparse prefix refuses suspicious holes",
-              !node_db_catchup_test_sparse_prefix_can_advance(
-                  0, 3, 3, 0, 0, 2, 1, 1, 0, true, 2));
-    NDC_CHECK("sparse prefix refuses missing active-chain indexes",
-              !node_db_catchup_test_sparse_prefix_can_advance(
-                  0, 3, 3, 0, 0, 2, 0, 0, 1, true, 2));
+              node_db_catchup_test_sparse_prefix_target(
+                  0, 3, 3, 0, 0, 2, 1, 0, -1, true, 2) == -1);
+    NDC_CHECK("sparse prefix stops before an interior missing active slot",
+              node_db_catchup_test_sparse_prefix_target(
+                  0, 3, 3, 0, 0, 2, 0, 1, 1, true, 2) == 0);
     NDC_CHECK("sparse prefix must cover the whole range",
-              !node_db_catchup_test_sparse_prefix_can_advance(
-                  0, 3, 2, 0, 0, 2, 0, 0, 0, true, 2));
+              node_db_catchup_test_sparse_prefix_target(
+                  0, 3, 2, 0, 0, 2, 0, 0, -1, true, 2) == -1);
+    NDC_CHECK("sparse prefix stops before a trailing missing active slot",
+              node_db_catchup_test_sparse_prefix_target(
+                  0, 3, 3, 0, 0, 2, 0, 1, 2, true, 2) == 1);
+    NDC_CHECK("sparse prefix refuses a missing first active slot",
+              node_db_catchup_test_sparse_prefix_target(
+                  0, 3, 3, 0, 0, 2, 0, 1, 0, true, 2) == -1);
+    NDC_CHECK("sparse prefix target remains bounded by proven authority",
+              node_db_catchup_test_sparse_prefix_target(
+                  0, 3, 3, 0, 0, 2, 0, 1, 2, true, 0) == -1);
+    NDC_CHECK("sparse watcher waits for the sole missing tip slot",
+              node_db_catchup_sparse_tip_slot_pending(true, 1, 2, false));
+    NDC_CHECK("sparse watcher resumes once the tip slot resolves",
+              !node_db_catchup_sparse_tip_slot_pending(true, 1, 2, true));
+    NDC_CHECK("ordinary projections never enter sparse tip wait",
+              !node_db_catchup_sparse_tip_slot_pending(false, 1, 2, false));
 
     test_cleanup_tmpdir(dir);
     printf("node_db_catchup_service: %d failures\n", failures);
