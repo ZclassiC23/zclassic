@@ -151,3 +151,59 @@ PASS: manifest v2 validated and the complete app route generation committed
   reload fallback; generation rejection does not. After a successful swap the
   watcher asynchronously builds and preflights an immutable binary generation
   so source and process state can converge at the next transactional reload.
+
+## ZVCS auto-anchor (Wave 2.3, power-station Pillar 2)
+
+Every "passed" `zcl.dev_cycle.v1` verdict — whether the cycle resolved to a
+Tier-1 hot-swap (`resident_commit`), a native fast/transactional reload
+(`transactional_reload`), or a docs-only `check` — now auto-anchors: the dev
+loop's `finish_cycle()` (`tools/dev/devloop_cycle.c`) calls
+`vcs_devloop_anchor_cycle()` (`lib/vcs/src/vcs_devloop.c`), which opens (or,
+on the very first call, creates) the ZVCS repo at `.zvcs/` beside `.git/` and
+takes a snapshot. The commit binds the current source tree to this cycle's
+verdict (`status`/`phase`/`elapsed_ms`), the binary generation it produced,
+and (from `ZCL_AGENT_ID`/`ZCL_SESSION_ID`/`ZCL_TASK_REF`) the agent/session/
+task that drove it — no "remember to commit" step.
+
+**Generation binding, per cycle type:**
+- Hot-swap (`resident_commit`): the `artifact_sha256` field already returned
+  by `dev_hotswap` / `zcl_agent_hotswap` (see
+  `tools/mcp/controllers/dev_hotswap_controller.c`) — the sha256 of the exact
+  `.so` this cycle `dlopen`'d.
+- Reload (`transactional_reload`): `candidate_sha256` (falling back to the
+  hex suffix of `running_generation`) read back from the
+  `zcl.agent_dev_deploy.v1` state file `tools/dev/deploy-dev-lane.sh` just
+  wrote to `$HOME/.zclassic-c23-dev/agent-deploy.json`.
+- `check` (docs-only, no build): no generation is known, so the commit binds
+  an all-zero `generation_sha256` — the source-tree/verdict binding still
+  lands.
+
+**Fail-open, with one loud exception.** A ZVCS problem (a missing `HOME`, a
+blocked `.zvcs/`, a corrupt index, ...) never fails the dev cycle: `finish_cycle`
+still returns `passed`/`rejected` exactly as it would without ZVCS, and the
+`zcl.dev_cycle.v1` verdict JSON gains one extra field —
+`"vcs_commit":"<64-hex commit id>"` on success, or `"vcs_error":"<message>"`
+on failure. The one exception that is surfaced loudly is a **sealed-path
+refusal**: editing a file under a sealed glob (see `vcs/vcs_seal.h` —
+default set `core/`, `domain/consensus/`, `lib/consensus/`, `lib/validation/`,
+`lib/chain/`, `lib/mining/`, `app/jobs/`) without a granted one-shot unseal
+token adds `"vcs_sealed_refusal":true` alongside `"vcs_error"`. At this
+integration point the refusal is **advisory only** — by the time
+`finish_cycle` runs, the cycle's own hot-swap/reload publish has already
+happened, so a refused anchor means only "this cycle's source snapshot did
+not land," not "the running binary was blocked." Wave 2.4 moves the seal
+check earlier, before publish, so a sealed-path edit is refused outright.
+
+**Reading the anchor log today.** There is no `dev vcs log` CLI yet (that is
+Registry Phase B / Wave 3 CLI wiring, `dev vcs snapshot|status|log|diff|revert`
+per the power-station plan) — the durable record is the `.zvcs/` directory in
+the repo root you ran the dev loop from: `.zvcs/commits.log` (self-verifying,
+newest commits at the tail; walk it with `vcs_log()`) and
+`.zvcs/objects/<2-hex>/<62-hex>` (content-addressed blobs/manifests, one per
+distinct file version). `lib/test/src/test_vcs_devloop.c` shows the exact
+`vcs_open()` + `vcs_log()` call shape used to read a commit back out.
+
+Tests: `make t ONLY=vcs_devloop` — a finish_cycle-shaped anchor call lands a
+commit with the verdict/generation binding intact, fail-open on an unwritable
+`.zvcs/`, and the sealed-refusal path. `make t ONLY=vcs_core` covers the ZVCS
+foundation (object store, manifest, index, seal) this glue sits on.
