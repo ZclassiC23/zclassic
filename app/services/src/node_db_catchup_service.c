@@ -86,15 +86,6 @@ extern volatile sig_atomic_t g_shutdown_requested;
 #define SYNC_PROJECTION_TIP_HASH_KEY   "sync_projection_tip_hash"
 #define SYNC_PROJECTION_TIP_HEIGHT_KEY "sync_projection_tip_height"
 
-bool node_db_catchup_sparse_tip_slot_pending(bool sparse_prefix,
-                                             int projection_tip,
-                                             int chain_tip,
-                                             bool tip_slot_present)
-{
-    return sparse_prefix && projection_tip >= 0 &&
-           projection_tip + 1 == chain_tip && !tip_slot_present;
-}
-
 /* ── Sync-controller helpers reached by forward declaration ──
  * These are defined in the sync_controller_*.c siblings and declared in
  * the controller-private sync_controller_internal.h (which is not on the
@@ -239,66 +230,6 @@ static bool catchup_read_prev_receipt(struct node_db *ndb, int h,
     sqlite3_finalize(s);
     return found;
 }
-
-/* Return the highest projection cursor that a body-less, proven snapshot
- * prefix may publish, or -1 when no safe prefix exists. A freshly seeded
- * active-chain window can temporarily omit its FINAL slot while the durable
- * reducer already proves the same height. Refusing the entire 3M-block sparse
- * prefix in that shape makes the watcher rescan every missing body forever.
- * Advance only to the slot immediately BEFORE the first missing index: every
- * slot in [start..target] was observed, the proven coins authority covers the
- * target, and no undecodable/hash-mismatched body was encountered. The
- * unresolved suffix remains pending and is retried normally. */
-static int catchup_sparse_prefix_target(int indexed,
-                                         int total,
-                                         int lean_holes,
-                                         int first_hole_h,
-                                         int start,
-                                         int chain_tip,
-                                         int suspicious_holes,
-                                         int missing_index_holes,
-                                         int first_missing_index_h,
-                                         bool proven_authority,
-                                         int32_t proven_applied)
-{
-    if (total <= 0 || indexed != 0 || lean_holes != total ||
-        first_hole_h != start || start > chain_tip ||
-        suspicious_holes != 0 || !proven_authority)
-        return -1; // raw-return-ok:pure classifier; -1 = no safe sparse prefix, a normal per-pass outcome
-
-    int target = chain_tip;
-    if (missing_index_holes > 0) {
-        if (first_missing_index_h < start ||
-            first_missing_index_h > chain_tip)
-            return -1; // raw-return-ok:pure classifier; caller logs the decision it acts on
-        target = first_missing_index_h - 1;
-    }
-    if (target < start || proven_applied < target)
-        return -1; // raw-return-ok:pure classifier; caller logs the decision it acts on
-    return target;
-}
-
-#ifdef ZCL_TESTING
-int node_db_catchup_test_sparse_prefix_target(int indexed,
-                                               int total,
-                                               int lean_holes,
-                                               int first_hole_h,
-                                               int start,
-                                               int chain_tip,
-                                               int suspicious_holes,
-                                               int missing_index_holes,
-                                               int first_missing_index_h,
-                                               bool proven_authority,
-                                               int32_t proven_applied)
-{
-    return catchup_sparse_prefix_target(indexed, total, lean_holes,
-                                         first_hole_h, start, chain_tip,
-                                         suspicious_holes,
-                                         missing_index_holes,
-                                         first_missing_index_h,
-                                         proven_authority, proven_applied);
-}
-#endif
 
 static bool catchup_set_sparse_projection_tip(struct node_db *ndb,
                                               const uint8_t hash[32],
@@ -819,7 +750,7 @@ int node_db_catchup_service_run(struct node_db *ndb,
                 failed = true;
             }
         } else {
-            int sparse_target = catchup_sparse_prefix_target(
+            int sparse_target = node_db_catchup_sparse_prefix_target(
                 indexed, total, lean_holes, first_hole_h, start, chain_tip,
                 suspicious_lean_holes, missing_index_holes,
                 first_missing_index_h, proven_authority, proven_applied);

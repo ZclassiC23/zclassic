@@ -6,15 +6,16 @@
  *
  * Workers in this unit:
  *   - payment_processor_thread        (store payment scanner + tip watchdog)
- *   - background_utxo_replay          (post-snapshot chain validation)
  *   - address_backfill_service_thread (advisory address aggregation)
  *   - hodl_history_worker_thread      (explorer HODL time-series filler)
  *   - projection_backfill_service_thread (reducer projection catch-up)
  *
  * The fast-sync snapshot-offer worker (build_snapshot_offer_thread) moved to
- * boot_snapshot_offer.{c,h} to keep this unit under the E1 ceiling; it shares
- * the worker_on_stall / boot_register_worker_supervisor helpers declared below
- * and implemented in boot_worker_supervisor.c.
+ * boot_snapshot_offer.{c,h} and the background UTXO-replay worker
+ * (background_utxo_replay) moved to boot_utxo_replay.{c,h}, both to keep this
+ * unit under the E1 ceiling; each shares the worker_on_stall /
+ * boot_register_worker_supervisor helpers declared below and implemented in
+ * boot_worker_supervisor.c.
  *
  * Each worker has a boot_start_ / boot_join_ pair declared below; the start
  * calls live at their existing scattered points in app_init_services (boot
@@ -86,7 +87,11 @@ void boot_complete_worker_supervisor(_Atomic supervisor_child_id *slot);
 bool boot_start_payment_service(struct boot_svc_ctx *svc);
 void boot_join_payment_service(struct boot_svc_ctx *svc);
 
-/* Background UTXO replay after a snapshot import (delta replay). */
+/* Background UTXO replay after a snapshot import (delta replay). Worker
+ * body (background_utxo_replay) moved to boot_utxo_replay.c to keep this
+ * unit under the E1 ceiling; declared here (not a dedicated header, same
+ * pattern as boot_worker_supervisor.c) since boot_services.c already
+ * includes this header for its existing call sites. */
 bool boot_start_replay_service(struct boot_svc_ctx *svc);
 void boot_join_replay_service(struct boot_svc_ctx *svc);
 
