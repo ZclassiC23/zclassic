@@ -1113,6 +1113,7 @@ int main(int argc, char **argv)
     failures += test_hotswap_loader();
     failures += test_hotswap_simnet();
     failures += test_dev_platform();
+    failures += test_command_registry_catalog();
     failures += test_mcp_controllers();
     failures += test_mcp_middleware();
     failures += test_mcp_metrics();
