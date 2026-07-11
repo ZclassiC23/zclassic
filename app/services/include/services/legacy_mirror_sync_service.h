@@ -51,7 +51,7 @@ void legacy_mirror_sync_stop(void);
 /* One synchronous catch-up attempt. Uses the service single-flight lock,
  * so callers may invoke this from watchdog/manual RPC paths without
  * overlapping the heartbeat tick. */
-bool legacy_mirror_sync_request_catchup(const char *reason);
+struct zcl_result legacy_mirror_sync_request_catchup(const char *reason);
 struct zcl_result legacy_mirror_sync_request_catchup_result(
     const char *reason);
 

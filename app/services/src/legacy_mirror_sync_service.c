@@ -9,6 +9,12 @@
  * and stats/introspection feed health, metrics, conditions, and the
  * liveness tree.
  */
+// one-result-type-ok:predicate-bool-only:lms_env_disabled — pure env-flag
+// predicate (an answer, not a failure): "has the operator disabled the
+// mirror via ZCL_MIRROR_SYNC?", consumed as a raw bool in
+// legacy_mirror_sync_state.c's init path. legacy_mirror_sync_request_catchup
+// — the genuinely fallible action export in this file — is converted to
+// struct zcl_result below.
 
 #include "platform/time_compat.h"
 #include "services/legacy_mirror_sync_service.h"
@@ -517,9 +523,8 @@ static void lms_mark_success(int local, int progress)
     lms_clear_blocker();
 }
 
-bool legacy_mirror_sync_request_catchup(const char *reason)
+struct zcl_result legacy_mirror_sync_request_catchup(const char *reason)
 {
-    (void)reason;
 #ifdef ZCL_TESTING
     if (atomic_load(&g_lms_test_catchup_enabled)) {
         atomic_fetch_add(&g_lms_test_catchup_calls, 1);
@@ -530,13 +535,17 @@ bool legacy_mirror_sync_request_catchup(const char *reason)
             g_lms.stuck_reason[0] = '\0';
             pthread_mutex_unlock(&g_lms.lock);
         }
-        return atomic_load(&g_lms_test_catchup_result) != 0;
+        if (atomic_load(&g_lms_test_catchup_result) != 0)
+            return ZCL_OK;
+        return ZCL_ERR(-1, "legacy_mirror_sync_request_catchup: "
+                       "reason=%s test-forced failure",
+                       reason ? reason : "");
     }
 #endif
     if (!g_lms.initialized || !g_lms.enabled)
-        return true;
+        return ZCL_OK;
     if (pthread_mutex_trylock(&g_lms.flight) != 0)
-        return true;
+        return ZCL_OK;
 
     atomic_store(&g_lms.in_flight, 1);
     atomic_store(&g_lms.last_attempt, (int64_t)platform_time_wall_time_t());
@@ -624,12 +633,24 @@ out:
     lms_refresh_local_heights(NULL, NULL);
     atomic_store(&g_lms.in_flight, 0);
     pthread_mutex_unlock(&g_lms.flight);
-    return ok;
+    if (!ok) {
+        char blocker[64], errbuf[160];
+        pthread_mutex_lock(&g_lms.lock);
+        snprintf(blocker, sizeof(blocker), "%s", g_lms.last_blocker_id);
+        snprintf(errbuf, sizeof(errbuf), "%s", g_lms.last_error);
+        pthread_mutex_unlock(&g_lms.lock);
+        return ZCL_ERR(-1,
+                       "legacy_mirror_sync_request_catchup: reason=%s "
+                       "blocker=%s error=%s",
+                       reason ? reason : "",
+                       blocker[0] ? blocker : "", errbuf[0] ? errbuf : "");
+    }
+    return ZCL_OK;
 }
 
 struct zcl_result lms_request_catchup_result_internal(const char *reason)
 {
-    if (legacy_mirror_sync_request_catchup(reason))
+    if (legacy_mirror_sync_request_catchup(reason).ok)
         return ZCL_OK;
     struct legacy_mirror_sync_stats s;
     legacy_mirror_sync_stats_snapshot(&s);

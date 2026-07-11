@@ -59,7 +59,7 @@ static void legacy_mirror_on_tick(struct liveness_contract *c)
 
     struct legacy_mirror_sync_stats before;
     legacy_mirror_sync_stats_snapshot(&before);
-    bool ok = legacy_mirror_sync_request_catchup("supervisor_tick");
+    bool ok = legacy_mirror_sync_request_catchup("supervisor_tick").ok;
 
     struct legacy_mirror_sync_stats after;
     legacy_mirror_sync_stats_snapshot(&after);

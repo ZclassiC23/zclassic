@@ -57,6 +57,10 @@
 
 #ifndef ZCL_SERVICES_IBD_THROTTLE_H
 #define ZCL_SERVICES_IBD_THROTTLE_H
+/* See ibd_throttle.c for the one-result-type-ok marker covering
+ * ibd_throttle_is_running / ibd_throttle_try_acquire (pure predicates) and
+ * ibd_throttle_dump_state_json (the mandated dump-bool contract).
+ * ibd_throttle_acquire is converted to struct zcl_result below. */
 
 #include "util/result.h"
 #include <stdbool.h>
@@ -116,13 +120,15 @@ bool ibd_throttle_is_running(void);
 /* ── Hot-path ───────────────────────────────────────────────── */
 
 /* Acquire 1 token. When the bucket is empty, sleeps in 1ms
- * increments until a token is available. Always returns true
- * (the only way this returns false is if the service rejects the
- * caller entirely, which it never does today). When not running,
- * returns true immediately without consuming anything.
+ * increments until a token is available. Always returns ZCL_OK
+ * (the only way this returns a non-ok result is if the service
+ * rejects the caller entirely, which it never does today — the
+ * zcl_result surface is here so a future rejection path has
+ * somewhere to report a reason). When not running, returns ZCL_OK
+ * immediately without consuming anything.
  *
  * Safe to call from any thread. */
-bool ibd_throttle_acquire(void);
+struct zcl_result ibd_throttle_acquire(void);
 
 /* Non-blocking variant: consume 1 token if available. Returns
  * true on success, false if the bucket was empty. Tests use this

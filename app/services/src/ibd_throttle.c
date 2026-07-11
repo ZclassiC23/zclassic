@@ -21,6 +21,13 @@
  * in the lock, and sleeps again. This is the right shape for a
  * writer throttle — the sleep dominates, not the lock.
  */
+// one-result-type-ok:predicate-and-json-dump-bool:ibd_throttle_is_running,ibd_throttle_try_acquire
+// — both are pure predicates (an answer, not a failure): is_running reports
+// lifecycle state, try_acquire reports "was a token available right now?"
+// and tests rely on its non-blocking bool return to drive deterministic
+// accounting. ibd_throttle_dump_state_json is the mandated *_dump_state_json
+// bool contract. ibd_throttle_acquire — the one genuinely fallible-shaped
+// action export in this file — is converted to struct zcl_result below.
 
 #include "platform/time_compat.h"
 #include "services/ibd_throttle.h"
@@ -245,10 +252,10 @@ bool ibd_throttle_try_acquire(void)
     return true;
 }
 
-bool ibd_throttle_acquire(void)
+struct zcl_result ibd_throttle_acquire(void)
 {
     /* Fast path: try once without sleeping. */
-    if (ibd_throttle_try_acquire()) return true;
+    if (ibd_throttle_try_acquire()) return ZCL_OK;
 
     int64_t wait_start = it_now_us();
     bool emit = false;
@@ -263,7 +270,7 @@ bool ibd_throttle_acquire(void)
         pthread_mutex_lock(&g_it.lock);
         if (!g_it.running) {
             pthread_mutex_unlock(&g_it.lock);
-            return true;
+            return ZCL_OK;
         }
         int64_t now = it_now_us();
         it_refill_locked(now);
@@ -291,7 +298,7 @@ bool ibd_throttle_acquire(void)
                     " rate=%" PRId64 " burst=%" PRId64,
                     ev_blocked, ev_wait / 1000, ev_rate, ev_burst);
     }
-    return true;
+    return ZCL_OK;
 }
 
 /* ── Status ─────────────────────────────────────────────────── */

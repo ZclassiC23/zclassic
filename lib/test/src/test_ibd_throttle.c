@@ -151,7 +151,7 @@ int test_ibd_throttle(void)
     /* ── 9. Not-running: acquire is a pass-through ─────────── */
     {
         IT_CHECK("it: stopped acquire passes through",
-                 ibd_throttle_acquire() == true);
+                 ibd_throttle_acquire().ok == true);
         IT_CHECK("it: stopped try_acquire passes through",
                  ibd_throttle_try_acquire() == true);
         IT_CHECK("it: is_running is false",
@@ -218,7 +218,7 @@ int test_ibd_throttle(void)
         (void)ibd_throttle_try_acquire();
         struct timespec t0, t1;
         platform_time_monotonic_timespec(&t0);
-        bool got = ibd_throttle_acquire();
+        bool got = ibd_throttle_acquire().ok;
         platform_time_monotonic_timespec(&t1);
         int64_t dur_ms = (int64_t)(t1.tv_sec - t0.tv_sec) * 1000 +
                          (t1.tv_nsec - t0.tv_nsec) / 1000000;
