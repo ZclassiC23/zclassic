@@ -2,8 +2,8 @@
 # Do not edit by hand. `make core-seal-check` fails loud if core/ drifts from this.
 # Format: <sha3-256 hex>  <path>, one per sealed file (sorted), then a final ROOT line.
 9287004c29f09c75197233650c5284bb3e07d42a769b6ff00760e4ce1fccef02  core/UNSEAL.md
-9dde79a3f3a62cd347d126bd6b7a97df1a3026d3ebddf37b7084c695250503c0  core/chainparams/include/chain/chainparams.h
-d0b6a70dd59f8a3b4477f666da00a1a5af8395b3c2a60194a9b42bfef967a095  core/chainparams/include/chain/chainparamsbase.h
+0154dee8b452e80f28e6d9c915483ab19cf93ee834518edc355885204dad4119  core/chainparams/include/chain/chainparams.h
+76417939b54d9b0d0b2309c66b90fd20a510de3492bb6f97a11f4198292aa01f  core/chainparams/include/chain/chainparamsbase.h
 f98a2d6d80a94ab21614cb132e745636cd2754549820b2bf3d725b5bcafc5109  core/chainparams/include/chain/checkpoints.h
 70a619096c7c98fb5bbb315b44916b4641ab50e4938b99e5be0e8a1e0b1306d7  core/chainparams/include/chain/equihash.h
 b26d0eeb2d74adef629479a9006a23954f057a795d970f2dd5b71a816ff75fa9  core/chainparams/include/chain/pow.h
@@ -31,7 +31,7 @@ c4af800545b3595d44b11edfb414e831d820b28450910220ab5b154cc8a4d8b0  core/consensus
 9c6e854c133072342233334922ce2598615f47fc580e88e9416e09e705759f14  core/consensus/include/domain/consensus/tx_structural.h
 451f072ef8a94236b9a81ffb59324f656298d5ec0c66b664bdbc0725f816b4c2  core/consensus/include/domain/consensus/upgrades.h
 0b3736fbf65cc4fec514f3246e30112f7cc093f8a28885bc904a1f1c120e3707  core/consensus/include/domain/consensus/verify.h
-d0e55e51a69557548ad000acfc2d73dadf34f0c70ef6594de2fde58c81c8b69a  core/consensus/src/check_block.c
+9fcea40d39c4b99c0f30e6638e667274d9096e71ed6489e36270bd31d07cabee  core/consensus/src/check_block.c
 0fd21d16580b492e10c940a736d78d7444ea69bbea13a50abe6abb5255c0f738  core/consensus/src/checkpoints.c
 e4f9e1cb68b80844ce9f92ea879048d6cb445cdf8bdc0422964ca4c11eed752c  core/consensus/src/coinbase.c
 61e028de29de14d2ee5c75033fcb847a79d90778eac94ca9983ec670eca3af9b  core/consensus/src/coins_math.c
@@ -67,4 +67,4 @@ e84a4566fb4a01985ccbec9a4d3136a278422e1efe4f00cb8d0cf01480531064  core/params/in
 5ed0e4562789e7ea0bd9ff1238a27172669074b3d26201195aafffe1f863558e  core/params/module.cfg
 4d62b9a9b8824925e2f7efebca536ff924a96c7464067472cb07b9dd57e356dc  core/params/src/params.c
 9907071da9b95e13d236ac70fe8fa95612c7873ff9a88102d988c83ba8492b89  core/params/src/upgrades.c
-ROOT  52151e2ffce4ae5c7526a3aa96c4a2fbe34b59cd272e6abaa3657217ace5786d
+ROOT  6d07d92fd9a468edd93e6f17c8825149b38e190f7df8569f077b9f0bd2b15abe

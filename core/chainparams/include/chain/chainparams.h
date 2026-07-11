@@ -7,10 +7,9 @@
 #ifndef ZCL_CHAINPARAMS_H
 #define ZCL_CHAINPARAMS_H
 
-#include "chain/chainparamsbase.h"
+#include "chain/chainparamsbase.h"   /* MESSAGE_START_SIZE (pchMessageStart dim) */
 #include "chain/checkpoints.h"
 #include "consensus/params.h"
-#include "net/protocol.h"
 #include <stdbool.h>
 #include <stdint.h>
 

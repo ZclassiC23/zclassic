@@ -28,13 +28,11 @@
 # not in the allow set — this catches "validation/...", "app/...", any
 # controllers/models/services/views leak, and any unlisted lib subsystem.
 #
-# KNOWN RATCHET EXCEPTION (pre-W5 content fix, tracked in the plan): the upward
-# leak core/consensus/src/check_block.c -> "validation/sigops.h" is the single
-# grandfathered violation. It is redirected to a core sigops predicate in the
-# Pre-W5 content-fix commit (NOT this lane). Until then this gate treats that
-# one (file, header) pair as a KNOWN exception, printed as a WARN ratchet note,
-# never a hard failure. Any OTHER validation/ include, or any other forbidden
-# include, fails HARD.
+# EXCEPTION-FREE (Pre-W5 content fix landed): there are no grandfathered
+# exceptions. The two former leaks were both redirected downward —
+# check_block.c calls the core sigops predicate instead of validation/sigops.h,
+# and chainparams.h gets MESSAGE_START_SIZE from chain/chainparamsbase.h instead
+# of net/protocol.h. Any forbidden include now fails HARD.
 #
 # W0 posture: core/ is near-empty (only MANIFEST.sha3 + UNSEAL.md). The gate is
 # GREEN when a listed subdir is absent (nothing to scan yet — TODO ratchet: it
@@ -71,14 +69,12 @@ done
 # Known ratchet exception: (path, included-header) pairs grandfathered pre-W5.
 # Redirected by the Pre-W5 content-fix commit, not this lane.
 declare -A known_exception
-known_exception["core/consensus/src/check_block.c|validation/sigops.h"]=1
-# W4-introduced, W5-resolved: chainparams.h reaches into net/protocol.h purely
-# for the MESSAGE_START_SIZE (=4) network-magic array dimension. The Pre-W5
-# content fix defines that constant in the co-located chain/chainparamsbase.h
-# (benign identical redefinition — net/protocol.h keeps its own for net's many
-# consumers) and drops this include, after which BOTH exceptions are removed and
-# the gate is exception-free (W5 seals over the clean tree).
-known_exception["core/chainparams/include/chain/chainparams.h|net/protocol.h"]=1
+# EXCEPTION-FREE (Pre-W5 content fix landed): the two grandfathered leaks are
+# both resolved — core/consensus/src/check_block.c now calls the core sigops
+# predicate domain_consensus_tx_legacy_sig_op_count instead of including
+# validation/sigops.h, and core/chainparams/include/chain/chainparams.h gets
+# MESSAGE_START_SIZE from the co-located chain/chainparamsbase.h instead of
+# net/protocol.h. The map is intentionally empty; any new leak fails HARD.
 
 fail=0
 violations=()
