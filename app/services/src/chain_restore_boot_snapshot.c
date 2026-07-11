@@ -113,6 +113,24 @@ void chain_restore_record_snapshot_import(bool ok,
     g_chain_restore_boot_snapshot.snapshot_imported_height = snap_height;
 }
 
+void chain_restore_record_fast_restart(bool taken,
+                                       int64_t tip_height,
+                                       const char *reason)
+{
+    g_chain_restore_boot_snapshot.has_data = true;
+    g_chain_restore_boot_snapshot.boot_time =
+        (int64_t)platform_time_wall_time_t();
+    g_chain_restore_boot_snapshot.fast_restart_evaluated = true;
+    g_chain_restore_boot_snapshot.fast_restart_taken = taken;
+    g_chain_restore_boot_snapshot.fast_restart_tip_height = tip_height;
+    if (reason) {
+        size_t n = strnlen(reason,
+                           sizeof(g_chain_restore_boot_snapshot.fast_restart_reason) - 1);
+        memcpy(g_chain_restore_boot_snapshot.fast_restart_reason, reason, n);
+        g_chain_restore_boot_snapshot.fast_restart_reason[n] = '\0';
+    }
+}
+
 void chain_restore_get_boot_snapshot(struct chain_restore_boot_snapshot *out)
 {
     if (!out) return;
@@ -172,5 +190,11 @@ bool chain_restore_dump_state_json(struct json_value *out, const char *key)
                      s->snapshot_imported_utxos);
     json_push_kv_int(out, "snapshot_imported_height",
                      s->snapshot_imported_height);
+    json_push_kv_bool(out, "fast_restart_evaluated",
+                      s->fast_restart_evaluated);
+    json_push_kv_bool(out, "fast_restart_taken", s->fast_restart_taken);
+    json_push_kv_int(out, "fast_restart_tip_height",
+                     s->fast_restart_tip_height);
+    json_push_kv_str(out, "fast_restart_reason", s->fast_restart_reason);
     return true;
 }

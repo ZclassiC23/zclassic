@@ -28,13 +28,14 @@ app/jobs/src/reducer_frontier.c 806
 app/jobs/src/stage_repair_reducer_frontier.c 814
 app/jobs/src/tip_finalize_stage.c 817
 app/jobs/src/utxo_apply_stage.c 949
+app/services/src/block_index_loader.c 844
 app/services/src/chain_state_service.c 810
 app/services/src/node_db_catchup_service.c 904
 app/services/src/sticky_escalator.c 883
 app/services/src/sync_monitor.c 811
 app/views/src/explorer_pages_hodl.c 1853
 app/views/src/explorer_pages_view.c 823
-config/src/boot.c 3926
+config/src/boot.c 3949
 config/src/boot_background_workers.c 862
 config/src/boot_refold_staged.c 2107
-config/src/boot_services.c 1698
+config/src/boot_services.c 1704

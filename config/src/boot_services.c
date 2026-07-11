@@ -26,6 +26,7 @@
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/refold_progress.h"      /* refold_from_anchor_active (-load-verify-boot skip) */
+#include "config/boot_fast_restart.h"  /* boot_fast_restart_capture_shutdown_facts (P2) */
 #include "services/chain_tip_watchdog.h"
 #include "services/sticky_escalator.h"
 #include "services/invariant_sentinel.h"
@@ -1661,6 +1662,11 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
     shutdown_stop_frontend_services(svc);
     shutdown_quiesce_network_and_flush_coins(svc);
     shutdown_persist_runtime_state(svc);
+
+    /* Tier-2 P2: record the fast-restart binding while state + progress.kv are
+     * still live (values match the flat index saved just after the marker). */
+    boot_fast_restart_capture_shutdown_facts(svc->state);
+
     /* Write the verified-clean shutdown marker HERE — node.db is now
      * WAL-checkpointed and closed, so its on-disk identity is final and binds
      * the next boot's quick_check-skip. This point is reached on BOTH the

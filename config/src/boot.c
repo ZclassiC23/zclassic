@@ -1829,8 +1829,12 @@ bool app_init(struct app_context *ctx)
             loaded = true;
         }
 
-        if (!rebuilt_from_log)
+        /* Tier-2 P2: arm the flat loader to skip forward-pass re-derivation
+         * under a verified-clean binding (no-op otherwise). */
+        if (!rebuilt_from_log) {
+            boot_fast_restart_arm_flat_loader();
             loaded = load_block_index_flat(ctx->datadir, &g_state);
+        }
         if (!rebuilt_from_log && !loaded && g_node_db.open)
             loaded = load_block_index_sqlite(&g_node_db, &g_state);
 
@@ -2533,6 +2537,25 @@ bool app_init(struct app_context *ctx)
                scan_missing_header_data);
 
     t_reconcile_sub = boot_submark("blkidx.scan", t_reconcile_sub);
+
+    /* Tier-2 P2 fast-restart decision (helper does verify + in-memory install;
+     * any mismatch ⇒ full dirty-boot path). Never on reindex/log-rebuild/mint/
+     * refold/snapshot — those intentionally rebuild. */
+    if (!ctx->reindex_chainstate && !rebuilt_from_log &&
+        !ctx->mint_anchor && !ctx->refold_from_anchor && !ctx->refold_staged &&
+        ctx->load_snapshot_at_own_height == NULL) {
+        struct block_index *fr_tip = NULL;
+        if (boot_fast_restart_try(&g_state, &fr_tip) && fr_tip) {
+            fast_restart = true;
+            boot_restored_authority_tip = true;
+            boot_restored_authority_height = fr_tip->nHeight;
+            if (fr_tip->phashBlock)
+                boot_restored_authority_hash = *fr_tip->phashBlock;
+            if (scan_best_header)
+                (void)boot_promote_header_via_csr(scan_best_header,
+                                                  "fast_restart");
+        }
+    }
 
     /* Restore chain tip from coins DB best block hash */
     if (ctx->reindex_chainstate) {

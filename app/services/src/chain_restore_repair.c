@@ -30,7 +30,22 @@
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
+#include <stdatomic.h>
+
 /* ── Post-restore repair ────────────────── */
+
+/* Tier-2 P2 fast restart (see header). Boot-time toggle. */
+static _Atomic bool g_trust_index_fastpath = false;
+
+void chain_restore_set_trust_index_fastpath(bool on)
+{
+    atomic_store(&g_trust_index_fastpath, on);
+}
+
+bool chain_restore_trust_index_fastpath(void)
+{
+    return atomic_load(&g_trust_index_fastpath);
+}
 
 static bool chain_restore_candidate_matches_disk(
     const struct block_index *cand,
@@ -174,6 +189,12 @@ int chain_restore_rebuild_active_chain(struct main_state *ms,
 {
     if (!ms || !tip || tip->nHeight < 0)
         return 0;
+
+    /* Tier-2 P2: under a verified-clean binding, drop the datadir so the
+     * disk-backed rebuilds are skipped and only the in-memory pprev walk runs
+     * (integrity check downstream stays the fail-safe). */
+    if (chain_restore_trust_index_fastpath())
+        datadir = NULL;
 
     struct active_chain *c = &ms->chain_active;
     const int tip_h = tip->nHeight;

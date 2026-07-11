@@ -69,7 +69,51 @@ struct shutdown_clean_binding {
     uint32_t change_counter;
     uint32_t version_valid_for;
     int      schema_version;
+
+    /* ── Tier-2 P2 fast-restart bindings (marker v3 OPTIONAL fields) ──────
+     * Present iff the marker carried `fast_restart=1` and every fr_* field
+     * below parsed. Independent of the v2 node.db-identity binding above:
+     * the quick_check skip (P1) only needs the v2 fields; the forward-pass /
+     * reconcile / chain_restore_finalize skip (P2) additionally needs these.
+     * A marker written by a pre-P2 binary has valid=true, fr_valid=false —
+     * quick_check may still be skipped, the fast-restart path is not taken. */
+    bool     fr_valid;
+    int64_t  fr_tip_height;
+    uint8_t  fr_tip_hash[32];
+    int64_t  fr_coins_best_height;
+    uint8_t  fr_coins_best_hash[32];
+    int64_t  fr_block_index_count;
+    int64_t  fr_mmb_leaves;
+    int64_t  fr_sapling_ckpt_height;
 };
+
+/* Facts captured at CLEAN SHUTDOWN, baked into the v3 marker so the next boot
+ * can verify-then-trust the persisted state. All heights/counts are the
+ * durable, on-disk-consistent values as of the final flush. */
+struct fast_restart_shutdown_facts {
+    bool     valid;               /* set false to write a v2-only marker    */
+    int64_t  tip_height;
+    uint8_t  tip_hash[32];
+    int64_t  coins_best_height;
+    uint8_t  coins_best_hash[32];
+    int64_t  block_index_count;
+    int64_t  mmb_leaves;
+    int64_t  sapling_ckpt_height;
+};
+
+/* Record the fast-restart facts to bake into the NEXT clean-shutdown marker.
+ * Called from the shutdown path just before boot_shutdown_marker_write_clean.
+ * Pass valid=false (or never call it) to keep the marker v2-only. */
+void boot_shutdown_marker_set_fast_restart_facts(
+    const struct fast_restart_shutdown_facts *facts);
+
+/* Copy the fast-restart binding parsed from THIS boot's marker (cached by
+ * detect_unclean before it unlinked the on-disk file). Returns true iff a
+ * complete v3 fast-restart binding was present. Non-consuming (peek): the
+ * on-disk marker is already single-use via detect_unclean's unlink, so within
+ * one process the cache may be read more than once. */
+bool boot_shutdown_marker_peek_fast_restart_binding(
+    struct shutdown_clean_binding *out);
 
 /* Read node.db's pristine identity from `node_db_path`. Safe before any sqlite
  * open. Returns false (out->present=false) if the file is missing or not a
