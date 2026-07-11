@@ -279,10 +279,13 @@ void snapsync_build_offer_followup(struct snapsync_offer_followup *result,
 void snapsync_build_verify_result(struct snapsync_verify_result *result,
                                   bool verified);
 void snapsync_build_serve_complete(struct snapsync_serve_complete *result);
-bool snapsync_prepare_serve_step(struct snapsync_serve_step *step,
-                                 struct p2p_node *node,
-                                 const uint8_t *buf,
-                                 int64_t buf_size);
+/* Prepare the next snapshot-serve step (chunk / end / backpressure-none).
+ * Returns ZCL_OK with step->action set; a non-ok result (carrying the
+ * reason) on malformed args or a buffer/scan overflow. */
+struct zcl_result snapsync_prepare_serve_step(struct snapsync_serve_step *step,
+                                              struct p2p_node *node,
+                                              const uint8_t *buf,
+                                              int64_t buf_size);
 
 /* Action: verify FlyClient proofs from peer.
  * Checks 20 random block samples with MMB inclusion proofs

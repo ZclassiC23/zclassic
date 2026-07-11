@@ -706,7 +706,7 @@ static int test_snapshot_sync_service_prepare_serve_step(void)
         buf[pos++] = 1; /* script len */
         buf[pos++] = 0x51; /* script */
 
-        ASSERT(snapsync_prepare_serve_step(&step, &node, buf, (int64_t)pos));
+        ASSERT(snapsync_prepare_serve_step(&step, &node, buf, (int64_t)pos).ok);
         ASSERT(step.action == SNAPSYNC_SERVE_ACTION_SEND_CHUNK);
         ASSERT(step.entries == 1);
         ASSERT(step.chunk_offset == 0);
@@ -715,8 +715,34 @@ static int test_snapshot_sync_service_prepare_serve_step(void)
         ASSERT(node.zsync_sent == 1);
         ASSERT(node.zsync_file_offset == (int64_t)pos);
 
-        ASSERT(snapsync_prepare_serve_step(&step, &node, buf, (int64_t)pos));
+        ASSERT(snapsync_prepare_serve_step(&step, &node, buf, (int64_t)pos).ok);
         ASSERT(step.action == SNAPSYNC_SERVE_ACTION_SEND_END);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_snapshot_sync_service_prepare_serve_step_bad_input(void)
+{
+    int failures = 0;
+
+    TEST("snapshot sync serve step returns a non-ok result on bad input") {
+        struct p2p_node node;
+        struct snapsync_serve_step step;
+        uint8_t buf[8];
+
+        memset(&node, 0, sizeof(node));
+        memset(buf, 0, sizeof(buf));
+
+        /* NULL step / node / buf and non-positive size are all invalid args. */
+        ASSERT(!snapsync_prepare_serve_step(NULL, &node, buf, 4).ok);
+        ASSERT(!snapsync_prepare_serve_step(&step, &node, buf, 0).ok);
+
+        /* entry count 0 is rejected (bad entry count). buf[0..3] == 0. */
+        node.zsync_file_offset = 0;
+        ASSERT(!snapsync_prepare_serve_step(&step, &node, buf,
+                                            (int64_t)sizeof(buf)).ok);
         PASS();
     } _test_next:;
 
@@ -1816,6 +1842,7 @@ int test_snapshot_sync_service(void)
     failures += test_snapshot_sync_service_activates_fallback_tip();
     failures += test_snapshot_reset_clears_non_owned_anchor();
     failures += test_snapshot_sync_service_prepare_serve_step();
+    failures += test_snapshot_sync_service_prepare_serve_step_bad_input();
     failures += test_snapshot_sync_service_transition_results();
     failures += test_snapshot_sync_service_handle_offer_requires_v2();
     failures += test_snapshot_sync_service_handle_offer_null_inputs();
