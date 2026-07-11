@@ -515,17 +515,21 @@ preflight_candidate_default() {
         echo "candidate build identity mismatch: expected=$BUILD_COMMIT observed=$observed" >&2
         return 1
     fi
+    # Native discovery replaces `mcpcall zcl_tools_list`: the registry menu is
+    # the authoritative command catalog and needs no running node.
     tools="$(timeout "$timeout_s" "$CANDIDATE_BIN" \
         -datadir="$DEV_DATADIR" -rpcport="$DEV_RPCPORT" \
-        mcpcall zcl_tools_list '{}' 2>&1)" || return 1
-    printf '%s' "$tools" | grep -q '"tools"[[:space:]]*:' || return 1
+        discover help 2>&1)" || return 1
+    printf '%s' "$tools" | grep -q '"children"[[:space:]]*:' || return 1
     ! printf '%s' "$tools" | grep -q '"error"[[:space:]]*:' || return 1
+    # Native `ops selftest` replaces `mcpcall zcl_self_test mode=registry`:
+    # a deterministic, node-free well-formedness sweep of the registry.
     selftest="$(timeout "$timeout_s" "$CANDIDATE_BIN" \
         -datadir="$DEV_DATADIR" -rpcport="$DEV_RPCPORT" \
-        mcpcall zcl_self_test '{"mode":"registry"}' 2>&1)" || return 1
+        ops selftest 2>&1)" || return 1
     printf '%s' "$selftest" | grep -q '"mode"[[:space:]]*:[[:space:]]*"registry"' || return 1
     printf '%s' "$selftest" | grep -q '"fail"[[:space:]]*:[[:space:]]*0' || return 1
-    ! printf '%s' "$selftest" | grep -q '"error"[[:space:]]*:' || return 1
+    ! printf '%s' "$selftest" | grep -q '"code"[[:space:]]*:' || return 1
 }
 
 preflight_candidate() {
@@ -623,12 +627,11 @@ activation_probe_default() {
         -rpcport="$DEV_RPCPORT" operatorsnapshot 2>/dev/null)" || return 1
     printf '%s' "$operator_snapshot" | grep -q '"schema"[[:space:]]*:[[:space:]]*"zcl.operator_snapshot.v1"' || return 1
     catalog="$(timeout "$timeout_s" "$expected_bin" -datadir="$DEV_DATADIR" \
-        -rpcport="$DEV_RPCPORT" mcpcall zcl_tools_list '{}' 2>/dev/null)" || return 1
-    printf '%s' "$catalog" | grep -q '"tools"[[:space:]]*:' || return 1
+        -rpcport="$DEV_RPCPORT" discover help 2>/dev/null)" || return 1
+    printf '%s' "$catalog" | grep -q '"children"[[:space:]]*:' || return 1
     ! printf '%s' "$catalog" | grep -q '"error"[[:space:]]*:' || return 1
     selftest="$(timeout "$timeout_s" "$expected_bin" -datadir="$DEV_DATADIR" \
-        -rpcport="$DEV_RPCPORT" mcpcall zcl_self_test \
-        '{"mode":"registry"}' 2>/dev/null)" || return 1
+        -rpcport="$DEV_RPCPORT" ops selftest 2>/dev/null)" || return 1
     printf '%s' "$selftest" | grep -q '"mode"[[:space:]]*:[[:space:]]*"registry"' || return 1
     printf '%s' "$selftest" | grep -q '"fail"[[:space:]]*:[[:space:]]*0' || return 1
 }
@@ -819,7 +822,7 @@ main() {
     if ! preflight_candidate; then
         ACTIVATION_STATUS="preflight_failed"
         VERIFY_STATUS="preflight_failed"
-        VERIFY_DETAIL="candidate agentbuild/tool catalog/MCP self-test preflight failed"
+        VERIFY_DETAIL="candidate agentbuild/discovery/native ops-selftest preflight failed"
         FAILURE_CAPSULE="$VERIFY_DETAIL"
         quarantine_candidate "$VERIFY_DETAIL"
         write_deploy_state "$VERIFY_STATUS" "$VERIFY_DETAIL"

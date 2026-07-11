@@ -129,6 +129,20 @@ static int dev_op_preflight(void *ctx, const char *cand_bin,
         return -1;
     if (build_commit && build_commit[0] && strcmp(observed, build_commit) != 0)
         return -1;
+    /* Native registry self-test replaces the old `mcpcall zcl_self_test`
+     * preflight seam: a deterministic, node-free well-formedness sweep of the
+     * command catalog. Fail closed unless the candidate reports fail == 0. */
+    char portbuf[16];
+    snprintf(portbuf, sizeof(portbuf), "-rpcport=%d", req->rpcport);
+    char ddbuf[PATH_MAX];
+    snprintf(ddbuf, sizeof(ddbuf), "-datadir=%s", req->datadir);
+    struct zcl_devloop_process_result st = {0};
+    const char *sv[] = { cand_bin, ddbuf, portbuf, "ops", "selftest", NULL };
+    if (dev_run_argv(req->repo_root, sv, 30000, &st) != 0)
+        return -1;
+    if (!strstr(st.output, "\"mode\":\"registry\"") ||
+        !strstr(st.output, "\"fail\":0"))
+        return -1;
     return 0;
 }
 
