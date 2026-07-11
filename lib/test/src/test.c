@@ -1377,6 +1377,7 @@ int main(int argc, char **argv)
       failures += test_utxo_mirror_sync(); }
     failures += test_seal_kv();
     failures += test_seal_ratify();
+    { extern int test_vcs_core(void); failures += test_vcs_core(); }
     failures += test_nullifier_kv();
     failures += test_sapling_nullifier_adversarial();
     failures += test_stage_repair();
