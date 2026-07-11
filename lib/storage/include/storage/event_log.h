@@ -82,6 +82,8 @@ enum event_log_type {
     EV_CONTACT_DELETE       = 22,
     EV_ONION_ANNOUNCEMENT   = 23,
     EV_HODL_SNAPSHOT        = 24,
+    /* ZVCS (lib/vcs) commit log — appended by vcs_snapshot(). */
+    EV_VCS_COMMIT           = 25,
     /* Add cautiously — every entry is a permanent wire surface. */
 };
 

@@ -83,7 +83,7 @@ CONFIG_SRCS = $(call zcl_filter_ephemeral_sources,\
 # Library layer
 LIB_MODULES = bloom chain coins core crypto crypto_registry encoding event framework health hotswap kernel \
 	json keys metrics mining net platform policy primitives rpc script sim storage \
-	support sync util validation wallet sapling zslp znam
+	support sync util validation vcs wallet sapling zslp znam
 LIB_INCLUDES = $(foreach m,$(LIB_MODULES),-Ilib/$(m)/include)
 LIB_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(foreach m,$(LIB_MODULES),$(wildcard lib/$(m)/src/*.c)))
@@ -146,8 +146,14 @@ DEVLOOP_SRCS = $(call zcl_filter_ephemeral_sources,\
 # or boot internals.
 APP_SDK_INCLUDES = -Isdk/include
 
+# Native command adapter (registry-backed CLI). Release-visible: core/ops/
+# discover leaves ship in the release binary, so this is part of ALL_SRCS
+# rather than the dev-only lane. Header path -Itools is provided by MCP_INCLUDES.
+COMMAND_SRCS = $(call zcl_filter_ephemeral_sources,\
+	$(wildcard tools/command/*.c))
+
 NODE_ENTRY_SRCS = src/main.c tools/mcp_server.c
-ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS) $(CORE_SRCS) $(DOMAIN_SRCS) $(APPLICATION_SRCS) $(ADAPTERS_SRCS) $(MCP_SRCS) $(DEVLOOP_SRCS)
+ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS) $(CORE_SRCS) $(DOMAIN_SRCS) $(APPLICATION_SRCS) $(ADAPTERS_SRCS) $(MCP_SRCS) $(DEVLOOP_SRCS) $(COMMAND_SRCS)
 ALL_OBJS = $(patsubst %.c,$(OBJ_DIR)/%.o,$(ALL_SRCS))
 
 DEV_SRCS = $(NODE_ENTRY_SRCS) $(ALL_SRCS)
@@ -254,7 +260,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         background-fuzz background-coverage background-tests install-quality-linger quality-linger-status pre-push-ci \
         coverage coverage-clean docs-mcp docs-mcp-check ci audit release \
         bench bench-crypto-verify bench-regress \
-        lint check-malloc check-silent-errors check-raw-sqlite check-raw-malloc \
+        lint check-malloc check-silent-errors check-raw-sqlite check-vcs-no-git check-raw-malloc \
         check-coins-lookup-nullcheck check-observability-pairing \
         check-silent-errors-services check-silent-errors-controllers \
         check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool \
@@ -2742,6 +2748,10 @@ check-raw-sqlite:
 	@echo "══ LINT: raw sqlite3_step in app code ══"
 	@tools/scripts/check_raw_sqlite.sh
 
+check-vcs-no-git:
+	@echo "══ LINT: lib/vcs is git-free + spawns no processes ══"
+	@tools/scripts/check_vcs_no_git.sh
+
 # Release purity for the Tier-1 hot-swap loader (HARD). Two invariants:
 #   (1) no dlopen/dlsym/dlclose CALL in any .c outside lib/hotswap/ + vendor/;
 #   (2) inside lib/hotswap sources, every such call sits within a
@@ -3315,7 +3325,7 @@ check-honest-witness:
 	@echo "══ LINT: honest witness (E12) ══"
 	@ZCL_LINT_MODE=FAIL ./tools/lint/check_honest_witness.sh
 
-lint: check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vendor-provenance
+lint: check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vendor-provenance
 	@echo "══ LINT: all checks passed ══"
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the

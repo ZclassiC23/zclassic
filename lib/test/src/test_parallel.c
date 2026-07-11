@@ -85,6 +85,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(chain_activation_controller) \
     X(mcp_router) X(dev_mcp_rpc_bridge) X(mcp_controllers) X(mcp_middleware) X(mcp_metrics) \
     X(mcp_baseline) X(hotswap_loader) X(hotswap_simnet) X(dev_platform) \
+    X(command_registry_catalog) \
     X(metric_alerts) \
     X(mcp_inproc_equiv) \
     X(mcp_e2e) X(mcp_notify) X(db_validators) X(peer_scoring) X(peer_bandwidth) \
@@ -204,7 +205,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(header_admit_stage) X(header_probe_poll) \
     X(validate_headers_stage) X(body_fetch_stage) \
     X(body_persist_stage) X(created_outputs_index) X(coins_kv) X(coins_ram) \
-    X(seal_kv) X(seal_ratify) \
+    X(seal_kv) X(seal_ratify) X(vcs_core) \
     X(nullifier_kv) X(nullifier_backfill_service) \
     X(sapling_nullifier_adversarial) \
     X(script_validate_stage) X(script_validate_contextual_gate) \
@@ -261,7 +262,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(bg_validation_store_port) \
     X(zslp_store_port) \
     X(sapling_tree) X(sapling_ckpt_persist) X(shutdown_marker) X(heartbeat) X(syncdiag_rpc) X(peer_lifecycle) \
-    X(chainstate_legacy_reader) X(utxo_import_pipeline) X(ccoins_decoder_kat) X(coins_record_codec) X(blob_read_bounds) X(ldb_snapshot) \
+    X(chainstate_legacy_reader) X(chainstate_sapling_anchor) X(utxo_import_pipeline) X(ccoins_decoder_kat) X(coins_record_codec) X(blob_read_bounds) X(ldb_snapshot) \
     X(utxo_snapshot_loader) \
     X(load_verify_boot) \
     X(chain_stall_repro) \

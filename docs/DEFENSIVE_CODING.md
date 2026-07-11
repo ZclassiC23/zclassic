@@ -448,6 +448,7 @@ add/remove a gate.
 - `check-hotswap-dev-only`
 - `check-hotswap-eligible-scope`
 - `check-hotswap-static-state`
+- `check-vcs-no-git`
 <!-- LINT-GATES-END -->
 
 (`check-consensus-parity` [E13, the parity mechanism — see

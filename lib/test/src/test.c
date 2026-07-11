@@ -987,6 +987,7 @@ int main(int argc, char **argv)
     failures += test_bloom();
     failures += test_coins();
     failures += test_chainstate_legacy_reader();
+    failures += test_chainstate_sapling_anchor();
     failures += test_utxo_import_pipeline();
     failures += test_ccoins_decoder_kat();
     failures += test_coins_record_codec();
@@ -1113,6 +1114,7 @@ int main(int argc, char **argv)
     failures += test_hotswap_loader();
     failures += test_hotswap_simnet();
     failures += test_dev_platform();
+    failures += test_command_registry_catalog();
     failures += test_mcp_controllers();
     failures += test_mcp_middleware();
     failures += test_mcp_metrics();
@@ -1377,6 +1379,7 @@ int main(int argc, char **argv)
       failures += test_utxo_mirror_sync(); }
     failures += test_seal_kv();
     failures += test_seal_ratify();
+    { extern int test_vcs_core(void); failures += test_vcs_core(); }
     failures += test_nullifier_kv();
     failures += test_sapling_nullifier_adversarial();
     failures += test_stage_repair();
