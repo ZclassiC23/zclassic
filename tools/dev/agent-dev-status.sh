@@ -413,7 +413,7 @@ next_action() {
         if [ "$stale_candidate" = "true" ]; then
             printf 'make agent-clear-stale-dev-reindex'
         else
-            printf 'make agent-dev-recover'
+            printf 'make agent-dev-recover (or ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY=1 for a deliberate recovery boot)'
         fi
     elif [ "$rpc_status" = "ok" ]; then
         printf 'make agent-mcp-call-dev TOOL=zcl_status'

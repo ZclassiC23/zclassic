@@ -5376,12 +5376,13 @@ static int t_net_sync_planners_are_lib_owned(void)
         free(buf);
         buf = NULL;
         /* The background_utxo_replay worker drives the post-snapshot activation
-         * connect + chainstate commit. It moved with the other long-lived
-         * worker threads into boot_background_workers.c, so its
-         * activation_request_connect / csr_commit_tip call sites live there —
-         * still boot-owned (config/src), never in lib/net. */
+         * connect + chainstate commit. It lives in its own boot unit
+         * (boot_utxo_replay.c, split out of boot_background_workers.c for the
+         * file-size ratchet), so its activation_request_connect /
+         * csr_commit_tip call sites live there — still boot-owned
+         * (config/src), never in lib/net. */
         ASSERT(repo_path(path, sizeof(path),
-                         "config/src/boot_background_workers.c") == 0);
+                         "config/src/boot_utxo_replay.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "activation_request_connect") != NULL);
         ASSERT(strstr(buf, "csr_commit_tip") != NULL);
