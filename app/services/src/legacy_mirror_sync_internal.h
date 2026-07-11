@@ -89,11 +89,11 @@ extern _Atomic int g_lms_test_catchup_calls;
 void lms_set_error(const char *msg);
 int lms_env_int(const char *name, int fallback, int min, int max);
 bool lms_env_disabled(void);
-bool lms_local_hash_at(int height, char out_hex[65]);
+struct zcl_result lms_local_hash_at(int height, char out_hex[65]);
 /* Remote getblockhash probe for the mirror divergence locator (check 6):
  * thin export of the static lms_fetch_hash. Counts RPC errors like every
  * other mirror RPC. */
-bool lms_remote_hash_at(int height, char out_hex[65]);
+struct zcl_result lms_remote_hash_at(int height, char out_hex[65]);
 void lms_refresh_local_heights(int *out_local, int *out_header);
 struct zcl_result lms_request_catchup_result_internal(const char *reason);
 

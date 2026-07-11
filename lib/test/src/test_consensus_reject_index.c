@@ -149,7 +149,7 @@ int test_consensus_reject_index(void)
         struct cri_entry got;
         struct uint256 h = make_hash(0x11);
         CRI_CHECK("cri: lookup finds recorded entry",
-                  consensus_reject_index_lookup(&h, NULL, &got));
+                  consensus_reject_index_lookup(&h, NULL, &got).ok);
         CRI_CHECK("cri: lookup returns correct reason",
                   strcmp(got.reason, "bad-txns-vin-empty") == 0);
         CRI_CHECK("cri: lookup returns correct dos",
@@ -160,7 +160,7 @@ int test_consensus_reject_index(void)
         /* Wrong hash */
         struct uint256 h2 = make_hash(0x22);
         CRI_CHECK("cri: lookup of absent hash returns false",
-                  !consensus_reject_index_lookup(&h2, NULL, &got));
+                  !consensus_reject_index_lookup(&h2, NULL, &got).ok);
 
         consensus_reject_index_stop();
     }
@@ -184,13 +184,13 @@ int test_consensus_reject_index(void)
         enum cri_kind k_tx = CRI_KIND_TX, k_blk = CRI_KIND_BLOCK;
 
         CRI_CHECK("cri: kind=TX filter returns tx entry",
-                  consensus_reject_index_lookup(&h, &k_tx, &got) &&
+                  consensus_reject_index_lookup(&h, &k_tx, &got).ok &&
                   strcmp(got.reason, "tx-reason") == 0);
         CRI_CHECK("cri: kind=BLOCK filter returns block entry",
-                  consensus_reject_index_lookup(&h, &k_blk, &got) &&
+                  consensus_reject_index_lookup(&h, &k_blk, &got).ok &&
                   strcmp(got.reason, "block-reason") == 0);
         CRI_CHECK("cri: kind=NULL returns newest (block)",
-                  consensus_reject_index_lookup(&h, NULL, &got) &&
+                  consensus_reject_index_lookup(&h, NULL, &got).ok &&
                   strcmp(got.reason, "block-reason") == 0);
         consensus_reject_index_stop();
     }
@@ -210,7 +210,7 @@ int test_consensus_reject_index(void)
         struct cri_entry got;
         struct uint256 h = make_hash(0x44);
         CRI_CHECK("cri: duplicate hash returns newest",
-                  consensus_reject_index_lookup(&h, NULL, &got) &&
+                  consensus_reject_index_lookup(&h, NULL, &got).ok &&
                   strcmp(got.reason, "second") == 0 && got.dos == 10);
         consensus_reject_index_stop();
     }
@@ -236,7 +236,7 @@ int test_consensus_reject_index(void)
         /* hash 0..3 should be evicted */
         for (int i = 0; i < 4; i++) {
             struct uint256 h = make_hash((uint8_t)i);
-            if (consensus_reject_index_lookup(&h, NULL, &got)) {
+            if (consensus_reject_index_lookup(&h, NULL, &got).ok) {
                 printf("cri: evicted entry %d still present... FAIL\n", i);
                 failures++;
             }
@@ -244,7 +244,7 @@ int test_consensus_reject_index(void)
         /* hash 4..11 should be present */
         for (int i = 4; i < 12; i++) {
             struct uint256 h = make_hash((uint8_t)i);
-            if (!consensus_reject_index_lookup(&h, NULL, &got) ||
+            if (!consensus_reject_index_lookup(&h, NULL, &got).ok ||
                 got.dos != i) {
                 printf("cri: surviving entry %d missing/wrong... FAIL\n", i);
                 failures++;
@@ -303,7 +303,7 @@ int test_consensus_reject_index(void)
         struct cri_entry got;
         struct uint256 h = make_hash(0x66);
         CRI_CHECK("cri: lookup when stopped returns false",
-                  !consensus_reject_index_lookup(&h, NULL, &got));
+                  !consensus_reject_index_lookup(&h, NULL, &got).ok);
         CRI_CHECK("cri: count when stopped is 0",
                   consensus_reject_index_count() == 0);
     }
@@ -330,7 +330,7 @@ int test_consensus_reject_index(void)
         memset(expected.data, 0xCD, 32);
         struct cri_entry got;
         CRI_CHECK("cri: index has entry after check_transaction",
-                  consensus_reject_index_lookup(&expected, NULL, &got));
+                  consensus_reject_index_lookup(&expected, NULL, &got).ok);
         CRI_CHECK("cri: event-path entry has correct kind",
                   got.kind == CRI_KIND_TX);
         CRI_CHECK("cri: event-path entry contains 'bad-txns-vin-empty'",
@@ -361,7 +361,7 @@ int test_consensus_reject_index(void)
         block_header_get_hash(&hdr, &bh);
         struct cri_entry got;
         CRI_CHECK("cri: block hash looked up",
-                  consensus_reject_index_lookup(&bh, NULL, &got));
+                  consensus_reject_index_lookup(&bh, NULL, &got).ok);
         CRI_CHECK("cri: entry kind = BLOCK",
                   got.kind == CRI_KIND_BLOCK);
         CRI_CHECK("cri: entry reason mentions version-too-low",

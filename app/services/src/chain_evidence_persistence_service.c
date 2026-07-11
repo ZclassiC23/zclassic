@@ -51,35 +51,39 @@ static bool cec_retryable_sqlite_rc(int rc)
            rc == SQLITE_ERROR || rc == SQLITE_MISUSE;
 }
 
-bool chain_evidence_state_set_retry(struct node_db *ndb,
-                                    const char *key,
-                                    const void *value,
-                                    size_t len,
-                                    const char *owner)
+struct zcl_result chain_evidence_state_set_retry(struct node_db *ndb,
+                                                 const char *key,
+                                                 const void *value,
+                                                 size_t len,
+                                                 const char *owner)
 {
     if (!ndb || !ndb->open) {
         LOG_WARN("cec.store",
                  "state_set_retry: unavailable ndb owner=%s key=%s",
                  owner ? owner : "(unknown)", key ? key : "(null)");
-        return false;
+        return ZCL_ERR(-1, "state_set_retry: unavailable ndb owner=%s key=%s",
+                       owner ? owner : "(unknown)", key ? key : "(null)");
     }
     if (!key || !value) {
         LOG_WARN("cec.store",
                  "state_set_retry: invalid input owner=%s key=%s value=%d",
                  owner ? owner : "(unknown)", key ? key : "(null)",
                  value != NULL);
-        return false;
+        return ZCL_ERR(-2,
+                       "state_set_retry: invalid input owner=%s key=%s value=%d",
+                       owner ? owner : "(unknown)", key ? key : "(null)",
+                       value != NULL);
     }
 
     for (int i = 0; i < CEC_STATE_SET_RETRY_ATTEMPTS; i++) {
         if (app_runtime_node_db_state_set(ndb, key, value, len))
-            return true;
+            return ZCL_OK;
 
         struct node_db_status st;
         node_db_get_status(ndb, &st);
         int rc = st.last_sqlite_rc;
         if (node_db_state_set_detached(ndb, key, value, len))
-            return true;
+            return ZCL_OK;
         node_db_get_status(ndb, &st);
         rc = st.last_sqlite_rc;
         if (!cec_retryable_sqlite_rc(rc) ||
@@ -90,20 +94,26 @@ bool chain_evidence_state_set_retry(struct node_db *ndb,
                      owner ? owner : "(unknown)", key,
                      i + 1, rc, st.last_op[0] ? st.last_op : "(none)",
                      sqlite3_errstr(rc));
-            return false;
+            return ZCL_ERR(-3,
+                           "state_set_retry: failed owner=%s key=%s "
+                           "attempts=%d rc=%d op=%s err=%s",
+                           owner ? owner : "(unknown)", key,
+                           i + 1, rc, st.last_op[0] ? st.last_op : "(none)",
+                           sqlite3_errstr(rc));
         }
         platform_sleep_ms(CEC_STATE_SET_RETRY_BASE_MS * (i + 1));
     }
     LOG_WARN("cec.store",
              "state_set_retry: exhausted owner=%s key=%s",
              owner ? owner : "(unknown)", key);
-    return false;
+    return ZCL_ERR(-4, "state_set_retry: exhausted owner=%s key=%s",
+                   owner ? owner : "(unknown)", key);
 }
 
-bool chain_evidence_state_set_int_retry(struct node_db *ndb,
-                                        const char *key,
-                                        int64_t value,
-                                        const char *owner)
+struct zcl_result chain_evidence_state_set_int_retry(struct node_db *ndb,
+                                                     const char *key,
+                                                     int64_t value,
+                                                     const char *owner)
 {
     return chain_evidence_state_set_retry(ndb, key, &value, sizeof(value),
                                           owner);
@@ -205,12 +215,12 @@ struct zcl_result chain_evidence_store_persist(
         return ZCL_ERR(-2, "persist: null ndb key=%s",
                        key ? key : "(null)");
     }
-    if (!chain_evidence_state_set_retry(authority->ndb, key, &p, sizeof(p),
-                                        "chain_evidence_store_persist")) {
-        LOG_WARN("cec.store", "persist: node_db_state_set failed key=%s",
-                 key ? key : "(null)");
-        return ZCL_ERR(-3, "persist: node_db_state_set failed key=%s",
-                       key ? key : "(null)");
+    struct zcl_result set_r = chain_evidence_state_set_retry(
+        authority->ndb, key, &p, sizeof(p), "chain_evidence_store_persist");
+    if (!set_r.ok) {
+        LOG_WARN("cec.store", "persist: node_db_state_set failed key=%s reason=%s",
+                 key ? key : "(null)", set_r.message);
+        return set_r;
     }
     return ZCL_OK;
 }

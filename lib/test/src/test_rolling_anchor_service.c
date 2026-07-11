@@ -100,6 +100,32 @@ int test_rolling_anchor_service(void)
     idx = find_rolling_anchor_snapshot(&snap, &count);
     RA_CHECK("test reset unregisters child", idx < 0 && count == 0);
 
+    /* rolling_anchor_window_hash_ending_at — success + one failure envelope
+     * (E2 migration to struct zcl_result; no prior direct coverage). */
+    {
+        uint8_t out[32];
+        if (g_sha3_windows_count > 0) {
+            int32_t end_h = (int32_t)SHA3_WINDOW_SIZE - 1;
+            memset(out, 0, sizeof(out));
+            struct zcl_result r2 = rolling_anchor_window_hash_ending_at(end_h,
+                                                                        out);
+            RA_CHECK("window_hash_ending_at: compile-time window is ZCL_OK",
+                     r2.ok);
+            RA_CHECK("window_hash_ending_at: hash matches table entry",
+                     memcmp(out, g_sha3_windows[0].hash, 32) == 0);
+        }
+        /* end_h=5 does not end any 1000-block window. */
+        struct zcl_result bad =
+            rolling_anchor_window_hash_ending_at(5, out);
+        RA_CHECK("window_hash_ending_at: non-window-boundary end_h fails",
+                 !bad.ok && bad.message[0] != '\0');
+        struct zcl_result null_out =
+            rolling_anchor_window_hash_ending_at(
+                (int32_t)SHA3_WINDOW_SIZE - 1, NULL);
+        RA_CHECK("window_hash_ending_at: NULL out is a named failure",
+                 !null_out.ok && null_out.message[0] != '\0');
+    }
+
     /* ── §4d row-8: sealed-domain read failure PAGES after N consecutive,
      *    exactly once, re-arms on success; above-prefix never pages ── */
     {

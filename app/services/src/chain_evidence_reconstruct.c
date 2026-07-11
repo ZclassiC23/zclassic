@@ -41,7 +41,7 @@ static bool cer_persist_i64(struct chain_evidence_controller *a,
 {
     return a && a->ndb &&
            chain_evidence_state_set_int_retry(a->ndb, key, v,
-                                              "cec_reconstruct");
+                                              "cec_reconstruct").ok;
 }
 
 static bool cer_persist_blob(struct chain_evidence_controller *a,
@@ -49,7 +49,7 @@ static bool cer_persist_blob(struct chain_evidence_controller *a,
 {
     return a && a->ndb &&
            chain_evidence_state_set_retry(a->ndb, key, value, len,
-                                          "cec_reconstruct");
+                                          "cec_reconstruct").ok;
 }
 
 static bool cer_load_u256(struct node_db *ndb, const char *key,

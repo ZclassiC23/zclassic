@@ -77,10 +77,12 @@ void rolling_anchor_stop(void);
 int rolling_anchor_effective_prefix_end(void);
 
 /* SHA3 of the committed window ENDING at end_h (end_h+1 a multiple of 1000),
- * written to out[32]. Returns false if no such window is committed (compile
- * prefix or runtime ring). Informational input for seal.anchor_window_sha3.
- * Pure read under the rolling_anchor lock. */
-bool rolling_anchor_window_hash_ending_at(int32_t end_h, uint8_t out[32]);
+ * written to out[32]. Returns a non-ok zcl_result if no such window is
+ * committed (compile prefix or runtime ring) or the inputs are malformed.
+ * Informational input for seal.anchor_window_sha3. Pure read under the
+ * rolling_anchor lock. */
+struct zcl_result rolling_anchor_window_hash_ending_at(int32_t end_h,
+                                                        uint8_t out[32]);
 
 /* zcl_state subsystem=rolling_anchor entry. */
 bool rolling_anchor_dump_state_json(struct json_value *out,

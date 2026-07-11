@@ -125,10 +125,12 @@ size_t consensus_reject_index_capacity(void);
  * optional `kind` argument, if non-null, restricts the search to
  * entries of that kind (use for "was this block rejected?" vs
  * "was this txid rejected?"). Pass NULL to match either kind.
- * Returns true and fills *out if found. */
-bool consensus_reject_index_lookup(const struct uint256 *hash,
-                                    const enum cri_kind *kind,
-                                    struct cri_entry *out);
+ * Returns ZCL_OK and fills *out if found; a non-ok zcl_result names
+ * the bad input or that no matching entry is present (a cache miss
+ * is the common, expected case for an unrejected hash). */
+struct zcl_result consensus_reject_index_lookup(const struct uint256 *hash,
+                                                 const enum cri_kind *kind,
+                                                 struct cri_entry *out);
 
 /* Copy up to `cap` most recent entries (newest first) into
  * `out`. Returns the number actually copied. */
