@@ -240,8 +240,8 @@ static const char *agent_classify_path(const char *path,
         risk = "operator_health";
         docs = "docs/RUNBOOK.md";
         acc->code_changed = true;
-    } else if (agent_str_starts(path, "domain/consensus/") ||
-               agent_str_starts(path, "lib/consensus/") ||
+    } else if (agent_str_starts(path, "core/consensus/") ||
+               agent_str_starts(path, "core/params/") ||
                agent_str_starts(path, "lib/chain/") ||
                agent_str_starts(path, "lib/validation/") ||
                agent_str_starts(path, "lib/script/") ||
@@ -629,7 +629,7 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_push_kv_str(&dev, "default_opt", "ZCL_DEV_OPT=-Og");
     json_push_kv_str(&dev, "hot_opt", "ZCL_DEV_HOT_OPT=-O2");
     json_push_kv_str(&dev, "hot_path_buckets",
-                     "lib/chain, lib/consensus, lib/crypto, lib/primitives, lib/sapling, lib/script, lib/validation");
+                     "lib/chain, core/params, lib/crypto, lib/primitives, lib/sapling, lib/script, lib/validation");
     json_push_kv_str(&dev, "linker_knob", "ZCL_DEV_LINKER");
     json_push_kv_str(&dev, "purpose",
                      "Run changed native agent, diagnostics, parser, and API code without paying the release LTO link.");

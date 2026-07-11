@@ -81,7 +81,7 @@ CONFIG_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard config/src/*.c))
 
 # Library layer
-LIB_MODULES = bloom chain coins consensus core crypto crypto_registry encoding event framework health hotswap kernel \
+LIB_MODULES = bloom chain coins core crypto crypto_registry encoding event framework health hotswap kernel \
 	json keys metrics mining net platform policy primitives rpc script sim storage \
 	support sync util validation wallet sapling zslp znam
 LIB_INCLUDES = $(foreach m,$(LIB_MODULES),-Ilib/$(m)/include)
@@ -103,11 +103,12 @@ DOMAIN_SRCS = $(call zcl_filter_ephemeral_sources,\
 # Sealed consensus core (Wave 1.1 split). Bounded contexts under core/<context>/
 # hold the consensus predicates + static parameter tables. Include TOKENS are
 # preserved across the physical move (core/consensus keeps the "domain/consensus/"
-# token via -Icore/consensus/include), so no consumer #include changes. core/ is
+# token via -Icore/consensus/include; core/params keeps the "consensus/" token
+# via -Icore/params/include), so no consumer #include changes. core/ is
 # a source/gate/seal unit that stays IN the whole-program LTO link — NOT a
 # separate archive (a libzclcore.a would sever hot-path inlining). Sealed by
 # core/MANIFEST.sha3; boundary-gated by check-core-include-boundary.
-CORE_CONTEXTS = consensus
+CORE_CONTEXTS = consensus params
 CORE_INCLUDES = $(foreach c,$(CORE_CONTEXTS),-Icore/$(c)/include)
 CORE_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(foreach c,$(CORE_CONTEXTS),$(wildcard core/$(c)/src/*.c)))
@@ -2230,7 +2231,7 @@ $(OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_COMMIT_STAMP)
 # LTO or making every unrelated edit slow.
 DEV_COMPILE_CFLAGS = $(DEV_CFLAGS)
 $(DEV_OBJ_DIR)/lib/chain/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
-$(DEV_OBJ_DIR)/lib/consensus/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
+$(DEV_OBJ_DIR)/core/params/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
 $(DEV_OBJ_DIR)/lib/crypto/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
 $(DEV_OBJ_DIR)/lib/primitives/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
 $(DEV_OBJ_DIR)/lib/sapling/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)

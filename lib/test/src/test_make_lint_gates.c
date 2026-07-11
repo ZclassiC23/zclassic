@@ -3010,7 +3010,7 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(rules, "lib/test/src/test_models*.c") != NULL);
         ASSERT(strstr(rules, "\"models make_lint_gates\"") != NULL);
         ASSERT(strstr(rules, "core/consensus/*") != NULL);
-        ASSERT(strstr(rules, "lib/consensus/*") != NULL);
+        ASSERT(strstr(rules, "core/params/*") != NULL);
         ASSERT(strstr(rules,
                       "\"consensus_parity domain_consensus_tx_structural chain\"")
                != NULL);

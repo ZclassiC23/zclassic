@@ -101,7 +101,7 @@ static int test_change_classification(void)
         ASSERT(plan.action == ZCL_DEVLOOP_HOTSWAP);
         ASSERT(strcmp(plan.proof_group, "hotswap_simnet") == 0);
 
-        const char *core[] = { "lib/consensus/src/params.c" };
+        const char *core[] = { "core/params/src/params.c" };
         ASSERT(zcl_devloop_plan_files(core, 1, &plan));
         ASSERT(plan.action == ZCL_DEVLOOP_RELOAD);
         ASSERT(plan.consensus_risk);
