@@ -58,8 +58,8 @@ make agent-stage-dev         # stage dev binary for next linger restart without 
 make t-fast ONLY=<group>     # one test group
 make agent-loop              # default AI/operator loop; fast-ci plus optional dev knobs
 make fast-ci                 # cache-aware lint/build/focused-test loop
-make agent-mcp-call-hot TOOL=zcl_status   # no-build local typed MCP read
-make agent-mcp-call-dev TOOL=zcl_status   # no-build dev-lane typed MCP read
+build/bin/zclassic23 status               # native node status (registry replaces MCP)
+build/bin/zclassic23-dev status           # dev-lane native status
 ```
 
 Build details, dependency versions, and reproducible-release notes are in

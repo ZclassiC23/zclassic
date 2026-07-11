@@ -78,8 +78,8 @@ that deleted tip_finalize_log rows, shipped without a reset-safe test).
 | `make agent-loop` | one-command agent loop: fast-ci checks by default; `ZCL_AGENT_LOOP_BIN=1` also links the dev binary; `ZCL_AGENT_LOOP_DEPLOY=dev` hot-swaps the dev lane |
 | `make fast-ci` | cache-aware agent loop: `lint-fast` + changed compile gate + focused tests inferred from changed files + native linger-service probe; identical green inputs skip repeated lint/build/focused tests |
 | `make immutable-history-canaries` | fast real-chain consensus KATs: h=478544 oversized canonical transaction plus consensus parity pins |
-| `make agent-mcp-call-hot TOOL=<tool>` | no-build typed MCP read through the existing source-tree dev binary |
-| `make agent-mcp-call-dev TOOL=<tool>` | no-build typed MCP read through the installed `zcl23-dev` linger-lane binary |
+| `zclassic23 status` / `zclassic23 dumpstate <subsystem>` | native node reads (registry replaces MCP; `make agent-mcp-call-hot` is the legacy MCP path, removed in W3) |
+| `zclassic23-dev status` | dev-lane native read (legacy: `make agent-mcp-call-dev TOOL=<tool>`) |
 | `make pre-push-ci` | bounded push gate: cached focused fast-ci for changed files with `ZCL_FAST_COMPILE=strict` |
 | `make install-quality-linger` | install background full-test, fuzz, and coverage user timers |
 | `make quality-linger-status` | show latest background tests/fuzz/coverage JSON verdicts |
@@ -162,16 +162,13 @@ The native build contract is discoverable with `build/bin/zclassic23 agentbuild`
 or MCP `zcl_agent_build`; it advertises `make agent-plan`, the stage-without-restart
 path, and the same MCP shortcuts.
 
-Typed MCP tools are also callable through the same binary for terminal agents.
-In the source tree, prefer `make agent-mcp-call TOOL=zcl_status` and
-`make agent-mcp-call TOOL=zcl_state ARGS='{"subsystem":"supervisor"}'` for
-fresh-code smoke checks; the target refreshes `build/bin/zclassic23-dev` before
-dispatch. For routine read-only status/API checks, use
-`make agent-mcp-call-hot TOOL=<tool>` to skip rebuilding and reuse the existing
-source-tree dev binary, or `make agent-mcp-call-dev TOOL=<tool>` to query the
-installed `zcl23-dev` linger lane with its dev datadir and RPC port. Direct
-`build/bin/zclassic23 mcpcall zcl_status` is the underlying release-binary path
-after `make zclassic23` or deploy. Do not add Python, shell, or helper-binary
+Native commands are the agent interface. In the source tree, prefer
+`build/bin/zclassic23 status` and
+`build/bin/zclassic23 dumpstate supervisor` for fresh-code smoke checks, and
+`build/bin/zclassic23 discover help` to enumerate the command registry. Against
+the dev lane use `build/bin/zclassic23-dev status`. The legacy typed-MCP
+one-shots (`make agent-mcp-call*`, `zclassic23 mcpcall <tool>`) are the MCP path
+and are being removed in zero-MCP W3. Do not add Python, shell, or helper-binary
 wrappers for new agent workflows.
 
 Canonical operator APIs, in priority order:

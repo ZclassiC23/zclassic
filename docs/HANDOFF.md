@@ -245,7 +245,7 @@ Important counters from the sample:
   `utxo_apply_probe.history_diagnosis=utxo_apply_history_consistent`,
   `utxo_apply_probe_next_action=observe_anchor_mint_progress`
 
-Canonical live node check at the same time via `zclassic23 mcpcall zcl_status`
+Canonical live node check at the same time via `zclassic23 status`
 shows the public node healthy: served height `3174558`, header height
 `3174559`, 24 peers, mirror healthy / same-height hashes agree, no active
 operator latch, and `zcl_state subsystem=reducer_frontier` shows H* `3174558`

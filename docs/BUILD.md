@@ -40,9 +40,9 @@ make agent-loop
 make fast-rebuild
 make agent-index
 make dev-loop-bench
-make agent-mcp-call TOOL=zcl_tools_list
-make agent-mcp-call-hot TOOL=zcl_status
-make agent-mcp-call-dev TOOL=zcl_status
+build/bin/zclassic23 discover help          # native command registry (was: agent-mcp-call TOOL=zcl_tools_list)
+build/bin/zclassic23 status                 # native node status (was: agent-mcp-call-hot TOOL=zcl_status)
+build/bin/zclassic23-dev status             # dev-lane native status (was: agent-mcp-call-dev TOOL=zcl_status)
 make agent-doctor
 make agent-dev-status
 build/bin/zclassic23-dev agentdevstatus
@@ -117,6 +117,9 @@ consensus, or full-suite gates.
 checks; set `ZCL_AGENT_LOOP_BIN=1` to also link the local dev binary, or
 `ZCL_AGENT_LOOP_DEPLOY=dev` to transactionally reload the dev lane with the
 fast dev build.
+Native commands (`zclassic23 status`, `zclassic23 dumpstate <subsystem>`,
+`zclassic23 discover help`) are the agent interface going forward. The legacy
+typed-MCP one-shots below are removed in the zero-MCP W3 delete.
 `make agent-mcp-call` is the fresh source-tree typed MCP path; it refreshes
 `build/bin/zclassic23-dev` before calling `mcpcall`, so API smoke checks after a
 code edit use the current local code without paying the release LTO link. For

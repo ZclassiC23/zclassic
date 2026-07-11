@@ -76,12 +76,12 @@ Build each feature in this order.
 9. **Expose typed MCP and native calls from the same contract.**
    MCP tools live in `tools/mcp/controllers/*_controller.c`. Native operator
    commands live in the agent contract registry when they are first-class
-   commands. Terminal agents in the source tree should prefer
-   `make agent-mcp-call TOOL=<tool> [ARGS='{}']` for fresh-code smoke checks,
-   `make agent-mcp-call-hot TOOL=<tool> [ARGS='{}']` for no-build local reads,
-   and `make agent-mcp-call-dev TOOL=<tool> [ARGS='{}']` for the installed dev
-   linger lane. Direct `zclassic23 mcpcall <tool> [json]` is the underlying
-   binary path after a release/dev binary has been refreshed. Do not add
+   commands. Terminal agents should prefer native commands —
+   `zclassic23 status`, `zclassic23 dumpstate <subsystem>`,
+   `zclassic23 discover help` / `discover search <q>`, and
+   `zclassic23-dev status` for the installed dev lane. The legacy typed-MCP
+   one-shots (`make agent-mcp-call*`, `zclassic23 mcpcall <tool> [json]`) are
+   the MCP path and are being removed in zero-MCP W3. Do not add
    separate helper binaries. Before restarting or hot-swapping the dev lane,
    run `make agent-dev-status`, native `zclassic23 agentdevstatus`, or MCP
    `zcl_agent_dev_status` and use its next-action hint.

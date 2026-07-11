@@ -26,8 +26,8 @@ workflow, REST route contract, then typed MCP/native surface.
 | Persistent dev-process MCP bridge | `dev_hotswap` / `dev_mcp_call` JSON-RPC on the exact dev lane | resident MCP router |
 | Read-only fast-lane plan | `make agent-plan` | `zcl_agent_build` advertises it |
 | Combined dev doctor | `make agent-doctor` | `zcl_agent_build` advertises it |
-| Fresh typed MCP one-shot | `make agent-mcp-call TOOL=zcl_status` | `zcl_status` |
-| No-build dev-lane MCP one-shot | `make agent-mcp-call-dev TOOL=zcl_status` | `zcl_status` |
+| Generic state dump | `zclassic23 dumpstate <subsystem>` | `zcl_state` |
+| Registry / tool discovery | `zclassic23 discover help` | `zcl_tools_list` |
 | Dev-lane status | `zclassic23 agentdevstatus` (`make agent-dev-status`) | `zcl_agent_dev_status` |
 | Anchor producer status | `zclassic23 anchorstatus` | `zcl_rpc(method="anchorstatus")` |
 | Operator proof bundle | `zclassic23 proofbundle [anchor_datadir]` | `zcl_proof_bundle(anchor_datadir?)` |
@@ -260,17 +260,13 @@ needed. The native binary commands (`zclassic23 agentinterface`,
 scripts. REST is the public read-only mirror.
 
 For terminal work, keep the operator path inside the same binary: use native
-commands such as `build/bin/zclassic23 agent` or, inside this worktree, typed
-MCP one-shots through `make agent-mcp-call TOOL=zcl_status` and
-`make agent-mcp-call TOOL=zcl_state ARGS='{"subsystem":"supervisor"}'`. That
-fresh path refreshes `build/bin/zclassic23-dev` before dispatch so source-tree
-API checks do not accidentally use a stale release binary. For read-only status
-and schema checks, use `make agent-mcp-call-hot TOOL=<tool>` to reuse the
-existing source-tree dev binary, or `make agent-mcp-call-dev TOOL=<tool>` to
-reuse the installed `~/.local/bin/zclassic23-dev` binary against
-`~/.zclassic-c23-dev` on RPC port `18252`. Direct
-`build/bin/zclassic23 mcpcall zcl_status` remains the underlying one-binary
-path after `make zclassic23` or a deploy.
+commands such as `build/bin/zclassic23 status`, `build/bin/zclassic23 dumpstate
+supervisor`, or `build/bin/zclassic23 discover help`. Against the dev lane,
+`build/bin/zclassic23-dev status` queries the installed dev binary at
+`~/.zclassic-c23-dev` on RPC port `18252`. The native command registry is the
+sole agent interface going forward (zero-MCP track); the `make agent-mcp-call*`
+family and `zclassic23 mcpcall <tool>` are the legacy typed-MCP path and are
+being removed in zero-MCP W3.
 Use `make agent-plan` before a build when you need the exact no-build fast-lane
 decision: changed files, selected focused tests, changed-compile plan, cache
 hit/miss, dev-lane stage/deploy commands, and MCP shortcuts.
@@ -1150,19 +1146,23 @@ This is a C23 project, so the edit loop should compile only what changed.
   Release, canonical, and soak nodes do not register either method. The normal
   persistent operation is `make hotswap FILES=tools/mcp/controllers/app_controller.c PROBE=zcl_name_list`;
   it requires an already-running isolated dev node and
-  never starts or restarts one. A direct `mcpcall zcl_agent_hotswap` still
-  affects only that short-lived helper process. Watch mode uses
+  never starts or restarts one. The native dev-loop equivalent is
+  `zclassic23-dev dev change apply --input='{"files":[...]}'`; a direct legacy
+  `mcpcall zcl_agent_hotswap` still affects only that short-lived helper
+  process. Watch mode uses
   `tools/dev/hotswap-running-dev.sh` by default. Only its exit 69 means the
   persistent RPC transport is unavailable and allows `MODE=auto` to reload;
   ABI, capability, source/build/hash, self-test, commit, and probe failures stay
   visible and do not silently reload. Use `make hotswap-sim` for the focused
   deterministic simulated-network proof; `make sim-fast` remains the broader
   checked-in scenario and seeded replay suite.
-- `make agent-mcp-call TOOL=<tool>` is the fresh source-tree MCP smoke path.
-  It refreshes `build/bin/zclassic23-dev` before dispatch. Use
-  `make agent-mcp-call-hot TOOL=<tool>` when the existing source-tree dev
-  binary is good enough, and `make agent-mcp-call-dev TOOL=<tool>` for the
-  installed `zcl23-dev` linger lane. Set `ZCL_AGENT_MCP_BUILD=0`,
+- `make agent-mcp-call TOOL=<tool>` is the legacy fresh source-tree MCP smoke
+  path (removed in zero-MCP W3; prefer native commands like `zclassic23 status`
+  / `zclassic23 dumpstate <subsystem>`). It refreshes `build/bin/zclassic23-dev`
+  before dispatch. Use `make agent-mcp-call-hot TOOL=<tool>` when the existing
+  source-tree dev binary is good enough, and `make agent-mcp-call-dev
+  TOOL=<tool>` for the installed `zcl23-dev` linger lane. Set
+  `ZCL_AGENT_MCP_BUILD=0`,
   `ZCL_AGENT_BIN=...`, or `ZCL_AGENT_MCP_ARGS='-datadir=... -rpcport=...'`
   for custom no-build terminal probes.
 - `make t-fast ONLY=<group>` uses `build/test-obj` and
