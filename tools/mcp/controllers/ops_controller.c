@@ -17,6 +17,8 @@
 #include "../rpc_params.h"
 
 #include "controllers/agent_controller.h"
+#include "controllers/status_native_handlers.h"
+#include "controllers/status_native_helpers.h"
 #include "encoding/utilstrencodings.h"
 #include "json/json.h"
 #include "rpc/protocol.h"
@@ -50,8 +52,6 @@ DEFINE_PT(h_zcl_agent_interface,"agentinterface", "mcp.ops")
 DEFINE_PT(h_zcl_agent_ops,      "agentops",       "mcp.ops")
 DEFINE_PT(h_zcl_app_protocols,  "appprotocols",   "mcp.ops")
 
-static char *json_value_to_body(struct json_value *v, const char *label);
-
 static int h_zcl_agent_build(const struct mcp_request *req,
                              struct mcp_response *res)
 {
@@ -73,7 +73,7 @@ static int h_zcl_agent_build(const struct mcp_request *req,
         return 0;
     }
 
-    res->body = json_value_to_body(&result, "mcp.agentbuild.body");
+    res->body = zcl_json_value_to_body(&result, "mcp.agentbuild.body");
     if (!res->body) {
         res->error = MCP_ERR_INTERNAL;
         snprintf(res->error_message, sizeof(res->error_message),
@@ -107,7 +107,7 @@ static int h_zcl_agent_dev_status(const struct mcp_request *req,
         return 0;
     }
 
-    res->body = json_value_to_body(&result, "mcp.agentdevstatus.body");
+    res->body = zcl_json_value_to_body(&result, "mcp.agentdevstatus.body");
     if (!res->body) {
         res->error = MCP_ERR_INTERNAL;
         snprintf(res->error_message, sizeof(res->error_message),
@@ -120,739 +120,22 @@ static int h_zcl_agent_dev_status(const struct mcp_request *req,
     return 0;
 }
 
-static void status_push_json_error(struct json_value *obj,
-                                   const char *key,
-                                   const char *message,
-                                   const struct json_value *error_obj)
+/* Thin MCP wrapper for the re-homed transport-neutral body functions
+ * (app/controllers/src/status_native_handlers.c). The body function owns
+ * the composition and every LOG_* line; this maps its typed failure back
+ * onto the handler's historical MCP error code + message so the MCP surface
+ * stays byte-identical. */
+static int ops_native_wrap(struct mcp_response *res, char *body,
+                           const struct zcl_native_body_err *e)
 {
-    char err_key[96];
-    snprintf(err_key, sizeof(err_key), "%s_error", key ? key : "rpc");
-    if (error_obj && error_obj->type == JSON_OBJ) {
-        json_push_kv(obj, err_key, error_obj);
-        return;
+    if (!body) {
+        res->error = (e->status == ZCL_NATIVE_BODY_INTERNAL)
+                         ? MCP_ERR_INTERNAL : MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message), "%s",
+                 e->message);
     }
-
-    struct json_value err;
-    json_init(&err);
-    json_set_object(&err);
-    json_push_kv_str(&err, "message", message ? message : "unknown error");
-    json_push_kv(obj, err_key, &err);
-    json_free(&err);
-}
-
-static bool status_json_is_rpc_error(const struct json_value *value);
-
-static void status_push_rpc_json(struct json_value *obj, const char *key,
-                                 const char *raw, const char *rpc_name)
-{
-    struct json_value child;
-    json_init(&child);
-    if (raw && json_read(&child, raw, strlen(raw))) {
-        if (status_json_is_rpc_error(&child)) {
-            const struct json_value *wrapped = json_get(&child, "error");
-            struct json_value nullv;
-            json_init(&nullv);
-            json_set_null(&nullv);
-            json_push_kv(obj, key, &nullv);
-            status_push_json_error(obj, key, NULL,
-                                   wrapped && wrapped->type == JSON_OBJ
-                                       ? wrapped : &child);
-            json_free(&nullv);
-            json_free(&child);
-            return;
-        }
-        json_push_kv(obj, key, &child);
-        json_free(&child);
-        return;
-    }
-
-    json_set_null(&child);
-    json_push_kv(obj, key, &child);
-    json_free(&child);
-
-    char msg[128];
-    snprintf(msg, sizeof(msg), "%s RPC returned %s",
-             rpc_name ? rpc_name : key,
-             raw ? "invalid JSON" : "null");
-    status_push_json_error(obj, key, msg, NULL);
-}
-
-static void status_push_dumpstate_json(struct json_value *obj,
-                                       const char *key,
-                                       const char *expected_subsystem,
-                                       const char *raw)
-{
-    struct json_value child;
-    json_init(&child);
-    if (!raw || !json_read(&child, raw, strlen(raw))) {
-        struct json_value nullv;
-        json_init(&nullv);
-        json_set_null(&nullv);
-        json_push_kv(obj, key, &nullv);
-        status_push_json_error(obj, key,
-                               raw ? "invalid dumpstate JSON"
-                                   : "dumpstate RPC returned null",
-                               NULL);
-        json_free(&nullv);
-        json_free(&child);
-        return;
-    }
-
-    const struct json_value *error = json_get(&child, "error");
-    if (status_json_is_rpc_error(&child)) {
-        struct json_value nullv;
-        json_init(&nullv);
-        json_set_null(&nullv);
-        json_push_kv(obj, key, &nullv);
-        status_push_json_error(obj, key, NULL,
-                               error && error->type == JSON_OBJ
-                                   ? error : &child);
-        json_free(&nullv);
-        json_free(&child);
-        return;
-    }
-
-    const char *subsystem =
-        json_get_str(json_get(&child, "subsystem"));
-    const struct json_value *captured_at = json_get(&child, "captured_at");
-    const struct json_value *state = json_get(&child, "state");
-    if (!expected_subsystem || !subsystem ||
-        strcmp(subsystem, expected_subsystem) != 0 ||
-        !captured_at || captured_at->type != JSON_INT ||
-        captured_at->val.i < 0 || !state || state->type != JSON_OBJ) {
-        struct json_value nullv;
-        json_init(&nullv);
-        json_set_null(&nullv);
-        json_push_kv(obj, key, &nullv);
-        status_push_json_error(obj, key,
-                               "dumpstate returned an invalid subsystem envelope",
-                               NULL);
-        json_free(&nullv);
-        json_free(&child);
-        return;
-    }
-
-    json_push_kv(obj, key, state);
-    json_free(&child);
-}
-
-static bool status_parse_json(struct json_value *out, const char *raw)
-{
-    json_init(out);
-    return raw && json_read(out, raw, strlen(raw));
-}
-
-static bool status_json_is_rpc_error(const struct json_value *value)
-{
-    if (!value || value->type != JSON_OBJ)
-        return false;
-    const struct json_value *wrapped = json_get(value, "error");
-    if (wrapped && wrapped->type != JSON_NULL)
-        return true;
-    const struct json_value *code = json_get(value, "code");
-    const struct json_value *message = json_get(value, "message");
-    return code && code->type == JSON_INT &&
-           message && message->type == JSON_STR;
-}
-
-static bool status_parse_rpc_json(struct json_value *out, const char *raw,
-                                  enum json_type expected_type)
-{
-    return status_parse_json(out, raw) && out->type == expected_type &&
-           !status_json_is_rpc_error(out);
-}
-
-static bool status_read_height(const struct json_value *obj,
-                               const char *key, int64_t *out)
-{
-    const struct json_value *value = obj ? json_get(obj, key) : NULL;
-    if (!value || value->type != JSON_INT || value->val.i < 0 ||
-        value->val.i > INT_MAX)
-        return false;
-    if (out)
-        *out = value->val.i;
-    return true;
-}
-
-static bool status_read_bool(const struct json_value *obj,
-                             const char *key, bool *out)
-{
-    const struct json_value *value = obj ? json_get(obj, key) : NULL;
-    if (!value || value->type != JSON_BOOL)
-        return false;
-    if (out)
-        *out = value->val.b;
-    return true;
-}
-
-static bool status_read_nonnegative_int(const struct json_value *obj,
-                                        const char *key, int64_t *out)
-{
-    const struct json_value *value = obj ? json_get(obj, key) : NULL;
-    if (!value || value->type != JSON_INT || value->val.i < 0)
-        return false;
-    if (out)
-        *out = value->val.i;
-    return true;
-}
-
-static void status_push_int_if_known(struct json_value *obj, const char *key,
-                                     bool known, int64_t value)
-{
-    if (known) {
-        json_push_kv_int(obj, key, value);
-        return;
-    }
-    struct json_value unknown;
-    json_init(&unknown);
-    json_set_null(&unknown);
-    json_push_kv(obj, key, &unknown);
-    json_free(&unknown);
-}
-
-static void status_push_bool_if_known(struct json_value *obj, const char *key,
-                                      bool known, bool value)
-{
-    if (known) {
-        json_push_kv_bool(obj, key, value);
-        return;
-    }
-    struct json_value unknown;
-    json_init(&unknown);
-    json_set_null(&unknown);
-    json_push_kv(obj, key, &unknown);
-    json_free(&unknown);
-}
-
-static void status_format_int_if_known(char *buf, size_t buf_size,
-                                       bool known, int64_t value)
-{
-    if (!buf || buf_size == 0)
-        return;
-    if (known)
-        snprintf(buf, buf_size, "%lld", (long long)value);
-    else
-        snprintf(buf, buf_size, "unknown");
-}
-
-static void status_push_rpc_parse_error(struct json_value *obj,
-                                        const char *key,
-                                        const char *raw,
-                                        const char *message)
-{
-    struct json_value parsed;
-    json_init(&parsed);
-    if (raw && json_read(&parsed, raw, strlen(raw)) &&
-        parsed.type == JSON_OBJ) {
-        const struct json_value *wrapped = json_get(&parsed, "error");
-        if (wrapped && wrapped->type == JSON_OBJ)
-            status_push_json_error(obj, key, NULL, wrapped);
-        else if (json_get(&parsed, "code") || json_get(&parsed, "message"))
-            status_push_json_error(obj, key, NULL, &parsed);
-        else
-            status_push_json_error(obj, key, message, NULL);
-    } else {
-        status_push_json_error(obj, key, message, NULL);
-    }
-    json_free(&parsed);
-}
-
-static long long status_json_int(const struct json_value *obj,
-                                 const char *key,
-                                 long long dflt)
-{
-    const struct json_value *v = json_get(obj, key);
-    return v ? json_get_int(v) : dflt;
-}
-
-static const char *status_json_str(const struct json_value *obj,
-                                   const char *key,
-                                   const char *dflt)
-{
-    const struct json_value *v = json_get(obj, key);
-    const char *s = json_get_str(v);
-    return s && s[0] ? s : dflt;
-}
-
-static bool status_json_bool(const struct json_value *obj,
-                             const char *key,
-                             bool dflt)
-{
-    const struct json_value *v = json_get(obj, key);
-    return v ? json_get_bool(v) : dflt;
-}
-
-static bool status_peer_subver_has(const struct json_value *peer,
-                                   const char *token)
-{
-    const char *subver = status_json_str(peer, "subver", "");
-    return token && strstr(subver, token) != NULL;
-}
-
-static bool status_peer_is_zcl23(const struct json_value *peer)
-{
-    return status_json_bool(peer, "zclassic23", false) ||
-           status_json_bool(peer, "zclassic_c23", false) ||
-           status_peer_subver_has(peer, "ZClassic23") ||
-           status_peer_subver_has(peer, "ZClassic-C23");
-}
-
-static bool status_peer_is_magicbean(const struct json_value *peer)
-{
-    return status_json_bool(peer, "magicbean", false) ||
-           status_peer_subver_has(peer, "MagicBean");
-}
-
-/* ── Peer survey ────────────────────────────────────────────────
- *
- * One fold over the getpeerinfo JSON array, shared by all three
- * callers that used to each re-derive their own subset of these
- * counts with slightly different idioms: h_zcl_status (total/
- * inbound/outbound/zcl23/magicbean/max_height), h_zcl_operator_summary
- * (total/inbound/outbound/ready/max_height), and h_zcl_syncdiag (just
- * max_height, previously via a raw strstr scan of the unparsed RPC
- * text). Each caller reads only the fields it needs. */
-struct peer_survey {
-    int total;
-    int inbound;
-    int outbound;
-    int ready;      /* state == "handshake_complete" or "active" */
-    int zcl23;
-    int magicbean;
-    int max_height; /* max "startingheight" across all peers */
-    bool max_height_known;
-    bool direction_known;
-    bool ready_known;
-};
-
-static bool status_peer_array_is_valid(const struct json_value *peers)
-{
-    if (!peers || peers->type != JSON_ARR)
-        return false;
-    for (size_t i = 0; i < json_size(peers); i++) {
-        const struct json_value *peer = json_at(peers, i);
-        if (!peer || peer->type != JSON_OBJ)
-            return false;
-    }
-    return true;
-}
-
-static void status_peer_survey(const struct json_value *peers,
-                               struct peer_survey *out)
-{
-    struct peer_survey s = {
-        .direction_known = true,
-        .ready_known = true,
-    };
-
-    if (peers && peers->type == JSON_ARR) {
-        s.total = (int)json_size(peers);
-        for (size_t i = 0; i < json_size(peers); i++) {
-            const struct json_value *peer = json_at(peers, i);
-            if (!peer || peer->type != JSON_OBJ)
-                continue;
-            const struct json_value *inbound = json_get(peer, "inbound");
-            if (inbound && inbound->type == JSON_BOOL) {
-                if (inbound->val.b)
-                    s.inbound++;
-                else
-                    s.outbound++;
-            } else {
-                s.direction_known = false;
-            }
-            if (status_peer_is_zcl23(peer))
-                s.zcl23++;
-            else if (status_peer_is_magicbean(peer))
-                s.magicbean++;
-            const struct json_value *state_value = json_get(peer, "state");
-            if (state_value && state_value->type == JSON_STR) {
-                const char *state = json_get_str(state_value);
-                if (strcmp(state, "handshake_complete") == 0 ||
-                    strcmp(state, "active") == 0)
-                    s.ready++;
-            } else {
-                s.ready_known = false;
-            }
-            int64_t h = 0;
-            if (status_read_height(peer, "startingheight", &h)) {
-                if (!s.max_height_known || h > s.max_height)
-                    s.max_height = (int)h;
-                s.max_height_known = true;
-            }
-        }
-    }
-
-    if (out) *out = s;
-}
-
-static long long status_max_ll(long long a, long long b)
-{
-    return a > b ? a : b;
-}
-
-static void status_push_string_array(struct json_value *obj,
-                                     const char *key,
-                                     const char *a,
-                                     const char *b)
-{
-    struct json_value arr;
-    json_init(&arr);
-    json_set_array(&arr);
-    if (a && a[0]) {
-        struct json_value item;
-        json_init(&item);
-        json_set_str(&item, a);
-        json_push_back(&arr, &item);
-        json_free(&item);
-    }
-    if (b && b[0] && (!a || strcmp(a, b) != 0)) {
-        struct json_value item;
-        json_init(&item);
-        json_set_str(&item, b);
-        json_push_back(&arr, &item);
-        json_free(&item);
-    }
-    json_push_kv(obj, key, &arr);
-    json_free(&arr);
-}
-
-static void status_push_lane_safety_fields(
-    struct json_value *root, const struct json_value *lane)
-{
-    if (!root || !lane || lane->type != JSON_OBJ)
-        return;
-
-    const struct json_value *safety = json_get(lane, "deployment_safety");
-    json_push_kv_str(root, "operator_lane_name",
-                     status_json_str(lane, "lane", "unknown"));
-    json_push_kv_bool(root, "automation_restart_ok",
-                      status_json_bool(lane, "automation_restart_ok", false));
-    json_push_kv_bool(root, "automation_deploy_ok",
-                      status_json_bool(lane, "automation_deploy_ok", false));
-    json_push_kv_bool(root, "requires_operator_confirmation",
-                      status_json_bool(lane,
-                                       "requires_operator_confirmation",
-                                       true));
-    json_push_kv_str(root, "preferred_deploy_target",
-                     safety ? status_json_str(safety,
-                                              "preferred_deploy_target",
-                                              "unknown") : "unknown");
-    json_push_kv_str(root, "safe_default_action",
-                     safety ? status_json_str(safety,
-                                              "safe_default_action",
-                                              "inspect_operator_lane")
-                            : "inspect_operator_lane");
-}
-
-static int blocker_status_priority(const char *class_name)
-{
-    if (!class_name) return 0;
-    if (strcmp(class_name, "resource") == 0) return 400;
-    if (strcmp(class_name, "permanent") == 0) return 300;
-    if (strcmp(class_name, "dependency") == 0) return 200;
-    if (strcmp(class_name, "transient") == 0) return 100;
+    res->body = body;
     return 0;
-}
-
-static bool status_json_equal(const struct json_value *a,
-                              const struct json_value *b)
-{
-    if (!a || !b || a->type != b->type ||
-        a->num_children != b->num_children)
-        return false;
-    switch (a->type) {
-    case JSON_NULL:
-        break;
-    case JSON_BOOL:
-        if (a->val.b != b->val.b) return false;
-        break;
-    case JSON_INT:
-        if (a->val.i != b->val.i) return false;
-        break;
-    case JSON_REAL:
-        if (a->val.d != b->val.d) return false;
-        break;
-    case JSON_STR:
-        if (!a->val.s || !b->val.s || strcmp(a->val.s, b->val.s) != 0)
-            return false;
-        break;
-    case JSON_ARR:
-    case JSON_OBJ:
-        break;
-    }
-    for (size_t i = 0; i < a->num_children; i++) {
-        if ((a->keys[i] == NULL) != (b->keys[i] == NULL))
-            return false;
-        if (a->keys[i] && strcmp(a->keys[i], b->keys[i]) != 0)
-            return false;
-        if (!status_json_equal(&a->children[i], &b->children[i]))
-            return false;
-    }
-    return true;
-}
-
-static bool status_push_kv_verified(struct json_value *obj, const char *key,
-                                    const struct json_value *value)
-{
-    size_t before = obj ? obj->num_children : 0;
-    if (!obj || !key || !value || !json_push_kv(obj, key, value) ||
-        obj->num_children != before + 1)
-        return false;
-    size_t added = obj->num_children - 1;
-    return obj->keys[added] && strcmp(obj->keys[added], key) == 0 &&
-           status_json_equal(&obj->children[added], value);
-}
-
-static bool status_push_str_verified(struct json_value *obj, const char *key,
-                                     const char *value)
-{
-    struct json_value child;
-    json_init(&child);
-    json_set_str(&child, value ? value : "");
-    bool ok = child.type == JSON_STR &&
-              status_push_kv_verified(obj, key, &child);
-    json_free(&child);
-    return ok;
-}
-
-static const struct json_value *status_dominant_blocker(
-    const struct json_value *blockers)
-{
-    const struct json_value *dominant = NULL;
-    int dominant_prio = -1;
-    for (size_t i = 0; blockers && i < json_size(blockers); i++) {
-        const struct json_value *candidate = json_at(blockers, i);
-        if (!candidate || candidate->type != JSON_OBJ)
-            continue;
-        int prio = blocker_status_priority(
-            json_get_str(json_get(candidate, "class")));
-        if (!dominant || prio > dominant_prio ||
-            (prio == dominant_prio &&
-             json_get_int(json_get(candidate, "age_us")) >
-             json_get_int(json_get(dominant, "age_us")))) {
-            dominant = candidate;
-            dominant_prio = prio;
-        }
-    }
-    return dominant;
-}
-
-static bool status_blocker_counts_match(const struct json_value *state,
-                                        const struct json_value *entries)
-{
-    static const char *const count_keys[] = {
-        "permanent_count", "transient_count",
-        "dependency_count", "resource_count",
-    };
-    static const char *const class_names[] = {
-        "permanent", "transient", "dependency", "resource",
-    };
-    int64_t derived[4] = {0, 0, 0, 0};
-
-    const struct json_value *active = json_get(state, "active_count");
-    const struct json_value *escaped =
-        json_get(state, "escape_dispatched_total");
-    if (!active || active->type != JSON_INT ||
-        active->val.i != (int64_t)json_size(entries) ||
-        !escaped || escaped->type != JSON_INT || escaped->val.i < 0)
-        return false;
-
-    for (size_t i = 0; i < json_size(entries); i++) {
-        const struct json_value *entry = json_at(entries, i);
-        const char *class_name =
-            json_get_str(json_get(entry, "class"));
-        if (!entry || entry->type != JSON_OBJ || !class_name)
-            return false;
-        bool known = false;
-        for (size_t c = 0; c < 4; c++) {
-            if (strcmp(class_name, class_names[c]) == 0) {
-                derived[c]++;
-                known = true;
-                break;
-            }
-        }
-        if (!known)
-            return false;
-    }
-
-    for (size_t c = 0; c < 4; c++) {
-        const struct json_value *reported = json_get(state, count_keys[c]);
-        if (!reported || reported->type != JSON_INT ||
-            reported->val.i != derived[c])
-            return false;
-    }
-    return true;
-}
-
-/* Build the blocker summary exclusively from the target node's native
- * dumpstate response.  The MCP server is often a detached proxy process;
- * reading blocker globals here would describe that empty proxy and create a
- * dangerous false-green status while the actual node is blocked. */
-static bool status_build_blocker_summary(const char *raw,
-                                         bool include_entries,
-                                         struct json_value *summary_out,
-                                         struct json_value *dominant_out,
-                                         struct json_value *error_out)
-{
-    json_set_null(summary_out);
-    json_set_null(dominant_out);
-    json_set_null(error_out);
-
-    struct json_value response;
-    json_init(&response);
-    if (!raw || !json_read(&response, raw, strlen(raw))) {
-        json_set_object(error_out);
-        json_push_kv_str(error_out, "message",
-                         raw ? "invalid blocker dumpstate JSON"
-                             : "blocker dumpstate RPC returned null");
-        json_free(&response);
-        return false;
-    }
-
-    const struct json_value *rpc_error = json_get(&response, "error");
-    if (rpc_error && rpc_error->type != JSON_NULL) {
-        if (rpc_error->type == JSON_OBJ) {
-            json_copy(error_out, rpc_error);
-        } else {
-            json_set_object(error_out);
-            json_push_kv_str(error_out, "message",
-                             "blocker dumpstate returned an error indicator");
-        }
-        json_free(&response);
-        return false;
-    }
-
-    const struct json_value *state = json_get(&response, "state");
-    if (json_get(&response, "code") || json_get(&response, "message")) {
-        /* HTTP/in-process RPC failures are normally a bare
-         * {code,message,method} object; transport stubs may wrap it under
-         * "error". Reject mixed error+state objects too: error evidence
-         * cannot be made successful by appending plausible state. */
-        json_copy(error_out, &response);
-        json_free(&response);
-        return false;
-    }
-    const char *subsystem =
-        json_get_str(json_get(&response, "subsystem"));
-    const struct json_value *captured_at =
-        json_get(&response, "captured_at");
-    if (!state || state->type != JSON_OBJ ||
-        !subsystem || strcmp(subsystem, "blocker") != 0 ||
-        !captured_at || captured_at->type != JSON_INT ||
-        captured_at->val.i < 0) {
-        json_set_object(error_out);
-        json_push_kv_str(error_out, "message",
-                         "blocker dumpstate missing valid blocker envelope");
-        json_free(&response);
-        return false;
-    }
-    const struct json_value *entries = json_get(state, "blockers");
-    if (!entries || entries->type != JSON_ARR) {
-        json_set_object(error_out);
-        json_push_kv_str(error_out, "message",
-                         "blocker dumpstate missing object state/blockers array");
-        json_free(&response);
-        return false;
-    }
-    if (!status_blocker_counts_match(state, entries)) {
-        json_set_object(error_out);
-        json_push_kv_str(error_out, "message",
-                         "blocker dumpstate counts contradict blocker entries");
-        json_free(&response);
-        return false;
-    }
-
-    json_set_object(summary_out);
-    bool copy_ok = true;
-    for (size_t i = 0; i < state->num_children; i++) {
-        const char *key = state->keys[i];
-        if (!key || strcmp(key, "dominant") == 0 ||
-            strcmp(key, "execution_locus") == 0 ||
-            strcmp(key, "source_rpc") == 0 ||
-            strcmp(key, "captured_at") == 0 ||
-            (!include_entries &&
-             (strcmp(key, "blockers") == 0 ||
-              strcmp(key, "_health") == 0)))
-            continue;
-        if (!status_push_kv_verified(summary_out, key,
-                                     &state->children[i])) {
-            copy_ok = false;
-            break;
-        }
-    }
-    copy_ok = copy_ok && status_push_str_verified(
-        summary_out, "execution_locus", "target_node");
-    copy_ok = copy_ok && status_push_str_verified(
-        summary_out, "source_rpc", "dumpstate:blocker");
-    copy_ok = copy_ok && status_push_kv_verified(
-        summary_out, "captured_at", captured_at);
-
-    const struct json_value *selected = status_dominant_blocker(entries);
-    if (selected) {
-        json_copy(dominant_out, selected);
-        copy_ok = copy_ok && status_json_equal(dominant_out, selected);
-    }
-    copy_ok = copy_ok && status_push_kv_verified(
-        summary_out, "dominant", dominant_out);
-    if (!copy_ok) {
-        json_set_null(summary_out);
-        json_set_null(dominant_out);
-        json_set_object(error_out);
-        json_push_kv_str(error_out, "message",
-                         "blocker summary allocation/copy failed");
-        json_free(&response);
-        return false;
-    }
-    json_free(&response);
-    return true;
-}
-
-static bool status_push_built_blocker_summary(
-    struct json_value *root,
-    const struct json_value *summary,
-    const struct json_value *dominant,
-    const struct json_value *error,
-    bool ok)
-{
-    bool attached = status_push_kv_verified(root, "blockers", summary) &&
-                    status_push_kv_verified(root, "dominant_blocker",
-                                            dominant);
-    if (!ok) {
-        struct json_value fallback;
-        json_init(&fallback);
-        const struct json_value *error_value = error;
-        if (!error || error->type != JSON_OBJ) {
-            json_set_object(&fallback);
-            json_push_kv_str(&fallback, "message",
-                             "target blocker state unavailable");
-            error_value = &fallback;
-        }
-        attached = attached && status_push_kv_verified(
-            root, "blockers_error", error_value);
-        json_free(&fallback);
-    }
-    return attached;
-}
-
-static bool status_push_blocker_summary(struct json_value *root,
-                                        const char *raw)
-{
-    struct json_value summary;
-    struct json_value dominant;
-    struct json_value error;
-    json_init(&summary);
-    json_init(&dominant);
-    json_init(&error);
-
-    bool ok = status_build_blocker_summary(raw, false, &summary, &dominant,
-                                           &error);
-    bool attached = status_push_built_blocker_summary(
-        root, &summary, &dominant, &error, ok);
-
-    json_free(&error);
-    json_free(&dominant);
-    json_free(&summary);
-    return attached;
 }
 
 
@@ -860,212 +143,9 @@ static bool status_push_blocker_summary(struct json_value *root,
 
 static int h_zcl_status(const struct mcp_request *req, struct mcp_response *res)
 {
-    (void)req;
-    char *h  = mcp_node_rpc("getblockcount", NULL);
-    char *p  = mcp_node_rpc("getpeerinfo", NULL);
-    char *s  = mcp_node_rpc("syncstate", NULL);
-    char *v  = mcp_node_rpc("validationstatus", NULL);
-    char *hc = mcp_node_rpc("healthcheck", NULL);
-    char *ci = mcp_node_rpc("getblockchaininfo", NULL);
-    char *cac = mcp_node_rpc("dumpstate", "[\"chain_advance_coordinator\"]");
-    char *rf = mcp_node_rpc("dumpstate", "[\"reducer_frontier\"]");
-    char *tf = mcp_node_rpc("dumpstate", "[\"tip_finalize\"]");
-    char *ce = mcp_node_rpc("dumpstate", "[\"condition_engine\"]");
-    char *bl = mcp_node_rpc("dumpstate", "[\"blocker\"]");
-
-    int pc = 0, inbound = 0, outbound = 0, zcl23_cnt = 0, magicbean_cnt = 0;
-    int max_peer_height = 0;
-    bool max_peer_height_known = false;
-    bool peer_direction_known = false;
-    struct json_value height_j, peers_j, chain_j, health_j;
-    bool height_ok = status_parse_rpc_json(&height_j, h, JSON_INT) &&
-                     height_j.val.i >= 0 && height_j.val.i <= INT_MAX;
-    bool peers_ok = status_parse_rpc_json(&peers_j, p, JSON_ARR) &&
-                    status_peer_array_is_valid(&peers_j);
-    bool chain_ok = status_parse_rpc_json(&chain_j, ci, JSON_OBJ);
-    const struct json_value *header_value =
-        chain_ok ? json_get(&chain_j, "best_header_height") : NULL;
-    bool header_ok = header_value && header_value->type == JSON_INT &&
-                     header_value->val.i >= 0 &&
-                     header_value->val.i <= INT_MAX;
-    bool health_ok = status_parse_rpc_json(&health_j, hc, JSON_OBJ);
-    if (peers_ok) {
-        struct peer_survey ps;
-        status_peer_survey(&peers_j, &ps);
-        pc = ps.total;
-        inbound = ps.inbound;
-        outbound = ps.outbound;
-        zcl23_cnt = ps.zcl23;
-        magicbean_cnt = ps.magicbean;
-        max_peer_height = ps.max_height;
-        max_peer_height_known = ps.max_height_known;
-        peer_direction_known = ps.direction_known;
-    }
-
-    int block_height = height_ok ? (int)height_j.val.i : 0;
-    int header_height = header_ok ? (int)header_value->val.i : 0;
-    const int sync_behind_threshold_blocks = 144;
-    int header_gap = max_peer_height - header_height;
-    if (header_gap < 0) header_gap = 0;
-    bool header_gap_known = max_peer_height_known && header_ok;
-    bool header_sync_behind =
-        header_gap > sync_behind_threshold_blocks;
-    /* Only locally validated headers define the synchronization target.
-     * max_peer_height is an untrusted availability hint; one lying peer must
-     * never manufacture an authoritative node gap. */
-    int target_height = header_height;
-    bool chain_evidence_known = height_ok && header_ok;
-    bool chain_evidence_consistent =
-        chain_evidence_known && block_height <= header_height;
-    int sync_gap = chain_evidence_consistent
-        ? target_height - block_height : 0;
-    bool sync_gap_known = chain_evidence_consistent;
-    bool sync_behind = sync_gap > sync_behind_threshold_blocks;
-
-    const struct json_value *memory_value =
-        health_ok ? json_get(&health_j, "memory_rss_mb") : NULL;
-    const struct json_value *uptime_value =
-        health_ok ? json_get(&health_j, "uptime_seconds") : NULL;
-    bool memory_known = memory_value && memory_value->type == JSON_INT &&
-                        memory_value->val.i >= 0;
-    bool uptime_known = uptime_value && uptime_value->type == JSON_INT &&
-                        uptime_value->val.i >= 0;
-    const struct json_value *commit_value =
-        health_ok ? json_get(&health_j, "build_commit") : NULL;
-    const char *node_commit = json_get_str(commit_value);
-    bool have_node_commit = node_commit && node_commit[0];
-
-    struct json_value root;
-    json_init(&root);
-    json_set_object(&root);
-    json_push_kv_str(&root, "execution_locus", "composite");
-    status_push_int_if_known(&root, "height", height_ok, block_height);
-    /* build_commit must describe the NODE. This MCP server is a separate
-     * long-lived process and can be running an older binary than the node
-     * it queries — stamping our own hash here can mis-report the deployed
-     * node version. Keep the proxy hash in mcp_build_commit unconditionally
-     * and leave the node field null when target evidence is unavailable. */
-    if (have_node_commit) {
-        json_push_kv_str(&root, "build_commit", node_commit);
-    } else {
-        struct json_value unknown;
-        json_init(&unknown);
-        json_set_null(&unknown);
-        json_push_kv(&root, "build_commit", &unknown);
-        json_free(&unknown);
-    }
-    json_push_kv_str(&root, "build_commit_source",
-                     have_node_commit ? "target_node.healthcheck"
-                                      : "target_node.unavailable");
-    json_push_kv_str(&root, "mcp_build_commit", zcl_build_commit());
-    status_push_int_if_known(&root, "header_height", header_ok,
-                             header_height);
-    status_push_int_if_known(&root, "max_peer_height",
-                             max_peer_height_known,
-                             max_peer_height);
-    json_push_kv_bool(&root, "max_peer_height_known",
-                      max_peer_height_known);
-    json_push_kv_str(&root, "max_peer_height_trust",
-                     "untrusted_peer_advertisement");
-    status_push_int_if_known(&root, "header_gap", header_gap_known,
-                             header_gap);
-    status_push_bool_if_known(&root, "header_sync_behind",
-                              header_gap_known, header_sync_behind);
-    status_push_int_if_known(&root, "target_height", header_ok,
-                             target_height);
-    json_push_kv_str(&root, "target_height_source",
-                     header_ok ? "target_node.validated_header_tip"
-                               : "unavailable");
-    status_push_int_if_known(&root, "sync_gap", sync_gap_known, sync_gap);
-    json_push_kv_int(&root, "sync_behind_threshold_blocks",
-                     sync_behind_threshold_blocks);
-    status_push_bool_if_known(&root, "sync_behind", sync_gap_known,
-                              sync_behind);
-    status_push_bool_if_known(&root, "chain_evidence_consistent",
-                              chain_evidence_known,
-                              chain_evidence_consistent);
-    status_push_int_if_known(&root, "peers", peers_ok, pc);
-
-    if (!height_ok)
-        status_push_rpc_parse_error(&root, "height", h,
-                                    "getblockcount returned invalid data");
-    if (!peers_ok)
-        status_push_rpc_parse_error(&root, "peers", p,
-                                    "getpeerinfo returned invalid data");
-    else if (!max_peer_height_known) {
-        status_push_json_error(&root, "max_peer_height",
-                               "no connected peer supplied a valid height claim",
-                               NULL);
-        status_push_json_error(&root, "header_gap",
-                               "peer height claim unavailable", NULL);
-    }
-    if (!header_ok)
-        status_push_rpc_parse_error(
-            &root, "header_height", ci,
-            "getblockchaininfo missing valid best_header_height");
-    if (chain_evidence_known && !chain_evidence_consistent)
-        status_push_json_error(
-            &root, "chain_evidence",
-            "served H* exceeds the locally validated header frontier",
-            NULL);
-
-    struct json_value conn;
-    json_init(&conn);
-    json_set_object(&conn);
-    json_push_kv_bool(&conn, "known", peers_ok && peer_direction_known);
-    json_push_kv_bool(&conn, "total_known", peers_ok);
-    json_push_kv_bool(&conn, "direction_known", peer_direction_known);
-    status_push_int_if_known(&conn, "total", peers_ok, pc);
-    status_push_int_if_known(&conn, "inbound", peer_direction_known,
-                             inbound);
-    status_push_int_if_known(&conn, "outbound", peer_direction_known,
-                             outbound);
-    status_push_int_if_known(&conn, "zcl23", peers_ok, zcl23_cnt);
-    status_push_int_if_known(&conn, "magicbean", peers_ok, magicbean_cnt);
-    if (peers_ok && !peer_direction_known)
-        status_push_json_error(&conn, "direction",
-                               "peer entry missing boolean inbound field",
-                               NULL);
-    json_push_kv(&root, "connections", &conn);
-    json_free(&conn);
-
-    status_push_int_if_known(&root, "memory_rss_mb", memory_known,
-                             memory_known ? memory_value->val.i : 0);
-    status_push_int_if_known(&root, "uptime_secs", uptime_known,
-                             uptime_known ? uptime_value->val.i : 0);
-    if (!memory_known)
-        status_push_json_error(&root, "memory_rss_mb",
-                               "healthcheck missing valid nonnegative memory",
-                               NULL);
-    if (!uptime_known)
-        status_push_json_error(&root, "uptime_secs",
-                               "healthcheck missing valid nonnegative uptime",
-                               NULL);
-    status_push_rpc_json(&root, "sync", s, "syncstate");
-    status_push_rpc_json(&root, "validation", v, "validationstatus");
-    status_push_rpc_json(&root, "health", hc, "healthcheck");
-    status_push_dumpstate_json(&root, "chain_advance",
-                               "chain_advance_coordinator", cac);
-    status_push_dumpstate_json(&root, "reducer_frontier",
-                               "reducer_frontier", rf);
-    status_push_dumpstate_json(&root, "tip_finalize", "tip_finalize", tf);
-    status_push_dumpstate_json(&root, "condition_engine",
-                               "condition_engine", ce);
-    bool blocker_fields_attached = status_push_blocker_summary(&root, bl);
-
-    char *out = blocker_fields_attached
-        ? json_value_to_body(&root, "status_body") : NULL;
-    json_free(&root);
-    json_free(&health_j);
-    json_free(&chain_j);
-    json_free(&peers_j);
-    json_free(&height_j);
-    free(h); free(p); free(s); free(v); free(hc); free(ci); free(cac);
-    free(rf); free(tf); free(ce); free(bl);
-    if (!out)
-        return mcp_res_set_oom(res, 0, "mcp.ops", "status response");
-    res->body = out;
-    return 0;
+    struct zcl_native_body_err e = { 0 };
+    char *body = zcl_native_status_body(req->args, &e);
+    return ops_native_wrap(res, body, &e);
 }
 
 static int h_zcl_operator_summary_compat(const struct mcp_request *req,
@@ -1655,7 +735,7 @@ static int h_zcl_operator_summary_compat(const struct mcp_request *req,
     json_free(&raw);
 
     char *out = blocker_fields_attached
-        ? json_value_to_body(&root, "operator_summary_body") : NULL;
+        ? zcl_json_value_to_body(&root, "operator_summary_body") : NULL;
     json_free(&root);
     json_free(&chain_j);
     json_free(&peers_j);
@@ -2534,7 +1614,7 @@ static int h_zcl_operator_summary(const struct mcp_request *req,
         return status_native_snapshot_error(res, raw, reason);
     }
     const struct json_value *summary = json_get(&root, "summary");
-    char *body = json_value_to_body((struct json_value *)summary,
+    char *body = zcl_json_value_to_body((struct json_value *)summary,
                                     "native_operator_summary_body");
     json_free(&root);
     free(raw);
@@ -2558,7 +1638,7 @@ static int h_zcl_agent_impact(const struct mcp_request *req,
     const struct json_value *files = json_get(req->args, "files");
     char *params = NULL;
     if (files && files->type == JSON_ARR) {
-        params = json_value_to_body((struct json_value *)files,
+        params = zcl_json_value_to_body((struct json_value *)files,
                                     "agent_impact_params");
         if (!params)
             return mcp_res_set_oom(res, 0, "mcp.ops", "agent impact params");
@@ -2628,13 +1708,9 @@ static int h_zcl_agent_liveness(const struct mcp_request *req,
 static int h_zcl_agent_diagnose(const struct mcp_request *req,
                                 struct mcp_response *res)
 {
-    struct mcp_params p;
-    mcp_params_init(&p);
-    mcp_params_push_str(&p, json_get_str_or(req->args, "mode", "brief"));
-    char *params = mcp_params_to_json(&p);
-    char *body = params ? mcp_node_rpc("agentdiagnose", params) : NULL;
-    free(params);
-    return mcp_return_rpc_body(res, body, "agentdiagnose", "mcp.ops");
+    struct zcl_native_body_err e = { 0 };
+    char *body = zcl_native_agent_diagnose_body(req->args, &e);
+    return ops_native_wrap(res, body, &e);
 }
 
 DEFINE_PT(h_zcl_mirror_status, "getmirrorstatus",       "mcp.ops")
@@ -2652,45 +1728,9 @@ static int h_zcl_events(const struct mcp_request *req, struct mcp_response *res)
 static int h_zcl_timeline(const struct mcp_request *req,
                           struct mcp_response *res)
 {
-    const char *category = json_get_str_or(req->args, "category", "all");
-    int64_t count = json_get_int_or(req->args, "count", 50);
-
-    struct json_value arr, obj;
-    json_init(&arr);
-    json_set_array(&arr);
-    json_init(&obj);
-    json_set_object(&obj);
-    json_push_kv_str(&obj, "category",
-                     (category && category[0]) ? category : "all");
-    json_push_kv_int(&obj, "count", count);
-
-    const char *str_filters[] = {
-        "reducer_stage", "stage", "condition", "deploy", "lane",
-    };
-    const char *int_filters[] = {
-        "scan_count", "scan", "since_us", "since_secs", "peer", "height",
-    };
-    for (size_t i = 0; i < sizeof(str_filters) / sizeof(str_filters[0]); i++) {
-        const char *v = json_get_str(json_get(req->args, str_filters[i]));
-        if (v && v[0])
-            json_push_kv_str(&obj, str_filters[i], v);
-    }
-    for (size_t i = 0; i < sizeof(int_filters) / sizeof(int_filters[0]); i++) {
-        const struct json_value *v = json_get(req->args, int_filters[i]);
-        if (v && (v->type == JSON_INT || v->type == JSON_REAL))
-            json_push_kv_int(&obj, int_filters[i], json_get_int(v));
-    }
-    json_push_back(&arr, &obj);
-
-    size_t need = json_write(&arr, NULL, 0);
-    char *params = zcl_malloc(need + 1u, "mcp timeline params");
-    if (params)
-        json_write(&arr, params, need + 1u);
-    char *body = params ? mcp_node_rpc("timeline", params) : NULL;
-    free(params);
-    json_free(&obj);
-    json_free(&arr);
-    return mcp_return_rpc_body(res, body, "timeline", "mcp.ops");
+    struct zcl_native_body_err e = { 0 };
+    char *body = zcl_native_timeline_body(req->args, &e);
+    return ops_native_wrap(res, body, &e);
 }
 
 static int h_zcl_rpc(const struct mcp_request *req, struct mcp_response *res)
@@ -2707,49 +1747,9 @@ static int h_zcl_rpc(const struct mcp_request *req, struct mcp_response *res)
  * remain stable over time — we just add new top-level fields. */
 static int h_zcl_kpi(const struct mcp_request *req, struct mcp_response *res)
 {
-    (void)req;
-    char *height    = mcp_node_rpc("getblockcount",     NULL);
-    char *peers     = mcp_node_rpc("getpeerinfo",       NULL);
-    char *sync      = mcp_node_rpc("syncstate",         NULL);
-    char *val       = mcp_node_rpc("validationstatus",  NULL);
-    char *health    = mcp_node_rpc("healthcheck",       NULL);
-    char *mempool   = mcp_node_rpc("getmempoolinfo",    NULL);
-    char *wallet    = mcp_node_rpc("getwalletinfo",     NULL);
-    char *chain     = mcp_node_rpc("getblockchaininfo", NULL);
-    char *network   = mcp_node_rpc("getnetworkinfo",    NULL);
-
-    struct json_value peers_j;
-    bool peers_ok = status_parse_rpc_json(&peers_j, peers, JSON_ARR) &&
-                    status_peer_array_is_valid(&peers_j);
-    int64_t peer_count = peers_ok ? (int64_t)json_size(&peers_j) : 0;
-
-    struct json_value root;
-    json_init(&root);
-    json_set_object(&root);
-    status_push_rpc_json(&root, "height", height, "getblockcount");
-    status_push_int_if_known(&root, "peer_count", peers_ok, peer_count);
-    json_push_kv_bool(&root, "peer_count_known", peers_ok);
-    status_push_rpc_json(&root, "peers", peers, "getpeerinfo");
-    if (!peers_ok)
-        status_push_rpc_parse_error(&root, "peer_count", peers,
-                                    "getpeerinfo returned invalid peer array");
-    status_push_rpc_json(&root, "sync", sync, "syncstate");
-    status_push_rpc_json(&root, "validation", val, "validationstatus");
-    status_push_rpc_json(&root, "health", health, "healthcheck");
-    status_push_rpc_json(&root, "mempool", mempool, "getmempoolinfo");
-    status_push_rpc_json(&root, "wallet", wallet, "getwalletinfo");
-    status_push_rpc_json(&root, "chain", chain, "getblockchaininfo");
-    status_push_rpc_json(&root, "network", network, "getnetworkinfo");
-
-    free(height); free(peers); free(sync); free(val); free(health);
-    free(mempool); free(wallet); free(chain); free(network);
-    char *out = json_value_to_body(&root, "kpi_body");
-    json_free(&root);
-    json_free(&peers_j);
-    if (!out)
-        return mcp_res_set_oom(res, 0, "mcp.ops", "KPI response");
-    res->body = out;
-    return 0;
+    struct zcl_native_body_err e = { 0 };
+    char *body = zcl_native_kpi_body(req->args, &e);
+    return ops_native_wrap(res, body, &e);
 }
 
 static int h_zcl_self_heal_stats(const struct mcp_request *req,
@@ -2786,73 +1786,11 @@ static int h_zcl_self_heal_stats(const struct mcp_request *req,
  * with download queue stats and peer max height into a single response
  * for diagnosing sync issues without multiple tool calls. */
 static int h_zcl_syncdiag(const struct mcp_request *req,
-                           struct mcp_response *res)
+                          struct mcp_response *res)
 {
-    (void)req;
-    char *diag = mcp_node_rpc("getsyncdiag", NULL);
-    char *dl   = mcp_node_rpc("downloadstats", NULL);
-    char *pi   = mcp_node_rpc("getpeerinfo", NULL);
-
-    /* Peer-advertised height is only an availability hint. Keep it unknown
-     * when the RPC/error shape is invalid; never turn an error into zero. */
-    int peer_max_height = 0;
-    bool peer_max_height_known = false;
-    struct json_value pi_j;
-    bool peers_ok = status_parse_rpc_json(&pi_j, pi, JSON_ARR) &&
-                    status_peer_array_is_valid(&pi_j);
-    if (peers_ok) {
-        struct peer_survey ps;
-        status_peer_survey(&pi_j, &ps);
-        peer_max_height = ps.max_height;
-        peer_max_height_known = ps.max_height_known;
-    }
-
-    struct json_value root;
-    struct json_value diag_json;
-    json_init(&root);
-    json_set_object(&root);
-
-    bool diag_ok = status_parse_rpc_json(&diag_json, diag, JSON_OBJ);
-    if (diag_ok) {
-        for (size_t i = 0; i < diag_json.num_children; i++) {
-            const char *key = diag_json.keys[i];
-            if (!key || strcmp(key, "peer_max_height") == 0 ||
-                strcmp(key, "download") == 0)
-                continue;
-            json_push_kv(&root, key, &diag_json.children[i]);
-        }
-    } else {
-        json_push_kv_str(&root, "error", "getsyncdiag RPC failed");
-        status_push_rpc_parse_error(
-            &root, "getsyncdiag", diag,
-            diag ? "getsyncdiag RPC returned invalid data"
-                 : "getsyncdiag RPC returned null");
-    }
-
-    status_push_int_if_known(&root, "peer_max_height",
-                             peer_max_height_known,
-                             peer_max_height);
-    json_push_kv_bool(&root, "peer_max_height_known",
-                      peer_max_height_known);
-    json_push_kv_str(&root, "peer_max_height_trust",
-                     "untrusted_peer_advertisement");
-    if (!peers_ok)
-        status_push_rpc_parse_error(&root, "peer_max_height", pi,
-                                    "getpeerinfo returned invalid peer array");
-    else if (!peer_max_height_known)
-        status_push_json_error(&root, "peer_max_height",
-                               "no connected peer supplied a valid height claim",
-                               NULL);
-    status_push_rpc_json(&root, "download", dl, "downloadstats");
-    json_free(&diag_json);
-    json_free(&pi_j);
-    free(diag); free(dl); free(pi);
-    char *out = json_value_to_body(&root, "syncdiag_body");
-    json_free(&root);
-    if (!out)
-        return mcp_res_set_oom(res, 0, "mcp.ops", "syncdiag response");
-    res->body = out;
-    return 0;
+    struct zcl_native_body_err e = { 0 };
+    char *body = zcl_native_syncdiag_body(req->args, &e);
+    return ops_native_wrap(res, body, &e);
 }
 
 /* zcl_rebuild_recent — bounded recovery: fetch the recent block range from
@@ -2885,138 +1823,19 @@ static int h_zcl_rebuild_recent(const struct mcp_request *req,
 static int h_zcl_blockers(const struct mcp_request *req,
                           struct mcp_response *res)
 {
-    (void)req;
-
-    char *raw = mcp_node_rpc("dumpstate", "[\"blocker\"]");
-    struct json_value summary;
-    struct json_value dominant;
-    struct json_value error;
-    json_init(&summary);
-    json_init(&dominant);
-    json_init(&error);
-    if (!status_build_blocker_summary(raw, true, &summary, &dominant,
-                                      &error)) {
-        const char *message = json_get_str(json_get(&error, "message"));
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "target blocker state unavailable: %s",
-                 message ? message : "invalid dumpstate response");
-        LOG_ERR("mcp.ops", "target blocker state unavailable: %s",
-                message ? message : "invalid dumpstate response");
-        free(raw);
-        json_free(&error);
-        json_free(&dominant);
-        json_free(&summary);
-        return 0;
-    }
-
-    char *out = json_value_to_body(&summary, "zcl_blockers_body");
-    free(raw);
-    json_free(&error);
-    json_free(&dominant);
-    json_free(&summary);
-    if (!out)
-        return mcp_res_set_oom(res, 0, "mcp.ops", "blockers body");
-    res->body = out;
-    return 0;
+    struct zcl_native_body_err e = { 0 };
+    char *body = zcl_native_blockers_body(req->args, &e);
+    return ops_native_wrap(res, body, &e);
 }
 
 /* ── Phase 6b postmortem capsules ───────────────────────────── */
 
-static int postmortem_default_dir(char *buf, size_t cap)
-{
-    const char *home = getenv("HOME");
-    int n;
-    if (home && *home) {
-        n = snprintf(buf, cap, "%s/.zclassic-c23/postmortems", home);
-    } else {
-        n = snprintf(buf, cap, "./.zclassic-c23/postmortems");
-    }
-    if (n < 0 || (size_t)n >= cap) return -ENOSPC;
-    return 0;
-}
-
-static char *json_value_to_body(struct json_value *v, const char *label)
-{
-    size_t need = json_write(v, NULL, 0);
-    char *out = zcl_malloc(need + 1, label);
-    if (!out) return NULL;
-    json_write(v, out, need + 1);
-    return out;
-}
-
 static int h_zcl_postmortem_list(const struct mcp_request *req,
                                  struct mcp_response *res)
 {
-    const char *dir = json_get_str_or(req->args, "dir", NULL);
-    char default_dir[512];
-    if (!dir || !*dir) {
-        if (postmortem_default_dir(default_dir, sizeof(default_dir)) != 0) {
-            res->error = MCP_ERR_INTERNAL;
-            snprintf(res->error_message, sizeof(res->error_message),
-                     "default postmortem dir path too long");
-            LOG_ERR("mcp.ops", "default postmortem dir path too long");
-            return 0;
-        }
-        dir = default_dir;
-    }
-
-    int64_t limit_i = json_get_int_or(req->args, "limit", 20);
-    if (limit_i < 1) limit_i = 1;
-    if (limit_i > 100) limit_i = 100;
-    size_t limit = (size_t)limit_i;
-
-    struct postmortem_summary *summaries =
-        zcl_malloc(sizeof(*summaries) * limit, "mcp.postmortem.list");
-    if (!summaries) {
-        return mcp_res_set_oom(res, sizeof(*summaries) * limit, "mcp.ops",
-                               "postmortem summary list");
-    }
-
-    size_t count = 0;
-    int rc = postmortem_list(dir, summaries, limit, &count);
-    if (rc != 0) {
-        free(summaries);
-        res->error = MCP_ERR_HANDLER_FAILED;
-        snprintf(res->error_message, sizeof(res->error_message),
-                 "postmortem list failed for %s (rc=%d)", dir, rc);
-        LOG_ERR("mcp.ops", "postmortem list failed dir=%s rc=%d", dir, rc);
-        return 0;
-    }
-
-    struct json_value root, arr;
-    json_init(&root); json_set_object(&root);
-    json_init(&arr);  json_set_array(&arr);
-    size_t returned = count < limit ? count : limit;
-    json_push_kv_str(&root, "dir", dir);
-    json_push_kv_int(&root, "total", (int64_t)count);
-    json_push_kv_int(&root, "returned", (int64_t)returned);
-    json_push_kv_int(&root, "limit", (int64_t)limit);
-
-    for (size_t i = 0; i < returned; i++) {
-        struct json_value item;
-        json_init(&item); json_set_object(&item);
-        json_push_kv_str(&item, "path", summaries[i].path);
-        json_push_kv_int(&item, "crash_unix", summaries[i].crash_unix);
-        json_push_kv_int(&item, "crash_signal",
-                         (int64_t)summaries[i].crash_signal);
-        json_push_kv_int(&item, "capsule_bytes",
-                         (int64_t)summaries[i].capsule_bytes);
-        json_push_kv_int(&item, "tape_size_bytes",
-                         (int64_t)summaries[i].tape_size_bytes);
-        json_push_back(&arr, &item);
-        json_free(&item);
-    }
-    json_push_kv(&root, "capsules", &arr);
-
-    char *body = json_value_to_body(&root, "mcp.postmortem.list.body");
-    json_free(&arr);
-    json_free(&root);
-    free(summaries);
-    if (!body)
-        return mcp_res_set_oom(res, 0, "mcp.ops", "postmortem list response");
-    res->body = body;
-    return 0;
+    struct zcl_native_body_err e = { 0 };
+    char *body = zcl_native_postmortem_list_body(req->args, &e);
+    return ops_native_wrap(res, body, &e);
 }
 
 static int h_zcl_postmortem_replay(const struct mcp_request *req,
@@ -3107,7 +1926,7 @@ static int h_zcl_postmortem_replay(const struct mcp_request *req,
     json_push_kv_bool(&root, "truncated", returned == limit);
     json_push_kv(&root, "events", &events);
 
-    char *body = json_value_to_body(&root, "mcp.postmortem.replay.body");
+    char *body = zcl_json_value_to_body(&root, "mcp.postmortem.replay.body");
     json_free(&events);
     json_free(&root);
     if (!body)

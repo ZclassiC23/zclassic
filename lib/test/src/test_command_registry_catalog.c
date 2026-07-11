@@ -509,6 +509,38 @@ static int test_dev_vcs_seal_grant_release_stub(void)
     return failures;
 }
 
+/* W0-A: the native bridge dispatches WITHOUT the MCP router/middleware.
+ * Every bridged READY leaf must resolve to exactly ONE MCP-free dispatch:
+ * a re-homed transport-neutral body function (app/controllers/
+ * *_native_handlers.c) XOR a direct JSON-RPC method (pure pass-through).
+ * The MCP tool name stays as dual-run equivalence metadata. */
+static int test_bridge_mcp_free_bindings(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    TEST("every bridged leaf has exactly one MCP-free dispatch binding") {
+        int checked = 0;
+        for (size_t i = 0; i < reg->count; i++) {
+            const struct zcl_command_spec *s = &reg->commands[i];
+            if (s->mode == ZCL_COMMAND_MODE_BRANCH)
+                continue;
+            if (s->handler != zcl_native_bridge_command)
+                continue;
+            const char *tool = zcl_native_bridge_tool_for_path(s->path);
+            zcl_native_body_fn body = zcl_native_bridge_body_for_path(s->path);
+            const char *rpc = zcl_native_bridge_rpc_for_path(s->path);
+            ASSERT(tool != NULL && tool[0] != 0);
+            /* exactly one of the two dispatch kinds */
+            ASSERT((body != NULL) != (rpc != NULL));
+            checked++;
+        }
+        /* the full bridged read surface, not a sample */
+        ASSERT(checked >= 40);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* W0: ops.selftest is the native, node-free successor of the MCP
  * `zcl_self_test mode=registry`. It sweeps the catalog for the static
  * well-formedness the registry guarantees. Because test_catalog_wellformed
@@ -591,6 +623,7 @@ int test_command_registry_catalog(void)
     failures += test_search_bounded();
     failures += test_ready_leaves_bound();
     failures += test_bridge_bindings_reverse();
+    failures += test_bridge_mcp_free_bindings();
     failures += test_planned_fail_closed();
     failures += test_envelope_vectors();
     failures += test_dev_branch_leaves();

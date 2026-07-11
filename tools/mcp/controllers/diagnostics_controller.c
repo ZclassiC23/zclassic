@@ -21,6 +21,7 @@
 #include "../rpc_params.h"
 
 #include "controllers/diagnostics_controller.h"
+#include "controllers/diagnostics_native_handlers.h"
 #include "json/json.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -40,17 +41,15 @@
 static int h_zcl_sql(const struct mcp_request *req,
                      struct mcp_response *res)
 {
-    const char *sql = json_get_str(json_get(req->args, "sql"));
-
-    struct mcp_params p;
-    mcp_params_init(&p);
-    mcp_params_push_str(&p, sql ? sql : "");
-    mcp_params_push_int(&p, json_get_int_or(req->args, "limit", 10));
-    char *pjson = mcp_params_to_json(&p);
-
-    char *out = pjson ? mcp_node_rpc("dbquery", pjson) : NULL;
-    free(pjson);
-    return mcp_return_rpc_body(res, out, "dbquery", "mcp.diag");
+    struct zcl_native_body_err e = { 0 };
+    char *body = zcl_native_sql_body(req->args, &e);
+    if (!body) {
+        res->error = (e.status == ZCL_NATIVE_BODY_INTERNAL)
+                         ? MCP_ERR_INTERNAL : MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message), "%s", e.message);
+    }
+    res->body = body;
+    return 0;
 }
 
 /* ── zcl_node_log ────────────────────────────────────────────── */
@@ -63,20 +62,15 @@ static int h_zcl_sql(const struct mcp_request *req,
 static int h_zcl_node_log(const struct mcp_request *req,
                           struct mcp_response *res)
 {
-    const char *pattern = json_get_str(json_get(req->args, "pattern"));
-    const char *level = json_get_str(json_get(req->args, "level"));
-
-    struct mcp_params p;
-    mcp_params_init(&p);
-    mcp_params_push_str(&p, pattern ? pattern : "");
-    mcp_params_push_int(&p, json_get_int_or(req->args, "since_secs", 300));
-    mcp_params_push_int(&p, json_get_int_or(req->args, "max_lines",   50));
-    mcp_params_push_str(&p, level && level[0] ? level : "all");
-    char *pjson = mcp_params_to_json(&p);
-
-    char *out = pjson ? mcp_node_rpc("getnodelog", pjson) : NULL;
-    free(pjson);
-    return mcp_return_rpc_body(res, out, "getnodelog", "mcp.diag");
+    struct zcl_native_body_err e = { 0 };
+    char *body = zcl_native_node_log_body(req->args, &e);
+    if (!body) {
+        res->error = (e.status == ZCL_NATIVE_BODY_INTERNAL)
+                         ? MCP_ERR_INTERNAL : MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message), "%s", e.message);
+    }
+    res->body = body;
+    return 0;
 }
 
 /* ── zcl_state ───────────────────────────────────────────────── */

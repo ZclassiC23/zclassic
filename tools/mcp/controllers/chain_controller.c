@@ -15,6 +15,7 @@
 #define ZCL_HOTSWAP_PROBE_TOOLS "zcl_getblockchaininfo"
 #include "hotswap/hotswap.h"
 #include "chain/chain.h"
+#include "controllers/chain_native_handlers.h"
 #include "json/json.h"
 #include "services/replay_verify_service.h"
 #include "util/log_macros.h"
@@ -136,75 +137,42 @@ static int h_zcl_replay_verify(const struct mcp_request *req,
 static int h_zcl_utxo_audit(const struct mcp_request *req,
                             struct mcp_response *res)
 {
-    const char *remote = json_get_str_or(req->args, "remote_sha3", NULL);
-    const char *source = json_get_str_or(req->args, "source",      NULL);
-
-    struct mcp_params p;
-    mcp_params_init(&p);
-    if (remote && remote[0]) {
-        mcp_params_push_str(&p, remote);
-        mcp_params_push_int(&p, json_get_int_or(req->args, "remote_height", 0));
-        mcp_params_push_str(&p, source && source[0] ? source : "trusted-peer");
+    struct zcl_native_body_err e = { 0 };
+    char *body = zcl_native_utxo_audit_body(req->args, &e);
+    if (!body) {
+        res->error = (e.status == ZCL_NATIVE_BODY_INTERNAL)
+                         ? MCP_ERR_INTERNAL : MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message), "%s", e.message);
     }
-    char *params = mcp_params_to_json(&p);
-    char *out = mcp_node_rpc("getutxoaudit", params);
-    free(params);
-    return mcp_return_rpc_body(res, out, "getutxoaudit", "mcp.chain");
+    res->body = body;
+    return 0;
 }
 
 static int h_zcl_getrawtransaction(const struct mcp_request *req,
                                     struct mcp_response *res)
 {
-    const char *txid = json_get_str(json_get(req->args, "txid"));
-    struct mcp_params p;
-    mcp_params_init(&p);
-    mcp_params_push_str(&p, txid);
-    mcp_params_push_int(&p, json_get_int_or(req->args, "verbose", 1));
-    char *params = mcp_params_to_json(&p);
-    char *out = params ? mcp_node_rpc("getrawtransaction", params) : NULL;
-    free(params);
-    return mcp_return_rpc_body_ctx(res, out, "getrawtransaction", "mcp.chain",
-                                   "txid=%s", txid ? txid : "(null)");
+    struct zcl_native_body_err e = { 0 };
+    char *body = zcl_native_getrawtransaction_body(req->args, &e);
+    if (!body) {
+        res->error = (e.status == ZCL_NATIVE_BODY_INTERNAL)
+                         ? MCP_ERR_INTERNAL : MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message), "%s", e.message);
+    }
+    res->body = body;
+    return 0;
 }
 
 static int h_zcl_getblock(const struct mcp_request *req, struct mcp_response *res)
 {
-    const char *id_str = json_get_str(json_get(req->args, "block_id"));
-    int verbosity = (int)json_get_int_or(req->args, "verbosity", 1);
-
-    bool is_num = id_str && id_str[0];
-    for (const char *c = id_str; is_num && *c; c++)
-        if (*c < '0' || *c > '9') is_num = false;
-
-    char clean[128] = {0};
-    const char *hash_str = id_str;
-    if (is_num) {
-        struct mcp_params ph;
-        mcp_params_init(&ph);
-        mcp_params_push_int(&ph, id_str ? atoll(id_str) : 0);
-        char *php = mcp_params_to_json(&ph);
-        char *hash = php ? mcp_node_rpc("getblockhash", php) : NULL;
-        free(php);
-        if (!hash)
-            return mcp_return_rpc_body_ctx(res, NULL, "getblockhash", "mcp.chain",
-                                           "height=%s", id_str ? id_str : "(null)");
-        size_t ci = 0;
-        for (size_t i = 0; hash[i] && ci < 127; i++)
-            if (hash[i] != '"' && hash[i] != '\n') clean[ci++] = hash[i];
-        clean[ci] = 0;
-        free(hash);
-        hash_str = clean;
+    struct zcl_native_body_err e = { 0 };
+    char *body = zcl_native_getblock_body(req->args, &e);
+    if (!body) {
+        res->error = (e.status == ZCL_NATIVE_BODY_INTERNAL)
+                         ? MCP_ERR_INTERNAL : MCP_ERR_HANDLER_FAILED;
+        snprintf(res->error_message, sizeof(res->error_message), "%s", e.message);
     }
-
-    struct mcp_params p;
-    mcp_params_init(&p);
-    mcp_params_push_str(&p, hash_str);
-    mcp_params_push_int(&p, verbosity);
-    char *params = mcp_params_to_json(&p);
-    char *out = params ? mcp_node_rpc("getblock", params) : NULL;
-    free(params);
-    return mcp_return_rpc_body_ctx(res, out, "getblock", "mcp.chain",
-                                   "id=%s", id_str ? id_str : "(null)");
+    res->body = body;
+    return 0;
 }
 
 /* ── waitfor* long-poll passthroughs ───────────────────────────────

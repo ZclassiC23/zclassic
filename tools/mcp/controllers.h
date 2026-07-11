@@ -15,6 +15,7 @@
 #include <string.h>
 
 #include "json/json.h"
+#include "controllers/native_handler_body.h" /* json_get_*_or + body contract */
 #include "router.h"
 #include "rpc_client.h"
 #include "util/log_macros.h"
@@ -48,34 +49,10 @@ bool mcp_dev_hotswap_probe_body_ok(
 
 /* ── Defaulted JSON accessors ─────────────────────────────────────
  *
- * Optional MCP parameters with handler-side defaults used to look like:
- *
- *   const struct json_value *mc = json_get(req->args, "minconf");
- *   int64_t v = mc ? json_get_int(mc) : 1;
- *
- * Three inline helpers collapse the two-line pattern to one line and
- * make the default visible inline at the call site.
- */
-static inline int64_t
-json_get_int_or(const struct json_value *obj, const char *key, int64_t dflt)
-{
-    const struct json_value *v = json_get(obj, key);
-    return v ? json_get_int(v) : dflt;
-}
-
-static inline bool
-json_get_bool_or(const struct json_value *obj, const char *key, bool dflt)
-{
-    const struct json_value *v = json_get(obj, key);
-    return v ? json_get_bool(v) : dflt;
-}
-
-static inline const char *
-json_get_str_or(const struct json_value *obj, const char *key, const char *dflt)
-{
-    const struct json_value *v = json_get(obj, key);
-    return v ? json_get_str(v) : dflt;
-}
+ * json_get_int_or / json_get_bool_or / json_get_str_or now live in
+ * controllers/native_handler_body.h (included above) so the re-homed
+ * transport-neutral body functions and the MCP controllers share one
+ * definition. */
 
 /* ── Pass-through handler macro ────────────────────────────────────
  *
