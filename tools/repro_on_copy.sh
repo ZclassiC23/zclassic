@@ -39,6 +39,23 @@
 #   --full            copy the WHOLE datadir incl. blocks/ + consensus_snapshot
 #                     (default is --light: node.db + progress.kv + block_index +
 #                     projections; skips the 14G blocks/ + 2.3G snapshot)
+#   --like-live       DEPLOY GATE mode. Reconstruct the effective live systemd
+#                     ExecStart on the COPY: read the merged drop-in ExecStart +
+#                     Environment from the running `zclassic23` user unit
+#                     (READ-ONLY), strip only network/port identity
+#                     (-port/-rpcport/-externalip/-addnode/-connect and the
+#                     $ZCL_EXTERNALIP_FLAG/$ZCL_ADDNODE_FLAGS refs), rewrite
+#                     -datadir and -load-snapshot-at-own-height onto the COPY,
+#                     and pass EVERYTHING else verbatim (-txindex -tor
+#                     -nobgvalidation -nolegacyimport -showmetrics=0 …). Forces
+#                     --full so the snapshot-loader path is reachable, replicates
+#                     the service Environment=/EnvironmentFile vars (net-identity
+#                     stripped, live-datadir paths rewritten onto the COPY,
+#                     ZCL_AGENT_EXPECT_BUILD_COMMIT set to the candidate), and
+#                     makes ~/.zcash-params and ~/.zclassic (zclassicd chainstate
+#                     for the tier-1b Sapling-frontier borrow) reachable in the
+#                     isolated HOME. The generic default mode is NOT sufficient
+#                     to clear a live deploy — see docs/work/boot-loop-2026-07-11.md.
 #   --deadline=SECS   how long to watch the tip (default 180)
 #   --expect-climb-past=H
 #                     require the served/provable tip (H*) to climb strictly
@@ -144,6 +161,10 @@ RUN=1
 PASS=""
 JSON=0
 STATUS_FILE=""
+LIKE_LIVE=0
+LIKE_LIVE_FLAGS=""
+LIKE_LIVE_ENV=""
+LIKE_LIVE_SNAP=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -155,6 +176,7 @@ while [ $# -gt 0 ]; do
         --connect=*)   CONNECT="${1#--connect=}" ;;
         --full)        LIGHT=0 ;;
         --light)       LIGHT=1 ;;
+        --like-live)   LIKE_LIVE=1; LIGHT=0 ;;
         --deadline=*)  DEADLINE="${1#--deadline=}" ;;
         --expect-climb-past=*) EXPECT_CLIMB_PAST="${1#--expect-climb-past=}" ;;
         --no-run)      RUN=0 ;;
@@ -249,6 +271,80 @@ DEST="$HOME/.zclassic-c23-COPY-$TS-$SLUG"
 [ ! -e "$DEST" ] || { echo "repro_on_copy: dest already exists: $DEST" >&2; exit 1; }
 case "$DEST" in "$SRC"|"$SRC"/*) echo "repro_on_copy: dest must not be inside src" >&2; exit 1 ;; esac
 
+# ── --like-live: reconstruct the effective live systemd ExecStart on the COPY.
+# READ-ONLY reads of the running `zclassic23` user unit; the COPY destination is
+# still the fixed <HOME>/.zclassic-c23-COPY-<ts>-<slug> path computed above (no
+# caller-controlled dest), and every port/peer/-datadir the live unit carries is
+# stripped here — the harness OWNS ports, peers, and the datadir. See
+# docs/work/boot-loop-2026-07-11.md "Copy-prove flag-parity gap".
+process_env_kv() {
+    _kv="$1"; _key="${_kv%%=*}"; _val="${_kv#*=}"
+    [ -n "$_key" ] || return 0
+    case "$_key" in
+        ZCL_EXTERNALIP_FLAG|ZCL_ADDNODE_FLAGS) return 0 ;;           # net identity
+        ZCL_AGENT_EXPECT_BUILD_COMMIT|ZCL_AGENT_EXPECT_BUILD_SOURCE) return 0 ;;  # set to candidate below
+        HOME|ZCL_MIRROR_SYNC) return 0 ;;                            # owned by the harness
+    esac
+    case "$_val" in *[!-A-Za-z0-9_/.:=]*) return 0 ;; esac           # single safe token only
+    case "$_val" in                                                 # live datadir -> COPY
+        "$SRC"/*) _val="$DEST/${_val#"$SRC"/}" ;;
+        "$SRC")   _val="$DEST" ;;
+    esac
+    LIKE_LIVE_ENV="$LIKE_LIVE_ENV $_key=$_val"
+}
+derive_like_live_flags() {
+    _exec="$(systemctl --user show zclassic23 -p ExecStart --value 2>/dev/null || true)"
+    [ -n "$_exec" ] || { echo "repro_on_copy: --like-live: cannot read ExecStart for zclassic23 (unit installed?)" >&2; exit 1; }
+    _argv="$(printf '%s\n' "$_exec" | sed -n 's/.*argv\[\]=\(.*\) ; ignore_errors=.*/\1/p')"
+    [ -n "$_argv" ] || { echo "repro_on_copy: --like-live: could not parse argv from ExecStart" >&2; exit 1; }
+    _first=1
+    # shellcheck disable=SC2086
+    for _tok in $_argv; do
+        if [ "$_first" = 1 ]; then _first=0; continue; fi            # drop argv[0] (binary path)
+        case "$_tok" in
+            -datadir=*|-port=*|-rpcport=*|-fsport=*|-httpsport=*) continue ;;
+            -externalip=*|-addnode=*|-connect=*)                  continue ;;
+            \$*)                                                  continue ;; # unexpanded net-identity env refs
+            -load-snapshot-at-own-height=*)
+                LIKE_LIVE_SNAP="$(basename "${_tok#-load-snapshot-at-own-height=}")"
+                continue ;;
+            *) LIKE_LIVE_FLAGS="$LIKE_LIVE_FLAGS $_tok" ;;
+        esac
+    done
+    # Defensive: the harness OWNS ports/peers/datadir — a passthrough flag must never carry them.
+    case " $LIKE_LIVE_FLAGS " in
+        *" -port="*|*" -rpcport="*|*" -addnode="*|*" -connect="*|*" -externalip="*|*" -datadir="*)
+            echo "repro_on_copy: --like-live: refused to pass a network/port/datadir flag through" >&2
+            exit 1 ;;
+    esac
+}
+if [ "$LIKE_LIVE" = "1" ]; then
+    LIGHT=0                                                          # snapshot-loader path must be reachable
+    derive_like_live_flags
+    # Replicate Environment= (via systemctl show) + EnvironmentFile vars.
+    for _kv in $(systemctl --user show zclassic23 -p Environment --value 2>/dev/null); do
+        process_env_kv "$_kv"
+    done
+    _envfile="$HOME/.config/zclassic23/env"
+    if [ -f "$_envfile" ]; then
+        while IFS= read -r _line; do
+            case "$_line" in ''|\#*) continue ;; *=*) : ;; *) continue ;; esac
+            process_env_kv "$_line"
+        done < "$_envfile"
+    fi
+    _cand="$(git -C "$REPO_ROOT" rev-parse --short=9 HEAD 2>/dev/null || echo unknown)"
+    LIKE_LIVE_ENV="$LIKE_LIVE_ENV ZCL_AGENT_EXPECT_BUILD_COMMIT=$_cand ZCL_AGENT_EXPECT_BUILD_SOURCE=like-live"
+    LIKE_LIVE_ENV="${LIKE_LIVE_ENV# }"
+    # Rewrite the snapshot loader onto the COPY, then assemble PASS: live flags
+    # first, then any explicit `-- <args>` the caller added last (override wins).
+    if [ -n "$LIKE_LIVE_SNAP" ]; then
+        LIKE_LIVE_FLAGS="$LIKE_LIVE_FLAGS -load-snapshot-at-own-height=$DEST/$LIKE_LIVE_SNAP"
+    fi
+    PASS="$(printf '%s' "$LIKE_LIVE_FLAGS ${PASS:-}" | sed 's/^ *//; s/ *$//')"
+    echo "[repro] --like-live derived node args: $PASS"
+    echo "[repro] --like-live derived env:       $LIKE_LIVE_ENV"
+fi
+
 # Disk precheck: need ~110% of what we are about to copy.
 if [ "$LIGHT" = "1" ]; then
     NEED_KB=$( { du -sk "$SRC/node.db" "$SRC/progress.kv" "$SRC/block_index.bin" 2>/dev/null; \
@@ -296,6 +392,8 @@ rm -f "$DEST/zclassic23.pid" "$DEST/.cookie" "$DEST/.lock" 2>/dev/null || true
     echo "created:     $TS"
     echo "src:         $SRC"
     echo "mode:        $([ "$LIGHT" = 1 ] && echo light || echo full)"
+    echo "like_live:   $([ "$LIKE_LIVE" = 1 ] && echo yes || echo no)"
+    [ "$LIKE_LIVE" = 1 ] && echo "like_live_env: $LIKE_LIVE_ENV"
     echo "git_head:    $(git rev-parse HEAD 2>/dev/null || echo unknown)"
     echo "node_args:   $PASS"
     echo "rpcport:     $RPCPORT"
@@ -334,9 +432,26 @@ ISO_HOME="$DEST/.isolated-home"
 mkdir -p "$ISO_HOME"
 NODE_ISO_ARGS="-fsport=$FSPORT -httpsport=$HTTPSPORT -connect=$CONNECT -nolegacyimport -nofilesync"
 
+# --like-live: the node runs with HOME=$ISO_HOME, so the real ~/.zcash-params
+# (Sapling proving/verifying keys) and ~/.zclassic (zclassicd chainstate, read
+# by the tier-1b Sapling-frontier borrow at $HOME/.zclassic/chainstate) are not
+# reachable unless we bridge them into the isolated HOME. Both are symlinked
+# READ-ONLY (the borrow copies chainstate OUT into the COPY datadir, never
+# writes back). Missing params otherwise parks the node before the code under
+# test; a missing chainstate silently disables the tier-1b borrow the gate
+# checks for.
+if [ "$LIKE_LIVE" = "1" ]; then
+    [ -e "$HOME/.zcash-params" ] && ln -sfn "$HOME/.zcash-params" "$ISO_HOME/.zcash-params"
+    [ -e "$HOME/.zclassic" ]     && ln -sfn "$HOME/.zclassic"     "$ISO_HOME/.zclassic"
+fi
+
 echo "[repro] launching $NODE_BIN on the COPY (rpcport=$RPCPORT p2p=$P2PPORT fs=$FSPORT https=$HTTPSPORT connect=$CONNECT) args: $PASS"
 # shellcheck disable=SC2086
+# `env $LIKE_LIVE_ENV` replicates the live service Environment=/EnvironmentFile
+# vars in --like-live mode (empty string otherwise → a no-op env wrapper that
+# just forwards HOME/ZCL_MIRROR_SYNC unchanged).
 HOME="$ISO_HOME" ZCL_MIRROR_SYNC=0 \
+env $LIKE_LIVE_ENV \
 "$NODE_BIN" -datadir="$DEST" -rpcport="$RPCPORT" -port="$P2PPORT" \
     $NODE_ISO_ARGS $PASS \
     > "$DEST/repro_node.log" 2>&1 &
