@@ -2917,6 +2917,30 @@ core-unseal:
 	echo "core-unseal: token minted ($(CORE_UNSEAL_TOKEN)); seal lifted for one commit."; \
 	echo "  Make the core/ edit, then 'make core-seal' + 'make lint && make test_parallel' before commit."
 
+# ── ZVCS unseal ritual (owner-run, separate from core-unseal above) ────────
+# ZVCS's own sealed-path pin (lib/vcs/src/vcs_seal.c: pin in .zvcs/index.kv,
+# one-shot token via vcs_seal_grant_unseal()) has no operator surface of its
+# own — nothing outside lib/test ever called the grant primitive. This
+# target is that surface: it mirrors core-unseal's shape (REASON mandatory,
+# an append-only record, a one-shot token) but drives the registry-owned
+# dev.vcs.seal.grant command (tools/command/native_dev_command.c) instead of
+# writing core/UNSEAL.md directly. It authorizes exactly the CURRENT tree's
+# sealed content (app/jobs/, core/, lib/consensus/, ... — see
+# .zvcs/sealed_paths or the compiled default set) for the next ZVCS
+# green-cycle anchor (vcs_snapshot); a further sealed-path change after that
+# anchor requires a new grant. No agent source edit can produce this — it is
+# an owner make target.
+.PHONY: zvcs-unseal
+zvcs-unseal: dev-bin
+	@if [ -z "$(REASON)" ]; then \
+	    echo "zvcs-unseal: REASON is required — 'make zvcs-unseal REASON=\"why\"'" >&2; \
+	    exit 2; \
+	fi
+	@echo "══ zvcs-unseal: authorizing exactly the CURRENT tree's sealed content for ONE anchor ══"
+	@reason_json=$$(printf '%s' "$(REASON)" | sed 's/\\/\\\\/g; s/"/\\"/g'); \
+	$(ZCLASSIC23_DEV_BIN) dev vcs seal grant \
+	    --input="{\"reason\":\"$$reason_json\",\"confirm\":true}"
+
 # HARD lint gate for the seal (frozen at W5 — the whole W0–W4 split has landed).
 # core/ drift now FAILS the build unless an owner unseal token is active. A
 # deliberate consensus-core change goes through `make core-unseal REASON=…`

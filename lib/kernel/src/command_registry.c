@@ -433,7 +433,7 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
                 type_ok = item->type == JSON_STR && text && text[0] &&
                           strlen(text) <= 1024;
             }
-        } else if (strcmp(key, "verbose") == 0) {
+        } else if (strcmp(key, "verbose") == 0 || strcmp(key, "confirm") == 0) {
             type_ok = value->type == JSON_BOOL;
         } else if (strcmp(key, "seed") == 0) {
             type_ok = (value->type == JSON_INT && json_get_int(value) > 0) ||

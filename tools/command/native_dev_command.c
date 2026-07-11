@@ -26,6 +26,7 @@
 #include "json/json.h"
 #include "platform/time_compat.h"
 #include "vcs/vcs.h"
+#include "vcs/vcs_seal.h"
 
 #include "encoding/utilstrencodings.h"
 
@@ -1211,6 +1212,238 @@ void zcl_native_handle_dev_vcs_revert(
                                "worktree I/O error)",
                                to_hex);
         return;
+    }
+#endif
+}
+
+/* ── dev.vcs.seal.grant — owner-run ZVCS unseal-token ritual ─────────
+ * ZVCS's seal pin (lib/vcs/src/vcs_seal.c: pin in index.kv, one-shot token
+ * via vcs_seal_grant_unseal(), VCS_SEAL_TOKEN_KEY) has NO operator surface —
+ * vcs_seal_grant_unseal() has zero callers outside lib/test. This executor
+ * IS that surface, mirroring the core-unseal Makefile ritual's shape
+ * (mandatory reason, append-only record, one-shot token, "no agent source
+ * edit can produce this — owner make target") but for the ZVCS pin instead
+ * of core/MANIFEST.sha3.
+ *
+ * lib/vcs/ stays git-free and process-spawn-free (the ZVCS sovereignty
+ * gate): this file computes the CURRENT worktree's sealset with the exact
+ * same primitives vcs_snapshot() itself uses (vcs_manifest_build +
+ * vcs_seal_load_globs + vcs_sealset_hash), calls vcs_seal_grant_unseal() to
+ * mint the one-shot token, then appends an audit record (reason + old/new
+ * sealset hex + timestamp) into index.kv's meta table. meta is a flat
+ * key->value store with no native append primitive (vcs_index.h), so the
+ * append-safe idiom is one key per grant — "seal_grant_log_<N>" — with
+ * "seal_grant_count" tracking N, written in one begin/commit transaction. */
+#ifdef ZCL_DEV_BUILD
+static void dev_vcs_seal_iso_utc_now(char out[32])
+{
+    time_t t = platform_time_wall_time_t();
+    struct tm tmv;
+    if (gmtime_r(&t, &tmv))
+        strftime(out, 32, "%Y-%m-%dT%H:%M:%SZ", &tmv);
+    else
+        snprintf(out, 32, "1970-01-01T00:00:00Z");
+}
+
+static uint64_t dev_vcs_seal_grant_count(struct vcs_index *idx)
+{
+    uint8_t buf[8] = {0};
+    size_t len = 0;
+    bool found = false;
+    if (!vcs_index_meta_get(idx, "seal_grant_count", buf, sizeof(buf), &len,
+                            &found) ||
+        !found || len != sizeof(buf))
+        return 0;
+    uint64_t n = 0;
+    for (int i = 0; i < 8; i++)
+        n |= (uint64_t)buf[i] << (8 * i);
+    return n;
+}
+
+/* Append one audit record and advance the counter in a single txn. Returns
+ * false on any write failure (the token itself is already granted by this
+ * point — a logging failure is reported to the caller as a partial-mutation
+ * BLOCKED result, never silently dropped). */
+static bool dev_vcs_seal_grant_log(struct vcs_index *idx, const char *reason,
+                                   const char *old_hex, const char *new_hex,
+                                   const char *ts, char *out_key,
+                                   size_t out_key_sz)
+{
+    uint64_t n = dev_vcs_seal_grant_count(idx);
+    if (snprintf(out_key, out_key_sz, "seal_grant_log_%llu",
+                (unsigned long long)n) <= 0)
+        return false;
+
+    char record[1024];
+    int rn = snprintf(record, sizeof(record),
+                      "ts=%s\nreason=%s\nold_sealset=%s\nnew_sealset=%s\n",
+                      ts, reason, old_hex, new_hex);
+    if (rn <= 0)
+        return false;
+    size_t rlen = (size_t)rn < sizeof(record) ? (size_t)rn : sizeof(record) - 1;
+
+    uint8_t next[8];
+    uint64_t nn = n + 1;
+    for (int i = 0; i < 8; i++)
+        next[i] = (uint8_t)((nn >> (8 * i)) & 0xff);
+
+    if (!vcs_index_begin(idx))
+        return false;
+    if (!vcs_index_meta_set_in_tx(idx, out_key, record, rlen) ||
+        !vcs_index_meta_set_in_tx(idx, "seal_grant_count", next,
+                                  sizeof(next))) {
+        vcs_index_rollback(idx);
+        return false;
+    }
+    return vcs_index_commit(idx);
+}
+#endif /* ZCL_DEV_BUILD */
+
+void zcl_native_handle_dev_vcs_seal_grant(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+#ifndef ZCL_DEV_BUILD
+    (void)request;
+    zcl_command_reply_fail(
+        reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
+        "DEV_BUILD_REQUIRED", "dispatch", false, false,
+        "granting a ZVCS unseal token requires a dev build",
+        "make dev-bin, or zclassic23-dev");
+#else
+    if (!reply)
+        return;
+    if (!request || !request->input) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "BAD_REQUEST",
+                               "normalize", false, false,
+                               "missing request input", "");
+        return;
+    }
+
+    const char *reason = json_get_str(json_get(request->input, "reason"));
+    bool confirm = json_get_bool(json_get(request->input, "confirm"));
+
+    if (!reason || !reason[0]) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "REASON_REQUIRED", "normalize", true, false,
+            "'reason' is required — record why this sealed-path change is "
+            "authorized",
+            "");
+        return;
+    }
+    if (!confirm) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
+            "CONFIRM_REQUIRED", "normalize", true, false,
+            "granting a ZVCS unseal token requires 'confirm':true — this "
+            "authorizes exactly the CURRENT tree's sealed content for the "
+            "next green-cycle anchor",
+            reason);
+        return;
+    }
+
+    const char *root = (request->context && request->context->source_root &&
+                        request->context->source_root[0])
+                           ? request->context->source_root
+                           : ".";
+    struct vcs_repo *r = vcs_open(root);
+    if (!r) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "VCS_OPEN_FAILED",
+                               "execute", false, false,
+                               "could not open the ZVCS repo at source_root",
+                               root);
+        return;
+    }
+    struct vcs_index *idx = vcs_repo_index(r);
+
+    /* Compute the sealset the worktree would produce right now — the exact
+     * same computation vcs_snapshot() performs before its own seal check. */
+    struct vcs_manifest m;
+    if (!vcs_manifest_build(root, idx, &m)) {
+        vcs_close(r);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL,
+                               "MANIFEST_BUILD_FAILED", "execute", false,
+                               false,
+                               "could not build the current worktree manifest",
+                               "");
+        return;
+    }
+    char **globs = NULL;
+    size_t nglobs = 0;
+    if (!vcs_seal_load_globs(root, &globs, &nglobs)) {
+        vcs_manifest_free(&m);
+        vcs_close(r);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL,
+                               "SEAL_GLOBS_FAILED", "execute", false, false,
+                               "could not load the sealed-path glob set", "");
+        return;
+    }
+    uint8_t new_sealset[32];
+    bool sh = vcs_sealset_hash(&m, globs, nglobs, new_sealset);
+    vcs_seal_free_globs(globs, nglobs);
+    vcs_manifest_free(&m);
+    if (!sh) {
+        vcs_close(r);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL,
+                               "SEALSET_HASH_FAILED", "execute", false, false,
+                               "could not compute the current sealset hash",
+                               "");
+        return;
+    }
+
+    uint8_t old_pin[32] = {0};
+    bool have_old = false;
+    (void)vcs_index_seal_pin_get(idx, old_pin, &have_old);
+
+    if (!vcs_seal_grant_unseal(idx, new_sealset)) {
+        vcs_close(r);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "GRANT_FAILED",
+                               "execute", false, false,
+                               "vcs_seal_grant_unseal failed", "");
+        return;
+    }
+
+    char new_hex[65];
+    HexStr(new_sealset, sizeof(new_sealset), false, new_hex, sizeof(new_hex));
+    char old_hex[65];
+    if (have_old)
+        HexStr(old_pin, sizeof(old_pin), false, old_hex, sizeof(old_hex));
+    else
+        snprintf(old_hex, sizeof(old_hex), "none");
+
+    char ts[32];
+    dev_vcs_seal_iso_utc_now(ts);
+
+    char log_key[64];
+    bool logged = dev_vcs_seal_grant_log(idx, reason, old_hex, new_hex, ts,
+                                         log_key, sizeof(log_key));
+    vcs_close(r);
+
+    (void)json_push_kv_str(&reply->data, "reason", reason);
+    (void)json_push_kv_str(&reply->data, "old_sealset", old_hex);
+    (void)json_push_kv_str(&reply->data, "granted_sealset", new_hex);
+    (void)json_push_kv_str(&reply->data, "granted_at", ts);
+    (void)json_push_kv_str(&reply->data, "log_key", logged ? log_key : "");
+    (void)json_push_kv_str(&reply->data, "status", "granted");
+    (void)json_push_kv_str(
+        &reply->data, "note",
+        "one-shot: the next green-cycle anchor (vcs_snapshot, e.g. via the "
+        "dev change/apply cycle) consumes this token and re-pins the "
+        "sealset; a FURTHER sealed-path change after that requires a new "
+        "grant");
+
+    if (!logged) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
+            "LOG_WRITE_FAILED", "execute", true, true,
+            "token was granted but the audit-log record failed to write",
+            new_hex);
     }
 #endif
 }

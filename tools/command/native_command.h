@@ -81,6 +81,13 @@ void zcl_native_handle_dev_change_plan(
 void zcl_native_handle_dev_vcs_revert(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+/* dev.vcs.seal.grant — owner-run ZVCS unseal-token ritual (see
+ * tools/command/native_dev_command.c). Mirrors dev.vcs.revert's shape: a
+ * release build's copy of this function is a `#ifndef ZCL_DEV_BUILD` stub
+ * that fails BLOCKED without touching lib/vcs/ or spawning anything. */
+void zcl_native_handle_dev_vcs_seal_grant(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_app_list(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

@@ -13,6 +13,7 @@
  *   7. torn commits.log tail -> rebuild recovers the last complete commit.
  *   8. seal refusal + one-shot token accept + forged/mismatched token reject.
  *   9. timing: warm status < 20 ms, 1-file snapshot < 50 ms.
+ *  10. owner-ritual primitives: grant, non-consuming peek, snapshot consumes.
  *
  * All work happens under ./test-tmp/ (project no-/tmp convention). */
 
@@ -672,6 +673,53 @@ static int t_seal(const char *dir)
     return failures;
 }
 
+/* ── test 9: owner-ritual primitives — grant, peek (non-consuming), then
+ * snapshot consumes ────────────────────────────────────────────────────
+ * The dev.vcs.seal.grant executor (tools/command/native_dev_command.c) is
+ * the operator surface for vcs_seal_grant_unseal(); this proves the exact
+ * primitive sequence it drives: grant a token for the CURRENT sealset,
+ * confirm vcs_seal_peek() reports OK for it any number of times WITHOUT
+ * consuming it, then vcs_snapshot() spends the token and re-pins, and a
+ * FURTHER sealed change afterward is refused again (one-shot proven). */
+static int t_seal_grant_operator_ritual(const char *dir)
+{
+    int failures = 0;
+    seed_worktree(dir);
+    vc_write(dir, ".zvcs/sealed_paths", "sealed/\n");
+    vc_write(dir, "sealed/consensus.txt", "RULE=1\n");
+
+    struct vcs_repo *r = vcs_open(dir);
+    VC_CHECK("seal-grant: open", r != NULL);
+    if (!r) return failures + 1;
+    struct vcs_snapshot_meta meta = {0};
+    meta.phase = "g";
+    uint8_t c1[32];
+    VC_CHECK("seal-grant: initial snapshot pins", vcs_snapshot(r, &meta, c1) == VCS_OK);
+
+    vc_write(dir, "sealed/consensus.txt", "RULE=2\n");
+    uint8_t want[32];
+    VC_CHECK("seal-grant: compute new sealset", compute_current_sealset(r, want));
+    VC_CHECK("seal-grant: grant token", vcs_seal_grant_unseal(vcs_repo_index(r), want));
+
+    VC_CHECK("seal-grant: peek OK (non-consuming)",
+             vcs_seal_peek(vcs_repo_index(r), want) == VCS_SEAL_OK);
+    VC_CHECK("seal-grant: peek again still OK (token not spent by peek)",
+             vcs_seal_peek(vcs_repo_index(r), want) == VCS_SEAL_OK);
+
+    uint8_t c2[32];
+    VC_CHECK("seal-grant: snapshot consumes token and re-pins",
+             vcs_snapshot(r, &meta, c2) == VCS_OK);
+
+    /* One-shot: a FURTHER sealed change now needs a NEW grant. */
+    vc_write(dir, "sealed/consensus.txt", "RULE=3\n");
+    uint8_t c3[32];
+    VC_CHECK("seal-grant: further sealed change refuses (one-shot proven)",
+             vcs_snapshot(r, &meta, c3) == VCS_REFUSED);
+
+    vcs_close(r);
+    return failures;
+}
+
 /* ── test: commit record round-trips + self-hash catches tamper ─── */
 static int t_commit_record(void)
 {
@@ -758,6 +806,10 @@ int test_vcs_core(void)
 
     test_make_tmpdir(dir, sizeof(dir), "vcs_core", "seal");
     failures += t_seal(dir);
+    test_rm_rf_recursive(dir);
+
+    test_make_tmpdir(dir, sizeof(dir), "vcs_core", "seal_grant");
+    failures += t_seal_grant_operator_ritual(dir);
     test_rm_rf_recursive(dir);
 
     printf("=== vcs_core complete: %d failure(s) ===\n", failures);

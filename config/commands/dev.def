@@ -188,6 +188,29 @@ ZCL_COMMAND_DEV_COMMAND(
     "one-command source+binary revert requires a dev build",
     "zclassic23-dev dev vcs revert <to> [--relink-generation]")
 
+ZCL_COMMAND_BRANCH("dev.vcs.seal", "dev.vcs",
+                   "Owner-run ZVCS unseal-token ritual", ZCL_COMMAND_LAYER_DEV)
+
+ZCL_COMMAND_DEV_COMMAND(
+    "dev.vcs.seal.grant", "dev.vcs.seal", "", "Mint a one-shot ZVCS unseal "
+    "token authorizing the CURRENT worktree's sealed content for the next "
+    "green-cycle anchor",
+    "vcs,seal,unseal,grant,owner,token", "zcl.dev_vcs_seal_grant_input.v1",
+    "zcl.dev_vcs_seal_grant.v1", "reason,confirm", "reason",
+    "zclassic23 dev vcs seal grant --input='{\"reason\":\"post-baseline "
+    "app/jobs edits reviewed\",\"confirm\":true}'",
+    ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_DEV_MUTATION, ZCL_COMMAND_SCOPE_DEV_LANE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_DEV,
+    ZCL_COMMAND_CAP_CHECKOUT_WRITE,
+    ZCL_COMMAND_TRAIT_DEV_ONLY,
+    zcl_native_handle_dev_vcs_seal_grant,
+    "granting a ZVCS unseal token requires a dev build",
+    "zclassic23-dev dev vcs seal grant --input='{\"reason\":\"...\","
+    "\"confirm\":true}'")
+
 ZCL_COMMAND_DEV_COMMAND(
     "dev.loop.ensure", "dev.loop", "dev.loop.watch",
     "Idempotently ensure one persistent native watcher", "loop,ensure,watcher,inotify",

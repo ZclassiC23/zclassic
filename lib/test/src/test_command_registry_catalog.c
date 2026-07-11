@@ -317,7 +317,7 @@ static int test_dev_branch_leaves(void)
             "dev.loop.wait", "dev.loop.stop", "dev.test.run",
             "dev.test.sim", "dev.generation.current",
             "dev.generation.history", "dev.diagnose.latest",
-            "dev.vcs.revert",
+            "dev.vcs.revert", "dev.vcs.seal.grant",
         };
         for (size_t i = 0; i < sizeof(compat) / sizeof(compat[0]); i++) {
             const struct zcl_command_spec *s = find_spec(reg, compat[i]);
@@ -461,6 +461,54 @@ static int test_dev_vcs_revert_release_stub(void)
     return failures;
 }
 
+/* dev.vcs.seal.grant IS a golden catalog row now (config/commands/dev.def
+ * via ZCL_COMMAND_DEV_COMMAND, asserted COMPAT above in
+ * test_dev_branch_leaves). Same shape as test_dev_vcs_revert_release_stub:
+ * this release/testing build (no ZCL_DEV_BUILD) links the `#ifndef
+ * ZCL_DEV_BUILD` stub body of zcl_native_handle_dev_vcs_seal_grant — never
+ * the real vcs_seal_grant_unseal() path — so the mandatory-confirm gate
+ * inside ZCL_DEV_BUILD is not reachable from this binary. What IS provable
+ * here is that the stub fails closed (BLOCKED, never a silent mutation)
+ * regardless of whether the caller supplied a well-formed, owner-confirmed
+ * request or an unconfirmed one — granting a ZVCS unseal token is simply
+ * unavailable outside a dev build. */
+static int test_dev_vcs_seal_grant_release_stub(void)
+{
+    int failures = 0;
+    TEST("dev.vcs.seal.grant fails closed (BLOCKED) outside a dev build, "
+         "confirmed or not") {
+        const bool confirms[] = { true, false };
+        for (size_t i = 0; i < sizeof(confirms) / sizeof(confirms[0]); i++) {
+            struct json_value input;
+            json_init(&input);
+            json_set_object(&input);
+            (void)json_push_kv_str(&input, "reason", "post-baseline review");
+            (void)json_push_kv_bool(&input, "confirm", confirms[i]);
+
+            struct zcl_command_request request = {
+                .spec = NULL,
+                .context = NULL,
+                .input = &input,
+                .view = "normal",
+                .budget_bytes = 0,
+                .invoked_by_alias = false,
+                .invoked_name = "dev.vcs.seal.grant",
+            };
+            struct zcl_command_reply reply;
+            zcl_command_reply_init(&reply, "zcl.dev_vcs_seal_grant.v1");
+            zcl_native_handle_dev_vcs_seal_grant(&request, &reply);
+
+            ASSERT_EQ((int)reply.status, (int)ZCL_COMMAND_STATUS_BLOCKED);
+            ASSERT_EQ((int)reply.exit_code, (int)ZCL_COMMAND_EXIT_BLOCKED);
+            ASSERT_STR_EQ(reply.error.code, "DEV_BUILD_REQUIRED");
+            zcl_command_reply_free(&reply);
+            json_free(&input);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_is_root_ownership(void)
 {
     int failures = 0;
@@ -495,6 +543,7 @@ int test_command_registry_catalog(void)
     failures += test_response_budget_views();
     failures += test_typo_stays_branch();
     failures += test_dev_vcs_revert_release_stub();
+    failures += test_dev_vcs_seal_grant_release_stub();
     failures += test_is_root_ownership();
     printf("=== command_registry_catalog: %d failures ===\n", failures);
     return failures;
