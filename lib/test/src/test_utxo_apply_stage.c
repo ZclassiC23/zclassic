@@ -1192,6 +1192,11 @@ int test_utxo_apply_stage(void)
                  progress_meta_set(db, "nullifier_kv.activation_cursor",
                                    "3134000", 7));
         utxo_apply_nullifier_gap_blocker_refresh(db);
+        int64_t nf_cursor = -1;
+        bool nf_gap = false;
+        UV_CHECK("nf gap: runtime snapshot caches marker without SQL",
+                 utxo_apply_nullifier_gap_snapshot(&nf_cursor, &nf_gap) &&
+                     nf_cursor == 3134000 && nf_gap);
         UV_CHECK("nf gap: blocker registered for marker > 0",
                  blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID));
         UV_CHECK("nf gap: blocker is PERMANENT (operator-clear only)",
@@ -1203,6 +1208,9 @@ int test_utxo_apply_stage(void)
                  progress_meta_set(db, "nullifier_kv.activation_cursor",
                                    "0", 1));
         utxo_apply_nullifier_gap_blocker_refresh(db);
+        UV_CHECK("nf gap: runtime snapshot observes cleared marker",
+                 utxo_apply_nullifier_gap_snapshot(&nf_cursor, &nf_gap) &&
+                     nf_cursor == 0 && !nf_gap);
         UV_CHECK("nf gap: blocker cleared for marker == 0",
                  !blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID));
         UV_CHECK("nf gap: security posture clears nullifier gap",

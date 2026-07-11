@@ -19,12 +19,16 @@
 #include "util/safe_alloc.h"
 
 #include <sqlite3.h>
+#include <stdatomic.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #define NF_SUBSYS "utxo_apply"
+
+static _Atomic int64_t g_nf_activation_cursor = -1;
+static _Atomic bool g_nf_activation_cursor_known = false;
 
 /* One entry of the per-block nullifier accumulator: the pass-1 same-block
  * check set and the pass-2 insert list. pool 0 = Sprout, 1 = Sapling —
@@ -270,6 +274,10 @@ void utxo_apply_nullifier_gap_blocker_refresh(struct sqlite3 *db)
         return;
     }
     long long act = found ? strtoll(buf, NULL, 10) : 0;
+    atomic_store_explicit(&g_nf_activation_cursor, (int64_t)act,
+                          memory_order_relaxed);
+    atomic_store_explicit(&g_nf_activation_cursor_known, true,
+                          memory_order_release);
     if (act <= 0) {
         /* 0 == enforcement covers all history (from-genesis replay);
          * absent == marker never stamped on a virgin store. No gap. */
@@ -291,4 +299,19 @@ void utxo_apply_nullifier_gap_blocker_refresh(struct sqlite3 *db)
                       BLOCKER_PERMANENT, reason))
         return;   /* blocker_init logged the overflow */
     blocker_set(&rec);  /* -1 (cap exhausted) already logged by blocker_set */
+}
+
+bool utxo_apply_nullifier_gap_snapshot(int64_t *activation_cursor,
+                                       bool *backfill_gap)
+{
+    if (!activation_cursor || !backfill_gap)
+        return false;
+    if (!atomic_load_explicit(&g_nf_activation_cursor_known,
+                              memory_order_acquire))
+        return false;
+    int64_t cursor = atomic_load_explicit(&g_nf_activation_cursor,
+                                          memory_order_relaxed);
+    *activation_cursor = cursor;
+    *backfill_gap = cursor > 0;
+    return true;
 }

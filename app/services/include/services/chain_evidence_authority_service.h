@@ -169,11 +169,12 @@ enum chain_evidence_controller_result chain_evidence_controller_promote_tip(
  * next drain retries). Returns true on success or when the persisted
  * evidence already names this exact tip.
  *
- * LOCK ORDER: takes csr->lock (and the controller init's csr_snapshot takes
- * csr->lock then the coins_kv authority mutex). NEVER call from the reducer
- * drive — it holds coins_kv, and the inversion deadlocked the live node on
- * 2026-06-12. The drive calls chain_evidence_note_finalized_tip below; the
- * health-collect path drains. */
+ * LOCK ORDER: takes csr->lock. csr_snapshot never nests csr->lock with
+ * coins_kv/progress.kv; it releases the repository lock before sampling those
+ * external stores. NEVER call from the reducer drive — it already holds
+ * coins_kv, and blocking on csr there deadlocked the live node on 2026-06-12.
+ * The drive calls chain_evidence_note_finalized_tip below; the health-collect
+ * path drains. */
 bool chain_evidence_controller_record_finalized_tip(
     struct chain_evidence_controller *authority,
     struct block_index *finalized_tip,

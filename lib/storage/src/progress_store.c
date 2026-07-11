@@ -313,6 +313,12 @@ void progress_store_tx_lock(void)
     pthread_mutex_lock(&g_tx_lock);
 }
 
+bool progress_store_tx_trylock(void)
+{
+    pthread_once(&g_tx_lock_once, progress_store_tx_lock_init);
+    return pthread_mutex_trylock(&g_tx_lock) == 0;
+}
+
 void progress_store_tx_unlock(void)
 {
     pthread_mutex_unlock(&g_tx_lock);

@@ -49,21 +49,45 @@ static bool chain_frontier_read_authority(
     bool *durable,
     enum chain_frontier_authority_source *source)
 {
+    struct uint256 runtime_hash;
+    struct uint256 durable_hash;
+    int64_t runtime_height = -1;
+
     *durable = false;
     *source = CHAIN_FRONTIER_AUTHORITY_NONE;
-    sqlite3 *db = progress_store_db();
-    if (db && tip_finalize_stage_block_hash_at(db, height, hash->data)) {
-        *durable = true;
-        *source = CHAIN_FRONTIER_AUTHORITY_DURABLE_TIP_FINALIZE_LOG;
-        return !uint256_is_null(hash);
+    uint256_set_null(&runtime_hash);
+    uint256_set_null(&durable_hash);
+
+    bool runtime_known = tip_finalize_stage_authority_snapshot(
+        &runtime_height, runtime_hash.data) && runtime_height == height &&
+        !uint256_is_null(&runtime_hash);
+    if (runtime_known) {
+        *hash = runtime_hash;
+        *source = CHAIN_FRONTIER_AUTHORITY_RUNTIME_PUBLICATION;
     }
 
-    int64_t runtime_height = -1;
-    if (tip_finalize_stage_authority_snapshot(&runtime_height, hash->data) &&
-        runtime_height == height && !uint256_is_null(hash)) {
-        *source = CHAIN_FRONTIER_AUTHORITY_RUNTIME_PUBLICATION;
-        return true;
+    /* Operator/agent collection is total and latency-bounded. A reducer batch
+     * may legitimately own progress_store_tx_lock across durable event writes;
+     * never queue an RPC behind that batch. Opportunistically upgrade the
+     * already-exact runtime pair to durable evidence only when the singleton
+     * handle is immediately available. tip_finalize_stage_block_hash_at takes
+     * the same recursive lock internally, so the successful trylock brackets
+     * the shared SQLite handle safely. */
+    sqlite3 *db = progress_store_db();
+    if (db && progress_store_tx_trylock()) {
+        bool durable_known = tip_finalize_stage_block_hash_at(
+            db, height, durable_hash.data) && !uint256_is_null(&durable_hash);
+        progress_store_tx_unlock();
+        if (durable_known) {
+            *hash = durable_hash;
+            *durable = true;
+            *source = CHAIN_FRONTIER_AUTHORITY_DURABLE_TIP_FINALIZE_LOG;
+            return true;
+        }
     }
+
+    if (runtime_known)
+        return true;
     uint256_set_null(hash);
     return false;
 }

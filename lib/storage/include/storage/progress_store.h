@@ -60,6 +60,9 @@ bool progress_store_path(char *out, size_t cap);
  * threads unless the caller serializes them. This lock is recursive so a
  * stage step can call read helpers while its outer transaction is active. */
 void progress_store_tx_lock(void);
+/* Non-blocking counterpart for observational surfaces. Returns true with the
+ * recursive lock held, or false immediately when a reducer batch owns it. */
+bool progress_store_tx_trylock(void);
 void progress_store_tx_unlock(void);
 
 /* Switch the durability PRAGMA on the open progress.kv handle.

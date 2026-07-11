@@ -9,42 +9,14 @@
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 
-#include <errno.h>
-#include <sqlite3.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
-
-#define AGENT_NF_CURSOR_KEY "nullifier_kv.activation_cursor"
 
 static void posture_str(char *dst, size_t dst_sz, const char *src)
 {
     if (!dst || dst_sz == 0)
         return;
     snprintf(dst, dst_sz, "%s", src ? src : "");
-}
-
-static int64_t posture_parse_i64(const char *buf, bool *ok)
-{
-    char *end = NULL;
-    errno = 0;
-    long long v = strtoll(buf ? buf : "", &end, 10);
-    if (!buf || end == buf || errno == ERANGE) {
-        if (ok)
-            *ok = false;
-        return 0;
-    }
-    while (end && (*end == ' ' || *end == '\t' || *end == '\n' ||
-                   *end == '\r'))
-        end++;
-    if (end && *end != '\0') {
-        if (ok)
-            *ok = false;
-        return 0;
-    }
-    if (ok)
-        *ok = true;
-    return (int64_t)v;
 }
 
 static void posture_collect_bootstrap(struct agent_security_posture *out,
@@ -108,48 +80,26 @@ static void posture_collect_bootstrap(struct agent_security_posture *out,
 
 static void posture_collect_nullifiers(struct agent_security_posture *out)
 {
-    sqlite3 *db;
-    char buf[32] = {0};
-    size_t len = 0;
-    bool found = false;
-    bool parsed = false;
+    bool gap = false;
 
     if (!out)
         return;
-    db = progress_store_db();
-    out->progress_store_available = db != NULL;
-    if (!db) {
+    out->progress_store_available = progress_store_db() != NULL;
+    if (!out->progress_store_available) {
         posture_str(out->nullifier_history_state,
                     sizeof(out->nullifier_history_state),
                     "unknown_no_progress_store");
         return;
     }
-    if (!progress_meta_get(db, AGENT_NF_CURSOR_KEY, buf, sizeof(buf) - 1,
-                           &len, &found)) {
-        posture_str(out->nullifier_history_state,
-                    sizeof(out->nullifier_history_state), "unknown_read_failed");
-        return;
-    }
-    if (!found) {
-        out->nullifier_cursor_known = true;
-        out->nullifier_activation_cursor = 0;
-        out->nullifier_history_complete = true;
+    if (!utxo_apply_nullifier_gap_snapshot(
+            &out->nullifier_activation_cursor, &gap)) {
         posture_str(out->nullifier_history_state,
                     sizeof(out->nullifier_history_state),
-                    "complete_from_genesis_or_unactivated");
-        return;
-    }
-    buf[sizeof(buf) - 1] = '\0';
-    out->nullifier_activation_cursor = posture_parse_i64(buf, &parsed);
-    if (!parsed) {
-        posture_str(out->nullifier_history_state,
-                    sizeof(out->nullifier_history_state),
-                    "unknown_malformed_activation_cursor");
+                    "unknown_runtime_snapshot_not_ready");
         return;
     }
     out->nullifier_cursor_known = true;
-    out->nullifier_backfill_gap =
-        out->nullifier_activation_cursor > 0 ||
+    out->nullifier_backfill_gap = gap ||
         blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID);
     out->nullifier_history_complete = !out->nullifier_backfill_gap;
     posture_str(out->nullifier_history_state,

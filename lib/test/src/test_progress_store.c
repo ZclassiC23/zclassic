@@ -96,6 +96,14 @@ int test_progress_store(void)
         PS_CHECK("handle unchanged after idempotent open",
                  progress_store_db() == db1);
 
+        progress_store_tx_lock();
+        bool recursive_trylock = progress_store_tx_trylock();
+        PS_CHECK("trylock succeeds recursively for current owner",
+                 recursive_trylock);
+        if (recursive_trylock)
+            progress_store_tx_unlock();
+        progress_store_tx_unlock();
+
         /* Verify the stage_cursor schema is queryable. */
         sqlite3_stmt *st_check = NULL;
         int rc = sqlite3_prepare_v2(progress_store_db(),

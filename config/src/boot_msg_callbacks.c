@@ -6,7 +6,7 @@
  * callback takes the threaded boot svc handle (struct boot_svc_ctx *) as its
  * void *ctx and reaches only external subsystem APIs plus svc-> fields — it is
  * S-accessor-free, so it relocates out of boot_services.c without touching any
- * boot-state static. Pure relocation; no logic change. */
+ * boot-state static. */
 
 #include "config/boot_msg_callbacks.h"
 #include "config/boot_internal.h"
@@ -77,7 +77,13 @@ bool boot_submit_compact_block(struct block *block,
 int boot_drain_catchup_reducer(void *ctx)
 {
     (void)ctx;
-    return reducer_kick_unbudgeted(boot_activation_controller());
+    /* Network catch-up is a latency-sensitive runtime path, not the dedicated
+     * -mint-anchor bulk fold. The unbudgeted kick holds progress_store_tx_lock
+     * for batches of 1000 steps; header event durability can therefore pin
+     * operator RPC behind thousands of fsyncs. The ordinary kick preserves the
+     * exact reducer checks and cursor transactions while yielding on its
+     * bounded runtime cadence. */
+    return reducer_kick(boot_activation_controller());
 }
 
 bool boot_snapshot_active(void *ctx)

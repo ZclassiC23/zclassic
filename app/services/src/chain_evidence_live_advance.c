@@ -30,12 +30,11 @@
  * healthy=false, /api/health 503.
  *
  * LOCK-ORDER LAW: the reducer drive holds the coins_kv authority mutex for
- * the whole ingest; the health path takes csr->lock THEN coins_kv
- * (csr_snapshot -> coins_kv_is_proven_authority). Taking csr->lock from
- * inside the drive is therefore the inverted ABBA edge — it inverts the
- * established order and deadlocks (net thread blocked in record_finalized_tip
- * wanting csr->lock; an RPC healthcheck held csr->lock wanting coins_kv). So the
- * drive NEVER calls the evidence machinery: tip_finalize only stamps the
+ * the whole ingest. No path may hold csr->lock while acquiring coins_kv;
+ * csr_snapshot copies repository state and releases csr->lock before sampling
+ * external stores. Taking csr->lock from inside the drive is still an unsafe
+ * blocking edge for the hot reducer path, so the drive NEVER calls the
+ * evidence machinery: tip_finalize only stamps the
  * pending slot below (chain_evidence_note_finalized_tip — one leaf mutex,
  * never nested), and chain_evidence_drain_pending_tip runs the actual
  * record from the health-collect path, which already owns the established
@@ -197,8 +196,8 @@ static int cla_state_get_i32(struct node_db *ndb, const char *key, int def)
  * (csr_snapshot's active_tip_hash IS the active-chain tip's hash). Fail-closed
  * (return false) on any uncertainty — a still-diverged or reorg-in-flight state
  * keeps the freeze and keeps paging. Runs on the health/drain path, which owns
- * the csr->lock-THEN-coins_kv order; csr_snapshot acquires+releases csr->lock
- * alone (no coins_kv held), never the reducer drive. */
+ * no-nested-lock snapshot path; csr_snapshot acquires+releases csr->lock before
+ * reading coins_kv and never runs from the reducer drive. */
 static bool cec_boot_tip_divergence_resolved(
     struct chain_evidence_controller *authority,
     const struct block_index *finalized_tip)

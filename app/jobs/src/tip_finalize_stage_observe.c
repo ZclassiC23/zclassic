@@ -338,8 +338,18 @@ bool tip_finalize_observe_dump_state_json(struct json_value *out,
 
     int64_t now = platform_time_wall_unix();
     int64_t last = atomic_load(&g_last_step_unix);
+    /* The runtime counters below are atomic. Durable log_rows is optional
+     * observational detail and must never queue an RPC behind a reducer batch
+     * that owns the singleton progress connection. stage_log_row_count takes
+     * this recursive lock internally, so an outer successful trylock safely
+     * brackets the exact handle without adding a blocking path. */
+    bool durable_snapshot = db && progress_store_tx_trylock();
 
     stage_dump_header(out, STAGE_NAME, stage);
+    json_push_kv_bool(out, "durable_snapshot_available", durable_snapshot);
+    json_push_kv_str(out, "durable_snapshot_status",
+                     !db ? "progress_store_unavailable" :
+                     durable_snapshot ? "available" : "progress_store_busy");
     json_push_kv_int(out, "finalized_total",
                      (int64_t)atomic_load(&g_finalized_total));
     json_push_kv_int(out, "upstream_failed_total",
@@ -395,8 +405,10 @@ bool tip_finalize_observe_dump_state_json(struct json_value *out,
         }
     }
     json_push_kv_int(out, "log_rows",
-                     db ? stage_log_row_count(db, STAGE_NAME,
-                                              "tip_finalize_log") : 0);
+                     durable_snapshot
+                         ? stage_log_row_count(db, STAGE_NAME,
+                                               "tip_finalize_log")
+                         : -1);
     stage_dump_counters(out, stage);
 
     /* Reserved `_health` key (see docs/work "Adding state introspection" +
@@ -427,5 +439,7 @@ bool tip_finalize_observe_dump_state_json(struct json_value *out,
         json_push_kv(out, "_health", &health);
         json_free(&health);
     }
+    if (durable_snapshot)
+        progress_store_tx_unlock();
     return true;
 }

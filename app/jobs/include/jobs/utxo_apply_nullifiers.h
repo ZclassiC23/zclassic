@@ -13,6 +13,7 @@
 #define ZCL_JOBS_UTXO_APPLY_NULLIFIERS_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 struct sqlite3;
 struct block;
@@ -45,5 +46,12 @@ bool utxo_apply_check_and_insert_nullifiers(struct sqlite3 *db,
  * (from-genesis replays are complete). Called from utxo_apply_stage_init
  * every boot. Best-effort: store errors are logged, never fatal. */
 void utxo_apply_nullifier_gap_blocker_refresh(struct sqlite3 *db);
+
+/* Lock-free runtime snapshot of the activation-gap marker last read by the
+ * refresh above. Returns false until the boot-time refresh has completed;
+ * diagnostics use that as explicit unknown evidence instead of blocking on an
+ * active reducer transaction. */
+bool utxo_apply_nullifier_gap_snapshot(int64_t *activation_cursor,
+                                       bool *backfill_gap);
 
 #endif /* ZCL_JOBS_UTXO_APPLY_NULLIFIERS_H */

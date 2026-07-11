@@ -434,7 +434,20 @@ bool reducer_frontier_dump_state_json(struct json_value *out, const char *key)
         return true;
     }
 
-    progress_store_tx_lock();
+    /* Diagnostics are an observational surface, not a reducer dependency.
+     * A catch-up batch can legitimately own the singleton connection for long
+     * enough to exceed the RPC deadline; queueing zcl_state/zcl_status behind
+     * it made the daily operator endpoint disappear exactly while the node was
+     * busiest. Return the lock-free published frontier with an explicit busy
+     * durable snapshot instead. A later call can fill in the SQLite detail. */
+    if (!progress_store_tx_trylock()) {
+        json_push_kv_bool(out, "snapshot_complete", false);
+        json_push_kv_str(out, "snapshot_status", "progress_store_busy");
+        json_push_kv_bool(out, "retryable", true);
+        return true;
+    }
+    json_push_kv_bool(out, "snapshot_complete", true);
+    json_push_kv_str(out, "snapshot_status", "available");
 
     char missing[64] = "";
     bool ready = schema_ready(db, missing, sizeof(missing));
