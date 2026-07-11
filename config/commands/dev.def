@@ -166,6 +166,28 @@ ZCL_COMMAND_DEV_COMMAND(
     "change application requires the dev-only process/activation executor",
     "zclassic23-dev dev change cycle")
 
+ZCL_COMMAND_BRANCH("dev.vcs", "dev", "One-command source+binary revert (ZVCS)",
+                   ZCL_COMMAND_LAYER_DEV)
+
+ZCL_COMMAND_DEV_COMMAND(
+    "dev.vcs.revert", "dev.vcs", "", "Restore the checkout to a prior ZVCS "
+    "commit, optionally relinking the running binary generation",
+    "vcs,revert,rollback,generation,relink", "zcl.dev_vcs_revert_input.v1",
+    "zcl.dev_vcs_revert.v1", "to,relink_generation", "to",
+    "zclassic23 dev vcs revert --input='{\"to\":\"<64-hex commit id>\","
+    "\"relink_generation\":true}'",
+    ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_DEV_MUTATION, ZCL_COMMAND_SCOPE_DEV_LANE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_DEV,
+    ZCL_COMMAND_CAP_CHECKOUT_WRITE | ZCL_COMMAND_CAP_PROCESS_EXEC |
+        ZCL_COMMAND_CAP_DEV_ACTIVATE,
+    ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_REVERSIBLE,
+    zcl_native_handle_dev_vcs_revert,
+    "one-command source+binary revert requires a dev build",
+    "zclassic23-dev dev vcs revert <to> [--relink-generation]")
+
 ZCL_COMMAND_DEV_COMMAND(
     "dev.loop.ensure", "dev.loop", "dev.loop.watch",
     "Idempotently ensure one persistent native watcher", "loop,ensure,watcher,inotify",

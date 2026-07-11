@@ -317,6 +317,7 @@ static int test_dev_branch_leaves(void)
             "dev.loop.wait", "dev.loop.stop", "dev.test.run",
             "dev.test.sim", "dev.generation.current",
             "dev.generation.history", "dev.diagnose.latest",
+            "dev.vcs.revert",
         };
         for (size_t i = 0; i < sizeof(compat) / sizeof(compat[0]); i++) {
             const struct zcl_command_spec *s = find_spec(reg, compat[i]);
@@ -418,6 +419,48 @@ static int test_response_budget_views(void)
     return failures;
 }
 
+/* dev.vcs.revert IS a golden catalog row now (config/commands/dev.def via
+ * ZCL_COMMAND_DEV_COMMAND, asserted COMPAT above in test_dev_branch_leaves).
+ * What test_dev_branch_leaves does NOT reach is the handler body itself: a
+ * release/testing build (this test binary is built WITHOUT ZCL_DEV_BUILD,
+ * see Makefile TEST_FAST_CFLAGS) must link the `#ifndef ZCL_DEV_BUILD` stub
+ * body of zcl_native_handle_dev_vcs_revert — never the real
+ * vcs_revert()+shell-fallback path — and that stub must fail closed
+ * (BLOCKED, not a silent no-op) instead of mutating anything. */
+static int test_dev_vcs_revert_release_stub(void)
+{
+    int failures = 0;
+    TEST("dev.vcs.revert fails closed (BLOCKED) outside a dev build") {
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        (void)json_push_kv_str(&input, "to",
+                               "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                               "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+
+        struct zcl_command_request request = {
+            .spec = NULL,
+            .context = NULL,
+            .input = &input,
+            .view = "normal",
+            .budget_bytes = 0,
+            .invoked_by_alias = false,
+            .invoked_name = "dev.vcs.revert",
+        };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.dev_vcs_revert.v1");
+        zcl_native_handle_dev_vcs_revert(&request, &reply);
+
+        ASSERT_EQ((int)reply.status, (int)ZCL_COMMAND_STATUS_BLOCKED);
+        ASSERT_EQ((int)reply.exit_code, (int)ZCL_COMMAND_EXIT_BLOCKED);
+        ASSERT_STR_EQ(reply.error.code, "DEV_BUILD_REQUIRED");
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_is_root_ownership(void)
 {
     int failures = 0;
@@ -451,6 +494,7 @@ int test_command_registry_catalog(void)
     failures += test_dev_branch_leaves();
     failures += test_response_budget_views();
     failures += test_typo_stays_branch();
+    failures += test_dev_vcs_revert_release_stub();
     failures += test_is_root_ownership();
     printf("=== command_registry_catalog: %d failures ===\n", failures);
     return failures;
