@@ -84,7 +84,7 @@ static bool zslp_open_runtime_db(const char *datadir, sqlite3 **db_out,
 
 static bool zslp_require_token_key(const char *token_key, struct json_value *result)
 {
-    if (token_key && zslp_service_validate_token_key(token_key))
+    if (token_key && zslp_service_validate_token_key(token_key).ok)
         return true;
     if (result)
         json_set_str(result, "token_id must be alphanumeric or 64-char hex");
@@ -94,7 +94,7 @@ static bool zslp_require_token_key(const char *token_key, struct json_value *res
 static bool zslp_require_address(const char *addr, bool strict_chain_addr,
                                  struct json_value *result)
 {
-    if (addr && zslp_service_validate_recipient_addr(addr, strict_chain_addr))
+    if (addr && zslp_service_validate_recipient_addr(addr, strict_chain_addr).ok)
         return true;
     if (result)
         json_set_str(result, "address is invalid");
@@ -193,8 +193,8 @@ uint64_t zslp_balance(const char *datadir,
     sqlite3 *db = NULL;
     bool owns_db = false;
     if (!zslp_effective_datadir(datadir) ||
-        !zslp_service_validate_token_key(token_id_hex) ||
-        !zslp_service_validate_recipient_addr(addr, false)) return 0;
+        !zslp_service_validate_token_key(token_id_hex).ok ||
+        !zslp_service_validate_recipient_addr(addr, false).ok) return 0;
 
     /* Scan the SQLite token_balances table */
     if (!zslp_open_runtime_db(datadir, &db, &owns_db))
@@ -247,7 +247,7 @@ bool zslp_mint(const char *datadir,
     };
     const char *validation_error = NULL;
     if (!zslp_effective_datadir(datadir) ||
-        !zslp_service_validate_token_key(token_id_hex) ||
+        !zslp_service_validate_token_key(token_id_hex).ok ||
         !recipient_addr)
         LOG_FAIL("zslp", "mint: invalid params (datadir=%p token=%p recipient=%p)",
                  (const void *)zslp_effective_datadir(datadir),
@@ -321,7 +321,7 @@ bool zslp_send(const char *datadir,
     };
     const char *validation_error = NULL;
     if (!zslp_effective_datadir(datadir) ||
-        !zslp_service_validate_token_key(token_id_hex) ||
+        !zslp_service_validate_token_key(token_id_hex).ok ||
         !to_addr)
         LOG_FAIL("zslp", "send: invalid params (datadir=%p token=%p to=%p)",
                  (const void *)zslp_effective_datadir(datadir),

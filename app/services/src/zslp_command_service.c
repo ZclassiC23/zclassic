@@ -158,7 +158,7 @@ struct zcl_result zslp_command_build_send_base_tx(struct wallet *wallet,
 
     if (!wallet || !to_addr || !wtx || !fee_paid)
         return ZCL_ERR(-1, "build_send_base_tx: NULL argument");
-    if (!zslp_service_decode_transparent_destination(to_addr, &dest))
+    if (!zslp_service_decode_transparent_destination(to_addr, &dest).ok)
         return ZCL_ERR(-2, "build_send_base_tx: invalid address %s", to_addr);
     if (!wallet_create_transaction_multi(wallet, &dest, vals, 1, wtx,
                                          fee_paid, tx_error))
@@ -179,7 +179,7 @@ struct zcl_result zslp_command_build_owner_base_tx(struct wallet *wallet,
         return ZCL_ERR(-1, "build_owner_base_tx: NULL argument");
 
     if (!zslp_service_decode_transparent_destination(owner_address,
-                                                      &owner_dest) ||
+                                                      &owner_dest).ok ||
         owner_dest.type != DEST_KEY_ID) {
         if (tx_error)
             *tx_error = "owner address is not a spendable P2PKH address";

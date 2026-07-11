@@ -187,13 +187,13 @@ static bool route_is_order_create(const char *method, const char *path)
 static bool store_validate_access_addr(const char *addr)
 {
     return addr && addr[0] &&
-           zslp_service_validate_recipient_addr(addr, false);
+           zslp_service_validate_recipient_addr(addr, false).ok;
 }
 
 static bool store_validate_access_token(const char *token)
 {
     return token && token[0] &&
-           zslp_service_validate_token_key(token);
+           zslp_service_validate_token_key(token).ok;
 }
 
 static bool store_parse_query_field(const char *path, const char *field,

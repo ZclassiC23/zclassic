@@ -1,3 +1,9 @@
+// one-result-type-ok:json-dump-bool-only:mempool_limits_dump_state_json —
+// mempool_limits_passes_min_relay is converted to struct zcl_result below.
+// The sole remaining bool export is the zcl_state introspection dumper;
+// the dump convention (CLAUDE.md "Adding state introspection") mandates a
+// bool return (false = couldn't populate), not struct zcl_result.
+
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Mempool Limits — see header for rationale.
@@ -220,12 +226,18 @@ static struct mempool_limits_config ml_resolve_cfg(
 
 /* ── Min relay fee ──────────────────────────────────────────── */
 
-bool mempool_limits_passes_min_relay(const struct mempool_limits_config *cfg,
-                                      int64_t fee, size_t tx_size)
+struct zcl_result mempool_limits_passes_min_relay(
+    const struct mempool_limits_config *cfg, int64_t fee, size_t tx_size)
 {
-    if (tx_size == 0) LOG_FAIL("mempool_limits", "min relay check with tx_size=0");
+    if (tx_size == 0)
+        return ZCL_ERR(-1, "mempool_limits_passes_min_relay: tx_size=0");
     struct mempool_limits_config r = ml_resolve_cfg(cfg);
-    return fee >= r.min_relay_fee_zat;
+    if (fee < r.min_relay_fee_zat)
+        return ZCL_ERR(-2,
+                       "mempool_limits_passes_min_relay: fee %lld below "
+                       "min relay %lld",
+                       (long long)fee, (long long)r.min_relay_fee_zat);
+    return ZCL_OK;
 }
 
 /* ── Fee-per-byte sort (ascending worst-first) ──────────────── */

@@ -337,10 +337,10 @@ int test_mempool_limits(void)
         struct mempool_limits_config cfg = {0};
         cfg.min_relay_fee_zat = 1000;
         bool ok = true;
-        ok = ok &&  mempool_limits_passes_min_relay(&cfg, 1000, 200);
-        ok = ok &&  mempool_limits_passes_min_relay(&cfg, 5000, 200);
-        ok = ok && !mempool_limits_passes_min_relay(&cfg,  999, 200);
-        ok = ok && !mempool_limits_passes_min_relay(&cfg, 1000,   0);
+        ok = ok &&  mempool_limits_passes_min_relay(&cfg, 1000, 200).ok;
+        ok = ok &&  mempool_limits_passes_min_relay(&cfg, 5000, 200).ok;
+        ok = ok && !mempool_limits_passes_min_relay(&cfg,  999, 200).ok;
+        ok = ok && !mempool_limits_passes_min_relay(&cfg, 1000,   0).ok;
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 

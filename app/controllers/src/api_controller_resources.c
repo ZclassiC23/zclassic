@@ -189,7 +189,7 @@ size_t api_serve_zslp_token(const char *token_id, uint8_t *response,
     if (!ndb || !ndb->db)
         return api_json_error(response, response_max, JSON_500_HEADERS, "No database");
     if (!api_is_printable_ascii(token_id) ||
-        !zslp_service_validate_token_key(token_id))
+        !zslp_service_validate_token_key(token_id).ok)
         return api_json_error(response, response_max, JSON_404_HEADERS,
                           "Invalid token id");
     if (!db_zslp_token_find(ndb, token_id, &token))
@@ -228,7 +228,7 @@ size_t api_serve_zslp_token_transfers(const char *path,
     if (!ndb || !ndb->db)
         return api_json_error(response, response_max, JSON_500_HEADERS, "No database");
     if (!api_is_printable_ascii(token_id) ||
-        !zslp_service_validate_token_key(token_id))
+        !zslp_service_validate_token_key(token_id).ok)
         return api_json_error(response, response_max, JSON_404_HEADERS,
                           "Invalid token id");
     if (!api_parse_zslp_limit(path, &limit))

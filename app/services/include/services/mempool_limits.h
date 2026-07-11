@@ -139,12 +139,13 @@ int mempool_limits_enforce(struct tx_mempool *pool,
 int mempool_limits_expire(struct tx_mempool *pool,
                            const struct mempool_limits_config *cfg);
 
-/* Advisory min-relay-fee check — returns true when `(fee, tx_size)`
- * meets `min_relay_fee_zat` as an absolute floor. Integration
- * callers use this at acceptance time to reject sub-minimum txs
- * before they ever enter the mempool. Zero-size txs return false. */
-bool mempool_limits_passes_min_relay(const struct mempool_limits_config *cfg,
-                                      int64_t fee, size_t tx_size);
+/* Advisory min-relay-fee check — ZCL_OK when `(fee, tx_size)` meets
+ * `min_relay_fee_zat` as an absolute floor, ZCL_ERR (with a reason)
+ * otherwise. Integration callers use this at acceptance time to reject
+ * sub-minimum txs before they ever enter the mempool. Zero-size txs
+ * are a ZCL_ERR. */
+struct zcl_result mempool_limits_passes_min_relay(
+    const struct mempool_limits_config *cfg, int64_t fee, size_t tx_size);
 
 /* ── Lifecycle ──────────────────────────────────────────────── */
 

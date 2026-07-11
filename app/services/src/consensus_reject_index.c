@@ -1,3 +1,10 @@
+// one-result-type-ok:running-flag-getter — the sole remaining legacy
+// export, consensus_reject_index_running, is a mutex-guarded read of the
+// service's running flag with no failure path (struct zcl_result would
+// always report OK). Every fallible surface in this file
+// (consensus_reject_index_start, consensus_reject_index_lookup) already
+// returns zcl_result.
+
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Consensus Reject Index — see header for rationale.
