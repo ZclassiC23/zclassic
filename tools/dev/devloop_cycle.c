@@ -472,6 +472,31 @@ static int finish_cycle(const struct zcl_devloop_plan *plan,
     return strcmp(status, "passed") == 0 ? 0 : 1;
 }
 
+/* Wave 2.4 core refusal: emit the structured sealed-core refusal envelope
+ * (stdout + the persisted zcl.dev_cycle.v1 verdict) and return CLI exit 3
+ * (blocked-by-precondition). Reused by both the one-shot `dev change cycle`
+ * path and the persistent watcher — both funnel through
+ * zcl_devloop_run_cycle(). No subprocess is launched: the caller returns here
+ * BEFORE any hotswap/reload publish step. */
+static int emit_refusal(const char *const *files, size_t file_count)
+{
+    char body[16384], path[PATH_MAX];
+    size_t len = zcl_devloop_refusal_json(files, file_count, body,
+                                          sizeof(body) - 2);
+    if (len == 0) {
+        fprintf(stderr,
+                "[devloop] sealed-core refusal envelope exceeded its buffer\n");
+        return 3;  /* still refuse — never fall through to publish */
+    }
+    body[len++] = '\n';
+    body[len] = 0;
+    if (native_state_path(path) && !write_atomic(path, body, len))
+        fprintf(stderr, "[devloop] could not persist refusal verdict\n");
+    fwrite(body, 1, len, stdout);
+    fflush(stdout);
+    return 3;
+}
+
 int zcl_devloop_run_cycle(const char *repo_root,
                           const char *const *files,
                           size_t file_count)
@@ -481,6 +506,33 @@ int zcl_devloop_run_cycle(const char *repo_root,
     if (!zcl_devloop_plan_files(files, file_count, &plan)) {
         fprintf(stderr, "[devloop] cycle: invalid changed-file set\n");
         return 2;
+    }
+
+    /* Core refusal, BEFORE any publish and BEFORE the dev-build gate (a
+     * release binary refuses identically). A changed-file set touching the
+     * sealed consensus core (core/ — what core/MANIFEST.sha3 pins) is
+     * structurally refused from the autonomous fast path unless the owner
+     * unseal ritual left a valid one-shot .core-unseal-token at the repo root.
+     *
+     * Token semantics (see zcl_devloop_unseal_token_present): the token is
+     * checked read-only and NEVER consumed here. `make core-seal` consumes it
+     * when the sealed edit lands, so one `make core-unseal` authorizes exactly
+     * one landed commit — which may cover several iterative dev-cycles while
+     * the author converges the fix — not one dev-cycle. With the token
+     * present the cycle proceeds and (because zcl_devloop_plan_files marks any
+     * sealed file consensus_risk) routes to the heaviest proof path, exactly
+     * as a lib/validation edit does today. Sealed != frozen: the refusal
+     * envelope always names the elevated procedure. */
+    if (plan.sealed_core) {
+        if (!zcl_devloop_unseal_token_present(repo_root))
+            return emit_refusal(files, file_count);
+        fprintf(stderr,
+                "[devloop] sealed consensus core: unseal token present at "
+                "%s/.core-unseal-token — seal lifted for THIS cycle; routing "
+                "to the heaviest proof path. The token is consumed by "
+                "'make core-seal' when the edit lands, so one unseal = one "
+                "landed commit, not one dev-cycle.\n",
+                (repo_root && repo_root[0]) ? repo_root : ".");
     }
 #ifndef ZCL_DEV_BUILD
     (void)repo_root;

@@ -31,7 +31,38 @@
  * resident router validates all entries and commits one immutable snapshot. */
 HOTSWAP_ELIGIBLE("tools/mcp/controllers/app_controller.c")
 
-/* REST and diagnostics are intentionally reload-required in manifest v2.
- * Their legacy direct-provider atomics cannot join the MCP router's single
- * immutable-snapshot commit, so admitting either would reintroduce mixed
- * generations. Re-enable only behind one unified resident provider table. */
+/* Wave 3.1 eligibility expansion. Each TU below is a single-k_routes[]
+ * stateless MCP controller: all handlers marshal args then call resident
+ * kernel symbols (mcp_node_rpc, service fns) that bind against the -rdynamic
+ * host at dlopen; file scope is all-const (no mutable file-scope statics ⇒
+ * check-hotswap-static-state clean) and each invokes ZCL_HOTSWAP_EXPORT_ROUTES
+ * (⇒ genuinely generation-exportable, enforced by check-hotswap-eligible-scope).
+ * Each is built into its OWN single-provider .so — this expands the set of
+ * independently swappable TUs, NOT multiple providers per generation (still a
+ * v2 non-goal). Proven per-TU by tools/scripts/hotswap_demo.sh. */
+/* meta: read/introspection tools (status, kpi, tools_list, self_test, ...). */
+HOTSWAP_ELIGIBLE("tools/mcp/controllers/meta_controller.c")
+/* chain: read-only block/tx/replay-verify tools; no mutable statics (the old
+ * function-local default-legacy-dir scratch was hoisted to a stack buffer). */
+HOTSWAP_ELIGIBLE("tools/mcp/controllers/chain_controller.c")
+/* net: read-only network-introspection tools (peers, networkinfo, onion). */
+HOTSWAP_ELIGIBLE("tools/mcp/controllers/net_controller.c")
+/* wallet: wallet tools. Includes wallet-mutating routes (send, importprivkey)
+ * — admitted on the same footing as the app_controller pilot's destructive
+ * routes: swap safety is statelessness, not read-vs-write, and the loader
+ * admits only the ephemeral ~/.zclassic-c23-dev node. */
+HOTSWAP_ELIGIBLE("tools/mcp/controllers/wallet_controller.c")
+
+/* Still reload-required (NOT eligible), by design:
+ *   - REST (app/controllers/src/api_controller_routes.c) and diagnostics
+ *     (diagnostics_registry.c) carry ZCL_HOTSWAP_EXPORT_PROVIDER: their legacy
+ *     direct-provider atomics cannot join the MCP router's single
+ *     immutable-snapshot commit (fail closed on ZCL_HOTSWAP_CAP_DIRECT_PROVIDER).
+ *   - diagnostics_controller.c holds mutable file-scope statics
+ *     (g_state_subsystems_csv, non-const p_state[]).
+ *   - ops_controller.c registers TWO route tables (g_agent_mcp_routes + k_routes);
+ *     the single-array macro emits one gen_init/manifest, so it cannot export
+ *     both without an aggregator (a v2 non-goal).
+ *   - dev_hotswap_controller.c IS the swap driver — swapping the swapper is
+ *     circular.
+ * Re-enable REST/diagnostics only behind one unified resident provider table. */

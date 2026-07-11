@@ -558,92 +558,102 @@ static void finalize_statements(struct node_db *ndb)
     sqlite3_finalize(ndb->stmt_vint_insert);
 }
 
-bool node_db_open(struct node_db *ndb, const char *path)
+/* Close the half-open handle and return false (uniform open-failure exit). */
+static bool node_db_open_abort(struct node_db *ndb)
+{
+    if (ndb->db) { sqlite3_close(ndb->db); ndb->db = NULL; }
+    node_db_state_destroy(ndb);
+    return false;
+}
+
+/* Shared open path. boot_ceremony=true is the one-time boot open (quick_check +
+ * migration banner + staging cleanup); false is a runtime reopen that skips all
+ * three and names itself (see node_db_open_runtime). */
+static bool node_db_open_impl(struct node_db *ndb, const char *path,
+                              bool boot_ceremony, const char *reason)
 {
     memset(ndb, 0, sizeof(*ndb));
     if (path)
         snprintf(ndb->path, sizeof(ndb->path), "%s", path);
     node_db_state_init(ndb);
 
-    /* Tier-2 fast restart: consult the quick_check-skip probe on the PRISTINE
-     * on-disk file, BEFORE db_open_raw touches it (WAL-mode open + pragmas can
-     * mutate the header). A true return means the previous shutdown proved this
-     * exact file clean; skip the ~9s PRAGMA quick_check on this open. Any
-     * ambiguity → probe returns false → quick_check runs exactly as before. */
-    bool skip_quick_check = g_quick_check_skip_probe && path &&
-                            g_quick_check_skip_probe(path);
+    /* No anonymous DB open: a reopen names who/why so it cannot look like a
+     * silent boot loop in a filtered log. */
+    if (!boot_ceremony)
+        LOG_INFO("db", "db: runtime reopen (reason=%s) path=%s",
+                 reason ? reason : "(unnamed)", path ? path : "(null)");
 
-    if (!db_open_raw(&ndb->db, path)) {
-        node_db_state_destroy(ndb);
-        return false;
-    }
-
-    if (skip_quick_check) {
-        printf("[boot] quick_check skipped (verified-clean shutdown)\n");
-    } else {
-        int64_t t_qc = db_now_ms();
-        bool qc_ok = db_quick_check_ok(ndb->db, path);
-        printf("[boot]   %-28s %lldms\n", "sqlite.quick_check",
-               (long long)(db_now_ms() - t_qc));
-        if (!qc_ok) {
-            LOG_INFO("db", "db: %s is malformed; rebuilding fresh SQLite state",
-                     path);
-            sqlite3_close(ndb->db);
-            ndb->db = NULL;
-            db_quarantine_files(path);
-            if (!db_open_raw(&ndb->db, path)) {
-                node_db_state_destroy(ndb);
-                return false;
+    if (!db_open_raw(&ndb->db, path))
+        return node_db_open_abort(ndb);
+    if (boot_ceremony) {
+        /* Tier-2 fast restart: skip-probe reads the PRISTINE file; true = prior
+         * shutdown proved it clean, skip the ~9s quick_check. */
+        bool skip_quick_check = g_quick_check_skip_probe && path &&
+                                g_quick_check_skip_probe(path);
+        if (skip_quick_check) {
+            printf("[boot] quick_check skipped (verified-clean shutdown)\n");
+        } else {
+            int64_t t_qc = db_now_ms();
+            bool qc_ok = db_quick_check_ok(ndb->db, path);
+            printf("[boot]   %-28s %lldms\n", "sqlite.quick_check",
+                   (long long)(db_now_ms() - t_qc));
+            if (!qc_ok) {
+                LOG_INFO("db", "db: %s is malformed; rebuilding fresh SQLite state",
+                         path);
+                sqlite3_close(ndb->db);
+                ndb->db = NULL;
+                db_quarantine_files(path);
+                if (!db_open_raw(&ndb->db, path))
+                    return node_db_open_abort(ndb);
             }
         }
     }
 
-    if (!create_schema(ndb)) {
-        sqlite3_close(ndb->db);
-        ndb->db = NULL;
-        node_db_state_destroy(ndb);
-        return false;
-    }
+    if (!create_schema(ndb))
+        return node_db_open_abort(ndb);
 
     ndb->open = true; /* node_db_migrate uses node_db_state_* helpers. */
+    /* Runtime reopen is already at current schema — suppress the banner. */
+    ndb->suppress_migrate_banner = !boot_ceremony;
     int migrated = node_db_migrate(ndb, NULL);
+    ndb->suppress_migrate_banner = false;
     ndb->open = false;
-    if (migrated < 0) {
-        sqlite3_close(ndb->db);
-        ndb->db = NULL;
-        node_db_state_destroy(ndb);
-        return false;
-    }
-
+    if (migrated < 0)
+        return node_db_open_abort(ndb);
     /* Crash recovery: staged snapshot rows are never authoritative across
-     * process lifetimes. If the node died mid-receive or mid-verify, discard
-     * the incomplete staging namespace before normal boot continues. */
-    if (db_exec_checked_progress(ndb->db,
+     * process lifetimes. BOOT-only (a reopen must not re-run it every cycle). */
+    if (boot_ceremony &&
+        (db_exec_checked_progress(ndb->db,
             "DELETE FROM snapshot_staging_utxos",
             "snapshot_staging_boot_cleanup", path) != SQLITE_OK ||
-        db_exec_checked_progress(ndb->db,
+         db_exec_checked_progress(ndb->db,
             "DELETE FROM node_state WHERE key LIKE 'snapshot_staging_%'",
-            "snapshot_staging_state_boot_cleanup", path) != SQLITE_OK) {
-        sqlite3_close(ndb->db);
-        ndb->db = NULL;
-        node_db_state_destroy(ndb);
-        return false;
-    }
-
-    if (!prepare_statements(ndb)) {
-        sqlite3_close(ndb->db);
-        ndb->db = NULL;
-        node_db_state_destroy(ndb);
-        return false;
-    }
+            "snapshot_staging_state_boot_cleanup", path) != SQLITE_OK))
+        return node_db_open_abort(ndb);
+    if (!prepare_statements(ndb))
+        return node_db_open_abort(ndb);
 
     ndb->open = true;
-    /* Register model validators once per process.  Idempotent. */
-    db_register_all_validators();
-    /* Opt-in txn diagnostics (ZCL_DB_TXN_TRACE=1); no-op otherwise. */
-    zcl_db_txn_trace_register(ndb->db, "node_db");
+    db_register_all_validators();                  /* idempotent per process */
+    zcl_db_txn_trace_register(ndb->db, "node_db"); /* ZCL_DB_TXN_TRACE opt-in */
     node_db_note_activity(ndb, "open", SQLITE_OK);
     return true;
+}
+
+bool node_db_open(struct node_db *ndb, const char *path)
+{
+    return node_db_open_impl(ndb, path, /*boot_ceremony=*/true, "boot");
+}
+bool node_db_open_runtime(struct node_db *ndb, const char *path,
+                          const char *reason)
+{
+    /* Mandatory reason (LOG_FAIL returns false; LOG_ERR would return -1). */
+    if (!reason || reason[0] == '\0') {
+        memset(ndb, 0, sizeof(*ndb));
+        LOG_FAIL("db", "node_db_open_runtime: reason is mandatory (path=%s)",
+                 path ? path : "(null)");
+    }
+    return node_db_open_impl(ndb, path, /*boot_ceremony=*/false, reason);
 }
 
 void node_db_close(struct node_db *ndb)
@@ -657,12 +667,10 @@ void node_db_close(struct node_db *ndb)
     node_db_note_activity(ndb, "close", SQLITE_OK);
     zcl_db_txn_trace_unregister(ndb->db);
     finalize_statements(ndb);
-    /* sqlite3_close() returns SQLITE_BUSY if any prepared statement or backup
-     * on this handle is still un-finalized. A silently-leaked handle keeps its
-     * open transaction (and WAL write/read lock) alive for the rest of the
-     * process — the exact "unreachable silent halt" this project forbids. Log
-     * loudly, finalize every leftover statement via sqlite3_next_stmt(), and
-     * retry the close so the handle is actually released. */
+    /* sqlite3_close() returns SQLITE_BUSY if any prepared statement/backup on
+     * this handle is un-finalized; a leaked handle keeps its txn + WAL lock
+     * alive for the process (an "unreachable silent halt"). Finalize every
+     * leftover stmt via sqlite3_next_stmt() and retry the close. */
     int close_rc = sqlite3_close(ndb->db);
     if (close_rc == SQLITE_BUSY) {
         int leaked = 0;

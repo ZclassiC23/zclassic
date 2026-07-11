@@ -15,7 +15,7 @@
 #   (1) its own headers, reached through preserved include tokens —
 #         "domain/consensus/<x>.h"  (core/consensus keeps this token)
 #         "consensus/<x>.h"         (core/params keeps this token)
-#         "core/<x>.h"              (lib/core math, absorbed later)
+#         "core/<x>.h"              (core/math, absorbed from lib/core in W3)
 #         "chainparams/<x>.h"       (core/chainparams, later wave)
 #   (2) C / POSIX system headers  — #include <...>
 #   (3) bare domain-local siblings — a quoted include with NO slash
@@ -28,13 +28,11 @@
 # not in the allow set — this catches "validation/...", "app/...", any
 # controllers/models/services/views leak, and any unlisted lib subsystem.
 #
-# KNOWN RATCHET EXCEPTION (pre-W5 content fix, tracked in the plan): the upward
-# leak core/consensus/src/check_block.c -> "validation/sigops.h" is the single
-# grandfathered violation. It is redirected to a core sigops predicate in the
-# Pre-W5 content-fix commit (NOT this lane). Until then this gate treats that
-# one (file, header) pair as a KNOWN exception, printed as a WARN ratchet note,
-# never a hard failure. Any OTHER validation/ include, or any other forbidden
-# include, fails HARD.
+# EXCEPTION-FREE (Pre-W5 content fix landed): there are no grandfathered
+# exceptions. The two former leaks were both redirected downward —
+# check_block.c calls the core sigops predicate instead of validation/sigops.h,
+# and chainparams.h gets MESSAGE_START_SIZE from chain/chainparamsbase.h instead
+# of net/protocol.h. Any forbidden include now fails HARD.
 #
 # W0 posture: core/ is near-empty (only MANIFEST.sha3 + UNSEAL.md). The gate is
 # GREEN when a listed subdir is absent (nothing to scan yet — TODO ratchet: it
@@ -52,18 +50,31 @@ CORE_SUBDIRS=(core/consensus core/params core/chainparams core/math)
 
 # Allow set: include-token top-level prefixes a sealed-core file may depend on.
 # Mirrors check_domain_purity.sh's 12 lib subsystems MINUS `validation`
-# (forbidden), PLUS `domain`, `chainparams`, and `math` (preserved core tokens).
-# Absorbing lib/core keeps the `core` token; core/params keeps `consensus`.
+# (forbidden), PLUS `domain`, `chainparams`, and `math` (preserved core tokens),
+# PLUS `encoding` and `json` — the pure leaf libs the absorbed lib/core math
+# primitives depend DOWN on (uint256/core_io use encoding/utilstrencodings +
+# encoding/utilmoneystr for hex/money string conversion and json/json for
+# core_io serialization; both leaves themselves reach only core/encoding/util/
+# json, never validation or app — verified in W3),
+# PLUS `platform` — the clock/rng leaf (lib/platform reaches only platform/util);
+# core/chainparams/checkpoints.c reads a single clock via platform/time_compat.h
+# (verified pure leaf in W4).
+# core/math keeps the `core` token (absorbed from lib/core in W3); core/params keeps `consensus`.
 declare -A allow
 for p in domain consensus core chainparams math \
-         bloom chain coins crypto keys primitives script support util; do
+         bloom chain coins crypto encoding json keys platform primitives script support util; do
     allow["$p"]=1
 done
 
 # Known ratchet exception: (path, included-header) pairs grandfathered pre-W5.
 # Redirected by the Pre-W5 content-fix commit, not this lane.
 declare -A known_exception
-known_exception["core/consensus/src/check_block.c|validation/sigops.h"]=1
+# EXCEPTION-FREE (Pre-W5 content fix landed): the two grandfathered leaks are
+# both resolved — core/consensus/src/check_block.c now calls the core sigops
+# predicate domain_consensus_tx_legacy_sig_op_count instead of including
+# validation/sigops.h, and core/chainparams/include/chain/chainparams.h gets
+# MESSAGE_START_SIZE from the co-located chain/chainparamsbase.h instead of
+# net/protocol.h. The map is intentionally empty; any new leak fails HARD.
 
 fail=0
 violations=()

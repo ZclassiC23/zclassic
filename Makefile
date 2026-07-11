@@ -104,11 +104,19 @@ DOMAIN_SRCS = $(call zcl_filter_ephemeral_sources,\
 # hold the consensus predicates + static parameter tables. Include TOKENS are
 # preserved across the physical move (core/consensus keeps the "domain/consensus/"
 # token via -Icore/consensus/include; core/params keeps the "consensus/" token
-# via -Icore/params/include), so no consumer #include changes. core/ is
-# a source/gate/seal unit that stays IN the whole-program LTO link — NOT a
-# separate archive (a libzclcore.a would sever hot-path inlining). Sealed by
-# core/MANIFEST.sha3; boundary-gated by check-core-include-boundary.
-CORE_CONTEXTS = consensus params
+# via -Icore/params/include; core/math keeps the "core/" token via
+# -Icore/math/include over core/math/include/core/*.h — absorbing the pure
+# lib/core primitives resolves the core/ namespace collision, the reduced
+# lib/core keeps only the dirty leaves amount/random/utiltime; core/chainparams
+# keeps the "chain/" token via -Icore/chainparams/include over
+# core/chainparams/include/chain/*.h — the pure params/verify subset
+# chainparams/chainparamsbase/equihash/pow/subsidy/checkpoints, with the
+# orchestration remainder chain/mmb/mmr/sha3_windows/utxo_* staying in lib/chain;
+# the two "chain/" -I paths serve disjoint headers), so no consumer #include
+# changes. core/ is a source/gate/seal unit that stays IN the whole-program LTO
+# link — NOT a separate archive (a libzclcore.a would sever hot-path inlining).
+# Sealed by core/MANIFEST.sha3; boundary-gated by check-core-include-boundary.
+CORE_CONTEXTS = consensus params math chainparams
 CORE_INCLUDES = $(foreach c,$(CORE_CONTEXTS),-Icore/$(c)/include)
 CORE_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(foreach c,$(CORE_CONTEXTS),$(wildcard core/$(c)/src/*.c)))
@@ -2237,6 +2245,7 @@ $(OBJ_DIR)/lib/util/src/clientversion.o: $(BUILD_COMMIT_STAMP)
 # LTO or making every unrelated edit slow.
 DEV_COMPILE_CFLAGS = $(DEV_CFLAGS)
 $(DEV_OBJ_DIR)/lib/chain/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
+$(DEV_OBJ_DIR)/core/chainparams/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
 $(DEV_OBJ_DIR)/core/params/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
 $(DEV_OBJ_DIR)/lib/crypto/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
 $(DEV_OBJ_DIR)/lib/primitives/src/%.o: DEV_COMPILE_CFLAGS = $(DEV_HOT_CFLAGS)
@@ -2870,17 +2879,20 @@ core-unseal:
 	echo "core-unseal: token minted ($(CORE_UNSEAL_TOKEN)); seal lifted for one commit."; \
 	echo "  Make the core/ edit, then 'make core-seal' + 'make lint && make test_parallel' before commit."
 
-# WARN/ratchet lint gate for the seal (HARD-flipped by a later lane at W5).
-# In WARN mode a drift is reported but does not fail the build.
+# HARD lint gate for the seal (frozen at W5 — the whole W0–W4 split has landed).
+# core/ drift now FAILS the build unless an owner unseal token is active. A
+# deliberate consensus-core change goes through `make core-unseal REASON=…`
+# (records the reason in the append-only core/UNSEAL.md + mints the one-shot
+# token), lands green on the parity + domain-consensus groups, then re-freezes
+# with `make core-seal`.
 check-core-seal: tools/core_seal
-	@echo "══ LINT: consensus-core seal (WARN/ratchet until W5) ══"
+	@echo "══ LINT: consensus-core seal (HARD) ══"
 	@if [ -f "$(CORE_UNSEAL_TOKEN)" ]; then \
 	    echo "check-core-seal: unseal token present — seal check lifted for this commit"; \
-	elif git ls-files -z core/ | $(BIN_DIR)/core_seal check $(CORE_MANIFEST); then \
-	    :; \
+	    echo "  (owner unseal ritual active; re-run 'make core-seal' to refreeze before commit.)"; \
+	    git ls-files -z core/ | $(BIN_DIR)/core_seal check $(CORE_MANIFEST) || true; \
 	else \
-	    echo "check-core-seal: WARN — core/ drifts from its seal. Run 'make core-seal' to refreeze."; \
-	    echo "  (WARN/ratchet: not failing the build yet; a later lane flips this HARD at W5.)"; \
+	    git ls-files -z core/ | $(BIN_DIR)/core_seal check $(CORE_MANIFEST); \
 	fi
 
 # Sealed-core include boundary: core/ may not depend upward/sideways (esp. not

@@ -252,7 +252,7 @@ static bool store_mark_order_paid(const char *datadir,
 
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
     memset(&ndb, 0, sizeof(ndb));
-    if (!node_db_open(&ndb, db_path))
+    if (!node_db_open_runtime(&ndb, db_path, "store.mark_order_paid"))
         LOG_FAIL("store", "store_mark_order_paid: node_db_open failed path=%s order=%lld",
                  db_path, (long long)order_id);
 
@@ -411,7 +411,7 @@ size_t store_handle_request(const char *method, const char *path,
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
     struct node_db ndb;
     memset(&ndb, 0, sizeof(ndb));
-    if (!node_db_open(&ndb, db_path)) return 0;
+    if (!node_db_open_runtime(&ndb, db_path, "store.request")) return 0;
     sqlite3 *db = ndb.db;
     store_ensure_schema(db, datadir);
 
@@ -525,7 +525,10 @@ void store_process_payments(const char *datadir)
     snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
     struct node_db ndb;
     memset(&ndb, 0, sizeof(ndb));
-    if (!node_db_open(&ndb, db_path)) return;
+    /* Background 30 s scan — a runtime reopen, NOT a boot. Re-running the boot
+     * ceremony here every cycle (quick_check + staging DELETE + version banner)
+     * is what made a merely-stalled node look like a silent boot loop. */
+    if (!node_db_open_runtime(&ndb, db_path, "store.payment_scan")) return;
 
     struct db_store_pending_payment pending_orders[64];
     int pending_count = db_store_order_list_pending_payments(&ndb,

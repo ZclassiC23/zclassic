@@ -475,6 +475,60 @@ int test_sqlite(void) {
     }
 
     {
+        /* Regression: a background RUNTIME reopen must not re-run the boot
+         * ceremony. If it did (quick_check + version banner + snapshot-staging
+         * crash-recovery DELETE every cycle), a merely-stalled node's periodic
+         * reopen looks like a silent boot loop — the live P0 this lane fixed.
+         * We assert the two structural guarantees behaviorally: (1) a runtime
+         * reopen PRESERVES the snapshot_staging namespace that a boot open
+         * would wipe, and (2) the reason argument is mandatory. */
+        printf("node_db_open_runtime: named + skips boot-only staging wipe... ");
+        char dir_template[] = "/tmp/zclassic23-runtime-reopen-XXXXXX";
+        char *dir_path = mkdtemp(dir_template);
+        char db_path[1024];
+        struct node_db ndb;
+        bool ok = dir_path != NULL;
+        char buf[8];
+        size_t glen = 0;
+
+        memset(&ndb, 0, sizeof(ndb));
+        if (ok) {
+            snprintf(db_path, sizeof(db_path), "%s/node.db", dir_path);
+            ok = node_db_open(&ndb, db_path);          /* boot open */
+        }
+        /* Stage a marker in the crash-recovery namespace the boot open wipes. */
+        ok = ok && node_db_state_set(&ndb, "snapshot_staging_testmark", "x", 1);
+        if (ndb.open) node_db_close(&ndb);
+
+        /* Runtime reopen: mandatory reason; must NOT run the staging wipe. */
+        memset(&ndb, 0, sizeof(ndb));
+        ok = ok && node_db_open_runtime(&ndb, db_path, "test.reopen");
+        ok = ok && node_db_state_get(&ndb, "snapshot_staging_testmark",
+                                     buf, sizeof(buf), &glen);  /* preserved */
+        if (ndb.open) node_db_close(&ndb);
+
+        /* Boot reopen: MUST run the staging wipe and remove the marker. */
+        memset(&ndb, 0, sizeof(ndb));
+        ok = ok && node_db_open(&ndb, db_path);
+        ok = ok && !node_db_state_get(&ndb, "snapshot_staging_testmark",
+                                      buf, sizeof(buf), &glen);  /* wiped */
+        if (ndb.open) node_db_close(&ndb);
+
+        /* Mandatory-reason enforcement: NULL/empty reason is refused. */
+        {
+            struct node_db bad;
+            memset(&bad, 0, sizeof(bad));
+            ok = ok && !node_db_open_runtime(&bad, db_path, NULL);
+            memset(&bad, 0, sizeof(bad));
+            ok = ok && !node_db_open_runtime(&bad, db_path, "");
+        }
+
+        cleanup_temp_db_dir(dir_path);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    {
         printf("SQLite snapshot tx-index job starts and joins cleanly... ");
         char dir_template[] = "/tmp/zclassic23-tx-index-job-XXXXXX";
         char *dir_path = mkdtemp(dir_template);

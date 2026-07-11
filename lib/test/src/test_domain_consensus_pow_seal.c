@@ -21,7 +21,7 @@
  *      verdict on repeated evaluation; the function is never flaky.
  *
  * Target arithmetic used below (verified against
- * arith_uint256_set_compact in lib/core/src/arith_uint256.c):
+ * arith_uint256_set_compact in core/math/src/arith_uint256.c):
  *
  *   nBits 0x03123456 -> size=3, word=0x123456, target = 0x123456.
  *   uint256 is little-endian (data[0] = LSB), so a hash whose value is

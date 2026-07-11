@@ -242,6 +242,7 @@ static const char *agent_classify_path(const char *path,
         acc->code_changed = true;
     } else if (agent_str_starts(path, "core/consensus/") ||
                agent_str_starts(path, "core/params/") ||
+               agent_str_starts(path, "core/chainparams/") ||
                agent_str_starts(path, "lib/chain/") ||
                agent_str_starts(path, "lib/validation/") ||
                agent_str_starts(path, "lib/script/") ||
