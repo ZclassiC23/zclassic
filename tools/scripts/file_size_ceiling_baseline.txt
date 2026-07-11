@@ -31,6 +31,7 @@ app/jobs/src/utxo_apply_stage.c 949
 app/services/src/block_index_loader.c 844
 app/services/src/chain_state_service.c 810
 app/services/src/node_db_catchup_service.c 860
+app/services/src/rolling_anchor_service.c 801
 app/services/src/sticky_escalator.c 883
 app/services/src/sync_monitor.c 811
 app/views/src/explorer_pages_hodl.c 1853

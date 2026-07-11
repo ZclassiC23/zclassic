@@ -1,3 +1,4 @@
+// one-result-type-ok:atomic-flag-getter — chain_restore_trust_index_fastpath is a lock-free atomic read with no failure path; chain_restore_finalize already returns zcl_result.
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Chain Restore Repair - post-restore block index and active-chain repair.

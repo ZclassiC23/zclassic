@@ -32,10 +32,10 @@ struct zslp_token_transfer_request {
 
 bool zslp_service_is_alphanumeric(const char *str, size_t len);
 bool zslp_service_is_hex_string(const char *str, size_t len);
-bool zslp_service_validate_token_key(const char *token_key);
-bool zslp_service_decode_transparent_destination(const char *addr,
-                                                 struct tx_destination *dest);
-bool zslp_service_validate_recipient_addr(const char *addr,
+struct zcl_result zslp_service_validate_token_key(const char *token_key);
+struct zcl_result zslp_service_decode_transparent_destination(
+    const char *addr, struct tx_destination *dest);
+struct zcl_result zslp_service_validate_recipient_addr(const char *addr,
                                           bool strict_chain_addr);
 const char *zslp_service_validate_create_request(
     const struct zslp_token_create_request *req);

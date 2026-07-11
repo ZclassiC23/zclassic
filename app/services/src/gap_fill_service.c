@@ -1,3 +1,14 @@
+// one-result-type-ok:gap-fill-window-predicates — the three remaining
+// legacy exports (gap_fill_compute_window, gap_fill_block_needs_queue,
+// gap_fill_wake_dispatch_if_idle) are pure window/queue-state predicates:
+// their bool return is the caller-consumed ANSWER (has_work / needs_queue /
+// did_wake), not an error signal — none of them route through LOG_FAIL/
+// LOG_ERR, and their defensive NULL-arg guards return the same false a
+// normal "no work" answer would, so there is no distinct failure branch to
+// carry in struct zcl_result. Every fallible surface in this file
+// (gap_fill_start, gap_fill_register_supervisor) already returns
+// zcl_result.
+
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #define _GNU_SOURCE  /* pthread_timedjoin_np */

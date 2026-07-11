@@ -195,13 +195,13 @@ int test_model_zslp(void)
 
     printf("validate_token_key: accepts 3-char ticker 'ZCL' (has non-hex)... ");
     {
-        if (zslp_service_validate_token_key("ZCL")) printf("OK\n");
+        if (zslp_service_validate_token_key("ZCL").ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
     printf("validate_token_key: accepts 'BTC' (T is non-hex)... ");
     {
-        if (zslp_service_validate_token_key("BTC")) printf("OK\n");
+        if (zslp_service_validate_token_key("BTC").ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
@@ -210,13 +210,13 @@ int test_model_zslp(void)
     {
         /* This one is load-bearing — store_controller.c:178 seeds
          * 'ZCL23ACCESS' as a token_id for token-gated access. */
-        if (zslp_service_validate_token_key("ZCL23ACCESS")) printf("OK\n");
+        if (zslp_service_validate_token_key("ZCL23ACCESS").ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
     printf("validate_token_key: accepts 10-char 'ZCL23STORE'... ");
     {
-        if (zslp_service_validate_token_key("ZCL23STORE")) printf("OK\n");
+        if (zslp_service_validate_token_key("ZCL23STORE").ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
@@ -226,7 +226,7 @@ int test_model_zslp(void)
         /* Pre-fix "abcdef1234" was accepted as alphanumeric; canonicalized
          * to "ABCDEF1234", indistinguishable from a truncated hex txid
          * prefix of the same shape — the exact collision. */
-        if (!zslp_service_validate_token_key("abcdef1234"))
+        if (!zslp_service_validate_token_key("abcdef1234").ok)
             printf("OK\n");
         else { printf("FAIL (collision gate missing)\n"); failures++; }
     }
@@ -235,7 +235,7 @@ int test_model_zslp(void)
            "(mid-range txid prefix)... ");
     {
         if (!zslp_service_validate_token_key(
-                "abcdef0123456789abcdef0123456789"))
+                "abcdef0123456789abcdef0123456789").ok)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -244,7 +244,7 @@ int test_model_zslp(void)
            "(just below full txid)... ");
     {
         if (!zslp_service_validate_token_key(
-                "abcdef0123456789abcdef0123456789abcdef0123456789abcdef012345678"))
+                "abcdef0123456789abcdef0123456789abcdef0123456789abcdef012345678").ok)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -253,7 +253,7 @@ int test_model_zslp(void)
            "(canonical full-txid form)... ");
     {
         if (zslp_service_validate_token_key(
-                "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"))
+                "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789").ok)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -263,14 +263,14 @@ int test_model_zslp(void)
         /* 64 chars with 'g' — alphanumeric, non-hex. Not a txid
          * (txids are hex), not ambiguous with anything — accept. */
         if (zslp_service_validate_token_key(
-                "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg"))
+                "gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg").ok)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
     printf("validate_token_key: rejects empty string... ");
     {
-        if (!zslp_service_validate_token_key("")) printf("OK\n");
+        if (!zslp_service_validate_token_key("").ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
@@ -278,20 +278,20 @@ int test_model_zslp(void)
     {
         /* 65 chars */
         if (!zslp_service_validate_token_key(
-                "abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567890"))
+                "abcdef0123456789abcdef0123456789abcdef0123456789abcdef01234567890").ok)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
     printf("validate_token_key: rejects NULL... ");
     {
-        if (!zslp_service_validate_token_key(NULL)) printf("OK\n");
+        if (!zslp_service_validate_token_key(NULL).ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
 
     printf("validate_token_key: rejects punctuation (non-alnum)... ");
     {
-        if (!zslp_service_validate_token_key("ZCL-23"))
+        if (!zslp_service_validate_token_key("ZCL-23").ok)
             printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

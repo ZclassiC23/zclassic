@@ -1,3 +1,13 @@
+// one-result-type-ok:alphanumeric-hex-classifiers — zslp_service_is_
+// alphanumeric and zslp_service_is_hex_string are the file's only
+// remaining bare-bool exports: pure character-class scans with no
+// LOG_FAIL/LOG_ERR path and no failure state to represent (struct
+// zcl_result would always report OK). zslp_service_validate_token_key,
+// zslp_service_decode_transparent_destination, and zslp_service_
+// validate_recipient_addr — the genuinely fallible validators in this
+// file, each with a distinct LOG_FAIL-guarded error branch — already
+// return struct zcl_result.
+
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * ZSLP application service — validation and persistence helpers. */
 
@@ -65,22 +75,23 @@ bool zslp_service_is_hex_string(const char *str, size_t len)
     return true;
 }
 
-bool zslp_service_validate_token_key(const char *token_key)
+struct zcl_result zslp_service_validate_token_key(const char *token_key)
 {
     size_t len;
     if (!token_key)
-        LOG_FAIL("zslp_svc", "validate_token_key: NULL token_key");
+        return ZCL_ERR(-1, "validate_token_key: NULL token_key");
     len = strlen(token_key);
     if (len == 0 || len > ZSLP_MAX_TOKEN_KEY_LEN)
-        LOG_FAIL("zslp_svc", "validate_token_key: bad length %zu", len);
+        return ZCL_ERR(-2, "validate_token_key: bad length %zu", len);
 
     /* Canonical full-txid form: exactly 64 hex chars. Always accepted. */
     if (len == 64 && zslp_service_is_hex_string(token_key, len))
-        return true;
+        return ZCL_OK;
 
     /* All other keys must be alphanumeric. */
     if (!zslp_service_is_alphanumeric(token_key, len))
-        return false;
+        return ZCL_ERR(-3, "validate_token_key: not alphanumeric: %s",
+                       token_key);
 
     /* disambiguate ticker-style token IDs from truncated hex txid
      * prefixes. A string that is ALL hex digits ([0-9a-fA-F]) at any
@@ -94,13 +105,15 @@ bool zslp_service_validate_token_key(const char *token_key)
      * token-key lookups; those tokens must be referenced by their
      * 64-char txid instead. */
     if (zslp_service_is_hex_string(token_key, len))
-        return false;
+        return ZCL_ERR(-4,
+                       "validate_token_key: ambiguous hex-only ticker "
+                       "(use the 64-char txid instead): %s", token_key);
 
-    return true;
+    return ZCL_OK;
 }
 
-bool zslp_service_decode_transparent_destination(const char *addr,
-                                                 struct tx_destination *dest)
+struct zcl_result zslp_service_decode_transparent_destination(
+    const char *addr, struct tx_destination *dest)
 {
     const struct chain_params *cp;
     size_t pk_len = 0, sc_len = 0;
@@ -108,29 +121,35 @@ bool zslp_service_decode_transparent_destination(const char *addr,
     const unsigned char *sc_pfx;
 
     if (!addr || !dest)
-        LOG_FAIL("zslp_svc", "decode_transparent_destination: NULL addr or dest");
+        return ZCL_ERR(-1,
+                       "decode_transparent_destination: NULL addr or dest");
 
     cp = chain_params_get();
     pk_pfx = chain_params_base58_prefix(cp, B58_PUBKEY_ADDRESS, &pk_len);
     sc_pfx = chain_params_base58_prefix(cp, B58_SCRIPT_ADDRESS, &sc_len);
-    return decode_destination(addr, pk_pfx, pk_len, sc_pfx, sc_len, dest);
+    if (!decode_destination(addr, pk_pfx, pk_len, sc_pfx, sc_len, dest))
+        return ZCL_ERR(-2,
+                       "decode_transparent_destination: invalid address %s",
+                       addr);
+    return ZCL_OK;
 }
 
-bool zslp_service_validate_recipient_addr(const char *addr,
+struct zcl_result zslp_service_validate_recipient_addr(const char *addr,
                                           bool strict_chain_addr)
 {
     size_t len;
     struct tx_destination dest;
 
     if (!addr)
-        LOG_FAIL("zslp_svc", "validate_recipient_addr: NULL addr");
+        return ZCL_ERR(-1, "validate_recipient_addr: NULL addr");
     len = strlen(addr);
     if (len == 0 || len > 128)
-        LOG_FAIL("zslp_svc", "validate_recipient_addr: bad length %zu", len);
+        return ZCL_ERR(-2, "validate_recipient_addr: bad length %zu", len);
     if (strict_chain_addr)
         return zslp_service_decode_transparent_destination(addr, &dest);
-    return zslp_service_is_alphanumeric(addr, len) ||
-           zslp_service_decode_transparent_destination(addr, &dest);
+    if (zslp_service_is_alphanumeric(addr, len))
+        return ZCL_OK;
+    return zslp_service_decode_transparent_destination(addr, &dest);
 }
 
 const char *zslp_service_validate_create_request(
@@ -170,10 +189,10 @@ const char *zslp_service_validate_transfer_request(
 {
     if (!req)
         return "request is required";
-    if (!zslp_service_validate_token_key(req->token_id))
+    if (!zslp_service_validate_token_key(req->token_id).ok)
         return "token_id must be alphanumeric or 64-char hex";
     if (!zslp_service_validate_recipient_addr(req->recipient_addr,
-                                              req->strict_chain_addr))
+                                              req->strict_chain_addr).ok)
         return "address is invalid";
     if (req->amount == 0)
         return "amount must be a positive integer";
@@ -232,8 +251,8 @@ uint64_t zslp_service_get_balance(sqlite3 *db, const char *token_id,
     struct db_zslp_balance balance;
     char token_key[ZSLP_MAX_TOKEN_KEY_LEN + 1];
 
-    if (!db || !zslp_service_validate_token_key(token_id) ||
-        !zslp_service_validate_recipient_addr(addr, false))
+    if (!db || !zslp_service_validate_token_key(token_id).ok ||
+        !zslp_service_validate_recipient_addr(addr, false).ok)
         return 0;
 
     zslp_service_canonicalize_token_key(token_id, token_key);
@@ -249,7 +268,7 @@ struct zcl_result zslp_service_get_token(sqlite3 *db, const char *token_id,
     struct node_db ndb;
     char token_key[ZSLP_MAX_TOKEN_KEY_LEN + 1];
 
-    if (!db || !out || !zslp_service_validate_token_key(token_id))
+    if (!db || !out || !zslp_service_validate_token_key(token_id).ok)
         return ZCL_ERR(-1,
                  "get_token: invalid args (db=%p out=%p token_id=%s)",
                  (void *)db, (void *)out, token_id ? token_id : "NULL");
@@ -281,7 +300,7 @@ int zslp_service_list_transfers(sqlite3 *db, const char *token_id,
     char token_key[ZSLP_MAX_TOKEN_KEY_LEN + 1];
 
     if (!db || !out || max_out == 0 ||
-        !zslp_service_validate_token_key(token_id))
+        !zslp_service_validate_token_key(token_id).ok)
         return 0;
 
     zslp_service_canonicalize_token_key(token_id, token_key);
@@ -296,8 +315,8 @@ struct zcl_result zslp_service_credit_balance(sqlite3 *db, const char *token_id,
     struct node_db ndb;
     char token_key[ZSLP_MAX_TOKEN_KEY_LEN + 1];
 
-    if (!db || amount == 0 || !zslp_service_validate_token_key(token_id) ||
-        !zslp_service_validate_recipient_addr(recipient_addr, false))
+    if (!db || amount == 0 || !zslp_service_validate_token_key(token_id).ok ||
+        !zslp_service_validate_recipient_addr(recipient_addr, false).ok)
         return ZCL_ERR(-1,
                  "credit_balance: invalid args (token=%s addr=%s amount=%llu)",
                  token_id ? token_id : "NULL", recipient_addr ? recipient_addr : "NULL",

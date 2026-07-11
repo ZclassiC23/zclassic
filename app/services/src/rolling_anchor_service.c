@@ -1,3 +1,4 @@
+// one-result-type-ok:json-dump-bool-only:rolling_anchor_dump_state_json — rolling_anchor_window_hash_ending_at already returns zcl_result; the dumper stays bool per CLAUDE.md "Adding state introspection".
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Rolling SHA3 anchor extension — see services/rolling_anchor_service.h

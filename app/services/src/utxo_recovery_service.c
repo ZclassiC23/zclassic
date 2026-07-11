@@ -1,3 +1,12 @@
+// one-result-type-ok:xor-mismatch-classifier — the sole remaining legacy
+// export, utxo_recovery_xor_mismatch_is_corruption_candidate, is a pure
+// two-integer classification (stale-vs-corruption split, see the doc
+// comment above it) with no failure path — there is nothing that can fail
+// when comparing two uint64_t counts, so struct zcl_result would always
+// report OK. Every fallible surface in this file (utxo_recovery_commit_tip,
+// utxo_recovery_wipe, utxo_recovery_execute, ...) already returns
+// zcl_result.
+
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * UTXO Recovery Service: boot-time UTXO consistency checks and destructive
