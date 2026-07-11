@@ -80,6 +80,17 @@ struct utxo_import_result {
 struct utxo_import_result utxo_recovery_import_ldb(
     struct utxo_recovery_ctx *ctx);
 
+/* Point-in-time copy of a (possibly live) zclassicd chainstate LevelDB from
+ * cs_path to import_path.  Retries until no source file changed while the copy
+ * ran, so the image can never be torn mid-write; refuses with a non-ok
+ * zcl_result if the source never goes quiet.  Never touches cs_path (the copied
+ * LOCK, if any, is the caller's to remove).  Implemented in
+ * utxo_recovery_ldb_copy.c — exposed so the borrowed-frontier cure
+ * (sapling_anchor_frontier_unavailable tier-1b) can borrow a live chainstate
+ * read-only. */
+struct zcl_result utxo_recovery_copy_chainstate_stable(const char *cs_path,
+                                                       const char *import_path);
+
 /* ── Chain tip restoration ───────────────────────────────── */
 
 struct chain_restore_result {
