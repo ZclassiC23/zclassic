@@ -372,6 +372,7 @@ current green tree.
 |------|------|------------------------------|
 | **E1: `check-file-size-ceiling`** | RATCHET | No `app/**/*.c` exceeds **800 lines** (caps mega-modules hiding behind many <500-LOC functions). Baseline `file_size_ceiling_baseline.txt` (`<path> <max-loc>`; may only shrink) IS the visible escape hatch — no inline override. |
 | **E2: `check-one-result-type`** | RATCHET | New `app/services/src/*.c` reference `struct zcl_result` (§2) instead of bare bool/int. File-granularity. Baseline `one_result_type_baseline.txt` (empty; 9 originals migrated). Override `// one-result-type-ok:<tag>` (pure table/registry helper). |
+| **`check-service-result-convergence`** | RATCHET | Phase 3 sibling to E2: counts *exported* (non-static, top-level) bare-bool function DEFINITIONS per `app/services/src/*.c` file, so a file cannot stay E2-clean forever while still exporting legacy bool functions alongside its one `zcl_result` use. Baseline `service_result_convergence_baseline.txt` (`<path> <count>`; may only shrink; a file whose live count reaches 0, or that gains the `// one-result-type-ok:<tag>` marker, must be deleted from it). Same override marker as E2. Inventory + lane plan: `docs/work/service-result-convergence.md`. |
 | **E3: `check-shape-includes-header`** | HARD | A shape file must include its shape contract header: conditions → `"framework/condition.h"` or `"conditions/"`; models → a `"models/"` header (pulls AR lifecycle); supervisors → `"supervisors/"` or `"util/supervisor.h"`. `app/jobs/` skipped (no `job.h` yet). Override `// shape-include-ok:<tag>`. |
 | **E4: `check-projections-pure`** | HARD | A projection (`lib/storage/src/*_projection.c`) is a pure fold: no `#include` from `app/services/`-`app/controllers/`, and no AR save path (`AR_*_SAVE`, which would fire another model's hooks). Override `// projection-cache-ok:<tag>` (memoize a derived value into the projection's own table). |
 | **E6: `check-one-write-path`** | RATCHET | New chain-state write surfaces forbidden unless they route through the reducer/log authority. Scans for legacy writers (`active_chain_set_tip`, `coins_view_*` flush/write, `process_new_block`, `connect_tip`, `disconnect_tip`, `utxo_projection_set_author`) vs `one_write_path_baseline.txt`. Override `// one-write-path-ok:<tag>` (compat wrapper, not a second consensus writer). |
@@ -426,6 +427,7 @@ add/remove a gate.
 - `check-raw-malloc`
 - `check-raw-sqlite`
 - `check-rpc-registrar`
+- `check-service-result-convergence`
 - `check-silent-errors`
 - `check-silent-errors-bool`
 - `check-wallet-raw-prepare-log`
