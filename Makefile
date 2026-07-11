@@ -2791,6 +2791,81 @@ check-observability-pairing: tools/check_observability_pairing
 	@echo "══ LINT: observable stderr diagnostics ══"
 	@$(BIN_DIR)/check_observability_pairing
 
+# ── Sealed consensus core (Wave 1.1 / W0) ───────────────────────────────────
+# core/ is the physical sealed consensus tree (predicates + static param
+# tables). core_seal is a tiny build-time C tool (no external deps: it links the
+# in-tree FIPS-202 SHA3-256 + memory_cleanse) that reads the file list on stdin
+# (git ls-files -z) and writes/verifies core/MANIFEST.sha3. See tools/core_seal.c
+# and core/UNSEAL.md for the ritual.
+.PHONY: core-seal core-seal-check core-unseal check-core-seal check-core-include-boundary
+CORE_MANIFEST := core/MANIFEST.sha3
+CORE_UNSEAL_TOKEN := .core-unseal-token
+CORE_SEAL_SRCS := tools/core_seal.c lib/crypto/src/sha3.c lib/support/src/cleanse.c
+
+.PHONY: tools/core_seal
+tools/core_seal: $(BIN_DIR)/core_seal
+$(BIN_DIR)/core_seal: $(CORE_SEAL_SRCS)
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror \
+	    -Ilib/crypto/include -Ilib/support/include -o $@ $(CORE_SEAL_SRCS)
+
+# Freeze the seal: recompute and (re)write core/MANIFEST.sha3 over every tracked
+# file under core/ (excluding the manifest itself), and consume any active
+# unseal token (the ritual is complete once the seal is re-frozen).
+core-seal: tools/core_seal
+	@echo "══ core: sealing consensus core → $(CORE_MANIFEST) ══"
+	@git ls-files -z core/ | $(BIN_DIR)/core_seal seal $(CORE_MANIFEST)
+	@rm -f $(CORE_UNSEAL_TOKEN)
+
+# Verify the seal: fail LOUD if core/ drifts from core/MANIFEST.sha3. Honors an
+# active .core-unseal-token (owner-run unseal ritual) for exactly one commit.
+core-seal-check: tools/core_seal
+	@echo "══ core: verifying consensus-core seal ══"
+	@if [ -f "$(CORE_UNSEAL_TOKEN)" ]; then \
+	    echo "core-seal-check: unseal token present — seal check LIFTED for this commit"; \
+	    echo "  (token: $$(cat $(CORE_UNSEAL_TOKEN) 2>/dev/null | head -1)); re-run 'make core-seal' to refreeze."; \
+	    git ls-files -z core/ | $(BIN_DIR)/core_seal check $(CORE_MANIFEST) || true; \
+	else \
+	    git ls-files -z core/ | $(BIN_DIR)/core_seal check $(CORE_MANIFEST); \
+	fi
+
+# Owner-run unseal ritual: record the reason + current ROOT hash in the
+# append-only core/UNSEAL.md and mint a one-shot .core-unseal-token (gitignored)
+# that core-seal-check honors until the next 'make core-seal'. REASON is
+# mandatory. No agent source edit can produce this — it is an owner make target.
+core-unseal:
+	@if [ -z "$(REASON)" ]; then \
+	    echo "core-unseal: REASON is required — 'make core-unseal REASON=\"why\"'" >&2; \
+	    exit 2; \
+	fi
+	@ts=$$(date -u +%Y-%m-%dT%H:%M:%SZ); \
+	old=$$(grep -E '^ROOT ' $(CORE_MANIFEST) 2>/dev/null | awk '{print $$2}'); \
+	old=$${old:-<none>}; \
+	printf '\n- %s — REASON: %s\n  old ROOT: %s\n  by: owner unseal ritual (make core-unseal)\n' \
+	    "$$ts" "$(REASON)" "$$old" >> core/UNSEAL.md; \
+	printf 'unsealed %s\nreason: %s\nold-root: %s\n' "$$ts" "$(REASON)" "$$old" > $(CORE_UNSEAL_TOKEN); \
+	echo "core-unseal: token minted ($(CORE_UNSEAL_TOKEN)); seal lifted for one commit."; \
+	echo "  Make the core/ edit, then 'make core-seal' + 'make lint && make test_parallel' before commit."
+
+# WARN/ratchet lint gate for the seal (HARD-flipped by a later lane at W5).
+# In WARN mode a drift is reported but does not fail the build.
+check-core-seal: tools/core_seal
+	@echo "══ LINT: consensus-core seal (WARN/ratchet until W5) ══"
+	@if [ -f "$(CORE_UNSEAL_TOKEN)" ]; then \
+	    echo "check-core-seal: unseal token present — seal check lifted for this commit"; \
+	elif git ls-files -z core/ | $(BIN_DIR)/core_seal check $(CORE_MANIFEST); then \
+	    :; \
+	else \
+	    echo "check-core-seal: WARN — core/ drifts from its seal. Run 'make core-seal' to refreeze."; \
+	    echo "  (WARN/ratchet: not failing the build yet; a later lane flips this HARD at W5.)"; \
+	fi
+
+# Sealed-core include boundary: core/ may not depend upward/sideways (esp. not
+# on lib/validation). Clone of check_domain_purity.sh over the core/ subdirs.
+check-core-include-boundary:
+	@echo "══ LINT: sealed consensus-core include boundary ══"
+	@./tools/scripts/check_core_include_boundary.sh
+
 check-silent-errors-services:
 	@echo "══ LINT: silent error returns in services ══"
 	@HITS=$$(grep -rn -B1 'return -1;' app/services/src/ --include='*.c' \
@@ -3227,7 +3302,7 @@ check-honest-witness:
 	@echo "══ LINT: honest witness (E12) ══"
 	@ZCL_LINT_MODE=FAIL ./tools/lint/check_honest_witness.sh
 
-lint: check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vendor-provenance
+lint: check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vendor-provenance
 	@echo "══ LINT: all checks passed ══"
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the

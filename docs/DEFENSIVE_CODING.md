@@ -282,6 +282,27 @@ assert green).
   already clean). Override `// domain-purity-ok:<tag>`. Impl:
   `tools/scripts/check_domain_purity.sh`.
 
+- **Gate #46: `check-core-include-boundary`** (HARD) — the sealed consensus
+  core (top-level `core/`, populated by the Wave 1.1 physical split) is the
+  innermost layer. A `core/**/*.c|.h|.inc` file may only `#include` its own
+  preserved headers (`"domain/consensus/…"`, `"consensus/…"`, `"core/…"`,
+  `"chainparams/…"`), C/system `<…>` headers, bare siblings, or a pure leaf lib
+  subsystem — **never** `lib/validation` (validation *drives* consensus, it is
+  not consensus) or any app/ shape. One grandfathered exception
+  (`core/consensus/src/check_block.c` → `"validation/sigops.h"`) is a WARN
+  ratchet note until the Pre-W5 content fix redirects it. Override
+  `// core-boundary-ok:<tag>`. Impl: `tools/scripts/check_core_include_boundary.sh`.
+
+- **Gate #47: `check-core-seal`** (WARN/ratchet → HARD at split wave W5) — pins
+  the byte-integrity of `core/` to the SHA3-256 manifest `core/MANIFEST.sha3`
+  (per-file digest + a ROOT digest over the sorted `(path, filehash)` stream).
+  Any change to a sealed file changes ROOT. Regenerate with `make core-seal`;
+  verify standalone with `make core-seal-check` (fails loud). A deliberate
+  consensus-core change goes through the owner unseal ritual
+  (`make core-unseal REASON=…` → append-only `core/UNSEAL.md` + one-shot
+  `.core-unseal-token`). Tool: `tools/core_seal.c` (no external deps: links the
+  in-tree FIPS-202 SHA3-256).
+
 - **Gate #16: `check-supervisor-registration`** (RATCHET) — flags any
   `app/services/src/*_service.c` that spawns work (`pthread_create`,
   `thread_registry_spawn`, `health_register_periodic`) but does NOT call
@@ -370,6 +391,8 @@ add/remove a gate.
 - `check-before-save-hooks`
 - `check-coins-lookup-nullcheck`
 - `check-consensus-parity`
+- `check-core-include-boundary`
+- `check-core-seal`
 - `check-doc-accuracy`
 - `check-doc-counts`
 - `check-domain-purity`

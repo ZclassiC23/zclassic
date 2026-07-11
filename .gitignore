@@ -27,6 +27,8 @@ crash_log.txt
 /core
 /core.*
 /vgcore.*
+# ...but the sealed consensus-core TREE (core/) is tracked (Wave 1.1 split).
+!/core/
 
 # Test artifacts (Tor integration temp dirs)
 zcl_torrc_hs_*/
@@ -67,3 +69,6 @@ compile_commands.json
 
 # chaos harness run artifacts
 chaos-output/
+
+# Sealed consensus-core unseal token (owner ritual; never tracked)
+.core-unseal-token
