@@ -629,7 +629,14 @@ emit_plan_json() {
     printf '    "reason": "%s",\n' "$(json_escape "$PLAN_CACHE_REASON")"
     printf '    "root": "%s"\n' "$(json_escape "$CACHE_ROOT")"
     printf '  },\n'
+    printf '  "native_shortcuts": {\n'
+    printf '    "fresh_source_tree": "zclassic23 <leaf> [--input=json]",\n'
+    printf '    "dev_linger_lane": "zclassic23-dev <leaf> [--input=json]",\n'
+    printf '    "discover": "zclassic23 discover help | zclassic23 discover search <q>",\n'
+    printf '    "dev_hotswap": "zclassic23-dev dev change apply --input=json"\n'
+    printf '  },\n'
     printf '  "mcp_shortcuts": {\n'
+    printf '    "status": "legacy, removed in W3 -- prefer native_shortcuts above",\n'
     printf '    "fresh_source_tree": "make agent-mcp-call TOOL=<tool> [ARGS='
     printf "'{}'"
     printf ']",\n'
