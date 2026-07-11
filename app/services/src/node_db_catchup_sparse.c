@@ -19,16 +19,24 @@
 #include <stdint.h>
 
 /* A verified body-less snapshot may publish its derived projection cursor up
- * to the last resolvable active-chain slot. If exactly the next/tip slot is
- * still absent, the backfill watcher waits instead of retrying the same
- * one-row catchup transaction every loop. */
+ * to the last resolvable active-chain slot. node_db_catchup_sparse_prefix_target
+ * always publishes target = first_missing_index_h - 1, so a fresh catchup
+ * pass can only make progress when the very next slot the projection needs
+ * (projection_tip + 1) is itself present: if THAT slot is the missing one,
+ * target collapses back to projection_tip (no advance) no matter how many
+ * further slots above it are also missing. In that shape the backfill
+ * watcher waits instead of restarting catchup service every loop — a
+ * restart cannot help until the reducer/indexer produces that next slot.
+ * next_slot_present is whether active_chain_at(projection_tip + 1) resolves;
+ * the caller derives it that way (not chain_tip), which is what makes this
+ * correct for two-or-more missing top slots, not just exactly one. */
 bool node_db_catchup_sparse_tip_slot_pending(bool sparse_prefix,
                                              int projection_tip,
                                              int chain_tip,
-                                             bool tip_slot_present)
+                                             bool next_slot_present)
 {
     return sparse_prefix && projection_tip >= 0 &&
-           projection_tip + 1 == chain_tip && !tip_slot_present;
+           projection_tip < chain_tip && !next_slot_present;
 }
 
 /* Return the highest projection cursor that a body-less, proven snapshot

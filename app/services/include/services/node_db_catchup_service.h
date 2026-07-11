@@ -28,13 +28,17 @@ struct active_chain;
 struct wallet;
 
 /* A verified body-less snapshot may publish its derived projection cursor up
- * to the last resolvable active-chain slot. If exactly the next/tip slot is
- * still absent, the backfill watcher waits instead of retrying the same
- * one-row catchup transaction every loop. */
+ * to the last resolvable active-chain slot. When the very next slot the
+ * projection needs (projection_tip + 1) is a missing active-chain index —
+ * regardless of how many further slots above it are also missing — a fresh
+ * catchup pass cannot advance the cursor, so the backfill watcher waits
+ * instead of retrying the same no-progress catchup transaction every loop.
+ * next_slot_present must reflect presence at height projection_tip + 1
+ * (not chain_tip). See node_db_catchup_sparse.c for the full rationale. */
 bool node_db_catchup_sparse_tip_slot_pending(bool sparse_prefix,
                                              int projection_tip,
                                              int chain_tip,
-                                             bool tip_slot_present);
+                                             bool next_slot_present);
 
 #ifdef ZCL_TESTING
 #include <stddef.h>

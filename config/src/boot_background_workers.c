@@ -374,12 +374,21 @@ static void *projection_backfill_service_thread(void *arg)
             bool sparse_prefix =
                 projection_sparse_prefix_is_expected(projection_tip,
                                                      chain_tip);
-            bool tip_slot_present =
-                active_chain_at(&svc->state->chain_active, chain_tip) != NULL;
+            /* node_db_catchup_service_run always starts its walk at
+             * projection_tip + 1 (start = db_tip + 1), so THAT height, not
+             * chain_tip, is the slot a fresh catchup pass must resolve to
+             * make any progress. Checking chain_tip instead only caught the
+             * single-missing-slot case; two-or-more missing top slots left
+             * this false while catchup churned (start → immediate
+             * first_missing_index_h - 1 == projection_tip, no advance,
+             * restart every ~5 s). */
+            bool next_slot_present =
+                active_chain_at(&svc->state->chain_active,
+                                projection_tip + 1) != NULL;
             bool sparse_tip_pending =
                 node_db_catchup_sparse_tip_slot_pending(
                     sparse_prefix, projection_tip, chain_tip,
-                    tip_slot_present);
+                    next_slot_present);
             if (projection_block_tip >= 0 &&
                 projection_tip > projection_block_tip &&
                 projection_block_tip < chain_tip &&

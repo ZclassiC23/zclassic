@@ -94,6 +94,22 @@ int test_node_db_catchup_service(void)
               !node_db_catchup_sparse_tip_slot_pending(true, 1, 2, true));
     NDC_CHECK("ordinary projections never enter sparse tip wait",
               !node_db_catchup_sparse_tip_slot_pending(false, 1, 2, false));
+    /* Two-or-more missing TOP slots (chain_tip=3, projection_tip=1: heights
+     * 2 AND 3 both missing active-chain indices). A fresh catchup pass would
+     * start at height 2, find it missing, and publish target=1 — the same
+     * projection_tip it already has, no progress — so the watcher must
+     * suppress the restart just as it does for a single missing slot. This
+     * is the exact defect this predicate was generalized to cover. */
+    NDC_CHECK("sparse watcher waits when two-or-more top slots are missing",
+              node_db_catchup_sparse_tip_slot_pending(true, 1, 3, false));
+    /* Missing slot strictly interior (below projection_tip + 1) while the
+     * next-needed slot IS present: a fresh catchup pass starting at
+     * projection_tip + 1 makes real progress (the interior hole is a lean
+     * hole handled inline by the run, not a reason to wait), so the watcher
+     * must allow the restart. */
+    NDC_CHECK("sparse watcher allows restart when the next slot is present "
+              "despite an interior hole",
+              !node_db_catchup_sparse_tip_slot_pending(true, 1, 5, true));
 
     test_cleanup_tmpdir(dir);
     printf("node_db_catchup_service: %d failures\n", failures);
