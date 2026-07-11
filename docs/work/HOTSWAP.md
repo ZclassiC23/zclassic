@@ -33,7 +33,8 @@ transactional reload still verifies it and preserves rollback semantics.
 | Loader (`hotswap_load`, registry, `zcl_state` dumper) | `lib/hotswap/` |
 | Immutable router snapshots + transactional batch commit | `tools/mcp/router.{c,h}` |
 | Driving MCP tool `zcl_agent_hotswap` | `tools/mcp/controllers/dev_hotswap_controller.c` |
-| v2 manifest + pilot controller (`ZCL_HOTSWAP_EXPORT_ROUTES`) | `lib/hotswap/include/hotswap/hotswap.h`, `tools/mcp/controllers/app_controller.c` |
+| v2 manifest + `ZCL_HOTSWAP_EXPORT_ROUTES` macro | `lib/hotswap/include/hotswap/hotswap.h` |
+| Eligible controller TUs (each exports its own `k_routes[]`) | `tools/mcp/controllers/{app,meta,chain,net,wallet}_controller.c` |
 | Runtime eligibility allowlist | `config/hotswap_eligible.def` |
 | Persistent dev RPC bridge | `tools/mcp/dev_rpc_bridge.{c,h}` (`dev_hotswap`, read-only `dev_mcp_call`) |
 | Build/verification targets | `make hotswap-so`, `make hotswap`, `make hotswap-sim` |
@@ -111,15 +112,18 @@ be described as a persistent swap.
 sh tools/scripts/hotswap_demo.sh
 ```
 
-It builds `zclassic23-dev`, compiles the allowlisted app controller into a v2
-generation, dispatches `zcl_agent_hotswap` in one exact-dev-datadir `mcpcall`
-process, and asserts the transaction commits with source/input/artifact
-provenance. It does not alter the running service.
+It builds `zclassic23-dev` once, then for EVERY eligible controller in
+`config/hotswap_eligible.def` compiles it into a v2 generation, dispatches
+`zcl_agent_hotswap` in one exact-dev-datadir `mcpcall` process, and asserts the
+transaction commits with source/input/artifact provenance and re-points a
+read-only route that TU owns. A harness sync-check fails loud if an eligible TU
+has no proof entry (or vice-versa). It does not alter the running service.
 Expected tail:
 
 ```
-{"ok":true,"gen":1,...,"provider_id":"mcp.routes",...,"artifact_sha256":"..."}
-PASS: manifest v2 validated and the complete app route generation committed
+PASS: tools/mcp/controllers/app_controller.c committed a v2 generation re-pointing zcl_name_list
+...
+== hotswap_demo: 5 passed, 0 failed over eligible TUs ==
 ```
 
 ## Tests
@@ -134,15 +138,44 @@ PASS: manifest v2 validated and the complete app route generation committed
 - `make t ONLY=dev_mcp_rpc_bridge` — release omission, exact-lane registration,
   CLI typing, and persistent generation visibility across resident RPC calls.
 
+## Eligibility (which TUs Tier-1 can swap)
+
+Eligible = (a) all routes go through the router snapshot mechanism
+(`ZCL_HOTSWAP_EXPORT_ROUTES` over one `k_routes[]`), (b) no mutable file-scope
+static (`check-hotswap-static-state`), (c) app-layer, outside every consensus/
+state root (`check-hotswap-eligible-scope`, which now also rejects a listed TU
+that fails to invoke the export macro). The scope gate's forbidden roots are
+`core`, `lib/consensus`, `lib/validation`, `lib/storage`, `lib/net`,
+`lib/coins`, `app/jobs`.
+
+| TU | Eligible | Why |
+|----|----------|-----|
+| `tools/mcp/controllers/app_controller.c` | ✅ | pilot; stateless `k_routes[]` (ZNAM/ZMSG/market/swap) |
+| `tools/mcp/controllers/meta_controller.c` | ✅ | stateless; status/kpi/tools_list/self_test |
+| `tools/mcp/controllers/chain_controller.c` | ✅ | stateless read-only chain/replay (legacy-dir scratch hoisted to stack) |
+| `tools/mcp/controllers/net_controller.c` | ✅ | stateless network introspection |
+| `tools/mcp/controllers/wallet_controller.c` | ✅ | stateless; includes wallet-mutating routes, same footing as the pilot's destructive routes |
+| `tools/mcp/controllers/ops_controller.c` | ❌ | two route tables (`g_agent_mcp_routes` + `k_routes`) — one macro exports one `gen_init`; needs an aggregator |
+| `tools/mcp/controllers/diagnostics_controller.c` | ❌ | mutable file-scope statics (`g_state_subsystems_csv`, non-const `p_state[]`) |
+| `tools/mcp/controllers/dev_hotswap_controller.c` | ❌ | is the swap driver; swapping the swapper is circular |
+| `app/controllers/src/api_controller_routes.c`, `diagnostics_registry.c` | ❌ | `ZCL_HOTSWAP_EXPORT_PROVIDER` direct-provider slots can't join the router transaction (fail closed on `CAP_DIRECT_PROVIDER`) |
+
+Each eligible TU is built into its OWN single-provider `.so` and swapped
+independently. Every eligible TU is proven end-to-end by
+`tools/scripts/hotswap_demo.sh` (build gen `.so` → dlopen via one exact-dev
+`mcpcall` → assert the atomic commit re-points a route it owns).
+
 ## Known limits (v2 stateless pilot, fail-closed)
 
-- Only the stateless MCP route provider is admitted. REST and diagnostics were
-  removed from eligibility because their independent atomic slots cannot join
-  the router transaction. Services, models, storage, events, conditions,
-  supervisors, wallet/key state, networking, reducer/consensus, and bootstrap
-  ownership are `reload_required`.
+- Only the stateless MCP route provider class (`mcp.routes`) is admitted. REST
+  and diagnostics were removed from eligibility because their independent atomic
+  slots cannot join the router transaction. Services, models, storage, events,
+  conditions, supervisors, wallet/key *state*, networking, reducer/consensus,
+  and bootstrap ownership are `reload_required`.
 - One eligible controller per `.so`; a generated multi-provider aggregator is
-  still needed before multiple controller TUs can form one generation.
+  still needed before multiple controller TUs can form ONE generation. The
+  Wave 3.1 expansion widens the *set* of independently swappable TUs (app +
+  meta + chain + net + wallet), it does NOT put multiple providers in one `.so`.
 - There are no state migrations or background callback leases in this pilot.
   That is safe because admitted code is stateless, declares no quiescence, and
   old text is never unmapped. Stateful modules remain refused.

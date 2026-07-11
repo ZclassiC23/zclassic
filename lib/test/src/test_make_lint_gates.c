@@ -60,6 +60,8 @@
     "lib/test/fixtures/hotswap_manifest_bad_scope.def"
 #define HOTSWAP_BAD_STATIC_MANIFEST_REL \
     "lib/test/fixtures/hotswap_manifest_bad_static.def"
+#define HOTSWAP_NO_MACRO_MANIFEST_REL \
+    "lib/test/fixtures/hotswap_manifest_no_macro.def"
 #define GIT_HOOKS_SCRIPT_REL "tools/scripts/check_git_hooks_installed.sh"
 #define GIT_HOOKS_PRE_PUSH_REL "tools/githooks/pre-push"
 
@@ -1952,6 +1954,11 @@ static int t_hotswap_eligible_scope_gate(void)
          * (exit 1) — proof it is not hollow. */
         ASSERT(run_hotswap_gate_with_manifest(HOTSWAP_SCOPE_SCRIPT_REL,
                                               HOTSWAP_BAD_SCOPE_MANIFEST_REL) == 1);
+        /* An app-layer TU that does NOT invoke ZCL_HOTSWAP_EXPORT_ROUTES (so it
+         * could never actually export a generation) also trips the gate —
+         * proof the macro-presence check added in Wave 3.1 is not hollow. */
+        ASSERT(run_hotswap_gate_with_manifest(HOTSWAP_SCOPE_SCRIPT_REL,
+                                              HOTSWAP_NO_MACRO_MANIFEST_REL) == 1);
         /* Recovery: back on the real manifest the gate passes again. */
         ASSERT(run_hotswap_gate_with_manifest(HOTSWAP_SCOPE_SCRIPT_REL,
                                               HOTSWAP_MANIFEST_REL) == 0);

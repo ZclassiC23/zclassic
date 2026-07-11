@@ -18,6 +18,11 @@
 #include "../metrics.h"
 #include "../baseline.h"
 
+/* Tier-1 hot-swap: this controller's route table is generation-exportable
+ * (see config/hotswap_eligible.def). The probe names a read-only route it
+ * owns; the #define MUST precede hotswap.h. */
+#define ZCL_HOTSWAP_PROBE_TOOLS "zcl_tools_list"
+#include "hotswap/hotswap.h"
 #include "json/json.h"
 #include "net/peer_scoring.h"
 #include "net/peer_bandwidth.h"
@@ -983,3 +988,9 @@ void mcp_register_meta(void)
     for (size_t i = 0; i < PARAM_COUNT(k_routes); i++)
         mcp_router_register_required(&k_routes[i]);
 }
+
+/* ── Hot-swap: generation entrypoint (dev-only; no-op in node/release) ──
+ * Under -DZCL_HOTSWAP_GEN this emits the v2 manifest + zcl_hotswap_gen_init
+ * that re-points every route above at this TU's freshly-compiled handlers.
+ * Stateless, all-const file scope — swap-safe. No trailing semicolon. */
+ZCL_HOTSWAP_EXPORT_ROUTES(k_routes, PARAM_COUNT(k_routes))
