@@ -232,9 +232,12 @@ void boot_configure_frontend_rpc(struct boot_svc_ctx *svc);
  * Called once from app_init_services before the frontend kernel starts. */
 bool boot_register_frontend_services(struct boot_svc_ctx *svc);
 
-/* Catchup-job helpers stay in boot_services.c (the catchup job is owned beside
- * the staying app_init/shutdown call sites); the projection-backfill worker in
- * boot_background_workers.c drives them forward. */
+/* Thin boot_svc_ctx-to-job wrappers stay in boot_services.c beside the
+ * app_init/shutdown call sites that own &svc->catchup_job; the
+ * projection-backfill worker in boot_background_workers.c drives them
+ * forward. The actual start/join/reap POLICY lives in
+ * app/services/src/catchup_lifecycle_service.c (catchup_lifecycle_start/
+ * _join/_reap) — it takes the job + inputs directly, not boot_svc_ctx. */
 bool boot_start_catchup_service(struct boot_svc_ctx *svc, const char *datadir);
 bool boot_reap_catchup_service(struct boot_svc_ctx *svc);
 
