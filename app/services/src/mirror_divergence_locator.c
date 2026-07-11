@@ -56,7 +56,7 @@ static int64_t g_pending_first_seen_unix = 0;
  * main-chain rows. */
 static bool mdl_local_hash(int height, char out_hex[65])
 {
-    if (lms_local_hash_at(height, out_hex))
+    if (lms_local_hash_at(height, out_hex).ok)
         return true;
 
     struct node_db *ndb = app_runtime_node_db();
@@ -95,7 +95,7 @@ static bool mdl_local_hash(int height, char out_hex[65])
 
 static bool mdl_remote_hash(int height, char out_hex[65])
 {
-    return lms_remote_hash_at(height, out_hex);
+    return lms_remote_hash_at(height, out_hex).ok;
 }
 
 #ifdef ZCL_TESTING

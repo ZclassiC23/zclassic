@@ -82,7 +82,7 @@ int64_t csr_header_height(struct chain_state_repository *csr)
     return height;
 }
 
-bool csr_capture_frontiers(
+struct zcl_result csr_capture_frontiers(
     struct chain_state_repository *csr,
     struct active_chain *expected_chain,
     struct block_index **expected_header_slot,
@@ -90,12 +90,14 @@ bool csr_capture_frontiers(
     struct chain_state_frontier_view *out)
 {
     if (!out)
-        return false;
+        return ZCL_ERR(-1, "capture_frontiers: null out requested_height=%d",
+                       requested_height);
     memset(out, 0, sizeof(*out));
     out->window.height = -1;
     out->window.requested_height = requested_height;
     if (!csr)
-        return false;
+        return ZCL_ERR(-2, "capture_frontiers: null csr requested_height=%d",
+                       requested_height);
 
     pthread_mutex_lock(&csr->lock);
     out->initialized = csr->initialized;
@@ -110,5 +112,11 @@ bool csr_capture_frontiers(
             out->header_tip = *csr->pindex_best_hdr;
     }
     pthread_mutex_unlock(&csr->lock);
-    return captured;
+    if (!captured)
+        return ZCL_ERR(-3,
+                       "capture_frontiers: not captured requested_height=%d "
+                       "initialized=%d bound_to_expected_state=%d",
+                       requested_height, out->initialized,
+                       out->bound_to_expected_state);
+    return ZCL_OK;
 }

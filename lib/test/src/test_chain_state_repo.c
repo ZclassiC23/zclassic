@@ -1204,6 +1204,41 @@ static int t_snapshot_uninitialised(void)
     return failures;
 }
 
+/* csr_capture_frontiers — success + one failure envelope (E2 migration to
+ * struct zcl_result; no prior direct coverage of this function). */
+static int t_capture_frontiers_success(void)
+{
+    int failures = 0;
+    struct chain_state_repository csr;
+    struct csr_fixture f; csr_fix_init(&f);
+    csr_init(&csr, &f.bm, &f.chain, &f.header_tip, &f.coins_tip, NULL, NULL);
+    struct block_index *g = csr_fix_add(&f, 0xA0);
+    struct chain_state_commit c = csr_make_commit(g, "capture_frontiers init");
+    c.update_header_tip = true;
+    csr_commit_tip(&csr, &c);
+
+    struct chain_state_frontier_view view;
+    struct zcl_result r = csr_capture_frontiers(
+        &csr, &f.chain, &f.header_tip, 0, &view);
+    bool ok = r.ok && view.initialized && view.bound_to_expected_state &&
+              view.window.height == 0 && view.header_tip == g;
+    CSR_RUN("csr: capture_frontiers succeeds on bound, committed state", ok);
+    csr_free(&csr);
+    csr_fix_free(&f);
+    return failures;
+}
+
+static int t_capture_frontiers_null_csr(void)
+{
+    int failures = 0;
+    struct chain_state_frontier_view view;
+    memset(&view, 0, sizeof(view));
+    struct zcl_result r = csr_capture_frontiers(NULL, NULL, NULL, 0, &view);
+    bool ok = !r.ok && r.message[0] != '\0';
+    CSR_RUN("csr: capture_frontiers on NULL csr is a named failure", ok);
+    return failures;
+}
+
 static int t_counters_increment(void)
 {
     int failures = 0;
@@ -1508,6 +1543,8 @@ int test_chain_state_repo(void)
     failures += t_persist_coins_best_uses_db_writer();
     failures += t_snapshot_after_commit();
     failures += t_snapshot_uninitialised();
+    failures += t_capture_frontiers_success();
+    failures += t_capture_frontiers_null_csr();
     failures += t_counters_increment();
     failures += t_events_fire();
     failures += t_wallet_scan();

@@ -1895,7 +1895,7 @@ int test_sqlite(void) {
         if (ok) {
             fallback_ok = chain_evidence_state_set_retry(
                 &writer, "cec.detached.locked",
-                fallback, sizeof(fallback), "unit.detached_state");
+                fallback, sizeof(fallback), "unit.detached_state").ok;
         }
         if (thread_started)
             pthread_join(thread, NULL);

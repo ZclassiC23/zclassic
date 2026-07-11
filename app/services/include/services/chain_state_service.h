@@ -260,7 +260,12 @@ void csr_snapshot(struct chain_state_repository *csr,
  * on a frequent tick that only need the header height. */
 int64_t csr_header_height(struct chain_state_repository *csr);
 
-bool csr_capture_frontiers(
+/* Captures the served/indexed/header frontier windows into *out under the
+ * repository lock. Returns ZCL_OK only when out is non-NULL, csr is
+ * initialized, AND the caller's expected_chain/expected_header_slot still
+ * match the repository's bound state; a non-ok result names which
+ * precondition failed (DEFENSIVE_CODING.md §2). */
+struct zcl_result csr_capture_frontiers(
     struct chain_state_repository *csr,
     struct active_chain *expected_chain,
     struct block_index **expected_header_slot,

@@ -136,7 +136,7 @@ void chain_frontier_snapshot_collect(struct chain_frontier_snapshot *out,
     struct chain_state_frontier_view view;
     snapshot.context_known = csr_capture_frontiers(
         csr_instance(), &main->chain_active, &main->pindex_best_header,
-        hstar, &view);
+        hstar, &view).ok;
     if (!snapshot.context_known) {
         *out = snapshot;
         return;

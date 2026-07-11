@@ -339,29 +339,29 @@ bool chain_evidence_controller_record_finalized_tip(
         chain_evidence_state_set_retry(
             authority->ndb, "cec.active_tip_hash",
             finalized_tip->phashBlock->data, 32,
-            "chain_evidence_record_finalized_tip") &&
+            "chain_evidence_record_finalized_tip").ok &&
         chain_evidence_state_set_int_retry(
             authority->ndb, "cec.active_tip_height",
             finalized_tip->nHeight,
-            "chain_evidence_record_finalized_tip") &&
+            "chain_evidence_record_finalized_tip").ok &&
         chain_evidence_state_set_int_retry(
             authority->ndb, "cec.coins_best_block_height",
-            coins_height, "chain_evidence_record_finalized_tip") &&
+            coins_height, "chain_evidence_record_finalized_tip").ok &&
         chain_evidence_state_set_int_retry(
             authority->ndb, "cec.utxo_max_height",
             finalized_tip->nHeight,
-            "chain_evidence_record_finalized_tip") &&
+            "chain_evidence_record_finalized_tip").ok &&
         chain_evidence_state_set_int_retry(
             authority->ndb, "cec.publish_state",
             CEC_PUBLISH_LOCAL_EVIDENCE,
-            "chain_evidence_record_finalized_tip") &&
+            "chain_evidence_record_finalized_tip").ok &&
         chain_evidence_state_set_int_retry(
             authority->ndb, "cec.active_tip_source_class",
             CEC_SOURCE_CLASS_LOCAL_IMPORT,
-            "chain_evidence_record_finalized_tip") &&
+            "chain_evidence_record_finalized_tip").ok &&
         chain_evidence_state_set_int_retry(
             authority->ndb, "cec.repaired_active_tip_evidence", 1,
-            "chain_evidence_record_finalized_tip") &&
+            "chain_evidence_record_finalized_tip").ok &&
         chain_evidence_store_persist(authority,
                                      "cec.block_index_evidence_state",
                                      &forward).ok &&

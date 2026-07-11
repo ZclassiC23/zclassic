@@ -391,7 +391,7 @@ static void legacy_mirror_sync_stats_snapshot_impl(
                      out->local_height >= 0;
     out->lag_valid = out->lag_known;
     if (resolve_local_hash &&
-        !lms_local_hash_at(out->local_height, out->zclassic23_hash)) {
+        !lms_local_hash_at(out->local_height, out->zclassic23_hash).ok) {
         pthread_mutex_lock(&g_lms.lock);
         snprintf(out->zclassic23_hash, sizeof(out->zclassic23_hash), "%s",
                  g_lms.zclassic23_hash);

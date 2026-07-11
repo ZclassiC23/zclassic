@@ -256,21 +256,24 @@ static bool lms_fetch_hash(int height, char out_hex[65],
     return ok;
 }
 
-bool lms_remote_hash_at(int height, char out_hex[65])
+struct zcl_result lms_remote_hash_at(int height, char out_hex[65])
 {
     char err[160] = {0};
     if (!lms_fetch_hash(height, out_hex, err, sizeof(err))) {
         atomic_fetch_add(&g_lms.rpc_errors, 1);
-        return false;
+        return ZCL_ERR(-1, "lms_remote_hash_at: height=%d err=%s", height,
+                       err[0] ? err : "(unknown)");
     }
-    return true;
+    return ZCL_OK;
 }
 
-bool lms_local_hash_at(int height, char out_hex[65])
+struct zcl_result lms_local_hash_at(int height, char out_hex[65])
 {
     out_hex[0] = '\0';
     struct main_state *ms = g_lms.ms;
-    if (!ms || height < 0) return false;
+    if (!ms || height < 0)
+        return ZCL_ERR(-1, "lms_local_hash_at: ms=%p height=%d",
+                       (void *)ms, height);
     zcl_mutex_lock(&ms->cs_main);
     struct block_index *bi = active_chain_at(&ms->chain_active, height);
     if (!bi) {
@@ -286,14 +289,16 @@ bool lms_local_hash_at(int height, char out_hex[65])
     if (bi && bi->phashBlock)
         uint256_get_hex(bi->phashBlock, out_hex);
     zcl_mutex_unlock(&ms->cs_main);
-    return out_hex[0] != '\0';
+    if (out_hex[0] == '\0')
+        return ZCL_ERR(-2, "lms_local_hash_at: no block at height=%d", height);
+    return ZCL_OK;
 }
 
 static bool lms_verify_anchor(int height)
 {
     if (height < 0) return true;
     char local[65], remote[65], err[160] = {0};
-    if (!lms_local_hash_at(height, local))
+    if (!lms_local_hash_at(height, local).ok)
         return true;
     if (!lms_fetch_hash(height, remote, err, sizeof(err))) {
         atomic_fetch_add(&g_lms.rpc_errors, 1);
@@ -320,7 +325,7 @@ static bool lms_verify_anchor(int height)
 static bool lms_verify_after_tip(int height)
 {
     char local[65], remote[65], err[160] = {0};
-    if (!lms_local_hash_at(height, local)) {
+    if (!lms_local_hash_at(height, local).ok) {
         lms_set_error("local tip hash unavailable after catchup");
         return false;
     }
@@ -563,7 +568,7 @@ bool legacy_mirror_sync_request_catchup(const char *reason)
     {
         char local_hash[65] = {0}, remote_hash[65] = {0};
         char hash_err[160] = {0};
-        if (lms_local_hash_at(local, local_hash))
+        if (lms_local_hash_at(local, local_hash).ok)
             lms_cache_hashes(local_hash, NULL);
         if (legacy_blocks >= 0 &&
             lms_fetch_hash(legacy_blocks, remote_hash,

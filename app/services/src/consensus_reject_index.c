@@ -268,11 +268,16 @@ size_t consensus_reject_index_capacity(void)
     return c;
 }
 
-bool consensus_reject_index_lookup(const struct uint256 *hash,
-                                    const enum cri_kind *kind,
-                                    struct cri_entry *out)
+struct zcl_result consensus_reject_index_lookup(const struct uint256 *hash,
+                                                 const enum cri_kind *kind,
+                                                 struct cri_entry *out)
 {
-    if (!hash || !out) LOG_FAIL("consensus_reject", "lookup called with null hash or out pointer");
+    if (!hash || !out) {
+        LOG_WARN("consensus_reject",
+                 "lookup called with null hash or out pointer");
+        return ZCL_ERR(-1,
+                       "consensus_reject_index_lookup: null hash or out pointer");
+    }
     bool found = false;
     pthread_mutex_lock(&g_cri.lock);
     if (g_cri.running && g_cri.count > 0) {
@@ -288,7 +293,14 @@ bool consensus_reject_index_lookup(const struct uint256 *hash,
         }
     }
     pthread_mutex_unlock(&g_cri.lock);
-    return found;
+    if (!found) {
+        char hex[65];
+        uint256_get_hex(hash, hex);
+        return ZCL_ERR(-2,
+                       "consensus_reject_index_lookup: no match for hash=%s",
+                       hex);
+    }
+    return ZCL_OK;
 }
 
 size_t consensus_reject_index_recent(struct cri_entry *out, size_t cap)

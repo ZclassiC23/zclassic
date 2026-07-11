@@ -537,14 +537,18 @@ int rolling_anchor_effective_prefix_end(void)
     return runtime_end;
 }
 
-bool rolling_anchor_window_hash_ending_at(int32_t end_h, uint8_t out[32])
+struct zcl_result rolling_anchor_window_hash_ending_at(int32_t end_h,
+                                                        uint8_t out[32])
 {
-    if (!out) return false;
+    if (!out)
+        return ZCL_ERR(-1, "window_hash_ending_at: null out end_h=%d", end_h);
     /* A window covers [start .. start+999] ending at start+999, so a window
      * ending at end_h has end_h+1 a multiple of SHA3_WINDOW_SIZE. */
-    if (((int64_t)end_h + 1) % (int)SHA3_WINDOW_SIZE != 0) return false;
+    if (((int64_t)end_h + 1) % (int)SHA3_WINDOW_SIZE != 0)
+        return ZCL_ERR(-2, "window_hash_ending_at: end_h=%d not window-end", end_h);
     int32_t start_height = end_h - (int)SHA3_WINDOW_SIZE + 1;
-    if (start_height < 0) return false;
+    if (start_height < 0)
+        return ZCL_ERR(-3, "window_hash_ending_at: end_h=%d start<0", end_h);
 
     pthread_mutex_lock(&g_ra.lock);
     /* Compile-time prefix windows first (g_sha3_windows is start-indexed). */
@@ -555,21 +559,21 @@ bool rolling_anchor_window_hash_ending_at(int32_t end_h, uint8_t out[32])
             g_sha3_windows[idx].start_height == start_height) {
             memcpy(out, g_sha3_windows[idx].hash, 32);
             pthread_mutex_unlock(&g_ra.lock);
-            return true;
+            return ZCL_OK;
         }
         pthread_mutex_unlock(&g_ra.lock);
-        return false;
+        return ZCL_ERR(-4, "window_hash_ending_at: no compile window start=%d", start_height);
     }
     /* Otherwise scan the runtime ring for a matching start_height. */
     for (int i = 0; i < g_ra.count; i++) {
         if (g_ra.windows[i].start_height == start_height) {
             memcpy(out, g_ra.windows[i].hash, 32);
             pthread_mutex_unlock(&g_ra.lock);
-            return true;
+            return ZCL_OK;
         }
     }
     pthread_mutex_unlock(&g_ra.lock);
-    return false;
+    return ZCL_ERR(-5, "window_hash_ending_at: no runtime window start=%d", start_height);
 }
 
 static void rolling_anchor_on_stall(struct liveness_contract *c)
