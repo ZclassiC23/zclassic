@@ -1,5 +1,53 @@
 # START HERE (2026-07-11)
 
+## ⏸ SESSION RESTART — RESUMABLE STATE (2026-07-11 late)
+
+**MCP servers were removed from config** (`.mcp.json` + `~/.claude.json`: zcl23,
+zcl23-dev, zcl23-live) to cut context bloat — this session uses the **native
+CLI**: `build/bin/zclassic23 status` / `dumpstate <subsystem>` / `discover help`,
+`build/bin/zclassic23-dev status`, `dev status`. Re-add MCP only if needed
+(`claude mcp add zcl23-dev -- .../zclassic23-dev -mcp -datadir=~/.zclassic-c23-dev -rpcport=18252`).
+Read the **`zclassic23-dev` skill** (v1.1.0) — it now leads with the fast dev loop.
+
+**Landed on `origin/main`:** `bf67d2202` fast-boot cursor fix (import stamps
+`pprev_repaired_height`/`shielded_backfill_height`; boot skips the two O(3.17M)
+passes — proven, but RPC-bind is still ~142s so the real bottleneck is elsewhere:
+LevelDB index load / coins gate / UTXO import). `e0af31868` skill+docs org.
+
+**⚠ Known regression on main:** the fast-boot doc migration removed
+`make agent-mcp-call TOOL=<tool>` strings that `test_make_lint_gates.c:3180/4852`
+assert — that group currently FAILS. **Fixed forward** in `wf/zmcp-tests` (migrates
+those asserts to native). Lands via the integration below; do NOT re-fix by
+restoring the doc strings.
+
+**10 ready branches to integrate → gate → push** (all green in isolation, all
+forked from bf67d2202; a mid-session integrator run may have left a partial
+`integ/dev-ux-fast` — verify or re-integrate from the sources):
+- dev-ux: `wf/dux-prepush-hook` (SIGPIPE-safe pre-push hook), `wf/dux-lean-status`
+  (`core.status.brief`, 9 flat fields), `wf/dux-boot-observe` (`core.node.bootstatus`/
+  `bootwait` + boot_status.json), `wf/dux-boot-bottleneck` (142s diagnosis/fix).
+- tests: `wf/test-services` (+21), `wf/test-models` (+5), `wf/test-conditions`
+  (+36), `wf/test-storage-util`.
+- zero-MCP W2: `wf/zmcp-tests` (test asserts → native), `wf/zmcp-docs-config`
+  (docs/config native-first, MCP marked legacy).
+- **Merge additively** (conflicts on `config/commands/core.def`,
+  `tools/command/native_command.c`, `lib/test/src/test_parallel.c`/`test.c`,
+  `agent_impact_rules.def`, `test_command_registry_catalog.c`,
+  `test_make_lint_gates.c`: keep EVERY lane's new leaves/tests/mappings; take
+  zmcp-tests's native asserts; update any leaf-count expectations to post-merge
+  totals). Gate: `make build-only` → `make test` (0 groups failed) → `make lint`
+  (the worktree-only `check-git-hooks-installed` core.hooksPath artifact aside).
+  Push flow trap: pre-push hook SIGPIPEs on stdout — `make pre-push-ci >log 2>&1;
+  echo $?` then `git push --no-verify` (the wf/dux-prepush-hook fix retires this).
+
+**Background (survives restart on disk, processes die):** anchor-mint folding on
+`~/.zclassic-c23-anchor-mint` (sovereign-cure snapshot, ~70h+, check for
+`utxo-anchor.snapshot`); my work node `~/.zclassic-c23-work:18262` serves H*=3178007
+but is wedged on the borrowed-seed `reducer_frontier_reconcile_light` (same class
+as canonical — needs the refold cure). Disk was cleaned (freed ~420GB of stale
+datadir copies). See memory `feedback_node_must_always_sync_fast_2026-07-11` +
+`project_anchor_mint_running_and_refold_facts_2026-07-11`.
+
 ## Zero-MCP program state (the current #1 track)
 
 The owner directive is to delete the MCP server entirely — the native CLI

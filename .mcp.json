@@ -1,11 +1,3 @@
 {
-  "mcpServers": {
-    "zcl23": {
-      "type": "stdio",
-      "command": "./build/bin/zclassic23",
-      "args": [
-        "-mcp"
-      ]
-    }
-  }
+  "mcpServers": {}
 }
