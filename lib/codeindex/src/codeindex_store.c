@@ -1,0 +1,614 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * codeindex_store — the derived-state SQLite WAL store for the code index.
+ *
+ * ── OUTSIDE the node.db ActiveRecord lifecycle by design ──
+ * index.kv is a dedicated single-writer SQLite WAL file at
+ * <root>/.codeindex/index.kv, below the AR layer — exactly like lib/vcs's
+ * index.kv, progress.kv, and seal_kv. Its rows are NOT AR models; routing
+ * them through AR would be a category error. Raw sqlite3_step here therefore
+ * carries the `// raw-sql-ok:codeindex-derived` marker, and the whole store
+ * is recomputable from the source tree by codeindex_rebuild
+ * ("recompute, never repair"). Each symbol row carries a row_sha3 checksum so
+ * a corrupted row is caught on read (verify-on-read). */
+
+#include "codeindex_priv.h"
+
+#include "util/log_macros.h"
+#include "util/safe_alloc.h"
+
+#include <sqlite3.h>
+
+#include <pthread.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/stat.h>
+
+struct ci_store {
+    sqlite3        *db;
+    pthread_mutex_t lock;   /* recursive: held begin..commit; reads take briefly */
+};
+
+/* Bounded copy into a fixed field; always NUL-terminates. */
+static void cpy(char *dst, size_t cap, const char *src)
+{
+    if (!dst || cap == 0) return;
+    if (!src) { dst[0] = '\0'; return; }
+    size_t i = 0;
+    for (; i + 1 < cap && src[i]; i++) dst[i] = src[i];
+    dst[i] = '\0';
+}
+
+/* ── canonical per-symbol row hash (verify-on-read) ─────────────────── */
+
+void ci_symbol_row_hash(const struct ci_symbol *sym, uint8_t out[32])
+{
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+    static const uint8_t tag = 0x01;  /* domain separator for symbol rows */
+    sha3_256_write(&ctx, &tag, 1);
+    /* Serialize every card field, each length-free but delimited by a NUL so
+     * two fields cannot alias. Fixed integers appended little-endian. */
+    const char *fields[] = { sym->name, sym->def_path, sym->decl_path,
+                             sym->signature, sym->doc, sym->guard, sym->group };
+    for (size_t i = 0; i < sizeof(fields) / sizeof(fields[0]); i++) {
+        sha3_256_write(&ctx, (const unsigned char *)fields[i],
+                       strlen(fields[i]) + 1);
+    }
+    unsigned char sc[6];
+    sc[0] = (unsigned char)sym->kind;
+    sc[1] = sym->partial ? 1u : 0u;
+    sc[2] = (unsigned char)(sym->def_line & 0xff);
+    sc[3] = (unsigned char)((sym->def_line >> 8) & 0xff);
+    sc[4] = (unsigned char)(sym->decl_line & 0xff);
+    sc[5] = (unsigned char)((sym->decl_line >> 8) & 0xff);
+    sha3_256_write(&ctx, sc, sizeof(sc));
+    sha3_256_finalize(&ctx, out);
+}
+
+/* ── open / schema ──────────────────────────────────────────────────── */
+
+static bool apply_pragmas(sqlite3 *db)
+{
+    static const char *const pragmas[] = {
+        "PRAGMA journal_mode=WAL",
+        "PRAGMA synchronous=NORMAL",
+        "PRAGMA busy_timeout=5000",
+        NULL,
+    };
+    for (size_t i = 0; pragmas[i]; i++) {
+        char *err = NULL;
+        if (sqlite3_exec(db, pragmas[i], NULL, NULL, &err) != SQLITE_OK) {
+            fprintf(stderr, "[codeindex] pragma failed (%s): %s\n",  // obs-ok:codeindex-open-failure
+                    pragmas[i], err ? err : "(no message)");
+            if (err) sqlite3_free(err);
+            return false;
+        }
+    }
+    return true;
+}
+
+static bool ensure_schema(sqlite3 *db)
+{
+    static const char *const ddl =
+        "CREATE TABLE IF NOT EXISTS files ("
+        "  id INTEGER PRIMARY KEY,"
+        "  path TEXT UNIQUE NOT NULL,"
+        "  \"group\" TEXT NOT NULL,"
+        "  purpose TEXT NOT NULL,"
+        "  content_sha3 BLOB NOT NULL,"
+        "  mtime INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS symbols ("
+        "  id INTEGER PRIMARY KEY,"
+        "  name TEXT NOT NULL,"
+        "  kind TEXT NOT NULL,"
+        "  def_path TEXT NOT NULL,"
+        "  def_line INTEGER NOT NULL,"
+        "  decl_path TEXT NOT NULL,"
+        "  decl_line INTEGER NOT NULL,"
+        "  signature TEXT NOT NULL,"
+        "  doc TEXT NOT NULL,"
+        "  guard TEXT NOT NULL,"
+        "  \"group\" TEXT NOT NULL,"
+        "  partial INTEGER NOT NULL,"
+        "  row_sha3 BLOB NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS includes ("
+        "  file_id INTEGER NOT NULL,"
+        "  dep_path TEXT NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS refs ("
+        "  callee_name TEXT NOT NULL,"
+        "  ref_file TEXT NOT NULL,"
+        "  ref_line INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS groups ("
+        "  path TEXT PRIMARY KEY,"
+        "  kind TEXT NOT NULL,"
+        "  parent TEXT NOT NULL,"
+        "  purpose TEXT NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS meta ("
+        "  k TEXT PRIMARY KEY,"
+        "  v BLOB NOT NULL);"
+        "CREATE INDEX IF NOT EXISTS idx_symbols_name ON symbols(name);"
+        "CREATE INDEX IF NOT EXISTS idx_refs_callee ON refs(callee_name);"
+        "CREATE INDEX IF NOT EXISTS idx_files_group ON files(\"group\");";
+    char *err = NULL;
+    if (sqlite3_exec(db, ddl, NULL, NULL, &err) != SQLITE_OK) {
+        fprintf(stderr, "[codeindex] schema failed: %s\n",  // obs-ok:codeindex-open-failure
+                err ? err : "(no message)");
+        if (err) sqlite3_free(err);
+        return false;
+    }
+    return true;
+}
+
+struct ci_store *ci_store_open_path(const char *dbpath)
+{
+    if (!dbpath || !dbpath[0])
+        LOG_NULL("codeindex", "null dbpath");
+
+    struct ci_store *s = zcl_calloc(1, sizeof(*s), "ci_store");
+    if (!s)
+        LOG_NULL("codeindex", "calloc ci_store");
+
+    pthread_mutexattr_t attr;
+    pthread_mutexattr_init(&attr);
+    pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_RECURSIVE);
+    pthread_mutex_init(&s->lock, &attr);
+    pthread_mutexattr_destroy(&attr);
+
+    if (sqlite3_open(dbpath, &s->db) != SQLITE_OK) {
+        fprintf(stderr, "[codeindex] sqlite3_open %s: %s\n",  // obs-ok:codeindex-open-failure
+                dbpath, s->db ? sqlite3_errmsg(s->db) : "(no handle)");
+        if (s->db) sqlite3_close(s->db);
+        pthread_mutex_destroy(&s->lock);
+        free(s);
+        return NULL;
+    }
+    if (!apply_pragmas(s->db) || !ensure_schema(s->db)) {
+        sqlite3_close(s->db);
+        pthread_mutex_destroy(&s->lock);
+        free(s);
+        LOG_NULL("codeindex", "store open: pragmas/schema failed");
+    }
+    return s;
+}
+
+struct ci_store *ci_store_open(const char *root)
+{
+    if (!root || !root[0])
+        LOG_NULL("codeindex", "null root");
+    char dir[CI_PATH_MAX];
+    int dn = snprintf(dir, sizeof(dir), "%s/.codeindex", root);
+    if (dn <= 0 || (size_t)dn >= sizeof(dir))
+        LOG_NULL("codeindex", "root too long");
+    mkdir(dir, 0755);  /* best-effort; open reports the real failure */
+    char path[CI_PATH_MAX];
+    int pn = snprintf(path, sizeof(path), "%s/index.kv", dir);
+    if (pn <= 0 || (size_t)pn >= sizeof(path))
+        LOG_NULL("codeindex", "index path too long");
+    return ci_store_open_path(path);
+}
+
+void ci_store_close(struct ci_store *s)
+{
+    if (!s) return;
+    if (s->db) {
+        sqlite3_exec(s->db, "PRAGMA wal_checkpoint(TRUNCATE)", NULL, NULL, NULL);
+        sqlite3_close(s->db);
+    }
+    pthread_mutex_destroy(&s->lock);
+    free(s);
+}
+
+/* ── transaction control ────────────────────────────────────────────── */
+
+bool ci_store_begin(struct ci_store *s)
+{
+    if (!s) LOG_FAIL("codeindex", "null store");
+    pthread_mutex_lock(&s->lock);
+    char *err = NULL;
+    if (sqlite3_exec(s->db, "BEGIN IMMEDIATE", NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        pthread_mutex_unlock(&s->lock);
+        LOG_FAIL("codeindex", "BEGIN IMMEDIATE failed");
+    }
+    return true;
+}
+
+bool ci_store_commit(struct ci_store *s)
+{
+    if (!s) LOG_FAIL("codeindex", "null store");
+    char *err = NULL;
+    bool ok = sqlite3_exec(s->db, "COMMIT", NULL, NULL, &err) == SQLITE_OK;
+    if (err) sqlite3_free(err);
+    pthread_mutex_unlock(&s->lock);
+    if (!ok) LOG_FAIL("codeindex", "COMMIT failed");
+    return true;
+}
+
+bool ci_store_rollback(struct ci_store *s)
+{
+    if (!s) LOG_FAIL("codeindex", "null store");
+    char *err = NULL;
+    sqlite3_exec(s->db, "ROLLBACK", NULL, NULL, &err);
+    if (err) sqlite3_free(err);
+    pthread_mutex_unlock(&s->lock);
+    return true;
+}
+
+bool ci_store_clear(struct ci_store *s)
+{
+    if (!s) LOG_FAIL("codeindex", "null store");
+    char *err = NULL;
+    if (sqlite3_exec(s->db,
+        "DELETE FROM files; DELETE FROM symbols; DELETE FROM includes;"
+        " DELETE FROM refs; DELETE FROM groups; DELETE FROM meta;",
+        NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        LOG_FAIL("codeindex", "clear tables");
+    }
+    return true;
+}
+
+/* ── writes ─────────────────────────────────────────────────────────── */
+
+bool ci_store_put_file(struct ci_store *s, const struct ci_file *f,
+                       const uint8_t content_sha3[32], int64_t mtime,
+                       int64_t *out_file_id)
+{
+    if (!s || !f || !content_sha3)
+        LOG_FAIL("codeindex", "null arg to put_file");
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db,
+        "INSERT OR REPLACE INTO files(path,\"group\",purpose,content_sha3,mtime)"
+        " VALUES(?,?,?,?,?)", -1, &stmt, NULL) != SQLITE_OK)
+        LOG_FAIL("codeindex", "prepare put_file: %s", sqlite3_errmsg(s->db));
+    sqlite3_bind_text(stmt, 1, f->path, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, f->group, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, f->purpose, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(stmt, 4, content_sha3, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 5, mtime);
+    int rc = sqlite3_step(stmt);  // raw-sql-ok:codeindex-derived
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE)
+        LOG_FAIL("codeindex", "step put_file rc=%d", rc);
+    if (out_file_id) *out_file_id = sqlite3_last_insert_rowid(s->db);
+    return true;
+}
+
+bool ci_store_put_symbol(struct ci_store *s, const struct ci_symbol *sym)
+{
+    if (!s || !sym)
+        LOG_FAIL("codeindex", "null arg to put_symbol");
+    uint8_t row[32];
+    ci_symbol_row_hash(sym, row);
+    char kindstr[2] = { sym->kind, '\0' };
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db,
+        "INSERT INTO symbols(name,kind,def_path,def_line,decl_path,decl_line,"
+        "signature,doc,guard,\"group\",partial,row_sha3)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)", -1, &stmt, NULL) != SQLITE_OK)
+        LOG_FAIL("codeindex", "prepare put_symbol: %s", sqlite3_errmsg(s->db));
+    sqlite3_bind_text(stmt, 1, sym->name, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, kindstr, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, sym->def_path, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 4, sym->def_line);
+    sqlite3_bind_text(stmt, 5, sym->decl_path, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 6, sym->decl_line);
+    sqlite3_bind_text(stmt, 7, sym->signature, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 8, sym->doc, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 9, sym->guard, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 10, sym->group, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 11, sym->partial ? 1 : 0);
+    sqlite3_bind_blob(stmt, 12, row, 32, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(stmt);  // raw-sql-ok:codeindex-derived
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE)
+        LOG_FAIL("codeindex", "step put_symbol rc=%d", rc);
+    return true;
+}
+
+bool ci_store_put_include(struct ci_store *s, int64_t file_id,
+                          const char *dep_path)
+{
+    if (!s || !dep_path)
+        LOG_FAIL("codeindex", "null arg to put_include");
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db,
+        "INSERT INTO includes(file_id,dep_path) VALUES(?,?)",
+        -1, &stmt, NULL) != SQLITE_OK)
+        LOG_FAIL("codeindex", "prepare put_include: %s", sqlite3_errmsg(s->db));
+    sqlite3_bind_int64(stmt, 1, file_id);
+    sqlite3_bind_text(stmt, 2, dep_path, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(stmt);  // raw-sql-ok:codeindex-derived
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE)
+        LOG_FAIL("codeindex", "step put_include rc=%d", rc);
+    return true;
+}
+
+bool ci_store_put_ref(struct ci_store *s, const char *callee,
+                      const char *ref_file, int ref_line)
+{
+    if (!s || !callee || !ref_file)
+        LOG_FAIL("codeindex", "null arg to put_ref");
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db,
+        "INSERT INTO refs(callee_name,ref_file,ref_line) VALUES(?,?,?)",
+        -1, &stmt, NULL) != SQLITE_OK)
+        LOG_FAIL("codeindex", "prepare put_ref: %s", sqlite3_errmsg(s->db));
+    sqlite3_bind_text(stmt, 1, callee, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, ref_file, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int(stmt, 3, ref_line);
+    int rc = sqlite3_step(stmt);  // raw-sql-ok:codeindex-derived
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE)
+        LOG_FAIL("codeindex", "step put_ref rc=%d", rc);
+    return true;
+}
+
+bool ci_store_put_group(struct ci_store *s, const struct ci_group *g)
+{
+    if (!s || !g)
+        LOG_FAIL("codeindex", "null arg to put_group");
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db,
+        "INSERT OR REPLACE INTO groups(path,kind,parent,purpose)"
+        " VALUES(?,?,?,?)", -1, &stmt, NULL) != SQLITE_OK)
+        LOG_FAIL("codeindex", "prepare put_group: %s", sqlite3_errmsg(s->db));
+    sqlite3_bind_text(stmt, 1, g->path, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, g->kind, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, g->parent, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, g->purpose, -1, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(stmt);  // raw-sql-ok:codeindex-derived
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE)
+        LOG_FAIL("codeindex", "step put_group rc=%d", rc);
+    return true;
+}
+
+bool ci_store_meta_set(struct ci_store *s, const char *k, const void *v,
+                       size_t vlen)
+{
+    if (!s || !k || !k[0] || (vlen > 0 && !v))
+        LOG_FAIL("codeindex", "null arg to meta_set");
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db,
+        "INSERT OR REPLACE INTO meta(k,v) VALUES(?,?)",
+        -1, &stmt, NULL) != SQLITE_OK)
+        LOG_FAIL("codeindex", "prepare meta_set: %s", sqlite3_errmsg(s->db));
+    sqlite3_bind_text(stmt, 1, k, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(stmt, 2, v ? v : "", (int)vlen, SQLITE_TRANSIENT);
+    int rc = sqlite3_step(stmt);  // raw-sql-ok:codeindex-derived
+    sqlite3_finalize(stmt);
+    if (rc != SQLITE_DONE)
+        LOG_FAIL("codeindex", "step meta_set rc=%d", rc);
+    return true;
+}
+
+/* ── reads ──────────────────────────────────────────────────────────── */
+
+bool ci_store_meta_get(struct ci_store *s, const char *k, void *buf,
+                       size_t cap, size_t *outlen, bool *found)
+{
+    if (found) *found = false;
+    if (outlen) *outlen = 0;
+    if (!s || !k || !k[0])
+        LOG_FAIL("codeindex", "null arg to meta_get");
+    pthread_mutex_lock(&s->lock);
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db, "SELECT v FROM meta WHERE k=?",
+                           -1, &stmt, NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&s->lock);
+        LOG_FAIL("codeindex", "prepare meta_get");
+    }
+    sqlite3_bind_text(stmt, 1, k, -1, SQLITE_TRANSIENT);
+    bool ok = true;
+    int rc = sqlite3_step(stmt);  // raw-sql-ok:codeindex-derived
+    if (rc == SQLITE_ROW) {
+        if (found) *found = true;
+        int n = sqlite3_column_bytes(stmt, 0);
+        const void *b = sqlite3_column_blob(stmt, 0);
+        if (outlen) *outlen = (size_t)n;
+        if (buf && cap > 0 && b) {
+            size_t copy = (size_t)n < cap ? (size_t)n : cap;
+            if (copy > 0) memcpy(buf, b, copy);
+        }
+    } else if (rc != SQLITE_DONE) {
+        ok = false;
+    }
+    sqlite3_finalize(stmt);
+    pthread_mutex_unlock(&s->lock);
+    if (!ok) LOG_FAIL("codeindex", "step meta_get");
+    return true;
+}
+
+/* Column order for the shared SELECT below. */
+#define CI_SYM_COLS \
+    "name,kind,def_path,def_line,decl_path,decl_line," \
+    "signature,doc,guard,\"group\",partial,row_sha3"
+
+/* Fill a ci_symbol from a stepped row and verify its integrity checksum.
+ * Returns false (row rejected) if the recomputed hash mismatches the stored
+ * row_sha3 — verify-on-read. */
+static bool fill_symbol(sqlite3_stmt *stmt, struct ci_symbol *out)
+{
+    memset(out, 0, sizeof(*out));
+    const unsigned char *t;
+    t = sqlite3_column_text(stmt, 0);  cpy(out->name, sizeof(out->name), (const char *)t);
+    t = sqlite3_column_text(stmt, 1);  out->kind = (t && t[0]) ? (char)t[0] : 'D';
+    t = sqlite3_column_text(stmt, 2);  cpy(out->def_path, sizeof(out->def_path), (const char *)t);
+    out->def_line = sqlite3_column_int(stmt, 3);
+    t = sqlite3_column_text(stmt, 4);  cpy(out->decl_path, sizeof(out->decl_path), (const char *)t);
+    out->decl_line = sqlite3_column_int(stmt, 5);
+    t = sqlite3_column_text(stmt, 6);  cpy(out->signature, sizeof(out->signature), (const char *)t);
+    t = sqlite3_column_text(stmt, 7);  cpy(out->doc, sizeof(out->doc), (const char *)t);
+    t = sqlite3_column_text(stmt, 8);  cpy(out->guard, sizeof(out->guard), (const char *)t);
+    t = sqlite3_column_text(stmt, 9);  cpy(out->group, sizeof(out->group), (const char *)t);
+    out->partial = sqlite3_column_int(stmt, 10) != 0;
+
+    const void *rb = sqlite3_column_blob(stmt, 11);
+    int rn = sqlite3_column_bytes(stmt, 11);
+    uint8_t want[32];
+    ci_symbol_row_hash(out, want);
+    if (!rb || rn != 32 || memcmp(rb, want, 32) != 0)
+        return false;  /* corrupted row */
+    return true;
+}
+
+bool ci_store_symbol_by_name(struct ci_store *s, const char *name,
+                             struct ci_symbol *out, bool *found)
+{
+    if (found) *found = false;
+    if (!s || !name || !out)
+        LOG_FAIL("codeindex", "null arg to symbol_by_name");
+    pthread_mutex_lock(&s->lock);
+    sqlite3_stmt *stmt = NULL;
+    /* Prefer a definition over a bare declaration, then lowest def_line. */
+    if (sqlite3_prepare_v2(s->db,
+        "SELECT " CI_SYM_COLS " FROM symbols WHERE name=?"
+        " ORDER BY (def_path='') ASC, def_line ASC, def_path ASC LIMIT 1",
+        -1, &stmt, NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&s->lock);
+        LOG_FAIL("codeindex", "prepare symbol_by_name");
+    }
+    sqlite3_bind_text(stmt, 1, name, -1, SQLITE_TRANSIENT);
+    bool ok = true;
+    int rc = sqlite3_step(stmt);  // raw-sql-ok:codeindex-derived
+    if (rc == SQLITE_ROW) {
+        if (fill_symbol(stmt, out)) {
+            if (found) *found = true;
+        }  /* corrupted → leave found=false */
+    } else if (rc != SQLITE_DONE) {
+        ok = false;
+    }
+    sqlite3_finalize(stmt);
+    pthread_mutex_unlock(&s->lock);
+    if (!ok) LOG_FAIL("codeindex", "step symbol_by_name");
+    return true;
+}
+
+int ci_store_find_symbols(struct ci_store *s, const char *q,
+                          struct ci_symbol *out, int cap)
+{
+    if (!s || !q || !out || cap <= 0)
+        LOG_ERR("codeindex", "bad arg to find_symbols");
+    /* Rank: exact(0) < prefix(1) < substring(2); then name, def_path. */
+    char like[300];
+    snprintf(like, sizeof(like), "%%%s%%", q);
+    char pfx[300];
+    snprintf(pfx, sizeof(pfx), "%s%%", q);
+    pthread_mutex_lock(&s->lock);
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db,
+        "SELECT " CI_SYM_COLS ", "
+        "  CASE WHEN name=?1 THEN 0 WHEN name LIKE ?2 THEN 1 ELSE 2 END AS rank"
+        " FROM symbols WHERE name LIKE ?3"
+        " ORDER BY rank ASC, name ASC, (def_path='') ASC, def_path ASC, def_line ASC",
+        -1, &stmt, NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&s->lock);
+        LOG_ERR("codeindex", "prepare find_symbols");
+    }
+    sqlite3_bind_text(stmt, 1, q, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 2, pfx, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, like, -1, SQLITE_TRANSIENT);
+    int n = 0;
+    int rc;
+    while (n < cap && (rc = sqlite3_step(stmt)) == SQLITE_ROW) {  // raw-sql-ok:codeindex-derived
+        if (fill_symbol(stmt, &out[n]))
+            n++;  /* skip corrupted rows */
+    }
+    sqlite3_finalize(stmt);
+    pthread_mutex_unlock(&s->lock);
+    return n;
+}
+
+int ci_store_refs_by_callee(struct ci_store *s, const char *callee,
+                            struct ci_ref *out, int cap)
+{
+    if (!s || !callee || !out || cap <= 0)
+        LOG_ERR("codeindex", "bad arg to refs_by_callee");
+    pthread_mutex_lock(&s->lock);
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db,
+        "SELECT callee_name,ref_file,ref_line FROM refs WHERE callee_name=?"
+        " ORDER BY ref_file ASC, ref_line ASC",
+        -1, &stmt, NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&s->lock);
+        LOG_ERR("codeindex", "prepare refs_by_callee");
+    }
+    sqlite3_bind_text(stmt, 1, callee, -1, SQLITE_TRANSIENT);
+    int n = 0;
+    int rc;
+    while (n < cap && (rc = sqlite3_step(stmt)) == SQLITE_ROW) {  // raw-sql-ok:codeindex-derived
+        memset(&out[n], 0, sizeof(out[n]));
+        cpy(out[n].callee, sizeof(out[n].callee),
+            (const char *)sqlite3_column_text(stmt, 0));
+        cpy(out[n].ref_file, sizeof(out[n].ref_file),
+            (const char *)sqlite3_column_text(stmt, 1));
+        out[n].ref_line = sqlite3_column_int(stmt, 2);
+        n++;
+    }
+    sqlite3_finalize(stmt);
+    pthread_mutex_unlock(&s->lock);
+    return n;
+}
+
+bool ci_store_file_by_path(struct ci_store *s, const char *path,
+                           struct ci_file *out, bool *found)
+{
+    if (found) *found = false;
+    if (!s || !path || !out)
+        LOG_FAIL("codeindex", "null arg to file_by_path");
+    pthread_mutex_lock(&s->lock);
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db,
+        "SELECT path,\"group\",purpose FROM files WHERE path=?",
+        -1, &stmt, NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&s->lock);
+        LOG_FAIL("codeindex", "prepare file_by_path");
+    }
+    sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
+    bool ok = true;
+    int rc = sqlite3_step(stmt);  // raw-sql-ok:codeindex-derived
+    if (rc == SQLITE_ROW) {
+        memset(out, 0, sizeof(*out));
+        cpy(out->path, sizeof(out->path), (const char *)sqlite3_column_text(stmt, 0));
+        cpy(out->group, sizeof(out->group), (const char *)sqlite3_column_text(stmt, 1));
+        cpy(out->purpose, sizeof(out->purpose), (const char *)sqlite3_column_text(stmt, 2));
+        if (found) *found = true;
+    } else if (rc != SQLITE_DONE) {
+        ok = false;
+    }
+    sqlite3_finalize(stmt);
+    pthread_mutex_unlock(&s->lock);
+    if (!ok) LOG_FAIL("codeindex", "step file_by_path");
+    return true;
+}
+
+int ci_store_list_groups(struct ci_store *s, struct ci_group *out, int cap)
+{
+    if (!s || !out || cap <= 0)
+        LOG_ERR("codeindex", "bad arg to list_groups");
+    pthread_mutex_lock(&s->lock);
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(s->db,
+        "SELECT path,kind,parent,purpose FROM groups ORDER BY path ASC",
+        -1, &stmt, NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&s->lock);
+        LOG_ERR("codeindex", "prepare list_groups");
+    }
+    int n = 0;
+    int rc;
+    while (n < cap && (rc = sqlite3_step(stmt)) == SQLITE_ROW) {  // raw-sql-ok:codeindex-derived
+        memset(&out[n], 0, sizeof(out[n]));
+        cpy(out[n].path, sizeof(out[n].path), (const char *)sqlite3_column_text(stmt, 0));
+        cpy(out[n].kind, sizeof(out[n].kind), (const char *)sqlite3_column_text(stmt, 1));
+        cpy(out[n].parent, sizeof(out[n].parent), (const char *)sqlite3_column_text(stmt, 2));
+        cpy(out[n].purpose, sizeof(out[n].purpose), (const char *)sqlite3_column_text(stmt, 3));
+        n++;
+    }
+    sqlite3_finalize(stmt);
+    pthread_mutex_unlock(&s->lock);
+    return n;
+}
