@@ -418,7 +418,7 @@ int main(int argc, char **argv)
     /* (2) in-memory block index. */
     struct main_state ms;
     main_state_init(&ms);
-    if (!load_block_index_flat(datadir, &ms)) {
+    if (!load_block_index_flat(datadir, &ms).ok) {
         fprintf(stderr, "load_block_index_flat(%s) failed — the source datadir "
                 "has no readable block_index.bin. Point at a datadir from a "
                 "synced zclassic23 node, which writes block_index.bin itself "
@@ -779,7 +779,7 @@ int main(int argc, char **argv)
         /* Verify the emitted index round-trips (loads + integrity-passes). */
         struct main_state vms;
         main_state_init(&vms);
-        if (!load_block_index_flat(bundle_dir, &vms)) {
+        if (!load_block_index_flat(bundle_dir, &vms).ok) {
             fprintf(stderr, "[bundle] VERIFY FAILED: emitted block_index.bin "
                     "did not load back\n");
             node_db_close(&ndb);

@@ -919,7 +919,7 @@ bool app_init_services(struct app_context *ctx,
                     flat_st.st_size > 1000000) {
                     printf("Loading downloaded block_index.bin...\n");
                     fflush(stdout);
-                    load_block_index_flat(ctx->datadir, svc->state);
+                    (void)load_block_index_flat(ctx->datadir, svc->state);
                 }
 
                 /* Validate block file references — clear HAVE_DATA for

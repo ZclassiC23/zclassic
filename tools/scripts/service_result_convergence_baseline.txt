@@ -26,6 +26,4 @@
 # struct zcl_result (ZCL_OK / ZCL_ERR), then delete its line.
 #
 # One '<path> <count>' entry per line, repo-relative, sorted by path.
-app/services/src/block_index_loader.c 2
-app/services/src/block_index_loader_rebuild.c 2
 app/services/src/header_sync_service.c 17

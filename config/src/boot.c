@@ -1824,7 +1824,7 @@ bool app_init(struct app_context *ctx)
          * FRESH path; a warm boot of that node rebuilds here. */
         if (ctx->boot_from_log &&
             boot_try_rebuild_block_index_from_projection(
-                &g_state, params, 1000, /*publish_tip=*/true)) {
+                &g_state, params, 1000, /*publish_tip=*/true).ok) {
             rebuilt_from_log = true;
             loaded = true;
         }
@@ -1833,10 +1833,10 @@ bool app_init(struct app_context *ctx)
          * under a verified-clean binding (no-op otherwise). */
         if (!rebuilt_from_log) {
             boot_fast_restart_arm_flat_loader();
-            loaded = load_block_index_flat(ctx->datadir, &g_state);
+            loaded = load_block_index_flat(ctx->datadir, &g_state).ok;
         }
         if (!rebuilt_from_log && !loaded && g_node_db.open)
-            loaded = load_block_index_sqlite(&g_node_db, &g_state);
+            loaded = load_block_index_sqlite(&g_node_db, &g_state).ok;
 
         /* kill-9 recovery: a node SIGKILL'd with no clean shutdown never wrote
          * the flat file (clean-shutdown only) or the >1000-gated block_index
@@ -1852,7 +1852,7 @@ bool app_init(struct app_context *ctx)
          * stale-flat (1940) + tip-hash (1957) guards below short-circuit. */
         if (!rebuilt_from_log && g_state.map_block_index.size <= 1 &&
             boot_try_rebuild_block_index_from_projection(
-                &g_state, params, 1, /*publish_tip=*/false))
+                &g_state, params, 1, /*publish_tip=*/false).ok)
             loaded = true;
 
         /* Check if flat file is stale — if it loaded but has far fewer

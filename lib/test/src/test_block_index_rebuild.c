@@ -234,7 +234,7 @@ static int run_rebuild_n_headers(int *failures)
     main_state_init(&ms);
 
     const struct chain_params *params = chain_params_get();
-    bool rebuilt = load_block_index_from_projection(&ms, params, bip, pk);
+    bool rebuilt = load_block_index_from_projection(&ms, params, bip, pk).ok;
     BIR_CHECK("n: rebuild returns true", rebuilt);
 
     /* N folded headers + the bare genesis node the loader inserts so block
@@ -316,7 +316,7 @@ static int run_rebuild_empty(int *failures)
     main_state_init(&ms);
 
     bool rebuilt = load_block_index_from_projection(&ms, chain_params_get(),
-                                                    bip, pk);
+                                                    bip, pk).ok;
     BIR_CHECK("empty: rebuild returns true on empty projection", rebuilt);
     BIR_CHECK("empty: map is empty", ms.map_block_index.size == 0);
     BIR_CHECK("empty: no active tip",
@@ -341,7 +341,7 @@ static int run_rebuild_null_bip(int *failures)
     main_state_init(&ms);
 
     bool rebuilt = load_block_index_from_projection(&ms, chain_params_get(),
-                                                    NULL, NULL);
+                                                    NULL, NULL).ok;
     BIR_CHECK("null: rebuild returns true with NULL projection", rebuilt);
     BIR_CHECK("null: map is empty", ms.map_block_index.size == 0);
 
@@ -400,7 +400,7 @@ static int run_rebuild_competing_fork(int *failures)
     main_state_init(&ms);
 
     bool rebuilt = load_block_index_from_projection(&ms, chain_params_get(),
-                                                    bip, pk);
+                                                    bip, pk).ok;
     BIR_CHECK("fork: rebuild returns true", rebuilt);
 
     /* Both the canonical block AND the fork are in the map (N canonical +

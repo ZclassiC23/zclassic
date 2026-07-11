@@ -46,10 +46,12 @@ struct sqlite3;
  * Creates <datadir>/block_index.bin.  Overwrites if present. */
 void save_block_index_flat(const char *datadir, struct main_state *ms);
 
-/* Load block_index.bin via mmap.  Returns true if >= 1 entry loaded.
+/* Load block_index.bin via mmap.  Returns .ok=true if >= 1 entry loaded.
  * Allocates a contiguous arena for all entries, links pprev by hash,
- * recomputes nChainWork/nChainTx from pprev chain. */
-bool load_block_index_flat(const char *datadir, struct main_state *ms);
+ * recomputes nChainWork/nChainTx from pprev chain. On failure the result
+ * self-describes the cause (open/fstat/mmap/format/size failures), each a
+ * distinct negative code; the previous bare-bool true/false maps to .ok. */
+struct zcl_result load_block_index_flat(const char *datadir, struct main_state *ms);
 
 /* Tier-2 P2 fast restart: arm the NEXT load_block_index_flat call to TRUST the
  * flat file's stored pointer-graph-derived fields (nChainWork, nChainTx, skip
@@ -73,8 +75,9 @@ void block_index_loader_arm_trust_flat_fields(int64_t expected_count,
 void save_block_index_recent(struct node_db *ndb, struct main_state *ms);
 
 /* Load block_index from the block_index_cache table.
- * Returns true if >= 1 entry loaded.  Requires >= 1000 cached rows. */
-bool load_block_index_sqlite(struct node_db *ndb, struct main_state *ms);
+ * Returns .ok=true if >= 1 entry loaded.  Requires >= 1000 cached rows.
+ * The previous bare-bool true/false maps to .ok. */
+struct zcl_result load_block_index_sqlite(struct node_db *ndb, struct main_state *ms);
 
 /* ── LevelDB block tree ──────────────────────────────────── */
 
@@ -129,16 +132,16 @@ void block_index_forward_pass(struct block_index **sorted, size_t count);
  *      chain_set_active_tip.
  *
  * Empty projection (cold datadir) → no entries folded, no tip set,
- * returns true (the node sits at genesis; fast_sync seeds it).
+ * returns ZCL_OK (the node sits at genesis; fast_sync seeds it).
  *
  * `bip` is the open projection; `progress_db` is the progress.kv handle
  * (progress_store_db()). Both may be NULL — a NULL `bip` makes this a
- * no-op (returns true, empty map); a NULL `progress_db` skips the tip
+ * no-op (returns ZCL_OK, empty map); a NULL `progress_db` skips the tip
  * seed (map rebuilt, no tip published).
  *
- * Returns true on success (including the empty case), false on a hard
- * fold/iterate error. */
-bool load_block_index_from_projection(struct main_state *ms,
+ * Returns .ok=true on success (including the empty case), .ok=false on a
+ * hard fold/iterate error — the previous bare-bool true/false maps to .ok. */
+struct zcl_result load_block_index_from_projection(struct main_state *ms,
                                       const struct chain_params *params,
                                       struct block_index_projection *bip,
                                       struct sqlite3 *progress_db);
@@ -257,8 +260,9 @@ bool block_index_loader_torn_import_detect(struct main_state *ms,
  * > min_entries nodes. `publish_tip`=true publishes the cursor tip (the
  * projection-as-authority -rebuildfromlog path); =false does a PURE map
  * rebuild with NO tip publish (the kill-9 fallback — the coins authority +
- * the guarded forward seed own the tip). Returns true on accept. */
-bool boot_try_rebuild_block_index_from_projection(struct main_state *ms,
+ * the guarded forward seed own the tip). Returns .ok=true on accept; the
+ * previous bare-bool true/false maps to .ok. */
+struct zcl_result boot_try_rebuild_block_index_from_projection(struct main_state *ms,
                                                   const struct chain_params *params,
                                                   size_t min_entries,
                                                   bool publish_tip);

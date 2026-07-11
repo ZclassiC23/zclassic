@@ -326,39 +326,37 @@ int block_index_loader_seed_tip_from_finalized(struct main_state *ms,
     return 1;
 }
 
-bool load_block_index_from_projection(struct main_state *ms,
+struct zcl_result load_block_index_from_projection(struct main_state *ms,
                                       const struct chain_params *params,
                                       struct block_index_projection *bip,
                                       struct sqlite3 *progress_db)
 {
     if (!ms)
-        LOG_FAIL("block_index",
-                 "load_block_index_from_projection: null main_state");
+        return ZCL_ERR(-1, "load_block_index_from_projection: null main_state");
 
     /* Cold / unwired: empty map, no tip. The caller (boot) seeds genesis
      * or fast_sync separately. */
     if (!bip)
-        return true;
+        return ZCL_OK;
 
     /* (1) Drain the event log into the projection. */
     uint64_t off = block_index_projection_catch_up(bip);
     if (off == (uint64_t)-1)
-        LOG_FAIL("block_index",
-                 "load_block_index_from_projection: projection catch_up failed");
+        return ZCL_ERR(-2, "load_block_index_from_projection: projection "
+                       "catch_up failed");
 
     /* (2) Fold every projection row into the in-memory map. */
     struct projection_fold_ctx ctx = { .ms = ms, .folded = 0, .failed = false };
     int64_t t0 = (int64_t)platform_time_wall_time_t();
     if (block_index_projection_iterate(bip, projection_fold_cb, &ctx) != 0 ||
         ctx.failed)
-        LOG_FAIL("block_index",
-                 "load_block_index_from_projection: fold failed after %zu rows",
-                 ctx.folded);
+        return ZCL_ERR(-3, "load_block_index_from_projection: fold failed "
+                       "after %zu rows", ctx.folded);
 
     if (ctx.folded == 0) {
         /* Empty projection — cold datadir. Genesis/fast_sync seeds later. */
         printf("Block index projection: empty — no entries folded\n");
-        return true;
+        return ZCL_OK;
     }
 
     /* Option A: re-seed every node's per-node hash storage and point
@@ -403,8 +401,8 @@ bool load_block_index_from_projection(struct main_state *ms,
      * entry. Resolving after all rows are inserted handles same-height
      * siblings/orphans correctly, exactly as the flat/LevelDB loaders. */
     if (block_index_projection_iterate(bip, projection_link_pprev_cb, ms) != 0)
-        LOG_FAIL("block_index",
-                 "load_block_index_from_projection: pprev link iterate failed");
+        return ZCL_ERR(-4, "load_block_index_from_projection: pprev link "
+                       "iterate failed");
 
     /* (4) Forward pass: nChainWork, nChainTx, skip links, branch id,
      * failed-child propagation — identical to load_block_index post-load. */
@@ -412,9 +410,8 @@ bool load_block_index_from_projection(struct main_state *ms,
     struct block_index **sorted = zcl_malloc(
         count * sizeof(struct block_index *), "projection sorted");
     if (!sorted)
-        LOG_FAIL("block_index",
-                 "load_block_index_from_projection: malloc failed for %zu entries",
-                 count);
+        return ZCL_ERR(-5, "load_block_index_from_projection: malloc failed "
+                       "for %zu entries", count);
     size_t idx = 0, iter = 0;
     struct block_index *pi;
     while (block_map_next(&ms->map_block_index, &iter, NULL, &pi)) {
@@ -433,7 +430,7 @@ bool load_block_index_from_projection(struct main_state *ms,
     /* (5) Seed the tip from the durable tip_finalize cursor. */
     rebuild_seed_tip(ms, progress_db);
 
-    return true;
+    return ZCL_OK;
 }
 
 /* Shared projection-rebuild front door for boot. Folds the durable
@@ -453,28 +450,34 @@ bool load_block_index_from_projection(struct main_state *ms,
  *             This is the load-bearing safety distinction: publishing an
  *             unguarded cursor tip here would short-circuit coins-restore and
  *             genesis-init. */
-bool boot_try_rebuild_block_index_from_projection(struct main_state *ms,
+struct zcl_result boot_try_rebuild_block_index_from_projection(struct main_state *ms,
                                                   const struct chain_params *params,
                                                   size_t min_entries,
                                                   bool publish_tip)
 {
     if (!ms)
-        return false;
+        return ZCL_ERR(-1, "boot_try_rebuild_block_index_from_projection: "
+                       "null main_state");
     struct block_index_projection *bip = block_index_projection_singleton();
     if (!bip)
-        return false;
-    if (!load_block_index_from_projection(
-            ms, params, bip, publish_tip ? progress_store_db() : NULL))
-        return false;
+        return ZCL_ERR(-2, "boot_try_rebuild_block_index_from_projection: "
+                       "no projection singleton");
+    struct zcl_result r = load_block_index_from_projection(
+            ms, params, bip, publish_tip ? progress_store_db() : NULL);
+    if (!r.ok)
+        return r;
     if (ms->map_block_index.size <= min_entries)
-        return false;
+        return ZCL_ERR(-3, "boot_try_rebuild_block_index_from_projection: "
+                       "folded map too small (%zu <= %zu)",
+                       ms->map_block_index.size, min_entries);
     if (publish_tip && !active_chain_tip(&ms->chain_active))
-        return false;
+        return ZCL_ERR(-4, "boot_try_rebuild_block_index_from_projection: "
+                       "publish_tip requested but no active tip after rebuild");
     printf("[boot] block index rebuilt from projection: %zu entries "
            "(publish_tip=%d)\n", ms->map_block_index.size, (int)publish_tip);
     event_emitf(EV_BOOT_BLOCK_INDEX, 0, "rebuilt_from_projection entries=%zu",
                 ms->map_block_index.size);
-    return true;
+    return ZCL_OK;
 }
 
 /* Durable cold-import anchor keys, written by the producer

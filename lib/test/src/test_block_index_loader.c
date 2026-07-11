@@ -135,7 +135,7 @@ int test_block_index_loader(void)
         block_map_init(&ms2.map_block_index);
         active_chain_init(&ms2.chain_active);
 
-        bool loaded = file_ok && load_block_index_flat(tmpdir, &ms2);
+        bool loaded = file_ok && load_block_index_flat(tmpdir, &ms2).ok;
         bool count_ok = loaded && (ms2.map_block_index.size == ms.map_block_index.size);
 
         bool heights_ok = count_ok;
@@ -219,7 +219,7 @@ int test_block_index_loader(void)
             memset(&ms, 0, sizeof(ms));
             block_map_init(&ms.map_block_index);
             active_chain_init(&ms.chain_active);
-            ok = ok && !load_block_index_flat(tmpdir, &ms);
+            ok = ok && !load_block_index_flat(tmpdir, &ms).ok;
             block_map_free(&ms.map_block_index);
         }
 
@@ -251,7 +251,7 @@ int test_block_index_loader(void)
             memset(&ms, 0, sizeof(ms));
             block_map_init(&ms.map_block_index);
             active_chain_init(&ms.chain_active);
-            ok = ok && !load_block_index_flat(tmpdir, &ms);
+            ok = ok && !load_block_index_flat(tmpdir, &ms).ok;
             block_map_free(&ms.map_block_index);
         }
 
@@ -310,7 +310,7 @@ int test_block_index_loader(void)
             block_map_init(&ms2.map_block_index);
             active_chain_init(&ms2.chain_active);
 
-            ok = ok && load_block_index_sqlite(&ndb, &ms2);
+            ok = ok && load_block_index_sqlite(&ndb, &ms2).ok;
             ok = ok && (ms2.map_block_index.size >= 1500);
 
             block_map_free(&ms2.map_block_index);
@@ -362,7 +362,7 @@ int test_block_index_loader(void)
             block_map_init(&ms2.map_block_index);
             active_chain_init(&ms2.chain_active);
 
-            ok = ok && !load_block_index_sqlite(&ndb, &ms2);
+            ok = ok && !load_block_index_sqlite(&ndb, &ms2).ok;
 
             block_map_free(&ms2.map_block_index);
             sqlite3_close(ndb.db);
@@ -400,7 +400,7 @@ int test_block_index_loader(void)
         block_map_init(&ms2.map_block_index);
         active_chain_init(&ms2.chain_active);
 
-        if (ok) ok = load_block_index_flat(tmpdir, &ms2);
+        if (ok) ok = load_block_index_flat(tmpdir, &ms2).ok;
         if (ok) {
             struct block_index *loaded = block_map_find(&ms2.map_block_index, &tip_hash);
             ok = ok && loaded && (arith_uint256_compare(&loaded->nChainWork, &orig_work) == 0);
@@ -424,7 +424,7 @@ int test_block_index_loader(void)
         block_map_init(&ms.map_block_index);
         active_chain_init(&ms.chain_active);
 
-        bool ok = !load_block_index_flat("/nonexistent/path", &ms);
+        bool ok = !load_block_index_flat("/nonexistent/path", &ms).ok;
 
         BIL_CHECK("bil: load_block_index_flat returns false for missing file", ok);
 
@@ -468,7 +468,7 @@ int test_block_index_loader(void)
         memset(&ms2, 0, sizeof(ms2));
         block_map_init(&ms2.map_block_index);
         active_chain_init(&ms2.chain_active);
-        bool rejected = wrote && !load_block_index_flat(tmpdir, &ms2);
+        bool rejected = wrote && !load_block_index_flat(tmpdir, &ms2).ok;
 
         BIL_CHECK("bil: embedded format rejects corrupted payload", rejected);
 
@@ -506,7 +506,7 @@ int test_block_index_loader(void)
         memset(&ms2, 0, sizeof(ms2));
         block_map_init(&ms2.map_block_index);
         active_chain_init(&ms2.chain_active);
-        bool rejected = tok && !load_block_index_flat(tmpdir, &ms2);
+        bool rejected = tok && !load_block_index_flat(tmpdir, &ms2).ok;
 
         BIL_CHECK("bil: embedded format rejects truncated file", rejected);
 
@@ -542,7 +542,7 @@ int test_block_index_loader(void)
         memset(&ms, 0, sizeof(ms));
         block_map_init(&ms.map_block_index);
         active_chain_init(&ms.chain_active);
-        bool rejected = wrote && !load_block_index_flat(tmpdir, &ms);
+        bool rejected = wrote && !load_block_index_flat(tmpdir, &ms).ok;
 
         BIL_CHECK("bil: embedded format rejects header-only file", rejected);
 
@@ -608,7 +608,7 @@ int test_block_index_loader(void)
         memset(&ms2, 0, sizeof(ms2));
         block_map_init(&ms2.map_block_index);
         active_chain_init(&ms2.chain_active);
-        bool loaded = legacy_ok && load_block_index_flat(tmpdir, &ms2);
+        bool loaded = legacy_ok && load_block_index_flat(tmpdir, &ms2).ok;
         bool count_ok = loaded &&
             (ms2.map_block_index.size == ms.map_block_index.size);
 
@@ -680,7 +680,7 @@ int test_block_index_loader(void)
         memset(&ms2, 0, sizeof(ms2));
         block_map_init(&ms2.map_block_index);
         active_chain_init(&ms2.chain_active);
-        bool loaded = legacy_ok && load_block_index_flat(tmpdir, &ms2);
+        bool loaded = legacy_ok && load_block_index_flat(tmpdir, &ms2).ok;
         bool missing_ok = loaded &&
             (bii_verify(tmpdir, NULL, NULL, NULL, 0) == BII_SIDECAR_MISSING);
 
