@@ -153,3 +153,57 @@ char *zcl_native_listaddresses_body(const struct json_value *args,
     json_free(&root);
     return out;
 }
+
+/* ── Tier-1 hot-swap: native.leaves generation entrypoint (W1-B/C) ──────
+ * Dev-only (compiled only under -DZCL_HOTSWAP_GEN, a generation .so build;
+ * expands to nothing in the node/release TU — see ZCL_HOTSWAP_EXPORT_LEAVES
+ * in lib/hotswap/include/hotswap/hotswap.h). Stages every native command
+ * leaf this controller owns; the resident bridge re-points them at THIS
+ * TU's freshly-compiled bodies via zcl_native_bridge_run(). Probe is
+ * core.wallet.address.list: zcl_native_listaddresses_body ignores `args`
+ * ((void)args) and unconditionally calls listwalletkeys[false], returning
+ * {"t_addresses":[...],"z_addresses":[...]} with no top-level "error" key
+ * on success, so the empty-args self-test dispatch succeeds.
+ * core.wallet.utxo.list / core.wallet.transaction.list also default their
+ * params (minconf/maxconf, count/skip) and would work as a probe too;
+ * core.wallet.transaction.get requires a caller-supplied txid and is NOT
+ * a probe candidate. See config/hotswap_eligible.def. */
+#ifdef ZCL_HOTSWAP_GEN
+#define ZCL_HOTSWAP_PROBE_LEAF "core.wallet.address.list"
+#include "hotswap/hotswap.h"
+#include "kernel/command_registry.h"
+#include "command/native_command.h"
+
+static void tramp_listaddresses(const struct zcl_command_request *request,
+                                struct zcl_command_reply *reply)
+{
+    zcl_native_bridge_run(request, zcl_native_listaddresses_body, reply);
+}
+
+static void tramp_listunspent(const struct zcl_command_request *request,
+                              struct zcl_command_reply *reply)
+{
+    zcl_native_bridge_run(request, zcl_native_listunspent_body, reply);
+}
+
+static void tramp_listtransactions(const struct zcl_command_request *request,
+                                   struct zcl_command_reply *reply)
+{
+    zcl_native_bridge_run(request, zcl_native_listtransactions_body, reply);
+}
+
+static void tramp_gettransaction(const struct zcl_command_request *request,
+                                 struct zcl_command_reply *reply)
+{
+    zcl_native_bridge_run(request, zcl_native_gettransaction_body, reply);
+}
+
+static const struct zcl_hotswap_leaf_replacement k_leaves[] = {
+    { "core.wallet.address.list",      tramp_listaddresses },
+    { "core.wallet.utxo.list",         tramp_listunspent },
+    { "core.wallet.transaction.list",  tramp_listtransactions },
+    { "core.wallet.transaction.get",   tramp_gettransaction },
+};
+
+ZCL_HOTSWAP_EXPORT_LEAVES(k_leaves, sizeof(k_leaves) / sizeof(k_leaves[0]))
+#endif /* ZCL_HOTSWAP_GEN */

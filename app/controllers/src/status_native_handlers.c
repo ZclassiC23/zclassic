@@ -558,3 +558,72 @@ char *zcl_native_postmortem_list_body(const struct json_value *args,
     }
     return body;
 }
+
+/* ── Tier-1 hot-swap: native.leaves generation entrypoint (W1-B/C) ──────
+ * Dev-only (compiled only under -DZCL_HOTSWAP_GEN, a generation .so build;
+ * expands to nothing in the node/release TU — see ZCL_HOTSWAP_EXPORT_LEAVES
+ * in lib/hotswap/include/hotswap/hotswap.h). Stages every native command
+ * leaf this controller owns; the resident bridge re-points them at THIS
+ * TU's freshly-compiled bodies via zcl_native_bridge_run(). Probe is
+ * core.status: zcl_native_status_body ignores `args` ((void)args) and
+ * composes its body from unconditional RPC/dumpstate calls; per-field
+ * failures are surfaced as nested "<field>_error" keys
+ * (status_push_json_error in status_native_helpers.c), never a top-level
+ * "error" key, so the empty-args self-test dispatch succeeds. The other
+ * five leaves here also tolerate empty args (all optional/defaulted
+ * params: category/count, mode, dir/limit, ...) but core.status is kept
+ * as the probe for parity with the legacy zcl_status pilot. See
+ * config/hotswap_eligible.def. */
+#ifdef ZCL_HOTSWAP_GEN
+#define ZCL_HOTSWAP_PROBE_LEAF "core.status"
+#include "hotswap/hotswap.h"
+#include "kernel/command_registry.h"
+#include "command/native_command.h"
+
+static void tramp_status(const struct zcl_command_request *request,
+                         struct zcl_command_reply *reply)
+{
+    zcl_native_bridge_run(request, zcl_native_status_body, reply);
+}
+
+static void tramp_syncdiag(const struct zcl_command_request *request,
+                           struct zcl_command_reply *reply)
+{
+    zcl_native_bridge_run(request, zcl_native_syncdiag_body, reply);
+}
+
+static void tramp_blockers(const struct zcl_command_request *request,
+                           struct zcl_command_reply *reply)
+{
+    zcl_native_bridge_run(request, zcl_native_blockers_body, reply);
+}
+
+static void tramp_timeline(const struct zcl_command_request *request,
+                           struct zcl_command_reply *reply)
+{
+    zcl_native_bridge_run(request, zcl_native_timeline_body, reply);
+}
+
+static void tramp_agent_diagnose(const struct zcl_command_request *request,
+                                 struct zcl_command_reply *reply)
+{
+    zcl_native_bridge_run(request, zcl_native_agent_diagnose_body, reply);
+}
+
+static void tramp_postmortem_list(const struct zcl_command_request *request,
+                                  struct zcl_command_reply *reply)
+{
+    zcl_native_bridge_run(request, zcl_native_postmortem_list_body, reply);
+}
+
+static const struct zcl_hotswap_leaf_replacement k_leaves[] = {
+    { "core.status",          tramp_status },
+    { "core.sync.diagnose",   tramp_syncdiag },
+    { "core.sync.blockers",   tramp_blockers },
+    { "ops.timeline",         tramp_timeline },
+    { "ops.diagnose",         tramp_agent_diagnose },
+    { "ops.postmortem.list",  tramp_postmortem_list },
+};
+
+ZCL_HOTSWAP_EXPORT_LEAVES(k_leaves, sizeof(k_leaves) / sizeof(k_leaves[0]))
+#endif /* ZCL_HOTSWAP_GEN */

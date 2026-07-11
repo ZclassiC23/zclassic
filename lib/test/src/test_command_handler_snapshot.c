@@ -91,6 +91,20 @@ static const struct zcl_command_spec g_specs[] = {
         .availability_reason = "not implemented",
         .handler = NULL,
     },
+    {
+        /* Mirrors the ZCL_COMMAND_BRANCH() macro shape exactly
+         * (config/src/command_catalog.c): availability=READY,
+         * effect=READ, mode=BRANCH, handler=NULL. A branch would slip
+         * past the READY+READ checks if the mode weren't checked too. */
+        .path = "core.probe.branch",
+        .summary = "branch probe node (no handler)",
+        .layer = ZCL_COMMAND_LAYER_CORE,
+        .effect = ZCL_COMMAND_EFFECT_READ,
+        .availability = ZCL_COMMAND_READY,
+        .mode = ZCL_COMMAND_MODE_BRANCH,
+        .allowed_lanes = ZCL_COMMAND_LANE_LOCAL,
+        .handler = NULL,
+    },
 };
 
 static const struct zcl_command_registry g_reg = {
@@ -271,6 +285,31 @@ static int test_reject_ineligible_leaves(void)
     return failures;
 }
 
+static int test_reject_branch_leaf(void)
+{
+    int failures = 0;
+    TEST("a branch leaf (NULL handler, mode=BRANCH) is rejected, not swappable") {
+        reset_fixture();
+        char why[256];
+
+        struct zcl_command_handler_override branch = {
+            .path = "core.probe.branch", .handler = h_override,
+        };
+        why[0] = '\0';
+        ASSERT(!zcl_command_registry_replace_batch(0, &branch, 1, why,
+                                                   sizeof(why)));
+        ASSERT(strstr(why, "branch") != NULL);
+        ASSERT(strstr(why, "core.probe.branch") != NULL);
+
+        /* Nothing installed. */
+        ASSERT_EQ((unsigned)zcl_command_registry_active_generation(), 0u);
+        ASSERT(zcl_command_registry_effective_handler(
+                   find_spec("core.probe.branch")) == NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_generation_monotonicity(void)
 {
     int failures = 0;
@@ -386,6 +425,7 @@ int test_command_handler_snapshot(void)
     failures += test_fallback_when_absent();
     failures += test_batch_atomicity();
     failures += test_reject_ineligible_leaves();
+    failures += test_reject_branch_leaf();
     failures += test_generation_monotonicity();
     failures += test_concurrent_hammer();
     /* Leave the override layer clean for any sibling group sharing the TU. */

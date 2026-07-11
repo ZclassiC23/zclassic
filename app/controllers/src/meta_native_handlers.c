@@ -108,3 +108,41 @@ char *zcl_native_consensus_report_body(const struct json_value *args,
     }
     return out;
 }
+
+/* ── Tier-1 hot-swap: native.leaves generation entrypoint (W1-B/C) ──────
+ * Dev-only (compiled only under -DZCL_HOTSWAP_GEN, a generation .so build;
+ * expands to nothing in the node/release TU — see ZCL_HOTSWAP_EXPORT_LEAVES
+ * in lib/hotswap/include/hotswap/hotswap.h). Stages every native command
+ * leaf this controller owns; the resident bridge re-points them at THIS
+ * TU's freshly-compiled bodies via zcl_native_bridge_run(). Probe is
+ * ops.metrics: zcl_native_metrics_body ignores `args` ((void)args) and
+ * unconditionally renders the Prometheus text buffer into a JSON envelope
+ * with no top-level "error" key, so the empty-args self-test dispatch
+ * succeeds. core.consensus.report is equally args-free ((void)args) and
+ * would work as a probe too — either is valid; ops.metrics is kept as the
+ * pilot probe. See config/hotswap_eligible.def. */
+#ifdef ZCL_HOTSWAP_GEN
+#define ZCL_HOTSWAP_PROBE_LEAF "ops.metrics"
+#include "hotswap/hotswap.h"
+#include "kernel/command_registry.h"
+#include "command/native_command.h"
+
+static void tramp_consensus_report(const struct zcl_command_request *request,
+                                   struct zcl_command_reply *reply)
+{
+    zcl_native_bridge_run(request, zcl_native_consensus_report_body, reply);
+}
+
+static void tramp_metrics(const struct zcl_command_request *request,
+                          struct zcl_command_reply *reply)
+{
+    zcl_native_bridge_run(request, zcl_native_metrics_body, reply);
+}
+
+static const struct zcl_hotswap_leaf_replacement k_leaves[] = {
+    { "core.consensus.report", tramp_consensus_report },
+    { "ops.metrics",           tramp_metrics },
+};
+
+ZCL_HOTSWAP_EXPORT_LEAVES(k_leaves, sizeof(k_leaves) / sizeof(k_leaves[0]))
+#endif /* ZCL_HOTSWAP_GEN */

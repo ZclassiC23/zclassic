@@ -255,6 +255,14 @@ AGENT_IMPACT_RULE("lib/hotswap/src/hotswap_loader.c|lib/hotswap/include/hotswap/
 AGENT_IMPACT_RULE("tools/dev/*.c|tools/dev/devloop.h|sdk/include/zclassic23/app.h|lib/framework/src/app_platform.c|lib/framework/include/framework/app_platform.h|lib/sim/src/social_app_sim.c|lib/sim/include/sim/social_app_sim.h|lib/test/src/test_dev_platform.c|apps/*/*", "dev_platform hotswap_simnet vcs_devloop make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/api_controller_dispatch.c|app/controllers/src/diagnostics_dispatch.c", "hotswap_loader mcp_controllers make_lint_gates")
 
+/* Zero-MCP W1-B/C: the native `native.leaves` hot-swap provider driver
+ * (tools/command/native_dev_hotswap.{c,h}) plus its eligibility manifest and
+ * the lib/hotswap generation/loader surface it re-targets. A bad edit here
+ * can break either the leaf-handler override snapshot proof
+ * (command_handler_snapshot) or the loader/simnet manifest contract
+ * (hotswap_loader, hotswap_simnet). */
+AGENT_IMPACT_RULE("tools/command/native_dev_hotswap.c|tools/command/native_dev_hotswap.h|config/commands/dev.def|lib/hotswap/*|config/hotswap_eligible.def", "hotswap_loader hotswap_simnet command_handler_snapshot make_lint_gates")
+
 /* Instant dev loop Wave 1/2: Tier-2 fast restart (clean-shutdown marker + skip). */
 AGENT_IMPACT_RULE("config/src/boot_shutdown_marker.c|config/include/config/boot_shutdown_marker.h|config/src/boot_fast_restart.c|config/include/config/boot_fast_restart.h|lib/test/src/test_shutdown_marker.c", "shutdown_marker unclean_shutdown_advance boot_phase make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/block_index_loader.c|app/services/src/block_index_loader_rebuild.c|app/services/include/services/block_index_loader.h|lib/test/src/test_block_index_loader.c|lib/test/src/test_block_index_rebuild.c", "load_verify_boot block_index_loader block_index_rebuild block_index_integrity make_lint_gates")

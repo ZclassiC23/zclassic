@@ -34,6 +34,19 @@ int zcl_native_command_main(const char *root_word,
 void zcl_native_bridge_command(const struct zcl_command_request *request,
                                struct zcl_command_reply *reply);
 
+/* Run a bridged leaf with an EXPLICIT body function — the reusable core of
+ * zcl_native_bridge_command: build args from the request, dispatch the passed
+ * `body` (or, when `body` is NULL and the leaf is a pure 1:1 proxy, the
+ * backing JSON-RPC method directly), then project the body into the reply
+ * envelope. zcl_native_bridge_command is a thin wrapper that supplies
+ * zcl_native_bridge_body_for_path(path); a hot-swap generation instead
+ * supplies its own freshly-compiled body. A NULL `body` on a path with no
+ * direct-RPC binding yields the same NO_BRIDGE_BINDING reply as an unknown
+ * path. */
+void zcl_native_bridge_run(const struct zcl_command_request *request,
+                           zcl_native_body_fn body,
+                           struct zcl_command_reply *reply);
+
 /* Project a bridged tool body into reply->data bounded by request->view
  * (summary|normal|full), request->budget_bytes, request->max_items, and
  * request->cursor, emitting an explicit `_page` descriptor and — when
@@ -158,6 +171,15 @@ void zcl_native_handle_dev_generation_history(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_dev_diagnose_latest(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+/* dev.hotswap.apply / dev.hotswap.probe — Tier-1 in-process hot-swap of native
+ * command leaves. Short-lived CLI processes that forward over JSON-RPC to the
+ * resident dev node (see tools/command/native_dev_hotswap.c). */
+void zcl_native_handle_dev_hotswap_apply(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_dev_hotswap_probe(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 #endif

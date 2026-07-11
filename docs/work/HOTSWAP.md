@@ -1,10 +1,20 @@
 # Tier-1 in-process hot-swap (DEV-ONLY)
 
-An AI agent edits a manifest-eligible stateless MCP controller `.c`, compiles it
+An AI agent edits a manifest-eligible stateless controller `.c`, compiles it
 into a content-identified generation `.so`, and loads it into a **running dev
-node's resident MCP router** without a restart. Generation v2 stages every route, validates the
-complete set and ABI manifest, runs its self-test, then publishes one immutable
-router snapshot with one atomic store. Any failure publishes zero routes.
+node** without a restart. Two provider classes exist and run **dual-run** side
+by side:
+
+- **`mcp.routes`** (original pilot — everything below through "Known limits"
+  describes it) — re-points routes in the resident **MCP router**.
+- **`native.leaves`** (Wave W1-B/C, Zero-MCP re-target — see the section
+  below) — re-points leaf handlers in the **kernel command registry**, so
+  Tier-1 hot-swap keeps working after the MCP server is deleted (W3). See
+  `docs/work/project_zero_mcp_directive_2026-07-11.md` for the deletion plan.
+
+Generation v2 stages every route/leaf, validates the complete set and ABI
+manifest, runs its self-test, then publishes one immutable snapshot with one
+atomic store. Any failure publishes zero routes/leaves.
 
 **This is dev-only. The release binary is 100% static with zero `dlopen`.**
 Every dynamic-loading line lives behind `#ifdef ZCL_DEV_BUILD`; a release build
@@ -43,6 +53,13 @@ transactional reload still verifies it and preserves rollback semantics.
 | Persistent dev RPC bridge | `tools/mcp/dev_rpc_bridge.{c,h}` (`dev_hotswap`, read-only `dev_mcp_call`) |
 | Build/verification targets | `make hotswap-so`, `make hotswap`, `make hotswap-sim` |
 | `zcl_state subsystem=hotswap` | `zcl.hotswap_generation.v2` provenance/status |
+| **`native.leaves` (W1-B/C)** loader entrypoint `hotswap_load_leaves` | `lib/hotswap/` (`hotswap_loader.c`) |
+| Atomic leaf-handler override layer + `zcl_command_registry_replace_batch` | `lib/kernel/src/command_registry.c` |
+| v3 host + `ZCL_HOTSWAP_EXPORT_LEAVES` macro | `lib/hotswap/include/hotswap/hotswap.h` |
+| Eligible native TUs (each exports its own `k_leaves[]` trampoline table) | `app/controllers/src/{status,wallet,net,meta,chain}_native_handlers.c` |
+| Native seam a trampoline calls into its own body | `zcl_native_bridge_run()` in `tools/command/native_command.c` |
+| Native dev commands `dev.hotswap.apply` / `dev.hotswap.probe` | `config/commands/dev.def`, `tools/command/native_dev_hotswap.{c,h}` |
+| Resident RPC the CLI forwards to | `dev_hotswap_native` in `tools/mcp/dev_rpc_bridge.c` |
 
 Zero new external dependencies: plain `$(CC) -shared` + libc `dlopen` (`-ldl`,
 already linked). No mold/lld/inotify/etc. required.
@@ -144,6 +161,10 @@ PASS: tools/mcp/controllers/app_controller.c committed a v2 generation re-pointi
 
 ## Eligibility (which TUs Tier-1 can swap)
 
+This section covers `mcp.routes` eligibility. For the `native.leaves`
+provider class eligibility table, see "`native.leaves` provider (Zero-MCP
+re-target, Wave W1-B/C)" below.
+
 Eligible = (a) all routes go through the router snapshot mechanism
 (`ZCL_HOTSWAP_EXPORT_ROUTES` over one `k_routes[]`), (b) no mutable file-scope
 static (`check-hotswap-static-state`), (c) app-layer, outside every consensus/
@@ -188,6 +209,219 @@ independently. Every eligible TU is proven end-to-end by
   reload fallback; generation rejection does not. After a successful swap the
   watcher asynchronously builds and preflights an immutable binary generation
   so source and process state can converge at the next transactional reload.
+
+## `native.leaves` provider (Zero-MCP re-target, Wave W1-B/C)
+
+Everything above this section describes the original `mcp.routes` provider
+class, which re-points routes in the resident **MCP router**
+(`tools/mcp/router.{c,h}`). The ZERO-MCP directive
+(`docs/work/project_zero_mcp_directive_2026-07-11.md`) deletes the MCP router
+in Wave 3, so Tier-1 hot-swap needed a second, MCP-free provider class that
+re-points **native command leaves** in the **kernel command registry**
+instead. Both provider classes are **dual-run** today — publishing a
+`mcp.routes` generation does not touch `native.leaves` and vice versa; a
+controller pair (e.g. `tools/mcp/controllers/status_controller.c` and
+`app/controllers/src/status_native_handlers.c`) may each carry their own
+`ZCL_HOTSWAP_EXPORT_*` macro and be swapped independently.
+
+### What changed at the ABI level
+
+`lib/hotswap/include/hotswap/hotswap.h` gained a **v3 host** alongside the
+existing v2 host (same manifest schema, `ZCL_HOTSWAP_MANIFEST_SCHEMA_V2`):
+
+- `ZCL_HOTSWAP_HOST_ABI_V3` / `ZCL_HOTSWAP_CAP_LEAF_STAGE` /
+  `ZCL_HOTSWAP_V3_HOST_CAPABILITIES` — the v3 capability bit and its required
+  set, parallel to the v2 `MCP_STAGE`/`ATOMIC_COMMIT` pair.
+- `struct zcl_hotswap_host` gained one field appended past `mcp_stage`:
+  `bool (*leaf_stage)(const char *path, zcl_command_handler_fn handler);`.
+  The append is deliberate and load-bearing: `ZCL_HOTSWAP_HOST_STRUCT_SIZE_V2`
+  is frozen as `offsetof(struct zcl_hotswap_host, leaf_stage)` (not
+  `sizeof(...)`), so an already-compiled `mcp.routes` generation keeps
+  declaring the SAME `host_struct_size` it always did — the v3 field growing
+  the struct cannot retroactively break v2 generations.
+- `struct zcl_hotswap_leaf_replacement { const char *path;
+  zcl_command_handler_fn handler; }` and `zcl_hotswap_leaf_commit_cb` are the
+  leaf analogues of `zcl_hotswap_mcp_replacement` / `zcl_hotswap_commit_cb`.
+- `hotswap_load_leaves(so_path, datadir, probe_leaf, commit_cb, ctx, report)`
+  in `lib/hotswap/src/hotswap_loader.c` is the leaf analogue of `hotswap_load()`
+  — same fail-closed precheck/dlopen/hash/manifest-validate core, diverging
+  only in staging leaves via the v3 host and invoking a
+  `zcl_hotswap_leaf_commit_cb`. Dev-only: without `ZCL_DEV_BUILD` it refuses
+  with "unavailable" and performs no `dlopen`.
+- `ZCL_HOTSWAP_EXPORT_LEAVES(leaves_arr, leaves_count)` is the leaf analogue of
+  `ZCL_HOTSWAP_EXPORT_ROUTES`. Both macros now expand through one shared
+  `ZCL_HOTSWAP_EXPORT_MANIFEST(host_abi_, host_size_, required_caps_,
+  provider_id_, probe_csv_)` body, so the v2/v3 manifest emitters cannot drift
+  apart. A TU invokes exactly one of the two `EXPORT_*` macros — never both —
+  so the single `zcl_hotswap_default_self_test` / `zcl_hotswap_manifest_v2`
+  symbols never clash.
+- `lib/kernel/src/command_registry.c`'s `zcl_command_registry_replace_batch()`
+  is the publication primitive `native.leaves` commits into: atomic,
+  generation-monotonic (a batch with `gen <= active` is rejected outright,
+  publishing nothing), lock-free readers. W1-B/C added one more precheck to
+  it: a batch entry naming a **branch** path (`mode == ZCL_COMMAND_MODE_BRANCH`,
+  no handler) is rejected with `"leaf '%s' is a branch, not swappable"` — only
+  a real, `READY` leaf can be re-pointed.
+
+### How a generation .so re-points its OWN leaf
+
+A generation `.so` re-points a leaf to its own freshly-compiled body through a
+**per-TU trampoline** compiled `#ifdef ZCL_HOTSWAP_GEN` at the bottom of the
+owning `app/controllers/src/*_native_handlers.c` file. Each trampoline calls
+the new seam `zcl_native_bridge_run(request, body, reply)`
+(`tools/command/native_command.c`) — the same request-build /
+dispatch / project pipeline `zcl_native_bridge_command()` always used, now
+factored so a caller can supply an explicit `body` function instead of
+resolving one from the static path table. `zcl_native_bridge_command()` itself
+is now a thin wrapper: `zcl_native_bridge_run(request,
+zcl_native_bridge_body_for_path(request->spec->path), reply)`. Example
+(`app/controllers/src/status_native_handlers.c`):
+
+```c
+#ifdef ZCL_HOTSWAP_GEN
+#define ZCL_HOTSWAP_PROBE_LEAF "core.status"
+#include "hotswap/hotswap.h"
+#include "kernel/command_registry.h"
+#include "command/native_command.h"
+
+static void tramp_status(const struct zcl_command_request *request,
+                         struct zcl_command_reply *reply)
+{
+    zcl_native_bridge_run(request, zcl_native_status_body, reply);
+}
+/* ...five more trampolines... */
+
+static const struct zcl_hotswap_leaf_replacement k_leaves[] = {
+    { "core.status",         tramp_status },
+    { "core.sync.diagnose",  tramp_syncdiag },
+    /* ... */
+};
+
+ZCL_HOTSWAP_EXPORT_LEAVES(k_leaves, sizeof(k_leaves) / sizeof(k_leaves[0]))
+#endif /* ZCL_HOTSWAP_GEN */
+```
+
+`lib/hotswap` itself never includes kernel/app headers — `struct
+zcl_command_request`/`zcl_command_reply` are only forward-declared in
+`hotswap.h` (`struct zcl_command_request; struct zcl_command_reply; typedef
+void (*zcl_command_handler_fn)(...)`); the concrete types are complete only in
+the controller TU that invokes `ZCL_HOTSWAP_EXPORT_LEAVES`.
+
+### `dev.hotswap.apply` / `dev.hotswap.probe` (native commands)
+
+Tier-1 hot-swap over `native.leaves` is driven through two new native dev
+commands (`config/commands/dev.def`, handlers in
+`tools/command/native_dev_hotswap.c` — the MCP-free successor of
+`tools/mcp/controllers/dev_hotswap_controller.c` +
+`tools/mcp/dev_rpc_bridge.c`'s `rpc_dev_hotswap`, kept entirely off
+`tools/mcp/` so it survives the W3 MCP delete):
+
+```sh
+zclassic23-dev dev hotswap apply --input='{"so_path":"/tmp/gen.so","probe_leaf":"core.status"}'
+zclassic23-dev dev hotswap probe --input='{"so_path":"/tmp/gen.so","probe_leaf":"core.status"}'
+```
+
+Both are **CLI handlers running as a short-lived process** — they cannot
+re-point a leaf in the *running* dev node's registry directly, so they
+forward the request over JSON-RPC to the already-running node via a new
+resident method, `dev_hotswap_native` (registered in
+`tools/mcp/dev_rpc_bridge.c`'s `dev_bridge_register_impl()` through
+`register_dev_native_hotswap_rpc()`). That handler runs
+`hotswap_load_leaves()` **in-process** in the resident dev node, so the leaf
+re-point happens in the RUNNING dev node — exactly the "which process gets
+swapped" contract the `mcp.routes` pilot already has.
+
+- **`dev.hotswap.apply`** commits: `hotswap_commit_native_leaves()` in
+  `tools/command/native_dev_hotswap.c` stages the whole batch then calls
+  `zcl_command_registry_replace_batch()` — all-or-nothing publish.
+- **`dev.hotswap.probe`** stages + self-tests **without** publishing:
+  `hotswap_probe_native_leaves()` validates the staged batch shape
+  (non-empty paths, non-NULL handlers, count within
+  `ZCL_HOTSWAP_GEN_MAX_REPLACED`) and returns success without ever calling
+  `replace_batch()` — the resident override snapshot is untouched.
+- Both CLI handlers resolve their JSON-RPC target from the exact dev-lane
+  defaults (`$HOME/.zclassic-c23-dev`, port 18252,
+  `hotswap_cli_ensure_rpc_client()`) unless a caller-side RPC client is
+  already initialized. See the `TODO(W1)` below.
+- The resident `dev_hotswap_native` RPC itself is lane-guarded the same way
+  as the MCP pilot's `dev_hotswap`: it 403s outside the exact dev datadir
+  (`hotswap_datadir_is_dev()`), and `register_dev_native_hotswap_rpc()`
+  registers as a successful no-op on any other lane or on a release build.
+
+### Eligibility for `native.leaves`
+
+Eligibility mirrors the `mcp.routes` rule set (`config/hotswap_eligible.def`,
+enforced by `tools/lint/check_hotswap_eligible_scope.sh`, which now accepts
+`.` in a canonical probe — a dotted command path like `core.status`, not just
+an mcp tool name like `zcl_status` — and requires an eligible TU to invoke
+EITHER `ZCL_HOTSWAP_EXPORT_ROUTES` OR `ZCL_HOTSWAP_EXPORT_LEAVES`). Five
+native TUs are eligible today, each mapped to its `mcp.routes` sibling:
+
+| `native.leaves` TU | Probe leaf | `mcp.routes` sibling |
+|---|---|---|
+| `app/controllers/src/status_native_handlers.c` | `core.status` | `app_controller.c`/`meta_controller.c` |
+| `app/controllers/src/wallet_native_handlers.c` | `core.wallet.address.list` | `wallet_controller.c` |
+| `app/controllers/src/net_native_handlers.c` | `core.network.peers.incidents` | `net_controller.c` |
+| `app/controllers/src/meta_native_handlers.c` | `ops.metrics` | `meta_controller.c` |
+| `app/controllers/src/chain_native_handlers.c` | `core.consensus.utxo.audit` | `chain_controller.c` |
+
+`app/controllers/src/diagnostics_native_handlers.c` is **eligible-pending, NOT
+listed**. A `native.leaves` generation self-test dispatches the manifest's
+declared probe leaf with **no input** before committing (mirroring the
+`mcp.routes` probe discipline), so a probe leaf must tolerate empty args. Both
+leaves this controller owns reject that: `core.storage.query` →
+`zcl_native_sql_body` requires a non-empty `sql` and `ops.logs` →
+`zcl_native_node_log_body` requires a non-empty `pattern`; both fail with a
+top-level RPC error on empty args, which would make the self-test spuriously
+fail on every load. **Rule for any future eligible TU: verify the probe leaf's
+body tolerates empty args by reading the body function (and its backing RPC
+handler's param-arity check) — never assume it from the leaf name.**
+
+### Tests
+
+- `make t ONLY=hotswap_loader` — `test_hotswap_leaf_manifest_v3_contract`:
+  the v3 manifest/host contract (ABI/size/caps mismatch rejection, unknown
+  `provider_id` rejection), fixtured against the real
+  `status_native_handlers.c` eligibility row.
+- `make t ONLY=hotswap_simnet` — `test_hotswap_native_leaf_repoint`: two
+  successive `zcl_command_registry_replace_batch()` generations atomically
+  re-point the SAME fixture leaf path, proving generation monotonicity (a
+  `gen <= active` batch is rejected, publishing nothing) the same way the
+  MCP-router simnet above proves it for `mcp.routes` — without touching
+  `mcp/router.h` at all.
+- `make t ONLY=command_handler_snapshot` — `test_reject_branch_leaf`: a batch
+  entry naming a branch path (`mode == ZCL_COMMAND_MODE_BRANCH`, no handler)
+  is rejected with nothing installed.
+
+### Known v1 TODOs
+
+- **Isolated precommit probe.** `hotswap_commit_native_leaves()`
+  (`tools/command/native_dev_hotswap.c`) has a `TODO(W1)`: it does not yet
+  look up the probe leaf's spec and invoke the candidate handler against an
+  empty request before publish. Today's v1 guards are the generation
+  self-test (loader-side) plus `zcl_command_registry_replace_batch()`'s
+  READY / read-only / non-branch / non-duplicate validation — a dry
+  precommit probe needs a new registry lookup+invoke API and is deferred
+  rather than blocking the batch publish.
+- **CLI datadir/port resolution.** `hotswap_cli_ensure_rpc_client()`
+  (`tools/command/native_dev_hotswap.c`) has a `TODO(W1)`: the CLI resolves
+  the dev datadir/port from fixed defaults
+  (`$HOME/.zclassic-c23-dev`, port 18252) instead of threading the CLI's own
+  resolved `-datadir`/`-rpcport` (today held in `native_command.c`'s
+  `g_bridge_datadir`/`g_bridge_rpc_port` statics) through the request
+  context.
+
+### Why the RPC registration lives in `dev_rpc_bridge.c`, not `boot_services.c`
+
+`register_dev_native_hotswap_rpc()` is called from
+`tools/mcp/dev_rpc_bridge.c`'s `dev_bridge_register_impl()`, not from
+`config/src/boot_services.c` (where most boot-time RPC registration lives).
+`config/src/boot_services.c` is pinned at its `check-file-size-ceiling` (E1)
+ratchet baseline — `tools/lint/file_size_ceiling_baseline.txt` records it at
+exactly 1634 lines, its current line count, i.e. **zero headroom**. Any net
+addition to that file fails the E1 gate outright. `dev_rpc_bridge.c` was
+already the natural home (it registers the sibling `dev_hotswap`/`dev_mcp_call`
+methods), so the new registration call landed there instead.
 
 ## ZVCS auto-anchor (Wave 2.3, power-station Pillar 2)
 

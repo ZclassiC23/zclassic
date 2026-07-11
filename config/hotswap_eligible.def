@@ -58,6 +58,33 @@ HOTSWAP_ELIGIBLE("tools/mcp/controllers/net_controller.c") HOTSWAP_PROBE("zcl_ne
  * admits only the ephemeral ~/.zclassic-c23-dev node. */
 HOTSWAP_ELIGIBLE("tools/mcp/controllers/wallet_controller.c") HOTSWAP_PROBE("zcl_balance")
 
+/* native.leaves dual-run pilot (Wave W1-B/C, ZERO-MCP): the same v3-host
+ * provider class as the mcp.routes rows above but for the MCP-free native
+ * command bridge (tools/command/native_command.c). Each TU below invokes
+ * ZCL_HOTSWAP_EXPORT_LEAVES(k_leaves, ...) inside `#ifdef ZCL_HOTSWAP_GEN`,
+ * staging {dotted_leaf_path, trampoline} pairs — a trampoline calls
+ * zcl_native_bridge_run(request, <this TU's freshly-compiled body fn>,
+ * reply), the same MCP-free composition the resident bridge already uses.
+ * The resident native command router dispatches the manifest's declared
+ * probe leaf with NO input before committing the batch (mirroring the
+ * mcp.routes probe discipline above), so the probe for a native TU MUST be
+ * a leaf whose body TOLERATES EMPTY ARGS — verified per-TU by reading the
+ * body function (and its backing RPC handler's param-arity check), not
+ * assumed from the leaf name. Kept alongside the mcp.routes rows above
+ * (dual-run through W2/W3) — do NOT delete those. */
+HOTSWAP_ELIGIBLE("app/controllers/src/status_native_handlers.c") HOTSWAP_PROBE("core.status")
+HOTSWAP_ELIGIBLE("app/controllers/src/wallet_native_handlers.c") HOTSWAP_PROBE("core.wallet.address.list")
+HOTSWAP_ELIGIBLE("app/controllers/src/net_native_handlers.c") HOTSWAP_PROBE("core.network.peers.incidents")
+HOTSWAP_ELIGIBLE("app/controllers/src/meta_native_handlers.c") HOTSWAP_PROBE("ops.metrics")
+HOTSWAP_ELIGIBLE("app/controllers/src/chain_native_handlers.c") HOTSWAP_PROBE("core.consensus.utxo.audit")
+/* app/controllers/src/diagnostics_native_handlers.c: eligible-pending, NOT
+ * listed above. Its two leaves (core.storage.query -> zcl_native_sql_body,
+ * ops.logs -> zcl_native_node_log_body) both require a caller-supplied
+ * required argument (sql / pattern) and reject an empty-args dispatch with
+ * a top-level RPC error ("dbquery: missing sql" / "getnodelog: missing
+ * pattern") — no param-free probe leaf exists for this TU today. See the
+ * matching note in app/controllers/src/diagnostics_native_handlers.c. */
+
 /* Still reload-required (NOT eligible), by design:
  *   - REST (app/controllers/src/api_controller_routes.c) and diagnostics
  *     (diagnostics_registry.c) carry ZCL_HOTSWAP_EXPORT_PROVIDER: their legacy

@@ -211,6 +211,45 @@ ZCL_COMMAND_DEV_COMMAND(
     "zclassic23-dev dev vcs seal grant --input='{\"reason\":\"...\","
     "\"confirm\":true}'")
 
+ZCL_COMMAND_BRANCH("dev.hotswap", "dev",
+                   "Tier-1 in-process hot-swap of native command leaves",
+                   ZCL_COMMAND_LAYER_DEV)
+
+ZCL_COMMAND_DEV_COMMAND(
+    "dev.hotswap.apply", "dev.hotswap", "", "dlopen a native.leaves generation "
+    ".so into the running dev node and atomically re-point its command leaves "
+    "with no restart",
+    "hotswap,apply,leaves,generation,relink", "zcl.dev_hotswap_input.v1",
+    "zcl.dev_hotswap.v1", "so_path,probe_leaf", "so_path",
+    "zclassic23-dev dev hotswap apply --input='{\"so_path\":\"/tmp/gen.so\","
+    "\"probe_leaf\":\"core.status\"}'",
+    ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_DEV_MUTATION, ZCL_COMMAND_SCOPE_DEV_LANE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_DEV,
+    ZCL_COMMAND_CAP_HOTSWAP | ZCL_COMMAND_CAP_DEV_ACTIVATE,
+    ZCL_COMMAND_TRAIT_DEV_ONLY, zcl_native_handle_dev_hotswap_apply,
+    "in-process hot-swap requires a dev build",
+    "zclassic23-dev dev hotswap apply --input='{\"so_path\":\"...\","
+    "\"probe_leaf\":\"...\"}'")
+
+ZCL_COMMAND_DEV_READ(
+    "dev.hotswap.probe", "dev.hotswap", "", "Read-only precommit: stage and "
+    "self-test a native.leaves generation .so WITHOUT publishing it",
+    "hotswap,probe,precommit,leaves,generation", "zcl.dev_hotswap_input.v1",
+    "zcl.dev_hotswap.v1", "so_path,probe_leaf", "so_path",
+    "zclassic23-dev dev hotswap probe --input='{\"so_path\":\"/tmp/gen.so\","
+    "\"probe_leaf\":\"core.status\"}'",
+    ZCL_COMMAND_SCOPE_DEV_LANE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_DEV,
+    ZCL_COMMAND_CAP_HOTSWAP,
+    ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_DRY_RUN,
+    zcl_native_handle_dev_hotswap_probe,
+    "in-process hot-swap probe requires a dev build",
+    "zclassic23-dev dev hotswap probe --input='{\"so_path\":\"...\","
+    "\"probe_leaf\":\"...\"}'")
+
 ZCL_COMMAND_DEV_COMMAND(
     "dev.loop.ensure", "dev.loop", "dev.loop.watch",
     "Idempotently ensure one persistent native watcher", "loop,ensure,watcher,inotify",

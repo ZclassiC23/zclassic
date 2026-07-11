@@ -104,7 +104,7 @@ static struct zcl_hotswap_manifest_v2 valid_manifest(void)
         .schema_version = ZCL_HOTSWAP_MANIFEST_SCHEMA_V2,
         .struct_size = sizeof(struct zcl_hotswap_manifest_v2),
         .host_abi_version = ZCL_HOTSWAP_HOST_ABI_V2,
-        .host_struct_size = sizeof(struct zcl_hotswap_host),
+        .host_struct_size = ZCL_HOTSWAP_HOST_STRUCT_SIZE_V2,
         .required_host_capabilities = ZCL_HOTSWAP_V2_HOST_CAPABILITIES,
         .provider_id = "mcp.routes",
         .build_identity = zcl_build_commit(),
@@ -119,6 +119,75 @@ static struct zcl_hotswap_manifest_v2 valid_manifest(void)
         .probe_tools_csv = "zcl_name_list",
         .self_test = manifest_self_test_ok,
     };
+}
+
+/* Wave W1-B/C: the `native.leaves` provider class (V3 host: same manifest
+ * schema, host vtable adds leaf_stage; see hotswap.h / hotswap_loader.c
+ * hotswap_manifest_v2_validate()'s provider_id branch). source_identity /
+ * probe_tools_csv below mirror the real native.leaves eligibility row in
+ * config/hotswap_eligible.def (app/controllers/src/status_native_handlers.c,
+ * probe "core.status" — a param-free READ leaf, safe as a probe dispatch). */
+static struct zcl_hotswap_manifest_v2 valid_leaf_manifest(void)
+{
+    return (struct zcl_hotswap_manifest_v2) {
+        .schema_version = ZCL_HOTSWAP_MANIFEST_SCHEMA_V2,
+        .struct_size = sizeof(struct zcl_hotswap_manifest_v2),
+        .host_abi_version = ZCL_HOTSWAP_HOST_ABI_V3,
+        .host_struct_size = ZCL_HOTSWAP_HOST_STRUCT_SIZE_V3,
+        .required_host_capabilities = ZCL_HOTSWAP_V3_HOST_CAPABILITIES,
+        .provider_id = "native.leaves",
+        .build_identity = zcl_build_commit(),
+        .source_identity = "app/controllers/src/status_native_handlers.c",
+        .input_digest =
+            "abcdef0123456789abcdef0123456789"
+            "abcdef0123456789abcdef0123456789",
+        .state_schema_version = 0,
+        .stateless = true,
+        .quiescence = ZCL_HOTSWAP_QUIESCENCE_NONE,
+        .mapped_tests_csv = "hotswap_loader,command_handler_snapshot",
+        .probe_tools_csv = "core.status",
+        .self_test = manifest_self_test_ok,
+    };
+}
+
+static int test_hotswap_leaf_manifest_v3_contract(void)
+{
+    int failures = 0;
+    TEST("native.leaves manifest validates against the V3 host contract") {
+        char why[256];
+        struct zcl_hotswap_manifest_v2 manifest = valid_leaf_manifest();
+        ASSERT(hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
+
+        /* A native.leaves manifest carrying V2 host abi/size/caps is a
+         * provider/caps mismatch — the loader must reject it, not silently
+         * fall back to the mcp.routes contract. */
+        manifest = valid_leaf_manifest();
+        manifest.host_abi_version = ZCL_HOTSWAP_HOST_ABI_V2;
+        manifest.host_struct_size = ZCL_HOTSWAP_HOST_STRUCT_SIZE_V2;
+        manifest.required_host_capabilities = ZCL_HOTSWAP_V2_HOST_CAPABILITIES;
+        ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
+        ASSERT(strstr(why, "ABI/size mismatch") != NULL ||
+               strstr(why, "capabilities") != NULL);
+
+        /* Same idea, isolating just the capability bits (abi/size still V3). */
+        manifest = valid_leaf_manifest();
+        manifest.required_host_capabilities = ZCL_HOTSWAP_V2_HOST_CAPABILITIES;
+        ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
+        ASSERT(strstr(why, "capabilities") != NULL);
+
+        /* An unknown provider_id is rejected outright — no ABI/caps checked. */
+        manifest = valid_leaf_manifest();
+        manifest.provider_id = "bogus.provider";
+        ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
+        ASSERT(strstr(why, "unknown") != NULL);
+
+        manifest = valid_leaf_manifest();
+        manifest.provider_id = NULL;
+        ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
+        ASSERT(strstr(why, "unknown") != NULL);
+        PASS();
+    } _test_next:;
+    return failures;
 }
 
 static int test_hotswap_manifest_v2_contract(void)
@@ -414,6 +483,7 @@ int test_hotswap_loader(void)
     failures += test_hotswap_path_acceptance();
     failures += test_hotswap_datadir_guard();
     failures += test_hotswap_manifest_v2_contract();
+    failures += test_hotswap_leaf_manifest_v3_contract();
     failures += test_hotswap_load_stub_and_registry();
     failures += test_hotswap_dump_state();
     failures += test_hotswap_probe_safety();

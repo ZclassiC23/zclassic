@@ -119,3 +119,51 @@ char *zcl_native_utxo_audit_body(const struct json_value *args,
     }
     return out;
 }
+
+/* ── Tier-1 hot-swap: native.leaves generation entrypoint (W1-B/C) ──────
+ * Dev-only (compiled only under -DZCL_HOTSWAP_GEN, a generation .so build;
+ * expands to nothing in the node/release TU — see ZCL_HOTSWAP_EXPORT_LEAVES
+ * in lib/hotswap/include/hotswap/hotswap.h). Stages every native command
+ * leaf this controller owns; the resident bridge re-points them at THIS
+ * TU's freshly-compiled bodies via zcl_native_bridge_run(). Probe is
+ * core.consensus.utxo.audit: rpc_getutxoaudit (blockchain_controller_chain.c)
+ * accepts 0..3 params (rpc_params_expect(&p, 0, 3)) and, with remote_sha3
+ * absent, falls back to utxo_audit_local() — a genuine local-only audit, not
+ * an error — so the empty-args self-test dispatch succeeds. core.chain.
+ * block.get and core.chain.transaction.get are NOT probe candidates: both
+ * require a caller-supplied id (block_id / txid); with no args they call
+ * getblock/getrawtransaction with an empty hash and get back a top-level
+ * {"error":...} envelope, which would make the self-test spuriously fail.
+ * See config/hotswap_eligible.def. */
+#ifdef ZCL_HOTSWAP_GEN
+#define ZCL_HOTSWAP_PROBE_LEAF "core.consensus.utxo.audit"
+#include "hotswap/hotswap.h"
+#include "kernel/command_registry.h"
+#include "command/native_command.h"
+
+static void tramp_getblock(const struct zcl_command_request *request,
+                           struct zcl_command_reply *reply)
+{
+    zcl_native_bridge_run(request, zcl_native_getblock_body, reply);
+}
+
+static void tramp_getrawtransaction(const struct zcl_command_request *request,
+                                    struct zcl_command_reply *reply)
+{
+    zcl_native_bridge_run(request, zcl_native_getrawtransaction_body, reply);
+}
+
+static void tramp_utxo_audit(const struct zcl_command_request *request,
+                             struct zcl_command_reply *reply)
+{
+    zcl_native_bridge_run(request, zcl_native_utxo_audit_body, reply);
+}
+
+static const struct zcl_hotswap_leaf_replacement k_leaves[] = {
+    { "core.chain.block.get",       tramp_getblock },
+    { "core.chain.transaction.get", tramp_getrawtransaction },
+    { "core.consensus.utxo.audit",  tramp_utxo_audit },
+};
+
+ZCL_HOTSWAP_EXPORT_LEAVES(k_leaves, sizeof(k_leaves) / sizeof(k_leaves[0]))
+#endif /* ZCL_HOTSWAP_GEN */

@@ -397,17 +397,26 @@ void zcl_native_bridge_project(const struct zcl_command_request *request,
     }
 }
 
-void zcl_native_bridge_command(const struct zcl_command_request *request,
-                               struct zcl_command_reply *reply)
+/* Run a bridged leaf with an EXPLICIT body function — everything
+ * zcl_native_bridge_command does after resolving the body pointer: build the
+ * tool arguments from the request, dispatch (the supplied body function, or —
+ * when `body` is NULL and the leaf is a pure 1:1 proxy — the backing JSON-RPC
+ * method directly), then project the resulting body into the reply envelope.
+ * A hot-swap generation supplies its OWN freshly-compiled body here; the
+ * ordinary registry path passes zcl_native_bridge_body_for_path(path). When
+ * `body` is NULL and the path also has no direct-RPC binding (i.e. an unknown
+ * / unbound path), this fails with the same NO_BRIDGE_BINDING reply the
+ * pre-extraction code produced. */
+void zcl_native_bridge_run(const struct zcl_command_request *request,
+                           zcl_native_body_fn body,
+                           struct zcl_command_reply *reply)
 {
     if (!request || !request->spec || !reply)
         return;
     const char *tool = zcl_native_bridge_tool_for_path(request->spec->path);
-    zcl_native_body_fn body_fn =
-        zcl_native_bridge_body_for_path(request->spec->path);
     const char *rpc_method =
         zcl_native_bridge_rpc_for_path(request->spec->path);
-    if (!tool || (!body_fn && !rpc_method)) {
+    if (!tool || (!body && !rpc_method)) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL, "NO_BRIDGE_BINDING",
                                "dispatch", false, false,
@@ -432,11 +441,11 @@ void zcl_native_bridge_command(const struct zcl_command_request *request,
     const struct json_value *args =
         use_translated ? &translated : request->input;
 
-    /* Dispatch WITHOUT the MCP router/middleware: the re-homed body function
+    /* Dispatch WITHOUT the MCP router/middleware: the supplied body function
      * (identical composition to the MCP tool) or the backing RPC directly. */
     struct zcl_native_body_err body_err = { 0 };
-    char *result = body_fn ? body_fn(args, &body_err)
-                           : mcp_node_rpc(rpc_method, NULL);
+    char *result = body ? body(args, &body_err)
+                        : mcp_node_rpc(rpc_method, NULL);
     if (use_translated)
         json_free(&translated);
 
@@ -445,7 +454,7 @@ void zcl_native_bridge_command(const struct zcl_command_request *request,
          * envelope whose message the bridge surfaced as TOOL_ERROR. */
         char msgbuf[224];
         const char *msg;
-        if (body_fn) {
+        if (body) {
             msg = body_err.message[0] ? body_err.message
                                       : "tool reported an error";
         } else {
@@ -461,9 +470,10 @@ void zcl_native_bridge_command(const struct zcl_command_request *request,
         return;
     }
 
-    struct json_value body;
-    if (!json_read(&body, result, strlen(result)) || body.type != JSON_OBJ) {
-        json_free(&body);
+    struct json_value body_doc;
+    if (!json_read(&body_doc, result, strlen(result)) ||
+        body_doc.type != JSON_OBJ) {
+        json_free(&body_doc);
         free(result);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL, "BAD_TOOL_BODY",
@@ -473,7 +483,7 @@ void zcl_native_bridge_command(const struct zcl_command_request *request,
     }
     free(result);
 
-    const struct json_value *err = json_get(&body, "error");
+    const struct json_value *err = json_get(&body_doc, "error");
     if (err && !json_is_null(err)) {
         const char *msg = NULL;
         if (err->type == JSON_OBJ)
@@ -485,14 +495,24 @@ void zcl_native_bridge_command(const struct zcl_command_request *request,
                                "execute", false, false,
                                msg && msg[0] ? msg : "tool reported an error",
                                tool);
-        json_free(&body);
+        json_free(&body_doc);
         return;
     }
 
     /* Success: project the tool body into the result envelope's data, bounded
      * by view + budget so a large read pages instead of overflowing (§8/§9). */
-    zcl_native_bridge_project(request, &body, reply);
-    json_free(&body);
+    zcl_native_bridge_project(request, &body_doc, reply);
+    json_free(&body_doc);
+}
+
+void zcl_native_bridge_command(const struct zcl_command_request *request,
+                               struct zcl_command_reply *reply)
+{
+    if (!request || !request->spec || !reply)
+        return;
+    zcl_native_bridge_run(request,
+                          zcl_native_bridge_body_for_path(request->spec->path),
+                          reply);
 }
 
 /* ── discovery + app handlers (bound by the catalog) ───────────────── */

@@ -204,3 +204,43 @@ char *zcl_native_onion_health_body(const struct json_value *args,
 
     return body;
 }
+
+/* ── Tier-1 hot-swap: native.leaves generation entrypoint (W1-B/C) ──────
+ * Dev-only (compiled only under -DZCL_HOTSWAP_GEN, a generation .so build;
+ * expands to nothing in the node/release TU — see ZCL_HOTSWAP_EXPORT_LEAVES
+ * in lib/hotswap/include/hotswap/hotswap.h). Stages every native command
+ * leaf this controller owns; the resident bridge re-points them at THIS
+ * TU's freshly-compiled bodies via zcl_native_bridge_run(). Probe is
+ * core.network.peers.incidents: zcl_native_peer_incidents_body ignores
+ * `args` entirely (RPC "peerincidents" takes no parameters) and never
+ * emits a top-level "error" key on success, so it tolerates the empty-args
+ * dispatch the generation self-test uses. core.network.onion.health is
+ * NOT the probe: with no onion service started (the default dev/test build
+ * links the Tor stub) it returns {"ok":false,"error":"not_started",...},
+ * which would make the self-test spuriously fail depending on whether Tor
+ * happens to be up. See config/hotswap_eligible.def. */
+#ifdef ZCL_HOTSWAP_GEN
+#define ZCL_HOTSWAP_PROBE_LEAF "core.network.peers.incidents"
+#include "hotswap/hotswap.h"
+#include "kernel/command_registry.h"
+#include "command/native_command.h"
+
+static void tramp_peer_incidents(const struct zcl_command_request *request,
+                                 struct zcl_command_reply *reply)
+{
+    zcl_native_bridge_run(request, zcl_native_peer_incidents_body, reply);
+}
+
+static void tramp_onion_health(const struct zcl_command_request *request,
+                               struct zcl_command_reply *reply)
+{
+    zcl_native_bridge_run(request, zcl_native_onion_health_body, reply);
+}
+
+static const struct zcl_hotswap_leaf_replacement k_leaves[] = {
+    { "core.network.peers.incidents", tramp_peer_incidents },
+    { "core.network.onion.health",    tramp_onion_health },
+};
+
+ZCL_HOTSWAP_EXPORT_LEAVES(k_leaves, sizeof(k_leaves) / sizeof(k_leaves[0]))
+#endif /* ZCL_HOTSWAP_GEN */

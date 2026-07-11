@@ -73,3 +73,17 @@ char *zcl_native_node_log_body(const struct json_value *args,
     }
     return out;
 }
+
+/* ── Tier-1 hot-swap: NOT YET ELIGIBLE (W1-B/C) ─────────────────────────
+ * No ZCL_HOTSWAP_EXPORT_LEAVES here on purpose. A native.leaves generation
+ * self-test dispatches the manifest's declared probe leaf with NO input
+ * (see zcl_hotswap_default_self_test / hotswap_commit_probe_candidate),
+ * and BOTH leaves this controller owns reject that:
+ *   - core.storage.query  -> zcl_native_sql_body:      diag_rpc_dbquery
+ *     requires a non-empty `sql` (returns "dbquery: missing sql").
+ *   - ops.logs             -> zcl_native_node_log_body: diag_rpc_getnodelog
+ *     requires a non-empty `pattern` (returns "getnodelog: missing pattern").
+ * Both surface as a top-level RPC error, which would make the generation
+ * self-test spuriously fail on every load attempt. Revisit if a param-free
+ * probe leaf becomes available for this controller (see the "Still
+ * reload-required" note in config/hotswap_eligible.def). */

@@ -267,10 +267,23 @@ dev
 │   ├── history
 │   ├── rollback
 │   └── compact
+├── hotswap
+│   ├── apply
+│   └── probe
 └── diagnose
     ├── latest
     └── show <failure-id>
 ```
+
+`dev.hotswap.apply` / `dev.hotswap.probe` are the native successor of the
+Tier-1 in-process hot-swap MCP tool (`zcl_agent_hotswap`): `apply` dlopens a
+`native.leaves` generation `.so` into the running dev node and atomically
+re-points its command leaves via `zcl_command_registry_replace_batch`, no
+restart; `probe` stages and self-tests the same generation without
+publishing. Both are short-lived CLI processes that forward over resident
+JSON-RPC to the already-running dev node — the same "which process gets
+swapped" contract the MCP pilot used, now MCP-free. Full mechanism, ABI, and
+eligibility rules: `docs/work/HOTSWAP.md`.
 
 The ordinary agent runs `loop ensure` once, edits files, then optionally calls
 `loop wait` for the new source epoch. The persistent loop owns classification,
@@ -675,6 +688,16 @@ without renaming the grammar.
   `zcl_command_registry_menu_json`/`_search_json`;
   `tools/lint/check_release_no_dev_symbols.sh` proves via `nm` that the
   release binary links no dev-mutation executors.
+- **Done (2026-07-11, Wave W1-B/C, ZERO-MCP re-target):** Tier-1 in-process
+  hot-swap — previously an MCP-only tool (`zcl_agent_hotswap`) — now has a
+  native command path too: `dev.hotswap.apply` / `dev.hotswap.probe`
+  publish through a new `native.leaves` hot-swap provider class that
+  re-points leaf handlers in the kernel command registry
+  (`zcl_command_registry_replace_batch`) instead of the MCP router. Dual-run
+  with the original `mcp.routes` provider through Wave 3 (the MCP router
+  still exists and both stay swappable independently). See
+  `docs/work/HOTSWAP.md` §"`native.leaves` provider (Zero-MCP re-target,
+  Wave W1-B/C)".
 
 Exit: an LLM can find and run every read-only operation without MCP
 discovery. **Met for the registry surface** — every declared root
@@ -786,7 +809,11 @@ Known gaps before calling the interface production-ready:
 - transactional activation/status still has shell-backed compatibility paths;
 - App generation loading is not yet wired to the public App ABI;
 - `ready` versus `planned` metadata is not yet emitted by every menu node;
-- flat MCP routes still exist and remain the default MCP catalog;
+- flat MCP routes still exist and remain the default MCP catalog (the owner
+  ZERO-MCP directive, `docs/work/project_zero_mcp_directive_2026-07-11.md`,
+  targets deleting the MCP server entirely; Tier-1 hot-swap's `native.leaves`
+  provider (§7, `docs/work/HOTSWAP.md`) is one dev-mutation surface already
+  re-targeted off MCP as part of that effort, dual-run with `mcp.routes`);
 - the running dev service still needs one safe immutable-generation bootstrap
   before the persistent native watcher can take ownership.
 

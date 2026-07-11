@@ -54,7 +54,10 @@ for pair in "${PAIRS[@]}"; do
     probe="${pair#*$'\t'}"
     probe_key="$probe"
     case "$probe" in
-        ""|*[!A-Za-z0-9_]*)
+        # '.' is allowed: native.leaves probes are dotted canonical command
+        # paths (e.g. "core.status"), not just mcp.routes tool identifiers
+        # (e.g. "zcl_status").
+        ""|*[!A-Za-z0-9_.]*)
             violations="${violations}  $p (invalid canonical probe '$probe')"$'\n'
             ;;
     esac
@@ -81,12 +84,15 @@ for p in "${PATHS[@]}"; do
         violations="${violations}  $p (manifest references a nonexistent file)"$'\n'
         continue
     fi
-    # Genuinely-exportable: an eligible TU MUST invoke ZCL_HOTSWAP_EXPORT_ROUTES,
-    # or `make hotswap-so` would build a .so with no zcl_hotswap_gen_init /
-    # zcl_hotswap_manifest_v2 and the loader would reject it at the manifest
-    # stage — a silently-unswapabble entry. Guards the multi-TU expansion.
-    if ! grep -qE '(^|[^_])ZCL_HOTSWAP_EXPORT_ROUTES[[:space:]]*\(' "$p"; then
-        violations="${violations}  $p (eligible TU does not invoke ZCL_HOTSWAP_EXPORT_ROUTES)"$'\n'
+    # Genuinely-exportable: an eligible TU MUST invoke ZCL_HOTSWAP_EXPORT_ROUTES
+    # (mcp.routes provider class) OR ZCL_HOTSWAP_EXPORT_LEAVES (native.leaves
+    # provider class, W1-B/C), or `make hotswap-so` would build a .so with no
+    # zcl_hotswap_gen_init / zcl_hotswap_manifest_v2 and the loader would
+    # reject it at the manifest stage — a silently-unswapabble entry. Guards
+    # the multi-TU expansion.
+    if ! grep -qE '(^|[^_])ZCL_HOTSWAP_EXPORT_ROUTES[[:space:]]*\(' "$p" &&
+       ! grep -qE '(^|[^_])ZCL_HOTSWAP_EXPORT_LEAVES[[:space:]]*\(' "$p"; then
+        violations="${violations}  $p (eligible TU does not invoke ZCL_HOTSWAP_EXPORT_ROUTES or ZCL_HOTSWAP_EXPORT_LEAVES)"$'\n'
     fi
 done
 

@@ -540,7 +540,7 @@ hotswap-so: $(VIEW_GEN_HEADERS)
 	[ "$$count" -eq 1 ] || { \
 	  echo "hotswap-so: reload_required: v2 pilot admits one atomic provider per generation (got $$count)" >&2; exit 2; }; \
 	probe="$$(sed -n 's/^[[:space:]]*HOTSWAP_ELIGIBLE("\([^"]*\)")[[:space:]]*HOTSWAP_PROBE("\([^"]*\)").*/\1\t\2/p' config/hotswap_eligible.def | awk -F '\t' -v selected="$$selected" '$$1 == selected { print $$2 }')"; \
-	case "$$probe" in ''|*[!A-Za-z0-9_]*) echo "hotswap-so: missing/unsafe canonical probe for $$selected" >&2; exit 2;; esac; \
+	case "$$probe" in ''|*[!A-Za-z0-9_.]*) echo "hotswap-so: missing/unsafe canonical probe for $$selected" >&2; exit 2;; esac; \
 	mkdir -p "$(HOTSWAP_OBJ_DIR)" "$(HOTSWAP_SO_DIR)"; \
 	inputs="$$(mktemp "$(HOTSWAP_SO_DIR)/.inputs.XXXXXX")"; \
 	tmp_o="$$(mktemp "$(HOTSWAP_OBJ_DIR)/.generation.XXXXXX.o")"; \
@@ -549,13 +549,14 @@ hotswap-so: $(VIEW_GEN_HEADERS)
 	{ \
 	  printf '%s\n' 'schema=zcl.hotswap_inputs.v2'; \
 	  printf 'compiler='; $(CC) --version 2>/dev/null | head -1; \
-	  printf '%s\n' 'flags=$(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_GEN -DZCL_HOTSWAP_BUILD_IDENTITY=<build> -DZCL_HOTSWAP_SOURCE_ID=<source> -DZCL_HOTSWAP_INPUT_DIGEST=<sha256> -DZCL_HOTSWAP_PROBE_TOOLS=<probe>'; \
+	  printf '%s\n' 'flags=$(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_GEN -DZCL_HOTSWAP_BUILD_IDENTITY=<build> -DZCL_HOTSWAP_SOURCE_ID=<source> -DZCL_HOTSWAP_INPUT_DIGEST=<sha256> -DZCL_HOTSWAP_PROBE_TOOLS=<probe> -DZCL_HOTSWAP_PROBE_LEAF=<probe>'; \
 	  printf 'source=%s\n' "$$selected"; \
 	  printf 'probe=%s\n' "$$probe"; \
 	  $(CC) $(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_GEN \
 	    -DZCL_HOTSWAP_BUILD_IDENTITY=\"$(BUILD_COMMIT)\" \
 	    -DZCL_HOTSWAP_SOURCE_ID=\"$$selected\" \
-	    -DZCL_HOTSWAP_PROBE_TOOLS=\"$$probe\" -E -P "$$selected"; \
+	    -DZCL_HOTSWAP_PROBE_TOOLS=\"$$probe\" \
+	    -DZCL_HOTSWAP_PROBE_LEAF=\"$$probe\" -E -P "$$selected"; \
 	} > "$$inputs"; \
 	digest="$$(sha256sum "$$inputs" | awk '{print $$1}')"; \
 	case "$$digest" in *[!0-9a-f]*|'') echo "hotswap-so: invalid input digest" >&2; exit 1;; esac; \
@@ -566,6 +567,7 @@ hotswap-so: $(VIEW_GEN_HEADERS)
 	  -DZCL_HOTSWAP_SOURCE_ID=\"$$selected\" \
 	  -DZCL_HOTSWAP_INPUT_DIGEST=\"$$digest\" \
 	  -DZCL_HOTSWAP_PROBE_TOOLS=\"$$probe\" \
+	  -DZCL_HOTSWAP_PROBE_LEAF=\"$$probe\" \
 	  -MMD -MP -MF "$(HOTSWAP_OBJ_DIR)/gen-$$digest.d" \
 	  -c -o "$$tmp_o" "$$selected" >&2; \
 	$(CC) -shared -Wl,--build-id=none -Wl,-z,relro -Wl,-z,now \

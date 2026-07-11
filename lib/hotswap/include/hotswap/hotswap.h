@@ -36,15 +36,31 @@ extern "C" {
 struct mcp_tool_route;
 struct json_value;
 
+/* Forward decls only — the native command surface (kernel/app types) is never
+ * pulled into lib/hotswap. A `native.leaves` generation stages replacement
+ * command handlers by dotted path; the concrete request/reply structs are
+ * complete only in the controller TU that invokes ZCL_HOTSWAP_EXPORT_LEAVES. */
+struct zcl_command_request;
+struct zcl_command_reply;
+typedef void (*zcl_command_handler_fn)(const struct zcl_command_request *,
+                                       struct zcl_command_reply *);
+
 /* v2 is deliberately small: the only admitted provider class is a stateless
  * MCP route set.  REST/diagnostics and every stateful provider remain reload
  * required until they can participate in the same generation transaction. */
 #define ZCL_HOTSWAP_MANIFEST_SCHEMA_V2 2u
 #define ZCL_HOTSWAP_HOST_ABI_V2        2u
+/* v3 host: same manifest schema (v2), but the host vtable additionally exposes
+ * leaf_stage for the native.leaves provider class. Strictly additive — the v3
+ * struct appends one field past the v2 layout, so a v2 consumer that only reads
+ * the first ZCL_HOTSWAP_HOST_STRUCT_SIZE_V2 bytes is unaffected. */
+#define ZCL_HOTSWAP_HOST_ABI_V3        3u
 
 enum zcl_hotswap_host_capability {
     ZCL_HOTSWAP_CAP_MCP_STAGE          = UINT64_C(1) << 0,
     ZCL_HOTSWAP_CAP_ATOMIC_COMMIT      = UINT64_C(1) << 1,
+    /* v3: stage a native command leaf (dotted path → handler). */
+    ZCL_HOTSWAP_CAP_LEAF_STAGE         = UINT64_C(1) << 2,
     /* Deliberately unsupported in the v2 pilot.  The legacy provider macro
      * requests this bit, so direct REST/diagnostics publication fails closed
      * before generation code runs. */
@@ -53,6 +69,9 @@ enum zcl_hotswap_host_capability {
 
 #define ZCL_HOTSWAP_V2_HOST_CAPABILITIES \
     (ZCL_HOTSWAP_CAP_MCP_STAGE | ZCL_HOTSWAP_CAP_ATOMIC_COMMIT)
+
+#define ZCL_HOTSWAP_V3_HOST_CAPABILITIES \
+    (ZCL_HOTSWAP_CAP_LEAF_STAGE | ZCL_HOTSWAP_CAP_ATOMIC_COMMIT)
 
 enum zcl_hotswap_quiescence {
     ZCL_HOTSWAP_QUIESCENCE_NONE = 0,
@@ -68,7 +87,21 @@ struct zcl_hotswap_host {
     uint32_t gen;
     uint64_t capabilities;
     bool (*mcp_stage)(const char *name, const struct mcp_tool_route *route);
+    /* v3 (appended — DO NOT reorder the fields above; a v2 consumer sees only
+     * the first ZCL_HOTSWAP_HOST_STRUCT_SIZE_V2 bytes). Present only when the
+     * host advertises ZCL_HOTSWAP_HOST_ABI_V3 / ZCL_HOTSWAP_CAP_LEAF_STAGE. */
+    bool (*leaf_stage)(const char *path, zcl_command_handler_fn handler);
 };
+
+/* The v2 host layout is exactly the prefix through mcp_stage; the v3 layout is
+ * the whole struct. Freezing the v2 size as an offsetof (rather than a bare
+ * sizeof) keeps a routes generation compiled against this header declaring the
+ * SAME host_struct_size a pre-v3 generation declared, so the byte path stays
+ * identical after the struct grows. */
+#define ZCL_HOTSWAP_HOST_STRUCT_SIZE_V2 \
+    ((uint32_t)offsetof(struct zcl_hotswap_host, leaf_stage))
+#define ZCL_HOTSWAP_HOST_STRUCT_SIZE_V3 \
+    ((uint32_t)sizeof(struct zcl_hotswap_host))
 
 /* The symbol every generation .so must export. */
 typedef bool (*zcl_hotswap_gen_init_fn)(const struct zcl_hotswap_host *host);
@@ -129,6 +162,23 @@ typedef bool (*zcl_hotswap_commit_cb)(
     char *why,
     size_t why_sz);
 
+/* Parallel to zcl_hotswap_mcp_replacement for the native.leaves provider: a
+ * dotted command path bound to the generation's freshly-compiled handler. */
+struct zcl_hotswap_leaf_replacement {
+    const char *path;
+    zcl_command_handler_fn handler;
+};
+
+/* All-or-zero publication callback supplied by the resident native command
+ * router. Signature is depended on verbatim by downstream (W1-B/C) code. */
+typedef bool (*zcl_hotswap_leaf_commit_cb)(
+    void *ctx,
+    uint32_t gen,
+    const struct zcl_hotswap_leaf_replacement *reps,
+    size_t n,
+    char *why,
+    size_t why_sz);
+
 /* Load a generation .so and stage its route replacements.
  *
  *   so_path          absolute path to the gen .so (see hotswap_path_is_acceptable)
@@ -148,6 +198,18 @@ bool hotswap_load(const char *so_path,
                   zcl_hotswap_commit_cb commit_cb,
                   void *commit_context,
                   struct hotswap_load_report *report);
+
+/* Load a `native.leaves` generation .so and stage its command-handler
+ * replacements. Same fail-closed precheck/dlopen/hash/manifest-validate core
+ * as hotswap_load(); diverges only in staging native leaves (v3 host,
+ * leaf_stage) and invoking a zcl_hotswap_leaf_commit_cb. DEV-ONLY: without
+ * ZCL_DEV_BUILD it refuses with an "unavailable" error and performs NO dlopen. */
+bool hotswap_load_leaves(const char *so_path,
+                         const char *datadir,
+                         const char *probe_leaf,
+                         zcl_hotswap_leaf_commit_cb commit_cb,
+                         void *ctx,
+                         struct hotswap_load_report *report);
 
 /* ── Pure predicates (compiled in ALL builds; unit-tested w/o dlopen) ── */
 
@@ -210,13 +272,22 @@ bool hotswap_dump_state_json(struct json_value *out, const char *key);
 #ifndef ZCL_HOTSWAP_PROBE_TOOLS
 #define ZCL_HOTSWAP_PROBE_TOOLS "zcl_name_list"
 #endif
+#ifndef ZCL_HOTSWAP_PROBE_LEAF
+#define ZCL_HOTSWAP_PROBE_LEAF "node.status"
+#endif
 
-#define ZCL_HOTSWAP_EXPORT_V2_MANIFEST(required_caps_, provider_id_)         \
+/* Generalized manifest emitter, parameterized by the host ABI/size/caps/probe
+ * so both the v2 (mcp.routes) and v3 (native.leaves) provider classes share
+ * one body. The self-test validates the host against the SAME abi/size/caps the
+ * manifest declares. A TU invokes exactly one EXPORT_* macro, so the single
+ * zcl_hotswap_default_self_test / zcl_hotswap_manifest_v2 symbols never clash. */
+#define ZCL_HOTSWAP_EXPORT_MANIFEST(host_abi_, host_size_, required_caps_,   \
+                                    provider_id_, probe_csv_)                \
     static bool zcl_hotswap_default_self_test(                              \
         const struct zcl_hotswap_host *host, char *why, size_t why_sz)       \
     {                                                                        \
-        if (!host || host->abi_version != ZCL_HOTSWAP_HOST_ABI_V2 ||        \
-            host->struct_size != sizeof(*host) ||                            \
+        if (!host || host->abi_version != (host_abi_) ||                    \
+            host->struct_size != (host_size_) ||                             \
             (host->capabilities & (required_caps_)) != (required_caps_)) {   \
             if (why && why_sz)                                               \
                 (void)snprintf(why, why_sz, "generation host contract mismatch"); \
@@ -228,8 +299,8 @@ bool hotswap_dump_state_json(struct json_value *out, const char *key);
     const struct zcl_hotswap_manifest_v2 zcl_hotswap_manifest_v2 = {        \
         .schema_version = ZCL_HOTSWAP_MANIFEST_SCHEMA_V2,                   \
         .struct_size = sizeof(struct zcl_hotswap_manifest_v2),              \
-        .host_abi_version = ZCL_HOTSWAP_HOST_ABI_V2,                        \
-        .host_struct_size = sizeof(struct zcl_hotswap_host),                \
+        .host_abi_version = (host_abi_),                                    \
+        .host_struct_size = (host_size_),                                   \
         .required_host_capabilities = (required_caps_),                     \
         .provider_id = (provider_id_),                                      \
         .build_identity = ZCL_HOTSWAP_BUILD_IDENTITY,                       \
@@ -239,9 +310,17 @@ bool hotswap_dump_state_json(struct json_value *out, const char *key);
         .stateless = true,                                                   \
         .quiescence = ZCL_HOTSWAP_QUIESCENCE_NONE,                          \
         .mapped_tests_csv = ZCL_HOTSWAP_MAPPED_TESTS,                       \
-        .probe_tools_csv = ZCL_HOTSWAP_PROBE_TOOLS,                         \
+        .probe_tools_csv = (probe_csv_),                                    \
         .self_test = zcl_hotswap_default_self_test,                         \
     };
+
+/* v2 alias (unchanged emitted bytes: host_struct_size resolves to the frozen
+ * v2 prefix size, identical to the pre-v3 sizeof). */
+#define ZCL_HOTSWAP_EXPORT_V2_MANIFEST(required_caps_, provider_id_)         \
+    ZCL_HOTSWAP_EXPORT_MANIFEST(ZCL_HOTSWAP_HOST_ABI_V2,                     \
+                                ZCL_HOTSWAP_HOST_STRUCT_SIZE_V2,             \
+                                required_caps_, provider_id_,                \
+                                ZCL_HOTSWAP_PROBE_TOOLS)
 
 #define ZCL_HOTSWAP_EXPORT_ROUTES(routes_arr, routes_count)                  \
     ZCL_HOTSWAP_EXPORT_V2_MANIFEST(                                          \
@@ -258,8 +337,40 @@ bool hotswap_dump_state_json(struct json_value *out, const char *key);
         }                                                                    \
         return zcl__all;                                                     \
     }
+
+/* ── native.leaves (v3 host) generation entrypoint emitter ─────────────
+ *
+ * Invoke ONCE at file scope in a swap-eligible native command controller TU,
+ * passing the controller's static {path,handler} table and its element count:
+ *
+ *     ZCL_HOTSWAP_EXPORT_LEAVES(k_leaves, PARAM_COUNT(k_leaves))
+ *
+ * (no trailing semicolon). Under a generation .so build it emits the manifest
+ * plus zcl_hotswap_gen_init, which stages every command leaf the controller
+ * owns via the host's v3 leaf_stage vtable entry — the handlers resolve to the
+ * .so's OWN freshly-compiled copies. In node/release builds it expands to
+ * nothing. struct zcl_command_request/reply are complete only here, which is
+ * why lib/hotswap needs only a forward declaration. */
+#define ZCL_HOTSWAP_EXPORT_LEAVES(leaves_arr, leaves_count)                  \
+    ZCL_HOTSWAP_EXPORT_MANIFEST(ZCL_HOTSWAP_HOST_ABI_V3,                     \
+                                ZCL_HOTSWAP_HOST_STRUCT_SIZE_V3,             \
+                                ZCL_HOTSWAP_V3_HOST_CAPABILITIES,            \
+                                "native.leaves", ZCL_HOTSWAP_PROBE_LEAF)     \
+    bool zcl_hotswap_gen_init(const struct zcl_hotswap_host *host);          \
+    bool zcl_hotswap_gen_init(const struct zcl_hotswap_host *host)           \
+    {                                                                        \
+        if (!host || !host->leaf_stage) return false;                        \
+        bool zcl__all = true;                                                \
+        for (size_t zcl__i = 0; zcl__i < (size_t)(leaves_count); zcl__i++) { \
+            if (!host->leaf_stage((leaves_arr)[zcl__i].path,                 \
+                                  (leaves_arr)[zcl__i].handler))             \
+                zcl__all = false;                                            \
+        }                                                                    \
+        return zcl__all;                                                     \
+    }
 #else
 #define ZCL_HOTSWAP_EXPORT_ROUTES(routes_arr, routes_count) /* node/release: omitted */
+#define ZCL_HOTSWAP_EXPORT_LEAVES(leaves_arr, leaves_count) /* node/release: omitted */
 #endif
 
 /* ── Legacy direct-provider marker (reload-required under v2) ──────────

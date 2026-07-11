@@ -13,6 +13,8 @@
 #include <stdlib.h>
 #include <string.h>
 
+static bool command_is_branch(const struct zcl_command_spec *spec);
+
 static _Atomic uint64_t g_request_sequence = 1;
 
 /* ── Hot-swap leaf-handler override layer ─────────────────────────────
@@ -131,6 +133,13 @@ bool zcl_command_registry_replace_batch(
             if (why && why_sz)
                 snprintf(why, why_sz, "no canonical leaf named '%s'", ovr->path);
             LOG_FAIL("kernel.command", "no canonical leaf named '%s'",
+                     ovr->path);
+        }
+        if (command_is_branch(spec)) {
+            if (why && why_sz)
+                snprintf(why, why_sz, "leaf '%s' is a branch, not swappable",
+                         ovr->path);
+            LOG_FAIL("kernel.command", "leaf '%s' is a branch, not swappable",
                      ovr->path);
         }
         if (spec->availability != ZCL_COMMAND_READY) {

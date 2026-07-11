@@ -17,7 +17,10 @@
 #include "router.h"
 #include "rpc_client.h"
 
+#include "command/native_dev_hotswap.h"
+#include "config/command_catalog.h"
 #include "json/json.h"
+#include "kernel/command_registry.h"
 #include "rpc/protocol.h"
 #include "rpc/server.h"
 #include "util/log_macros.h"
@@ -234,6 +237,10 @@ static bool dev_bridge_initialize_router(const char *datadir, int rpc_port)
     g_dev_bridge_rpc_port = rpc_port;
     mcp_rpc_client_init(datadir, rpc_port);
     mcp_rpc_client_use_inprocess();
+    /* Bind the active kernel command registry so this resident dev
+     * process can commit hot-swap batches into the native snapshot
+     * (zcl_command_registry_replace_batch). Idempotent + NULL-safe. */
+    zcl_command_registry_set_active(zcl_command_catalog());
     mcp_router_reset();
     mcp_register_ops();
     mcp_register_diagnostics();
@@ -271,6 +278,11 @@ static bool dev_bridge_register_impl(struct rpc_table *table,
     }
     for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++)
         rpc_table_must_append(table, &commands[i]);
+    /* Zero-MCP W1-B/C: resident RPC for native Tier-1 hot-swap
+     * (dev.hotswap.apply/probe forward here). Registered on the node's
+     * JSON-RPC table, not the MCP surface; survives the W3 MCP delete. */
+    if (!register_dev_native_hotswap_rpc(table, datadir, rpc_port))
+        return false;
     return true;
 }
 

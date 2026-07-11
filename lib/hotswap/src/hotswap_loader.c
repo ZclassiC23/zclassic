@@ -245,20 +245,36 @@ bool hotswap_manifest_v2_validate(
     if (manifest->struct_size != sizeof(*manifest))
         MANIFEST_REJECT("manifest struct size %u != %zu",
                         manifest->struct_size, sizeof(*manifest));
-    if (manifest->host_abi_version != ZCL_HOTSWAP_HOST_ABI_V2 ||
-        manifest->host_struct_size != sizeof(struct zcl_hotswap_host))
+    /* Two admitted provider classes: the v2 stateless MCP route set
+     * (mcp.routes, v2 host) and the v3 native command-leaf set (native.leaves,
+     * v3 host). Branch on provider_id to select the exact ABI/size/capability
+     * contract; every other check below is identical for both. */
+    uint32_t want_host_abi;
+    uint32_t want_host_size;
+    uint64_t want_host_caps;
+    if (manifest_text_present(manifest->provider_id) &&
+        strcmp(manifest->provider_id, "mcp.routes") == 0) {
+        want_host_abi = ZCL_HOTSWAP_HOST_ABI_V2;
+        want_host_size = ZCL_HOTSWAP_HOST_STRUCT_SIZE_V2;
+        want_host_caps = ZCL_HOTSWAP_V2_HOST_CAPABILITIES;
+    } else if (manifest_text_present(manifest->provider_id) &&
+               strcmp(manifest->provider_id, "native.leaves") == 0) {
+        want_host_abi = ZCL_HOTSWAP_HOST_ABI_V3;
+        want_host_size = ZCL_HOTSWAP_HOST_STRUCT_SIZE_V3;
+        want_host_caps = ZCL_HOTSWAP_V3_HOST_CAPABILITIES;
+    } else {
+        MANIFEST_REJECT("provider is reload-required or unknown: %s",
+                        manifest->provider_id ? manifest->provider_id : "");
+    }
+    if (manifest->host_abi_version != want_host_abi ||
+        manifest->host_struct_size != want_host_size)
         MANIFEST_REJECT("host ABI/size mismatch: abi=%u size=%u",
                         manifest->host_abi_version,
                         manifest->host_struct_size);
-    if (manifest->required_host_capabilities !=
-        ZCL_HOTSWAP_V2_HOST_CAPABILITIES)
+    if (manifest->required_host_capabilities != want_host_caps)
         MANIFEST_REJECT("missing/unsupported host capabilities: 0x%llx",
                         (unsigned long long)
                             manifest->required_host_capabilities);
-    if (!manifest_text_present(manifest->provider_id) ||
-        strcmp(manifest->provider_id, "mcp.routes") != 0)
-        MANIFEST_REJECT("provider is reload-required or unknown: %s",
-                        manifest->provider_id ? manifest->provider_id : "");
     if (!manifest_text_present(manifest->build_identity) ||
         !build_identity_compatible(manifest->build_identity,
                                    zcl_build_commit()))
@@ -480,6 +496,48 @@ static bool hotswap_stage_thunk(const char *name,
     return true;
 }
 
+struct hotswap_leaf_tx {
+    struct zcl_hotswap_leaf_replacement staged[ZCL_HOTSWAP_GEN_MAX_REPLACED];
+    size_t staged_count;
+    bool stage_failed;
+    char stage_error[256];
+};
+
+/* Mirror of g_active_tx for the native.leaves provider. Loads are serialized
+ * under g_lock, so only the current stack transaction is ever reachable. */
+static struct hotswap_leaf_tx *g_active_leaf_tx;
+
+static bool hotswap_leaf_stage_thunk(const char *path,
+                                     zcl_command_handler_fn handler)
+{
+    struct hotswap_leaf_tx *tx = g_active_leaf_tx;
+    if (!tx)
+        return false;
+    if (!path || !path[0] || !handler) {
+        tx->stage_failed = true;
+        copy_text(tx->stage_error, sizeof(tx->stage_error),
+                  "generation staged a malformed native leaf");
+        return false;
+    }
+    if (tx->staged_count >= ZCL_HOTSWAP_GEN_MAX_REPLACED) {
+        tx->stage_failed = true;
+        copy_text(tx->stage_error, sizeof(tx->stage_error),
+                  "generation staged too many native leaves");
+        return false;
+    }
+    for (size_t i = 0; i < tx->staged_count; i++) {
+        if (strcmp(tx->staged[i].path, path) == 0) {
+            tx->stage_failed = true;
+            snprintf(tx->stage_error, sizeof(tx->stage_error),
+                     "generation staged duplicate leaf '%s'", path);
+            return false;
+        }
+    }
+    tx->staged[tx->staged_count++] =
+        (struct zcl_hotswap_leaf_replacement){ .path = path, .handler = handler };
+    return true;
+}
+
 static struct hotswap_generation *generation_add_locked(uint32_t gen,
                                                          const char *so_path,
                                                          void *handle,
@@ -566,13 +624,13 @@ static bool generation_reject_locked(struct hotswap_generation *slot,
 }
 
 static bool load_precheck(const char *so_path, const char *resolved_datadir,
-                          zcl_hotswap_commit_cb commit_cb,
+                          bool commit_cb_present,
                           struct hotswap_load_report *report)
 {
     if (!report)
         return false;
     memset(report, 0, sizeof(*report));
-    if (!commit_cb) {
+    if (!commit_cb_present) {
         copy_text(report->rejection_stage, sizeof(report->rejection_stage),
                   "precheck");
         copy_text(report->error, sizeof(report->error),
@@ -598,25 +656,26 @@ static bool load_precheck(const char *so_path, const char *resolved_datadir,
     return true;
 }
 
-bool hotswap_load(const char *so_path,
-                  const char *resolved_datadir,
-                  const char *required_probe,
-                  zcl_hotswap_commit_cb commit_cb,
-                  void *commit_context,
-                  struct hotswap_load_report *report)
-{
-    if (!load_precheck(so_path, resolved_datadir, commit_cb, report)) {
-        if (report) {
-            pthread_mutex_lock(&g_lock);
-            rejection_set_locked(0, report->rejection_stage, report->error,
-                                 so_path, "");
-            pthread_mutex_unlock(&g_lock);
-            LOG_WARN("hotswap", "%s", report->error);
-        }
-        return false;
-    }
+/* Result of the shared load core (dlopen + hash + register + manifest
+ * validation), common to every provider class. */
+struct hotswap_prepared {
+    struct hotswap_generation *slot;
+    const struct zcl_hotswap_manifest_v2 *manifest;
+    zcl_hotswap_gen_init_fn gen_init;
+    uint32_t gen;
+};
 
-    pthread_mutex_lock(&g_lock);
+/* Shared dlopen/hash/register/manifest-validate/probe-match core. ASSUMES
+ * g_lock is HELD and load_precheck already passed. On success returns true with
+ * *out fully filled and the lock STILL HELD; on failure returns false (report
+ * populated via generation_reject_locked) with the lock STILL HELD. The caller
+ * unlocks in both cases. Provider-agnostic: the caller supplies the host vtable
+ * and staging transaction after this returns. */
+static bool load_prepare_locked(const char *so_path, const char *required_probe,
+                                struct hotswap_load_report *report,
+                                struct hotswap_prepared *out)
+{
+    memset(out, 0, sizeof(*out));
     int artifact_fd = open(so_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     struct stat artifact_stat;
     if (artifact_fd < 0 || fstat(artifact_fd, &artifact_stat) != 0 ||
@@ -624,11 +683,9 @@ bool hotswap_load(const char *so_path,
         !artifact_sha256_fd(artifact_fd, report->artifact_sha256)) {
         if (artifact_fd >= 0)
             close(artifact_fd);
-        bool result = generation_reject_locked(
+        return generation_reject_locked(
             NULL, report, "artifact_hash",
             "could not pin and hash a regular generation artifact");
-        pthread_mutex_unlock(&g_lock);
-        return result;
     }
     /* Hash and dlopen the same pinned inode. Opening by the original pathname
      * after hashing creates a replacement race during rapid editor/build
@@ -643,9 +700,7 @@ bool hotswap_load(const char *so_path,
         snprintf(error, sizeof(error), "dlopen failed: %s",
                  dl_error ? dl_error : "(unknown)");
         close(artifact_fd);
-        bool result = generation_reject_locked(NULL, report, "dlopen", error);
-        pthread_mutex_unlock(&g_lock);
-        return result;
+        return generation_reject_locked(NULL, report, "dlopen", error);
     }
 
     uint32_t gen = g_next_gen++;
@@ -658,9 +713,7 @@ bool hotswap_load(const char *so_path,
                  HOTSWAP_MAX_GENERATIONS);
         dlclose(handle);
         close(artifact_fd);
-        bool result = generation_reject_locked(NULL, report, "registry", error);
-        pthread_mutex_unlock(&g_lock);
-        return result;
+        return generation_reject_locked(NULL, report, "registry", error);
     }
     copy_text(slot->artifact_sha256, sizeof(slot->artifact_sha256),
               report->artifact_sha256);
@@ -674,9 +727,7 @@ bool hotswap_load(const char *so_path,
         snprintf(why, sizeof(why), "missing zcl_hotswap_manifest_v2: %s",
                  manifest_symbol_error ? manifest_symbol_error :
                                          "symbol not found");
-        bool result = generation_reject_locked(slot, report, "manifest", why);
-        pthread_mutex_unlock(&g_lock);
-        return result;
+        return generation_reject_locked(slot, report, "manifest", why);
     }
     /* Once the exported object's schema and byte size prove all fields exist,
      * capture bounded provenance even when a later ABI/capability/identity
@@ -684,20 +735,15 @@ bool hotswap_load(const char *so_path,
     if (manifest->schema_version == ZCL_HOTSWAP_MANIFEST_SCHEMA_V2 &&
         manifest->struct_size == sizeof(*manifest))
         manifest_copy(slot, report, manifest);
-    if (!hotswap_manifest_v2_validate(manifest, why, sizeof(why))) {
-        bool result = generation_reject_locked(slot, report, "manifest", why);
-        pthread_mutex_unlock(&g_lock);
-        return result;
-    }
+    if (!hotswap_manifest_v2_validate(manifest, why, sizeof(why)))
+        return generation_reject_locked(slot, report, "manifest", why);
     if (!required_probe || !required_probe[0] ||
         strcmp(required_probe, manifest->probe_tools_csv) != 0) {
         (void)snprintf(why, sizeof(why),
                        "requested probe mismatch: requested=%s manifest=%s",
                        required_probe ? required_probe : "",
                        manifest->probe_tools_csv);
-        bool result = generation_reject_locked(slot, report, "manifest", why);
-        pthread_mutex_unlock(&g_lock);
-        return result;
+        return generation_reject_locked(slot, report, "manifest", why);
     }
 
     dlerror();
@@ -707,21 +753,64 @@ bool hotswap_load(const char *so_path,
     if (!gen_init || init_symbol_error) {
         snprintf(why, sizeof(why), "missing zcl_hotswap_gen_init: %s",
                  init_symbol_error ? init_symbol_error : "symbol not found");
-        bool result = generation_reject_locked(slot, report, "manifest", why);
-        pthread_mutex_unlock(&g_lock);
-        return result;
+        return generation_reject_locked(slot, report, "manifest", why);
     }
+
+    out->slot = slot;
+    out->manifest = manifest;
+    out->gen_init = gen_init;
+    out->gen = gen;
+    return true;
+}
+
+/* Shared entry preamble: precheck + acquire g_lock + run the load core. On
+ * success returns true with g_lock HELD and *prep filled; on failure returns
+ * false with g_lock NOT held (report populated). */
+static bool load_enter(const char *so_path, const char *resolved_datadir,
+                       bool commit_cb_present, const char *required_probe,
+                       struct hotswap_load_report *report,
+                       struct hotswap_prepared *prep)
+{
+    if (!load_precheck(so_path, resolved_datadir, commit_cb_present, report)) {
+        if (report) {
+            pthread_mutex_lock(&g_lock);
+            rejection_set_locked(0, report->rejection_stage, report->error,
+                                 so_path, "");
+            pthread_mutex_unlock(&g_lock);
+            LOG_WARN("hotswap", "%s", report->error);
+        }
+        return false;
+    }
+    pthread_mutex_lock(&g_lock);
+    if (!load_prepare_locked(so_path, required_probe, report, prep)) {
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
+    return true;
+}
+
+bool hotswap_load(const char *so_path,
+                  const char *resolved_datadir,
+                  const char *required_probe,
+                  zcl_hotswap_commit_cb commit_cb,
+                  void *commit_context,
+                  struct hotswap_load_report *report)
+{
+    struct hotswap_prepared prep;
+    if (!load_enter(so_path, resolved_datadir, commit_cb != NULL,
+                    required_probe, report, &prep))
+        return false;
 
     struct zcl_hotswap_host host = {
         .abi_version = ZCL_HOTSWAP_HOST_ABI_V2,
-        .struct_size = sizeof(struct zcl_hotswap_host),
-        .gen = gen,
+        .struct_size = ZCL_HOTSWAP_HOST_STRUCT_SIZE_V2,
+        .gen = prep.gen,
         .capabilities = ZCL_HOTSWAP_V2_HOST_CAPABILITIES,
         .mcp_stage = hotswap_stage_thunk,
     };
     struct hotswap_load_tx tx = {0};
     g_active_tx = &tx;
-    bool init_ok = gen_init(&host);
+    bool init_ok = prep.gen_init(&host);
     g_active_tx = NULL;
     if (!init_ok || tx.stage_failed || tx.staged_count == 0) {
         const char *error = tx.stage_error[0]
@@ -729,39 +818,106 @@ bool hotswap_load(const char *so_path,
             : (tx.staged_count == 0
                    ? "generation staged no MCP routes"
                    : "generation init returned false");
-        bool result = generation_reject_locked(slot, report, "init", error);
+        bool result = generation_reject_locked(prep.slot, report, "init", error);
         pthread_mutex_unlock(&g_lock);
         return result;
     }
 
-    why[0] = '\0';
-    if (!manifest->self_test(&host, why, sizeof(why))) {
+    char why[256] = {0};
+    if (!prep.manifest->self_test(&host, why, sizeof(why))) {
         bool result = generation_reject_locked(
-            slot, report, "self_test",
+            prep.slot, report, "self_test",
             why[0] ? why : "generation self-test returned false");
         pthread_mutex_unlock(&g_lock);
         return result;
     }
 
     why[0] = '\0';
-    if (!commit_cb(commit_context, gen, tx.staged, tx.staged_count,
+    if (!commit_cb(commit_context, prep.gen, tx.staged, tx.staged_count,
                    why, sizeof(why))) {
         bool result = generation_reject_locked(
-            slot, report, "commit",
+            prep.slot, report, "commit",
             why[0] ? why : "transactional route commit failed");
         pthread_mutex_unlock(&g_lock);
         return result;
     }
 
-    slot->ok = true;
-    slot->mapped = true;
-    slot->replaced_count = tx.staged_count;
-    g_active_gen = gen;
+    prep.slot->ok = true;
+    prep.slot->mapped = true;
+    prep.slot->replaced_count = tx.staged_count;
+    g_active_gen = prep.gen;
     report->ok = true;
     report->replaced_count = tx.staged_count;
     for (size_t i = 0; i < tx.staged_count; i++)
         copy_text(report->replaced[i], sizeof(report->replaced[i]),
                   tx.staged[i].name);
+
+    pthread_mutex_unlock(&g_lock);
+    return true;
+}
+
+bool hotswap_load_leaves(const char *so_path,
+                         const char *datadir,
+                         const char *probe_leaf,
+                         zcl_hotswap_leaf_commit_cb commit_cb,
+                         void *ctx,
+                         struct hotswap_load_report *report)
+{
+    struct hotswap_prepared prep;
+    if (!load_enter(so_path, datadir, commit_cb != NULL, probe_leaf, report,
+                    &prep))
+        return false;
+
+    struct zcl_hotswap_host host = {
+        .abi_version = ZCL_HOTSWAP_HOST_ABI_V3,
+        .struct_size = ZCL_HOTSWAP_HOST_STRUCT_SIZE_V3,
+        .gen = prep.gen,
+        .capabilities = ZCL_HOTSWAP_V3_HOST_CAPABILITIES,
+        .leaf_stage = hotswap_leaf_stage_thunk,
+    };
+    struct hotswap_leaf_tx tx = {0};
+    g_active_leaf_tx = &tx;
+    bool init_ok = prep.gen_init(&host);
+    g_active_leaf_tx = NULL;
+    if (!init_ok || tx.stage_failed || tx.staged_count == 0) {
+        const char *error = tx.stage_error[0]
+            ? tx.stage_error
+            : (tx.staged_count == 0
+                   ? "generation staged no native leaves"
+                   : "generation init returned false");
+        bool result = generation_reject_locked(prep.slot, report, "init", error);
+        pthread_mutex_unlock(&g_lock);
+        return result;
+    }
+
+    char why[256] = {0};
+    if (!prep.manifest->self_test(&host, why, sizeof(why))) {
+        bool result = generation_reject_locked(
+            prep.slot, report, "self_test",
+            why[0] ? why : "generation self-test returned false");
+        pthread_mutex_unlock(&g_lock);
+        return result;
+    }
+
+    why[0] = '\0';
+    if (!commit_cb(ctx, prep.gen, tx.staged, tx.staged_count,
+                   why, sizeof(why))) {
+        bool result = generation_reject_locked(
+            prep.slot, report, "commit",
+            why[0] ? why : "transactional leaf commit failed");
+        pthread_mutex_unlock(&g_lock);
+        return result;
+    }
+
+    prep.slot->ok = true;
+    prep.slot->mapped = true;
+    prep.slot->replaced_count = tx.staged_count;
+    g_active_gen = prep.gen;
+    report->ok = true;
+    report->replaced_count = tx.staged_count;
+    for (size_t i = 0; i < tx.staged_count; i++)
+        copy_text(report->replaced[i], sizeof(report->replaced[i]),
+                  tx.staged[i].path);
 
     pthread_mutex_unlock(&g_lock);
     return true;
@@ -781,6 +937,28 @@ bool hotswap_load(const char *so_path,
     (void)required_probe;
     (void)commit_cb;
     (void)commit_context;
+    if (!report)
+        return false;
+    memset(report, 0, sizeof(*report));
+    copy_text(report->rejection_stage, sizeof(report->rejection_stage),
+              "release");
+    copy_text(report->error, sizeof(report->error),
+              "hotswap unavailable in release build");
+    return false;
+}
+
+bool hotswap_load_leaves(const char *so_path,
+                         const char *datadir,
+                         const char *probe_leaf,
+                         zcl_hotswap_leaf_commit_cb commit_cb,
+                         void *ctx,
+                         struct hotswap_load_report *report)
+{
+    (void)so_path;
+    (void)datadir;
+    (void)probe_leaf;
+    (void)commit_cb;
+    (void)ctx;
     if (!report)
         return false;
     memset(report, 0, sizeof(*report));
