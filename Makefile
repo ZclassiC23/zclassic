@@ -303,13 +303,14 @@ all: test_zcl zclassic23 zclassic-cli zcl-rpc
 
 TEST_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard lib/test/src/*.c))
+TEST_DEV_EXECUTOR_SRCS = tools/dev/devloop_cycle.c
 SPEC_SRCS = $(wildcard lib/test/spec/*.c)
 CHAOS_SIM_SRCS = tools/sim/sim_peer.c
 
 # test.c and test_parallel.c each own their own main() — never both in
 # one binary. test_parallel_zcl uses the latter + the same test/spec
 # helpers as sequential test_zcl.
-TEST_SRCS_NO_MAIN = $(filter-out lib/test/src/test.c lib/test/src/test_parallel.c, $(TEST_SRCS))
+TEST_SRCS_NO_MAIN = $(filter-out lib/test/src/test.c lib/test/src/test_parallel.c, $(TEST_SRCS)) $(TEST_DEV_EXECUTOR_SRCS)
 TEST_FAST_OBJ_DIR = $(BUILD_DIR)/test-obj
 TEST_PARALLEL_FAST_BIN = $(BIN_DIR)/test_parallel_fast
 TEST_PARALLEL_FAST_SRCS = $(TEST_SRCS_NO_MAIN) lib/test/src/test_parallel.c $(SPEC_SRCS) $(CHAOS_SIM_SRCS) $(ALL_SRCS)
@@ -445,7 +446,7 @@ test-parallel: test_parallel
 # the default `all`), so running build/bin/test_parallel directly after editing a test
 # can false-green an old binary or report "matched no groups" for a new test.
 # `make t ONLY=<group>` always rebuilds the harness first, closing that trap.
-.PHONY: t t-fast syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop dev-watch dev-watch-once dev-watch-selftest dev-activation-selftest dev-loop-selftest agent-index dev-loop-bench dev-loop-bench-selftest hotswap-sim immutable-history-canaries historical-canaries agent-mcp-call agent-mcp-call-hot agent-mcp-call-dev agent-dev-status agent-clear-stale-dev-reindex agent-doctor stage-dev-bin agent-stage-dev deploy-dev-fast agent-deploy-fast
+.PHONY: t t-fast syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop dev-watch dev-watch-once dev-watch-selftest dev-activation-selftest dev-loop-selftest agent-index dev-loop-bench dev-loop-bench-selftest hotswap-sim immutable-history-canaries historical-canaries agent-mcp-call agent-mcp-call-hot agent-mcp-call-dev agent-dev-status agent-dev-recover dev-recovery-selftest agent-clear-stale-dev-reindex agent-doctor stage-dev-bin agent-stage-dev deploy-dev-fast agent-deploy-fast
 
 # Run ONE test group, always rebuilding the harness first:
 #   make t ONLY=service_state_driver
@@ -527,7 +528,7 @@ hotswap-so: $(VIEW_GEN_HEADERS)
 	  echo "usage: make hotswap-so FILES=\"tools/mcp/controllers/app_controller.c\"" >&2; \
 	  exit 2; fi
 	@set -eu; \
-	count=0; selected=""; \
+	count=0; selected=""; probe=""; \
 	eligible="$$(sed -n 's/^[[:space:]]*HOTSWAP_ELIGIBLE("\([^"]*\)").*/\1/p' config/hotswap_eligible.def)"; \
 	for f in $(FILES); do \
 	  count=$$((count + 1)); selected="$$f"; \
@@ -537,6 +538,8 @@ hotswap-so: $(VIEW_GEN_HEADERS)
 	done; \
 	[ "$$count" -eq 1 ] || { \
 	  echo "hotswap-so: reload_required: v2 pilot admits one atomic provider per generation (got $$count)" >&2; exit 2; }; \
+	probe="$$(sed -n 's/^[[:space:]]*HOTSWAP_ELIGIBLE("\([^"]*\)")[[:space:]]*HOTSWAP_PROBE("\([^"]*\)").*/\1\t\2/p' config/hotswap_eligible.def | awk -F '\t' -v selected="$$selected" '$$1 == selected { print $$2 }')"; \
+	case "$$probe" in ''|*[!A-Za-z0-9_]*) echo "hotswap-so: missing/unsafe canonical probe for $$selected" >&2; exit 2;; esac; \
 	mkdir -p "$(HOTSWAP_OBJ_DIR)" "$(HOTSWAP_SO_DIR)"; \
 	inputs="$$(mktemp "$(HOTSWAP_SO_DIR)/.inputs.XXXXXX")"; \
 	tmp_o="$$(mktemp "$(HOTSWAP_OBJ_DIR)/.generation.XXXXXX.o")"; \
@@ -545,11 +548,13 @@ hotswap-so: $(VIEW_GEN_HEADERS)
 	{ \
 	  printf '%s\n' 'schema=zcl.hotswap_inputs.v2'; \
 	  printf 'compiler='; $(CC) --version 2>/dev/null | head -1; \
-	  printf '%s\n' 'flags=$(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_GEN -DZCL_HOTSWAP_BUILD_IDENTITY=<build> -DZCL_HOTSWAP_SOURCE_ID=<source> -DZCL_HOTSWAP_INPUT_DIGEST=<sha256>'; \
+	  printf '%s\n' 'flags=$(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_GEN -DZCL_HOTSWAP_BUILD_IDENTITY=<build> -DZCL_HOTSWAP_SOURCE_ID=<source> -DZCL_HOTSWAP_INPUT_DIGEST=<sha256> -DZCL_HOTSWAP_PROBE_TOOLS=<probe>'; \
 	  printf 'source=%s\n' "$$selected"; \
+	  printf 'probe=%s\n' "$$probe"; \
 	  $(CC) $(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_GEN \
 	    -DZCL_HOTSWAP_BUILD_IDENTITY=\"$(BUILD_COMMIT)\" \
-	    -DZCL_HOTSWAP_SOURCE_ID=\"$$selected\" -E -P "$$selected"; \
+	    -DZCL_HOTSWAP_SOURCE_ID=\"$$selected\" \
+	    -DZCL_HOTSWAP_PROBE_TOOLS=\"$$probe\" -E -P "$$selected"; \
 	} > "$$inputs"; \
 	digest="$$(sha256sum "$$inputs" | awk '{print $$1}')"; \
 	case "$$digest" in *[!0-9a-f]*|'') echo "hotswap-so: invalid input digest" >&2; exit 1;; esac; \
@@ -559,6 +564,7 @@ hotswap-so: $(VIEW_GEN_HEADERS)
 	  -DZCL_HOTSWAP_BUILD_IDENTITY=\"$(BUILD_COMMIT)\" \
 	  -DZCL_HOTSWAP_SOURCE_ID=\"$$selected\" \
 	  -DZCL_HOTSWAP_INPUT_DIGEST=\"$$digest\" \
+	  -DZCL_HOTSWAP_PROBE_TOOLS=\"$$probe\" \
 	  -MMD -MP -MF "$(HOTSWAP_OBJ_DIR)/gen-$$digest.d" \
 	  -c -o "$$tmp_o" "$$selected" >&2; \
 	$(CC) -shared -Wl,--build-id=none -Wl,-z,relro -Wl,-z,now \
@@ -2437,6 +2443,16 @@ agent-mcp-call-dev:
 agent-dev-status:
 	@tools/dev/agent-dev-status.sh $(ARGS)
 
+# Reversible fresh-datadir recovery for the isolated dev lane. Dry-run is the
+# default; pass ARGS=--apply only after staging/selecting the intended immutable
+# generation. The transaction archives the old datadir and rolls it back on any
+# loader, executable-identity, RPC, or agent-contract proof failure.
+agent-dev-recover:
+	@tools/dev/recover-dev-lane.sh $(ARGS)
+
+dev-recovery-selftest:
+	@tools/dev/recover-dev-lane-selftest.sh
+
 agent-clear-stale-dev-reindex:
 	@tools/dev/agent-clear-stale-reindex.sh $(ARGS)
 
@@ -2596,7 +2612,7 @@ COV_TEST_BIN = $(BIN_DIR)/test_zcl_cov
 COV_INFO = $(BUILD_DIR)/coverage.info
 COV_HTML = $(BUILD_DIR)/coverage_html
 
-COV_TEST_SRCS := $(filter-out lib/test/src/test_parallel.c, $(TEST_SRCS))
+COV_TEST_SRCS := $(filter-out lib/test/src/test_parallel.c, $(TEST_SRCS)) $(TEST_DEV_EXECUTOR_SRCS)
 COV_OBJS := $(patsubst %.c,$(COV_BUILD_DIR)/%.o,$(COV_TEST_SRCS) $(SPEC_SRCS) $(CHAOS_SIM_SRCS) $(ALL_SRCS))
 
 $(COV_BUILD_DIR)/%.o: %.c $(TMPL_GEN)

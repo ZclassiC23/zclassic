@@ -12,6 +12,7 @@
 
 #include "vcs/vcs_index.h"
 #include "vcs/vcs_commit.h"
+#include "vcs/vcs_manifest.h"
 
 #include "vcs_priv.h"
 #include "vcs_walk.h"
@@ -210,6 +211,54 @@ bool vcs_index_stat_put_in_tx(struct vcs_index *idx, const char *path,
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE)
         LOG_FAIL("vcs", "step stat_put rc=%d", rc);
+    return true;
+}
+
+bool vcs_index_stat_prune_in_tx(struct vcs_index *idx,
+                                const struct vcs_manifest *manifest)
+{
+    if (!idx || !manifest)
+        LOG_FAIL("vcs", "null arg to stat_prune");
+
+    /* A TEMP table keeps the one generic DELETE bounded to the manifest and
+     * avoids preparing one DELETE per stale row. TEMP writes never enter the
+     * durable WAL; only rows actually removed from stat_cache do. */
+    char *err = NULL;
+    if (sqlite3_exec(idx->db,
+        "CREATE TEMP TABLE IF NOT EXISTS current_stat_paths("
+        "path TEXT PRIMARY KEY) WITHOUT ROWID;"
+        "DELETE FROM current_stat_paths;", NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        LOG_FAIL("vcs", "prepare stat prune set");
+    }
+
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(idx->db,
+        "INSERT INTO current_stat_paths(path) VALUES(?)", -1, &stmt, NULL) !=
+        SQLITE_OK)
+        LOG_FAIL("vcs", "prepare stat prune insert: %s",
+                 sqlite3_errmsg(idx->db));
+    for (size_t i = 0; i < manifest->count; i++) {
+        sqlite3_bind_text(stmt, 1, manifest->entries[i].path, -1,
+                          SQLITE_TRANSIENT);
+        int rc = sqlite3_step(stmt);  // raw-sql-ok:vcs-index-kernel-store
+        sqlite3_reset(stmt);
+        sqlite3_clear_bindings(stmt);
+        if (rc != SQLITE_DONE) {
+            sqlite3_finalize(stmt);
+            LOG_FAIL("vcs", "step stat prune insert rc=%d", rc);
+        }
+    }
+    sqlite3_finalize(stmt);
+
+    err = NULL;
+    if (sqlite3_exec(idx->db,
+        "DELETE FROM stat_cache WHERE NOT EXISTS ("
+        "SELECT 1 FROM current_stat_paths p WHERE p.path=stat_cache.path)",
+        NULL, NULL, &err) != SQLITE_OK) {
+        if (err) sqlite3_free(err);
+        LOG_FAIL("vcs", "delete stale stat rows");
+    }
     return true;
 }
 

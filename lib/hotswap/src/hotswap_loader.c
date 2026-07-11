@@ -15,12 +15,15 @@
 #include "util/clientversion.h"
 #include "util/log_macros.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define HOTSWAP_MAX_GENERATIONS 128
@@ -29,6 +32,10 @@ struct hotswap_generation {
     uint32_t gen;
     char so_path[512];
     void *handle;                 /* successful mappings are never closed */
+    /* Keep the descriptor whose /proc/self/fd path was passed to dlopen.
+     * Reusing that numeric fd while an older handle remains mapped makes the
+     * dynamic loader return the older cached object for a different artifact. */
+    int artifact_fd;
     time_t loaded_at;
     size_t replaced_count;
     bool ok;
@@ -61,9 +68,14 @@ static uint32_t g_next_gen = 1;
 static uint32_t g_active_gen;
 static struct hotswap_rejection g_last_rejection;
 
-static const char *const g_eligible_sources[] = {
-#define HOTSWAP_ELIGIBLE(path_) path_,
+static const struct {
+    const char *source;
+    const char *probe;
+} g_eligible_sources[] = {
+#define HOTSWAP_ELIGIBLE(path_) { .source = path_, .probe =
+#define HOTSWAP_PROBE(probe_) probe_ },
 #include "../../../config/hotswap_eligible.def"
+#undef HOTSWAP_PROBE
 #undef HOTSWAP_ELIGIBLE
 };
 
@@ -158,16 +170,16 @@ bool hotswap_datadir_is_dev(const char *resolved_datadir)
     return same_dir(resolved_datadir, exact_dev);
 }
 
-static bool eligible_source(const char *source_identity)
+static const char *eligible_probe(const char *source_identity)
 {
     if (!source_identity || !source_identity[0])
-        return false;
+        return NULL;
     for (size_t i = 0;
          i < sizeof(g_eligible_sources) / sizeof(g_eligible_sources[0]); i++) {
-        if (strcmp(source_identity, g_eligible_sources[i]) == 0)
-            return true;
+        if (strcmp(source_identity, g_eligible_sources[i].source) == 0)
+            return g_eligible_sources[i].probe;
     }
-    return false;
+    return NULL;
 }
 
 static bool manifest_text_present(const char *value)
@@ -185,6 +197,33 @@ static bool lowercase_sha256_hex(const char *value)
             return false;
     }
     return true;
+}
+
+/* An eligible source edit necessarily makes the checkout dirty while the
+ * resident host may have been built from the immediately preceding clean
+ * tree. `-dirty` is provenance, not an ABI revision. Compare the common base
+ * commit while the explicit host ABI version/struct/capability checks above
+ * continue to guard binary compatibility. Exact input_digest remains the
+ * identity of the edited generation itself. */
+static size_t build_identity_base_len(const char *identity)
+{
+    size_t len = identity ? strlen(identity) : 0;
+    static const char suffix[] = "-dirty";
+    if (len > sizeof(suffix) - 1 &&
+        memcmp(identity + len - (sizeof(suffix) - 1), suffix,
+               sizeof(suffix) - 1) == 0)
+        len -= sizeof(suffix) - 1;
+    return len;
+}
+
+static bool build_identity_compatible(const char *generation,
+                                      const char *host)
+{
+    size_t generation_len = build_identity_base_len(generation);
+    size_t host_len = build_identity_base_len(host);
+    return generation && host && generation_len > 0 &&
+           generation_len == host_len &&
+           memcmp(generation, host, generation_len) == 0;
 }
 
 bool hotswap_manifest_v2_validate(
@@ -221,12 +260,14 @@ bool hotswap_manifest_v2_validate(
         MANIFEST_REJECT("provider is reload-required or unknown: %s",
                         manifest->provider_id ? manifest->provider_id : "");
     if (!manifest_text_present(manifest->build_identity) ||
-        strcmp(manifest->build_identity, zcl_build_commit()) != 0)
+        !build_identity_compatible(manifest->build_identity,
+                                   zcl_build_commit()))
         MANIFEST_REJECT("build identity mismatch: generation=%s host=%s",
                         manifest->build_identity ? manifest->build_identity : "",
                         zcl_build_commit());
-    if (!manifest_text_present(manifest->source_identity) ||
-        !eligible_source(manifest->source_identity))
+    const char *required_probe = manifest_text_present(manifest->source_identity)
+        ? eligible_probe(manifest->source_identity) : NULL;
+    if (!required_probe)
         MANIFEST_REJECT("source is not runtime-eligible: %s",
                         manifest->source_identity ? manifest->source_identity : "");
     if (!lowercase_sha256_hex(manifest->input_digest))
@@ -238,6 +279,9 @@ bool hotswap_manifest_v2_validate(
     if (!manifest_text_present(manifest->mapped_tests_csv) ||
         !manifest_text_present(manifest->probe_tools_csv))
         MANIFEST_REJECT("mapped tests/probe metadata is required");
+    if (strcmp(manifest->probe_tools_csv, required_probe) != 0)
+        MANIFEST_REJECT("probe metadata mismatch: generation=%s required=%s",
+                        manifest->probe_tools_csv, required_probe);
     if (!manifest->self_test)
         MANIFEST_REJECT("generation self-test is required");
 #undef MANIFEST_REJECT
@@ -284,6 +328,8 @@ static void generation_json(struct json_value *obj,
     json_push_kv_str(obj, "artifact_sha256", generation->artifact_sha256);
     json_push_kv_bool(obj, "artifact_hash_available",
                       generation->artifact_sha256[0] != '\0');
+    json_push_kv_bool(obj, "artifact_inode_pinned",
+                      generation->mapped && generation->artifact_fd >= 0);
     json_push_kv_str(obj, "mapped_tests", generation->mapped_tests_csv);
     json_push_kv_str(obj, "probe_tools", generation->probe_tools_csv);
     if (generation->rejection_stage[0])
@@ -308,6 +354,8 @@ bool hotswap_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_bool(out, "ephemeral", true);
     json_push_kv_str(out, "mapping_policy",
                      "successful_generations_permanently_mapped");
+    json_push_kv_str(out, "artifact_inode_policy",
+                     "successful_generation_fd_pinned");
     json_push_kv_str(out, "admitted_provider_class", "stateless_mcp_routes");
     json_push_kv_str(out, "input_hash_scope", "source_headers_flags");
     json_push_kv_str(out, "artifact_hash_scope", "shared_object_bytes");
@@ -357,24 +405,27 @@ bool hotswap_dump_state_json(struct json_value *out, const char *key)
 
 #include <dlfcn.h>
 
-static bool artifact_sha256_file(const char *path, char hex_out[65])
+static bool artifact_sha256_fd(int fd, char hex_out[65])
 {
-    if (!path || !hex_out)
+    if (fd < 0 || !hex_out || lseek(fd, 0, SEEK_SET) < 0)
         return false;
     hex_out[0] = '\0';
-    FILE *file = fopen(path, "rb");
-    if (!file)
-        return false;
     struct sha256_ctx context;
     sha256_init(&context);
     unsigned char buffer[64 * 1024];
-    size_t count;
-    while ((count = fread(buffer, 1, sizeof(buffer), file)) > 0)
-        sha256_write(&context, buffer, count);
-    bool ok = !ferror(file);
-    if (fclose(file) != 0)
-        ok = false;
-    if (!ok)
+    for (;;) {
+        ssize_t count = read(fd, buffer, sizeof(buffer));
+        if (count > 0) {
+            sha256_write(&context, buffer, (size_t)count);
+            continue;
+        }
+        if (count == 0)
+            break;
+        if (errno == EINTR)
+            continue;
+        return false;
+    }
+    if (lseek(fd, 0, SEEK_SET) < 0)
         return false;
     unsigned char digest[SHA256_OUTPUT_SIZE];
     sha256_finalize(&context, digest);
@@ -431,14 +482,29 @@ static bool hotswap_stage_thunk(const char *name,
 
 static struct hotswap_generation *generation_add_locked(uint32_t gen,
                                                          const char *so_path,
-                                                         void *handle)
+                                                         void *handle,
+                                                         int artifact_fd)
 {
-    if (g_gen_count >= HOTSWAP_MAX_GENERATIONS)
+    struct hotswap_generation *slot = NULL;
+    if (g_gen_count < HOTSWAP_MAX_GENERATIONS) {
+        slot = &g_gens[g_gen_count++];
+    } else {
+        /* Rejected generations are already dlclose'd and no router snapshot
+         * can reference them. Reuse those diagnostic slots so malformed edit
+         * attempts cannot exhaust an otherwise healthy hot-swap host. */
+        for (size_t i = 0; i < g_gen_count; i++) {
+            if (!g_gens[i].ok && !g_gens[i].mapped && !g_gens[i].handle) {
+                slot = &g_gens[i];
+                break;
+            }
+        }
+    }
+    if (!slot)
         return NULL;
-    struct hotswap_generation *slot = &g_gens[g_gen_count++];
     memset(slot, 0, sizeof(*slot));
     slot->gen = gen;
     slot->handle = handle;
+    slot->artifact_fd = artifact_fd;
     slot->loaded_at = platform_time_wall_time_t();
     copy_text(slot->so_path, sizeof(slot->so_path), so_path);
     return slot;
@@ -487,6 +553,10 @@ static bool generation_reject_locked(struct hotswap_generation *slot,
             dlclose(slot->handle);
             slot->handle = NULL;
         }
+        if (slot->artifact_fd >= 0) {
+            close(slot->artifact_fd);
+            slot->artifact_fd = -1;
+        }
     } else {
         rejection_set_locked(report->gen, stage, error, "",
                              report->source_identity);
@@ -530,7 +600,9 @@ static bool load_precheck(const char *so_path, const char *resolved_datadir,
 
 bool hotswap_load(const char *so_path,
                   const char *resolved_datadir,
+                  const char *required_probe,
                   zcl_hotswap_commit_cb commit_cb,
+                  void *commit_context,
                   struct hotswap_load_report *report)
 {
     if (!load_precheck(so_path, resolved_datadir, commit_cb, report)) {
@@ -545,19 +617,32 @@ bool hotswap_load(const char *so_path,
     }
 
     pthread_mutex_lock(&g_lock);
-    if (!artifact_sha256_file(so_path, report->artifact_sha256)) {
+    int artifact_fd = open(so_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    struct stat artifact_stat;
+    if (artifact_fd < 0 || fstat(artifact_fd, &artifact_stat) != 0 ||
+        !S_ISREG(artifact_stat.st_mode) ||
+        !artifact_sha256_fd(artifact_fd, report->artifact_sha256)) {
+        if (artifact_fd >= 0)
+            close(artifact_fd);
         bool result = generation_reject_locked(
             NULL, report, "artifact_hash",
-            "could not compute generation artifact SHA-256");
+            "could not pin and hash a regular generation artifact");
         pthread_mutex_unlock(&g_lock);
         return result;
     }
-    void *handle = dlopen(so_path, RTLD_NOW | RTLD_LOCAL);
+    /* Hash and dlopen the same pinned inode. Opening by the original pathname
+     * after hashing creates a replacement race during rapid editor/build
+     * activity; /proc/self/fd keeps identity exact through the loader call. */
+    char pinned_path[64];
+    (void)snprintf(pinned_path, sizeof(pinned_path), "/proc/self/fd/%d",
+                   artifact_fd);
+    void *handle = dlopen(pinned_path, RTLD_NOW | RTLD_LOCAL);
     if (!handle) {
         const char *dl_error = dlerror();
         char error[256];
         snprintf(error, sizeof(error), "dlopen failed: %s",
                  dl_error ? dl_error : "(unknown)");
+        close(artifact_fd);
         bool result = generation_reject_locked(NULL, report, "dlopen", error);
         pthread_mutex_unlock(&g_lock);
         return result;
@@ -566,12 +651,13 @@ bool hotswap_load(const char *so_path,
     uint32_t gen = g_next_gen++;
     report->gen = gen;
     struct hotswap_generation *slot =
-        generation_add_locked(gen, so_path, handle);
+        generation_add_locked(gen, so_path, handle, artifact_fd);
     if (!slot) {
         char error[128];
         snprintf(error, sizeof(error), "generation registry full (%d)",
                  HOTSWAP_MAX_GENERATIONS);
         dlclose(handle);
+        close(artifact_fd);
         bool result = generation_reject_locked(NULL, report, "registry", error);
         pthread_mutex_unlock(&g_lock);
         return result;
@@ -599,6 +685,16 @@ bool hotswap_load(const char *so_path,
         manifest->struct_size == sizeof(*manifest))
         manifest_copy(slot, report, manifest);
     if (!hotswap_manifest_v2_validate(manifest, why, sizeof(why))) {
+        bool result = generation_reject_locked(slot, report, "manifest", why);
+        pthread_mutex_unlock(&g_lock);
+        return result;
+    }
+    if (!required_probe || !required_probe[0] ||
+        strcmp(required_probe, manifest->probe_tools_csv) != 0) {
+        (void)snprintf(why, sizeof(why),
+                       "requested probe mismatch: requested=%s manifest=%s",
+                       required_probe ? required_probe : "",
+                       manifest->probe_tools_csv);
         bool result = generation_reject_locked(slot, report, "manifest", why);
         pthread_mutex_unlock(&g_lock);
         return result;
@@ -648,7 +744,8 @@ bool hotswap_load(const char *so_path,
     }
 
     why[0] = '\0';
-    if (!commit_cb(gen, tx.staged, tx.staged_count, why, sizeof(why))) {
+    if (!commit_cb(commit_context, gen, tx.staged, tx.staged_count,
+                   why, sizeof(why))) {
         bool result = generation_reject_locked(
             slot, report, "commit",
             why[0] ? why : "transactional route commit failed");
@@ -674,12 +771,16 @@ bool hotswap_load(const char *so_path,
 
 bool hotswap_load(const char *so_path,
                   const char *resolved_datadir,
+                  const char *required_probe,
                   zcl_hotswap_commit_cb commit_cb,
+                  void *commit_context,
                   struct hotswap_load_report *report)
 {
     (void)so_path;
     (void)resolved_datadir;
+    (void)required_probe;
     (void)commit_cb;
+    (void)commit_context;
     if (!report)
         return false;
     memset(report, 0, sizeof(*report));

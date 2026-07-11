@@ -178,6 +178,44 @@ static int t_manifest_fixedpoint(void)
     return failures;
 }
 
+static bool manifest_has_path(const struct vcs_manifest *manifest,
+                              const char *path)
+{
+    for (size_t i = 0; manifest && i < manifest->count; i++)
+        if (strcmp(manifest->entries[i].path, path) == 0)
+            return true;
+    return false;
+}
+
+static int t_generated_paths_ignored(const char *dir)
+{
+    int failures = 0;
+    vc_write(dir, "src/kept.c", "int kept;\n");
+    vc_write(dir, ".claude/commands/kept.md", "tracked command\n");
+    vc_write(dir, ".claude/worktrees/copy/src/main.c", "ignored\n");
+    vc_write(dir, ".claude/tmp/scratch.c", "ignored\n");
+    vc_write(dir, ".cache/compiler/result", "ignored\n");
+    vc_write(dir, ".zcl_test_render/page.html", "ignored\n");
+    vc_write(dir, "examples/bin/example", "ignored\n");
+    vc_write(dir, "vendor/tor/generated.c", "ignored\n");
+    vc_write(dir, "vendor/zclassic-ref/source.cc", "ignored\n");
+
+    struct vcs_manifest manifest;
+    VC_CHECK("ignore: manifest build",
+             vcs_manifest_build(dir, NULL, &manifest));
+    VC_CHECK("ignore: ordinary source retained",
+             manifest_has_path(&manifest, "src/kept.c"));
+    VC_CHECK("ignore: tracked Claude command retained",
+             manifest_has_path(&manifest, ".claude/commands/kept.md"));
+    VC_CHECK("ignore: agent worktree pruned",
+             !manifest_has_path(&manifest,
+                                ".claude/worktrees/copy/src/main.c"));
+    VC_CHECK("ignore: generated roots pruned",
+             manifest.count == 2);
+    vcs_manifest_free(&manifest);
+    return failures;
+}
+
 /* ── test 2/3: object store dedup + verify-on-read ──────────────── */
 static int t_object_store(const char *repo)
 {
@@ -566,6 +604,10 @@ int test_vcs_core(void)
 
     test_make_tmpdir(dir, sizeof(dir), "vcs_core", "objstore");
     failures += t_object_store(dir);
+    test_rm_rf_recursive(dir);
+
+    test_make_tmpdir(dir, sizeof(dir), "vcs_core", "ignored");
+    failures += t_generated_paths_ignored(dir);
     test_rm_rf_recursive(dir);
 
     test_make_tmpdir(dir, sizeof(dir), "vcs_core", "snap");

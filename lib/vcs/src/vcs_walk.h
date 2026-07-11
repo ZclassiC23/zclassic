@@ -14,8 +14,8 @@
 #include <stdint.h>
 
 /* True iff a repo-relative path is in the ZVCS ignore set:
- *   dir prefixes: .git/ .zvcs/ build/ vendor/lib/
- *   basename globs: *.db  node.db*  test-tmp*
+ *   source-control/build roots plus checkout-local agent worktrees/caches;
+ *   basename globs for databases, logs, test artifacts, and local tokens.
  * A directory whose name triggers a prefix rule is pruned (not descended). */
 bool vcs_path_ignored(const char *relpath);
 

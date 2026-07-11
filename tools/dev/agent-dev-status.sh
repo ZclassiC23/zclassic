@@ -183,7 +183,7 @@ auto_reindex_json() {
 }
 
 worker_lane_json() {
-    printf '{"name":"dev","role":"worker","purpose":"fresh-build development lane for frequent agent iteration","unit":"%s","datadir":"%s","rpcport":"%s","mutation_policy":"noncanonical_dev_only","canonical_guard":"never_touches_live_or_soak","status_command":"make agent-dev-status","deploy_command":"make agent-deploy-fast","stage_command":"tools/dev/deploy-dev-lane.sh --stage","legacy_stage_command":"make agent-stage-dev","recover_command":"make lane-recover LANE=dev"}' \
+    printf '{"name":"dev","role":"worker","purpose":"fresh-build development lane for frequent agent iteration","unit":"%s","datadir":"%s","rpcport":"%s","mutation_policy":"noncanonical_dev_only","canonical_guard":"never_touches_live_or_soak","status_command":"make agent-dev-status","deploy_command":"make agent-deploy-fast","stage_command":"tools/dev/deploy-dev-lane.sh --stage","legacy_stage_command":"make agent-stage-dev","recover_command":"make agent-dev-recover"}' \
         "$(json_escape "$UNIT")" "$(json_escape "$DEV_DATADIR")" \
         "$(json_escape "$DEV_RPCPORT")"
 }
@@ -413,7 +413,7 @@ next_action() {
         if [ "$stale_candidate" = "true" ]; then
             printf 'make agent-clear-stale-dev-reindex'
         else
-            printf 'inspect dev agent blocker before clearing auto_reindex_request; use ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY=1 only for deliberate recovery boot'
+            printf 'make agent-dev-recover'
         fi
     elif [ "$rpc_status" = "ok" ]; then
         printf 'make agent-mcp-call-dev TOOL=zcl_status'

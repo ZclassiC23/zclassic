@@ -78,7 +78,9 @@ historical fixture passes, then deploy/restart intentionally.
   preflights an immutable `staged` generation, but it does not flip `current`
   or turn the in-memory generation into a durable activation; the next
   transactional process reload is still the boundary. Successful old generation
-  text deliberately remains mapped so in-flight calls can finish safely.
+  text deliberately remains mapped so in-flight calls can finish safely. The
+  matching artifact fd also stays pinned: closing it would let a later
+  `/proc/self/fd/N` load alias the older dynamic-loader cache entry.
 - **Do not infer latency SLOs from a safe/default benchmark run.**
   `make dev-loop-bench` skips hot-swap and process-reload activation unless the
   operator explicitly opts in. Only the `zcl.dev_loop_bench.v1` p95 fields from

@@ -54,6 +54,11 @@ STALE_OOM_BUDGET_DROPIN="$HOME/.config/systemd/user/zcl23-dev.service.d/zz-oom-b
 BUILD_ID_DROPIN="$HOME/.config/systemd/user/zcl23-dev.service.d/90-build-identity.conf"
 DEPLOY_STATE="$DEV_DATADIR/agent-deploy.json"
 DEV_DEPLOY_BUILD="${ZCL_DEV_DEPLOY_BUILD:-fast}"
+# app_shutdown_svc() has a 90-second SIGALRM backstop.  The controlling
+# systemctl process must outlive that deadline: killing `systemctl stop` at the
+# same instant cancels the explicit stop job and Restart=always can relaunch the
+# old `current` generation before the activator flips the link.
+DEV_SYSTEMCTL_TIMEOUT="${ZCL_DEV_SYSTEMCTL_TIMEOUT:-120}"
 
 BUILD_COMMIT=""
 BUILD_ARTIFACT="${ZCL_DEV_BUILD_ARTIFACT:-}"
@@ -555,7 +560,7 @@ cleanup_dropins() {
 }
 
 systemctl_default() {
-    timeout "${ZCL_DEV_SYSTEMCTL_TIMEOUT:-90}" systemctl --user "$@"
+    timeout "$DEV_SYSTEMCTL_TIMEOUT" systemctl --user "$@"
 }
 
 service_stop() {
@@ -641,7 +646,10 @@ verify_running_generation() {
     local expected="$1" expected_bin
     expected_bin="$GEN_ROOT/$expected/zclassic23-dev"
     local deadline now pid exe interval_ms="${ZCL_DEV_PROBE_INTERVAL_MS:-250}"
-    local timeout_s="${ZCL_DEV_ACTIVATION_TIMEOUT:-30}"
+    # Clean boots on the consensus-bound dev starter are normally ~30-35s.
+    # Leave enough headroom for a loaded workstation without misclassifying a
+    # healthy immutable generation at the exact edge of its expected boot.
+    local timeout_s="${ZCL_DEV_ACTIVATION_TIMEOUT:-60}"
     deadline=$(( $(date +%s) + timeout_s ))
     RUNNING_GENERATION=""
     while :; do

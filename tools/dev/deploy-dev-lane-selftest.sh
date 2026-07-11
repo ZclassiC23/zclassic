@@ -225,6 +225,12 @@ test_no_prior_generation_removes_candidate_links() {
     printf '[dev-activation-selftest] PASS: no-prior failure removes rejected current links\n'
 }
 
+test_default_stop_window_outlives_node_backstop() {
+    grep -q 'DEV_SYSTEMCTL_TIMEOUT="${ZCL_DEV_SYSTEMCTL_TIMEOUT:-120}"' "$DEPLOY" ||
+        fail "default systemctl window no longer outlives the node's 90-second shutdown backstop"
+    printf '[dev-activation-selftest] PASS: default stop window outlives node backstop\n'
+}
+
 test_preflight_untouched
 test_stage_untouched
 test_success_promotes_candidate
@@ -232,4 +238,5 @@ test_probe_failure_rolls_back
 test_lock_rejects_concurrent_activation
 test_running_identity_mismatch_fails_closed
 test_no_prior_generation_removes_candidate_links
+test_default_stop_window_outlives_node_backstop
 printf '[dev-activation-selftest] PASS: all transactional activation proofs\n'

@@ -25,10 +25,14 @@
 #include "vcs/vcs_devloop.h"
 #include "vcs/vcs_index.h"
 
+#include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #define VD_CHECK(name, expr) do {                                       \
@@ -186,6 +190,56 @@ static int t_anchor_ok(const char *dir)
     return failures;
 }
 
+static bool baseline_finished(const char *dir)
+{
+    char log_path[4096], lock_path[4096];
+    snprintf(log_path, sizeof(log_path), "%s/.zvcs/commits.log", dir);
+    snprintf(lock_path, sizeof(lock_path), "%s/.zvcs/bootstrap.lock", dir);
+    struct stat st;
+    if (stat(log_path, &st) != 0 || st.st_size <= 0)
+        return false;
+    int fd = open(lock_path, O_RDWR | O_CLOEXEC);
+    if (fd < 0)
+        return false;
+    bool done = flock(fd, LOCK_EX | LOCK_NB) == 0;
+    if (done)
+        (void)flock(fd, LOCK_UN);
+    close(fd);
+    return done;
+}
+
+static int t_initial_anchor_deferred(const char *dir)
+{
+    int failures = 0;
+    vd_write(dir, "src/main.c", "int main(void){return 0;}\n");
+
+    struct vcs_devloop_verdict v = {0};
+    v.phase = "resident_commit";
+    v.defer_initial_snapshot = true;
+    struct vcs_devloop_anchor_result first = {0};
+    vcs_devloop_anchor_cycle(dir, &v, &first);
+    VD_CHECK("deferred: first baseline leaves foreground",
+             first.status == VCS_DEVLOOP_ANCHOR_DEFERRED);
+    VD_CHECK("deferred: result names unanchored cycle",
+             strstr(first.error, "unanchored") != NULL);
+
+    bool finished = false;
+    for (int i = 0; i < 500 && !finished; i++) {
+        finished = baseline_finished(dir);
+        if (!finished) {
+            const struct timespec pause = { .tv_nsec = 10 * 1000 * 1000 };
+            (void)nanosleep(&pause, NULL);
+        }
+    }
+    VD_CHECK("deferred: detached baseline completes", finished);
+
+    struct vcs_devloop_anchor_result next = {0};
+    vcs_devloop_anchor_cycle(dir, &v, &next);
+    VD_CHECK("deferred: next warm cycle anchors synchronously",
+             next.status == VCS_DEVLOOP_ANCHOR_OK);
+    return failures;
+}
+
 /* ── test: fail-open when .zvcs/ cannot be created ─────────────────── */
 static int t_fail_open(const char *dir)
 {
@@ -270,6 +324,10 @@ int test_vcs_devloop(void)
 
     test_make_tmpdir(dir, sizeof(dir), "vcs_devloop", "ok");
     failures += t_anchor_ok(dir);
+    test_rm_rf_recursive(dir);
+
+    test_make_tmpdir(dir, sizeof(dir), "vcs_devloop", "deferred");
+    failures += t_initial_anchor_deferred(dir);
     test_rm_rf_recursive(dir);
 
     test_make_tmpdir(dir, sizeof(dir), "vcs_devloop", "failopen");

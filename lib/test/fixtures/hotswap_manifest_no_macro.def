@@ -4,4 +4,4 @@
  * self-test to prove the macro-presence check is not hollow: an app-layer path
  * that would pass the forbidden-root check must still trip (exit 1) because it
  * cannot actually export a generation. */
-HOTSWAP_ELIGIBLE("tools/mcp/controllers/ops_controller.c")
+HOTSWAP_ELIGIBLE("tools/mcp/controllers/ops_controller.c") HOTSWAP_PROBE("fixture_probe")

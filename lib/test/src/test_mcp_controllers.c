@@ -3114,7 +3114,7 @@ static int test_zcl_agent_dev_tools_dispatch(void)
                       "\"mutation_policy\":\"noncanonical_dev_only\","
                       "\"canonical_guard\":\"never_touches_live_or_soak\","
                       "\"stage_command\":\"make agent-stage-dev\","
-                      "\"recover_command\":\"make lane-recover LANE=dev\"},"
+                      "\"recover_command\":\"make agent-dev-recover\"},"
                       "\"next_action\":\"unit-test\","
                       "\"service\":{\"active_state\":\"active\"},"
                       "\"rpc\":{\"status\":\"ok\"}}'",
@@ -3143,7 +3143,7 @@ static int test_zcl_agent_dev_tools_dispatch(void)
         ASSERT_STR_EQ(json_get_str(json_get(worker, "stage_command")),
                       "make agent-stage-dev");
         ASSERT_STR_EQ(json_get_str(json_get(worker, "recover_command")),
-                      "make lane-recover LANE=dev");
+                      "make agent-dev-recover");
         json_free(&root);
         free(body);
 

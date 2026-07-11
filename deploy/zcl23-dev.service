@@ -27,7 +27,8 @@ Type=simple
 # anti-eclipse body-source floor (>=3 healthy distinct peers) — a
 # localhost-only node pins at its seed whenever announce-stream holes need
 # body_fetch backfill (proven on the soak lane 2026-06-12). Same external
-# set as the soak unit.
+# set as the soak unit. The dev lane owns a consensus-bound v2 starter bundle,
+# so it never merges the mutable zclassicd datadir's block/index coordinates.
 ExecStart=%h/.local/lib/zclassic23-dev/current/zclassic23-dev \
     -datadir=%h/.zclassic-c23-dev \
     -operator-lane=dev \
@@ -35,6 +36,7 @@ ExecStart=%h/.local/lib/zclassic23-dev/current/zclassic23-dev \
     -rpcport=18252 \
     -listen \
     -txindex \
+    -nolegacyimport \
     -addnode=127.0.0.1:8034 \
     -addnode=127.0.0.1:8033 \
     -addnode=127.0.0.1:8043 \

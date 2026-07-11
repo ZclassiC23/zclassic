@@ -2504,7 +2504,7 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(agent_status, "noncanonical_dev_only") != NULL);
         ASSERT(strstr(agent_status, "never_touches_live_or_soak") != NULL);
         ASSERT(strstr(agent_status, "make agent-stage-dev") != NULL);
-        ASSERT(strstr(agent_status, "make lane-recover LANE=dev") != NULL);
+        ASSERT(strstr(agent_status, "make agent-dev-recover") != NULL);
         ASSERT(strstr(agent_status,
                       "pending_auto_reindex_requires_explicit_recovery_boot")
                != NULL);

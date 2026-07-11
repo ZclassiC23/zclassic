@@ -17,6 +17,7 @@ vendor/include/zlib.h
 vendor/include/zconf.h
 
 # Data / runtime
+.zvcs/
 *.db
 *.db-wal
 *.db-shm

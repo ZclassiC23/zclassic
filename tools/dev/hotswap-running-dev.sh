@@ -9,7 +9,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="${ZCL_DEV_WATCH_ROOT:-$(cd "$SCRIPT_DIR/../.." && pwd)}"
 FILES_FILE="${ZCL_DEV_HOTSWAP_FILES_FILE:-}"
-PROBE="${ZCL_DEV_HOTSWAP_PROBE:-zcl_name_list}"
+REQUESTED_PROBE="${ZCL_DEV_HOTSWAP_PROBE:-}"
+PROBE=""
 STATE_DIR="${ZCL_DEV_WATCH_STATE_DIR:-$HOME/.local/state/zclassic23-dev}"
 RESULT_FILE="${ZCL_DEV_HOTSWAP_RESULT:-$STATE_DIR/hotswap-latest.json}"
 CYCLE_ID="${ZCL_DEV_CYCLE_ID:-standalone-$(date +%s)-$$}"
@@ -37,8 +38,24 @@ source_file="${files[0]}"
 case "$source_file" in
     *[!A-Za-z0-9_./-]*|/*|*..*) fail "unsafe source path: $source_file" ;;
 esac
+
+# Resolve the route probe from the same manifest row that admits the source.
+# A caller may repeat that value for an explicit assertion, but may not
+# override it: planner/transport drift must fail before compilation.
+while IFS=$'\t' read -r entry_path entry_probe; do
+    if [ "$entry_path" = "$source_file" ]; then
+        PROBE="$entry_probe"
+        break
+    fi
+done < <(sed -n \
+    's/^[[:space:]]*HOTSWAP_ELIGIBLE("\([^"]*\)")[[:space:]]*HOTSWAP_PROBE("\([^"]*\)").*/\1\	\2/p' \
+    "$ROOT/config/hotswap_eligible.def" 2>/dev/null || true)
+[ -n "$PROBE" ] || fail "manifest has no probe for admitted source: $source_file"
+if [ -n "$REQUESTED_PROBE" ] && [ "$REQUESTED_PROBE" != "$PROBE" ]; then
+    fail "probe drift for $source_file: requested=$REQUESTED_PROBE manifest=$PROBE"
+fi
 case "$PROBE" in
-    "") ;;
+    "") fail "manifest probe is empty for $source_file" ;;
     *[!A-Za-z0-9_]*) fail "unsafe probe tool name: $PROBE" ;;
 esac
 
@@ -75,8 +92,8 @@ if [ "$smoke_rc" -ne 0 ] ||
    ! printf '%s' "$smoke_output" |
        grep -q '"ok"[[:space:]]*:[[:space:]]*true' ||
    printf '%s' "$smoke_output" | grep -q '"probe_error"[[:space:]]*:' ||
-   { [ -n "$PROBE" ] &&
-     ! printf '%s' "$smoke_output" | grep -q '"probe"[[:space:]]*:'; }; then
+   ! printf '%s' "$smoke_output" | grep -q '"probe"[[:space:]]*:' ||
+   printf '%s' "$smoke_output" | grep -q '"error"[[:space:]]*:'; then
     printf '%s\n' "$smoke_output"
     printf '[dev-hotswap] pre-commit generation/probe smoke failed; resident node was untouched\n' >&2
     exit 1
@@ -85,7 +102,7 @@ fi
 : > "$err_file"
 set +e
 output="$("$bin" -datadir="$HOME/.zclassic-c23-dev" -rpcport=18252 \
-    dev_hotswap "$so" 2>"$err_file")"
+    dev_hotswap "$so" "$PROBE" 2>"$err_file")"
 rc=$?
 set -e
 printf '%s\n' "$output"
@@ -111,6 +128,11 @@ fi
 
 if [ "$rc" -ne 0 ]; then
     combined="$output $(cat "$err_file")"
+    if printf '%s' "$combined" | grep -q 'generation registry full' &&
+       printf '%s' "$combined" | grep -q '"rejection_stage"[[:space:]]*:[[:space:]]*"registry"'; then
+        printf '[dev-hotswap] mapped-generation budget reached; transactional reload is required\n' >&2
+        exit 69
+    fi
     if printf '%s' "$combined" | grep -Eqi \
         'method not found|"code"[[:space:]]*:[[:space:]]*-32601|could not connect|connection refused|rpc server unavailable|failed to connect'; then
         printf '[dev-hotswap] persistent dev-node RPC unavailable; reload fallback is permitted\n' >&2
@@ -121,7 +143,15 @@ if [ "$rc" -ne 0 ]; then
 fi
 
 if ! printf '%s' "$output" |
-     grep -q '"ok"[[:space:]]*:[[:space:]]*true'; then
+     grep -q '"ok"[[:space:]]*:[[:space:]]*true' ||
+   ! printf '%s' "$output" | grep -q '"probe"[[:space:]]*:' ||
+   printf '%s' "$output" | grep -q '"probe_error"[[:space:]]*:' ||
+   printf '%s' "$output" | grep -q '"error"[[:space:]]*:'; then
+    if printf '%s' "$output" | grep -q 'generation registry full' &&
+       printf '%s' "$output" | grep -q '"rejection_stage"[[:space:]]*:[[:space:]]*"registry"'; then
+        printf '[dev-hotswap] mapped-generation budget reached; transactional reload is required\n' >&2
+        exit 69
+    fi
     printf '[dev-hotswap] generation rejected; refusing to hide it behind a reload\n' >&2
     exit 1
 fi

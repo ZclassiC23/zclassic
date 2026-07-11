@@ -32,15 +32,42 @@ fi
 # Extract the quoted path from each HOTSWAP_ELIGIBLE("...") invocation.
 mapfile -t PATHS < <(gate_grep -oE 'HOTSWAP_ELIGIBLE\("[^"]+"\)' "$MANIFEST" \
     | sed -E 's/HOTSWAP_ELIGIBLE\("([^"]+)"\)/\1/')
+mapfile -t PAIRS < <(sed -n \
+    's/^[[:space:]]*HOTSWAP_ELIGIBLE("\([^"]*\)")[[:space:]]*HOTSWAP_PROBE("\([^"]*\)").*/\1\t\2/p' \
+    "$MANIFEST")
 
 # Fail-loud: a manifest that parses to zero entries means the format drifted
 # (renamed macro, mangled quoting). Do not pass 'clean' off an empty parse.
 gate_require_scanned "${#PATHS[@]}" 1 check_hotswap_eligible_scope \
     "no HOTSWAP_ELIGIBLE(\"...\") entries parsed from $MANIFEST"
+if [ "${#PAIRS[@]}" -ne "${#PATHS[@]}" ]; then
+    echo "FAIL: every HOTSWAP_ELIGIBLE row must carry exactly one HOTSWAP_PROBE on the same line" >&2
+    exit 1
+fi
 
 FORBIDDEN='^(core|lib/consensus|lib/validation|lib/storage|lib/net|lib/coins|app/jobs)/'
 
 violations=""
+declare -A seen_paths=() seen_probes=()
+for pair in "${PAIRS[@]}"; do
+    p="${pair%%$'\t'*}"
+    probe="${pair#*$'\t'}"
+    probe_key="$probe"
+    case "$probe" in
+        ""|*[!A-Za-z0-9_]*)
+            violations="${violations}  $p (invalid canonical probe '$probe')"$'\n'
+            ;;
+    esac
+    [ -n "$probe_key" ] || probe_key="__empty__:$p"
+    if [ -n "${seen_paths[$p]:-}" ]; then
+        violations="${violations}  $p (duplicate eligibility row)"$'\n'
+    fi
+    if [ -n "${seen_probes[$probe_key]:-}" ]; then
+        violations="${violations}  $p (probe '$probe' is already assigned to ${seen_probes[$probe_key]})"$'\n'
+    fi
+    seen_paths[$p]=1
+    seen_probes[$probe_key]="$p"
+done
 for p in "${PATHS[@]}"; do
     if printf '%s\n' "$p" | grep -qE "$FORBIDDEN"; then
         violations="${violations}  $p (under a forbidden consensus/state root)"$'\n'

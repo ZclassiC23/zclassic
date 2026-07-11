@@ -35,6 +35,10 @@ bool mcp_dev_hotswap_probe_allowed(
     const struct hotswap_load_report *rep,
     const struct mcp_tool_route *active_route,
     const char **error_code_out);
+bool mcp_dev_hotswap_probe_body_ok(
+    const char *body,
+    char *error_code_out, size_t error_code_sz,
+    char *error_message_out, size_t error_message_sz);
 #endif
 
 /* Compile-time element count for a statically-sized array. Used by the

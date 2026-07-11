@@ -378,11 +378,16 @@ bool vcs_manifest_build(const char *repo_root, struct vcs_index *idx,
         LOG_FAIL("vcs", "worktree walk failed");
     }
 
-    /* Persist recomputed stat rows in one transaction. */
+    /* Persist recomputed rows and prune paths no longer in the tracked set in
+     * one transaction. Pruning is load-bearing for the dev loop: generated
+     * agent worktrees may disappear or become newly ignored, and their stale
+     * cache rows must not tax every later snapshot. */
+    vcs_manifest_sort(out);
     bool ok = true;
-    if (idx && b.dirty_count > 0) {
+    if (idx) {
         if (vcs_index_begin(idx)) {
-            for (size_t i = 0; i < b.dirty_count; i++) {
+            ok = vcs_index_stat_prune_in_tx(idx, out);
+            for (size_t i = 0; ok && i < b.dirty_count; i++) {
                 struct dirty_row *dr = &b.dirty[i];
                 if (!vcs_index_stat_put_in_tx(idx, dr->path, dr->mtime_ns,
                                               dr->size, dr->ctime_ns, dr->blob)) {
@@ -403,7 +408,6 @@ bool vcs_manifest_build(const char *repo_root, struct vcs_index *idx,
         free(b.dirty[i].path);
     free(b.dirty);
 
-    vcs_manifest_sort(out);
     if (!ok) {
         vcs_manifest_free(out);
         LOG_FAIL("vcs", "stat-cache write-back failed");

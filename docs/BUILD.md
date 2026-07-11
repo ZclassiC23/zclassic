@@ -81,6 +81,26 @@ executable `agent_next_action`. `make dev-watch` uses
 fallback. `make dev-watch-selftest` is the deterministic, node-free contract
 test.
 
+The registry-owned C23 development plane is the preferred direct interface:
+
+```bash
+build/bin/zclassic23-dev dev loop ensure \
+  --input='{"root":"/home/rhett/github/zclassic23"}'
+build/bin/zclassic23-dev dev loop status
+build/bin/zclassic23-dev dev loop wait \
+  --input='{"after_epoch":0,"timeout_ms":30000}'
+build/bin/zclassic23-dev dev change apply \
+  --input='{"files":["tools/mcp/controllers/meta_controller.c"]}'
+```
+
+`ensure` is singleton/idempotent and returns the watcher ID used by
+`dev loop stop`. The dev executable defaults this confined command tree to the
+`dev` operator lane, so the documented commands work without an environment
+prefix; an explicit canonical or soak lane still fails closed. The native
+cycle returns one bounded verdict after classify, proof, build, publication,
+probe, and provenance. The shell watcher remains a compatibility/operator
+surface over the same plan and activation contracts.
+
 Process reloads are content-addressed under
 `~/.local/lib/zclassic23-dev/<generation>/`. Candidate `agentbuild`, tool
 catalog, MCP self-test, and build identity are checked before the old process is
@@ -175,6 +195,11 @@ exit 69 means only that the persistent RPC transport is unavailable, permitting
 returns a different status and is never hidden by fallback. Run
 `make hotswap-sim` for the focused deterministic simulated-network proof, and
 `make sim-fast` for the broader checked-in scenarios plus seeded replay sweep.
+Each successful mapping keeps both its code mapping and the exact artifact
+descriptor pinned for the process lifetime. This prevents `/proc/self/fd/N`
+loader-cache aliasing when several different providers are swapped in
+sequence; `zcl_state subsystem=hotswap` reports
+`artifact_inode_pinned=true` for every accepted generation.
 
 `make fast-rebuild` is an alias for the local dev binary (`make dev-bin`). It
 writes cached per-file objects under `build/dev-obj/`, links without LTO, keeps

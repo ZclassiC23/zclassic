@@ -1,7 +1,12 @@
 /* Tier-1 hot-swap eligibility manifest (DEV-ONLY surface).
  *
  * Consumer must define:
- *   HOTSWAP_ELIGIBLE(path)   // repo-relative .c path of a swap-eligible TU
+ *   HOTSWAP_ELIGIBLE(path) HOTSWAP_PROBE(tool)
+ *
+ * `path` is the repo-relative .c translation unit and `tool` is one
+ * parameter-free, non-destructive route owned by that TU.  Keep the pair on
+ * one line: this file is the single source of truth consumed by the native
+ * planner, shell watcher, demo, loader allowlist, and lint gates.
  *
  * A translation unit listed here may be recompiled into a generation .so
  * (`make hotswap-so FILES=...`) and dlopen'd into a RUNNING dev node to
@@ -29,7 +34,7 @@
 
 /* Stateless MCP router pilot: stages k_routes[] via host->mcp_stage; the
  * resident router validates all entries and commits one immutable snapshot. */
-HOTSWAP_ELIGIBLE("tools/mcp/controllers/app_controller.c")
+HOTSWAP_ELIGIBLE("tools/mcp/controllers/app_controller.c") HOTSWAP_PROBE("zcl_name_list")
 
 /* Wave 3.1 eligibility expansion. Each TU below is a single-k_routes[]
  * stateless MCP controller: all handlers marshal args then call resident
@@ -41,17 +46,17 @@ HOTSWAP_ELIGIBLE("tools/mcp/controllers/app_controller.c")
  * independently swappable TUs, NOT multiple providers per generation (still a
  * v2 non-goal). Proven per-TU by tools/scripts/hotswap_demo.sh. */
 /* meta: read/introspection tools (status, kpi, tools_list, self_test, ...). */
-HOTSWAP_ELIGIBLE("tools/mcp/controllers/meta_controller.c")
+HOTSWAP_ELIGIBLE("tools/mcp/controllers/meta_controller.c") HOTSWAP_PROBE("zcl_tools_list")
 /* chain: read-only block/tx/replay-verify tools; no mutable statics (the old
  * function-local default-legacy-dir scratch was hoisted to a stack buffer). */
-HOTSWAP_ELIGIBLE("tools/mcp/controllers/chain_controller.c")
+HOTSWAP_ELIGIBLE("tools/mcp/controllers/chain_controller.c") HOTSWAP_PROBE("zcl_getblockchaininfo")
 /* net: read-only network-introspection tools (peers, networkinfo, onion). */
-HOTSWAP_ELIGIBLE("tools/mcp/controllers/net_controller.c")
+HOTSWAP_ELIGIBLE("tools/mcp/controllers/net_controller.c") HOTSWAP_PROBE("zcl_networkinfo")
 /* wallet: wallet tools. Includes wallet-mutating routes (send, importprivkey)
  * — admitted on the same footing as the app_controller pilot's destructive
  * routes: swap safety is statelessness, not read-vs-write, and the loader
  * admits only the ephemeral ~/.zclassic-c23-dev node. */
-HOTSWAP_ELIGIBLE("tools/mcp/controllers/wallet_controller.c")
+HOTSWAP_ELIGIBLE("tools/mcp/controllers/wallet_controller.c") HOTSWAP_PROBE("zcl_balance")
 
 /* Still reload-required (NOT eligible), by design:
  *   - REST (app/controllers/src/api_controller_routes.c) and diagnostics

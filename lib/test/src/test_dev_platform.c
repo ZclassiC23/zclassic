@@ -102,12 +102,33 @@ static int test_menu_and_search(void)
 static int test_change_classification(void)
 {
     int failures = 0;
-    TEST("dev platform: classification keeps Core reload-only and app pilot hot") {
+    TEST("dev platform: classification maps every provider probe and keeps Core reload-only") {
         struct zcl_devloop_plan plan;
-        const char *hot[] = { "tools/mcp/controllers/app_controller.c" };
-        ASSERT(zcl_devloop_plan_files(hot, 1, &plan));
-        ASSERT(plan.action == ZCL_DEVLOOP_HOTSWAP);
-        ASSERT(strcmp(plan.proof_group, "hotswap_simnet") == 0);
+        static const struct {
+            const char *path;
+            const char *probe;
+        } hot[] = {
+            { "tools/mcp/controllers/app_controller.c", "zcl_name_list" },
+            { "tools/mcp/controllers/meta_controller.c", "zcl_tools_list" },
+            { "tools/mcp/controllers/chain_controller.c", "zcl_getblockchaininfo" },
+            { "tools/mcp/controllers/net_controller.c", "zcl_networkinfo" },
+            { "tools/mcp/controllers/wallet_controller.c", "zcl_balance" },
+        };
+        for (size_t i = 0; i < sizeof(hot) / sizeof(hot[0]); i++) {
+            const char *files[] = { hot[i].path };
+            ASSERT(zcl_devloop_plan_files(files, 1, &plan));
+            ASSERT(plan.action == ZCL_DEVLOOP_HOTSWAP);
+            ASSERT(strcmp(plan.proof_group, "hotswap_simnet") == 0);
+            ASSERT(strcmp(plan.probe_tool, hot[i].probe) == 0);
+        }
+
+        const char *multi_hot[] = {
+            hot[0].path, hot[1].path,
+        };
+        ASSERT(zcl_devloop_plan_files(multi_hot, 2, &plan));
+        ASSERT(plan.action == ZCL_DEVLOOP_RELOAD);
+        ASSERT(strcmp(plan.reason,
+                      "multi_provider_generation_not_yet_admitted") == 0);
 
         const char *core[] = { "core/params/src/params.c" };
         ASSERT(zcl_devloop_plan_files(core, 1, &plan));

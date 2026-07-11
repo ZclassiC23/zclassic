@@ -10,8 +10,17 @@
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
 
+#include <errno.h>
+#include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <sys/wait.h>
+#include <unistd.h>
 
 static int hex_nibble(char c)
 {
@@ -37,22 +46,10 @@ bool vcs_devloop_hex32_decode(const char *hex, uint8_t out[32])
     return true;
 }
 
-void vcs_devloop_anchor_cycle(const char *repo_root,
+static void anchor_cycle_sync(const char *repo_root,
                               const struct vcs_devloop_verdict *v,
                               struct vcs_devloop_anchor_result *out)
 {
-    if (!out)
-        return;
-    memset(out, 0, sizeof(*out));
-    out->status = VCS_DEVLOOP_ANCHOR_ERROR;
-
-    if (!repo_root || !repo_root[0] || !v) {
-        snprintf(out->error, sizeof(out->error),
-                 "vcs_devloop: invalid arguments (repo_root or verdict is NULL)");
-        LOG_WARN("vcs.devloop", "anchor_cycle: invalid arguments");
-        return;
-    }
-
     struct vcs_repo *r = vcs_open(repo_root);
     if (!r) {
         snprintf(out->error, sizeof(out->error),
@@ -120,4 +117,156 @@ void vcs_devloop_anchor_cycle(const char *repo_root,
     }
     snprintf(out->error, sizeof(out->error), "vcs_snapshot failed (rc=%d)", rc);
     LOG_WARN("vcs.devloop", "anchor_cycle: vcs_snapshot failed rc=%d", rc);
+}
+
+/* The first snapshot is generation-neutral bootstrap work. It may need to
+ * durably store thousands of blobs, so detach it from the save-to-verdict
+ * latency path. A singleton flock prevents two rapid cycles from launching
+ * competing baselines. The double fork means a persistent watcher never
+ * accumulates an unreaped child. */
+static bool queue_initial_baseline(const char *repo_root)
+{
+    char dir[PATH_MAX], lock_path[PATH_MAX], log_path[PATH_MAX];
+    int n = snprintf(dir, sizeof(dir), "%s/.zvcs", repo_root);
+    if (n <= 0 || (size_t)n >= sizeof(dir) ||
+        (mkdir(dir, 0700) != 0 && errno != EEXIST))
+        return false;
+    n = snprintf(lock_path, sizeof(lock_path), "%s/bootstrap.lock", dir);
+    if (n <= 0 || (size_t)n >= sizeof(lock_path))
+        return false;
+    n = snprintf(log_path, sizeof(log_path), "%s/bootstrap.log", dir);
+    if (n <= 0 || (size_t)n >= sizeof(log_path))
+        return false;
+
+    int lock_fd = open(lock_path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (lock_fd < 0)
+        return false;
+    if (flock(lock_fd, LOCK_EX | LOCK_NB) != 0) {
+        bool already_running = errno == EWOULDBLOCK || errno == EAGAIN;
+        close(lock_fd);
+        return already_running;
+    }
+
+    pid_t launcher = fork();
+    if (launcher < 0) {
+        close(lock_fd);
+        return false;
+    }
+    if (launcher == 0) {
+        if (setsid() < 0)
+            _exit(1);
+        pid_t worker = fork();
+        if (worker < 0)
+            _exit(1);
+        if (worker > 0)
+            _exit(0);
+
+        int null_fd = open("/dev/null", O_RDONLY | O_CLOEXEC);
+        int log_fd = open(log_path,
+                          O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0600);
+        if (null_fd >= 0) {
+            (void)dup2(null_fd, STDIN_FILENO);
+            close(null_fd);
+        }
+        if (log_fd >= 0) {
+            (void)dup2(log_fd, STDOUT_FILENO);
+            (void)dup2(log_fd, STDERR_FILENO);
+            close(log_fd);
+        }
+
+        struct vcs_devloop_verdict baseline = {
+            .verdict_status = 0,
+            .phase = "bootstrap_baseline",
+            .elapsed_ms = 0,
+        };
+        struct vcs_devloop_anchor_result result = {
+            .status = VCS_DEVLOOP_ANCHOR_ERROR,
+        };
+        anchor_cycle_sync(repo_root, &baseline, &result);
+        if (result.status == VCS_DEVLOOP_ANCHOR_OK)
+            fprintf(stderr, "[vcs.devloop] initial baseline complete\n");
+        else
+            fprintf(stderr, "[vcs.devloop] initial baseline failed: %s\n",
+                    result.error[0] ? result.error : "unknown error");
+        close(lock_fd);
+        _exit(result.status == VCS_DEVLOOP_ANCHOR_OK ? 0 : 1);
+    }
+
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(launcher, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    close(lock_fd);
+    return waited == launcher && WIFEXITED(status) &&
+           WEXITSTATUS(status) == 0;
+}
+
+static bool durable_history_present(const char *repo_root)
+{
+    char path[PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/.zvcs/commits.log", repo_root);
+    if (n <= 0 || (size_t)n >= sizeof(path))
+        return false;
+    struct stat st;
+    return stat(path, &st) == 0 && st.st_size > 0;
+}
+
+static bool initial_baseline_running(const char *repo_root)
+{
+    char path[PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/.zvcs/bootstrap.lock",
+                     repo_root);
+    if (n <= 0 || (size_t)n >= sizeof(path))
+        return false;
+    int fd = open(path, O_RDWR | O_CLOEXEC);
+    if (fd < 0)
+        return false;
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        bool running = errno == EWOULDBLOCK || errno == EAGAIN;
+        close(fd);
+        return running;
+    }
+    (void)flock(fd, LOCK_UN);
+    close(fd);
+    return false;
+}
+
+void vcs_devloop_anchor_cycle(const char *repo_root,
+                              const struct vcs_devloop_verdict *v,
+                              struct vcs_devloop_anchor_result *out)
+{
+    if (!out)
+        return;
+    memset(out, 0, sizeof(*out));
+    out->status = VCS_DEVLOOP_ANCHOR_ERROR;
+
+    if (!repo_root || !repo_root[0] || !v) {
+        snprintf(out->error, sizeof(out->error),
+                 "vcs_devloop: invalid arguments (repo_root or verdict is NULL)");
+        LOG_WARN("vcs.devloop", "anchor_cycle: invalid arguments");
+        return;
+    }
+
+    if (v->defer_initial_snapshot && initial_baseline_running(repo_root)) {
+        out->status = VCS_DEVLOOP_ANCHOR_DEFERRED;
+        snprintf(out->error, sizeof(out->error),
+                 "generation-neutral initial ZVCS baseline is still building; this cycle is unanchored");
+        return;
+    }
+
+    if (v->defer_initial_snapshot && !durable_history_present(repo_root)) {
+        if (!queue_initial_baseline(repo_root)) {
+            snprintf(out->error, sizeof(out->error),
+                     "initial ZVCS baseline could not be queued");
+            LOG_WARN("vcs.devloop", "anchor_cycle: baseline queue failed");
+            return;
+        }
+        out->status = VCS_DEVLOOP_ANCHOR_DEFERRED;
+        snprintf(out->error, sizeof(out->error),
+                 "generation-neutral initial ZVCS baseline queued; this cycle is unanchored");
+        return;
+    }
+
+    anchor_cycle_sync(repo_root, v, out);
 }

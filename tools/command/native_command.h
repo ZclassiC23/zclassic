@@ -81,6 +81,41 @@ void zcl_native_handle_app_inspect(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* Dev-build-only executors.  The catalog binds these only when
+ * ZCL_DEV_BUILD is set; release objects neither reference nor link them. */
+#ifdef ZCL_DEV_BUILD
+void zcl_native_handle_dev_change_apply(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_dev_loop_ensure(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_dev_loop_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_dev_loop_wait(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_dev_loop_stop(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_dev_test_run(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_dev_test_sim(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_dev_generation_current(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_dev_generation_history(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_dev_diagnose_latest(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+#endif
+
 #ifdef __cplusplus
 }
 #endif

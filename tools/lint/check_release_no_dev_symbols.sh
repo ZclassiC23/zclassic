@@ -10,9 +10,10 @@
 # or loader command path").
 #
 # Two layers, so the gate is authoritative from source AND from the artifact:
-#   1. STRUCTURAL (always): main.c guards the devloop dispatch under
-#      ZCL_DEV_BUILD, and the Makefile excludes the executors from ALL_SRCS.
-#      These two facts guarantee absence in any fresh release build.
+#   1. STRUCTURAL (always): main.c has no legacy devloop dispatch, and the
+#      Makefile excludes the executors from ALL_SRCS. These two facts guarantee
+#      absence in any fresh release build while the registry can still expose
+#      honest COMPAT metadata for dev-only commands.
 #   2. ARTIFACT (when a fresh release binary exists): `nm -D` must not export
 #      any forbidden dev-executor symbol. The release binary is stripped, but
 #      -rdynamic keeps extern symbols in .dynsym, so nm -D is definitive.
@@ -43,19 +44,9 @@ echo "══ LINT: release binary contains no dev-only mutation symbols ══"
 rc=0
 
 # ── layer 1: structural (source-level, always runs) ──────────────────────
-# main.c must guard the devloop dispatch under ZCL_DEV_BUILD.
-if ! gate_grep -qE '#ifdef[[:space:]]+ZCL_DEV_BUILD' src/main.c >/dev/null; then
-    echo "FAIL: src/main.c has no ZCL_DEV_BUILD guard at all" >&2
-    rc=1
-fi
-guard_block="$(awk '
-    /#ifdef[[:space:]]+ZCL_DEV_BUILD/ { depth++; inblk=1 }
-    inblk { print }
-    /#endif/ { if (depth>0) depth-- ; if (depth==0) inblk=0 }
-' src/main.c)"
-if ! printf '%s' "$guard_block" | gate_grep -q 'zcl_devloop_cli_main' >/dev/null; then
-    echo "FAIL: the zcl_devloop_cli_main dispatch in src/main.c is not inside a" >&2
-    echo "      #ifdef ZCL_DEV_BUILD block — it would link into the release binary" >&2
+# main.c must not bypass the registry through the retired devloop dispatcher.
+if gate_grep -qE 'zcl_devloop_(cli_main|is_method)' src/main.c >/dev/null; then
+    echo "FAIL: src/main.c still bypasses the native registry for dev commands" >&2
     rc=1
 fi
 

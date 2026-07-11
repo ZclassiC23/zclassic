@@ -36,6 +36,7 @@ FALLBACK_LOCK_DIR=""
 NEXT_MANIFEST=""
 SETTLED_MANIFEST=""
 SELECTED_PATH=""
+SELECTED_PROBE=""
 SELECTION_REASON=""
 IMPACT_PLAN=""
 HEARTBEAT="$STATE_DIR/watcher-heartbeat.json"
@@ -230,6 +231,7 @@ write_cycle_record()
         printf '  "watcher_pid":%s,\n' "$$"
         printf '  "requested_mode":"%s",\n' "$(json_escape "$MODE")"
         printf '  "selected_path":"%s",\n' "$(json_escape "$SELECTED_PATH")"
+        printf '  "selected_probe":"%s",\n' "$(json_escape "$SELECTED_PROBE")"
         printf '  "selection_reason":"%s",\n' "$(json_escape "$SELECTION_REASON")"
         printf '  "outcome":"%s",\n' "$(json_escape "$outcome")"
         printf '  "changed_files":'; json_array_from_file "$changed_file"; printf ',\n'
@@ -413,17 +415,24 @@ dirty_relevant_paths()
     LC_ALL=C sort -u "$output" -o "$output"
 }
 
-path_is_hotswap_eligible()
+hotswap_probe_for_path()
 {
-    local wanted="$1" entry
+    local wanted="$1" entry_path entry_probe
     [ -r "$HOTSWAP_MANIFEST" ] || return 1
-    while IFS= read -r entry; do
-        entry="${entry#*\"}"
-        entry="${entry%%\"*}"
-        [ "$entry" = "$wanted" ] && return 0
-    done < <(grep -E '^[[:space:]]*HOTSWAP_ELIGIBLE\("[^"]+"\)' \
+    while IFS=$'\t' read -r entry_path entry_probe; do
+        if [ "$entry_path" = "$wanted" ] && [ -n "$entry_probe" ]; then
+            printf '%s\n' "$entry_probe"
+            return 0
+        fi
+    done < <(sed -n \
+        's/^[[:space:]]*HOTSWAP_ELIGIBLE("\([^"]*\)")[[:space:]]*HOTSWAP_PROBE("\([^"]*\)").*/\1\	\2/p' \
         "$HOTSWAP_MANIFEST" 2>/dev/null || true)
     return 1
+}
+
+path_is_hotswap_eligible()
+{
+    hotswap_probe_for_path "$1" >/dev/null
 }
 
 is_docs_only_path()
@@ -436,16 +445,19 @@ is_docs_only_path()
 
 classify_cycle()
 {
-    local changed_file="$1" started path count=0 eligible=0 docs=0 blocker=""
+    local changed_file="$1" started path probe count=0 eligible=0 docs=0 blocker=""
     started="$(clock_ms)"
     SELECTED_PATH="reload"
+    SELECTED_PROBE=""
     SELECTION_REASON="reload_required: change is outside the proven stateless hot-swap manifest"
 
     while IFS= read -r path; do
         [ -n "$path" ] || continue
         count=$((count + 1))
-        if path_is_hotswap_eligible "$path"; then
+        probe="$(hotswap_probe_for_path "$path" || true)"
+        if [ -n "$probe" ]; then
             eligible=$((eligible + 1))
+            SELECTED_PROBE="$probe"
         elif is_docs_only_path "$path"; then
             docs=$((docs + 1))
         elif [ -z "$blocker" ]; then
@@ -462,33 +474,39 @@ classify_cycle()
     if [ "$count" -gt 0 ] && [ "$docs" -eq "$count" ]; then
         SELECTED_PATH="check"
         SELECTION_REASON="docs_only: verification required; no runtime activation"
-    elif [ "$count" -gt 0 ] && [ "$eligible" -eq "$count" ]; then
+    elif [ "$count" -eq 1 ] && [ "$eligible" -eq 1 ]; then
         if [ -n "$HOTSWAP_COMMAND" ]; then
             SELECTED_PATH="hotswap"
-            SELECTION_REASON="all changed translation units are manifest-eligible and a persistent dev-process transport is configured"
+            SELECTION_REASON="the changed translation unit and its probe are manifest-admitted and a persistent dev-process transport is configured"
         else
             SELECTED_PATH="reload"
             SELECTION_REASON="reload_required: persistent hot-swap transport unavailable; one-shot mcpcall would not update the dev service"
         fi
+    elif [ "$count" -gt 1 ] && [ "$eligible" -eq "$count" ]; then
+        SELECTED_PROBE=""
+        SELECTED_PATH="reload"
+        SELECTION_REASON="reload_required: v2 admits exactly one provider per atomic generation"
     elif [ -n "$blocker" ]; then
+        SELECTED_PROBE=""
         SELECTION_REASON="$blocker"
     fi
 
     case "$MODE" in
         auto) ;;
         hotswap)
-            if [ "$eligible" -eq "$count" ] && [ "$count" -gt 0 ] &&
+            if [ "$eligible" -eq 1 ] && [ "$count" -eq 1 ] &&
                [ -n "$HOTSWAP_COMMAND" ]; then
                 SELECTED_PATH="hotswap"
                 SELECTION_REASON="forced hotswap: eligibility and persistent transport proven"
             else
                 SELECTED_PATH="rejected"
-                SELECTION_REASON="hotswap refused: ${blocker:-persistent transport or manifest eligibility missing}"
+                SELECTED_PROBE=""
+                SELECTION_REASON="hotswap refused: ${blocker:-exactly one manifest provider/probe and persistent transport are required}"
             fi
             ;;
-        reload) SELECTED_PATH="reload"; SELECTION_REASON="forced transactional process reload" ;;
-        stage) SELECTED_PATH="stage"; SELECTION_REASON="forced immutable generation staging without restart" ;;
-        check) SELECTED_PATH="check"; SELECTION_REASON="forced verification-only path" ;;
+        reload) SELECTED_PATH="reload"; SELECTED_PROBE=""; SELECTION_REASON="forced transactional process reload" ;;
+        stage) SELECTED_PATH="stage"; SELECTED_PROBE=""; SELECTION_REASON="forced immutable generation staging without restart" ;;
+        check) SELECTED_PATH="check"; SELECTED_PROBE=""; SELECTION_REASON="forced verification-only path" ;;
     esac
     CLASSIFY_MS=$(( $(clock_ms) - started ))
 }
@@ -623,6 +641,7 @@ run_activation_command()
             ;;
         hotswap)
             export ZCL_DEV_HOTSWAP_FILES_FILE="$ZCL_FAST_CHANGED_FILES_FILE"
+            export ZCL_DEV_HOTSWAP_PROBE="$SELECTED_PROBE"
             (cd "$ROOT" && /bin/sh -c "$HOTSWAP_COMMAND")
             ;;
         rejected)
@@ -875,6 +894,7 @@ self_test()
     printf 'all:\n\t@true\n' > "$ROOT/Makefile"
     printf 'int a;\n' > "$ROOT/app/a.c"
     printf 'int b;\n' > "$ROOT/app/b.h"
+    printf 'int d;\n' > "$ROOT/app/d.c"
     refresh_watch_paths
 
     old="$WORK/old"
@@ -930,15 +950,18 @@ self_test()
     # persistent-process transport is configured.  It skips the process link,
     # commits one hot-swap command, and writes the authoritative cycle record.
     mkdir -p "$ROOT/config"
-    printf '%s\n' 'HOTSWAP_ELIGIBLE("app/a.c")' > "$ROOT/config/hotswap_eligible.def"
+    printf '%s\n' \
+        'HOTSWAP_ELIGIBLE("app/a.c") HOTSWAP_PROBE("probe_a")' \
+        'HOTSWAP_ELIGIBLE("app/d.c") HOTSWAP_PROBE("probe_d")' \
+        > "$ROOT/config/hotswap_eligible.def"
     HOTSWAP_MANIFEST="$ROOT/config/hotswap_eligible.def"
-    HOTSWAP_COMMAND="printf 'hotswap\\n' >> '$command_log'"
+    HOTSWAP_COMMAND="printf 'hotswap:%s\\n' \"\$ZCL_DEV_HOTSWAP_PROBE\" >> '$command_log'"
     MODE="auto"
     printf 'app/a.c\n' > "$changed"
     : > "$command_log"
     run_cycle "$changed" "$expected" >/dev/null 2>&1 ||
         selftest_fail "eligible auto hot-swap cycle rejected" || { rm -rf "$sandbox"; return 1; }
-    [ "$(tr '\n' ' ' < "$command_log")" = "check hotswap " ] ||
+    [ "$(tr '\n' ' ' < "$command_log")" = "check hotswap:probe_a " ] ||
         selftest_fail "auto hot-swap command order is wrong" || { rm -rf "$sandbox"; return 1; }
     latest="$STATE_DIR/latest-cycle.json"
     [ -r "$latest" ] && grep -q '"schema":"zcl.dev_cycle.v1"' "$latest" &&
@@ -954,14 +977,27 @@ self_test()
     # A runtime that predates the dev-only bridge returns EX_UNAVAILABLE.
     # Auto mode then links and transactionally reloads; a manifest/ABI failure
     # uses a different status and is never hidden this way.
-    HOTSWAP_COMMAND="printf 'hotswap\n' >> '$command_log'; exit 69"
+    HOTSWAP_COMMAND="printf 'hotswap:%s\n' \"\$ZCL_DEV_HOTSWAP_PROBE\" >> '$command_log'; exit 69"
     : > "$command_log"
     run_cycle "$changed" "$expected" >/dev/null 2>&1 ||
         selftest_fail "transport-unavailable reload fallback rejected" || { rm -rf "$sandbox"; return 1; }
-    [ "$(tr '\n' ' ' < "$command_log")" = "check hotswap rebuild deploy " ] ||
+    [ "$(tr '\n' ' ' < "$command_log")" = "check hotswap:probe_a rebuild deploy " ] ||
         selftest_fail "transport fallback command order is wrong" || { rm -rf "$sandbox"; return 1; }
     grep -q '"selected_path":"reload"' "$STATE_DIR/latest-cycle.json" ||
         selftest_fail "transport fallback cycle did not report reload" || { rm -rf "$sandbox"; return 1; }
+
+    # Two independently eligible TUs are not one v2 atomic generation. Auto
+    # must select the transactional reload boundary rather than invoke a
+    # single-provider transport that will reject the file set.
+    HOTSWAP_COMMAND="printf 'hotswap:%s\n' \"\$ZCL_DEV_HOTSWAP_PROBE\" >> '$command_log'"
+    printf 'app/a.c\napp/d.c\n' > "$changed"
+    : > "$command_log"
+    run_cycle "$changed" "$expected" >/dev/null 2>&1 ||
+        selftest_fail "multi-provider auto reload cycle rejected" || { rm -rf "$sandbox"; return 1; }
+    [ "$(tr '\n' ' ' < "$command_log")" = "check rebuild deploy " ] ||
+        selftest_fail "multi-provider edit did not reload transactionally" || { rm -rf "$sandbox"; return 1; }
+    grep -q 'v2 admits exactly one provider' "$STATE_DIR/latest-cycle.json" ||
+        selftest_fail "multi-provider reload reason missing" || { rm -rf "$sandbox"; return 1; }
 
     # Mixed/header changes fail closed to a transactional process reload.
     HOTSWAP_COMMAND="printf 'hotswap\n' >> '$command_log'"

@@ -48,7 +48,7 @@ ZCL_COMMAND_PLANNED_READ(
     ZCL_COMMAND_CAP_TEST_RUN | ZCL_COMMAND_CAP_PROCESS_EXEC,
     "native proof job extraction is not complete")
 
-ZCL_COMMAND_PLANNED_READ(
+ZCL_COMMAND_READY_READ(
     "dev.app.list", "dev.app", "", "List checkout App manifests",
     "apps,manifest,checkout", "zcl.command.empty_input.v1",
     "zcl.dev_app_index.v1", "", "", "zclassic23 dev app list",
@@ -56,7 +56,9 @@ ZCL_COMMAND_PLANNED_READ(
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
     ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
     ZCL_COMMAND_CAP_APP_MANIFEST_READ,
-    "use app.list until the dev projection adds generation state")
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT |
+        ZCL_COMMAND_TRAIT_DEV_ONLY,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_app_list)
 
 ZCL_COMMAND_READY_READ(
     "dev.app.describe", "dev.app", "", "Describe an App manifest and its proofs",
@@ -148,57 +150,65 @@ ZCL_COMMAND_READY_READ(
         ZCL_COMMAND_TRAIT_DEV_ONLY,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_dev_change_plan)
 
-ZCL_COMMAND_COMPAT_COMMAND(
+ZCL_COMMAND_DEV_COMMAND(
     "dev.change.apply", "dev.change", "dev.change.cycle",
     "Run one classify, proof, build, and publication transaction",
     "change,apply,build,hotswap,reload,rollback", "zcl.dev_change_input.v1",
     "zcl.dev_cycle.v1", "files", "", "zclassic23 dev change apply --input='{\"files\":[\"apps/social/app.def\"]}'",
-    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_DEV_MUTATION, ZCL_COMMAND_SCOPE_DEV_LANE,
     ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_JOB,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_HIGH,
     ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_DEV,
     ZCL_COMMAND_CAP_PROCESS_EXEC | ZCL_COMMAND_CAP_TEST_RUN |
         ZCL_COMMAND_CAP_COMPILER | ZCL_COMMAND_CAP_DEV_ACTIVATE,
-    ZCL_COMMAND_TRAIT_DEV_ONLY,
-    "cycle backend still invokes fixed Make compatibility targets",
+    ZCL_COMMAND_TRAIT_DEV_ONLY, zcl_native_handle_dev_change_apply,
+    "change application requires the dev-only process/activation executor",
     "zclassic23-dev dev change cycle")
 
-ZCL_COMMAND_PLANNED_COMMAND(
+ZCL_COMMAND_DEV_COMMAND(
     "dev.loop.ensure", "dev.loop", "dev.loop.watch",
     "Idempotently ensure one persistent native watcher", "loop,ensure,watcher,inotify",
     "zcl.dev_loop_ensure_input.v1", "zcl.dev_loop_status.v1",
     "root", "", "zclassic23 dev loop ensure --input='{\"root\":\".\"}'",
-    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_DEV_MUTATION, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL,
     ZCL_COMMAND_CAP_DEV_STATE_WRITE,
     ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_IDEMPOTENT,
-    "blocking watcher has not been extracted into ensure semantics")
+    zcl_native_handle_dev_loop_ensure,
+    "watcher ownership requires the dev-only executor",
+    "zclassic23-dev dev loop ensure")
 
-ZCL_COMMAND_COMPAT_READ(
+ZCL_COMMAND_DEV_READ(
     "dev.loop.status", "dev.loop", "dev.loop.heartbeat",
     "Read watcher identity, epoch, and latest verdict",
     "loop,status,heartbeat,epoch", "zcl.command.empty_input.v1",
     "zcl.dev_loop_status.v1", "", "", "zclassic23 dev loop status",
-    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
     ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
-    ZCL_COMMAND_CAP_DEV_STATE_READ, ZCL_COMMAND_TRANSPORT_NATIVE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    zcl_native_handle_dev_loop_status,
+    "watcher state is available through the dev binary",
     "zclassic23-dev dev loop heartbeat")
 
-ZCL_COMMAND_PLANNED_READ(
+ZCL_COMMAND_DEV_READ(
     "dev.loop.wait", "dev.loop", "", "Wait for one verdict after a source epoch",
     "loop,wait,epoch,verdict", "zcl.dev_loop_wait_input.v1",
     "zcl.dev_cycle.v1", "after_epoch,timeout_ms,view", "",
     "zclassic23 dev loop wait --input='{\"after_epoch\":41}'",
-    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_PERSISTENT,
     ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
     ZCL_COMMAND_CAP_DEV_STATE_READ,
-    "durable epoch wait and wakeup protocol is not implemented")
+    ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    zcl_native_handle_dev_loop_wait,
+    "bounded verdict waiting is available through the dev binary",
+    "zclassic23-dev dev loop wait")
 
 ZCL_COMMAND_PLANNED_READ(
     "dev.loop.events", "dev.loop", "", "Stream resumable source and cycle events",
@@ -211,20 +221,21 @@ ZCL_COMMAND_PLANNED_READ(
     ZCL_COMMAND_CAP_DEV_STATE_READ,
     "resumable NDJSON event journal is not implemented")
 
-ZCL_COMMAND_PLANNED_COMMAND(
+ZCL_COMMAND_DEV_COMMAND(
     "dev.loop.stop", "dev.loop", "", "Stop one identified native watcher",
     "loop,stop,watcher", "zcl.dev_loop_stop_input.v1",
     "zcl.dev_loop_status.v1", "watcher_id", "watcher_id",
-    "zclassic23 dev loop stop <watcher-id>", ZCL_COMMAND_LAYER_DEV,
+    "zclassic23 dev loop stop <watcher-id>",
     ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_DEV_MUTATION,
     ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OWNER,
     ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FAST,
     ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
     ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_WRITE,
-    ZCL_COMMAND_TRAIT_DEV_ONLY,
-    "identified watcher lifecycle is not implemented")
+    ZCL_COMMAND_TRAIT_DEV_ONLY, zcl_native_handle_dev_loop_stop,
+    "watcher shutdown requires the dev-only executor",
+    "zclassic23-dev dev loop stop")
 
-ZCL_COMMAND_PLANNED_READ(
+ZCL_COMMAND_READY_READ(
     "dev.test.plan", "dev.test", "", "Map changed files to mandatory proof groups",
     "test,plan,impact,groups", "zcl.dev_change_input.v1",
     "zcl.dev_test_plan.v1", "files", "", "zclassic23 dev test plan --input='{\"files\":[]}'",
@@ -232,28 +243,36 @@ ZCL_COMMAND_PLANNED_READ(
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
     ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
     ZCL_COMMAND_CAP_CHECKOUT_READ,
-    "test-plan projection is not separated from change.plan yet")
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT |
+        ZCL_COMMAND_TRAIT_DEV_ONLY,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_dev_change_plan)
 
-ZCL_COMMAND_COMPAT_READ(
+ZCL_COMMAND_DEV_READ(
     "dev.test.run", "dev.test", "dev.test.focused",
     "Run one exact prebuilt focused test group", "test,focused,group",
     "zcl.dev_test_run_input.v1", "zcl.dev_focused_test.v1", "group", "group",
-    "zclassic23 dev test run hotswap_simnet", ZCL_COMMAND_LAYER_DEV,
-    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OWNER,
+    "zclassic23 dev test run hotswap_simnet", ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OWNER,
     ZCL_COMMAND_LATENCY_BACKGROUND, ZCL_COMMAND_COST_HIGH,
     ZCL_COMMAND_LANE_LOCAL,
     ZCL_COMMAND_CAP_PROCESS_EXEC | ZCL_COMMAND_CAP_TEST_RUN,
-    ZCL_COMMAND_TRANSPORT_NATIVE, "zclassic23-dev dev test focused")
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    zcl_native_handle_dev_test_run,
+    "focused tests require the dev-only process executor",
+    "zclassic23-dev dev test focused")
 
-ZCL_COMMAND_COMPAT_READ(
+ZCL_COMMAND_DEV_READ(
     "dev.test.sim", "dev.test", "", "Run the generic hot-swap network proof",
     "test,simulation,hotswap,network", "zcl.dev_test_sim_input.v1",
     "zcl.dev_sim.v1", "app_id", "", "zclassic23 dev test sim",
-    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_LATENCY_FAST,
     ZCL_COMMAND_COST_MODERATE, ZCL_COMMAND_LANE_LOCAL,
     ZCL_COMMAND_CAP_PROCESS_EXEC | ZCL_COMMAND_CAP_TEST_RUN,
-    ZCL_COMMAND_TRANSPORT_NATIVE, "zclassic23-dev dev test sim")
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    zcl_native_handle_dev_test_sim,
+    "the simulation runner requires the dev-only process executor",
+    "zclassic23-dev dev test sim")
 
 ZCL_COMMAND_PLANNED_READ(
     "dev.test.replay", "dev.test", "", "Replay one deterministic failure seed",
@@ -278,24 +297,30 @@ ZCL_COMMAND_PLANNED_READ(
     ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_READ,
     "native background-quality projection is not implemented")
 
-ZCL_COMMAND_PLANNED_READ(
+ZCL_COMMAND_DEV_READ(
     "dev.generation.current", "dev.generation", "", "Show current and last-good generations",
     "generation,current,last-good,hotswap", "zcl.command.empty_input.v1",
     "zcl.dev_generation_status.v1", "", "", "zclassic23 dev generation current",
-    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
     ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
     ZCL_COMMAND_CAP_DEV_STATE_READ,
-    "native immutable-generation reader is not implemented")
-ZCL_COMMAND_PLANNED_READ(
+    ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    zcl_native_handle_dev_generation_current,
+    "generation state is available through the dev binary",
+    "zclassic23-dev dev generation current")
+ZCL_COMMAND_DEV_READ(
     "dev.generation.history", "dev.generation", "", "Page accepted and rejected generations",
     "generation,history,rejected,quarantine", "zcl.page_input.v1",
     "zcl.dev_generation_history.v1", "cursor,max_items", "",
-    "zclassic23 dev generation history", ZCL_COMMAND_LAYER_DEV,
-    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    "zclassic23 dev generation history", ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_READ,
-    "native generation history reader is not implemented")
+    ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    zcl_native_handle_dev_generation_history,
+    "generation history is available through the dev binary",
+    "zclassic23-dev dev generation history")
 ZCL_COMMAND_PLANNED_COMMAND(
     "dev.generation.rollback", "dev.generation", "", "Restore verified last-good in the dev lane",
     "generation,rollback,last-good,recovery", "zcl.dev_generation_rollback_input.v1",
@@ -321,14 +346,17 @@ ZCL_COMMAND_PLANNED_COMMAND(
     ZCL_COMMAND_TRAIT_DEV_ONLY,
     "native lease-aware compaction is not implemented")
 
-ZCL_COMMAND_COMPAT_READ(
+ZCL_COMMAND_DEV_READ(
     "dev.diagnose.latest", "dev.diagnose", "", "Read the latest failure capsule",
     "diagnose,failure,capsule,latest", "zcl.command.empty_input.v1",
     "zcl.dev_failure.v1", "", "", "zclassic23 dev diagnose latest",
-    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
     ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
-    ZCL_COMMAND_CAP_DEV_STATE_READ, ZCL_COMMAND_TRANSPORT_NATIVE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    zcl_native_handle_dev_diagnose_latest,
+    "failure capsules are available through the dev binary",
     "zclassic23-dev dev diagnose latest")
 ZCL_COMMAND_PLANNED_READ(
     "dev.diagnose.show", "dev.diagnose", "", "Show one durable failure artifact",

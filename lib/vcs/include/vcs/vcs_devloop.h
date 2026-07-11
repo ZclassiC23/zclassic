@@ -41,12 +41,18 @@ struct vcs_devloop_verdict {
     const char *agent_id;        /* from ZCL_AGENT_ID, or NULL/empty */
     const char *session_id;      /* from ZCL_SESSION_ID, or NULL/empty */
     const char *task_ref;        /* from ZCL_TASK_REF, or NULL/empty */
+    /* A fresh repository has no stat cache or object baseline and can require
+     * thousands of durable writes. When true, queue that generation-neutral
+     * baseline out of band and return DEFERRED instead of blocking the edit
+     * verdict. Existing repositories still anchor synchronously. */
+    bool        defer_initial_snapshot;
 };
 
 enum vcs_devloop_anchor_status {
     VCS_DEVLOOP_ANCHOR_OK      = 0,  /* committed; out->commit_id is valid */
     VCS_DEVLOOP_ANCHOR_ERROR   = 1,  /* vcs failure; fail-open, see out->error */
     VCS_DEVLOOP_ANCHOR_REFUSED = 2,  /* sealed-path change refused (advisory) */
+    VCS_DEVLOOP_ANCHOR_DEFERRED = 3, /* generation-neutral baseline queued */
 };
 
 struct vcs_devloop_anchor_result {
@@ -60,9 +66,9 @@ struct vcs_devloop_anchor_result {
  * calling process. `out` is always fully populated (memset first) — check
  * out->status rather than a boolean return. Safe to call from the hot
  * dev-loop path: the object store dedupes unchanged files, so steady-state
- * cost tracks the change set. The very first call on a fresh .zvcs/ walks
- * the whole tracked worktree once (~2s on this repo) and logs that cost via
- * LOG_INFO. */
+ * cost tracks the change set. Callers that set defer_initial_snapshot get a
+ * detached, generation-neutral first baseline and a DEFERRED result; this
+ * prevents checkout size or filesystem latency from delaying publication. */
 void vcs_devloop_anchor_cycle(const char *repo_root,
                               const struct vcs_devloop_verdict *v,
                               struct vcs_devloop_anchor_result *out);

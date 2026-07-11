@@ -122,6 +122,7 @@ struct zcl_hotswap_mcp_replacement {
 /* One all-or-zero publication callback supplied by the resident MCP
  * controller.  The loader never links upward against tools/mcp/router. */
 typedef bool (*zcl_hotswap_commit_cb)(
+    void *context,
     uint32_t gen,
     const struct zcl_hotswap_mcp_replacement *replacements,
     size_t replacement_count,
@@ -133,7 +134,9 @@ typedef bool (*zcl_hotswap_commit_cb)(
  *   so_path          absolute path to the gen .so (see hotswap_path_is_acceptable)
  *   resolved_datadir must resolve to the exact worker path
  *                    ~/.zclassic-c23-dev; every other lane is refused
+ *   required_probe   canonical manifest probe selected by the planner
  *   commit_cb        validates + publishes one immutable route snapshot
+ *   commit_context   opaque caller context passed to commit_cb
  *   report           out — always populated
  *
  * Returns true iff the .so loaded, manifest/init/self-test passed, and the
@@ -141,7 +144,9 @@ typedef bool (*zcl_hotswap_commit_cb)(
  * "unavailable" error and performs NO dlopen. */
 bool hotswap_load(const char *so_path,
                   const char *resolved_datadir,
+                  const char *required_probe,
                   zcl_hotswap_commit_cb commit_cb,
+                  void *commit_context,
                   struct hotswap_load_report *report);
 
 /* ── Pure predicates (compiled in ALL builds; unit-tested w/o dlopen) ── */

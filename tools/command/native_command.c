@@ -10,9 +10,8 @@
  * READ-ONLY Core/Ops leaves execute through zcl_native_bridge_command, which
  * proxies the one canonical MCP tool for the leaf via the in-process MCP
  * middleware. Discovery leaves (help/search/describe/schema) render the native
- * discovery document directly. The `dev` subtree is intentionally NOT a root
- * here — it stays owned by tools/dev/devloop_cli.c until Wave 2.2 replaces the
- * hardcoded devloop menu with registry wrappers.
+ * discovery document directly. The `dev` subtree uses this same resolver; its
+ * process and watcher handlers are injected only in a ZCL_DEV_BUILD catalog.
  */
 
 #define _GNU_SOURCE
@@ -30,6 +29,7 @@
 #include "mcp/rpc_client.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -38,14 +38,13 @@
 
 /* ── root recognition ──────────────────────────────────────────────── */
 /* Canonical roots this adapter owns. `status` keeps its existing static-agent
- * path (the contract's compact status), and `dev` keeps the devloop dispatcher;
- * both are documented seams handled before this adapter is reached. */
+ * path (the contract's compact status). */
 bool zcl_native_command_is_root(const char *word)
 {
     if (!word || !word[0])
         return false;
     static const char *const roots[] = {
-        "core", "app", "ops", "discover", "help", "search",
+        "core", "app", "dev", "ops", "discover", "help", "search",
     };
     for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
         if (strcmp(word, roots[i]) == 0)
@@ -584,19 +583,6 @@ static bool nc_split_flag(const char *word, char *key, size_t key_size,
     return true;
 }
 
-static bool nc_reserved_control(const char *key)
-{
-    static const char *const reserved[] = {
-        "input", "view", "format", "max-items", "budget-bytes", "fields",
-        "cursor", "quiet", "side",
-    };
-    for (size_t i = 0; i < sizeof(reserved) / sizeof(reserved[0]); i++) {
-        if (strcmp(key, reserved[i]) == 0)
-            return true;
-    }
-    return false;
-}
-
 static bool nc_set_typed_value(struct json_value *obj, const char *key,
                                const char *value)
 {
@@ -606,9 +592,27 @@ static bool nc_set_typed_value(struct json_value *obj, const char *key,
         return json_push_kv_bool(obj, key, true);
     if (strcmp(value, "false") == 0)
         return json_push_kv_bool(obj, key, false);
-    if (nc_is_integer(value))
-        return json_push_kv_int(obj, key, (int64_t)strtoll(value, NULL, 10));
+    if (nc_is_integer(value)) {
+        errno = 0;
+        long long parsed = strtoll(value, NULL, 10);
+        if (errno != 0)
+            return false;
+        return json_push_kv_int(obj, key, (int64_t)parsed);
+    }
     return json_push_kv_str(obj, key, value);
+}
+
+static bool nc_parse_size_control(const char *value, size_t minimum,
+                                  size_t maximum, size_t *out)
+{
+    if (!value || !nc_is_integer(value) || value[0] == '-' || value[0] == '+')
+        return false;
+    errno = 0;
+    unsigned long long parsed = strtoull(value, NULL, 10);
+    if (errno != 0 || parsed < minimum || parsed > maximum)
+        return false;
+    *out = (size_t)parsed;
+    return true;
 }
 
 static char *nc_read_stdin(void)
@@ -841,7 +845,11 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
     size_t budget = 0;
     size_t max_items = 0;
     bool flag_error = false;
+    bool seen_input = false, seen_view = false, seen_side = false;
+    bool seen_budget = false, seen_max_items = false, seen_cursor = false;
+    bool seen_format = false;
     char flag_key[128];
+    char flag_why[160] = "malformed or duplicate option";
     for (size_t i = consumed; i < count; i++) {
         const char *w = words[i];
         if (!nc_is_flag(w)) {
@@ -855,30 +863,91 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
             break;
         }
         if (strcmp(flag_key, "input") == 0) {
-            input_flag = value ? value : "";
+            if (seen_input || !value || !value[0]) {
+                flag_error = true;
+                (void)snprintf(flag_why, sizeof(flag_why),
+                               "--input requires one non-empty value and may appear once");
+                break;
+            }
+            seen_input = true;
+            input_flag = value;
         } else if (strcmp(flag_key, "view") == 0) {
+            if (seen_view || !value ||
+                (strcmp(value, "summary") != 0 && strcmp(value, "normal") != 0 &&
+                 strcmp(value, "full") != 0)) {
+                flag_error = true;
+                (void)snprintf(flag_why, sizeof(flag_why),
+                               "--view must be summary, normal, or full and may appear once");
+                break;
+            }
+            seen_view = true;
             view = value;
         } else if (strcmp(flag_key, "side") == 0) {
+            if (seen_side || !value ||
+                (strcmp(value, "input") != 0 && strcmp(value, "output") != 0)) {
+                flag_error = true;
+                (void)snprintf(flag_why, sizeof(flag_why),
+                               "--side must be input or output and may appear once");
+                break;
+            }
+            seen_side = true;
             side = value;
         } else if (strcmp(flag_key, "budget-bytes") == 0) {
-            if (value && nc_is_integer(value))
-                budget = (size_t)strtoull(value, NULL, 10);
+            if (seen_budget ||
+                !nc_parse_size_control(value, 512, ZCL_COMMAND_LIST_BUDGET,
+                                       &budget)) {
+                flag_error = true;
+                (void)snprintf(flag_why, sizeof(flag_why),
+                               "--budget-bytes must be in 512..%u and may appear once",
+                               ZCL_COMMAND_LIST_BUDGET);
+                break;
+            }
+            seen_budget = true;
         } else if (strcmp(flag_key, "max-items") == 0) {
-            if (value && nc_is_integer(value))
-                max_items = (size_t)strtoull(value, NULL, 10);
+            if (seen_max_items ||
+                !nc_parse_size_control(value, 1, 100, &max_items)) {
+                flag_error = true;
+                (void)snprintf(flag_why, sizeof(flag_why),
+                               "--max-items must be in 1..100 and may appear once");
+                break;
+            }
+            seen_max_items = true;
         } else if (strcmp(flag_key, "cursor") == 0) {
+            if (seen_cursor || !value || !value[0] || strlen(value) > 256) {
+                flag_error = true;
+                (void)snprintf(flag_why, sizeof(flag_why),
+                               "--cursor requires one value of at most 256 bytes");
+                break;
+            }
+            seen_cursor = true;
             cursor = value;
-        } else if (nc_reserved_control(flag_key)) {
-            /* accepted, no effect */
+        } else if (strcmp(flag_key, "format") == 0) {
+            if (seen_format || !value || strcmp(value, "json") != 0) {
+                flag_error = true;
+                (void)snprintf(flag_why, sizeof(flag_why),
+                               "only one --format=json is implemented for bounded native results");
+                break;
+            }
+            seen_format = true;
+        } else if (strcmp(flag_key, "fields") == 0 ||
+                   strcmp(flag_key, "quiet") == 0) {
+            flag_error = true;
+            (void)snprintf(flag_why, sizeof(flag_why),
+                           "--%s is not implemented; refusing a silent no-op",
+                           flag_key);
+            break;
         } else if (!nc_set_typed_value(&flags, flag_key, value)) {
             flag_error = true;
+            (void)snprintf(flag_why, sizeof(flag_why),
+                           "malformed, duplicate, or out-of-range --%s value",
+                           flag_key);
             break;
         }
     }
     if (flag_error) {
         json_free(&flags);
         nc_print_error(spec->path, "BAD_FLAG", "normalize",
-                       "malformed or duplicate option", spec->path,
+                       flag_why, spec->path,
                        "discover.describe", "{}", "inspect the input schema");
         return ZCL_COMMAND_EXIT_INVALID;
     }
@@ -1002,10 +1071,68 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
         return ZCL_COMMAND_EXIT_INVALID;
     }
 
+    /* The frozen grammar permits paging/view controls inside --input as well
+     * as top-level flags. Normalize both spellings to the one request object,
+     * and reject ambiguous double specification. */
+    char input_cursor[64];
+    const struct json_value *input_view = json_get(&input, "view");
+    if (input_view) {
+        if (seen_view) {
+            json_free(&input);
+            nc_print_error(spec->path, "DUPLICATE_CONTROL", "normalize",
+                           "view was supplied both inside --input and as a flag",
+                           "view", "discover.schema", "{}",
+                           "supply each response control once");
+            return ZCL_COMMAND_EXIT_INVALID;
+        }
+        view = json_get_str(input_view);
+    }
+    const struct json_value *input_max_items = json_get(&input, "max_items");
+    if (input_max_items) {
+        if (seen_max_items) {
+            json_free(&input);
+            nc_print_error(spec->path, "DUPLICATE_CONTROL", "normalize",
+                           "max_items was supplied both inside --input and as a flag",
+                           "max_items", "discover.schema", "{}",
+                           "supply each response control once");
+            return ZCL_COMMAND_EXIT_INVALID;
+        }
+        max_items = (size_t)json_get_int(input_max_items);
+    }
+    const struct json_value *input_cursor_value = json_get(&input, "cursor");
+    if (input_cursor_value) {
+        if (seen_cursor) {
+            json_free(&input);
+            nc_print_error(spec->path, "DUPLICATE_CONTROL", "normalize",
+                           "cursor was supplied both inside --input and as a flag",
+                           "cursor", "discover.schema", "{}",
+                           "supply each response control once");
+            return ZCL_COMMAND_EXIT_INVALID;
+        }
+        if (input_cursor_value->type == JSON_STR) {
+            cursor = json_get_str(input_cursor_value);
+        } else {
+            (void)snprintf(input_cursor, sizeof(input_cursor), "%lld",
+                           (long long)json_get_int(input_cursor_value));
+            cursor = input_cursor;
+        }
+    }
+
+    const char *operator_lane = getenv("ZCL_OPERATOR_LANE");
+#ifdef ZCL_DEV_BUILD
+    /* The development executable is itself the confined dev-lane authority:
+     * its mutating handlers target only ~/.zclassic-c23-dev and are omitted
+     * from release builds.  Requiring callers to repeat
+     * ZCL_OPERATOR_LANE=dev made the documented one-command edit loop deny
+     * itself as lane "unknown".  An explicit environment value still wins,
+     * so setting canonical/soak continues to fail closed. */
+    if (!operator_lane || !operator_lane[0])
+        operator_lane = "dev";
+#endif
     struct zcl_command_context ctx = {
         .registry = reg,
         .source_root = getenv("ZCL_DEV_SOURCE_ROOT"),
-        .operator_lane = getenv("ZCL_OPERATOR_LANE"),
+        .operator_lane = operator_lane,
         .granted_capabilities = ~(uint64_t)0,
 #ifdef ZCL_DEV_BUILD
         .dev_build = true,

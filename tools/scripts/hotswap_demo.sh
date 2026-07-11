@@ -15,9 +15,8 @@
 #   4. assert v2 provenance (mcp.routes provider + both content hashes) and that
 #      a read-only route the TU owns appears in the atomic replacement report.
 #
-# Every eligible TU MUST have a proof entry here (probe_for_source); an eligible
-# TU with no entry, or a proof entry for a non-eligible TU, fails the sync
-# check below — so the harness cannot silently skip a newly-admitted TU.
+# Every eligible TU carries its proof route on the same manifest row, so the
+# harness, planners, and live transport cannot maintain divergent side tables.
 #
 # Pure POSIX sh + coreutils; no third-party tools.
 set -eu
@@ -28,43 +27,31 @@ BIN=build/bin/zclassic23-dev
 DEMO_DATADIR=${HOME}/.zclassic-c23-dev
 MANIFEST=config/hotswap_eligible.def
 
-# A read-only route each eligible TU owns, used to prove its generation
-# committed. Keep in sync with config/hotswap_eligible.def.
-probe_for_source() {
-    case "$1" in
-        tools/mcp/controllers/app_controller.c)    echo "zcl_name_list" ;;
-        tools/mcp/controllers/meta_controller.c)   echo "zcl_tools_list" ;;
-        tools/mcp/controllers/chain_controller.c)  echo "zcl_getblockcount" ;;
-        tools/mcp/controllers/net_controller.c)    echo "zcl_peers" ;;
-        tools/mcp/controllers/wallet_controller.c) echo "zcl_balance" ;;
-        *) echo "" ;;
-    esac
-}
-
-# Parse eligible sources from the manifest.
-ELIGIBLE=$(sed -n 's/^[[:space:]]*HOTSWAP_ELIGIBLE("\([^"]*\)").*/\1/p' "$MANIFEST")
+# Parse the canonical source:probe pairs from the manifest. Colons are not
+# legal in either repo-relative source paths or MCP tool names.
+ELIGIBLE=$(sed -n \
+    's/^[[:space:]]*HOTSWAP_ELIGIBLE("\([^"]*\)")[[:space:]]*HOTSWAP_PROBE("\([^"]*\)").*/\1:\2/p' \
+    "$MANIFEST")
 if [ -z "$ELIGIBLE" ]; then
-    echo "FAIL: no HOTSWAP_ELIGIBLE(...) entries parsed from $MANIFEST" >&2
+    echo "FAIL: no HOTSWAP_ELIGIBLE/HOTSWAP_PROBE pairs parsed from $MANIFEST" >&2
     exit 1
 fi
 
-echo "== [sync] every eligible TU has a proof entry =="
-sync_fail=0
-for src in $ELIGIBLE; do
-    if [ -z "$(probe_for_source "$src")" ]; then
-        echo "FAIL: eligible TU '$src' has no probe route in hotswap_demo.sh" >&2
-        sync_fail=1
-    fi
-done
-[ "$sync_fail" -eq 0 ] || exit 1
+echo "== [sync] every eligible TU has one canonical proof route =="
 
 echo "== [1/2] build dev binary =="
 make --no-print-directory dev-bin
 
 pass=0
 fail=0
-for src in $ELIGIBLE; do
-    probe=$(probe_for_source "$src")
+for entry in $ELIGIBLE; do
+    src=${entry%%:*}
+    probe=${entry#*:}
+    if [ -z "$src" ] || [ -z "$probe" ] || [ "$src" = "$probe" ]; then
+        echo "FAIL: malformed eligible source/probe pair '$entry'" >&2
+        fail=$((fail + 1))
+        continue
+    fi
     echo "== [2/2] $src (probe $probe) =="
 
     SO=$(make --no-print-directory hotswap-so FILES="$src" | tail -1)

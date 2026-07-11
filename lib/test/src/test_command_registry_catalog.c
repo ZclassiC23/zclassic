@@ -289,6 +289,7 @@ static int test_dev_branch_leaves(void)
         const char *ready[] = {
             "dev.status", "dev.core.boundary", "dev.app.describe",
             "dev.app.plan", "dev.app.simulate", "dev.change.plan",
+            "dev.app.list", "dev.test.plan",
         };
         for (size_t i = 0; i < sizeof(ready) / sizeof(ready[0]); i++) {
             const struct zcl_command_spec *s = find_spec(reg, ready[i]);
@@ -299,14 +300,30 @@ static int test_dev_branch_leaves(void)
         /* Unfinished dev operations are explicitly planned + handlerless, so
          * discovery can never advertise a dev command that cannot dispatch. */
         const char *planned[] = {
-            "dev.core.proof", "dev.app.list", "dev.app.inspect",
-            "dev.generation.current", "dev.loop.wait", "dev.test.replay",
+            "dev.core.proof", "dev.app.inspect", "dev.test.replay",
+            "dev.generation.rollback", "dev.loop.events",
         };
         for (size_t i = 0; i < sizeof(planned) / sizeof(planned[0]); i++) {
             const struct zcl_command_spec *s = find_spec(reg, planned[i]);
             ASSERT(s != NULL);
             ASSERT_EQ(s->availability, ZCL_COMMAND_PLANNED);
             ASSERT(s->handler == NULL);
+        }
+        /* Dev executors are real handlers only in ZCL_DEV_BUILD.  This test
+         * binary is a release-shaped catalog, so those leaves must remain
+         * explicit COMPAT entries rather than falsely READY. */
+        const char *compat[] = {
+            "dev.change.apply", "dev.loop.ensure", "dev.loop.status",
+            "dev.loop.wait", "dev.loop.stop", "dev.test.run",
+            "dev.test.sim", "dev.generation.current",
+            "dev.generation.history", "dev.diagnose.latest",
+        };
+        for (size_t i = 0; i < sizeof(compat) / sizeof(compat[0]); i++) {
+            const struct zcl_command_spec *s = find_spec(reg, compat[i]);
+            ASSERT(s != NULL);
+            ASSERT_EQ(s->availability, ZCL_COMMAND_COMPAT);
+            ASSERT(s->handler == NULL);
+            ASSERT(s->compat_target != NULL && s->compat_target[0]);
         }
         PASS();
     } _test_next:;
@@ -404,7 +421,7 @@ static int test_response_budget_views(void)
 static int test_is_root_ownership(void)
 {
     int failures = 0;
-    TEST("is_root owns core/app/ops/discover but not status or dev") {
+    TEST("is_root owns core/app/dev/ops/discover but not status") {
         ASSERT(zcl_native_command_is_root("core"));
         ASSERT(zcl_native_command_is_root("app"));
         ASSERT(zcl_native_command_is_root("ops"));
@@ -412,7 +429,7 @@ static int test_is_root_ownership(void)
         ASSERT(zcl_native_command_is_root("help"));
         ASSERT(zcl_native_command_is_root("search"));
         ASSERT(!zcl_native_command_is_root("status"));
-        ASSERT(!zcl_native_command_is_root("dev"));
+        ASSERT(zcl_native_command_is_root("dev"));
         ASSERT(!zcl_native_command_is_root("getblockcount"));
         PASS();
     } _test_next:;

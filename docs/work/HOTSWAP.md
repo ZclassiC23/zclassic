@@ -19,7 +19,11 @@ A hot-swap lives only for the lifetime of the process it was loaded into, and
 only in that process. **It reverts on restart.** To make a change permanent,
 rebuild normally (`make dev-bin` / `make deploy-dev`) and commit the source.
 Generations are never `dlclose`'d (a deliberate leak) so an in-flight call that
-already entered old code stays valid.
+already entered old code stays valid. Each accepted generation also retains
+the descriptor for the exact inode loaded through `/proc/self/fd/N`. Reusing
+that descriptor number while an older handle remains mapped can make `dlopen`
+return the older cached object for a different path; the pinned descriptor is
+therefore part of generation identity, not an accidental file leak.
 
 `dev-watch auto` starts an asynchronous immutable binary build and preflight
 stage after a successful swap. That removes compilation from the foreground
@@ -187,7 +191,7 @@ independently. Every eligible TU is proven end-to-end by
 
 ## ZVCS auto-anchor (Wave 2.3, power-station Pillar 2)
 
-Every "passed" `zcl.dev_cycle.v1` verdict — whether the cycle resolved to a
+Every warm "passed" `zcl.dev_cycle.v1` verdict — whether the cycle resolved to a
 Tier-1 hot-swap (`resident_commit`), a native fast/transactional reload
 (`transactional_reload`), or a docs-only `check` — now auto-anchors: the dev
 loop's `finish_cycle()` (`tools/dev/devloop_cycle.c`) calls
@@ -197,6 +201,16 @@ takes a snapshot. The commit binds the current source tree to this cycle's
 verdict (`status`/`phase`/`elapsed_ms`), the binary generation it produced,
 and (from `ZCL_AGENT_ID`/`ZCL_SESSION_ID`/`ZCL_TASK_REF`) the agent/session/
 task that drove it — no "remember to commit" step.
+
+The first-ever snapshot is different: it may need thousands of durable object
+writes, so it is never allowed to delay an edit verdict. The first green cycle
+queues a singleton detached, generation-neutral baseline and returns
+`"vcs_deferred":true` plus an explicit `vcs_error` saying that cycle is
+unanchored. Once the baseline completes, subsequent cycles synchronously bind
+their exact generation as above. Generated build trees, local agent worktrees,
+and caches are pruned from the tracked walk, and stale stat-cache rows are
+deleted during the background baseline so steady-state cost follows the real
+source change set.
 
 **Generation binding, per cycle type:**
 - Hot-swap (`resident_commit`): the `artifact_sha256` field already returned
@@ -216,7 +230,8 @@ blocked `.zvcs/`, a corrupt index, ...) never fails the dev cycle: `finish_cycle
 still returns `passed`/`rejected` exactly as it would without ZVCS, and the
 `zcl.dev_cycle.v1` verdict JSON gains one extra field —
 `"vcs_commit":"<64-hex commit id>"` on success, or `"vcs_error":"<message>"`
-on failure. The one exception that is surfaced loudly is a **sealed-path
+on failure/deferred bootstrap (with `"vcs_deferred":true` for the latter). The
+one exception that is surfaced loudly is a **sealed-path
 refusal**: editing a file under a sealed glob (see `vcs/vcs_seal.h` —
 default set `core/`, `domain/consensus/`, `lib/consensus/`, `lib/validation/`,
 `lib/chain/`, `lib/mining/`, `app/jobs/`) without a granted one-shot unseal

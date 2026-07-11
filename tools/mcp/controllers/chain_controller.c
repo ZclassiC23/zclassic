@@ -12,7 +12,7 @@
 /* Tier-1 hot-swap: this controller's route table is generation-exportable
  * (see config/hotswap_eligible.def). The probe names a read-only route it
  * owns; the #define MUST precede hotswap.h. */
-#define ZCL_HOTSWAP_PROBE_TOOLS "zcl_getblockcount"
+#define ZCL_HOTSWAP_PROBE_TOOLS "zcl_getblockchaininfo"
 #include "hotswap/hotswap.h"
 #include "chain/chain.h"
 #include "json/json.h"

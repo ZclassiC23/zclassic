@@ -11,7 +11,7 @@
 /* Tier-1 hot-swap: this controller's route table is generation-exportable
  * (see config/hotswap_eligible.def). The probe names a read-only route it
  * owns; the #define MUST precede hotswap.h. */
-#define ZCL_HOTSWAP_PROBE_TOOLS "zcl_peers"
+#define ZCL_HOTSWAP_PROBE_TOOLS "zcl_networkinfo"
 #include "hotswap/hotswap.h"
 #include "controllers/network_controller.h"
 #include "json/json.h"

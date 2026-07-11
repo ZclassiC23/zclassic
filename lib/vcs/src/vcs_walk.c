@@ -43,6 +43,15 @@ static bool has_dir_component(const char *relpath, const char *comp)
     return false;
 }
 
+/* Root-relative directory match. Unlike has_dir_component(), this does not
+ * hide a same-named directory nested inside tracked source. */
+static bool has_root_prefix(const char *relpath, const char *prefix)
+{
+    size_t len = strlen(prefix);
+    return strncmp(relpath, prefix, len) == 0 &&
+           (relpath[len] == '/' || relpath[len] == '\0');
+}
+
 bool vcs_path_ignored(const char *relpath)
 {
     if (!relpath || !relpath[0])
@@ -55,8 +64,32 @@ bool vcs_path_ignored(const char *relpath)
         return true;
     if (has_dir_component(relpath, "build"))
         return true;
-    if (strncmp(relpath, "vendor/lib/", 11) == 0 ||
-        strcmp(relpath, "vendor/lib") == 0)
+    /* Checkout-local agent worktrees and generated caches can contain many
+     * complete repository copies. Walking them made the first dev-loop
+     * provenance snapshot recursively index ~150k files and stall a hot swap
+     * for minutes. Keep tracked .claude commands/skills; prune only runtime
+     * subtrees. These paths mirror the repository's generated-file policy. */
+    static const char *const ignored_roots[] = {
+        ".cache",
+        ".claude/tmp",
+        ".claude/worktrees",
+        ".zcl_test_render",
+        "chaos-output",
+        "examples/bin",
+        "obj",
+        "bin",
+        "vendor/.build",
+        "vendor/.cache",
+        "vendor/lib",
+        "vendor/tor",
+        "vendor/zclassic-ref",
+        NULL,
+    };
+    for (size_t i = 0; ignored_roots[i]; i++)
+        if (has_root_prefix(relpath, ignored_roots[i]))
+            return true;
+
+    if (has_root_prefix(relpath, "vendor/include/openssl"))
         return true;
 
     const char *b = base_of(relpath);
@@ -64,11 +97,21 @@ bool vcs_path_ignored(const char *relpath)
     /* *.db */
     if (blen >= 3 && strcmp(b + blen - 3, ".db") == 0)
         return true;
+    if (blen >= 7 && strcmp(b + blen - 7, ".db-wal") == 0)
+        return true;
+    if (blen >= 7 && strcmp(b + blen - 7, ".db-shm") == 0)
+        return true;
+    if (blen >= 4 && strcmp(b + blen - 4, ".log") == 0)
+        return true;
     /* node.db* (covers node.db, node.db-wal, node.db-shm) */
     if (strncmp(b, "node.db", 7) == 0)
         return true;
     /* test-tmp* */
     if (strncmp(b, "test-tmp", 8) == 0)
+        return true;
+    if (strcmp(relpath, ".claude/scheduled_tasks.lock") == 0 ||
+        strcmp(b, "compile_commands.json") == 0 ||
+        strcmp(b, ".core-unseal-token") == 0)
         return true;
 
     return false;

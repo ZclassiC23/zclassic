@@ -352,6 +352,7 @@ struct vcs_anchor_fields {
     char commit_hex[65];  /* set iff the snapshot committed */
     char error[256];      /* set iff attempted and not committed */
     bool sealed_refusal;  /* true iff refused for touching a sealed path */
+    bool deferred;        /* generation-neutral first baseline is out of band */
 };
 
 static size_t cycle_json(const struct zcl_devloop_plan *plan,
@@ -400,6 +401,9 @@ static size_t cycle_json(const struct zcl_devloop_plan *plan,
         if (vcs->sealed_refusal &&
             !appendf(out, out_sz, &pos, ",\"vcs_sealed_refusal\":true"))
             return 0;
+        if (vcs->deferred &&
+            !appendf(out, out_sz, &pos, ",\"vcs_deferred\":true"))
+            return 0;
     }
     if (!appendf(out, out_sz, &pos, "}"))
         return 0;
@@ -432,6 +436,7 @@ static int finish_cycle(const struct zcl_devloop_plan *plan,
         v.agent_id = getenv("ZCL_AGENT_ID");
         v.session_id = getenv("ZCL_SESSION_ID");
         v.task_ref = getenv("ZCL_TASK_REF");
+        v.defer_initial_snapshot = true;
 
         struct vcs_devloop_anchor_result ar;
         vcs_devloop_anchor_cycle(repo_root, &v, &ar);
@@ -442,6 +447,10 @@ static int finish_cycle(const struct zcl_devloop_plan *plan,
             break;
         case VCS_DEVLOOP_ANCHOR_REFUSED:
             vcsf.sealed_refusal = true;
+            snprintf(vcsf.error, sizeof(vcsf.error), "%s", ar.error);
+            break;
+        case VCS_DEVLOOP_ANCHOR_DEFERRED:
+            vcsf.deferred = true;
             snprintf(vcsf.error, sizeof(vcsf.error), "%s", ar.error);
             break;
         case VCS_DEVLOOP_ANCHOR_ERROR:
@@ -618,6 +627,9 @@ int zcl_devloop_run_cycle(const char *repo_root,
         };
         if (!zcl_devloop_process_run(root, commit_argv, 15000, &result) ||
             !result_ok(&result) || !strstr(result.output, "\"ok\":true")) {
+            if (strstr(result.output, "generation registry full") &&
+                strstr(result.output, "\"rejection_stage\":\"registry\""))
+                goto transactional_reload;
             output_capsule(&result, capsule);
             return finish_cycle(&plan, files, file_count, "rejected",
                                 "resident_commit", started_us, capsule,
@@ -636,6 +648,7 @@ int zcl_devloop_run_cycle(const char *repo_root,
                             root, generation_hex[0] ? generation_hex : NULL);
     }
 
+transactional_reload:
     /* Compatibility backend during the native activation extraction.  The
      * LLM-facing plane is already C-only; this fixed argv is never a shell
      * interpolation surface and preserves the proven transactional rollback

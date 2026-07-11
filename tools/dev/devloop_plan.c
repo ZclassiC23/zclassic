@@ -9,9 +9,16 @@
 #include <string.h>
 #include <unistd.h>
 
-static const char *const g_hotswap_eligible[] = {
-#define HOTSWAP_ELIGIBLE(path) path,
+struct hotswap_eligible_entry {
+    const char *path;
+    const char *probe;
+};
+
+static const struct hotswap_eligible_entry g_hotswap_eligible[] = {
+#define HOTSWAP_ELIGIBLE(path_) { .path = path_, .probe =
+#define HOTSWAP_PROBE(probe_) probe_ },
 #include "../../config/hotswap_eligible.def"
+#undef HOTSWAP_PROBE
 #undef HOTSWAP_ELIGIBLE
 };
 
@@ -26,14 +33,14 @@ static bool path_is_safe(const char *path)
     return true;
 }
 
-static bool path_is_hotswap_eligible(const char *path)
+static const struct hotswap_eligible_entry *hotswap_entry(const char *path)
 {
     for (size_t i = 0; i < sizeof(g_hotswap_eligible) /
                             sizeof(g_hotswap_eligible[0]); i++) {
-        if (strcmp(path, g_hotswap_eligible[i]) == 0)
-            return true;
+        if (strcmp(path, g_hotswap_eligible[i].path) == 0)
+            return &g_hotswap_eligible[i];
     }
-    return false;
+    return NULL;
 }
 
 static bool has_suffix(const char *path, const char *suffix)
@@ -98,12 +105,16 @@ bool zcl_devloop_plan_files(const char *const *files, size_t file_count,
 
     bool all_docs = true;
     bool all_hotswap = true;
+    const struct hotswap_eligible_entry *single_hotswap = NULL;
     struct agent_impact_acc impact = {0};
     for (size_t i = 0; i < file_count; i++) {
         if (!path_is_safe(files[i]))
             return false;
         all_docs = all_docs && path_is_docs(files[i]);
-        all_hotswap = all_hotswap && path_is_hotswap_eligible(files[i]);
+        const struct hotswap_eligible_entry *entry = hotswap_entry(files[i]);
+        all_hotswap = all_hotswap && entry != NULL;
+        if (file_count == 1)
+            single_hotswap = entry;
         bool sealed = zcl_devloop_path_is_sealed_core(files[i]);
         out->sealed_core = out->sealed_core || sealed;
         /* A sealed-core file is always heaviest-proof: even core/math (not in
@@ -118,12 +129,12 @@ bool zcl_devloop_plan_files(const char *const *files, size_t file_count,
         out->reason = "documentation_only";
         return true;
     }
-    if (file_count == 1 && all_hotswap) {
+    if (file_count == 1 && all_hotswap && single_hotswap) {
         out->action = ZCL_DEVLOOP_HOTSWAP;
         out->action_name = "hotswap";
         out->reason = "single_stateless_provider";
         out->proof_group = "hotswap_simnet";
-        out->probe_tool = "zcl_name_list";
+        out->probe_tool = single_hotswap->probe;
         return true;
     }
 

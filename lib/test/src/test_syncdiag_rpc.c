@@ -6682,7 +6682,7 @@ syncdiag_net_split_done:
             "\"mutation_policy\":\"noncanonical_dev_only\","
             "\"canonical_guard\":\"never_touches_live_or_soak\","
             "\"stage_command\":\"make agent-stage-dev\","
-            "\"recover_command\":\"make lane-recover LANE=dev\"},"
+            "\"recover_command\":\"make agent-dev-recover\"},"
             "\"next_action\":\"unit-test\","
             "\"service\":{\"active_state\":\"active\"},"
             "\"rpc\":{\"status\":\"ok\"}}'",
@@ -6725,7 +6725,7 @@ syncdiag_net_split_done:
                           "make agent-stage-dev") == 0;
         ok = ok && strcmp(json_get_str(json_get(dev_worker,
                                                 "recover_command")),
-                          "make lane-recover LANE=dev") == 0;
+                          "make agent-dev-recover") == 0;
 
         struct json_value liveness;
         json_init(&liveness);

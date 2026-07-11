@@ -405,6 +405,11 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
         if (why) snprintf(why, why_size, "input must be one JSON object");
         return false;
     }
+    if (strcmp(spec->input_schema, "zcl.command.empty_input.v1") == 0 &&
+        input->num_children != 0) {
+        if (why) snprintf(why, why_size, "command accepts no input keys");
+        return false;
+    }
     for (size_t i = 0; i < input->num_children; i++) {
         const char *key = input->keys[i];
         if (!key || !key[0] || !csv_token_equal(spec->input_keys, key)) {
@@ -417,6 +422,75 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
                 if (why) snprintf(why, why_size, "duplicate input key '%s'", key);
                 return false;
             }
+        }
+        const struct json_value *value = &input->children[i];
+        bool type_ok = false;
+        if (strcmp(key, "files") == 0) {
+            type_ok = value->type == JSON_ARR && value->num_children <= 256;
+            for (size_t j = 0; type_ok && j < value->num_children; j++) {
+                const struct json_value *item = &value->children[j];
+                const char *text = json_get_str(item);
+                type_ok = item->type == JSON_STR && text && text[0] &&
+                          strlen(text) <= 1024;
+            }
+        } else if (strcmp(key, "verbose") == 0) {
+            type_ok = value->type == JSON_BOOL;
+        } else if (strcmp(key, "seed") == 0) {
+            type_ok = (value->type == JSON_INT && json_get_int(value) > 0) ||
+                      (value->type == JSON_STR && json_get_str(value) &&
+                       json_get_str(value)[0] && strlen(json_get_str(value)) <= 32);
+        } else if (strcmp(key, "amount") == 0) {
+            type_ok = value->type == JSON_INT || value->type == JSON_REAL ||
+                      (value->type == JSON_STR && json_get_str(value) &&
+                       json_get_str(value)[0] && strlen(json_get_str(value)) <= 64);
+        } else if (strcmp(key, "cursor") == 0) {
+            type_ok = (value->type == JSON_INT && json_get_int(value) >= 0) ||
+                      (value->type == JSON_STR && json_get_str(value) &&
+                       json_get_str(value)[0] && strlen(json_get_str(value)) <= 256);
+        } else if (strcmp(key, "height") == 0 ||
+                   strcmp(key, "start_height") == 0 ||
+                   strcmp(key, "after") == 0 ||
+                   strcmp(key, "after_epoch") == 0) {
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
+        } else if (strcmp(key, "timeout_ms") == 0) {
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
+                      json_get_int(value) <= 300000;
+        } else if (strcmp(key, "heartbeat_ms") == 0) {
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 100 &&
+                      json_get_int(value) <= 60000;
+        } else if (strcmp(key, "verbosity") == 0) {
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 0 &&
+                      json_get_int(value) <= 2;
+        } else if (strcmp(key, "max_items") == 0) {
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
+                      json_get_int(value) <= 100;
+        } else if (strcmp(key, "max_lines") == 0) {
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
+                      json_get_int(value) <= 1000;
+        } else if (strcmp(key, "since_secs") == 0) {
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 0 &&
+                      json_get_int(value) <= 31536000;
+        } else if (strcmp(key, "limit") == 0 || strcmp(key, "depth") == 0) {
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
+                      json_get_int(value) <= 1000000;
+        } else if (strcmp(key, "watcher_id") == 0) {
+            type_ok = value->type == JSON_INT && json_get_int(value) > 1;
+        } else {
+            const char *text = json_get_str(value);
+            type_ok = value->type == JSON_STR && text && text[0] &&
+                      strlen(text) <= 4096;
+            if (type_ok && strcmp(key, "side") == 0)
+                type_ok = strcmp(text, "input") == 0 ||
+                          strcmp(text, "output") == 0;
+            if (type_ok && strcmp(key, "view") == 0)
+                type_ok = strcmp(text, "summary") == 0 ||
+                          strcmp(text, "normal") == 0 ||
+                          strcmp(text, "full") == 0;
+        }
+        if (!type_ok) {
+            if (why) snprintf(why, why_size,
+                              "invalid type or range for input key '%s'", key);
+            return false;
         }
     }
     return true;

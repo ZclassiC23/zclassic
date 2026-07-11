@@ -32,6 +32,7 @@
 #include <stdint.h>
 
 struct vcs_index;
+struct vcs_manifest;
 
 /* Open (creating if needed) <repo_root>/.zvcs/index.kv in WAL mode and ensure
  * the schema. Returns NULL on failure. */
@@ -50,6 +51,11 @@ bool vcs_index_rollback(struct vcs_index *idx);
 bool vcs_index_stat_put_in_tx(struct vcs_index *idx, const char *path,
                               int64_t mtime_ns, int64_t size, int64_t ctime_ns,
                               const uint8_t blob[32]);
+/* Delete cached paths absent from the current manifest. This keeps ignored,
+ * removed, and renamed checkout files from making the warm path grow without
+ * bound. Requires an open transaction. */
+bool vcs_index_stat_prune_in_tx(struct vcs_index *idx,
+                                const struct vcs_manifest *manifest);
 bool vcs_index_ref_set_in_tx(struct vcs_index *idx, const char *name,
                              const uint8_t commit_id[32]);
 bool vcs_index_seal_pin_set_in_tx(struct vcs_index *idx,

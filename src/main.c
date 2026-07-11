@@ -61,7 +61,6 @@
 #include "mcp/middleware.h"
 #include "mcp/router.h"
 #include "mcp/rpc_client.h"
-#include "devloop.h"
 #include "command/native_command.h"
 #include <signal.h>
 #include <stdatomic.h>
@@ -1463,18 +1462,6 @@ static int cli_main(int argc, char **argv)
         return 1;
     }
 
-    /* The dev command tree is checkout-local and intentionally independent of
-     * any running node. Dispatch before service/cookie discovery so menu,
-     * planning, and watcher startup stay constant-time and token-light. The
-     * dispatcher (and its mutating cycle/watch/process executors) is DEV-ONLY:
-     * the release binary links none of it, so the whole seam is compiled out
-     * under ZCL_DEV_BUILD — a release `zclassic23 dev` is simply not a command
-     * (proved absent by check-release-no-dev-symbols). */
-#ifdef ZCL_DEV_BUILD
-    if (zcl_devloop_is_method(method))
-        return zcl_devloop_cli_main(params_storage, nparams);
-#endif
-
     if (!datadir_set && !cli_cookie_exists(datadir)) {
         char service_datadir[512];
         if (cli_service_exec_arg("datadir", service_datadir,
@@ -1529,13 +1516,11 @@ static int cli_main(int argc, char **argv)
              strcmp(method, "-summary") == 0)
         method = "summary";
 
-    /* Canonical registry roots (core/app/ops/discover + the help/search
+    /* Canonical registry roots (core/app/dev/ops/discover + the help/search
      * aliases) resolve through the native command registry BEFORE the
      * arbitrary RPC-method fallback further down. A typo under a canonical
      * branch returns the structured unknown-command error (exit 2) and never
-     * becomes an RPC method. `status` keeps its static-agent path and `dev`
-     * keeps the devloop dispatcher (checked above) — documented seams the
-     * registry does not yet own (Wave 2.2 folds them in). */
+     * becomes an RPC method. `status` keeps its static-agent path. */
     if (zcl_native_command_is_root(method))
         return zcl_native_command_main(method,
                                        (const char *const *)params_storage,

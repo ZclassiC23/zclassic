@@ -141,8 +141,30 @@ static int test_hotswap_manifest_v2_contract(void)
         manifest.build_identity = "wrong-build";
         ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
         manifest = valid_manifest();
+        char alternate_dirty_identity[128];
+        const char *host_identity = zcl_build_commit();
+        size_t host_identity_len = strlen(host_identity);
+        if (host_identity_len > strlen("-dirty") &&
+            strcmp(host_identity + host_identity_len - strlen("-dirty"),
+                   "-dirty") == 0) {
+            snprintf(alternate_dirty_identity,
+                     sizeof(alternate_dirty_identity), "%.*s",
+                     (int)(host_identity_len - strlen("-dirty")),
+                     host_identity);
+        } else {
+            snprintf(alternate_dirty_identity,
+                     sizeof(alternate_dirty_identity), "%s-dirty",
+                     host_identity);
+        }
+        manifest.build_identity = alternate_dirty_identity;
+        ASSERT(hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
+        manifest = valid_manifest();
         manifest.source_identity = "app/controllers/src/api_controller_routes.c";
         ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
+        manifest = valid_manifest();
+        manifest.probe_tools_csv = "zcl_tools_list";
+        ASSERT(!hotswap_manifest_v2_validate(&manifest, why, sizeof(why)));
+        ASSERT(strstr(why, "probe metadata mismatch") != NULL);
         manifest = valid_manifest();
         manifest.input_digest =
             "0123456789abcdef0123456789abcdef"
@@ -176,7 +198,7 @@ static int test_hotswap_load_stub_and_registry(void)
 
         struct hotswap_load_report rep;
         bool ok = hotswap_load("/tmp/whatever.so", "/tmp/dev-datadir",
-                               NULL, &rep);
+                               "zcl_name_list", NULL, NULL, &rep);
         ASSERT(ok == false);
         ASSERT(rep.ok == false);
         ASSERT(rep.error[0] != '\0');
@@ -206,6 +228,8 @@ static int test_hotswap_dump_state(void)
                       "zcl.hotswap_generation.v2") == 0);
         ASSERT(strcmp(json_get_str(json_get(&out, "mapping_policy")),
                       "successful_generations_permanently_mapped") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&out, "artifact_inode_policy")),
+                      "successful_generation_fd_pinned") == 0);
 
         const struct json_value *gc = json_get(&out, "generation_count");
         ASSERT(gc != NULL);
@@ -263,7 +287,7 @@ static const struct mcp_tool_route k_route_destructive = {
 static int test_hotswap_probe_safety(void)
 {
     int failures = 0;
-    TEST("post-load probe is replaced-only and never destructive") {
+    TEST("candidate probe is replaced-only, non-destructive, and error-free") {
         struct hotswap_load_report rep = {0};
         snprintf(rep.replaced[0], sizeof(rep.replaced[0]),
                  "t.hotswap_probe");
@@ -291,6 +315,36 @@ static int test_hotswap_probe_safety(void)
         ASSERT(!mcp_dev_hotswap_probe_allowed(
             "t.hotswap_probe", &rep, &k_route_orig, &code));
         ASSERT(strcmp(code, "invalid_report") == 0);
+
+        char body_error_code[64], body_error_message[256];
+        ASSERT(mcp_dev_hotswap_probe_body_ok(
+            "{\"result\":\"ready\"}", body_error_code,
+            sizeof(body_error_code), body_error_message,
+            sizeof(body_error_message)));
+        ASSERT(body_error_code[0] == '\0');
+        ASSERT(!mcp_dev_hotswap_probe_body_ok(
+            "{\"error\":{\"code\":-32603,\"message\":\"cannot connect\"}}",
+            body_error_code, sizeof(body_error_code), body_error_message,
+            sizeof(body_error_message)));
+        ASSERT(strcmp(body_error_code, "handler_error") == 0);
+        ASSERT(strstr(body_error_message, "cannot connect") != NULL);
+        ASSERT(!mcp_dev_hotswap_probe_body_ok(
+            "not-json", body_error_code, sizeof(body_error_code),
+            body_error_message, sizeof(body_error_message)));
+        ASSERT(strcmp(body_error_code, "unparseable_response") == 0);
+        ASSERT(!mcp_dev_hotswap_probe_body_ok(
+            "[]", body_error_code, sizeof(body_error_code),
+            body_error_message, sizeof(body_error_message)));
+        ASSERT(strcmp(body_error_code, "invalid_response_shape") == 0);
+        ASSERT(!mcp_dev_hotswap_probe_body_ok(
+            "{\"ok\":false}", body_error_code, sizeof(body_error_code),
+            body_error_message, sizeof(body_error_message)));
+        ASSERT(strcmp(body_error_code, "unsuccessful_response") == 0);
+        ASSERT(!mcp_dev_hotswap_probe_body_ok(
+            "{\"status\":\"blocked\"}", body_error_code,
+            sizeof(body_error_code), body_error_message,
+            sizeof(body_error_message)));
+        ASSERT(strcmp(body_error_code, "unsuccessful_status") == 0);
 
         /* A route captured after the policy check remains the route invoked
          * even if a later generation changes the active slot. */

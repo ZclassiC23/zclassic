@@ -7,15 +7,11 @@
  * build. Metadata is transport-neutral; the handler column is the single
  * explicitly injected native binding per leaf.
  *
- * Wave 1.2 activated root + core + apps + ops. Wave 2.2 expands the `dev`
- * subtree here (dev.def) and binds its six READY read-only leaves to
- * release-safe handlers in tools/command/native_dev_command.c. The devloop
- * DISPATCH (cycle/watch/focused) still lives in the dev-only
- * tools/dev/devloop_cli.c; only the dev menu/help/search and planned-leaf
- * fail-closed behaviour are registry-driven now. The READY dev handlers are
- * read-only (describe/plan/simulate/change-plan/status/boundary) and therefore
- * compile into the release binary; every mutating dev leaf is COMPAT or
- * PLANNED with a NULL handler.
+ * Read-only checkout inspection handlers are release-safe.  Process execution,
+ * watcher ownership, and generation inspection bind only in ZCL_DEV_BUILD;
+ * the same entries remain honest COMPAT metadata with NULL handlers in a
+ * release catalog.  This keeps one grammar without linking dev mutation code
+ * into the release binary.
  */
 
 #include "config/command_catalog.h"
@@ -141,6 +137,61 @@
       .traits = (traits_), .transports = ZCL_COMMAND_TRANSPORT_NATIVE,         \
       .handler = NULL },
 
+/* One declarative dev leaf, two build-specific bindings.  A dev binary owns
+ * the executable handler; a release binary exposes only an honest COMPAT
+ * description pointing at the dev binary. */
+#ifdef ZCL_DEV_BUILD
+#define ZCL_DEV_AVAILABILITY ZCL_COMMAND_READY
+#define ZCL_DEV_REASON(reason_) ""
+#define ZCL_DEV_COMPAT(target_) ""
+#define ZCL_DEV_HANDLER(handler_) (handler_)
+#else
+#define ZCL_DEV_AVAILABILITY ZCL_COMMAND_COMPAT
+#define ZCL_DEV_REASON(reason_) (reason_)
+#define ZCL_DEV_COMPAT(target_) (target_)
+#define ZCL_DEV_HANDLER(handler_) NULL
+#endif
+
+#define ZCL_COMMAND_DEV_READ(path_, parent_, aliases_, summary_, tags_,       \
+                             in_, out_, in_keys_, pos_keys_, example_,        \
+                             scope_, authority_, latency_, cost_, lanes_,     \
+                             caps_, traits_, handler_, release_reason_,       \
+                             compat_)                                         \
+    { .path = (path_), .parent = (parent_), .aliases = (aliases_),             \
+      .summary = (summary_), .tags = (tags_), .input_schema = (in_),          \
+      .output_schema = (out_), .input_keys = (in_keys_),                       \
+      .positional_keys = (pos_keys_), .example = (example_),                   \
+      .availability_reason = ZCL_DEV_REASON(release_reason_),                  \
+      .compat_target = ZCL_DEV_COMPAT(compat_),                                \
+      .layer = ZCL_COMMAND_LAYER_DEV, .effect = ZCL_COMMAND_EFFECT_READ,       \
+      .risk = ZCL_COMMAND_RISK_READ, .scope = (scope_),                        \
+      .authority = (authority_), .availability = ZCL_DEV_AVAILABILITY,         \
+      .mode = ZCL_COMMAND_MODE_SYNC, .latency = (latency_), .cost = (cost_),   \
+      .confirmation = ZCL_COMMAND_CONFIRM_NONE, .allowed_lanes = (lanes_),     \
+      .required_capabilities = (caps_), .traits = (traits_),                   \
+      .transports = ZCL_COMMAND_TRANSPORT_NATIVE,                              \
+      .handler = ZCL_DEV_HANDLER(handler_) },
+
+#define ZCL_COMMAND_DEV_COMMAND(path_, parent_, aliases_, summary_, tags_,    \
+                                in_, out_, in_keys_, pos_keys_, example_,     \
+                                effect_, risk_, scope_, authority_, mode_,    \
+                                latency_, cost_, confirmation_, lanes_, caps_,\
+                                traits_, handler_, release_reason_, compat_)  \
+    { .path = (path_), .parent = (parent_), .aliases = (aliases_),             \
+      .summary = (summary_), .tags = (tags_), .input_schema = (in_),          \
+      .output_schema = (out_), .input_keys = (in_keys_),                       \
+      .positional_keys = (pos_keys_), .example = (example_),                   \
+      .availability_reason = ZCL_DEV_REASON(release_reason_),                  \
+      .compat_target = ZCL_DEV_COMPAT(compat_),                                \
+      .layer = ZCL_COMMAND_LAYER_DEV, .effect = (effect_), .risk = (risk_),    \
+      .scope = (scope_), .authority = (authority_),                            \
+      .availability = ZCL_DEV_AVAILABILITY, .mode = (mode_),                   \
+      .latency = (latency_), .cost = (cost_),                                  \
+      .confirmation = (confirmation_), .allowed_lanes = (lanes_),              \
+      .required_capabilities = (caps_), .traits = (traits_),                   \
+      .transports = ZCL_COMMAND_TRANSPORT_NATIVE,                              \
+      .handler = ZCL_DEV_HANDLER(handler_) },
+
 static const struct zcl_command_spec g_catalog_commands[] = {
 #include "../commands/root.def"
 #include "../commands/core.def"
@@ -155,6 +206,12 @@ static const struct zcl_command_spec g_catalog_commands[] = {
 #undef ZCL_COMMAND_PLANNED_READ
 #undef ZCL_COMMAND_PLANNED_COMMAND
 #undef ZCL_COMMAND_COMPAT_COMMAND
+#undef ZCL_COMMAND_DEV_READ
+#undef ZCL_COMMAND_DEV_COMMAND
+#undef ZCL_DEV_AVAILABILITY
+#undef ZCL_DEV_REASON
+#undef ZCL_DEV_COMPAT
+#undef ZCL_DEV_HANDLER
 
 static const struct zcl_command_registry g_catalog_registry = {
     .commands = g_catalog_commands,

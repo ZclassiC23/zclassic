@@ -66,7 +66,9 @@ static bool ignored_dir(const char *name)
 {
     return !name || !name[0] || name[0] == '.' ||
            strcmp(name, "build") == 0 || strcmp(name, "vendor") == 0 ||
-           strcmp(name, "target") == 0 || strcmp(name, "node_modules") == 0;
+           strcmp(name, "target") == 0 || strcmp(name, "node_modules") == 0 ||
+           strcmp(name, "test-tmp") == 0 ||
+           strcmp(name, "test-tmp-reclaim") == 0;
 }
 
 static bool relevant_file(const char *path)
