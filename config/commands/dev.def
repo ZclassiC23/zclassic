@@ -1,0 +1,341 @@
+/* Checkout-local development commands. Never bind these to RPC/REST/MCP. */
+
+ZCL_COMMAND_READY_READ(
+    "dev.status", "dev", "", "Read the latest bounded native cycle verdict",
+    "dev,status,cycle,verdict", "zcl.command.empty_input.v1",
+    "zcl.dev_status.v1", "", "", "zclassic23 dev status",
+    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_dev_status)
+
+ZCL_COMMAND_BRANCH("dev.core", "dev", "Core boundary and guarded proof lanes",
+                   ZCL_COMMAND_LAYER_DEV)
+ZCL_COMMAND_BRANCH("dev.app", "dev", "Build capability-scoped C Apps",
+                   ZCL_COMMAND_LAYER_DEV)
+ZCL_COMMAND_BRANCH("dev.change", "dev", "Classify and apply source changes",
+                   ZCL_COMMAND_LAYER_DEV)
+ZCL_COMMAND_BRANCH("dev.loop", "dev", "Persistent save-to-verdict state machine",
+                   ZCL_COMMAND_LAYER_DEV)
+ZCL_COMMAND_BRANCH("dev.test", "dev", "Focused deterministic proof selection",
+                   ZCL_COMMAND_LAYER_DEV)
+ZCL_COMMAND_BRANCH("dev.generation", "dev", "Immutable generation provenance",
+                   ZCL_COMMAND_LAYER_DEV)
+ZCL_COMMAND_BRANCH("dev.diagnose", "dev", "Bounded failure capsule lookup",
+                   ZCL_COMMAND_LAYER_DEV)
+
+ZCL_COMMAND_READY_READ(
+    "dev.core.boundary", "dev.core", "", "Show the enforced Core/App ownership law",
+    "core,app,boundary,consensus,capabilities",
+    "zcl.command.empty_input.v1", "zcl.core_app_boundary.v1", "", "",
+    "zclassic23 dev core boundary",
+    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_dev_core_boundary)
+
+ZCL_COMMAND_PLANNED_READ(
+    "dev.core.proof", "dev.core", "", "Run mandatory Core parity proof lanes",
+    "core,consensus,parity,history,replay", "zcl.dev_core_proof_input.v1",
+    "zcl.dev_core_proof.v1", "files", "", "zclassic23 dev core proof",
+    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_LATENCY_BACKGROUND,
+    ZCL_COMMAND_COST_HIGH, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_TEST_RUN | ZCL_COMMAND_CAP_PROCESS_EXEC,
+    "native proof job extraction is not complete")
+
+ZCL_COMMAND_PLANNED_READ(
+    "dev.app.list", "dev.app", "", "List checkout App manifests",
+    "apps,manifest,checkout", "zcl.command.empty_input.v1",
+    "zcl.dev_app_index.v1", "", "", "zclassic23 dev app list",
+    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_APP_MANIFEST_READ,
+    "use app.list until the dev projection adds generation state")
+
+ZCL_COMMAND_READY_READ(
+    "dev.app.describe", "dev.app", "", "Describe an App manifest and its proofs",
+    "app,manifest,capabilities,simulations", "zcl.dev_app_ref_input.v1",
+    "zcl.dev_app.v1", "app_id", "app_id",
+    "zclassic23 dev app describe social",
+    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_APP_MANIFEST_READ,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT |
+        ZCL_COMMAND_TRAIT_DEV_ONLY,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_dev_app_describe)
+
+ZCL_COMMAND_READY_READ(
+    "dev.app.plan", "dev.app", "", "Plan one conventional App resource slice",
+    "app,resource,rails,plan", "zcl.dev_app_resource_input.v1",
+    "zcl.dev_app_plan.v1", "app_id,resource", "app_id,resource",
+    "zclassic23 dev app plan social posts",
+    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_CHECKOUT_READ,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT |
+        ZCL_COMMAND_TRAIT_DEV_ONLY,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_dev_app_plan)
+
+ZCL_COMMAND_PLANNED_COMMAND(
+    "dev.app.scaffold", "dev.app", "", "Materialize a conventional App resource slice",
+    "app,resource,rails,scaffold", "zcl.dev_app_resource_input.v1",
+    "zcl.dev_app_scaffold.v1", "app_id,resource", "app_id,resource",
+    "zclassic23 dev app scaffold social posts", ZCL_COMMAND_LAYER_DEV,
+    ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_DEV_MUTATION,
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_MODERATE, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_CHECKOUT_WRITE,
+    ZCL_COMMAND_TRAIT_DEV_ONLY,
+    "native bounded file materializer is not implemented")
+
+ZCL_COMMAND_READY_READ(
+    "dev.app.simulate", "dev.app", "", "Run deterministic App network scenarios",
+    "app,simulation,censorship,partition,replay,signature",
+    "zcl.dev_app_sim_input.v1", "zcl.dev_app_sim.v1",
+    "app_id,scenario,seed", "app_id",
+    "zclassic23 dev app simulate social --seed=0x534f4349414c0001",
+    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_MODERATE, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_APP_SIMULATE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT |
+        ZCL_COMMAND_TRAIT_DEV_ONLY,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_dev_app_simulate)
+
+ZCL_COMMAND_PLANNED_READ(
+    "dev.app.inspect", "dev.app", "", "Inspect a resident App generation",
+    "app,generation,state,leases", "zcl.dev_app_ref_input.v1",
+    "zcl.dev_app_inspect.v1", "app_id", "app_id",
+    "zclassic23 dev app inspect social", ZCL_COMMAND_LAYER_DEV,
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "public App ABI is not connected to resident generations yet")
+
+ZCL_COMMAND_PLANNED_COMMAND(
+    "dev.app.publish", "dev.app", "", "Atomically publish a proven App generation",
+    "app,publish,hotswap,generation,quiescence", "zcl.dev_app_publish_input.v1",
+    "zcl.dev_app_publish.v1", "app_id,idempotency_key", "app_id",
+    "zclassic23 dev app publish social --idempotency-key=<key>",
+    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_DEV_MUTATION, ZCL_COMMAND_SCOPE_DEV_LANE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_JOB,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_CONFIRM_IDEMPOTENCY, ZCL_COMMAND_LANE_DEV,
+    ZCL_COMMAND_CAP_COMPILER | ZCL_COMMAND_CAP_TEST_RUN |
+        ZCL_COMMAND_CAP_HOTSWAP,
+    ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    "App ABI generation publication is not wired yet")
+
+ZCL_COMMAND_READY_READ(
+    "dev.change.plan", "dev.change", "", "Classify files and select the smallest proof",
+    "change,impact,classify,proof,hotswap,reload", "zcl.dev_change_input.v1",
+    "zcl.dev_plan.v1", "files", "", "zclassic23 dev change plan --input='{\"files\":[\"apps/social/app.def\"]}'",
+    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_CHECKOUT_READ,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT |
+        ZCL_COMMAND_TRAIT_DEV_ONLY,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_dev_change_plan)
+
+ZCL_COMMAND_COMPAT_COMMAND(
+    "dev.change.apply", "dev.change", "dev.change.cycle",
+    "Run one classify, proof, build, and publication transaction",
+    "change,apply,build,hotswap,reload,rollback", "zcl.dev_change_input.v1",
+    "zcl.dev_cycle.v1", "files", "", "zclassic23 dev change apply --input='{\"files\":[\"apps/social/app.def\"]}'",
+    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_DEV_MUTATION, ZCL_COMMAND_SCOPE_DEV_LANE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_JOB,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_DEV,
+    ZCL_COMMAND_CAP_PROCESS_EXEC | ZCL_COMMAND_CAP_TEST_RUN |
+        ZCL_COMMAND_CAP_COMPILER | ZCL_COMMAND_CAP_DEV_ACTIVATE,
+    ZCL_COMMAND_TRAIT_DEV_ONLY,
+    "cycle backend still invokes fixed Make compatibility targets",
+    "zclassic23-dev dev change cycle")
+
+ZCL_COMMAND_PLANNED_COMMAND(
+    "dev.loop.ensure", "dev.loop", "dev.loop.watch",
+    "Idempotently ensure one persistent native watcher", "loop,ensure,watcher,inotify",
+    "zcl.dev_loop_ensure_input.v1", "zcl.dev_loop_status.v1",
+    "root", "", "zclassic23 dev loop ensure --input='{\"root\":\".\"}'",
+    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_DEV_MUTATION, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_DEV_STATE_WRITE,
+    ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    "blocking watcher has not been extracted into ensure semantics")
+
+ZCL_COMMAND_COMPAT_READ(
+    "dev.loop.status", "dev.loop", "dev.loop.heartbeat",
+    "Read watcher identity, epoch, and latest verdict",
+    "loop,status,heartbeat,epoch", "zcl.command.empty_input.v1",
+    "zcl.dev_loop_status.v1", "", "", "zclassic23 dev loop status",
+    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_DEV_STATE_READ, ZCL_COMMAND_TRANSPORT_NATIVE,
+    "zclassic23-dev dev loop heartbeat")
+
+ZCL_COMMAND_PLANNED_READ(
+    "dev.loop.wait", "dev.loop", "", "Wait for one verdict after a source epoch",
+    "loop,wait,epoch,verdict", "zcl.dev_loop_wait_input.v1",
+    "zcl.dev_cycle.v1", "after_epoch,timeout_ms,view", "",
+    "zclassic23 dev loop wait --input='{"after_epoch":41}'",
+    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_PERSISTENT,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "durable epoch wait and wakeup protocol is not implemented")
+
+ZCL_COMMAND_PLANNED_READ(
+    "dev.loop.events", "dev.loop", "", "Stream resumable source and cycle events",
+    "loop,events,jsonl,cursor,epoch", "zcl.dev_loop_events_input.v1",
+    "zcl.dev_loop_event.v1", "after,heartbeat_ms", "",
+    "zclassic23 dev loop events --format=jsonl",
+    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_PERSISTENT,
+    ZCL_COMMAND_COST_STREAM, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "resumable NDJSON event journal is not implemented")
+
+ZCL_COMMAND_PLANNED_COMMAND(
+    "dev.loop.stop", "dev.loop", "", "Stop one identified native watcher",
+    "loop,stop,watcher", "zcl.dev_loop_stop_input.v1",
+    "zcl.dev_loop_status.v1", "watcher_id", "watcher_id",
+    "zclassic23 dev loop stop <watcher-id>", ZCL_COMMAND_LAYER_DEV,
+    ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_DEV_MUTATION,
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_WRITE,
+    ZCL_COMMAND_TRAIT_DEV_ONLY,
+    "identified watcher lifecycle is not implemented")
+
+ZCL_COMMAND_PLANNED_READ(
+    "dev.test.plan", "dev.test", "", "Map changed files to mandatory proof groups",
+    "test,plan,impact,groups", "zcl.dev_change_input.v1",
+    "zcl.dev_test_plan.v1", "files", "", "zclassic23 dev test plan --input='{\"files\":[]}'",
+    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_CHECKOUT_READ,
+    "test-plan projection is not separated from change.plan yet")
+
+ZCL_COMMAND_COMPAT_READ(
+    "dev.test.run", "dev.test", "dev.test.focused",
+    "Run one exact prebuilt focused test group", "test,focused,group",
+    "zcl.dev_test_run_input.v1", "zcl.dev_focused_test.v1", "group", "group",
+    "zclassic23 dev test run hotswap_simnet", ZCL_COMMAND_LAYER_DEV,
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_LATENCY_BACKGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_PROCESS_EXEC | ZCL_COMMAND_CAP_TEST_RUN,
+    ZCL_COMMAND_TRANSPORT_NATIVE, "zclassic23-dev dev test focused")
+
+ZCL_COMMAND_COMPAT_READ(
+    "dev.test.sim", "dev.test", "", "Run the generic hot-swap network proof",
+    "test,simulation,hotswap,network", "zcl.dev_test_sim_input.v1",
+    "zcl.dev_sim.v1", "app_id", "", "zclassic23 dev test sim",
+    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_MODERATE, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_PROCESS_EXEC | ZCL_COMMAND_CAP_TEST_RUN,
+    ZCL_COMMAND_TRANSPORT_NATIVE, "zclassic23-dev dev test sim")
+
+ZCL_COMMAND_PLANNED_READ(
+    "dev.test.replay", "dev.test", "", "Replay one deterministic failure seed",
+    "test,replay,seed,deterministic", "zcl.dev_test_replay_input.v1",
+    "zcl.dev_test_replay.v1", "seed,scenario", "seed",
+    "zclassic23 dev test replay 1234", ZCL_COMMAND_LAYER_DEV,
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_APP_SIMULATE,
+    "generic seed replay registry is not implemented")
+
+ZCL_COMMAND_BRANCH("dev.test.background", "dev.test", "Background proof freshness",
+                   ZCL_COMMAND_LAYER_DEV)
+ZCL_COMMAND_PLANNED_READ(
+    "dev.test.background.status", "dev.test.background", "",
+    "Read lint, sanitizer, replay, and reproducibility freshness",
+    "test,background,quality,freshness", "zcl.command.empty_input.v1",
+    "zcl.dev_background_quality.v1", "", "",
+    "zclassic23 dev test background status", ZCL_COMMAND_LAYER_DEV,
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_INSTANT, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "native background-quality projection is not implemented")
+
+ZCL_COMMAND_PLANNED_READ(
+    "dev.generation.current", "dev.generation", "", "Show current and last-good generations",
+    "generation,current,last-good,hotswap", "zcl.command.empty_input.v1",
+    "zcl.dev_generation_status.v1", "", "", "zclassic23 dev generation current",
+    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "native immutable-generation reader is not implemented")
+ZCL_COMMAND_PLANNED_READ(
+    "dev.generation.history", "dev.generation", "", "Page accepted and rejected generations",
+    "generation,history,rejected,quarantine", "zcl.page_input.v1",
+    "zcl.dev_generation_history.v1", "cursor,max_items", "",
+    "zclassic23 dev generation history", ZCL_COMMAND_LAYER_DEV,
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "native generation history reader is not implemented")
+ZCL_COMMAND_PLANNED_COMMAND(
+    "dev.generation.rollback", "dev.generation", "", "Restore verified last-good in the dev lane",
+    "generation,rollback,last-good,recovery", "zcl.dev_generation_rollback_input.v1",
+    "zcl.dev_generation_rollback.v1", "intent_id,effect_digest", "",
+    "zclassic23 dev generation rollback --input='<intent>'", ZCL_COMMAND_LAYER_DEV,
+    ZCL_COMMAND_EFFECT_DESTRUCTIVE, ZCL_COMMAND_RISK_DEV_MUTATION,
+    ZCL_COMMAND_SCOPE_DEV_LANE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_JOB, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_HIGH, ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_DEV, ZCL_COMMAND_CAP_DEV_ACTIVATE,
+    ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_REVERSIBLE,
+    "native activation engine is not implemented")
+ZCL_COMMAND_PLANNED_COMMAND(
+    "dev.generation.compact", "dev.generation", "", "Compact unleased old generations",
+    "generation,compact,leases,retention", "zcl.dev_generation_compact_input.v1",
+    "zcl.dev_generation_compact.v1", "intent_id,effect_digest", "",
+    "zclassic23 dev generation compact --input='<intent>'", ZCL_COMMAND_LAYER_DEV,
+    ZCL_COMMAND_EFFECT_DESTRUCTIVE, ZCL_COMMAND_RISK_DEV_MUTATION,
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_JOB, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_MODERATE, ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_WRITE,
+    ZCL_COMMAND_TRAIT_DEV_ONLY,
+    "native lease-aware compaction is not implemented")
+
+ZCL_COMMAND_COMPAT_READ(
+    "dev.diagnose.latest", "dev.diagnose", "", "Read the latest failure capsule",
+    "diagnose,failure,capsule,latest", "zcl.command.empty_input.v1",
+    "zcl.dev_failure.v1", "", "", "zclassic23 dev diagnose latest",
+    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_DEV_STATE_READ, ZCL_COMMAND_TRANSPORT_NATIVE,
+    "zclassic23-dev dev diagnose latest")
+ZCL_COMMAND_PLANNED_READ(
+    "dev.diagnose.show", "dev.diagnose", "", "Show one durable failure artifact",
+    "diagnose,failure,artifact", "zcl.dev_failure_ref_input.v1",
+    "zcl.dev_failure.v1", "failure_id", "failure_id",
+    "zclassic23 dev diagnose show <failure-id>", ZCL_COMMAND_LAYER_DEV,
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "durable failure artifact store is not implemented")

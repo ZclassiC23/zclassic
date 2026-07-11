@@ -121,8 +121,20 @@ MCP_SRCS = $(call zcl_filter_ephemeral_sources,\
 	$(wildcard tools/mcp/*.c) $(wildcard tools/mcp/controllers/*.c) \
 	$(wildcard tools/mcp/views/*.c))
 
+# Native development control plane.  These C adapters are the AI-facing
+# save -> classify -> prove -> publish loop; tools/dev/*.sh remain temporary
+# compatibility/self-test fixtures, not the primary interface.
+DEVLOOP_INCLUDES = -Itools/dev
+DEVLOOP_SRCS = $(call zcl_filter_ephemeral_sources,\
+	$(wildcard tools/dev/*.c))
+
+# Stable public Core -> App ABI. App generations compile against this include
+# root only; it deliberately exposes no consensus, storage, wallet-key, socket,
+# or boot internals.
+APP_SDK_INCLUDES = -Isdk/include
+
 NODE_ENTRY_SRCS = src/main.c tools/mcp_server.c
-ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS) $(DOMAIN_SRCS) $(APPLICATION_SRCS) $(ADAPTERS_SRCS) $(MCP_SRCS)
+ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS) $(DOMAIN_SRCS) $(APPLICATION_SRCS) $(ADAPTERS_SRCS) $(MCP_SRCS) $(DEVLOOP_SRCS)
 ALL_OBJS = $(patsubst %.c,$(OBJ_DIR)/%.o,$(ALL_SRCS))
 
 DEV_SRCS = $(NODE_ENTRY_SRCS) $(ALL_SRCS)
@@ -150,7 +162,7 @@ HARDEN_LDFLAGS = -pie -Wl,-z,relro -Wl,-z,now -Wl,-z,noexecstack -fcf-protection
 CFLAGS = -std=c23 -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) -flto=auto -Wall -Wextra -Werror -pedantic \
 	$(HARDEN_CFLAGS) \
 	-Wno-stringop-overflow -Wno-unused-result \
-	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(MCP_INCLUDES) \
+	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(MCP_INCLUDES) $(DEVLOOP_INCLUDES) $(APP_SDK_INCLUDES) \
 	-Ilib/test/include \
 	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE -DZCL_BUILD_COMMIT=\"$(BUILD_COMMIT)\" -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
 	$(WEBKIT_DEF) $(WEBKIT_CFLAGS)
@@ -394,7 +406,7 @@ test-parallel: test_parallel
 # the default `all`), so running build/bin/test_parallel directly after editing a test
 # can false-green an old binary or report "matched no groups" for a new test.
 # `make t ONLY=<group>` always rebuilds the harness first, closing that trap.
-.PHONY: t t-fast syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop dev-watch dev-watch-once dev-watch-selftest immutable-history-canaries historical-canaries agent-mcp-call agent-mcp-call-hot agent-mcp-call-dev agent-dev-status agent-clear-stale-dev-reindex agent-doctor stage-dev-bin agent-stage-dev deploy-dev-fast agent-deploy-fast
+.PHONY: t t-fast syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop dev-watch dev-watch-once dev-watch-selftest dev-activation-selftest dev-loop-selftest agent-index dev-loop-bench dev-loop-bench-selftest hotswap-sim immutable-history-canaries historical-canaries agent-mcp-call agent-mcp-call-hot agent-mcp-call-dev agent-dev-status agent-clear-stale-dev-reindex agent-doctor stage-dev-bin agent-stage-dev deploy-dev-fast agent-deploy-fast
 
 # Run ONE test group, always rebuilding the harness first:
 #   make t ONLY=service_state_driver
@@ -463,58 +475,79 @@ $(ZCLASSIC23_DEV_BIN): $(VIEW_GEN_HEADERS) $(BUILD_COMMIT_STAMP) $(DEV_OBJS) | $
 HOTSWAP_OBJ_DIR = $(BUILD_DIR)/hotswap-obj
 HOTSWAP_SO_DIR  = $(BUILD_DIR)/hotswap
 
-# Per-generation object: dev cflags + -fPIC + -DZCL_HOTSWAP_GEN so a pilot
-# controller's ZCL_HOTSWAP_EXPORT_ROUTES(...) macro emits zcl_hotswap_gen_init.
-$(HOTSWAP_OBJ_DIR)/%.o: %.c $(VIEW_GEN_HEADERS)
-	@mkdir -p $(dir $@)
-	$(CC) $(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_GEN -c -o $@ $<
-
 .PHONY: hotswap-so hotswap
 # make hotswap-so FILES="tools/mcp/controllers/app_controller.c ..."
-# Compiles the named TU(s) to hotswap objects and links a timestamped
-# generation .so. The .so path is the LAST line printed.
+# Compile one manifest-admitted stateless provider into an immutable,
+# input-addressed generation.  The digest covers the compiler identity, exact
+# C23/dev flags, source identity, and fully preprocessed source (therefore every
+# included/generated header).  It is embedded in zcl_hotswap_manifest_v2 and
+# the .so path is the LAST line printed.  Multiple providers remain
+# reload_required until they share one generated aggregate manifest/entrypoint.
 hotswap-so: $(VIEW_GEN_HEADERS)
 	@if [ -z "$(FILES)" ]; then \
 	  echo "usage: make hotswap-so FILES=\"tools/mcp/controllers/app_controller.c\"" >&2; \
 	  exit 2; fi
-	@mkdir -p $(HOTSWAP_SO_DIR)
-	@objs=""; for f in $(FILES); do \
-	  o="$(HOTSWAP_OBJ_DIR)/$${f%.c}.o"; \
-	  $(MAKE) --no-print-directory "$$o" >&2 || exit 1; \
-	  objs="$$objs $$o"; \
+	@set -eu; \
+	count=0; selected=""; \
+	eligible="$$(sed -n 's/^[[:space:]]*HOTSWAP_ELIGIBLE("\([^"]*\)").*/\1/p' config/hotswap_eligible.def)"; \
+	for f in $(FILES); do \
+	  count=$$((count + 1)); selected="$$f"; \
+	  [ -f "$$f" ] || { echo "hotswap-so: source does not exist: $$f" >&2; exit 2; }; \
+	  printf '%s\n' "$$eligible" | grep -Fqx "$$f" || { \
+	    echo "hotswap-so: reload_required: $$f is not admitted by config/hotswap_eligible.def" >&2; exit 2; }; \
 	done; \
-	so="$(HOTSWAP_SO_DIR)/gen-$$(date +%s).so"; \
-	$(CC) -shared -o "$$so" $$objs >&2 || exit 1; \
-	echo "hotswap-so: linked $$so" >&2; \
+	[ "$$count" -eq 1 ] || { \
+	  echo "hotswap-so: reload_required: v2 pilot admits one atomic provider per generation (got $$count)" >&2; exit 2; }; \
+	mkdir -p "$(HOTSWAP_OBJ_DIR)" "$(HOTSWAP_SO_DIR)"; \
+	inputs="$$(mktemp "$(HOTSWAP_SO_DIR)/.inputs.XXXXXX")"; \
+	tmp_o="$$(mktemp "$(HOTSWAP_OBJ_DIR)/.generation.XXXXXX.o")"; \
+	tmp_so="$$(mktemp "$(HOTSWAP_SO_DIR)/.generation.XXXXXX.so")"; \
+	trap 'rm -f "$$inputs" "$$tmp_o" "$$tmp_so"' EXIT HUP INT TERM; \
+	{ \
+	  printf '%s\n' 'schema=zcl.hotswap_inputs.v2'; \
+	  printf 'compiler='; $(CC) --version 2>/dev/null | head -1; \
+	  printf '%s\n' 'flags=$(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_GEN -DZCL_HOTSWAP_BUILD_IDENTITY=<build> -DZCL_HOTSWAP_SOURCE_ID=<source> -DZCL_HOTSWAP_INPUT_DIGEST=<sha256>'; \
+	  printf 'source=%s\n' "$$selected"; \
+	  $(CC) $(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_GEN \
+	    -DZCL_HOTSWAP_BUILD_IDENTITY=\"$(BUILD_COMMIT)\" \
+	    -DZCL_HOTSWAP_SOURCE_ID=\"$$selected\" -E -P "$$selected"; \
+	} > "$$inputs"; \
+	digest="$$(sha256sum "$$inputs" | awk '{print $$1}')"; \
+	case "$$digest" in *[!0-9a-f]*|'') echo "hotswap-so: invalid input digest" >&2; exit 1;; esac; \
+	o="$(HOTSWAP_OBJ_DIR)/gen-$$digest.o"; \
+	so="$(HOTSWAP_SO_DIR)/gen-$$digest.so"; \
+	$(CC) $(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_GEN \
+	  -DZCL_HOTSWAP_BUILD_IDENTITY=\"$(BUILD_COMMIT)\" \
+	  -DZCL_HOTSWAP_SOURCE_ID=\"$$selected\" \
+	  -DZCL_HOTSWAP_INPUT_DIGEST=\"$$digest\" \
+	  -MMD -MP -MF "$(HOTSWAP_OBJ_DIR)/gen-$$digest.d" \
+	  -c -o "$$tmp_o" "$$selected" >&2; \
+	$(CC) -shared -Wl,--build-id=none -Wl,-z,relro -Wl,-z,now \
+	  -Wl,-z,noexecstack -o "$$tmp_so" "$$tmp_o" >&2; \
+	if [ ! -e "$$o" ]; then mv "$$tmp_o" "$$o"; else rm -f "$$tmp_o"; fi; \
+	if [ ! -e "$$so" ]; then mv "$$tmp_so" "$$so"; else rm -f "$$tmp_so"; fi; \
+	printf '{"schema":"zcl.hotswap_build.v2","input_digest":"%s","source":"%s","artifact":"%s"}\n' \
+	  "$$digest" "$$selected" "$$so" > "$(HOTSWAP_SO_DIR)/gen-$$digest.json.tmp"; \
+	mv -f "$(HOTSWAP_SO_DIR)/gen-$$digest.json.tmp" "$(HOTSWAP_SO_DIR)/gen-$$digest.json"; \
+	echo "hotswap-so: linked immutable $$so" >&2; \
 	echo "$$so"
 
 # make hotswap FILES="..." [PROBE=zcl_tool]
 # Build the generation .so, then hand it to zcl_agent_hotswap. NOTE: a
-# `mcpcall` runs a one-shot in-process dispatcher, so this proves the
-# load+replace end to end and is the smoke-test path; a swap that PERSISTS in
-# the long-running node happens when the tool is dispatched through that node's
-# own MCP server (see docs/work/HOTSWAP.md). This target never starts/stops any
-# service: it only runs the command if a dev node process is already up,
-# otherwise it just prints the exact command for you to run.
+# The dev-only `dev_hotswap` RPC executes inside the already-running isolated
+# dev node, so the committed router generation persists until its next process
+# restart.  This target never starts/stops any service and can never target the
+# canonical or soak lane.
 hotswap: $(VIEW_GEN_HEADERS)
-	@so=$$($(MAKE) --no-print-directory hotswap-so FILES="$(FILES)"); \
-	[ -n "$$so" ] || exit 1; \
-	if [ -n "$(PROBE)" ]; then \
-	  argj="{\"so_path\":\"$$so\",\"probe_tool\":\"$(PROBE)\"}"; \
-	else \
-	  argj="{\"so_path\":\"$$so\"}"; \
-	fi; \
-	cmd="$(ZCLASSIC23_DEV_BIN) mcpcall zcl_agent_hotswap '$$argj'"; \
-	running=0; \
-	for c in /proc/[0-9]*/cmdline; do \
-	  tr '\0' ' ' < "$$c" 2>/dev/null | grep -q 'zclassic23-dev' && { running=1; break; }; \
-	done; \
-	if [ "$$running" = 1 ] && [ -x "$(ZCLASSIC23_DEV_BIN)" ]; then \
-	  echo "hotswap: dev node detected — dispatching:"; echo "  $$cmd"; \
-	  eval "$$cmd"; \
-	else \
-	  echo "hotswap: no running dev node detected; run:"; echo "  $$cmd"; \
-	fi
+	@if [ -z "$(FILES)" ]; then \
+	  echo "usage: make hotswap FILES=\"tools/mcp/controllers/app_controller.c\" [PROBE=zcl_name_list]" >&2; \
+	  exit 2; fi
+	@files="$$(mktemp "$(BUILD_DIR)/.hotswap-files.XXXXXX")"; \
+	trap 'rm -f "$$files"' EXIT HUP INT TERM; \
+	for f in $(FILES); do printf '%s\n' "$$f" >> "$$files"; done; \
+	ZCL_DEV_HOTSWAP_FILES_FILE="$$files" \
+	  ZCL_DEV_HOTSWAP_PROBE="$(PROBE)" \
+	  tools/dev/hotswap-running-dev.sh
 
 # Full no-link syntax check across every TU in one shot (no incremental state).
 syntax-check: $(VIEW_GEN_HEADERS)
@@ -572,18 +605,40 @@ agent-loop agent-dev-loop:
 	    exit 2 ;; \
 	esac
 
-# JavaScript-like save loop for C: debounce relevant source changes, run the
-# existing changed-file/focused checks, link the non-LTO dev binary, and update
-# ONLY the isolated zcl23-dev lane.  Use MODE=stage to avoid a restart or
-# MODE=off for build/test feedback only.  Canonical and soak are never targets.
+# JavaScript-like save loop for C: debounce relevant source changes, classify
+# them, run the smallest mapped verification path, and update ONLY the isolated
+# zcl23-dev lane. `auto` prefers a proven persistent hot-swap and otherwise
+# uses transactional immutable process activation. Canonical and soak are
+# never targets.
 dev-watch:
-	@ZCL_DEV_WATCH_MODE="$${MODE:-$${ZCL_DEV_WATCH_MODE:-deploy}}" tools/dev/watch-dev-lane.sh
+	@ZCL_DEV_WATCH_MODE="$${MODE:-$${ZCL_DEV_WATCH_MODE:-auto}}" tools/dev/watch-dev-lane.sh
 
 dev-watch-once:
-	@ZCL_DEV_WATCH_ONCE=1 ZCL_DEV_WATCH_MODE="$${MODE:-$${ZCL_DEV_WATCH_MODE:-deploy}}" tools/dev/watch-dev-lane.sh
+	@ZCL_DEV_WATCH_ONCE=1 ZCL_DEV_WATCH_MODE="$${MODE:-$${ZCL_DEV_WATCH_MODE:-auto}}" tools/dev/watch-dev-lane.sh
 
 dev-watch-selftest:
 	@tools/dev/watch-dev-lane.sh --self-test
+
+dev-activation-selftest:
+	@tools/dev/deploy-dev-lane.sh --self-test
+
+agent-index:
+	@bash tools/dev/generate-compdb.sh
+
+dev-loop-bench:
+	@bash tools/dev/dev-loop-bench.sh
+
+dev-loop-bench-selftest:
+	@bash tools/dev/dev-loop-bench.sh --self-test
+
+# Fast deterministic network/generation proof. The focused group models
+# multiple peers plus an in-flight old-generation call; sim-fast remains the
+# broader seeded P2P suite.
+hotswap-sim: test_parallel_fast
+	@ulimit -s unlimited && $(TEST_PARALLEL_FAST_BIN) --only=hotswap_simnet
+
+dev-loop-selftest: dev-watch-selftest dev-activation-selftest dev-loop-bench-selftest hotswap-sim
+	@echo "dev-loop-selftest: PASS"
 
 remote-node-update:
 	@if [ -n "$${ZCL_REMOTE_HOST:-}" ]; then \
@@ -2297,7 +2352,10 @@ deploy-dev:
 	@./tools/dev/deploy-dev-lane.sh
 
 deploy-dev-fast agent-deploy-fast:
-	@ZCL_DEV_DEPLOY_BUILD=fast ./tools/dev/deploy-dev-lane.sh
+	@$(MAKE) fast-rebuild
+	@ZCL_DEV_DEPLOY_BUILD=fast ZCL_DEV_USE_PREBUILT=1 \
+	  ZCL_DEV_BUILD_ARTIFACT="$(abspath $(ZCLASSIC23_DEV_BIN))" \
+	  ./tools/dev/deploy-dev-lane.sh
 
 agent-mcp-call:
 	@if [ -z "$(TOOL)" ]; then \
@@ -2347,11 +2405,9 @@ agent-doctor:
 
 stage-dev-bin agent-stage-dev:
 	@$(MAKE) fast-rebuild
-	@mkdir -p "$(dir $(ZCL_AGENT_DEV_BIN))"
-	@tmp="$$(mktemp "$(ZCL_AGENT_DEV_BIN).next.XXXXXX")"; \
-	  install -m 755 "$(ZCLASSIC23_DEV_BIN)" "$$tmp"; \
-	  mv -f "$$tmp" "$(ZCL_AGENT_DEV_BIN)"; \
-	  echo "stage-dev-bin: staged $(ZCLASSIC23_DEV_BIN) at $(ZCL_AGENT_DEV_BIN) for the next zcl23-dev restart"
+	@ZCL_DEV_DEPLOY_BUILD=fast ZCL_DEV_USE_PREBUILT=1 \
+	  ZCL_DEV_BUILD_ARTIFACT="$(abspath $(ZCLASSIC23_DEV_BIN))" \
+	  ./tools/dev/deploy-dev-lane.sh --stage
 
 lane-health:
 	@./tools/scripts/lane_health.sh
@@ -2702,6 +2758,16 @@ check-hotswap-dev-only:
 	    fi; \
 	done
 	@echo "  OK: hot-swap dynamic loading is dev-only"
+
+# Tier-1 hot-swap eligibility manifest (config/hotswap_eligible.def) is kept
+# honest by two REAL gates (self-tested in test_make_lint_gates.c): eligible
+# TUs must be app-layer surfaces, and must hold no mutable file-scope statics
+# (a .so gets its own zero copy). See docs/work/HOTSWAP.md.
+check-hotswap-eligible-scope:
+	@tools/lint/check_hotswap_eligible_scope.sh
+
+check-hotswap-static-state:
+	@tools/lint/check_hotswap_static_state.sh
 
 check-raw-malloc:
 	@echo "══ LINT: raw malloc/calloc/realloc in production code ══"
@@ -3161,7 +3227,7 @@ check-honest-witness:
 	@echo "══ LINT: honest witness (E12) ══"
 	@ZCL_LINT_MODE=FAIL ./tools/lint/check_honest_witness.sh
 
-lint: check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vendor-provenance
+lint: check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-one-result-type check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vendor-provenance
 	@echo "══ LINT: all checks passed ══"
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the

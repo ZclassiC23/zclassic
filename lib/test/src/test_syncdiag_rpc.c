@@ -6400,6 +6400,9 @@ syncdiag_net_split_done:
             json_get(&build, "incremental_compile");
         const struct json_value *dev_binary =
             json_get(&build, "dev_node_binary");
+        const struct json_value *indexing = json_get(&build, "indexing");
+        const struct json_value *dev_loop_benchmark =
+            json_get(&build, "dev_loop_benchmark");
         const struct json_value *cache = json_get(&build, "cache");
         const struct json_value *history =
             json_get(&build, "immutable_history_canaries");
@@ -6493,6 +6496,25 @@ syncdiag_net_split_done:
                                                         "enabled"));
         ok = ok && strcmp(json_get_str(json_get(dev_binary, "binary")),
                           "build/bin/zclassic23-dev") == 0;
+        ok = ok && indexing &&
+            strcmp(json_get_str(json_get(indexing, "schema")),
+                   "zcl.agent_index_runtime.v1") == 0;
+        ok = ok && indexing &&
+            strcmp(json_get_str(json_get(indexing, "command")),
+                   "make agent-index") == 0;
+        ok = ok && indexing &&
+            strcmp(json_get_str(json_get(indexing, "generator")),
+                   "tools/dev/generate-compdb.sh") == 0;
+        ok = ok && indexing && json_get(indexing, "freshness") != NULL;
+        ok = ok && indexing && json_get(indexing, "clangd_optional") != NULL;
+        ok = ok && dev_loop_benchmark &&
+            strcmp(json_get_str(json_get(dev_loop_benchmark, "schema")),
+                   "zcl.dev_loop_bench.v1") == 0;
+        ok = ok && dev_loop_benchmark &&
+            json_get(dev_loop_benchmark, "slo") != NULL;
+        ok = ok && find_object_with_str(commands, "name", "agent_index") != NULL;
+        ok = ok && find_object_with_str(commands, "name",
+                                         "dev_loop_benchmark") != NULL;
         ok = ok && strcmp(json_get_str(json_get(dev_binary,
                                                 "native_status_command")),
                           "zclassic23 agentdevstatus") == 0;

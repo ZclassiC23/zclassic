@@ -1110,7 +1110,10 @@ int main(int argc, char **argv)
     failures += test_chain_restore_service();
     failures += test_chain_activation_controller();
     failures += test_mcp_router();
+    failures += test_dev_mcp_rpc_bridge();
     failures += test_hotswap_loader();
+    failures += test_hotswap_simnet();
+    failures += test_dev_platform();
     failures += test_mcp_controllers();
     failures += test_mcp_middleware();
     failures += test_mcp_metrics();

@@ -49,6 +49,33 @@ static bool has_unfillable_required(const struct mcp_tool_route *r)
     return false;
 }
 
+/* Candidate-local preflight must not depend on the health of the process it
+ * is about to replace.  Validate the immutable route registry and every
+ * generated input schema without dispatching handlers (most handlers proxy to
+ * the currently-running node).  The exhaustive mode remains available for
+ * background/live diagnostics. */
+static const char *registry_route_error(const struct mcp_tool_route *r)
+{
+    char schema[8192];
+    struct json_value parsed = {0};
+
+    if (!r || !r->name || !r->name[0] || !r->handler)
+        return "malformed-route";
+    if (mcp_router_find(r->name) != r)
+        return "registry-lookup-mismatch";
+
+    size_t wrote = mcp_router_input_schema_json(r, schema, sizeof(schema));
+    if (wrote == 0 || wrote >= sizeof(schema) - 1)
+        return "schema-generation-failed";
+    if (!json_read(&parsed, schema, wrote)) {
+        json_free(&parsed);
+        return "schema-invalid-json";
+    }
+    bool valid = parsed.type == JSON_OBJ;
+    json_free(&parsed);
+    return valid ? NULL : "schema-not-object";
+}
+
 /* ── Handlers ────────────────────────────────────────────────── */
 
 static int h_zcl_tools_list(const struct mcp_request *req,
@@ -70,7 +97,9 @@ static int h_zcl_tools_list(const struct mcp_request *req,
 static int h_zcl_self_test(const struct mcp_request *req,
                             struct mcp_response *res)
 {
-    (void)req;
+    const char *mode = json_get_str_or(req ? req->args : NULL,
+                                       "mode", "full");
+    bool registry_only = strcmp(mode, "registry") == 0;
 
     size_t cap = 131072;
     char *out = zcl_malloc(cap, "self_test_body");
@@ -78,7 +107,7 @@ static int h_zcl_self_test(const struct mcp_request *req,
         return mcp_res_set_oom(res, cap, "mcp.meta", "self-test response");
     size_t pos = 0;
     pos += (size_t)snprintf(out + pos, cap - pos,
-                            "{\"results\":[");
+                            "{\"mode\":\"%s\",\"results\":[", mode);
 
     size_t total = 0, passed = 0, failed = 0, skipped = 0;
     bool first = true;
@@ -97,7 +126,16 @@ static int h_zcl_self_test(const struct mcp_request *req,
         if (override && json_read(&override_val, override, strlen(override)))
             have_override = true;
 
-        if (r->flags & MCP_TOOL_FLAG_DESTRUCTIVE) {
+        if (registry_only) {
+            reason = registry_route_error(r);
+            if (reason) {
+                status = "fail";
+                failed++;
+            } else {
+                status = "pass";
+                passed++;
+            }
+        } else if (r->flags & MCP_TOOL_FLAG_DESTRUCTIVE) {
             status = "skipped";
             reason = "destructive";
             skipped++;
@@ -853,6 +891,13 @@ static const struct mcp_param_spec p_logtail[] = {
       0, 0, 0, 64, NULL, NULL },
 };
 
+static const struct mcp_param_spec p_self_test[] = {
+    { "mode", MCP_PARAM_STR, false,
+      "full dispatches safe handlers; registry validates candidate-local "
+      "route and schema integrity without contacting a running node",
+      0, 0, 0, 16, "full,registry", "\"full\"" },
+};
+
 static const struct mcp_param_spec p_admin[] = {
     { "since", MCP_PARAM_INT, false,
       "Unix-seconds timestamp: resolves to the nearest metrics baseline "
@@ -868,9 +913,9 @@ static const struct mcp_tool_route k_routes[] = {
       "description, and parameter schema. Self-documenting surface.",
       NULL, 0, h_zcl_tools_list, 0, NULL },
     { "zcl_self_test", "ops",
-      "Call every registered tool with safe defaults, reporting "
-      "pass/fail/skip. Destructive tools are skipped.",
-      NULL, 0, h_zcl_self_test,
+      "Validate every registered tool, reporting pass/fail/skip. mode=full "
+      "dispatches safe handlers; mode=registry is bounded and candidate-local.",
+      p_self_test, PARAM_COUNT(p_self_test), h_zcl_self_test,
       .flags = MCP_TOOL_FLAG_DESTRUCTIVE /* avoid recursion */ },
     { "zcl_logtail", "ops",
       "Tail the structured event log. Optional domain prefix filter.",

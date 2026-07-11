@@ -53,6 +53,13 @@
 #define RAW_MALLOC_OK_FIXTURE_DST_REL "app/_raw_malloc_ok_lint_fixture_tmp.c"
 #define RAW_SQLITE_SCRIPT_REL "tools/scripts/check_raw_sqlite.sh"
 #define RAW_MALLOC_SCRIPT_REL "tools/scripts/check_raw_malloc.sh"
+#define HOTSWAP_SCOPE_SCRIPT_REL  "tools/lint/check_hotswap_eligible_scope.sh"
+#define HOTSWAP_STATIC_SCRIPT_REL "tools/lint/check_hotswap_static_state.sh"
+#define HOTSWAP_MANIFEST_REL "config/hotswap_eligible.def"
+#define HOTSWAP_BAD_SCOPE_MANIFEST_REL \
+    "lib/test/fixtures/hotswap_manifest_bad_scope.def"
+#define HOTSWAP_BAD_STATIC_MANIFEST_REL \
+    "lib/test/fixtures/hotswap_manifest_bad_static.def"
 #define GIT_HOOKS_SCRIPT_REL "tools/scripts/check_git_hooks_installed.sh"
 #define GIT_HOOKS_PRE_PUSH_REL "tools/githooks/pre-push"
 
@@ -1922,6 +1929,56 @@ static int meta_gate_empty_scan_trips(const char *script_rel,
  * guaranteed-empty dir (it EXISTS — a bare -d check would pass — but holds zero
  * source files, the exact hollow vector). See
  * docs/work/lint-gate-hollowness-audit.md. */
+/* Run a hot-swap manifest gate against a specific manifest fixture by exporting
+ * ZCL_HOTSWAP_MANIFEST (resolved to an absolute path). */
+static int run_hotswap_gate_with_manifest(const char *script_rel,
+                                          const char *manifest_rel)
+{
+    char manifest_abs[PATH_MAX];
+    if (repo_path(manifest_abs, sizeof(manifest_abs), manifest_rel) != 0)
+        return -1;
+    return run_gate_script_with_env(script_rel, "ZCL_HOTSWAP_MANIFEST",
+                                    manifest_abs);
+}
+
+static int t_hotswap_eligible_scope_gate(void)
+{
+    int failures = 0;
+    TEST("hotswap eligible-scope gate: real manifest passes, forbidden root trips") {
+        /* The committed manifest is all app-layer surfaces → clean (exit 0). */
+        ASSERT(run_hotswap_gate_with_manifest(HOTSWAP_SCOPE_SCRIPT_REL,
+                                              HOTSWAP_MANIFEST_REL) == 0);
+        /* A seeded manifest that lists a lib/consensus TU trips the gate
+         * (exit 1) — proof it is not hollow. */
+        ASSERT(run_hotswap_gate_with_manifest(HOTSWAP_SCOPE_SCRIPT_REL,
+                                              HOTSWAP_BAD_SCOPE_MANIFEST_REL) == 1);
+        /* Recovery: back on the real manifest the gate passes again. */
+        ASSERT(run_hotswap_gate_with_manifest(HOTSWAP_SCOPE_SCRIPT_REL,
+                                              HOTSWAP_MANIFEST_REL) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int t_hotswap_static_state_gate(void)
+{
+    int failures = 0;
+    TEST("hotswap static-state gate: real manifest passes, mutable static trips") {
+        /* Every committed eligible TU is free of mutable file-scope statics. */
+        ASSERT(run_hotswap_gate_with_manifest(HOTSWAP_STATIC_SCRIPT_REL,
+                                              HOTSWAP_MANIFEST_REL) == 0);
+        /* A seeded manifest that points at a fixture TU carrying a mutable
+         * file-scope static trips the gate (exit 1). */
+        ASSERT(run_hotswap_gate_with_manifest(HOTSWAP_STATIC_SCRIPT_REL,
+                                              HOTSWAP_BAD_STATIC_MANIFEST_REL) == 1);
+        /* Recovery. */
+        ASSERT(run_hotswap_gate_with_manifest(HOTSWAP_STATIC_SCRIPT_REL,
+                                              HOTSWAP_MANIFEST_REL) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int t_lint_gates_fail_loud_on_empty_scan(void)
 {
     int failures = 0;
@@ -2423,7 +2480,8 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(script, "ZCL_DEV_DEPLOY_BUILD") != NULL);
         ASSERT(strstr(script, "make fast-rebuild") != NULL);
         ASSERT(strstr(script, "build/bin/zclassic23-dev") != NULL);
-        ASSERT(strstr(script, "ZCL_DEV_DEPLOY_BUILD=strict") != NULL);
+        ASSERT(strstr(script, "case \"$DEV_DEPLOY_BUILD\"") != NULL);
+        ASSERT(strstr(script, "strict)") != NULL);
         ASSERT(strstr(makefile, "deploy-dev-fast agent-deploy-fast") != NULL);
         ASSERT(strstr(script, "probe_agent_contract") != NULL);
         ASSERT(strstr(script, "ZCL_DEV_AGENT_TIMEOUT") != NULL);
@@ -2741,8 +2799,10 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "tools/dev/agent-dev-status.sh") != NULL);
         ASSERT(strstr(buf, "tools/dev/agent-doctor.sh") != NULL);
         ASSERT(strstr(buf, "stage-dev-bin agent-stage-dev") != NULL);
+        ASSERT(strstr(buf, "ZCL_DEV_USE_PREBUILT=1") != NULL);
+        ASSERT(strstr(buf, "deploy-dev-lane.sh --stage") != NULL);
         ASSERT(strstr(buf, "mktemp \"$(ZCL_AGENT_DEV_BIN).next.XXXXXX\"")
-               != NULL);
+               == NULL);
         ASSERT(strstr(buf, "mcpcall") != NULL);
         ASSERT(strstr(buf, "ZCL_AGENT_BIN") != NULL);
         ASSERT(strstr(buf, "ZCL_AGENT_DEV_BIN") != NULL);
@@ -4777,24 +4837,28 @@ static int t_boot_shutdown_persistence_order_contract(void)
 {
     int failures = 0;
     char *buf = NULL;
-    TEST("shutdown persists block index after network quiesce") {
+    TEST("shutdown writes clean marker before the block-index flat save") {
+        /* Durability-first ordering: node.db is WAL-checkpointed + closed, then
+         * the verified-clean marker is written, and ONLY THEN the best-effort
+         * block-index flat save runs. A kill during the slow flat save must not
+         * be able to strand the marker, so the marker write must precede the
+         * flat-save call. (This replaces the older "fast < connman_join"
+         * contract, which required the flat save before the checkpoint.) */
         char path[PATH_MAX];
         ASSERT(repo_path(path, sizeof(path), "config/src/boot_services.c") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         char *network_stop = strstr(buf, "zcl_service_kernel_stop_all(&svc->network_kernel);");
-        char *replay_join = strstr(buf, "boot_join_replay_service(svc);");
-        char *coins_flushed = strstr(buf, "Coins cache flushed.");
+        char *wal_checkpoint = strstr(buf, "node_db_wal_checkpoint(svc->node_db)");
+        char *marker = strstr(buf, "boot_shutdown_marker_write_clean(svc->datadir);");
         char *fast = strstr(buf, "shutdown_persist_fast_restart_state(svc);");
-        char *connman_join = strstr(buf, "connman_join(svc->connman);");
         ASSERT(network_stop != NULL);
-        ASSERT(replay_join != NULL);
-        ASSERT(coins_flushed != NULL);
+        ASSERT(wal_checkpoint != NULL);
+        ASSERT(marker != NULL);
         ASSERT(fast != NULL);
-        ASSERT(connman_join != NULL);
-        ASSERT(network_stop < fast);
-        ASSERT(replay_join < fast);
-        ASSERT(coins_flushed < fast);
-        ASSERT(fast < connman_join);
+        /* checkpoint precedes the marker (marker binds a checkpointed DB) */
+        ASSERT(wal_checkpoint < marker);
+        /* marker precedes the slow flat save (durability before optimization) */
+        ASSERT(marker < fast);
         PASS();
     } _test_next:;
     free(buf);
@@ -6513,6 +6577,8 @@ int test_make_lint_gates(void)
     failures += t_e7_no_authoritative_ram_state();
     failures += t_e12_honest_witness();
     failures += t_gate21_supervisor_worker_lockin();
+    failures += t_hotswap_eligible_scope_gate();
+    failures += t_hotswap_static_state_gate();
     failures += t_lint_gates_fail_loud_on_empty_scan();
     return failures;
 }

@@ -13,14 +13,113 @@ SRC_BIN="${ZCL_AGENT_SRC_BIN:-build/bin/zclassic23-dev}"
 DEV_DATADIR="${ZCL_AGENT_DEV_DATADIR:-$HOME/.zclassic-c23-dev}"
 DEV_RPCPORT="${ZCL_AGENT_DEV_RPCPORT:-18252}"
 UNIT="${ZCL_AGENT_DEV_UNIT:-zcl23-dev.service}"
+GEN_ROOT="${ZCL_DEV_GENERATION_ROOT:-$HOME/.local/lib/zclassic23-dev}"
+CURRENT_LINK="$GEN_ROOT/current"
+LAST_GOOD_LINK="$GEN_ROOT/last-good"
+STAGED_LINK="$GEN_ROOT/staged"
+ACTIVATION_LOCK="$GEN_ROOT/activation.lock"
+REJECTED_DIR="$GEN_ROOT/rejected"
 NODE_LOG="$DEV_DATADIR/node.log"
 DEPLOY_STATE="$DEV_DATADIR/agent-deploy.json"
 AUTO_REINDEX_SENTINEL="$DEV_DATADIR/auto_reindex_request"
+DEV_LOOP_STATE_DIR="${ZCL_DEV_WATCH_STATE_DIR:-$HOME/.local/state/zclassic23-dev}"
+LATEST_CYCLE="$DEV_LOOP_STATE_DIR/latest-cycle.json"
+WATCHER_HEARTBEAT="$DEV_LOOP_STATE_DIR/watcher-heartbeat.json"
+QUALITY_STATE_DIR="${ZCL_QUALITY_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/zclassic23-quality}"
 SCHEMA="zcl.agent_dev_status.v1"
 MODE="${1:-text}"
 
 json_escape() {
     printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+artifact_json() {
+    local path="$1" schema="$2"
+    if [ -r "$path" ] &&
+       grep -q "\"schema\"[[:space:]]*:[[:space:]]*\"${schema}\"" "$path"; then
+        cat "$path"
+    else
+        printf '{"schema":"%s","status":"unavailable","path":"%s","agent_next_action":"%s"}' \
+            "$(json_escape "$schema")" "$(json_escape "$path")" \
+            "$(json_escape "generate $schema from the repository")"
+    fi
+}
+
+command_json() {
+    local command="$1" schema="$2" body
+    body="$(cd "$REPO" && /bin/sh -c "$command" 2>/dev/null || true)"
+    if printf '%s' "$body" |
+       grep -q "\"schema\"[[:space:]]*:[[:space:]]*\"${schema}\""; then
+        printf '%s' "$body"
+    else
+        printf '{"schema":"%s","status":"unavailable","collector_command":"%s"}' \
+            "$(json_escape "$schema")" "$(json_escape "$command")"
+    fi
+}
+
+watcher_status_json() {
+    local present=false mtime=0 age=-1 stale=true now pid="" alive=false
+    if [ -r "$WATCHER_HEARTBEAT" ]; then
+        present=true
+        mtime="$(stat -c '%Y' "$WATCHER_HEARTBEAT" 2>/dev/null || printf 0)"
+        pid="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' \
+            "$WATCHER_HEARTBEAT" | head -1)"
+        if is_uint "$pid" && [ "$pid" -gt 0 ] && kill -0 "$pid" 2>/dev/null; then
+            alive=true
+            stale=false
+        fi
+        now="$(date +%s)"
+        if is_uint "$mtime" && [ "$mtime" -gt 0 ]; then
+            age=$((now - mtime))
+            if [ "$alive" != true ] && [ "$age" -le 5 ]; then
+                stale=false
+            fi
+        fi
+    fi
+    printf '{"schema":"zcl.dev_watcher_status.v1","present":%s,"path":"%s","pid":"%s","alive":%s,"mtime_epoch":%s,"age_seconds":%s,"stale":%s,"heartbeat":' \
+        "$present" "$(json_escape "$WATCHER_HEARTBEAT")" \
+        "$(json_escape "$pid")" "$alive" "$mtime" "$age" "$stale"
+    artifact_json "$WATCHER_HEARTBEAT" zcl.dev_watch_heartbeat.v1
+    printf '}'
+}
+
+quality_freshness_json() {
+    local expected="$1" lane file commit status freshness
+    local present=0 current=0 stale=0 unknown=0 sep=""
+    printf '{"schema":"zcl.background_quality_freshness.v1","state_dir":"%s","expected_commit":"%s","lanes":[' \
+        "$(json_escape "$QUALITY_STATE_DIR")" "$(json_escape "$expected")"
+    for lane in fuzz coverage tests; do
+        file="$QUALITY_STATE_DIR/status/$lane.json"
+        commit=""; status="missing"; freshness="no_verdict"
+        if [ -r "$file" ]; then
+            present=$((present + 1))
+            commit="$(sed -n 's/.*"commit"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$file" | head -1)"
+            status="$(sed -n 's/.*"status"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$file" | head -1)"
+            [ -n "$status" ] || status="invalid"
+            if [ -z "$commit" ] || [ -z "$expected" ]; then
+                freshness="unknown"; unknown=$((unknown + 1))
+            elif [ "$commit" = "$expected" ] ||
+                 [ "${expected#"$commit"}" != "$expected" ] ||
+                 [ "${commit#"$expected"}" != "$commit" ]; then
+                freshness="current"; current=$((current + 1))
+            else
+                freshness="stale"; stale=$((stale + 1))
+            fi
+        fi
+        printf '%s{"lane":"%s","status":"%s","commit":"%s","freshness":"%s","path":"%s"}' \
+            "$sep" "$lane" "$(json_escape "$status")" \
+            "$(json_escape "$commit")" "$freshness" "$(json_escape "$file")"
+        sep=","
+    done
+    printf '],"counts":{"present":%s,"current":%s,"stale":%s,"unknown":%s},' \
+        "$present" "$current" "$stale" "$unknown"
+    if [ "$stale" -gt 0 ]; then freshness="stale"
+    elif [ "$present" -eq 0 ]; then freshness="no_verdict"
+    elif [ "$unknown" -gt 0 ]; then freshness="partial"
+    else freshness="current"
+    fi
+    printf '"freshness":"%s","agent_next_action":"%s"}' "$freshness" \
+        "$([ "$freshness" = current ] && printf 'background verdicts match this build' || printf 'make quality-linger-status')"
 }
 
 file_state_json() {
@@ -84,7 +183,7 @@ auto_reindex_json() {
 }
 
 worker_lane_json() {
-    printf '{"name":"dev","role":"worker","purpose":"fresh-build development lane for frequent agent iteration","unit":"%s","datadir":"%s","rpcport":"%s","mutation_policy":"noncanonical_dev_only","canonical_guard":"never_touches_live_or_soak","status_command":"make agent-dev-status","deploy_command":"make agent-deploy-fast","stage_command":"make agent-stage-dev","recover_command":"make lane-recover LANE=dev"}' \
+    printf '{"name":"dev","role":"worker","purpose":"fresh-build development lane for frequent agent iteration","unit":"%s","datadir":"%s","rpcport":"%s","mutation_policy":"noncanonical_dev_only","canonical_guard":"never_touches_live_or_soak","status_command":"make agent-dev-status","deploy_command":"make agent-deploy-fast","stage_command":"tools/dev/deploy-dev-lane.sh --stage","legacy_stage_command":"make agent-stage-dev","recover_command":"make lane-recover LANE=dev"}' \
         "$(json_escape "$UNIT")" "$(json_escape "$DEV_DATADIR")" \
         "$(json_escape "$DEV_RPCPORT")"
 }
@@ -198,17 +297,109 @@ rpc_json() {
 
 deploy_state_summary_json() {
     local verify_status="" verify_detail="" build_commit="" deployed_at=""
+    local candidate="" current="" running="" last_good="" activation_status=""
+    local rollback_status="" rollback_available="false" failure_capsule=""
     if [ -r "$DEPLOY_STATE" ] && command -v jq >/dev/null 2>&1; then
         verify_status="$(jq -r '.verify_status // ""' "$DEPLOY_STATE" 2>/dev/null || true)"
         verify_detail="$(jq -r '.verify_detail // ""' "$DEPLOY_STATE" 2>/dev/null || true)"
         build_commit="$(jq -r '.build_commit // ""' "$DEPLOY_STATE" 2>/dev/null || true)"
         deployed_at="$(jq -r '.deployed_at_utc // ""' "$DEPLOY_STATE" 2>/dev/null || true)"
+        candidate="$(jq -r '.candidate_generation // ""' "$DEPLOY_STATE" 2>/dev/null || true)"
+        current="$(jq -r '.current_generation // ""' "$DEPLOY_STATE" 2>/dev/null || true)"
+        running="$(jq -r '.running_generation // ""' "$DEPLOY_STATE" 2>/dev/null || true)"
+        last_good="$(jq -r '.last_good_generation // ""' "$DEPLOY_STATE" 2>/dev/null || true)"
+        activation_status="$(jq -r '.activation_status // ""' "$DEPLOY_STATE" 2>/dev/null || true)"
+        rollback_status="$(jq -r '.rollback_status // ""' "$DEPLOY_STATE" 2>/dev/null || true)"
+        rollback_available="$(jq -r '.rollback_available // false' "$DEPLOY_STATE" 2>/dev/null || printf false)"
+        failure_capsule="$(jq -r '.failure_capsule // ""' "$DEPLOY_STATE" 2>/dev/null || true)"
     fi
-    printf '{"path":"%s","present":%s,"build_commit":"%s","deployed_at_utc":"%s","verify_status":"%s","verify_detail":"%s"}' \
+    case "$rollback_available" in true|false) ;; *) rollback_available="false" ;; esac
+    printf '{"path":"%s","present":%s,"build_commit":"%s","deployed_at_utc":"%s","verify_status":"%s","verify_detail":"%s","candidate_generation":"%s","current_generation":"%s","running_generation":"%s","last_good_generation":"%s","activation_status":"%s","rollback_status":"%s","rollback_available":%s,"failure_capsule":"%s"}' \
         "$(json_escape "$DEPLOY_STATE")" \
         "$([ -r "$DEPLOY_STATE" ] && printf true || printf false)" \
         "$(json_escape "$build_commit")" "$(json_escape "$deployed_at")" \
-        "$(json_escape "$verify_status")" "$(json_escape "$verify_detail")"
+        "$(json_escape "$verify_status")" "$(json_escape "$verify_detail")" \
+        "$(json_escape "$candidate")" "$(json_escape "$current")" \
+        "$(json_escape "$running")" "$(json_escape "$last_good")" \
+        "$(json_escape "$activation_status")" "$(json_escape "$rollback_status")" \
+        "$rollback_available" "$(json_escape "$failure_capsule")"
+}
+
+read_generation_link() {
+    local link="$1" target
+    [ -L "$link" ] || return 1
+    target="$(readlink "$link")" || return 1
+    case "$target" in
+        gen-[0-9a-f]*|legacy-[0-9a-f]*) ;;
+        *) return 1 ;;
+    esac
+    case "$target" in */*) return 1 ;; esac
+    [ -x "$GEN_ROOT/$target/zclassic23-dev" ] || return 1
+    printf '%s\n' "$target"
+}
+
+rejected_generations_json() {
+    local marker generation sep=""
+    printf '['
+    if [ -d "$REJECTED_DIR" ]; then
+        while IFS= read -r marker; do
+            [ -n "$marker" ] || continue
+            generation="$(basename "$marker" .json)"
+            printf '%s"%s"' "$sep" "$(json_escape "$generation")"
+            sep=","
+        done < <(find "$REJECTED_DIR" -maxdepth 1 -type f -name 'gen-*.json' -print 2>/dev/null | LC_ALL=C sort)
+    fi
+    printf ']'
+}
+
+activation_lock_json() {
+    local present="false" held="false" owner_pid="" fd
+    if [ -e "$ACTIVATION_LOCK" ]; then
+        present="true"
+        owner_pid="$(sed -n 's/.*"pid"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$ACTIVATION_LOCK" 2>/dev/null | head -1 || true)"
+        exec {fd}>>"$ACTIVATION_LOCK"
+        if flock -n "$fd"; then
+            flock -u "$fd"
+            owner_pid=""
+        else
+            held="true"
+        fi
+        exec {fd}>&-
+    fi
+    printf '{"path":"%s","present":%s,"held":%s,"owner_pid":"%s"}' \
+        "$(json_escape "$ACTIVATION_LOCK")" "$present" "$held" \
+        "$(json_escape "$owner_pid")"
+}
+
+generation_state_json() {
+    local current="" last_good="" staged="" running="" running_exe="" pid=""
+    local rollback_available="false" running_matches_current="false" rejected_count
+    current="$(read_generation_link "$CURRENT_LINK" || true)"
+    last_good="$(read_generation_link "$LAST_GOOD_LINK" || true)"
+    staged="$(read_generation_link "$STAGED_LINK" || true)"
+    [ -n "$last_good" ] && rollback_available="true"
+    pid="$(service_field MainPID)"
+    if is_uint "$pid" && [ "$pid" -gt 0 ]; then
+        running_exe="$(readlink -f "/proc/$pid/exe" 2>/dev/null || true)"
+        case "$running_exe" in
+            "$GEN_ROOT"/*/zclassic23-dev)
+                running="$(basename "$(dirname "$running_exe")")"
+                ;;
+        esac
+    fi
+    [ -n "$current" ] && [ "$running" = "$current" ] && running_matches_current="true"
+    if [ -d "$REJECTED_DIR" ]; then
+        rejected_count="$(find "$REJECTED_DIR" -maxdepth 1 -type f -name 'gen-*.json' 2>/dev/null | wc -l | tr -d ' ')"
+    else
+        rejected_count=0
+    fi
+    printf '{"schema":"zcl.dev_generation_status.v1","root":"%s","current_generation":"%s","last_good_generation":"%s","staged_generation":"%s","running_generation":"%s","running_executable":"%s","running_matches_current":%s,"rollback_available":%s,"rejected_count":%s,"rejected_generations":' \
+        "$(json_escape "$GEN_ROOT")" "$(json_escape "$current")" \
+        "$(json_escape "$last_good")" "$(json_escape "$staged")" \
+        "$(json_escape "$running")" "$(json_escape "$running_exe")" \
+        "$running_matches_current" "$rollback_available" "$rejected_count"
+    rejected_generations_json
+    printf ',"activation_lock":%s}' "$(activation_lock_json)"
 }
 
 staged_matches() {
@@ -234,10 +425,11 @@ next_action() {
 }
 
 emit_json() {
-    local src installed service rpc deploy auto worker active_state rpc_status auto_pending
+    local src installed service rpc deploy auto worker generations active_state rpc_status auto_pending
     local rpc_height auto_anchor auto_count agent_probe agent_ready agent_reason
     local deploy_blocker="false"
     local deploy_blocker_reason="" stale_candidate="false" staged="false" action
+    local source_commit cycle watcher index_status latency_status quality_status
     src="$(file_state_json "$SRC_BIN")"
     installed="$(file_state_json "$DEV_BIN")"
     service="$(service_json)"
@@ -245,6 +437,14 @@ emit_json() {
     deploy="$(deploy_state_summary_json)"
     auto="$(auto_reindex_json)"
     worker="$(worker_lane_json)"
+    generations="$(generation_state_json)"
+    source_commit="$(printf '%s\n' "$src" |
+        sed -n 's/.*"build_commit":"\([^"]*\)".*/\1/p')"
+    cycle="$(artifact_json "$LATEST_CYCLE" zcl.dev_cycle.v1)"
+    watcher="$(watcher_status_json)"
+    index_status="$(command_json 'bash tools/dev/generate-compdb.sh --status' zcl.agent_index_runtime.v1)"
+    latency_status="$(command_json 'bash tools/dev/dev-loop-bench.sh --status' zcl.dev_loop_bench.v1)"
+    quality_status="$(quality_freshness_json "$source_commit")"
     staged_matches && staged="true"
     active_state="$(printf '%s\n' "$service" |
         sed -n 's/.*"active_state":"\([^"]*\)".*/\1/p')"
@@ -284,6 +484,12 @@ emit_json() {
     printf '  "service": %s,\n' "$service"
     printf '  "rpc": %s,\n' "$rpc"
     printf '  "deploy_state": %s,\n' "$deploy"
+    printf '  "activation": %s,\n' "$generations"
+    printf '  "current_cycle": %s,\n' "$cycle"
+    printf '  "watcher": %s,\n' "$watcher"
+    printf '  "index_freshness": %s,\n' "$index_status"
+    printf '  "latency_slo": %s,\n' "$latency_status"
+    printf '  "background_quality_freshness": %s,\n' "$quality_status"
     printf '  "auto_reindex": %s,\n' "$auto"
     printf '  "deploy_blocker": %s,\n' "$deploy_blocker"
     printf '  "deploy_blocker_reason": "%s",\n' \
@@ -331,7 +537,26 @@ emit_text() {
             " marker_clear_reason=" + .agent_contract_marker_clear_reason,
             "[agent-dev-status] deploy_state=" + .deploy_state.path +
             " present=" + (.deploy_state.present|tostring) +
-            " verify=" + .deploy_state.verify_status,
+            " verify=" + .deploy_state.verify_status +
+            " activation=" + .deploy_state.activation_status +
+            " rollback=" + .deploy_state.rollback_status,
+            "[agent-dev-status] generation current=" + .activation.current_generation +
+            " running=" + .activation.running_generation +
+            " last_good=" + .activation.last_good_generation +
+            " staged=" + .activation.staged_generation +
+            " exact=" + (.activation.running_matches_current|tostring) +
+            " rollback_available=" + (.activation.rollback_available|tostring) +
+            " rejected=" + (.activation.rejected_count|tostring) +
+            " activation_lock_held=" + (.activation.activation_lock.held|tostring),
+            "[agent-dev-status] watcher present=" + (.watcher.present|tostring) +
+            " alive=" + (.watcher.alive|tostring) +
+            " stale=" + (.watcher.stale|tostring) +
+            " cycle=" + (.current_cycle.cycle_id // "") +
+            " cycle_outcome=" + (.current_cycle.outcome // .current_cycle.status // "unknown"),
+            "[agent-dev-status] index=" + (.index_freshness.freshness // "unavailable") +
+            " hot_swap_slo=" + (.latency_slo.slo.hot_swap.status // "not_measured") +
+            " reload_slo=" + (.latency_slo.slo.process_reload.status // "not_measured") +
+            " background_quality=" + (.background_quality_freshness.freshness // "unknown"),
             "[agent-dev-status] next=" + .next_action'
     else
         printf '%s\n' "$json"

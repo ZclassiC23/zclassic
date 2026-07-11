@@ -28,6 +28,15 @@ void mcp_register_app(void);      /* zcl_name_*, zcl_msg_*, zcl_market_*, zcl_sw
 void mcp_register_meta(void);     /* zcl_tools_list, zcl_self_test, zcl_logtail       */
 void mcp_register_dev_hotswap(void); /* DEV-ONLY zcl_agent_hotswap (no-op in release)  */
 
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+struct hotswap_load_report;
+bool mcp_dev_hotswap_probe_allowed(
+    const char *probe,
+    const struct hotswap_load_report *rep,
+    const struct mcp_tool_route *active_route,
+    const char **error_code_out);
+#endif
+
 /* Compile-time element count for a statically-sized array. Used by the
  * route + param-spec tables in every controller, and by the register
  * loops. Replaces the `sizeof(arr) / sizeof(arr[0])` idiom. */

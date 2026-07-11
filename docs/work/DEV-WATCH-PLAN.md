@@ -25,7 +25,8 @@ generation if bounded probes fail. Canonical and soak lanes are never touched.
   8053/18252.
 - `make agent-stage-dev`, `make agent-deploy-fast`, and
   `tools/dev/deploy-dev-lane.sh`: staging, dev-only restart, and basic probes.
-- `make agent-mcp-call-dev`, `zcl_tools_list`, and `zcl_self_test`: candidate
+- `make agent-mcp-call-dev`, `zcl_tools_list`, and bounded candidate-local
+  `zcl_self_test {"mode":"registry"}`: candidate
   and running-node introspection.
 
 The host has `ccache`, but no `mold`, `lld`, `inotifywait`, `entr`, or
@@ -33,40 +34,64 @@ The host has `ccache`, but no `mold`, `lld`, `inotifywait`, `entr`, or
 
 ## P0 implementation order
 
-## MVP status — implemented 2026-07-10
+## Unified loop status — implemented 2026-07-10
 
 The bounded watcher is now available:
 
 ```bash
-make dev-watch                         # green save -> isolated dev redeploy
-MODE=stage make dev-watch              # stage without restarting
-MODE=off make dev-watch                # compile/test/link only
+make dev-watch                         # auto: smallest proven safe path
+MODE=hotswap make dev-watch             # require manifest + persistent transport
+MODE=reload make dev-watch              # transactional process generation
+MODE=stage make dev-watch               # immutable generation, no restart
+MODE=check make dev-watch               # compile/test feedback only
 ZCL_DEV_WATCH_ONCE_FILES=lib/net/src/msg_tx.c make dev-watch-once
 make dev-watch-selftest
+make agent-index
+make dev-loop-bench
 ```
 
 `tools/dev/watch-dev-lane.sh` uses `inotifywait` when installed and otherwise
 polls a SHA-256 digest over a sorted path/mtime/size manifest. It debounces and
 coalesces editor saves, forwards only the changed paths through
 `ZCL_FAST_CHANGED_FILES_FILE` + `ZCL_FAST_CHANGED_FILES_ONLY=1`, runs the
-existing fast focused gate and `fast-rebuild`, then calls only
-`agent-deploy-fast` / `agent-stage-dev`. A failed check or rebuild never invokes
-the activation command, and the watcher remains alive for the next save.
+existing fast focused gate, classifies against `config/hotswap_eligible.def`,
+and either checks, stages, or calls the transactional reload path. A failed
+check or rebuild never invokes activation, and the watcher remains alive for
+the next save.
 Changes that arrive during a check or link suppress activation and schedule one
 coalesced follow-up from the newest tree. `--once` and injectable commands give
 the shell self-test a deterministic, node-free path.
 
+Every attempted cycle atomically writes `zcl.dev_cycle.v1` below
+`~/.local/state/zclassic23-dev/cycles/`, refreshes `latest-cycle.json`, and
+updates a watcher heartbeat. The record owns changed files, the native impact
+plan, selected path/reason, phase timings, generation identities, rollback
+status, a failure capsule, and one executable `agent_next_action`.
+
 Controls: `ZCL_DEV_WATCH_POLL_MS`, `ZCL_DEV_WATCH_DEBOUNCE_MS`,
 `ZCL_DEV_WATCH_BACKEND=auto|poll|inotify`,
-`ZCL_DEV_WATCH_MODE=deploy|stage|off`, and `ZCL_DEV_WATCH_INITIAL=1`.
+`ZCL_DEV_WATCH_MODE=auto|hotswap|reload|stage|check`, and
+`ZCL_DEV_WATCH_INITIAL=1`. `deploy` and `off` remain compatibility aliases for
+`reload` and `check`.
 
-This MVP intentionally reuses the existing dev deploy script. The immutable
-generation / last-known-good rollback design below remains the next hardening
-step. Therefore a build/test failure is proven not to touch the running dev
-service, but this watcher does not yet claim automatic rollback after a failure
-inside the existing activation workflow.
+Process activation is content-addressed and immutable under
+`~/.local/lib/zclassic23-dev/`. A nonblocking activation lock serializes flips;
+`current` and `last-good` are atomic links. Candidate preflight runs before the
+old process is stopped. A failed warm probe restores and verifies last-good,
+then quarantines the rejected generation. The systemd unit executes
+`current/zclassic23-dev`, never an overwritten singleton.
 
-### 1. Transactional activation first
+`auto` uses the authenticated, dev-only `dev_hotswap` RPC through
+`tools/dev/hotswap-running-dev.sh`, so a successful swap changes the resident
+systemd dev process. Exit 69 means that an older runtime does not expose the
+bridge and permits an explicit transactional reload fallback; ABI, manifest,
+probe, or generation failures remain rejected and are never hidden by a
+reload. The v2 stateless MCP pilot is all-or-zero, but REST, diagnostics,
+services, models, storage adapters, events, conditions, supervisors, and every
+stateful module remain `reload_required` until one resident
+provider/state/quiescence contract covers them.
+
+### 1. Transactional activation — implemented
 
 Harden `tools/dev/deploy-dev-lane.sh` before automatic watching:
 
@@ -75,7 +100,8 @@ Harden `tools/dev/deploy-dev-lane.sh` before automatic watching:
 3. Install at `~/.local/lib/zclassic23-dev/<generation>/zclassic23-dev`.
 4. Maintain atomic `current` and `last-good` symlinks; make the dev unit execute
    `current`.
-5. Preflight native `agentbuild`, the MCP catalog, and `zcl_self_test`; failure
+5. Preflight native `agentbuild`, the MCP catalog, and candidate-local
+   `zcl_self_test {"mode":"registry"}`; failure
    leaves the old process untouched.
 6. Flip `current`, restart only `zclassic23-dev`, and run a bounded warm probe:
    unit active, RPC ready, native `agent`, operator snapshot, exact running
@@ -86,7 +112,7 @@ Harden `tools/dev/deploy-dev-lane.sh` before automatic watching:
 Never overwrite the sole installed binary or let `Restart=always` loop a known
 bad candidate indefinitely.
 
-### 2. Add the watcher — bounded MVP complete
+### 2. Add the watcher — unified modes + durable verdict complete
 
 The MVP added `tools/dev/watch-dev-lane.sh` and `make dev-watch` with the
 following behavior:
@@ -115,9 +141,16 @@ Give the foreground loop a 60–90 second warm-activation ceiling. Move the
 multi-minute height-climb/deep-health proof to a background quality lane. Cold
 first bootstrap remains explicit, never part of watch mode.
 
-Persist `candidate_generation`, `running_generation`, `last_good_generation`,
-`rollback_available`, `activation_status`, `rollback_status`, mapped tests, and
-MCP self-test failure count in dev status.
+The activation/status contracts persist `candidate_generation`,
+`running_generation`, `last_good_generation`, `rollback_available`,
+`activation_status`, `rollback_status`, rejected generations, current cycle,
+watcher heartbeat, index freshness, mapped tests, and MCP probe outcomes.
+
+`make agent-index` derives `compile_commands.json` from dry-runs of the exact
+dev-object recipes, preserving generated-header prerequisites and the `-Og` /
+hot-bucket `-O2` split. clangd is optional. `make dev-loop-bench` writes a
+machine-readable percentile artifact; activation cases are skipped unless the
+operator explicitly opts in, so an SLO is never inferred from a build-only run.
 
 ## Required tests
 
@@ -132,6 +165,11 @@ With injectable commands and temporary directories, prove:
 
 Wire the script, service, Makefile, and tests into `agent_impact_rules.def` and
 `make_lint_gates`.
+
+`make hotswap-sim` is the focused deterministic three-node RAM-network proof.
+It exercises a rejected all-or-zero batch, an in-flight old-generation call,
+an atomic two-provider commit, new-call visibility, and exact seed replay.
+`make sim-fast` remains the broader seeded network suite.
 
 ## Explicit non-goal
 

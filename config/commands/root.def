@@ -1,0 +1,84 @@
+/* Canonical root and discovery branch. Consumer defines ZCL_COMMAND_*.
+ * Root order is a wire contract: status, core, app, dev, ops, discover. */
+
+ZCL_COMMAND_COMPAT_READ(
+    "status", "", "agent", "Compact node status and next action",
+    "health,sync,height,peers,blocker", "zcl.command.empty_input.v1",
+    "zcl.public_status.v1", "", "", "zclassic23 status",
+    ZCL_COMMAND_LAYER_ROOT, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_ALL_NODE, ZCL_COMMAND_CAP_CHAIN_READ,
+    ZCL_COMMAND_TRANSPORT_NATIVE | ZCL_COMMAND_TRANSPORT_REST |
+        ZCL_COMMAND_TRANSPORT_RPC | ZCL_COMMAND_TRANSPORT_MCP_LEGACY,
+    "zclassic23 status")
+
+ZCL_COMMAND_BRANCH("core", "", "Consensus-bound node capabilities",
+                   ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_BRANCH("app", "", "Capability-scoped sovereign applications",
+                   ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("dev", "", "Native edit, proof, and publication loop",
+                   ZCL_COMMAND_LAYER_DEV)
+ZCL_COMMAND_BRANCH("ops", "", "Bounded diagnosis and node operations",
+                   ZCL_COMMAND_LAYER_OPS)
+ZCL_COMMAND_BRANCH("discover", "", "Search and describe the command registry",
+                   ZCL_COMMAND_LAYER_DISCOVER)
+
+ZCL_COMMAND_READY_READ(
+    "discover.help", "discover", "help,dev.help",
+    "Show one branch or leaf without loading the whole tree",
+    "help,menu,branch,context", "zcl.discover.path_input.v1",
+    "zcl.discovery_document.v1", "path", "path",
+    "zclassic23 discover help dev.app",
+    ZCL_COMMAND_LAYER_DISCOVER, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE | ZCL_COMMAND_TRANSPORT_MCP_COMPACT,
+    zcl_native_handle_discover_help)
+
+ZCL_COMMAND_READY_READ(
+    "discover.search", "discover", "search,dev.search,dev.diagnose.search",
+    "Rank at most five commands by local deterministic intent search",
+    "search,find,intent,error,capability", "zcl.discover.search_input.v1",
+    "zcl.command_search.v1", "query", "query",
+    "zclassic23 discover search 'ABI mismatch'",
+    ZCL_COMMAND_LAYER_DISCOVER, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE | ZCL_COMMAND_TRANSPORT_MCP_COMPACT,
+    zcl_native_handle_discover_search)
+
+ZCL_COMMAND_READY_READ(
+    "discover.describe", "discover", "",
+    "Describe one leaf's schemas, safety, authority, and availability",
+    "describe,schema,risk,authority,availability",
+    "zcl.discover.path_input.v1", "zcl.command_spec.v1", "path", "path",
+    "zclassic23 discover describe dev.app.simulate",
+    ZCL_COMMAND_LAYER_DISCOVER, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE | ZCL_COMMAND_TRANSPORT_MCP_COMPACT,
+    zcl_native_handle_discover_describe)
+
+ZCL_COMMAND_READY_READ(
+    "discover.schema", "discover", "",
+    "Return the compact input or output schema contract for one leaf",
+    "schema,input,output,contract", "zcl.discover.schema_input.v1",
+    "zcl.command_schema.v1", "path,side", "path",
+    "zclassic23 discover schema dev.app.simulate --side=input",
+    ZCL_COMMAND_LAYER_DISCOVER, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE | ZCL_COMMAND_TRANSPORT_MCP_COMPACT,
+    zcl_native_handle_discover_schema)

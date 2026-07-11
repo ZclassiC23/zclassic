@@ -19,6 +19,11 @@ workflow, REST route contract, then typed MCP/native surface.
 | Changed files to tests/risk | `zclassic23 agentimpact <files...>` | `zcl_agent_impact` |
 | Versioned contracts | `zclassic23 agentcontracts` | `zcl_agent_contracts` |
 | Fast build contract | `zclassic23 agentbuild` | `zcl_agent_build` |
+| Unified save loop | `make dev-watch [MODE=auto\|hotswap\|reload\|stage\|check]` | `zcl_agent_dev_status` reports its latest verdict |
+| Compilation database | `make agent-index` | `zcl_agent_build` embeds index freshness |
+| Developer-loop benchmark | `make dev-loop-bench` | `zcl_agent_build` embeds the latest artifact status |
+| In-process hot-swap status | `zclassic23 dumpstate hotswap` | `zcl_state(subsystem="hotswap")` |
+| Persistent dev-process MCP bridge | `dev_hotswap` / `dev_mcp_call` JSON-RPC on the exact dev lane | resident MCP router |
 | Read-only fast-lane plan | `make agent-plan` | `zcl_agent_build` advertises it |
 | Combined dev doctor | `make agent-doctor` | `zcl_agent_build` advertises it |
 | Fresh typed MCP one-shot | `make agent-mcp-call TOOL=zcl_status` | `zcl_status` |
@@ -945,15 +950,18 @@ for those runtimes. This keeps the shell lane summary subordinate to the
 C-native API without letting stale wrapper-era responses hide or invent a
 validation-pack hold.
 
-`make deploy-dev` follows the same contract. Its height probe is only a sync
-sample (`SYNC OK`); the script prints `AGENT READY` only after the dev lane's
-native `agent` contract reports healthy and serving. A blocked, operator-needed,
-or failed validation-pack contract makes the deploy fail with the named blocker
-instead of falsely declaring the new binary healthy. Every dev-lane deploy also
-saves `~/.zclassic-c23-dev/agent-deploy.json` (`zcl.agent_dev_deploy.v1`) with
-the build commit, build type, installed binary, service name, verification
-status, and any pending auto-reindex marker, so pre-RPC recovery still has a
-cheap machine-readable breadcrumb.
+`make deploy-dev` is a transaction over an immutable content-addressed binary
+generation, not an overwrite of the running executable. It stages and
+preflights the candidate while the old process still serves, then flips the
+atomic `current` link and verifies the exact `/proc` executable, build identity,
+RPC, native `agent`, operator snapshot, MCP catalog, and MCP self-test. Failure
+quarantines the candidate, restores `last-good`, restarts once, and verifies the
+recovery. Every attempt saves `~/.zclassic-c23-dev/agent-deploy.json`
+(`zcl.agent_dev_deploy.v1`) with candidate/current/running/last-good identities,
+activation-lock state, rollback status, rejected generations, build and probe
+status, failure capsule, and any pending auto-reindex marker. The activator and
+unit are hard-bound to the dev service, datadir, and ports; canonical and soak
+targets are rejected.
 `make agent-dev-status` / `zclassic23 agentdevstatus` /
 `zcl_agent_dev_status` expose the same restart hazard before deploy as
 `deploy_blocker`, `deploy_blocker_reason`, `explicit_recovery_env`, and
@@ -1021,11 +1029,40 @@ systemd command lines whenever the node RPC is reachable.
 
 This is a C23 project, so the edit loop should compile only what changed.
 
-- `make agent-loop` is the default AI/operator edit loop. It runs the
+- `make dev-watch` is the public save-driven loop. It batches a quiet save,
+  captures the same `zcl.agent_fast_plan.v1` impact routing used by
+  `agentimpact`, performs focused verification, and writes exactly one durable
+  `zcl.dev_cycle.v1` verdict. `MODE=auto` chooses the smallest proven-safe path;
+  `MODE=hotswap` requires exact manifest eligibility plus the running dev
+  node's authenticated `dev_hotswap` bridge. Its default
+  `tools/dev/hotswap-running-dev.sh` transport reserves exit 69 for bridge
+  unavailability, which permits auto fallback to reload; generation validation
+  or probe failure remains a rejected cycle. `MODE=reload` activates an
+  immutable binary generation;
+  `MODE=stage` builds and preflights without restart; and `MODE=check` never
+  activates. Mixed changes, headers, stateful code, missing transport, and any
+  unproven dependency/quiescence contract are `reload_required`. Use
+  `make dev-watch-once` for an explicit changed-file batch and
+  `make dev-watch-selftest` for the hermetic watcher contract.
+- Every watch attempt atomically refreshes
+  `~/.local/state/zclassic23-dev/latest-cycle.json` and stores its immutable
+  cycle record below `cycles/`. The record names changed files, impact-rule
+  hits and mapped tests, selected path and reason, phase timings,
+  candidate/running/last-good generations, probes, rollback result, failure
+  capsule, and one executable `agent_next_action`. A heartbeat lets
+  `zcl.agent_dev_status.v1` distinguish an idle watcher from a dead one.
+- Process activation is serialized by a nonblocking lock under
+  `~/.local/lib/zclassic23-dev/`. Candidate preflight cannot disturb the running
+  process. A failed warm activation restores and verifies `last-good`; a known
+  bad generation is quarantined instead of being fed to an unbounded restart
+  loop. `ZCL_DEV_DEPLOY_BUILD=strict make deploy-dev` exercises the same
+  isolated transaction with a production-flag candidate; it does not replace
+  strict compile, consensus, full-suite, reproducibility, or real-chain gates.
+- `make agent-loop` is the manual one-shot AI/operator edit loop. It runs the
   cache-aware `make fast-ci` checks; set `ZCL_AGENT_LOOP_BIN=1` to also link
   `build/bin/zclassic23-dev`, `ZCL_AGENT_LOOP_DEPLOY=stage` to stage the
   dev-lane binary for the next restart without stopping the service, or
-  `ZCL_AGENT_LOOP_DEPLOY=dev` to run the fast dev-lane hot-swap.
+  `ZCL_AGENT_LOOP_DEPLOY=dev` to run the fast transactional dev-lane reload.
 - `make agent-plan` is the read-only fast-lane decision packet
   (`zcl.agent_fast_plan.v1`). It reports changed files, selected focused tests,
   unmapped code changes, the changed-compile plan, green-input cache hit/miss,
@@ -1060,11 +1097,13 @@ This is a C23 project, so the edit loop should compile only what changed.
   the lane's explicit `worker_lane` contract (`role=worker`,
   `mutation_policy=noncanonical_dev_only`, safe status/deploy/stage/recover
   commands, and the guard that it never touches live or soak),
-  the source and installed dev binaries, whether the staged binary matches the
-  source-tree binary, `zcl23-dev` linger service state, RPC readiness or
-  pre-RPC recovery progress, saved `agent-deploy.json`, auto-reindex marker
-  state, deploy blocker/reason, stale-marker candidate, and the next safe
-  action. Use `make agent-dev-status ARGS=--json` for `zcl.agent_dev_status.v1`;
+  the source and installed dev binaries, `zcl23-dev` linger service and RPC
+  state, current/running/last-good/staged generations, exact-running-identity
+  match, activation lock, rejected generations, rollback availability, saved
+  deploy state, current `zcl.dev_cycle.v1`, watcher heartbeat, latency-SLO and
+  background-quality freshness, auto-reindex state, deploy blocker/reason, and
+  the next safe action. Use `make agent-dev-status ARGS=--json` for
+  `zcl.agent_dev_status.v1`;
   use `zclassic23 agentdevstatus` or MCP `zcl_agent_dev_status` for the
   first-class native/MCP contract.
 - `make agent-clear-stale-dev-reindex` archives a proven-stale dev-lane
@@ -1075,10 +1114,50 @@ This is a C23 project, so the edit loop should compile only what changed.
   fast-lane decision, recent focused-test failure hints, dirty-file count, MCP
   shortcuts, and a single next safe command. Use `ARGS=--json` for
   `zcl.agent_doctor.v1`.
-- `make agent-stage-dev` runs the fast dev rebuild and atomically replaces
-  `~/.local/bin/zclassic23-dev` for the next `zcl23-dev` restart without
-  stopping the current service. Use it when the dev lane is in pre-RPC recovery
-  or otherwise should not be interrupted.
+- `make agent-stage-dev` builds and preflights an immutable candidate, then
+  moves only the `staged` generation link. It does not stop the current service
+  or change `current`/`last-good`.
+- `make agent-index` atomically generates root `compile_commands.json` from a
+  dry-run of the actual `DEV_OBJS` recipes. It keeps the real C23 flags,
+  generated headers, compiler/cache wrapper, output object, and target-specific
+  normal `-Og` versus hot consensus/crypto/script/validation `-O2` profile.
+  Hash/freshness metadata lives under `.cache/zcl-agent-index/`. clangd is an
+  optional consumer; generation and freshness reporting work without it.
+- `make dev-loop-bench` writes `zcl.dev_loop_bench.v1` with configuration,
+  source/host identity, per-case raw millisecond samples, failures, p50/p95,
+  and separate hot-swap/reload SLO verdicts. Its default cases cannot activate
+  a service: hot-swap and reload remain `not_measured` until the operator opts
+  in explicitly. A missed p95 stays a `miss` in the artifact.
+- `zcl.hotswap_manifest.v2` currently admits only stateless MCP route sets. A
+  load validates schema/host ABI, capabilities, build/source identities, exact
+  input hash, mapped tests/probes, stateless state schema, and quiescence before
+  generation code runs. It stages all route replacements, runs the generation
+  self-test, and publishes one immutable resident router snapshot; any failure
+  publishes zero replacements. REST, diagnostics, services, models, storage,
+  events, conditions, supervisors, wallet/network/crypto state, reducers,
+  consensus, and process/bootstrap ownership remain `reload_required`.
+  Successful generations stay mapped so in-flight calls finish against their
+  original code. Inspect provenance and rejection detail through
+  `zcl_state(subsystem="hotswap")`, schema `zcl.hotswap_generation.v2`.
+- A hot-swap is process-local and ephemeral. It disappears on restart. After a
+  successful watch-mode hot-swap, an asynchronous `fast-rebuild` converges the
+  source-tree binary and preflights an immutable `staged` generation without
+  changing `current`; durable activation still requires the next transactional
+  process reload. In a dev build on the exact `~/.zclassic-c23-dev` lane, the
+  authenticated JSON-RPC methods `dev_hotswap` and `dev_mcp_call` dispatch
+  through the running process's resident MCP router. `dev_mcp_call` refuses
+  destructive tools; `dev_hotswap` is the dedicated narrow mutation bridge.
+  Release, canonical, and soak nodes do not register either method. The normal
+  persistent operation is `make hotswap FILES=tools/mcp/controllers/app_controller.c PROBE=zcl_name_list`;
+  it requires an already-running isolated dev node and
+  never starts or restarts one. A direct `mcpcall zcl_agent_hotswap` still
+  affects only that short-lived helper process. Watch mode uses
+  `tools/dev/hotswap-running-dev.sh` by default. Only its exit 69 means the
+  persistent RPC transport is unavailable and allows `MODE=auto` to reload;
+  ABI, capability, source/build/hash, self-test, commit, and probe failures stay
+  visible and do not silently reload. Use `make hotswap-sim` for the focused
+  deterministic simulated-network proof; `make sim-fast` remains the broader
+  checked-in scenario and seeded replay suite.
 - `make agent-mcp-call TOOL=<tool>` is the fresh source-tree MCP smoke path.
   It refreshes `build/bin/zclassic23-dev` before dispatch. Use
   `make agent-mcp-call-hot TOOL=<tool>` when the existing source-tree dev
@@ -1130,10 +1209,13 @@ Status JSON is written under `~/.local/state/zclassic23-quality`. The native
 `zclassic23 agentbuild` / `zcl_agent_build` response also embeds
 `recommended_loop` (`zcl.agent_build_loop.v1`) with the cheapest command for
 each intent (`agent-plan`, `agent-loop`, `fast-changed-compile`, `fast-compile`,
-`fast-rebuild`, `immutable-history-canaries`, focused `t-fast`, and
-`pre-push-ci`),
+`fast-rebuild`, `agent-index`, `dev-loop-bench`,
+`immutable-history-canaries`, focused `t-fast`, and `pre-push-ci`),
 `dev_node_binary` (`make dev-bin`, `build/bin/zclassic23-dev`, hot-path
-optimization buckets, and release/deploy boundary) plus
+optimization buckets, and release/deploy boundary), `indexing`
+(`zcl.agent_index_runtime.v1`, compilation-database presence/hash/freshness and
+optional clangd status), `dev_loop_benchmark` (`zcl.dev_loop_bench.v1`, latest
+artifact/SLO status), plus
 `immutable_history_canaries` (`zcl.immutable_history_canaries.v1`, the pinned
 h=478544 fixture, fast command, and replay gate commands) plus
 `background_quality_status` (`zcl.background_quality_runtime.v1`), a C-native

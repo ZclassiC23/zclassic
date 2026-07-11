@@ -1,0 +1,32 @@
+/* ZClassic23 Social — reference permissionless application.
+ *
+ * This declarative file will generate the conventional C resource slice and
+ * zcl_app_manifest_v1. It is data, not authority: the Core host grants only
+ * the named public SDK capabilities. */
+
+ZCL_APP("social", "ZClassic Social", "0.1.0")
+
+ZCL_APP_CAPABILITY(CHAIN_READ)
+ZCL_APP_CAPABILITY(SIGNED_EVENTS)
+ZCL_APP_CAPABILITY(RESIDENT_STATE)
+ZCL_APP_CAPABILITY(WEB_ROUTES)
+ZCL_APP_CAPABILITY(ONION_BINDING)
+ZCL_APP_CAPABILITY(ZNAM_BINDING)
+ZCL_APP_CAPABILITY(P2P_TOPICS)
+ZCL_APP_CAPABILITY(WALLET_REQUESTS)
+
+ZCL_APP_RESOURCE("profiles")
+ZCL_APP_RESOURCE("posts")
+ZCL_APP_RESOURCE("follows")
+ZCL_APP_RESOURCE("feeds")
+
+ZCL_APP_TOPIC("social.events.v1", 1, 65536)
+ZCL_APP_WEB_MOUNT("/")
+ZCL_APP_ONION(true)
+ZCL_APP_ZNAM("social")
+ZCL_APP_STATE_SCHEMA(1)
+
+ZCL_APP_SIM("partition_rejoin_converges")
+ZCL_APP_SIM("single_relay_censorship_bypassed")
+ZCL_APP_SIM("invalid_signature_rejected")
+ZCL_APP_SIM("same_seed_replay_identical")

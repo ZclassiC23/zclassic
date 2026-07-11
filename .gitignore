@@ -60,6 +60,7 @@ TAGS
 
 # Local developer/tool caches
 .cache/
+compile_commands.json
 
 # Claude Code scratch space — never track
 .claude/tmp/

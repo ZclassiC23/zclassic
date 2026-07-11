@@ -1,26 +1,18 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Tier 1 in-process hot-swap loader (DEV-ONLY dlopen path). See
- * hotswap/hotswap.h for the contract and docs/work/HOTSWAP.md for the
- * end-to-end recipe.
- *
- * Structure:
- *   - Pure helpers (path/datadir predicates) + the generation registry +
- *     the zcl_state dumper compile in ALL builds. They contain no dlopen /
- *     dlsym, so they are safe in release and unit-testable without loading
- *     a real .so.
- *   - hotswap_load()'s ACTUAL dlopen/dlsym/gen_init machinery lives inside
- *     `#ifdef ZCL_DEV_BUILD`. In release the function is a stub that refuses
- *     with "hotswap unavailable in release" and performs no dynamic load.
- *
- * The check-hotswap-dev-only lint gate enforces that dlopen/dlsym never
- * escape the ZCL_DEV_BUILD region below.
- */
+ * Stateless MCP hot-swap generation v2. Dynamic loading is DEV-ONLY; pure
+ * guards, manifest validation, status, and the release refusal stub compile in
+ * every build. A generation may only stage MCP routes. The caller validates
+ * the complete batch and publishes one immutable router snapshot after the
+ * generation self-test succeeds. No generation code runs before its exported
+ * manifest has passed the host ABI/capability/provenance/state contract. */
 
 #include "hotswap/hotswap.h"
 
+#include "crypto/sha256.h"
 #include "json/json.h"
 #include "platform/time_compat.h"
+#include "util/clientversion.h"
 #include "util/log_macros.h"
 
 #include <limits.h>
@@ -31,23 +23,56 @@
 #include <time.h>
 #include <unistd.h>
 
-/* ── Generation registry (always compiled) ───────────────────────── */
-
 #define HOTSWAP_MAX_GENERATIONS 128
 
 struct hotswap_generation {
     uint32_t gen;
-    char     so_path[512];
-    void    *handle;           /* dlopen handle (NULL in release); never closed */
-    time_t   loaded_at;
-    size_t   replaced_count;
-    bool     ok;
+    char so_path[512];
+    void *handle;                 /* successful mappings are never closed */
+    time_t loaded_at;
+    size_t replaced_count;
+    bool ok;
+    bool mapped;
+    char rejection_stage[64];
+    char error[256];
+    char provider_id[96];
+    char build_identity[96];
+    char source_identity[256];
+    char input_digest[128];
+    char artifact_sha256[65];
+    char mapped_tests_csv[256];
+    char probe_tools_csv[256];
+};
+
+struct hotswap_rejection {
+    bool present;
+    uint32_t gen;
+    time_t rejected_at;
+    char stage[64];
+    char error[256];
+    char so_path[512];
+    char source_identity[256];
 };
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct hotswap_generation g_gens[HOTSWAP_MAX_GENERATIONS];
-static size_t   g_gen_count = 0;
-static uint32_t g_next_gen  = 1;
+static size_t g_gen_count;
+static uint32_t g_next_gen = 1;
+static uint32_t g_active_gen;
+static struct hotswap_rejection g_last_rejection;
+
+static const char *const g_eligible_sources[] = {
+#define HOTSWAP_ELIGIBLE(path_) path_,
+#include "../../../config/hotswap_eligible.def"
+#undef HOTSWAP_ELIGIBLE
+};
+
+static void copy_text(char *dst, size_t dst_sz, const char *src)
+{
+    if (!dst || dst_sz == 0)
+        return;
+    snprintf(dst, dst_sz, "%s", src ? src : "");
+}
 
 size_t hotswap_generation_count(void)
 {
@@ -57,18 +82,19 @@ size_t hotswap_generation_count(void)
     return n;
 }
 
-/* ── Pure predicates (always compiled) ───────────────────────────── */
-
-static bool has_suffix(const char *s, const char *suf)
+static bool has_suffix(const char *s, const char *suffix)
 {
-    if (!s || !suf) return false;
-    size_t ls = strlen(s), lf = strlen(suf);
-    return ls >= lf && memcmp(s + ls - lf, suf, lf) == 0;
+    if (!s || !suffix)
+        return false;
+    size_t s_len = strlen(s), suffix_len = strlen(suffix);
+    return s_len >= suffix_len &&
+           memcmp(s + s_len - suffix_len, suffix, suffix_len) == 0;
 }
 
 bool hotswap_path_is_acceptable(const char *so_path, char *why, size_t why_sz)
 {
-    if (why && why_sz) why[0] = '\0';
+    if (why && why_sz)
+        why[0] = '\0';
     if (!so_path || !so_path[0]) {
         if (why) snprintf(why, why_sz, "empty path");
         return false;
@@ -89,63 +115,182 @@ bool hotswap_path_is_acceptable(const char *so_path, char *why, size_t why_sz)
         if (why) snprintf(why, why_sz, "file does not exist / unreadable");
         return false;
     }
-    /* Resolve and confine to /tmp or a repo build/hotswap dir so a stray
-     * MCP call cannot dlopen an arbitrary attacker-planted library. */
+
     char real[PATH_MAX];
     if (!realpath(so_path, real)) {
         if (why) snprintf(why, why_sz, "realpath failed");
         return false;
     }
     bool under_tmp = strncmp(real, "/tmp/", 5) == 0;
-    bool under_build = strstr(real, "/build/hotswap") != NULL;
+    bool under_build = strstr(real, "/build/hotswap/") != NULL;
     if (!under_tmp && !under_build) {
         if (why)
             snprintf(why, why_sz,
-                     "resolved path %s not under /tmp or a build/hotswap dir",
+                     "resolved path %s not under /tmp or build/hotswap",
                      real);
         return false;
     }
     return true;
 }
 
-/* Expand "~/<tail>" against $HOME into buf. */
-static void home_path(const char *tail, char *buf, size_t buf_sz)
-{
-    const char *home = getenv("HOME");
-    snprintf(buf, buf_sz, "%s/%s", home ? home : "", tail);
-}
-
-/* True if two directory paths denote the same location (realpath when both
- * exist, else a byte compare with any single trailing slash trimmed). */
 static bool same_dir(const char *a, const char *b)
 {
-    if (!a || !b) return false;
-    char ra[PATH_MAX], rb[PATH_MAX];
-    const char *pa = realpath(a, ra) ? ra : a;
-    const char *pb = realpath(b, rb) ? rb : b;
-    size_t la = strlen(pa), lb = strlen(pb);
-    if (la && pa[la - 1] == '/') la--;
-    if (lb && pb[lb - 1] == '/') lb--;
-    return la == lb && strncmp(pa, pb, la) == 0;
+    if (!a || !a[0] || !b || !b[0])
+        return false;
+    char real_a[PATH_MAX], real_b[PATH_MAX];
+    const char *path_a = realpath(a, real_a) ? real_a : a;
+    const char *path_b = realpath(b, real_b) ? real_b : b;
+    size_t a_len = strlen(path_a), b_len = strlen(path_b);
+    if (a_len && path_a[a_len - 1] == '/') a_len--;
+    if (b_len && path_b[b_len - 1] == '/') b_len--;
+    return a_len == b_len && strncmp(path_a, path_b, a_len) == 0;
 }
 
 bool hotswap_datadir_is_dev(const char *resolved_datadir)
 {
-    /* Refuse the canonical live datadir and the legacy zclassicd datadir;
-     * everything else (empty, dev/test/soak copies) is treated as dev. */
     if (!resolved_datadir || !resolved_datadir[0])
-        return true;
-    char canonical[PATH_MAX], legacy[PATH_MAX];
-    home_path(".zclassic-c23", canonical, sizeof(canonical));
-    home_path(".zclassic", legacy, sizeof(legacy));
-    if (same_dir(resolved_datadir, canonical))
         return false;
-    if (same_dir(resolved_datadir, legacy))
+    const char *home = getenv("HOME");
+    if (!home || home[0] != '/')
         return false;
+    char exact_dev[PATH_MAX];
+    snprintf(exact_dev, sizeof(exact_dev), "%s/.zclassic-c23-dev", home);
+    return same_dir(resolved_datadir, exact_dev);
+}
+
+static bool eligible_source(const char *source_identity)
+{
+    if (!source_identity || !source_identity[0])
+        return false;
+    for (size_t i = 0;
+         i < sizeof(g_eligible_sources) / sizeof(g_eligible_sources[0]); i++) {
+        if (strcmp(source_identity, g_eligible_sources[i]) == 0)
+            return true;
+    }
+    return false;
+}
+
+static bool manifest_text_present(const char *value)
+{
+    return value && value[0] && strnlen(value, 4096) < 4096;
+}
+
+static bool lowercase_sha256_hex(const char *value)
+{
+    if (!value || strlen(value) != 64)
+        return false;
+    for (size_t i = 0; i < 64; i++) {
+        if (!((value[i] >= '0' && value[i] <= '9') ||
+              (value[i] >= 'a' && value[i] <= 'f')))
+            return false;
+    }
     return true;
 }
 
-/* ── zcl_state subsystem=hotswap (always compiled) ───────────────── */
+bool hotswap_manifest_v2_validate(
+    const struct zcl_hotswap_manifest_v2 *manifest,
+    char *why,
+    size_t why_sz)
+{
+    if (why && why_sz)
+        why[0] = '\0';
+#define MANIFEST_REJECT(...) do {                                            \
+        if (why) snprintf(why, why_sz, __VA_ARGS__);                         \
+        return false;                                                        \
+    } while (0)
+    if (!manifest)
+        MANIFEST_REJECT("missing zcl_hotswap_manifest_v2");
+    if (manifest->schema_version != ZCL_HOTSWAP_MANIFEST_SCHEMA_V2)
+        MANIFEST_REJECT("manifest schema %u != %u", manifest->schema_version,
+                        ZCL_HOTSWAP_MANIFEST_SCHEMA_V2);
+    if (manifest->struct_size != sizeof(*manifest))
+        MANIFEST_REJECT("manifest struct size %u != %zu",
+                        manifest->struct_size, sizeof(*manifest));
+    if (manifest->host_abi_version != ZCL_HOTSWAP_HOST_ABI_V2 ||
+        manifest->host_struct_size != sizeof(struct zcl_hotswap_host))
+        MANIFEST_REJECT("host ABI/size mismatch: abi=%u size=%u",
+                        manifest->host_abi_version,
+                        manifest->host_struct_size);
+    if (manifest->required_host_capabilities !=
+        ZCL_HOTSWAP_V2_HOST_CAPABILITIES)
+        MANIFEST_REJECT("missing/unsupported host capabilities: 0x%llx",
+                        (unsigned long long)
+                            manifest->required_host_capabilities);
+    if (!manifest_text_present(manifest->provider_id) ||
+        strcmp(manifest->provider_id, "mcp.routes") != 0)
+        MANIFEST_REJECT("provider is reload-required or unknown: %s",
+                        manifest->provider_id ? manifest->provider_id : "");
+    if (!manifest_text_present(manifest->build_identity) ||
+        strcmp(manifest->build_identity, zcl_build_commit()) != 0)
+        MANIFEST_REJECT("build identity mismatch: generation=%s host=%s",
+                        manifest->build_identity ? manifest->build_identity : "",
+                        zcl_build_commit());
+    if (!manifest_text_present(manifest->source_identity) ||
+        !eligible_source(manifest->source_identity))
+        MANIFEST_REJECT("source is not runtime-eligible: %s",
+                        manifest->source_identity ? manifest->source_identity : "");
+    if (!lowercase_sha256_hex(manifest->input_digest))
+        MANIFEST_REJECT("input content SHA-256 must be 64 lowercase hex chars");
+    if (!manifest->stateless || manifest->state_schema_version != 0)
+        MANIFEST_REJECT("stateful provider is reload-required");
+    if (manifest->quiescence != ZCL_HOTSWAP_QUIESCENCE_NONE)
+        MANIFEST_REJECT("quiescence contract is unsupported in stateless v2");
+    if (!manifest_text_present(manifest->mapped_tests_csv) ||
+        !manifest_text_present(manifest->probe_tools_csv))
+        MANIFEST_REJECT("mapped tests/probe metadata is required");
+    if (!manifest->self_test)
+        MANIFEST_REJECT("generation self-test is required");
+#undef MANIFEST_REJECT
+    return true;
+}
+
+#ifdef ZCL_DEV_BUILD
+static void rejection_set_locked(uint32_t gen, const char *stage,
+                                 const char *error, const char *so_path,
+                                 const char *source_identity)
+{
+    memset(&g_last_rejection, 0, sizeof(g_last_rejection));
+    g_last_rejection.present = true;
+    g_last_rejection.gen = gen;
+    g_last_rejection.rejected_at = platform_time_wall_time_t();
+    copy_text(g_last_rejection.stage, sizeof(g_last_rejection.stage), stage);
+    copy_text(g_last_rejection.error, sizeof(g_last_rejection.error), error);
+    copy_text(g_last_rejection.so_path, sizeof(g_last_rejection.so_path), so_path);
+    copy_text(g_last_rejection.source_identity,
+              sizeof(g_last_rejection.source_identity), source_identity);
+}
+#endif
+
+static void generation_json(struct json_value *obj,
+                            const struct hotswap_generation *generation)
+{
+    json_set_object(obj);
+    json_push_kv_int(obj, "gen", (int64_t)generation->gen);
+    json_push_kv_str(obj, "status",
+                     generation->ok
+                         ? (generation->gen == g_active_gen
+                                ? "active" : "retired_mapped")
+                         : "rejected");
+    json_push_kv_str(obj, "so_path", generation->so_path);
+    json_push_kv_int(obj, "loaded_at", (int64_t)generation->loaded_at);
+    json_push_kv_int(obj, "replaced_count",
+                     (int64_t)generation->replaced_count);
+    json_push_kv_bool(obj, "ok", generation->ok);
+    json_push_kv_bool(obj, "mapped", generation->mapped);
+    json_push_kv_str(obj, "provider_id", generation->provider_id);
+    json_push_kv_str(obj, "build_identity", generation->build_identity);
+    json_push_kv_str(obj, "source_identity", generation->source_identity);
+    json_push_kv_str(obj, "input_content_sha256", generation->input_digest);
+    json_push_kv_str(obj, "artifact_sha256", generation->artifact_sha256);
+    json_push_kv_bool(obj, "artifact_hash_available",
+                      generation->artifact_sha256[0] != '\0');
+    json_push_kv_str(obj, "mapped_tests", generation->mapped_tests_csv);
+    json_push_kv_str(obj, "probe_tools", generation->probe_tools_csv);
+    if (generation->rejection_stage[0])
+        json_push_kv_str(obj, "rejection_stage", generation->rejection_stage);
+    if (generation->error[0])
+        json_push_kv_str(obj, "error", generation->error);
+}
 
 bool hotswap_dump_state_json(struct json_value *out, const char *key)
 {
@@ -153,229 +298,395 @@ bool hotswap_dump_state_json(struct json_value *out, const char *key)
     if (!out)
         return false;
     json_set_object(out);
-
+    json_push_kv_str(out, "schema", "zcl.hotswap_generation.v2");
 #ifdef ZCL_DEV_BUILD
     json_push_kv_bool(out, "available", true);
 #else
     json_push_kv_bool(out, "available", false);
     json_push_kv_str(out, "note", "hotswap unavailable in release build");
 #endif
+    json_push_kv_bool(out, "ephemeral", true);
+    json_push_kv_str(out, "mapping_policy",
+                     "successful_generations_permanently_mapped");
+    json_push_kv_str(out, "admitted_provider_class", "stateless_mcp_routes");
+    json_push_kv_str(out, "input_hash_scope", "source_headers_flags");
+    json_push_kv_str(out, "artifact_hash_scope", "shared_object_bytes");
 
     pthread_mutex_lock(&g_lock);
     json_push_kv_int(out, "generation_count", (int64_t)g_gen_count);
     json_push_kv_int(out, "next_gen", (int64_t)g_next_gen);
+    json_push_kv_int(out, "active_generation", (int64_t)g_active_gen);
 
-    struct json_value arr;
-    json_init(&arr);
-    json_set_array(&arr);
+    struct json_value generations = {0};
+    json_set_array(&generations);
+    struct json_value rejected = {0};
+    json_set_array(&rejected);
     for (size_t i = 0; i < g_gen_count; i++) {
-        const struct hotswap_generation *g = &g_gens[i];
-        struct json_value obj;
-        json_init(&obj);
-        json_set_object(&obj);
-        json_push_kv_int(&obj, "gen", (int64_t)g->gen);
-        json_push_kv_str(&obj, "so_path", g->so_path);
-        json_push_kv_int(&obj, "loaded_at", (int64_t)g->loaded_at);
-        json_push_kv_int(&obj, "replaced_count", (int64_t)g->replaced_count);
-        json_push_kv_bool(&obj, "ok", g->ok);
-        json_push_back(&arr, &obj);
+        struct json_value obj = {0};
+        generation_json(&obj, &g_gens[i]);
+        json_push_back(&generations, &obj);
+        if (!g_gens[i].ok)
+            json_push_back(&rejected, &obj);
         json_free(&obj);
     }
-    pthread_mutex_unlock(&g_lock);
+    json_push_kv(out, "generations", &generations);
+    json_push_kv(out, "rejected_generations", &rejected);
+    json_free(&generations);
+    json_free(&rejected);
 
-    json_push_kv(out, "generations", &arr);
-    json_free(&arr);
+    struct json_value last = {0};
+    json_set_object(&last);
+    json_push_kv_bool(&last, "present", g_last_rejection.present);
+    if (g_last_rejection.present) {
+        json_push_kv_int(&last, "gen", (int64_t)g_last_rejection.gen);
+        json_push_kv_int(&last, "rejected_at",
+                         (int64_t)g_last_rejection.rejected_at);
+        json_push_kv_str(&last, "stage", g_last_rejection.stage);
+        json_push_kv_str(&last, "error", g_last_rejection.error);
+        json_push_kv_str(&last, "so_path", g_last_rejection.so_path);
+        json_push_kv_str(&last, "source_identity",
+                         g_last_rejection.source_identity);
+    }
+    json_push_kv(out, "last_rejection", &last);
+    json_free(&last);
+    pthread_mutex_unlock(&g_lock);
     return true;
 }
-
-/* ── Load path ───────────────────────────────────────────────────── */
 
 #ifdef ZCL_DEV_BUILD
 
 #include <dlfcn.h>
 
-/* Register a generation slot (caller holds g_lock). Returns the slot or
- * NULL if the registry is full. */
-static struct hotswap_generation *hotswap_registry_add(uint32_t gen,
-                                                       const char *so_path,
-                                                       void *handle)
+static bool artifact_sha256_file(const char *path, char hex_out[65])
+{
+    if (!path || !hex_out)
+        return false;
+    hex_out[0] = '\0';
+    FILE *file = fopen(path, "rb");
+    if (!file)
+        return false;
+    struct sha256_ctx context;
+    sha256_init(&context);
+    unsigned char buffer[64 * 1024];
+    size_t count;
+    while ((count = fread(buffer, 1, sizeof(buffer), file)) > 0)
+        sha256_write(&context, buffer, count);
+    bool ok = !ferror(file);
+    if (fclose(file) != 0)
+        ok = false;
+    if (!ok)
+        return false;
+    unsigned char digest[SHA256_OUTPUT_SIZE];
+    sha256_finalize(&context, digest);
+    static const char hex[] = "0123456789abcdef";
+    for (size_t i = 0; i < SHA256_OUTPUT_SIZE; i++) {
+        hex_out[i * 2] = hex[digest[i] >> 4];
+        hex_out[i * 2 + 1] = hex[digest[i] & 0x0f];
+    }
+    hex_out[64] = '\0';
+    return true;
+}
+
+struct hotswap_load_tx {
+    struct zcl_hotswap_mcp_replacement staged[ZCL_HOTSWAP_GEN_MAX_REPLACED];
+    size_t staged_count;
+    bool stage_failed;
+    char stage_error[256];
+};
+
+/* Loads are serialized under g_lock. This context only makes the C callback
+ * reach the current stack transaction; no staged route is visible to readers. */
+static struct hotswap_load_tx *g_active_tx;
+
+static bool hotswap_stage_thunk(const char *name,
+                                const struct mcp_tool_route *route)
+{
+    struct hotswap_load_tx *tx = g_active_tx;
+    if (!tx)
+        return false;
+    if (!name || !name[0] || !route) {
+        tx->stage_failed = true;
+        copy_text(tx->stage_error, sizeof(tx->stage_error),
+                  "generation staged a malformed MCP route");
+        return false;
+    }
+    if (tx->staged_count >= ZCL_HOTSWAP_GEN_MAX_REPLACED) {
+        tx->stage_failed = true;
+        copy_text(tx->stage_error, sizeof(tx->stage_error),
+                  "generation staged too many MCP routes");
+        return false;
+    }
+    for (size_t i = 0; i < tx->staged_count; i++) {
+        if (strcmp(tx->staged[i].name, name) == 0) {
+            tx->stage_failed = true;
+            snprintf(tx->stage_error, sizeof(tx->stage_error),
+                     "generation staged duplicate route '%s'", name);
+            return false;
+        }
+    }
+    tx->staged[tx->staged_count++] =
+        (struct zcl_hotswap_mcp_replacement){ .name = name, .route = route };
+    return true;
+}
+
+static struct hotswap_generation *generation_add_locked(uint32_t gen,
+                                                         const char *so_path,
+                                                         void *handle)
 {
     if (g_gen_count >= HOTSWAP_MAX_GENERATIONS)
         return NULL;
-    struct hotswap_generation *g = &g_gens[g_gen_count++];
-    memset(g, 0, sizeof(*g));
-    g->gen = gen;
-    snprintf(g->so_path, sizeof(g->so_path), "%s", so_path ? so_path : "");
-    g->handle = handle;
-    g->loaded_at = platform_time_wall_time_t();
-    g->ok = false;
-    return g;
+    struct hotswap_generation *slot = &g_gens[g_gen_count++];
+    memset(slot, 0, sizeof(*slot));
+    slot->gen = gen;
+    slot->handle = handle;
+    slot->loaded_at = platform_time_wall_time_t();
+    copy_text(slot->so_path, sizeof(slot->so_path), so_path);
+    return slot;
 }
 
-/* Shared prologue: validate inputs before touching any dynamic loader.
- * Fills report->error and returns false on rejection. */
-static bool hotswap_load_precheck(const char *so_path,
-                                  const char *resolved_datadir,
-                                  zcl_hotswap_replace_cb replace_cb,
-                                  struct hotswap_load_report *report)
+static void manifest_copy(struct hotswap_generation *slot,
+                          struct hotswap_load_report *report,
+                          const struct zcl_hotswap_manifest_v2 *manifest)
+{
+#define COPY_MANIFEST_TEXT(slot_field_, report_field_, source_) do {         \
+        if (manifest_text_present(source_)) {                                \
+            copy_text(slot->slot_field_, sizeof(slot->slot_field_), source_); \
+            copy_text(report->report_field_, sizeof(report->report_field_),  \
+                      source_);                                              \
+        }                                                                    \
+    } while (0)
+    COPY_MANIFEST_TEXT(provider_id, provider_id, manifest->provider_id);
+    COPY_MANIFEST_TEXT(build_identity, build_identity,
+                       manifest->build_identity);
+    COPY_MANIFEST_TEXT(source_identity, source_identity,
+                       manifest->source_identity);
+    COPY_MANIFEST_TEXT(input_digest, input_digest, manifest->input_digest);
+    if (manifest_text_present(manifest->mapped_tests_csv))
+        copy_text(slot->mapped_tests_csv, sizeof(slot->mapped_tests_csv),
+                  manifest->mapped_tests_csv);
+    if (manifest_text_present(manifest->probe_tools_csv))
+        copy_text(slot->probe_tools_csv, sizeof(slot->probe_tools_csv),
+                  manifest->probe_tools_csv);
+#undef COPY_MANIFEST_TEXT
+}
+
+static bool generation_reject_locked(struct hotswap_generation *slot,
+                                     struct hotswap_load_report *report,
+                                     const char *stage, const char *error)
+{
+    copy_text(report->rejection_stage, sizeof(report->rejection_stage), stage);
+    copy_text(report->error, sizeof(report->error), error);
+    if (slot) {
+        copy_text(slot->rejection_stage, sizeof(slot->rejection_stage), stage);
+        copy_text(slot->error, sizeof(slot->error), error);
+        slot->ok = false;
+        slot->mapped = false;
+        rejection_set_locked(slot->gen, stage, error, slot->so_path,
+                             slot->source_identity);
+        if (slot->handle) {
+            dlclose(slot->handle);
+            slot->handle = NULL;
+        }
+    } else {
+        rejection_set_locked(report->gen, stage, error, "",
+                             report->source_identity);
+    }
+    LOG_WARN("hotswap", "generation rejected stage=%s: %s", stage, error);
+    return false;
+}
+
+static bool load_precheck(const char *so_path, const char *resolved_datadir,
+                          zcl_hotswap_commit_cb commit_cb,
+                          struct hotswap_load_report *report)
 {
     if (!report)
         return false;
     memset(report, 0, sizeof(*report));
-
-    if (!replace_cb) {
-        snprintf(report->error, sizeof(report->error),
-                 "no route-replacement callback supplied");
+    if (!commit_cb) {
+        copy_text(report->rejection_stage, sizeof(report->rejection_stage),
+                  "precheck");
+        copy_text(report->error, sizeof(report->error),
+                  "no transactional commit callback supplied");
         return false;
     }
     if (!hotswap_datadir_is_dev(resolved_datadir)) {
+        copy_text(report->rejection_stage, sizeof(report->rejection_stage),
+                  "precheck");
         snprintf(report->error, sizeof(report->error),
-                 "refusing hot-swap on canonical/live datadir '%s'",
+                 "refusing hot-swap outside exact dev datadir: '%s'",
                  resolved_datadir ? resolved_datadir : "");
-        LOG_WARN("hotswap", "%s", report->error);
         return false;
     }
     char why[192] = {0};
     if (!hotswap_path_is_acceptable(so_path, why, sizeof(why))) {
+        copy_text(report->rejection_stage, sizeof(report->rejection_stage),
+                  "precheck");
         snprintf(report->error, sizeof(report->error),
                  "rejected so_path: %s", why);
-        LOG_WARN("hotswap", "%s", report->error);
         return false;
     }
     return true;
 }
 
-/* Loads are serialized under g_lock, so a single file-static context lets
- * the C-callable host thunk (no closures in C) reach the in-progress
- * report + the caller's replace callback. */
-static struct hotswap_load_report *g_active_report = NULL;
-static zcl_hotswap_replace_cb      g_active_cb     = NULL;
-
-/* host->mcp_replace thunk: publish via the caller's callback and record the
- * published tool name into the active report. */
-static bool hotswap_replace_thunk(const char *name,
-                                  const struct mcp_tool_route *route)
-{
-    if (!g_active_cb || !g_active_report)
-        return false;
-    bool ok = g_active_cb(name, route);
-    if (ok && name) {
-        struct hotswap_load_report *r = g_active_report;
-        if (r->replaced_count < ZCL_HOTSWAP_GEN_MAX_REPLACED) {
-            snprintf(r->replaced[r->replaced_count],
-                     sizeof(r->replaced[0]), "%s", name);
-            r->replaced_count++;
-        } else {
-            r->replaced_overflow = true;
-        }
-    }
-    return ok;
-}
-
 bool hotswap_load(const char *so_path,
                   const char *resolved_datadir,
-                  zcl_hotswap_replace_cb replace_cb,
+                  zcl_hotswap_commit_cb commit_cb,
                   struct hotswap_load_report *report)
 {
-    if (!hotswap_load_precheck(so_path, resolved_datadir, replace_cb, report))
+    if (!load_precheck(so_path, resolved_datadir, commit_cb, report)) {
+        if (report) {
+            pthread_mutex_lock(&g_lock);
+            rejection_set_locked(0, report->rejection_stage, report->error,
+                                 so_path, "");
+            pthread_mutex_unlock(&g_lock);
+            LOG_WARN("hotswap", "%s", report->error);
+        }
         return false;
+    }
 
     pthread_mutex_lock(&g_lock);
-
-    /* 1. dlopen. RTLD_LOCAL keeps the .so's symbols out of global scope
-     *    (only the executable's -rdynamic kernel symbols are shared into
-     *    the .so). RTLD_NOW surfaces unresolved symbols now, not later. */
+    if (!artifact_sha256_file(so_path, report->artifact_sha256)) {
+        bool result = generation_reject_locked(
+            NULL, report, "artifact_hash",
+            "could not compute generation artifact SHA-256");
+        pthread_mutex_unlock(&g_lock);
+        return result;
+    }
     void *handle = dlopen(so_path, RTLD_NOW | RTLD_LOCAL);
     if (!handle) {
-        const char *e = dlerror();
-        snprintf(report->error, sizeof(report->error),
-                 "dlopen failed: %s", e ? e : "(unknown)");
-        LOG_WARN("hotswap", "%s", report->error);
+        const char *dl_error = dlerror();
+        char error[256];
+        snprintf(error, sizeof(error), "dlopen failed: %s",
+                 dl_error ? dl_error : "(unknown)");
+        bool result = generation_reject_locked(NULL, report, "dlopen", error);
         pthread_mutex_unlock(&g_lock);
-        return false;
+        return result;
     }
 
-    /* 2. Resolve the well-known generation entrypoint. Nothing is published
-     *    yet, so on failure we may safely dlclose this handle. */
+    uint32_t gen = g_next_gen++;
+    report->gen = gen;
+    struct hotswap_generation *slot =
+        generation_add_locked(gen, so_path, handle);
+    if (!slot) {
+        char error[128];
+        snprintf(error, sizeof(error), "generation registry full (%d)",
+                 HOTSWAP_MAX_GENERATIONS);
+        dlclose(handle);
+        bool result = generation_reject_locked(NULL, report, "registry", error);
+        pthread_mutex_unlock(&g_lock);
+        return result;
+    }
+    copy_text(slot->artifact_sha256, sizeof(slot->artifact_sha256),
+              report->artifact_sha256);
+
     dlerror();
-    /* POSIX object->function pointer round-trip via a void* lvalue avoids the
-     * ISO C -Wpedantic diagnostic on a direct cast of dlsym's result. */
+    const struct zcl_hotswap_manifest_v2 *manifest =
+        dlsym(handle, "zcl_hotswap_manifest_v2");
+    const char *manifest_symbol_error = dlerror();
+    char why[256] = {0};
+    if (!manifest || manifest_symbol_error) {
+        snprintf(why, sizeof(why), "missing zcl_hotswap_manifest_v2: %s",
+                 manifest_symbol_error ? manifest_symbol_error :
+                                         "symbol not found");
+        bool result = generation_reject_locked(slot, report, "manifest", why);
+        pthread_mutex_unlock(&g_lock);
+        return result;
+    }
+    /* Once the exported object's schema and byte size prove all fields exist,
+     * capture bounded provenance even when a later ABI/capability/identity
+     * check rejects it. Rejected generations must remain diagnosable. */
+    if (manifest->schema_version == ZCL_HOTSWAP_MANIFEST_SCHEMA_V2 &&
+        manifest->struct_size == sizeof(*manifest))
+        manifest_copy(slot, report, manifest);
+    if (!hotswap_manifest_v2_validate(manifest, why, sizeof(why))) {
+        bool result = generation_reject_locked(slot, report, "manifest", why);
+        pthread_mutex_unlock(&g_lock);
+        return result;
+    }
+
+    dlerror();
     zcl_hotswap_gen_init_fn gen_init = NULL;
     *(void **)(&gen_init) = dlsym(handle, "zcl_hotswap_gen_init");
-    const char *sym_err = dlerror();
-    if (!gen_init || sym_err) {
-        snprintf(report->error, sizeof(report->error),
-                 "missing zcl_hotswap_gen_init: %s",
-                 sym_err ? sym_err : "symbol not found");
-        LOG_WARN("hotswap", "%s", report->error);
-        dlclose(handle);
+    const char *init_symbol_error = dlerror();
+    if (!gen_init || init_symbol_error) {
+        snprintf(why, sizeof(why), "missing zcl_hotswap_gen_init: %s",
+                 init_symbol_error ? init_symbol_error : "symbol not found");
+        bool result = generation_reject_locked(slot, report, "manifest", why);
         pthread_mutex_unlock(&g_lock);
-        return false;
+        return result;
     }
 
-    /* 3. Register the generation BEFORE calling gen_init: once gen_init runs
-     *    it may publish routes pointing into this .so, so the handle must be
-     *    tracked (and never closed) from here on. */
-    uint32_t gen = g_next_gen++;
-    struct hotswap_generation *slot =
-        hotswap_registry_add(gen, so_path, handle);
-    if (!slot) {
-        snprintf(report->error, sizeof(report->error),
-                 "generation registry full (%d)", HOTSWAP_MAX_GENERATIONS);
-        LOG_WARN("hotswap", "%s", report->error);
-        /* Nothing published yet; safe to close. */
-        dlclose(handle);
-        pthread_mutex_unlock(&g_lock);
-        return false;
-    }
-    report->gen = gen;
-
-    /* 4. Run gen_init with the host vtable. Its host->mcp_replace stages
-     *    each replacement and records the name. */
     struct zcl_hotswap_host host = {
+        .abi_version = ZCL_HOTSWAP_HOST_ABI_V2,
+        .struct_size = sizeof(struct zcl_hotswap_host),
         .gen = gen,
-        .mcp_replace = hotswap_replace_thunk,
+        .capabilities = ZCL_HOTSWAP_V2_HOST_CAPABILITIES,
+        .mcp_stage = hotswap_stage_thunk,
     };
-    g_active_report = report;
-    g_active_cb = replace_cb;
+    struct hotswap_load_tx tx = {0};
+    g_active_tx = &tx;
     bool init_ok = gen_init(&host);
-    g_active_report = NULL;
-    g_active_cb = NULL;
-
-    slot->replaced_count = report->replaced_count;
-    slot->ok = init_ok;
-    report->ok = init_ok;
-
-    if (!init_ok) {
-        /* v1 semantics: a partial failure leaves already-published entries
-         * in place (they point at valid code in this kept-alive .so). Full
-         * transactionality (stage-then-commit-all) is a later refinement. */
-        snprintf(report->error, sizeof(report->error),
-                 "gen_init reported failure after %zu replacement(s); "
-                 "already-published routes were kept (v1 non-transactional)",
-                 report->replaced_count);
-        LOG_WARN("hotswap", "%s", report->error);
+    g_active_tx = NULL;
+    if (!init_ok || tx.stage_failed || tx.staged_count == 0) {
+        const char *error = tx.stage_error[0]
+            ? tx.stage_error
+            : (tx.staged_count == 0
+                   ? "generation staged no MCP routes"
+                   : "generation init returned false");
+        bool result = generation_reject_locked(slot, report, "init", error);
+        pthread_mutex_unlock(&g_lock);
+        return result;
     }
+
+    why[0] = '\0';
+    if (!manifest->self_test(&host, why, sizeof(why))) {
+        bool result = generation_reject_locked(
+            slot, report, "self_test",
+            why[0] ? why : "generation self-test returned false");
+        pthread_mutex_unlock(&g_lock);
+        return result;
+    }
+
+    why[0] = '\0';
+    if (!commit_cb(gen, tx.staged, tx.staged_count, why, sizeof(why))) {
+        bool result = generation_reject_locked(
+            slot, report, "commit",
+            why[0] ? why : "transactional route commit failed");
+        pthread_mutex_unlock(&g_lock);
+        return result;
+    }
+
+    slot->ok = true;
+    slot->mapped = true;
+    slot->replaced_count = tx.staged_count;
+    g_active_gen = gen;
+    report->ok = true;
+    report->replaced_count = tx.staged_count;
+    for (size_t i = 0; i < tx.staged_count; i++)
+        copy_text(report->replaced[i], sizeof(report->replaced[i]),
+                  tx.staged[i].name);
 
     pthread_mutex_unlock(&g_lock);
-    return init_ok;
+    return true;
 }
 
-#else /* !ZCL_DEV_BUILD — release: no dynamic loading whatsoever */
+#else /* !ZCL_DEV_BUILD */
 
 bool hotswap_load(const char *so_path,
                   const char *resolved_datadir,
-                  zcl_hotswap_replace_cb replace_cb,
+                  zcl_hotswap_commit_cb commit_cb,
                   struct hotswap_load_report *report)
 {
     (void)so_path;
     (void)resolved_datadir;
-    (void)replace_cb;
+    (void)commit_cb;
     if (!report)
         return false;
     memset(report, 0, sizeof(*report));
-    snprintf(report->error, sizeof(report->error),
-             "hotswap unavailable in release build");
+    copy_text(report->rejection_stage, sizeof(report->rejection_stage),
+              "release");
+    copy_text(report->error, sizeof(report->error),
+              "hotswap unavailable in release build");
     return false;
 }
 

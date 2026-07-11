@@ -274,11 +274,43 @@ const struct api_resource_route *
 api_resource_route_find(const char *method, const char *path);
 bool api_route_registry_is_private(const char *path);
 void api_route_registry_visit(api_route_contract_visit_fn visit, void *ctx);
+/* Public REST dynamic-dispatch entry. This is a hot-swap TRAMPOLINE
+ * (app/controllers/src/api_controller_dispatch.c): it acquire-loads an
+ * atomic provider and, if a dev generation .so has installed one, delegates
+ * to it; otherwise it calls the resident built-in below. See
+ * docs/work/HOTSWAP.md and ZCL_HOTSWAP_EXPORT_PROVIDER. */
 size_t api_resource_route_dispatch_dynamic(const char *method,
                                            const char *path,
                                            uint8_t *response,
                                            size_t response_max,
                                            bool *handled);
+
+/* The resident built-in REST dynamic dispatch (the static route tables live
+ * in the swap-eligible api_controller_routes.c). The trampoline calls this
+ * when no provider is installed; a generation .so installs its own recompiled
+ * copy of this symbol as the provider. */
+size_t api_resource_route_dispatch_builtin(const char *method,
+                                           const char *path,
+                                           uint8_t *response,
+                                           size_t response_max,
+                                           bool *handled);
+
+/* Matches api_resource_route_dispatch_builtin — the swap unit for REST. */
+typedef size_t (*api_resource_dispatch_fn)(const char *method,
+                                           const char *path,
+                                           uint8_t *response,
+                                           size_t response_max,
+                                           bool *handled);
+
+#ifdef ZCL_DEV_BUILD
+/* DEV-ONLY: atomically re-point the resident REST dispatch provider at `fn`
+ * (release store; the trampoline reads it with an acquire load). Lives in the
+ * RESIDENT trampoline TU so a generation .so reaches it as an undefined symbol
+ * that binds to the executable's copy. Returns false on a NULL fn. Used only
+ * by the Tier-1 hot-swap generation entrypoint + tests. */
+bool api_resource_dispatch_replace(api_resource_dispatch_fn fn);
+#endif
+
 size_t api_route_contract_count(void);
 void api_route_contracts_json(struct json_value *out);
 

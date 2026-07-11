@@ -423,6 +423,8 @@ add/remove a gate.
 - `check-mint-skip-crypto-offline-only`
 - `check-wire-harness-security-gate`
 - `check-hotswap-dev-only`
+- `check-hotswap-eligible-scope`
+- `check-hotswap-static-state`
 <!-- LINT-GATES-END -->
 
 (`check-consensus-parity` [E13, the parity mechanism — see

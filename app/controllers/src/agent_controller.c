@@ -13,7 +13,6 @@
 #include "rpc/server.h"
 #include "util/clientversion.h"
 
-#include <errno.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,24 +55,42 @@ static void agent_push_build_knob(struct json_value *arr, const char *name,
     json_free(&knob);
 }
 
-static void agent_dev_status_error(struct json_value *result,
-                                   const char *error,
-                                   const char *detail,
-                                   int collector_status)
+/* Read-only optional tooling status. Missing scripts/artifacts are normal on
+ * installed binaries, so failures become a typed unavailable object rather
+ * than making agentbuild itself fail. */
+static void agent_collect_optional_status(struct json_value *out,
+                                          const char *command,
+                                          const char *schema)
 {
-    json_set_object(result);
-    json_push_kv_str(result, "schema", "zcl.agent_dev_status.v1");
-    json_push_kv_str(result, "api_version", "v1");
-    json_push_kv_str(result, "status", "error");
-    json_push_kv_str(result, "error", error ? error : "agent_dev_status_failed");
-    json_push_kv_str(result, "detail", detail ? detail : "");
-    json_push_kv_int(result, "collector_status", collector_status);
-    json_push_kv_str(result, "collector_command",
-                     "tools/dev/agent-dev-status.sh --json");
-    json_push_kv_str(result, "native_command", "zclassic23 agentdevstatus");
-    json_push_kv_str(result, "mcp_tool", "zcl_agent_dev_status");
-    json_push_kv_str(result, "safe_next_action",
-                     "run make agent-dev-status from the repository");
+    char buf[65536];
+    size_t used = 0;
+    int rc = -1;
+    FILE *pipe = popen(command, "r");
+    if (pipe) {
+        while (used + 1 < sizeof(buf)) {
+            size_t n = fread(buf + used, 1, sizeof(buf) - used - 1, pipe);
+            used += n;
+            if (n == 0) break;
+        }
+        rc = pclose(pipe);
+    }
+    buf[used] = '\0';
+    struct json_value parsed = {0};
+    if (pipe && used + 1 < sizeof(buf) &&
+        json_read(&parsed, buf, used) && parsed.type == JSON_OBJ &&
+        strcmp(json_get_str(json_get(&parsed, "schema")), schema) == 0) {
+        *out = parsed;
+        json_push_kv_int(out, "collector_status", rc);
+        return;
+    }
+    json_free(&parsed);
+    json_set_object(out);
+    json_push_kv_str(out, "schema", schema);
+    json_push_kv_str(out, "status", "unavailable");
+    json_push_kv_str(out, "collector_command", command);
+    json_push_kv_int(out, "collector_status", rc);
+    json_push_kv_str(out, "agent_next_action",
+                     "run the corresponding make target from the repository");
 }
 
 bool rpc_agent_dev_status(const struct json_value *params, bool help,
@@ -92,62 +109,14 @@ bool rpc_agent_dev_status(const struct json_value *params, bool help,
     const char *cmd_env = getenv("ZCL_AGENT_DEV_STATUS_CMD");
     const char *cmd = (cmd_env && cmd_env[0])
         ? cmd_env : "tools/dev/agent-dev-status.sh --json";
-    FILE *pipe = popen(cmd, "r");
-    if (!pipe) {
-        agent_dev_status_error(result, "collector_start_failed",
-                               strerror(errno), -1);
-        return true;
-    }
-
-    char buf[65536];
-    size_t used = 0;
-    while (used + 1 < sizeof(buf)) {
-        size_t n = fread(buf + used, 1, sizeof(buf) - used - 1, pipe);
-        used += n;
-        if (n == 0)
-            break;
-    }
-    buf[used] = '\0';
-    int collector_status = pclose(pipe);
-    if (used + 1 >= sizeof(buf)) {
-        agent_dev_status_error(result, "collector_output_too_large",
-                               "agent-dev-status JSON exceeded 64 KiB",
-                               collector_status);
-        return true;
-    }
-    if (collector_status != 0 && used == 0) {
-        agent_dev_status_error(result, "collector_failed",
-                               "agent-dev-status exited without JSON",
-                               collector_status);
-        return true;
-    }
-
-    struct json_value parsed;
-    json_init(&parsed);
-    if (!json_read(&parsed, buf, used) || parsed.type != JSON_OBJ) {
-        json_free(&parsed);
-        agent_dev_status_error(result, "collector_invalid_json",
-                               "agent-dev-status did not return a JSON object",
-                               collector_status);
-        return true;
-    }
-
-    const char *schema = json_get_str(json_get(&parsed, "schema"));
-    if (strcmp(schema, "zcl.agent_dev_status.v1") != 0) {
-        json_free(&parsed);
-        agent_dev_status_error(result, "collector_schema_mismatch",
-                               schema && schema[0] ? schema : "missing schema",
-                               collector_status);
-        return true;
-    }
-
-    *result = parsed;
+    agent_collect_optional_status(result, cmd, "zcl.agent_dev_status.v1");
     json_push_kv_str(result, "api_version", "v1");
-    json_push_kv_str(result, "status", "ok");
-    json_push_kv_int(result, "collector_status", collector_status);
+    if (strcmp(json_get_str(json_get(result, "status")), "unavailable") != 0)
+        json_push_kv_str(result, "status", "ok");
     json_push_kv_str(result, "collector_command", cmd);
     json_push_kv_str(result, "native_command", "zclassic23 agentdevstatus");
     json_push_kv_str(result, "mcp_tool", "zcl_agent_dev_status");
+    json_push_kv_str(result, "safe_next_action", "run make agent-dev-status");
     return true;
 }
 
@@ -542,8 +511,9 @@ bool rpc_agent_build(const struct json_value *params, bool help,
         "  { \"schema\":\"zcl.agent_build.v1\", "
         "\"commands\":[...], \"reproducible_release\":{...} }\n");
 
-    struct json_value loop, incremental, dev, cache, knobs, history, commands,
-                      repro, background, quality_status, lanes, remote, gates;
+    struct json_value loop, incremental, dev, indexing, benchmark, cache,
+                      knobs, history, commands, repro, background,
+                      quality_status, lanes, remote, gates;
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.agent_build.v1");
     json_push_kv_str(result, "api_version", "v1");
@@ -571,6 +541,8 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_push_kv_str(&loop, "fast_no_link_compile", "make fast-compile");
     json_push_kv_str(&loop, "strict_no_link_compile", "make build-only");
     json_push_kv_str(&loop, "runnable_dev_binary", "make fast-rebuild");
+    json_push_kv_str(&loop, "agent_index", "make agent-index");
+    json_push_kv_str(&loop, "dev_loop_benchmark", "make dev-loop-bench");
     json_push_kv_str(&loop, "focused_fast_test", "make t-fast ONLY=<group>");
     json_push_kv_str(&loop, "immutable_history_canaries",
                      "make immutable-history-canaries");
@@ -663,6 +635,26 @@ bool rpc_agent_build(const struct json_value *params, bool help,
                      "Run changed native agent, diagnostics, parser, and API code without paying the release LTO link.");
     json_push_kv(result, "dev_node_binary", &dev);
     json_free(&dev);
+
+    json_init(&indexing);
+    agent_collect_optional_status(&indexing,
+        "bash tools/dev/generate-compdb.sh --status",
+        "zcl.agent_index_runtime.v1");
+    if (!json_get(&indexing, "command"))
+        json_push_kv_str(&indexing, "command", "make agent-index");
+    if (!json_get(&indexing, "freshness"))
+        json_push_kv_str(&indexing, "freshness", "unavailable");
+    json_push_kv(result, "indexing", &indexing);
+    json_free(&indexing);
+
+    json_init(&benchmark);
+    agent_collect_optional_status(&benchmark,
+        "bash tools/dev/dev-loop-bench.sh --status",
+        "zcl.dev_loop_bench.v1");
+    if (!json_get(&benchmark, "command"))
+        json_push_kv_str(&benchmark, "command", "make dev-loop-bench");
+    json_push_kv(result, "dev_loop_benchmark", &benchmark);
+    json_free(&benchmark);
 
     json_init(&cache);
     json_set_object(&cache);
@@ -764,6 +756,11 @@ bool rpc_agent_build(const struct json_value *params, bool help,
                              "strict incremental no-link compile of all release-flag node objects");
     agent_push_build_command(&commands, "fast_rebuild", "make fast-rebuild",
                              "incremental non-LTO node executable; preferred local rebuild target");
+    agent_push_build_command(&commands, "agent_index", "make agent-index",
+                             "generate exact dev compile commands and optional index freshness metadata");
+    agent_push_build_command(&commands, "dev_loop_benchmark",
+                             "make dev-loop-bench",
+                             "write honest p50/p95 developer-loop evidence without activation by default");
     agent_push_build_command(&commands, "dev_node_binary", "make dev-bin",
                              "incremental non-LTO node executable for local agent/API iteration");
     agent_push_build_command(&commands, "focused_fast_test",

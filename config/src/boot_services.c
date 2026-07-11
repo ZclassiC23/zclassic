@@ -1,5 +1,4 @@
 #define _GNU_SOURCE  /* pthread_timedjoin_np */
-
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Runtime service initialization: mempool, P2P, RPC, Tor, HTTPS,
  * mining, wallet sync, shutdown, and utility functions. */
@@ -99,6 +98,7 @@
 #include "rpc/httpserver.h"
 #include "rpc/legacy_chain_oracle.h"
 #include "rpc/server.h"
+#include "mcp/dev_rpc_bridge.h"
 #include "json/json.h"
 #include "net/https_server.h"
 #include "net/fast_sync.h"
@@ -119,7 +119,6 @@
 #include "sapling/params_init.h"
 #include <netdb.h>
 #include <errno.h>
-
 #include <stdatomic.h>
 #include <time.h>
 #include <stdio.h>
@@ -128,7 +127,6 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <unistd.h>
-#include <time.h>
 #include <sys/stat.h>
 #include <pthread.h>
 #include <signal.h>
@@ -1268,6 +1266,8 @@ bool app_init_services(struct app_context *ctx,
     zslp_rpc_set_datadir(ctx->datadir);
     register_zslp_rpc_commands(svc->rpc_table);
 
+    if (!register_dev_mcp_rpc_commands(svc->rpc_table, ctx->datadir, ctx->rpc_port)) return false;
+
     /* Pre-compute fast sync snapshot offer in background */
     {
         int chain_tip_h = active_chain_height(&svc->state->chain_active);
@@ -1510,9 +1510,6 @@ static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
     } else {
         fprintf(stderr, "WARNING: Coins cache flush FAILED during shutdown!\n");
     }
-
-    shutdown_persist_fast_restart_state(svc);
-
     /* Now join threads — safe, coins already persisted */
     printf("[shutdown] joining connman threads\n");
     connman_join(svc->connman);
@@ -1671,6 +1668,9 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
      * app_shutdown()'s later write is skipped when the straggler path _exit()s.
      * Idempotent: app_shutdown() may re-write the identical marker. */
     boot_shutdown_marker_write_clean(svc->datadir);
+
+    /* Durability secured; only best-effort teardown follows. The block-index flat cache is written AFTER the marker (it previously preceded the checkpoint and lost the marker on a mid-teardown kill). */
+    shutdown_persist_fast_restart_state(svc);
     {
         int stragglers = thread_registry_join_all(2);
         if (stragglers > 0) {

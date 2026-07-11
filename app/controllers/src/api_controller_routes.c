@@ -15,6 +15,7 @@
 #include "controllers/name_controller.h"
 #include "controllers/network_controller.h"
 #include "controllers/swap_controller.h"
+#include "hotswap/hotswap.h"
 #include "json/json.h"
 #include "models/zslp.h"
 
@@ -665,7 +666,7 @@ api_resource_route_find(const char *method, const char *path)
     return NULL;
 }
 
-size_t api_resource_route_dispatch_dynamic(const char *method,
+size_t api_resource_route_dispatch_builtin(const char *method,
                                            const char *path,
                                            uint8_t *response,
                                            size_t response_max,
@@ -751,3 +752,16 @@ const char *api_dynamic_resource_route_action_at(size_t i)
     return k_api_dynamic_resource_routes[i].action;
 }
 #endif
+
+/* ── Hot-swap generation entrypoint ─────────────────────────────────
+ *
+ * This TU is Tier-1 hot-swap eligible (config/hotswap_eligible.def). Under a
+ * generation .so build (-DZCL_HOTSWAP_GEN) the macro emits zcl_hotswap_gen_init,
+ * which re-points the resident REST dispatch provider at THIS TU's
+ * freshly-compiled api_resource_route_dispatch_builtin (and its recompiled
+ * static route tables). api_resource_dispatch_replace lives in the resident
+ * trampoline TU, so it binds to the executable's copy and mutates the provider
+ * the live read path reads. In the node build and in release the macro expands
+ * to nothing (no trailing semicolon by design). */
+ZCL_HOTSWAP_EXPORT_PROVIDER(
+    api_resource_dispatch_replace(api_resource_route_dispatch_builtin))
