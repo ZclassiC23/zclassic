@@ -153,6 +153,7 @@ bool dev_activation_rollback_previous(struct dev_activation_txn *txn,
         snprintf(r->failure_capsule, sizeof(r->failure_capsule),
                  "%s; no prior generation available", reason ? reason : "");
         txn->activation_in_progress = false;
+        dev_activation_clear_in_progress(txn);
         return false;
     }
 
@@ -167,6 +168,7 @@ bool dev_activation_rollback_previous(struct dev_activation_txn *txn,
         snprintf(r->failure_capsule, sizeof(r->failure_capsule),
                  "%s; last-good restart command failed", reason ? reason : "");
         txn->activation_in_progress = false;
+        dev_activation_clear_in_progress(txn);
         return false;
     }
 
@@ -175,6 +177,7 @@ bool dev_activation_rollback_previous(struct dev_activation_txn *txn,
                                              txn->previous_generation);
         snprintf(r->rollback_status, sizeof(r->rollback_status), "verified");
         txn->activation_in_progress = false;
+        dev_activation_clear_in_progress(txn);
         return true;
     }
 
@@ -183,6 +186,7 @@ bool dev_activation_rollback_previous(struct dev_activation_txn *txn,
     snprintf(r->failure_capsule, sizeof(r->failure_capsule),
              "%s; last-good recovery probe failed", reason ? reason : "");
     txn->activation_in_progress = false;
+    dev_activation_clear_in_progress(txn);
     return false;
 }
 

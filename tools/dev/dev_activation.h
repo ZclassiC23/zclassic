@@ -48,6 +48,17 @@ enum dev_activation_status {
     DEV_ACTIVATION_E_PREFLIGHT = 4,   /* preflight rejected; nothing touched */
     DEV_ACTIVATION_E_ACTIVATE = 5,    /* stop/start/verify failed (rolled back) */
     DEV_ACTIVATION_E_INTERNAL = 6,    /* unexpected internal error */
+    /* Refused before the lock: a pending crash-only auto-reindex request is on
+     * disk (<datadir>/auto_reindex_request) and this deploy would stop/restart
+     * the lane, silently consuming a bounded reindex attempt before RPC comes
+     * up. Mirrors deploy-dev-lane.sh:guard_pending_auto_reindex(). Override with
+     * ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY=1. */
+    DEV_ACTIVATION_E_AUTO_REINDEX_PENDING = 7,
+    /* Refused under the lock: a prior activation crashed mid-transaction and
+     * left a stale <gen_root>/activation.in_progress marker. The lane may be in
+     * a mixed state; the operator must run `make agent-dev-recover` to
+     * reconcile. We never auto-roll-back another run's half-finished state. */
+    DEV_ACTIVATION_E_STALE_IN_PROGRESS = 8,
     DEV_ACTIVATION_E_LOCK_BUSY = 75,  /* another activation holds the lock */
 };
 

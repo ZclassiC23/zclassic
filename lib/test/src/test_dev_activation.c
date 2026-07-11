@@ -238,6 +238,54 @@ static size_t read_file(const char *path, char *buf, size_t buf_sz)
     return n;
 }
 
+/* mkdir -p a path (best-effort, mirrors the lock-test inline helper). */
+static void mkpath(const char *dir)
+{
+    char part[PATH_MAX];
+    snprintf(part, sizeof(part), "%s", dir);
+    for (char *p = part + 1; *p; p++)
+        if (*p == '/') { *p = 0; mkdir(part, 0755); *p = '/'; }
+    mkdir(part, 0755);
+}
+
+/* Arm a crash-only auto-reindex sentinel "<anchor> <count>\n" in the dev
+ * datadir (the on-disk format boot_auto_reindex.c writes). */
+static bool write_auto_reindex_sentinel(struct sandbox *sb, int anchor, int count)
+{
+    mkpath(sb->datadir);
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/auto_reindex_request", sb->datadir);
+    FILE *f = fopen(path, "w");
+    if (!f)
+        return false;
+    fprintf(f, "%d %d\n", anchor, count);
+    fclose(f);
+    return true;
+}
+
+/* Plant a stale activation.in_progress marker in the generation root, as if a
+ * prior activation had crashed mid-flip. */
+static bool write_in_progress_marker(struct sandbox *sb, const char *gen)
+{
+    mkpath(sb->gen_root);
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/activation.in_progress", sb->gen_root);
+    FILE *f = fopen(path, "w");
+    if (!f)
+        return false;
+    fprintf(f, "{\"schema\":\"zcl.dev_activation_in_progress.v1\",\"pid\":999999,"
+               "\"candidate_generation\":\"%s\"}\n", gen ? gen : "gen-dead");
+    fclose(f);
+    return true;
+}
+
+static bool in_progress_marker_exists(struct sandbox *sb)
+{
+    char path[PATH_MAX];
+    snprintf(path, sizeof(path), "%s/activation.in_progress", sb->gen_root);
+    return file_exists(path);
+}
+
 static bool hex_to_bytes32(const char *hex, uint8_t out[32])
 {
     if (strlen(hex) != 64)
@@ -679,6 +727,181 @@ static int test_activate_generation_by_sha(void)
     return failures;
 }
 
+static int test_auto_reindex_pending_blocks(void)
+{
+    int failures = 0;
+    TEST("dev_activation: pending auto-reindex sentinel blocks before service_stop") {
+        struct sandbox sb;
+        sandbox_enter(&sb, "reindex_block");
+        char artifact[PATH_MAX];
+        snprintf(artifact, sizeof(artifact), "%s/cand", sb.home);
+        ASSERT(write_fake_binary(artifact, 'A'));
+        /* A pending crash-only reindex request (count > 0, not terminal). */
+        ASSERT(write_auto_reindex_sentinel(&sb, 3173739, 1));
+
+        struct fake_ctx c = {0};
+        snprintf(c.gen_root, sizeof(c.gen_root), "%s", sb.gen_root);
+        struct dev_activation_ops ops;
+        fake_ops_init(&ops, &c);
+        struct dev_activation_request req;
+        base_request(&req, &sb, artifact);
+        struct dev_activation_result r;
+
+        /* Make sure the override is not leaking in from the environment. */
+        unsetenv("ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY");
+        int rc = dev_activation_run(&req, &ops, &r);
+        ASSERT_EQ(rc, DEV_ACTIVATION_E_AUTO_REINDEX_PENDING);
+        ASSERT_EQ(c.stop_calls, 0);       /* never touched the service */
+        ASSERT_EQ(c.preflight_calls, 0);  /* refused before the lock/stage */
+        ASSERT_STR_EQ(r.activation_status, "refused");
+        ASSERT_STR_EQ(r.verify_status, "auto_reindex_pending");
+
+        /* current link never created */
+        char link[PATH_MAX];
+        snprintf(link, sizeof(link), "%s/current", sb.gen_root);
+        char cur[PATH_MAX];
+        ASSERT(!read_link_str(link, cur, sizeof(cur)));
+
+        sandbox_exit(&sb);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_auto_reindex_override_allows(void)
+{
+    int failures = 0;
+    TEST("dev_activation: ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY=1 forces past the sentinel") {
+        struct sandbox sb;
+        sandbox_enter(&sb, "reindex_force");
+        char artifact[PATH_MAX];
+        snprintf(artifact, sizeof(artifact), "%s/cand", sb.home);
+        ASSERT(write_fake_binary(artifact, 'A'));
+        ASSERT(write_auto_reindex_sentinel(&sb, 3173739, 2));
+
+        struct fake_ctx c = {0};
+        snprintf(c.gen_root, sizeof(c.gen_root), "%s", sb.gen_root);
+        struct dev_activation_ops ops;
+        fake_ops_init(&ops, &c);
+        struct dev_activation_request req;
+        base_request(&req, &sb, artifact);
+        struct dev_activation_result r;
+
+        setenv("ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY", "1", 1);
+        int rc = dev_activation_run(&req, &ops, &r);
+        unsetenv("ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY");
+        ASSERT_EQ(rc, DEV_ACTIVATION_OK);
+        ASSERT_STR_EQ(r.activation_status, "active");
+        ASSERT(c.stop_calls > 0);
+
+        /* deploy-state records the REAL sentinel presence (pending==true). */
+        char state[PATH_MAX], js[8192];
+        snprintf(state, sizeof(state), "%s/agent-deploy.json", sb.datadir);
+        size_t jn = read_file(state, js, sizeof(js));
+        ASSERT(jn > 0);
+        struct json_value v = {0};
+        ASSERT(json_read(&v, js, jn));
+        ASSERT(json_get_bool(json_get(&v, "auto_reindex_pending")));
+        ASSERT_STR_EQ(json_get_str(json_get(&v, "auto_reindex_anchor")),
+                      "3173739");
+        ASSERT_STR_EQ(json_get_str(json_get(&v, "auto_reindex_count")), "2");
+        json_free(&v);
+
+        sandbox_exit(&sb);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_stale_in_progress_refused(void)
+{
+    int failures = 0;
+    TEST("dev_activation: a stale in-progress marker from a dead run is refused") {
+        struct sandbox sb;
+        sandbox_enter(&sb, "stale_inprog");
+        char artA[PATH_MAX], genA[96];
+        ASSERT_EQ(seed_generation(&sb, 'A', artA, sizeof(artA), genA, sizeof(genA)),
+                  DEV_ACTIVATION_OK);
+        /* A healthy activation clears its own marker. */
+        ASSERT(!in_progress_marker_exists(&sb));
+
+        /* Plant a marker as if a prior activation crashed mid-flip. */
+        ASSERT(write_in_progress_marker(&sb, "gen-deadbeef"));
+
+        char artB[PATH_MAX];
+        snprintf(artB, sizeof(artB), "%s/cand_B", sb.home);
+        ASSERT(write_fake_binary(artB, 'B'));
+        struct fake_ctx c = {0};
+        snprintf(c.gen_root, sizeof(c.gen_root), "%s", sb.gen_root);
+        struct dev_activation_ops ops;
+        fake_ops_init(&ops, &c);
+        struct dev_activation_request req;
+        base_request(&req, &sb, artB);
+        struct dev_activation_result r;
+
+        int rc = dev_activation_run(&req, &ops, &r);
+        ASSERT_EQ(rc, DEV_ACTIVATION_E_STALE_IN_PROGRESS);
+        ASSERT_EQ(c.stop_calls, 0);       /* refused before touching the lane */
+        ASSERT_EQ(c.preflight_calls, 0);
+        ASSERT_STR_EQ(r.activation_status, "refused");
+        ASSERT_STR_EQ(r.verify_status, "activation_in_progress");
+        /* it does NOT auto-roll-back: the marker is left for the operator */
+        ASSERT(in_progress_marker_exists(&sb));
+
+        /* current still points at A (untouched) */
+        char cur[PATH_MAX], link[PATH_MAX];
+        snprintf(link, sizeof(link), "%s/current", sb.gen_root);
+        ASSERT(read_link_str(link, cur, sizeof(cur)));
+        ASSERT_STR_EQ(cur, genA);
+
+        sandbox_exit(&sb);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_in_progress_marker_cleared(void)
+{
+    int failures = 0;
+    TEST("dev_activation: in-progress marker cleared on both success and rollback") {
+        struct sandbox sb;
+        sandbox_enter(&sb, "inprog_clear");
+
+        /* success path: happy activation must leave no marker behind */
+        char artA[PATH_MAX], genA[96];
+        ASSERT_EQ(seed_generation(&sb, 'A', artA, sizeof(artA), genA, sizeof(genA)),
+                  DEV_ACTIVATION_OK);
+        ASSERT(!in_progress_marker_exists(&sb));
+
+        /* rollback path: candidate B start fails, rollback to A verifies, and
+         * the marker written at the flip must be cleared again. */
+        char artB[PATH_MAX];
+        snprintf(artB, sizeof(artB), "%s/cand_B", sb.home);
+        ASSERT(write_fake_binary(artB, 'B'));
+        struct fake_ctx c = {0};
+        snprintf(c.gen_root, sizeof(c.gen_root), "%s", sb.gen_root);
+        struct dev_activation_ops ops;
+        fake_ops_init(&ops, &c);
+        struct dev_activation_request req;
+        base_request(&req, &sb, artB);
+        struct dev_activation_result r;
+        {
+            extern bool dev_activation_sha256_file(const char *, char[65]);
+            char hex[65];
+            ASSERT(dev_activation_sha256_file(artB, hex));
+            snprintf(c.fail_start_gen, sizeof(c.fail_start_gen), "gen-%s", hex);
+        }
+        int rc = dev_activation_run(&req, &ops, &r);
+        ASSERT_EQ(rc, DEV_ACTIVATION_E_ACTIVATE);
+        ASSERT_STR_EQ(r.rollback_status, "verified");
+        ASSERT(!in_progress_marker_exists(&sb));  /* cleared on rollback */
+
+        sandbox_exit(&sb);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_dev_activation(void)
 {
     int failures = 0;
@@ -690,6 +913,10 @@ int test_dev_activation(void)
     failures += test_verify_fail_quarantines();
     failures += test_mid_transaction_abort();
     failures += test_activate_generation_by_sha();
+    failures += test_auto_reindex_pending_blocks();
+    failures += test_auto_reindex_override_allows();
+    failures += test_stale_in_progress_refused();
+    failures += test_in_progress_marker_cleared();
     printf("=== dev_activation: %d failures ===\n", failures);
     return failures;
 }

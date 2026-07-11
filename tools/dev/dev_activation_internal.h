@@ -57,6 +57,7 @@ struct dev_activation_txn {
     char staged_link[PATH_MAX];
     char rejected_dir[PATH_MAX];
     char lock_path[PATH_MAX];
+    char inprogress_path[PATH_MAX]; /* crash-recovery marker for a live flip */
     char compat_bin[PATH_MAX];    /* ~/.local/bin/zclassic23-dev symlink */
     char build_id_dropin[PATH_MAX];
     char deploy_state[PATH_MAX];
@@ -144,6 +145,11 @@ void dev_activation_generation_commit(const struct dev_activation_txn *txn,
 
 /* Write the byte-compatible zcl.agent_dev_deploy.v1 state file. */
 bool dev_activation_write_deploy_state(struct dev_activation_txn *txn);
+
+/* Remove the crash-recovery in-progress marker (best-effort). Called wherever
+ * the transaction concludes (success OR rollback) so a live flip that finished
+ * leaves no stale marker behind. Safe to call when no marker exists. */
+void dev_activation_clear_in_progress(const struct dev_activation_txn *txn);
 
 /* ── verify / rollback / quarantine (dev_activation_verify.c) ─────────── */
 

@@ -14,6 +14,7 @@
 
 #if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
 
+#include "storage/boot_auto_reindex.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -371,9 +372,24 @@ bool dev_activation_write_deploy_state(struct dev_activation_txn *txn)
     fprintf(f, "  \"verify_status\": \"%s\",\n", e_vstat);
     fprintf(f, "  \"verify_detail\": \"%s\",\n", e_vdetail);
     fprintf(f, "  \"failure_capsule\": \"%s\",\n", e_capsule);
-    fprintf(f, "  \"auto_reindex_pending\": false,\n");
-    fprintf(f, "  \"auto_reindex_anchor\": \"\",\n");
-    fprintf(f, "  \"auto_reindex_count\": \"\"\n");
+    /* Record the REAL crash-only auto-reindex sentinel state, matching
+     * deploy-dev-lane.sh:write_deploy_state (a pending marker is a JSON bool
+     * true; a TERMINAL/absent/malformed marker is not pending). The anchor and
+     * count are emitted as bare-integer strings when a well-formed marker
+     * exists, empty strings otherwise. */
+    int32_t ar_anchor = 0;
+    int ar_count = 0;
+    bool ar_have = boot_auto_reindex_status(req->datadir, &ar_anchor, &ar_count);
+    bool ar_pending = ar_have && ar_count > 0;
+    fprintf(f, "  \"auto_reindex_pending\": %s,\n",
+            ar_pending ? "true" : "false");
+    if (ar_have) {
+        fprintf(f, "  \"auto_reindex_anchor\": \"%d\",\n", (int)ar_anchor);
+        fprintf(f, "  \"auto_reindex_count\": \"%d\"\n", ar_count);
+    } else {
+        fprintf(f, "  \"auto_reindex_anchor\": \"\",\n");
+        fprintf(f, "  \"auto_reindex_count\": \"\"\n");
+    }
     fprintf(f, "}\n");
     if (fclose(f) != 0) {
         (void)unlink(tmp);
