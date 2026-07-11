@@ -1,4 +1,3 @@
-// one-result-type-ok:dump-state-json-typedef — the sole legacy bool export,
 // utxo_mirror_sync_dump_state_json, implements the diagnostics_dump_fn
 // typedef (CLAUDE.md "Adding state introspection": `bool
 // <name>_dump_state_json(...)`) mandated by the g_dumpers[] dispatch table

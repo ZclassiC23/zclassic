@@ -9,7 +9,6 @@
  * existing utxo_apply nullifier writer, then clears the diagnostics blocker
  * marker when the bounded historical gap has been populated. */
 // repair-rung-ok:test_nullifier_backfill_service
-// one-result-type-ok:dump-state-json-typedef — the sole legacy bool export,
 // nullifier_backfill_dump_state_json, implements the diagnostics_dump_fn
 // typedef (CLAUDE.md "Adding state introspection": `bool
 // <name>_dump_state_json(...)`) mandated by the g_dumpers[] dispatch table

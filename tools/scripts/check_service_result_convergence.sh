@@ -69,6 +69,13 @@ count_legacy_bool_exports() {
     {
         line = $0
         if (!in_sig) {
+            # *_dump_state_json(struct json_value*, const char*) is the
+            # documented bool CONTRACT for zcl_state/dumpstate introspection
+            # (CLAUDE.md "Adding state introspection") — never a legacy
+            # export; adding a dumper must not force a file marker.
+            if (line ~ /^bool[ \t]+[A-Za-z_][A-Za-z0-9_]*_dump_state_json\(/) {
+                next
+            }
             if (line ~ /^bool[ \t]+[A-Za-z_][A-Za-z0-9_]*\(/) {
                 in_sig = 1
             } else {
