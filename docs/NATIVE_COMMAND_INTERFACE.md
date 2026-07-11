@@ -665,22 +665,22 @@ without renaming the grammar.
   method `zcl_native_command_is_root()` recognizes. `status` and the
   read-only Core/operator commands in `core.def` are among the first
   mapped leaves.
-- **Not done:** `dev.def`'s leaves are declared (a branch under `root.def`)
-  but deliberately **not yet included/bound** in `command_catalog.c` — its
-  own header comment says why: the `dev` subtree's leaves still belong to
-  the checkout-local `tools/dev/devloop_cli.c` dispatcher, and including
-  `dev.def` before that binding exists would name handlers the catalog
-  does not define. Generated menu/help/search output and a documentation
-  cross-check against every existing native/RPC/MCP/service operation
-  (the "fail the build on an unmapped route" goal) have not been verified
-  this session — check `config/src/command_catalog.c` and
-  `lib/kernel/src/command_registry.c` directly before assuming either
-  exists.
+- **Done (2026-07-11):** `dev.def`'s leaves are bound in
+  `command_catalog.c` through `ZCL_COMMAND_DEV_READ` /
+  `ZCL_COMMAND_DEV_COMMAND` — each declarative leaf maps to a real handler
+  in the dev build (`tools/command/native_dev_command.c`, `ZCL_DEV_BUILD`)
+  and an honest `ZCL_COMMAND_COMPAT` stub with a `compat_target` in the
+  release build. The legacy checkout-local devloop dispatcher is deleted
+  from `src/main.c`; `tools/dev/devloop_menu.c` is a thin wrapper over
+  `zcl_command_registry_menu_json`/`_search_json`;
+  `tools/lint/check_release_no_dev_symbols.sh` proves via `nm` that the
+  release binary links no dev-mutation executors.
 
 Exit: an LLM can find and run every read-only operation without MCP
-discovery. **Not yet met** — `dev.def` (the native development-plane
-surface Phase C depends on) is still routed through the legacy devloop
-dispatcher, not the registry.
+discovery. **Met for the registry surface** — every declared root
+(`status`, core, apps, ops, dev) resolves through the catalog before the
+RPC fallback; remaining gap is coverage breadth (not every legacy RPC/MCP
+operation has a registry leaf yet), not routing.
 
 ### Phase C — Native development plane
 

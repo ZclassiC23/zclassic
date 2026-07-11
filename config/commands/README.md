@@ -14,22 +14,19 @@ Checkpoint status (2026-07-11):
   through `zcl_native_command_main()` for any method
   `zcl_native_command_is_root()` recognizes — this is a live dispatch path,
   not a declaration-only exercise.
-- `dev.def` is declared here (a branch under `root.def`) but its leaves are
-  **not yet bound in `command_catalog.c`** — `command_catalog.c` says so
-  directly: *"the `dev` subtree is declared as a branch in root.def but its
-  leaves stay owned by the checkout-local devloop dispatcher
-  (`tools/dev/devloop_cli.c`)... Do NOT include dev.def before that binding
-  exists — its READY leaves name handlers this catalog does not define."*
-  Replacing that hardcoded devloop menu with registry wrappers is tracked as
-  a follow-on wave; check `config/src/command_catalog.c`'s own header
-  comment for the current wave label before assuming it has landed.
+- `dev.def` is bound in `command_catalog.c` via the `ZCL_COMMAND_DEV_READ` /
+  `ZCL_COMMAND_DEV_COMMAND` macros: one declarative leaf maps to a real
+  handler in the dev build (`tools/command/native_dev_command.c`, guarded by
+  `ZCL_DEV_BUILD`) and to an honest `ZCL_COMMAND_COMPAT` stub with a
+  `compat_target` in the release build. The old checkout-local devloop
+  dispatcher path in `src/main.c` is deleted;
+  `tools/lint/check_release_no_dev_symbols.sh` proves with `nm` that the
+  release binary links none of the dev executors.
 - The transport-neutral registry engine compiles in `lib/kernel`
   (`lib/kernel/src/command_registry.c`).
 
-The next implementation work is: bind `dev.def`'s leaves in
-`config/src/command_catalog.c` once the registry-wrapper replacement for
-`devloop_cli.c` exists; no `lib/` source may include App, controller,
-service, or development handler headers. Keep metadata separate from handler
+No `lib/` source may include App, controller, service, or development
+handler headers. Keep metadata separate from handler
 bindings so release discovery can describe the `dev` branch while the release
 binary contains no development executor pointers or loader path.
 

@@ -32,29 +32,29 @@ before trusting exact commit hashes below, they rot):
   returns a `probe:{…}` field per `docs/work/HOTSWAP.md`. Dev-only by
   construction (`check-hotswap-dev-only`, `check-hotswap-eligible-scope`,
   `check-hotswap-static-state` all HARD).
-- **Registry-driven dev tree — NOT on `main` as of this session.** The
+- **Registry-driven dev tree — LANDED on `main` (2026-07-11).** All five
   command-registry files (`config/commands/{root,core,apps,ops,dev}.def`)
-  exist and `root.def`/`core.def`/`apps.def`/`ops.def` ARE wired into real
-  dispatch via `config/src/command_catalog.c` →
-  `tools/command/native_command.c` → `src/main.c`. But `dev.def`'s leaves
-  are **explicitly not yet bound** — `command_catalog.c`'s own header
-  comment says the `dev` subtree still routes through the checkout-local
-  `tools/dev/devloop_cli.c` dispatcher, and a commit that finishes that
-  binding (`native-cmd: registry-drive the dev tree, split dev-only
-  executors, page bridge reads`, seen as `2c191d42b` on a branch named
-  `dev/service-refactor-finish`) was **not reachable from `main`** in this
-  worktree at verification time. **Do not write "registry-driven dev tree
-  landed" into a doc without re-checking `git merge-base --is-ancestor
-  <that commit> main` first** — treat it as in flight until confirmed
-  merged. Current state: [`config/commands/README.md`](../config/commands/README.md),
+  are wired into real dispatch via `config/src/command_catalog.c` →
+  `tools/command/native_command.c` → `src/main.c`. `dev.def`'s leaves bind
+  through `ZCL_COMMAND_DEV_READ`/`ZCL_COMMAND_DEV_COMMAND`: real handlers in
+  the dev build (`tools/command/native_dev_command.c`), honest COMPAT stubs
+  in release; the old checkout-local devloop dispatcher is deleted from
+  `src/main.c` and `tools/lint/check_release_no_dev_symbols.sh` proves the
+  release binary links none of the dev executors (`nm` artifact). Landed as
+  `2c191d42b` + the `dev/service-refactor-finish` follow-ups merged
+  2026-07-11. Current state: [`config/commands/README.md`](../config/commands/README.md),
   [`docs/NATIVE_COMMAND_INTERFACE.md`](NATIVE_COMMAND_INTERFACE.md) §"Phase B."
-- **"Waves 3.2/3.3"** — only "Wave 3.3" is a real, findable label in this
-  tree (`lib/vcs/include/vcs/vcs.h`, `vcs.c`: `vcs_revert()`'s
-  `relink_generation` argument returns `VCS_ENOTIMPL` — the binary-generation
-  relink half of a ZVCS revert is not wired yet). No "Wave 3.2" label was
-  found anywhere in code, `docs/work/HOTSWAP.md`, or this file as of this
-  session — do not assume it names a specific landed or in-flight unit of
-  work without finding the actual reference first.
+- **Waves 3.2/3.3 (power-station program).** Wave 3.3 = the binary-relink
+  half of `vcs_revert()` (`lib/vcs/src/vcs.c`): a `vcs_revert_relink_ops`
+  callback replaces the old `VCS_ENOTIMPL` stub — NULL ops = source-only
+  revert, a real activator gets the target commit's `generation_sha256`
+  after the forward commit lands, and an activation failure returns
+  `VCS_EPARTIAL` with the source revert standing (append-only). Wave 3.2 =
+  `tools/dev/dev_activation.c`, the native transactional activation engine
+  that replaces the `make agent-deploy-fast` shellout in
+  `tools/dev/devloop_cycle.c` (ops-vtable port of
+  `tools/dev/deploy-dev-lane.sh`, gated behind `ZCL_DEV_NATIVE_ACTIVATION`,
+  default off until proven on the dev lane).
 - **This wave (Wave 4.4): docs.** This session added
   [`docs/ZVCS.md`](ZVCS.md) and
   [`docs/adr/0002-sealed-consensus-core.md`](adr/0002-sealed-consensus-core.md),
@@ -77,14 +77,17 @@ on both: *"shielded anchor history is incomplete below reducer cursor
 H\*. Auto-remedy: condition `sapling_anchor_frontier_unavailable` seeds a
 header-verified frontier..."* — this is the same class of gap named
 `project_nullifier_backfill_gap_2026-07-09` in the memory index, still
-open. For the **dev** lane specifically, the documented bounded-recovery
-entry point is `make lane-recover LANE=dev` (`tools/scripts/lane_recover.sh`
-— plans recovery by default; `ZCL_LANE_RECOVERY_APPLY=1` or `--apply`
-installs/restarts the noncanonical unit; canonical/live/main is always
-refused by that script — use `make lane-health` for read-only status on any
-lane). **Correction:** an earlier note in this program referred to a
-`make agent-dev-recover` target — no such target exists in the `Makefile`;
-`lane-recover` is the real one. Verify current blocker state with
+open. For the **dev** lane specifically, the primary bounded-recovery entry
+point is `make agent-dev-recover` (`tools/dev/recover-dev-lane.sh`, landed
+2026-07-11): a transactional fresh-datadir recovery — archive the old
+datadir, stage from a SHA256-verified v2 `utxo-seed-<height>.snapshot` +
+`block_index.bin` bundle, prove via node.log + RPC height + agent-contract
+JSON, then commit or roll back atomically; it structurally refuses
+canonical/soak/legacy datadirs (hermetic selftest:
+`make dev-recovery-selftest`). The older `make lane-recover LANE=dev`
+(`tools/scripts/lane_recover.sh`) remains for unit-level plan/apply
+recovery; `make lane-health` is read-only status. Verify current blocker
+state with
 `zcl_status` / `zcl_blockers` before acting — this is a live snapshot, not a
 standing fact.
 
