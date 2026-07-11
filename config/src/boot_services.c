@@ -15,6 +15,7 @@
 #include "services/chain_evidence_authority_service.h"
 #include "services/chain_state_service.h"
 #include "services/chain_tip.h"
+#include "services/catchup_lifecycle_service.h"
 #include "services/hodl_history_service.h"
 #include "services/quorum_oracle_service.h"
 /* The eight staged-sync stage Job headers are no longer included here: the
@@ -342,38 +343,32 @@ bool boot_running(const struct boot_svc_ctx *svc)
     return svc && svc->running && atomic_load(svc->running);
 }
 
+/* Catchup-job lifecycle policy moved to catchup_lifecycle_start/_join/_reap
+ * (app/services/src/catchup_lifecycle_service.c); these three stay as thin
+ * boot_svc_ctx-to-job plumbing (same job, same timeouts). */
 bool boot_start_catchup_service(struct boot_svc_ctx *svc,
                                 const char *datadir)
 {
-    if (!svc || node_db_sync_catchup_job_is_started(&svc->catchup_job))
+    if (!svc)
         return false;
 
-    return node_db_sync_catchup_job_start(&svc->catchup_job, boot_node_db(svc),
-                                          &svc->state->chain_active,
-                                          svc->wallet, datadir);
+    return catchup_lifecycle_start(&svc->catchup_job, boot_node_db(svc),
+                                   &svc->state->chain_active,
+                                   svc->wallet, datadir);
 }
-
 
 static void boot_join_catchup_service(struct boot_svc_ctx *svc)
 {
     if (!svc)
         return;
-    if (!svc->catchup_job.started)
-        return;
-    boot_join_thread_bounded(svc->catchup_job.thread, "catchup", 5);
-    svc->catchup_job.started = false;
+    catchup_lifecycle_join(&svc->catchup_job, 5);
 }
 
 bool boot_reap_catchup_service(struct boot_svc_ctx *svc)
 {
-    if (!svc || !svc->catchup_job.started)
+    if (!svc)
         return true;
-    if (!atomic_load(&svc->catchup_job.finished))
-        return true;
-    if (!boot_join_thread_bounded(svc->catchup_job.thread, "catchup", 1))
-        return false;
-    svc->catchup_job.started = false;
-    return true;
+    return catchup_lifecycle_reap(&svc->catchup_job);
 }
 
 static void boot_register_core_liveness_and_reducer(
