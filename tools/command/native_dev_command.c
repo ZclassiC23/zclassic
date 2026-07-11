@@ -20,6 +20,7 @@
 #define _GNU_SOURCE
 #include "command/native_command.h"
 
+#include "dev_activation.h"
 #include "devloop.h"
 #include "kernel/command_registry.h"
 #include "json/json.h"
@@ -1015,21 +1016,35 @@ void zcl_native_handle_dev_diagnose_latest(
 #endif /* ZCL_DEV_BUILD */
 
 /* ── dev.vcs.revert — relink activator seam ──────────────────────────
- * This wave (3.3) ships a SHELL FALLBACK: activation rebuilds the binary
- * from the just-reverted source tree and redeploys it via the same fixed
- * argv devloop's transactional-reload path uses
- * (tools/dev/devloop_cycle.c: `make agent-deploy-fast`) — never a shell
- * string, never touching lib/vcs/. It cannot yet tell a full
- * binary-generation hash apart from a bare hotswap .so hash (that
- * classification belongs to the not-yet-built generation store / native
- * dev_activation engine), so it always issues a full rebuild+redeploy from
- * the now-reverted source tree: always a safe way to activate ANY
- * generation, just not the minimal one for a hotswap-only generation.
+ * Two activators are wired behind the ONE seam every caller goes through,
+ * dev_vcs_revert_relink_ops():
  *
- * dev_vcs_revert_relink_ops() is the ONE seam every caller goes through —
- * swapping the shell fallback for the native
- * dev_activation_activate_generation() engine (once it lands) touches only
- * this function's body. */
+ *   - dev_vcs_shell_fallback_activate() (wave 3.3, the long-standing
+ *     default): rebuilds the binary from the just-reverted source tree and
+ *     redeploys it via the same fixed argv devloop's transactional-reload
+ *     path uses (tools/dev/devloop_cycle.c: `make agent-deploy-fast`) —
+ *     never a shell string, never touching lib/vcs/. It cannot tell a full
+ *     binary-generation hash apart from a bare hotswap .so hash, so it
+ *     always issues a full rebuild+redeploy from the now-reverted source
+ *     tree: always a safe way to activate ANY generation, just not the
+ *     minimal one for a hotswap-only generation.
+ *
+ *   - dev_vcs_native_activate() (wave 3.2 engine, ZCL_DEV_NATIVE_ACTIVATION
+ *     opt-in): calls dev_activation_activate_generation() directly against
+ *     the already-staged gen-<sha> directory — no rebuild, no redeploy
+ *     shell-out. Unlike the shell fallback it DOES tell the two hash kinds
+ *     apart: dev_activation_activate_generation() requires
+ *     gen_root/gen-<sha>/zclassic23-dev to already exist and match the
+ *     requested sha, so a hotswap-anchored commit (whose generation_sha256
+ *     addresses a standalone .so, never staged as a full binary directory)
+ *     correctly fails staging and this function returns false — vcs_revert
+ *     then reports VCS_EPARTIAL exactly per vcs.h's documented contract,
+ *     rather than the shell fallback's blunter "always rebuild" guess.
+ *
+ * dev_vcs_revert_relink_ops() picks between them at call time via
+ * dev_activation_native_enabled() (the same runtime env switch
+ * devloop_cycle.c's transactional-reload site uses) — default OFF, so
+ * today's shell-fallback behavior is unchanged unless the dev lane opts in. */
 #ifdef ZCL_DEV_BUILD
 static bool dev_vcs_shell_fallback_activate(const uint8_t gen_sha256[32],
                                             void *ctx)
@@ -1051,8 +1066,36 @@ static bool dev_vcs_shell_fallback_activate(const uint8_t gen_sha256[32],
            result.term_signal == 0;
 }
 
+static bool dev_vcs_native_activate(const uint8_t gen_sha256[32], void *ctx)
+{
+    (void)ctx;
+    const char *root = getenv("ZCL_DEV_SOURCE_ROOT");
+    if (!root || !root[0])
+        root = ".";
+    /* No build/rebuild here — dev_activation_activate_generation() never
+     * builds, it only relinks an already-staged generation. build_commit is
+     * "" (not NULL): the staged generation's own manifest already carries
+     * its build_commit, and dev_op_preflight() skips the expected-commit
+     * comparison entirely when passed an empty string (see
+     * tools/dev/dev_activation_ops.c). */
+    struct dev_activation_cycle_request creq;
+    if (!dev_activation_request_from_cycle(root, "", &creq))
+        return false;
+    struct dev_activation_ops ops;
+    dev_activation_default_ops(&creq.req, &ops);
+    struct dev_activation_result result = {0};
+    int rc = dev_activation_activate_generation(gen_sha256, &creq.req, &ops,
+                                                &result);
+    return rc == DEV_ACTIVATION_OK;
+}
+
 static struct vcs_revert_relink_ops dev_vcs_revert_relink_ops(void)
 {
+    if (dev_activation_native_enabled())
+        return (struct vcs_revert_relink_ops){
+            .activate_generation = dev_vcs_native_activate,
+            .ctx = NULL,
+        };
     return (struct vcs_revert_relink_ops){
         .activate_generation = dev_vcs_shell_fallback_activate,
         .ctx = NULL,

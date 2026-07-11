@@ -258,6 +258,81 @@ not land," not "the running binary was blocked." This ZVCS-side check remains
 as a defense-in-depth backstop; the **pre-publish core refusal** below (Wave
 2.4) is the one that structurally blocks the running binary.
 
+## Transactional reload: native engine (Wave 3.2, opt-in)
+
+The `transactional_reload` action has two backends now. Both stop the running
+`zcl23-dev.service`, atomically flip the `current` generation symlink,
+restart, and verify the exact `/proc` executable identity before declaring
+success — rolling back to the previous generation on any preflight/verify
+failure. What differs is HOW:
+
+- **Shell path (default, byte-identical to before Wave 3.2).**
+  `devloop_cycle.c`'s `transactional_reload` label shells out to `make
+  agent-deploy-fast`, which runs `make fast-rebuild` then drives
+  `tools/dev/deploy-dev-lane.sh` — the proven bash transaction. This is what
+  runs when `ZCL_DEV_NATIVE_ACTIVATION` is unset (or any value other than
+  `1`/`true`/`yes`).
+- **Native engine (opt-in).** Set `ZCL_DEV_NATIVE_ACTIVATION=1` in the
+  environment of the dev-loop watcher (or the one-shot `dev change cycle`
+  invocation). The reload site still runs `make fast-rebuild` (a build step
+  common to both backends — the engine never builds), then calls
+  `dev_activation_run()` (`tools/dev/dev_activation.{h,c}`) directly with a
+  request built from the exact dev-lane constants
+  `tools/dev/deploy-dev-lane.sh` hard-codes (`GEN_ROOT`, `DEV_DATADIR`,
+  `UNIT`, `DEV_RPCPORT`) — no `deploy-dev-lane.sh` invocation, no
+  `agent-deploy.json` re-read: the engine's own `result.candidate_sha256`
+  feeds the ZVCS generation binding directly. `build_commit` is recomputed
+  via a fixed-argv `git rev-parse --short HEAD` (+ `-dirty` suffix), the
+  same algorithm `deploy-dev-lane.sh:build_candidate()` uses, honoring
+  `ZCL_DEV_BUILD_COMMIT_OVERRIDE` too. If a precondition only the shell path
+  can currently satisfy is missing (e.g. `HOME` unset, `git` unavailable),
+  the reload site logs a warning and falls back to the shell path for that
+  one cycle.
+
+  `native_dev_command.c`'s `dev.vcs.revert` relink seam
+  (`dev_vcs_revert_relink_ops()`) honors the same switch: with
+  `ZCL_DEV_NATIVE_ACTIVATION=1` it calls
+  `dev_activation_activate_generation()` (the Wave 3.3 revert hook — activate
+  an already-staged generation by its 32-byte sha, no rebuild) instead of the
+  shell fallback's always-rebuild-from-source. Unlike the shell fallback,
+  the native activator correctly tells a full binary-generation hash apart
+  from a bare hotswap `.so` hash: a hotswap-anchored commit was never staged
+  as a `gen-<sha>/zclassic23-dev` directory, so
+  `dev_activation_activate_generation()` fails staging and the seam reports
+  `VCS_EPARTIAL` (source reverted, binary relink refused) exactly per
+  `vcs.h`'s documented contract — never a guessed rebuild.
+
+**Why a runtime env check, not a second `#ifdef`.** The whole native engine
+already compiles only into `ZCL_DEV_BUILD`/`ZCL_TESTING` binaries (see
+`dev_activation.h`'s own header comment and `check-release-no-dev-symbols`);
+a second compile-time gate on top would only let one flag value exist per
+already-built dev binary. `ZCL_DEV_NATIVE_ACTIVATION` follows the same idiom
+`deploy-dev-lane.sh` already uses for its own adjacent switches
+(`ZCL_DEV_USE_PREBUILT`, `ZCL_DEV_SKIP_BUILD`), so one already-deployed
+`zclassic23-dev` can A/B the native engine against the proven shell path with
+one env var and no rebuild — see `dev_activation_native_enabled()` in
+`tools/dev/devloop.h`.
+
+**What is and isn't hermetically tested.** Both call sites' actual reload
+bodies exec real processes (`make`, `systemctl`, `git`) and are therefore
+`ZCL_DEV_BUILD`-only, invisible to the `-DZCL_TESTING` harness `make t`
+drives. The engine itself (`dev_activation_run` /
+`dev_activation_activate_generation`, driven against a fake in-memory ops
+vtable) is fully covered by `test_dev_activation`. The glue both call sites
+share to build the engine's request and interpret its result — pure,
+no-process-exec — is factored into `dev_activation_native_enabled()` /
+`dev_activation_request_from_cycle()` / `dev_activation_map_result()`
+(`tools/dev/devloop.h` / `devloop_cycle.c`) and covered by `test_dev_platform`.
+
+**Proof bar before `ZCL_DEV_NATIVE_ACTIVATION=1` becomes the default:**
+`test_dev_activation`, `test_dev_platform`, and `test_vcs_devloop` green
+(regression floor) **plus** at least one real dev-lane native activation —
+run a dev-loop cycle with `ZCL_DEV_NATIVE_ACTIVATION=1` against the live
+`zcl23-dev.service` and confirm `zcl_agent_dev_status` (or `dev generation
+current`) shows the new generation active and verified, matching what
+`make agent-deploy-fast` already proves today. Until that lands, this stays
+opt-in and the shell path remains load-bearing.
+
 ## Core refusal — the fast loop cannot auto-publish sealed consensus (Wave 2.4)
 
 **What an agent sees when it edits `core/`.** The top-level `core/` tree is the
