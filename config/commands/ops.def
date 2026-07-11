@@ -1,0 +1,148 @@
+/* Bounded diagnosis and node operations (contract §4).
+ *
+ * Same rule as core.def: a READ-ONLY leaf with a genuine live handler binds
+ * zcl_native_bridge_command; jobs, recovery mutations, and reads without a
+ * bridged handler are PLANNED (fail-closed, exit 3). */
+
+ZCL_COMMAND_READY_READ(
+    "ops.health", "ops", "", "Rolled-up node health with named checks",
+    "health,checks,status,rollup", "zcl.command.empty_input.v1",
+    "zcl.health.v1", "", "", "zclassic23 ops health",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_READY_READ(
+    "ops.diagnose", "ops", "", "One-shot operator diagnosis of the live node",
+    "diagnose,triage,operator,summary", "zcl.command.empty_input.v1",
+    "zcl.ops_diagnose.v1", "", "", "zclassic23 ops diagnose",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_READY_READ(
+    "ops.lanes", "ops", "", "Worktree and deploy lane status",
+    "lanes,worktree,deploy,dev", "zcl.command.empty_input.v1",
+    "zcl.ops_lanes.v1", "", "", "zclassic23 ops lanes",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_BRANCH("ops.jobs", "ops", "Asynchronous job lifecycle",
+                   ZCL_COMMAND_LAYER_OPS)
+ZCL_COMMAND_PLANNED_READ(
+    "ops.jobs.list", "ops.jobs", "", "List asynchronous jobs",
+    "jobs,list,async", "zcl.command.empty_input.v1", "zcl.jobs.v1", "", "",
+    "zclassic23 ops jobs list",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "the native job registry is a Wave 2.2 deliverable")
+
+ZCL_COMMAND_READY_READ(
+    "ops.logs", "ops", "", "Server-side regex tail of node.log",
+    "logs,tail,grep,node.log", "zcl.ops_logs.input.v1", "zcl.ops_logs.v1",
+    "pattern,since_secs,max_lines,level", "pattern",
+    "zclassic23 ops logs --pattern='blocker'",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_READY_READ(
+    "ops.timeline", "ops", "", "Recent node event timeline",
+    "timeline,events,history", "zcl.command.empty_input.v1",
+    "zcl.ops_timeline.v1", "", "", "zclassic23 ops timeline",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_READY_READ(
+    "ops.metrics", "ops", "", "Runtime metrics counters and gauges",
+    "metrics,counters,gauges", "zcl.command.empty_input.v1",
+    "zcl.ops_metrics.v1", "", "", "zclassic23 ops metrics",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_BRANCH("ops.postmortem", "ops", "Durable failure postmortems",
+                   ZCL_COMMAND_LAYER_OPS)
+ZCL_COMMAND_READY_READ(
+    "ops.postmortem.list", "ops.postmortem", "", "List captured postmortems",
+    "postmortem,list,failure,capsule", "zcl.command.empty_input.v1",
+    "zcl.postmortem_list.v1", "", "", "zclassic23 ops postmortem list",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_PLANNED_READ(
+    "ops.postmortem.replay", "ops.postmortem", "",
+    "Replay one captured postmortem", "postmortem,replay,failure",
+    "zcl.ops_postmortem_ref.input.v1", "zcl.postmortem_replay.v1", "id", "id",
+    "zclassic23 ops postmortem replay <id>",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    "postmortem replay argument mapping is a Wave 2.2 deliverable")
+
+ZCL_COMMAND_BRANCH("ops.config", "ops", "Runtime configuration",
+                   ZCL_COMMAND_LAYER_OPS)
+ZCL_COMMAND_PLANNED_READ(
+    "ops.config.show", "ops.config", "", "Show effective runtime configuration",
+    "config,show,settings", "zcl.command.empty_input.v1", "zcl.ops_config.v1",
+    "", "", "zclassic23 ops config show",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ,
+    "an effective-config reader is a Wave 2.2 deliverable")
+ZCL_COMMAND_PLANNED_COMMAND(
+    "ops.config.reload", "ops.config", "", "Reload runtime configuration",
+    "config,reload", "zcl.command.empty_input.v1", "zcl.ops_config_reload.v1",
+    "", "", "zclassic23 ops config reload",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_CORE_RECOVERY, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    "config-reload binding is a Wave 2.2 deliverable")
+
+ZCL_COMMAND_BRANCH("ops.recovery", "ops", "Bounded recovery operations",
+                   ZCL_COMMAND_LAYER_OPS)
+ZCL_COMMAND_READY_READ(
+    "ops.recovery.status", "ops.recovery", "", "Refold and recovery progress",
+    "recovery,refold,status,rebuild", "zcl.command.empty_input.v1",
+    "zcl.recovery_status.v1", "", "", "zclassic23 ops recovery status",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_PLANNED_COMMAND(
+    "ops.recovery.rebuild", "ops.recovery", "",
+    "Rebuild recent chain state", "recovery,rebuild,recent",
+    "zcl.ops_recovery_rebuild.input.v1", "zcl.recovery_rebuild.v1", "depth", "",
+    "zclassic23 ops recovery rebuild --depth=100",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_EFFECT_DESTRUCTIVE,
+    ZCL_COMMAND_RISK_CORE_RECOVERY, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_JOB,
+    ZCL_COMMAND_LATENCY_BACKGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_NONE,
+    "recovery rebuild plan/commit handshake is a Wave 2.2 deliverable")

@@ -1,0 +1,313 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * Golden contract tests for the native command registry catalog
+ * (docs/NATIVE_COMMAND_INTERFACE.md §20). Proves the composition-root catalog
+ * is well-formed, shallow, budgeted, fail-closed for planned leaves, and that
+ * every READY leaf has a live binding — without contacting a node.
+ */
+
+#include "test/test_helpers.h"
+
+#include "config/command_catalog.h"
+#include "kernel/command_registry.h"
+#include "command/native_command.h"
+#include "json/json.h"
+
+#include <string.h>
+
+static const struct zcl_command_spec *find_spec(
+    const struct zcl_command_registry *reg, const char *path)
+{
+    for (size_t i = 0; i < reg->count; i++)
+        if (strcmp(reg->commands[i].path, path) == 0)
+            return &reg->commands[i];
+    return NULL;
+}
+
+static bool exec_leaf(const struct zcl_command_registry *reg,
+                      const struct zcl_command_spec *spec,
+                      char *out, size_t out_size,
+                      enum zcl_command_exit *exit_code)
+{
+    struct zcl_command_context ctx = {
+        .registry = reg,
+        .granted_capabilities = ~(uint64_t)0,
+    };
+    struct json_value input;
+    json_init(&input);
+    json_set_object(&input);
+    size_t n = zcl_command_registry_execute_json(reg, spec, &ctx, &input,
+                                                 false, spec->path, "normal", 0,
+                                                 out, out_size, exit_code);
+    json_free(&input);
+    return n > 0;
+}
+
+static int test_catalog_wellformed(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    TEST("catalog validates and is non-trivial") {
+        char why[128] = { 0 };
+        ASSERT(reg != NULL);
+        ASSERT(reg->count > 40);
+        ASSERT(zcl_command_registry_validate(reg, why, sizeof(why)));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_six_roots(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    TEST("root exposes exactly six choices") {
+        size_t roots = 0;
+        for (size_t i = 0; i < reg->count; i++) {
+            const char *p = reg->commands[i].parent;
+            if (!p || !p[0])
+                roots++;
+        }
+        ASSERT_EQ(roots, (size_t)6);
+        ASSERT(find_spec(reg, "status") != NULL);
+        ASSERT(find_spec(reg, "core") != NULL);
+        ASSERT(find_spec(reg, "app") != NULL);
+        ASSERT(find_spec(reg, "dev") != NULL);
+        ASSERT(find_spec(reg, "ops") != NULL);
+        ASSERT(find_spec(reg, "discover") != NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_root_menu_budget(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    char out[ZCL_COMMAND_LIST_BUDGET + 1];
+    TEST("root menu is within its byte budget") {
+        size_t n = zcl_command_registry_menu_json(reg, "root", out,
+                                                  sizeof(out));
+        ASSERT(n > 0);
+        ASSERT(n <= ZCL_COMMAND_ROOT_BUDGET);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_branch_menus_shallow(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    char out[ZCL_COMMAND_LIST_BUDGET + 1];
+    TEST("branch menus stay in budget and list only immediate children") {
+        const char *branches[] = { "core", "core.chain", "core.wallet",
+                                   "ops", "discover" };
+        for (size_t b = 0; b < sizeof(branches) / sizeof(branches[0]); b++) {
+            size_t n = zcl_command_registry_menu_json(reg, branches[b], out,
+                                                      sizeof(out));
+            ASSERT(n > 0);
+            ASSERT(n <= ZCL_COMMAND_BRANCH_BUDGET);
+            struct json_value doc;
+            ASSERT(json_read(&doc, out, n) && doc.type == JSON_OBJ);
+            const struct json_value *children = json_get(&doc, "children");
+            ASSERT(children && children->type == JSON_ARR);
+            for (size_t i = 0; i < children->num_children; i++) {
+                const char *cpath =
+                    json_get_str(json_get(&children->children[i], "path"));
+                const struct zcl_command_spec *cs = find_spec(reg, cpath);
+                ASSERT(cs != NULL);
+                ASSERT_STR_EQ(cs->parent, branches[b]);
+            }
+            json_free(&doc);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_search_bounded(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    char out[ZCL_COMMAND_LIST_BUDGET + 1];
+    TEST("search returns at most five ranked matches") {
+        const char *queries[] = { "block", "wallet", "sync", "peer", "a" };
+        for (size_t q = 0; q < sizeof(queries) / sizeof(queries[0]); q++) {
+            size_t n = zcl_command_registry_search_json(reg, queries[q], out,
+                                                        sizeof(out));
+            ASSERT(n > 0);
+            struct json_value doc;
+            ASSERT(json_read(&doc, out, n) && doc.type == JSON_OBJ);
+            const struct json_value *matches = json_get(&doc, "matches");
+            ASSERT(matches && matches->type == JSON_ARR);
+            ASSERT(matches->num_children <= ZCL_COMMAND_SEARCH_LIMIT);
+            json_free(&doc);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_ready_leaves_bound(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    TEST("every READY leaf has a non-NULL handler and bridge binding") {
+        for (size_t i = 0; i < reg->count; i++) {
+            const struct zcl_command_spec *s = &reg->commands[i];
+            if (s->mode == ZCL_COMMAND_MODE_BRANCH)
+                continue;
+            if (s->availability != ZCL_COMMAND_READY)
+                continue;
+            ASSERT(s->handler != NULL);
+            if (s->handler == zcl_native_bridge_command)
+                ASSERT(zcl_native_bridge_tool_for_path(s->path) != NULL);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_bridge_bindings_reverse(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    TEST("every sampled bridge binding names a READY core/ops leaf") {
+        const char *sample[] = {
+            "core.status", "core.chain.tip", "ops.health", "ops.metrics",
+            "core.storage.query", "core.chain.block.get",
+        };
+        for (size_t i = 0; i < sizeof(sample) / sizeof(sample[0]); i++) {
+            const char *tool = zcl_native_bridge_tool_for_path(sample[i]);
+            ASSERT(tool != NULL && tool[0] != 0);
+            const struct zcl_command_spec *s = find_spec(reg, sample[i]);
+            ASSERT(s != NULL);
+            ASSERT_EQ(s->availability, ZCL_COMMAND_READY);
+            ASSERT(s->handler == zcl_native_bridge_command);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_planned_fail_closed(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+    TEST("every planned leaf blocks with exit 3 and no handler") {
+        int checked = 0;
+        for (size_t i = 0; i < reg->count; i++) {
+            const struct zcl_command_spec *s = &reg->commands[i];
+            if (s->mode == ZCL_COMMAND_MODE_BRANCH)
+                continue;
+            if (s->availability != ZCL_COMMAND_PLANNED)
+                continue;
+            ASSERT(s->handler == NULL);
+            ASSERT(s->availability_reason && s->availability_reason[0]);
+            enum zcl_command_exit code = ZCL_COMMAND_EXIT_OK;
+            ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_BLOCKED);
+            ASSERT(strstr(out, "\"ok\":false") != NULL);
+            ASSERT(strstr(out, "COMMAND_PLANNED") != NULL);
+            checked++;
+        }
+        ASSERT(checked > 5);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_envelope_vectors(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+    TEST("a local discovery leaf returns a passing common envelope") {
+        const struct zcl_command_spec *s = find_spec(reg, "discover.describe");
+        ASSERT(s != NULL);
+        struct zcl_command_context ctx = {
+            .registry = reg, .granted_capabilities = ~(uint64_t)0,
+        };
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        (void)json_push_kv_str(&input, "path", "core.status");
+        enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+        size_t n = zcl_command_registry_execute_json(
+            reg, s, &ctx, &input, false, "discover.describe", "normal", 0, out,
+            sizeof(out), &code);
+        json_free(&input);
+        ASSERT(n > 0);
+        ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(strstr(out, "\"schema\":\"zcl.result.v1\"") != NULL);
+        ASSERT(strstr(out, "\"ok\":true") != NULL);
+        ASSERT(strstr(out, "core.status") != NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_typo_stays_branch(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    TEST("a typo under a canonical branch resolves to the branch, not a leaf") {
+        /* `core chain bogus`: longest path is the core.chain BRANCH with the
+         * unknown word left over. The adapter turns this into the structured
+         * unknown-command error; the registry never invents a leaf for it, so
+         * it can never fall through to an arbitrary RPC method. */
+        const char *words[] = { "core", "chain", "bogus" };
+        size_t consumed = 0;
+        bool alias = false;
+        char invoked[ZCL_COMMAND_MAX_PATH];
+        const struct zcl_command_spec *s = zcl_command_registry_resolve_words(
+            reg, words, 3, &consumed, &alias, invoked, sizeof(invoked));
+        ASSERT(s != NULL);
+        ASSERT_STR_EQ(s->path, "core.chain");
+        ASSERT_EQ(s->mode, ZCL_COMMAND_MODE_BRANCH);
+        ASSERT_EQ(consumed, (size_t)2);
+        ASSERT(find_spec(reg, "core.chain.bogus") == NULL);
+        ASSERT(zcl_command_registry_find(reg, "core.chain.bogus", NULL) ==
+               NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_is_root_ownership(void)
+{
+    int failures = 0;
+    TEST("is_root owns core/app/ops/discover but not status or dev") {
+        ASSERT(zcl_native_command_is_root("core"));
+        ASSERT(zcl_native_command_is_root("app"));
+        ASSERT(zcl_native_command_is_root("ops"));
+        ASSERT(zcl_native_command_is_root("discover"));
+        ASSERT(zcl_native_command_is_root("help"));
+        ASSERT(zcl_native_command_is_root("search"));
+        ASSERT(!zcl_native_command_is_root("status"));
+        ASSERT(!zcl_native_command_is_root("dev"));
+        ASSERT(!zcl_native_command_is_root("getblockcount"));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+int test_command_registry_catalog(void)
+{
+    int failures = 0;
+    failures += test_catalog_wellformed();
+    failures += test_six_roots();
+    failures += test_root_menu_budget();
+    failures += test_branch_menus_shallow();
+    failures += test_search_bounded();
+    failures += test_ready_leaves_bound();
+    failures += test_bridge_bindings_reverse();
+    failures += test_planned_fail_closed();
+    failures += test_envelope_vectors();
+    failures += test_typo_stays_branch();
+    failures += test_is_root_ownership();
+    printf("=== command_registry_catalog: %d failures ===\n", failures);
+    return failures;
+}

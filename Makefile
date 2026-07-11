@@ -133,8 +133,14 @@ DEVLOOP_SRCS = $(call zcl_filter_ephemeral_sources,\
 # or boot internals.
 APP_SDK_INCLUDES = -Isdk/include
 
+# Native command adapter (registry-backed CLI). Release-visible: core/ops/
+# discover leaves ship in the release binary, so this is part of ALL_SRCS
+# rather than the dev-only lane. Header path -Itools is provided by MCP_INCLUDES.
+COMMAND_SRCS = $(call zcl_filter_ephemeral_sources,\
+	$(wildcard tools/command/*.c))
+
 NODE_ENTRY_SRCS = src/main.c tools/mcp_server.c
-ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS) $(DOMAIN_SRCS) $(APPLICATION_SRCS) $(ADAPTERS_SRCS) $(MCP_SRCS) $(DEVLOOP_SRCS)
+ALL_SRCS = $(APP_SRCS) $(CONFIG_SRCS) $(LIB_SRCS) $(DOMAIN_SRCS) $(APPLICATION_SRCS) $(ADAPTERS_SRCS) $(MCP_SRCS) $(DEVLOOP_SRCS) $(COMMAND_SRCS)
 ALL_OBJS = $(patsubst %.c,$(OBJ_DIR)/%.o,$(ALL_SRCS))
 
 DEV_SRCS = $(NODE_ENTRY_SRCS) $(ALL_SRCS)

@@ -69,6 +69,35 @@ int64_t chainstate_legacy_iter(void *handle,
 /* Read the best-block hash stored under the single-byte key 'B'. */
 bool chainstate_legacy_get_best_block(void *handle, struct uint256 *out);
 
+/* ── Historical Sapling anchor lookup ─────────────────────────────────
+ *
+ * A zcashd-lineage chainstate persists every historical Sapling
+ * note-commitment tree along the active chain, keyed by its root:
+ *   key:   'Z' || <32-byte anchor root, raw byte order>
+ *   value: serialized SaplingMerkleTree (the IncrementalMerkleTree
+ *          boost::optional wire format: optional<left>, optional<right>,
+ *          vector<optional<parent>>)
+ * The key-schema knowledge (DB_SAPLING_ANCHOR = 'Z') is ported from the
+ * Zcash reference — see the ATTRIBUTION block in the .c file. */
+struct incremental_merkle_tree;
+
+enum chainstate_anchor_result {
+    CHAINSTATE_ANCHOR_ERROR   = -1, /* read / deserialize / verify failure */
+    CHAINSTATE_ANCHOR_MISSING =  0, /* no row for this root */
+    CHAINSTATE_ANCHOR_FOUND   =  1, /* tree_out valid, root re-verified */
+};
+
+/* Look up the Sapling anchor tree stored under ('Z' || root) and
+ * deserialize it into *tree_out (which the caller need not pre-init; this
+ * calls sapling_tree_init).  FAIL-CLOSED: recomputes the deserialized
+ * tree's own root and returns CHAINSTATE_ANCHOR_ERROR (writing nothing
+ * usable) on ANY mismatch against the lookup `root` — a borrowed tree is
+ * never returned unverified.  Returns CHAINSTATE_ANCHOR_MISSING when the
+ * key is absent. */
+enum chainstate_anchor_result chainstate_legacy_get_sapling_anchor(
+    void *handle, const struct uint256 *root,
+    struct incremental_merkle_tree *tree_out);
+
 #ifdef __cplusplus
 }
 #endif

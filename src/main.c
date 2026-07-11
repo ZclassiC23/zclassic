@@ -62,6 +62,7 @@
 #include "mcp/router.h"
 #include "mcp/rpc_client.h"
 #include "devloop.h"
+#include "command/native_command.h"
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -1521,6 +1522,18 @@ static int cli_main(int argc, char **argv)
     else if (strcmp(method, "--summary") == 0 ||
              strcmp(method, "-summary") == 0)
         method = "summary";
+
+    /* Canonical registry roots (core/app/ops/discover + the help/search
+     * aliases) resolve through the native command registry BEFORE the
+     * arbitrary RPC-method fallback further down. A typo under a canonical
+     * branch returns the structured unknown-command error (exit 2) and never
+     * becomes an RPC method. `status` keeps its static-agent path and `dev`
+     * keeps the devloop dispatcher (checked above) — documented seams the
+     * registry does not yet own (Wave 2.2 folds them in). */
+    if (zcl_native_command_is_root(method))
+        return zcl_native_command_main(method,
+                                       (const char *const *)params_storage,
+                                       nparams, datadir, cli_port);
 
     if (strcmp(method, "mcpcall") == 0 || strcmp(method, "mcp") == 0)
         return cli_run_mcp_call(datadir, params_storage, nparams);

@@ -1,0 +1,594 @@
+/* Consensus-bound Core capabilities (contract §5).
+ *
+ * READ-ONLY leaves that have a genuine live handler bind the generic native
+ * bridge (zcl_native_bridge_command), which proxies the resolved leaf to the
+ * one canonical MCP/RPC handler for this build. The path->tool binding lives in
+ * the transport adapter (tools/command/native_command.c), never in this
+ * metadata. Mutations and reads that are not yet bridged are PLANNED — the
+ * engine fail-closes a PLANNED leaf with exit 3, so nothing is advertised as
+ * working before its handler exists. Do NOT promote a handlerless node to
+ * READY. */
+
+ZCL_COMMAND_READY_READ(
+    "core.status", "core", "", "Consensus node status: height, sync, health",
+    "status,height,sync,consensus,tip", "zcl.command.empty_input.v1",
+    "zcl.core_status.v1", "", "", "zclassic23 core status",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+/* ── chain ─────────────────────────────────────────────────────────── */
+ZCL_COMMAND_BRANCH("core.chain", "core", "Blocks, transactions, and mempool",
+                   ZCL_COMMAND_LAYER_CORE)
+
+ZCL_COMMAND_READY_READ(
+    "core.chain.tip", "core.chain", "", "Active chain tip in one call",
+    "tip,best,height,hash,work", "zcl.command.empty_input.v1",
+    "zcl.chain_tip.v1", "", "", "zclassic23 core chain tip",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_BRANCH("core.chain.block", "core.chain", "Block by height or hash",
+                   ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_READ(
+    "core.chain.block.get", "core.chain.block", "",
+    "Get one block by height or hash", "block,get,height,hash",
+    "zcl.core_block_get.input.v1", "zcl.block.v1", "height,hash,verbosity",
+    "height", "zclassic23 core chain block get --height=478544",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_BRANCH("core.chain.transaction", "core.chain",
+                   "Transaction by id", ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_READ(
+    "core.chain.transaction.get", "core.chain.transaction", "",
+    "Get one transaction by id", "transaction,tx,get,txid",
+    "zcl.core_tx_get.input.v1", "zcl.transaction.v1", "txid,verbose", "txid",
+    "zclassic23 core chain transaction get --txid=<hex>",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_BRANCH("core.chain.mempool", "core.chain", "Mempool state",
+                   ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_READ(
+    "core.chain.mempool.status", "core.chain.mempool", "",
+    "Mempool size, bytes, and fee summary", "mempool,status,fees",
+    "zcl.command.empty_input.v1", "zcl.mempool_status.v1", "", "",
+    "zclassic23 core chain mempool status",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_READY_READ(
+    "core.chain.mempool.list", "core.chain.mempool", "",
+    "List mempool transaction ids", "mempool,list,txids",
+    "zcl.command.empty_input.v1", "zcl.mempool_list.v1", "", "",
+    "zclassic23 core chain mempool list",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+ZCL_COMMAND_BRANCH("core.chain.wait", "core.chain",
+                   "Block until a chain condition holds", ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_PLANNED_READ(
+    "core.chain.wait.height", "core.chain.wait", "",
+    "Wait until the tip reaches a target height", "wait,height,sync",
+    "zcl.core_wait_height.input.v1", "zcl.wait_result.v1", "height,timeout_ms",
+    "height", "zclassic23 core chain wait height --height=3200000",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_PERSISTENT, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ,
+    "blocking wait proxy is deferred to the Wave 2.2 job protocol")
+ZCL_COMMAND_PLANNED_READ(
+    "core.chain.wait.blocker", "core.chain.wait", "",
+    "Wait until a named blocker is raised or cleared", "wait,blocker,stall",
+    "zcl.core_wait_blocker.input.v1", "zcl.wait_result.v1", "blocker,timeout_ms",
+    "blocker", "zclassic23 core chain wait blocker",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_PERSISTENT, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ,
+    "blocking wait proxy is deferred to the Wave 2.2 job protocol")
+ZCL_COMMAND_PLANNED_READ(
+    "core.chain.wait.halt", "core.chain.wait", "",
+    "Wait until the node halts on a named blocker", "wait,halt,blocker",
+    "zcl.core_wait_halt.input.v1", "zcl.wait_result.v1", "timeout_ms", "",
+    "zclassic23 core chain wait halt",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_PERSISTENT, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ,
+    "blocking wait proxy is deferred to the Wave 2.2 job protocol")
+
+/* ── sync ──────────────────────────────────────────────────────────── */
+ZCL_COMMAND_BRANCH("core.sync", "core", "Sync phase and validation progress",
+                   ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_READ(
+    "core.sync.status", "core.sync", "", "Sync phase and header/block gap",
+    "sync,status,phase,gap", "zcl.command.empty_input.v1", "zcl.sync_status.v1",
+    "", "", "zclassic23 core sync status",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_READY_READ(
+    "core.sync.validation", "core.sync", "",
+    "Background validation progress", "validation,proofs,progress",
+    "zcl.command.empty_input.v1", "zcl.validation_status.v1", "", "",
+    "zclassic23 core sync validation",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_READY_READ(
+    "core.sync.blockers", "core.sync", "", "Active named sync blockers",
+    "blockers,stall,sync", "zcl.command.empty_input.v1", "zcl.blockers.v1",
+    "", "", "zclassic23 core sync blockers",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_READY_READ(
+    "core.sync.diagnose", "core.sync", "", "Diagnose why sync is not advancing",
+    "sync,diagnose,stall,gap", "zcl.command.empty_input.v1", "zcl.syncdiag.v1",
+    "", "", "zclassic23 core sync diagnose",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+/* ── consensus ─────────────────────────────────────────────────────── */
+ZCL_COMMAND_BRANCH("core.consensus", "core",
+                   "Consensus reports, integrity, and mutation",
+                   ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_READ(
+    "core.consensus.report", "core.consensus", "",
+    "Consensus parity and rule report", "consensus,report,parity",
+    "zcl.command.empty_input.v1", "zcl.consensus_report.v1", "", "",
+    "zclassic23 core consensus report",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_READY_READ(
+    "core.consensus.integrity", "core.consensus", "",
+    "SHA3 over consensus tables", "integrity,sha3,dataintegrity",
+    "zcl.command.empty_input.v1", "zcl.data_integrity.v1", "", "",
+    "zclassic23 core consensus integrity",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_BRANCH("core.consensus.utxo", "core.consensus",
+                   "UTXO set commitment and audit", ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_READ(
+    "core.consensus.utxo.commitment", "core.consensus.utxo", "",
+    "SHA3 commitment over the UTXO set", "utxo,commitment,sha3",
+    "zcl.command.empty_input.v1", "zcl.utxo_commitment.v1", "", "",
+    "zclassic23 core consensus utxo commitment",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_READY_READ(
+    "core.consensus.utxo.audit", "core.consensus.utxo", "",
+    "Audit the UTXO set for drift", "utxo,audit,drift",
+    "zcl.command.empty_input.v1", "zcl.utxo_audit.v1", "", "",
+    "zclassic23 core consensus utxo audit",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_READY_READ(
+    "core.consensus.mmb", "core.consensus", "",
+    "Merkle Mountain Belt commitment state", "mmb,flyclient,commitment",
+    "zcl.command.empty_input.v1", "zcl.mmb.v1", "", "",
+    "zclassic23 core consensus mmb",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_BRANCH("core.consensus.block", "core.consensus",
+                   "Invalidate or reconsider a block", ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_PLANNED_COMMAND(
+    "core.consensus.block.invalidate", "core.consensus.block", "",
+    "Mark a block invalid and reorg away from it", "invalidate,reorg,block",
+    "zcl.core_block_ref.input.v1", "zcl.block_mutation.v1", "hash", "hash",
+    "zclassic23 core consensus block invalidate --hash=<hash>",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_DESTRUCTIVE,
+    ZCL_COMMAND_RISK_CORE_RECOVERY, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_NONE,
+    "chain-mutation confirmation handshake is a Wave 2.2 deliverable")
+ZCL_COMMAND_PLANNED_COMMAND(
+    "core.consensus.block.reconsider", "core.consensus.block", "",
+    "Clear an invalid mark and reconsider a block", "reconsider,block",
+    "zcl.core_block_ref.input.v1", "zcl.block_mutation.v1", "hash", "hash",
+    "zclassic23 core consensus block reconsider --hash=<hash>",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_CORE_RECOVERY, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_REVERSIBLE,
+    "chain-mutation confirmation handshake is a Wave 2.2 deliverable")
+
+/* ── network ───────────────────────────────────────────────────────── */
+ZCL_COMMAND_BRANCH("core.network", "core", "Peers and onion transport",
+                   ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_READ(
+    "core.network.status", "core.network", "", "Network info and connections",
+    "network,status,connections", "zcl.command.empty_input.v1",
+    "zcl.network_status.v1", "", "", "zclassic23 core network status",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_BRANCH("core.network.peers", "core.network",
+                   "Connected peers", ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_READ(
+    "core.network.peers.list", "core.network.peers", "",
+    "List connected peers", "peers,list,addresses,latency",
+    "zcl.command.empty_input.v1", "zcl.peers.v1", "", "",
+    "zclassic23 core network peers list",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_READY_READ(
+    "core.network.peers.incidents", "core.network.peers", "",
+    "Recent peer misbehavior incidents", "peers,incidents,ban,misbehavior",
+    "zcl.command.empty_input.v1", "zcl.peer_incidents.v1", "", "",
+    "zclassic23 core network peers incidents",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_READY_READ(
+    "core.network.peers.latency", "core.network.peers", "",
+    "Round-trip latency for every peer", "peers,latency,ping",
+    "zcl.command.empty_input.v1", "zcl.peer_latency.v1", "", "",
+    "zclassic23 core network peers latency",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_PLANNED_COMMAND(
+    "core.network.peers.add", "core.network.peers", "",
+    "Add an outbound peer connection", "peers,add,connect,addnode",
+    "zcl.core_peer_add.input.v1", "zcl.peer_add.v1", "address", "address",
+    "zclassic23 core network peers add --address=<ip:port>",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_CORE_RECOVERY, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_NONE,
+    "peer-mutation binding is a Wave 2.2 deliverable")
+ZCL_COMMAND_BRANCH("core.network.onion", "core.network",
+                   "Embedded onion service", ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_READ(
+    "core.network.onion.status", "core.network.onion", "",
+    "Onion address and bootstrap status", "onion,tor,status,address",
+    "zcl.command.empty_input.v1", "zcl.onion_status.v1", "", "",
+    "zclassic23 core network onion status",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_READY_READ(
+    "core.network.onion.health", "core.network.onion", "",
+    "Onion reachability health", "onion,tor,health,reachability",
+    "zcl.command.empty_input.v1", "zcl.onion_health.v1", "", "",
+    "zclassic23 core network onion health",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+/* ── wallet ────────────────────────────────────────────────────────── */
+ZCL_COMMAND_BRANCH("core.wallet", "core", "Keys, balance, and transactions",
+                   ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_READ(
+    "core.wallet.status", "core.wallet", "", "Wallet summary and key counts",
+    "wallet,status,info", "zcl.command.empty_input.v1", "zcl.wallet_status.v1",
+    "", "", "zclassic23 core wallet status",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_READY_READ(
+    "core.wallet.balance", "core.wallet", "", "Confirmed and total balance",
+    "wallet,balance", "zcl.command.empty_input.v1", "zcl.wallet_balance.v1",
+    "", "", "zclassic23 core wallet balance",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_BRANCH("core.wallet.address", "core.wallet",
+                   "Transparent addresses", ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_PLANNED_COMMAND(
+    "core.wallet.address.new", "core.wallet.address", "",
+    "Derive and persist a new transparent address", "wallet,address,new",
+    "zcl.command.empty_input.v1", "zcl.wallet_address.v1", "", "",
+    "zclassic23 core wallet address new",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    "wallet key-mutation binding is a Wave 2.2 deliverable")
+ZCL_COMMAND_READY_READ(
+    "core.wallet.address.list", "core.wallet.address", "",
+    "List transparent addresses", "wallet,address,list",
+    "zcl.command.empty_input.v1", "zcl.wallet_addresses.v1", "", "",
+    "zclassic23 core wallet address list",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_PLANNED_COMMAND(
+    "core.wallet.address.import", "core.wallet.address", "",
+    "Import a watch-only address", "wallet,address,import",
+    "zcl.core_addr_import.input.v1", "zcl.wallet_address.v1", "address",
+    "address", "zclassic23 core wallet address import --address=<addr>",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    "wallet import binding is a Wave 2.2 deliverable")
+ZCL_COMMAND_PLANNED_COMMAND(
+    "core.wallet.address.export-key", "core.wallet.address", "",
+    "Export the private key for an address", "wallet,export,privkey",
+    "zcl.core_addr_ref.input.v1", "zcl.wallet_privkey.v1", "address", "address",
+    "zclassic23 core wallet address export-key --address=<addr>",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_READ, ZCL_COMMAND_RISK_READ,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    "private-key export is owner-gated and deferred to Wave 2.2")
+ZCL_COMMAND_BRANCH("core.wallet.utxo", "core.wallet", "Spendable outputs",
+                   ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_READ(
+    "core.wallet.utxo.list", "core.wallet.utxo", "", "List spendable UTXOs",
+    "wallet,utxo,unspent", "zcl.command.empty_input.v1", "zcl.wallet_utxos.v1",
+    "", "", "zclassic23 core wallet utxo list",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_BRANCH("core.wallet.transaction", "core.wallet",
+                   "Wallet transactions", ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_READ(
+    "core.wallet.transaction.list", "core.wallet.transaction", "",
+    "List recent wallet transactions", "wallet,transaction,list,history",
+    "zcl.command.empty_input.v1", "zcl.wallet_tx_list.v1", "", "",
+    "zclassic23 core wallet transaction list",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_READY_READ(
+    "core.wallet.transaction.get", "core.wallet.transaction", "",
+    "Get one wallet transaction by id", "wallet,transaction,get,txid",
+    "zcl.core_tx_get.input.v1", "zcl.wallet_tx.v1", "txid", "txid",
+    "zclassic23 core wallet transaction get --txid=<hex>",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_PLANNED_COMMAND(
+    "core.wallet.transaction.send", "core.wallet.transaction", "",
+    "Build, sign, and broadcast a payment", "wallet,send,pay,broadcast",
+    "zcl.core_wallet_send.input.v1", "zcl.wallet_send.v1",
+    "address,amount,idempotency_key", "",
+    "zclassic23 core wallet transaction send --input='<obj>'",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FOREGROUND,
+    ZCL_COMMAND_COST_MODERATE, ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    "spend plan/commit handshake is a Wave 2.2 deliverable")
+ZCL_COMMAND_BRANCH("core.wallet.shielded", "core.wallet",
+                   "Sapling shielded addresses and notes",
+                   ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_PLANNED_COMMAND(
+    "core.wallet.shielded.address", "core.wallet.shielded", "",
+    "Derive a new shielded address", "shielded,sapling,address,new",
+    "zcl.command.empty_input.v1", "zcl.shielded_address.v1", "", "",
+    "zclassic23 core wallet shielded address",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    "shielded key-mutation binding is a Wave 2.2 deliverable")
+ZCL_COMMAND_PLANNED_READ(
+    "core.wallet.shielded.balance", "core.wallet.shielded", "",
+    "Shielded balance for one address", "shielded,balance,sapling",
+    "zcl.core_shielded_ref.input.v1", "zcl.shielded_balance.v1", "address",
+    "address", "zclassic23 core wallet shielded balance --address=<zaddr>",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST,
+    "shielded balance argument mapping is a Wave 2.2 deliverable")
+ZCL_COMMAND_PLANNED_READ(
+    "core.wallet.shielded.notes", "core.wallet.shielded", "",
+    "List spendable shielded notes", "shielded,notes,unspent",
+    "zcl.command.empty_input.v1", "zcl.shielded_notes.v1", "", "",
+    "zclassic23 core wallet shielded notes",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST,
+    "shielded note listing binding is a Wave 2.2 deliverable")
+ZCL_COMMAND_PLANNED_COMMAND(
+    "core.wallet.shielded.send", "core.wallet.shielded", "",
+    "Send a shielded payment", "shielded,send,z_sendmany",
+    "zcl.core_shielded_send.input.v1", "zcl.shielded_send.v1",
+    "from,to,amount,idempotency_key", "",
+    "zclassic23 core wallet shielded send --input='<obj>'",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_JOB,
+    ZCL_COMMAND_LATENCY_BACKGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_CONFIRM_PLAN_COMMIT,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    "shielded send plan/commit handshake is a Wave 2.2 deliverable")
+ZCL_COMMAND_BRANCH("core.wallet.backup", "core.wallet", "Wallet backup",
+                   ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_READ(
+    "core.wallet.backup.status", "core.wallet.backup", "",
+    "Wallet backup freshness", "wallet,backup,status",
+    "zcl.command.empty_input.v1", "zcl.wallet_backup_status.v1", "", "",
+    "zclassic23 core wallet backup status",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_PLANNED_COMMAND(
+    "core.wallet.backup.now", "core.wallet.backup", "",
+    "Take a wallet backup now", "wallet,backup,now",
+    "zcl.command.empty_input.v1", "zcl.wallet_backup.v1", "", "",
+    "zclassic23 core wallet backup now",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW, ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    "wallet backup-now binding is a Wave 2.2 deliverable")
+ZCL_COMMAND_READY_READ(
+    "core.wallet.audit", "core.wallet", "", "Audit wallet key/UTXO consistency",
+    "wallet,audit,consistency", "zcl.command.empty_input.v1",
+    "zcl.wallet_audit.v1", "", "", "zclassic23 core wallet audit",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_PLANNED_COMMAND(
+    "core.wallet.rescan", "core.wallet", "",
+    "Rescan the chain for wallet transactions", "wallet,rescan",
+    "zcl.core_wallet_rescan.input.v1", "zcl.wallet_rescan.v1", "start_height",
+    "", "zclassic23 core wallet rescan",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_JOB,
+    ZCL_COMMAND_LATENCY_BACKGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    "wallet rescan job binding is a Wave 2.2 deliverable")
+ZCL_COMMAND_PLANNED_COMMAND(
+    "core.wallet.replay", "core.wallet", "",
+    "Replay wallet state from chain", "wallet,replay,rebuild",
+    "zcl.command.empty_input.v1", "zcl.wallet_replay.v1", "", "",
+    "zclassic23 core wallet replay",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_WALLET,
+    ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_JOB,
+    ZCL_COMMAND_LATENCY_BACKGROUND, ZCL_COMMAND_COST_HIGH,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_WALLET_REQUEST, ZCL_COMMAND_TRAIT_NONE,
+    "wallet replay job binding is a Wave 2.2 deliverable")
+
+/* ── storage ───────────────────────────────────────────────────────── */
+ZCL_COMMAND_BRANCH("core.storage", "core", "Raw node storage",
+                   ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_READ(
+    "core.storage.stats", "core.storage", "", "Database size and table stats",
+    "storage,stats,db,size", "zcl.command.empty_input.v1", "zcl.db_stats.v1",
+    "", "", "zclassic23 core storage stats",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_PLANNED_READ(
+    "core.storage.integrity", "core.storage", "",
+    "Verify raw storage integrity", "storage,integrity,check",
+    "zcl.command.empty_input.v1", "zcl.storage_integrity.v1", "", "",
+    "zclassic23 core storage integrity",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ,
+    "a distinct storage-integrity handler is a Wave 2.2 deliverable")
+ZCL_COMMAND_READY_READ(
+    "core.storage.query", "core.storage", "",
+    "Run one SELECT-only query over node.db", "storage,query,sql,select",
+    "zcl.core_storage_query.input.v1", "zcl.storage_query.v1", "sql,limit",
+    "sql", "zclassic23 core storage query --sql='SELECT ...'",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+
+/* ── mining ────────────────────────────────────────────────────────── */
+ZCL_COMMAND_BRANCH("core.mining", "core", "Mining info and benchmarks",
+                   ZCL_COMMAND_LAYER_CORE)
+ZCL_COMMAND_READY_READ(
+    "core.mining.status", "core.mining", "", "Mining info and difficulty",
+    "mining,status,difficulty,hashrate", "zcl.command.empty_input.v1",
+    "zcl.mining_status.v1", "", "", "zclassic23 core mining status",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_READY_READ(
+    "core.mining.benchmark", "core.mining", "", "Run an Equihash solver benchmark",
+    "mining,benchmark,equihash,solver", "zcl.command.empty_input.v1",
+    "zcl.mining_benchmark.v1", "", "", "zclassic23 core mining benchmark",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)

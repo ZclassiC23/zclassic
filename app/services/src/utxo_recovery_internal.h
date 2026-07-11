@@ -115,13 +115,10 @@ int utxo_recovery_settle_finalized_floor(struct utxo_recovery_ctx *ctx,
 struct zcl_result utxo_recovery_commit_genesis(struct utxo_recovery_ctx *ctx,
                                   const char *reason);
 
-/* Point-in-time copy of a (possibly live) zclassicd chainstate LevelDB
- * from cs_path to import_path. Retries until no source file changed
- * while the copy ran, so the image can never be torn mid-write; refuses
- * with a non-ok zcl_result if the source never goes quiet. Implemented
- * in utxo_recovery_ldb_copy.c. */
-struct zcl_result utxo_recovery_copy_chainstate_stable(const char *cs_path,
-                                                       const char *import_path);
+/* utxo_recovery_copy_chainstate_stable (point-in-time chainstate copy,
+ * implemented in utxo_recovery_ldb_copy.c) is now declared in the PUBLIC
+ * services/utxo_recovery_service.h (included above) so the borrowed-frontier
+ * cure can reuse it. */
 
 /* ── Cold-import seed provenance (utxo_recovery_seed_provenance.c) ────
  * The durable seed-anchor keys cold_import_seed_anchor_{height,hash,

@@ -73,21 +73,35 @@ struct zcl_result utxo_recovery_copy_chainstate_stable(const char *cs_path,
     const int max_copy_attempts = 6;
     for (int attempt = 1; attempt <= max_copy_attempts; attempt++) {
         uint64_t sig_before = chainstate_dir_signature(cs_path);
-        if (system(cmd) != 0)
-            return ZCL_ERR(-3,
-                "copy_chainstate_stable: failed to copy chainstate "
-                "from %s to %s", cs_path, import_path);
+        /* IMPORTANT: system()'s return value is NOT trustworthy here.  The node
+         * installs SIGCHLD with SA_NOCLDWAIT (lib/util/src/alerts.c), so the
+         * cp child is auto-reaped and system()'s internal waitpid() fails with
+         * ECHILD, returning -1 even when `cp` succeeded byte-for-byte.  Ignore
+         * the code and prove the copy structurally instead: (1) the source did
+         * not change during the copy (point-in-time), and (2) the destination
+         * is a COMPLETE image of it.  chainstate_dir_signature folds
+         * (name,size,mtime_ns) over every entry and `cp -a` preserves all three
+         * on the same filesystem, so a complete copy has dest_sig == source
+         * sig; a torn/failed cp (vanished SST, disk-full) does not. */
+        int rc = system(cmd);
+        (void)rc;
         uint64_t sig_after = chainstate_dir_signature(cs_path);
-        if (sig_before != 0 && sig_before == sig_after)
-            return ZCL_OK;
-        printf("chainstate changed during copy (attempt %d/%d) — "
-               "retrying for a point-in-time image...\n",
-               attempt, max_copy_attempts);
+        uint64_t dest_sig  = chainstate_dir_signature(import_path);
+        if (sig_before != 0 && sig_before == sig_after && dest_sig == sig_after)
+            return ZCL_OK;   /* point-in-time source + complete destination */
+
+        const char *why =
+            (sig_before != sig_after) ? "source changed during copy"
+            : (dest_sig != sig_after) ? "destination incomplete (cp raced/failed)"
+                                      : "source unreadable";
+        printf("chainstate copy not yet point-in-time (attempt %d/%d: %s) — "
+               "retrying...\n", attempt, max_copy_attempts, why);
         fflush(stdout);
-        sleep(2);
+        if (attempt < max_copy_attempts)
+            sleep(2);
     }
     return ZCL_ERR(-3,
-        "copy_chainstate_stable: chainstate at %s kept changing across "
-        "%d copy attempts — refusing a torn import (stop zclassicd or "
-        "retry when it is idle)", cs_path, max_copy_attempts);
+        "copy_chainstate_stable: could not capture a complete point-in-time "
+        "copy of %s across %d attempts — refusing a torn import (retry when "
+        "the source is idle)", cs_path, max_copy_attempts);
 }

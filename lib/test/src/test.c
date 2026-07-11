@@ -987,6 +987,7 @@ int main(int argc, char **argv)
     failures += test_bloom();
     failures += test_coins();
     failures += test_chainstate_legacy_reader();
+    failures += test_chainstate_sapling_anchor();
     failures += test_utxo_import_pipeline();
     failures += test_ccoins_decoder_kat();
     failures += test_coins_record_codec();
@@ -1113,6 +1114,7 @@ int main(int argc, char **argv)
     failures += test_hotswap_loader();
     failures += test_hotswap_simnet();
     failures += test_dev_platform();
+    failures += test_command_registry_catalog();
     failures += test_mcp_controllers();
     failures += test_mcp_middleware();
     failures += test_mcp_metrics();
