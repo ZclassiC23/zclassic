@@ -65,6 +65,15 @@ for entry in $ELIGIBLE; do
         *)  SO="$(cd "$(dirname "$SO")" && pwd)/$(basename "$SO")" ;;
     esac
 
+    # zero-MCP note (docs/work/MCP-REMOVAL-WORKLIST.md W2, "no native analog"
+    # case): this harness specifically proves the legacy `mcp.routes`
+    # hot-swap provider (asserted below via provider_id=="mcp.routes"), the
+    # dual-run partner of the newer `native.leaves` provider behind
+    # `zclassic23-dev dev hotswap apply`/`dev hotswap probe`
+    # (docs/work/HOTSWAP.md). It cannot be migrated to the native command
+    # without changing what it proves; `mcpcall` here stays the legacy path
+    # pending the mcp.routes provider's removal in zero-MCP W3, at which
+    # point this whole harness retires with it.
     ARGS="{\"so_path\":\"$SO\"}"
     OUT=$("$BIN" -datadir="$DEMO_DATADIR" mcpcall zcl_agent_hotswap "$ARGS")
 

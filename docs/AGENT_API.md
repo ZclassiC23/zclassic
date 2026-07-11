@@ -246,18 +246,19 @@ back to onion reachability when NAT or firewall conditions require it.
 
 ## Preferred Interface
 
-The best interface for an AI coding operator is MCP with typed JSON tools:
-start with `zcl_agent_ops` for the compact no-jq command center, use
-`zcl_agent_interface` when checking the full transport contract, then use
-`zcl_agent_diagnose`, `zcl_agent`, `zcl_agent_liveness`,
-`zcl_agent_lanes`, `zcl_mirror_status`,
-`zcl_agent_impact`,
-`zcl_agent_build`, `zcl_state_catalog`, `zcl_state`, `zcl_timeline`,
-`zcl_app_protocols`, `zcl_service_catalog`, `zcl_node_log`, and `zcl_sql` as
-needed. The native binary commands (`zclassic23 agentinterface`,
-`zclassic23 appprotocols`, `zclassic23 servicecatalog bootstrap`,
-`zclassic23 status` / `zclassic23 agent`, etc.) are the second-best interface for terminal work and
-scripts. REST is the public read-only mirror.
+The best interface for an AI coding operator is the native command registry
+(`zclassic23 <leaf> [--input=json]`): start with `zclassic23 status` /
+`zclassic23 agent` for the compact no-jq command center, use
+`zclassic23 agentinterface` when checking the full transport contract, then use
+`zclassic23 agentdiagnose`, `zclassic23 agentliveness`, `zclassic23 agentlanes`,
+`zclassic23 getmirrorstatus`, `zclassic23 agentimpact`, `zclassic23 agentbuild`,
+`zclassic23 dumpstate <subsystem>`, `zclassic23 timeline`,
+`zclassic23 appprotocols`, `zclassic23 servicecatalog`, and `discover
+help`/`discover search <q>` as needed. The legacy MCP tools
+(`zcl_agent_ops`, `zcl_agent`, `zcl_agent_interface`, `zcl_state`, `zcl_sql`,
+etc.) call the same native RPC methods and still work today, but MCP is being
+removed entirely in zero-MCP W3 (`docs/work/MCP-REMOVAL-PLAN.md`) — do not
+build new tooling against it. REST is the public read-only mirror.
 
 For terminal work, keep the operator path inside the same binary: use native
 commands such as `build/bin/zclassic23 status`, `build/bin/zclassic23 dumpstate

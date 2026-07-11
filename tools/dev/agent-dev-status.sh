@@ -416,7 +416,7 @@ next_action() {
             printf 'make agent-dev-recover (or ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY=1 for a deliberate recovery boot)'
         fi
     elif [ "$rpc_status" = "ok" ]; then
-        printf 'make agent-mcp-call-dev TOOL=zcl_status'
+        printf 'zclassic23-dev status'
     elif [ "$active_state" = "active" ]; then
         printf 'wait; tail -f %s' "$NODE_LOG"
     else

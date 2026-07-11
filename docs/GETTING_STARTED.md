@@ -128,10 +128,27 @@ git submodule update --init vendor/tor
 Then build Tor as described in `docs/BUILD.md`. When `vendor/tor/libtor.a`
 exists, the Makefile links it automatically and `-tor` can publish the onion.
 
-## Optional MCP
+## Agent / Operator Interface
 
-Claude Code or another MCP client can operate the node through typed local
-tools:
+The native command registry is the primary way an AI agent or operator
+inspects and drives the node — no separate server process, no client setup:
+
+```bash
+build/bin/zclassic23 -datadir="$HOME/.zclassic-c23" status
+build/bin/zclassic23 -datadir="$HOME/.zclassic-c23" discover help
+build/bin/zclassic23 -datadir="$HOME/.zclassic-c23" dumpstate <subsystem>
+```
+
+Start with `status`, then `discover help` / `discover search <q>` to find the
+rest of the tree. See `docs/AGENT_API.md` for the full surface.
+
+### Optional MCP (legacy, removed in W3)
+
+Claude Code or another MCP client can still operate the node through the
+typed local MCP tools today, but MCP is being phased out in favor of the
+native command registry above (the zero-MCP directive,
+`docs/work/MCP-REMOVAL-PLAN.md`) and this path is removed entirely in
+zero-MCP W3:
 
 ```bash
 claude mcp add zcl23 -- build/bin/zclassic23 -mcp -datadir="$HOME/.zclassic-c23"

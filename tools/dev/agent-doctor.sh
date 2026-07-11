@@ -112,7 +112,7 @@ failure_summary() {
 next_action() {
     local dev_next="$1" fail_log="$2" changed_count="$3" fast_next="$4"
     if [ -n "$dev_next" ] &&
-       ! printf '%s' "$dev_next" | grep -q '^make agent-mcp-call-dev'; then
+       ! printf '%s' "$dev_next" | grep -q '^zclassic23-dev status$'; then
         printf '%s' "$dev_next"
     elif [ -n "$fail_log" ]; then
         printf 'inspect %s or rerun the focused failing group' "$fail_log"
@@ -172,8 +172,8 @@ emit_text() {
             "[agent-doctor] changed_files=" + (.changed_file_count|tostring) +
             " tests=" + ((.fast_lane.test_groups // [])|join(",")) +
             " unmapped=" + ((.fast_lane.unmapped_code_changes // [])|join(",")),
-            "[agent-doctor] mcp_hot=" + (.fast_lane.mcp_shortcuts.hot_source_tree // "") +
-            " mcp_dev=" + (.fast_lane.mcp_shortcuts.dev_linger_lane // ""),
+            "[agent-doctor] native_fresh=" + (.fast_lane.native_shortcuts.fresh_source_tree // "") +
+            " native_dev=" + (.fast_lane.native_shortcuts.dev_linger_lane // ""),
             "[agent-doctor] latest_failure_log=" + .latest_failure_log,
             "[agent-doctor] next=" + .next_action'
     else
