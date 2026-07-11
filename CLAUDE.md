@@ -82,6 +82,19 @@ is a regression floor, not a liveness proof.
 > [`docs/HANDOFF.md`](./docs/HANDOFF.md) — never assume "synced" from a doc.
 > Wedge-class cure design: [`docs/work/never-stuck-plan.md`](./docs/work/never-stuck-plan.md).
 
+**The active #1 track is zero-MCP removal.** The owner directive is to
+delete the MCP server entirely — the native CLI (`zclassic23 <command>`) is
+becoming the ONLY agent interface. W0 (bridge re-homed to
+`app/controllers`) + W1-A (kernel handler-snapshot) + W1-B/C (Tier-1
+hot-swap re-targeted onto the command registry, commit `88b4e1030`) are
+DONE; W2 (the remaining ~47 call sites) and W3 (delete the MCP server) are
+next. See [`docs/work/MCP-REMOVAL-PLAN.md`](./docs/work/MCP-REMOVAL-PLAN.md)
+(prose rationale) + [`docs/work/MCP-REMOVAL-WORKLIST.md`](./docs/work/MCP-REMOVAL-WORKLIST.md)
+(the authoritative 114-site inventory) — that worklist is the plan of
+record for this track, ranking above MVP/soak below. A new source-code
+navigator subsystem (`lib/codeindex/` + a `code` command branch) is also in
+flight alongside it.
+
 **The v1 bar is [`docs/MVP.md`](./docs/MVP.md)** — 8 operator acceptance criteria; v1 = MRS 8/8.
 **THE plan is [`docs/work/FORWARD_PLAN.md`](./docs/work/FORWARD_PLAN.md)** — MVP-anchored, covering the autonomous / owner-gated / operational critical path. Current live state is in [`docs/HANDOFF.md`](./docs/HANDOFF.md). **#1 priority: CI-enforce the MVP criteria and accumulate soak time.**
 

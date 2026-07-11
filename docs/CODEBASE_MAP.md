@@ -188,6 +188,13 @@ actually fires.
 
 ## 3. The agent surface (MCP)
 
+> **MCP is being phased out.** The owner directive is zero-MCP: delete the
+> MCP server entirely and make the native CLI the only agent interface — see
+> [`docs/work/MCP-REMOVAL-PLAN.md`](work/MCP-REMOVAL-PLAN.md). The durable
+> interface is [`docs/NATIVE_COMMAND_INTERFACE.md`](NATIVE_COMMAND_INTERFACE.md);
+> this section documents the current dual-run surface (both still work
+> today), not the target.
+
 100+ typed tools. Discover them live with `zcl_tools_list`; smoke-test with
 `zcl_self_test`; dump schemas with `zcl_openapi`. Source of truth is the
 controller `k_routes[]` arrays.

@@ -1,5 +1,23 @@
 # START HERE (2026-07-11)
 
+## Zero-MCP program state (the current #1 track)
+
+The owner directive is to delete the MCP server entirely — the native CLI
+(`zclassic23 <command>`) becomes the ONLY agent interface; MVP/soak is now
+the secondary track. W0 (bridge handler composition re-homed to
+`app/controllers`) + W1-A (kernel handler-snapshot) + W1-B/C (Tier-1
+hot-swap re-targeted onto the command registry) are DONE — W1-B/C landed on
+`main` at `88b4e1030`. Next: W2 (the remaining ~47 call-site migration) then
+W3 (delete the MCP server), executing from
+[`docs/work/MCP-REMOVAL-WORKLIST.md`](work/MCP-REMOVAL-WORKLIST.md) (the
+authoritative 114-site inventory; plan prose is
+[`docs/work/MCP-REMOVAL-PLAN.md`](work/MCP-REMOVAL-PLAN.md)). Session detail:
+[`docs/work/SESSION-HANDOFF-2026-07-11-ZERO-MCP.md`](work/SESSION-HANDOFF-2026-07-11-ZERO-MCP.md)
+(W0+W1-A) and
+[`docs/work/SESSION-HANDOFF-2026-07-11-W1BC.md`](work/SESSION-HANDOFF-2026-07-11-W1BC.md)
+(W1-B/C hot-swap re-target — written pre-merge from a worktree, since merged
+to `main` per the commit above).
+
 ## Power-station program state
 
 Verified against code + git history this session (`main` at `cfc9df77c` in
@@ -108,7 +126,21 @@ standing fact.
 
 ## Prior handoffs (history — read for context, not current state)
 
-> **▶ NEXT DEV START HERE (latest): [`docs/work/SESSION-HANDOFF-2026-07-10-OPERATOR-SNAPSHOT.md`](work/SESSION-HANDOFF-2026-07-10-OPERATOR-SNAPSHOT.md)**
+> **▶ NEXT DEV START HERE (latest): [`docs/work/SESSION-HANDOFF-2026-07-11-W1BC.md`](work/SESSION-HANDOFF-2026-07-11-W1BC.md)**
+> — 2026-07-11 zero-MCP W1-B/C: re-targeted Tier-1 hot-swap onto the command
+> registry (mechanism doc `docs/work/HOTSWAP.md` §"Zero-MCP re-target");
+> landed on `main` at `88b4e1030`. Next: W2 (47 call sites) + W3 (delete the
+> MCP server) per `docs/work/MCP-REMOVAL-WORKLIST.md`.
+>
+> **▶ NEXT DEV START HERE: [`docs/work/SESSION-HANDOFF-2026-07-11-ZERO-MCP.md`](work/SESSION-HANDOFF-2026-07-11-ZERO-MCP.md)**
+> — 2026-07-11 zero-MCP W0+W1-A (program start): re-homed MCP handler
+> composition to `app/controllers` (bridge is router-free) and landed the
+> kernel handler-snapshot, gated by `make lint` + full `make test-parallel`
+> green at each step. Read with `docs/work/MCP-REMOVAL-PLAN.md` (the
+> program) and `docs/work/MCP-REMOVAL-WORKLIST.md` (the authoritative
+> 114-site execution inventory).
+>
+> **▶ PRIOR: [`docs/work/SESSION-HANDOFF-2026-07-10-OPERATOR-SNAPSHOT.md`](work/SESSION-HANDOFF-2026-07-10-OPERATOR-SNAPSHOT.md)**
 > — target-owned native operator truth, fail-closed MCP projection, durable
 > chain/peer/blocker/condition evidence, focused regression proof, and the P0
 > plan for a JavaScript-like C dev watcher with transactional last-good rollback.

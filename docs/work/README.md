@@ -40,8 +40,12 @@ detects its worktree ID, and the push/completion ritual — lives in
 
 ## Where to look
 
-- **Current work:** [`../REFACTOR_STATUS.md`](../REFACTOR_STATUS.md).
-- **Current architecture:** [`../FRAMEWORK.md`](../FRAMEWORK.md).
+- **Current work:** [`FORWARD_PLAN.md`](./FORWARD_PLAN.md) (THE plan) and
+  [`MCP-REMOVAL-WORKLIST.md`](./MCP-REMOVAL-WORKLIST.md) (zero-MCP, the
+  active #1 track — the authoritative 114-site inventory).
+- **Current architecture:** [`../FRAMEWORK.md`](../FRAMEWORK.md) (reference,
+  off the v1 path — see `../REFACTOR_STATUS.md` for the debt board, which
+  self-labels NOT the v1 path).
 - **Session entrypoint:** [`../HANDOFF.md`](../HANDOFF.md).
 - **Worker protocol:** this file plus [`agent-protocol.md`](./agent-protocol.md).
 
