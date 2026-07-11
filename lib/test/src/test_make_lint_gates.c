@@ -953,6 +953,73 @@ static int run_gate_script_with_env(const char *script_rel,
     return -1;
 }
 
+/* Like run_gate_script_with_env but exports TWO env vars. Used by the
+ * service-result-convergence self-test, which needs to point the gate at
+ * both an isolated scan dir AND an isolated baseline file simultaneously so
+ * it never touches the real tree/baseline. Mirrors the same fork/exec/
+ * redirect plumbing as its siblings. */
+static int run_gate_script_with_env2(const char *script_rel,
+                                     const char *env_name1,
+                                     const char *env_value1,
+                                     const char *env_name2,
+                                     const char *env_value2)
+{
+    char script[PATH_MAX];
+    if (repo_path(script, sizeof(script), script_rel) != 0)
+        return -1;
+
+    char out_path[PATH_MAX];
+    if (repo_path(out_path, sizeof(out_path),
+                  "test-tmp/zcl_gate_lint.out") != 0)
+        return -1;
+
+    struct sigaction old_chld;
+    struct sigaction dfl_chld;
+    int restore_chld = 0;
+    memset(&old_chld, 0, sizeof(old_chld));
+    memset(&dfl_chld, 0, sizeof(dfl_chld));
+    dfl_chld.sa_handler = SIG_DFL;
+    sigemptyset(&dfl_chld.sa_mask);
+    if (sigaction(SIGCHLD, NULL, &old_chld) == 0 &&
+        sigaction(SIGCHLD, &dfl_chld, NULL) == 0) {
+        restore_chld = 1;
+    }
+
+    pid_t pid = fork();
+    if (pid < 0) {
+        if (restore_chld)
+            (void)sigaction(SIGCHLD, &old_chld, NULL);
+        return -1;
+    }
+    if (pid == 0) {
+        int fd = open(out_path, O_CREAT | O_WRONLY | O_TRUNC, 0600);
+        if (fd >= 0) {
+            (void)dup2(fd, STDOUT_FILENO);
+            (void)dup2(fd, STDERR_FILENO);
+            close(fd);
+        }
+        if (env_name1 && env_value1)
+            (void)setenv(env_name1, env_value1, 1);
+        if (env_name2 && env_value2)
+            (void)setenv(env_name2, env_value2, 1);
+        execl(script, script, (char *)NULL);
+        _exit(127);
+    }
+
+    int rc = 0;
+    while (waitpid(pid, &rc, 0) < 0) {
+        if (errno == EINTR)
+            continue;
+        if (restore_chld)
+            (void)sigaction(SIGCHLD, &old_chld, NULL);
+        return -1;
+    }
+    if (restore_chld)
+        (void)sigaction(SIGCHLD, &old_chld, NULL);
+    if (WIFEXITED(rc)) return WEXITSTATUS(rc);
+    return -1;
+}
+
 static int run_git_hooks_gate_with_path(const char *hooks_path)
 {
     return run_gate_script_with_env(GIT_HOOKS_SCRIPT_REL,
@@ -1024,6 +1091,16 @@ static int t_git_hooks_gate_rejects_noop_pre_push(void)
 #define MODEL_AR_FIXTURE_DST "app/models/src/_model_ar_lifecycle_fixture_tmp.c"
 #define E2_SCRIPT_REL    "tools/scripts/check_one_result_type.sh"
 #define E2_FIXTURE_DST   "app/services/src/_e2_one_result_fixture_tmp.c"
+/* Phase 3 shrinking-floor ratchet (sibling to E2): counts exported bool
+ * DEFINITIONS per file rather than "does the file mention zcl_result
+ * anywhere". Run entirely against an isolated test-tmp/ scan dir + baseline
+ * (via ZCL_SERVICE_RESULT_CONVERGENCE_SCAN_DIR / _BASELINE) so the self-test
+ * never touches the real app/services/src tree or the real baseline. */
+#define SVC_CONV_SCRIPT_REL   "tools/scripts/check_service_result_convergence.sh"
+#define SVC_CONV_SCAN_DIR_REL "test-tmp/_svc_conv_scan_dir_tmp"
+#define SVC_CONV_KEEP_REL     "test-tmp/_svc_conv_scan_dir_tmp/keep.c"
+#define SVC_CONV_FIXTURE_REL  "test-tmp/_svc_conv_scan_dir_tmp/fixture.c"
+#define SVC_CONV_BASELINE_REL "test-tmp/_svc_conv_baseline_tmp.txt"
 #define E3_SCRIPT_REL    "tools/scripts/check_shape_includes_header.sh"
 #define E3_FIXTURE_DST   "app/conditions/src/_e3_shape_include_fixture_tmp.c"
 #define E4_SCRIPT_REL    "tools/scripts/check_projections_pure.sh"
@@ -1517,6 +1594,205 @@ static int t_e2_one_result_type(void)
         ASSERT(recover_rc == 0);
         PASS();
     } _test_next:;
+    return failures;
+}
+
+/* Phase 3 service-result-convergence shrinking-floor ratchet: unlike E2
+ * (file-granularity — clean the moment a file mentions zcl_result anywhere),
+ * this gate counts exported bare-bool function DEFINITIONS per file and
+ * fails on: (a) a baselined file's live count GROWING past its recorded
+ * count, (b) a NEW unbaselined/unmarked file with any legacy bool export,
+ * (c) a baseline entry whose file no longer exists, and (d) a baseline
+ * entry left behind for a file that is now clean or marker-exempt (the
+ * "shrinking floor"). Run hermetically via ZCL_SERVICE_RESULT_CONVERGENCE_
+ * SCAN_DIR/_BASELINE overrides so it never mutates the real tree/baseline. */
+static int t_service_result_convergence_ratchet(void)
+{
+    int failures = 0;
+    char test_tmp[PATH_MAX];
+    char scan_dir[PATH_MAX];
+    char keep_path[PATH_MAX];
+    char fixture_path[PATH_MAX];
+    char baseline_path[PATH_MAX];
+
+    if (repo_path(test_tmp, sizeof(test_tmp), "test-tmp") != 0 ||
+        repo_path(scan_dir, sizeof(scan_dir), SVC_CONV_SCAN_DIR_REL) != 0 ||
+        repo_path(keep_path, sizeof(keep_path), SVC_CONV_KEEP_REL) != 0 ||
+        repo_path(fixture_path, sizeof(fixture_path),
+                  SVC_CONV_FIXTURE_REL) != 0 ||
+        repo_path(baseline_path, sizeof(baseline_path),
+                  SVC_CONV_BASELINE_REL) != 0) {
+        fprintf(stderr,
+                "[lint-gate] could not resolve service-result-convergence "
+                "fixture paths\n");
+        return 1;
+    }
+    (void)mkdir(test_tmp, 0700);
+    (void)mkdir(scan_dir, 0700);
+    (void)unlink(fixture_path);
+    (void)unlink(baseline_path);
+
+    /* keep.c: a permanent, always-clean (0 legacy exports) file so the
+     * gate's non-empty-scan floor is satisfied in every sub-case below,
+     * independent of whatever fixture.c is doing. */
+    int wrote_keep = write_file(keep_path,
+        "int svc_conv_keep_placeholder;\n");
+
+    /* Case A: fixture.c exports exactly 2 legacy bool functions; baseline
+     * records it at 2 — matched, must be clean. */
+    int wrote_fixture_2 = write_file(fixture_path,
+        "#include <stdbool.h>\n"
+        "bool svc_conv_fixture_a(void)\n"
+        "{\n"
+        "    return false;\n"
+        "}\n"
+        "\n"
+        "bool svc_conv_fixture_b(void)\n"
+        "{\n"
+        "    return false;\n"
+        "}\n");
+    char baseline_2[PATH_MAX + 16];
+    (void)snprintf(baseline_2, sizeof(baseline_2), "%s 2\n", SVC_CONV_FIXTURE_REL);
+    int wrote_baseline_2 = write_file(baseline_path, baseline_2);
+    int matched_rc =
+        (wrote_keep == 0 && wrote_fixture_2 == 0 && wrote_baseline_2 == 0)
+            ? run_gate_script_with_env2(SVC_CONV_SCRIPT_REL,
+                  "ZCL_SERVICE_RESULT_CONVERGENCE_SCAN_DIR",
+                  SVC_CONV_SCAN_DIR_REL,
+                  "ZCL_SERVICE_RESULT_CONVERGENCE_BASELINE",
+                  SVC_CONV_BASELINE_REL)
+            : -999;
+
+    /* Case B: same fixture (still 2), baseline lowered to 1 — must trip as
+     * a REGRESSION (grown past its recorded count). */
+    char baseline_1[PATH_MAX + 16];
+    (void)snprintf(baseline_1, sizeof(baseline_1), "%s 1\n", SVC_CONV_FIXTURE_REL);
+    int wrote_baseline_1 = write_file(baseline_path, baseline_1);
+    int grown_rc =
+        wrote_baseline_1 == 0
+            ? run_gate_script_with_env2(SVC_CONV_SCRIPT_REL,
+                  "ZCL_SERVICE_RESULT_CONVERGENCE_SCAN_DIR",
+                  SVC_CONV_SCAN_DIR_REL,
+                  "ZCL_SERVICE_RESULT_CONVERGENCE_BASELINE",
+                  SVC_CONV_BASELINE_REL)
+            : -999;
+    char grown_out_path[PATH_MAX];
+    char *grown_out = NULL;
+    int grown_read =
+        (grown_rc >= 0 &&
+         repo_path(grown_out_path, sizeof(grown_out_path),
+                   "test-tmp/zcl_gate_lint.out") == 0)
+            ? read_entire_file(grown_out_path, &grown_out)
+            : -1;
+
+    /* Case C: same fixture (2), EMPTY baseline — must trip as a NEW
+     * unlisted file with legacy bool exports. */
+    int wrote_baseline_empty = write_file(baseline_path, "");
+    int new_rc =
+        wrote_baseline_empty == 0
+            ? run_gate_script_with_env2(SVC_CONV_SCRIPT_REL,
+                  "ZCL_SERVICE_RESULT_CONVERGENCE_SCAN_DIR",
+                  SVC_CONV_SCAN_DIR_REL,
+                  "ZCL_SERVICE_RESULT_CONVERGENCE_BASELINE",
+                  SVC_CONV_BASELINE_REL)
+            : -999;
+    char new_out_path[PATH_MAX];
+    char *new_out = NULL;
+    int new_read =
+        (new_rc >= 0 &&
+         repo_path(new_out_path, sizeof(new_out_path),
+                   "test-tmp/zcl_gate_lint.out") == 0)
+            ? read_entire_file(new_out_path, &new_out)
+            : -1;
+
+    /* Case D: fixture.c REMOVED, baseline still references it at 2 — must
+     * trip as a STALE baseline entry (file no longer exists). */
+    (void)unlink(fixture_path);
+    int wrote_baseline_stale = write_file(baseline_path, baseline_2);
+    int stale_rc =
+        wrote_baseline_stale == 0
+            ? run_gate_script_with_env2(SVC_CONV_SCRIPT_REL,
+                  "ZCL_SERVICE_RESULT_CONVERGENCE_SCAN_DIR",
+                  SVC_CONV_SCAN_DIR_REL,
+                  "ZCL_SERVICE_RESULT_CONVERGENCE_BASELINE",
+                  SVC_CONV_BASELINE_REL)
+            : -999;
+    char stale_out_path[PATH_MAX];
+    char *stale_out = NULL;
+    int stale_read =
+        (stale_rc >= 0 &&
+         repo_path(stale_out_path, sizeof(stale_out_path),
+                   "test-tmp/zcl_gate_lint.out") == 0)
+            ? read_entire_file(stale_out_path, &stale_out)
+            : -1;
+
+    /* Case E: fixture.c restored but now fully CLEAN (0 legacy exports),
+     * baseline still lists it at 2 — must trip as a stale "now clean"
+     * entry (the shrinking-floor requirement: a converted file cannot
+     * stay listed). */
+    int wrote_fixture_clean = write_file(fixture_path,
+        "int svc_conv_fixture_now_clean;\n");
+    int wrote_baseline_for_clean = write_file(baseline_path, baseline_2);
+    int clean_stale_rc =
+        (wrote_fixture_clean == 0 && wrote_baseline_for_clean == 0)
+            ? run_gate_script_with_env2(SVC_CONV_SCRIPT_REL,
+                  "ZCL_SERVICE_RESULT_CONVERGENCE_SCAN_DIR",
+                  SVC_CONV_SCAN_DIR_REL,
+                  "ZCL_SERVICE_RESULT_CONVERGENCE_BASELINE",
+                  SVC_CONV_BASELINE_REL)
+            : -999;
+    char clean_out_path[PATH_MAX];
+    char *clean_out = NULL;
+    int clean_read =
+        (clean_stale_rc >= 0 &&
+         repo_path(clean_out_path, sizeof(clean_out_path),
+                   "test-tmp/zcl_gate_lint.out") == 0)
+            ? read_entire_file(clean_out_path, &clean_out)
+            : -1;
+
+    /* Recovery: remove fixture.c and the baseline entry entirely — only
+     * keep.c (0 legacy exports, unbaselined) remains, so the gate must
+     * report clean again. */
+    (void)unlink(fixture_path);
+    int wrote_baseline_empty2 = write_file(baseline_path, "");
+    int recover_rc =
+        wrote_baseline_empty2 == 0
+            ? run_gate_script_with_env2(SVC_CONV_SCRIPT_REL,
+                  "ZCL_SERVICE_RESULT_CONVERGENCE_SCAN_DIR",
+                  SVC_CONV_SCAN_DIR_REL,
+                  "ZCL_SERVICE_RESULT_CONVERGENCE_BASELINE",
+                  SVC_CONV_BASELINE_REL)
+            : -999;
+
+    (void)unlink(fixture_path);
+    (void)unlink(keep_path);
+    (void)unlink(baseline_path);
+    (void)rmdir(scan_dir);
+
+    TEST("[lint-gate] service-result-convergence shrinking-floor: matched clean, grown/new/stale/clean-stale all trip, recovers") {
+        ASSERT(matched_rc == 0);
+        ASSERT(grown_rc != 0);
+        ASSERT(grown_read == 0);
+        ASSERT(grown_out != NULL && strstr(grown_out, "REGRESSION") != NULL);
+        ASSERT(new_rc != 0);
+        ASSERT(new_read == 0);
+        ASSERT(new_out != NULL && strstr(new_out, "NEW file") != NULL);
+        ASSERT(stale_rc != 0);
+        ASSERT(stale_read == 0);
+        ASSERT(stale_out != NULL &&
+               strstr(stale_out, "no longer exists") != NULL);
+        ASSERT(clean_stale_rc != 0);
+        ASSERT(clean_read == 0);
+        ASSERT(clean_out != NULL &&
+               strstr(clean_out, "fully converted") != NULL);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+
+    free(grown_out);
+    free(new_out);
+    free(stale_out);
+    free(clean_out);
     return failures;
 }
 
@@ -6577,6 +6853,7 @@ int test_make_lint_gates(void)
     failures += t_e11_doc_accuracy();
     failures += t_model_ar_lifecycle_gate();
     failures += t_e2_one_result_type();
+    failures += t_service_result_convergence_ratchet();
     failures += t_e3_shape_includes_header();
     failures += t_e4_projections_pure();
     failures += t_domain_purity();

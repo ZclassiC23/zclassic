@@ -1,0 +1,47 @@
+# service-result-convergence baseline — Phase 3 shrinking-floor ratchet.
+#
+# check_service_result_convergence.sh (sibling to E2
+# check_one_result_type.sh) counts exported (non-static, top-level)
+# bool-returning function DEFINITIONS per app/services/src/*.c file. E2
+# only requires a file to reference `struct zcl_result` SOMEWHERE, so a
+# file can be E2-clean while still exporting bare-bool functions
+# elsewhere — this baseline tracks and ratchets THAT residue down.
+#
+# Each line is '<path> <legacy-bool-export-count>', the count recorded
+# when the file was baselined. The gate FAILS when:
+#   - a baselined file's live count grows above its recorded count, OR
+#   - a baselined file's live count reaches 0 (or the file grows a
+#     `// one-result-type-ok:<tag>` marker) and the stale line is still
+#     here, OR
+#   - a baselined path no longer exists on disk, OR
+#   - a NEW (non-baselined, non-marker) file exports any legacy bool
+#     function.
+#
+# A file carrying a `// one-result-type-ok:<tag>` marker (same marker E2
+# uses) is fully exempt and must NOT appear here — see docs/work/
+# service-result-convergence.md for the full inventory, call sites, and
+# the lane partition for paying this down.
+#
+# This baseline may ONLY SHRINK. Migrate a file's legacy bool exports to
+# struct zcl_result (ZCL_OK / ZCL_ERR), then delete its line.
+#
+# One '<path> <count>' entry per line, repo-relative, sorted by path.
+app/services/src/block_index_loader.c 2
+app/services/src/block_index_loader_rebuild.c 2
+app/services/src/block_source_policy_decisions.c 3
+app/services/src/chain_evidence_persistence_service.c 2
+app/services/src/chain_restore_repair.c 1
+app/services/src/chain_state_snapshot_service.c 1
+app/services/src/consensus_reject_index.c 2
+app/services/src/disk_monitor.c 2
+app/services/src/gap_fill_service.c 3
+app/services/src/header_sync_service.c 17
+app/services/src/ibd_throttle.c 4
+app/services/src/legacy_mirror_sync_service.c 4
+app/services/src/legacy_mirror_sync_state.c 2
+app/services/src/mempool_limits.c 2
+app/services/src/rolling_anchor_service.c 2
+app/services/src/snapshot_fetch.c 2
+app/services/src/snapshot_sync_service.c 8
+app/services/src/utxo_recovery_service.c 1
+app/services/src/zslp_service.c 5

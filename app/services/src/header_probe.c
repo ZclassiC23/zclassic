@@ -1,3 +1,9 @@
+// one-result-type-ok:json-dump-bool — E2 (one way out): the sole remaining
+// legacy export is header_probe_dump_state_json, the zcl_state introspection
+// dumper. The dump convention (CLAUDE.md "Adding state introspection")
+// mandates a bool return (false = couldn't populate), not struct zcl_result;
+// every other fallible surface in this file already returns zcl_result.
+
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Header Probe. See header for the high-level rationale.
