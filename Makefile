@@ -2791,6 +2791,15 @@ check-hotswap-dev-only:
 	done
 	@echo "  OK: hot-swap dynamic loading is dev-only"
 
+# The native dev-lane activation engine (tools/dev/dev_activation*.c) is a
+# developer control-plane (stop/start the unit, flip the `current` generation
+# symlink, exec `systemctl --user ...`) and must be ABSENT from the shipped
+# node. Its entry points compile only under ZCL_DEV_BUILD/ZCL_TESTING; this gate
+# proves each is dev/test-guarded in source and (if the release binary exists)
+# that nm reports none of them. See tools/lint/check_release_no_dev_symbols.sh.
+check-release-no-dev-symbols:
+	@tools/lint/check_release_no_dev_symbols.sh
+
 # Tier-1 hot-swap eligibility manifest (config/hotswap_eligible.def) is kept
 # honest by two REAL gates (self-tested in test_make_lint_gates.c): eligible
 # TUs must be app-layer surfaces, and must hold no mutable file-scope statics
