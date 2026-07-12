@@ -165,6 +165,32 @@ bool groth16_verify(const struct groth16_vk *vk,
                     const uint64_t (*public_inputs)[4],
                     size_t n_inputs);
 
+/* Batch Groth16 verification for a set of proofs sharing ONE verifying key.
+ *
+ * Verdict contract: returns true iff EVERY proof in the set individually
+ * verifies under groth16_verify (deterministically true — a set of
+ * individually-valid proofs yields the exact GT identity, no false negative).
+ * A false return means at least one proof is invalid; the caller MUST then
+ * re-run groth16_verify per proof to attribute the failure (never accept a
+ * batch a per-proof check would reject). Soundness error against a crafted
+ * invalid set is ~2^-128 per proof, driven by per-batch random scalars derived
+ * from a BLAKE2b hash of the proof bytes + public inputs (Fiat-Shamir: the
+ * challenge is unpredictable to a forger who must commit the proofs first — a
+ * fixed scalar would let a forger cancel terms).
+ *
+ * Math: check ∏_j [ e(A_j,B_j)·e(vk_x_j,-γ)·e(C_j,-δ)·e(-α,β) ]^{r_j} == 1,
+ * regrouped by pairing bilinearity into (n_proofs+3) Miller loops + ONE final
+ * exponentiation instead of 4·n_proofs loops + n_proofs final-exps.
+ *
+ * public_inputs is a FLAT array of n_proofs*n_inputs rows; proof j consumes
+ * rows [j*n_inputs, (j+1)*n_inputs). n_inputs must equal vk->ic_len - 1.
+ * n_proofs must be >= 1. Verification-side only — verdict-identical to a
+ * per-proof sweep for any set the per-proof sweep accepts. */
+bool groth16_batch_verify(const struct groth16_vk *vk,
+                          const struct groth16_proof *proofs,
+                          const uint64_t (*public_inputs)[4],
+                          size_t n_inputs, size_t n_proofs);
+
 /* Pack bytes into Fr scalars (253 bits per scalar, little-endian bit ordering).
  * Use for Sapling nullifier packing. */
 void multipack_bytes_to_fr(uint64_t (*out)[4], size_t *n_out,

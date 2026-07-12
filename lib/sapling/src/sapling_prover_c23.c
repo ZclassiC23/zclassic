@@ -152,6 +152,52 @@ bool zclassic_sapling_final_check(
                                sighash_value);
 }
 
+/* --- Batched Groth16 verification (background re-validation) ------------- */
+
+bool zclassic_sapling_spend_prepare(
+    void *ctx, const uint8_t *cv, const uint8_t *anchor,
+    const uint8_t *nullifier, const uint8_t *rk, const uint8_t *zkproof,
+    const uint8_t *spend_auth_sig, const uint8_t *sighash_value,
+    struct groth16_proof *proof_out, uint64_t (*pub_out)[4])
+{
+    return sapling_spend_prepare(ctx, cv, anchor, nullifier, rk, zkproof,
+                                 spend_auth_sig, sighash_value,
+                                 proof_out, pub_out);
+}
+
+bool zclassic_sapling_output_prepare(
+    void *ctx, const uint8_t *cv, const uint8_t *cm,
+    const uint8_t *epk, const uint8_t *zkproof,
+    struct groth16_proof *proof_out, uint64_t (*pub_out)[4])
+{
+    return sapling_output_prepare(ctx, cv, cm, epk, zkproof,
+                                  proof_out, pub_out);
+}
+
+bool zclassic_sapling_spend_groth16_batch(
+    const struct groth16_proof *proofs, const uint64_t (*pub)[4], size_t n)
+{
+    return sapling_spend_groth16_batch(proofs, pub, n);
+}
+
+bool zclassic_sapling_output_groth16_batch(
+    const struct groth16_proof *proofs, const uint64_t (*pub)[4], size_t n)
+{
+    return sapling_output_groth16_batch(proofs, pub, n);
+}
+
+bool zclassic_sapling_spend_groth16_one(
+    const struct groth16_proof *proof, const uint64_t (*pub)[4])
+{
+    return sapling_spend_groth16_one(proof, pub);
+}
+
+bool zclassic_sapling_output_groth16_one(
+    const struct groth16_proof *proof, const uint64_t (*pub)[4])
+{
+    return sapling_output_groth16_one(proof, pub);
+}
+
 /* --- Witness ABI conversion --------------------------------------------- */
 
 bool sapling_spend_parse_witness(const uint8_t *witness,

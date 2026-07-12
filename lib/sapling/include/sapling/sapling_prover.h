@@ -48,6 +48,34 @@ bool zclassic_sapling_final_check(
     void *ctx, int64_t value_balance,
     const uint8_t *binding_sig, const uint8_t *sighash_value);
 
+/* Batched Groth16 verification for the BACKGROUND re-validation pass only.
+ * `*_prepare` runs every non-Groth16 gate + folds cv into the ctx balance +
+ * decodes the proof + builds the public inputs (verdict-identical to the
+ * matching check_* up to the Groth16 step). `*_batch` verifies many prepared
+ * proofs in ~N+2 Miller loops + ONE final-exp; `*_one` is the per-proof
+ * fallback the caller MUST use on a batch reject to attribute the failure.
+ * pub_out points at a caller-owned [7][4] (spend) / [5][4] (output) block;
+ * for batch/one `pub` is flat with proof j at rows [j*7) / [j*5). See
+ * sapling.h for the full verdict-safety contract. */
+struct groth16_proof;
+bool zclassic_sapling_spend_prepare(
+    void *ctx, const uint8_t *cv, const uint8_t *anchor,
+    const uint8_t *nullifier, const uint8_t *rk, const uint8_t *zkproof,
+    const uint8_t *spend_auth_sig, const uint8_t *sighash_value,
+    struct groth16_proof *proof_out, uint64_t (*pub_out)[4]);
+bool zclassic_sapling_output_prepare(
+    void *ctx, const uint8_t *cv, const uint8_t *cm,
+    const uint8_t *epk, const uint8_t *zkproof,
+    struct groth16_proof *proof_out, uint64_t (*pub_out)[4]);
+bool zclassic_sapling_spend_groth16_batch(
+    const struct groth16_proof *proofs, const uint64_t (*pub)[4], size_t n);
+bool zclassic_sapling_output_groth16_batch(
+    const struct groth16_proof *proofs, const uint64_t (*pub)[4], size_t n);
+bool zclassic_sapling_spend_groth16_one(
+    const struct groth16_proof *proof, const uint64_t (*pub)[4]);
+bool zclassic_sapling_output_groth16_one(
+    const struct groth16_proof *proof, const uint64_t (*pub)[4]);
+
 /* Proving context */
 void *zclassic_sapling_proving_ctx_init(void);
 void zclassic_sapling_proving_ctx_free(void *ctx);

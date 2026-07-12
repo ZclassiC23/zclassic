@@ -21,10 +21,12 @@
 #include "jobs/mint_skip_crypto.h"
 #include "primitives/block.h"
 #include "sapling/bn254.h"
+#include "sapling/bls12_381.h"
 #include "sapling/params_init.h"
 #include "sapling/sapling.h"
 #include "sapling/sapling_prover.h"
 #include "sapling/sprout.h"
+#include "util/safe_alloc.h"
 #include "script/script.h"
 #include "script/sighashtype.h"
 #include "storage/disk_block_io.h"
@@ -185,6 +187,74 @@ static bool tx_has_shielded_proofs(const struct transaction *tx)
                   tx->num_shielded_output > 0);
 }
 
+/* Verify one homogeneous Sapling proof set (all spends OR all outputs) with
+ * batched Groth16 + a per-proof fallback for attribution. Each description's
+ * non-Groth16 gates (point decode, small-order, RedJubjub, bvk fold) run in
+ * order via *_prepare — verdict-identical to check_* — then the whole set's
+ * proofs verify in ONE final exponentiation. Returns true on accept; on
+ * reject/alloc-failure it sets *out and returns false (the stage then writes
+ * ok=0 for the block, exactly as the per-proof path did). The accept path —
+ * every real block — is verdict-identical, just faster. */
+static bool pv_sapling_set(void *sctx, const struct transaction *tx,
+                           const struct uint256 *sighash, bool is_spend,
+                           struct proof_validate_tx_report *out)
+{
+    size_t n = is_spend ? tx->num_shielded_spend : tx->num_shielded_output;
+    if (n == 0)
+        return true;
+    size_t ni = is_spend ? 7 : 5;
+    struct groth16_proof *p = zcl_calloc(n, sizeof(*p), "pv sapling proofs");
+    uint64_t (*pub)[4] = zcl_calloc(n * ni, sizeof(*pub), "pv sapling pub");
+    if (!p || !pub) {
+        free(p); free(pub);
+        out->ok = false;
+        out->internal_error = true;
+        out->first_failure_proof_type = "sapling_ctx";
+        return false;
+    }
+    const char *ftype = is_spend ? "sapling_spend" : "sapling_output";
+    for (size_t i = 0; i < n; i++) {
+        bool ok;
+        if (is_spend) {
+            const struct spend_description *sd = &tx->v_shielded_spend[i];
+            out->sapling_spends_total++;
+            ok = zclassic_sapling_spend_prepare(sctx, sd->cv.data,
+                    sd->anchor.data, sd->nullifier.data, sd->rk.data,
+                    sd->zkproof, sd->spend_auth_sig, sighash->data,
+                    &p[i], &pub[i * ni]);
+        } else {
+            const struct output_description *od = &tx->v_shielded_output[i];
+            out->sapling_outputs_total++;
+            ok = zclassic_sapling_output_prepare(sctx, od->cv.data,
+                    od->cm.data, od->ephemeral_key.data, od->zkproof,
+                    &p[i], &pub[i * ni]);
+        }
+        if (!ok) {
+            free(p); free(pub);
+            out->ok = false;
+            out->first_failure_proof_type = ftype;
+            return false;
+        }
+    }
+    bool batch = is_spend ? zclassic_sapling_spend_groth16_batch(p, pub, n)
+                          : zclassic_sapling_output_groth16_batch(p, pub, n);
+    if (!batch) {
+        for (size_t i = 0; i < n; i++) {
+            bool one = is_spend
+                ? zclassic_sapling_spend_groth16_one(&p[i], &pub[i * ni])
+                : zclassic_sapling_output_groth16_one(&p[i], &pub[i * ni]);
+            if (!one) {
+                free(p); free(pub);
+                out->ok = false;
+                out->first_failure_proof_type = ftype;
+                return false;
+            }
+        }
+    }
+    free(p); free(pub);
+    return true;
+}
+
 static bool default_verify_tx(const struct transaction *tx, int height,
                               struct proof_validate_tx_report *out,
                               void *user)
@@ -239,34 +309,13 @@ static bool default_verify_tx(const struct transaction *tx, int height,
             out->first_failure_proof_type = "sapling_ctx";
             return true;
         }
-
-        for (size_t i = 0; i < tx->num_shielded_spend; i++) {
-            const struct spend_description *sd = &tx->v_shielded_spend[i];
-            out->sapling_spends_total++;
-            if (!zclassic_sapling_check_spend(
-                    sctx, sd->cv.data, sd->anchor.data,
-                    sd->nullifier.data, sd->rk.data,
-                    sd->zkproof, sd->spend_auth_sig, sighash.data)) {
-                zclassic_sapling_verification_ctx_free(sctx);
-                out->ok = false;
-                out->first_failure_proof_type = "sapling_spend";
-                return true;
-            }
+        /* Batched Groth16 (spends then outputs), verdict-identical to a
+         * per-description check_* sweep on the accept path — see pv_sapling_set. */
+        if (!pv_sapling_set(sctx, tx, &sighash, true, out) ||
+            !pv_sapling_set(sctx, tx, &sighash, false, out)) {
+            zclassic_sapling_verification_ctx_free(sctx);
+            return true;
         }
-
-        for (size_t i = 0; i < tx->num_shielded_output; i++) {
-            const struct output_description *od = &tx->v_shielded_output[i];
-            out->sapling_outputs_total++;
-            if (!zclassic_sapling_check_output(
-                    sctx, od->cv.data, od->cm.data,
-                    od->ephemeral_key.data, od->zkproof)) {
-                zclassic_sapling_verification_ctx_free(sctx);
-                out->ok = false;
-                out->first_failure_proof_type = "sapling_output";
-                return true;
-            }
-        }
-
         if (!zclassic_sapling_final_check(sctx, tx->value_balance,
                                           tx->binding_sig, sighash.data)) {
             zclassic_sapling_verification_ctx_free(sctx);

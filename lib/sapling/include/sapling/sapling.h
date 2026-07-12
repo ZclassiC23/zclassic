@@ -297,4 +297,58 @@ bool sapling_final_check(struct sapling_verification_ctx *ctx,
                           const uint8_t binding_sig[64],
                           const uint8_t sighash[32]);
 
+/* ── Batched Groth16 verification (BACKGROUND re-validation ONLY) ──────────
+ *
+ * These split each per-description check into (1) a "prepare" that runs every
+ * NON-Groth16 gate (point decode, small-order, RedJubjub sig, bvk fold, proof
+ * decode, public-input construction) with the EXACT order and early-returns of
+ * sapling_check_spend / sapling_check_output — the consensus functions are
+ * literally implemented as prepare()+the single verify below — and (2) a
+ * Groth16 stage that can be run either batched (many proofs, one final-exp) or
+ * per-proof. This lets the background full-validation pass verify a whole
+ * transaction's shielded proofs with ~N+2 Miller loops + ONE final
+ * exponentiation instead of 4N loops + N final-exps.
+ *
+ * VERDICT SAFETY: the accept set is identical to a per-proof sweep (a valid
+ * set yields the exact GT identity — batch never false-rejects it). A caller
+ * MUST, on a batch reject, fall back to the per-proof `*_groth16_one` calls to
+ * attribute the failure — never accept a set the per-proof sweep would reject.
+ * The consensus tip path (contextual_check_tx) still calls sapling_check_spend
+ * / sapling_check_output unchanged; only offline re-validation uses batching.
+ *
+ * `pub_out` points at a caller-owned [7][4] (spend) or [5][4] (output) block.
+ * The prepare folds cv into ctx->bvk on success exactly like the check fn. */
+struct groth16_proof;
+
+bool sapling_spend_prepare(struct sapling_verification_ctx *ctx,
+                           const uint8_t cv[32], const uint8_t anchor[32],
+                           const uint8_t nullifier[32], const uint8_t rk[32],
+                           const uint8_t zkproof[192],
+                           const uint8_t spend_auth_sig[64],
+                           const uint8_t sighash[32],
+                           struct groth16_proof *proof_out,
+                           uint64_t (*pub_out)[4]);
+
+bool sapling_output_prepare(struct sapling_verification_ctx *ctx,
+                            const uint8_t cv[32], const uint8_t cm[32],
+                            const uint8_t epk[32], const uint8_t zkproof[192],
+                            struct groth16_proof *proof_out,
+                            uint64_t (*pub_out)[4]);
+
+/* Batch-verify n_proofs prepared spend/output proofs against the loaded VK.
+ * `pub` is a flat array: proof j uses rows [j*7 .. ) (spend) / [j*5 .. )
+ * (output). Returns true iff every proof verifies (deterministic on a valid
+ * set). On false the caller falls back to *_groth16_one per proof. */
+bool sapling_spend_groth16_batch(const struct groth16_proof *proofs,
+                                 const uint64_t (*pub)[4], size_t n_proofs);
+bool sapling_output_groth16_batch(const struct groth16_proof *proofs,
+                                  const uint64_t (*pub)[4], size_t n_proofs);
+
+/* Per-proof Groth16 verify against the loaded VK (fallback / attribution).
+ * `pub` points at this proof's [7][4] (spend) or [5][4] (output) block. */
+bool sapling_spend_groth16_one(const struct groth16_proof *proof,
+                               const uint64_t (*pub)[4]);
+bool sapling_output_groth16_one(const struct groth16_proof *proof,
+                                const uint64_t (*pub)[4]);
+
 #endif
