@@ -1068,6 +1068,7 @@ int main(int argc, char **argv)
     { extern int test_check_tx_edge(void);        failures += test_check_tx_edge(); }
     { extern int test_check_block_edge(void);     failures += test_check_block_edge(); }
     { extern int test_amount_subsidy_edge(void);  failures += test_amount_subsidy_edge(); }
+    { extern int test_clientversion_format(void); failures += test_clientversion_format(); }
     { extern int test_locktime_edge(void);        failures += test_locktime_edge(); }
     /* Consensus-parity round-3 lock-in pins (assert CURRENT zcl23-vs-zclassicd
      * behavior so a future tightening flips a test deliberately). */

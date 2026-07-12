@@ -281,7 +281,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(soak_attestation) \
     X(zclassicd_oracle) X(oracle_policy) \
     X(script_interp_edge) X(script_interp_edges) X(sighash_edge) X(sighash_malleability) X(sigops_edge) \
-    X(check_tx_edge) X(check_block_edge) X(amount_subsidy_edge) \
+    X(check_tx_edge) X(check_block_edge) X(amount_subsidy_edge) X(clientversion_format) \
     X(locktime_edge) X(tx_expiry_locktime_adversarial) \
     X(pow_diffadj_precedence) X(bip34_coinbase_height_parity) \
     X(difficulty_adjustment_adversarial) \
