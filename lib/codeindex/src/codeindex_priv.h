@@ -92,19 +92,24 @@ bool ci_enumerate_sources(const char *root, ci_enum_cb cb, void *user);
  * Scan one in-tree file's text. Emits symbols and refs through callbacks.
  * relpath is repo-relative; is_header selects DEFINITION vs DECLARATION
  * handling for prototypes. Never aborts on messy input — degrades to
- * partial=true. `content_sha3` of the scanned bytes is returned in out_sha3. */
+ * partial=true. `content_sha3` of the scanned bytes is returned in out_sha3.
+ * `purpose_out` (may be NULL) receives the file's one-line self-description
+ * derived from its leading block comment (§1.1 of docs/work/palace-design.md);
+ * "" when no leading comment precedes the first code token. */
 typedef void (*ci_sym_cb)(const struct ci_symbol *sym, void *user);
 typedef void (*ci_ref_cb)(const char *callee, const char *ref_file,
                           int ref_line, void *user);
 bool ci_scan_file(const char *root, const char *relpath,
                   ci_sym_cb on_sym, ci_ref_cb on_ref, void *user,
-                  uint8_t out_sha3[32]);
+                  uint8_t out_sha3[32], char purpose_out[160]);
 
 /* Pure text scanner (no file I/O) — the testable core. `src`/`len` is the raw
- * file text; the group is stamped into every emitted symbol. */
+ * file text; the group is stamped into every emitted symbol. `purpose_out`
+ * (may be NULL) receives the derived file purpose (see ci_scan_file). */
 void ci_scan_text(const char *src, size_t len, const char *relpath,
                   bool is_header, const char *group,
-                  ci_sym_cb on_sym, ci_ref_cb on_ref, void *user);
+                  ci_sym_cb on_sym, ci_ref_cb on_ref, void *user,
+                  char purpose_out[160]);
 
 /* ── depfile parsing (codeindex_deps.c) ───────────────────────────────
  * Parse one make depfile: yields (source_relpath, dep_relpath) edges for

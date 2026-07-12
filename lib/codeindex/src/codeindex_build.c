@@ -277,7 +277,9 @@ static bool build_file_cb2(const char *relpath, int64_t mtime_ns, int64_t size,
     if (b->err) return false;
 
     uint8_t sha[32];
-    if (!ci_scan_file(env->root, relpath, on_sym_cb, on_ref_cb, b, sha)) {
+    char purpose[160] = "";
+    if (!ci_scan_file(env->root, relpath, on_sym_cb, on_ref_cb, b, sha,
+                      purpose)) {
         b->err = true;
         return false;
     }
@@ -285,7 +287,8 @@ static bool build_file_cb2(const char *relpath, int64_t mtime_ns, int64_t size,
     memset(&f, 0, sizeof(f));
     snprintf(f.path, sizeof(f.path), "%s", relpath);
     ci_group_for_path(relpath, f.group);
-    f.purpose[0] = '\0';  /* per-file purpose is a later-lane enrichment */
+    /* self-description derived from the file's leading comment (§1.1). */
+    snprintf(f.purpose, sizeof(f.purpose), "%s", purpose);
     int64_t id = -1;
     if (!ci_store_put_file(b->store, &f, sha, mtime_ns, &id)) {
         b->err = true;

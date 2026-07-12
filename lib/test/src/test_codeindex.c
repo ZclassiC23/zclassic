@@ -104,10 +104,35 @@ static const char *FOO_H =
     "\n"
     "#endif\n";
 
+/* Purpose-derivation fixtures (§1.1): stem-dashed header, explicit override,
+ * and a file whose only comment is interior (no file-level purpose). */
+static const char *PURPOSE_STEM_C =
+    "/* Copyright 2026 Rhett Creighton - Apache License 2.0\n"
+    " *\n"
+    " * purpose_stem \xe2\x80\x94 derives its purpose from the stem header.\n"
+    " */\n"
+    "int purpose_stem_fn(void) { return 0; }\n";
+
+static const char *PURPOSE_OVERRIDE_C =
+    "/* Copyright 2026 Rhett Creighton - Apache License 2.0\n"
+    " *\n"
+    " * purpose: explicit override wins.\n"
+    " */\n"
+    "int purpose_override_fn(void) { return 0; }\n";
+
+static const char *PURPOSE_NONE_C =
+    "#include <stddef.h>\n"
+    "\n"
+    "/* interior helper doc, not a file-level purpose */\n"
+    "int purpose_none_fn(void) { return 1; }\n";
+
 static bool write_fixture(void)
 {
     return mk_write(FIX, "lib/net/src/foo.c", FOO_C) &&
-           mk_write(FIX, "lib/net/include/net/foo.h", FOO_H);
+           mk_write(FIX, "lib/net/include/net/foo.h", FOO_H) &&
+           mk_write(FIX, "lib/net/src/purpose_stem.c", PURPOSE_STEM_C) &&
+           mk_write(FIX, "lib/net/src/purpose_override.c", PURPOSE_OVERRIDE_C) &&
+           mk_write(FIX, "lib/net/src/purpose_none.c", PURPOSE_NONE_C);
 }
 
 /* Canonical ordered dump of every symbol as one string (for identity tests). */
@@ -252,6 +277,19 @@ int test_codeindex(void)
     codeindex_file(ci, "lib/net/src/foo.c", &cf, &found);
     CI_CHECK("foo.c maps to group lib/net", found &&
              strcmp(cf.group, "lib/net") == 0);
+
+    /* file → purpose (§1.1): stem-dashed header, explicit override, none */
+    codeindex_file(ci, "lib/net/src/purpose_stem.c", &cf, &found);
+    CI_CHECK("stem-dashed header yields the bare description", found &&
+             strcmp(cf.purpose, "derives its purpose from the stem header.") == 0);
+
+    codeindex_file(ci, "lib/net/src/purpose_override.c", &cf, &found);
+    CI_CHECK("explicit /* purpose: X */ override wins", found &&
+             strcmp(cf.purpose, "explicit override wins.") == 0);
+
+    codeindex_file(ci, "lib/net/src/purpose_none.c", &cf, &found);
+    CI_CHECK("interior-only comment yields empty purpose", found &&
+             cf.purpose[0] == '\0');
 
     /* group hierarchy contains lib/net with parent lib */
     struct ci_group groups[256];

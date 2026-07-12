@@ -35,6 +35,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>   /* strncasecmp */
 #include <unistd.h>
 
 #define CI_MAX_SYMS_PER_FILE  20000
@@ -179,6 +180,91 @@ static const char *doc_for(const struct scan_ctx *c, size_t seg_start,
             best = c->comments[i].firstline;
     }
     return best;
+}
+
+/* ── file self-description (§1.1 of docs/work/palace-design.md) ───────── */
+
+/* Derive a file's one-line purpose from its EXISTING leading block comment:
+ * the first substantive body line after skipping the Copyright/license line and
+ * blank '*' fill, with a leading "<stem> [—:-] " prefix stripped so the stored
+ * purpose is the bare description. An explicit "purpose: ..." body line
+ * overrides (mirrors the // suffix-ok convention). Writes "" when no comment
+ * precedes the first code token. Walks only the one leading comment's bytes via
+ * the offsets already captured in c->comments[] — NO second file parse. */
+static void ci_file_purpose(const struct scan_ctx *c, char out[160])
+{
+    out[0] = '\0';
+    if (c->ncomments == 0) return;
+
+    /* first code token in the clean buffer (comments already blanked) */
+    size_t code_off = 0;
+    while (code_off < c->len && isspace((unsigned char)c->clean[code_off]))
+        code_off++;
+    /* the leading comment must precede the first code token, else the earliest
+     * comment is an interior doc block, not a file-level purpose. */
+    size_t start = c->comments[0].start_off;
+    size_t end   = c->comments[0].end_off;
+    if (start >= code_off) return;
+
+    /* file stem = basename minus extension, for prefix stripping */
+    char stem[128];
+    {
+        const char *base = strrchr(c->relpath, '/');
+        base = base ? base + 1 : c->relpath;
+        size_t n = 0;
+        while (base[n] && base[n] != '.' && n + 1 < sizeof(stem))
+            stem[n] = base[n], n++;
+        stem[n] = '\0';
+    }
+    size_t sl = strlen(stem);
+
+    /* walk body lines of [start,end), mirroring capture_doc's fill-stripping */
+    size_t i = start;
+    char line[256];
+    while (i < end) {
+        while (i < end && (c->src[i] == ' ' || c->src[i] == '\t' ||
+                           c->src[i] == '*' || c->src[i] == '\r'))
+            i++;
+        if (i < end && c->src[i] == '\n') { i++; continue; }
+        size_t j = i;
+        while (j < end && c->src[j] != '\n') j++;
+        size_t e = j;
+        while (e > i && (c->src[e - 1] == ' ' || c->src[e - 1] == '\t' ||
+                         c->src[e - 1] == '\r' || c->src[e - 1] == '*'))
+            e--;
+        if (e > i) {
+            size_t n = e - i;
+            if (n > sizeof(line) - 1) n = sizeof(line) - 1;
+            memcpy(line, c->src + i, n);
+            line[n] = '\0';
+
+            /* explicit override wins: "purpose: <text>" */
+            if (strncasecmp(line, "purpose:", 8) == 0) {
+                const char *p = line + 8;
+                while (*p == ' ' || *p == '\t') p++;
+                snprintf(out, 160, "%s", p);
+                return;
+            }
+            /* skip the Copyright/license line and keep walking */
+            if (strncasecmp(line, "Copyright", 9) == 0) { i = j + 1; continue; }
+
+            /* first substantive line: strip a leading "<stem> [—:-] " prefix */
+            const char *desc = line;
+            if (sl > 0 && strncmp(line, stem, sl) == 0) {
+                const char *p = line + sl;
+                while (*p == ' ') p++;
+                if ((unsigned char)p[0] == 0xE2 && (unsigned char)p[1] == 0x80 &&
+                    (unsigned char)p[2] == 0x94) {          /* em-dash — */
+                    p += 3; while (*p == ' ') p++; desc = p;
+                } else if (p[0] == ':' || p[0] == '-') {    /* "stem:" / "stem -" */
+                    p += 1; while (*p == ' ') p++; desc = p;
+                }
+            }
+            snprintf(out, 160, "%s", desc);
+            return;
+        }
+        i = j + 1;
+    }
 }
 
 /* ── small string helpers over the clean buffer ─────────────────────── */
@@ -574,8 +660,10 @@ static void scan_refs(struct scan_ctx *c)
 
 void ci_scan_text(const char *src, size_t len, const char *relpath,
                   bool is_header, const char *group,
-                  ci_sym_cb on_sym, ci_ref_cb on_ref, void *user)
+                  ci_sym_cb on_sym, ci_ref_cb on_ref, void *user,
+                  char purpose_out[160])
 {
+    if (purpose_out) purpose_out[0] = '\0';
     if (!src || len == 0 || !relpath || !on_sym || !on_ref) return;
 
     char *clean = zcl_malloc(len, "ci_clean");
@@ -642,6 +730,9 @@ void ci_scan_text(const char *src, size_t len, const char *relpath,
         }
         if (st == LC) capture_doc(&c, com_start + 2, len);
     }
+
+    /* ── file self-description: derive purpose from the leading comment ── */
+    if (purpose_out) ci_file_purpose(&c, purpose_out);
 
     /* ── line index ── */
     size_t nl = 1;
@@ -808,8 +899,9 @@ done:
 
 bool ci_scan_file(const char *root, const char *relpath,
                   ci_sym_cb on_sym, ci_ref_cb on_ref, void *user,
-                  uint8_t out_sha3[32])
+                  uint8_t out_sha3[32], char purpose_out[160])
 {
+    if (purpose_out) purpose_out[0] = '\0';
     if (!root || !relpath || !on_sym || !on_ref)
         LOG_FAIL("codeindex", "null arg to scan_file");
 
@@ -854,7 +946,8 @@ bool ci_scan_file(const char *root, const char *relpath,
     char group[64];
     ci_group_for_path(relpath, group);
 
-    ci_scan_text(buf, len, relpath, is_header, group, on_sym, on_ref, user);
+    ci_scan_text(buf, len, relpath, is_header, group, on_sym, on_ref, user,
+                 purpose_out);
     free(buf);
     return true;
 }
