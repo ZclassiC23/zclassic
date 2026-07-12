@@ -39,6 +39,8 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
+#include <time.h>
 
 #define ADV_CHECK(name, expr) do {              \
     printf("  %s... ", (name));                 \
@@ -416,6 +418,176 @@ int test_bls12_381_adversarial(void)
             struct groth16_proof gp2;
             ADV_CHECK("groth16_proof_read ACCEPTS all-in-subgroup points (control)",
                       groth16_proof_read(&gp2, good));
+        }
+    }
+
+    /* ============================================================
+     * 5. Groth16 BATCH verification — random-linear-combination
+     *    (params-free): parity with the per-proof sweep + the
+     *    soundness property that the per-batch random scalars defeat
+     *    a naive-cancellation forgery.
+     * ============================================================ */
+    printf("Groth16 batch verify (RLC parity + cancellation soundness)\n");
+    if (g1_ok && g2_ok) {
+        /* Build a synthetic VK + a family of DISTINCT valid proofs sharing it,
+         * using only the canonical generators — no trusted-setup params.
+         *
+         * Recipe (algebraic identity, verified below by groth16_verify itself):
+         *   alpha=G1, beta=gamma=delta=G2, IC=[O, G1], n_inputs=1.
+         *   proof j: A=G1(=alpha), B=G2(=beta), input t_j (nonzero) so
+         *            vk_x_j = t_j*G1, and C_j = -vk_x_j.
+         *   => e(A,B)e(-alpha,beta) = 1  and  e(vk_x_j,-gamma)e(C_j,-delta)
+         *      = e(vk_x_j + C_j, -G2) = e(O,-G2) = 1  (gamma==delta). Valid. */
+        struct g1_point O1;
+        g1_identity(&O1);
+
+        struct groth16_vk vk;
+        vk.alpha_g1 = G1;
+        vk.beta_g2  = G2;
+        vk.gamma_g2 = G2;
+        vk.delta_g2 = G2;
+        vk.ic_len   = 2;
+        vk.ic = malloc(2 * sizeof(struct g1_point));
+        ADV_CHECK("batch: VK IC allocation", vk.ic != NULL);
+
+        if (vk.ic) {
+            vk.ic[0] = O1;  /* IC[0] = identity */
+            vk.ic[1] = G1;  /* IC[1] = G1 base for vk_x */
+
+            enum { NB = 8 };
+            struct groth16_proof proofs[NB];
+            uint64_t inputs[NB][4];
+            for (int j = 0; j < NB; j++) {
+                uint64_t t[4] = { (uint64_t)(j + 3), 0, 0, 0 };
+                struct g1_point vk_x_j;
+                g1_scalar_mul(&vk_x_j, &G1, t);   /* t_j * G1 */
+                proofs[j].a = G1;
+                proofs[j].b = G2;
+                g1_neg(&proofs[j].c, &vk_x_j);    /* C_j = -vk_x_j */
+                inputs[j][0] = t[0];
+                inputs[j][1] = 0; inputs[j][2] = 0; inputs[j][3] = 0;
+            }
+
+            /* (a) Each proof individually verifies under the canonical
+             *     single-proof verifier — establishes the "accept set". */
+            bool all_single_ok = true;
+            for (int j = 0; j < NB; j++)
+                if (!groth16_verify(&vk, &proofs[j],
+                                    (const uint64_t (*)[4])&inputs[j], 1))
+                    all_single_ok = false;
+            ADV_CHECK("batch: every synthetic proof passes per-proof verify",
+                      all_single_ok);
+
+            /* (b) PARITY: batch ACCEPTS exactly the set per-proof accepts.
+             *     A valid set yields the exact GT identity — deterministic
+             *     accept, never a false negative. */
+            ADV_CHECK("batch: groth16_batch_verify ACCEPTS the all-valid set",
+                      groth16_batch_verify(&vk, proofs,
+                                           (const uint64_t (*)[4])inputs,
+                                           1, NB));
+
+            /* (c) REJECT-on-corruption + fallback attribution: flip proof k's
+             *     C point (add G1). Per-proof sweep must flag exactly k; batch
+             *     must FAIL so the caller falls back to that per-proof sweep. */
+            {
+                struct groth16_proof bad[NB];
+                memcpy(bad, proofs, sizeof(bad));
+                const int k = 5;
+                g1_add(&bad[k].c, &bad[k].c, &G1);   /* corrupt proof k */
+
+                ADV_CHECK("batch: corrupted proof fails per-proof verify at k",
+                          !groth16_verify(&vk, &bad[k],
+                                          (const uint64_t (*)[4])&inputs[k], 1));
+                ADV_CHECK("batch: groth16_batch_verify REJECTS a set with one bad proof",
+                          !groth16_batch_verify(&vk, bad,
+                                                (const uint64_t (*)[4])inputs,
+                                                1, NB));
+                /* Fallback sweep attributes the failure to exactly index k. */
+                int first_bad = -1;
+                for (int j = 0; j < NB; j++)
+                    if (!groth16_verify(&vk, &bad[j],
+                                        (const uint64_t (*)[4])&inputs[j], 1)) {
+                        first_bad = j; break;
+                    }
+                ADV_CHECK("batch: per-proof fallback attributes failure to k",
+                          first_bad == k);
+            }
+
+            /* (d) Tamper a PUBLIC INPUT (not the proof) -> reject + fallback. */
+            {
+                uint64_t bad_in[NB][4];
+                memcpy(bad_in, inputs, sizeof(bad_in));
+                bad_in[2][0] ^= 0x1;   /* changes vk_x_2, breaks C_2 = -vk_x_2 */
+                ADV_CHECK("batch: tampered public input -> per-proof reject",
+                          !groth16_verify(&vk, &proofs[2],
+                                          (const uint64_t (*)[4])&bad_in[2], 1));
+                ADV_CHECK("batch: tampered public input -> batch REJECTS",
+                          !groth16_batch_verify(&vk, proofs,
+                                                (const uint64_t (*)[4])bad_in,
+                                                1, NB));
+            }
+
+            /* (e) SOUNDNESS: two proofs that are each INVALID but whose GT
+             *     errors are exact negatives — a naive equal-weight (r=1) batch
+             *     would false-ACCEPT (errors cancel). With per-batch random
+             *     scalars r_0 != r_1 the combined error e((r0-r1)*D, -G2) != 1,
+             *     so groth16_batch_verify MUST REJECT. This is the property a
+             *     fixed constant scalar would violate. */
+            {
+                struct g1_point D;
+                uint64_t two[4] = {2, 0, 0, 0};
+                g1_scalar_mul(&D, &G1, two);   /* D = [2]G1, nonzero */
+
+                struct groth16_proof cx[2];
+                uint64_t cin[2][4];
+                for (int j = 0; j < 2; j++) {
+                    uint64_t t[4] = { (uint64_t)(j + 3), 0, 0, 0 };
+                    struct g1_point vk_x_j, negvkx;
+                    g1_scalar_mul(&vk_x_j, &G1, t);
+                    g1_neg(&negvkx, &vk_x_j);
+                    cx[j].a = G1;
+                    cx[j].b = G2;
+                    cin[j][0] = t[0]; cin[j][1] = 0; cin[j][2] = 0; cin[j][3] = 0;
+                    if (j == 0)                 /* C_0 = -vk_x_0 + D  (err +D) */
+                        g1_add(&cx[j].c, &negvkx, &D);
+                    else {                      /* C_1 = -vk_x_1 - D  (err -D) */
+                        struct g1_point negD;
+                        g1_neg(&negD, &D);
+                        g1_add(&cx[j].c, &negvkx, &negD);
+                    }
+                }
+                /* Each is individually invalid. */
+                ADV_CHECK("batch soundness: crafted proof 0 is individually INVALID",
+                          !groth16_verify(&vk, &cx[0],
+                                          (const uint64_t (*)[4])&cin[0], 1));
+                ADV_CHECK("batch soundness: crafted proof 1 is individually INVALID",
+                          !groth16_verify(&vk, &cx[1],
+                                          (const uint64_t (*)[4])&cin[1], 1));
+                /* Equal-weight cancellation would accept; RLC must reject. */
+                ADV_CHECK("batch soundness: RLC scalars defeat naive cancellation (REJECT)",
+                          !groth16_batch_verify(&vk, cx,
+                                                (const uint64_t (*)[4])cin,
+                                                1, 2));
+            }
+
+            /* (f) Throughput: N single verifies vs one batch (informational). */
+            {
+                clock_t t0 = clock();
+                for (int j = 0; j < NB; j++)
+                    (void)groth16_verify(&vk, &proofs[j],
+                                         (const uint64_t (*)[4])&inputs[j], 1);
+                clock_t t1 = clock();
+                (void)groth16_batch_verify(&vk, proofs,
+                                           (const uint64_t (*)[4])inputs, 1, NB);
+                clock_t t2 = clock();
+                double single_ms = 1000.0 * (double)(t1 - t0) / CLOCKS_PER_SEC;
+                double batch_ms  = 1000.0 * (double)(t2 - t1) / CLOCKS_PER_SEC;
+                printf("  [throughput] %d proofs: per-proof=%.1f ms  batch=%.1f ms"
+                       "  speedup=%.2fx\n", NB, single_ms, batch_ms,
+                       batch_ms > 0.0 ? single_ms / batch_ms : 0.0);
+            }
+
+            free(vk.ic);
         }
     }
 

@@ -7,6 +7,8 @@
 #include "sapling/bls12_381.h"
 #include <string.h>
 #include <stdlib.h>
+#include <stdint.h>
+#include "crypto/blake2b.h"
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
 
@@ -1917,6 +1919,141 @@ bool groth16_verify(const struct groth16_vk *vk,
     struct g2_point qts[4] = { proof->b, neg_gamma, neg_delta, vk->beta_g2 };
 
     return bls12_381_multi_pairing_check(pts, qts, 4);
+}
+
+/* Compute vk_x = IC[0] + sum(IC[i+1] * input[i]) — the per-proof aggregated
+ * public-input commitment, identical to the loop inside groth16_verify. */
+static void groth16_compute_vk_x(const struct groth16_vk *vk,
+                                 const uint64_t (*public_inputs)[4],
+                                 size_t n_inputs, struct g1_point *vk_x)
+{
+    *vk_x = vk->ic[0];
+    for (size_t i = 0; i < n_inputs; i++) {
+        if (public_inputs[i][0] == 0 && public_inputs[i][1] == 0 &&
+            public_inputs[i][2] == 0 && public_inputs[i][3] == 0)
+            continue;
+        struct g1_point term;
+        g1_scalar_mul(&term, &vk->ic[i + 1], public_inputs[i]);
+        g1_add(vk_x, vk_x, &term);
+    }
+}
+
+/* 256-bit little-endian add: acc += add (wrap at 2^256; a set large enough to
+ * overflow 2^256 with 128-bit summands is not reached on any real block). */
+static void u256_add(uint64_t acc[4], const uint64_t add[4])
+{
+    unsigned __int128 carry = 0;
+    for (int i = 0; i < 4; i++) {
+        unsigned __int128 s = (unsigned __int128)acc[i] + add[i] + carry;
+        acc[i] = (uint64_t)s;
+        carry = s >> 64;
+    }
+}
+
+bool groth16_batch_verify(const struct groth16_vk *vk,
+                          const struct groth16_proof *proofs,
+                          const uint64_t (*public_inputs)[4],
+                          size_t n_inputs, size_t n_proofs)
+{
+    if (n_proofs == 0)
+        LOG_FAIL("groth16", "batch_verify: n_proofs == 0");
+    if (n_inputs + 1 != vk->ic_len)
+        LOG_FAIL("groth16",
+                 "batch_verify: public input count mismatch: n_inputs=%zu ic_len=%zu",
+                 n_inputs, vk->ic_len);
+
+    /* Per-batch Fiat-Shamir seed: BLAKE2b over every proof's point bytes and
+     * every public-input scalar. The random combining scalars r_j derive from
+     * this seed, so a forger who chooses the proofs cannot predict r_j and
+     * therefore cannot craft a set whose weighted product cancels to 1. A fixed
+     * r would be unsound. */
+    uint8_t seed[32];
+    {
+        struct blake2b_ctx bctx;
+        if (blake2b_init(&bctx, sizeof(seed)) != 0)
+            LOG_FAIL("groth16", "batch_verify: blake2b_init(seed) failed");
+        static const uint8_t domain[] = "ZCL_Groth16_Batch_v1";
+        blake2b_update(&bctx, domain, sizeof(domain));
+        blake2b_update(&bctx, proofs, n_proofs * sizeof(struct groth16_proof));
+        if (n_inputs > 0)
+            blake2b_update(&bctx, public_inputs,
+                           n_proofs * n_inputs * sizeof(public_inputs[0]));
+        blake2b_final(&bctx, seed, sizeof(seed));
+    }
+
+    /* Accumulators shared across the batch:
+     *   S_vkx = sum_j r_j * vk_x_j     (paired with -gamma, one Miller loop)
+     *   S_c   = sum_j r_j * C_j        (paired with -delta, one Miller loop)
+     *   sum_r = sum_j r_j              ((sum_r)*(-alpha) paired with beta) */
+    struct g1_point S_vkx, S_c;
+    g1_identity(&S_vkx);
+    g1_identity(&S_c);
+    uint64_t sum_r[4] = {0, 0, 0, 0};
+
+    size_t n_terms = n_proofs + 3;
+    struct g1_point *pts = zcl_calloc(n_terms, sizeof(struct g1_point),
+                                      "groth16 batch pts");
+    struct g2_point *qts = zcl_calloc(n_terms, sizeof(struct g2_point),
+                                      "groth16 batch qts");
+    if (!pts || !qts) {
+        free(pts);
+        free(qts);
+        LOG_FAIL("groth16", "batch_verify: allocation failed (n_proofs=%zu)",
+                 n_proofs);
+    }
+
+    for (size_t j = 0; j < n_proofs; j++) {
+        /* r_j: 128-bit challenge from the seed (2^-128 soundness), never 0. */
+        uint8_t rd[64];
+        struct blake2b_ctx rctx;
+        blake2b_init(&rctx, sizeof(rd));
+        blake2b_update(&rctx, seed, sizeof(seed));
+        uint64_t jj = (uint64_t)j;
+        uint8_t jle[8];
+        for (int b = 0; b < 8; b++) jle[b] = (uint8_t)(jj >> (8 * b));
+        blake2b_update(&rctx, jle, sizeof(jle));
+        blake2b_final(&rctx, rd, sizeof(rd));
+        uint64_t r[4] = {0, 0, 0, 0};
+        for (int b = 0; b < 8; b++) {
+            r[0] |= (uint64_t)rd[b] << (8 * b);
+            r[1] |= (uint64_t)rd[8 + b] << (8 * b);
+        }
+        if (r[0] == 0 && r[1] == 0)
+            r[0] = 1;
+
+        const uint64_t (*pi_j)[4] =
+            n_inputs ? &public_inputs[j * n_inputs] : NULL;
+
+        /* r_j * A_j  paired with  B_j (distinct per proof → own Miller loop) */
+        g1_scalar_mul(&pts[j], &proofs[j].a, r);
+        qts[j] = proofs[j].b;
+
+        /* accumulate r_j * vk_x_j and r_j * C_j into the shared G2 terms */
+        struct g1_point vk_x_j, tmp;
+        groth16_compute_vk_x(vk, pi_j, n_inputs, &vk_x_j);
+        g1_scalar_mul(&tmp, &vk_x_j, r);
+        g1_add(&S_vkx, &S_vkx, &tmp);
+        g1_scalar_mul(&tmp, &proofs[j].c, r);
+        g1_add(&S_c, &S_c, &tmp);
+
+        u256_add(sum_r, r);
+    }
+
+    struct g2_point neg_gamma, neg_delta;
+    g2_neg(&neg_gamma, &vk->gamma_g2);
+    g2_neg(&neg_delta, &vk->delta_g2);
+    struct g1_point neg_alpha, sum_r_neg_alpha;
+    g1_neg(&neg_alpha, &vk->alpha_g1);
+    g1_scalar_mul(&sum_r_neg_alpha, &neg_alpha, sum_r);
+
+    pts[n_proofs + 0] = S_vkx;         qts[n_proofs + 0] = neg_gamma;
+    pts[n_proofs + 1] = S_c;           qts[n_proofs + 1] = neg_delta;
+    pts[n_proofs + 2] = sum_r_neg_alpha; qts[n_proofs + 2] = vk->beta_g2;
+
+    bool ok = bls12_381_multi_pairing_check(pts, qts, n_terms);
+    free(pts);
+    free(qts);
+    return ok;
 }
 
 /* ===== VK reader (bellman format) ===== */

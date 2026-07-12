@@ -580,14 +580,19 @@ bool sapling_generate_r(uint8_t result[32])
     return true;
 }
 
-bool sapling_check_spend(struct sapling_verification_ctx *ctx,
-                          const uint8_t cv[32],
-                          const uint8_t anchor[32],
-                          const uint8_t nullifier[32],
-                          const uint8_t rk[32],
-                          const uint8_t zkproof[192],
-                          const uint8_t spend_auth_sig[64],
-                          const uint8_t sighash[32])
+/* Prepare a spend: run every non-Groth16 gate in the EXACT order and with the
+ * EXACT early-returns of sapling_check_spend, fold cv into bvk, decode the
+ * proof, and build the 7 public inputs. sapling_check_spend is literally
+ * prepare()+groth16_verify below, so the consensus verdict is byte-identical;
+ * the background batch path reuses this so its accept set matches per-proof. */
+bool sapling_spend_prepare(struct sapling_verification_ctx *ctx,
+                           const uint8_t cv[32], const uint8_t anchor[32],
+                           const uint8_t nullifier[32], const uint8_t rk[32],
+                           const uint8_t zkproof[192],
+                           const uint8_t spend_auth_sig[64],
+                           const uint8_t sighash[32],
+                           struct groth16_proof *proof_out,
+                           uint64_t (*pub_out)[4])
 {
     ensure_fixed_generators();
 
@@ -619,38 +624,69 @@ bool sapling_check_spend(struct sapling_verification_ctx *ctx,
     if (!sapling_spend_vk)
         LOG_FAIL("sapling", "sapling_spend_vk is NULL (params not loaded)");
 
-    {
-        struct groth16_proof proof;
-        if (!groth16_proof_read(&proof, zkproof))
-            LOG_FAIL("sapling", "groth16_proof_read(spend) failed");
+    if (!groth16_proof_read(proof_out, zkproof))
+        LOG_FAIL("sapling", "groth16_proof_read(spend) failed");
 
-        /* Public inputs: rk.x, rk.y, cv.x, cv.y, anchor, nullifier_pack[0..1] */
-        uint64_t public_input[7][4];
+    /* Public inputs: rk.x, rk.y, cv.x, cv.y, anchor, nullifier_pack[0..1] */
+    struct jub_point rk_point;
+    if (!jub_from_bytes(&rk_point, rk))
+        LOG_FAIL("sapling", "jub_from_bytes(rk) failed for spend proof");
+    jub_to_affine_raw(pub_out[0], pub_out[1], &rk_point);
+    jub_to_affine_raw(pub_out[2], pub_out[3], &cv_point);
+    bytes_le_to_fr_raw(pub_out[4], anchor);
 
-        struct jub_point rk_point;
-        if (!jub_from_bytes(&rk_point, rk))
-            LOG_FAIL("sapling", "jub_from_bytes(rk) failed for spend proof");
-        jub_to_affine_raw(public_input[0], public_input[1], &rk_point);
-        jub_to_affine_raw(public_input[2], public_input[3], &cv_point);
-        bytes_le_to_fr_raw(public_input[4], anchor);
-
-        /* Nullifier: bytes_to_bits_le → compute_multipacking (2 Fr scalars) */
-        size_t n_packed;
-        multipack_bytes_to_fr((uint64_t (*)[4])&public_input[5], &n_packed,
-                               nullifier, 32);
-
-        if (!groth16_verify(sapling_spend_vk, &proof, public_input, 7))
-            LOG_FAIL("sapling", "groth16_verify(spend) rejected proof");
-    }
-
+    /* Nullifier: bytes_to_bits_le → compute_multipacking (2 Fr scalars) */
+    size_t n_packed;
+    multipack_bytes_to_fr((uint64_t (*)[4])&pub_out[5], &n_packed,
+                           nullifier, 32);
     return true;
 }
 
-bool sapling_check_output(struct sapling_verification_ctx *ctx,
-                           const uint8_t cv[32],
-                           const uint8_t cm[32],
-                           const uint8_t epk[32],
-                           const uint8_t zkproof[192])
+bool sapling_spend_groth16_one(const struct groth16_proof *proof,
+                               const uint64_t (*pub)[4])
+{
+    if (!sapling_spend_vk)
+        LOG_FAIL("sapling", "sapling_spend_vk is NULL (params not loaded)");
+    if (!groth16_verify(sapling_spend_vk, proof, pub, 7))
+        LOG_FAIL("sapling", "groth16_verify(spend) rejected proof");
+    return true;
+}
+
+bool sapling_spend_groth16_batch(const struct groth16_proof *proofs,
+                                 const uint64_t (*pub)[4], size_t n_proofs)
+{
+    if (!sapling_spend_vk)
+        LOG_FAIL("sapling", "sapling_spend_vk is NULL (params not loaded)");
+    if (n_proofs == 0)
+        return true;
+    return groth16_batch_verify(sapling_spend_vk, proofs, pub, 7, n_proofs);
+}
+
+bool sapling_check_spend(struct sapling_verification_ctx *ctx,
+                          const uint8_t cv[32],
+                          const uint8_t anchor[32],
+                          const uint8_t nullifier[32],
+                          const uint8_t rk[32],
+                          const uint8_t zkproof[192],
+                          const uint8_t spend_auth_sig[64],
+                          const uint8_t sighash[32])
+{
+    struct groth16_proof proof;
+    uint64_t public_input[7][4];
+    if (!sapling_spend_prepare(ctx, cv, anchor, nullifier, rk, zkproof,
+                               spend_auth_sig, sighash, &proof, public_input))
+        return false;
+    return sapling_spend_groth16_one(&proof, public_input);
+}
+
+/* Prepare an output: run every non-Groth16 gate in the EXACT order/early-return
+ * of sapling_check_output, fold -cv into bvk, decode the proof, build the 5
+ * public inputs. sapling_check_output == prepare()+groth16_verify below. */
+bool sapling_output_prepare(struct sapling_verification_ctx *ctx,
+                            const uint8_t cv[32], const uint8_t cm[32],
+                            const uint8_t epk[32], const uint8_t zkproof[192],
+                            struct groth16_proof *proof_out,
+                            uint64_t (*pub_out)[4])
 {
     /* Deserialize cv */
     struct jub_point cv_point;
@@ -676,28 +712,52 @@ bool sapling_check_output(struct sapling_verification_ctx *ctx,
     if (!sapling_output_vk)
         LOG_FAIL("sapling", "sapling_output_vk is NULL (params not loaded)");
 
-    {
-        struct groth16_proof proof;
-        if (!groth16_proof_read(&proof, zkproof))
-            LOG_FAIL("sapling", "groth16_proof_read(output) failed");
+    if (!groth16_proof_read(proof_out, zkproof))
+        LOG_FAIL("sapling", "groth16_proof_read(output) failed");
 
-        /* Public inputs: cv.x, cv.y, epk.x, epk.y, cm */
-        uint64_t public_input[5][4];
+    /* Public inputs: cv.x, cv.y, epk.x, epk.y, cm */
+    jub_to_affine_raw(pub_out[0], pub_out[1], &cv_point);
 
-        jub_to_affine_raw(public_input[0], public_input[1], &cv_point);
+    struct jub_point epk_point;
+    if (!jub_from_bytes(&epk_point, epk))
+        LOG_FAIL("sapling", "jub_from_bytes(epk) failed for output proof");
+    jub_to_affine_raw(pub_out[2], pub_out[3], &epk_point);
 
-        struct jub_point epk_point;
-        if (!jub_from_bytes(&epk_point, epk))
-            LOG_FAIL("sapling", "jub_from_bytes(epk) failed for output proof");
-        jub_to_affine_raw(public_input[2], public_input[3], &epk_point);
-
-        bytes_le_to_fr_raw(public_input[4], cm);
-
-        if (!groth16_verify(sapling_output_vk, &proof, public_input, 5))
-            LOG_FAIL("sapling", "groth16_verify(output) rejected proof");
-    }
-
+    bytes_le_to_fr_raw(pub_out[4], cm);
     return true;
+}
+
+bool sapling_output_groth16_one(const struct groth16_proof *proof,
+                                const uint64_t (*pub)[4])
+{
+    if (!sapling_output_vk)
+        LOG_FAIL("sapling", "sapling_output_vk is NULL (params not loaded)");
+    if (!groth16_verify(sapling_output_vk, proof, pub, 5))
+        LOG_FAIL("sapling", "groth16_verify(output) rejected proof");
+    return true;
+}
+
+bool sapling_output_groth16_batch(const struct groth16_proof *proofs,
+                                  const uint64_t (*pub)[4], size_t n_proofs)
+{
+    if (!sapling_output_vk)
+        LOG_FAIL("sapling", "sapling_output_vk is NULL (params not loaded)");
+    if (n_proofs == 0)
+        return true;
+    return groth16_batch_verify(sapling_output_vk, proofs, pub, 5, n_proofs);
+}
+
+bool sapling_check_output(struct sapling_verification_ctx *ctx,
+                           const uint8_t cv[32],
+                           const uint8_t cm[32],
+                           const uint8_t epk[32],
+                           const uint8_t zkproof[192])
+{
+    struct groth16_proof proof;
+    uint64_t public_input[5][4];
+    if (!sapling_output_prepare(ctx, cv, cm, epk, zkproof, &proof, public_input))
+        return false;
+    return sapling_output_groth16_one(&proof, public_input);
 }
 
 bool sapling_final_check(struct sapling_verification_ctx *ctx,
