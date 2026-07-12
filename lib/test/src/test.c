@@ -1429,6 +1429,7 @@ int main(int argc, char **argv)
     failures += test_reducer_frontier();
     failures += test_waitforheight_provable();
     failures += test_refold_progress_floor();
+    failures += test_refold_cadence();
     { extern int test_reindex_epilogue(void);
       failures += test_reindex_epilogue(); }
     { extern int test_snapshot_boot_seed(void);

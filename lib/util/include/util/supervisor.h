@@ -99,6 +99,13 @@ struct liveness_contract {
 
     /* configuration (atomic-mutable at runtime) */
     _Atomic int64_t period_secs;       /* >0 ⇒ supervisor drives on_tick */
+    /* Sub-second tick override (microseconds). >0 takes precedence over
+     * period_secs for the on_tick due-check; 0 (the default set by
+     * liveness_contract_init) ⇒ use period_secs unchanged. Only the
+     * mint/refold-accelerated staged-sync stages set this (gated on
+     * refold_cadence_active); every other child leaves it 0, so their tick
+     * cadence is byte-identical. */
+    _Atomic int64_t period_us;
     _Atomic int64_t deadline_secs;     /* >0 ⇒ stall if last_tick lapses */
     _Atomic int64_t progress_max_quiet_us;
                                        /* >0 ⇒ stall if marker frozen */
@@ -192,6 +199,14 @@ void supervisor_stop(void);
  * real-time waits. Production never calls this. */
 void supervisor_set_tick_ms_for_testing(int ms);
 
+/* Lower the supervisor loop wake interval to AT MOST `ms` (monotonic min: a
+ * smaller current value is kept). Production use: an accelerated mint/refold
+ * fold sets a sub-second stage period_us and calls this so the sweep runs
+ * often enough to honor it. A NORMAL boot never calls this, so g_tick_ms stays
+ * at its 1000 ms default and every child's tick/stall cadence is unchanged.
+ * No-op for ms <= 0. */
+void supervisor_request_min_tick_ms(int ms);
+
 /* Test hook: clear the registry and reset internal state. Each test_*
  * function in the fork-based runner is its own process, so per-process
  * isolation is already free, but the sequential runner (test.c) calls
@@ -208,6 +223,7 @@ struct supervisor_snapshot {
     int64_t  last_tick_age_us;       /* now - last_tick_us */
     int64_t  progress_marker;
     int64_t  period_secs;
+    int64_t  period_us;              /* sub-second tick override; 0 ⇒ period_secs */
     int64_t  deadline_secs;
     bool     completed;
     int      stall_reason;           /* enum supervisor_stall_reason */

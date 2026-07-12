@@ -199,8 +199,26 @@ bool coins_ram_init(struct sqlite3 *db, uint32_t flush_every_blocks)
     G.live_count = 0;
     G.used = 0;
     G.db = db;
-    G.flush_every = flush_every_blocks ? flush_every_blocks
-                                       : COINS_RAM_DEFAULT_FLUSH_EVERY;
+    /* Flush cadence precedence: an explicit caller arg wins; otherwise honor
+     * ZCL_FOLD_INRAM_FLUSH_EVERY (a mint/refold operator tuning knob — a
+     * smaller value tightens the worst-case crash-resume rewind at the cost of
+     * more frequent flushes); otherwise the compiled default. When the env is
+     * unset the value is COINS_RAM_DEFAULT_FLUSH_EVERY exactly as before, so
+     * steady-state behavior is unchanged. Bounds keep it in [1, 5,000,000]. */
+    if (flush_every_blocks) {
+        G.flush_every = flush_every_blocks;
+    } else {
+        G.flush_every = COINS_RAM_DEFAULT_FLUSH_EVERY;
+        const char *fe = getenv("ZCL_FOLD_INRAM_FLUSH_EVERY");
+        if (fe && fe[0]) {
+            char *end = NULL;
+            long n = strtol(fe, &end, 10);
+            if (end != fe && n >= 1) {
+                if (n > 5000000) n = 5000000;
+                G.flush_every = (uint32_t)n;
+            }
+        }
+    }
     G.since_flush = 0;
     G.last_applied = -1;
     G.active = true;

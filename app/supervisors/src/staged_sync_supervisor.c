@@ -24,6 +24,7 @@
 #include "validation/main_logic.h"
 
 #include "util/supervisor.h"
+#include "jobs/refold_cadence.h"   /* accelerated drain batch + tick, mint/refold only */
 #include "jobs/header_admit_stage.h"
 #include "jobs/validate_headers_stage.h"
 #include "jobs/body_fetch_stage.h"
@@ -216,7 +217,13 @@ static void staged_stage_tick(struct liveness_contract *c)
         supervisor_tick(d->id);
         return;
     }
-    (void)d->drain(d->batch);
+    /* Drain batch: the stage default (d->batch) on a normal live node —
+     * refold_cadence_drain_batch returns its argument unchanged when
+     * refold_cadence_active() is false, so the live hot path is unchanged.
+     * During a -mint-anchor/-refold-* fold it returns the accelerated
+     * ZCL_REFOLD_DRAIN_BATCH (default 2000). Batch size never changes WHAT a
+     * stage folds — only the commit cadence and latency. */
+    (void)d->drain(refold_cadence_drain_batch(d->batch));
     supervisor_progress(d->id, (int64_t)d->cursor());
     supervisor_tick(d->id);
 }
@@ -281,6 +288,17 @@ static void staged_stage_register(struct staged_stage_desc *d,
      * for long stretches when the live chain is stuck. 30 min before
      * we emit a progress warning. */
     atomic_store(&d->contract.progress_max_quiet_us, STAGED_STAGE_QUIET_US);
+    /* Accelerated cadence for a mint/refold offline fold ONLY: a sub-second
+     * tick period so the sweep drives the stages more often than the 2s live
+     * cadence. Gated on refold_cadence_active() — false on a normal boot, so
+     * period_us stays 0 (⇒ the sweep uses period_secs=2, unchanged) and
+     * the loop wake stays at its 1000ms default. When active we also lower the
+     * loop wake so the sub-second period can actually fire. */
+    int64_t accel_us = refold_cadence_tick_period_us();
+    if (accel_us > 0) {
+        atomic_store(&d->contract.period_us, accel_us);
+        supervisor_request_min_tick_ms((int)(accel_us / 1000));
+    }
     d->contract.on_tick  = staged_stage_tick;
     d->contract.on_stall = staged_stage_stall;
     d->contract.ctx      = d;

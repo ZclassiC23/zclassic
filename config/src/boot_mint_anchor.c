@@ -17,7 +17,30 @@
  * The validation policy is selected before this driver starts: normal
  * -mint-anchor keeps crypto validation on; -mint-anchor-fast passes the
  * script/proof stages through while preserving the state fold and final
- * SHA3/count hard-assert. */
+ * SHA3/count hard-assert.
+ *
+ * OBSERVABILITY — the drive loop appends a throttled progress line
+ * (height / anchor / rate / ETA / elapsed) to <datadir>/mint-progress.log (or
+ * $ZCL_MINT_PROGRESS_LOG) every ~5s so a long fold is readable FROM DISK, not
+ * only from stderr. Best-effort: a log-write failure never affects the fold.
+ *
+ * RESUMABILITY — a fresh mint does NOT re-fold from genesis after a crash. Three
+ * durable mechanisms already cover resume; this driver only observes them:
+ *   (1) progress.kv stage cursors are committed per drain batch (durable);
+ *   (2) mint_anchor_progress (config/src/mint_anchor_progress.c) binds a
+ *       checkpoint-scoped resume marker so boot_mint_anchor_reset SKIPS the
+ *       genesis reset and resumes at coins_applied_height (see the "resuming
+ *       existing checkpoint-bound fold" branch);
+ *   (3) with -fold-inram, coins_ram flushes the in-RAM overlay to durable
+ *       coins_kv every ZCL_FOLD_INRAM_FLUSH_EVERY blocks (default 50,000) and
+ *       coins_ram_reconcile_boot rewinds the cursor to that flush watermark on
+ *       the next boot, so a crash loses at most one flush window, not the fold.
+ * The worst-case resume rewind is thus one flush window; lower
+ * ZCL_FOLD_INRAM_FLUSH_EVERY to tighten it. A finer (per-batch) synchronous
+ * checkpoint of the full in-RAM working set is intentionally NOT added here — it
+ * would trade the fold's dominant throughput lever (a low fsync cadence) for a
+ * marginal resume-granularity gain, and the mechanisms above already make the
+ * mint resumable without it. */
 
 #include "config/boot.h"
 #include "config/mint_anchor_progress.h"
@@ -43,6 +66,7 @@
                                                  * boot_activation_controller */
 #include "event/event.h"                        /* event_emitf */
 #include "util/log_macros.h"
+#include "core/utiltime.h"                       /* GetTimeMicros */
 
 /* The utxo_apply frontier is a NEXT-height cursor: applied-through `h` means
  * coins_applied_height == h+1. Read it; return -1 when unknown (absent). */
@@ -61,6 +85,66 @@ bool boot_mint_anchor_should_log_progress(int32_t applied_through,
     const int kProgressEvery = 10000;
     return (applied_through % kProgressEvery) == 0 ||
            applied_through >= anchor - 16;
+}
+
+/* Resolve the on-disk progress-log path: $ZCL_MINT_PROGRESS_LOG, else
+ * <datadir>/mint-progress.log. */
+static void mint_progress_log_path(const char *datadir, char *out, size_t n)
+{
+    const char *env = getenv("ZCL_MINT_PROGRESS_LOG");
+    if (env && env[0])
+        snprintf(out, n, "%s", env);
+    else
+        snprintf(out, n, "%s/mint-progress.log", datadir ? datadir : ".");
+}
+
+/* Append one throttled progress line to the on-disk mint-progress.log so a
+ * long fold is observable FROM DISK. Throttled to ~every 5s of wall time; the
+ * final-anchor line is always written. Rate is computed over the interval since
+ * the last write (blocks/s), ETA from the remaining span at that rate. All
+ * best-effort — a failure to open/write NEVER affects the fold. */
+static void mint_progress_log_tick(const char *path, int32_t through,
+                                   int32_t anchor, int64_t start_us,
+                                   bool force)
+{
+    static int64_t last_write_us   = 0;
+    static int32_t last_write_h     = -1;
+    const int64_t  kEveryUs        = 5 * 1000 * 1000;  /* 5s */
+
+    int64_t now_us = GetTimeMicros();
+    if (last_write_us == 0) {            /* first call: seed the interval base */
+        last_write_us = start_us > 0 ? start_us : now_us;
+        last_write_h  = through;
+    }
+    int64_t since_us = now_us - last_write_us;
+    if (!force && since_us < kEveryUs)
+        return;
+
+    double interval_s = since_us > 0 ? (double)since_us / 1e6 : 0.0;
+    int32_t d_h       = through - last_write_h;
+    double  rate      = interval_s > 0.0 ? (double)d_h / interval_s : 0.0;
+    int32_t remaining = anchor > through ? anchor - through : 0;
+    long    eta_s     = rate > 0.0 ? (long)((double)remaining / rate) : -1;
+    double  elapsed_s = start_us > 0 ? (double)(now_us - start_us) / 1e6 : 0.0;
+
+    FILE *f = fopen(path, "a");
+    if (!f)
+        return;                          /* best-effort: never block the fold */
+    if (eta_s >= 0)
+        fprintf(f,
+                "mint height=%d / %d rate=%.1f blk/s eta=%ld:%02ld:%02ld "
+                "elapsed=%.0fs\n",
+                through, anchor, rate,
+                eta_s / 3600, (eta_s % 3600) / 60, eta_s % 60, elapsed_s);
+    else
+        fprintf(f,
+                "mint height=%d / %d rate=%.1f blk/s eta=unknown "
+                "elapsed=%.0fs\n",
+                through, anchor, rate, elapsed_s);
+    fclose(f);
+
+    last_write_us = now_us;
+    last_write_h  = through;
 }
 
 bool boot_mint_anchor_run(const char *datadir)
@@ -100,9 +184,15 @@ bool boot_mint_anchor_run(const char *datadir)
     int32_t last_through = mint_applied_through(pdb);
     int stall_kicks = 0;
     const int kStallLimit = 64;   /* consecutive no-progress kicks → bodies gap */
+    char progress_log[1200];
+    mint_progress_log_path(datadir, progress_log, sizeof(progress_log));
+    const int64_t drive_start_us = GetTimeMicros();
     fprintf(stderr,
             "[mint-anchor] driving the genesis..%d fold; "
-            "starting at applied-through=%d\n", anchor, last_through);
+            "starting at applied-through=%d; progress log -> %s\n",
+            anchor, last_through, progress_log);
+    mint_progress_log_tick(progress_log, last_through, anchor,
+                           drive_start_us, /*force=*/true);
 
     for (;;) {
         int32_t through = mint_applied_through(pdb);
@@ -112,6 +202,10 @@ bool boot_mint_anchor_run(const char *datadir)
         (void)reducer_kick_unbudgeted(ctl);   /* tight back-to-back drain to convergence */
 
         int32_t now = mint_applied_through(pdb);
+        /* Throttled on-disk progress (every ~5s) — readable while the fold
+         * runs, regardless of the sparse stderr cadence below. */
+        mint_progress_log_tick(progress_log, now, anchor, drive_start_us,
+                               /*force=*/false);
         if (now > last_through) {
             last_through = now;
             stall_kicks = 0;
@@ -131,6 +225,8 @@ bool boot_mint_anchor_run(const char *datadir)
 
     int32_t through = mint_applied_through(pdb);
     int64_t count = coins_kv_count(pdb);
+    mint_progress_log_tick(progress_log, through, anchor, drive_start_us,
+                           /*force=*/true);
     fprintf(stderr,
             "[mint-anchor] fold reached the anchor: applied-through=%d, "
             "coins_kv count=%lld — writing the snapshot\n",

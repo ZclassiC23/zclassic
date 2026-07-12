@@ -305,14 +305,21 @@ static void sweep_once(void)
 
         int64_t last_tick = atomic_load(&c->last_tick_us);
         int64_t period_s  = atomic_load(&c->period_secs);
+        int64_t period_u  = atomic_load(&c->period_us);
         int64_t deadl_s   = atomic_load(&c->deadline_secs);
         int64_t quiet_us  = atomic_load(&c->progress_max_quiet_us);
+
+        /* Effective tick window: period_us (sub-second override) wins when set,
+         * else period_secs. Default period_us=0 ⇒ byte-identical to before for
+         * every child that does not opt into the sub-second cadence. */
+        int64_t period_window_us = period_u > 0 ? period_u
+                                                : period_s * 1000000;
 
         /* Periodic on_tick driving. Supervisor calls on_tick when the
          * configured period has elapsed; on_tick is expected to do the
          * child's actual work and then call supervisor_tick to record
          * the heartbeat (or do work that emits supervisor_progress). */
-        if (period_s > 0 && (now - last_tick) >= period_s * 1000000) {
+        if (period_window_us > 0 && (now - last_tick) >= period_window_us) {
             if (c->on_tick) c->on_tick(c);
             /* If on_tick didn't call supervisor_tick itself, stamp it
              * now so we don't busy-fire. */
@@ -438,6 +445,20 @@ void supervisor_set_tick_ms_for_testing(int ms)
     atomic_store(&g_tick_ms, ms);
 }
 
+void supervisor_request_min_tick_ms(int ms)
+{
+    if (ms < 1) return;              /* no-op on a nonsense request */
+    if (ms > 60000) ms = 60000;      /* mirror the loop's own clamp */
+    /* Monotonic min via a CAS loop: never RAISE the interval (another
+     * accelerated child may have already lowered it), only lower it. */
+    int cur = atomic_load(&g_tick_ms);
+    while (ms < cur) {
+        if (atomic_compare_exchange_weak(&g_tick_ms, &cur, ms))
+            break;
+        /* cur reloaded by the CAS; loop re-checks ms < cur. */
+    }
+}
+
 #ifdef ZCL_TESTING
 void supervisor_reset_for_testing(void)
 {
@@ -480,6 +501,7 @@ int supervisor_snapshot_all(struct supervisor_snapshot *out, int max)
         out[i].last_tick_age_us = now - lt;
         out[i].progress_marker  = atomic_load(&c->progress_marker);
         out[i].period_secs      = atomic_load(&c->period_secs);
+        out[i].period_us        = atomic_load(&c->period_us);
         out[i].deadline_secs    = atomic_load(&c->deadline_secs);
         out[i].completed        = atomic_load(&c->completed);
         out[i].stall_reason     = atomic_load(&c->stall_reason);
@@ -565,6 +587,8 @@ static void push_contract_json(struct json_value *arr,
                       atomic_load(&c->progress_marker));
     json_push_kv_int (&child, "period_secs",
                       atomic_load(&c->period_secs));
+    json_push_kv_int (&child, "period_us",
+                      atomic_load(&c->period_us));
     json_push_kv_int (&child, "deadline_secs",
                       atomic_load(&c->deadline_secs));
     json_push_kv_bool(&child, "completed",

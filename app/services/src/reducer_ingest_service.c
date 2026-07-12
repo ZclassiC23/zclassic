@@ -56,6 +56,7 @@
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/stage_helpers.h"
 #include "jobs/stage_repair.h"  /* header-solution repair-table backfill */
+#include "jobs/refold_cadence.h"  /* refold_cadence_drain_batch (mint/refold only) */
 
 static _Atomic int g_last_body_persist_log_height = -1;
 
@@ -158,12 +159,17 @@ int reducer_drain_to_convergence_unbudgeted(void)
      * journal-commit cadence that otherwise pins the drive thread in
      * jbd2_log_wait_commit. */
     const int drain_hard_cap   = 64;      /* up to 64 * batch blocks per call */
-    const int per_stage_batch  = 1000;    /* one fsync per ~1k blocks/stage:
-                                           * ~10x fewer journal barriers than
-                                           * the 100-block legacy cadence, while
-                                           * still committing often enough that
-                                           * progress stays visible and the open
-                                           * transaction (+ WAL) stays bounded. */
+    /* Per-stage batch: one COMMIT/fsync per this many blocks/stage. A larger
+     * batch drops the ext4 journal-commit cadence that otherwise pins the drive
+     * thread in jbd2_log_wait_commit. This path is reached ONLY via
+     * reducer_kick_unbudgeted (the -mint-anchor driver), where the mint fold
+     * ceiling is set, so refold_cadence_active() is true and the accelerated
+     * ZCL_REFOLD_DRAIN_BATCH default (2000) applies; the env var lets the
+     * operator tune it live without a rebuild. Passing 1000 as the "normal"
+     * fallback keeps the prior cadence if this path is ever reached with the
+     * gate inactive. Full validation is identical for any batch size — only the
+     * commit cadence and latency differ, never WHAT a stage checks. */
+    const int per_stage_batch  = refold_cadence_drain_batch(1000);
     return reducer_drain_core(/*budget_us=*/0, drain_hard_cap, per_stage_batch);
 }
 
