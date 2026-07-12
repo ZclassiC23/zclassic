@@ -9,6 +9,7 @@
 #include "platform/time_compat.h"
 #include "services/sync_monitor.h"
 #include "sync/sync_state.h"
+#include "util/blocker.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -48,12 +49,37 @@ static bool download_work_pending(uint64_t inflight, uint64_t queued)
     return queued > 0 || inflight > 0;
 }
 
+/* A PERMANENT typed blocker (bad PoW, malformed block, consensus reject, an
+ * irreducible fold hole — see util/blocker.h) means H* cannot advance no
+ * matter how much download work is kept in flight: kick_local_sync (the
+ * remedy below) can NEVER clear a fold blocker. Once one is active, download
+ * starvation observed here is a SYMPTOM of that blocker, not an independent,
+ * operator-actionable local fault — paging on it manufactures an
+ * unresolvable page riding on top of the real, already-named wedge. Reuse
+ * the SAME class query chain_tip_watchdog.c:wd_deterministic_stall_cause()
+ * already uses to classify a stall as deterministic
+ * (chain_tip_watchdog.c:304, `blocker_count_by_class(BLOCKER_PERMANENT)`) —
+ * do not invent a second mechanism for the same fact. */
+static bool permanent_fold_blocker_active(void)
+{
+    return blocker_count_by_class(BLOCKER_PERMANENT) > 0;
+}
+
 static bool detect_download_queue_starved(void)
 {
     struct connman *cm = sync_monitor_connman();
     struct download_manager *dm =
         sync_monitor_download_manager();
     int64_t now = platform_time_wall_unix();
+    /* Defer: never START a new episode while a permanent fold blocker holds
+     * H* — see permanent_fold_blocker_active() above. An episode that is
+     * ALREADY active when the blocker appears is deferred by the witness
+     * below (detect() gates episode START, never CONTINUATION — see
+     * framework/condition.c condition_tick_one). */
+    if (permanent_fold_blocker_active()) {
+        atomic_store(&g_first_seen, 0);
+        return false;
+    }
     if (sync_get_state() != SYNC_BLOCKS_DOWNLOAD || !cm || !dm ||
         connman_get_node_count(cm) == 0) {
         atomic_store(&g_first_seen, 0);
@@ -104,6 +130,16 @@ static enum condition_remedy_result remedy_download_queue_starved(void)
 static bool witness_download_queue_starved(int64_t target_at_detect)
 {
     (void)target_at_detect;
+    /* Same defer as detect() above: if a permanent fold blocker becomes (or
+     * already is) active while this episode is active, honestly treat the
+     * episode as resolved from THIS condition's point of view — the real
+     * cause is the named fold blocker (visible via zcl_blockers / the
+     * chain_tip_watchdog cause probe), not a queue refill this remedy could
+     * ever fix. detail_download_queue_starved() below still reports the
+     * deferral (permanent_blocker_active / permanent_blocker_id /
+     * permanent_blocker_reason) so the clear is never silent. */
+    if (permanent_fold_blocker_active())
+        return true;
     if (sync_get_state() != SYNC_BLOCKS_DOWNLOAD)
         return true;
 
@@ -241,7 +277,39 @@ static bool detail_download_queue_starved(struct json_value *out)
                                 (int64_t)diag.overdue_in_flight);
     ok = ok && json_push_kv_str(
         out, "remedy_contract",
-        "kick_local_sync is witnessed when total_requested advances past requested_at_detect or the pending queue/in-flight work drains");
+        "kick_local_sync is witnessed when total_requested advances past requested_at_detect or the pending queue/in-flight work drains; DEFERRED (not attempted) whenever a permanent fold blocker is active, since a queue kick can never clear one");
+
+    /* Honest deferral (Law 7): a permanent fold blocker means this
+     * condition's own diagnosis (starved download queue) is not the
+     * operator-actionable cause — see permanent_fold_blocker_active().
+     * Name the blocker actually holding H* rather than silently clearing. */
+    bool permanent_blocker_active = permanent_fold_blocker_active();
+    char blocker_id[BLOCKER_ID_MAX] = "";
+    char blocker_reason[BLOCKER_REASON_MAX] = "";
+    if (permanent_blocker_active) {
+        struct blocker_snapshot snaps[BLOCKER_CAP];
+        int n = blocker_snapshot_all(snaps, BLOCKER_CAP);
+        for (int i = 0; i < n; i++) {
+            if (snaps[i].class == BLOCKER_PERMANENT) {
+                snprintf(blocker_id, sizeof(blocker_id), "%s", snaps[i].id);
+                snprintf(blocker_reason, sizeof(blocker_reason), "%s",
+                         snaps[i].reason);
+                break;
+            }
+        }
+    }
+    ok = ok && json_push_kv_bool(out, "permanent_blocker_active",
+                                 permanent_blocker_active);
+    ok = ok && json_push_kv_str(out, "permanent_blocker_id", blocker_id);
+    ok = ok && json_push_kv_str(out, "permanent_blocker_reason",
+                                blocker_reason);
+    char deferred_summary[BLOCKER_REASON_MAX + 128] = "";
+    if (permanent_blocker_active) {
+        snprintf(deferred_summary, sizeof(deferred_summary),
+                 "deferred: superseded by permanent fold blocker '%s' (%s)",
+                 blocker_id, blocker_reason);
+    }
+    ok = ok && json_push_kv_str(out, "deferred_reason", deferred_summary);
     return ok;
 }
 

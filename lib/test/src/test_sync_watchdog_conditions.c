@@ -12,6 +12,7 @@
 #include "net/protocol.h"
 #include "platform/clock.h"
 #include "services/sync_monitor.h"
+#include "util/blocker.h"
 #include "validation/chainstate.h"
 
 #include <stdatomic.h>
@@ -59,6 +60,11 @@ static void reset_sync_watchdog(struct connman *cm,
                                 struct main_state *ms)
 {
     condition_engine_reset_for_testing();
+    /* download_queue_starved now reads the global typed-blocker registry
+     * (permanent_fold_blocker_active()); reset it too so a PERMANENT blocker
+     * left behind by an unrelated test group elsewhere in this process can
+     * never leak into (or out of) these tests. */
+    blocker_reset_for_testing();
     header_stall_at_height_test_reset();
     sync_state_stuck_test_reset();
     download_queue_starved_test_reset();
@@ -77,6 +83,7 @@ static void reset_sync_watchdog(struct connman *cm,
 static void cleanup_sync_watchdog(void)
 {
     condition_engine_reset_for_testing();
+    blocker_reset_for_testing();
     sync_monitor_set_context(NULL, NULL, NULL);
     clock_reset_default();
 }
@@ -317,6 +324,142 @@ int test_sync_watchdog_conditions(void)
         json_free(&dump);
         SYNC_WATCHDOG_CHECK(
             "download queue starved kicks refill with detail json", ok);
+        dl_free(&dm);
+        zcl_mutex_destroy(&dm.cs);
+        cleanup_sync_watchdog();
+    }
+
+    {
+        /* R3 fix (false-page class): a PERMANENT typed blocker (bad PoW,
+         * malformed block, an irreducible fold hole) means H* cannot advance
+         * no matter how much download work is kept in flight — kick_refill
+         * can never clear it. This condition must never even START an
+         * episode while one is active; it is a symptom, not the cause. */
+        struct fake_clock clock;
+        fake_clock_install(&clock, 3700);
+        struct connman cm;
+        struct download_manager dm;
+        struct main_state ms;
+        reset_sync_watchdog(&cm, &dm, &ms);
+        zcl_mutex_destroy(&dm.cs);
+        dl_init(&dm);
+        sync_monitor_set_context(&cm, &dm, &ms);
+        bool ok = true;
+        register_download_queue_starved();
+
+        struct p2p_node peer = {0};
+        struct p2p_node *peers[1] = { &peer };
+        cm.manager.nodes = peers;
+        cm.manager.num_nodes = 1;
+        struct uint256 qh = {0};
+        qh.data[0] = 0xd4;
+        int32_t qheight = 123;
+        ok = ok && dl_queue_blocks(&dm, &qh, &qheight, 1) == 1;
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
+        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+
+        struct blocker_record rec;
+        ok = ok && blocker_init(
+            &rec, "utxo_apply.fold_hole", "utxo_apply", BLOCKER_PERMANENT,
+            "utxo_apply permanent store failure at height=3176326: fixture");
+        ok = ok && blocker_set(&rec) >= 0;
+
+        condition_engine_tick();
+        fake_clock_set(&clock, 3821);
+        condition_engine_tick();
+        ok = ok && download_queue_starved_test_remedy_calls() == 0;
+        ok = ok && condition_engine_get_active_count() == 0;
+
+        struct json_value dump;
+        json_init(&dump);
+        json_set_object(&dump);
+        ok = ok && condition_engine_dump_state_json(&dump, NULL);
+        const struct json_value *conditions = json_get(&dump, "conditions");
+        const struct json_value *cond = sync_watchdog_condition_json(
+            conditions, "download_queue_starved");
+        const struct json_value *detail = cond ? json_get(cond, "detail")
+                                               : NULL;
+        ok = ok && detail != NULL;
+        ok = ok && json_get_bool(json_get(detail, "permanent_blocker_active"));
+        ok = ok && strcmp(json_get_str(json_get(
+                              detail, "permanent_blocker_id")),
+                          "utxo_apply.fold_hole") == 0;
+        const struct json_value *deferred_v =
+            detail ? json_get(detail, "deferred_reason") : NULL;
+        const char *deferred = deferred_v ? json_get_str(deferred_v) : NULL;
+        ok = ok && deferred && strstr(deferred, "permanent fold blocker") &&
+             strstr(deferred, "utxo_apply.fold_hole");
+        json_free(&dump);
+
+        SYNC_WATCHDOG_CHECK(
+            "download queue starved never starts an episode while a "
+            "permanent fold blocker is active, and reports it honestly",
+            ok);
+        dl_free(&dm);
+        zcl_mutex_destroy(&dm.cs);
+        cleanup_sync_watchdog();
+    }
+
+    {
+        /* R3 fix, second half: an episode that is ALREADY active when the
+         * permanent fold blocker is diagnosed must be DEFERRED (cleared,
+         * unwitnessed-but-honest) rather than paged further — detect() only
+         * gates episode START, so this exercises the witness-side defer. */
+        struct fake_clock clock;
+        fake_clock_install(&clock, 4100);
+        struct connman cm;
+        struct download_manager dm;
+        struct main_state ms;
+        reset_sync_watchdog(&cm, &dm, &ms);
+        zcl_mutex_destroy(&dm.cs);
+        dl_init(&dm);
+        sync_monitor_set_context(&cm, &dm, &ms);
+        bool ok = true;
+        register_download_queue_starved();
+
+        struct p2p_node peer = {0};
+        struct p2p_node *peers[1] = { &peer };
+        cm.manager.nodes = peers;
+        cm.manager.num_nodes = 1;
+        struct uint256 qh = {0};
+        qh.data[0] = 0xd5;
+        int32_t qheight = 200;
+        ok = ok && dl_queue_blocks(&dm, &qh, &qheight, 1) == 1;
+        sync_set_state(SYNC_HEADERS_DOWNLOAD, "setup");
+        sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+
+        condition_engine_tick();
+        fake_clock_set(&clock, 4221);
+        condition_engine_tick();
+        ok = ok && download_queue_starved_test_remedy_calls() == 1;
+        ok = ok && condition_engine_get_active_count() == 1;
+
+        /* The real cause is now diagnosed: name a PERMANENT fold blocker,
+         * exactly as utxo_apply_stage.c / reducer_frontier_replay.c etc do
+         * live. The already-active episode must defer, not re-fire. */
+        struct blocker_record rec;
+        ok = ok && blocker_init(
+            &rec, "utxo_apply.fold_hole", "utxo_apply", BLOCKER_PERMANENT,
+            "utxo_apply permanent store failure at height=3176326: fixture");
+        ok = ok && blocker_set(&rec) >= 0;
+
+        fake_clock_set(&clock, 4222);
+        condition_engine_tick();
+        ok = ok && condition_engine_get_active_count() == 0;
+        /* No further remedy attempt was made past the one before the
+         * blocker appeared, and — critically — no forever-re-arm page. */
+        ok = ok && download_queue_starved_test_remedy_calls() == 1;
+
+        struct condition_runtime_snapshot snap;
+        memset(&snap, 0, sizeof(snap));
+        ok = ok && condition_engine_get_registered_snapshot(
+            "download_queue_starved", &snap);
+        ok = ok && !snap.operator_needed_emitted;
+
+        SYNC_WATCHDOG_CHECK(
+            "download queue starved defers an already-active episode once "
+            "a permanent fold blocker is diagnosed (no page, no re-arm)",
+            ok);
         dl_free(&dm);
         zcl_mutex_destroy(&dm.cs);
         cleanup_sync_watchdog();
