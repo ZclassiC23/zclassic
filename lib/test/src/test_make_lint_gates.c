@@ -154,6 +154,29 @@ static int copy_file(const char *src, const char *dst)
     return 0;
 }
 
+/* Replace the first occurrence of `needle` in `hay` with `repl`, returning a
+ * freshly malloc'd buffer (caller frees) or NULL if `needle` is absent or on
+ * allocation failure. Test-only string-fixture helper (no production callers,
+ * so plain malloc — test/ files are exempt from check-raw-malloc). */
+static char *str_replace_once(const char *hay, const char *needle,
+                              const char *repl)
+{
+    const char *pos = strstr(hay, needle);
+    if (!pos) return NULL;
+    size_t pre = (size_t)(pos - hay);
+    size_t hay_len = strlen(hay);
+    size_t needle_len = strlen(needle);
+    size_t repl_len = strlen(repl);
+    size_t out_len = hay_len - needle_len + repl_len;
+    char *out = malloc(out_len + 1);
+    if (!out) return NULL;
+    memcpy(out, hay, pre);
+    memcpy(out + pre, repl, repl_len);
+    memcpy(out + pre + repl_len, pos + needle_len, hay_len - pre - needle_len);
+    out[out_len] = '\0';
+    return out;
+}
+
 static bool has_c_suffix(const char *path)
 {
     size_t len = strlen(path);
@@ -1118,6 +1141,13 @@ static int t_git_hooks_gate_rejects_noop_pre_push(void)
 #define FSUF_SCRIPT_REL  "tools/lint/check_framework_filename_suffix.sh"
 /* A foreign-shape suffix (*_controller) planted under app/services/src. */
 #define FSUF_FIXTURE_DST "app/services/src/_fsuf_fixture_tmp_controller.c"
+/* Gate P2 (docs/work/palace-design.md §3) — check-group-purpose. Runs against
+ * a test-tmp/ COPY of the real codeindex_group.c (via ZCL_GROUP_PURPOSE_SRC)
+ * so the self-test never mutates the real source file. */
+#define GRPPURPOSE_SCRIPT_REL      "tools/lint/check_group_purpose.sh"
+#define GRPPURPOSE_REAL_SRC_REL    "lib/codeindex/src/codeindex_group.c"
+#define GRPPURPOSE_OK_FIXTURE_REL  "test-tmp/_group_purpose_fixture_ok_tmp.c"
+#define GRPPURPOSE_BAD_FIXTURE_REL "test-tmp/_group_purpose_fixture_bad_tmp.c"
 #define LOG_MACRO_RETURN_SCRIPT_REL \
     "tools/lint/check_log_macro_return_type.sh"
 #define LOG_MACRO_RETURN_FIXTURE_DST \
@@ -1470,6 +1500,77 @@ static int t_gate22_framework_filename_suffix(void)
         ASSERT(baseline_rc == 0);
         ASSERT(planted == 0);
         ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Gate P2 (docs/work/palace-design.md §3) — check-group-purpose (HARD): a
+ * group node whose ci_group_purpose() case returns "" trips the gate; the
+ * unmodified source is clean. Never touches the live codeindex_group.c —
+ * copies it into test-tmp/, blanks one known case (lib/bloom) in the copy,
+ * and points the gate at each fixture via ZCL_GROUP_PURPOSE_SRC. */
+static int t_gate_p2_group_purpose(void)
+{
+    int failures = 0;
+    char real_path[PATH_MAX], ok_path[PATH_MAX], bad_path[PATH_MAX];
+    char test_tmp_dir[PATH_MAX];
+    int paths_ok =
+        (repo_path(real_path, sizeof(real_path), GRPPURPOSE_REAL_SRC_REL) == 0 &&
+         repo_path(ok_path, sizeof(ok_path), GRPPURPOSE_OK_FIXTURE_REL) == 0 &&
+         repo_path(bad_path, sizeof(bad_path), GRPPURPOSE_BAD_FIXTURE_REL) == 0 &&
+         repo_path(test_tmp_dir, sizeof(test_tmp_dir), "test-tmp") == 0)
+            ? 1 : 0;
+    if (paths_ok) (void)mkdir(test_tmp_dir, 0700);
+
+    unlink_rel(GRPPURPOSE_OK_FIXTURE_REL);
+    unlink_rel(GRPPURPOSE_BAD_FIXTURE_REL);
+
+    int copied = (paths_ok && copy_file(real_path, ok_path) == 0) ? 0 : -1;
+
+    char *ok_contents = NULL;
+    int read_ok = (copied == 0) ? read_entire_file(ok_path, &ok_contents) : -1;
+
+    const char *needle =
+        "if (strcmp(group, \"lib/bloom\") == 0) return "
+        "\"bloom filters + merkle proofs for lightweight block/tx filtering\";";
+    const char *repl = "if (strcmp(group, \"lib/bloom\") == 0) return \"\";";
+    char *bad_contents =
+        (read_ok == 0) ? str_replace_once(ok_contents, needle, repl) : NULL;
+    int wrote_bad = bad_contents ? write_file(bad_path, bad_contents) : -1;
+
+    int ok_rc = (copied == 0 && read_ok == 0)
+        ? run_gate_script_with_env2(GRPPURPOSE_SCRIPT_REL,
+                                    "ZCL_LINT_MODE", "FAIL",
+                                    "ZCL_GROUP_PURPOSE_SRC", ok_path)
+        : -1;
+    int bad_rc = (wrote_bad == 0)
+        ? run_gate_script_with_env2(GRPPURPOSE_SCRIPT_REL,
+                                    "ZCL_LINT_MODE", "FAIL",
+                                    "ZCL_GROUP_PURPOSE_SRC", bad_path)
+        : -1;
+    int recover_rc = (copied == 0 && read_ok == 0)
+        ? run_gate_script_with_env2(GRPPURPOSE_SCRIPT_REL,
+                                    "ZCL_LINT_MODE", "FAIL",
+                                    "ZCL_GROUP_PURPOSE_SRC", ok_path)
+        : -1;
+
+    unlink_rel(GRPPURPOSE_OK_FIXTURE_REL);
+    unlink_rel(GRPPURPOSE_BAD_FIXTURE_REL);
+    free(ok_contents);
+    free(bad_contents);
+
+    TEST("[lint-gate] P2 group-purpose: clean copy passes, blanked purpose trips, recovers") {
+        ASSERT(paths_ok);
+        ASSERT(copied == 0);
+        ASSERT(read_ok == 0);
+        /* bad_contents == NULL means the needle wasn't found — the real
+         * source's lib/bloom case text drifted out from under this fixture. */
+        ASSERT(bad_contents != NULL);
+        ASSERT(wrote_bad == 0);
+        ASSERT(ok_rc == 0);
+        ASSERT(bad_rc != 0);
         ASSERT(recover_rc == 0);
         PASS();
     } _test_next:;
@@ -6942,6 +7043,7 @@ int test_make_lint_gates(void)
     failures += t_e10_framework_shape_ratchet();
     failures += t_e10_no_raw_sqlite_ratchet();
     failures += t_gate22_framework_filename_suffix();
+    failures += t_gate_p2_group_purpose();
     failures += t_log_macro_return_type_gate();
     failures += t_e11_doc_accuracy();
     failures += t_model_ar_lifecycle_gate();

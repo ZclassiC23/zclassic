@@ -403,6 +403,7 @@ add/remove a gate.
 - `check-framework-filename-suffix`
 - `check-framework-shape`
 - `check-git-hooks-installed`
+- `check-group-purpose`
 - `check-honest-witness`
 - `check-lag-slo-observable`
 - `check-lib-layering`

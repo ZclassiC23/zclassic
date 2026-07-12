@@ -8,7 +8,8 @@
  * Makefile's LIB_MODULES variable and the eight app/ shape folders. A parity
  * test (test_codeindex, case 6) asserts they stay in sync. Keep them sorted
  * the way the Makefile lists them is NOT required — the parity test compares
- * as sets. */
+ * as sets. k_domain_contexts[] mirrors the Makefile's DOMAIN_CONTEXTS the
+ * same way, but is file-local (not exported) so it has no parity test yet. */
 
 #include "codeindex_priv.h"
 #include "codeindex/codeindex_build.h"
@@ -31,6 +32,12 @@ static const char *const k_lib_modules[] = {
 static const char *const k_app_shapes[] = {
     "conditions", "controllers", "events", "jobs",
     "models", "services", "supervisors", "views",
+};
+
+/* mirrors the Makefile's DOMAIN_CONTEXTS = wallet encoding (case 8b in
+ * check_group_purpose.sh cross-checks this list against the Makefile). */
+static const char *const k_domain_contexts[] = {
+    "encoding", "wallet",
 };
 
 const char *const *ci_lib_modules(size_t *count)
@@ -108,6 +115,47 @@ const char *ci_group_purpose(const char *group)
     if (strcmp(group, "app/services") == 0) return "shape: service objects (business logic)";
     if (strcmp(group, "app/supervisors") == 0) return "shape: liveness supervisors";
     if (strcmp(group, "app/views") == 0) return "shape: explorer/HTML/JSON views";
+
+    /* lib/<mod> — one line per module in k_lib_modules[] above. */
+    if (strcmp(group, "lib/bloom") == 0) return "bloom filters + merkle proofs for lightweight block/tx filtering";
+    if (strcmp(group, "lib/chain") == 0) return "chain index primitives: MMB/MMR fast-sync proofs, UTXO-root ladder, snapshot loader";
+    if (strcmp(group, "lib/coins") == 0) return "the UTXO set: coins view, undo data, compression, SHA3 UTXO commitment";
+    if (strcmp(group, "lib/core") == 0) return "small consensus-adjacent primitives: amount, random, time-since-epoch helpers";
+    if (strcmp(group, "lib/crypto") == 0) return "hash/cipher/PoW primitives: SHA-2/3, Blake2, ChaCha20-Poly1305, Ed25519, Equihash";
+    if (strcmp(group, "lib/crypto_registry") == 0) return "singleton catalog of pluggable cryptographic verifier implementations";
+    if (strcmp(group, "lib/encoding") == 0) return "string encoding helpers: money strings, hex/bin string encodings";
+    if (strcmp(group, "lib/event") == 0) return "the in-process publish/subscribe event bus that decouples subsystems";
+    if (strcmp(group, "lib/framework") == 0) return "app-shape platform glue: app_platform bootstrap + the typed-blocker condition contract";
+    if (strcmp(group, "lib/health") == 0) return "single in-process heartbeat/watchdog ring (replaces the old per-subsystem watchdogs)";
+    if (strcmp(group, "lib/hotswap") == 0) return "Tier-1 dev-only dlopen hot-swap loader for hotswap-eligible controller/handler TUs";
+    if (strcmp(group, "lib/kernel") == 0) return "service lifecycle kernel (init/start/stop/status ordering) + the native command registry";
+    if (strcmp(group, "lib/json") == 0) return "minimal in-tree JSON value/parse/serialize library (no external deps)";
+    if (strcmp(group, "lib/keys") == 0) return "EC key material: private/public keys, bech32/base58 address key encoding";
+    if (strcmp(group, "lib/metrics") == 0) return "Prometheus-style in-process counters/histograms for MCP + node metrics";
+    if (strcmp(group, "lib/mining") == 0) return "block template generation + the CPU miner loop";
+    if (strcmp(group, "lib/net") == 0) return "P2P networking: connman, peers, addrman, messages, Tor/onion, file market, fast sync";
+    if (strcmp(group, "lib/platform") == 0) return "thin OS-portability wrappers: monotonic clock, RNG, time_t/timespec conversions";
+    if (strcmp(group, "lib/policy") == 0) return "mempool/relay fee policy (min relay fee, fee estimation)";
+    if (strcmp(group, "lib/primitives") == 0) return "consensus wire primitives: CBlock/CBlockHeader, CTransaction";
+    if (strcmp(group, "lib/rpc") == 0) return "JSON-RPC client/server plumbing: HTTP server, RPC dispatch, legacy zclassicd oracle client";
+    if (strcmp(group, "lib/script") == 0) return "Bitcoin Script interpreter, sig cache/encoding, HTLC + standard script templates";
+    if (strcmp(group, "lib/sim") == 0) return "deterministic simnet: byzantine/cluster harnesses, seed-tape replay, HTLC contract overlay";
+    if (strcmp(group, "lib/storage") == 0) return "persistence layer: event log, coins/anchor/nullifier KV stores, block index, projections";
+    if (strcmp(group, "lib/support") == 0) return "low-level memory-safety helpers: secure cleanse, page-locked (mlock) allocations";
+    if (strcmp(group, "lib/sync") == 0) return "sync + snapshot-sync state machines (single owner of sync_state/sync_planner)";
+    if (strcmp(group, "lib/util") == 0) return "shared low-level utilities: logging, boot phase/progress, blockers, supervisor, safe_alloc";
+    if (strcmp(group, "lib/validation") == 0) return "consensus block/tx validation: connect_block, mempool accept, checkpoint, tx_verifier";
+    if (strcmp(group, "lib/vcs") == 0) return "in-binary ZVCS: source+binary snapshot/revert, sealed-core commitment guard";
+    if (strcmp(group, "lib/wallet") == 0) return "wallet key/persistence infra: HD keychain, BIP44, mnemonic, keystore, wallet DB";
+    if (strcmp(group, "lib/sapling") == 0) return "Sapling zk-SNARK primitives: Groth16 prover, Jubjub/BLS12-381, note encryption, circuits";
+    if (strcmp(group, "lib/zslp") == 0) return "Simple Ledger Protocol (SLP) token support encoded in OP_RETURN outputs";
+    if (strcmp(group, "lib/znam") == 0) return "ZCL Names (ZNAM) on-chain name registry protocol (ENS-inspired)";
+    if (strcmp(group, "lib/codeindex") == 0) return "the in-binary source-code navigator index: scan, store, query, the `code` CLI";
+
+    /* domain/<ctx> — one line per bounded context in k_domain_contexts[] above. */
+    if (strcmp(group, "domain/encoding") == 0) return "pure framework-free base58/bech32 address encoding (no clock/RNG/IO)";
+    if (strcmp(group, "domain/wallet") == 0) return "pure framework-free HD key derivation + mnemonic math (no clock/RNG/IO)";
+
     return "";
 }
 
@@ -156,6 +204,14 @@ bool ci_group_emit_all(struct ci_store *s)
         char path[64];
         snprintf(path, sizeof(path), "app/%s", shapes[i]);
         if (!emit(s, path, "app-shape", "app")) return false;
+    }
+
+    /* domain/<ctx> */
+    size_t ndc = sizeof(k_domain_contexts) / sizeof(k_domain_contexts[0]);
+    for (size_t i = 0; i < ndc; i++) {
+        char path[64];
+        snprintf(path, sizeof(path), "domain/%s", k_domain_contexts[i]);
+        if (!emit(s, path, "domain-context", "domain")) return false;
     }
     return true;
 }
