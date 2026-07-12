@@ -78,47 +78,43 @@ int64_t peer_scoring_now_ms(void)
     return (int64_t)ts.tv_sec * 1000 + (int64_t)ts.tv_nsec / 1000000;
 }
 
+/* DoS-policy surface: one row per offence carries both the weight and the
+ * display name, indexed by the enum value itself. Single source of truth —
+ * previously peer_offence_weight() and peer_offence_name() each carried
+ * their own parallel switch over the same case list; changing a weight or a
+ * name now only touches one line instead of two. */
+struct peer_offence_info {
+    int weight;
+    const char *name;
+};
+
+static const struct peer_offence_info g_peer_offence_info[PEER_OFFENCE_COUNT_] = {
+    [PEER_OFFENCE_NONE]               = { 0,   "none" },
+    [PEER_OFFENCE_TIMEOUT]            = { 5,   "timeout" },
+    [PEER_OFFENCE_INVALID_MESSAGE]    = { 10,  "invalid_message" },
+    [PEER_OFFENCE_UNREQUESTED]        = { 10,  "unrequested" },
+    [PEER_OFFENCE_OFFER_REJECTED]     = { 10,  "offer_rejected" },
+    [PEER_OFFENCE_FLOOD]              = { 20,  "flood" },
+    [PEER_OFFENCE_INVALID_PAYLOAD]    = { 20,  "invalid_payload" },
+    [PEER_OFFENCE_INVALID_HEADER]     = { 50,  "invalid_header" },
+    [PEER_OFFENCE_INVALID_CHUNK]      = { 50,  "invalid_chunk" },
+    [PEER_OFFENCE_INVALID_BLOCK]      = { 100, "invalid_block" },
+    [PEER_OFFENCE_INVALID_PROOF]      = { 100, "invalid_proof" },
+    [PEER_OFFENCE_PROTOCOL_VIOLATION] = { 100, "protocol_violation" },
+};
+
 int peer_offence_weight(enum peer_offence offence)
 {
-    /* DoS-policy surface: these are the exact weights the raw
-     * peer_misbehaving() call-sites used before typed adoption.
-     * Changing one changes ban behaviour. */
-    switch (offence) {
-    case PEER_OFFENCE_NONE:               return 0;
-    case PEER_OFFENCE_TIMEOUT:            return 5;
-    case PEER_OFFENCE_INVALID_MESSAGE:    return 10;
-    case PEER_OFFENCE_UNREQUESTED:        return 10;
-    case PEER_OFFENCE_OFFER_REJECTED:     return 10;
-    case PEER_OFFENCE_FLOOD:              return 20;
-    case PEER_OFFENCE_INVALID_PAYLOAD:    return 20;
-    case PEER_OFFENCE_INVALID_HEADER:     return 50;
-    case PEER_OFFENCE_INVALID_CHUNK:      return 50;
-    case PEER_OFFENCE_INVALID_BLOCK:      return 100;
-    case PEER_OFFENCE_INVALID_PROOF:      return 100;
-    case PEER_OFFENCE_PROTOCOL_VIOLATION: return 100;
-    case PEER_OFFENCE_COUNT_:             break;
-    }
-    return 0;
+    if (offence < 0 || offence >= PEER_OFFENCE_COUNT_)
+        return 0;
+    return g_peer_offence_info[offence].weight;
 }
 
 const char *peer_offence_name(enum peer_offence offence)
 {
-    switch (offence) {
-    case PEER_OFFENCE_NONE:               return "none";
-    case PEER_OFFENCE_TIMEOUT:            return "timeout";
-    case PEER_OFFENCE_INVALID_MESSAGE:    return "invalid_message";
-    case PEER_OFFENCE_UNREQUESTED:        return "unrequested";
-    case PEER_OFFENCE_OFFER_REJECTED:     return "offer_rejected";
-    case PEER_OFFENCE_FLOOD:              return "flood";
-    case PEER_OFFENCE_INVALID_PAYLOAD:    return "invalid_payload";
-    case PEER_OFFENCE_INVALID_HEADER:     return "invalid_header";
-    case PEER_OFFENCE_INVALID_CHUNK:      return "invalid_chunk";
-    case PEER_OFFENCE_INVALID_BLOCK:      return "invalid_block";
-    case PEER_OFFENCE_INVALID_PROOF:      return "invalid_proof";
-    case PEER_OFFENCE_PROTOCOL_VIOLATION: return "protocol_violation";
-    case PEER_OFFENCE_COUNT_:             break;
-    }
-    return "unknown";
+    if (offence < 0 || offence >= PEER_OFFENCE_COUNT_)
+        return "unknown";
+    return g_peer_offence_info[offence].name;
 }
 
 void peer_scoring_record(struct net_manager *nm, struct p2p_node *node,
