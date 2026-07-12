@@ -12,6 +12,7 @@ AGENT_IMPACT_RULE("app/controllers/src/store_controller.c|app/controllers/includ
 AGENT_IMPACT_RULE("docs/HANDOFF.md|docs/work/SESSION-HANDOFF-*.md|docs/work/sovereign-service-roadmap.md|docs/work/DEV-WORKFLOW-CODEX.md", "make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/explorer_*.c|app/controllers/include/controllers/explorer_*.h|app/views/src/explorer_*.c|app/views/src/explorer_*.css|app/views/include/views/explorer_*.h|lib/test/src/test_explorer*.c", "explorer")
 AGENT_IMPACT_RULE("lib/keys/src/key_io.c|lib/keys/include/keys/key_io.h|lib/test/src/test_test_key_io_codec.c", "test_key_io_codec keys key_hostile_wif make_lint_gates")
+AGENT_IMPACT_RULE("lib/encoding/src/utilstrencodings.c|lib/encoding/include/encoding/utilstrencodings.h|lib/encoding/src/utilmoneystr.c|lib/encoding/include/encoding/utilmoneystr.h|lib/test/src/test_test_str_money_codecs.c", "test_str_money_codecs encoding make_lint_gates")
 
 AGENT_IMPACT_RULE("tools/mcp/*|tools/mcp_server.c|app/controllers/src/*mcp*|lib/test/src/test_mcp_controllers.c", "mcp_controllers")
 AGENT_IMPACT_RULE("tools/mcp/baseline.c|tools/mcp/baseline.h|lib/test/src/test_mcp_baseline.c", "mcp_baseline mcp_controllers")

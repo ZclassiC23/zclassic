@@ -946,6 +946,8 @@ int main(int argc, char **argv)
     failures += test_crypto();
     failures += test_crypto_registry();
     failures += test_encoding();
+    { extern int test_test_str_money_codecs(void);
+      failures += test_test_str_money_codecs(); }
     failures += test_chain();
     { extern int test_pprev_walk(void); failures += test_pprev_walk(); }
     { extern int test_chain_tip(void); failures += test_chain_tip(); }
