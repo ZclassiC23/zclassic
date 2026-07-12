@@ -19,6 +19,7 @@ DEBOUNCE_MS="${ZCL_DEV_WATCH_DEBOUNCE_MS:-500}"
 BACKEND="${ZCL_DEV_WATCH_BACKEND:-auto}"
 RUN_ONCE="${ZCL_DEV_WATCH_ONCE:-0}"
 RUN_INITIAL="${ZCL_DEV_WATCH_INITIAL:-0}"
+WARM_CODEINDEX="${ZCL_DEV_WARM_CODEINDEX:-1}"
 
 # Test/automation seams.  Empty means use the real in-tree command.
 CHECK_COMMAND="${ZCL_DEV_WATCH_CHECK_COMMAND:-}"
@@ -100,6 +101,8 @@ Environment:
                                       defaults to the dev-only RPC bridge;
                                       set empty to force reload fallback
   ZCL_DEV_WATCH_STATE_DIR=path        durable cycles + watcher heartbeat
+  ZCL_DEV_WARM_CODEINDEX=1            warm lib/codeindex after each green
+                                      cycle (default on); set 0 to disable
 
 Examples:
   make dev-watch
@@ -674,6 +677,17 @@ schedule_async_immutable_build()
     log "scheduled async immutable dev binary build+preflight stage pid=$! log=$log_path"
 }
 
+schedule_codeindex_warm()
+{
+    is_true "$WARM_CODEINDEX" || return 0
+    command -v flock >/dev/null 2>&1 || return 0
+    local bin="$ROOT/build/bin/zclassic23-dev" lock_file="$STATE_DIR/codeindex-warm.lock"
+    [ -x "$bin" ] || return 0
+    mkdir -p "$STATE_DIR"
+    ( nice flock -n "$lock_file" "$bin" code map >/dev/null 2>&1 || true ) &
+    log "cycle=$CYCLE scheduled codeindex warm pid=$! lock=$lock_file"
+}
+
 source_still_matches()
 {
     local expected="$1" probe="$WORK/source-probe"
@@ -834,6 +848,7 @@ run_cycle()
 
     AGENT_NEXT_ACTION="make agent-dev-status ARGS=--json"
     write_cycle_record "$changed_file" accepted
+    schedule_codeindex_warm
     case "$SELECTED_PATH" in
         reload) log "cycle=$CYCLE ready isolated-dev-lane elapsed_s=$(elapsed_seconds "$started")" ;;
         stage) log "cycle=$CYCLE staged-for-next-dev-restart elapsed_s=$(elapsed_seconds "$started")" ;;
@@ -1010,8 +1025,32 @@ self_test()
     [ "$(tr '\n' ' ' < "$command_log")" = "check rebuild deploy " ] ||
         selftest_fail "mixed auto change did not use reload" || { rm -rf "$sandbox"; return 1; }
 
+    # The post-green codeindex warm hook is fire-and-forget: backgrounded,
+    # flock-guarded, and skippable via WARM_CODEINDEX (ZCL_DEV_WARM_CODEINDEX).
+    mkdir -p "$ROOT/build/bin"
+    cat > "$ROOT/build/bin/zclassic23-dev" <<'FAKE_DEV_BIN'
+#!/usr/bin/env bash
+printf 'warm:%s\n' "$*" >> "$ZCL_WARM_LOG"
+FAKE_DEV_BIN
+    chmod +x "$ROOT/build/bin/zclassic23-dev"
+    ZCL_WARM_LOG="$sandbox/warm.log"
+    export ZCL_WARM_LOG
+    : > "$ZCL_WARM_LOG"
+    WARM_CODEINDEX=0
+    run_cycle "$changed" "$expected" >/dev/null 2>&1
+    wait
+    [ ! -s "$ZCL_WARM_LOG" ] ||
+        selftest_fail "codeindex warm hook fired while disabled" || { rm -rf "$sandbox"; return 1; }
+
+    WARM_CODEINDEX=1
+    run_cycle "$changed" "$expected" >/dev/null 2>&1
+    wait
+    grep -qx 'warm:code map' "$ZCL_WARM_LOG" ||
+        selftest_fail "codeindex warm hook did not fire on a green cycle" || { rm -rf "$sandbox"; return 1; }
+    unset ZCL_WARM_LOG
+
     rm -rf "$sandbox"
-    printf '[dev-watch-selftest] PASS: manifest diff, failure short-circuit, five modes, auto classification, durable cycle JSON\n'
+    printf '[dev-watch-selftest] PASS: manifest diff, failure short-circuit, five modes, auto classification, durable cycle JSON, codeindex warm hook\n'
 }
 
 run_once()
