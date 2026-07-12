@@ -23,6 +23,7 @@
 #include "storage/progress_store.h"
 #include "storage/coins_kv.h"
 #include "storage/anchor_kv.h"
+#include "config/boot_shielded_seed.h"
 #include "storage/disk_block_io.h"       /* block_index_have_data_readable */
 #include "config/boot_internal.h"        /* boot_index_clear_coins_state */
 #include "config/mint_anchor_progress.h" /* mint_anchor_progress_* */
@@ -1176,6 +1177,14 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
     uint8_t *embedded_frontier = NULL;
     uint32_t embedded_frontier_len = 0;
 
+    /* v3 ALSO carries the Sprout frontier + nullifier set (the Phase-2 seed
+     * installs them to cure the empty-sapling_anchors birth defect). NULL/0 on
+     * v1/v2 — the old cursor-reset path runs. See config/boot_shielded_seed.h. */
+    bool     embedded_shielded_v3 = false;
+    uint8_t *embedded_sprout = NULL, *embedded_nullifiers = NULL;
+    uint32_t embedded_sprout_len = 0;
+    uint64_t embedded_nullifier_count = 0;
+
     /* (ii) CONSENSUS CROSS-CHECK — bind the snapshot to THIS node's PoW-proven
      * header chain. The self-SHA3 verify above proves the file is internally
      * consistent but binds it to NOTHING on the real chain: a self-consistent
@@ -1360,30 +1369,13 @@ retry_authority_store:
         }
     }
 
-    /* While the (re-opened) handle is still mapped, capture a heap copy of any
-     * embedded Sapling frontier (v2 snapshot). The section is inside the body
-     * SHA3 region uss_open already verified, so this blob is integrity-bound. */
-    if (load_ok && uss_version(h) == 2) {
-        const uint8_t *fblob = NULL;
-        uint32_t flen = 0;
-        if (uss_frontier(h, &fblob, &flen) && fblob && flen > 0) {
-            embedded_frontier = zcl_malloc(flen, "boot.embedded_frontier");
-            if (embedded_frontier) {
-                memcpy(embedded_frontier, fblob, flen);
-                embedded_frontier_len = flen;
-                LOG_INFO("boot", "[boot] -load-snapshot-at-own-height: v2 "
-                         "snapshot carries a %u-byte Sapling frontier", flen);
-            } else {
-                LOG_WARN("boot", "[boot] -load-snapshot-at-own-height: OOM "
-                         "copying the embedded frontier (%u B) — will fall "
-                         "back to the block-replay rebuild", flen);
-            }
-        } else {
-            LOG_WARN("boot", "[boot] -load-snapshot-at-own-height: v2 header "
-                     "but no readable frontier section — falling back to the "
-                     "block-replay rebuild");
-        }
-    }
+    /* Capture heap copies of the embedded shielded state (v2 = Sapling frontier;
+     * v3 = Sapling+Sprout frontiers + nullifiers) — all inside the SHA3-verified
+     * body, so integrity-bound. See config/boot_shielded_seed.h. */
+    boot_capture_shielded(h, load_ok, &embedded_frontier,
+                          &embedded_frontier_len, &embedded_shielded_v3,
+                          &embedded_sprout, &embedded_sprout_len,
+                          &embedded_nullifiers, &embedded_nullifier_count);
 
     uss_close(h);
     h = NULL;
@@ -1729,7 +1721,13 @@ retry_authority_store:
             refold_ok = false;
     if (refold_ok && !coins_kv_set_applied_height_in_tx(rpdb, seed_h + 1))
         refold_ok = false;
-    if (refold_ok && !anchor_kv_reset_in_tx(rpdb, seed_h))
+    /* SHIELDED SEED (v3, Sapling root-verified) or the default cursor reset
+     * (v1/v2). Fail-closed. See config/boot_shielded_seed.h. */
+    if (refold_ok && !boot_shielded_cure_or_reset_in_tx(
+            rpdb, ms, seed_h, sapling_installed_from_frontier,
+            embedded_shielded_v3, embedded_frontier, embedded_frontier_len,
+            embedded_sprout, embedded_sprout_len,
+            embedded_nullifiers, embedded_nullifier_count))
         refold_ok = false;
     if (refold_ok) {
         (void)progress_meta_delete_in_tx(rpdb, REDUCER_TRUSTED_BASE_HEIGHT_KEY);
@@ -1774,6 +1772,8 @@ retry_authority_store:
 
     free(embedded_frontier);
     embedded_frontier = NULL;
+    free(embedded_sprout);
+    free(embedded_nullifiers);
 
     fprintf(stderr,
             "[boot] -load-snapshot-at-own-height: coin set RE-SEEDED + "

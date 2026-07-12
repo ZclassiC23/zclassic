@@ -2,6 +2,7 @@
 
 #include "chain/utxo_snapshot_loader.h"
 #include "crypto/sha3.h"
+#include "storage/snapshot_shielded.h"
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
 
@@ -28,6 +29,7 @@ struct uss_handle {
 
 #define USS_VERSION_V1 1u
 #define USS_VERSION_V2 2u   /* v1 + trailing Sapling-frontier section */
+#define USS_VERSION_V3 3u   /* v1 + shielded section (Sapling + Sprout + nfs) */
 
 static uint32_t rd_le32(const uint8_t *p)
 {
@@ -109,7 +111,8 @@ struct uss_handle *uss_open(const char *path,
     memcpy(h->hdr.anchor_block_hash, base + 40, 32);
     memcpy(h->hdr.sha3_hash,         base + 72, 32);
 
-    if (h->hdr.version != USS_VERSION_V1 && h->hdr.version != USS_VERSION_V2) {
+    if (h->hdr.version != USS_VERSION_V1 && h->hdr.version != USS_VERSION_V2 &&
+        h->hdr.version != USS_VERSION_V3) {
         set_err(err, err_sz, "bad version %u", h->hdr.version);
         munmap(mp, (size_t)st.st_size);
         free(h);
@@ -178,35 +181,97 @@ uint32_t uss_version(const struct uss_handle *h)
     return h ? h->hdr.version : 0;
 }
 
+/* Walk PAST the `count` UTXO records (identical decode to uss_iter) and return
+ * the pointer at the first byte AFTER them — the start of any trailing shielded
+ * section. Returns NULL on truncation. */
+static const uint8_t *uss_body_after_records(struct uss_handle *h,
+                                             const uint8_t **end_out)
+{
+    const uint8_t *p = h->base + h->body_off;
+    const uint8_t *end = h->base + h->size;
+    if (end_out) *end_out = end;
+    for (uint64_t i = 0; i < h->hdr.count; i++) {
+        if ((size_t)(end - p) < 32 + 4 + 8 + 4) return NULL;
+        p += 32;            /* txid   */
+        p += 4;             /* vout   */
+        p += 8;             /* value  */
+        uint32_t slen = rd_le32(p); p += 4;
+        if ((uint64_t)(end - p) < (uint64_t)slen + 4 + 1) return NULL;
+        p += slen;          /* script */
+        p += 4;             /* height */
+        p += 1;             /* is_coinbase */
+    }
+    return p;
+}
+
 bool uss_frontier(struct uss_handle *h, const uint8_t **blob_out,
                   uint32_t *len_out)
 {
     if (blob_out) *blob_out = NULL;
     if (len_out)  *len_out = 0;
     if (!h) return false;
-    if (h->hdr.version != USS_VERSION_V2) return false;
+    /* The Sapling frontier is the FIRST trailing section in BOTH v2 (only that
+     * section) and v3 (Sapling then Sprout then nullifiers), so the same
+     * [u32 len][blob] decode serves both. The section lives inside the body
+     * SHA3 region uss_open's verify_full_sha3 already bound. */
+    if (h->hdr.version != USS_VERSION_V2 && h->hdr.version != USS_VERSION_V3)
+        return false;
 
-    /* Walk PAST the `count` UTXO records (identical decode to uss_iter) to find
-     * the trailing [u32 frontier_len LE][blob] section. The section lives inside
-     * the body SHA3 region, so uss_open's verify_full_sha3 already bound it. */
-    const uint8_t *p = h->base + h->body_off;
-    const uint8_t *end = h->base + h->size;
-    for (uint64_t i = 0; i < h->hdr.count; i++) {
-        if ((size_t)(end - p) < 32 + 4 + 8 + 4) return false;
-        p += 32;            /* txid   */
-        p += 4;             /* vout   */
-        p += 8;             /* value  */
-        uint32_t slen = rd_le32(p); p += 4;
-        if ((uint64_t)(end - p) < (uint64_t)slen + 4 + 1) return false;
-        p += slen;          /* script */
-        p += 4;             /* height */
-        p += 1;             /* is_coinbase */
-    }
-    /* p now points at the frontier section. */
+    const uint8_t *end = NULL;
+    const uint8_t *p = uss_body_after_records(h, &end);
+    if (!p) return false;
     if ((size_t)(end - p) < 4) return false;
     uint32_t flen = rd_le32(p); p += 4;
     if (flen == 0 || (uint64_t)(end - p) < (uint64_t)flen) return false;
     if (blob_out) *blob_out = p;
     if (len_out)  *len_out  = flen;
+    return true;
+}
+
+bool uss_shielded(struct uss_handle *h,
+                  const uint8_t **sapling_out, uint32_t *sapling_len_out,
+                  const uint8_t **sprout_out,  uint32_t *sprout_len_out,
+                  const uint8_t **nf_out,      uint64_t *nf_count_out)
+{
+    if (sapling_out)     *sapling_out = NULL;
+    if (sapling_len_out) *sapling_len_out = 0;
+    if (sprout_out)      *sprout_out = NULL;
+    if (sprout_len_out)  *sprout_len_out = 0;
+    if (nf_out)          *nf_out = NULL;
+    if (nf_count_out)    *nf_count_out = 0;
+    if (!h || h->hdr.version != USS_VERSION_V3) return false;
+
+    const uint8_t *end = NULL;
+    const uint8_t *p = uss_body_after_records(h, &end);
+    if (!p) return false;
+
+    /* [u32 sapling_len][sapling] */
+    if ((size_t)(end - p) < 4) return false;
+    uint32_t sap_len = rd_le32(p); p += 4;
+    if ((uint64_t)(end - p) < (uint64_t)sap_len) return false;
+    const uint8_t *sap = sap_len ? p : NULL;
+    p += sap_len;
+
+    /* [u32 sprout_len][sprout] */
+    if ((size_t)(end - p) < 4) return false;
+    uint32_t spr_len = rd_le32(p); p += 4;
+    if ((uint64_t)(end - p) < (uint64_t)spr_len) return false;
+    const uint8_t *spr = spr_len ? p : NULL;
+    p += spr_len;
+
+    /* [u64 nf_count][records] */
+    if ((size_t)(end - p) < 8) return false;
+    uint64_t nf_count = rd_le64(p); p += 8;
+    uint64_t nf_bytes = nf_count * (uint64_t)SNAPSHOT_NF_RECORD_BYTES;
+    if (nf_count > (UINT64_MAX / SNAPSHOT_NF_RECORD_BYTES)) return false;
+    if ((uint64_t)(end - p) < nf_bytes) return false;
+    const uint8_t *nf = nf_count ? p : NULL;
+
+    if (sapling_out)     *sapling_out = sap;
+    if (sapling_len_out) *sapling_len_out = sap_len;
+    if (sprout_out)      *sprout_out = spr;
+    if (sprout_len_out)  *sprout_len_out = spr_len;
+    if (nf_out)          *nf_out = nf;
+    if (nf_count_out)    *nf_count_out = nf_count;
     return true;
 }
