@@ -940,6 +940,54 @@ maybe_live_probe() {
     esac
 }
 
+# Dense one-line failure diagnosis for a rung. Priority:
+#  (1) first compiler error   file:line:col: error:
+#  (2) else, if a "Failed groups:" block is present, the first log=<path>
+#      token's first failing assertion line (inline it — the harness only
+#      prints the path, so the reader would otherwise have to open the file)
+#  (3) else the first line matching error|FAIL
+# Always prints exactly one line, prefixed FIRST-ERROR[<label>]: .
+first_error_line() {
+    local label="$1" output="$2" line log_path
+    line="$(printf '%s\n' "$output" | grep -m1 -E ':[0-9]+:[0-9]+: error:' || true)"
+    if [ -n "$line" ]; then
+        log "FIRST-ERROR[$label]: $line"
+        return
+    fi
+    if printf '%s\n' "$output" | grep -q 'Failed groups:'; then
+        log_path="$(printf '%s\n' "$output" |
+            grep -m1 -oE 'log=[^[:space:]]+' | sed 's/^log=//' || true)"
+        if [ -n "$log_path" ] && [ -f "$log_path" ]; then
+            line="$(grep -m1 -E 'FAIL|Assertion|assert|EXPECT' "$log_path" || true)"
+            if [ -n "$line" ]; then
+                log "FIRST-ERROR[$label]: $line"
+                return
+            fi
+        fi
+    fi
+    line="$(printf '%s\n' "$output" | grep -m1 -iE 'error|FAIL' || true)"
+    log "FIRST-ERROR[$label]: ${line:-<no matching error line>}"
+}
+
+# Run one ladder rung, capturing combined output. Always prints the output;
+# on non-zero exit prints a dense FIRST-ERROR line then fails (short-circuits
+# the ladder). set +e/-e brackets the capture so pipefail does not abort us
+# before we can diagnose.
+run_rung() {
+    local label="$1"
+    shift
+    local output rc
+    set +e
+    output="$("$@" 2>&1)"
+    rc=$?
+    set -e
+    printf '%s\n' "$output"
+    if [ "$rc" -ne 0 ]; then
+        first_error_line "$label" "$output"
+        fail "rung $label failed (exit $rc)"
+    fi
+}
+
 main() {
     local mode="${1:-run}"
     case "$mode" in
@@ -979,6 +1027,32 @@ main() {
             log "PASS: focused tests for changed files ($TEST_GROUPS)"
             return
             ;;
+        ff)
+            # Fail-fast ladder for the edit loop: cost-ordered, short-circuiting,
+            # no live probe, no full/LTO build. Order is load-bearing — compile is
+            # the cheapest rung and a broken compile poisons test + lint output, so
+            # it runs first; focused tests before lint keeps the failure that most
+            # often matters at the front.
+            log "ff ladder: compile -> focused-tests -> lint-fast (fail-fast; not release CI)"
+
+            # rung 1: compile ONLY the changed TUs (non-LTO, no link).
+            run_rung compile compile_changed_gate
+
+            # rung 2: focused test group(s) for the working-tree diff.
+            select_test_groups
+            fail_on_unmapped_code_changes
+            if [ -n "$TEST_GROUPS" ]; then
+                run_rung focused-tests run_focused_tests
+            else
+                log "no focused test groups (docs/tooling only)"
+            fi
+
+            # rung 3: fast lint gates.
+            run_rung lint-fast make_fast lint-fast
+
+            log "PASS: ff ladder green (compile -> focused-tests -> lint-fast); not release CI"
+            return
+            ;;
         rebuild-dev|dev-rebuild|fast-rebuild|hot-rebuild)
             run_dev_rebuild
             return
@@ -1002,9 +1076,11 @@ main() {
     show_cache_stats
 
     run_shell_checks
+    # Compile before lint: a broken compile must surface the compiler error
+    # first, not be buried under lint noise. Both still run on green.
+    run_compile_gate
     log "lint-fast"
     make_fast lint-fast
-    run_compile_gate
     run_focused_tests
     maybe_live_probe
 
