@@ -167,12 +167,10 @@ struct app_context {
                                  * to the request's Host header). */
     bool allow_degraded;       /* -allow-degraded : continue past failed post-restore integrity check
                                  * (default false → boot FATALs on broken chain state). */
-    int  par_workers;          /* -par=N : verification-engine worker count
-                                 * (validation/thread_pool.c). 0 (default) =>
-                                 * GetNumCores()-1, clamped >= 1. 1 => serial
-                                 * (no worker threads; verify_queue runs inline).
-                                 * ADDITIVE foundation — not yet wired into the
-                                 * staged reducer / consensus path. */
+    int  par_workers;          /* -par=N : verification-engine worker count.
+                                 * 0 (default) => GetNumCores()-1, clamped >= 1.
+                                 * 1 => serial. ADDITIVE foundation — not yet
+                                 * wired into the staged reducer / consensus path. */
     const char *load_snapshot_at_own_height; /* -load-snapshot-at-own-height=PATH :
                                  * EXPLICIT-ONLY recovery (NEVER fires on a normal
                                  * boot — NULL unless the operator sets the flag).

@@ -800,7 +800,6 @@ uint64_t tip_finalize_stage_utxo_count_diverged_total(void) { return tip_finaliz
 uint64_t tip_finalize_stage_precondition_failed_total(void) { return tip_finalize_observe_precondition_failed_total(); }
 uint64_t tip_finalize_stage_successor_pending_total(void) { return tip_finalize_observe_successor_pending_total(); }
 uint64_t tip_finalize_stage_header_witness_total(void) { return tip_finalize_observe_header_witness_total(); }
-uint64_t tip_finalize_stage_total_work_added_high(void) { return tip_finalize_observe_total_work_added_high(); }
 uint64_t tip_finalize_stage_total_work_added_low(void) { return tip_finalize_observe_total_work_added_low(); }
 
 /* Lock-free blocked-class snapshot for the supervisor stall log. Returns a

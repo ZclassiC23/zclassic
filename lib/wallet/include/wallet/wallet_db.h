@@ -21,27 +21,15 @@ struct wallet_db {
 bool wallet_db_open(struct wallet_db *wdb, const char *path);
 void wallet_db_close(struct wallet_db *wdb);
 
-bool wallet_db_write_key(struct wallet_db *wdb, const struct pubkey *pk,
-                          const struct privkey *key);
 bool wallet_db_read_keys(struct wallet_db *wdb, struct wallet *w);
 
-bool wallet_db_write_tx(struct wallet_db *wdb, const struct wallet_tx *wtx);
 bool wallet_db_read_txs(struct wallet_db *wdb, struct wallet *w);
 
-bool wallet_db_write_scan_height(struct wallet_db *wdb, int height);
 bool wallet_db_read_scan_height(struct wallet_db *wdb, int *height);
 
-bool wallet_db_write_sapling_seed(struct wallet_db *wdb,
-                                    const uint8_t seed[32]);
 bool wallet_db_read_sapling_seed(struct wallet_db *wdb, uint8_t seed[32]);
-bool wallet_db_write_sapling_key(struct wallet_db *wdb,
-                                   uint32_t child_index,
-                                   const struct sapling_key_entry *entry);
 bool wallet_db_read_sapling_keys(struct wallet_db *wdb, struct wallet *w);
 
-bool wallet_db_write_script(struct wallet_db *wdb,
-                              const struct uint160 *script_id,
-                              const struct script *redeem_script);
 bool wallet_db_read_scripts(struct wallet_db *wdb, struct wallet *w);
 
 #endif

@@ -166,8 +166,6 @@ void sha3_512_x4(const uint8_t key[32], const uint8_t nonce[32],
     }
 }
 
-bool sha3_avx512_available(void) { return true; }
-
 #else /* no AVX-512 */
 
 /* Fallback: 4 sequential SHA3-512 calls */
@@ -184,7 +182,5 @@ void sha3_512_x4(const uint8_t key[32], const uint8_t nonce[32],
         sha3_512_finalize(&ctx, out + i * 64);
     }
 }
-
-bool sha3_avx512_available(void) { return false; }
 
 #endif

@@ -271,15 +271,6 @@ bool block_source_policy_get_cached_status(struct cac_decision *out)
     return ok;
 }
 
-bool block_source_policy_selected_non_legacy_source(void)
-{
-    struct cac_decision d;
-    block_source_policy_get_status(&d);
-    return d.result == CAC_DECISION_USE_SOURCE &&
-           d.selected_source != CAC_SOURCE_NONE &&
-           d.selected_source != CAC_SOURCE_ZCLASSICD_MIRROR;
-}
-
 bool block_source_policy_dump_state_json(struct json_value *out,
                                          const char *key)
 {

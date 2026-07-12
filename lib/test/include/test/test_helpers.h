@@ -74,7 +74,6 @@
 #include "net/netbase.h"
 #include "bloom/merkleblock.h"
 #include "script/zcashconsensus.h"
-#include "validation/validationinterface.h"
 #include "net/addrman.h"
 #include "net/net.h"
 #include "validation/txmempool.h"

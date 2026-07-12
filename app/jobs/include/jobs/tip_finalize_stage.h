@@ -125,7 +125,6 @@ uint64_t tip_finalize_stage_successor_pending_total(void);
  * cure step 3). A subset of finalized_total; the complement of
  * successor_pending_total. */
 uint64_t tip_finalize_stage_header_witness_total(void);
-uint64_t tip_finalize_stage_total_work_added_high(void);
 uint64_t tip_finalize_stage_total_work_added_low(void);
 /* Lock-free snapshot of the last blocked-class token. Returns "" when no
  * block has been observed yet; the pointer is a process-lifetime literal

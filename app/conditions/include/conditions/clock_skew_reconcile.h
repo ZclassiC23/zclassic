@@ -21,9 +21,6 @@ void register_clock_skew_reconcile(void);
 #ifdef ZCL_TESTING
 void clock_skew_reconcile_test_reset(void);
 int  clock_skew_reconcile_test_remedy_calls(void);
-/* Test hook: force the next detect() to treat the current (wall,monotonic)
- * pair as a fresh baseline (so an injected jump is measured against it). */
-void clock_skew_reconcile_test_rebaseline(void);
 #endif
 
 #endif /* ZCL_CONDITIONS_CLOCK_SKEW_RECONCILE_H */

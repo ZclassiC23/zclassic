@@ -387,18 +387,6 @@ bool script_validate_stage_dry_run_block(
     return dry_run_block_impl(blk, height, NULL, NULL, out);
 }
 
-bool script_validate_stage_dry_run_block_with_prevout(
-    const struct block *blk,
-    int height,
-    script_validate_prevout_fn prevout,
-    void *prevout_user,
-    struct script_validate_dry_run_report *out)
-{
-    if (!prevout)
-        LOG_FAIL("script_validate", "dry_run_block_with_prevout: NULL resolver");
-    return dry_run_block_impl(blk, height, prevout, prevout_user, out);
-}
-
 static job_result_t step_validate(struct stage_step_ctx *c)
 {
     atomic_store(&g_last_step_unix, platform_time_wall_unix());

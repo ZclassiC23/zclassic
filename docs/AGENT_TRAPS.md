@@ -120,7 +120,6 @@ historical fixture passes, then deploy/restart intentionally.
 
 ### Dead scaffolding — do NOT wire into consensus thinking it's missing
 
-- **`verify_queue` thread-pool engine.** ADDITIVE by design; NOT wired into the staged reducer or any consensus path. Observability/unit-test only. Don't "wire it into the consensus path" — the real hot-path parallelism is `g_script_pool` (above). → `verify_queue.c:7` (header), `:129-130` (`status='additive_unwired'`); `thread_pool.c:7`. (Wave-1 Lane C may have deleted this — re-check before relying on it.)
 - **The `xor_accumulator`-fed commitment MMR is RPC-export-only / dead.** `rpc_blockchain_maybe_commit` (`blockchain_controller.c:262`, `c.utxo_root=xor_accumulator` at `:285`) has ZERO runtime callers; the commitment-MMR root is read only by the `getcommitmentmmr`/`auditchain` export RPCs (`blockchain_controller_mmr.c`); no consensus path reads it. The real per-height UTXO binding lives in the MMB leaf (keystone `b2482a6ff`). So the Act-4a fix is to DELETE the XOR path, NOT to enforce `boundary_root` into it.
 
 ### Shipped but DEFAULT-OFF — present, not active (see also section 3 for why)

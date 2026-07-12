@@ -28,9 +28,4 @@ enum sapling_anchor_gap_class sapling_anchor_frontier_classify(struct sqlite3 *d
 
 void register_sapling_anchor_frontier_unavailable(void);
 
-#ifdef ZCL_TESTING
-void sapling_anchor_frontier_unavailable_test_reset(void);
-int sapling_anchor_frontier_unavailable_test_remedy_calls(void);
-#endif
-
 #endif /* ZCL_CONDITIONS_SAPLING_ANCHOR_FRONTIER_UNAVAILABLE_H */

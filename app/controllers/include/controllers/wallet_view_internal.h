@@ -93,10 +93,6 @@ bool wv_parse_form_field(const uint8_t *body, size_t body_len,
 bool wv_validate_zcl_address(const char *addr);
 void wv_save_contact(const char *address, const char *name);
 
-/* JSON extraction from raw RPC responses */
-void wv_json_extract_str(const char *json, const char *key,
-                          char *out, size_t outmax);
-
 /* ── Format helpers ───────────────────────────────────────── */
 
 void wv_format_relative_time(int64_t timestamp, char *out, size_t max);

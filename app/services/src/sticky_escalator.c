@@ -857,19 +857,9 @@ enum sticky_rung sticky_escalator_test_drive(int64_t injected_tip,
     return (enum sticky_rung)atomic_load(&g_rung);
 }
 
-enum sticky_rung sticky_escalator_test_current_rung(void)
-{
-    return (enum sticky_rung)atomic_load(&g_rung);
-}
-
 bool sticky_escalator_test_armed(void)
 {
     return atomic_load(&g_armed);
-}
-
-uint64_t sticky_escalator_test_fires_operator_needed(void)
-{
-    return atomic_load(&g_fires_operator_needed);
 }
 
 void sticky_escalator_test_set_suppress_refold_restart(bool s)

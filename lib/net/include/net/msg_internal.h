@@ -186,7 +186,6 @@ void msg_processor_plan_valid_block_acceptance(
 struct node_db *msg_node_db(const struct msg_processor *mp);
 struct snapshot_sync_service *msg_snapshot_sync(const struct msg_processor *mp);
 struct snapshot_sync_service *msg_snapshot_sync_ensure(const struct msg_processor *mp);
-struct wallet *msg_wallet(const struct msg_processor *mp);
 
 /* Dandelion state (in msg_tx.c). */
 struct dandelion_state;

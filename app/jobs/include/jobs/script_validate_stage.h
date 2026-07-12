@@ -69,13 +69,6 @@ bool script_validate_stage_dry_run_block(
     int height,
     struct script_validate_dry_run_report *out);
 
-bool script_validate_stage_dry_run_block_with_prevout(
-    const struct block *blk,
-    int height,
-    script_validate_prevout_fn prevout,
-    void *prevout_user,
-    struct script_validate_dry_run_report *out);
-
 bool script_validate_dump_state_json(struct json_value *out, const char *key);
 
 #endif /* ZCL_SERVICES_SCRIPT_VALIDATE_STAGE_H */

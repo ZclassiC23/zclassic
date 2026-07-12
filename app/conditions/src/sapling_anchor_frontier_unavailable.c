@@ -493,17 +493,3 @@ void register_sapling_anchor_frontier_unavailable(void)
     (void)condition_register(&c_sapling_anchor_frontier_unavailable);
 }
 
-#ifdef ZCL_TESTING
-void sapling_anchor_frontier_unavailable_test_reset(void)
-{
-    atomic_store(&g_hstar_at_detect, -1);
-    atomic_store(&g_tier1b_attempts, 0);
-    atomic_store(&g_test_remedy_calls, 0);
-    condition_reset_state(&c_sapling_anchor_frontier_unavailable);
-}
-
-int sapling_anchor_frontier_unavailable_test_remedy_calls(void)
-{
-    return atomic_load(&g_test_remedy_calls);
-}
-#endif

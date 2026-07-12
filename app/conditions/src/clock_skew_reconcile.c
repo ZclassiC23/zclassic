@@ -161,11 +161,4 @@ int clock_skew_reconcile_test_remedy_calls(void)
 {
     return atomic_load(&g_test_remedy_calls);
 }
-
-void clock_skew_reconcile_test_rebaseline(void)
-{
-    atomic_store(&g_last_wall_unix, platform_time_wall_unix());
-    atomic_store(&g_last_mono_ms, platform_time_monotonic_ms());
-    atomic_store(&g_last_skew_secs, 0);
-}
 #endif

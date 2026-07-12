@@ -21,9 +21,6 @@
 #include <stdatomic.h>
 #include "util/safe_alloc.h"
 
-static int test_tip_count = 0;
-static int test_tip_height = 0;
-
 static int test_onion_peer_discover(const char *datadir,
                                     struct onion_peer *out,
                                     size_t max)
@@ -45,13 +42,6 @@ static size_t test_onion_blog_serve(const char *datadir,
                      "blog:%s:%s",
                      datadir, path);
     return n < 0 ? 0 : (size_t)n;
-}
-
-static void test_updated_block_tip(void *ctx, int height)
-{
-    (void)ctx;
-    test_tip_count++;
-    test_tip_height = height;
 }
 
 /* ── backpressure-watchdog event observers ──────────── */
@@ -589,58 +579,6 @@ int test_net(void)
         unsigned char key[18];
         net_service_get_key(&s, key);
         bool ok = key[16] == (8233 >> 8) && key[17] == (8233 & 0xFF);
-        if (ok) printf("OK\n");
-        else { printf("FAIL\n"); failures++; }
-    }
-
-    printf("validation_signals register/dispatch... ");
-    {
-        test_tip_count = 0;
-        test_tip_height = 0;
-
-        struct validation_signals vs;
-        validation_signals_init(&vs);
-
-        struct validation_callbacks cb;
-        memset(&cb, 0, sizeof(cb));
-        cb.ctx = NULL;
-        cb.updated_block_tip = test_updated_block_tip;
-
-        validation_register(&vs, &cb);
-        signal_updated_block_tip(&vs, 42);
-
-        bool ok = (test_tip_count == 1 && test_tip_height == 42);
-
-        signal_updated_block_tip(&vs, 100);
-        ok = ok && test_tip_count == 2 && test_tip_height == 100;
-
-        validation_unregister(&vs, NULL);
-        signal_updated_block_tip(&vs, 200);
-        ok = ok && test_tip_count == 2;
-
-        if (ok) printf("OK\n");
-        else { printf("FAIL\n"); failures++; }
-    }
-
-    printf("validation_signals unregister_all... ");
-    {
-        struct validation_signals vs;
-        validation_signals_init(&vs);
-
-        struct validation_callbacks cb1, cb2;
-        memset(&cb1, 0, sizeof(cb1));
-        memset(&cb2, 0, sizeof(cb2));
-        int ctx1 = 0, ctx2 = 0;
-        cb1.ctx = &ctx1;
-        cb2.ctx = &ctx2;
-
-        validation_register(&vs, &cb1);
-        validation_register(&vs, &cb2);
-        bool ok = (vs.num_listeners == 2);
-
-        validation_unregister_all(&vs);
-        ok = ok && (vs.num_listeners == 0);
-
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

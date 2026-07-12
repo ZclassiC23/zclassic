@@ -138,13 +138,6 @@ void sync_state_test_set_entered_unix(int64_t entered_unix)
 }
 #endif
 
-static sync_state_change_cb g_sync_state_change_cb = NULL;
-
-void sync_set_state_change_callback(sync_state_change_cb cb)
-{
-    g_sync_state_change_cb = cb;
-}
-
 bool sync_set_state(enum sync_state new_state, const char *reason)
 {
     enum sync_state old = (enum sync_state)atomic_load(&g_sync_state);
@@ -168,10 +161,6 @@ bool sync_set_state(enum sync_state new_state, const char *reason)
     atomic_store(&g_sync_state_entered_time,
                  (int64_t)platform_time_wall_time_t());
     atomic_store(&g_sync_state_entry_height, 0);
-
-    /* Notify watchdog of state change */
-    if (g_sync_state_change_cb)
-        g_sync_state_change_cb(new_state, 0);
 
     char buf[EVENT_PAYLOAD_SIZE];
     int n = snprintf(buf, sizeof(buf), "%s->%s: %s",
@@ -206,8 +195,6 @@ bool sync_try_transition(enum sync_state expected,
     atomic_store(&g_sync_state_entered_time,
                  (int64_t)platform_time_wall_time_t());
     atomic_store(&g_sync_state_entry_height, 0);
-    if (g_sync_state_change_cb)
-        g_sync_state_change_cb(new_state, 0);
 
     char buf[EVENT_PAYLOAD_SIZE];
     int n = snprintf(buf, sizeof(buf), "%s->%s: %s",

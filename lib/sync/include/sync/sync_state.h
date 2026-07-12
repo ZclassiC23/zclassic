@@ -62,11 +62,6 @@ int sync_get_state_entry_height(void);
 void sync_state_test_set_entered_unix(int64_t entered_unix);
 #endif
 
-/* Optional callback invoked on successful sync state change.
- * Set by sync_monitor_init() to track state timestamps. */
-typedef void (*sync_state_change_cb)(enum sync_state new_state, int height);
-void sync_set_state_change_callback(sync_state_change_cb cb);
-
 /* ── Snapshot sync state machine ──────────────────────── */
 
 enum snapshot_sync_state {

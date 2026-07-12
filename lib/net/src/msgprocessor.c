@@ -94,13 +94,6 @@ struct node_db *msg_node_db(const struct msg_processor *mp)
     return db_service_node_db(mp->runtime->db_service);
 }
 
-struct wallet *msg_wallet(const struct msg_processor *mp)
-{
-    if (!mp || !mp->runtime)
-        LOG_NULL("net", "mp or mp->runtime is NULL in msg_wallet");
-    return mp->runtime->wallet;
-}
-
 /* ── Recent-block / recent-tx dedup ring buffers ─────────────── */
 /* Used by msg_blocks.c and msg_tx.c via the helpers declared in
  * net/msg_internal.h. Kept here because both families consume them. */
