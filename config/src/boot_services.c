@@ -1426,7 +1426,7 @@ static bool shutdown_flush_coins_to_sqlite(struct boot_svc_ctx *svc,
         return false;
     }
 
-    bool ok = coins_view_sqlite_batch_write_ex( // one-write-path-ok:shutdown-single-writer
+    bool ok = coins_view_sqlite_batch_write( // one-write-path-ok:shutdown-single-writer
         svc->coins_sqlite, &svc->coins_tip->cache_coins,
         &svc->coins_tip->hash_block, &svc->coins_tip->commitment);
     if (!ok) {

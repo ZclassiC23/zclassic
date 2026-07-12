@@ -214,7 +214,7 @@ static bool boot_index_flush_reindex_coins(struct coins_view_sqlite *cvs,
                  "reindex coins flush: NULL arg cvs=%p cvtip=%p",
                  (void *)cvs, (void *)cvtip);
 
-    bool ok = coins_view_sqlite_batch_write_ex( // one-write-path-ok:boot-reindex-single-writer
+    bool ok = coins_view_sqlite_batch_write( // one-write-path-ok:boot-reindex-single-writer
         cvs, &cvtip->cache_coins, &cvtip->hash_block, &cvtip->commitment);
     if (!ok) {
         fprintf(stderr, // obs-ok:helper-context-logged

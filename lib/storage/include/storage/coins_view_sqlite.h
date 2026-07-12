@@ -49,7 +49,7 @@ bool coins_view_sqlite_get_best_block(struct coins_view_sqlite *cvs,
 /* Flush dirty UTXO entries and optionally persist the path commitment in the
  * same transaction. Pass NULL for `commit` when only the coins_best_block
  * anchor should be updated. */
-bool coins_view_sqlite_batch_write_ex( // one-write-path-ok:coins-sqlite-writer-contract
+bool coins_view_sqlite_batch_write( // one-write-path-ok:coins-sqlite-writer-contract
     struct coins_view_sqlite *cvs, struct coins_map *map_coins,
     const struct uint256 *hash_block, const struct utxo_commitment *commit);
 
