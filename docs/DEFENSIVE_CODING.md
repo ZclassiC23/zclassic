@@ -399,6 +399,7 @@ add/remove a gate.
 - `check-doc-accuracy`
 - `check-doc-counts`
 - `check-domain-purity`
+- `check-file-purpose`
 - `check-file-size-ceiling`
 - `check-framework-filename-suffix`
 - `check-framework-shape`
@@ -418,6 +419,7 @@ add/remove a gate.
 - `check-no-new-borrowed-seed`
 - `check-no-new-coin-backfill-caller`
 - `check-no-new-repair-rung`
+- `check-no-orphan-placement`
 - `check-no-silent-ready`
 - `check-observability-pairing`
 - `check-one-result-type`

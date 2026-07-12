@@ -245,23 +245,6 @@ void zcl_native_handle_code_group(const struct zcl_command_request *request,
     }
 
     /* Arg given: that group's immediate subgroups, then its files. */
-    int nsub = 0;
-    for (int i = 0; i < ng && nsub < CODE_SUBGROUP_CAP; i++) {
-        if (strcmp(groups[i].parent, arg) != 0) continue;
-        int fc = codeindex_count_files_in_group(ci, groups[i].path, true);
-        if (fc < 0) fc = 0;
-        struct json_value o;
-        json_init(&o); json_set_object(&o);
-        (void)json_push_kv_str(&o, "path", groups[i].path);
-        (void)json_push_kv_str(&o, "kind", groups[i].kind);
-        (void)json_push_kv_int(&o, "file_count", fc);
-        code_push_obj(&list, &o);
-        char sline[128];
-        (void)snprintf(sline, sizeof(sline), "%s (%d files)", groups[i].path, fc);
-        code_push_line(&lines, sline);
-        nsub++;
-    }
-
     static struct ci_file files[CODE_FILE_CAP + 1];
     int nf = codeindex_files_in_group(ci, arg, files, CODE_FILE_CAP + 1);
     if (nf < 0) nf = 0;
@@ -270,18 +253,67 @@ void zcl_native_handle_code_group(const struct zcl_command_request *request,
 
     struct json_value farr;
     json_init(&farr); json_set_array(&farr);
-    for (int i = 0; i < nf; i++) {
-        char purpose[72];
-        code_trunc(purpose, sizeof(purpose), files[i].purpose, 55);
-        struct json_value o;
-        json_init(&o); json_set_object(&o);
-        (void)json_push_kv_str(&o, "path", files[i].path);
-        (void)json_push_kv_str(&o, "purpose", purpose);
-        code_push_obj(&farr, &o);
-        char line[200];
-        (void)snprintf(line, sizeof(line), "%s%s%s", files[i].path,
-                       purpose[0] ? " — " : "", purpose);
-        code_push_line(&lines, line);
+
+    /* Subgroup purposes mirror the top-bucket branch above, but a LARGE group
+     * (lib: 34 modules x ~64-char purposes, emitted twice — JSON field + text
+     * line) cannot fit the kernel's 4096-byte ZCL_COMMAND_RESULT_BUDGET.
+     * Assemble WITH purposes first, measure, and rebuild without them when the
+     * reply would overflow: a purpose-less listing (the pre-purpose output)
+     * beats a RESPONSE_BUDGET_EXCEEDED error. */
+    int nsub = 0;
+    for (bool with_purpose = true;; with_purpose = false) {
+        json_free(&list);  json_init(&list);  json_set_array(&list);
+        json_free(&lines); json_init(&lines); json_set_array(&lines);
+        json_free(&farr);  json_init(&farr);  json_set_array(&farr);
+        nsub = 0;
+        for (int i = 0; i < ng && nsub < CODE_SUBGROUP_CAP; i++) {
+            if (strcmp(groups[i].parent, arg) != 0) continue;
+            int fc = codeindex_count_files_in_group(ci, groups[i].path, true);
+            if (fc < 0) fc = 0;
+            char purpose[80];
+            purpose[0] = '\0';
+            if (with_purpose)
+                code_trunc(purpose, sizeof(purpose), groups[i].purpose, 64);
+            struct json_value o;
+            json_init(&o); json_set_object(&o);
+            (void)json_push_kv_str(&o, "path", groups[i].path);
+            (void)json_push_kv_str(&o, "kind", groups[i].kind);
+            (void)json_push_kv_int(&o, "file_count", fc);
+            if (with_purpose)
+                (void)json_push_kv_str(&o, "purpose", purpose);
+            code_push_obj(&list, &o);
+            char sline[176];
+            (void)snprintf(sline, sizeof(sline), "%s (%d files)%s%s",
+                           groups[i].path, fc, purpose[0] ? " — " : "",
+                           purpose);
+            code_push_line(&lines, sline);
+            nsub++;
+        }
+        for (int i = 0; i < nf; i++) {
+            char purpose[72];
+            code_trunc(purpose, sizeof(purpose), files[i].purpose, 55);
+            struct json_value o;
+            json_init(&o); json_set_object(&o);
+            (void)json_push_kv_str(&o, "path", files[i].path);
+            (void)json_push_kv_str(&o, "purpose", purpose);
+            code_push_obj(&farr, &o);
+            char line[200];
+            (void)snprintf(line, sizeof(line), "%s%s%s", files[i].path,
+                           purpose[0] ? " — " : "", purpose);
+            code_push_line(&lines, line);
+        }
+        if (!with_purpose) break;
+        /* ~900 bytes reserved for the result envelope + the scalar fields
+         * pushed below; json_write overflow counts as the full scratch. */
+        char scratch[ZCL_COMMAND_RESULT_BUDGET + 1];
+        size_t used = 0;
+        const struct json_value *parts[] = { &list, &farr, &lines };
+        for (size_t p = 0; p < sizeof(parts) / sizeof(parts[0]); p++) {
+            size_t n = json_write(parts[p], scratch, sizeof(scratch));
+            used += (n == 0 || n >= sizeof(scratch)) ? sizeof(scratch) : n;
+        }
+        if (used <= ZCL_COMMAND_RESULT_BUDGET - 900)
+            break;
     }
 
     (void)json_push_kv_str(&reply->data, "scope", "group");

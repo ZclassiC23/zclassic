@@ -1148,6 +1148,20 @@ static int t_git_hooks_gate_rejects_noop_pre_push(void)
 #define GRPPURPOSE_REAL_SRC_REL    "lib/codeindex/src/codeindex_group.c"
 #define GRPPURPOSE_OK_FIXTURE_REL  "test-tmp/_group_purpose_fixture_ok_tmp.c"
 #define GRPPURPOSE_BAD_FIXTURE_REL "test-tmp/_group_purpose_fixture_bad_tmp.c"
+/* Gate P1 (docs/work/palace-design.md §3) — check-file-purpose. The gate scans
+ * an ISOLATED fixture tree under test-tmp/ (via ZCL_FILE_PURPOSE_ROOT), never
+ * the real codebase; the two canned fixtures live in lib/test/fixtures/. */
+#define FILEPURPOSE_SCRIPT_REL      "tools/lint/check_file_purpose.sh"
+#define FILEPURPOSE_ROOT_REL        "test-tmp/_file_purpose_root_tmp"
+#define FILEPURPOSE_PLANT_REL       "test-tmp/_file_purpose_root_tmp/app/" \
+                                    "services/src/_file_purpose_lint_fixture_tmp.c"
+#define FILEPURPOSE_BAD_FIXTURE_REL "lib/test/fixtures/file_purpose_missing_fixture.c"
+#define FILEPURPOSE_OK_FIXTURE_REL  "lib/test/fixtures/file_purpose_present_fixture.c"
+/* Gate P3 (docs/work/palace-design.md §3) — check-no-orphan-placement. The
+ * gate judges an EXPLICIT path list (via ZCL_ORPHAN_PLACEMENT_FILES) instead
+ * of git ls-files; placement is decided from the path alone, so no file needs
+ * to exist on disk. */
+#define ORPHAN_SCRIPT_REL "tools/lint/check_no_orphan_placement.sh"
 #define LOG_MACRO_RETURN_SCRIPT_REL \
     "tools/lint/check_log_macro_return_type.sh"
 #define LOG_MACRO_RETURN_FIXTURE_DST \
@@ -1572,6 +1586,115 @@ static int t_gate_p2_group_purpose(void)
         ASSERT(ok_rc == 0);
         ASSERT(bad_rc != 0);
         ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Gate P1 (docs/work/palace-design.md §3) — check-file-purpose: a file whose
+ * first code token precedes any comment (no derivable purpose) trips the gate
+ * in FAIL mode; a file with a substantive leading block comment passes. The
+ * gate is pointed at an isolated test-tmp/ fixture tree via
+ * ZCL_FILE_PURPOSE_ROOT so it never scans (or depends on) the real tree. */
+static int t_gate_p1_file_purpose(void)
+{
+    int failures = 0;
+    char root_abs[PATH_MAX], plant_abs[PATH_MAX];
+    char bad_src[PATH_MAX], ok_src[PATH_MAX], dir_abs[PATH_MAX];
+    int paths_ok =
+        (repo_path(root_abs, sizeof(root_abs), FILEPURPOSE_ROOT_REL) == 0 &&
+         repo_path(plant_abs, sizeof(plant_abs), FILEPURPOSE_PLANT_REL) == 0 &&
+         repo_path(bad_src, sizeof(bad_src), FILEPURPOSE_BAD_FIXTURE_REL) == 0 &&
+         repo_path(ok_src, sizeof(ok_src), FILEPURPOSE_OK_FIXTURE_REL) == 0)
+            ? 1 : 0;
+
+    /* Build test-tmp/_file_purpose_root_tmp/app/services/src level by level
+     * (mkdir has no -p; EEXIST is fine). */
+    int dirs_ok = 0;
+    if (paths_ok) {
+        static const char *const levels[] = {
+            "test-tmp",
+            FILEPURPOSE_ROOT_REL,
+            FILEPURPOSE_ROOT_REL "/app",
+            FILEPURPOSE_ROOT_REL "/app/services",
+            FILEPURPOSE_ROOT_REL "/app/services/src",
+        };
+        dirs_ok = 1;
+        for (size_t i = 0; i < sizeof(levels) / sizeof(levels[0]); i++) {
+            if (repo_path(dir_abs, sizeof(dir_abs), levels[i]) != 0 ||
+                (mkdir(dir_abs, 0700) != 0 && errno != EEXIST)) {
+                dirs_ok = 0;
+                break;
+            }
+        }
+    }
+
+    (void)unlink(plant_abs);
+    int planted_bad = (dirs_ok && copy_file(bad_src, plant_abs) == 0) ? 0 : -1;
+    int bad_rc = (planted_bad == 0)
+        ? run_gate_script_with_env2(FILEPURPOSE_SCRIPT_REL,
+                                    "ZCL_LINT_MODE", "FAIL",
+                                    "ZCL_FILE_PURPOSE_ROOT", root_abs)
+        : -1;
+
+    int planted_ok = (dirs_ok && copy_file(ok_src, plant_abs) == 0) ? 0 : -1;
+    int ok_rc = (planted_ok == 0)
+        ? run_gate_script_with_env2(FILEPURPOSE_SCRIPT_REL,
+                                    "ZCL_LINT_MODE", "FAIL",
+                                    "ZCL_FILE_PURPOSE_ROOT", root_abs)
+        : -1;
+
+    /* RATCHET must also trip on the purpose-less file — it is NOT in the
+     * shrink-only baseline (the baseline holds root-relative real-tree paths,
+     * never fixture paths). */
+    int ratchet_bad_rc = (planted_bad == 0 && copy_file(bad_src, plant_abs) == 0)
+        ? run_gate_script_with_env2(FILEPURPOSE_SCRIPT_REL,
+                                    "ZCL_LINT_MODE", "RATCHET",
+                                    "ZCL_FILE_PURPOSE_ROOT", root_abs)
+        : -1;
+
+    (void)unlink(plant_abs);
+
+    TEST("[lint-gate] P1 file-purpose: purpose-less fixture trips (FAIL+RATCHET), purposed passes") {
+        ASSERT(paths_ok);
+        ASSERT(dirs_ok);
+        ASSERT(planted_bad == 0);
+        ASSERT(bad_rc != 0);
+        ASSERT(planted_ok == 0);
+        ASSERT(ok_rc == 0);
+        ASSERT(ratchet_bad_rc != 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Gate P3 (docs/work/palace-design.md §3) — check-no-orphan-placement: a path
+ * outside every known navigator top resolves to the catch-all "root" group and
+ * trips the gate in FAIL/RATCHET mode; a lib/-placed path passes. The scan set
+ * is overridden via ZCL_ORPHAN_PLACEMENT_FILES so git ls-files (which cannot
+ * see an untracked planted file) is bypassed entirely. */
+static int t_gate_p3_orphan_placement(void)
+{
+    int failures = 0;
+
+    int bad_rc = run_gate_script_with_env2(ORPHAN_SCRIPT_REL,
+                                           "ZCL_LINT_MODE", "FAIL",
+                                           "ZCL_ORPHAN_PLACEMENT_FILES",
+                                           "_orphan_fixture_dir_tmp/orphan.c");
+    int ok_rc = run_gate_script_with_env2(ORPHAN_SCRIPT_REL,
+                                          "ZCL_LINT_MODE", "FAIL",
+                                          "ZCL_ORPHAN_PLACEMENT_FILES",
+                                          "lib/util/src/placed.c");
+    /* RATCHET must also trip — the orphan path is not in the baseline. */
+    int ratchet_bad_rc = run_gate_script_with_env2(ORPHAN_SCRIPT_REL,
+                                                   "ZCL_LINT_MODE", "RATCHET",
+                                                   "ZCL_ORPHAN_PLACEMENT_FILES",
+                                                   "_orphan_fixture_dir_tmp/orphan.c");
+
+    TEST("[lint-gate] P3 orphan-placement: rootless path trips (FAIL+RATCHET), lib/ path passes") {
+        ASSERT(bad_rc != 0);
+        ASSERT(ok_rc == 0);
+        ASSERT(ratchet_bad_rc != 0);
         PASS();
     } _test_next:;
     return failures;
@@ -7044,6 +7167,8 @@ int test_make_lint_gates(void)
     failures += t_e10_no_raw_sqlite_ratchet();
     failures += t_gate22_framework_filename_suffix();
     failures += t_gate_p2_group_purpose();
+    failures += t_gate_p1_file_purpose();
+    failures += t_gate_p3_orphan_placement();
     failures += t_log_macro_return_type_gate();
     failures += t_e11_doc_accuracy();
     failures += t_model_ar_lifecycle_gate();

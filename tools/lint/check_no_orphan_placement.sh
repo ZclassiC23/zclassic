@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# Gate P3 (docs/work/palace-design.md §3) — check-no-orphan-placement: every
+# tracked .c/.h resolves to a known navigator group (lib/<mod>, app/<shape>,
+# core, config, tools, domain, adapters, ports). A file that falls through to
+# the catch-all "root" group has no obvious home — the complement of the app/
+# shape gate (#18), operationalizing "exactly one obvious place for each
+# concept" across the WHOLE tree.
+#
+# The placement decision is the shell mirror of ci_group_for_path()
+# (lib/codeindex/src/codeindex_group.c:79-94): a path is placed iff its first
+# segment is one of the known tops followed by "/"; anything else → "root" →
+# violation.
+#
+# Mode: WARN | RATCHET | FAIL (controlled by ZCL_LINT_MODE; default WARN),
+# modeled on tools/lint/check_group_purpose.sh + framework_shape_check.sh. This
+# gate ships WARN with a shrink-only orphan_placement_baseline.txt seeded from
+# today's tree; the RATCHET flip is a later cycle (palace-design §5, P4.4).
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+cd "$ROOT"
+# shellcheck source=tools/lint/gate_lib.sh
+source "$SCRIPT_DIR/gate_lib.sh"
+
+MODE="${ZCL_LINT_MODE:-WARN}"
+BASELINE="$SCRIPT_DIR/orphan_placement_baseline.txt"
+
+# The scan set is `git ls-files '*.c' '*.h'`. ZCL_ORPHAN_PLACEMENT_FILES
+# overrides it (space/newline-separated repo-relative paths) — test isolation
+# only, since git ls-files never sees an untracked planted fixture. Unset in
+# production. Mirrors ZCL_SUPERVISOR_WORKER_FILES in check_supervisor_domain.sh.
+if [[ -n "${ZCL_ORPHAN_PLACEMENT_FILES:-}" ]]; then
+    read -r -a all_files <<< "$ZCL_ORPHAN_PLACEMENT_FILES"
+    FLOOR=1
+else
+    mapfile -t all_files < <(git ls-files '*.c' '*.h')
+    FLOOR=1500
+fi
+
+# Excludes: vendor (third-party), build artifacts, the test fixtures dir, and
+# the repo's `_`-prefixed ephemeral-source convention (planted lint fixtures).
+is_excluded() {
+    local f="$1" base="${1##*/}"
+    case "$f" in
+        vendor/*|build/*|lib/test/fixtures/*) return 0 ;;
+    esac
+    case "$base" in
+        _*) return 0 ;;
+    esac
+    return 1
+}
+
+# Mirror of ci_group_for_path(): does the path resolve to a known group, or the
+# catch-all "root"? Returns 0 (placed) or 1 (orphan → "root").
+KNOWN_TOPS=(lib app domain core config tools adapters ports)
+is_placed() {
+    local f="$1" top
+    for top in "${KNOWN_TOPS[@]}"; do
+        [[ "$f" == "$top/"* ]] && return 0
+    done
+    return 1
+}
+
+declare -A ALLOWED=()
+if [[ -f "$BASELINE" ]]; then
+    while IFS= read -r line; do
+        line="${line%%#*}"
+        line="${line#"${line%%[![:space:]]*}"}"
+        line="${line%"${line##*[![:space:]]}"}"
+        [[ -z "$line" ]] && continue
+        ALLOWED["$line"]=1
+    done < "$BASELINE"
+fi
+
+scanned=0
+considered=0
+violations=0
+allowlisted=0
+for f in "${all_files[@]}"; do
+    scanned=$((scanned + 1))
+    is_excluded "$f" && continue
+    considered=$((considered + 1))
+    if is_placed "$f"; then
+        continue
+    fi
+    if [[ "$MODE" != "FAIL" && -n "${ALLOWED[$f]:-}" ]]; then
+        allowlisted=$((allowlisted + 1))
+        continue
+    fi
+    violations=$((violations + 1))
+    echo "$f: orphan placement — resolves to the catch-all 'root' group; move it under a known top (lib/<mod>, app/<shape>, core, config, tools, domain, adapters, ports)" >&2
+done
+
+gate_require_scanned "$scanned" "$FLOOR" check-no-orphan-placement \
+    "git ls-files returned too few .c/.h — run from repo root inside the worktree?"
+
+echo "[check_no_orphan_placement] scanned $scanned tracked source(s), considered $considered after excludes"
+echo "[check_no_orphan_placement] $violations violation(s) found (mode: $MODE)"
+if (( allowlisted > 0 )); then
+    echo "[check_no_orphan_placement] $allowlisted allowlisted violation(s) ignored"
+fi
+if (( violations > 0 )); then
+    echo "[check_no_orphan_placement] give the file an obvious home, or (shrink-only) write to tools/lint/orphan_placement_baseline.txt"
+fi
+
+fail=0
+if (( violations > 0 )) && [[ "$MODE" == "FAIL" || "$MODE" == "RATCHET" ]]; then
+    fail=1
+fi
+exit "$fail"

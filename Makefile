@@ -3230,12 +3230,30 @@ check-supervisor-domain:
 	@echo "→ Gate #21: supervisor_domain"
 	@./tools/lint/check_supervisor_domain.sh
 
+# Gate P1 (docs/work/palace-design.md §3) — every indexed .c/.h under the
+# codeindex roots has a DERIVABLE one-line purpose (a substantive top-of-file
+# comment or an explicit `purpose:` override). RATCHET against the shrink-only
+# tools/lint/file_purpose_baseline.txt; graduates to FAIL when it empties.
+check-file-purpose:
+	@echo "→ Gate P1: check_file_purpose"
+	@ZCL_LINT_MODE=RATCHET ./tools/lint/check_file_purpose.sh
+
 # Gate P2 (docs/work/palace-design.md §3) — every navigator group node
 # emitted by ci_group_emit_all() has a non-empty ci_group_purpose() (HARD:
 # the group population is finite and filled in full, so no ratchet needed).
 check-group-purpose:
 	@echo "→ Gate P2: check_group_purpose"
 	@ZCL_LINT_MODE=FAIL ./tools/lint/check_group_purpose.sh
+
+# Gate P3 (docs/work/palace-design.md §3) — every tracked .c/.h resolves to a
+# known navigator group (lib/<mod>, app/<shape>, core, config, tools, domain,
+# adapters, ports); a file falling through to the catch-all "root" group is a
+# violation. WARN for now (measurement); the RATCHET flip against the
+# shrink-only tools/lint/orphan_placement_baseline.txt is a later cycle
+# (palace P4.4).
+check-no-orphan-placement:
+	@echo "→ Gate P3: check_no_orphan_placement"
+	@ZCL_LINT_MODE=WARN ./tools/lint/check_no_orphan_placement.sh
 
 # Gate E13 — consensus-parity guard (HARD). Bans any non-zclassicd consensus
 # mechanism (miner-signaled versionbits / dynamic Equihash override — the
@@ -3435,7 +3453,7 @@ check-honest-witness:
 	@echo "══ LINT: honest witness (E12) ══"
 	@ZCL_LINT_MODE=FAIL ./tools/lint/check_honest_witness.sh
 
-lint: check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-release-no-dev-symbols check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-group-purpose check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vendor-provenance
+lint: check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-release-no-dev-symbols check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-purpose check-group-purpose check-no-orphan-placement check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vendor-provenance
 	@echo "══ LINT: all checks passed ══"
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the
