@@ -85,8 +85,10 @@ fast changed-file checks plus the non-LTO dev rebuild, then optionally updates
 ONLY the isolated zcl23-dev lane.
 
 Environment:
-  ZCL_DEV_WATCH_MODE=auto|hotswap|reload|stage|check
-                                      smallest safe path after green checks
+  ZCL_DEV_WATCH_MODE=auto|hotswap|reload|stage|check|verify
+                                      smallest safe path after green checks;
+                                      verify runs `make ff` and defers deploy
+                                      (native dev loop; `dev change apply`)
   ZCL_DEV_WATCH_POLL_MS=500           polling interval without inotifywait
   ZCL_DEV_WATCH_DEBOUNCE_MS=500       quiet window used to coalesce saves
   ZCL_DEV_WATCH_BACKEND=auto|poll|inotify
@@ -270,10 +272,10 @@ validate_options()
 {
     [ -d "$ROOT" ] || fail "repository root does not exist: $ROOT"
     case "$MODE" in
-        auto|hotswap|reload|stage|check) ;;
+        auto|hotswap|reload|stage|check|verify) ;;
         deploy) MODE="reload" ;; # compatibility with the bounded watcher MVP
         off) MODE="check" ;;     # compatibility with the bounded watcher MVP
-        *) fail "ZCL_DEV_WATCH_MODE must be auto, hotswap, reload, stage, or check (got $MODE)" ;;
+        *) fail "ZCL_DEV_WATCH_MODE must be auto, hotswap, reload, stage, check, or verify (got $MODE)" ;;
     esac
     case "$BACKEND" in
         auto|poll|inotify) ;;

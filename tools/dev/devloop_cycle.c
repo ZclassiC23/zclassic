@@ -123,6 +123,57 @@ static bool write_atomic(const char *path, const char *body, size_t len)
     return ok;
 }
 
+/* Scan [out, out+len) FORWARD line-by-line for the first ACTIONABLE line —
+ * a compiler diagnostic (a line containing ": error:") or a test failure (a
+ * line containing "FAIL", "Assertion", or "EXPECT") — and copy it (newline
+ * stripped, bounded by dstcap) into dst. Returns true iff one was found; dst
+ * is always NUL-terminated. Pure: no I/O, no allocation. Static so the real
+ * capsule builder can call it directly; a thin non-static wrapper below lets
+ * the ZCL_TESTING harness exercise this pure function without ZCL_DEV_BUILD.
+ * Guarded ZCL_DEV_BUILD||ZCL_TESTING so the test binary (which defines only
+ * ZCL_TESTING) compiles and reaches it. */
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
+static bool distill_first_error(const char *out, size_t len,
+                                char *dst, size_t dstcap)
+{
+    if (!out || !dst || dstcap == 0)
+        return false;
+    dst[0] = 0;
+    size_t i = 0;
+    while (i < len) {
+        size_t start = i;
+        while (i < len && out[i] != '\n' && out[i] != '\r')
+            i++;
+        size_t line_len = i - start;
+        while (i < len && (out[i] == '\n' || out[i] == '\r'))
+            i++;
+        if (line_len == 0)
+            continue;
+        const char *line = out + start;
+        bool hit = memmem(line, line_len, ": error:", 8) != NULL ||
+                   memmem(line, line_len, "FAIL", 4) != NULL ||
+                   memmem(line, line_len, "Assertion", 9) != NULL ||
+                   memmem(line, line_len, "EXPECT", 6) != NULL;
+        if (hit) {
+            size_t copy = line_len < dstcap - 1 ? line_len : dstcap - 1;
+            memcpy(dst, line, copy);
+            dst[copy] = 0;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Thin testable wrapper — distill_first_error is static; the ZCL_TESTING
+ * harness drives it through this. Also keeps the static function "used" in a
+ * ZCL_TESTING-only build (where output_capsule below is compiled out). */
+bool zcl_devloop_distill_first_error(const char *out, size_t len,
+                                     char *dst, size_t dstcap)
+{
+    return distill_first_error(out, len, dst, dstcap);
+}
+#endif /* ZCL_DEV_BUILD || ZCL_TESTING */
+
 #ifdef ZCL_DEV_BUILD
 static void output_capsule(const struct zcl_devloop_process_result *result,
                            char out[1024])
@@ -131,6 +182,20 @@ static void output_capsule(const struct zcl_devloop_process_result *result,
         out[0] = 0;
         return;
     }
+
+    /* Dense capsule (A4): lead with the first actionable error line so the
+     * agent sees the root cause without paging the tail. Fail-open — when no
+     * pattern matches, the existing last-N-bytes tail is the whole body, so
+     * nothing regresses. */
+    size_t pos = 0;
+    char first[512];
+    if (distill_first_error(result->output, result->output_len,
+                            first, sizeof(first))) {
+        int n = snprintf(out, 1024, "first_error=%s\n", first);
+        if (n > 0 && (size_t)n < 1024)
+            pos = (size_t)n;
+    }
+
     const char *start = result->output;
     size_t len = result->output_len;
     if (len > 900) {
@@ -141,8 +206,11 @@ static void output_capsule(const struct zcl_devloop_process_result *result,
         start++;
         len--;
     }
-    memcpy(out, start, len);
-    out[len] = 0;
+    /* Bound the tail so first_error + tail never overflow out[1024]. */
+    if (len > 1024 - 1 - pos)
+        len = 1024 - 1 - pos;
+    memcpy(out + pos, start, len);
+    out[pos + len] = 0;
 }
 
 static bool result_ok(const struct zcl_devloop_process_result *result)
@@ -781,6 +849,47 @@ int zcl_devloop_run_cycle(const char *repo_root,
         return finish_cycle(&plan, files, file_count, "passed",
                             "resident_commit", started_us, "",
                             root, generation_hex[0] ? generation_hex : NULL);
+    }
+
+    /* MODE=verify / MODE=ff (A6): decouple "prove it compiles + tests +
+     * lints" from "deploy it to the running dev lane". When the persistent
+     * watcher runs in the opt-in verify mode, a plain RELOAD-classified edit
+     * runs the fast feed-forward `make ff` ladder (compile -> focused tests
+     * -> lint) and reports a verify verdict INSTEAD of paying the ~60s
+     * transactional dev-lane reload below; the operator deploys explicitly
+     * with `dev change apply`. The guard deliberately excludes consensus-risk
+     * and sealed-core edits — those MUST still take the heavy reload path so
+     * the proof surface is never weakened. Hotswap-eligible single-file edits
+     * were already handled and returned above; a registry-full hotswap that
+     * `goto`s the label below jumps PAST this guard and reloads heavily. */
+    if (plan.action == ZCL_DEVLOOP_RELOAD &&
+        !plan.consensus_risk && !plan.sealed_core) {
+        const char *watch_mode = getenv("ZCL_DEV_WATCH_MODE");
+        if (watch_mode && (strcmp(watch_mode, "verify") == 0 ||
+                           strcmp(watch_mode, "ff") == 0)) {
+            plan.action_name = "verify";
+            const char *ff_argv[] = {
+                "make", "--no-print-directory", "ff", NULL
+            };
+            if (!zcl_devloop_process_run(root, ff_argv, 900000, &result) ||
+                !result_ok(&result)) {
+                output_capsule(&result, capsule);
+                fprintf(stderr,
+                        "[devloop] verify (make ff) failed — fix, then run "
+                        "`dev change apply` to deploy\n");
+                return finish_cycle(&plan, files, file_count, "rejected",
+                                    "verify", started_us,
+                                    capsule[0] ? capsule : "make ff failed",
+                                    root, NULL);
+            }
+            fprintf(stderr,
+                    "[devloop] verified in %llds — run `dev change apply` "
+                    "to deploy\n",
+                    (long long)((platform_time_monotonic_us() - started_us) /
+                                1000000));
+            return finish_cycle(&plan, files, file_count, "passed", "verify",
+                                started_us, "", root, NULL);
+        }
     }
 
 transactional_reload:

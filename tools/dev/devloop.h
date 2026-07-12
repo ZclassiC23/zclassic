@@ -204,6 +204,15 @@ struct dev_activation_cycle_outcome {
 /* Pure: maps `r` into `out`. `r` NULL => *out zeroed (ok=false). */
 void dev_activation_map_result(const struct dev_activation_result *r,
                                struct dev_activation_cycle_outcome *out);
+
+/* Testable wrapper over devloop_cycle.c's static distill_first_error(): scan
+ * [out, out+len) FORWARD for the first actionable line — a compiler
+ * diagnostic (contains ": error:") or a test failure (contains "FAIL",
+ * "Assertion", or "EXPECT") — and copy it (newline stripped, bounded by
+ * dstcap, always NUL-terminated) into dst. Returns true iff one was found.
+ * Backs the dense output_capsule "first_error=" prefix. Pure: no I/O. */
+bool zcl_devloop_distill_first_error(const char *out, size_t len,
+                                     char *dst, size_t dstcap);
 #endif /* ZCL_DEV_BUILD || ZCL_TESTING */
 
 #ifdef __cplusplus

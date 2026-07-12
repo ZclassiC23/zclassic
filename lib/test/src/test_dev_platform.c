@@ -557,9 +557,77 @@ static int test_watch_relevance(void)
     return failures;
 }
 
+/* A4: distill_first_error picks the first actionable line (compiler
+ * ": error:" or test FAIL/Assertion/EXPECT) and falls back cleanly when no
+ * pattern matches. Exercised via the thin zcl_devloop_distill_first_error
+ * wrapper (the underlying function is static in devloop_cycle.c). */
+static int test_distill_first_error(void)
+{
+    int failures = 0;
+    TEST("dev platform: distill_first_error extracts the first actionable line") {
+        char dst[256];
+
+        /* A compiler ": error:" line is extracted, newline-stripped, even when
+         * it is not the last line of output. */
+        const char *compiler =
+            "cc -c foo.c\n"
+            "foo.c: In function 'bar':\n"
+            "foo.c:12:5: error: 'x' undeclared (first use in this function)\n"
+            "make: *** [foo.o] Error 1\n";
+        ASSERT(zcl_devloop_distill_first_error(compiler, strlen(compiler),
+                                               dst, sizeof(dst)));
+        ASSERT(strcmp(dst,
+            "foo.c:12:5: error: 'x' undeclared (first use in this function)")
+            == 0);
+
+        /* A test FAIL line is extracted. */
+        const char *testfail =
+            "running group vcs_devloop\n"
+            "[dev-watch-selftest] FAIL: stage command order is wrong\n"
+            "1 failure\n";
+        ASSERT(zcl_devloop_distill_first_error(testfail, strlen(testfail),
+                                               dst, sizeof(dst)));
+        ASSERT(strcmp(dst,
+            "[dev-watch-selftest] FAIL: stage command order is wrong") == 0);
+
+        /* An Assertion line is extracted (the first actionable line wins over
+         * a later error-looking line). */
+        const char *assertion =
+            "ok: sanity\n"
+            "Assertion `n > 0 && n < sizeof(body)' failed.\n";
+        ASSERT(zcl_devloop_distill_first_error(assertion, strlen(assertion),
+                                               dst, sizeof(dst)));
+        ASSERT(strcmp(dst, "Assertion `n > 0 && n < sizeof(body)' failed.")
+            == 0);
+
+        /* No matching pattern => false, dst emptied (caller falls back to the
+         * tail). */
+        const char *clean = "cc -c foo.c\nlink ok\nall good here\n";
+        ASSERT(!zcl_devloop_distill_first_error(clean, strlen(clean),
+                                                dst, sizeof(dst)));
+        ASSERT(dst[0] == 0);
+
+        /* Bounded copy: a long matching line is truncated to dstcap-1, never
+         * overruns, always NUL-terminated. */
+        char tiny[8];
+        const char *longline = "src.c:1:1: error: this line is far too long\n";
+        ASSERT(zcl_devloop_distill_first_error(longline, strlen(longline),
+                                               tiny, sizeof(tiny)));
+        ASSERT(strlen(tiny) == sizeof(tiny) - 1);
+
+        /* Defensive: NULL / zero-cap inputs are rejected without a crash. */
+        ASSERT(!zcl_devloop_distill_first_error(NULL, 0, dst, sizeof(dst)));
+        ASSERT(!zcl_devloop_distill_first_error(compiler, strlen(compiler),
+                                                dst, 0));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_dev_platform(void)
 {
     int failures = 0;
+    failures += test_distill_first_error();
     failures += test_menu_and_search();
     failures += test_change_classification();
     failures += test_watch_relevance();
