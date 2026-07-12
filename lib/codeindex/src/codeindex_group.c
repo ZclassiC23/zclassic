@@ -25,7 +25,7 @@ static const char *const k_lib_modules[] = {
     "bloom", "chain", "coins", "core", "crypto", "crypto_registry", "encoding",
     "event", "framework", "health", "hotswap", "kernel", "json", "keys",
     "metrics", "mining", "net", "platform", "policy", "primitives", "rpc",
-    "script", "sim", "storage", "support", "sync", "util", "validation",
+    "script", "session", "sim", "storage", "support", "sync", "util", "validation",
     "vcs", "wallet", "sapling", "zslp", "znam", "codeindex",
 };
 
@@ -139,6 +139,7 @@ const char *ci_group_purpose(const char *group)
     if (strcmp(group, "lib/primitives") == 0) return "consensus wire primitives: CBlock/CBlockHeader, CTransaction";
     if (strcmp(group, "lib/rpc") == 0) return "JSON-RPC client/server plumbing: HTTP server, RPC dispatch, legacy zclassicd oracle client";
     if (strcmp(group, "lib/script") == 0) return "Bitcoin Script interpreter, sig cache/encoding, HTLC + standard script templates";
+    if (strcmp(group, "lib/session") == 0) return "secure-session transport: Noise handshake (NK/XX) + post-handshake AEAD record layer";
     if (strcmp(group, "lib/sim") == 0) return "deterministic simnet: byzantine/cluster harnesses, seed-tape replay, HTLC contract overlay";
     if (strcmp(group, "lib/storage") == 0) return "persistence layer: event log, coins/anchor/nullifier KV stores, block index, projections";
     if (strcmp(group, "lib/support") == 0) return "low-level memory-safety helpers: secure cleanse, page-locked (mlock) allocations";

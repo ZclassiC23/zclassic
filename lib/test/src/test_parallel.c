@@ -113,7 +113,10 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(equihash_blake2b_state_seal)    X(equihash_serialization_matches_independent_rebuild) \
     X(equihash_legacy_wrapper_regression_seal)    X(coins_amount_codec_roundtrip) \
     X(coins_amount_codec_boundary_exponents)    X(coins_amount_codec_digit_preservation) \
-    X(coins_amount_codec_regression_seal)    X(hmac_sha512_kat_rfc4231_jefe) \
+    X(coins_amount_codec_regression_seal) \
+    X(hkdf_sha256_rfc5869) X(x25519_safe) \
+    X(noise_nk_handshake) X(noise_xx_handshake) X(session_transport) \
+    X(hmac_sha512_kat_rfc4231_jefe) \
     X(hmac_sha512_kat_oversized_key)    X(hmac_sha512_empty_message) \
     X(hmac_sha512_multiblock_stateful_write)    X(hmac_sha512_key_len_128_boundary) \
     X(pbkdf2_sha512_rfc_vector)    X(pbkdf2_sha512_multiblock) \

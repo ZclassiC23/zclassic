@@ -1184,6 +1184,11 @@ int main(int argc, char **argv)
     failures += test_coins_amount_codec_boundary_exponents();
     failures += test_coins_amount_codec_digit_preservation();
     failures += test_coins_amount_codec_regression_seal();
+    failures += test_hkdf_sha256_rfc5869();
+    failures += test_x25519_safe();
+    failures += test_noise_nk_handshake();
+    failures += test_noise_xx_handshake();
+    failures += test_session_transport();
     failures += test_hmac_sha512_kat_rfc4231_jefe();
     failures += test_hmac_sha512_kat_oversized_key();
     failures += test_hmac_sha512_empty_message();
