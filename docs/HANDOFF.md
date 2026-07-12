@@ -1,3 +1,10 @@
+> **⏭ 2026-07-12 — READ `docs/work/SESSION-HANDOFF-2026-07-12.md` FIRST.** Shipped the fast dev
+> loop (`make ff` / `code map` / `code tests` / watcher `MODE=verify`), the palace legibility layer,
+> and the sovereign-cure PRODUCER (canonical `coins_kv_snapshot_write` + `snapshot_shielded_collect_from_db`,
+> byte-proven, on `origin/main` `42cd4cef9`). **The live node is STILL WEDGED at H\*=3,176,325** — the #1
+> next job is the cure's integration copy-prove (add `-export-shielded-snapshot`, mint from a soak copy,
+> boot a wedged-datadir copy, gate on H\* climbing past 3,176,326) then the owner-authorized live deploy.
+
 # START HERE (2026-07-11)
 
 ## ⏸ SESSION RESTART — RESUMABLE STATE (2026-07-11 late)
