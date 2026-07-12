@@ -1037,6 +1037,8 @@ int main(int argc, char **argv)
     failures += test_flyclient();
     { extern int test_flyclient_chainwork_floor(void);
       failures += test_flyclient_chainwork_floor(); }
+    { extern int test_test_zmsg_memo_codec(void);
+      failures += test_test_zmsg_memo_codec(); }
     failures += test_scan_util();
     failures += test_tor();
     { extern int test_onion_bootstrap(void);
