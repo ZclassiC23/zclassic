@@ -1,7 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * test_snapshot_shielded_v3 — copy-prove for the v3 UTXO-snapshot SHIELDED
- * frontier (the birth-defect cure).
+ * test_snapshot_shielded — copy-prove for the UTXO-snapshot SHIELDED frontier
+ * (the birth-defect cure): the canonical writer's byte-identical v1/v2/v3
+ * output, the loader round-trip, the restore cure, and the collect-from-db
+ * producer half.
  *
  * WHAT THIS PROVES (at the exact seam that gates the first post-seed shielded
  * tx, without a 3M-block boot):
@@ -28,6 +30,7 @@
 #include "chain/utxo_snapshot_loader.h"
 #include "core/serialize.h"
 #include "core/uint256.h"
+#include "crypto/sha3.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "storage/anchor_kv.h"
 #include "storage/coins_kv.h"
@@ -41,7 +44,7 @@
 #include <string.h>
 
 #define SV_CHECK(name, expr) do {                              \
-    printf("snapshot_shielded_v3: %s... ", (name));            \
+    printf("snapshot_shielded: %s... ", (name));               \
     if (expr) printf("OK\n");                                  \
     else { printf("FAIL\n"); failures++; }                     \
 } while (0)
@@ -73,13 +76,13 @@ static bool sv_seed_coins(sqlite3 *db)
     return coins_kv_add(db, txid, 2, 22222, 20, false, sb, sizeof(sb));
 }
 
-int test_snapshot_shielded_v3(void)
+int test_snapshot_shielded(void)
 {
-    printf("\n=== snapshot_shielded_v3 ===\n");
+    printf("\n=== snapshot_shielded ===\n");
     int failures = 0;
 
     char dir[256];
-    test_make_tmpdir(dir, sizeof(dir), "snapshot_shielded_v3", "main");
+    test_make_tmpdir(dir, sizeof(dir), "snapshot_shielded", "main");
     char v3_path[320], v1_path[320];
     snprintf(v3_path, sizeof(v3_path), "%s/shielded-v3.snapshot", dir);
     snprintf(v1_path, sizeof(v1_path), "%s/coins-only-v1.snapshot", dir);
@@ -125,6 +128,10 @@ int test_snapshot_shielded_v3(void)
         .nf_records = nf_recs,  .nf_count = 2,
     };
 
+    /* GOLDEN CAPTURE (temporary) — whole-file SHA3 of v1/v2/v3 outputs. */
+    char v2_path[320];
+    snprintf(v2_path, sizeof(v2_path), "%s/sapling-only-v2.snapshot", dir);
+
     /* ── Write the v3 snapshot (+ a v1 coins-only control) ──────────────── */
     uint8_t v3_sha3[32] = {0}; uint64_t v3_count = 0; int64_t v3_supply = 0;
     uint8_t anchor_hash[32];
@@ -132,8 +139,8 @@ int test_snapshot_shielded_v3(void)
     {
         sqlite3 *src = NULL;
         bool ok = sqlite3_open(":memory:", &src) == SQLITE_OK && sv_seed_coins(src);
-        ok = ok && coins_kv_snapshot_write_v3(src, v3_path, SEED_H, anchor_hash,
-                                              &sh, v3_sha3, &v3_count, &v3_supply);
+        ok = ok && coins_kv_snapshot_write(src, v3_path, SEED_H, anchor_hash,
+                                           &sh, v3_sha3, &v3_count, &v3_supply);
         SV_CHECK("v3 snapshot written (coins + shielded)", ok && v3_count == 2);
         sqlite3_close(src);
     }
@@ -142,9 +149,56 @@ int test_snapshot_shielded_v3(void)
         uint8_t r[32]; uint64_t c = 0; int64_t s = 0;
         bool ok = sqlite3_open(":memory:", &src) == SQLITE_OK && sv_seed_coins(src);
         ok = ok && coins_kv_snapshot_write(src, v1_path, SEED_H, anchor_hash,
-                                           r, &c, &s);
+                                           /*shielded=*/NULL, r, &c, &s);
         SV_CHECK("v1 coins-only control written", ok && c == 2);
         sqlite3_close(src);
+    }
+    {
+        /* Sapling-only shielded => the canonical writer emits format version 2,
+         * the byte-identical twin of the historical Sapling-frontier-only file. */
+        struct snapshot_shielded sap_only = {
+            .sapling = sap_bs.data, .sapling_len = (uint32_t)sap_bs.size,
+        };
+        sqlite3 *src = NULL;
+        uint8_t r[32]; uint64_t c = 0; int64_t s = 0;
+        bool ok = sqlite3_open(":memory:", &src) == SQLITE_OK && sv_seed_coins(src);
+        ok = ok && coins_kv_snapshot_write(src, v2_path, SEED_H, anchor_hash,
+                                           &sap_only, r, &c, &s);
+        SV_CHECK("v2 sapling-only control written", ok && c == 2);
+        sqlite3_close(src);
+    }
+
+    /* ── BYTE-IDENTITY PROOF ─────────────────────────────────────────────
+     * The whole-file SHA3-256 of each artifact, PINNED to values captured from
+     * the pre-refactor per-version writers (coins_kv_snapshot_write /
+     * _write_v2 / _write_v3). The canonical single writer must reproduce every
+     * byte of every format for the same inputs, or the on-disk format changed. */
+    {
+        static const char *golden[3] = {
+            /* v1 (coins only)            */
+            "a892a617a7d30f7f4fc2e9aaffbc8be61906b30d62a89a82447117f3b806f268",
+            /* v2 (Sapling frontier only) */
+            "81a2265bff4d00537f13586eceb3639024d41666d5a435e76eb7f39c97534952",
+            /* v3 (full shielded section) */
+            "7ae309279450b3a9ac4a503ae99dbc5d559d5aa03e710985d045cc74b633eaf5",
+        };
+        const char *paths[3] = { v1_path, v2_path, v3_path };
+        const char *names[3] = { "v1", "v2", "v3" };
+        for (int p = 0; p < 3; p++) {
+            FILE *f = fopen(paths[p], "rb");
+            struct sha3_256_ctx c; sha3_256_init(&c);
+            uint8_t buf[4096]; size_t rd;
+            while (f && (rd = fread(buf, 1, sizeof(buf), f)) > 0)
+                sha3_256_write(&c, buf, rd);
+            if (f) fclose(f);
+            uint8_t d[32]; sha3_256_finalize(&c, d);
+            char hex[65];
+            for (int i = 0; i < 32; i++) snprintf(hex + 2 * i, 3, "%02x", d[i]);
+            char nm[64];
+            snprintf(nm, sizeof(nm),
+                     "%s byte-identical to pre-refactor writer", names[p]);
+            SV_CHECK(nm, f != NULL && strcmp(hex, golden[p]) == 0);
+        }
     }
 
     /* ── Loader: single-hash verify + shielded round-trip ───────────────── */
@@ -247,9 +301,78 @@ int test_snapshot_shielded_v3(void)
         if (db) sqlite3_close(db);
     }
 
+    /* ── PRODUCER: snapshot_shielded_collect_from_db round-trips ─────────
+     * Populate a fixture db's shielded state (the reverse of the restore path),
+     * collect it with the canonical producer, and prove the collected struct
+     * (a) matches the known frontiers + nullifiers byte-for-byte and (b) writes
+     * a v3 snapshot the loader round-trips — i.e. collect -> write -> read is a
+     * closed loop, the mint's self-verified-shielded-snapshot path. */
+    {
+        sqlite3 *db = NULL;
+        bool ok = sqlite3_open(":memory:", &db) == SQLITE_OK;
+        ok = ok && anchor_kv_reset_in_tx(db, 0);
+        ok = ok && anchor_kv_seed_frontier_row(db, ANCHOR_POOL_SAPLING,
+                                               &sap_tree, SEED_H, &sap_root);
+        ok = ok && anchor_kv_add_tree(db, ANCHOR_POOL_SPROUT, &spr_tree, SEED_H);
+        ok = ok && nullifier_kv_ensure_schema(db);
+        ok = ok && nullifier_kv_add(db, nf0, NULLIFIER_POOL_SPROUT, 12);
+        ok = ok && nullifier_kv_add(db, nf1, NULLIFIER_POOL_SAPLING, 27);
+        SV_CHECK("producer fixture shielded state installs", ok);
+
+        struct snapshot_shielded col;
+        memset(&col, 0, sizeof(col));
+        bool cok = ok && snapshot_shielded_collect_from_db(db, SEED_H, &col);
+        SV_CHECK("collect_from_db succeeds", cok);
+
+        /* Sapling frontier round-trips (serialize of the stored tree == the
+         * original serialization). */
+        SV_CHECK("collected Sapling frontier matches",
+                 cok && col.sapling_len == sap_bs.size &&
+                 memcmp(col.sapling, sap_bs.data, sap_bs.size) == 0);
+        SV_CHECK("collected Sprout frontier matches",
+                 cok && col.sprout_len == spr_bs.size &&
+                 memcmp(col.sprout, spr_bs.data, spr_bs.size) == 0);
+        /* Nullifiers: 2 rows, deterministic (pool, nf) order == nf0 then nf1. */
+        SV_CHECK("collected nullifier set matches (count + bytes)",
+                 cok && col.nf_count == 2 &&
+                 memcmp(col.nf_records, nf_recs, sizeof(nf_recs)) == 0);
+
+        /* collect -> write -> read closes the loop: the collected struct emits a
+         * v3 snapshot whose shielded regions the loader returns unchanged. */
+        char cpath[320];
+        snprintf(cpath, sizeof(cpath), "%s/collected-v3.snapshot", dir);
+        sqlite3 *csrc = NULL;
+        uint8_t csha3[32] = {0}; uint64_t cc = 0; int64_t cs = 0;
+        bool wok = cok && sqlite3_open(":memory:", &csrc) == SQLITE_OK &&
+                   sv_seed_coins(csrc) &&
+                   coins_kv_snapshot_write(csrc, cpath, SEED_H, anchor_hash,
+                                           &col, csha3, &cc, &cs);
+        SV_CHECK("collected struct writes a v3 snapshot", wok && cc == 2);
+        if (csrc) sqlite3_close(csrc);
+
+        char cerr[128] = {0}; struct uss_header chdr;
+        struct uss_handle *ch = wok ? uss_open(cpath, true, csha3, &chdr, cerr,
+                                               sizeof(cerr)) : NULL;
+        const uint8_t *c_sap = NULL, *c_spr = NULL, *c_nf = NULL;
+        uint32_t c_sap_len = 0, c_spr_len = 0; uint64_t c_nf_count = 0;
+        bool rok = ch && chdr.version == 3 &&
+                   uss_shielded(ch, &c_sap, &c_sap_len, &c_spr, &c_spr_len,
+                                &c_nf, &c_nf_count);
+        SV_CHECK("collected v3 snapshot loader round-trips all regions",
+                 rok && c_sap_len == sap_bs.size && c_spr_len == spr_bs.size &&
+                 c_nf_count == 2 &&
+                 memcmp(c_sap, sap_bs.data, sap_bs.size) == 0 &&
+                 memcmp(c_spr, spr_bs.data, spr_bs.size) == 0 &&
+                 memcmp(c_nf, nf_recs, sizeof(nf_recs)) == 0);
+        if (ch) uss_close(ch);
+
+        snapshot_shielded_free_collected(&col);
+        if (db) sqlite3_close(db);
+    }
+
     stream_free(&sap_bs);
     stream_free(&spr_bs);
 
-    printf("=== snapshot_shielded_v3: %d failure(s) ===\n", failures);
+    printf("=== snapshot_shielded: %d failure(s) ===\n", failures);
     return failures;
 }

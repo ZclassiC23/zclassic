@@ -89,6 +89,7 @@ int main(int argc, char **argv)
     uint64_t got_count = 0;
     int64_t got_supply = 0;
     if (!coins_kv_snapshot_write(pdb, out_path, height, anchor_hash,
+                                 /*shielded=*/NULL,
                                  got_sha3, &got_count, &got_supply)) {
         fprintf(stderr, "coins_kv_snapshot_write FAILED\n");
         return 1;

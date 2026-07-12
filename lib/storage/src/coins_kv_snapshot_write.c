@@ -172,30 +172,53 @@ static bool snapshot_finalize(FILE *out, const char *tmp_path,
     return true;
 }
 
+/* Classify the shielded argument into an on-disk format version. NULL => v1
+ * (coins only). A Sapling-only frontier (no Sprout, no nullifiers) => v2 (the
+ * single-frontier section). A Sprout frontier and/or a nullifier set => v3 (the
+ * full storage/snapshot_shielded.h section). This is the ONE place the version
+ * byte is derived from DATA, so the writer is named once, not per format. */
+static uint32_t snapshot_version_for(const struct snapshot_shielded *sh)
+{
+    if (!sh) return 1;
+    if (sh->sprout_len > 0 || sh->nf_count > 0) return 3;
+    if (sh->sapling_len > 0) return 2;
+    return 1;
+}
+
+/* Append the shielded section for `version` (2 or 3) to `out`, folding the
+ * IDENTICAL bytes into `ctx`. v2 writes only [u32 sapling_len][sapling]
+ * (byte-identical to the historical Sapling-frontier section); v3 writes the
+ * full Sapling+Sprout+nullifier section. Returns false on a short write. */
+static bool snapshot_append_shielded(FILE *out, struct sha3_256_ctx *ctx,
+                                     uint32_t version,
+                                     const struct snapshot_shielded *sh)
+{
+    if (version == 2) {
+        uint8_t lenbuf[4];
+        le32(lenbuf, sh->sapling_len);
+        if (fwrite(lenbuf, 1, 4, out) != 4 ||
+            (sh->sapling_len &&
+             fwrite(sh->sapling, 1, sh->sapling_len, out) != sh->sapling_len)) {
+            LOG_WARN("coins_kv", "snapshot_write: sapling frontier write failed");
+            return false;
+        }
+        sha3_256_write(ctx, lenbuf, 4);
+        if (sh->sapling_len)
+            sha3_256_write(ctx, sh->sapling, sh->sapling_len);
+        return true;
+    }
+    /* version 3 */
+    return snapshot_shielded_write(out, ctx, sh);
+}
+
 bool coins_kv_snapshot_write(sqlite3 *db, const char *out_path,
                              int32_t height, const uint8_t anchor_block_hash[32],
+                             const struct snapshot_shielded *shielded_or_null,
                              uint8_t out_sha3[32], uint64_t *out_count,
                              int64_t *out_total_supply)
 {
-    /* Back-compat thin wrapper: no Sapling frontier => writes a v1 file. */
-    return coins_kv_snapshot_write_v2(db, out_path, height, anchor_block_hash,
-                                      NULL, 0, out_sha3, out_count,
-                                      out_total_supply);
-}
-
-bool coins_kv_snapshot_write_v2(sqlite3 *db, const char *out_path,
-                                int32_t height,
-                                const uint8_t anchor_block_hash[32],
-                                const uint8_t *frontier, uint32_t frontier_len,
-                                uint8_t out_sha3[32], uint64_t *out_count,
-    int64_t *out_total_supply)
-{
     if (!db || !out_path || !out_path[0]) {
         LOG_FAIL("coins_kv", "snapshot_write: null db/path");
-        return false;
-    }
-    if (frontier_len > 0 && !frontier) {
-        LOG_FAIL("coins_kv", "snapshot_write: frontier_len>0 with null blob");
         return false;
     }
 
@@ -204,9 +227,11 @@ bool coins_kv_snapshot_write_v2(sqlite3 *db, const char *out_path,
      * the artifact is complete and its body SHA3 still equals the compiled
      * checkpoint. With the flag off this is a single bool load that is false. */
     if (coins_ram_active())
-        return coins_ram_snapshot_write_v2(out_path, height, anchor_block_hash,
-                                           frontier, frontier_len,
-                                           out_sha3, out_count, out_total_supply);
+        return coins_ram_snapshot_write(out_path, height, anchor_block_hash,
+                                        shielded_or_null, out_sha3, out_count,
+                                        out_total_supply);
+
+    uint32_t snap_version = snapshot_version_for(shielded_or_null);
 
     char tmp_path[1100];
     int np = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", out_path);
@@ -240,98 +265,20 @@ bool coins_kv_snapshot_write_v2(sqlite3 *db, const char *out_path,
         return false;
     }
 
-    /* OPTIONAL Sapling-frontier section, appended AFTER the UTXO records and
-     * BEFORE the header rewrite so it falls inside the body SHA3 region
-     * (everything after offset 104). Layout: [u32 frontier_len LE][blob].
-     * Absent => v1 file (no section, version stays 1). Present => version 2. */
-    uint32_t snap_version = 1;
-    if (frontier_len > 0) {
-        uint8_t lenbuf[4];
-        le32(lenbuf, frontier_len);
-        if (fwrite(lenbuf, 1, 4, out) != 4 ||
-            fwrite(frontier, 1, frontier_len, out) != frontier_len) {
-            LOG_WARN("coins_kv", "snapshot_write: frontier write failed");
-            fclose(out);
-            unlink(tmp_path);
-            return false;
-        }
-        sha3_256_write(&ctx, lenbuf, 4);
-        sha3_256_write(&ctx, frontier, frontier_len);
-        snap_version = 2;
+    /* OPTIONAL shielded section, appended AFTER the UTXO records and BEFORE the
+     * header rewrite so it falls inside the body SHA3 region (everything after
+     * offset 104). v2 => single Sapling frontier; v3 => full shielded section. */
+    if (snap_version >= 2 &&
+        !snapshot_append_shielded(out, &ctx, snap_version, shielded_or_null)) {
+        fclose(out);
+        unlink(tmp_path);
+        return false;
     }
 
     uint8_t body_sha3[32];
     sha3_256_finalize(&ctx, body_sha3);
 
     if (!snapshot_finalize(out, tmp_path, out_path, snap_version, height,
-                           anchor_block_hash, count, total_supply, body_sha3))
-        return false;
-
-    if (out_sha3) memcpy(out_sha3, body_sha3, 32);
-    if (out_count) *out_count = count;
-    if (out_total_supply) *out_total_supply = total_supply;
-    return true;
-}
-
-bool coins_kv_snapshot_write_v3(sqlite3 *db, const char *out_path,
-                                int32_t height,
-                                const uint8_t anchor_block_hash[32],
-                                const struct snapshot_shielded *shielded,
-                                uint8_t out_sha3[32], uint64_t *out_count,
-                                int64_t *out_total_supply)
-{
-    if (!db || !out_path || !out_path[0] || !shielded) {
-        LOG_FAIL("coins_kv", "snapshot_write_v3: null db/path/shielded");
-        return false;
-    }
-
-    /* Same in-RAM-overlay handling as v2 (see coins_kv_snapshot_write_v2). */
-    if (coins_ram_active())
-        return coins_ram_snapshot_write_v3(out_path, height, anchor_block_hash,
-                                           shielded, out_sha3, out_count,
-                                           out_total_supply);
-
-    char tmp_path[1100];
-    int np = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", out_path);
-    if (np < 0 || (size_t)np >= sizeof(tmp_path)) {
-        LOG_WARN("coins_kv", "snapshot_write_v3: out_path too long");
-        return false;
-    }
-    FILE *out = fopen(tmp_path, "wb");
-    if (!out) {
-        LOG_WARN("coins_kv", "snapshot_write_v3: fopen(%s) failed", tmp_path);
-        return false;
-    }
-    uint8_t header[USS_HEADER_BYTES] = {0};
-    if (fwrite(header, 1, sizeof(header), out) != sizeof(header)) {
-        LOG_WARN("coins_kv", "snapshot_write_v3: header reserve failed");
-        fclose(out);
-        unlink(tmp_path);
-        return false;
-    }
-
-    struct sha3_256_ctx ctx;
-    sha3_256_init(&ctx);
-    uint64_t count = 0;
-    int64_t  total_supply = 0;
-    if (!stream_coins_body(out, db, &ctx, &count, &total_supply)) {
-        fclose(out);
-        unlink(tmp_path);
-        return false;
-    }
-
-    /* v3 SHIELDED section (Sapling + Sprout frontiers + nullifier set), inside
-     * the body SHA3 region — the single hash covers coins AND shielded state. */
-    if (!snapshot_shielded_write(out, &ctx, shielded)) {
-        fclose(out);
-        unlink(tmp_path);
-        return false;
-    }
-
-    uint8_t body_sha3[32];
-    sha3_256_finalize(&ctx, body_sha3);
-
-    if (!snapshot_finalize(out, tmp_path, out_path, /*version=*/3, height,
                            anchor_block_hash, count, total_supply, body_sha3))
         return false;
 

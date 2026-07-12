@@ -256,8 +256,8 @@ static bool raa_build_matching_snapshot(const char *snap_path,
     int64_t wr_total = 0;
     if (ok)
         ok = coins_kv_snapshot_write(bpk, snap_path, RAA_CP_HEIGHT,
-                                     anchor_block_hash, wr_sha3, &wr_count,
-                                     &wr_total);
+                                     anchor_block_hash, /*shielded=*/NULL,
+                                     wr_sha3, &wr_count, &wr_total);
     /* The writer's body SHA3 MUST equal the commitment (same encoder). */
     if (ok && memcmp(wr_sha3, root, 32) != 0)
         ok = false;

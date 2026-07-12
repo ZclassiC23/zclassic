@@ -18,8 +18,9 @@
  *      activation up to the (capped) endpoint and VERIFIES the final root
  *      against hashFinalSaplingRoot at the seed height, persisting the
  *      serialized frontier into node_state["sapling_tree"].
- *   6. read that frontier blob back + write the v2 snapshot via
- *      coins_kv_snapshot_write_v2 (UTXO records + [u32 len][frontier]).
+ *   6. read that frontier blob back + write the v2 snapshot via the canonical
+ *      coins_kv_snapshot_write with a Sapling-only shielded arg (UTXO records +
+ *      [u32 len][frontier], format version 2).
  *
  * The seed height must be <= the durable coins-applied frontier
  * (coins_applied_height - 1) so the UTXO set and the frontier are coherent at
@@ -47,6 +48,7 @@
 
 #include "storage/progress_store.h"
 #include "storage/coins_kv.h"
+#include "storage/snapshot_shielded.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "chain/chain.h"
@@ -668,10 +670,15 @@ int main(int argc, char **argv)
     uint8_t got_sha3[32] = {0};
     uint64_t got_count = 0;
     int64_t got_supply = 0;
-    if (!coins_kv_snapshot_write_v2(pdb, out_path, seed_h, anchor_hash,
-                                    frontier, (uint32_t)flen,
-                                    got_sha3, &got_count, &got_supply)) {
-        fprintf(stderr, "coins_kv_snapshot_write_v2 FAILED\n");
+    /* Sapling-only shielded => the canonical writer emits format version 2
+     * (single Sapling-frontier section), byte-identical to the historical v2. */
+    struct snapshot_shielded sap_only = {
+        .sapling = frontier, .sapling_len = (uint32_t)flen,
+    };
+    if (!coins_kv_snapshot_write(pdb, out_path, seed_h, anchor_hash,
+                                 flen > 0 ? &sap_only : NULL,
+                                 got_sha3, &got_count, &got_supply)) {
+        fprintf(stderr, "coins_kv_snapshot_write (v2 sapling-only) FAILED\n");
         node_db_close(&ndb);
         return 1;
     }

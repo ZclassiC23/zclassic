@@ -69,6 +69,7 @@ static bool sa_write_snapshot(const char *path, uint8_t root[32],
     uint64_t written_count = 0;
     int64_t written_supply = 0;
     ok = ok && coins_kv_snapshot_write(src, path, 30, anchor_hash,
+                                       /*shielded=*/NULL,
                                        written_root, &written_count,
                                        &written_supply);
     ok = ok && memcmp(root, written_root, 32) == 0;

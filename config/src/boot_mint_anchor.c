@@ -33,7 +33,11 @@
 #include "chain/checkpoints.h"                  /* get_sha3_utxo_checkpoint */
 #include "storage/coins_kv.h"                   /* coins_kv_snapshot_write,
                                                  * coins_kv_get_applied_height,
-                                                 * coins_kv_count */
+                                                 * coins_kv_count,
+                                                 * coins_kv_commitment */
+#include "storage/coins_ram.h"                  /* coins_ram_active,
+                                                 * coins_ram_commitment */
+#include "storage/snapshot_shielded.h"          /* snapshot_shielded_collect_from_db */
 #include "storage/progress_store.h"             /* progress_store_db */
 #include "services/chain_activation_service.h"  /* reducer_kick,
                                                  * boot_activation_controller */
@@ -143,15 +147,50 @@ bool boot_mint_anchor_run(const char *datadir)
                  datadir ? datadir : ".");
     }
 
+    /* Collect the live SHIELDED frontier at the anchor (Sapling + Sprout
+     * commitment-tree frontiers + the nullifier set) so the artifact is a
+     * SELF-VERIFIED v3 snapshot, not a coins-only borrow. FAIL LOUD if the
+     * frontier is unavailable — never emit a coins-only snapshot mislabeled
+     * shielded (the birth-defect this cure exists to close). */
+    struct snapshot_shielded shielded;
+    if (!snapshot_shielded_collect_from_db(pdb, anchor, &shielded)) {
+        fprintf(stderr,
+                "FATAL: -mint-anchor: shielded-frontier collection at h=%d "
+                "failed — refusing to emit a coins-only snapshot mislabeled "
+                "shielded\n", anchor);
+        event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                    "mint_anchor shielded_collect_failed h=%d", anchor);
+        _exit(EXIT_FAILURE);
+    }
+
     uint8_t got_sha3[32] = {0};
     uint64_t got_count = 0;
     int64_t  got_supply = 0;
     if (!coins_kv_snapshot_write(pdb, out_path, anchor, cp->block_hash,
-                                 got_sha3, &got_count, &got_supply)) {
+                                 &shielded, got_sha3, &got_count, &got_supply)) {
+        snapshot_shielded_free_collected(&shielded);
         fprintf(stderr, "FATAL: -mint-anchor: snapshot write to %s failed\n",
                 out_path);
         event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
                     "mint_anchor snapshot_write_failed path=%s", out_path);
+        _exit(EXIT_FAILURE);
+    }
+    snapshot_shielded_free_collected(&shielded);
+
+    /* Coins-only commitment over the SAME effective set the writer streamed.
+     * got_sha3 is the v3 BODY SHA3 (coins + shielded section), so it is NOT the
+     * coins commitment the compiled checkpoint pins; compute that separately,
+     * mirroring the writer's overlay predicate (coins_ram_active), so the value
+     * covers any un-flushed in-RAM fold tail exactly as the writer did. */
+    uint8_t coins_sha3[32] = {0};
+    int crc = coins_ram_active() ? coins_ram_commitment(coins_sha3)
+                                 : coins_kv_commitment(pdb, coins_sha3);
+    if (crc != 0) {
+        fprintf(stderr, "FATAL: -mint-anchor: coins commitment computation at "
+                "h=%d failed — cannot verify the minted set\n", anchor);
+        event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                    "mint_anchor coins_commitment_failed h=%d", anchor);
+        unlink(out_path);
         _exit(EXIT_FAILURE);
     }
 
@@ -161,13 +200,13 @@ bool boot_mint_anchor_run(const char *datadir)
      * zclassicd's checkpoint exactly. A MISMATCH means our fold disagrees with
      * the checkpoint (the h=478544 class): page EV_BOOT_VALIDATION_FAILED and
      * _exit — NEVER publish an unproven artifact. */
-    bool sha3_match = memcmp(got_sha3, cp->sha3_hash, 32) == 0;
+    bool sha3_match = memcmp(coins_sha3, cp->sha3_hash, 32) == 0;
     bool count_match = got_count == cp->utxo_count;
     if (!sha3_match || !count_match) {
         char want_hex[65], got_hex[65];
         for (int i = 0; i < 32; i++) {
             snprintf(want_hex + 2 * i, 3, "%02x", cp->sha3_hash[i]);
-            snprintf(got_hex + 2 * i, 3, "%02x", got_sha3[i]);
+            snprintf(got_hex + 2 * i, 3, "%02x", coins_sha3[i]);
         }
         fprintf(stderr,
                 "FATAL: -mint-anchor: minted anchor set FAILED the SHA3/count "
@@ -190,11 +229,12 @@ bool boot_mint_anchor_run(const char *datadir)
 
     char sha3_hex[65];
     for (int i = 0; i < 32; i++)
-        snprintf(sha3_hex + 2 * i, 3, "%02x", got_sha3[i]);
+        snprintf(sha3_hex + 2 * i, 3, "%02x", coins_sha3[i]);
     fprintf(stderr,
             "[mint-anchor] SUCCESS: minted the verified anchor UTXO set at h=%d "
-            "(count=%llu, supply=%lld zatoshi, sha3=%s) — matches the compiled "
-            "checkpoint. Snapshot artifact: %s\n",
+            "(count=%llu, supply=%lld zatoshi, coins_sha3=%s) — matches the "
+            "compiled checkpoint. Self-verified v3 shielded snapshot artifact: "
+            "%s\n",
             anchor, (unsigned long long)got_count, (long long)got_supply,
             sha3_hex, out_path);
     if (!mint_anchor_progress_clear(pdb))

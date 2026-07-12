@@ -657,27 +657,30 @@ int coins_ram_commitment(uint8_t out[32])
  * set and its body SHA3 still equals the compiled checkpoint. The body encoder
  * is utxo_sha3_serialize_record — byte-identical to coins_kv_snapshot_write and
  * coins_ram_commitment. */
+/* ONE canonical overlay-active writer, versioned by DATA exactly like
+ * coins_kv_snapshot_write (see storage/coins_kv.h): shielded_or_null == NULL =>
+ * v1 (coins only); a Sapling-only frontier (sprout_len == 0 && nf_count == 0,
+ * sapling_len > 0) => v2 (single Sapling-frontier section); a Sprout frontier
+ * and/or nullifier set => v3 (full storage/snapshot_shielded.h section). Emits
+ * the byte-identical stream coins_kv_snapshot_write would for the same set. */
 bool coins_ram_snapshot_write(const char *out_path, int32_t height,
                               const uint8_t anchor_block_hash[32],
+                              const struct snapshot_shielded *shielded_or_null,
                               uint8_t out_sha3[32], uint64_t *out_count,
                               int64_t *out_total_supply)
 {
-    /* Back-compat thin wrapper: no Sapling frontier => writes a v1 file. */
-    return coins_ram_snapshot_write_v2(out_path, height, anchor_block_hash,
-                                       NULL, 0, out_sha3, out_count,
-                                       out_total_supply);
-}
-
-bool coins_ram_snapshot_write_v2(const char *out_path, int32_t height,
-                                 const uint8_t anchor_block_hash[32],
-                                 const uint8_t *frontier, uint32_t frontier_len,
-                                 uint8_t out_sha3[32], uint64_t *out_count,
-                                 int64_t *out_total_supply)
-{
     if (!coins_ram_active() || !out_path || !out_path[0])
         LOG_FAIL("coins_ram", "snapshot_write: inactive or null path");
-    if (frontier_len > 0 && !frontier)
-        LOG_FAIL("coins_ram", "snapshot_write: frontier_len>0 with null blob");
+
+    /* Format version from the shielded content: NULL => v1; Sapling-only => v2;
+     * Sprout and/or nullifiers => v3. */
+    uint32_t snap_version = 1;
+    if (shielded_or_null) {
+        if (shielded_or_null->sprout_len > 0 || shielded_or_null->nf_count > 0)
+            snap_version = 3;
+        else if (shielded_or_null->sapling_len > 0)
+            snap_version = 2;
+    }
 
     struct comm_rec *recs = NULL; size_t n = 0; uint8_t *scr_pool = NULL;
     if (!build_effective_sorted(&recs, &n, &scr_pool))
@@ -738,28 +741,35 @@ bool coins_ram_snapshot_write_v2(const char *out_path, int32_t height,
     if (!ok) { fclose(out); unlink(tmp_path);
         LOG_FAIL("coins_ram", "snapshot_write: body write failed"); }
 
-    /* OPTIONAL Sapling-frontier section (same layout as coins_kv_snapshot_write):
-     * appended after the UTXO records, inside the body SHA3 region. Present =>
-     * version 2; absent => version 1. */
-    uint32_t snap_version = 1;
-    if (frontier_len > 0) {
+    /* OPTIONAL shielded section, appended after the UTXO records and inside the
+     * body SHA3 region. v2 => single Sapling frontier ([u32 sapling_len][blob],
+     * byte-identical to the historical layout); v3 => full shielded section. */
+    if (snap_version == 2) {
+        const struct snapshot_shielded *sh = shielded_or_null;
         uint8_t lenbuf[4];
-        for (int i = 0; i < 4; i++) lenbuf[i] = (uint8_t)(frontier_len >> (8 * i));
+        for (int i = 0; i < 4; i++)
+            lenbuf[i] = (uint8_t)(sh->sapling_len >> (8 * i));
         if (fwrite(lenbuf, 1, 4, out) != 4 ||
-            fwrite(frontier, 1, frontier_len, out) != frontier_len) {
+            (sh->sapling_len &&
+             fwrite(sh->sapling, 1, sh->sapling_len, out) != sh->sapling_len)) {
             fclose(out); unlink(tmp_path);
-            LOG_FAIL("coins_ram", "snapshot_write: frontier write failed");
+            LOG_FAIL("coins_ram", "snapshot_write: sapling frontier write failed");
         }
         sha3_256_write(&ctx, lenbuf, 4);
-        sha3_256_write(&ctx, frontier, frontier_len);
-        snap_version = 2;
+        if (sh->sapling_len)
+            sha3_256_write(&ctx, sh->sapling, sh->sapling_len);
+    } else if (snap_version == 3) {
+        if (!snapshot_shielded_write(out, &ctx, shielded_or_null)) {
+            fclose(out); unlink(tmp_path);
+            LOG_FAIL("coins_ram", "snapshot_write: shielded section failed");
+        }
     }
 
     uint8_t body_sha3[32];
     sha3_256_finalize(&ctx, body_sha3);
 
     memcpy(header, "ZCLUTXO\x00", 8);
-    /* version u32 at off 8 (1 or 2); height u32 at off 16; count u64 at off 24;
+    /* version u32 at off 8 (1/2/3); height u32 at off 16; count u64 at off 24;
      * total_supply i64 at off 32; anchor hash at off 40; sha3 at off 72. */
     header[8] = (uint8_t)snap_version;
     header[16] = (uint8_t)height; header[17] = (uint8_t)(height >> 8);
@@ -780,109 +790,6 @@ bool coins_ram_snapshot_write_v2(const char *out_path, int32_t height,
     if (rename(tmp_path, out_path) != 0) {
         unlink(tmp_path);
         LOG_FAIL("coins_ram", "snapshot_write: rename failed");
-    }
-    if (out_sha3) memcpy(out_sha3, body_sha3, 32);
-    if (out_count) *out_count = count;
-    if (out_total_supply) *out_total_supply = total_supply;
-    return true;
-}
-
-bool coins_ram_snapshot_write_v3(const char *out_path, int32_t height,
-                                 const uint8_t anchor_block_hash[32],
-                                 const struct snapshot_shielded *shielded,
-                                 uint8_t out_sha3[32], uint64_t *out_count,
-                                 int64_t *out_total_supply)
-{
-    if (!coins_ram_active() || !out_path || !out_path[0] || !shielded)
-        LOG_FAIL("coins_ram", "snapshot_write_v3: inactive/null path/shielded");
-
-    struct comm_rec *recs = NULL; size_t n = 0; uint8_t *scr_pool = NULL;
-    if (!build_effective_sorted(&recs, &n, &scr_pool))
-        return false;
-
-    char tmp_path[1100];
-    int np = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", out_path);
-    if (np < 0 || (size_t)np >= sizeof(tmp_path)) {
-        free(recs); free(scr_pool);
-        LOG_FAIL("coins_ram", "snapshot_write_v3: path too long");
-    }
-    FILE *out = fopen(tmp_path, "wb");
-    if (!out) { free(recs); free(scr_pool);
-        LOG_FAIL("coins_ram", "snapshot_write_v3: fopen(%s) failed", tmp_path); }
-
-    uint8_t header[104] = {0};
-    bool ok = fwrite(header, 1, sizeof(header), out) == sizeof(header);
-
-    struct sha3_256_ctx ctx;
-    sha3_256_init(&ctx);
-    uint64_t count = 0;
-    int64_t  total_supply = 0;
-    for (size_t i = 0; ok && i < n; i++) {
-        const struct comm_rec *r = &recs[i];
-        uint8_t inline_buf[UTXO_SHA3_RECORD_MAX(1024)];
-        uint8_t *rec = inline_buf, *heap = NULL;
-        size_t bcap = sizeof(inline_buf);
-        if (r->script_len > 1024) {
-            bcap = UTXO_SHA3_RECORD_MAX(r->script_len);
-            heap = zcl_malloc(bcap, "coins_ram_snap_rec");
-            if (!heap) { ok = false; break; }
-            rec = heap;
-        }
-        size_t rec_len = 0;
-        if (!utxo_sha3_serialize_record(rec, bcap, &rec_len, r->txid, r->vout,
-                                        r->value,
-                                        r->script_len ? r->script : NULL,
-                                        r->script_len, (uint32_t)r->height,
-                                        r->is_coinbase)) {
-            if (heap) free(heap);
-            ok = false;
-            break;
-        }
-        if (fwrite(rec, 1, rec_len, out) != rec_len) {
-            if (heap) free(heap);
-            ok = false;
-            break;
-        }
-        sha3_256_write(&ctx, rec, rec_len);
-        if (heap) free(heap);
-        total_supply += r->value;
-        count++;
-    }
-    free(recs); free(scr_pool);
-
-    if (!ok) { fclose(out); unlink(tmp_path);
-        LOG_FAIL("coins_ram", "snapshot_write_v3: body write failed"); }
-
-    /* v3 SHIELDED section (Sapling + Sprout frontiers + nullifier set), inside
-     * the body SHA3 region — same layout as coins_kv_snapshot_write_v3. */
-    if (!snapshot_shielded_write(out, &ctx, shielded)) {
-        fclose(out); unlink(tmp_path);
-        LOG_FAIL("coins_ram", "snapshot_write_v3: shielded section failed");
-    }
-
-    uint8_t body_sha3[32];
-    sha3_256_finalize(&ctx, body_sha3);
-
-    memcpy(header, "ZCLUTXO\x00", 8);
-    header[8] = 3;  /* version u32 = 3 */
-    header[16] = (uint8_t)height; header[17] = (uint8_t)(height >> 8);
-    header[18] = (uint8_t)(height >> 16); header[19] = (uint8_t)(height >> 24);
-    for (int i = 0; i < 8; i++) header[24 + i] = (uint8_t)(count >> (8 * i));
-    for (int i = 0; i < 8; i++)
-        header[32 + i] = (uint8_t)((uint64_t)total_supply >> (8 * i));
-    if (anchor_block_hash) memcpy(header + 40, anchor_block_hash, 32);
-    memcpy(header + 72, body_sha3, 32);
-
-    if (fseek(out, 0, SEEK_SET) != 0 ||
-        fwrite(header, 1, sizeof(header), out) != sizeof(header) ||
-        fflush(out) != 0) {
-        fclose(out); unlink(tmp_path);
-        LOG_FAIL("coins_ram", "snapshot_write_v3: header rewrite failed");
-    }
-    fclose(out);
-    if (rename(tmp_path, out_path) != 0) {
-        unlink(tmp_path);
-        LOG_FAIL("coins_ram", "snapshot_write_v3: rename failed");
     }
     if (out_sha3) memcpy(out_sha3, body_sha3, 32);
     if (out_count) *out_count = count;

@@ -42,6 +42,7 @@
 #include <stdio.h>
 
 struct sha3_256_ctx;
+struct sqlite3;
 
 /* 1 pool byte + 32 nullifier bytes + 8 height bytes. */
 #define SNAPSHOT_NF_RECORD_BYTES 41
@@ -60,6 +61,26 @@ struct snapshot_shielded {
  * file). */
 bool snapshot_shielded_write(FILE *out, struct sha3_256_ctx *ctx,
                              const struct snapshot_shielded *s);
+
+/* Collect the live SHIELDED consensus state at `height` from the reducer's
+ * progress.kv handle into `*out` (the producer half of the sovereign cure):
+ *   - the Sapling active-chain frontier (anchor_kv_latest_tree SAPLING),
+ *   - the Sprout active-chain frontier (anchor_kv_latest_tree SPROUT),
+ *   - every nullifier revealed at height <= `height` (both pools),
+ * all in freshly-malloc'd buffers OWNED by `*out`. Pass the result straight to
+ * coins_kv_snapshot_write to emit a v3 self-verified shielded snapshot, then
+ * release the buffers with snapshot_shielded_free_collected.
+ *
+ * FAILS LOUD (returns false, logs, writes nothing to *out) when a frontier is
+ * unavailable or a store read errors — a seed that cannot present its shielded
+ * frontier must never be written as a coins-only snapshot mislabeled shielded.
+ * An absent nullifier table is a clean empty set (fail-open, no wedge). */
+bool snapshot_shielded_collect_from_db(struct sqlite3 *db, int64_t height,
+                                       struct snapshot_shielded *out);
+
+/* Free the buffers snapshot_shielded_collect_from_db allocated into `s` and
+ * zero the struct. Safe on a NULL or already-zeroed struct. */
+void snapshot_shielded_free_collected(struct snapshot_shielded *s);
 
 /* Pack ONE nullifier record into rec[SNAPSHOT_NF_RECORD_BYTES]. */
 void snapshot_shielded_pack_nf(uint8_t rec[SNAPSHOT_NF_RECORD_BYTES],

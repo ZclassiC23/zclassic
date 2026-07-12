@@ -283,6 +283,7 @@ int test_refold_retro_validate(void)
         int64_t out_supply = 0;
         RV_CHECK("mint snapshot written",
                  coins_kv_snapshot_write(pdb, snap_path, RV_ANCHOR_M, cp.block_hash,
+                                         /*shielded=*/NULL,
                                          out_sha3, &out_count, &out_supply));
         RV_CHECK("mint body SHA3 == checkpoint root",
                  memcmp(out_sha3, cp.sha3_hash, 32) == 0);

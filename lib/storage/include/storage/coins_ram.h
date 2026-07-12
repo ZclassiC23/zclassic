@@ -154,32 +154,20 @@ int coins_ram_commitment(uint8_t out[32]);
  * and body encoder. Used by the anchor self-mint when the overlay is active so
  * the artifact reflects the COMPLETE applied set (including the un-flushed
  * tail) and its body SHA3 still matches the compiled checkpoint. Fills
- * *out_sha3 / *out_count / *out_total_supply on success. */
+ * *out_sha3 / *out_count / *out_total_supply on success.
+ *
+ * ONE canonical writer, versioned by DATA exactly like coins_kv_snapshot_write:
+ * `shielded_or_null == NULL` → v1 (coins only); Sapling-only frontier
+ * (sprout_len == 0 && nf_count == 0, sapling_len > 0) → v2; a Sprout frontier
+ * and/or nullifier set → v3 (full storage/snapshot_shielded.h section). This is
+ * the coins_ram overlay-active twin of coins_kv_snapshot_write and emits the
+ * byte-identical stream for the same inputs. */
+struct snapshot_shielded;
 bool coins_ram_snapshot_write(const char *out_path, int32_t height,
                               const uint8_t anchor_block_hash[32],
+                              const struct snapshot_shielded *shielded_or_null,
                               uint8_t out_sha3[32], uint64_t *out_count,
                               int64_t *out_total_supply);
-
-/* v2 writer: same as coins_ram_snapshot_write, but if `frontier_len` > 0 it
- * appends a Sapling commitment-tree frontier section
- * ([u32 frontier_len LE][blob]) after the UTXO records and stamps header
- * version = 2. Byte-identical format to coins_kv_snapshot_write_v2. */
-bool coins_ram_snapshot_write_v2(const char *out_path, int32_t height,
-                                 const uint8_t anchor_block_hash[32],
-                                 const uint8_t *frontier, uint32_t frontier_len,
-                                 uint8_t out_sha3[32], uint64_t *out_count,
-                                 int64_t *out_total_supply);
-
-/* v3 writer: same as coins_ram_snapshot_write, but appends the SHIELDED section
- * (Sapling + Sprout frontiers + nullifier set) after the UTXO records and
- * stamps header version = 3. Byte-identical format to
- * coins_kv_snapshot_write_v3 (see storage/snapshot_shielded.h). */
-struct snapshot_shielded;
-bool coins_ram_snapshot_write_v3(const char *out_path, int32_t height,
-                                 const uint8_t anchor_block_hash[32],
-                                 const struct snapshot_shielded *shielded,
-                                 uint8_t out_sha3[32], uint64_t *out_count,
-                                 int64_t *out_total_supply);
 
 /* ── durability ── */
 

@@ -241,6 +241,7 @@ void anchor_selfmint_hook_in_tx(struct sqlite3 *db, const char *datadir,
     uint64_t got_count = 0;
     int64_t got_supply = 0;
     if (!coins_kv_snapshot_write(db, path, cp->height, cp->block_hash,
+                                 /*shielded=*/NULL,
                                  got_sha3, &got_count, &got_supply)) {
         LOG_WARN("selfmint", "[selfmint] snapshot write to %s failed — leaving "
                  "no artifact (the offline -mint-anchor ceremony remains the "
