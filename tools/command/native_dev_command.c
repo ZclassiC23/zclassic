@@ -483,6 +483,17 @@ static bool dev_pid_is_watcher(pid_t pid)
     if (got <= 0 || (size_t)got >= sizeof(exe))
         return false;
     exe[got] = 0;
+    /* A live watcher whose on-disk binary was replaced (every rebuild of
+     * build/bin/zclassic23-dev does exactly this while the watcher runs)
+     * shows up as "<path> (deleted)" in /proc/<pid>/exe. Strip that suffix
+     * before the basename compare so the watcher stays recognized across a
+     * dev-binary rebuild — otherwise `dev loop status` reports active:false
+     * and `dev loop ensure` tries to spawn a duplicate against the held
+     * singleton lock. */
+    static const char kDeleted[] = " (deleted)";
+    size_t dlen = sizeof(kDeleted) - 1;
+    if ((size_t)got >= dlen && strcmp(exe + got - dlen, kDeleted) == 0)
+        exe[got - dlen] = 0;
     const char *base = strrchr(exe, '/');
     return base && strcmp(base + 1, "zclassic23-dev") == 0;
 }

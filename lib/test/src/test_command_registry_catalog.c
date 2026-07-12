@@ -199,6 +199,40 @@ static int test_search_bounded(void)
     return failures;
 }
 
+static size_t search_total_matches(const struct zcl_command_registry *reg,
+                                   const char *query, char *out, size_t out_sz)
+{
+    size_t n = zcl_command_registry_search_json(reg, query, out, out_sz);
+    if (n == 0)
+        return 0;
+    struct json_value doc;
+    if (!json_read(&doc, out, n) || doc.type != JSON_OBJ)
+        return 0;
+    const struct json_value *tm = json_get(&doc, "total_matches");
+    size_t total = tm && tm->type == JSON_INT ? (size_t)json_get_int(tm) : 0;
+    json_free(&doc);
+    return total;
+}
+
+static int test_search_multiword(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    char out[ZCL_COMMAND_LIST_BUDGET + 1];
+    TEST("a space-separated query matches dotted command paths") {
+        /* Regression: "dev loop" (space) previously matched nothing because
+         * the literal string is never a substring of "dev.loop.status". Each
+         * word must appear for a hit; a nonsense word blocks the match. */
+        ASSERT(search_total_matches(reg, "dev loop", out, sizeof(out)) > 0);
+        ASSERT(search_total_matches(reg, "loop dev", out, sizeof(out)) > 0);
+        ASSERT(search_total_matches(reg, "dev zzznope", out, sizeof(out)) == 0);
+        /* Single-word behavior is unchanged and still finds matches. */
+        ASSERT(search_total_matches(reg, "loop", out, sizeof(out)) > 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_ready_leaves_bound(void)
 {
     int failures = 0;
@@ -779,6 +813,7 @@ int test_command_registry_catalog(void)
     failures += test_root_menu_budget();
     failures += test_branch_menus_shallow();
     failures += test_search_bounded();
+    failures += test_search_multiword();
     failures += test_ready_leaves_bound();
     failures += test_bridge_bindings_reverse();
     failures += test_status_brief_flat_lean_envelope();

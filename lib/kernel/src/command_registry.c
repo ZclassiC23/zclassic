@@ -1041,6 +1041,39 @@ static int command_match_score(const struct zcl_command_spec *spec,
         *reason = "summary";
         return 300;
     }
+    /* Multi-word fallback: a space-separated query ("dev loop") that matched
+     * nothing as a single string still matches a command when EVERY word
+     * appears (folded) in its path, tags, or summary. This lets natural
+     * multi-word queries reach dotted command paths ("dev.loop.status") —
+     * where the literal "dev loop" is never a substring. Single-word queries
+     * never enter this block (no space), so all scoring above is unchanged. */
+    if (strchr(query, ' ')) {
+        size_t words = 0, matched = 0;
+        for (const char *p = query; *p;) {
+            while (*p == ' ')
+                p++;
+            if (!*p)
+                break;
+            const char *start = p;
+            while (*p && *p != ' ')
+                p++;
+            size_t wl = (size_t)(p - start);
+            char word[129];
+            if (wl == 0 || wl >= sizeof(word))
+                return 0;
+            memcpy(word, start, wl);
+            word[wl] = 0;
+            words++;
+            if (contains_folded(spec->path, word) ||
+                contains_folded(spec->tags, word) ||
+                contains_folded(spec->summary, word))
+                matched++;
+        }
+        if (words >= 2 && matched == words) {
+            *reason = "terms";
+            return 250;
+        }
+    }
     return 0;
 }
 
