@@ -953,6 +953,8 @@ int main(int argc, char **argv)
     failures += test_keys();
     { extern int test_test_key_io_codec(void);
       failures += test_test_key_io_codec(); }
+    { extern int test_test_png_writer(void);
+      failures += test_test_png_writer(); }
     failures += test_script();
     failures += test_net();
     failures += test_connman_addnode_fallback();
