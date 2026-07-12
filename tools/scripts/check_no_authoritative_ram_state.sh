@@ -25,25 +25,32 @@ done < "$BASELINE"
 
 pattern='(\.|->)chain_active\.(height|chain|capacity)|(^|[[:space:]])static[[:space:]]+struct[[:space:]]+active_chain[[:space:]]+[A-Za-z_][A-Za-z0-9_]*|(^|[[:space:]])struct[[:space:]]+active_chain[[:space:]]+g_[A-Za-z_][A-Za-z0-9_]*'
 
-violations=()
-while IFS= read -r f; do
-    while IFS= read -r match; do
-        key=$(printf '%s:%s\n' "$f" "$match" | sed -E 's/[[:space:]]+/ /g')
-        line_content="${key#*:}"
-        line_content="${line_content#*:}"
-        if printf '%s\n' "$line_content" | grep -qE '//[[:space:]]*ram-state-ok:[A-Za-z][A-Za-z0-9_-]*'; then
-            continue
-        fi
-        if [ -n "${baseline[$key]+x}" ]; then
-            continue
-        fi
-        violations+=("$key")
-    done < <(grep -nE "$pattern" "$f" || true)
-done < <(find app lib config tools -type f \( -name '*.c' -o -name '*.h' \) \
+mapfile -t scan_files < <(find app lib config tools -type f \( -name '*.c' -o -name '*.h' \) \
     ! -path '*/test/*' \
     ! -path 'tools/scripts/*' \
     ! -path 'tools/lint/*' \
     | sort)
+
+# One batched grep over the whole scan set instead of a fork per file.
+# `grep -H` emits FILE:LINE:content, byte-identical to the old
+# printf '%s:%s' "$f" "<LINE:content>" key, so the marker skip and baseline
+# dedup below are unchanged. `</dev/null` keeps grep from reading stdin (and
+# hanging) in the degenerate empty-scan case; `|| true` masks the exit-1
+# no-match exactly as the per-file `grep ... || true` did.
+violations=()
+while IFS= read -r hit; do
+    [ -z "$hit" ] && continue
+    key=$(printf '%s\n' "$hit" | sed -E 's/[[:space:]]+/ /g')
+    line_content="${key#*:}"
+    line_content="${line_content#*:}"
+    if printf '%s\n' "$line_content" | grep -qE '//[[:space:]]*ram-state-ok:[A-Za-z][A-Za-z0-9_-]*'; then
+        continue
+    fi
+    if [ -n "${baseline[$key]+x}" ]; then
+        continue
+    fi
+    violations+=("$key")
+done < <(grep -nHE "$pattern" "${scan_files[@]}" </dev/null || true)
 
 if [ "${#violations[@]}" -eq 0 ]; then
     echo "check_no_authoritative_ram_state: clean — $baseline_count grandfathered RAM-authority surface(s), no new ones"

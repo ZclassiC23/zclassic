@@ -63,25 +63,30 @@ SCAN_FLOOR=200
 gate_require_scanned "${#scan_files[@]}" "$SCAN_FLOOR" check_one_write_path \
     "find roots: $SCAN_ROOTS"
 
+# One batched grep over the whole scan set instead of a fork per file.
+# `grep -H` emits FILE:LINE:content, byte-identical to the old
+# printf '%s:%s' "$f" "<LINE:content>" key, so every downstream filter
+# (comment/marker skip, baseline dedup) is unchanged. gate_grep still makes a
+# real grep error (exit >=2) FATAL, and the gate_require_scanned floor above
+# still catches a hollow (empty) scan before we ever get here.
 violations=()
-for f in "${scan_files[@]}"; do
-    while IFS= read -r match; do
-        key=$(printf '%s:%s\n' "$f" "$match" | sed -E 's/[[:space:]]+/ /g')
-        line_content="${key#*:}"
-        line_content="${line_content#*:}"
-        trimmed="${line_content#"${line_content%%[![:space:]]*}"}"
-        case "$trimmed" in
-            '/*'*|'*'*|'//'*) continue ;;
-        esac
-        if printf '%s\n' "$line_content" | grep -qE '//[[:space:]]*one-write-path-ok:[A-Za-z][A-Za-z0-9_-]*'; then
-            continue
-        fi
-        if [ -n "${baseline[$key]+x}" ]; then
-            continue
-        fi
-        violations+=("$key")
-    done < <(gate_grep -nE "$pattern" "$f")
-done
+while IFS= read -r hit; do
+    [ -z "$hit" ] && continue
+    key=$(printf '%s\n' "$hit" | sed -E 's/[[:space:]]+/ /g')
+    line_content="${key#*:}"
+    line_content="${line_content#*:}"
+    trimmed="${line_content#"${line_content%%[![:space:]]*}"}"
+    case "$trimmed" in
+        '/*'*|'*'*|'//'*) continue ;;
+    esac
+    if printf '%s\n' "$line_content" | grep -qE '//[[:space:]]*one-write-path-ok:[A-Za-z][A-Za-z0-9_-]*'; then
+        continue
+    fi
+    if [ -n "${baseline[$key]+x}" ]; then
+        continue
+    fi
+    violations+=("$key")
+done < <(gate_grep -nHE "$pattern" "${scan_files[@]}")
 
 if [ "${#violations[@]}" -eq 0 ]; then
     echo "check_one_write_path: clean — $baseline_count grandfathered write surface(s), no new ones"

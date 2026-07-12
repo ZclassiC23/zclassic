@@ -38,36 +38,55 @@ while IFS= read -r line; do
     baseline_count=$((baseline_count + 1))
 done < "$BASELINE"
 
-# Is $1's basename a repair-rung name? repair|reconcile|backfill always;
-# `heal` only when it is NOT the substring of `health`.
-is_repair_rung_name() {
-    local base; base="$(basename "$1")"
-    if printf '%s' "$base" | grep -qE 'repair|reconcile|backfill'; then
-        return 0
-    fi
-    if printf '%s' "$base" | grep -qE 'heal' && \
-       ! printf '%s' "$base" | grep -qE 'health'; then
+# Is a basename a repair-rung name? repair|reconcile|backfill always;
+# `heal` only when it is NOT the substring of `health`. Pure bash — no
+# basename/grep fork per file (the old is_repair_rung_name forked 2-3 times
+# for every app/*.c file).
+is_repair_rung_base() {
+    local base="$1"
+    case "$base" in
+        *repair*|*reconcile*|*backfill*) return 0 ;;
+    esac
+    if [[ "$base" == *heal* && "$base" != *health* ]]; then
         return 0
     fi
     return 1
 }
 
-fail=0
-new_violations=()
+# First pass: filter the app/ tree to just the repair-rung-named files using
+# pure-bash name tests (no fork). Only that small candidate set (~two dozen)
+# needs a content grep for the marker.
+rung_files=()
 while IFS= read -r f; do
     [ -f "$f" ] || continue
-    is_repair_rung_name "$f" || continue
+    is_repair_rung_base "${f##*/}" || continue
+    rung_files+=("$f")
+done < <(find app -type f -name '*.c' | sort)
+
+# One batched `grep -lE` over the candidate set names every file that carries
+# a `// repair-rung-ok:<cite>` marker, instead of a grep fork per candidate.
+declare -A has_marker
+if [ "${#rung_files[@]}" -gt 0 ]; then
+    while IFS= read -r mf; do
+        [ -n "$mf" ] && has_marker["$mf"]=1
+    done < <(grep -lE '//[[:space:]]*repair-rung-ok:[A-Za-z][A-Za-z0-9_./-]*' \
+                 "${rung_files[@]}" </dev/null 2>/dev/null || true)
+fi
+
+fail=0
+new_violations=()
+for f in "${rung_files[@]}"; do
     # Grandfathered existing rung? Pass.
     if [ -n "${baseline[$f]+x}" ]; then
         continue
     fi
     # Per-file marker citing the write-time-invariant test? Pass.
-    if grep -qE '//[[:space:]]*repair-rung-ok:[A-Za-z][A-Za-z0-9_./-]*' "$f"; then
+    if [ -n "${has_marker[$f]+x}" ]; then
         continue
     fi
     new_violations+=("$f")
     fail=1
-done < <(find app -type f -name '*.c' | sort)
+done
 
 if [ "$fail" = "0" ]; then
     echo "check_no_new_repair_rung: clean — ${baseline_count} grandfathered rung(s), no new ones"
