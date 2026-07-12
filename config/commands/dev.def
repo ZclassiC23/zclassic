@@ -1,7 +1,7 @@
 /* Checkout-local development commands. Never bind these to RPC/REST/MCP. */
 
 ZCL_COMMAND_READY_READ(
-    "dev.status", "dev", "", "Read the latest bounded native cycle verdict",
+    "dev.status", "dev", "", "Read the latest native cycle verdict",
     "dev,status,cycle,verdict", "zcl.command.empty_input.v1",
     "zcl.dev_status.v1", "", "", "zclassic23 dev status",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
@@ -11,19 +11,30 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_dev_status)
 
-ZCL_COMMAND_BRANCH("dev.core", "dev", "Core boundary and guarded proof lanes",
+ZCL_COMMAND_READY_READ(
+    "dev.ff", "dev", "", "Fail-fast ladder: compile, test, lint",
+    "dev,ff,ladder,fast,verify", "zcl.command.empty_input.v1",
+    "zcl.dev_ff.v1", "", "", "zclassic23 dev ff",
+    ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_DEV_STATE_READ,
+    ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_dev_ff)
+
+ZCL_COMMAND_BRANCH("dev.core", "dev", "Core boundary and proof lanes",
                    ZCL_COMMAND_LAYER_DEV)
 ZCL_COMMAND_BRANCH("dev.app", "dev", "Build capability-scoped C Apps",
                    ZCL_COMMAND_LAYER_DEV)
-ZCL_COMMAND_BRANCH("dev.change", "dev", "Classify and apply source changes",
+ZCL_COMMAND_BRANCH("dev.change", "dev", "Classify and apply changes",
                    ZCL_COMMAND_LAYER_DEV)
-ZCL_COMMAND_BRANCH("dev.loop", "dev", "Persistent save-to-verdict state machine",
+ZCL_COMMAND_BRANCH("dev.loop", "dev", "Persistent save-to-verdict loop",
                    ZCL_COMMAND_LAYER_DEV)
-ZCL_COMMAND_BRANCH("dev.test", "dev", "Focused deterministic proof selection",
+ZCL_COMMAND_BRANCH("dev.test", "dev", "Focused proof selection",
                    ZCL_COMMAND_LAYER_DEV)
-ZCL_COMMAND_BRANCH("dev.generation", "dev", "Immutable generation provenance",
+ZCL_COMMAND_BRANCH("dev.generation", "dev", "Generation provenance",
                    ZCL_COMMAND_LAYER_DEV)
-ZCL_COMMAND_BRANCH("dev.diagnose", "dev", "Bounded failure capsule lookup",
+ZCL_COMMAND_BRANCH("dev.diagnose", "dev", "Failure capsule lookup",
                    ZCL_COMMAND_LAYER_DEV)
 
 ZCL_COMMAND_READY_READ(
@@ -166,7 +177,7 @@ ZCL_COMMAND_DEV_COMMAND(
     "change application requires the dev-only process/activation executor",
     "zclassic23-dev dev change cycle")
 
-ZCL_COMMAND_BRANCH("dev.vcs", "dev", "One-command source+binary revert (ZVCS)",
+ZCL_COMMAND_BRANCH("dev.vcs", "dev", "One-command source+binary revert",
                    ZCL_COMMAND_LAYER_DEV)
 
 ZCL_COMMAND_DEV_COMMAND(
@@ -212,7 +223,7 @@ ZCL_COMMAND_DEV_COMMAND(
     "\"confirm\":true}'")
 
 ZCL_COMMAND_BRANCH("dev.hotswap", "dev",
-                   "Tier-1 in-process hot-swap of native command leaves",
+                   "Tier-1 command-leaf hot-swap",
                    ZCL_COMMAND_LAYER_DEV)
 
 ZCL_COMMAND_DEV_COMMAND(

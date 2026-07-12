@@ -85,6 +85,14 @@ void zcl_native_handle_discover_schema(
 void zcl_native_handle_dev_status(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+/* dev.ff — the fail-fast edit-loop ladder (`make ff`: compile -> focused
+ * tests -> lint-fast, see tools/command/native_dev_command.c). A release
+ * build's copy of this function is a `#ifndef ZCL_DEV_BUILD` stub that fails
+ * BLOCKED without spawning anything (zcl_devloop_process_run is dev-only
+ * linked, see Makefile DEV_ONLY_SRCS). */
+void zcl_native_handle_dev_ff(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_dev_core_boundary(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

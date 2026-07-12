@@ -115,6 +115,82 @@ void zcl_native_handle_dev_status(const struct zcl_command_request *request,
                            "keep editing; the native watcher records verdicts");
 }
 
+/* ── dev.ff ────────────────────────────────────────────────────────────
+ * Thin wrapper around `make ff` (Makefile: compile -> focused tests ->
+ * lint-fast, cost-ordered and short-circuiting). Runs via the same
+ * zcl_devloop_process_run() subprocess primitive the reload/redeploy path
+ * uses (see dev_vcs_shell_fallback_activate() above), which is DEV_ONLY
+ * linked (Makefile DEV_ONLY_SRCS) — so a release build never spawns this. */
+void zcl_native_handle_dev_ff(const struct zcl_command_request *request,
+                              struct zcl_command_reply *reply)
+{
+#ifndef ZCL_DEV_BUILD
+    (void)request;
+    zcl_command_reply_fail(
+        reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
+        "DEV_BUILD_REQUIRED", "dispatch", false, false,
+        "the fail-fast ladder requires a dev build",
+        "make dev-bin, or zclassic23-dev dev ff");
+#else
+    char root[PATH_MAX];
+    const char *src_root = dev_source_root(request);
+    if (!realpath(src_root, root)) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "ROOT_RESOLVE_FAILED",
+                               "normalize", false, false,
+                               "could not resolve the checkout root", src_root);
+        return;
+    }
+    const char *argv[] = { "make", "--no-print-directory", "ff", NULL };
+    struct zcl_devloop_process_result result;
+    if (!zcl_devloop_process_run(root, argv, 600000, &result)) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "FF_EXEC_FAILED",
+                               "execute", true, false,
+                               "could not execute the fail-fast ladder", "");
+        return;
+    }
+    bool ok = result.exit_code == 0 && result.term_signal == 0 &&
+              !result.timed_out;
+    (void)json_push_kv_str(&reply->data, "schema", "zcl.dev_ff.v1");
+    (void)json_push_kv_bool(&reply->data, "passed", ok);
+    (void)json_push_kv_int(&reply->data, "elapsed_ms", result.elapsed_ms);
+    (void)json_push_kv_int(&reply->data, "exit_code", result.exit_code);
+    (void)json_push_kv_bool(&reply->data, "timed_out", result.timed_out);
+    if (!ok) {
+        const char *tail = result.output;
+        if (result.output_len > 2048)
+            tail += result.output_len - 2048;
+        (void)json_push_kv_str(&reply->data, "output_tail", tail);
+        /* The failing envelope drops reply->data (see serialize_reply()), so
+         * carry the ladder's own dense "FIRST-ERROR[<rung>]: ..." line (see
+         * tools/agent_fast_ci.sh) in the error evidence, where it is
+         * actually rendered. Falls back to a short output tail if the
+         * marker was not printed (e.g. a killed/timed-out subprocess). */
+        char evidence[256];
+        const char *marker = strstr(result.output, "FIRST-ERROR[");
+        if (marker) {
+            const char *eol = strchr(marker, '\n');
+            size_t len = eol ? (size_t)(eol - marker) : strlen(marker);
+            if (len >= sizeof(evidence))
+                len = sizeof(evidence) - 1;
+            memcpy(evidence, marker, len);
+            evidence[len] = 0;
+        } else {
+            (void)snprintf(evidence, sizeof(evidence), "%s",
+                           result.output_len > sizeof(evidence) - 1
+                               ? result.output +
+                                     (result.output_len - (sizeof(evidence) - 1))
+                               : result.output);
+        }
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_FAILED, "FF_LADDER_FAILED",
+                               "prove", true, false,
+                               "fail-fast ladder failed", evidence);
+    }
+#endif
+}
+
 /* ── dev.core.boundary ─────────────────────────────────────────────────── */
 void zcl_native_handle_dev_core_boundary(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
