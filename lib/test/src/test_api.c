@@ -4810,14 +4810,16 @@ int test_api(void)
                           "zcl.agent_impact.v1") == 0;
         ok = ok && json_get_int(json_get(&result, "files_count")) == 2;
         ok = ok && json_get_int(json_get(&result,
-                                         "relevant_test_groups_count")) == 3;
+                                         "relevant_test_groups_count")) == 4;
         const struct json_value *groups =
             json_get(&result, "relevant_test_groups");
         ok = ok && api_test_array_has_str(groups,
                                           "chain_advance_coordinator");
+        ok = ok && api_test_array_has_str(groups,
+                                          "block_source_policy_status_json");
         /* zero-MCP note (docs/work/MCP-REMOVAL-WORKLIST.md W2): this
          * asserts a real, still-accurate impact-rule row (block_source_
-         * policy* -> mcp_controllers, agent_impact_rules.def:86) — left
+         * policy* -> mcp_controllers, agent_impact_rules.def:94) — left
          * as-is, it guards live classification behavior until W3 retires
          * the row. The native successor shape (a *_native_handlers.c
          * change classifying into command_registry_catalog) already has
