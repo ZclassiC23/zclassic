@@ -23,6 +23,16 @@ don't trust this page's specifics blindly (code moves; docs rot):
 - `docs/CONSENSUS_PARITY_DOCTRINE.md` — the inviolable parity rule.
 - `docs/NATIVE_COMMAND_INTERFACE.md` — the native command registry (the dev + agent interface).
 
+## Understand fast — query the code index, don't grep (this saves the most tokens)
+
+Before you Read a file or `grep`, ask the in-tree **code navigator** (`lib/codeindex/`, served as `zclassic23 code …`). One indexed lookup ≈ 150–200 tokens; grepping then reading a 1,000-line file to learn the same fact is *thousands*. **Navigator-first — `grep`/`Read` is the fallback for what the index can't answer (prose, comments, non-symbol text).**
+
+- `zclassic23 code sym --input='{"name":"<symbol>"}'` → definition `path:line` + full signature + group. Answers "where is X defined?"
+- `zclassic23 code refs --input='{"name":"<symbol>"}'` → every call site as `file:line`. Answers "who calls X? / what breaks if I change it?" (e.g. it flags a caller a delete must handle before you've opened a single file).
+- `zclassic23 code find` / `code file` / `code group` → text search / a file's symbol surface / a directory's surface. Run `zclassic23 discover schema <leaf>` for the exact input keys.
+
+The index is derived and read-only. The full efficient loop is **`code sym`/`code refs` to understand (cheap) → `Edit` the `.c` → the watcher auto-builds+tests+reloads → `dev status` to confirm → `dev vcs` to revert.** Understand → edit → proven-in-reality, minimum tokens, minimum thinking.
+
 ## Develop fast — the native dev loop (this is how you stay efficient)
 
 The platform exists so you **drop in C and let the machine build+test+run it.** Do not hand-run every step or drop to bash to inspect — that is the slow path the platform was built to remove.
