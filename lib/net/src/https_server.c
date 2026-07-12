@@ -31,7 +31,7 @@
 #include "util/path_check.h"
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
-#include "mcp/metrics.h"
+#include "metrics/prometheus_metrics.h"
 
 static SSL_CTX *g_ssl_ctx = NULL;
 static int g_https_fd = -1;
@@ -209,7 +209,7 @@ static void handle_https_client(SSL *ssl)
         size_t cap = 131072;
         char *mbuf = zcl_malloc(cap, "https_metrics_buf");
         if (!mbuf) return;
-        size_t n = mcp_metrics_render_prometheus(mbuf, cap);
+        size_t n = metrics_prometheus_render_prometheus(mbuf, cap);
         char hdr[256];
         int hlen = snprintf(hdr, sizeof(hdr),
             "HTTP/1.1 200 OK\r\n"

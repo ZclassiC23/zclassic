@@ -85,7 +85,7 @@ static const char *const stale_witnesses[] = {
     "tools/mcp/controllers/ops_controller.c",
     "tools/mcp/controllers/diagnostics_controller.c",
     "tools/mcp/controllers/app_controller.c",
-    "tools/mcp/metrics.c",
+    "lib/metrics/src/prometheus_metrics.c",
     "tools/mcp/middleware.c",
     "tools/mcp_server.c",
     "src/main.c",

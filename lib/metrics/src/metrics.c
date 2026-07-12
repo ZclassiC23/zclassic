@@ -4,7 +4,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "metrics/metrics.h"
-#include "mcp/metrics.h"
+#include "metrics/prometheus_metrics.h"
 #include "validation/main_state.h"
 #include "net/connman.h"
 #include "chain/chainparams.h"
@@ -373,23 +373,23 @@ static void *metrics_thread_fn(void *arg)
             if (ctx->external_gauges)
                 ctx->external_gauges(&ext, ctx->external_gauges_ctx);
 
-            mcp_metrics_set_node_gauges(gh, gpc, grss, ext.utxo_count, gup);
+            metrics_prometheus_set_node_gauges(gh, gpc, grss, ext.utxo_count, gup);
 
-            mcp_metrics_set_sync_state(ext.sync_state, ext.sync_state_name);
+            metrics_prometheus_set_sync_state(ext.sync_state, ext.sync_state_name);
 
             /* Must run after set_node_gauges (uptime) and set_sync_state
-             * (sync state) above — mcp_metrics_set_header_gap reads both
+             * (sync state) above — metrics_prometheus_set_header_gap reads both
              * as same-tick context for its breach-seconds hysteresis. */
-            mcp_metrics_set_header_gap(ext.header_gap_blocks);
+            metrics_prometheus_set_header_gap(ext.header_gap_blocks);
 
-            mcp_metrics_set_tip_advance_age(
+            metrics_prometheus_set_tip_advance_age(
                 ext.tip_advance_age_seconds);
 
-            mcp_metrics_set_mirror_lag(ext.mirror_lag_blocks,
+            metrics_prometheus_set_mirror_lag(ext.mirror_lag_blocks,
                                        ext.mirror_lag_breach_seconds,
                                        ext.mirror_lag_critical_seconds);
 
-            mcp_metrics_set_peer_kinds(ext.magicbean_peer_count,
+            metrics_prometheus_set_peer_kinds(ext.magicbean_peer_count,
                                        ext.zclassic_c23_peer_count);
         }
 

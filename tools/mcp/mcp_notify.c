@@ -33,7 +33,7 @@
  * healers already emit on every new detection episode
  * (lib/framework/src/condition.c) AND the vehicle the metrics
  * threshold-alert rule table uses (tools/mcp/metrics.c
- * mcp_metrics_evaluate_alert_rules(), payload name prefixed
+ * metrics_prometheus_evaluate_alert_rules(), payload name prefixed
  * "metric_alert."). Both producers are edge-triggered — one push per
  * detection episode, not per poll — so allow-listing the type does not
  * reintroduce the routine-chatter flood this list exists to avoid. */

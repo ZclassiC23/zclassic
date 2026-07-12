@@ -12,7 +12,7 @@
 #include "controllers/meta_native_handlers.h"
 
 #include "json/json.h"
-#include "mcp/metrics.h"
+#include "metrics/prometheus_metrics.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -46,7 +46,7 @@ char *zcl_native_metrics_body(const struct json_value *args,
     char *raw = zcl_malloc(cap, "metrics_raw");
     if (!raw)
         return meta_native_oom(err, cap, "metrics buffer");
-    size_t n = mcp_metrics_render_prometheus(raw, cap);
+    size_t n = metrics_prometheus_render_prometheus(raw, cap);
 
     /* Wrap the Prometheus text in a JSON envelope so the stdio layer
      * can shuttle it as a tool result.  Escape quotes + newlines. */
@@ -70,9 +70,9 @@ char *zcl_native_metrics_body(const struct json_value *args,
     }
     pos += (size_t)snprintf(out + pos, out_cap - pos,
         "\",\"total_requests\":%llu,\"total_errors\":%llu,\"counter_count\":%zu}",
-        (unsigned long long)mcp_metrics_total_requests(),
-        (unsigned long long)mcp_metrics_total_errors(),
-        mcp_metrics_counter_count());
+        (unsigned long long)metrics_prometheus_total_requests(),
+        (unsigned long long)metrics_prometheus_total_errors(),
+        metrics_prometheus_counter_count());
 
     free(raw);
     return out;
@@ -92,7 +92,7 @@ char *zcl_native_consensus_report_body(const struct json_value *args,
     /* Cap large enough for the full 48-slot table plus overflow +
      * totals envelope (worst case ~= 48 x 80 bytes per entry). */
     char body[8192];
-    size_t n = mcp_metrics_consensus_report_json(body, sizeof(body));
+    size_t n = metrics_prometheus_consensus_report_json(body, sizeof(body));
     if (n == 0) {
         err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
         snprintf(err->message, sizeof(err->message),

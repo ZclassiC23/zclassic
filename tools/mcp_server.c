@@ -22,7 +22,7 @@
 
 #include "mcp/router.h"
 #include "mcp/middleware.h"
-#include "mcp/metrics.h"
+#include "metrics/prometheus_metrics.h"
 #include "mcp/replay.h"
 #include "mcp/baseline.h"
 #include "mcp/controllers.h"
@@ -198,7 +198,7 @@ int mcp_server_main(const char *datadir, int rpc_port)
     mcp_rpc_client_init(datadir, rpc_port);
     register_all_controllers();
     mcp_middleware_init_global();
-    mcp_metrics_init();
+    metrics_prometheus_init();
     mcp_replay_init();
     mcp_baseline_init();
 

@@ -5,7 +5,7 @@
  * live snapshot so an operator can answer "what changed in the last
  * hour" in one call.
  *
- * Design: a baseline captures mcp_metrics_render_prometheus()'s TEXT
+ * Design: a baseline captures metrics_prometheus_render_prometheus()'s TEXT
  * output verbatim — that render is metrics.c's one existing full
  * enumeration of every counter/gauge/histogram it exports. Diffing
  * walks that text generically ("name{labels} value" lines, see

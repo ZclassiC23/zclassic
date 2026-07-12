@@ -7,7 +7,7 @@
 
 #include "test/test_helpers.h"
 #include "mcp/baseline.h"
-#include "mcp/metrics.h"
+#include "metrics/prometheus_metrics.h"
 #include "mcp/router.h"
 #include "mcp/controllers.h"
 #include "json/json.h"
@@ -97,7 +97,7 @@ static int test_diff_shows_exactly_the_mutated_leaf(void)
     int failures = 0;
     TEST("baseline: diff reports exactly the one counter that changed") {
         mcp_baseline_init();
-        mcp_metrics_reset();
+        metrics_prometheus_reset();
 
         char label[MCP_BASELINE_LABEL_MAX];
         ASSERT(mcp_baseline_set("before", label, sizeof(label), NULL));
@@ -108,7 +108,7 @@ static int test_diff_shows_exactly_the_mutated_leaf(void)
          * single independent gauge with no histogram / no cumulative
          * neighbors, so this is the cleanest "exactly one leaf changed"
          * mutation available via metrics.c's public test surface. */
-        mcp_metrics_record_peer_ban();
+        metrics_prometheus_record_peer_ban();
 
         char *diff = mcp_baseline_diff_json(idx);
         ASSERT(diff != NULL);
@@ -131,7 +131,7 @@ static int test_diff_empty_when_nothing_changed(void)
     int failures = 0;
     TEST("baseline: diff against an untouched live state is empty") {
         mcp_baseline_init();
-        mcp_metrics_reset();
+        metrics_prometheus_reset();
 
         int idx = -1;
         {
@@ -182,14 +182,14 @@ static int test_ring_reused_label_resolves_to_newest(void)
     int failures = 0;
     TEST("baseline: a re-used label resolves to the newest capture") {
         mcp_baseline_init();
-        mcp_metrics_reset();
+        metrics_prometheus_reset();
 
         char label[MCP_BASELINE_LABEL_MAX];
         int idx_old, idx_new;
 
         ASSERT(mcp_baseline_set("dup", label, sizeof(label), NULL));
         idx_old = mcp_baseline_find("dup");
-        mcp_metrics_record_peer_ban(); /* state advances between captures */
+        metrics_prometheus_record_peer_ban(); /* state advances between captures */
         ASSERT(mcp_baseline_set("dup", label, sizeof(label), NULL));
         idx_new = mcp_baseline_find("dup");
 
@@ -292,7 +292,7 @@ static int test_handler_diff_by_label_through_router(void)
     TEST("zcl_metrics_baseline_diff resolves by label through the router") {
         register_meta_only();
         mcp_baseline_init();
-        mcp_metrics_reset();
+        metrics_prometheus_reset();
 
         struct json_value set_args = {0};
         const char *set_src = "{\"label\":\"rt\"}";
@@ -302,7 +302,7 @@ static int test_handler_diff_by_label_through_router(void)
         free(set_body);
         json_free(&set_args);
 
-        mcp_metrics_record_peer_ban();
+        metrics_prometheus_record_peer_ban();
 
         struct json_value diff_args = {0};
         const char *diff_src = "{\"label\":\"rt\"}";
@@ -344,7 +344,7 @@ int test_mcp_baseline(void)
     failures += test_handler_diff_by_label_through_router();
 
     mcp_baseline_init();
-    mcp_metrics_reset();
+    metrics_prometheus_reset();
     mcp_router_reset();
     return failures;
 }
