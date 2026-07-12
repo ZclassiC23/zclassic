@@ -94,6 +94,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(metric_alerts) \
     X(mcp_inproc_equiv) \
     X(mcp_e2e) X(mcp_notify) X(db_validators) X(peer_scoring) X(peer_bandwidth) \
+    X(peer_identity_hostkey) \
     X(secrets_hygiene) X(block_index_integrity) \
     X(block_map_grow_phashblock) \
     X(block_successor) \
