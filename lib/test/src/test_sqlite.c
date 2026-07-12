@@ -754,7 +754,7 @@ int test_sqlite(void) {
         ok = ok && db_sapling_note_balance_for_ivk(&ndb, note.ivk) == note.value;
         memcpy(nullifier, note.nullifier, sizeof(nullifier));
         memset(spending_txid, 0x08, sizeof(spending_txid));
-        ok = ok && node_db_sync_sapling_spend(&ndb, nullifier, spending_txid);
+        ok = ok && node_db_sync_sapling_spend_bool_compat(&ndb, nullifier, spending_txid);
         ok = ok && db_sapling_note_balance_for_ivk(&ndb, note.ivk) == 0;
 
         /* Tri-state contract: an indexed note that just got spent must
@@ -762,7 +762,7 @@ int test_sqlite(void) {
          * NOT_FOUND is also acceptable; what matters is it is never ERROR). */
         {
             enum db_mark_spent_result re =
-                node_db_sync_sapling_spend_ex(&ndb, nullifier, spending_txid);
+                node_db_sync_sapling_spend(&ndb, nullifier, spending_txid);
             ok = ok && re != DB_MARK_SPENT_ERROR;
         }
 
@@ -776,13 +776,13 @@ int test_sqlite(void) {
             memset(unknown_nf, 0xEE, sizeof(unknown_nf));
             memset(unknown_txid, 0x09, sizeof(unknown_txid));
             enum db_mark_spent_result rmiss =
-                node_db_sync_sapling_spend_ex(&ndb, unknown_nf, unknown_txid);
+                node_db_sync_sapling_spend(&ndb, unknown_nf, unknown_txid);
             ok = ok && rmiss == DB_MARK_SPENT_NOT_FOUND;
             /* Legacy bool wrapper reports false for the benign miss but must
              * not be treated as fatal by the tri-state catchup path. */
-            ok = ok && !node_db_sync_sapling_spend(&ndb, unknown_nf, unknown_txid);
+            ok = ok && !node_db_sync_sapling_spend_bool_compat(&ndb, unknown_nf, unknown_txid);
             /* Model-level tri-state is consistent with the controller. */
-            ok = ok && db_sapling_note_mark_spent_ex(&ndb, unknown_nf, unknown_txid)
+            ok = ok && db_sapling_note_mark_spent(&ndb, unknown_nf, unknown_txid)
                        == DB_MARK_SPENT_NOT_FOUND;
         }
 
@@ -808,7 +808,7 @@ int test_sqlite(void) {
         ok = ok && node_db_exec(&ndb, "DROP TABLE sapling_nullifiers");
         if (ok) {
             enum db_mark_spent_result r =
-                node_db_sync_sapling_spend_ex(&ndb, nullifier, spending_txid);
+                node_db_sync_sapling_spend(&ndb, nullifier, spending_txid);
             ok = ok && r == DB_MARK_SPENT_ERROR;
         }
 
@@ -1301,7 +1301,7 @@ int test_sqlite(void) {
         /* Mark spent via nullifier */
         uint8_t spent_by[32];
         memset(spent_by, 0x77, 32);
-        ok = ok && db_sapling_note_mark_spent(&ndb, n1.nullifier, spent_by);
+        ok = ok && db_sapling_note_mark_spent_bool_compat(&ndb, n1.nullifier, spent_by);
 
         bal = db_sapling_note_balance(&ndb);
         ok = ok && (bal == 0);

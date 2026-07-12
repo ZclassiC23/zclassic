@@ -282,7 +282,7 @@ int test_wallet_funds_safety(void)
         /* Simulate the at-broadcast mark-spent the fix adds to z_sendmany. */
         uint8_t spending_txid[32]; memset(spending_txid, 0xEE, 32);
         enum db_mark_spent_result r =
-            node_db_sync_sapling_spend_ex(&ndb, nf_a, spending_txid);
+            node_db_sync_sapling_spend(&ndb, nf_a, spending_txid);
         WFS_CHECK("mark-spent at broadcast succeeds (OK)", r == DB_MARK_SPENT_OK);
 
         struct db_sapling_note after[16];

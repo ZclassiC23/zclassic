@@ -179,7 +179,7 @@ bool db_sapling_note_save(struct node_db *ndb, const struct db_sapling_note *n)
     AR_FINISH_SAVE(cbs, n, ok);
 }
 
-enum db_mark_spent_result db_sapling_note_mark_spent_ex(
+enum db_mark_spent_result db_sapling_note_mark_spent(
                                 struct node_db *ndb,
                                 const uint8_t nullifier[32],
                                 const uint8_t spent_by[32])
@@ -209,11 +209,11 @@ enum db_mark_spent_result db_sapling_note_mark_spent_ex(
     }
 }
 
-bool db_sapling_note_mark_spent(struct node_db *ndb,
+bool db_sapling_note_mark_spent_bool_compat(struct node_db *ndb,
                                 const uint8_t nullifier[32],
                                 const uint8_t spent_by[32])
 {
-    return db_sapling_note_mark_spent_ex(ndb, nullifier, spent_by)
+    return db_sapling_note_mark_spent(ndb, nullifier, spent_by)
            == DB_MARK_SPENT_OK;
 }
 

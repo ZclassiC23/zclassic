@@ -224,16 +224,16 @@ enum db_mark_spent_result {
     DB_MARK_SPENT_ERROR = 2,     /* real DB write error (fatal)              */
 };
 
-/* Tri-state variant. Distinguishes benign-miss from real write error so the
- * projection catchup can skip not-our-note spends without aborting. */
-enum db_mark_spent_result db_sapling_note_mark_spent_ex(
+/* Canonical tri-state API. Distinguishes benign-miss from real write error
+ * so the projection catchup can skip not-our-note spends without aborting. */
+enum db_mark_spent_result db_sapling_note_mark_spent(
                                 struct node_db *ndb,
                                 const uint8_t nullifier[32],
                                 const uint8_t spent_by[32]);
 
 /* Legacy bool wrapper: true only when an indexed note was updated.
  * Treats both NOT_FOUND and ERROR as false — do NOT use this in catchup. */
-bool db_sapling_note_mark_spent(struct node_db *ndb,
+bool db_sapling_note_mark_spent_bool_compat(struct node_db *ndb,
                                 const uint8_t nullifier[32],
                                 const uint8_t spent_by[32]);
 int64_t db_sapling_note_balance(struct node_db *ndb);

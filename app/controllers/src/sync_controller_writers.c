@@ -426,7 +426,7 @@ static bool node_db_sync_sapling_spend_write(struct node_db *ndb, void *ctx)
         LOG_FAIL("sync", "sapling_spend_write: nullifier insert failed: %s",
                  sqlite3_errmsg(ndb->db));
 
-    spend->result = db_sapling_note_mark_spent_ex(ndb,
+    spend->result = db_sapling_note_mark_spent(ndb,
                                                   spend->nullifier,
                                                   spend->spending_txid);
     spend->ok = (spend->result == DB_MARK_SPENT_OK);
@@ -437,7 +437,7 @@ static bool node_db_sync_sapling_spend_write(struct node_db *ndb, void *ctx)
     return spend->result != DB_MARK_SPENT_ERROR;
 }
 
-enum db_mark_spent_result node_db_sync_sapling_spend_ex(
+enum db_mark_spent_result node_db_sync_sapling_spend(
                                 struct node_db *ndb,
                                 const uint8_t nullifier[32],
                                 const uint8_t spending_txid[32])
@@ -456,11 +456,11 @@ enum db_mark_spent_result node_db_sync_sapling_spend_ex(
     return ctx.result;
 }
 
-bool node_db_sync_sapling_spend(struct node_db *ndb,
+bool node_db_sync_sapling_spend_bool_compat(struct node_db *ndb,
                                 const uint8_t nullifier[32],
                                 const uint8_t spending_txid[32])
 {
-    return node_db_sync_sapling_spend_ex(ndb, nullifier, spending_txid)
+    return node_db_sync_sapling_spend(ndb, nullifier, spending_txid)
            == DB_MARK_SPENT_OK;
 }
 
@@ -483,7 +483,7 @@ static bool node_db_sync_wallet_sapling_spends_write(
     for (size_t i = 0; i < batch->tx->num_shielded_spend; i++) {
         const uint8_t *nf =
             batch->tx->v_shielded_spend[i].nullifier.data;
-        enum db_mark_spent_result r = db_sapling_note_mark_spent_ex(
+        enum db_mark_spent_result r = db_sapling_note_mark_spent(
             ndb, nf, batch->tx->hash.data);
         /* Every spend in a wallet-authored shielded transaction came from the
          * unspent-note query immediately before construction. NOT_FOUND here

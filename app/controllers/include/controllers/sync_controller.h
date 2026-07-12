@@ -150,20 +150,21 @@ bool node_db_sync_sapling_note(struct node_db *ndb,
 
 /* Mark Sapling nullifiers as spent (from a confirmed tx).
  *
- * The _ex variant returns a tri-state: OK (matched an indexed note),
+ * The canonical API returns a tri-state: OK (matched an indexed note),
  * NOT_FOUND (benign — the note isn't in our index; the projection catchup
  * must skip and keep advancing), or ERROR (a real DB write failure, fatal).
- * The bool wrapper is true only on OK and is unsuitable for catchup. */
-enum db_mark_spent_result node_db_sync_sapling_spend_ex(
+ * The _bool_compat wrapper is true only on OK and is unsuitable for
+ * catchup. */
+enum db_mark_spent_result node_db_sync_sapling_spend(
                                 struct node_db *ndb,
                                 const uint8_t nullifier[32],
                                 const uint8_t spending_txid[32]);
-bool node_db_sync_sapling_spend(struct node_db *ndb,
+bool node_db_sync_sapling_spend_bool_compat(struct node_db *ndb,
                                 const uint8_t nullifier[32],
                                 const uint8_t spending_txid[32]);
 
 /* Atomically reserve every wallet-owned Sapling note spent by an unconfirmed
- * locally-authored transaction. Unlike node_db_sync_sapling_spend_ex(), this
+ * locally-authored transaction. Unlike node_db_sync_sapling_spend(), this
  * wallet-only path does NOT insert into the confirmed-chain
  * sapling_nullifiers projection. */
 bool node_db_sync_wallet_sapling_spends(

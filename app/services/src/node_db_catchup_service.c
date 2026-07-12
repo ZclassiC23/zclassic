@@ -658,7 +658,7 @@ int node_db_catchup_service_run(struct node_db *ndb,
                     struct transaction *mtx = (struct transaction *)&blk.vtx[i];
                     transaction_compute_hash(mtx);
                     /* Only ERROR is fatal; NOT_FOUND (not our note) is benign. */
-                    if (node_db_sync_sapling_spend_ex(ndb,
+                    if (node_db_sync_sapling_spend(ndb,
                             blk.vtx[i].v_shielded_spend[si].nullifier.data,
                             mtx->hash.data) == DB_MARK_SPENT_ERROR) {
                         LOG_WARN("catchup", "catchup: sapling spend update failed at height %d " "(tx=%d, spend=%zu)", h, (int)i, si);
