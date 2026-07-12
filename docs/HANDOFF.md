@@ -1,6 +1,10 @@
 > **Read this file first for current live-node state.** Session-by-session
 > detail lives in `docs/work/archive/` (historical logs, not standing facts;
 > full pre-slim history: [`HANDOFF-HISTORY-2026-07.md`](work/archive/HANDOFF-HISTORY-2026-07.md)).
+>
+> **⚡ Incoming developer, start here:** [`work/HANDOFF-2026-07-12-evening.md`](work/HANDOFF-2026-07-12-evening.md)
+> — main @ `d5a682c64`; the exact un-wedge steps (mint → refold-on-copy → deploy)
+> and the multi-user-server/game-platform foundation that just landed.
 
 # HANDOFF — current state (2026-07-12)
 
