@@ -146,18 +146,20 @@ static bool znam_build_header(uint8_t *out, size_t *off, size_t cap,
                              (const uint8_t *)name, strlen(name));
 }
 
-size_t znam_build_register(uint8_t *out, size_t out_len,
-                           const char *name, uint8_t target_type,
-                           const char *target_value)
+/* Shared body for the REGISTER / UPDATE / SET_RECORD builders: they differ
+ * only in the ZNAM_CMD_* code passed to znam_build_header. The literal-3
+ * cap is lifted to ZNAM_TYPE_CONTENT so callers accept the multi-coin types
+ * (BTC/LTC/DOGE) and the CONTENT hash that the parser already round-trips. */
+static size_t znam_build_targeted(uint8_t *out, size_t out_len,
+                                  uint8_t command, const char *name,
+                                  uint8_t target_type,
+                                  const char *target_value)
 {
     if (!znam_validate_name(name) || !target_value) return 0;
-    /* lift the literal-3 cap to ZNAM_TYPE_CONTENT so REGISTER
-     * accepts the multi-coin types (BTC/LTC/DOGE) and CONTENT hash
-     * that the parser and znam_build_set_record already round-trip. */
     if (target_type < 1 || target_type > ZNAM_TYPE_CONTENT) return 0;
 
     size_t off = 0;
-    bool ok = znam_build_header(out, &off, out_len, ZNAM_CMD_REGISTER, name);
+    bool ok = znam_build_header(out, &off, out_len, command, name);
     ok = ok && push_data_checked(out, &off, out_len, &target_type, 1);
     ok = ok && push_data_checked(out, &off, out_len,
                                  (const uint8_t *)target_value,
@@ -165,21 +167,20 @@ size_t znam_build_register(uint8_t *out, size_t out_len,
     return ok ? off : 0;
 }
 
+size_t znam_build_register(uint8_t *out, size_t out_len,
+                           const char *name, uint8_t target_type,
+                           const char *target_value)
+{
+    return znam_build_targeted(out, out_len, ZNAM_CMD_REGISTER, name,
+                               target_type, target_value);
+}
+
 size_t znam_build_update(uint8_t *out, size_t out_len,
                          const char *name, uint8_t target_type,
                          const char *target_value)
 {
-    if (!znam_validate_name(name) || !target_value) return 0;
-    /* lift the literal-3 cap to ZNAM_TYPE_CONTENT (parser parity). */
-    if (target_type < 1 || target_type > ZNAM_TYPE_CONTENT) return 0;
-
-    size_t off = 0;
-    bool ok = znam_build_header(out, &off, out_len, ZNAM_CMD_UPDATE, name);
-    ok = ok && push_data_checked(out, &off, out_len, &target_type, 1);
-    ok = ok && push_data_checked(out, &off, out_len,
-                                 (const uint8_t *)target_value,
-                                 strlen(target_value));
-    return ok ? off : 0;
+    return znam_build_targeted(out, out_len, ZNAM_CMD_UPDATE, name,
+                               target_type, target_value);
 }
 
 size_t znam_build_transfer(uint8_t *out, size_t out_len,
@@ -211,16 +212,8 @@ size_t znam_build_set_record(uint8_t *out, size_t out_len,
                              const char *name, uint8_t target_type,
                              const char *target_value)
 {
-    if (!znam_validate_name(name) || !target_value) return 0;
-    if (target_type < 1 || target_type > ZNAM_TYPE_CONTENT) return 0;
-
-    size_t off = 0;
-    bool ok = znam_build_header(out, &off, out_len, ZNAM_CMD_SET_RECORD, name);
-    ok = ok && push_data_checked(out, &off, out_len, &target_type, 1);
-    ok = ok && push_data_checked(out, &off, out_len,
-                                 (const uint8_t *)target_value,
-                                 strlen(target_value));
-    return ok ? off : 0;
+    return znam_build_targeted(out, out_len, ZNAM_CMD_SET_RECORD, name,
+                               target_type, target_value);
 }
 
 /* ENS-inspired: set arbitrary text record (key-value) */
