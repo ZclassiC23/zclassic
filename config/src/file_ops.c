@@ -1,9 +1,15 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * File operations for data import/export.
- * Always byte-copy. Never hardlink or symlink. */
+ * Always byte-copy. Never hardlink or symlink.
+ *
+ * Thin wrappers over the single fd-based file-tree walker in
+ * lib/util/src/file_tree_ops.c — this file holds no recursive copy/remove
+ * logic of its own (os-substrate-plan §1: exactly one walker in the tree). */
 
 #include "config/file_ops.h"
+#include "util/file_tree_ops.h"
+
 #include <dirent.h>
 #include <errno.h>
 #include <stdio.h>
@@ -11,36 +17,29 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
-/* Remove a directory's immediate entries (one level deep), unlinking a
- * symlink target directly. File-local: the only caller is dir_copy below. */
-static void dir_remove_shallow(const char *dir);
-
 bool file_copy(const char *src, const char *dst)
 {
+    /* Preserve the historical contract: a regular file only. A directory (or
+     * anything non-regular) returns false. lstat, not stat, so a symlink
+     * source is refused rather than followed (matches this module's
+     * "Never hardlink or symlink" doctrine and the O_NOFOLLOW walker). */
     struct stat st;
-    if (stat(src, &st) != 0 || !S_ISREG(st.st_mode))
+    if (lstat(src, &st) != 0 || !S_ISREG(st.st_mode))
         return false;
 
-    unlink(dst);
-    FILE *fin = fopen(src, "rb");
-    if (!fin) return false;
-    FILE *fout = fopen(dst, "wb");
-    if (!fout) { fclose(fin); return false; }
-    char buf[256 * 1024];
-    size_t n;
-    while ((n = fread(buf, 1, sizeof(buf), fin)) > 0) {
-        if (fwrite(buf, 1, n, fout) != n) {
-            fclose(fin); fclose(fout); return false;
-        }
-    }
-    fclose(fin);
-    fclose(fout);
-    return true;
+    struct zcl_result r = zcl_tree_copy(src, dst, 0, NULL, NULL);
+    return r.ok;
 }
 
 bool dir_copy(const char *src_dir, const char *dst_dir)
 {
-    dir_remove_shallow(dst_dir);
+    /* One level deep, byte copy, skip LOCK — same semantics as before. The
+     * recursive walker is deliberately NOT used here: dir_copy treats a
+     * nested subdirectory as a failure (fails closed), whereas a tree copy
+     * would descend it. Empty the destination via the shared rm -rf
+     * primitive, then copy each regular file through file_copy (itself a
+     * walker wrapper). */
+    (void)zcl_tree_remove(dst_dir);
     if (mkdir(dst_dir, 0755) != 0 && errno != EEXIST) {
         fprintf(stderr, "Warning: mkdir(%s) failed: %s\n",
                 dst_dir, strerror(errno));
@@ -108,57 +107,9 @@ void block_files_clean(const char *dir)
     closedir(d);
 }
 
-static void dir_remove_shallow(const char *dir)
-{
-    struct stat lst;
-    if (lstat(dir, &lst) != 0) return;
-    if (S_ISLNK(lst.st_mode)) { unlink(dir); return; }
-    if (!S_ISDIR(lst.st_mode)) return;
-    DIR *d = opendir(dir);
-    if (!d) return;
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
-            continue;
-        char path[1024];
-        snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
-        unlink(path);
-    }
-    closedir(d);
-    rmdir(dir);
-}
-
 void dir_remove_tree(const char *dir)
 {
-    struct stat lst;
-    if (lstat(dir, &lst) != 0)
-        return;
-    if (S_ISLNK(lst.st_mode) || !S_ISDIR(lst.st_mode)) {
-        unlink(dir);
-        return;
-    }
-
-    DIR *d = opendir(dir);
-    if (!d)
-        return;
-
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
-            continue;
-
-        char path[1024];
-        snprintf(path, sizeof(path), "%s/%s", dir, ent->d_name);
-
-        struct stat child_st;
-        if (lstat(path, &child_st) != 0)
-            continue;
-        if (S_ISDIR(child_st.st_mode) && !S_ISLNK(child_st.st_mode))
-            dir_remove_tree(path);
-        else
-            unlink(path);
-    }
-
-    closedir(d);
-    rmdir(dir);
+    /* rm -rf semantics, best-effort (void return preserved). The one shared
+     * walker handles symlinks-in-place and ENOENT-as-success. */
+    (void)zcl_tree_remove(dir);
 }

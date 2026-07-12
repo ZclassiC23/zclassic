@@ -310,3 +310,10 @@ AGENT_IMPACT_RULE("lib/storage/include/storage/sha3_sidecar_io.h|lib/storage/src
  * Live-wedge cure, default unflipped. */
 AGENT_IMPACT_RULE("lib/storage/src/snapshot_shielded.c|lib/storage/include/storage/snapshot_shielded.h|lib/storage/src/coins_kv_snapshot_write.c|lib/storage/include/storage/coins_kv.h|lib/storage/src/coins_ram.c|lib/storage/include/storage/coins_ram.h|config/src/boot_shielded_seed.c|config/include/config/boot_shielded_seed.h|config/src/boot_mint_anchor.c|lib/test/src/test_snapshot_shielded.c", "snapshot_shielded utxo_snapshot_loader snapshot_apply_coins_kv coins make_lint_gates")
 AGENT_IMPACT_RULE("lib/chain/src/utxo_snapshot_loader.c|lib/chain/include/chain/utxo_snapshot_loader.h|config/src/boot_refold_staged.c", "snapshot_shielded utxo_snapshot_loader refold_from_anchor_fatal load_verify_boot make_lint_gates")
+
+/* os-substrate Rung 0 (L1): the single fd-based file-tree walker that replaces
+ * every system("cp -a…")/rm -rf shell-out, plus config/src/file_ops.c which is
+ * now a thin wrapper over it (its callers boot_legacy_blocks/boot_blocktree_cleanup
+ * and the snapshot importers). */
+AGENT_IMPACT_RULE("lib/util/src/file_tree_ops.c|lib/util/include/util/file_tree_ops.h|lib/test/src/test_file_tree_ops.c", "file_tree_ops make_lint_gates")
+AGENT_IMPACT_RULE("config/src/file_ops.c|config/include/config/file_ops.h|lib/test/src/test_file_ops.c", "file_ops file_tree_ops boot_legacy_blocks boot_blocktree_cleanup make_lint_gates")
