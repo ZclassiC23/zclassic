@@ -1136,6 +1136,7 @@ int main(int argc, char **argv)
     failures += test_peer_scoring();
     failures += test_peer_bandwidth();
     failures += test_peer_lifecycle();
+    failures += test_peer_identity_hostkey();
     failures += test_secrets_hygiene();
     failures += test_block_index_integrity();
     failures += test_block_map_grow_phashblock();

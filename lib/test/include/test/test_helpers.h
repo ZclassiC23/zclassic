@@ -336,6 +336,7 @@ int test_db_validators(void);
 int test_peer_scoring(void);
 int test_peer_bandwidth(void);
 int test_peer_lifecycle(void);
+int test_peer_identity_hostkey(void);
 int test_secrets_hygiene(void);
 int test_block_index_integrity(void);
 int test_block_map_grow_phashblock(void);
