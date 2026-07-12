@@ -1351,6 +1351,19 @@ size_t zcl_command_registry_execute_json(
                                    ? context->operator_lane : "unknown");
         (void)zcl_command_reply_add_next(&reply, "discover.describe", "{}",
                                          "inspect the declared lane scope");
+    } else if (context && spec->authority > context->authority_ceiling) {
+        /* Fail closed: the session's authority ceiling (derived once from its
+         * role via the authz policy table) is below what this leaf requires.
+         * Enforced BEFORE the capability check so an under-privileged role can
+         * never reach a capped leaf even if it somehow held the bit. A NULL
+         * context (local operator / in-process) bypasses this entirely. */
+        zcl_command_reply_fail(&reply, ZCL_COMMAND_STATUS_BLOCKED,
+                               ZCL_COMMAND_EXIT_DENIED, "AUTHORITY_DENIED",
+                               "authorize", false, false,
+                               "command authority exceeds the session ceiling",
+                               zcl_command_authority_name(spec->authority));
+        (void)zcl_command_reply_add_next(&reply, "discover.describe", "{}",
+                                         "inspect the required authority");
     } else if (context &&
                (spec->required_capabilities &
                 ~context->granted_capabilities) != 0) {

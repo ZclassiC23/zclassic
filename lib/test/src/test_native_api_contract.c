@@ -49,6 +49,7 @@ static bool exec_leaf(const struct zcl_command_registry *reg,
     struct zcl_command_context ctx = {
         .registry = reg,
         .granted_capabilities = ~(uint64_t)0,
+        .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
     };
     struct json_value input;
     json_init(&input);

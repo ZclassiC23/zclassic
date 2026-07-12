@@ -393,6 +393,56 @@ int node_db_migrate_features(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 26) {
+        /* v26: multi-user-server identity overlay. `principals` is one row per
+         * authenticated public key (address = base58check(hash160(pubkey)) is
+         * the PK); role is the only authorization input and
+         * granted_capabilities is a derived cache the model recomputes on every
+         * save. `auth_challenges` is the single-use login-nonce store. Pure
+         * app-layer overlay — sybil_proof_height is bookkeeping and is never
+         * consulted by consensus. Idempotent (IF NOT EXISTS) on a pre-v26 db. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS principals ("
+            "address TEXT PRIMARY KEY,"
+            "pubkey_hex TEXT NOT NULL,"
+            "key_kind INTEGER NOT NULL DEFAULT 0,"
+            "znam_name TEXT NOT NULL DEFAULT '',"
+            "role TEXT NOT NULL DEFAULT 'guest' "
+            "  CHECK(role IN ('guest','member','operator','owner')),"
+            "granted_capabilities INTEGER NOT NULL DEFAULT 0,"
+            "created_at INTEGER NOT NULL,"
+            "last_login INTEGER NOT NULL DEFAULT 0,"
+            "status TEXT NOT NULL DEFAULT 'active' "
+            "  CHECK(status IN ('active','suspended')),"
+            "sybil_proof_height INTEGER NOT NULL DEFAULT -1)");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_principals_pubkey "
+            "ON principals(pubkey_hex)");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_principals_role "
+            "ON principals(role)");
+
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS auth_challenges ("
+            "nonce_hex TEXT PRIMARY KEY,"
+            "address TEXT NOT NULL,"
+            "issued_at INTEGER NOT NULL,"
+            "expires_at INTEGER NOT NULL,"
+            "consumed INTEGER NOT NULL DEFAULT 0 CHECK(consumed IN (0,1)))");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_auth_challenges_address "
+            "ON auth_challenges(address)");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_auth_challenges_expiry "
+            "ON auth_challenges(expires_at)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('026')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 26);
+        current_ver = 26;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }

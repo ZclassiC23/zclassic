@@ -1,0 +1,122 @@
+/* Multi-user-server identity surface, mounted under the `app` root (the frozen
+ * root set stays at seven: status/core/app/dev/ops/discover/code). app.auth.* is
+ * challenge/response public-key login (PUBLIC); app.account.* manage principals.
+ * app.account.add/role/suspend/unsuspend are the first executable mutating
+ * native leaves (OWNER). Consumer defines ZCL_COMMAND_*. */
+
+ZCL_COMMAND_BRANCH("app.auth", "app", "Public-key challenge/response login",
+                   ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("app.account", "app", "Principal (multi-user) administration",
+                   ZCL_COMMAND_LAYER_APP)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.auth.challenge", "app.auth", "", "Issue a single-use login challenge to sign",
+    "auth,login,challenge,nonce", "zcl.auth_challenge_input.v1",
+    "zcl.auth_challenge.v1", "server,address", "address",
+    "zclassic23 app auth challenge --input='{\"address\":\"t1...\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_auth_challenge)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.auth.verify", "app.auth", "", "Verify a signed challenge and mint a session",
+    "auth,login,verify,session,signature", "zcl.auth_verify_input.v1",
+    "zcl.auth_session.v1", "server,address,nonce,signature,pubkey", "",
+    "zclassic23 app auth verify --input='{\"address\":\"t1...\",\"nonce\":\"..\","
+    "\"signature\":\"..\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_auth_verify)
+
+ZCL_COMMAND_READY_READ(
+    "app.account.list", "app.account", "", "List principals (public projection)",
+    "account,principals,list", "zcl.command.empty_input.v1",
+    "zcl.account_index.v1", "", "", "zclassic23 app account list",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_account_list)
+
+ZCL_COMMAND_READY_READ(
+    "app.account.show", "app.account", "", "Show one principal by address",
+    "account,principal,show", "zcl.account_ref_input.v1",
+    "zcl.account.v1", "address", "address",
+    "zclassic23 app account show t1...",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_account_show)
+
+ZCL_COMMAND_READY_READ(
+    "app.account.whoami", "app.account", "", "Resolve one address to its role/caps",
+    "account,whoami,role,capabilities", "zcl.account_ref_input.v1",
+    "zcl.account.v1", "address", "address",
+    "zclassic23 app account whoami t1...",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_account_whoami)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.account.add", "app.account", "", "Register or update a principal with a role",
+    "account,principal,add,role", "zcl.account_add_input.v1",
+    "zcl.account.v1", "address,pubkey,role,key_kind", "address",
+    "zclassic23 app account add --input='{\"address\":\"t1...\",\"pubkey\":\"..\","
+    "\"role\":\"operator\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_account_add)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.account.role", "app.account", "", "Set a principal's role",
+    "account,principal,role,authorize", "zcl.account_role_input.v1",
+    "zcl.account.v1", "address,role", "address",
+    "zclassic23 app account role --input='{\"address\":\"t1...\",\"role\":\"owner\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_account_role)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.account.suspend", "app.account", "", "Suspend a principal",
+    "account,principal,suspend,disable", "zcl.account_ref_input.v1",
+    "zcl.account.v1", "address", "address",
+    "zclassic23 app account suspend t1...",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_account_suspend)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.account.unsuspend", "app.account", "", "Reactivate a suspended principal",
+    "account,principal,unsuspend,enable", "zcl.account_ref_input.v1",
+    "zcl.account.v1", "address", "address",
+    "zclassic23 app account unsuspend t1...",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    zcl_native_handle_account_unsuspend)

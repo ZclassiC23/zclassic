@@ -137,6 +137,29 @@
       .traits = (traits_), .transports = ZCL_COMMAND_TRANSPORT_NATIVE,         \
       .handler = NULL },
 
+/* A READY mutating leaf: availability=READY with a non-NULL native handler —
+ * the first executable mutating native leaves (account.add/role/suspend/...).
+ * Mirrors ZCL_COMMAND_PLANNED_COMMAND's full effect/risk/mode policy grammar
+ * but binds an executable handler instead of failing BLOCKED. */
+#define ZCL_COMMAND_READY_COMMAND(path_, parent_, aliases_, summary_, tags_,   \
+                                  in_, out_, in_keys_, pos_keys_, example_,    \
+                                  layer_, effect_, risk_, scope_,              \
+                                  authority_, mode_, latency_, cost_,          \
+                                  confirmation_, lanes_, caps_, traits_,       \
+                                  handler_)                                    \
+    { .path = (path_), .parent = (parent_), .aliases = (aliases_),             \
+      .summary = (summary_), .tags = (tags_), .input_schema = (in_),          \
+      .output_schema = (out_), .input_keys = (in_keys_),                       \
+      .positional_keys = (pos_keys_), .example = (example_),                   \
+      .availability_reason = "", .compat_target = "",                          \
+      .layer = (layer_), .effect = (effect_), .risk = (risk_),                 \
+      .scope = (scope_), .authority = (authority_),                            \
+      .availability = ZCL_COMMAND_READY, .mode = (mode_),                      \
+      .latency = (latency_), .cost = (cost_), .confirmation = (confirmation_), \
+      .allowed_lanes = (lanes_), .required_capabilities = (caps_),             \
+      .traits = (traits_), .transports = ZCL_COMMAND_TRANSPORT_NATIVE,         \
+      .handler = (handler_) },
+
 /* One declarative dev leaf, two build-specific bindings.  A dev binary owns
  * the executable handler; a release binary exposes only an honest COMPAT
  * description pointing at the dev binary. */
@@ -199,6 +222,7 @@ static const struct zcl_command_spec g_catalog_commands[] = {
 #include "../commands/ops.def"
 #include "../commands/dev.def"
 #include "../commands/code.def"
+#include "../commands/accounts.def"
 };
 
 #undef ZCL_COMMAND_BRANCH
@@ -206,6 +230,7 @@ static const struct zcl_command_spec g_catalog_commands[] = {
 #undef ZCL_COMMAND_COMPAT_READ
 #undef ZCL_COMMAND_PLANNED_READ
 #undef ZCL_COMMAND_PLANNED_COMMAND
+#undef ZCL_COMMAND_READY_COMMAND
 #undef ZCL_COMMAND_COMPAT_COMMAND
 #undef ZCL_COMMAND_DEV_READ
 #undef ZCL_COMMAND_DEV_COMMAND

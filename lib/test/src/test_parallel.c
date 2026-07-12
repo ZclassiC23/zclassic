@@ -90,6 +90,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(dev_activation) \
     X(command_registry_catalog) \
     X(native_api_contract) \
+    X(principal_authz) X(auth_login) X(command_authority) \
     X(command_handler_snapshot) \
     X(metric_alerts) \
     X(mcp_inproc_equiv) \

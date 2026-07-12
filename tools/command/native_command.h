@@ -210,6 +210,41 @@ void zcl_native_handle_core_node_bootwait(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* app.auth.* / app.account.* — the multi-user-server identity surface
+ * (app/controllers/src/account_controller.c), mounted under the `app` root.
+ * app.auth.challenge/app.auth.verify are PUBLIC (no capability):
+ * challenge/response public-key login. app.account.* manage principals:
+ * list/show/whoami are reads, add/role/suspend/unsuspend are the first
+ * executable mutating native leaves (OWNER authority). Each renders one bounded
+ * JSON document. Bound by config/commands/accounts.def. */
+void zcl_native_handle_auth_challenge(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_auth_verify(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_account_list(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_account_show(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_account_whoami(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_account_add(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_account_role(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_account_suspend(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_account_unsuspend(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* Dev-build-only executors.  The catalog binds these only when
  * ZCL_DEV_BUILD is set; release objects neither reference nor link them. */
 #ifdef ZCL_DEV_BUILD

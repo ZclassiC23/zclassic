@@ -178,6 +178,12 @@ struct zcl_command_context {
     const char *source_root;
     const char *operator_lane;
     uint64_t granted_capabilities;
+    /* The highest command authority this session may exercise. Dispatch fails
+     * closed with AUTHORITY_DENIED when spec->authority exceeds it. A
+     * zero-initialized context therefore defaults to ZCL_COMMAND_AUTH_PUBLIC
+     * (the least-privilege floor); real sessions raise it from their role via
+     * authz_ceiling_for_role(). A NULL context bypasses the check entirely. */
+    enum zcl_command_authority authority_ceiling;
     bool dev_build;
 };
 

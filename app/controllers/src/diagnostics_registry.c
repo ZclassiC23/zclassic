@@ -79,6 +79,8 @@
 #include "services/mempool_limits.h"
 #include "health/heartbeat.h"
 #include "models/database.h"
+#include "models/principal.h"
+#include "models/auth_challenge.h"
 #include "config/runtime.h"
 #include "net/peer_lifecycle.h"
 #include "net/https_server.h"
@@ -497,6 +499,10 @@ static const struct diagnostics_dump_entry g_dumpers[] = {
                      "mirror hash-disagreement bisect locator: last_locate_unix, last_first_div, probes_last_run, divergence_latched, pending record" },
     { "nullifier_backfill", nullifier_backfill_dump_state_json,
                      "owner-gated C-3 nullifier gap backfill: durable activation/resume cursors, derived status, gap_blocker_active" },
+    { "principals", principal_dump_state_json,
+                     "multi-user-server identity registry: count + public projection of each principal {address, role, status, key_kind, last_login, has_znam}" },
+    { "auth",       auth_challenge_dump_state_json,
+                     "auth login-challenge nonce store: db_open + pending (unconsumed) single-use challenge count" },
 };
 
 int diagnostics_subsystems_csv(char *out, size_t out_sz)

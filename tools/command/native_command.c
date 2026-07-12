@@ -1573,6 +1573,10 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
         .source_root = getenv("ZCL_DEV_SOURCE_ROOT"),
         .operator_lane = operator_lane,
         .granted_capabilities = ~(uint64_t)0,
+        /* The local argv operator is omnipotent: full capabilities and the
+         * OWNER authority ceiling. Remote/multi-user sessions raise the ceiling
+         * from their role instead (never reaching this argv path). */
+        .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
 #ifdef ZCL_DEV_BUILD
         .dev_build = true,
 #else
