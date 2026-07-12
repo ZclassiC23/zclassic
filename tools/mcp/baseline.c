@@ -14,12 +14,12 @@
  *   (a) Capture-at-source: walk the same structs metrics.c owns
  *       (struct counter_entry, struct tool_hist, ...) directly.
  *   (b) Capture-the-render: call the ALREADY-PUBLIC
- *       mcp_metrics_render_prometheus() and treat its text output as
+ *       metrics_prometheus_render_prometheus() and treat its text output as
  *       the snapshot, diffing generically.
  *
  * (a) means baseline.c has to know, line for line, which internal
  * tables exist and how to walk each one — the same enumeration
- * knowledge mcp_metrics_render_prometheus() already encodes, just
+ * knowledge metrics_prometheus_render_prometheus() already encodes, just
  * duplicated in a second file. Every future metric added to
  * metrics.c (a new gauge, a new bounded table) would need a matching
  * hand-written addition here or it silently stops being diffable.
@@ -36,14 +36,14 @@
  * the one implemented here. lib/json is still used, just for building
  * the *output* envelope (list/diff bodies) rather than for parsing
  * the capture — the capture format is text because that is what the
- * single existing source of truth (mcp_metrics_render_prometheus)
+ * single existing source of truth (metrics_prometheus_render_prometheus)
  * already emits; wrapping it in a parallel JSON exporter would be
  * exactly the duplicated enumeration this design avoids.
  */
 
 #include "platform/time_compat.h"
 #include "baseline.h"
-#include "metrics.h"
+#include "metrics/prometheus_metrics.h"
 
 #include "json/json.h"
 #include "util/log_macros.h"
@@ -101,7 +101,7 @@ bool mcp_baseline_set(const char *label, char *out_label,
 
     e->timestamp_us = now_us();
     e->seq = g_seq;
-    e->text_len = mcp_metrics_render_prometheus(e->text, sizeof(e->text));
+    e->text_len = metrics_prometheus_render_prometheus(e->text, sizeof(e->text));
     e->used = true;
 
     if (out_label && out_label_cap)
@@ -368,7 +368,7 @@ char *mcp_baseline_diff_json(int idx)
                  "malloc failed for live metrics snapshot (%d bytes)",
                  MCP_BASELINE_SNAPSHOT_CAP);
     }
-    size_t curr_len = mcp_metrics_render_prometheus(curr_text,
+    size_t curr_len = metrics_prometheus_render_prometheus(curr_text,
                                                      MCP_BASELINE_SNAPSHOT_CAP);
 
     struct metric_kv *base_kv = zcl_malloc(

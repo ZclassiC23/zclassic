@@ -138,7 +138,7 @@
 #include "net/download.h"
 #include "net/msgprocessor.h"
 #include "services/db_maintenance.h"
-#include "mcp/metrics.h"
+#include "metrics/prometheus_metrics.h"
 
 extern _Atomic int g_deferred_proof_validation_below_height;
 
@@ -1238,7 +1238,7 @@ bool app_init_services(struct app_context *ctx,
     }
 
     /* Initialize metrics observers for Prometheus /metrics */
-    mcp_metrics_init();
+    metrics_prometheus_init();
 
     printf("[boot]   %-28s %lldms\n", "svc.register_rpc_cmds",
            (long long)(svc_clock_ms() - t_svc));

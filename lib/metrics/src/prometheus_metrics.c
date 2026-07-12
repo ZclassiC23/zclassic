@@ -3,7 +3,7 @@
  * MCP Metrics — implementation.  See metrics.h for the contract.
  */
 
-#include "mcp/metrics.h"
+#include "metrics/prometheus_metrics.h"
 #include "core/utiltime.h"
 #include "event/event.h"
 #include "net/peer_scoring.h"
@@ -21,7 +21,7 @@
 
 /* Bucket upper bounds in microseconds — matches Prometheus "le" labels.
  * Last bucket (+Inf) is implicit via the _count total. */
-static const int64_t k_bucket_us[MCP_METRICS_HIST_BUCKETS] = {
+static const int64_t k_bucket_us[METRICS_PROMETHEUS_HIST_BUCKETS] = {
     1000,       /* 1   ms */
     5000,       /* 5   ms */
     25000,      /* 25  ms */
@@ -30,7 +30,7 @@ static const int64_t k_bucket_us[MCP_METRICS_HIST_BUCKETS] = {
     2000000,    /* 2000 ms */
 };
 
-static const char *k_bucket_le_label[MCP_METRICS_HIST_BUCKETS] = {
+static const char *k_bucket_le_label[METRICS_PROMETHEUS_HIST_BUCKETS] = {
     "0.001", "0.005", "0.025", "0.1", "0.5", "2.0",
 };
 
@@ -42,18 +42,18 @@ struct counter_entry {
 
 struct tool_hist {
     char     tool[48];
-    uint64_t buckets[MCP_METRICS_HIST_BUCKETS];  /* le bucket counts (non-cumulative) */
+    uint64_t buckets[METRICS_PROMETHEUS_HIST_BUCKETS];  /* le bucket counts (non-cumulative) */
     uint64_t overflow;                           /* > last bucket */
     uint64_t total_count;                        /* _count */
     uint64_t total_us;                           /* running sum (for _sum) */
 };
 
-static struct counter_entry g_counters[MCP_METRICS_MAX_COUNTERS];
+static struct counter_entry g_counters[METRICS_PROMETHEUS_MAX_COUNTERS];
 static size_t               g_counter_count;
 
 /* +1 slot reserved for the "__other__" overflow bucket so that when we
- * hit MCP_METRICS_MAX_TOOLS we can still create the fold-in entry. */
-static struct tool_hist     g_hists[MCP_METRICS_MAX_TOOLS + 1];
+ * hit METRICS_PROMETHEUS_MAX_TOOLS we can still create the fold-in entry. */
+static struct tool_hist     g_hists[METRICS_PROMETHEUS_MAX_TOOLS + 1];
 static size_t               g_hist_count;
 
 static uint64_t             g_total_requests;
@@ -64,8 +64,8 @@ static uint64_t             g_total_errors;
  * "other".  Bans are a single counter — splitting them by kind would
  * be misleading because peer_misbehaving() bans on cumulative score,
  * not on the offence that crossed the threshold. */
-#define MCP_METRICS_PEER_KINDS 12
-static const char *const k_peer_kind_names[MCP_METRICS_PEER_KINDS] = {
+#define METRICS_PROMETHEUS_PEER_KINDS 12
+static const char *const k_peer_kind_names[METRICS_PROMETHEUS_PEER_KINDS] = {
     "timeout",
     "invalid_message",
     "flood",
@@ -79,7 +79,7 @@ static const char *const k_peer_kind_names[MCP_METRICS_PEER_KINDS] = {
     "protocol_violation",
     "other",
 };
-static uint64_t             g_peer_offences[MCP_METRICS_PEER_KINDS];
+static uint64_t             g_peer_offences[METRICS_PROMETHEUS_PEER_KINDS];
 static uint64_t             g_peer_offences_total;
 static uint64_t             g_peer_bans_total;
 
@@ -113,7 +113,7 @@ static _Atomic int64_t  g_node_zcl23_peer_count;
 /* Consensus reject registry — bounded (kind, reason) → count table.
  * `kind` is "tx" or "block"; reason is a kebab-case string emitted by
  * the REJECT_IF/UNLESS macros in lib/validation/src/check_*.c.  Beyond
- * `MCP_METRICS_MAX_REJECT_REASONS` distinct (kind, reason) pairs we fold
+ * `METRICS_PROMETHEUS_MAX_REJECT_REASONS` distinct (kind, reason) pairs we fold
  * into the per-kind overflow counters so cardinality stays bounded.
  * The per-kind totals are incremented unconditionally — they stay
  * consistent with the sum of slot counts + overflow counts. */
@@ -122,7 +122,7 @@ struct reject_reason_slot {
     char     kind[8];  /* "tx" or "block" */
     uint64_t count;
 };
-static struct reject_reason_slot g_reject_slots[MCP_METRICS_MAX_REJECT_REASONS];
+static struct reject_reason_slot g_reject_slots[METRICS_PROMETHEUS_MAX_REJECT_REASONS];
 static size_t                    g_reject_slot_count;
 static uint64_t                  g_reject_total_tx;
 static uint64_t                  g_reject_total_block;
@@ -142,13 +142,13 @@ static const char          *g_node_sync_state_name = "unknown";
  * seconds above (a duration gauge that a threshold alert compares
  * against, e.g. `> 0`), but the hysteresis is computed HERE instead of
  * in an owning service, using the node's own uptime counter (already
- * threaded through mcp_metrics_set_node_gauges) as the clock basis
+ * threaded through metrics_prometheus_set_node_gauges) as the clock basis
  * rather than wall-clock GetTime(). That makes every one of them
  * deterministically testable: a hermetic test drives "time" by simply
  * passing increasing `uptime_seconds` values, with no real sleep. */
 
 /* header_gap_growing: best-known header height minus served height H*.
- * Raw magnitude fed by mcp_metrics_set_header_gap(); -1 = unknown. */
+ * Raw magnitude fed by metrics_prometheus_set_header_gap(); -1 = unknown. */
 static _Atomic int64_t g_header_gap_blocks = -1;
 static _Atomic int64_t g_header_gap_breach_seconds;
 static _Atomic int64_t g_header_gap_breach_since_uptime = -1; /* -1 = not currently breaching */
@@ -207,7 +207,7 @@ static int hist_slot(const char *tool)
     for (size_t i = 0; i < g_hist_count; i++)
         if (strncmp(g_hists[i].tool, tool, sizeof(g_hists[i].tool)) == 0)
             return (int)i;
-    if (g_hist_count >= MCP_METRICS_MAX_TOOLS) {
+    if (g_hist_count >= METRICS_PROMETHEUS_MAX_TOOLS) {
         /* Fold into "__other__" */
         for (size_t i = 0; i < g_hist_count; i++)
             if (strcmp(g_hists[i].tool, "__other__") == 0) return (int)i;
@@ -229,7 +229,7 @@ static int counter_slot(const char *tool, const char *code)
         if (strncmp(g_counters[i].tool, tool, sizeof(g_counters[i].tool)) == 0 &&
             strncmp(g_counters[i].code, code, sizeof(g_counters[i].code)) == 0)
             return (int)i;
-    if (g_counter_count >= MCP_METRICS_MAX_COUNTERS) return -1;
+    if (g_counter_count >= METRICS_PROMETHEUS_MAX_COUNTERS) return -1;
     size_t idx = g_counter_count++;
     snprintf(g_counters[idx].tool, sizeof(g_counters[idx].tool), "%s", tool);
     snprintf(g_counters[idx].code, sizeof(g_counters[idx].code), "%s", code);
@@ -253,7 +253,7 @@ static void record_locked(const char *tool, const char *code, int64_t dur_us)
         if (hi >= 0) {
             struct tool_hist *h = &g_hists[hi];
             bool placed = false;
-            for (int b = 0; b < MCP_METRICS_HIST_BUCKETS; b++) {
+            for (int b = 0; b < METRICS_PROMETHEUS_HIST_BUCKETS; b++) {
                 if (dur_us <= k_bucket_us[b]) {
                     h->buckets[b]++;
                     placed = true;
@@ -267,14 +267,14 @@ static void record_locked(const char *tool, const char *code, int64_t dur_us)
     }
 }
 
-void mcp_metrics_record(const char *tool, const char *code, int64_t dur_us)
+void metrics_prometheus_record(const char *tool, const char *code, int64_t dur_us)
 {
     pthread_mutex_lock(&g_lock);
     record_locked(tool, code, dur_us);
     pthread_mutex_unlock(&g_lock);
 }
 
-void mcp_metrics_reset(void)
+void metrics_prometheus_reset(void)
 {
     pthread_mutex_lock(&g_lock);
     g_counter_count = 0;
@@ -294,7 +294,7 @@ void mcp_metrics_reset(void)
     g_reject_overflow_block = 0;
     pthread_mutex_unlock(&g_lock);
 
-    mcp_metrics_alerts_reset();
+    metrics_prometheus_alerts_reset();
 }
 
 /* ── Node-level gauge setter ────────────────────────────────── */
@@ -305,7 +305,7 @@ void mcp_metrics_reset(void)
  * env-tunable hysteresis thresholds (peer_count_collapsed etc.). */
 static double alert_env_double(const char *name, double def);
 
-void mcp_metrics_set_node_gauges(int64_t block_height, int64_t peer_count,
+void metrics_prometheus_set_node_gauges(int64_t block_height, int64_t peer_count,
                                  double rss_mb, int64_t utxo_count,
                                  int64_t uptime_seconds)
 {
@@ -336,12 +336,12 @@ void mcp_metrics_set_node_gauges(int64_t block_height, int64_t peer_count,
     }
 }
 
-void mcp_metrics_set_tip_advance_age(int64_t seconds)
+void metrics_prometheus_set_tip_advance_age(int64_t seconds)
 {
     atomic_store(&g_node_tip_advance_age, seconds);
 }
 
-void mcp_metrics_set_mirror_lag(int64_t lag_blocks,
+void metrics_prometheus_set_mirror_lag(int64_t lag_blocks,
                                 int64_t breach_seconds,
                                 int64_t critical_seconds)
 {
@@ -350,7 +350,7 @@ void mcp_metrics_set_mirror_lag(int64_t lag_blocks,
     atomic_store(&g_mirror_lag_critical_seconds, critical_seconds);
 }
 
-void mcp_metrics_set_peer_kinds(int64_t magicbean_count,
+void metrics_prometheus_set_peer_kinds(int64_t magicbean_count,
                                 int64_t zcl23_count)
 {
     atomic_store(&g_node_magicbean_peer_count, magicbean_count);
@@ -363,13 +363,13 @@ void mcp_metrics_set_peer_kinds(int64_t magicbean_count,
      * every gauge the alert rules read is fresh for this tick.
      * Piggy-backing here means the rule engine runs on the node's
      * existing periodic tick with no new thread. */
-    mcp_metrics_evaluate_alert_rules();
+    metrics_prometheus_evaluate_alert_rules();
 }
 
 /* ── Metric-threshold alert rules (C3) ──────────────────────────────
  *
  * Declarative rule table over the SAME gauges rendered in
- * mcp_metrics_render_prometheus() above — no re-parsing of the
+ * metrics_prometheus_render_prometheus() above — no re-parsing of the
  * rendered text, no re-enumeration of metric names. Edge-triggered:
  * a rule fires the instant its gauge crosses the threshold, then
  * stays silent until either the value drops back below threshold
@@ -394,7 +394,7 @@ struct mcp_alert_rule {
     int                 cooldown_sec; /* min seconds between repeat fires while crossed */
 };
 
-#define MCP_METRICS_ALERT_MAX_RULES 12
+#define METRICS_PROMETHEUS_ALERT_MAX_RULES 12
 
 struct mcp_alert_rule_state {
     bool     active;           /* latched true while the gauge stays crossed */
@@ -402,8 +402,8 @@ struct mcp_alert_rule_state {
     uint64_t fire_count;
 };
 
-static struct mcp_alert_rule       g_alert_rules[MCP_METRICS_ALERT_MAX_RULES];
-static struct mcp_alert_rule_state g_alert_state[MCP_METRICS_ALERT_MAX_RULES];
+static struct mcp_alert_rule       g_alert_rules[METRICS_PROMETHEUS_ALERT_MAX_RULES];
+static struct mcp_alert_rule_state g_alert_state[METRICS_PROMETHEUS_ALERT_MAX_RULES];
 static size_t                      g_alert_rule_count;
 static bool                        g_alert_rules_seeded;
 static pthread_mutex_t             g_alert_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -473,7 +473,7 @@ static void alert_rules_seed_locked(void)
     g_alert_rules[g_alert_rule_count++] = (struct mcp_alert_rule){
         /* zcl_header_gap_breach_seconds already folds in the magnitude
          * threshold (ZCL_ALERT_HEADER_GAP_BLOCKS, default 144) and the
-         * SYNC_HEADERS_DOWNLOAD exclusion — see mcp_metrics_set_header_gap.
+         * SYNC_HEADERS_DOWNLOAD exclusion — see metrics_prometheus_set_header_gap.
          * This is the rule that would have paged the 2026-07-10 incident
          * (node held 216 blocks behind headers for 4.6h with tip_stalled
          * as the only signal, because tip_advance_age only fires on a
@@ -489,7 +489,7 @@ static void alert_rules_seed_locked(void)
         /* zcl_peer_collapse_breach_seconds already folds in the peer
          * floor (ZCL_ALERT_PEER_COLLAPSE_MIN_PEERS, default 2) and the
          * post-boot grace window (ZCL_ALERT_PEER_COLLAPSE_GRACE_SECS,
-         * default 120s) — see mcp_metrics_set_node_gauges. */
+         * default 120s) — see metrics_prometheus_set_node_gauges. */
         .gauge_name   = "zcl_peer_collapse_breach_seconds",
         .cmp          = MCP_ALERT_GT,
         .threshold    = alert_env_double("ZCL_ALERT_PEER_COLLAPSE_SECS", 300.0),
@@ -499,7 +499,7 @@ static void alert_rules_seed_locked(void)
     };
     g_alert_rules[g_alert_rule_count++] = (struct mcp_alert_rule){
         /* zcl_sync_state_stuck_seconds is 0 whenever at_tip or the state
-         * id last changed — see mcp_metrics_set_sync_state. */
+         * id last changed — see metrics_prometheus_set_sync_state. */
         .gauge_name   = "zcl_sync_state_stuck_seconds",
         .cmp          = MCP_ALERT_GT,
         .threshold    = alert_env_double("ZCL_ALERT_SYNC_STUCK_SECS", 3600.0),
@@ -511,7 +511,7 @@ static void alert_rules_seed_locked(void)
         /* zcl_consensus_reject_delta is the rolling-window delta of the
          * existing zcl_consensus_rejects_total{kind="all",reason="all"}
          * counter — see the windowing step at the top of
-         * mcp_metrics_evaluate_alert_rules(). */
+         * metrics_prometheus_evaluate_alert_rules(). */
         .gauge_name   = "zcl_consensus_reject_delta",
         .cmp          = MCP_ALERT_GT,
         .threshold    = alert_env_double("ZCL_ALERT_CONSENSUS_REJECT_DELTA", 20.0),
@@ -525,7 +525,7 @@ static void alert_rules_seed_locked(void)
 }
 
 /* Current value for one rule's gauge. Reads the same in-process source
- * mcp_metrics_render_prometheus() reads — atomics fed by the metrics
+ * metrics_prometheus_render_prometheus() reads — atomics fed by the metrics
  * tick, or a direct live call for the blocker registry. */
 static double alert_rule_fetch_value(const struct mcp_alert_rule *r)
 {
@@ -578,14 +578,14 @@ static const char *alert_cmp_symbol(enum mcp_alert_cmp cmp)
  * elapsed, publish the delta since the last window boundary as
  * g_reject_spike_delta. First call just establishes the baseline so a
  * cumulative-since-boot total never reads as a false "spike". Called
- * from mcp_metrics_evaluate_alert_rules() so it advances once per tick
- * alongside every other rule, using mcp_metrics_consensus_rejects_total()
+ * from metrics_prometheus_evaluate_alert_rules() so it advances once per tick
+ * alongside every other rule, using metrics_prometheus_consensus_rejects_total()
  * — the same accessor `zcl_consensus_report` uses. */
 static void consensus_reject_spike_tick(void)
 {
     double  window_sec      = alert_env_double("ZCL_ALERT_CONSENSUS_REJECT_WINDOW_SECS", 60.0);
     int64_t uptime          = atomic_load(&g_node_uptime_seconds);
-    int64_t total           = (int64_t)mcp_metrics_consensus_rejects_total();
+    int64_t total           = (int64_t)metrics_prometheus_consensus_rejects_total();
     int64_t baseline_total  = atomic_load(&g_reject_spike_baseline_total);
     int64_t baseline_uptime = atomic_load(&g_reject_spike_baseline_uptime);
 
@@ -603,7 +603,7 @@ static void consensus_reject_spike_tick(void)
     atomic_store(&g_reject_spike_baseline_uptime, uptime);
 }
 
-void mcp_metrics_evaluate_alert_rules(void)
+void metrics_prometheus_evaluate_alert_rules(void)
 {
     pthread_mutex_lock(&g_alert_lock);
     alert_rules_seed_locked();
@@ -642,7 +642,7 @@ void mcp_metrics_evaluate_alert_rules(void)
     pthread_mutex_unlock(&g_alert_lock);
 }
 
-size_t mcp_metrics_alert_rule_count(void)
+size_t metrics_prometheus_alert_rule_count(void)
 {
     pthread_mutex_lock(&g_alert_lock);
     alert_rules_seed_locked();
@@ -651,7 +651,7 @@ size_t mcp_metrics_alert_rule_count(void)
     return n;
 }
 
-uint64_t mcp_metrics_alert_fire_count(const char *rule_event_name)
+uint64_t metrics_prometheus_alert_fire_count(const char *rule_event_name)
 {
     if (!rule_event_name) return 0;
     pthread_mutex_lock(&g_alert_lock);
@@ -667,7 +667,7 @@ uint64_t mcp_metrics_alert_fire_count(const char *rule_event_name)
     return v;
 }
 
-void mcp_metrics_alerts_reset(void)
+void metrics_prometheus_alerts_reset(void)
 {
     pthread_mutex_lock(&g_alert_lock);
     alert_rules_seed_locked();
@@ -693,14 +693,14 @@ void mcp_metrics_alerts_reset(void)
 
 static int peer_kind_slot(const char *kind)
 {
-    if (!kind || !*kind) return MCP_METRICS_PEER_KINDS - 1; /* "other" */
-    for (int i = 0; i < MCP_METRICS_PEER_KINDS; i++) {
+    if (!kind || !*kind) return METRICS_PROMETHEUS_PEER_KINDS - 1; /* "other" */
+    for (int i = 0; i < METRICS_PROMETHEUS_PEER_KINDS; i++) {
         if (strcmp(k_peer_kind_names[i], kind) == 0) return i;
     }
-    return MCP_METRICS_PEER_KINDS - 1; /* "other" */
+    return METRICS_PROMETHEUS_PEER_KINDS - 1; /* "other" */
 }
 
-void mcp_metrics_record_peer_offence(const char *kind)
+void metrics_prometheus_record_peer_offence(const char *kind)
 {
     pthread_mutex_lock(&g_lock);
     g_peer_offences[peer_kind_slot(kind)]++;
@@ -708,14 +708,14 @@ void mcp_metrics_record_peer_offence(const char *kind)
     pthread_mutex_unlock(&g_lock);
 }
 
-void mcp_metrics_record_peer_ban(void)
+void metrics_prometheus_record_peer_ban(void)
 {
     pthread_mutex_lock(&g_lock);
     g_peer_bans_total++;
     pthread_mutex_unlock(&g_lock);
 }
 
-uint64_t mcp_metrics_peer_offences_total(void)
+uint64_t metrics_prometheus_peer_offences_total(void)
 {
     pthread_mutex_lock(&g_lock);
     uint64_t v = g_peer_offences_total;
@@ -723,7 +723,7 @@ uint64_t mcp_metrics_peer_offences_total(void)
     return v;
 }
 
-uint64_t mcp_metrics_peer_offences_for_kind(const char *kind)
+uint64_t metrics_prometheus_peer_offences_for_kind(const char *kind)
 {
     pthread_mutex_lock(&g_lock);
     uint64_t v = g_peer_offences[peer_kind_slot(kind)];
@@ -731,7 +731,7 @@ uint64_t mcp_metrics_peer_offences_for_kind(const char *kind)
     return v;
 }
 
-uint64_t mcp_metrics_peer_bans_total(void)
+uint64_t metrics_prometheus_peer_bans_total(void)
 {
     pthread_mutex_lock(&g_lock);
     uint64_t v = g_peer_bans_total;
@@ -751,7 +751,7 @@ static int reject_slot_locked(const char *kind, const char *reason)
             strcmp(g_reject_slots[i].reason, reason) == 0)
             return (int)i;
     }
-    if (g_reject_slot_count >= MCP_METRICS_MAX_REJECT_REASONS)
+    if (g_reject_slot_count >= METRICS_PROMETHEUS_MAX_REJECT_REASONS)
         return -1;
     size_t idx = g_reject_slot_count++;
     memset(&g_reject_slots[idx], 0, sizeof(g_reject_slots[idx]));
@@ -762,7 +762,7 @@ static int reject_slot_locked(const char *kind, const char *reason)
     return (int)idx;
 }
 
-void mcp_metrics_record_consensus_reject(const char *kind, const char *reason)
+void metrics_prometheus_record_consensus_reject(const char *kind, const char *reason)
 {
     /* Normalise inputs so the table is predictable regardless of
      * observer call path. */
@@ -784,7 +784,7 @@ void mcp_metrics_record_consensus_reject(const char *kind, const char *reason)
     pthread_mutex_unlock(&g_lock);
 }
 
-uint64_t mcp_metrics_consensus_rejects_total(void)
+uint64_t metrics_prometheus_consensus_rejects_total(void)
 {
     pthread_mutex_lock(&g_lock);
     uint64_t v = g_reject_total_tx + g_reject_total_block;
@@ -792,7 +792,7 @@ uint64_t mcp_metrics_consensus_rejects_total(void)
     return v;
 }
 
-uint64_t mcp_metrics_consensus_rejects_for_kind(const char *kind)
+uint64_t metrics_prometheus_consensus_rejects_for_kind(const char *kind)
 {
     pthread_mutex_lock(&g_lock);
     uint64_t v = (kind && strcmp(kind, "block") == 0)
@@ -801,7 +801,7 @@ uint64_t mcp_metrics_consensus_rejects_for_kind(const char *kind)
     return v;
 }
 
-uint64_t mcp_metrics_consensus_rejects_tracked_reasons(void)
+uint64_t metrics_prometheus_consensus_rejects_tracked_reasons(void)
 {
     pthread_mutex_lock(&g_lock);
     uint64_t v = (uint64_t)g_reject_slot_count;
@@ -827,7 +827,7 @@ static void mcp_request_observer(enum event_type type, uint32_t peer_id,
     if (parse_kv(payload, payload_len, "dur_us", dur_str, sizeof(dur_str)))
         dur = strtoll(dur_str, NULL, 10);
 
-    mcp_metrics_record(tool, code, dur);
+    metrics_prometheus_record(tool, code, dur);
 }
 
 /* Extract the offence kind from an EV_PEER_MISBEHAVE / EV_PEER_BANNED
@@ -875,9 +875,9 @@ static void mcp_peer_observer(enum event_type type, uint32_t peer_id,
         char kind[32] = {0};
         if (payload && payload_len > 0)
             parse_peer_kind(payload, payload_len, kind, sizeof(kind));
-        mcp_metrics_record_peer_offence(kind);
+        metrics_prometheus_record_peer_offence(kind);
     } else if (type == EV_PEER_BANNED) {
-        mcp_metrics_record_peer_ban();
+        metrics_prometheus_record_peer_ban();
     }
 }
 
@@ -894,16 +894,16 @@ static void mcp_consensus_observer(enum event_type type, uint32_t peer_id,
     char reason[48] = {0};
     if (payload && payload_len > 0)
         parse_kv(payload, payload_len, "reason", reason, sizeof(reason));
-    mcp_metrics_record_consensus_reject(kind, reason);
+    metrics_prometheus_record_consensus_reject(kind, reason);
 }
 
-void mcp_metrics_set_sync_state(int state, const char *name)
+void metrics_prometheus_set_sync_state(int state, const char *name)
 {
     atomic_store(&g_node_sync_state, state);
     g_node_sync_state_name = name ? name : "unknown";
 
     /* sync_state_stuck hysteresis: uses the same-tick uptime gauge (set
-     * by mcp_metrics_set_node_gauges, which lib/metrics's tick always
+     * by metrics_prometheus_set_node_gauges, which lib/metrics's tick always
      * calls first — see its ordering) as the clock basis, not
      * wall-clock, so a hermetic test can drive it deterministically. */
     int64_t uptime = atomic_load(&g_node_uptime_seconds);
@@ -918,7 +918,7 @@ void mcp_metrics_set_sync_state(int state, const char *name)
     atomic_store(&g_sync_state_stuck_seconds, stuck);
 }
 
-void mcp_metrics_set_header_gap(int64_t gap_blocks)
+void metrics_prometheus_set_header_gap(int64_t gap_blocks)
 {
     atomic_store(&g_header_gap_blocks, gap_blocks);
 
@@ -946,7 +946,7 @@ void mcp_metrics_set_header_gap(int64_t gap_blocks)
     }
 }
 
-void mcp_metrics_init(void)
+void metrics_prometheus_init(void)
 {
     pthread_mutex_lock(&g_lock);
     if (g_observer_installed) {
@@ -964,7 +964,7 @@ void mcp_metrics_init(void)
 
 /* ── Introspection ──────────────────────────────────────────── */
 
-size_t mcp_metrics_counter_count(void)
+size_t metrics_prometheus_counter_count(void)
 {
     pthread_mutex_lock(&g_lock);
     size_t n = g_counter_count;
@@ -972,7 +972,7 @@ size_t mcp_metrics_counter_count(void)
     return n;
 }
 
-uint64_t mcp_metrics_get(const char *tool, const char *code)
+uint64_t metrics_prometheus_get(const char *tool, const char *code)
 {
     pthread_mutex_lock(&g_lock);
     uint64_t v = 0;
@@ -987,7 +987,7 @@ uint64_t mcp_metrics_get(const char *tool, const char *code)
     return v;
 }
 
-uint64_t mcp_metrics_total_requests(void)
+uint64_t metrics_prometheus_total_requests(void)
 {
     pthread_mutex_lock(&g_lock);
     uint64_t v = g_total_requests;
@@ -995,7 +995,7 @@ uint64_t mcp_metrics_total_requests(void)
     return v;
 }
 
-uint64_t mcp_metrics_total_errors(void)
+uint64_t metrics_prometheus_total_errors(void)
 {
     pthread_mutex_lock(&g_lock);
     uint64_t v = g_total_errors;
@@ -1018,7 +1018,7 @@ static size_t append(char *buf, size_t cap, size_t pos, const char *fmt, ...)
     return pos + (size_t)n;
 }
 
-size_t mcp_metrics_render_prometheus(char *buf, size_t cap)
+size_t metrics_prometheus_render_prometheus(char *buf, size_t cap)
 {
     if (!buf || cap == 0) return 0;
     pthread_mutex_lock(&g_lock);
@@ -1040,7 +1040,7 @@ size_t mcp_metrics_render_prometheus(char *buf, size_t cap)
     for (size_t i = 0; i < g_hist_count; i++) {
         const struct tool_hist *h = &g_hists[i];
         uint64_t cumulative = 0;
-        for (int b = 0; b < MCP_METRICS_HIST_BUCKETS; b++) {
+        for (int b = 0; b < METRICS_PROMETHEUS_HIST_BUCKETS; b++) {
             cumulative += h->buckets[b];
             pos = append(buf, cap, pos,
                 "zcl_mcp_request_duration_seconds_bucket{tool=\"%s\",le=\"%s\"} %llu\n",
@@ -1069,7 +1069,7 @@ size_t mcp_metrics_render_prometheus(char *buf, size_t cap)
     pos = append(buf, cap, pos,
         "# HELP zcl_peer_offences_total Peer scoring offences observed since boot\n"
         "# TYPE zcl_peer_offences_total counter\n");
-    for (int i = 0; i < MCP_METRICS_PEER_KINDS; i++) {
+    for (int i = 0; i < METRICS_PROMETHEUS_PEER_KINDS; i++) {
         pos = append(buf, cap, pos,
             "zcl_peer_offences_total{kind=\"%s\"} %llu\n",
             k_peer_kind_names[i], (unsigned long long)g_peer_offences[i]);
@@ -1294,7 +1294,7 @@ size_t mcp_metrics_render_prometheus(char *buf, size_t cap)
     return pos;
 }
 
-size_t mcp_metrics_peer_report_json(char *buf, size_t cap)
+size_t metrics_prometheus_peer_report_json(char *buf, size_t cap)
 {
     if (!buf || cap == 0) return 0;
     pthread_mutex_lock(&g_lock);
@@ -1310,7 +1310,7 @@ size_t mcp_metrics_peer_report_json(char *buf, size_t cap)
         peer_scoring_ban_hours(),
         peer_scoring_decay_rate());
 
-    for (int i = 0; i < MCP_METRICS_PEER_KINDS; i++) {
+    for (int i = 0; i < METRICS_PROMETHEUS_PEER_KINDS; i++) {
         pos = append(buf, cap, pos,
             "%s\"%s\":%llu",
             i == 0 ? "" : ",",
@@ -1328,7 +1328,7 @@ size_t mcp_metrics_peer_report_json(char *buf, size_t cap)
     return pos;
 }
 
-size_t mcp_metrics_rpc_report_json(char *buf, size_t cap)
+size_t metrics_prometheus_rpc_report_json(char *buf, size_t cap)
 {
     if (!buf || cap == 0) return 0;
 
@@ -1374,7 +1374,7 @@ size_t mcp_metrics_rpc_report_json(char *buf, size_t cap)
     return pos;
 }
 
-size_t mcp_metrics_consensus_report_json(char *buf, size_t cap)
+size_t metrics_prometheus_consensus_report_json(char *buf, size_t cap)
 {
     if (!buf || cap == 0) return 0;
     pthread_mutex_lock(&g_lock);
@@ -1395,7 +1395,7 @@ size_t mcp_metrics_consensus_report_json(char *buf, size_t cap)
         (unsigned long long)g_reject_overflow_tx,
         (unsigned long long)g_reject_overflow_block,
         g_reject_slot_count,
-        MCP_METRICS_MAX_REJECT_REASONS);
+        METRICS_PROMETHEUS_MAX_REJECT_REASONS);
 
     for (size_t i = 0; i < g_reject_slot_count; i++) {
         pos = append(buf, cap, pos,

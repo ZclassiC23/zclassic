@@ -15,7 +15,7 @@
 #include "../controllers.h"
 #include "../router.h"
 #include "../rpc_client.h"
-#include "../metrics.h"
+#include "metrics/prometheus_metrics.h"
 #include "../baseline.h"
 
 /* Tier-1 hot-swap: this controller's route table is generation-exportable
@@ -381,7 +381,7 @@ static int h_zcl_metrics_reset(const struct mcp_request *req,
                                 struct mcp_response *res)
 {
     (void)req;
-    mcp_metrics_reset();
+    metrics_prometheus_reset();
     char *out = strdup("{\"ok\":true,\"reset\":\"mcp_metrics\"}");
     if (!out) {
         res->error = MCP_ERR_INTERNAL;
@@ -526,7 +526,7 @@ static int h_zcl_rpc_report(const struct mcp_request *req,
 {
     (void)req;
     char body[2048];
-    size_t n = mcp_metrics_rpc_report_json(body, sizeof(body));
+    size_t n = metrics_prometheus_rpc_report_json(body, sizeof(body));
     if (n == 0) {
         res->error = MCP_ERR_HANDLER_FAILED;
         snprintf(res->error_message, sizeof(res->error_message),

@@ -14,7 +14,7 @@
 #include "hotswap/hotswap.h"
 #include "controllers/net_native_handlers.h"
 #include "json/json.h"
-#include "mcp/metrics.h"
+#include "metrics/prometheus_metrics.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -80,7 +80,7 @@ static int h_zcl_peer_report(const struct mcp_request *req,
 {
     (void)req;
     char body[2048];
-    size_t n = mcp_metrics_peer_report_json(body, sizeof(body));
+    size_t n = metrics_prometheus_peer_report_json(body, sizeof(body));
     char *out = (n == 0) ? NULL : strdup(body);
     return mcp_return_rpc_body(res, out, "peer_report", "mcp.net");
 }

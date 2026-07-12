@@ -12,7 +12,7 @@
 #include "rpc/protocol.h"
 #include "core/random.h"
 #include "encoding/utilstrencodings.h"
-#include "mcp/metrics.h"
+#include "metrics/prometheus_metrics.h"
 #include "support/cleanse.h"
 #include "util/log_macros.h"
 #include "util/trace.h"
@@ -509,7 +509,7 @@ static void handle_client(struct rpc_conn conn)
                                     oom, strlen(oom));
             goto done;
         }
-        size_t n = mcp_metrics_render_prometheus(buf, cap);
+        size_t n = metrics_prometheus_render_prometheus(buf, cap);
         /* Prometheus exposition format 0.0.4 */
         send_response_with_type(&conn, 200, "OK",
             "text/plain; version=0.0.4; charset=utf-8",
