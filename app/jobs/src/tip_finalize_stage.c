@@ -31,6 +31,7 @@
 #include <string.h>
 
 #define STAGE_NAME "tip_finalize"
+#define TF_REFOLD_HSTAR_REFRESH_STRIDE 4096  /* refold H* throttle; see step_finalize */
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct main_state *g_ms = NULL;
@@ -610,14 +611,13 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
         tip_finalize_observe_update_last_advance(new_tip->nHeight,
                                                  new_tip->phashBlock->data);
     }
-    /* Refresh the EXTERNAL provable-tip cache (H*) on the finalize advance.
-     * The durable "finalized" ok=1 row was inserted above (log_insert), and we
-     * still hold progress_store_tx_lock (tip_finalize_stage_step_once), so the
-     * recompute reads the just-committed prefix. One O(n) fold per finalized
-     * block — never per RPC. Runs on EVERY finalized advance (not only when
-     * `publish` fires): H* is derived from durable state and must not stay stale
-     * high even on a non-republishing re-finalize. */
-    tf_refresh_provable_tip(db);
+    /* Refresh the EXTERNAL provable-tip cache (H*) on the finalize advance (hold
+     * progress_store_tx_lock; reads just-committed prefix; every advance so H*
+     * can't stay stale-high). EXCEPT a from-genesis refold: floor=0 rescans the
+     * whole prefix per block — O(chain^2) mint cost — and H* is observability-
+     * only (never coins_kv or a log row), so throttling there is fold-identical. */
+    if (!refold_in_progress() || (next_h % TF_REFOLD_HSTAR_REFRESH_STRIDE) == 0)
+        tf_refresh_provable_tip(db);
     c->cursor_out = c->cursor_in + 1;
     return JOB_ADVANCED;
 }
