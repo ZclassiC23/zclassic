@@ -447,7 +447,7 @@ test-parallel: test_parallel
 # the default `all`), so running build/bin/test_parallel directly after editing a test
 # can false-green an old binary or report "matched no groups" for a new test.
 # `make t ONLY=<group>` always rebuilds the harness first, closing that trap.
-.PHONY: t t-fast syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop dev-watch dev-watch-once dev-watch-selftest dev-activation-selftest dev-loop-selftest agent-index dev-loop-bench dev-loop-bench-selftest hotswap-sim immutable-history-canaries historical-canaries agent-mcp-call agent-mcp-call-hot agent-mcp-call-dev agent-dev-status agent-dev-recover dev-recovery-selftest agent-clear-stale-dev-reindex agent-doctor stage-dev-bin agent-stage-dev deploy-dev-fast agent-deploy-fast
+.PHONY: t t-fast t-changed syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop dev-watch dev-watch-once dev-watch-selftest dev-activation-selftest dev-loop-selftest agent-index dev-loop-bench dev-loop-bench-selftest hotswap-sim immutable-history-canaries historical-canaries agent-mcp-call agent-mcp-call-hot agent-mcp-call-dev agent-dev-status agent-dev-recover dev-recovery-selftest agent-clear-stale-dev-reindex agent-doctor stage-dev-bin agent-stage-dev deploy-dev-fast agent-deploy-fast
 
 # Run ONE test group, always rebuilding the harness first:
 #   make t ONLY=service_state_driver
@@ -465,6 +465,16 @@ t-fast: test_parallel_fast
 	  echo "usage: make t-fast ONLY=<group-substr>   (e.g. make t-fast ONLY=node_health_service)"; \
 	  exit 2; fi
 	ulimit -s unlimited && $(TEST_PARALLEL_FAST_BIN) --only=$(ONLY)
+
+# The leanest changed-aware inner loop: no ONLY= to remember. It resolves the
+# focused test group(s) for the current working-tree diff from the impact
+# rules (app/controllers/include/controllers/agent_impact_rules.def — the same
+# map pre-push-ci uses) and runs ONLY those through the cached non-LTO harness.
+# Edit .c -> `make t-changed` -> ~seconds. Fails loud if a changed code file
+# has no focused-test mapping (add one). Use `make t ONLY=<g>` for the strict
+# LTO harness and `make pre-push-ci` as the pre-push gate.
+t-changed:
+	@tools/agent_fast_ci.sh test-changed
 
 # Incremental compile-check of the whole node (no link). Only changed TUs
 # recompile — the fastest "does my change still build" signal. The

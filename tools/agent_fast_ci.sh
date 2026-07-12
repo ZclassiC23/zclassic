@@ -962,6 +962,23 @@ main() {
             log "PASS: changed compile gate complete"
             return
             ;;
+        test-changed|t-changed|focused-tests)
+            # Leanest changed-aware loop: resolve the focused group(s) for the
+            # working-tree diff via the impact rules and run ONLY those through
+            # the cached non-LTO harness (t-fast). No lint/compile/probe layer,
+            # no group name to remember. The compile still happens — t-fast
+            # rebuilds the changed TUs before running — so a broken change
+            # fails here too.
+            select_test_groups
+            fail_on_unmapped_code_changes
+            if [ -z "$TEST_GROUPS" ]; then
+                log "no focused test groups for current diff (docs/tooling only)"
+                return
+            fi
+            run_focused_tests
+            log "PASS: focused tests for changed files ($TEST_GROUPS)"
+            return
+            ;;
         rebuild-dev|dev-rebuild|fast-rebuild|hot-rebuild)
             run_dev_rebuild
             return
