@@ -642,6 +642,39 @@ int ci_store_files_in_group(struct ci_store *s, const char *group,
     return n;
 }
 
+int ci_store_count_files_in_group(struct ci_store *s, const char *group,
+                                  bool recursive)
+{
+    if (!s || !group)
+        LOG_ERR("codeindex", "bad arg to count_files_in_group");
+    pthread_mutex_lock(&s->lock);
+    sqlite3_stmt *stmt = NULL;
+    /* Direct: only files stamped with EXACTLY this group. Recursive: also
+     * every descendant group ("lib/net" under "lib") via the "<group>/%"
+     * prefix, so a parent aggregates its children's file totals. */
+    const char *sql = recursive
+        ? "SELECT COUNT(*) FROM files WHERE \"group\"=? OR \"group\" LIKE ?||'/%'"
+        : "SELECT COUNT(*) FROM files WHERE \"group\"=?";
+    if (sqlite3_prepare_v2(s->db, sql, -1, &stmt, NULL) != SQLITE_OK) {
+        pthread_mutex_unlock(&s->lock);
+        LOG_ERR("codeindex", "prepare count_files_in_group");
+    }
+    sqlite3_bind_text(stmt, 1, group, -1, SQLITE_TRANSIENT);
+    if (recursive)
+        sqlite3_bind_text(stmt, 2, group, -1, SQLITE_TRANSIENT);
+    int n = 0;
+    bool ok = true;
+    int rc = sqlite3_step(stmt);  // raw-sql-ok:codeindex-derived
+    if (rc == SQLITE_ROW)
+        n = sqlite3_column_int(stmt, 0);
+    else if (rc != SQLITE_DONE)
+        ok = false;
+    sqlite3_finalize(stmt);
+    pthread_mutex_unlock(&s->lock);
+    if (!ok) LOG_ERR("codeindex", "step count_files_in_group");
+    return n;
+}
+
 int ci_store_symbols_in_file(struct ci_store *s, const char *path,
                              struct ci_symbol *out, int cap)
 {

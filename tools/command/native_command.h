@@ -137,6 +137,28 @@ void zcl_native_handle_code_refs(
 void zcl_native_handle_code_find(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+/* code.map — the whole-tree map: the 9 root groups (aggregate file counts +
+ * purposes) and the 8 app/ shapes (direct file counts), plus a total. */
+void zcl_native_handle_code_map(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+/* code.tests — the routing link: which focused test group a change to one file
+ * routes to, mirroring `dev test plan` (tools/dev/devloop_plan.c). */
+void zcl_native_handle_code_tests(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
+/* Resolve the focused-test proof group for a changed source `path`, mirroring
+ * tools/dev/devloop_plan.c:171-185 so `code tests` and `dev test plan` never
+ * disagree. When non-NULL, `acc` is filled with the matched shared-rule groups
+ * (caller may enumerate acc->groups[0..groups_len]) and `consensus_risk`
+ * reports whether the path is a consensus / sealed-core surface. Returns a
+ * static string owned by the registry ("consensus_parity" / a shared-rule
+ * group / "make_lint_gates") — pure, no node contact, no allocation. */
+struct agent_impact_acc;
+const char *zcl_native_code_route_for_path(const char *path,
+                                           struct agent_impact_acc *acc,
+                                           bool *consensus_risk);
 void zcl_native_handle_app_inspect(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

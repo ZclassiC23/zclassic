@@ -18,6 +18,8 @@
 #include "kernel/command_registry.h"
 #include "json/json.h"
 #include "codeindex/codeindex.h"
+#include "codeindex/codeindex_build.h"
+#include "controllers/agent_impact_rules.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -36,6 +38,9 @@ enum {
     CODE_FIND_DEFAULT = 5,
     CODE_FIND_MAX     = 12,
     CODE_OTHER_DEF_CAP = 5,
+    CODE_TESTS_CAP     = 12,   /* max test_groups emitted by code.tests/code.file */
+    CODE_MAP_ROOT_CAP  = 16,   /* max root groups rendered by code.map */
+    CODE_MAP_SHAPE_CAP = 16,   /* max app/ shapes rendered by code.map */
 };
 
 /* Bounded copy of at most `max` visible chars of `src` into dst[cap]; appends
@@ -116,6 +121,73 @@ static void code_push_obj(struct json_value *arr, struct json_value *obj)
     json_free(obj);
 }
 
+/* ── the routing link (code.tests + code.file) ───────────────────────────── */
+
+/* MIRROR of tools/dev/devloop_plan.c's consensus-risk detection: the whole
+ * sealed core/ tree (zcl_devloop_path_is_sealed_core) plus the non-core
+ * consensus/validation prefixes (path_is_consensus_risk). Kept in lockstep by
+ * the route-parity invariant in test_codeindex.c — `code tests <path>`'s route
+ * MUST equal `dev test plan`'s proof_group for the same single file, and that
+ * test fails the moment this list drifts from devloop's. */
+static bool code_path_is_consensus_risk(const char *path)
+{
+    if (!path) return false;
+    if (strncmp(path, "core/", 5) == 0) return true;   /* whole sealed core */
+    static const char *const prefixes[] = {
+        "lib/validation/", "lib/chain/", "lib/primitives/", "lib/crypto/",
+        "lib/sapling/", "app/jobs/",
+    };
+    for (size_t i = 0; i < sizeof(prefixes) / sizeof(prefixes[0]); i++)
+        if (strncmp(path, prefixes[i], strlen(prefixes[i])) == 0) return true;
+    return false;
+}
+
+const char *zcl_native_code_route_for_path(const char *path,
+                                           struct agent_impact_acc *acc,
+                                           bool *consensus_risk)
+{
+    struct agent_impact_acc local = {0};
+    struct agent_impact_acc *a = acc ? acc : &local;
+    (void)agent_impact_apply_shared_rules(path, a);
+    bool crisk = code_path_is_consensus_risk(path);
+    if (consensus_risk) *consensus_risk = crisk;
+    /* devloop_plan.c:171-185: a consensus/sealed surface always routes to the
+     * heaviest proof; else the first matched shared-rule group; else the
+     * lint-gate floor. */
+    if (crisk) return "consensus_parity";
+    if (a->groups_len > 0) return a->groups[0];
+    return "make_lint_gates";
+}
+
+/* Emit the routing block for a changed source `path` into reply->data:
+ * test_groups[] (the matched shared-rule groups, capped), the routed group,
+ * whether it is a consensus surface, and whether any rule matched. Shared by
+ * code.tests (top-level) and code.file (appended after the file info). Returns
+ * the routed group and, via `consensus_risk`, whether it is a consensus
+ * surface — so the caller can render a summary without recomputing. */
+static const char *code_emit_route(struct zcl_command_reply *reply,
+                                   const char *path, bool *consensus_risk)
+{
+    struct agent_impact_acc acc = {0};
+    bool crisk = false;
+    const char *route = zcl_native_code_route_for_path(path, &acc, &crisk);
+    if (consensus_risk) *consensus_risk = crisk;
+
+    struct json_value arr;
+    json_init(&arr); json_set_array(&arr);
+    size_t shown = acc.groups_len < (size_t)CODE_TESTS_CAP
+                       ? acc.groups_len : (size_t)CODE_TESTS_CAP;
+    for (size_t i = 0; i < shown; i++)
+        code_push_line(&arr, acc.groups[i]);
+
+    (void)json_push_kv(&reply->data, "test_groups", &arr);
+    (void)json_push_kv_str(&reply->data, "route", route);
+    (void)json_push_kv_bool(&reply->data, "consensus_risk", crisk);
+    (void)json_push_kv_bool(&reply->data, "matched", acc.shared_rule_hits > 0);
+    json_free(&arr);
+    return route;
+}
+
 /* ── code.group ─────────────────────────────────────────────────────────── */
 void zcl_native_handle_code_group(const struct zcl_command_request *request,
                                   struct zcl_command_reply *reply)
@@ -143,15 +215,18 @@ void zcl_native_handle_code_group(const struct zcl_command_request *request,
             if (shown >= CODE_SUBGROUP_CAP) break;
             char purpose[80];
             code_trunc(purpose, sizeof(purpose), groups[i].purpose, 64);
+            int fc = codeindex_count_files_in_group(ci, groups[i].path, true);
+            if (fc < 0) fc = 0;
             struct json_value o;
             json_init(&o); json_set_object(&o);
             (void)json_push_kv_str(&o, "path", groups[i].path);
             (void)json_push_kv_str(&o, "kind", groups[i].kind);
+            (void)json_push_kv_int(&o, "file_count", fc);
             (void)json_push_kv_str(&o, "purpose", purpose);
             code_push_obj(&list, &o);
-            char line[160];
-            (void)snprintf(line, sizeof(line), "%s%s%s", groups[i].path,
-                           purpose[0] ? " — " : "", purpose);
+            char line[176];
+            (void)snprintf(line, sizeof(line), "%s (%d files)%s%s", groups[i].path,
+                           fc, purpose[0] ? " — " : "", purpose);
             code_push_line(&lines, line);
             shown++;
         }
@@ -173,12 +248,17 @@ void zcl_native_handle_code_group(const struct zcl_command_request *request,
     int nsub = 0;
     for (int i = 0; i < ng && nsub < CODE_SUBGROUP_CAP; i++) {
         if (strcmp(groups[i].parent, arg) != 0) continue;
+        int fc = codeindex_count_files_in_group(ci, groups[i].path, true);
+        if (fc < 0) fc = 0;
         struct json_value o;
         json_init(&o); json_set_object(&o);
         (void)json_push_kv_str(&o, "path", groups[i].path);
         (void)json_push_kv_str(&o, "kind", groups[i].kind);
+        (void)json_push_kv_int(&o, "file_count", fc);
         code_push_obj(&list, &o);
-        code_push_line(&lines, groups[i].path);
+        char sline[128];
+        (void)snprintf(sline, sizeof(sline), "%s (%d files)", groups[i].path, fc);
+        code_push_line(&lines, sline);
         nsub++;
     }
 
@@ -300,6 +380,11 @@ void zcl_native_handle_code_file(const struct zcl_command_request *request,
                    "%s: %d symbol(s)%s, %d include(s)%s", path, ns,
                    syms_trunc ? "+" : "", ni, inc_trunc ? "+" : "");
     (void)json_push_kv_str(&reply->data, "summary", summary);
+
+    /* The routing link: which focused test group a change to THIS file routes
+     * to (mirrors `dev test plan` / code.tests). Lets an editor jump from a
+     * file to its proof group in one call. */
+    (void)code_emit_route(reply, path, NULL);
 
     json_free(&sarr); json_free(&iarr);
     codeindex_close(ci);
@@ -505,4 +590,109 @@ void zcl_native_handle_code_find(const struct zcl_command_request *request,
 
     json_free(&arr); json_free(&lines);
     codeindex_close(ci);
+}
+
+/* ── code.map ───────────────────────────────────────────────────────────── */
+void zcl_native_handle_code_map(const struct zcl_command_request *request,
+                                struct zcl_command_reply *reply)
+{
+    struct codeindex *ci = code_open(request, reply);
+    if (!ci) return;
+
+    static struct ci_group groups[512];
+    int ng = codeindex_groups(ci, groups, (int)(sizeof(groups) / sizeof(groups[0])));
+    if (ng < 0) ng = 0;
+
+    struct json_value roots, shapes;
+    json_init(&roots);  json_set_array(&roots);
+    json_init(&shapes); json_set_array(&shapes);
+
+    /* The root groups (parent "" or "root"): each with an AGGREGATE (recursive)
+     * file count so a parent totals all its module/shape children. The roots are
+     * a disjoint partition of the tree, so their counts sum to the total. */
+    int total = 0, nroot = 0;
+    for (int i = 0; i < ng && nroot < CODE_MAP_ROOT_CAP; i++) {
+        const char *p = groups[i].parent;
+        bool top = (p[0] == '\0') || strcmp(p, "root") == 0;
+        if (!top) continue;
+        int fc = codeindex_count_files_in_group(ci, groups[i].path, true);
+        if (fc < 0) fc = 0;
+        total += fc;
+        char purpose[64];
+        code_trunc(purpose, sizeof(purpose), groups[i].purpose, 48);
+        struct json_value o;
+        json_init(&o); json_set_object(&o);
+        (void)json_push_kv_str(&o, "path", groups[i].path);
+        (void)json_push_kv_int(&o, "file_count", fc);
+        (void)json_push_kv_str(&o, "purpose", purpose);
+        code_push_obj(&roots, &o);
+        nroot++;
+    }
+
+    /* The eight app/ shapes: DIRECT file counts (a shape has no sub-children),
+     * from the canonical ci_app_shapes() list, each with its baked purpose taken
+     * from the matching group row (avoids the private taxonomy function). */
+    size_t nsh = 0;
+    const char *const *sh = ci_app_shapes(&nsh);
+    int nshape = 0;
+    for (size_t i = 0; i < nsh && nshape < CODE_MAP_SHAPE_CAP; i++) {
+        char path[64];
+        (void)snprintf(path, sizeof(path), "app/%s", sh[i]);
+        int fc = codeindex_count_files_in_group(ci, path, false);
+        if (fc < 0) fc = 0;
+        const char *purpose = "";
+        for (int g = 0; g < ng; g++)
+            if (strcmp(groups[g].path, path) == 0) {
+                purpose = groups[g].purpose;
+                break;
+            }
+        char ptrunc[64];
+        code_trunc(ptrunc, sizeof(ptrunc), purpose, 48);
+        struct json_value o;
+        json_init(&o); json_set_object(&o);
+        (void)json_push_kv_str(&o, "path", path);
+        (void)json_push_kv_int(&o, "file_count", fc);
+        (void)json_push_kv_str(&o, "purpose", ptrunc);
+        code_push_obj(&shapes, &o);
+        nshape++;
+    }
+
+    (void)json_push_kv_str(&reply->data, "scope", "map");
+    (void)json_push_kv(&reply->data, "roots", &roots);
+    (void)json_push_kv(&reply->data, "shapes", &shapes);
+    (void)json_push_kv_int(&reply->data, "total_files", total);
+    char summary[176];
+    (void)snprintf(summary, sizeof(summary),
+                   "%d source files across %d root groups + %d app shapes; "
+                   "run `code group <path>` to descend", total, nroot, nshape);
+    (void)json_push_kv_str(&reply->data, "summary", summary);
+
+    json_free(&roots); json_free(&shapes);
+    codeindex_close(ci);
+}
+
+/* ── code.tests ─────────────────────────────────────────────────────────── */
+/* The routing link: which focused test group a change to one file routes to.
+ * Pure path→route (no index open needed) — mirrors `dev test plan`'s
+ * proof_group so an agent can decide what to run before touching the tree. */
+void zcl_native_handle_code_tests(const struct zcl_command_request *request,
+                                  struct zcl_command_reply *reply)
+{
+    const char *path = code_str(request, "path");
+    if (!path) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "MISSING_PATH",
+                               "normalize", false, false,
+                               "code tests requires a repo-relative path", "");
+        return;
+    }
+
+    (void)json_push_kv_str(&reply->data, "path", path);
+    bool crisk = false;
+    const char *route = code_emit_route(reply, path, &crisk);
+
+    char summary[224];
+    (void)snprintf(summary, sizeof(summary), "%s routes to `%s`%s", path, route,
+                   crisk ? " (consensus surface — heaviest proof)" : "");
+    (void)json_push_kv_str(&reply->data, "summary", summary);
 }

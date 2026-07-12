@@ -117,6 +117,12 @@ int codeindex_groups(struct codeindex *ci, struct ci_group *out, int cap);
 int codeindex_files_in_group(struct codeindex *ci, const char *group,
                              struct ci_file *out, int cap);
 
+/* Count files in `group`. When `recursive` is false, only files stamped with
+ * EXACTLY this group; when true, also every descendant group (so "lib" or "app"
+ * aggregates its child modules/shapes). Returns the count (>=0), -1 on error. */
+int codeindex_count_files_in_group(struct codeindex *ci, const char *group,
+                                   bool recursive);
+
 /* The symbol table of one file: symbols DEFINED in it (for a .c) or DECLARED in
  * it (for a header), definitions first then source order. Fills up to `cap`
  * rows, returns count (>=0), -1 on error. */

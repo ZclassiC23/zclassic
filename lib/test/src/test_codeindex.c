@@ -10,6 +10,9 @@
  *   5. verify-on-read              — a corrupted symbol row is rejected.
  *   6. group parity                — scanner module list == Makefile
  *                                    LIB_MODULES, and the eight app/ shapes.
+ *   7. file counts + route parity  — recursive vs direct group file counts, and
+ *                                    `code tests` route == `dev test plan`
+ *                                    proof_group for the same single file.
  *
  * All scratch work happens under ./test-tmp/ (project no-/tmp convention). */
 
@@ -17,6 +20,12 @@
 
 #include "codeindex/codeindex.h"
 #include "codeindex/codeindex_build.h"
+
+/* For the routing-link parity invariant (case 7): `code tests <path>`'s route
+ * (tools/command/native_code_command.c) must equal `dev test plan`'s
+ * proof_group (tools/dev/devloop_plan.c) for the same single changed file. */
+#include "command/native_command.h"
+#include "devloop.h"
 
 #include <sqlite3.h>
 
@@ -261,6 +270,59 @@ int test_codeindex(void)
     int cl = codeindex_render_card(ci, "foo_main", card, sizeof(card));
     CI_CHECK("card renders foo_main", cl > 0 && strstr(card, "foo_main") &&
              strstr(card, "func"));
+
+    /* ── 7a: file counts (ci_store_count_files_in_group via the public
+     * wrapper). The fixture's only module is lib/net (foo.c + foo.h). */
+    {
+        struct ci_file fbuf[16];
+        int listed = codeindex_files_in_group(ci, "lib/net", fbuf, 16);
+        int direct = codeindex_count_files_in_group(ci, "lib/net", false);
+        int recur_lib = codeindex_count_files_in_group(ci, "lib", true);
+        int recur_self = codeindex_count_files_in_group(ci, "lib/net", true);
+        int missing = codeindex_count_files_in_group(ci, "lib/nope", true);
+        CI_CHECK("direct count equals the listed file count",
+                 direct >= 2 && direct == listed);
+        CI_CHECK("recursive count on parent 'lib' aggregates lib/net children",
+                 recur_lib == direct);
+        CI_CHECK("recursive count on a leaf group equals its direct count",
+                 recur_self == direct);
+        CI_CHECK("unknown group counts zero (not an error)", missing == 0);
+    }
+
+    /* ── 7b: routing-link parity — `code tests <path>`'s route MUST equal
+     * `dev test plan`'s proof_group for the same single changed file. Pure
+     * path→route on both sides (no index/fixture dependency); the files need
+     * not exist. Every case is a non-docs, non-hotswap single file, so devloop
+     * takes the RELOAD path where proof_group is defined. This tripwire fails
+     * the instant native_code_command.c's consensus/route logic drifts from
+     * devloop_plan.c. */
+    {
+        static const char *const parity_paths[] = {
+            "lib/net/src/download.c",             /* -> "download" */
+            "core/consensus/src/pow.c",           /* -> "consensus_parity" */
+            "core/math/src/arith_uint256.c",      /* sealed core -> consensus_parity */
+            "app/services/src/node_health_service.c", /* -> "node_health_service" */
+            "lib/net/src/msg_blocks.c",           /* -> "msg_handlers" */
+            "lib/bloom/src/zzz_unmapped_xyz.c",   /* no rule -> "make_lint_gates" */
+        };
+        bool all_agree = true;
+        for (size_t i = 0; i < sizeof(parity_paths) / sizeof(parity_paths[0]); i++) {
+            const char *files[1] = { parity_paths[i] };
+            struct zcl_devloop_plan plan;
+            bool ok = zcl_devloop_plan_files(files, 1, &plan);
+            const char *my_route =
+                zcl_native_code_route_for_path(parity_paths[i], NULL, NULL);
+            if (!ok || plan.action != ZCL_DEVLOOP_RELOAD || !my_route ||
+                !plan.proof_group || strcmp(my_route, plan.proof_group) != 0) {
+                printf("    parity MISMATCH for %s: code=%s devloop=%s\n",
+                       parity_paths[i], my_route ? my_route : "(null)",
+                       ok ? plan.proof_group : "(plan failed)");
+                all_agree = false;
+            }
+        }
+        CI_CHECK("code tests route == dev test plan proof_group (all cases)",
+                 all_agree);
+    }
 
     /* ── 1: build determinism ── */
     char *dump1 = dump_symbols(ci);

@@ -21,6 +21,34 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_code_group)
 
 ZCL_COMMAND_READY_READ(
+    "code.map", "code", "",
+    "Map the whole tree: the root groups (aggregate file counts) and app shapes",
+    "code,map,tree,overview,groups,shapes", "zcl.command.empty_input.v1",
+    "zcl.code_map.v1", "", "",
+    "zclassic23 code map",
+    ZCL_COMMAND_LAYER_CODE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_code_map)
+
+ZCL_COMMAND_READY_READ(
+    "code.tests", "code", "",
+    "Show which focused test group a change to one file routes to",
+    "code,tests,route,impact,proof", "zcl.code_path_input.v1",
+    "zcl.code_tests.v1", "path", "path",
+    "zclassic23 code tests lib/net/src/download.c",
+    ZCL_COMMAND_LAYER_CODE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_code_tests)
+
+ZCL_COMMAND_READY_READ(
     "code.file", "code", "",
     "Show one file's symbol table and its in-tree include dependencies",
     "code,file,symbols,includes,deps", "zcl.code_path_input.v1",
