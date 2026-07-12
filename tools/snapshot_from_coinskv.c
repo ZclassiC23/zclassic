@@ -21,10 +21,12 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdbool.h>
 #include <signal.h>
 
 #include "storage/progress_store.h"
 #include "storage/coins_kv.h"
+#include "storage/snapshot_shielded.h"
 
 /* Provided by the node binary's main.c; this standalone tool defines its own
  * so the shared object set links (shutdown is irrelevant for a one-shot run). */
@@ -40,10 +42,18 @@ static int hexnib(char c)
 
 int main(int argc, char **argv)
 {
-    if (argc != 5) {
+    if (argc != 5 && argc != 6) {
         fprintf(stderr,
                 "usage: %s <datadir> <height> <blockhash_display_hex> "
-                "<out_path>\n", argv[0]);
+                "<out_path> [--shielded]\n", argv[0]);
+        return 2;
+    }
+    /* --shielded: also collect the Sapling+Sprout frontier + nullifier set from
+     * the already-folded datadir and emit a self-verified shielded snapshot
+     * (the cure seed). Without it, a coins-only snapshot as before. */
+    bool want_shielded = (argc == 6 && strcmp(argv[5], "--shielded") == 0);
+    if (argc == 6 && !want_shielded) {
+        fprintf(stderr, "unknown 5th arg '%s' (expected --shielded)\n", argv[5]);
         return 2;
     }
     const char *datadir = argv[1];
@@ -85,12 +95,27 @@ int main(int argc, char **argv)
         fprintf(stderr, "coins_kv: count=%lld supply=%lld\n",
                 (long long)count, (long long)supply);
 
+    struct snapshot_shielded shielded;
+    struct snapshot_shielded *shptr = NULL;
+    if (want_shielded) {
+        if (!snapshot_shielded_collect_from_db(pdb, height, &shielded)) {
+            fprintf(stderr,
+                    "snapshot_shielded_collect_from_db FAILED "
+                    "(shielded frontier unavailable at h=%d)\n", height);
+            return 1;
+        }
+        shptr = &shielded;
+        fprintf(stderr, "collected shielded frontier at h=%d\n", height);
+    }
+
     uint8_t got_sha3[32] = {0};
     uint64_t got_count = 0;
     int64_t got_supply = 0;
-    if (!coins_kv_snapshot_write(pdb, out_path, height, anchor_hash,
-                                 /*shielded=*/NULL,
-                                 got_sha3, &got_count, &got_supply)) {
+    bool ok = coins_kv_snapshot_write(pdb, out_path, height, anchor_hash,
+                                      shptr, got_sha3, &got_count, &got_supply);
+    if (shptr)
+        snapshot_shielded_free_collected(shptr);
+    if (!ok) {
         fprintf(stderr, "coins_kv_snapshot_write FAILED\n");
         return 1;
     }

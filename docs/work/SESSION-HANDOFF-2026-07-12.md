@@ -27,8 +27,28 @@ dev (`:18252`) run newer builds near tip and are NOT wedged.
   self-verified shielded snapshot. Collector is unit-tested (component-level cure proof). See
   `docs/work/canonicalization-backlog.md` for the 6 remaining `_ex` renames (rest of the `_vN` are legit ABI/format versions).
 
+## ⚠ BLOCKER FOUND 2026-07-12 (drove the copy-prove to the mint step, hit a real wall)
+Attempted the fast path — export a shielded seed from a **soak** datadir copy. It **failed at the mint**:
+`snapshot_shielded_collect_from_db` got the **Sapling** frontier (pool 0) but **NOT the Sprout** frontier
+(pool 1): `collect: pool=1 frontier not FOUND`. Root cause: **soak/dev were themselves seeded coins-only**,
+so they have the Sapling frontier (rebuilt forward) but lack the historical **Sprout** frontier. The collector
+**correctly refuses to fabricate one** (that refusal IS the cure's safety property). So:
+- The **only node with the COMPLETE frontier is the from-genesis `-mint-anchor` fold** (`~/.zclassic-c23-anchor-mint`,
+  running ~67h, DON'T touch, not finished).
+- Two ways forward: **(A, safe/slow)** let that fold finish → export the seed from IT → copy-prove → deploy;
+  **(B, needs a consensus answer first)** determine whether ZClassic's Sprout pool is genuinely EMPTY at h≈3.17M
+  (`getblockchaininfo valuePools` shows `sprout monitored:false` — INCONCLUSIVE). If Sprout is provably empty,
+  a small `collect_frontier` fix (absent Sprout → empty tree with the canonical empty-Sprout root) unblocks the
+  soak fast path. **Do NOT fabricate an empty Sprout frontier without that proof — an invalid snapshot is worse
+  than the wedge.**
+- Tool ready: `tools/snapshot_from_coinskv.c` now takes `--shielded` (collects the frontier + writes a shielded
+  snapshot); it built + runs, and fails-loud exactly as designed. Copy-prove recipe below is otherwise correct:
+  boot a copy of a datadir, read its height from the boot log (`coins_applied_height`), `getblockhash <h>` for the
+  stamp, run the tool `--shielded`, then load into a wedged-datadir copy. NOTE: `sqlite3` CLI is NOT installed;
+  read heights by booting the copy (clear `<copy>/zclassic23.pid` first — copies inherit the source's lock).
+
 ## THE #1 NEXT JOB — finish the sovereign cure (unwedge the live node)
-The read-side (v3 shielded restore, root-verified) AND the producer are now on main. What remains:
+The read-side (v3 shielded restore, root-verified) AND the producer are now on main. What remains (see BLOCKER above):
 
 1. **Add a lightweight `-export-shielded-snapshot` path.** The producer today only runs inside
    `-mint-anchor`, which does a full fold (hours). Extend `tools/snapshot_from_coinskv.c` (or add a tiny
