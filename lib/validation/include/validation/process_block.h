@@ -151,7 +151,21 @@ const char *sapling_checkpoint_path(void);
  * `tree` is serialized and written keyed by {height, block_hash, root}.
  * Rate-limited: an actual on-disk write happens at most once every
  * SAPLING_CHECKPOINT_BLOCK_INTERVAL calls unless `force` is true (used at
- * catchup completion / shutdown). Returns true iff a write occurred. */
+ * catchup completion / shutdown). Returns true iff a write occurred.
+ *
+ * BOUND TO THE REDUCER FOLD CURSOR: a call whose `height` exceeds the
+ * reducer's own applied frontier (coins_applied_height - 1, derived via
+ * reducer_frontier_derive_coins_best_now) is refused regardless of `force`
+ * — the checkpoint file must never be stamped at a height the reducer has
+ * not itself provably applied. Without this bound, a fast-moving projection
+ * lane (e.g. node_db_catchup_service, which is not gated on proof
+ * validation and can race far ahead of utxo_apply) can overwrite a
+ * previously-good, in-window checkpoint with one the empty-frontier healer
+ * (sapling_anchor_frontier_unavailable.c tier1) and boot.c's own load-verify
+ * path can no longer trust. When the reducer frontier cannot be derived
+ * (legacy/pre-migration datadir, hermetic caller with no progress_store
+ * open) this fails OPEN — unchanged pre-existing behavior. */
+#define SAPLING_CHECKPOINT_BLOCK_INTERVAL 10000
 struct incremental_merkle_tree;
 bool sapling_tree_flat_checkpoint_note(
     const struct incremental_merkle_tree *tree, int64_t height,

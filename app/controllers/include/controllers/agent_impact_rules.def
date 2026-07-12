@@ -142,7 +142,7 @@ AGENT_IMPACT_RULE("lib/test/src/test_simnet_wire_ibd.c", "simnet_wire_ibd simnet
 AGENT_IMPACT_RULE("lib/sim/src/seed_tape.c|lib/sim/include/sim/seed_tape.h|lib/sim/src/postmortem.c|lib/sim/include/sim/postmortem.h", "simnet simnet_wire postmortem_to_scenario make_lint_gates")
 AGENT_IMPACT_RULE("tools/postmortem_to_scenario.c|lib/test/src/test_postmortem_to_scenario.c|docs/CHAOS_HARNESS.md", "postmortem_to_scenario chaos_harness make_lint_gates")
 AGENT_IMPACT_RULE("lib/sapling/*|lib/test/src/test_sapling*.c|lib/test/src/test_simnet_sapling*.c|lib/test/src/test_snark_kat.c|lib/test/src/test_shielded_*.c", "sapling sapling_tree sapling_ckpt_persist simnet_sapling_activation make_lint_gates")
-AGENT_IMPACT_RULE("lib/validation/src/process_block_flush_policy.c|app/services/src/node_db_catchup_service.c", "sapling_ckpt_persist sapling_tree make_lint_gates")
+AGENT_IMPACT_RULE("lib/validation/src/process_block_flush_policy.c|lib/validation/include/validation/process_block.h|app/services/src/node_db_catchup_service.c|app/services/src/sapling_checkpoint_hook.c|app/services/include/services/sapling_checkpoint_hook.h", "sapling_ckpt_persist sapling_tree utxo_apply_stage sapling_anchor_frontier_condition make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_groth16_selfverify.c", "snark_kat make_lint_gates")
 AGENT_IMPACT_RULE("lib/sapling/src/bls12_381.c|lib/test/src/test_bls12_381_adversarial.c", "bls12_381_adversarial snark_kat make_lint_gates")
 /* wf/sapling-proof-verify-batch-parallel: batch Groth16 verify on the

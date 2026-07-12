@@ -20,6 +20,7 @@
 #include "core/serialize.h"
 #include "core/utiltime.h"
 #include "event/event.h"
+#include "jobs/reducer_frontier.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "storage/coins_view_sqlite.h"
 #include "util/log_macros.h"
@@ -90,8 +91,9 @@ void set_sapling_tree_for_flush(struct incremental_merkle_tree *tree)
  * SAPLING_CHECKPOINT_BLOCK_INTERVAL blocks we flush a self-contained
  * checkpoint to `<datadir>/sapling_tree_ckpt.dat`. Boot.c loads this
  * file before the node_state-backed rebuild path fires, so a healthy
- * checkpoint skips the 2.6M-block replay entirely. */
-#define SAPLING_CHECKPOINT_BLOCK_INTERVAL 10000
+ * checkpoint skips the 2.6M-block replay entirely.
+ * SAPLING_CHECKPOINT_BLOCK_INTERVAL is declared in
+ * validation/process_block.h (exported, see below). */
 static char g_sapling_ckpt_path[512] = {0};
 
 void set_sapling_checkpoint_datadir(const char *datadir)
@@ -116,7 +118,11 @@ const char *sapling_checkpoint_path(void)
  * The load/resume side already existed; this is the previously-missing
  * periodic WRITE. `g_blocks_since_flat_ckpt` counts note() calls; every
  * SAPLING_CHECKPOINT_BLOCK_INTERVAL calls (or on `force`) the current tree
- * is serialized to the flat file keyed by {height, block_hash, root}. */
+ * is serialized to the flat file keyed by {height, block_hash, root}.
+ * SAPLING_CHECKPOINT_BLOCK_INTERVAL itself is declared in
+ * validation/process_block.h (exported so callers reasoning about the
+ * checkpoint cadence — e.g. the reducer-cursor hook in
+ * services/sapling_checkpoint_hook.c — never duplicate the magic number). */
 static _Atomic int64_t g_blocks_since_flat_ckpt = 0;
 static _Atomic int64_t g_ckpt_last_write_height = -1;
 static _Atomic int64_t g_ckpt_writes = 0;
@@ -131,6 +137,31 @@ bool sapling_tree_flat_checkpoint_note(
 {
     if (!tree || g_sapling_ckpt_path[0] == '\0')
         return false;
+
+    /* Bind to the reducer fold cursor: never stamp a checkpoint at a
+     * height the reducer has not itself provably applied. coins_applied_
+     * height is co-committed in the SAME transaction as every utxo_apply
+     * cursor move (storage/coins_kv.h), so deriving from it here has no
+     * cross-stage lag and is the exact "reducer fold cursor" every
+     * verify-then-trust consumer of this file needs (the empty-frontier
+     * healer's tier1 in-window check, and boot.c's own coins-applied
+     * comparison endpoint). Checked BEFORE the interval/force logic below
+     * and regardless of `force`, so a fast projection lane racing ahead of
+     * utxo_apply (node_db_catchup_service is not gated on proof
+     * validation) can never clobber a previously-good in-window checkpoint
+     * with one that is no longer trustworthy. Fails OPEN when the frontier
+     * cannot be derived (legacy/pre-migration datadir, or a hermetic
+     * caller with no progress_store open) — unchanged prior behavior. */
+    int32_t coins_best_h = -1;
+    if (reducer_frontier_derive_coins_best_now(&coins_best_h, NULL, NULL) &&
+        height > (int64_t)coins_best_h) {
+        LOG_INFO("sapling_tree",
+                 "flat_checkpoint_note: refusing h=%lld ahead of reducer "
+                 "applied frontier h=%d — checkpoint stays bound to the "
+                 "fold cursor, not the caller's own pace",
+                 (long long)height, coins_best_h);
+        return false;
+    }
 
     int64_t since = atomic_fetch_add(&g_blocks_since_flat_ckpt, 1) + 1;
     if (!force && since < SAPLING_CHECKPOINT_BLOCK_INTERVAL)

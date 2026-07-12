@@ -18,6 +18,13 @@
 
 #include "test/test_helpers.h"
 
+#include "jobs/reducer_frontier.h"
+#include "services/sapling_checkpoint_hook.h"
+#include "storage/anchor_kv.h"
+#include "storage/coins_kv.h"
+#include "storage/progress_store.h"
+#include "validation/process_block.h"
+
 static void ckpt_fill_hash(struct uint256 *h, uint8_t seed, size_t idx)
 {
     for (size_t i = 0; i < 32; i++)
@@ -32,6 +39,32 @@ static void ckpt_build_tree(size_t n, struct incremental_merkle_tree *t_out)
         ckpt_fill_hash(&cm, 0x3C, i);
         incremental_tree_append(t_out, &cm);
     }
+}
+
+/* reducer_frontier_derive_coins_best_now (used internally by
+ * sapling_tree_flat_checkpoint_note's reducer-cursor bound) also reads
+ * validate_headers_log as a hash witness; a genuinely-missing table is
+ * treated as a hard read error (not a benign "no witness"), so a hermetic
+ * progress_store fixture needs the table present (even empty) for the
+ * derivation to succeed. Mirrors test_coins_best_derivation.c's
+ * cbd_build_progress_schema subset. */
+static bool ckpt_ensure_log_schema(sqlite3 *db)
+{
+    static const char *const ddl =
+        "CREATE TABLE IF NOT EXISTS validate_headers_log ("
+        "  height INTEGER PRIMARY KEY, hash BLOB NOT NULL, ok INTEGER NOT NULL,"
+        "  fail_reason TEXT, validated_at INTEGER);"
+        "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
+        "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+        "  tip_hash BLOB);";
+    char *err = NULL;
+    if (sqlite3_exec(db, ddl, NULL, NULL, &err) != SQLITE_OK) {
+        fprintf(stderr, "[sapling_ckpt_persist] log schema: %s\n",
+                err ? err : "?");
+        sqlite3_free(err);
+        return false;
+    }
+    return true;
 }
 
 int test_sapling_ckpt_persist(void)
@@ -243,6 +276,211 @@ done_corrupt:;
         unlink(path);
 done_delta:;
     }
+
+    /* Make coins_kv the PROVEN authority on `db` (the other two rungs of
+     * coins_kv_is_proven_authority, beside coins_applied_height itself):
+     * one live coin row + the migration stamp. Mirrors
+     * test_coins_best_derivation.c's cbd_mark_canonical. Needed so
+     * reducer_frontier_derive_coins_best_now() (which
+     * sapling_tree_flat_checkpoint_note calls internally) reports
+     * found=true instead of failing open. */
+    #define CKPT_BOUND_H ((int32_t)900000)
+
+    /* (f) BOUND: sapling_tree_flat_checkpoint_note refuses a height ahead
+     * of the reducer's own applied frontier — even under force=true — and
+     * leaves any prior checkpoint file untouched. This is THE fix under
+     * test: the flat-file checkpoint writer is bound to the reducer fold
+     * cursor (coins_applied_height), never the caller's own pace. */
+    printf("sapling_ckpt_persist flat_checkpoint_note refuses height ahead "
+           "of reducer applied frontier ... ");
+    {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "sapling_ckpt_bound", "refuse");
+        progress_store_close();
+        bool ok = progress_store_open(dir);
+        sqlite3 *pdb = ok ? progress_store_db() : NULL;
+        ok = ok && pdb != NULL && ckpt_ensure_log_schema(pdb);
+
+        uint8_t txid[32];
+        memset(txid, 0x33, sizeof(txid));
+        ok = ok && coins_kv_ensure_schema(pdb) &&
+             coins_kv_add(pdb, txid, 0, 1000LL, 1, false, NULL, 0);
+        uint8_t one = 1;
+        ok = ok && progress_meta_set(pdb, COINS_KV_MIGRATION_COMPLETE_KEY,
+                                     &one, 1);
+        /* Reducer applied through CKPT_BOUND_H: coins_applied_height ==
+         * CKPT_BOUND_H + 1, so the derived applied frontier == CKPT_BOUND_H. */
+        ok = ok && coins_kv_set_applied_height_in_tx(pdb,
+                                                     CKPT_BOUND_H + 1);
+
+        set_sapling_checkpoint_datadir(dir);
+        char ckpt_path[512];
+        snprintf(ckpt_path, sizeof(ckpt_path), "%s/sapling_tree_ckpt.dat",
+                 dir);
+
+        struct incremental_merkle_tree src;
+        ckpt_build_tree(20, &src);
+        uint8_t bhash[32];
+        for (int i = 0; i < 32; i++) bhash[i] = (uint8_t)(0x90 + i);
+
+        /* Ahead of the reducer's applied frontier: refused, even forced,
+         * even though nothing has been written to this path yet. */
+        bool wrote_ahead = ok && sapling_tree_flat_checkpoint_note(
+            &src, (int64_t)CKPT_BOUND_H + 1000, bhash, /*force=*/true);
+        struct stat st_after_refuse;
+        bool file_absent_after_refuse =
+            stat(ckpt_path, &st_after_refuse) != 0;
+
+        /* At/below the frontier: allowed, and round-trips. */
+        bool wrote_ok = ok && sapling_tree_flat_checkpoint_note(
+            &src, (int64_t)CKPT_BOUND_H, bhash, /*force=*/true);
+        struct incremental_merkle_tree dst;
+        sapling_tree_init(&dst);
+        int64_t got_h = -1;
+        uint8_t got_hash[32] = {0};
+        bool loaded = wrote_ok && sapling_tree_load_checkpoint(
+            &dst, &got_h, got_hash, ckpt_path);
+
+        /* A later attempt beyond the (still CKPT_BOUND_H) frontier must NOT
+         * clobber the good in-window checkpoint just written. */
+        struct incremental_merkle_tree clobber;
+        ckpt_build_tree(21, &clobber);
+        bool wrote_clobber = ok && sapling_tree_flat_checkpoint_note(
+            &clobber, (int64_t)CKPT_BOUND_H + 5000, bhash, /*force=*/true);
+        int64_t got_h2 = -1;
+        uint8_t got_hash2[32] = {0};
+        struct incremental_merkle_tree dst2;
+        sapling_tree_init(&dst2);
+        bool still_loads = sapling_tree_load_checkpoint(
+            &dst2, &got_h2, got_hash2, ckpt_path);
+
+        set_sapling_checkpoint_datadir(NULL);
+        unlink(ckpt_path);
+        progress_store_close();
+
+        if (!ok) {
+            printf("FAIL (fixture setup)\n"); failures++;
+        } else if (wrote_ahead) {
+            printf("FAIL (write ahead of frontier was NOT refused)\n");
+            failures++;
+        } else if (!file_absent_after_refuse) {
+            printf("FAIL (refused write still created a file)\n");
+            failures++;
+        } else if (!wrote_ok || !loaded || got_h != CKPT_BOUND_H) {
+            printf("FAIL (in-window write did not round-trip, got_h=%lld)\n",
+                   (long long)got_h);
+            failures++;
+        } else if (wrote_clobber) {
+            printf("FAIL (out-of-window write clobbered the good checkpoint)\n");
+            failures++;
+        } else if (!still_loads || got_h2 != CKPT_BOUND_H) {
+            printf("FAIL (good checkpoint was NOT preserved, got_h2=%lld)\n",
+                   (long long)got_h2);
+            failures++;
+        } else {
+            printf("OK\n");
+        }
+    }
+
+    /* (g) sapling_checkpoint_hook_in_tx end-to-end: the reducer-cursor hook
+     * checkpoints the anchor_kv frontier at the height the reducer just
+     * applied, and that checkpoint satisfies the empty-frontier healer's
+     * tier1 window precondition (activation <= ckpt_h < stall_height,
+     * where stall_height = H*+1 — the exact inequality
+     * tier1_seed_verified_frontier uses in
+     * conditions/sapling_anchor_frontier_unavailable.c) even after the
+     * reducer advances further past the height the checkpoint was taken
+     * at. */
+    printf("sapling_ckpt_persist sapling_checkpoint_hook_in_tx lands a "
+           "checkpoint that satisfies the healer's tier1 window ... ");
+    {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "sapling_ckpt_hook", "e2e");
+        progress_store_close();
+        bool ok = progress_store_open(dir);
+        sqlite3 *pdb = ok ? progress_store_db() : NULL;
+        ok = ok && pdb != NULL && ckpt_ensure_log_schema(pdb);
+
+        uint8_t txid[32];
+        memset(txid, 0x44, sizeof(txid));
+        ok = ok && coins_kv_ensure_schema(pdb) &&
+             coins_kv_add(pdb, txid, 0, 1000LL, 1, false, NULL, 0);
+        uint8_t one = 1;
+        ok = ok && progress_meta_set(pdb, COINS_KV_MIGRATION_COMPLETE_KEY,
+                                     &one, 1);
+
+        const int64_t activation = 100;
+        const int64_t H = 500000;   /* height the hook fires at */
+        ok = ok && anchor_kv_initialize_history(pdb, activation);
+        struct incremental_merkle_tree frontier;
+        ckpt_build_tree(11, &frontier);
+        ok = ok && anchor_kv_add_tree(pdb, ANCHOR_POOL_SAPLING, &frontier, H);
+        /* Reducer applied exactly through H at the moment the hook fires
+         * (mirrors utxo_apply_stage.c: coins_applied_height == next_h + 1
+         * inside the same transaction as the hook call). */
+        ok = ok && coins_kv_set_applied_height_in_tx(pdb, (int32_t)H + 1);
+
+        set_sapling_checkpoint_datadir(dir);
+        char ckpt_path[512];
+        snprintf(ckpt_path, sizeof(ckpt_path), "%s/sapling_tree_ckpt.dat",
+                 dir);
+
+        uint8_t bhash[32];
+        for (int i = 0; i < 32; i++) bhash[i] = (uint8_t)(0xB0 + i);
+#ifdef ZCL_TESTING
+        sapling_checkpoint_hook_test_force_next();
+#endif
+        if (ok)
+            sapling_checkpoint_hook_in_tx(pdb, H, bhash);
+
+        int64_t got_h = -1;
+        uint8_t got_hash[32] = {0};
+        struct incremental_merkle_tree got;
+        sapling_tree_init(&got);
+        bool loaded = sapling_tree_load_checkpoint(&got, &got_h, got_hash,
+                                                    ckpt_path);
+        struct uint256 got_root, want_root;
+        incremental_tree_root(&got, &got_root);
+        incremental_tree_root(&frontier, &want_root);
+
+        /* The reducer advances further (H*=H+50) before the healer ever
+         * looks — the checkpoint taken at H must STILL satisfy the tier1
+         * window against the NEW, higher H*. */
+        int32_t hstar_now = -1;
+        bool have_hstar = ok && coins_kv_set_applied_height_in_tx(
+            pdb, (int32_t)H + 51) &&
+            reducer_frontier_derive_coins_best_now(&hstar_now, NULL, NULL);
+        int64_t stall_height = (int64_t)hstar_now + 1;
+
+        set_sapling_checkpoint_datadir(NULL);
+        unlink(ckpt_path);
+        progress_store_close();
+
+        if (!ok) {
+            printf("FAIL (fixture setup)\n"); failures++;
+        } else if (!loaded || got_h != H) {
+            printf("FAIL (hook did not land a checkpoint at h=%lld, got=%lld)\n",
+                   (long long)H, (long long)got_h);
+            failures++;
+        } else if (memcmp(got_root.data, want_root.data, 32) != 0) {
+            printf("FAIL (checkpointed root != the anchor_kv frontier root)\n");
+            failures++;
+        } else if (!have_hstar || hstar_now != (int32_t)H + 50) {
+            printf("FAIL (reducer frontier re-derivation, hstar=%d)\n",
+                   hstar_now);
+            failures++;
+        } else if (!(got_h >= activation && got_h < stall_height)) {
+            printf("FAIL (tier1 window precondition NOT satisfied: "
+                   "activation=%lld ckpt_h=%lld stall_height=%lld)\n",
+                   (long long)activation, (long long)got_h,
+                   (long long)stall_height);
+            failures++;
+        } else {
+            printf("OK\n");
+        }
+    }
+
+    #undef CKPT_BOUND_H
 
     return failures;
 }

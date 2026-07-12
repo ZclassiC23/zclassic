@@ -21,6 +21,7 @@
 #include "core/uint256.h"
 #include "services/seal_service.h"
 #include "services/anchor_selfmint.h"
+#include "services/sapling_checkpoint_hook.h"
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "storage/coins_kv.h"
@@ -549,14 +550,12 @@ static job_result_t step_apply(struct stage_step_ctx *c)
         }
     }
     seal_candidate_hook_in_tx(db, g_ms, (int32_t)next_cursor);
-    /* SELF-MINT the SHA3-verified anchor snapshot the first time the fold lands
-     * the compiled checkpoint height — coins_kv provably holds the
-     * applied-through-anchor set inside THIS txn. Observe-only + best-effort:
-     * persists already-validated state (no consensus/fold change), one-shot at
-     * the exact anchor height, idempotent, and HARD-VERIFIES SHA3 before trust.
-     * Makes <datadir>/utxo-anchor.snapshot reachable for the torn-import
-     * self-heal without an operator running the offline -mint-anchor ceremony. */
+    /* SELF-MINT the SHA3-verified anchor snapshot once, at the compiled
+     * checkpoint height (observe-only, best-effort — see
+     * services/anchor_selfmint.h). */
     anchor_selfmint_hook_in_tx(db, g_datadir, (int32_t)next_cursor);
+    /* Bind the checkpoint to THIS cursor, not the catchup lane's pace. */
+    sapling_checkpoint_hook_in_tx(db, (int64_t)next_h, bi->phashBlock ? bi->phashBlock->data : NULL);
 
     atomic_store(&g_ua_last_advance_height, (int64_t)next_h);
     utxo_apply_reject_memo_clear();
