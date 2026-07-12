@@ -176,6 +176,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(net_ban_persistence) \
     X(chain_advance_coordinator) \
     X(chain_advance_atomicity) \
+    X(block_source_policy_status_json) \
     X(lag_slo) X(boot_phase) X(boot_status) X(path_check) X(parse_num) X(boot_progress) X(supervisor) \
     X(supervisor_domains) X(supervisor_production_tree) \
     X(condition_engine) X(utxo_activation_paused) \

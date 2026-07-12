@@ -1109,6 +1109,7 @@ int main(int argc, char **argv)
     failures += test_chain_advance_coordinator();
     { extern int test_chain_advance_atomicity(void);
       failures += test_chain_advance_atomicity(); }
+    failures += test_block_source_policy_status_json();
     failures += test_snapshot_sync_service();
     failures += test_file_controller();
     failures += test_file_ops();
