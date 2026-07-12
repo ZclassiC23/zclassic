@@ -696,3 +696,111 @@ void zcl_native_handle_code_tests(const struct zcl_command_request *request,
                    crisk ? " (consensus surface — heaviest proof)" : "");
     (void)json_push_kv_str(&reply->data, "summary", summary);
 }
+
+/* ── code.room ──────────────────────────────────────────────────────────── */
+/* The unified single-room view (palace-design.md §2): one bounded document that
+ * composes the four legibility namespaces for ONE path, so an LLM learns where a
+ * file lives / what it is / what it breaks in one call, no grep, no file read:
+ *   shape     — the 8 app/ shapes: the second component of an app/<shape> group
+ *   purpose   — self-description: finfo.purpose (populated by the P4.0 lane;
+ *               honestly empty in a tree where that lane has not landed)
+ *   group +   — directory-groups: codeindex_file() for the group,
+ *   neighbors   codeindex_files_in_group() for the siblings
+ *   tests +   — the ~580 test groups via the SAME impact resolver code.tests
+ *   route       uses (zcl_native_code_route_for_path → code_emit_route)
+ *   commands  — command branches: DEGRADED to null with a stated reason. The
+ *               registry stores handler function POINTERS, not symbol names, so
+ *               there is no cheap, correct file→command join without the
+ *               optional #handler stringize (§2.1). Law 7: state honestly, never
+ *               guess. */
+enum { CODE_ROOM_NEIGHBOR_CAP = 12 };
+
+void zcl_native_handle_code_room(const struct zcl_command_request *request,
+                                 struct zcl_command_reply *reply)
+{
+    const char *path = code_str(request, "path");
+    if (!path) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "MISSING_PATH",
+                               "normalize", false, false,
+                               "code room requires a repo-relative path", "");
+        return;
+    }
+    struct codeindex *ci = code_open(request, reply);
+    if (!ci) return;
+
+    struct ci_file finfo;
+    bool ffound = false;
+    (void)codeindex_file(ci, path, &finfo, &ffound);
+    const char *group = ffound ? finfo.group : "";
+
+    /* shape: the second component of an app/<shape> group ("app/jobs" → "jobs").
+     * Non-app groups (lib/<mod>, core, tools, …) have no shape → "". */
+    char shape[64] = "";
+    if (strncmp(group, "app/", 4) == 0) {
+        const char *s = group + 4;
+        size_t j = 0;
+        for (; s[j] && s[j] != '/' && j + 1 < sizeof(shape); j++)
+            shape[j] = s[j];
+        shape[j] = '\0';
+    }
+
+    (void)json_push_kv_str(&reply->data, "path", path);
+    (void)json_push_kv_bool(&reply->data, "found", ffound);
+    (void)json_push_kv_str(&reply->data, "shape", shape);
+    (void)json_push_kv_str(&reply->data, "purpose", ffound ? finfo.purpose : "");
+    (void)json_push_kv_str(&reply->data, "group", group);
+
+    /* neighbors: sibling files stamped with EXACTLY this group, this file
+     * excluded, capped. group_file_count is the accurate group size (from the
+     * count query), so neighbors_truncated is exact even past the render cap. */
+    struct json_value neigh;
+    json_init(&neigh); json_set_array(&neigh);
+    int gcount = 0, shown = 0;
+    if (group[0]) {
+        gcount = codeindex_count_files_in_group(ci, group, false);
+        if (gcount < 0) gcount = 0;
+        static struct ci_file sib[CODE_ROOM_NEIGHBOR_CAP + 8];
+        int nf = codeindex_files_in_group(ci, group, sib,
+                                          (int)(sizeof(sib) / sizeof(sib[0])));
+        if (nf < 0) nf = 0;
+        for (int i = 0; i < nf && shown < CODE_ROOM_NEIGHBOR_CAP; i++) {
+            if (strcmp(sib[i].path, path) == 0) continue;   /* exclude self */
+            code_push_line(&neigh, sib[i].path);
+            shown++;
+        }
+    }
+    int siblings = gcount > 0 ? gcount - 1 : 0;   /* group total minus self */
+    (void)json_push_kv(&reply->data, "neighbors", &neigh);
+    (void)json_push_kv_int(&reply->data, "neighbor_count", shown);
+    (void)json_push_kv_int(&reply->data, "group_file_count", gcount);
+    (void)json_push_kv_bool(&reply->data, "neighbors_truncated",
+                            siblings > shown);
+    json_free(&neigh);
+
+    /* tests[] + route + consensus_risk + matched — the same resolver code.tests
+     * and `dev test plan` use, so a room view and a test plan never disagree. */
+    bool crisk = false;
+    const char *route = code_emit_route(reply, path, &crisk);
+
+    /* commands[]: degraded (see the header comment). null value + stated reason,
+     * not a wrong guess. */
+    struct json_value cmds;
+    json_init(&cmds); json_set_null(&cmds);
+    (void)json_push_kv(&reply->data, "commands", &cmds);
+    json_free(&cmds);
+    (void)json_push_kv_str(&reply->data, "commands_reason",
+                           "unresolved: the command registry stores handler "
+                           "function pointers, not symbol names (the optional "
+                           "#handler stringize is not wired), so a file→command "
+                           "join would guess");
+
+    char summary[256];
+    (void)snprintf(summary, sizeof(summary),
+                   "%s: shape=%s group=%s neighbors=%d tests→`%s`%s", path,
+                   shape[0] ? shape : "-", group[0] ? group : "-", shown, route,
+                   crisk ? " (consensus surface)" : "");
+    (void)json_push_kv_str(&reply->data, "summary", summary);
+
+    codeindex_close(ci);
+}

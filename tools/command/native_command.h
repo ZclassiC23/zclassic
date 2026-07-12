@@ -155,6 +155,13 @@ void zcl_native_handle_code_map(
 void zcl_native_handle_code_tests(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+/* code.room — the unified single-room view: composes shape + purpose + group +
+ * neighbors + tests/route for one path into one bounded document (palace-design
+ * §2). The command→file join is degraded to null (registry stores handler
+ * pointers, not symbol names). */
+void zcl_native_handle_code_room(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 
 /* Resolve the focused-test proof group for a changed source `path`, mirroring
  * tools/dev/devloop_plan.c:171-185 so `code tests` and `dev test plan` never
