@@ -363,10 +363,10 @@ bool ws_events_start(void)
     for (int t = 0; t < EV_NUM_TYPES; t++)
         event_observe((enum event_type)t, ws_event_observer, NULL);
 
-    if (thread_registry_spawn_ex("zcl_ws_pump", pump_thread_fn, NULL,
+    if (thread_registry_spawn("zcl_ws_pump", pump_thread_fn, NULL,
                                   &g_pump_thread) != 0) {
         atomic_store(&g_started, false);
-        LOG_FAIL("ws", "thread_registry_spawn_ex failed for event pump thread");
+        LOG_FAIL("ws", "thread_registry_spawn failed for event pump thread");
     }
     return true;
 }

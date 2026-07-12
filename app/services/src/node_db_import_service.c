@@ -105,11 +105,11 @@ static bool import_job_start_decoders(struct import_job *job)
         LOG_FAIL("sync", "import_start_decoders: invalid args (job=%p)", (void *)job);
 
     for (int i = 0; i < job->num_decoders; i++) {
-        int rc = thread_registry_spawn_ex("zcl_utxo_dec",
+        int rc = thread_registry_spawn("zcl_utxo_dec",
                                            node_db_import_decoder_thread,
                                            job->ctx, &job->decoders[i]);
         if (rc != 0) {
-            LOG_WARN("sync", "UTXO import: thread_registry_spawn_ex decoder[%d] failed: %d", i, rc);
+            LOG_WARN("sync", "UTXO import: thread_registry_spawn decoder[%d] failed: %d", i, rc);
             import_ctx_request_stop(job->ctx);
             import_job_join_decoders(job);
             return false;
@@ -123,7 +123,7 @@ static bool import_job_start_writer(struct import_job *job)
 {
     if (!job || !job->ctx)
         LOG_FAIL("sync", "import_start_writer: invalid args (job=%p)", (void *)job);
-    if (thread_registry_spawn_ex("zcl_utxo_wr",
+    if (thread_registry_spawn("zcl_utxo_wr",
                                   node_db_import_writer_thread, job->ctx,
                                   &job->writer_thread) != 0) {
         fprintf(stderr, "UTXO import: FATAL — writer thread failed to start\n");

@@ -532,13 +532,13 @@ struct zcl_result db_maintenance_start(struct node_db *db,
     g_dbm.stop_requested = false;
     g_dbm.thread_running = true;
 
-    int rc = thread_registry_spawn_ex("zcl_db_maint", dbm_thread_fn, NULL,
+    int rc = thread_registry_spawn("zcl_db_maint", dbm_thread_fn, NULL,
                                        &g_dbm.thread);
     if (rc != 0) {
         g_dbm.thread_running = false;
         pthread_mutex_unlock(&g_dbm.lock);
         return ZCL_ERR(-12,
-            "db_maintenance: thread_registry_spawn_ex failed (%d)", rc);
+            "db_maintenance: thread_registry_spawn failed (%d)", rc);
     }
     pthread_mutex_unlock(&g_dbm.lock);
 

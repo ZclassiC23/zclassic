@@ -45,7 +45,7 @@ static int t_registry_stress_50_threads(void)
         for (int i = 0; i < N; i++) {
             char name[32];
             snprintf(name, sizeof(name), "tr-worker-%d", i);
-            ASSERT_EQ(thread_registry_spawn(name, tr_worker, &ctx), 0);
+            ASSERT_EQ(thread_registry_spawn(name, tr_worker, &ctx, NULL), 0);
         }
 
         /* Wait for all workers to start polling — the registry count
@@ -97,7 +97,7 @@ static int t_registry_reports_straggler(void)
 
     TEST("thread_registry: join_all reports straggler after timeout") {
         ASSERT_EQ(thread_registry_spawn("tr-stuck",
-                                        tr_stuck_worker, NULL),
+                                        tr_stuck_worker, NULL, NULL),
                   0);
         /* 1-second timeout on a 3-second sleep → exactly one straggler. */
         ASSERT_EQ(thread_registry_join_all(1), 1);
@@ -117,7 +117,7 @@ static int t_registry_rejects_null_entry(void)
     thread_registry_reset_for_test();
 
     TEST("thread_registry: spawn(NULL entry) rejects without leaking slot") {
-        int rc = thread_registry_spawn("bad", NULL, NULL);
+        int rc = thread_registry_spawn("bad", NULL, NULL, NULL);
         ASSERT(rc != 0);
         ASSERT_EQ(thread_registry_live_count(), 0);
         PASS();

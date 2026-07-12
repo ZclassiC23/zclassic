@@ -536,9 +536,9 @@ struct zcl_result gap_fill_start(struct main_state *ms, struct download_manager 
     g_gf.dm = dm;
     memset(&g_gf.stats, 0, sizeof(g_gf.stats));
     atomic_store(&g_gf.stop_requested, false);
-    if (thread_registry_spawn_ex("zcl_gap_fill", gap_fill_thread_main, NULL,
+    if (thread_registry_spawn("zcl_gap_fill", gap_fill_thread_main, NULL,
                                   &g_gf.thread) != 0) {
-        return ZCL_ERR(-2, "thread_registry_spawn_ex failed: errno=%d", errno);
+        return ZCL_ERR(-2, "thread_registry_spawn failed: errno=%d", errno);
     }
     g_gf.thread_started = true;
     atomic_store(&g_gf.running, true);

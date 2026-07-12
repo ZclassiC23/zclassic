@@ -717,7 +717,7 @@ bool bg_validation_start(struct bg_validation_service *svc)
     atomic_store(&svc->stop_requested, false);
     if (!bg_validation_register_supervisor(svc))
         return false;
-    if (thread_registry_spawn_ex("zcl_bg_valid", bg_validation_thread, svc,
+    if (thread_registry_spawn("zcl_bg_valid", bg_validation_thread, svc,
                                   &svc->thread) != 0) {
         bg_validation_supervisor_done();
         LOG_FAIL("bg-valid", "failed to create thread");

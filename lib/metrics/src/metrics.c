@@ -421,9 +421,9 @@ bool metrics_start(struct metrics_context *ctx)
     }
 
     atomic_store(&ctx->running, true);
-    if (thread_registry_spawn_ex("zcl_metrics", metrics_thread_fn, ctx,
+    if (thread_registry_spawn("zcl_metrics", metrics_thread_fn, ctx,
                                   &g_metrics_thread) != 0) {
-        perror("metrics_start: thread_registry_spawn_ex");
+        perror("metrics_start: thread_registry_spawn");
         atomic_store(&ctx->running, false);
         atomic_store(&g_metrics_started, false);
         return false;

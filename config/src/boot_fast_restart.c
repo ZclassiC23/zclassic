@@ -291,7 +291,7 @@ void boot_fast_restart_start_bg_quick_check(const char *datadir)
         return;
     }
     if (thread_registry_spawn("bg_quick_check",
-                              boot_bg_quick_check_entry, path) != 0) {
+                              boot_bg_quick_check_entry, path, NULL) != 0) {
         fprintf(stderr,
                 "WARNING: failed to spawn background quick_check thread\n");
         free(path);

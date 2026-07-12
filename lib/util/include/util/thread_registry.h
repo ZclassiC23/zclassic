@@ -13,11 +13,15 @@
  *
  * This header exposes a minimal API:
  *
- *   thread_registry_spawn(name, fn, arg)
+ *   thread_registry_spawn(name, fn, arg, out_tid)
  *     Wraps pthread_create + records the tid with a human-readable
  *     name. pthread_setname_np is set when available so `top -H` and
  *     `gdb info threads` identify the thread by purpose rather than
- *     "zclassic23".
+ *     "zclassic23". Pass NULL for `out_tid` for long-running daemons
+ *     that exit via thread_registry_shutdown_requested polling alone;
+ *     pass a non-NULL pthread_t* for bounded-lifetime services that
+ *     already have their own stop() routine and need to pthread_join
+ *     the spawned thread directly.
  *
  *   thread_registry_shutdown_requested()
  *     True once shutdown has been signaled. Every long-running loop
@@ -52,24 +56,23 @@
 #define ZCL_THREAD_REGISTRY_CAP 256
 
 /* Spawn a thread via pthread_create and record it in the registry.
- * `name` is copied; pass NULL for "unnamed". Returns 0 on success,
- * pthread errno on pthread_create failure, -1 on registry-full. */
-int thread_registry_spawn(const char *name,
-                          void *(*entry)(void *), void *arg);
-
-/* Like thread_registry_spawn, but also writes the spawned thread's
- * pthread_t into *out_tid so the caller can pthread_join it from its
- * own subsystem stop() path. The registry's trampoline still self-
- * unregisters on normal exit, so join_all's sweep will skip an
- * already-exited entry — doing both subsystem-local pthread_join AND
- * relying on join_all is safe in that order.
+ * `name` is copied; pass NULL for "unnamed". When `out_tid` is
+ * non-NULL, writes the spawned thread's pthread_t into *out_tid so the
+ * caller can pthread_join it from its own subsystem stop() path. The
+ * registry's trampoline still self-unregisters on normal exit, so
+ * join_all's sweep will skip an already-exited entry — doing both
+ * subsystem-local pthread_join AND relying on join_all is safe in that
+ * order.
  *
- * Use this for bounded-lifetime services that already have their own
- * stop() routine; use thread_registry_spawn for long-running daemons
- * that exit via thread_registry_shutdown_requested polling alone. */
-int thread_registry_spawn_ex(const char *name,
-                             void *(*entry)(void *), void *arg,
-                             pthread_t *out_tid);
+ * Pass a non-NULL `out_tid` for bounded-lifetime services that already
+ * have their own stop() routine; pass NULL for long-running daemons
+ * that exit via thread_registry_shutdown_requested polling alone.
+ *
+ * Returns 0 on success, pthread errno on pthread_create failure, -1 on
+ * registry-full. */
+int thread_registry_spawn(const char *name,
+                          void *(*entry)(void *), void *arg,
+                          pthread_t *out_tid);
 
 /* True once thread_registry_request_shutdown has been called. Safe
  * to call from any thread. */

@@ -388,7 +388,7 @@ struct zcl_result block_pruning_start(struct block_pruning_service *svc)
 
     atomic_store(&svc->stop_requested, false);
     svc->ready = false;
-    if (thread_registry_spawn_ex("zcl_block_prune", block_pruning_thread, svc,
+    if (thread_registry_spawn("zcl_block_prune", block_pruning_thread, svc,
                                   &svc->thread) != 0)
         return ZCL_ERR(-3, "block_pruning: failed to create thread: %s",
                        strerror(errno));

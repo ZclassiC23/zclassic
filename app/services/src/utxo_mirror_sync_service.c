@@ -618,7 +618,7 @@ struct zcl_result utxo_mirror_sync_start(struct utxo_mirror_sync_service *svc)
 
     atomic_store(&svc->stop_requested, false);
     svc->ready = false;
-    if (thread_registry_spawn_ex("zcl_utxo_mirror", utxo_mirror_sync_thread, svc,
+    if (thread_registry_spawn("zcl_utxo_mirror", utxo_mirror_sync_thread, svc,
                                   &svc->thread) != 0)
         return ZCL_ERR(-3, "utxo_mirror: failed to create thread: %s",
                        strerror(errno));

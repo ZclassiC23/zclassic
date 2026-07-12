@@ -1854,25 +1854,25 @@ bool connman_start(struct connman *cm)
 
     g_stop = false;
 
-    if (thread_registry_spawn_ex("zcl_dns_seed", thread_dns_seed, cm,
+    if (thread_registry_spawn("zcl_dns_seed", thread_dns_seed, cm,
                                   &g_thread_dns_seed) != 0) {
         perror("connman: thread_registry_spawn dns_seed");
         g_stop = true;
-        LOG_FAIL("net", "thread_registry_spawn_ex failed for dns_seed thread");
+        LOG_FAIL("net", "thread_registry_spawn failed for dns_seed thread");
     }
     cm->dns_seed_thread_started = true;
 
-    if (thread_registry_spawn_ex("zcl_connman_sock", thread_socket_handler,
+    if (thread_registry_spawn("zcl_connman_sock", thread_socket_handler,
                                   cm, &g_thread_socket) != 0) {
         perror("connman: thread_registry_spawn socket");
         g_stop = true;
         pthread_join(g_thread_dns_seed, NULL);
         cm->dns_seed_thread_started = false;
-        LOG_FAIL("net", "thread_registry_spawn_ex failed for socket_handler thread");
+        LOG_FAIL("net", "thread_registry_spawn failed for socket_handler thread");
     }
     cm->socket_thread_started = true;
 
-    if (thread_registry_spawn_ex("zcl_connman_open", thread_open_connections,
+    if (thread_registry_spawn("zcl_connman_open", thread_open_connections,
                                   cm, &g_thread_open) != 0) {
         perror("connman: thread_registry_spawn open");
         g_stop = true;
@@ -1880,11 +1880,11 @@ bool connman_start(struct connman *cm)
         pthread_join(g_thread_dns_seed, NULL);
         cm->socket_thread_started = false;
         cm->dns_seed_thread_started = false;
-        LOG_FAIL("net", "thread_registry_spawn_ex failed for open_connections thread");
+        LOG_FAIL("net", "thread_registry_spawn failed for open_connections thread");
     }
     cm->open_thread_started = true;
 
-    if (thread_registry_spawn_ex("zcl_connman_msg", thread_message_handler,
+    if (thread_registry_spawn("zcl_connman_msg", thread_message_handler,
                                   cm, &g_thread_message) != 0) {
         perror("connman: thread_registry_spawn message");
         g_stop = true;
@@ -1894,7 +1894,7 @@ bool connman_start(struct connman *cm)
         cm->open_thread_started = false;
         cm->socket_thread_started = false;
         cm->dns_seed_thread_started = false;
-        LOG_FAIL("net", "thread_registry_spawn_ex failed for message_handler thread");
+        LOG_FAIL("net", "thread_registry_spawn failed for message_handler thread");
     }
     cm->message_thread_started = true;
 

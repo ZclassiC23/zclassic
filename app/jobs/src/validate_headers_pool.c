@@ -55,7 +55,7 @@ bool vh_pool_start(struct vh_pool *pool, vh_pool_job_fn run_job,
     for (int i = 0; i < VH_POOL_SIZE; i++) {
         char name[32];
         snprintf(name, sizeof(name), "vh.worker.%d", i);
-        int rc = thread_registry_spawn_ex(name, vh_pool_worker_entry, pool,
+        int rc = thread_registry_spawn(name, vh_pool_worker_entry, pool,
                                           &pool->threads[i]);
         if (rc != 0) {
             LOG_WARN("validate_headers",

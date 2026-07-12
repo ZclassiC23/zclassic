@@ -162,12 +162,12 @@ bool node_db_sync_catchup_job_start(struct node_db_sync_catchup_job *job,
     job->result = -1;
     atomic_store(&job->finished, false);
     job->started = true;
-    if (thread_registry_spawn_ex("zcl_catchup",
+    if (thread_registry_spawn("zcl_catchup",
                                   node_db_sync_catchup_job_thread, job,
                                   &job->thread) != 0) {
         job->started = false;
         atomic_store(&job->finished, false);
-        LOG_FAIL("sync", "catchup_job_start: thread_registry_spawn_ex failed");
+        LOG_FAIL("sync", "catchup_job_start: thread_registry_spawn failed");
     }
     return true;
 }
@@ -227,10 +227,10 @@ bool node_db_sync_import_job_start(struct node_db_sync_import_job *job,
     job->args.ndb = ndb;
     job->args.cvdb = cvdb;
     job->result = -1;
-    if (thread_registry_spawn_ex("zcl_db_import",
+    if (thread_registry_spawn("zcl_db_import",
                                   node_db_sync_import_job_thread, job,
                                   &job->thread) != 0)
-        LOG_FAIL("sync", "import_job_start: thread_registry_spawn_ex failed");
+        LOG_FAIL("sync", "import_job_start: thread_registry_spawn failed");
     job->started = true;
     return true;
 }

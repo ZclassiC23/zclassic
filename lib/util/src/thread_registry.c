@@ -50,9 +50,9 @@ static void *thread_registry_trampoline(void *raw)
     return ret;
 }
 
-int thread_registry_spawn_ex(const char *name,
-                             void *(*entry)(void *), void *arg,
-                             pthread_t *out_tid)
+int thread_registry_spawn(const char *name,
+                          void *(*entry)(void *), void *arg,
+                          pthread_t *out_tid)
 {
     if (!entry) return EINVAL;
 
@@ -110,12 +110,6 @@ int thread_registry_spawn_ex(const char *name,
 #endif
 
     return 0;
-}
-
-int thread_registry_spawn(const char *name,
-                          void *(*entry)(void *), void *arg)
-{
-    return thread_registry_spawn_ex(name, entry, arg, NULL);
 }
 
 bool thread_registry_shutdown_requested(void)

@@ -309,10 +309,10 @@ struct zcl_result bg_hash_verify_start(struct bg_hash_verification_service *svc)
     if (!sup_r.ok)
         return sup_r;
 
-    if (thread_registry_spawn_ex("zcl_bg_hash", bg_hash_verify_thread, svc,
+    if (thread_registry_spawn("zcl_bg_hash", bg_hash_verify_thread, svc,
                                   &svc->thread) != 0) {
         bg_hash_verify_supervisor_done();
-        return ZCL_ERR(-2, "thread_registry_spawn_ex failed");
+        return ZCL_ERR(-2, "thread_registry_spawn failed");
     }
 
     svc->thread_started = true;

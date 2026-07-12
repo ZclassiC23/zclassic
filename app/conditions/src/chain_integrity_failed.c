@@ -171,7 +171,7 @@ static enum condition_remedy_result queue_chain_restore(struct main_state *ms,
     pthread_mutex_unlock(&g_restore_mu);
 
     int rc = thread_registry_spawn("zcl_chain_fix",
-                                   chain_integrity_restore_worker, NULL);
+                                   chain_integrity_restore_worker, NULL, NULL);
     if (rc != 0) {
         pthread_mutex_lock(&g_restore_mu);
         g_restore_running = false;

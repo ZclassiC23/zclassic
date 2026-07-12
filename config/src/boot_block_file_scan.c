@@ -349,7 +349,7 @@ static int scan_parse_files_parallel(struct boot_scan_file_result *files,
     };
     int started = 0;
     for (int i = 0; i < workers; i++) {
-        if (thread_registry_spawn_ex("zcl_blk_scan", scan_parse_worker,
+        if (thread_registry_spawn("zcl_blk_scan", scan_parse_worker,
                                      &ctx, &threads[started]) == 0)
             started++;
     }

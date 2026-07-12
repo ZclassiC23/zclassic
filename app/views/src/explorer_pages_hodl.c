@@ -723,7 +723,7 @@ static bool hodl_view_refresh_start(const char *datadir,
     task->tip_height = tip;
     snprintf(task->tip_hash, sizeof(task->tip_hash), "%s", tip_hash);
 
-    rc = thread_registry_spawn("zcl_hodl_ref", hodl_view_refresh_thread, task);
+    rc = thread_registry_spawn("zcl_hodl_ref", hodl_view_refresh_thread, task, NULL);
     if (rc != 0) {
         LOG_WARN("explorer",
                  "hodl background refresh thread_registry_spawn failed: %d",

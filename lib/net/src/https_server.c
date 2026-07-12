@@ -656,7 +656,7 @@ bool https_server_start_on_port(const char *cert_path, const char *key_path,
     atomic_store(&g_active_connections, 0);
 
     for (unsigned i = 0; i < (sizeof(g_worker_threads) / sizeof(g_worker_threads[0])); i++) {
-        if (thread_registry_spawn_ex("zcl_https_wkr", https_worker_fn,
+        if (thread_registry_spawn("zcl_https_wkr", https_worker_fn,
                                       NULL, &g_worker_threads[i]) != 0) {
             fprintf(stderr, "HTTPS: worker thread failed\n");  // obs-ok:thread-spawn-fallback-logged
             break;
@@ -680,7 +680,7 @@ bool https_server_start_on_port(const char *cert_path, const char *key_path,
         LOG_FAIL("https", "no worker threads could be started");
     }
 
-    if (thread_registry_spawn_ex("zcl_https_listen", https_listen_fn, NULL,
+    if (thread_registry_spawn("zcl_https_listen", https_listen_fn, NULL,
                                   &g_https_thread) != 0) {
         close(g_https_fd);
         g_https_fd = -1;
@@ -694,12 +694,12 @@ bool https_server_start_on_port(const char *cert_path, const char *key_path,
             SSL_CTX_free(g_ssl_ctx);
             g_ssl_ctx = NULL;
         }
-        LOG_FAIL("https", "thread_registry_spawn_ex failed for HTTPS listen thread");
+        LOG_FAIL("https", "thread_registry_spawn failed for HTTPS listen thread");
     }
     g_https_thread_started = true;
 
     if (g_http_fd >= 0) {
-        if (thread_registry_spawn_ex("zcl_http_listen", http_listen_fn, NULL,
+        if (thread_registry_spawn("zcl_http_listen", http_listen_fn, NULL,
                                       &g_http_thread) != 0) {
             fprintf(stderr, "HTTPS: HTTP redirect thread failed\n");  // obs-ok:thread-spawn-fallback-logged
             close(g_http_fd);

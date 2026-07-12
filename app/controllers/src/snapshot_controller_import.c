@@ -441,7 +441,7 @@ static bool snapshot_import_job_start(struct snapshot_import_job *job)
     if (!job)
         return false;
 
-    if (thread_registry_spawn_ex("zcl_snap_idx",
+    if (thread_registry_spawn("zcl_snap_idx",
                                   import_block_index_thread,
                                   &job->block_index_args,
                                   &job->block_index_thread) != 0) {
@@ -449,7 +449,7 @@ static bool snapshot_import_job_start(struct snapshot_import_job *job)
     }
     job->block_index_started = true;
 
-    if (thread_registry_spawn_ex("zcl_snap_utxo",
+    if (thread_registry_spawn("zcl_snap_utxo",
                                   import_utxos_thread,
                                   &job->utxo_args,
                                   &job->utxo_thread) != 0) {
@@ -459,7 +459,7 @@ static bool snapshot_import_job_start(struct snapshot_import_job *job)
     }
     job->utxo_started = true;
 
-    if (thread_registry_spawn_ex("zcl_snap_wallet",
+    if (thread_registry_spawn("zcl_snap_wallet",
                                   import_wallet_thread,
                                   &job->wallet_args,
                                   &job->wallet_thread) != 0) {

@@ -1128,9 +1128,9 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
         printf("RPC TLS server listening on 0.0.0.0:%u\n", g_tls_port);
 
     for (size_t i = 0; i < RPC_HTTP_WORKERS; i++) {
-        if (thread_registry_spawn_ex("zcl_rpc_worker", rpc_worker_thread_fn,
+        if (thread_registry_spawn("zcl_rpc_worker", rpc_worker_thread_fn,
                                       NULL, &g_worker_threads[i]) != 0) {
-            perror("thread_registry_spawn_ex");
+            perror("thread_registry_spawn");
             g_running = false;
             shutdown(g_listen_fd, SHUT_RDWR);
             close(g_listen_fd);
@@ -1146,9 +1146,9 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
         g_workers_started = i + 1;
     }
 
-    if (thread_registry_spawn_ex("zcl_rpc_listen", listen_thread_fn, NULL,
+    if (thread_registry_spawn("zcl_rpc_listen", listen_thread_fn, NULL,
                                   &g_listen_thread) != 0) {
-        perror("thread_registry_spawn_ex");
+        perror("thread_registry_spawn");
         g_running = false;
         pthread_mutex_lock(&g_client_queue_mutex);
         pthread_cond_broadcast(&g_client_queue_cond);
@@ -1164,7 +1164,7 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
 
     /* Start TLS listener thread if configured */
     if (g_tls_ctx && g_tls_listen_fd >= 0) {
-        if (thread_registry_spawn_ex("zcl_rpc_tls", tls_listen_thread_fn,
+        if (thread_registry_spawn("zcl_rpc_tls", tls_listen_thread_fn,
                                       NULL, &g_tls_listen_thread) == 0) {
             g_tls_listen_thread_started = true;
         } else {
@@ -1178,7 +1178,7 @@ bool rpc_http_start(const struct rpc_table *table, uint16_t port,
 
     /* Start cookie rotation background thread */
     if (g_cookie_mode && g_cookie_rotate_sec > 0) {
-        if (thread_registry_spawn_ex("zcl_rpc_cookie", cookie_rotate_thread_fn,
+        if (thread_registry_spawn("zcl_rpc_cookie", cookie_rotate_thread_fn,
                                       NULL, &g_cookie_rotate_thread) == 0) {
             g_cookie_rotate_started = true;
             printf("RPC cookie rotation: every %d seconds\n",

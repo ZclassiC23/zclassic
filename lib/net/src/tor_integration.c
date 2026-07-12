@@ -266,11 +266,11 @@ static void *tor_thread_fn(void *arg)
     fflush(stdout);
 
     /* Monitor for .onion address in parallel when the helper thread starts. */
-    if (thread_registry_spawn_ex("zcl_tor_monitor", tor_onion_monitor, NULL,
+    if (thread_registry_spawn("zcl_tor_monitor", tor_onion_monitor, NULL,
                                   &g_monitor_thread) == 0) {
         atomic_store(&g_monitor_started, true);
     } else {
-        perror("Tor: thread_registry_spawn_ex onion monitor");
+        perror("Tor: thread_registry_spawn onion monitor");
         atomic_store(&g_monitor_started, false);
     }
 
@@ -354,10 +354,10 @@ bool tor_integration_start(const char *datadir, uint16_t p2p_port)
     atomic_store(&g_tor_thread_done, false);
     atomic_store(&g_monitor_started, false);
 
-    if (thread_registry_spawn_ex("zcl_tor", tor_thread_fn, NULL,
+    if (thread_registry_spawn("zcl_tor", tor_thread_fn, NULL,
                                   &g_tor_thread) != 0) {
         atomic_store(&g_tor_running, false);
-        LOG_FAIL("tor", "thread_registry_spawn_ex failed for tor thread");
+        LOG_FAIL("tor", "thread_registry_spawn failed for tor thread");
     }
     atomic_store(&g_tor_started, true);
     return true;

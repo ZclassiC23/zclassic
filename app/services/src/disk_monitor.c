@@ -315,12 +315,12 @@ struct zcl_result disk_monitor_start(const struct disk_monitor_config *cfg)
 
     g_dm.stop_requested = false;
     g_dm.thread_running = true;
-    int rc = thread_registry_spawn_ex("zcl_disk_monitor", dm_thread_fn, NULL,
+    int rc = thread_registry_spawn("zcl_disk_monitor", dm_thread_fn, NULL,
                                        &g_dm.thread);
     if (rc != 0) {
         g_dm.thread_running = false;
         pthread_mutex_unlock(&g_dm.lock);
-        return ZCL_ERR(-4, "thread_registry_spawn_ex failed (%d)", rc);
+        return ZCL_ERR(-4, "thread_registry_spawn failed (%d)", rc);
     }
     pthread_mutex_unlock(&g_dm.lock);
 

@@ -297,7 +297,7 @@ bool rpc_timeout_start_watchdog(struct rpc_timeout_mgr *mgr)
     mgr->watchdog_running = true;
     pthread_mutex_unlock(&mgr->lock);
 
-    if (thread_registry_spawn_ex("zcl_rpc_timeout", watchdog_fn, mgr,
+    if (thread_registry_spawn("zcl_rpc_timeout", watchdog_fn, mgr,
                                   &mgr->watchdog_thread) != 0) {
         pthread_mutex_lock(&mgr->lock);
         mgr->watchdog_running = false;

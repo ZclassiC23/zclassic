@@ -149,7 +149,7 @@ bool boot_start_thread_service(pthread_t *thread,
         return false;
     /* Generic boot service starter wrapper for composition-owned helper
      * threads. Callers own the pthread_t and join it explicitly. A
-     * thread_registry_spawn_ex equivalent here would require a
+     * thread_registry_spawn equivalent here would require a
      * name-from-caller param; deferred to a focused follow-up.
      * raw-pthread-ok */
     if (pthread_create(thread, NULL, entry, arg) != 0)

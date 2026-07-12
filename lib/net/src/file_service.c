@@ -794,7 +794,7 @@ void fs_server_start(const char *datadir, uint16_t port)
     g_fs_client_queue_len = 0;
 
     for (unsigned i = 0; i < FS_SERVER_WORKERS; i++) {
-        if (thread_registry_spawn_ex("zcl_fs_wkr", fs_client_worker_thread,
+        if (thread_registry_spawn("zcl_fs_wkr", fs_client_worker_thread,
                                       NULL, &g_fs_worker_threads[i]) != 0) {
             fprintf(stderr,  // obs-ok:file-service-startup-failure
                     "file_service: failed to start worker %u\n", i);
@@ -804,7 +804,7 @@ void fs_server_start(const char *datadir, uint16_t port)
     }
     g_fs_worker_threads_started = started_workers;
 
-    if (thread_registry_spawn_ex("zcl_fs_server", fs_server_thread, NULL,
+    if (thread_registry_spawn("zcl_fs_server", fs_server_thread, NULL,
                                   &g_fs_thread) != 0) {
         atomic_store(&g_fs_running, false);
         pthread_cond_broadcast(&g_fs_client_queue_cv);
@@ -817,7 +817,7 @@ void fs_server_start(const char *datadir, uint16_t port)
     }
     g_fs_thread_started = true;
     if (g_fs_datadir) {
-        if (thread_registry_spawn_ex("zcl_fs_manifest", fs_manifest_thread,
+        if (thread_registry_spawn("zcl_fs_manifest", fs_manifest_thread,
                                       NULL, &g_fs_manifest_thread) == 0) {
             g_fs_manifest_thread_started = true;
         } else {

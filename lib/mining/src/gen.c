@@ -184,7 +184,7 @@ void gen_start(struct gen_context *ctx)
     atomic_store(&ctx->running, true);
 
     for (int i = 0; i < g_num_miner_threads; i++) {
-        if (thread_registry_spawn_ex("zcl_miner", miner_thread, ctx,
+        if (thread_registry_spawn("zcl_miner", miner_thread, ctx,
                                       &g_miner_threads[i]) != 0) {
             LOG_WARN("mining", "gen_start: failed to start miner thread %d", i);
             atomic_store(&ctx->running, false);

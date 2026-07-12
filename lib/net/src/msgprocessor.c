@@ -440,7 +440,7 @@ static struct msg_block_intake *msg_block_intake_start(struct msg_processor *mp)
         msg_block_intake_item_init(&in->queue[i]);
 
     mp->block_intake = in;
-    int rc = thread_registry_spawn_ex("zcl_p2p_ingest",
+    int rc = thread_registry_spawn("zcl_p2p_ingest",
                                       msg_block_intake_worker, in,
                                       &in->thread);
     if (rc != 0) {

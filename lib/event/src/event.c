@@ -229,7 +229,7 @@ bool event_async_start(void)
     }
     g_async.wake_initialized = true;
     atomic_store(&g_async.running, true);
-    if (thread_registry_spawn_ex("zcl_event_async", async_dispatch_thread,
+    if (thread_registry_spawn("zcl_event_async", async_dispatch_thread,
                                   NULL, &g_async.thread) != 0) {
         atomic_store(&g_async.running, false);
         pthread_cond_destroy(&g_async.wake_cond);

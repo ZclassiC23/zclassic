@@ -298,7 +298,7 @@ bool db_service_start(struct db_service *svc)
         return false;
     svc->stop_requested = false;
     db_service_reset_queue(svc);
-    if (thread_registry_spawn_ex("zcl_db_worker", db_service_worker_main,
+    if (thread_registry_spawn("zcl_db_worker", db_service_worker_main,
                                   svc, &svc->worker_thread) != 0) {
         db_service_close_query_db(svc);
         return false;
@@ -309,7 +309,7 @@ bool db_service_start(struct db_service *svc)
      * still works in steady state, and the explicit fsync barrier in
      * chain_tip.c keeps tip durability independent). */
     svc->ckpt_stop_requested = false;
-    if (thread_registry_spawn_ex("zcl_db_ckpt", db_service_ckpt_main,
+    if (thread_registry_spawn("zcl_db_ckpt", db_service_ckpt_main,
                                   svc, &svc->ckpt_thread) == 0) {
         svc->ckpt_started = true;
     } else {

@@ -578,14 +578,14 @@ struct zcl_result mempool_limits_start(struct tx_mempool *pool,
      * any concurrent add is already subject to enforcement. */
     tx_mempool_set_post_add_hook(ml_post_add_hook);
 
-    int rc = thread_registry_spawn_ex("zcl_mempool_lim", ml_thread_fn, NULL,
+    int rc = thread_registry_spawn("zcl_mempool_lim", ml_thread_fn, NULL,
                                        &g_ml.thread);
     if (rc != 0) {
         tx_mempool_set_post_add_hook(NULL);
         pthread_mutex_lock(&g_ml.lock);
         g_ml.thread_running = false;
         pthread_mutex_unlock(&g_ml.lock);
-        return ZCL_ERR(-3, "thread_registry_spawn_ex failed (%d)", rc);
+        return ZCL_ERR(-3, "thread_registry_spawn failed (%d)", rc);
     }
 
     struct zcl_result sup_r = ml_register_supervisor();

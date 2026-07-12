@@ -383,12 +383,12 @@ bool supervisor_start(void)
     atomic_store(&g_thread_alive, false);
 
     pthread_t tid;
-    int rc = thread_registry_spawn_ex("zcl_supervisor",
+    int rc = thread_registry_spawn("zcl_supervisor",
                                        supervisor_thread_main, NULL, &tid);
     if (rc != 0) {
         atomic_store(&g_running, false);
         fprintf(stderr,
-            "[supervisor] FAIL thread_registry_spawn_ex rc=%d\n", rc);
+            "[supervisor] FAIL thread_registry_spawn rc=%d\n", rc);
         return false;
     }
     g_thread_id = tid;

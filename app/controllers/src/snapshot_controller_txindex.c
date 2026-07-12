@@ -575,10 +575,10 @@ bool snapshot_tx_index_job_start(struct snapshot_tx_index_job *job,
     }
     job->args.datadir = c23_datadir;
     job->result = -1;
-    if (thread_registry_spawn_ex("zcl_snap_txidx",
+    if (thread_registry_spawn("zcl_snap_txidx",
                                   build_tx_index_thread, job,
                                   &job->thread) != 0) {
-        LOG_FAIL("snapshot", "tx_index_job_start: thread_registry_spawn_ex failed for datadir %s", c23_datadir);
+        LOG_FAIL("snapshot", "tx_index_job_start: thread_registry_spawn failed for datadir %s", c23_datadir);
     }
     job->started = true;
     return true;

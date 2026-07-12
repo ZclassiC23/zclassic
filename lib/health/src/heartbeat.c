@@ -240,7 +240,7 @@ bool health_start(void)
         return true; /* already running */
 
     atomic_store(&g_running, true);
-    int rc = thread_registry_spawn_ex("zcl_health_sweep", sweeper_thread,
+    int rc = thread_registry_spawn("zcl_health_sweep", sweeper_thread,
                                        NULL, &g_sweeper);
     if (rc != 0) {
         fprintf(stderr, "[health] sweeper spawn failed: rc=%d\n", rc);

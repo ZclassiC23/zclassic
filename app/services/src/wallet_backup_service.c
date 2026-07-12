@@ -691,12 +691,12 @@ struct zcl_result wallet_backup_start(const struct wallet_backup_config *cfg,
     g_wbs.stop_requested = false;
     g_wbs.thread_running = true;
 
-    int rc = thread_registry_spawn_ex("zcl_wallet_bk", wbs_thread_fn, NULL,
+    int rc = thread_registry_spawn("zcl_wallet_bk", wbs_thread_fn, NULL,
                                        &g_wbs.thread);
     if (rc != 0) {
         g_wbs.thread_running = false;
         struct zcl_result r = ZCL_ERR(-23,
-                "start: thread_registry_spawn_ex failed (%d)", rc);
+                "start: thread_registry_spawn failed (%d)", rc);
         pthread_mutex_unlock(&g_wbs.lock);
         return r;
     }
