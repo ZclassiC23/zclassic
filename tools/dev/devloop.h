@@ -56,6 +56,17 @@ bool zcl_devloop_plan_files(const char *const *files, size_t file_count,
 size_t zcl_devloop_plan_json(const char *const *files, size_t file_count,
                              char *out, size_t out_sz);
 
+/* True iff the persistent watcher should react to a change at `path`
+ * (repo-relative): a .c/.h/.def/.md/.mk/.service source or the Makefile,
+ * excluding editor temp files, build/, .git/, and — critically — the
+ * transient `_*fixture*` lint/shape-gate fixtures that
+ * test_make_lint_gates.c writes under app/, lib/, and domain/ then deletes.
+ * Reacting to those fixtures fires a phantom reload cycle on every
+ * test-suite run (they no longer exist by the time the cycle rebuilds), so
+ * the watcher must ignore them. Pure: no I/O. Shared by the watcher and its
+ * unit test. */
+bool zcl_devloop_path_is_relevant(const char *path);
+
 /* True iff `path` is under the sealed consensus core (the `core/` prefix —
  * the exact surface `core/MANIFEST.sha3` seals). Broader than the
  * consensus-risk prefix list: it covers ALL of core/ (incl. core/math). */

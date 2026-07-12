@@ -73,23 +73,11 @@ static bool ignored_dir(const char *name)
 
 static bool relevant_file(const char *path)
 {
-    if (!path || !path[0])
-        return false;
-    size_t len = strlen(path);
-    if (path[len - 1] == '~' || strstr(path, ".swp") ||
-        strstr(path, ".tmp") || strstr(path, "/build/") ||
-        strncmp(path, "build/", 6) == 0 ||
-        strncmp(path, ".git/", 5) == 0)
-        return false;
-    const char *base = strrchr(path, '/');
-    base = base ? base + 1 : path;
-    if (strcmp(base, "Makefile") == 0)
-        return true;
-    const char *dot = strrchr(base, '.');
-    return dot &&
-        (strcmp(dot, ".c") == 0 || strcmp(dot, ".h") == 0 ||
-         strcmp(dot, ".def") == 0 || strcmp(dot, ".md") == 0 ||
-         strcmp(dot, ".mk") == 0 || strcmp(dot, ".service") == 0);
+    /* Shared with the dev-platform unit test — see
+     * zcl_devloop_path_is_relevant() in devloop_plan.c. Keeps the watcher's
+     * change filter (including the transient lint-fixture exclusion) in one
+     * testable, pure place. */
+    return zcl_devloop_path_is_relevant(path);
 }
 
 static struct watched_dir *find_watch(struct watch_context *ctx, int wd)

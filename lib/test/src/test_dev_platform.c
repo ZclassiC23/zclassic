@@ -516,11 +516,53 @@ static int test_native_activation_result_mapping(void)
     return failures;
 }
 
+static int test_watch_relevance(void)
+{
+    int failures = 0;
+    TEST("dev platform: watcher ignores transient lint fixtures, keeps real edits") {
+        /* The bug this guards: the persistent watcher fired a phantom reload
+         * cycle every test-suite run because test_make_lint_gates.c writes
+         * `_*fixture*` .c files under app/, lib/, domain/ then deletes them. */
+        static const char *const fixtures[] = {
+            "app/_lint_gate_fixture_tmp.c",
+            "app/controllers/src/_coins_lookup_guard_fixture_tmp.c",
+            "app/jobs/src/_e5_stage_fixture_tmp_stage.c",
+            "lib/storage/src/_e4_pure_fixture_projection.c",
+            "domain/wallet/src/_domain_purity_fixture_tmp.c",
+        };
+        for (size_t i = 0; i < sizeof(fixtures) / sizeof(fixtures[0]); i++)
+            ASSERT(!zcl_devloop_path_is_relevant(fixtures[i]));
+
+        /* Real edits — including the genuine fixture SOURCES under
+         * lib/test/fixtures/ (no leading underscore) — must still fire. */
+        static const char *const real[] = {
+            "app/jobs/src/stage_repair_reducer_frontier_coin.c",
+            "tools/dev/devloop_watch.c",
+            "lib/test/fixtures/raw_sqlite_step_fixture.c",
+            "docs/HANDOFF.md",
+            "Makefile",
+            "app/controllers/include/controllers/agent_impact_rules.def",
+        };
+        for (size_t i = 0; i < sizeof(real) / sizeof(real[0]); i++)
+            ASSERT(zcl_devloop_path_is_relevant(real[i]));
+
+        /* Editor temp / build / vcs noise stays filtered. */
+        ASSERT(!zcl_devloop_path_is_relevant("app/services/src/foo.c~"));
+        ASSERT(!zcl_devloop_path_is_relevant("build/bin/zclassic23"));
+        ASSERT(!zcl_devloop_path_is_relevant(".git/index"));
+        ASSERT(!zcl_devloop_path_is_relevant(""));
+        ASSERT(!zcl_devloop_path_is_relevant(NULL));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_dev_platform(void)
 {
     int failures = 0;
     failures += test_menu_and_search();
     failures += test_change_classification();
+    failures += test_watch_relevance();
     failures += test_core_classification();
     failures += test_core_refusal_envelope();
     failures += test_core_refusal_cycle();

@@ -70,6 +70,36 @@ bool zcl_devloop_path_is_sealed_core(const char *path)
     return path && strncmp(path, "core/", 5) == 0;
 }
 
+bool zcl_devloop_path_is_relevant(const char *path)
+{
+    if (!path || !path[0])
+        return false;
+    size_t len = strlen(path);
+    if (path[len - 1] == '~' || strstr(path, ".swp") ||
+        strstr(path, ".tmp") || strstr(path, "/build/") ||
+        strncmp(path, "build/", 6) == 0 ||
+        strncmp(path, ".git/", 5) == 0)
+        return false;
+    const char *base = strrchr(path, '/');
+    base = base ? base + 1 : path;
+    /* Transient lint/shape-gate fixtures: test_make_lint_gates.c writes
+     * `_*fixture*` .c files under app/, lib/, and domain/ to exercise the
+     * path gates, then deletes them. A leading-underscore basename that
+     * mentions "fixture" is never a real edit; reacting to it fires a phantom
+     * reload cycle on every test-suite run (the file is already gone by the
+     * time the cycle rebuilds). No tracked source matches this shape — the
+     * real fixture sources under lib/test/fixtures/ have no leading '_'. */
+    if (base[0] == '_' && strstr(base, "fixture"))
+        return false;
+    if (strcmp(base, "Makefile") == 0)
+        return true;
+    const char *dot = strrchr(base, '.');
+    return dot &&
+        (strcmp(dot, ".c") == 0 || strcmp(dot, ".h") == 0 ||
+         strcmp(dot, ".def") == 0 || strcmp(dot, ".md") == 0 ||
+         strcmp(dot, ".mk") == 0 || strcmp(dot, ".service") == 0);
+}
+
 static bool path_is_consensus_risk(const char *path)
 {
     static const char *const prefixes[] = {
