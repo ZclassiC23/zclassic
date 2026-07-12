@@ -149,169 +149,44 @@ static bool finish(struct ar_errors *errs, char *err_out, size_t err_cap)
 /* ── Wrappers: one per SQL table ─────────────────────────────── *
  *
  * Each wrapper casts `row` to the model's struct, runs its existing
- * _validate() function, then joins any errors into err_out.
+ * _validate() function, then joins any errors into err_out. The vast
+ * majority differ only in (name, validate-fn, cast-type), so generate
+ * them from one template instead of hand-copying the 4-line body.
  */
 
-static bool val_block(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_block_validate((const struct db_block *)row, &e);
-    return finish(&e, err, cap);
-}
+#define DEFINE_VAL_WRAPPER(fn_name, validate_fn, cast_type)            \
+    static bool fn_name(const void *row, char *err, size_t cap)        \
+    {                                                                  \
+        struct ar_errors e; ar_errors_clear(&e);                      \
+        validate_fn((const cast_type *)row, &e);                      \
+        return finish(&e, err, cap);                                  \
+    }
 
-static bool val_contact(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_contact_validate((const struct db_contact *)row, &e);
-    return finish(&e, err, cap);
-}
+DEFINE_VAL_WRAPPER(val_block,              db_block_validate,              struct db_block)
+DEFINE_VAL_WRAPPER(val_contact,            db_contact_validate,            struct db_contact)
+DEFINE_VAL_WRAPPER(val_file_service,       db_file_service_validate,       struct db_file_service)
+DEFINE_VAL_WRAPPER(val_file_offer,         db_file_offer_validate,         struct file_offer)
+DEFINE_VAL_WRAPPER(val_mempool,            db_mempool_validate,            struct db_mempool_entry)
+DEFINE_VAL_WRAPPER(val_onion_announcement, db_onion_announcement_validate, struct db_onion_announcement)
+DEFINE_VAL_WRAPPER(val_peer,               db_peer_validate,               struct db_peer)
+DEFINE_VAL_WRAPPER(val_store_product,      db_store_product_validate,      struct db_store_product)
+DEFINE_VAL_WRAPPER(val_swap_contract,      db_swap_contract_validate,      struct swap_contract)
+DEFINE_VAL_WRAPPER(val_store_order,        db_store_order_validate,        struct db_store_order)
+DEFINE_VAL_WRAPPER(val_tx_index,           db_tx_validate,                 struct db_tx_index)
+DEFINE_VAL_WRAPPER(val_utxo,               db_utxo_validate,               struct db_utxo)
+DEFINE_VAL_WRAPPER(val_wallet_key,         db_wallet_key_validate,         struct db_wallet_key)
+DEFINE_VAL_WRAPPER(val_sapling_key,        db_sapling_key_validate,        struct db_sapling_key)
+DEFINE_VAL_WRAPPER(val_wallet_script,      db_wallet_script_validate,      struct db_wallet_script)
+DEFINE_VAL_WRAPPER(val_wallet_tx,          db_wallet_tx_validate,          struct db_wallet_tx)
+DEFINE_VAL_WRAPPER(val_wallet_utxo,        db_wallet_utxo_validate,        struct db_wallet_utxo)
+DEFINE_VAL_WRAPPER(val_sapling_note,       db_sapling_note_validate,       struct db_sapling_note)
+DEFINE_VAL_WRAPPER(val_zmsg,               db_zmsg_validate,               struct zmsg_message)
+DEFINE_VAL_WRAPPER(val_znam_entry,         db_znam_entry_validate,         struct znam_entry)
+DEFINE_VAL_WRAPPER(val_znam_text,          db_znam_text_validate,          struct znam_text_record)
+DEFINE_VAL_WRAPPER(val_znam_addr,          db_znam_addr_validate,          struct znam_addr_record)
+DEFINE_VAL_WRAPPER(val_zslp_balance,       db_zslp_balance_validate,       struct db_zslp_balance)
 
-static bool val_file_service(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_file_service_validate((const struct db_file_service *)row, &e);
-    return finish(&e, err, cap);
-}
-
-static bool val_file_offer(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_file_offer_validate((const struct file_offer *)row, &e);
-    return finish(&e, err, cap);
-}
-
-static bool val_mempool(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_mempool_validate((const struct db_mempool_entry *)row, &e);
-    return finish(&e, err, cap);
-}
-
-static bool val_onion_announcement(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_onion_announcement_validate((const struct db_onion_announcement *)row, &e);
-    return finish(&e, err, cap);
-}
-
-static bool val_peer(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_peer_validate((const struct db_peer *)row, &e);
-    return finish(&e, err, cap);
-}
-
-static bool val_store_product(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_store_product_validate((const struct db_store_product *)row, &e);
-    return finish(&e, err, cap);
-}
-
-static bool val_swap_contract(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_swap_contract_validate((const struct swap_contract *)row, &e);
-    return finish(&e, err, cap);
-}
-
-static bool val_store_order(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_store_order_validate((const struct db_store_order *)row, &e);
-    return finish(&e, err, cap);
-}
-
-static bool val_tx_index(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_tx_validate((const struct db_tx_index *)row, &e);
-    return finish(&e, err, cap);
-}
-
-static bool val_utxo(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_utxo_validate((const struct db_utxo *)row, &e);
-    return finish(&e, err, cap);
-}
-
-static bool val_wallet_key(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_wallet_key_validate((const struct db_wallet_key *)row, &e);
-    return finish(&e, err, cap);
-}
-
-static bool val_sapling_key(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_sapling_key_validate((const struct db_sapling_key *)row, &e);
-    return finish(&e, err, cap);
-}
-
-static bool val_wallet_script(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_wallet_script_validate((const struct db_wallet_script *)row, &e);
-    return finish(&e, err, cap);
-}
-
-static bool val_wallet_tx(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_wallet_tx_validate((const struct db_wallet_tx *)row, &e);
-    return finish(&e, err, cap);
-}
-
-static bool val_wallet_utxo(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_wallet_utxo_validate((const struct db_wallet_utxo *)row, &e);
-    return finish(&e, err, cap);
-}
-
-static bool val_sapling_note(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_sapling_note_validate((const struct db_sapling_note *)row, &e);
-    return finish(&e, err, cap);
-}
-
-static bool val_zmsg(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_zmsg_validate((const struct zmsg_message *)row, &e);
-    return finish(&e, err, cap);
-}
-
-static bool val_znam_entry(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_znam_entry_validate((const struct znam_entry *)row, &e);
-    return finish(&e, err, cap);
-}
-
-static bool val_znam_text(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_znam_text_validate((const struct znam_text_record *)row, &e);
-    return finish(&e, err, cap);
-}
-
-static bool val_znam_addr(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_znam_addr_validate((const struct znam_addr_record *)row, &e);
-    return finish(&e, err, cap);
-}
-
-static bool val_zslp_balance(const void *row, char *err, size_t cap)
-{
-    struct ar_errors e; ar_errors_clear(&e);
-    db_zslp_balance_validate((const struct db_zslp_balance *)row, &e);
-    return finish(&e, err, cap);
-}
+#undef DEFINE_VAL_WRAPPER
 
 /* zslp_token uses a private record struct.  We register the string-keyed
  * validator through its exported `db_zslp_token_validate_key` wrapper,
