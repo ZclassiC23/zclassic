@@ -1215,6 +1215,8 @@ int main(int argc, char **argv)
     failures += test_wallet_keystore();
     failures += test_wallet_sqlite_enc();
     { extern int test_zcl_result(void); failures += test_zcl_result(); }
+    { extern int test_netaddr_classify(void);
+      failures += test_netaddr_classify(); }
     { extern int test_wallet_sqlite_open_errors(void);
       failures += test_wallet_sqlite_open_errors(); }
     { extern int test_watch_only(void); failures += test_watch_only(); }
