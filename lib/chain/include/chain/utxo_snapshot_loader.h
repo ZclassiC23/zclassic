@@ -81,8 +81,9 @@ typedef bool (*uss_record_cb)(const struct uss_record *r, void *ctx);
  * Returns count emitted, or -1 on truncation. */
 int64_t uss_iter(struct uss_handle *h, uss_record_cb cb, void *ctx);
 
-/* Snapshot format version (1 = UTXO-only, 2 = UTXO + Sapling frontier). 0 on
- * NULL handle. */
+/* Snapshot format version (1 = UTXO-only, 2 = UTXO + Sapling frontier,
+ * 3 = UTXO + shielded section [Sapling + Sprout frontiers + nullifier set]).
+ * 0 on NULL handle. */
 uint32_t uss_version(const struct uss_handle *h);
 
 /* Expose the trailing Sapling commitment-tree frontier section, present only in
@@ -94,5 +95,17 @@ uint32_t uss_version(const struct uss_handle *h);
  * verified at uss_open time. */
 bool uss_frontier(struct uss_handle *h, const uint8_t **blob_out,
                   uint32_t *len_out);
+
+/* Expose the v3 SHIELDED section (present only in version-3 snapshots): the
+ * Sapling frontier, the Sprout frontier, and the packed nullifier records (each
+ * SNAPSHOT_NF_RECORD_BYTES, decode with snapshot_shielded_unpack_nf). All
+ * pointers point INTO the mmap'd file (valid until uss_close) and are already
+ * covered by the body SHA3 verified at uss_open time. Any out-pointer may be
+ * NULL. An empty region yields (NULL,0). Returns false for a v1/v2 file, a NULL
+ * handle, or any truncation (with all outputs zeroed). */
+bool uss_shielded(struct uss_handle *h,
+                  const uint8_t **sapling_out, uint32_t *sapling_len_out,
+                  const uint8_t **sprout_out,  uint32_t *sprout_len_out,
+                  const uint8_t **nf_out,      uint64_t *nf_count_out);
 
 #endif /* ZCL_CHAIN_UTXO_SNAPSHOT_LOADER_H */

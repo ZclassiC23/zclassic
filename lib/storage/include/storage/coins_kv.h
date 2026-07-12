@@ -399,4 +399,21 @@ bool coins_kv_snapshot_write_v2(struct sqlite3 *db, const char *out_path,
                                 uint8_t out_sha3[32], uint64_t *out_count,
                                 int64_t *out_total_supply);
 
+/* v3 writer: same coins body as v1/v2, then appends a SHIELDED section carrying
+ * the Sapling frontier, the Sprout frontier, AND the complete nullifier set
+ * (see storage/snapshot_shielded.h for the byte layout), still inside the body
+ * SHA3, and stamps header version = 3. This lets a fresh node install the
+ * shielded state (anchor_kv frontier rows + the nullifier set) that gates the
+ * first post-seed shielded transaction WITHOUT borrowing a zclassicd
+ * chainstate. Only the Sapling frontier is header-verifiable (against
+ * hashFinalSaplingRoot at the seed height); the Sprout frontier and nullifier
+ * set inherit the snapshot's overall body-SHA3 trust. */
+struct snapshot_shielded;
+bool coins_kv_snapshot_write_v3(struct sqlite3 *db, const char *out_path,
+                                int32_t height,
+                                const uint8_t anchor_block_hash[32],
+                                const struct snapshot_shielded *shielded,
+                                uint8_t out_sha3[32], uint64_t *out_count,
+                                int64_t *out_total_supply);
+
 #endif /* STORAGE_COINS_KV_H */

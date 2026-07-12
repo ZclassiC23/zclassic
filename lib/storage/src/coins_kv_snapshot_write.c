@@ -20,6 +20,7 @@
 #include "coins/utxo_commitment.h"
 #include "crypto/sha3.h"
 #include "storage/coins_ram.h"
+#include "storage/snapshot_shielded.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -45,6 +46,131 @@ static void le64(uint8_t b[8], uint64_t v)
 /* Inline-buffer cap for the per-record serialise (real ZCL scripts fit; an
  * oversized script falls back to a heap buffer). */
 enum { SNAP_SCRIPT_INLINE_CAP = 1024 };
+
+/* Stream every coins row in canonical (txid,vout) order to BOTH `out` and the
+ * SHA3 sponge `ctx`, using the SAME per-record encoder as coins_kv_commitment,
+ * so file body == SHA3 input == coins_kv_commitment input.  On success sets
+ * *count / *total_supply.  Shared by the v2 (Sapling-only) and v3 (Sapling +
+ * Sprout + nullifier) writers so the proven per-record encoding lives once. */
+static bool stream_coins_body(FILE *out, sqlite3 *db, struct sha3_256_ctx *ctx,
+                              uint64_t *count_out, int64_t *supply_out)
+{
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT txid, vout, value, script, height, is_coinbase "
+            "FROM coins ORDER BY txid, vout", -1, &s, NULL) != SQLITE_OK) {
+        LOG_WARN("coins_kv", "snapshot_write: prepare failed: %s",
+                 sqlite3_errmsg(db));
+        return false;
+    }
+
+    uint64_t count = 0;
+    int64_t  total_supply = 0;
+    bool ok = true;
+    int rc;
+    while (ok && (rc = sqlite3_step(s)) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
+        const uint8_t *txid = (const uint8_t *)sqlite3_column_blob(s, 0);
+        int txid_len = sqlite3_column_bytes(s, 0);
+        if (!txid || txid_len < 32) continue;
+
+        uint32_t vout   = (uint32_t)sqlite3_column_int(s, 1);
+        int64_t  value  = sqlite3_column_int64(s, 2);
+        const uint8_t *script = (const uint8_t *)sqlite3_column_blob(s, 3);
+        int script_len = sqlite3_column_bytes(s, 3);
+        int32_t  height_c = sqlite3_column_int(s, 4);
+        int cb_int = sqlite3_column_int(s, 5);
+
+        const uint8_t *eff_script = (script_len > 0) ? script : NULL;
+        uint32_t eff_slen = (uint32_t)(script_len > 0 ? script_len : 0);
+
+        uint8_t inline_buf[UTXO_SHA3_RECORD_MAX(SNAP_SCRIPT_INLINE_CAP)];
+        uint8_t *rec = inline_buf;
+        uint8_t *heap = NULL;
+        size_t cap = sizeof(inline_buf);
+        if (eff_slen > SNAP_SCRIPT_INLINE_CAP) {
+            cap = UTXO_SHA3_RECORD_MAX(eff_slen);
+            heap = zcl_malloc(cap, "coins_kv_snapshot_record");
+            if (!heap) {
+                LOG_WARN("coins_kv", "snapshot_write: oom for script_len=%u",
+                         eff_slen);
+                ok = false;
+                break;
+            }
+            rec = heap;
+        }
+        size_t rec_len = 0;
+        if (!utxo_sha3_serialize_record(rec, cap, &rec_len, txid, vout, value,
+                                        eff_script, eff_slen,
+                                        (uint32_t)height_c,
+                                        (uint8_t)(cb_int ? 1 : 0))) {
+            LOG_WARN("coins_kv", "snapshot_write: serialise failed");
+            if (heap) free(heap);
+            ok = false;
+            break;
+        }
+        if (fwrite(rec, 1, rec_len, out) != rec_len) {
+            LOG_WARN("coins_kv", "snapshot_write: record fwrite failed");
+            if (heap) free(heap);
+            ok = false;
+            break;
+        }
+        sha3_256_write(ctx, rec, rec_len);
+        if (heap) free(heap);
+
+        total_supply += value;
+        count++;
+    }
+    if (ok && rc != SQLITE_DONE && rc != SQLITE_ROW)
+        ok = false;
+    sqlite3_finalize(s);
+
+    if (ok) {
+        if (count_out)  *count_out = count;
+        if (supply_out) *supply_out = total_supply;
+    }
+    return ok;
+}
+
+/* Finalize header + atomic rename for a coins snapshot temp file.  `version` is
+ * 1/2/3; `body_sha3` is the completed sponge over records+section. */
+static bool snapshot_finalize(FILE *out, const char *tmp_path,
+                              const char *out_path, uint32_t version,
+                              int32_t height,
+                              const uint8_t anchor_block_hash[32],
+                              uint64_t count, int64_t total_supply,
+                              const uint8_t body_sha3[32])
+{
+    uint8_t header[USS_HEADER_BYTES] = {0};
+    memcpy(header, "ZCLUTXO\x00", 8);
+    le32(header + 8, version);
+    le32(header + 16, (uint32_t)height);
+    le64(header + 24, count);
+    le64(header + 32, (uint64_t)total_supply);
+    if (anchor_block_hash) memcpy(header + 40, anchor_block_hash, 32);
+    memcpy(header + 72, body_sha3, 32);
+
+    if (fseek(out, 0, SEEK_SET) != 0 ||
+        fwrite(header, 1, sizeof(header), out) != sizeof(header)) {
+        LOG_WARN("coins_kv", "snapshot_write: header rewrite failed");
+        fclose(out);
+        unlink(tmp_path);
+        return false;
+    }
+    if (fflush(out) != 0) {
+        LOG_WARN("coins_kv", "snapshot_write: fflush failed");
+        fclose(out);
+        unlink(tmp_path);
+        return false;
+    }
+    fclose(out);
+    if (rename(tmp_path, out_path) != 0) {
+        LOG_WARN("coins_kv", "snapshot_write: rename(%s -> %s) failed",
+                 tmp_path, out_path);
+        unlink(tmp_path);
+        return false;
+    }
+    return true;
+}
 
 bool coins_kv_snapshot_write(sqlite3 *db, const char *out_path,
                              int32_t height, const uint8_t anchor_block_hash[32],
@@ -104,84 +230,11 @@ bool coins_kv_snapshot_write_v2(sqlite3 *db, const char *out_path,
         return false;
     }
 
-    sqlite3_stmt *s = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT txid, vout, value, script, height, is_coinbase "
-            "FROM coins ORDER BY txid, vout", -1, &s, NULL) != SQLITE_OK) {
-        LOG_WARN("coins_kv", "snapshot_write: prepare failed: %s",
-                 sqlite3_errmsg(db));
-        fclose(out);
-        unlink(tmp_path);
-        return false;
-    }
-
     struct sha3_256_ctx ctx;
     sha3_256_init(&ctx);
     uint64_t count = 0;
     int64_t  total_supply = 0;
-    bool ok = true;
-
-    int rc;
-    while (ok && (rc = sqlite3_step(s)) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
-        const uint8_t *txid = (const uint8_t *)sqlite3_column_blob(s, 0);
-        int txid_len = sqlite3_column_bytes(s, 0);
-        if (!txid || txid_len < 32) continue;
-
-        uint32_t vout   = (uint32_t)sqlite3_column_int(s, 1);
-        int64_t  value  = sqlite3_column_int64(s, 2);
-        const uint8_t *script = (const uint8_t *)sqlite3_column_blob(s, 3);
-        int script_len = sqlite3_column_bytes(s, 3);
-        int32_t  height_c = sqlite3_column_int(s, 4);
-        int cb_int = sqlite3_column_int(s, 5);
-
-        const uint8_t *eff_script = (script_len > 0) ? script : NULL;
-        uint32_t eff_slen = (uint32_t)(script_len > 0 ? script_len : 0);
-
-        /* Serialise ONE record in the canonical layout (identical to what
-         * coins_kv_commitment absorbs), write it to BOTH the file and the SHA3
-         * sponge, so file body == SHA3 input == coins_kv_commitment input. */
-        uint8_t inline_buf[UTXO_SHA3_RECORD_MAX(SNAP_SCRIPT_INLINE_CAP)];
-        uint8_t *rec = inline_buf;
-        uint8_t *heap = NULL;
-        size_t cap = sizeof(inline_buf);
-        if (eff_slen > SNAP_SCRIPT_INLINE_CAP) {
-            cap = UTXO_SHA3_RECORD_MAX(eff_slen);
-            heap = zcl_malloc(cap, "coins_kv_snapshot_record");
-            if (!heap) {
-                LOG_WARN("coins_kv", "snapshot_write: oom for script_len=%u",
-                         eff_slen);
-                ok = false;
-                break;
-            }
-            rec = heap;
-        }
-        size_t rec_len = 0;
-        if (!utxo_sha3_serialize_record(rec, cap, &rec_len, txid, vout, value,
-                                        eff_script, eff_slen,
-                                        (uint32_t)height_c,
-                                        (uint8_t)(cb_int ? 1 : 0))) {
-            LOG_WARN("coins_kv", "snapshot_write: serialise failed");
-            if (heap) free(heap);
-            ok = false;
-            break;
-        }
-        if (fwrite(rec, 1, rec_len, out) != rec_len) {
-            LOG_WARN("coins_kv", "snapshot_write: record fwrite failed");
-            if (heap) free(heap);
-            ok = false;
-            break;
-        }
-        sha3_256_write(&ctx, rec, rec_len);
-        if (heap) free(heap);
-
-        total_supply += value;
-        count++;
-    }
-    if (ok && rc != SQLITE_DONE && rc != SQLITE_ROW)
-        ok = false;
-    sqlite3_finalize(s);
-
-    if (!ok) {
+    if (!stream_coins_body(out, db, &ctx, &count, &total_supply)) {
         fclose(out);
         unlink(tmp_path);
         return false;
@@ -210,37 +263,77 @@ bool coins_kv_snapshot_write_v2(sqlite3 *db, const char *out_path,
     uint8_t body_sha3[32];
     sha3_256_finalize(&ctx, body_sha3);
 
-    /* Rewrite the header with the real values. */
-    memcpy(header, "ZCLUTXO\x00", 8);
-    le32(header + 8, snap_version);               /* version (1 or 2) */
-    le32(header + 16, (uint32_t)height);          /* anchor height */
-    le64(header + 24, count);
-    le64(header + 32, (uint64_t)total_supply);
-    if (anchor_block_hash) memcpy(header + 40, anchor_block_hash, 32);
-    memcpy(header + 72, body_sha3, 32);
+    if (!snapshot_finalize(out, tmp_path, out_path, snap_version, height,
+                           anchor_block_hash, count, total_supply, body_sha3))
+        return false;
 
-    if (fseek(out, 0, SEEK_SET) != 0 ||
-        fwrite(header, 1, sizeof(header), out) != sizeof(header)) {
-        LOG_WARN("coins_kv", "snapshot_write: header rewrite failed");
+    if (out_sha3) memcpy(out_sha3, body_sha3, 32);
+    if (out_count) *out_count = count;
+    if (out_total_supply) *out_total_supply = total_supply;
+    return true;
+}
+
+bool coins_kv_snapshot_write_v3(sqlite3 *db, const char *out_path,
+                                int32_t height,
+                                const uint8_t anchor_block_hash[32],
+                                const struct snapshot_shielded *shielded,
+                                uint8_t out_sha3[32], uint64_t *out_count,
+                                int64_t *out_total_supply)
+{
+    if (!db || !out_path || !out_path[0] || !shielded) {
+        LOG_FAIL("coins_kv", "snapshot_write_v3: null db/path/shielded");
+        return false;
+    }
+
+    /* Same in-RAM-overlay handling as v2 (see coins_kv_snapshot_write_v2). */
+    if (coins_ram_active())
+        return coins_ram_snapshot_write_v3(out_path, height, anchor_block_hash,
+                                           shielded, out_sha3, out_count,
+                                           out_total_supply);
+
+    char tmp_path[1100];
+    int np = snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", out_path);
+    if (np < 0 || (size_t)np >= sizeof(tmp_path)) {
+        LOG_WARN("coins_kv", "snapshot_write_v3: out_path too long");
+        return false;
+    }
+    FILE *out = fopen(tmp_path, "wb");
+    if (!out) {
+        LOG_WARN("coins_kv", "snapshot_write_v3: fopen(%s) failed", tmp_path);
+        return false;
+    }
+    uint8_t header[USS_HEADER_BYTES] = {0};
+    if (fwrite(header, 1, sizeof(header), out) != sizeof(header)) {
+        LOG_WARN("coins_kv", "snapshot_write_v3: header reserve failed");
         fclose(out);
         unlink(tmp_path);
         return false;
     }
-    if (fflush(out) != 0) {
-        LOG_WARN("coins_kv", "snapshot_write: fflush failed");
+
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+    uint64_t count = 0;
+    int64_t  total_supply = 0;
+    if (!stream_coins_body(out, db, &ctx, &count, &total_supply)) {
         fclose(out);
         unlink(tmp_path);
         return false;
     }
-    fclose(out);
 
-    /* Atomic publish: rename temp → final. */
-    if (rename(tmp_path, out_path) != 0) {
-        LOG_WARN("coins_kv", "snapshot_write: rename(%s -> %s) failed",
-                 tmp_path, out_path);
+    /* v3 SHIELDED section (Sapling + Sprout frontiers + nullifier set), inside
+     * the body SHA3 region — the single hash covers coins AND shielded state. */
+    if (!snapshot_shielded_write(out, &ctx, shielded)) {
+        fclose(out);
         unlink(tmp_path);
         return false;
     }
+
+    uint8_t body_sha3[32];
+    sha3_256_finalize(&ctx, body_sha3);
+
+    if (!snapshot_finalize(out, tmp_path, out_path, /*version=*/3, height,
+                           anchor_block_hash, count, total_supply, body_sha3))
+        return false;
 
     if (out_sha3) memcpy(out_sha3, body_sha3, 32);
     if (out_count) *out_count = count;

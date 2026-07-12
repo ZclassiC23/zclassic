@@ -170,6 +170,17 @@ bool coins_ram_snapshot_write_v2(const char *out_path, int32_t height,
                                  uint8_t out_sha3[32], uint64_t *out_count,
                                  int64_t *out_total_supply);
 
+/* v3 writer: same as coins_ram_snapshot_write, but appends the SHIELDED section
+ * (Sapling + Sprout frontiers + nullifier set) after the UTXO records and
+ * stamps header version = 3. Byte-identical format to
+ * coins_kv_snapshot_write_v3 (see storage/snapshot_shielded.h). */
+struct snapshot_shielded;
+bool coins_ram_snapshot_write_v3(const char *out_path, int32_t height,
+                                 const uint8_t anchor_block_hash[32],
+                                 const struct snapshot_shielded *shielded,
+                                 uint8_t out_sha3[32], uint64_t *out_count,
+                                 int64_t *out_total_supply);
+
 /* ── durability ── */
 
 /* Drain the RAM overlay into coins_kv and advance the durable flush watermark
