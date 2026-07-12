@@ -69,7 +69,7 @@ bool rpc_z_getnewaddress(const struct json_value *params, bool help,
     uint8_t diversifier[11];
     uint8_t pk_d[32];
     struct sapling_address_undo undo;
-    if (!sapling_keystore_new_address_ex(&ctx->wallet->sapling_keys,
+    if (!sapling_keystore_new_address_transactional(&ctx->wallet->sapling_keys,
                                           diversifier, pk_d, &undo)) {
         json_set_str(result, "Failed to generate Sapling address");
         LOG_FAIL("wallet_shielded", "sapling_keystore_new_address failed");

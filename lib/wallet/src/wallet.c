@@ -362,7 +362,7 @@ bool wallet_get_new_change_address(struct wallet *w, char *addr_out,
     return wallet_pubkey_to_addr(&pk, addr_out, addr_size);
 }
 
-bool wallet_get_new_address_ex(struct wallet *w, char *addr_out,
+bool wallet_get_new_address_with_key_id(struct wallet *w, char *addr_out,
                                size_t addr_size, struct key_id *key_id_out)
 {
     struct pubkey pk;
@@ -384,7 +384,7 @@ bool wallet_get_new_address_ex(struct wallet *w, char *addr_out,
 
 bool wallet_get_new_address(struct wallet *w, char *addr_out, size_t addr_size)
 {
-    return wallet_get_new_address_ex(w, addr_out, addr_size, NULL);
+    return wallet_get_new_address_with_key_id(w, addr_out, addr_size, NULL);
 }
 
 bool wallet_top_up_key_pool(struct wallet *w, unsigned int target_size)

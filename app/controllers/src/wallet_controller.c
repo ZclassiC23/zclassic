@@ -70,7 +70,7 @@ static bool rpc_getnewaddress(const struct json_value *params, bool help,
 
     char addr[128];
     struct key_id generated_kid;
-    if (!wallet_get_new_address_ex(ctx->wallet, addr, sizeof(addr),
+    if (!wallet_get_new_address_with_key_id(ctx->wallet, addr, sizeof(addr),
                                    &generated_kid)) {
         json_set_str(result, "Error: no durable keypool address available");
         LOG_FAIL("wallet", "getnewaddress: durable keypool ran out");

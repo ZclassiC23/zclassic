@@ -965,7 +965,7 @@ int test_znam(void)
         init_hd_wallet(&w, 0x44);
         char addr[128] = {0};
         struct key_id kid;
-        bool got_addr = wallet_get_new_address_ex(&w, addr, sizeof(addr), &kid);
+        bool got_addr = wallet_get_new_address_with_key_id(&w, addr, sizeof(addr), &kid);
         bool funded = got_addr && fund_wallet_key(&w, &kid, 20000);
         struct wallet_tx wtx = {0};
         int64_t fee = 0;

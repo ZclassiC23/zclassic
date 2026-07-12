@@ -474,7 +474,7 @@ skip_sap_snap:;
         uint8_t d[ZC_DIVERSIFIER_SIZE], pk_d[32];
         struct sapling_address_undo first, second;
         sapling_keystore_init(&sks);
-        bool ok = sapling_keystore_new_address_ex(&sks, d, pk_d, &first) &&
+        bool ok = sapling_keystore_new_address_transactional(&sks, d, pk_d, &first) &&
                   first.valid && first.generated_seed &&
                   first.child_index == 0 && sks.num_keys == 1 &&
                   sks.next_child_index == 1;
@@ -483,8 +483,8 @@ skip_sap_snap:;
         if (sks.has_seed || sks.num_keys != 0 || sks.next_child_index != 0)
             ok = false;
 
-        if (ok && (!sapling_keystore_new_address_ex(&sks, d, pk_d, &first) ||
-                   !sapling_keystore_new_address_ex(&sks, d, pk_d, &second)))
+        if (ok && (!sapling_keystore_new_address_transactional(&sks, d, pk_d, &first) ||
+                   !sapling_keystore_new_address_transactional(&sks, d, pk_d, &second)))
             ok = false;
         /* Once another child exists, rolling back `first` must refuse rather
          * than erase the concurrent/latest child. */

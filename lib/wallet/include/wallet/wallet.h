@@ -163,7 +163,7 @@ bool wallet_get_new_address(struct wallet *w, char *addr_out, size_t addr_size);
 /* Same operation, also returning the exact generated/consumed key id. The
  * token lets a durability failure remove its own HD key rather than guessing
  * from the mutable keystore tail. */
-bool wallet_get_new_address_ex(struct wallet *w, char *addr_out,
+bool wallet_get_new_address_with_key_id(struct wallet *w, char *addr_out,
                                size_t addr_size, struct key_id *key_id_out);
 bool wallet_top_up_key_pool(struct wallet *w, unsigned int target_size);
 /* A top-up publishes new entries as unpersisted. They cannot be handed to a

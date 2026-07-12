@@ -56,7 +56,7 @@ bool sapling_keystore_set_seed(struct sapling_keystore *sks,
     return true;
 }
 
-bool sapling_keystore_new_address_ex(
+bool sapling_keystore_new_address_transactional(
     struct sapling_keystore *sks,
     uint8_t diversifier_out[ZC_DIVERSIFIER_SIZE],
     uint8_t pk_d_out[32],
@@ -142,7 +142,7 @@ bool sapling_keystore_new_address(struct sapling_keystore *sks,
                                    uint8_t diversifier_out[ZC_DIVERSIFIER_SIZE],
                                    uint8_t pk_d_out[32])
 {
-    return sapling_keystore_new_address_ex(
+    return sapling_keystore_new_address_transactional(
         sks, diversifier_out, pk_d_out, NULL);
 }
 
