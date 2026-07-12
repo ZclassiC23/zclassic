@@ -1021,6 +1021,8 @@ int main(int argc, char **argv)
     failures += test_explorer();
     failures += test_explorer_rpc_call();
     failures += test_explorer_index();
+    { extern int test_format_helpers_codec(void);
+      failures += test_format_helpers_codec(); }
     failures += test_mining();
     failures += test_regtest_generate();
     failures += test_utxo_commitment();

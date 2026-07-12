@@ -65,7 +65,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(swap_settlement) \
     X(file_market) X(strong_params) X(json) X(robustness) X(wallet) \
     X(primitives) X(bloom) X(coins) X(store) X(blog) X(api) \
-    X(explorer) X(explorer_rpc_call) X(explorer_index) X(mining) X(utxo_commitment) X(mmr) X(mmb) X(sha3_windows) \
+    X(explorer) X(explorer_rpc_call) X(explorer_index) X(format_helpers_codec) X(mining) X(utxo_commitment) X(mmr) X(mmb) X(sha3_windows) \
     X(keystone_utxo_binding) X(utxo_root_ladder) X(utxo_root_ladder_tripwire) \
     X(golden_staleness_canary) \
     X(flyclient) X(flyclient_chainwork_floor) X(test_zmsg_memo_codec) X(scan_util) X(tor) \
