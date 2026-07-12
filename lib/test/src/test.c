@@ -951,6 +951,8 @@ int main(int argc, char **argv)
     { extern int test_chain_tip(void); failures += test_chain_tip(); }
     { extern int test_checkpoint(void); failures += test_checkpoint(); }
     failures += test_keys();
+    { extern int test_test_key_io_codec(void);
+      failures += test_test_key_io_codec(); }
     failures += test_script();
     failures += test_net();
     failures += test_connman_addnode_fallback();
