@@ -1,3 +1,5 @@
+> **ARCHIVED / SUPERSEDED.** Superseded by docs/REFACTOR_STATUS.md (debt board) — the checklist below is historical. See `docs/work/ROADMAPS.md` for the live roadmap index. Kept for history — do not act on this as current.
+
 # Architecture Execution Plan — checklist
 
 > Companion to [architecture-roadmap.md](./architecture-roadmap.md) (the WHAT/WHY).

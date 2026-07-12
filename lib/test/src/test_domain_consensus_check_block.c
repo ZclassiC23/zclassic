@@ -371,7 +371,7 @@ int test_domain_consensus_check_block(void)
 
     /* ---- L1 LOCK-IN: no 2 MB serialized block-size cap ----------------
      *
-     * Parity-audit round 2 (docs/work/parity-audit-round2-findings.md, L1):
+     * Parity-audit round 2 (docs/work/archive/parity-audit-round2-findings.md, L1):
      * domain_consensus_check_block_size_and_coinbase() bounds only the
      * tx-COUNT (num_vtx <= 2,000,000), never the SERIALIZED byte size.
      * zclassicd's CheckBlock rejects a block whose serialized size exceeds

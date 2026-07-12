@@ -32,14 +32,14 @@
 > self-verified UTXO rebuild. It folds real block bodies forward from the
 > verified checkpoint, cuts over, then deletes the borrowed-seed machinery
 > (~715 LOC): [`never-stuck-plan.md`](./never-stuck-plan.md)
-> + the ordered worksheet [`sync-fix-plan-2026-06-21.md`](./sync-fix-plan-2026-06-21.md).
+> + the ordered worksheet [`archive/sync-fix-plan-2026-06-21.md`](./archive/sync-fix-plan-2026-06-21.md).
 > The **aesthetic-aligned canonical statement** (Prime Directive + Ten Laws, the
 > detective frame: Acts 0–4 + the `G-SOV` sovereignty gate) is
 > [`self-verified-tip-plan.md`](./self-verified-tip-plan.md).
 > The P0/P1/P2 subtask backlog is in [`../HANDOFF.md`](../HANDOFF.md) §4. Hardening
-> program of record: [`tenacity-roadmap.md`](./tenacity-roadmap.md) (carries the
+> program of record: [`archive/tenacity-roadmap.md`](./archive/tenacity-roadmap.md) (carries the
 > merged rock-solid recovery-program L1/L2 items) +
-> [`stability-improvements-2026-06-16.md`](./stability-improvements-2026-06-16.md).
+> [`archive/stability-improvements-2026-06-16.md`](./archive/stability-improvements-2026-06-16.md).
 > Copy-prove every recovery path on a datadir COPY before live; gate on H\* climb.
 
 **The #1 work now:** promote ◐ slice-gates to full ✅ CI gates and accumulate
@@ -155,7 +155,7 @@ debt does not block a working sovereign node and must not jump the queue.
 - [x] **Code-review remediation** (secondary hardening lane; must not displace
       the #1 spine) — the open, verified subset of the 2026-06-27 audit, batched
       into parallel-worktree lanes with a fix + proof-gate per item:
-      [`code-review-remediation-2026-06-30.md`](./code-review-remediation-2026-06-30.md).
+      [`archive/code-review-remediation-2026-06-30.md`](./archive/code-review-remediation-2026-06-30.md).
       Autonomous review-remediation items are now closed; continue MVP work from
       the sovereign cure and fresh soak window.
 

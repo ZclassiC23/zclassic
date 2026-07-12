@@ -6,6 +6,8 @@ ZClassic23 is one ~15 MB self-contained C23 binary that runs a full ZClassic nod
 
 See [`docs/HOW_THE_NODE_WORKS.md`](./docs/HOW_THE_NODE_WORKS.md) for the plain-language mental model (the node as a state machine), [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) for the canonical architecture (the Prime Directive, the Ten Laws of Beauty, and the eight shapes), [`docs/AGENT_ARCHITECTURE.md`](./docs/AGENT_ARCHITECTURE.md) for the concrete future-agent feature slice (REST resources, ActiveRecord, validations, relationships, schema, services, native surfaces), [`docs/ARCHITECTURE_DIAGRAMS.md`](./docs/ARCHITECTURE_DIAGRAMS.md) for current subsystem/boot topology, and [`docs/adr/0001-personal-sovereignty-stack.md`](./docs/adr/0001-personal-sovereignty-stack.md) for the 2026-05-22 pivot rationale.
 
+**The developer operating manual is the `zclassic23-dev` skill** ([`.claude/skills/zclassic23-dev/SKILL.md`](./.claude/skills/zclassic23-dev/SKILL.md)) — navigator-first code lookup, the fast dev loop / hot-swap tiers, typed-commands-over-bash, push traps, and build/test/deploy live there, not in this file.
+
 ## Security model for AI agents
 
 ZClassic23 is operator-owned full-node infrastructure. Tor, wallet/key
@@ -133,96 +135,19 @@ Key rules enforced by the compiler and CI:
 
 `make lint` checks for violations. `make ci` runs lint before tests.
 
-## MCP Server (Model Context Protocol)
+## Agent interface — native commands (legacy MCP server, removed in W3)
 
-ZClassic23 has a built-in MCP server for AI development. Claude Code can query the node directly via typed tools — no curl, no token waste.
-
-### Setup
-
-```bash
-claude mcp add zcl23 -- build/bin/zclassic23 -mcp
-```
-
-Or with custom datadir/port:
-```bash
-claude mcp add zcl23 -- build/bin/zclassic23 -mcp -datadir=/path/to/data -rpcport=18232
-```
-
-Restart Claude Code after adding. The tools appear automatically.
-
-For one-shot terminal use without adding any helper binary, call the same typed
-tool surface through zclassic23 itself:
-
-```bash
-build/bin/zclassic23 mcpcall zcl_status
-build/bin/zclassic23 mcpcall zcl_state '{"subsystem":"supervisor"}'
-```
-
-`ZCL_MCP_CALL_BEARER_TOKEN` may be set for a one-shot call; otherwise the
-command falls back to `ZCL_MCP_BEARER_TOKEN` or, for destructive tools,
-`ZCL_MCP_DESTRUCTIVE_BEARER_TOKEN` when configured.
-
-### Auth (two-tier, opt-in)
-
-The MCP server is a local stdio operator interface by default — no auth.
-Where a transport wants a credential, set env vars before launching the
-binary:
-
-- `ZCL_MCP_BEARER_TOKEN` — the **normal** bearer token. When set, every
-  tool call must present it (or the destructive token, see below) in the
-  `authorization` metadata, bare or `Bearer <token>` form.
-- `ZCL_MCP_DESTRUCTIVE_BEARER_TOKEN` — an **escalated** token for tools
-  flagged destructive (`zcl_send`, `zcl_invalidateblock`,
-  `zcl_importprivkey`, etc. — the same set that drains the destructive
-  rate-limit bucket). **Backward-compatible**: when UNSET, the normal token
-  governs ALL tools (destructive included) — identical to today. When SET,
-  a destructive tool REQUIRES the destructive token and REJECTS the normal
-  one; a non-destructive tool REQUIRES the normal token and REJECTS the
-  destructive one (least-privilege: an ops/destructive credential cannot be
-  reused to read introspection or run normal RPC, and vice-versa). 401
-  errors name the tier that was required without disclosing token material.
-  For the tier separation to be meaningful the two tokens MUST differ.
-
-Both comparisons are constant-time. Auth tier is independent of the
-rate-limit tier: a destructive tool always drains the destructive bucket
-regardless of which credential satisfied auth.
-
-### Quick Reference
-
-There are 100+ typed tools (native-first: `zclassic23 discover help` for the
-exact live count; the legacy MCP equivalent `zcl_tools_list` still works
-today, removed in W3). **This table lists only the ones you reach for
-daily** — it is deliberately not exhaustive. For the full catalog, run
-`zclassic23 discover search <q>` / `zcl_tools_list` (live routing table) or
-read the source of truth:
-`tools/mcp/controllers/{app,chain,meta,net,ops,wallet}_controller.c`.
-
-| Tool | When to use |
-|------|-------------|
-| `zcl_status` | **Start here.** Height, peers, sync, onion, health — one call |
-| `zcl_kpi` | KPI dashboard: height, peer_count, sync, validation |
-| `zcl_syncstate` / `zcl_validationstatus` | Sync phase + background-validation progress |
-| `zcl_getblock` / `zcl_getblockcount` | Block by height/hash; current height |
-| `zcl_peers` | Connected peers (addresses, latency, heights) |
-| `zcl_dataintegrity` / `zcl_utxocommitment` | SHA3 over consensus tables / UTXO set |
-| `zcl_balance` / `zcl_listunspent` | Wallet balance; spendable UTXOs |
-| **Primitive** `zcl_state` | Generic state dump: `subsystem=supervisor,watchdog,boot,block_index,…` — prefer this over a bespoke tool |
-| **Primitive** `zcl_node_log` | Server-side regex tail of node.log (level filter) |
-| **Primitive** `zcl_sql` | SELECT-only SQL over node.db (rate-gated) |
-| `zcl_tools_list` / `zcl_self_test` / `zcl_openapi` | Enumerate / smoke-test / schema-dump every tool |
-| **Escape hatch** `zcl_rpc` | Call any of 85+ RPC methods directly when no typed tool fits |
-
-Everything else (wallet shielded ops, ZNAM/ZMSG/Market/ZSWP, mining, peer
-games, metrics, replay buffer, admin) is a typed tool too — discover it via
-`zcl_tools_list` rather than memorizing it here. The three **primitives** plus
-the `zcl_rpc` escape hatch answer most one-off questions without a new tool.
-
-### Example: Raw RPC
-
-For commands without a dedicated tool, use `zcl_rpc`:
-- `zcl_rpc(method="getmempoolinfo")`
-- `zcl_rpc(method="z_listaddresses")`
-- `zcl_rpc(method="getblock", params="[\"hash\", 2]")`
+The interface is the native command registry: `zclassic23 <command>` under
+`core.*`/`app.*`/`ops.*`/`dev.*`/`discover.*`. Start with `zclassic23 status`;
+enumerate with `discover help` / `discover search <q>`; three diagnostic
+primitives (`dumpstate <subsystem>`, the node-log tail, SELECT-only SQL)
+answer most one-off questions. Full doc:
+[`docs/NATIVE_COMMAND_INTERFACE.md`](./docs/NATIVE_COMMAND_INTERFACE.md);
+daily usage patterns are in the `zclassic23-dev` skill. The **legacy MCP
+server** (`-mcp`, `zclassic23 mcpcall <tool>`, the `zcl_*` tool surface)
+still works today and is deleted in W3 — prefer native. Its opt-in two-tier
+bearer auth (`ZCL_MCP_BEARER_TOKEN` / `ZCL_MCP_DESTRUCTIVE_BEARER_TOKEN`) is
+documented in [`docs/SECURITY_AND_INTEGRITY.md`](./docs/SECURITY_AND_INTEGRITY.md).
 
 ### Adding state introspection
 
@@ -429,12 +354,11 @@ Progress via: `zcl_validationstatus`
 
 ## Development
 
-### Build
-```bash
-make -j$(nproc)     # Builds build/bin/zclassic23, build/bin/test_zcl, build/bin/zclassic-cli
-make test           # Run 488 test groups (~9k check sites)
-make deploy         # Build + setcap + restart service
-```
+Build/test/deploy commands, the fast inner loop, and the push traps are in
+the **`zclassic23-dev` skill** — the short version: `make build-only`
+(compile-check), `make -j$(nproc)` (full build), `make test` /
+`make test-parallel` (the canonical runner — never `test_zcl` directly),
+`make lint`, `make deploy` (owner-gated live) / `make deploy-dev`.
 
 Note on `-j`: each binary is ONE whole-program `cc` over ~660–1400 `.c` files
 (LTO), so `-j$(nproc)` only overlaps the 2–3 separate binaries + the LTO link,
@@ -443,18 +367,6 @@ NOT the per-binary front-end compile. For a fast compile-check inner loop use
 now tracked via depfiles, so it no longer false-greens on a header change.
 Default build targets `-march=x86-64-v3` (portable: AVX2/FMA/BMI2); pass
 `ZCL_NATIVE=1` to build for the host CPU only.
-
-### Test
-```bash
-build/bin/test_zcl  # All tests
-```
-
-### RPC (without MCP)
-```bash
-build/bin/zcl-rpc getblockcount
-build/bin/zcl-rpc getpeerinfo
-build/bin/zcl-rpc z_gettotalbalance
-```
 
 ### Services
 ```bash

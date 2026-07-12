@@ -1,7 +1,7 @@
 # Sync-Strength Fix — Implementation Design (SLATED FOR DELETION)
 
 > **Status (robustness-audit findings, now folded into
-> [`stability-improvements-2026-06-16.md`](./stability-improvements-2026-06-16.md),
+> [`archive/stability-improvements-2026-06-16.md`](./archive/stability-improvements-2026-06-16.md),
 > + tenacity-roadmap item 4):** this whole repair ladder — `coin_backfill`, ~1798
 > LOC — is a runtime compensator for the exact import-skip the project decided to
 > prevent at **write time** via the SHA3 import gate (shipped — the bless-time
@@ -9,7 +9,7 @@
 > `test_seed_torn_import_gate.c`). It is slated for **leaf-first deletion**
 > after the sovereign `-refold-from-anchor` cutover makes copied-seed coin tears
 > unreachable. The current delete/keep split is in
-> [`architecture-deletion-plan.md`](./architecture-deletion-plan.md): delete the
+> [`archive/architecture-deletion-plan.md`](./archive/architecture-deletion-plan.md): delete the
 > coin-backfill TUs, their public/private headers, the boot torn gate, and the
 > `coin_backfill` diagnostics together; remove or rename the
 > `script_validate.pending_prevout` producer; keep/re-home the reducer-frontier

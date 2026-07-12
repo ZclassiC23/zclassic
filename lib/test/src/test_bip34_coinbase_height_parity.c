@@ -3,7 +3,7 @@
  * test_bip34_coinbase_height_parity — D3 lock-in pin for the BIP34
  * "height in coinbase scriptSig" encoding DIFFERENCE between zcl23 and
  * zclassicd at heights 1-16 (parity-audit round 3,
- * docs/work/parity-audit-round3-findings.md).
+ * docs/work/archive/parity-audit-round3-findings.md).
  *
  * THE GAP. At heights 1-16 the height can be serialized two ways:
  *   (a) the single OP_N byte  (0x50 + height)  — e.g. height 5 → 0x55 (OP_5),

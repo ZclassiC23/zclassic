@@ -3,7 +3,7 @@
  *
  * L2 LOCK-IN — ContextualCheckBlockHeader skipped >1000 below tip.
  *
- * Parity-audit round 2 (docs/work/parity-audit-round2-findings.md, L2):
+ * Parity-audit round 2 (docs/work/archive/parity-audit-round2-findings.md, L2):
  * process_block_should_skip_contextual_header() returns TRUE — i.e. the
  * incoming header SKIPS contextual_check_block_header() on the synchronous
  * path — whenever the active tip is past height 100000 AND the header's

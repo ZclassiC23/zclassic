@@ -82,7 +82,7 @@ load-bearing claim re-queried by hand. Net: the thesis HOLDS; three refinements.
 Full evidence + every file:line is in the north-star memory
 `project_frontier_wedge_real_rootcause_2026-06-18` (re-corrected 2026-06-19) and the
 carve manifest's live-verified correction header (folded into
-[`architecture-deletion-plan.md`](./architecture-deletion-plan.md)).
+[`archive/architecture-deletion-plan.md`](./archive/architecture-deletion-plan.md)).
 
 ## 0b. CURE RESOLVED 2026-06-19 (workflow `wl5j9piiu`, adversarially verified — `partial`)
 
@@ -159,7 +159,7 @@ future agent re-derives them or trusts the stale roadmap text:
   full-genesis self-mint (LB-2). So B2 (fold the gap) is INDEPENDENT of parallelism — never
   block it on LB-1.
 
-- **`refold_driver_main` is VAPOR.** `architecture-execution-plan.md` item 1.5 cites
+- **`refold_driver_main` is VAPOR.** `archive/architecture-execution-plan.md` item 1.5 cites
   `refold_driver_main` at `reducer_ingest_service.c:142` as if present; grep is EMPTY across
   the committed tree (it lives only in an uncommitted stash). The real drain entry is
   `reducer_drain_to_convergence` (`reducer_ingest_service.c:79`, called from

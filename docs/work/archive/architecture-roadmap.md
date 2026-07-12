@@ -1,3 +1,5 @@
+> **ARCHIVED / SUPERSEDED.** Superseded by docs/FRAMEWORK.md (canonical architecture) and docs/REFACTOR_STATUS.md (debt board). See `docs/work/ROADMAPS.md` for the live roadmap index. Kept for history — do not act on this as current.
+
 # ZClassic23 Architecture Roadmap
 
 > Built 2026-06-20 from a 6-dimension parallel architecture audit (execution/concurrency,

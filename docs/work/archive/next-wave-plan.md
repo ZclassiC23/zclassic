@@ -1,3 +1,5 @@
+> **ARCHIVED / SUPERSEDED.** Superseded by docs/work/FORWARD_PLAN.md (THE plan). See `docs/work/ROADMAPS.md` for the live roadmap index. Kept for history — do not act on this as current.
+
 # Next-Wave Improvement Plan — zclassic23 (DRY / security / test)
 
 Read-only Opus pass, 2026-07-09. Launch AGAINST freshly-integrated main (after the

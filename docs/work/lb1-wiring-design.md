@@ -1,7 +1,7 @@
 # LB-1 — Wiring the parallel verify engine into the hot path
 
 **Status:** design (no production code in this branch). **Scope:** Phase-1 items
-1.2–1.6 of `docs/work/architecture-execution-plan.md` (lines 158–214). **Goal:**
+1.2–1.6 of `docs/work/archive/architecture-execution-plan.md` (lines 158–214). **Goal:**
 the shipped-but-unwired engine (`lib/validation/{thread_pool,verify_queue}.{c,h}`)
 owns the per-input / per-proof crypto hot path, gated behind `-par` (default-on,
 `-par=1` is the bit-for-bit serial oracle), with the per-block atomic co-commit

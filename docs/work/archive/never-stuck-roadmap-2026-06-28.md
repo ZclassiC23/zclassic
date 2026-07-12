@@ -1,3 +1,5 @@
+> **ARCHIVED / SUPERSEDED.** Superseded by docs/work/never-stuck-plan.md (the live wedge-class cure design). See `docs/work/ROADMAPS.md` for the live roadmap index. Kept for history — do not act on this as current.
+
 # Never-stuck hardening roadmap (2026-06-28) — competition
 
 Adversarial sweep (23 agents). FIXED since: step 3 (a35ca0c8f) + full de-latch (75967c574).

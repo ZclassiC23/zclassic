@@ -166,7 +166,7 @@ NEVER live surgery. Copy-prove first, gate on **H\* CLIMB** (not "booted without
 ## The subtraction (delete the borrowed loader — the payoff)
 
 Once the live node runs on the self-minted anchor, delete the borrowed-seed producers
-(per `sync-fix-plan-2026-06-21.md` "Deletable LOC"; ~400 LOC deletable immediately):
+(per `archive/sync-fix-plan-2026-06-21.md` "Deletable LOC"; ~400 LOC deletable immediately):
 
 - `utxo_recovery_restore.c:369-371` `coins_kv_seed_from_node_db` bulk-copy + `:381-384` cold-import seed.
 - `utxo_recovery_restore.c:240-242` `utxo_recovery_commit_tip(..., frontier_exempt=true)` (the only

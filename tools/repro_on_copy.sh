@@ -55,7 +55,7 @@
 #                     makes ~/.zcash-params and ~/.zclassic (zclassicd chainstate
 #                     for the tier-1b Sapling-frontier borrow) reachable in the
 #                     isolated HOME. The generic default mode is NOT sufficient
-#                     to clear a live deploy — see docs/work/boot-loop-2026-07-11.md.
+#                     to clear a live deploy — see docs/work/archive/boot-loop-2026-07-11.md.
 #   --deadline=SECS   how long to watch the tip (default 180)
 #   --expect-climb-past=H
 #                     require the served/provable tip (H*) to climb strictly
@@ -276,7 +276,7 @@ case "$DEST" in "$SRC"|"$SRC"/*) echo "repro_on_copy: dest must not be inside sr
 # still the fixed <HOME>/.zclassic-c23-COPY-<ts>-<slug> path computed above (no
 # caller-controlled dest), and every port/peer/-datadir the live unit carries is
 # stripped here — the harness OWNS ports, peers, and the datadir. See
-# docs/work/boot-loop-2026-07-11.md "Copy-prove flag-parity gap".
+# docs/work/archive/boot-loop-2026-07-11.md "Copy-prove flag-parity gap".
 process_env_kv() {
     _kv="$1"; _key="${_kv%%=*}"; _val="${_kv#*=}"
     [ -n "$_key" ] || return 0

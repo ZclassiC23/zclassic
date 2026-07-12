@@ -10,7 +10,7 @@ This is the canonical statement of the **sovereign cure** that
 the proven present." It is the same plan referenced by
 [`FORWARD_PLAN.md`](./FORWARD_PLAN.md) #1 (sovereign cure),
 [`never-stuck-plan.md`](./never-stuck-plan.md), and
-[`sync-fix-plan-2026-06-21.md`](./sync-fix-plan-2026-06-21.md) — restated in the
+[`archive/sync-fix-plan-2026-06-21.md`](./archive/sync-fix-plan-2026-06-21.md) — restated in the
 language of the Prime Directive and the Ten Laws.
 
 Drafted, then adversarially stress-tested against the repo (ordering
@@ -165,7 +165,7 @@ a borrowed copy.**
      borrowed seed via `utxo_recovery_import_ldb`, `config/src/boot.c:2487`).
   3. **Delete the borrow** — remove the `coins_kv` seed copy
      (`utxo_recovery_restore.c:369`) and the ~9k-LOC carve in dependency order
-     per [`architecture-deletion-plan.md`](./architecture-deletion-plan.md).
+     per [`archive/architecture-deletion-plan.md`](./archive/architecture-deletion-plan.md).
 - **9-caller caution (corrected from 5):** `tip_finalize_stage_seed_anchor` has
   **9 production callers**. KEEP the consensus-critical ones
   (`app/services/src/reducer_ingest_service.c` live fold; the from-anchor

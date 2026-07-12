@@ -1,3 +1,5 @@
+> **ARCHIVED / SUPERSEDED.** Superseded by docs/work/FORWARD_PLAN.md (THE plan); sovereign-contracts follow-on work tracks there now. See `docs/work/ROADMAPS.md` for the live roadmap index. Kept for history — do not act on this as current.
+
 # zclassic23 Sovereign Service — Strong/Fast Node + Parity-Safe Smart-Contract Overlays
 
 *Design of record — 2026-07-09. Lead architect's calls, not an options menu. Every claim traces to source read fresh; every lever is P2P-policy / storage-scheduling / read-model, none touches consensus (`docs/CONSENSUS_PARITY_DOCTRINE.md` §46-48). Verify file:line before editing — heights/commits rot.*

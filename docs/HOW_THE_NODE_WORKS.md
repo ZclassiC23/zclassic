@@ -121,7 +121,7 @@ set is seeded once on boot from a near-tip snapshot minted by an external
 UTXO checkpoint compiled into the binary (`get_sha3_utxo_checkpoint()`), and the
 restore path refuses to install a non-matching tip (`utxo_recovery_frontier_gate.c`)
 — so it is safe, but it is **borrowed**, not re-derived from genesis. The plan
-(`docs/work/self-verified-tip-plan.md`, and `docs/work/sync-fix-plan-2026-06-21.md`
+(`docs/work/self-verified-tip-plan.md`, and `docs/work/archive/sync-fix-plan-2026-06-21.md`
 for the ordered steps) replaces it with a **self-verified UTXO anchor rebuild**:
 the internal boot path is `-refold-from-anchor`
 (`app/jobs/src/refold_progress.c`, `app/services/src/anchor_selfmint.c`), which

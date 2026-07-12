@@ -1,6 +1,6 @@
 # L7 — close the shielded anchor-membership loosening (design)
 
-> Parity finding L7 (`docs/work/parity-audit-round2-findings.md`): zcl23 accepts a
+> Parity finding L7 (`docs/work/archive/parity-audit-round2-findings.md`): zcl23 accepts a
 > JoinSplit/Spend referencing a note-commitment-tree anchor that never existed in
 > chain history. `lib/coins/src/coins_view.c:476` is a literal `return true`
 > stub; `sapling_anchors` is written but never read to reject. zclassicd rejects a

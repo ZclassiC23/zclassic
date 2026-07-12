@@ -1,3 +1,5 @@
+> **ARCHIVED / SUPERSEDED.** Superseded by docs/work/FORWARD_PLAN.md + docs/work/self-verified-tip-plan.md; docs/TENACITY.md remains the standing doctrine. See `docs/work/ROADMAPS.md` for the live roadmap index. Kept for history — do not act on this as current.
+
 # Tenacity Roadmap — sync super fast, fail almost never
 
 **Date:** 2026-06-11 (rev 2026-06-16) · **Status:** active · **Builds on:** [`canonical-frontier-derived-state-plan.md`](./canonical-frontier-derived-state-plan.md) ("the canonical plan" — not duplicated here).

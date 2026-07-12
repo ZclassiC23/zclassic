@@ -1,3 +1,5 @@
+> **ARCHIVED / SUPERSEDED.** Superseded by docs/REFACTOR_STATUS.md — the deletion targets below are historical (mostly landed). See `docs/work/ROADMAPS.md` for the live roadmap index. Kept for history — do not act on this as current.
+
 # Architecture tree + deletion plan (less is more)
 
 > **STATUS (2026-06-23): the forward-sync wedge is FIXED** by commit `ab512d577`

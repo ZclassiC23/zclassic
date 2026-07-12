@@ -1,41 +1,29 @@
 # Refactor Status — Purpose-Per-File Finish Board
 
-> Updated 2026-07-11 (date stamp + the two entries below verified against
-> code this session; the rest of this file is the 2026-06-03 board,
-> unaudited beyond those two points — treat other specific line counts as
-> potentially stale until re-verified). This file is the current debt board
-> for finishing the framework refactor. `docs/FRAMEWORK.md` remains the
-> architecture.
+> Updated 2026-07-12 (file-size baseline count + Wave C closure re-verified
+> against code; the rest of this file is the 2026-06-03 board — treat other
+> specific line counts as potentially stale until re-verified). This file is
+> the current debt board for finishing the framework refactor.
+> `docs/FRAMEWORK.md` remains the architecture.
 >
 > ⚠️ **This is the ARCHITECTURE-AXIS board (~90% done). It is NOT the v1 path.**
 > The v1 bar is [`docs/MVP.md`](./MVP.md); THE plan is
 > [`docs/work/FORWARD_PLAN.md`](./work/FORWARD_PLAN.md). Do not start
 > architecture work until the v1 buckets are clear.
 >
-> **2026-07-11 addendum — verified this session, not yet folded into the
-> table below:**
-> - The **file-size baseline is no longer 2 entries.** The "Verified-clean
->   facts" bullet below (from 2026-06-03) is stale: as of this session,
->   `tools/scripts/file_size_ceiling_baseline.txt` carries **21 grandfathered
->   entries** — 17 under `app/` (e.g. `app/views/src/explorer_pages_hodl.c`
->   at 1853 lines, `app/controllers/src/name_controller.c` at 1034) and 4
->   under `config/src/` (`boot.c` 3949, `boot_refold_staged.c` 2107,
->   `boot_services.c` 1704, `boot_background_workers.c` 862). `app/` having
->   "no file-size baseline entry" is no longer true; do not repeat that claim
->   without re-checking the baseline file.
-> - **The sealed `core/` tree has landed** since this board was last written
->   and is not reflected in the table below: `domain/consensus/`,
->   `lib/consensus/`, the pure-math subset of `lib/core/`, and the pure
->   params/verify subset of `lib/chain/` were absorbed into a single sealed
->   `core/` tree (`core/consensus/`, `core/params/`, `core/math/`,
->   `core/chainparams/`), pinned by `core/MANIFEST.sha3` and the now-HARD
->   `check-core-seal` gate. See
->   [`docs/adr/0002-sealed-consensus-core.md`](adr/0002-sealed-consensus-core.md)
->   for the full rationale and verification notes. This directly touches
->   Rank 3 of the table below ("`domain/` fronted by thin `lib/` wrappers")
->   and should be re-scoped against the new `core/` layout rather than the
->   pre-split `domain/`/`lib/` paths next time this board is revised in
->   full.
+> **The sealed `core/` tree has landed** since this board was last written
+> in full and is not reflected in the table below: `domain/consensus/`,
+> `lib/consensus/`, the pure-math subset of `lib/core/`, and the pure
+> params/verify subset of `lib/chain/` were absorbed into a single sealed
+> `core/` tree (`core/consensus/`, `core/params/`, `core/math/`,
+> `core/chainparams/`), pinned by `core/MANIFEST.sha3` and the now-HARD
+> `check-core-seal` gate. See
+> [`docs/adr/0002-sealed-consensus-core.md`](adr/0002-sealed-consensus-core.md)
+> for the full rationale and verification notes. This directly touches
+> Rank 3 of the table below ("`domain/` fronted by thin `lib/` wrappers")
+> and should be re-scoped against the new `core/` layout rather than the
+> pre-split `domain/`/`lib/` paths next time this board is revised in
+> full.
 
 ## 2026-06-03 — Architecture conformance board (the "everything has a place" axis)
 
@@ -47,26 +35,39 @@ and named below. This axis is **independent of the §3 live-tip runtime cluster*
 **Verified-clean facts:**
 - 4 layers, dependency direction proven clean: `domain/` #includes `app/`+`lib/` **0×**
   (pure core); `app/` depends inward on `domain|ports|application` **18×**.
-- 10 of 11 lint baselines = **0 entries**; the size baseline carries 2 grandfathered entries (shape/result-type/sqlite/supervisor/
-  blocker/layering gates pass with zero grandfathered exceptions) — but the
-  file-size baseline is NOT empty: it carries 2 grandfathered entries
-  (`config/src/boot.c`, `config/src/boot_services.c`). `app/` no longer has a
-  file-size baseline entry; `app/jobs/src/tip_finalize_stage.c` is 799 lines.
+- 10 of 11 lint baselines = **0 entries** (shape/result-type/sqlite/supervisor/
+  blocker/layering gates pass with zero grandfathered exceptions). The one
+  non-empty baseline is file-size: as re-counted 2026-07-12,
+  `tools/scripts/file_size_ceiling_baseline.txt` carries **21 grandfathered
+  entries** — **18 under `app/`** (largest: `app/views/src/explorer_pages_hodl.c`
+  1853, `app/controllers/src/name_controller.c` 1034,
+  `app/controllers/src/swap_controller.c` 1013) and **3 under `config/src/`**
+  (`boot.c` 3949, `boot_refold_staged.c` 2107, `boot_services.c` 1634).
+  The earlier "2 entries / `app/` has no baseline entry" claim is stale —
+  do not repeat it without re-counting the baseline file. (A 2026-07-11
+  note also listed `config/src/boot_background_workers.c` as baselined;
+  that entry no longer exists — the file is 678 lines, under the 800
+  ceiling, so it correctly has no baseline line.)
 
 **Remaining debt, ranked (tracked as session Waves A–E):**
 
 | Rank | Item | Real numbers | Target ("the zclassic23 way") | Wave |
 |------|------|--------------|-------------------------------|------|
-| 1 | `config/` boot monolith | boot.c **3575** after the 2026-06-30 `boot_snapshot_failure_memory`, `boot_postmortem`, `boot_datadir_lock`, `boot_shutdown_marker`, `boot_stale_locks`, `boot_blocktree_cleanup`, `app_context`, `boot_legacy_blocks`, and `boot_memory_guard` splits, boot_services.c **1675** after the `boot_flyclient` split, boot_refold_staged.c **1840**, boot_index.c **701** — GATED (E1 covers app/ AND config/; baseline entries remain grandfathered in `file_size_ceiling_baseline.txt` and must not be raised) | continue only behavior-preserving extractions that reduce real coupling; larger moves need explicit seam design. Verified ordered plan: `docs/work/boot-decomposition-seams.md` | D |
+| 1 | `config/` boot monolith | boot.c **3949**, boot_services.c **1634**, boot_refold_staged.c **2107** (re-measured 2026-07-12; earlier splits — `boot_snapshot_failure_memory`, `boot_postmortem`, `boot_datadir_lock`, `boot_shutdown_marker`, `boot_stale_locks`, `boot_blocktree_cleanup`, `app_context`, `boot_legacy_blocks`, `boot_memory_guard`, `boot_flyclient` — landed 2026-06-30) — GATED (E1 covers app/ AND config/; baseline entries remain grandfathered in `file_size_ceiling_baseline.txt` and must not be raised) | continue only behavior-preserving extractions that reduce real coupling; larger moves need explicit seam design. Verified ordered plan: `docs/work/boot-decomposition-seams.md` | D |
 | 2 | Storage-adapter seam — **RESOLVED-CLOSED (outbound-only by design)** | `check_raw_sqlite.sh` reports CLEAN, empty allowlist; outbound persistence adapters are real and wired (`adapters/outbound/persistence/`: 13 ports + 13 sqlite impls, writes out through swappable ports — Law 2); the inbound "repository" adapter layer deliberately does NOT exist (Models ARE storage / own reads — Law 5), same reserved-empty-by-design posture as `app/events/` (Rank 5); the 49 raw-sqlite app/ sites are all legit: Models ARE storage (AR internals), Jobs use progress-kv kernel store, Views are read-only introspection | NOT a migration — closed by design; optional future read-only chain_state port stays optional. FRAMEWORK §3 row 8 documents the outbound-only rule. | E (resolved/closed) |
 | 3 | `domain/` fronted by thin `lib/` wrappers | divergent duplicate-name pairs both compile: base58 (38 vs 151), bech32 (24 vs 164), upgrades (122 vs 233) | migrate callers to `domain/`, delete the `lib/` wrapper, seal with `test_domain_*` | A |
 | 4 | Supervisor shape partial | only net/chain/staged_sync declared (6 .c); rest hand-wired in boot_services.c | folds into Rank 1 | D |
 | 5 | `app/events/` empty (0 files) | "reserved" shape; event primitives live in `lib/storage/event_log.c` | **RESOLVED — keep reserved-and-empty by design** (audit: no misplaced Event code; concept owned by `lib/event/` + `lib/storage/event_log` + projections; lone app subscriber is a Service). README + FRAMEWORK §3 row 7 document the keep-empty rule; `events` now in Makefile `APP_DIRS` for build/lint symmetry. | — |
 | 6 | Controller/Service legacy compat | baselines 0 (no NEW violations); import/sync controllers still orchestrate; services keep bare-bool compat APIs | subtraction, not new structure | B/C |
 
-Wave B = split the 8 files at the 800 ceiling; Wave C = rename
-`*_controller`/`*_repository` → `*_service`. Waves A/D/E are deeper
-REFACTOR_STATUS items tracked in the table above.
+Wave B = split the files at the 800 ceiling (the current inventory is the
+21-entry baseline above). Wave C (rename `*_controller`/`*_repository` →
+`*_service` under `app/services/`) is **DONE** — verified 2026-07-12:
+`app/services/src/` contains zero `*_controller.c`/`*_repository.c` files,
+and the lint gate `check-framework-filename-suffix`
+(`tools/lint/check_framework_filename_suffix.sh`, wired into `make lint`)
+is the recurrence guard. Waves A/D/E are deeper REFACTOR_STATUS items
+tracked in the table above.
 
 **Landed waves (historical):**
 
@@ -151,12 +152,12 @@ node soak.
 
 ### E1 Oversized App Files
 
-`tools/scripts/file_size_ceiling_baseline.txt` has 2 grandfathered entries:
-`config/src/boot.c` and `config/src/boot_services.c`. Current oversized review
-targets are `config/src/boot.c` (3575),
-`config/src/boot_services.c` (1675), and
-`config/src/boot_refold_staged.c` (1840, advisory/new). The baseline remains a
-ratchet and should not be raised; shrink these files through
+`tools/scripts/file_size_ceiling_baseline.txt` has **21 grandfathered
+entries** (re-counted 2026-07-12): 18 under `app/` and 3 under
+`config/src/`. The largest review targets are `config/src/boot.c` (3949),
+`config/src/boot_refold_staged.c` (2107), `config/src/boot_services.c`
+(1634), and `app/views/src/explorer_pages_hodl.c` (1853). The baseline
+remains a ratchet and should not be raised; shrink these files through
 behavior-preserving splits or explicit seam designs until the gate can go to
 zero.
 

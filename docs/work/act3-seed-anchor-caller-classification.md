@@ -37,7 +37,7 @@ the frontier cap is exempted and the cursor is set UNCONDITIONALLY.
 ### KEEP / DELETE summary
 
 - **KEEP (3):** `reducer_ingest_service.c:447` (live fold), `reducer_ingest_service.c:470` (regtest bootstrap), `snapshot_apply.c:91` (SHA3-verified fast-sync). These are the live / from-anchor / snapshot consensus-compatible paths the plan keeps. Deleting any of them trips a live predicate (forward-progress finalize, regtest finalize, fast-sync finalize respectively).
-- **DELETE after the cure (2):** `block_index_loader_rebuild.c:745` (legacy cold-import wedge-heal), `reindex_epilogue.c:178` (reindex cold-import seed). Both are the borrowed/imported-tip stamping path; remove them in dependency order per `architecture-deletion-plan.md`, AFTER Act-3 #2 makes the from-anchor refold the default cold start.
+- **DELETE after the cure (2):** `block_index_loader_rebuild.c:745` (legacy cold-import wedge-heal), `reindex_epilogue.c:178` (reindex cold-import seed). Both are the borrowed/imported-tip stamping path; remove them in dependency order per `archive/architecture-deletion-plan.md`, AFTER Act-3 #2 makes the from-anchor refold the default cold start.
 - The plan's prose named 9 callers and 5 in an earlier draft; the live HEAD has **6 production call sites** (2 of them the two `reducer_ingest_service.c` re-seeds), classified above. The plan's headline KEEP/DELETE split holds: KEEP `reducer_ingest_service.c` + `snapshot_apply.c` + the from-anchor refold; DELETE `block_index_loader_rebuild.c` + `reindex_epilogue.c`.
 
 > Note: the plan also names a from-anchor `boot_refold_staged.c` as a KEEP
