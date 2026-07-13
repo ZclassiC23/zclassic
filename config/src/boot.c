@@ -52,6 +52,7 @@
 #include "util/boot_status.h"
 #include "util/ar_step_readonly.h"
 #include "util/signal_handler.h"
+#include "util/self_backtrace.h"
 #include "util/thread_registry.h"
 #include "util/sync.h"
 #include "util/safe_alloc.h"
@@ -352,6 +353,14 @@ static bool boot_step_init_observability(void)
                         "boot without a crash handler\n");
         return false;
     }
+
+    /* Arm the live self-backtrace handler (SIGRTMIN+2) before threads spawn so
+     * every worker inherits it. Non-fatal: a diagnostic surface, not a
+     * correctness gate. Enables `ops.debug.backtrace` to dump all threads on a
+     * running node without perf/gdb. */
+    if (!self_backtrace_install())
+        fprintf(stderr, "WARNING: self_backtrace_install failed; "
+                        "ops.debug.backtrace will be unavailable\n");
 
     db_service_init(&g_db_service);
 
