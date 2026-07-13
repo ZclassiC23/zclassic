@@ -23,6 +23,23 @@ enum store_order_status {
     STORE_ORDER_FAILED = 3
 };
 
+/* Resource-exhaustion bounds on the pending-order pool (see the
+ * order-create gate in app/controllers/src/store_controller.c). Every
+ * unpaid order costs a minted Sapling z-address + a DB row; before this
+ * cap existed, an unauthenticated flood could grow `orders` without
+ * limit. These bound the TOTAL pending pool and the pool for any single
+ * product, so a flood against one product cannot exhaust capacity that
+ * legitimate buyers of other products need. */
+enum {
+    STORE_ORDER_MAX_PENDING_GLOBAL = 1000,
+    STORE_ORDER_MAX_PENDING_PER_PRODUCT = 200,
+    /* An unpaid order older than this already fell outside the payment
+     * scan window (store_process_payments only looks back 3600s), so
+     * pruning at the same threshold discards nothing a late-but-legit
+     * payer could still complete. */
+    STORE_ORDER_PENDING_EXPIRE_SECS = 3600
+};
+
 struct db_store_product {
     int64_t id;
     char name[STORE_PRODUCT_NAME_MAX + 1];
@@ -117,6 +134,25 @@ int db_store_order_list_pending_payments(struct node_db *ndb,
                                          size_t max,
                                          int64_t min_created_at);
 bool db_store_order_mark_paid(struct node_db *ndb, int64_t id, int status);
+
+/* Total STORE_ORDER_PENDING rows currently in the table. Used by the
+ * order-create gate to refuse new orders once the pending pool is full
+ * (see STORE_ORDER_MAX_PENDING_GLOBAL). Returns 0 on any error. */
+int db_store_order_count_pending(struct node_db *ndb);
+
+/* STORE_ORDER_PENDING rows for a single product_id. Bounds any one
+ * product from exhausting the whole pending pool (see
+ * STORE_ORDER_MAX_PENDING_PER_PRODUCT). Returns 0 on any error. */
+int db_store_order_count_pending_for_product(struct node_db *ndb,
+                                             int64_t product_id);
+
+/* Delete STORE_ORDER_PENDING rows older than `max_age_secs` (an unpaid
+ * order that old is abandoned — store_process_payments already stops
+ * scanning for its payment after the same window). This is what keeps
+ * the orders table bounded instead of growing forever: caps alone only
+ * refuse NEW rows, they don't reclaim old ones. Returns the number of
+ * rows deleted (0 on no-op or error). */
+int db_store_order_prune_expired(struct node_db *ndb, int64_t max_age_secs);
 
 /* Payment-check reads. The store payment processor needs the current
  * chain tip (to compute confirmation depth) and the confirmed shielded

@@ -10,7 +10,25 @@
 #include "wallet/wallet.h"
 #include "wallet/sapling_keys.h"
 #include "config/runtime.h"
+#include "net/fast_sync.h"
+#include "models/store.h"
+#include "models/database.h"
+#include "platform/time_compat.h"
+#include <time.h>
 #include <unistd.h>
+
+/* CSRF token + PoW-challenge generation are internal controller security
+ * machinery (defined in store_controller.c, declared in the controller's
+ * private store_controller_internal.h — not part of the public store
+ * surface). Most tests below exercise them end-to-end via HTTP scraping
+ * (fetch_csrf_token / fetch_pow_peer_hex), matching the real client
+ * path; the cap tests use a SYNTHETIC product_id with no real product
+ * row (so there is no page to scrape a token from) and call these
+ * directly instead, mirroring the same forward-declare-only pattern
+ * app/views/src/store_view.c already uses for store_csrf_token/context. */
+void store_csrf_token(const char *context, char out[33]);
+void store_csrf_context(char *out, size_t outmax, int64_t product_id);
+void store_pow_challenge(int64_t product_id, char peer_id_hex[65]);
 
 static char test_datadir[256];
 
@@ -50,6 +68,76 @@ static bool fetch_csrf_token(int64_t product_id, char *out, size_t outmax)
     if (tlen >= outmax) return false;
     memcpy(out, p, tlen);
     out[tlen] = '\0';
+    return true;
+}
+
+/* Fetch the PoW-challenge peer_id embedded in the purchase form for
+ * product_id.  GET /store/product/<id> and scrape value='...' from the
+ * data-pow-peer='...' attribute serve_product_detail writes on
+ * <form id='orderForm'>.  Returns true on success. */
+static bool fetch_pow_peer_hex(int64_t product_id, char *out, size_t outmax)
+{
+    uint8_t page[16384];
+    char path[64];
+    snprintf(path, sizeof(path), "/store/product/%lld", (long long)product_id);
+    size_t n = store_handle_request("GET", path, NULL, 0,
+                                     page, sizeof(page), test_datadir);
+    if (n == 0) return false;
+    page[sizeof(page) - 1] = 0;
+    const char *needle = "data-pow-peer='";
+    const char *p = strstr((char *)page, needle);
+    if (!p) return false;
+    p += strlen(needle);
+    const char *end = strchr(p, '\'');
+    if (!end) return false;
+    size_t tlen = (size_t)(end - p);
+    if (tlen >= outmax) return false;
+    memcpy(out, p, tlen);
+    out[tlen] = '\0';
+    return true;
+}
+
+/* fast_sync_solve_pow searches nonces deterministically from 0 for a
+ * given (peer_id, timestamp) — two solves for the SAME product within
+ * the SAME wall-clock second reproduce the identical (peer,ts,nonce)
+ * tuple, which store_pow_claim_once() would then (correctly) refuse as
+ * a replay of the first. This test file calls the solver repeatedly for
+ * product 1 across nearby test blocks, so always advance to a fresh
+ * second first — the same margin any two independent real buyers get
+ * "for free" from human-scale request spacing. */
+static void wait_for_next_wall_second(void)
+{
+    int64_t start = (int64_t)platform_time_wall_time_t();
+    struct timespec ts = { .tv_sec = 0, .tv_nsec = 10 * 1000 * 1000 };
+    while ((int64_t)platform_time_wall_time_t() == start)
+        nanosleep(&ts, NULL);
+}
+
+/* Solve the product-bound puzzle for product_id (fetching its peer_id
+ * from the real rendered page, then reusing fast_sync_solve_pow — the
+ * same primitive store_pow_verify_and_claim checks with) and format the
+ * pow_ts / pow_nonce form-field values a real client would submit. */
+static bool solve_store_pow_fields(int64_t product_id,
+                                   char *pow_ts_out, size_t ts_max,
+                                   char *pow_nonce_out, size_t nonce_max)
+{
+    char peer_hex[65] = "";
+    uint8_t peer_id[32];
+    struct fast_sync_pow pow;
+
+    wait_for_next_wall_second();
+    if (!fetch_pow_peer_hex(product_id, peer_hex, sizeof(peer_hex)))
+        return false;
+    if (strlen(peer_hex) != 64)
+        return false;
+    for (int i = 0; i < 32; i++) {
+        char b[3] = { peer_hex[i * 2], peer_hex[i * 2 + 1], '\0' };
+        peer_id[i] = (uint8_t)strtoul(b, NULL, 16);
+    }
+    if (!fast_sync_solve_pow(peer_id, &pow))
+        return false;
+    snprintf(pow_ts_out, ts_max, "%lld", (long long)pow.timestamp);
+    snprintf(pow_nonce_out, nonce_max, "%llu", (unsigned long long)pow.nonce);
     return true;
 }
 
@@ -170,17 +258,21 @@ int test_store(void)
     char csrf1[64] = "";
     bool have_csrf1 = fetch_csrf_token(1, csrf1, sizeof(csrf1));
 
-    printf("store: POST /store/buy/1 creates order... ");
+    printf("store: POST /store/buy/1 creates order (valid CSRF + PoW)... ");
     {
-        char body[256];
+        char pow_ts[32] = "", pow_nonce[32] = "";
+        bool have_pow = solve_store_pow_fields(1, pow_ts, sizeof(pow_ts),
+                                               pow_nonce, sizeof(pow_nonce));
+        char body[384];
         snprintf(body, sizeof(body),
-            "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s",
-            csrf1);
+            "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s"
+            "&pow_ts=%s&pow_nonce=%s",
+            csrf1, pow_ts, pow_nonce);
         size_t n = store_handle_request("POST", "/store/buy/1",
                                          (const uint8_t *)body, strlen(body),
                                          resp, sizeof(resp), test_datadir);
         bool ok = (n > 0);
-        ok = ok && have_csrf1;
+        ok = ok && have_csrf1 && have_pow;
         ok = ok && (strstr((char *)resp, "200 OK") != NULL);
         ok = ok && (strstr((char *)resp, "Order #") != NULL);
         ok = ok && (strstr((char *)resp, "t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn") != NULL);
@@ -189,21 +281,119 @@ int test_store(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("store: POST /store/orders REST create works... ");
+    printf("store: POST /store/orders REST create works (valid CSRF + PoW)... ");
     {
-        char body[256];
+        char pow_ts[32] = "", pow_nonce[32] = "";
+        bool have_pow = solve_store_pow_fields(1, pow_ts, sizeof(pow_ts),
+                                               pow_nonce, sizeof(pow_nonce));
+        char body[384];
         snprintf(body, sizeof(body),
-            "product_id=1&customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s",
-            csrf1);
+            "product_id=1&customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn"
+            "&csrf_token=%s&pow_ts=%s&pow_nonce=%s",
+            csrf1, pow_ts, pow_nonce);
         size_t n = store_handle_request("POST", "/store/orders",
                                          (const uint8_t *)body, strlen(body),
                                          resp, sizeof(resp), test_datadir);
-        bool ok = (n > 0);
+        bool ok = (n > 0) && have_pow;
         ok = ok && (strstr((char *)resp, "200 OK") != NULL);
         ok = ok && (strstr((char *)resp, "Order #") != NULL);
         ok = ok && (strstr((char *)resp, "t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn") != NULL);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
+    }
+
+    /* ── PoW order gate (resource-exhaustion mitigation) ──────────
+     * Verified threat: POST /store/orders and /store/buy/:id minted a
+     * z-address + wrote a DB row per request behind CSRF alone. These
+     * prove CSRF no longer suffices for the expensive path, that a
+     * valid puzzle still completes normally, that a solved puzzle
+     * cannot be replayed, and that the mint truly never runs on a
+     * rejected request (order count in the DB is unchanged). */
+    {
+        char dbpath[320];
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", test_datadir);
+
+        printf("store: order WITHOUT pow_ts/pow_nonce refused (CSRF alone insufficient)... ");
+        {
+            struct node_db ndb;
+            memset(&ndb, 0, sizeof(ndb));
+            bool have_db = node_db_open(&ndb, dbpath);
+            int before = have_db ? db_store_order_count_pending(&ndb) : -1;
+            if (have_db) node_db_close(&ndb);
+
+            char body[256];
+            snprintf(body, sizeof(body),
+                "product_id=1&customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn"
+                "&csrf_token=%s",
+                csrf1);
+            size_t n = store_handle_request("POST", "/store/orders",
+                                             (const uint8_t *)body, strlen(body),
+                                             resp, sizeof(resp), test_datadir);
+            memset(&ndb, 0, sizeof(ndb));
+            have_db = node_db_open(&ndb, dbpath);
+            int after = have_db ? db_store_order_count_pending(&ndb) : -2;
+            if (have_db) node_db_close(&ndb);
+
+            bool ok = (n > 0);
+            ok = ok && (strstr((char *)resp, "402") != NULL);
+            ok = ok && (strstr((char *)resp, "Proof of work required") != NULL);
+            ok = ok && (strstr((char *)resp, "Order #") == NULL);
+            /* The strongest proof the mint never ran: the pending-order
+             * row count in the DB is byte-for-byte unchanged. */
+            ok = ok && (before >= 0) && (after == before);
+            if (ok) printf("OK (pending count unchanged: %d)\n", before);
+            else { printf("FAIL (before=%d after=%d)\n", before, after); failures++; }
+        }
+
+        printf("store: order WITH garbage pow_nonce refused (unsolved puzzle)... ");
+        {
+            char body[384];
+            snprintf(body, sizeof(body),
+                "product_id=1&customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn"
+                "&csrf_token=%s&pow_ts=%lld&pow_nonce=0",
+                csrf1, (long long)platform_time_wall_time_t());
+            size_t n = store_handle_request("POST", "/store/orders",
+                                             (const uint8_t *)body, strlen(body),
+                                             resp, sizeof(resp), test_datadir);
+            bool ok = (n > 0);
+            ok = ok && (strstr((char *)resp, "402") != NULL);
+            ok = ok && (strstr((char *)resp, "Order #") == NULL);
+            if (ok) printf("OK\n");
+            else { printf("FAIL\n"); failures++; }
+        }
+
+        printf("store: order with valid PoW puzzle succeeds (legitimate flow intact)... ");
+        {
+            char pow_ts[32] = "", pow_nonce[32] = "";
+            bool have_pow = solve_store_pow_fields(1, pow_ts, sizeof(pow_ts),
+                                                   pow_nonce, sizeof(pow_nonce));
+            char body[384];
+            snprintf(body, sizeof(body),
+                "product_id=1&customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn"
+                "&csrf_token=%s&pow_ts=%s&pow_nonce=%s",
+                csrf1, pow_ts, pow_nonce);
+            size_t n = store_handle_request("POST", "/store/orders",
+                                             (const uint8_t *)body, strlen(body),
+                                             resp, sizeof(resp), test_datadir);
+            bool ok = (n > 0) && have_pow;
+            ok = ok && (strstr((char *)resp, "200 OK") != NULL);
+            ok = ok && (strstr((char *)resp, "Order #") != NULL);
+            if (ok) printf("OK\n");
+            else { printf("FAIL\n"); failures++; }
+
+            /* Replay: resubmitting the EXACT SAME solved puzzle for a
+             * second order must be refused — a flood cannot solve once
+             * and replay for unlimited orders within the ~5-min window. */
+            printf("store: replaying the same solved PoW puzzle is refused... ");
+            size_t n2 = store_handle_request("POST", "/store/orders",
+                                             (const uint8_t *)body, strlen(body),
+                                             resp, sizeof(resp), test_datadir);
+            bool ok2 = (n2 > 0) && have_pow;
+            ok2 = ok2 && (strstr((char *)resp, "402") != NULL);
+            ok2 = ok2 && (strstr((char *)resp, "Order #") == NULL);
+            if (ok2) printf("OK\n");
+            else { printf("FAIL\n"); failures++; }
+        }
     }
 
     printf("store: POST /store/buy/999 returns 404... ");
@@ -305,14 +495,18 @@ int test_store(void)
     printf("store: POST body with %%-encoded customer_addr decodes before validation... ");
     {
         /* Encode the 't' in t1YRB... as %74. */
-        char body[256];
+        char pow_ts[32] = "", pow_nonce[32] = "";
+        bool have_pow = solve_store_pow_fields(1, pow_ts, sizeof(pow_ts),
+                                               pow_nonce, sizeof(pow_nonce));
+        char body[384];
         snprintf(body, sizeof(body),
-            "customer_addr=%%74%%31YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s",
-            csrf1);
+            "customer_addr=%%74%%31YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s"
+            "&pow_ts=%s&pow_nonce=%s",
+            csrf1, pow_ts, pow_nonce);
         size_t n = store_handle_request("POST", "/store/buy/1",
                                          (const uint8_t *)body, strlen(body),
                                          resp, sizeof(resp), test_datadir);
-        bool ok = (n > 0) && (strstr((char *)resp, "200 OK") != NULL);
+        bool ok = (n > 0) && have_pow && (strstr((char *)resp, "200 OK") != NULL);
         /* The decoded address — not the %-encoded form — should be in
          * the order confirmation. */
         ok = ok && (strstr((char *)resp, "t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn") != NULL);
@@ -738,18 +932,22 @@ int test_store(void)
         else { printf("FAIL\n"); failures++; }
     }
 
-    printf("store: e2e: POST /store/buy/1 creates order with z-addr... ");
+    printf("store: e2e: POST /store/buy/1 creates order with z-addr (valid PoW)... ");
     {
         char csrf_e2e[64] = "";
         bool have_csrf = fetch_csrf_token(1, csrf_e2e, sizeof(csrf_e2e));
-        char body[256];
+        char pow_ts[32] = "", pow_nonce[32] = "";
+        bool have_pow = solve_store_pow_fields(1, pow_ts, sizeof(pow_ts),
+                                               pow_nonce, sizeof(pow_nonce));
+        char body[384];
         snprintf(body, sizeof(body),
-            "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s",
-            csrf_e2e);
+            "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s"
+            "&pow_ts=%s&pow_nonce=%s",
+            csrf_e2e, pow_ts, pow_nonce);
         size_t n = store_handle_request("POST", "/store/buy/1",
                                          (const uint8_t *)body, strlen(body),
                                          resp, sizeof(resp), test_datadir);
-        bool ok = (n > 0) && have_csrf;
+        bool ok = (n > 0) && have_csrf && have_pow;
         ok = ok && (strstr((char *)resp, "200 OK") != NULL);
         ok = ok && (strstr((char *)resp, "Order #") != NULL);
         ok = ok && (strstr((char *)resp, "t1YRBXKYLhrb") != NULL);
@@ -1063,18 +1261,25 @@ int test_store(void)
         uint8_t resp[4096];
         char csrf_rb[64] = "";
         fetch_csrf_token(1, csrf_rb, sizeof(csrf_rb));
-        char body[256];
+        char pow_ts[32] = "", pow_nonce[32] = "";
+        bool have_pow = solve_store_pow_fields(1, pow_ts, sizeof(pow_ts),
+                                               pow_nonce, sizeof(pow_nonce));
+        char body[384];
         int blen = snprintf(body, sizeof(body),
-            "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s",
-            csrf_rb);
+            "customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&csrf_token=%s"
+            "&pow_ts=%s&pow_nonce=%s",
+            csrf_rb, pow_ts, pow_nonce);
         size_t n = store_handle_request("POST", "/store/buy/1",
             (const uint8_t *)body, (size_t)blen,
             resp, sizeof(resp), test_datadir);
         resp[n < sizeof(resp) ? n : sizeof(resp) - 1] = '\0';
         /* With no seeded keystore the order MUST NOT be created. The
          * controller serves 503 and NEVER emits a synthetic placeholder
-         * address (zs1_pay_ / zs1_order_). */
-        bool ok = (n > 0);
+         * address (zs1_pay_ / zs1_order_). This also proves the PoW
+         * gate ran and passed here — the 503 comes from INSIDE
+         * serve_create_order (zslp_generate_payment_address failing),
+         * which the gate only reaches after a valid puzzle. */
+        bool ok = (n > 0) && have_pow;
         ok = ok && (strstr((char *)resp, "503") != NULL);
         ok = ok && (strstr((char *)resp, "zs1_order_") == NULL);
         ok = ok && (strstr((char *)resp, "zs1_pay_") == NULL);
@@ -1084,6 +1289,172 @@ int test_store(void)
 
     /* Restore the seeded merchant wallet for any subsequent tests. */
     app_runtime_set_current(&g_store_test_rt);
+
+    /* ── Pending-order pool caps + pruning ──────────────────────
+     * Seed rows directly via db_store_order_save (bypassing HTTP/PoW —
+     * these are DB-shape preconditions, not proof the HTTP path can
+     * reach them; that's proven separately above) to reach the cap
+     * WITHOUT solving hundreds of real puzzles, then prove ONE real
+     * HTTP order-create attempt is refused while the pool is full, and
+     * that pruning reclaims expired rows so it un-refuses. */
+    {
+        char dbpath[320];
+        snprintf(dbpath, sizeof(dbpath), "%s/node.db", test_datadir);
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        bool have_db = node_db_open(&ndb, dbpath);
+
+        printf("store: per-product pending cap refuses a real order when full... ");
+        {
+            /* Fill product 77's (synthetic — no real product row needed,
+             * `orders.product_id` carries no FK) pending pool to the cap. */
+            for (int i = 0; have_db && i < STORE_ORDER_MAX_PENDING_PER_PRODUCT; i++) {
+                struct db_store_order o;
+                memset(&o, 0, sizeof(o));
+                o.product_id = 77;
+                snprintf(o.customer_addr, sizeof(o.customer_addr),
+                         "t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn");
+                snprintf(o.payment_addr, sizeof(o.payment_addr),
+                         "zs1capfill%06d", i);
+                o.amount_zatoshi = 1000000;
+                o.status = STORE_ORDER_PENDING;
+                if (!db_store_order_save(&ndb, &o)) { have_db = false; break; }
+            }
+            int pending77 = have_db
+                ? db_store_order_count_pending_for_product(&ndb, 77) : -1;
+
+            char csrf_ctx77[64], csrf77[33];
+            store_csrf_context(csrf_ctx77, sizeof(csrf_ctx77), 77);
+            store_csrf_token(csrf_ctx77, csrf77);
+            char peer_hex77[65];
+            store_pow_challenge(77, peer_hex77);
+            uint8_t peer_id77[32];
+            for (int i = 0; i < 32; i++) {
+                char b[3] = { peer_hex77[i * 2], peer_hex77[i * 2 + 1], '\0' };
+                peer_id77[i] = (uint8_t)strtoul(b, NULL, 16);
+            }
+            struct fast_sync_pow pow77;
+            memset(&pow77, 0, sizeof(pow77));
+            bool solved77 = fast_sync_solve_pow(peer_id77, &pow77);
+
+            char body[384];
+            snprintf(body, sizeof(body),
+                "product_id=77&customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn"
+                "&csrf_token=%s&pow_ts=%lld&pow_nonce=%llu",
+                csrf77, (long long)pow77.timestamp,
+                (unsigned long long)pow77.nonce);
+            size_t n = store_handle_request("POST", "/store/orders",
+                                             (const uint8_t *)body, strlen(body),
+                                             resp, sizeof(resp), test_datadir);
+            bool ok = have_db && solved77 &&
+                      pending77 == STORE_ORDER_MAX_PENDING_PER_PRODUCT;
+            ok = ok && (n > 0);
+            ok = ok && (strstr((char *)resp, "503") != NULL);
+            ok = ok && (strstr((char *)resp, "Product busy") != NULL);
+            ok = ok && (strstr((char *)resp, "Order #") == NULL);
+            if (ok) printf("OK (pending77=%d, refused)\n", pending77);
+            else { printf("FAIL (have_db=%d solved77=%d pending77=%d)\n",
+                          have_db, solved77, pending77); failures++; }
+        }
+
+        printf("store: prune_expired evicts the cap-filling rows, unblocking a real order... ");
+        {
+            /* The seeded rows above have created_at="now" (db_store_order_save
+             * defaults it), so pruning at the real expiry window would NOT
+             * evict them yet — prove prune is a no-op on FRESH rows, then
+             * age them out with a 0-second window (still >= created_at,
+             * i.e. "everything") to prove the DELETE path itself works and
+             * actually shrinks the count. */
+            int fresh_pruned = have_db
+                ? db_store_order_prune_expired(&ndb, STORE_ORDER_PENDING_EXPIRE_SECS)
+                : -1;
+            int before = have_db
+                ? db_store_order_count_pending_for_product(&ndb, 77) : -1;
+            /* A 0-second window means "created before right now" — cross
+             * into the next wall-clock second first so rows created a
+             * moment ago (same second as this call) are strictly older
+             * than the cutoff, not tied with it. */
+            if (have_db) wait_for_next_wall_second();
+            int aged_pruned = have_db
+                ? db_store_order_prune_expired(&ndb, 0) : -1;
+            int after = have_db
+                ? db_store_order_count_pending_for_product(&ndb, 77) : -1;
+
+            bool ok = have_db && fresh_pruned == 0 &&
+                      before == STORE_ORDER_MAX_PENDING_PER_PRODUCT &&
+                      aged_pruned >= STORE_ORDER_MAX_PENDING_PER_PRODUCT &&
+                      after == 0;
+            if (ok) printf("OK (fresh_pruned=%d before=%d aged_pruned=%d after=%d)\n",
+                            fresh_pruned, before, aged_pruned, after);
+            else {
+                printf("FAIL (fresh_pruned=%d before=%d aged_pruned=%d after=%d)\n",
+                       fresh_pruned, before, aged_pruned, after);
+                failures++;
+            }
+        }
+
+        printf("store: global pending cap refuses a real order when full (product cap not tripped)... ");
+        {
+            /* Spread STORE_ORDER_MAX_PENDING_GLOBAL rows across many
+             * synthetic product_ids so each stays under the PER-PRODUCT
+             * cap while the GLOBAL total reaches its cap — isolates the
+             * "Store busy" (global) message from "Product busy". */
+            enum { SPREAD = 10 };
+            bool seed_ok = have_db;
+            for (int i = 0; seed_ok && i < STORE_ORDER_MAX_PENDING_GLOBAL; i++) {
+                struct db_store_order o;
+                memset(&o, 0, sizeof(o));
+                o.product_id = 9000 + (i % SPREAD);
+                snprintf(o.customer_addr, sizeof(o.customer_addr),
+                         "t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn");
+                snprintf(o.payment_addr, sizeof(o.payment_addr),
+                         "zs1globalfill%06d", i);
+                o.amount_zatoshi = 1000000;
+                o.status = STORE_ORDER_PENDING;
+                if (!db_store_order_save(&ndb, &o)) { seed_ok = false; break; }
+            }
+            int pending_global = seed_ok
+                ? db_store_order_count_pending(&ndb) : -1;
+            /* Product 1 (a real, unrelated product) has 0 rows of its own. */
+            int pending1 = seed_ok
+                ? db_store_order_count_pending_for_product(&ndb, 1) : -1;
+
+            char pow_ts[32] = "", pow_nonce[32] = "";
+            bool have_pow = solve_store_pow_fields(1, pow_ts, sizeof(pow_ts),
+                                                   pow_nonce, sizeof(pow_nonce));
+            char body[384];
+            snprintf(body, sizeof(body),
+                "product_id=1&customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn"
+                "&csrf_token=%s&pow_ts=%s&pow_nonce=%s",
+                csrf1, pow_ts, pow_nonce);
+            size_t n = store_handle_request("POST", "/store/orders",
+                                             (const uint8_t *)body, strlen(body),
+                                             resp, sizeof(resp), test_datadir);
+            bool ok = seed_ok && have_pow &&
+                      pending_global >= STORE_ORDER_MAX_PENDING_GLOBAL &&
+                      pending1 < STORE_ORDER_MAX_PENDING_PER_PRODUCT;
+            ok = ok && (n > 0);
+            ok = ok && (strstr((char *)resp, "503") != NULL);
+            ok = ok && (strstr((char *)resp, "Store busy") != NULL);
+            ok = ok && (strstr((char *)resp, "Order #") == NULL);
+            if (ok) printf("OK (pending_global=%d, refused)\n", pending_global);
+            else { printf("FAIL (seed_ok=%d have_pow=%d pending_global=%d pending1=%d)\n",
+                          seed_ok, have_pow, pending_global, pending1); failures++; }
+
+            /* Clean up: the pruning test above only ages out product 77's
+             * rows via an explicit test call; these globalfill rows are
+             * still "fresh" by created_at, so remove them directly here
+             * rather than leaving 1000 rows for every later test in this
+             * function to scan past. Cross a wall-clock second first —
+             * same reasoning as the prune test above. */
+            if (seed_ok) {
+                wait_for_next_wall_second();
+                db_store_order_prune_expired(&ndb, 0);
+            }
+        }
+
+        if (have_db) node_db_close(&ndb);
+    }
 
     /* ── Robustness: products.json loading ── */
     printf("store: loads products from JSON file... ");

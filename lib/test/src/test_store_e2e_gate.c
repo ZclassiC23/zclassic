@@ -33,6 +33,7 @@
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
 #include "config/runtime.h"
+#include "net/fast_sync.h"
 
 #include <unistd.h>
 
@@ -142,6 +143,59 @@ static bool p11_5_fetch_csrf_token(const char *datadir,
     return true;
 }
 
+/* Fetch the product-bound PoW peer_id (see serve_product_detail's
+ * data-pow-peer='...' attribute) and solve it via fast_sync_solve_pow —
+ * the same primitive store_pow_verify_and_claim() checks with — so this
+ * gate's order-create exercises the REAL gate, not a bypass. Formats
+ * the pow_ts / pow_nonce values a real client would submit. */
+static bool p11_5_solve_store_pow(const char *datadir,
+                                  int64_t product_id,
+                                  char *pow_ts_out, size_t ts_max,
+                                  char *pow_nonce_out, size_t nonce_max)
+{
+    uint8_t page[16384];
+    char path[64];
+    const char *needle = "data-pow-peer='";
+    const char *p, *end;
+    size_t n, hex_len;
+    char peer_hex[65];
+    uint8_t peer_id[32];
+    struct fast_sync_pow pow;
+
+    if (!datadir || !pow_ts_out || !pow_nonce_out)
+        return false;
+
+    snprintf(path, sizeof(path), "/store/product/%lld", (long long)product_id);
+    n = store_handle_request("GET", path, NULL, 0,
+                             page, sizeof(page), datadir);
+    if (n == 0)
+        return false;
+    page[(n < sizeof(page)) ? n : (sizeof(page) - 1)] = '\0';
+    p = strstr((const char *)page, needle);
+    if (!p)
+        return false;
+    p += strlen(needle);
+    end = strchr(p, '\'');
+    if (!end)
+        return false;
+    hex_len = (size_t)(end - p);
+    if (hex_len != 64)
+        return false;
+    memcpy(peer_hex, p, 64);
+    peer_hex[64] = '\0';
+
+    for (int i = 0; i < 32; i++) {
+        char b[3] = { peer_hex[i * 2], peer_hex[i * 2 + 1], '\0' };
+        peer_id[i] = (uint8_t)strtoul(b, NULL, 16);
+    }
+    memset(&pow, 0, sizeof(pow));
+    if (!fast_sync_solve_pow(peer_id, &pow))
+        return false;
+    snprintf(pow_ts_out, ts_max, "%lld", (long long)pow.timestamp);
+    snprintf(pow_nonce_out, nonce_max, "%llu", (unsigned long long)pow.nonce);
+    return true;
+}
+
 static bool p11_5_seed_tip_block(struct node_db *ndb, int height)
 {
     struct db_block blk;
@@ -234,12 +288,16 @@ int test_store_e2e_gate(void)
 
         if (ok) fail_step = "fetch csrf";
         ok = ok && p11_5_fetch_csrf_token(datadir, 1, csrf, sizeof(csrf));
+        char pow_ts[32] = "", pow_nonce[32] = "";
+        if (ok) fail_step = "solve pow";
+        ok = ok && p11_5_solve_store_pow(datadir, 1, pow_ts, sizeof(pow_ts),
+                                         pow_nonce, sizeof(pow_nonce));
         if (ok) {
             fail_step = "create order";
             snprintf(body, sizeof(body),
                      "product_id=1&customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn"
-                     "&csrf_token=%s",
-                     csrf);
+                     "&csrf_token=%s&pow_ts=%s&pow_nonce=%s",
+                     csrf, pow_ts, pow_nonce);
             n = store_handle_request("POST", "/store/orders",
                                      (const uint8_t *)body, strlen(body),
                                      resp, sizeof(resp), datadir);
@@ -518,12 +576,16 @@ int test_store_e2e_shielded(void)
     /* (1) Create an order through the HTTP controller (same as the gate). */
     if (ok) fail_step = "fetch csrf";
     ok = ok && p11_5_fetch_csrf_token(datadir, 1, csrf, sizeof(csrf));
+    char pow_ts[32] = "", pow_nonce[32] = "";
+    if (ok) fail_step = "solve pow";
+    ok = ok && p11_5_solve_store_pow(datadir, 1, pow_ts, sizeof(pow_ts),
+                                     pow_nonce, sizeof(pow_nonce));
     if (ok) {
         fail_step = "create order";
         snprintf(body, sizeof(body),
                  "product_id=1&customer_addr=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn"
-                 "&csrf_token=%s",
-                 csrf);
+                 "&csrf_token=%s&pow_ts=%s&pow_nonce=%s",
+                 csrf, pow_ts, pow_nonce);
         n = store_handle_request("POST", "/store/orders",
                                  (const uint8_t *)body, strlen(body),
                                  resp, sizeof(resp), datadir);
