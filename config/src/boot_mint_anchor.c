@@ -244,8 +244,12 @@ bool boot_mint_anchor_run(const char *datadir)
     }
 
     /* Collect the live SHIELDED frontier at the anchor (Sapling + Sprout
-     * commitment-tree frontiers + the nullifier set) so the artifact is a
-     * SELF-VERIFIED v3 snapshot, not a coins-only borrow. FAIL LOUD if the
+     * commitment-tree frontiers + the nullifier set) so the legacy artifact is
+     * a locally self-minted current-state candidate, not a coins-only borrow.
+     * It still omits historical anchor rows and therefore is not a complete
+     * sovereign bundle. The transparent set is checked against the compiled
+     * checkpoint; Sprout and nullifier completeness still require the canonical
+     * bundle proof manifest and copy proof. FAIL LOUD if the
      * frontier is unavailable — never emit a coins-only snapshot mislabeled
      * shielded (the birth-defect this cure exists to close). */
     struct snapshot_shielded shielded;
@@ -329,7 +333,8 @@ bool boot_mint_anchor_run(const char *datadir)
     fprintf(stderr,
             "[mint-anchor] SUCCESS: minted the verified anchor UTXO set at h=%d "
             "(count=%llu, supply=%lld zatoshi, coins_sha3=%s) — matches the "
-            "compiled checkpoint. Self-verified v3 shielded snapshot artifact: "
+            "compiled checkpoint. Locally self-minted legacy v3 current-state "
+            "candidate (history incomplete; canonical bundle not yet emitted): "
             "%s\n",
             anchor, (unsigned long long)got_count, (long long)got_supply,
             sha3_hex, out_path);

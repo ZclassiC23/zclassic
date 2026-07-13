@@ -1,15 +1,14 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * boot_shielded_seed — install the v3-snapshot SHIELDED consensus state (the
- * birth-defect cure) when seeding via -load-snapshot-at-own-height.
+ * boot_shielded_seed — legacy USS v3 current-state import adapter used by
+ * -load-snapshot-at-own-height. This is not the sovereign history cure.
  *
- * The v3 UTXO snapshot carries the Sapling + Sprout commitment-tree frontiers
- * and the complete nullifier set (storage/snapshot_shielded.h). These helpers
- * capture those regions from the SHA3-verified snapshot and install them into
- * anchor_kv + nullifier_kv, so a fresh seeded node can resolve the first
- * post-seed shielded transaction's anchor WITHOUT borrowing a zclassicd
- * chainstate. Split out of boot_refold_staged.c to keep that mega-module under
- * the file-size ceiling.
+ * The v3 UTXO snapshot carries current Sapling/Sprout commitment-tree frontiers
+ * and nullifier rows (storage/snapshot_shielded.h), but no independently proven
+ * complete history. These helpers install the useful current state while
+ * retaining positive anchor/nullifier history-gap cursors. ZClassic headers
+ * bind the Sapling frontier root only; they do not bind UTXOs, old anchors,
+ * Sprout state, or nullifiers.
  */
 
 #ifndef CONFIG_BOOT_SHIELDED_SEED_H
@@ -24,7 +23,8 @@ struct uss_handle;
 
 /* Capture the shielded section from an OPEN, SHA3-verified snapshot handle into
  * heap copies (the caller frees). v2 copies ONLY the Sapling frontier (leaving
- * *shielded_v3 false, so the v3 cure does not engage). v3 copies the Sapling +
+ * *shielded_v3 false, so the current-state adapter does not engage). v3 copies
+ * the Sapling +
  * Sprout frontiers + the nullifier set and, on a full capture, sets
  * *shielded_v3 = true. Sapling is only copied when *sapling is still NULL. On
  * OOM the partial v3 copies are freed and *shielded_v3 stays false (the caller
@@ -35,14 +35,25 @@ void boot_capture_shielded(struct uss_handle *h, bool load_ok,
                            uint8_t **sprout, uint32_t *sprout_len,
                            uint8_t **nfs, uint64_t *nf_count);
 
+/* Before an assisted snapshot may clear/reseed coins, durably clear stale
+ * shielded rows and publish a positive unknown-history boundary. This owns its
+ * transaction, so any later interruption leaves conservative provenance. */
+bool boot_shielded_prepare_assisted_boundary(struct sqlite3 *rpdb, int seed_h);
+
+#ifdef ZCL_TESTING
+void boot_shielded_interrupt_after_boundary_for_test(bool enabled);
+bool boot_shielded_consume_boundary_interrupt_for_test(void);
+#endif
+
 /* In the caller's ALREADY-OPEN progress.kv transaction, either:
- *   - (cure) when a v3 shielded section was captured AND its Sapling frontier
+ *   - when a v3 shielded section was captured AND its Sapling frontier
  *     ALREADY root-verified against hashFinalSaplingRoot (sapling_verified):
- *     reset the anchor adoption cursor to 0 (history complete), install the
- *     root-verified Sapling frontier row (fail-closed on any mismatch), add the
- *     Sprout frontier, and bulk-add the nullifier set; or
- *   - (default) reset the anchor adoption cursor to seed_h over EMPTY tables
- *     (today's behavior — HISTORY_INCOMPLETE until a body replay backfills).
+ *     retain seed_h as the incomplete-history cursor, install the root-verified
+ *     current Sapling frontier (fail-closed on mismatch), optionally add the
+ *     current Sprout frontier, bulk-add supplied nullifier rows, and persist a
+ *     positive nullifier gap marker; or
+ *   - (default) reset anchor and nullifier adoption cursors to seed_h over
+ *     empty state (HISTORY_INCOMPLETE until a body replay backfills).
  * Returns true on success, false (caller rolls back + fails closed) on any
  * error — INCLUDING a Sapling root-verify failure: an unverified/partial
  * shielded state is never seeded. */

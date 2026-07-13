@@ -266,6 +266,9 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(domain_encoding_base58) X(domain_encoding_bech32) \
     X(block_log_file) X(block_log_legacy) X(replay_verify) \
     X(utxo_snapshot_inmem) X(snapshot_apply_coins_kv) \
+    X(consensus_state_snapshot_install) \
+    X(consensus_state_snapshot_export) \
+    X(consensus_state_chain_binding) \
     X(hodl_history_port) X(node_health_store_port) \
     X(db_maintenance_port) X(wallet_backup_port) \
     X(snapshot_store_port) \

@@ -175,7 +175,7 @@ struct app_context {
                                  * EXPLICIT-ONLY recovery (NEVER fires on a normal
                                  * boot — NULL unless the operator sets the flag).
                                  * Seed coins_kv from a ZCLUTXO snapshot at the
-                                 * snapshot's OWN header height, SELF-verified against
+                                 * snapshot's OWN header height after verifying
                                  * the file's OWN body SHA3 (uss_open verify_full_sha3
                                  * with expected_sha3=NULL) + hdr.count == records
                                  * parsed — NOT bound to the compiled checkpoint. Then
@@ -185,7 +185,8 @@ struct app_context {
                                  * FORWARD over on-disk bodies from there. For a
                                  * snapshot taken ABOVE the compiled checkpoint (does
                                  * not cross it). Owner-gated; FATAL-refuses if the
-                                 * self-verify fails (never seeds an unproven set). */
+                                 * body-digest/count checks fail. Passing those checks
+                                 * proves file integrity, not state provenance. */
     bool load_verify_boot;     /* -load-verify-boot : on a NORMAL boot, AUTO-DETECT
                                  * a baked, SHA3-verified anchor snapshot
                                  * (<datadir>/utxo-anchor.snapshot or
@@ -222,17 +223,16 @@ bool app_init(struct app_context *ctx);
 void app_shutdown(void);
 void app_shutdown_offline(void);
 
-/* -refold-staged (impl in config/src/boot_refold_staged.c): boot_refold_staged_init
- * caches the durable refold_in_progress signal before the reducer starts (thin
- * wrapper over refold_progress_boot_init; no-op on a normal boot). _reset wipes
- * the staged reducer's derived state to genesis so the pipeline re-folds forward
- * over on-disk block BODIES. Owner-gated; progress.kv + node.db mirror only. */
+/* Legacy -refold-staged is contained before boot writes: its ordinary reducer
+ * replay cannot own the bounded shielded-history completion transaction. The
+ * init helper remains for the private offline mint driver and normal restart
+ * cache restoration; `preflight` returns false when the legacy flag is set. */
 struct node_db;
 void boot_refold_staged_init(bool refold_staged);
-void boot_refold_staged_reset(struct node_db *ndb);
+bool boot_refold_staged_preflight(bool refold_staged);
 
-/* -refold-from-anchor (B2; impl in config/src/boot_refold_staged.c): sibling of
- * boot_refold_staged_reset that FULL-resets coins_kv, RE-SEEDS the SHA3-verified
+/* -refold-from-anchor (B2; impl in config/src/boot_refold_staged.c): FULL-resets
+ * coins_kv, RE-SEEDS the SHA3-verified
  * anchor coin set from node.db's `utxos` mirror, HARD-ASSERTS it against the
  * compiled checkpoint (commitment + count; FATAL + _exit on mismatch), forces the
  * 8 stage cursors to the ANCHOR (not genesis), sets coins_applied_height =
@@ -257,25 +257,30 @@ bool boot_refold_from_anchor_artifact_available(struct node_db *ndb,
 
 /* -load-snapshot-at-own-height=PATH (impl in config/src/boot_refold_staged.c):
  * EXPLICIT-ONLY recovery loader. Sibling of boot_refold_from_anchor_reset EXCEPT
- * the snapshot is SELF-verified against its OWN header SHA3 (uss_open
+ * the snapshot body is digest-verified against its OWN header SHA3 (uss_open
  * verify_full_sha3=true, expected_sha3=NULL) — NOT bound to the compiled
  * checkpoint — and the fold resumes at the snapshot's OWN header height, not the
  * compiled anchor. Used to seed coins_kv from a SHA3-internally-consistent
  * UTXO-set dump taken at a height ABOVE the compiled checkpoint (so it never
- * crosses the checkpoint and the anchor self-mint hook is irrelevant). The ONLY
- * trust gate is: body SHA3 == hdr.sha3_hash AND records_parsed == hdr.count; on
- * failure it LOG_FAILs and FATAL-refuses (never seeds). Forces the 8 stage
+ * crosses the checkpoint and the anchor self-mint hook is irrelevant).
+ * File-integrity gates require body SHA3 == hdr.sha3_hash AND
+ * records_parsed == hdr.count; the separate active-chain check below verifies
+ * only the named height/hash location. Neither proves the UTXO, Sprout, or
+ * nullifier contents against ZClassic consensus. On integrity failure it
+ * LOG_FAILs and FATAL-refuses. Forces the 8 stage
  * cursors to hdr.height, sets applied = hdr.height+1, seeds the tip_finalize
  * anchor at hdr.height with hdr.anchor_block_hash, then the staged pipeline folds
  * FORWARD over on-disk BODIES from hdr.height. Caller must have passed a non-NULL
  * `path` (from ctx->load_snapshot_at_own_height); a normal boot never calls it.
  *
- * CONSENSUS CROSS-CHECK: `ms` is the live main_state whose in-memory active
- * chain (populated by the prior block-index load) is consulted to bind the
- * snapshot's hdr.anchor_block_hash to the PoW-proven header at seed_h — a
- * mismatch is FATAL, so a self-consistent-but-FORGED snapshot can never seed
- * coins_kv. `ms` may be NULL only in unit tests with no chain loaded (the
- * binding is then skipped with a loud warning).
+ * CHAIN-LOCATION CROSS-CHECK: `ms` is the live main_state whose in-memory
+ * active chain (populated by the prior block-index load) is consulted to match
+ * the snapshot's hdr.anchor_block_hash to the validated header at seed_h. A
+ * mismatch is FATAL, so state cannot be installed at a different chain
+ * location. This check does not authenticate the snapshot contents because
+ * ZClassic headers commit no UTXO, Sprout, or nullifier roots. `ms` may be NULL
+ * only in unit tests with no chain loaded (the check is then skipped with a
+ * loud warning).
  *
  * `trust_existing_block_files` is true for legacy-import/datadir boots, where a
  * non-empty blk file is a trusted local body source. It is false for
@@ -313,32 +318,34 @@ bool boot_snapshot_apply_to_coins_kv(struct sqlite3 *progress_db,
 
 /* Zero-flag starter-pack bootstrap. Scan `datadir` for a starter-pack bundle —
  * block_index.bin (the PoW header index) plus a utxo-seed-<H>.snapshot (a
- * SHA3-self-verified, anchor-bound UTXO seed) — and return a malloc'd absolute
+ * digest-verified, chain-location-checked UTXO seed) — and return a malloc'd absolute
  * path to the snapshot the loader should seed from, or NULL when no usable
  * bundle is present. The highest-height snapshot wins; a snapshot with no
  * block_index.bin alongside it is declined (logged) because the loader needs the
- * header chain for its consensus anchor cross-check. The CALLER must gate on
+ * header chain for its chain-location cross-check. The CALLER must gate on
  * coins_kv NOT yet being the proven authority so a synced node is never
- * re-seeded; the loader itself still self-verifies + anchor-binds, so this only
+ * re-seeded; the loader still verifies bytes + chain location, so this only
  * ever auto-selects a file the explicit -load-snapshot-at-own-height flag could
  * have loaded. Caller owns the returned string (free()). */
 char *boot_autodetect_bundle_snapshot(const char *datadir);
 
-/* FIX 3 seam — PURE consensus cross-check for the forged-snapshot FATAL inside
+/* FIX 3 seam — PURE chain-location cross-check for the snapshot FATAL inside
  * boot_load_snapshot_at_own_height_reset. The loaded snapshot's
  * hdr.anchor_block_hash MUST byte-equal this node's PoW-proven header hash at
  * the snapshot height; on mismatch the loader FATALs (refuses a forged /
- * wrong-chain snapshot) rather than seeding contaminated coins. Both inputs are
- * 32 raw bytes (internal little-endian). Returns true iff the snapshot is
- * consensus-bound to this chain (the two hashes are byte-identical). NULL on
+ * wrong-chain snapshot) rather than seeding state at the wrong height/hash.
+ * This does not prove the UTXO or shielded payload: ZClassic headers commit no
+ * such state roots. Both inputs are 32 raw bytes (internal little-endian).
+ * Returns true iff the snapshot names this chain location (the two hashes are
+ * byte-identical). NULL on
  * either side is treated as a non-match (refuse). Behavior-identical to the
  * inline `memcmp(bi->hashBlock.data, hdr.anchor_block_hash, 32) == 0`. */
 bool boot_snapshot_anchor_hash_matches(const unsigned char *index_block_hash,
                                        const unsigned char *snapshot_anchor_hash);
 
 /* -mint-anchor (impl in config/src/boot_refold_staged.c): the ANCHOR-SET MINT
- * boot-time reset. Resets the staged reducer to GENESIS (delegates to
- * boot_refold_staged_reset) AND caps the fold at the compiled SHA3 UTXO
+ * boot-time reset. Uses its private offline genesis reset and caps the fold at
+ * the compiled SHA3 UTXO
  * checkpoint anchor (mint_fold_ceiling_set), so the staged pipeline re-folds
  * genesis..anchor over on-disk BODIES and then converges AT the anchor. Marks
  * refold_in_progress (progress.kv) so the L0 floor drops to 0 while the fold

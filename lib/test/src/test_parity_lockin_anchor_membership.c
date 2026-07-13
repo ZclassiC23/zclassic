@@ -18,6 +18,7 @@
 #include "primitives/block.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "storage/anchor_kv.h"
+#include "storage/nullifier_kv.h"
 #include "util/safe_alloc.h"
 
 #include <sqlite3.h>
@@ -402,7 +403,83 @@ static int test_reducer_atomicity(void)
     return failures;
 }
 
+static int test_bounded_full_replay_frontier(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    L7_CHECK("open bounded full-replay store",
+             sqlite3_open(":memory:", &db) == SQLITE_OK);
+    if (!db)
+        return failures + 1;
+    L7_CHECK("bounded replay reset keeps all histories incomplete",
+             shielded_history_begin_full_replay(db, 0));
+    {
+        int64_t sprout = -1, sapling = -1, nf = -1;
+        bool sf = false, zf = false, nf_found = false;
+        L7_CHECK("bounded replay publishes positive markers before genesis",
+                 anchor_kv_activation_cursor(
+                     db, ANCHOR_POOL_SPROUT, &sprout, &sf) &&
+                 anchor_kv_activation_cursor(
+                     db, ANCHOR_POOL_SAPLING, &sapling, &zf) &&
+                 nullifier_kv_activation_cursor(db, &nf, &nf_found) &&
+                 sf && zf && nf_found && sprout == 1 && sapling == 1 &&
+                 nf == 1);
+    }
+
+    struct block blk;
+    L7_CHECK("construct bounded replay Sprout block",
+             block_with_joinsplit(&blk));
+    struct incremental_merkle_tree expected_tree;
+    struct uint256 expected_root;
+    sprout_tree_init(&expected_tree);
+    incremental_tree_append(
+        &expected_tree, &blk.vtx[0].v_joinsplit[0].commitments[0]);
+    incremental_tree_append(
+        &expected_tree, &blk.vtx[0].v_joinsplit[0].commitments[1]);
+    incremental_tree_root(&expected_tree, &expected_root);
+
+    struct delta_summary summary;
+    summary_init(&summary);
+    L7_CHECK("normal reducer transaction begins under positive marker",
+             sql_ok(db, "BEGIN IMMEDIATE"));
+    L7_CHECK("normal reducer cannot borrow replay empty-frontier authority",
+             utxo_apply_check_and_insert_anchors(
+                 db, &blk, 0, &summary) && !summary.ok);
+    L7_CHECK("normal reducer refusal rolls back", sql_ok(db, "ROLLBACK"));
+
+    summary_init(&summary);
+    L7_CHECK("bounded replay transaction begins",
+             sql_ok(db, "BEGIN IMMEDIATE"));
+    bool folded = utxo_apply_check_and_insert_anchors_full_replay(
+        db, &blk, 0, &summary);
+    L7_CHECK("bounded genesis replay uses protocol empty frontier",
+             folded && summary.ok);
+    L7_CHECK("bounded session advances with the anchor write",
+             folded && summary.ok &&
+             shielded_history_full_replay_advance_in_tx(db, 0, 0));
+    L7_CHECK("bounded replay transaction commits",
+             sql_ok(db, "COMMIT"));
+    {
+        int64_t cursor = -1;
+        bool found = false;
+        L7_CHECK("finished replay stays externally incomplete before epilogue",
+                 anchor_kv_activation_cursor(
+                     db, ANCHOR_POOL_SPROUT, &cursor, &found) &&
+                 found && cursor == 1);
+    }
+    L7_CHECK("successful target epilogue publishes all completeness",
+             shielded_history_publish_full_replay_complete(db, 0));
+    L7_CHECK("replayed Sprout frontier remains after completion",
+             anchor_kv_get(db, ANCHOR_POOL_SPROUT, &expected_root,
+                           NULL, NULL) == ANCHOR_KV_FOUND);
+
+    block_free(&blk);
+    sqlite3_close(db);
+    return failures;
+}
+
 int test_parity_lockin_anchor_membership(void)
 {
-    return test_membership_predicate() + test_reducer_atomicity();
+    return test_membership_predicate() + test_reducer_atomicity() +
+           test_bounded_full_replay_frontier();
 }

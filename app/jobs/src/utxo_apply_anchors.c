@@ -11,6 +11,7 @@
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "storage/anchor_kv.h"
+#include "storage/nullifier_kv.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
 
@@ -91,14 +92,36 @@ static const struct transaction *first_anchor_tx(const struct block *blk,
     return NULL;
 }
 
+static enum anchor_kv_lookup_result latest_tree_for_fold(
+    sqlite3 *db, int pool, int height, bool full_replay,
+    struct incremental_merkle_tree *tree)
+{
+    enum anchor_kv_lookup_result result = anchor_kv_latest_tree(
+        db, pool, tree, NULL, NULL);
+    if (result != ANCHOR_KV_HISTORY_INCOMPLETE || !full_replay)
+        return result;
+    /* Only the bounded genesis replay may use an implicit empty frontier while
+     * its public marker remains positive. The session proves exact next height,
+     * and the per-pool started bit prevents an unexpectedly cleared table from
+     * being reinterpreted as "no commitments yet" later in the replay. */
+    if (!shielded_history_full_replay_empty_frontier_allowed(
+            db, pool, height))
+        return result;
+    if (pool == ANCHOR_POOL_SPROUT)
+        sprout_tree_init(tree);
+    else
+        sapling_tree_init(tree);
+    return ANCHOR_KV_FOUND;
+}
+
 static bool fold_sprout(sqlite3 *db, const struct block *blk, int height,
-                        struct delta_summary *summary)
+                        struct delta_summary *summary, bool full_replay)
 {
     if (!block_has_sprout_commitments(blk))
         return true;
     struct incremental_merkle_tree tree;
-    enum anchor_kv_lookup_result lr = anchor_kv_latest_tree(
-        db, ANCHOR_POOL_SPROUT, &tree, NULL, NULL);
+    enum anchor_kv_lookup_result lr = latest_tree_for_fold(
+        db, ANCHOR_POOL_SPROUT, height, full_replay, &tree);
     if (lr == ANCHOR_KV_ERROR)
         return false;
     if (lr != ANCHOR_KV_FOUND) {
@@ -114,17 +137,23 @@ static bool fold_sprout(sqlite3 *db, const struct block *blk, int height,
                 incremental_tree_append(
                     &tree, &tx->v_joinsplit[j].commitments[k]);
     }
-    return anchor_kv_add_tree(db, ANCHOR_POOL_SPROUT, &tree, height);
+    if (!anchor_kv_add_tree(db, ANCHOR_POOL_SPROUT, &tree, height))
+        LOG_RETURN(false, ANCHOR_STAGE_SUBSYS,
+                   "[utxo_apply] Sprout frontier persist failed h=%d",
+                   height);
+    return !full_replay ||
+        shielded_history_full_replay_mark_pool_started_in_tx(
+            db, ANCHOR_POOL_SPROUT, height);
 }
 
 static bool fold_sapling(sqlite3 *db, const struct block *blk, int height,
-                         struct delta_summary *summary)
+                         struct delta_summary *summary, bool full_replay)
 {
     if (!block_has_sapling_commitments(blk))
         return true;
     struct incremental_merkle_tree tree;
-    enum anchor_kv_lookup_result lr = anchor_kv_latest_tree(
-        db, ANCHOR_POOL_SAPLING, &tree, NULL, NULL);
+    enum anchor_kv_lookup_result lr = latest_tree_for_fold(
+        db, ANCHOR_POOL_SAPLING, height, full_replay, &tree);
     if (lr == ANCHOR_KV_ERROR)
         return false;
     if (lr != ANCHOR_KV_FOUND) {
@@ -156,13 +185,19 @@ static bool fold_sapling(sqlite3 *db, const struct block *blk, int height,
             return true;
         }
     }
-    return anchor_kv_add_tree(db, ANCHOR_POOL_SAPLING, &tree, height);
+    if (!anchor_kv_add_tree(db, ANCHOR_POOL_SAPLING, &tree, height))
+        LOG_RETURN(false, ANCHOR_STAGE_SUBSYS,
+                   "[utxo_apply] Sapling frontier persist failed h=%d",
+                   height);
+    return !full_replay ||
+        shielded_history_full_replay_mark_pool_started_in_tx(
+            db, ANCHOR_POOL_SAPLING, height);
 }
 
-bool utxo_apply_check_and_insert_anchors(sqlite3 *db,
-                                         const struct block *blk,
-                                         int height,
-                                         struct delta_summary *summary)
+static bool check_and_insert_anchors(sqlite3 *db, const struct block *blk,
+                                     int height,
+                                     struct delta_summary *summary,
+                                     bool full_replay)
 {
     if (!db || !blk || !summary || height < 0) {
         LOG_WARN(ANCHOR_STAGE_SUBSYS,
@@ -204,11 +239,26 @@ bool utxo_apply_check_and_insert_anchors(sqlite3 *db,
     /* PushAnchor happens only after EVERY transaction was checked, exactly as
      * zclassicd ConnectBlock: roots made by an earlier tx in this block cannot
      * satisfy a later tx (only same-tx Sprout intermediates can). */
-    if (!fold_sprout(db, blk, height, summary) || !summary->ok)
+    if (!fold_sprout(db, blk, height, summary, full_replay) || !summary->ok)
         return summary->ok ? false : true;
-    if (!fold_sapling(db, blk, height, summary) || !summary->ok)
+    if (!fold_sapling(db, blk, height, summary, full_replay) || !summary->ok)
         return summary->ok ? false : true;
     return true;
+}
+
+bool utxo_apply_check_and_insert_anchors(sqlite3 *db,
+                                         const struct block *blk,
+                                         int height,
+                                         struct delta_summary *summary)
+{
+    return check_and_insert_anchors(db, blk, height, summary, false);
+}
+
+bool utxo_apply_check_and_insert_anchors_full_replay(
+    sqlite3 *db, const struct block *blk, int height,
+    struct delta_summary *summary)
+{
+    return check_and_insert_anchors(db, blk, height, summary, true);
 }
 
 void utxo_apply_anchor_gap_blocker_refresh(sqlite3 *db)

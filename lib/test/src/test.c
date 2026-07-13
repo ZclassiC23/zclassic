@@ -1006,6 +1006,9 @@ int main(int argc, char **argv)
     { extern int test_utxo_snapshot_loader(void);
       failures += test_utxo_snapshot_loader(); }
     failures += test_snapshot_apply_coins_kv();
+    failures += test_consensus_state_snapshot_install();
+    failures += test_consensus_state_snapshot_export();
+    failures += test_consensus_state_chain_binding();
     { extern int test_snapshot_shielded(void);
       failures += test_snapshot_shielded(); }
     { extern int test_load_verify_boot(void);

@@ -6,8 +6,9 @@
  *
  * THE BUG THIS PINS
  * -----------------
- * The -load-snapshot-at-own-height loader consensus-binds a snapshot by looking
- * its seed height up in the active-chain WINDOW (active_chain_at). That window
+ * The -load-snapshot-at-own-height loader checks snapshot chain location by
+ * looking its seed height up in the active-chain WINDOW (active_chain_at). It
+ * does not authenticate snapshot state contents. That window
  * is pinned to coins-best on every boot path. When the snapshot height (seed_h)
  * was ABOVE coins-best, active_chain_at returned NULL and the loader FATAL'd
  * "Run --importblockindex" — but --importblockindex only sets
@@ -49,6 +50,10 @@
 
 #include "test/test_helpers.h"
 
+#include "config/boot.h"
+#include "storage/anchor_kv.h"
+#include "storage/nullifier_kv.h"
+#include "storage/progress_store.h"
 #include "validation/main_state.h"
 #include "validation/chainstate.h"
 #include "chain/chain.h"
@@ -107,6 +112,35 @@ int test_boot_refold_window_extend(void)
     const int COINS_BEST = 100;
     const int SEED_H      = 130;   /* the snapshot height: above the window */
     const int HEADER_TIP  = 150;   /* pindex_best_header: above seed_h */
+
+    /* The legacy from-genesis staged verb used to reset all three shielded
+     * markers to zero before its ordinary reducer replay. It is now refused by
+     * the app-init preflight before progress.kv opens or any reset can run. */
+    {
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "boot_refold_contained", "main");
+        BRWE_CHECK("C: containment fixture progress store opens",
+                   progress_store_open(dir));
+        sqlite3 *db = progress_store_db();
+        BRWE_CHECK("C: assisted shielded boundary starts positive",
+                   db && shielded_history_reset_to_boundary(db, 7));
+        BRWE_CHECK("C: normal boot passes legacy-verb preflight",
+                   boot_refold_staged_preflight(false));
+        BRWE_CHECK("C: -refold-staged is refused before reset",
+                   !boot_refold_staged_preflight(true));
+        int64_t sprout = -1, sapling = -1, nf = -1;
+        bool sf = false, zf = false, nf_found = false;
+        BRWE_CHECK("C: refused verb preserves all positive markers",
+                   anchor_kv_activation_cursor(
+                       db, ANCHOR_POOL_SPROUT, &sprout, &sf) &&
+                   anchor_kv_activation_cursor(
+                       db, ANCHOR_POOL_SAPLING, &sapling, &zf) &&
+                   nullifier_kv_activation_cursor(db, &nf, &nf_found) &&
+                   sf && zf && nf_found && sprout == 7 && sapling == 7 &&
+                   nf == 7);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
 
     /* ── Case (A): RECOVERY — contiguous pprev chain to the header tip. ─────
      * Build a fully linked header chain [0 .. HEADER_TIP], pin the active

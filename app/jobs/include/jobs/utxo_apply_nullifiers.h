@@ -37,13 +37,34 @@ bool utxo_apply_check_and_insert_nullifiers(struct sqlite3 *db,
                                             int height,
                                             struct delta_summary *summary);
 
+enum utxo_apply_shielded_gate_result {
+    UTXO_SHIELDED_GATE_ERROR = -1,
+    UTXO_SHIELDED_GATE_CONTINUE = 0,
+    UTXO_SHIELDED_GATE_HOLD = 1,
+};
+
+/* Live-reducer combined shielded-history + anchor gate. Deliberately separate
+ * from the raw nullifier writer: owner-gated backfill calls that writer while
+ * the activation marker is positive. Transparent-only blocks continue; an
+ * incomplete prefix is parked behind its PERMANENT causal blocker with no
+ * peer-invalid verdict or transient blocker; malformed/store evidence errors.
+ * Anchor mutations, when any, remain in the caller's stage transaction. */
+enum utxo_apply_shielded_gate_result utxo_apply_shielded_history_gate(
+    struct sqlite3 *db, const struct block *blk, int height,
+    struct delta_summary *summary);
+
+/* Initialize anchor/nullifier completeness from one result-bearing reducer
+ * cursor read. Missing cursor means complete genesis only when coins authority
+ * is positively virgin; store/read ambiguity fails closed. */
+bool utxo_apply_shielded_history_initialize(struct sqlite3 *db);
+
 /* C-3 ACTIVATION GAP, owner-visible (see storage/nullifier_kv.h): reads
  * the `nullifier_kv.activation_cursor` marker; if > 0 the durable set is
- * MISSING every nullifier revealed at/below that height (no backfill
- * exists yet — a pre-activation shielded double-spend is accepted here,
- * rejected by zclassicd), so this registers/refreshes the PERMANENT
- * blocker UTXO_APPLY_NF_GAP_BLOCKER_ID; a 0/absent marker clears it
- * (from-genesis replays are complete). Called from utxo_apply_stage_init
+ * MISSING every nullifier revealed at/below that height. The live reducer
+ * preflight above now holds every shielded spend until backfill completes,
+ * so this registers/refreshes the matching PERMANENT
+ * blocker UTXO_APPLY_NF_GAP_BLOCKER_ID; only an explicit 0 marker clears it
+ * (from-genesis replays and completed backfills write zero). Called from stage init
  * every boot. Best-effort: store errors are logged, never fatal. */
 void utxo_apply_nullifier_gap_blocker_refresh(struct sqlite3 *db);
 

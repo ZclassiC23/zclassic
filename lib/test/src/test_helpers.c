@@ -3,6 +3,8 @@
 
 #include "test/test_helpers.h"
 #include "services/chain_evidence_authority_service.h"
+#include "storage/nullifier_kv.h"
+#include "storage/progress_store.h"
 #include "validation/chain_linkage_check.h"
 #include "jobs/tip_finalize_stage.h"
 #include <signal.h>
@@ -115,6 +117,23 @@ void test_make_tmpdir(char *buf, size_t n, const char *prefix,
     test_cleanup_tmpdir(buf);
     mkdir("test-tmp", 0755);
     mkdir(buf, 0755);
+}
+
+bool test_complete_genesis_shielded_replay(sqlite3 *db)
+{
+    if (!db || !shielded_history_begin_full_replay(db, 0))
+        return false;
+    progress_store_tx_lock();
+    char *err = NULL;
+    bool ok = sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) ==
+                  SQLITE_OK &&
+              shielded_history_full_replay_advance_in_tx(db, 0, 0) &&
+              sqlite3_exec(db, "COMMIT", NULL, NULL, &err) == SQLITE_OK;
+    if (!ok)
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    if (err) sqlite3_free(err);
+    progress_store_tx_unlock();
+    return ok && shielded_history_publish_full_replay_complete(db, 0);
 }
 
 void test_make_easy_consensus_params(struct consensus_params *p)

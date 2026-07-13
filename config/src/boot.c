@@ -15,6 +15,7 @@
 #include "config/boot_fast_restart.h"
 #include "config/boot_snapshot_failure_memory.h"
 #include "config/boot_snapshot_import.h"
+#include "config/boot_snapshot_install.h"
 #include "config/boot_stale_locks.h"
 #include "net/snapshot_sync_contract.h"
 #include "services/chain_activation_service.h"
@@ -1083,6 +1084,7 @@ bool app_init(struct app_context *ctx)
         return false;
     if (!boot_step_select_chain_and_datadir(ctx))
         return false;
+    if (!boot_refold_staged_preflight(ctx->refold_staged)) return false;
     const struct chain_params *params = chain_params_get();
 
     boot_postmortem_start(ctx->datadir);
@@ -1401,11 +1403,9 @@ bool app_init(struct app_context *ctx)
 
     /* Open the dedicated progress.kv SQLite file that hosts every staged-sync
      * stage cursor — independent of node.db (commits off the hot path). */
-    if (!progress_store_open(ctx->datadir)) {
-        fprintf(stderr,
-            "Warning: progress_store unavailable; staged-sync stages will "
-            "not be able to persist cursors\n");
-    } else {
+    bool progress_open = progress_store_open(ctx->datadir);
+    boot_snapshot_install_gate_boot(progress_open, ctx->load_snapshot_at_own_height);
+    if (progress_open) {
         /* Restore the prior operational mode (non-fatal; boot overwrites below). */
         (void)service_state_restore_from_progress_store();
         /* Refresh BOTH refold caches (refold_in_progress + refold_from_anchor,
@@ -1427,7 +1427,7 @@ bool app_init(struct app_context *ctx)
      * Idempotent: the helper refuses to import if main.utxos already
      * holds the snapshot's contents (handled by checking the source
      * file's integrity + size; a re-run with utxos>1000 is a no-op via
-     * the export guard in consensus_snapshot_export_service_run). */
+     * the export guard in consensus_snapshot_export_service_run_bound). */
     /* Timing only: the stretch to the block_index_load marker (~1.3–13s warm)
      * had no markers — attribute its heaviest steps via boot_submark(). */
     int64_t t_sub = boot_clock_ms();
@@ -3344,7 +3344,6 @@ sapling_tree_boot_check_done:
      * so the public tip can never drop below coins_best (proven in
      * test_stage_reducer_unwedge). No-op unless the cursor is ahead. */
 
-    if (ctx->refold_staged) boot_refold_staged_reset(&g_node_db); /* reset to genesis before staged Jobs init */
     if (ctx->mint_anchor) boot_mint_anchor_reset(&g_node_db, ctx->mint_anchor_fast); /* ANCHOR-SET MINT: genesis reset + fold-cap at the anchor; fast => crypto pass-through */
     /* Zero-flag starter-pack bootstrap. Auto-selects a bundled seed only when
      * the current coins authority is absent or below that seed; the loader still
@@ -3362,17 +3361,18 @@ sapling_tree_boot_check_done:
         &snap_from_autodetect,
         snapshot_fail_marker,
         sizeof(snapshot_fail_marker));
-    /* -load-snapshot-at-own-height=PATH (EXPLICIT-ONLY recovery): seed coins_kv
-     * from a SELF-SHA3-verified ZCLUTXO snapshot at the snapshot's OWN header
-     * height and fold forward from there. NULL unless the operator set the flag,
-     * so a normal boot never reaches this. FATAL-refuses inside on a failed
-     * self-verify; never seeds an unproven set. */
-    if (ctx->load_snapshot_at_own_height)
+    /* Explicit recovery: load digest-verified assisted state at its own header
+     * height and fold forward. File integrity is not state provenance; posture
+     * remains assisted until full-history promotion. */
+    if (ctx->load_snapshot_at_own_height) {
         boot_load_snapshot_at_own_height_reset(&g_node_db,
                                                ctx->load_snapshot_at_own_height,
                                                ctx->datadir,
                                                &g_state,
                                                !ctx->no_legacy_auto_import);
+        /* No early return may continue with a journaled partial generation. */
+        boot_snapshot_install_require_complete();
+    }
     /* The reset above ran anchor_kv_reset_in_tx(seed_h) with no initial
      * frontier; pre-seed the verified Sapling frontier at the seed cursor when
      * the in-RAM frontier aligns (else the runtime condition seeds it). */
@@ -3782,7 +3782,7 @@ sapling_tree_boot_check_done:
      * before P2P/RPC/runtime services and exits through main.c. */
     if (ctx->backfill_nullifiers) {
         struct nullifier_backfill_config nbc = {
-            .ndb = &g_node_db,
+            .main = &g_state, .ndb = &g_node_db,
             .progress_db = progress_store_db(),
             .datadir = ctx->datadir,
         };

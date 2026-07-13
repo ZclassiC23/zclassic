@@ -26,7 +26,9 @@
 #include "models/database.h"
 #include "services/reindex_epilogue.h"
 #include "services/seed_integrity_gate.h"
+#include "storage/anchor_kv.h"
 #include "storage/coins_kv.h"
+#include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "validation/chainstate.h"
@@ -153,6 +155,33 @@ static int32_t re_trusted_base(sqlite3 *db)
     return (int32_t)v;
 }
 
+static bool re_shielded_markers_are(sqlite3 *db, int64_t want)
+{
+    int64_t sprout = -1, sapling = -1, nf = -1;
+    bool sprout_found = false, sapling_found = false, nf_found = false;
+    return anchor_kv_activation_cursor(
+               db, ANCHOR_POOL_SPROUT, &sprout, &sprout_found) &&
+           anchor_kv_activation_cursor(
+               db, ANCHOR_POOL_SAPLING, &sapling, &sapling_found) &&
+           nullifier_kv_activation_cursor(db, &nf, &nf_found) &&
+           sprout_found && sapling_found && nf_found &&
+           sprout == want && sapling == want && nf == want;
+}
+
+/* This test exercises the epilogue, not the multi-million-block replay loop.
+ * Seed its exact durable completion witness directly after using the real
+ * begin/reset API; production advances this key one height per block in the
+ * same transaction as anchors/nullifiers. */
+static bool re_seed_completed_shielded_replay(sqlite3 *db, int64_t target)
+{
+    char next[24];
+    int n = snprintf(next, sizeof(next), "%lld", (long long)(target + 1));
+    return n > 0 && (size_t)n < sizeof(next) &&
+           shielded_history_begin_full_replay(db, target) &&
+           progress_meta_set(db, "shielded_history.full_replay.next",
+                             next, (size_t)n);
+}
+
 static int mkdir_p_re(const char *p)
 {
     if (mkdir(p, 0700) == 0) return 0;
@@ -208,6 +237,13 @@ int test_reindex_epilogue(void)
     RE_CHECK("fixture: progress_store opens", progress_store_open(dir));
     sqlite3 *pdb = progress_store_db();
     RE_CHECK("fixture: pdb handle", pdb != NULL);
+    uint8_t replay_nf[32] = {0x71};
+    RE_CHECK("fixture: exact genesis-to-target shielded replay completed",
+             re_seed_completed_shielded_replay(pdb, TIP));
+    RE_CHECK("fixture: all shielded markers remain incomplete pre-epilogue",
+             re_shielded_markers_are(pdb, (int64_t)TIP + 1));
+    RE_CHECK("fixture: replay inserts a nullifier under positive marker",
+             nullifier_kv_add(pdb, replay_nf, NULLIFIER_POOL_SAPLING, 9));
 
     struct main_state ms;
     memset(&ms, 0, sizeof(ms));
@@ -253,7 +289,24 @@ int test_reindex_epilogue(void)
                  found && fok && ca == STALE_HIGH && ca > ua + 1);
     }
 
-    /* ── RUN THE EPILOGUE. */
+    /* ── RUN THE EPILOGUE. Force the final NF marker write to fail after the
+     * two anchor rows were updated. The one completion transaction must roll
+     * all three back to positive, then an un-faulted retry may accept. */
+    RE_CHECK("fixture: completion interruption trigger installs",
+             sqlite3_exec(
+                 pdb,
+                 "CREATE TRIGGER fail_reindex_completion BEFORE INSERT ON "
+                 "progress_meta WHEN NEW.key='nullifier_kv.activation_cursor' "
+                 "BEGIN SELECT RAISE(ABORT,'completion interrupted'); END",
+                 NULL, NULL, NULL) == SQLITE_OK);
+    bool interrupted = reindex_epilogue_derive(&ms, &ndb, dir);
+    RE_CHECK("interrupted epilogue refuses",
+             !interrupted);
+    RE_CHECK("interrupted epilogue keeps all shielded history incomplete",
+             re_shielded_markers_are(pdb, (int64_t)TIP + 1));
+    RE_CHECK("fixture: completion interruption trigger drops",
+             sqlite3_exec(pdb, "DROP TRIGGER fail_reindex_completion",
+                          NULL, NULL, NULL) == SQLITE_OK);
     bool derived = reindex_epilogue_derive(&ms, &ndb, dir);
     RE_CHECK("epilogue_derive returns true", derived);
 
@@ -264,6 +317,17 @@ int test_reindex_epilogue(void)
              coins_kv_count(pdb) == 4);
     RE_CHECK("post: coins_kv proven-authority (migration stamp set)",
              coins_kv_is_proven_authority(pdb, NULL));
+    {
+        int64_t cursor = -1;
+        bool found = false, row_found = false;
+        RE_CHECK("post: full reindex publishes all shielded completeness last",
+                 re_shielded_markers_are(pdb, 0) &&
+                 nullifier_kv_activation_cursor(pdb, &cursor, &found) &&
+                 found && cursor == 0);
+        RE_CHECK("post: completion publication preserves replayed nullifiers",
+                 nullifier_kv_get(pdb, replay_nf, NULLIFIER_POOL_SAPLING,
+                                  &row_found, NULL) && row_found);
+    }
 
     /* coins_applied_height == tip+1 (dropped from the stale-HIGH 99). */
     {
@@ -372,6 +436,8 @@ int test_reindex_epilogue(void)
                      progress_store_open(sdir));
             sqlite3 *spdb = progress_store_db();
             RE_CHECK("snapshot: pdb handle", spdb != NULL);
+            RE_CHECK("snapshot: shielded history starts assisted/incomplete",
+                     shielded_history_reset_to_boundary(spdb, TIP));
 
             struct main_state sms;
             memset(&sms, 0, sizeof(sms));
@@ -408,6 +474,14 @@ int test_reindex_epilogue(void)
                      coins_kv_count(spdb) == 3);
             RE_CHECK("snapshot: coins_kv proven-authority",
                      coins_kv_is_proven_authority(spdb, NULL));
+            {
+                int64_t cursor = -1;
+                bool found = false;
+                RE_CHECK("snapshot: imported epilogue cannot publish shielded completeness",
+                         re_shielded_markers_are(spdb, TIP) &&
+                         nullifier_kv_activation_cursor(spdb, &cursor, &found) &&
+                         found && cursor == TIP);
+            }
             {
                 int32_t ca = -1; bool found = false;
                 bool ok = coins_kv_get_applied_height(spdb, &ca, &found);

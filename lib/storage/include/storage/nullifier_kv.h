@@ -30,18 +30,23 @@
  * PERMANENCE: like coins, the nullifier set is permanent consensus state —
  * it is NEVER pruned below finality (unlike utxo_apply_delta rows).
  *
- * ACTIVATION GAP (open, owner-gated follow-up): the set is populated only
- * by blocks applied AFTER the table is created. On a datadir whose
- * utxo_apply cursor was already past genesis at activation (the live node,
- * every FlyClient/SHA3-snapshot cold sync — the snapshot format carries
- * coins but no nullifier set), every nullifier revealed below the
- * `nullifier_kv.activation_cursor` marker is ABSENT, so a double-spend of
- * a pre-activation note is accepted here and rejected by zclassicd — C-3
- * is closed only for from-genesis replays and post-activation notes.
- * utxo_apply_stage_init surfaces this as the PERMANENT blocker
+ * ACTIVATION GAP: the set is populated only by blocks applied AFTER the table
+ * is created. On a datadir whose
+ * utxo_apply cursor was already past genesis at activation (the live node and
+ * legacy coins-only snapshot/import paths; v3 may carry nullifiers but must
+ * not be called complete unless its installer proves and preserves them),
+ * every nullifier revealed below the positive
+ * `nullifier_kv.activation_cursor` marker is absent, so a double-spend of
+ * a pre-activation note cannot be proven fresh. The live reducer therefore
+ * holds every Sprout JoinSplit/Sapling spend before any coin write while this
+ * marker is positive; transparent-only blocks remain processable. The raw
+ * writer stays available to the owner-gated backfill service. Stage init
+ * surfaces the gap as the PERMANENT blocker
  * `utxo_apply.nullifier_backfill_gap` (zcl_state subsystem=blocker) every
  * boot until a shielded-history backfill walker (or a snapshot-format
- * nullifier extension) lands. Fail-open direction only: no wedge risk.
+ * nullifier extension) lands. Malformed/unreadable completeness evidence fails
+ * closed; an absent marker is unknown, never implicit cursor zero. First
+ * adoption creates the table and explicit marker in one transaction.
  *
  * Every function operates on the passed progress.kv handle and therefore
  * participates in whatever transaction the caller already holds open. Raw
@@ -62,9 +67,68 @@ struct sqlite3;
 /* CREATE TABLE IF NOT EXISTS nullifiers(...) + height index. Idempotent. */
 bool nullifier_kv_ensure_schema(struct sqlite3 *db);
 
-/* True iff the `nullifiers` table already exists. Used by utxo_apply_stage
- * init to detect FIRST creation so it can record the diagnostics-only
- * activation-cursor honesty marker (heights below it were never checked). */
+/* Atomically ensure the schema and its durable completeness marker.  On first
+ * adoption, stores `activation_cursor`: zero explicitly proves a from-genesis
+ * store, while a positive value records the unknown historical prefix.
+ * Existing markers are never overwritten.  If the caller has an open
+ * transaction this joins it; otherwise it owns BEGIN IMMEDIATE..COMMIT. */
+bool nullifier_kv_initialize_history(struct sqlite3 *db,
+                                     int64_t activation_cursor);
+
+/* Strictly read the durable adoption cursor. Missing is reported with
+ * *found_out=false; malformed, overflowing, or non-canonical bytes are an
+ * error, never coerced to the complete value zero. */
+bool nullifier_kv_activation_cursor(struct sqlite3 *db,
+                                    int64_t *cursor_out, bool *found_out);
+
+/* Clear the complete set and replace its provenance with an explicit adoption
+ * boundary in the caller's ALREADY-OPEN transaction. This is the only valid
+ * full-reset primitive: DELETE without co-writing the marker can preserve a
+ * stale explicit zero and make an empty set look complete. */
+bool nullifier_kv_reset_in_tx(struct sqlite3 *db,
+                              int64_t activation_cursor);
+
+/* Start a bounded genesis-through-target replay.  Owns one transaction that
+ * clears both anchor tables and the nullifier set, writes the same positive
+ * target+1 incompleteness boundary for all three, and initializes an exact
+ * durable next-height session at zero.  No public completeness marker is zero
+ * while the replay is partial. */
+bool shielded_history_begin_full_replay(struct sqlite3 *db,
+                                        int64_t target_height);
+
+/* Read/verify the bounded replay session.  `expect_next` is a read-only gate
+ * used by the replay-only anchor folder; `advance_in_tx` requires the caller's
+ * block transaction and advances exactly height -> height+1.  It also records
+ * whether each pool has ever emitted a non-empty frontier so an unexpectedly
+ * emptied table can never be mistaken for the initial empty tree. */
+bool shielded_history_full_replay_expect_next(struct sqlite3 *db,
+                                              int64_t height);
+bool shielded_history_full_replay_advance_in_tx(struct sqlite3 *db,
+                                                int64_t height,
+                                                int64_t target_height);
+bool shielded_history_full_replay_empty_frontier_allowed(
+    struct sqlite3 *db, int pool, int64_t height);
+bool shielded_history_full_replay_mark_pool_started_in_tx(
+    struct sqlite3 *db, int pool, int64_t height);
+
+/* Publish Sprout, Sapling, and nullifier marker zero in ONE transaction, only
+ * when the durable replay session proves an exact [0,target] walk and all
+ * three markers still equal target+1.  The replay-session rows are removed in
+ * that same commit.  A failure leaves every marker positive. */
+bool shielded_history_publish_full_replay_complete(
+    struct sqlite3 *db, int64_t target_height);
+
+/* Own one BEGIN IMMEDIATE and reset BOTH anchor and nullifier history to the
+ * same strictly POSITIVE adoption boundary. Used by assisted snapshot
+ * activation before any reducer cursor/tip promotion. Either both provenance
+ * records and cleared sets commit, or neither does. Marker zero is deliberately
+ * unreachable here: only shielded_history_publish_full_replay_complete() may
+ * publish complete history after its exact bounded replay proof. */
+bool shielded_history_reset_to_boundary(struct sqlite3 *db,
+                                        int64_t activation_cursor);
+
+/* True iff the `nullifiers` table already exists. Diagnostic/test probe only;
+ * table existence is never completeness evidence. */
 bool nullifier_kv_table_exists(struct sqlite3 *db);
 
 /* Point-read one nullifier in one pool. Returns false only on a store error;

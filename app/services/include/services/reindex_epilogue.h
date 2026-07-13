@@ -30,7 +30,9 @@ struct node_db;
  * (2) recompute the SHA3 commitment + count, stamp utxo_sha3 + coins_best_block
  * cache; (3) raise coins_applied_height to tip+1 FIRST, then clamp the
  * tip_finalize anchor + 8 stage cursors to the replayed tip via the
- * trusted-seed convention; (4) self-check H* == replayed tip.
+ * trusted-seed convention; (4) self-check H* == replayed tip; (5) require the
+ * bounded shielded replay session at tip+1 and atomically publish Sprout,
+ * Sapling, and nullifier completeness.
  *
  * Returns true iff all derivations land AND H* == tip. Best-effort-but-LOUD:
  * any failure logs, PAGES (EV_OPERATOR_NEEDED + typed reason), and returns

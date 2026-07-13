@@ -76,8 +76,9 @@ bool anchor_kv_ensure_schema(sqlite3 *db)
         "CREATE TABLE IF NOT EXISTS anchor_state ("
         "  pool INTEGER PRIMARY KEY NOT NULL,"
         "  activation_cursor INTEGER NOT NULL,"
-        "  CHECK(pool IN (0,1)),"
-        "  CHECK(activation_cursor >= 0)"
+        "  CHECK(typeof(pool)='integer' AND pool IN (0,1)),"
+        "  CHECK(typeof(activation_cursor)='integer' AND "
+        "        activation_cursor >= 0)"
         ") WITHOUT ROWID",
         NULL, NULL, &err);
     if (rc != SQLITE_OK) {
@@ -146,6 +147,17 @@ bool anchor_kv_initialize_history(sqlite3 *db, int64_t activation_cursor)
         }
     }
     sqlite3_finalize(s);
+    /* INSERT OR IGNORE preserves legacy rows. Validate their durable storage
+     * class before accepting initialization so a preexisting TEXT/BLOB/REAL
+     * cursor cannot survive as a false complete zero via SQLite coercion. */
+    for (int pool = ANCHOR_POOL_SPROUT;
+         ok && pool <= ANCHOR_POOL_SAPLING; pool++) {
+        int64_t persisted = 0;
+        bool found = false;
+        if (!anchor_kv_activation_cursor(db, pool, &persisted, &found) ||
+            !found)
+            ok = false;
+    }
     if (own_tx) {
         const char *finish = ok ? "COMMIT" : "ROLLBACK";
         err = NULL;
@@ -187,13 +199,22 @@ bool anchor_kv_activation_cursor(sqlite3 *db, int pool,
     bool ok = true;
     int rc = sqlite3_step(s);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
-        *found_out = true;
-        *cursor_out = sqlite3_column_int64(s, 0);
-        if (*cursor_out < 0) {
+        int storage_type = sqlite3_column_type(s, 0);
+        if (storage_type != SQLITE_INTEGER) {
             LOG_WARN(ANCHOR_SUBSYS,
-                     "activation_cursor corrupt negative value=%lld pool=%d",
-                     (long long)*cursor_out, pool);
+                     "activation_cursor corrupt storage type=%d pool=%d",
+                     storage_type, pool);
             ok = false;
+        } else {
+            *cursor_out = sqlite3_column_int64(s, 0);
+            if (*cursor_out < 0) {
+                LOG_WARN(ANCHOR_SUBSYS,
+                         "activation_cursor corrupt negative value=%lld pool=%d",
+                         (long long)*cursor_out, pool);
+                ok = false;
+            } else {
+                *found_out = true;
+            }
         }
     } else if (rc != SQLITE_DONE) {
         LOG_WARN(ANCHOR_SUBSYS, "activation_cursor step rc=%d: %s", rc,
@@ -484,6 +505,76 @@ bool anchor_kv_reset_in_tx(sqlite3 *db, int64_t activation_cursor)
     }
     if (err) sqlite3_free(err);
     return anchor_kv_initialize_history(db, activation_cursor);
+}
+
+bool anchor_kv_publish_full_replay_complete_in_tx(
+    sqlite3 *db, int64_t expected_boundary)
+{
+    if (!db || expected_boundary <= 0) {
+        LOG_WARN(ANCHOR_SUBSYS,
+                 "publish complete: invalid boundary=%lld",
+                 (long long)expected_boundary);
+        return false;
+    }
+    if (sqlite3_get_autocommit(db) != 0) {
+        LOG_WARN(ANCHOR_SUBSYS,
+                 "publish complete requires caller transaction");
+        return false;
+    }
+    if (!anchor_kv_ensure_schema(db))
+        return false;
+
+    /* Refuse before the UPDATE if either component is absent, malformed, or
+     * no longer names this exact replay generation. */
+    for (int pool = ANCHOR_POOL_SPROUT;
+         pool <= ANCHOR_POOL_SAPLING; pool++) {
+        int64_t cursor = -1;
+        bool found = false;
+        if (!anchor_kv_activation_cursor(db, pool, &cursor, &found) ||
+            !found || cursor != expected_boundary) {
+            LOG_WARN(ANCHOR_SUBSYS,
+                     "publish complete boundary mismatch pool=%d got=%lld "
+                     "found=%d expected=%lld",
+                     pool, (long long)cursor, found ? 1 : 0,
+                     (long long)expected_boundary);
+            return false;
+        }
+    }
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(
+            db,
+            "UPDATE anchor_state SET activation_cursor=0 "
+            "WHERE activation_cursor=? AND pool IN(0,1)",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN(ANCHOR_SUBSYS, "publish complete prepare failed: %s",
+                 sqlite3_errmsg(db));
+        return false;
+    }
+    bool ok = sqlite3_bind_int64(
+                  st, 1, (sqlite3_int64)expected_boundary) == SQLITE_OK;
+    int rc = ok ? sqlite3_step(st) : SQLITE_ERROR; // raw-sql-ok:progress-kv-kernel-store
+    sqlite3_finalize(st);
+    if (!ok || rc != SQLITE_DONE || sqlite3_changes(db) != 2) {
+        LOG_WARN(ANCHOR_SUBSYS,
+                 "publish complete update failed rc=%d changed=%d: %s",
+                 rc, sqlite3_changes(db), sqlite3_errmsg(db));
+        return false;
+    }
+
+    for (int pool = ANCHOR_POOL_SPROUT;
+         pool <= ANCHOR_POOL_SAPLING; pool++) {
+        int64_t cursor = -1;
+        bool found = false;
+        if (!anchor_kv_activation_cursor(db, pool, &cursor, &found) ||
+            !found || cursor != 0) {
+            LOG_WARN(ANCHOR_SUBSYS,
+                     "publish complete zero verification failed pool=%d",
+                     pool);
+            return false;
+        }
+    }
+    return true;
 }
 
 bool anchor_kv_table_is_empty(sqlite3 *db, int pool, bool *empty_out)

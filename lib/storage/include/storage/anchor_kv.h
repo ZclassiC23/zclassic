@@ -84,6 +84,15 @@ bool anchor_kv_delete_range(struct sqlite3 *db, int64_t first_height,
  * transaction: boot/refold callers already own one. */
 bool anchor_kv_reset_in_tx(struct sqlite3 *db, int64_t activation_cursor);
 
+/* Change BOTH durable anchor-history markers from `expected_boundary` to zero
+ * in the caller's ALREADY-OPEN transaction, without clearing the replayed
+ * roots.  This is deliberately an in-tx primitive so the shielded-history
+ * owner can publish Sprout, Sapling, and nullifier completeness together.
+ * Both rows must exist and still equal the positive expected boundary; any
+ * mismatch refuses before either marker changes. */
+bool anchor_kv_publish_full_replay_complete_in_tx(
+    struct sqlite3 *db, int64_t expected_boundary);
+
 /* Report whether `pool`'s anchor table has zero rows.  Distinguishes the
  * birth-defect state (a nonzero activation cursor over an EMPTY table — no
  * initial frontier was ever seeded) from a genuine historical gap (rows exist

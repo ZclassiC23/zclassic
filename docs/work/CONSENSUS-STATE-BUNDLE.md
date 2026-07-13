@@ -1,0 +1,195 @@
+# Canonical Consensus-State Bundle
+
+This file is the naming and ownership authority for bootstrap artifacts. A
+schema suffix such as `.v1` versions an on-disk contract; it is not a product
+edition, implementation phase, trust level, or competing architecture. A new
+suffix is allowed only for an incompatible encoding change. There is one
+canonical codec; the implementation may have only one canonical writer and one
+canonical reader for the current schema.
+
+ZClassic consensus is unchanged. `USS v1`, `USS v2`, and `USS v3` are frozen
+legacy import encodings. They remain readable so existing recovery artifacts do
+not become useless, but no new feature is added to them and no producer may
+publish them as complete sovereign state. In particular, legacy USS v3 contains
+current Sapling/Sprout frontiers and nullifiers but not historical anchor rows.
+
+The one designated canonical writable format is:
+
+```text
+zcl.consensus_state_bundle.v1
+```
+
+Its completed contract must own one bounded manifest and these independently
+committed components:
+
+- canonical transparent UTXOs, count, and supply;
+- complete Sapling anchor history and current frontier;
+- complete Sprout anchor history and current frontier;
+- complete pool-qualified nullifier history;
+- anchor height, exact local-chain block hash, and chainwork;
+- producer commit, complete source-tree SHA3, source fold cursor, chain-corpus
+  digest, proof-manifest digest, and artifact digest;
+- trust posture (`sovereign` or explicitly assisted), signature set, target
+  lane, acceptance receipt, and rollback generation.
+
+## Implementation status — 2026-07-13
+
+`consensus_state_snapshot_install()` is a deliberately contained, read-only
+admission validator. The name reserves the single future installation service;
+it does not imply that publication exists today. It:
+
+- opens a non-writable regular external SQLite file with
+  `O_NOFOLLOW|O_CLOEXEC`, opens SQLite through the retained
+  `/proc/self/fd` identity, and holds one read transaction for the receipt's
+  lifetime;
+- rejects unfinished WAL/SHM/journal sidecars, enables defensive/query-only/
+  untrusted-schema SQLite posture, and bounds SQLite row/query resources;
+- hashes the complete SQLite file before and after semantic validation, rejects
+  any byte or descriptor-identity change, and exposes whole-file revalidation
+  for long evidence-capture operations;
+- runs `integrity_check`, requires the closed canonical six-table schema (no
+  extra tables, indexes, views, triggers, or columns), checks exact required
+  scalar/blob storage classes and singleton cardinality, validates height/hash
+  against the contained wrapper's caller assertion, and independently
+  recomputes UTXO/anchor/nullifier digests and counts;
+- rejects malformed values, non-canonical/duplicate UTXOs, duplicate roots or
+  nullifiers, invalid pools, supply outside `MoneyRange`, and internally
+  inconsistent component claims; and
+- returns `CONSENSUS_INSTALL_VERIFIED_CONTAINED` for a structurally valid bundle,
+  returns false, and performs no write to `progress.kv` or `node.db`.
+
+`consensus_state_snapshot_export()` now implements a contained canonical writer
+for a quiesced, process-owned `progress.kv`. Under one progress-store lock and
+frozen read transaction it refuses an active RAM coin overlay, requires exact
+computed H*, convention-aware durable tip/hash, `coins_applied=H+1`, explicit
+genesis anchor/nullifier cursors, a self-folded coin set, continuous successful
+header/stage rows, and an exact receipt for the running executable. It streams
+all coins, historical anchors, and pool-qualified nullifiers; recomputes every
+component commitment; emits the canonical eight-row `bundle_proof`; preserves
+the source receipt; and verifies the result through the independent contained
+reader before no-replace rename. When H is the compiled checkpoint it also
+requires exact compiled hash/root/count/supply. The receipt's source-tree and
+toolchain digests are producer claims bound to the known executable—not an
+independent rebuild proof.
+
+The exporter has no boot/manual/refold command caller and cannot publish node
+state. Its current pathname API requires a trusted stable parent directory;
+`openat`/descriptor-walk hardening is still required to close concurrent parent
+symlink/rename TOCTOU. There is no publisher transaction or crash-atomic state
+installation claim. A `history_complete` bit, producer receipt, nonzero digest,
+or caller-supplied height/hash is not proof of sovereignty.
+
+The general node datadir guard is now a real process-lifetime, nonblocking
+exclusive `flock` over an `openat(O_NOFOLLOW|O_CLOEXEC)` PID inode, with PID and
+directory fsync. Stale PID text is diagnostic only, symlink/hardlink aliases are
+refused, and release retains the inode to prevent split-lock races. This closes
+the basic two-writer prerequisite; it does not itself authorize state exchange.
+
+The two producers already running on 2026-07-13 predate the receipt contract.
+They are preserved evidence, not automatically admissible inputs. Do not
+backfill claims into a live producer database. A completed copy needs a
+separately reviewed ratification that hashes the actual preserved producer
+executable and binds immutable source/toolchain/corpus evidence, or a new
+receipt-owning producer must run without deleting the older inputs.
+
+`consensus_state_chain_evidence_build()` is the separate process-singleton
+selected-chain binder. It accepts only the opaque descriptor-bound artifact
+receipt; a caller-created manifest cannot construct evidence. It requires an
+unchanged durable frontier, exact selected H/hash,
+failure-free validation and header-pass rows at bundle H and the sparse Sapling
+frontier source, the Sapling root both at its source height and still current at
+bundle H, and selected-header ancestry/work. It samples all predicates twice,
+re-hashes the artifact around capture, and binds the whole-file validation
+receipt. Its lane tag is descriptive, never authority. The opaque result is
+diagnostic and can go stale immediately; no publisher consumes it. It does not
+support caller-selected copy/datadir contexts because reducer/proof authority
+comes from the open process singleton.
+
+## Required before activation
+
+The future protected publisher may become callable only after all of these are
+implemented and proven together:
+
+1. A full-history producer exports every transparent coin, Sapling/Sprout anchor
+   row, and pool-qualified nullifier with exact component counts and digests.
+2. One single-use protected candidate must combine the artifact receipt and
+   selected-chain evidence with sovereign trust posture, signed/expiring owner
+   authority, exact target-store identity, lane, nonce, and rollback digest. It
+   must recapture/CAS inside publication; diagnostic evidence is insufficient.
+3. The exporter must adopt a descriptor-walked stable parent. Admission itself
+   is descriptor-bound, whole-file-hashed, and closed-schema validated.
+4. A boot-only publisher must build and fully validate a separate
+   `synchronous=FULL` candidate `progress.kv`, strictly close the active store,
+   atomically exchange old/new files, fsync the directory, and strictly reopen
+   without auto-quarantine/fresh-empty fallback. It must clear or prove every
+   reducer log/projection dependency and leave every handle in autocommit after
+   failure.
+5. The prior complete generation remains physically restorable; its receipt is
+   a locator and digest for real rollback state, not merely a generation number.
+6. A file-backed ENOSPC/I/O/SIGKILL-at-every-boundary harness reopens the store
+   and observes exactly the old or new complete generation, never a hybrid.
+7. Only then do manual load and refold route through the service, followed by
+   copy proof, parity, warm restart, kill-9 resume, and owner-gated canonical
+   deployment.
+
+When those gates pass, writers emit bundle v1 only. Legacy writers are deleted
+only after the bundle producer, publisher, copy proof, restarts, and canonical
+cutover have all passed.
+
+## Producer/export contract
+
+Do not extend `snapshot_from_coinskv --shielded` into this writer. That legacy
+tool accepts an operator-supplied height/hash and collects only current
+frontiers. The canonical exporter runs at the end of the self-mint and takes
+one frozen read transaction over the complete producer `progress.kv` after the
+RAM overlay is durably flushed.
+
+Before opening an output, the exporter requires `H* == H`,
+`coins_applied == H+1`, all applicable stage cursors at their serving
+convention, both anchor activation cursors at zero, the nullifier activation
+cursor at zero, continuous successful reducer-log evidence, and an
+executable-bound source receipt. At the compiled checkpoint, its
+height/hash/root/count/supply must also match exactly; the immediate cure
+accepts no other anchor. It copies:
+
+| Producer authority | Bundle authority |
+|---|---|
+| `coins` | `coins`, ordered by `(txid,vout)` |
+| every `sprout_anchors` row | `anchors(pool=0,...)` |
+| every `sapling_anchors` row | `anchors(pool=1,...)` |
+| every `nullifiers` row | `nullifiers`, pool-qualified |
+| exact source receipt | `source_receipt` producer claims and executable/corpus binding |
+| `stage_cursor` and eight reducer logs | canonical ordered `bundle_proof` summaries |
+
+The latest frontier for each pool is the unique greatest stored height at or
+below H; it need not have been first stored at H. Every historical row is still
+copied. The Sapling frontier is later required to match the locally validated
+selected-chain header root. Sprout, nullifiers, and transparent state are never
+described as header- or PoW-bound.
+
+The destination is a unique `O_EXCL|O_NOFOLLOW` temporary file in the target
+directory, uses DELETE journaling and `synchronous=FULL`, writes the manifest
+last, runs full integrity and contained-admission verification after reopen,
+has no SQLite sidecars, and is file- plus directory-synced around a no-replace
+atomic rename. Failure unlinks only temporary output. Accepted files are
+read-only and never overwrite the prior artifact. Descriptor-bound parent
+identity remains an explicit pre-publication gate.
+
+## Protected local-chain binding contract
+
+The current diagnostic binder starts from opaque contained-bundle validation
+evidence. It captures a consistent before frontier,
+requires bundle H no higher than durable served H*, resolves the exact selected
+chain block at H, checks failure-free `BLOCK_VALID_SCRIPTS` status and a durable
+header-validation pass row, and proves the header tip descends from it.
+
+It then resolves the selected-chain block at `sapling_frontier_height`, requires
+a durable validated-header pass, compares the bundle Sapling root directly to
+that block's `hashFinalSaplingRoot`, and requires that same root at bundle H so
+a sparse frontier cannot be stale. A consistent equal after-frontier and
+second sample of every ancestor predicate are mandatory. The evidence digest
+binds the descriptor/whole-file validation receipt, logical bundle artifact,
+H/hash, Sapling height/root/block hash, served H*/hash, header tip/hash/chainwork,
+and descriptive lane tag. Publication remains unavailable and must recapture/
+CAS from the same target store while boot-quiesced. A standalone freshness
+boolean is intentionally not an activation interface.

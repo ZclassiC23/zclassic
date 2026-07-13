@@ -70,6 +70,8 @@ static utxo_apply_reader_fn g_reader = NULL;
 static void *g_reader_user = NULL;
 static utxo_apply_lookup_fn g_lookup = NULL;
 static void *g_lookup_user = NULL;
+static _Atomic int64_t g_history_hold_height = -1; /* kind: 1=nf, 2=anchor */
+static _Atomic int g_history_hold_kind = 0;
 
 /* Module state shared with utxo_apply_stage_dump.c (the zcl_state dump TU)
  * via utxo_apply_stage_internal.h — written here, atomic_load-only there. */
@@ -278,6 +280,15 @@ static job_result_t step_apply(struct stage_step_ctx *c)
                                    "stage cursor persisted negative");
         return JOB_FATAL;
     }
+    int hold_kind = atomic_load(&g_history_hold_kind);
+    if (atomic_load(&g_history_hold_height) == next_h && hold_kind != 0) {
+        const char *id = hold_kind == 1 ? UTXO_APPLY_NF_GAP_BLOCKER_ID
+                                        : UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID;
+        if (blocker_exists(id))
+            return JOB_IDLE; /* causal dependency has not cleared */
+        atomic_store(&g_history_hold_kind, 0); atomic_store(
+            &g_history_hold_height, (int64_t)-1);
+    }
 
     uint64_t pv_cursor = 0;
     if (!stage_cursor_read_or_zero(db, "proof_validate", STAGE_NAME,
@@ -400,25 +411,27 @@ static job_result_t step_apply(struct stage_step_ctx *c)
         return JOB_ADVANCED;
     }
 
-    /* Shielded anchor-membership + frontier gate (L7) -- BEFORE nullifiers
-     * and coins, in this same stage transaction.  A forged root is a normal
-     * consensus refusal; an imported/snapshot history gap is a fail-closed,
-     * explicitly named blocker.  Both leave H* and all state at next_h-1. */
     if (summary.ok && utxo_projection_get_author() == UTXO_AUTHOR_STAGE) {
-        if (!utxo_apply_check_and_insert_anchors(db, &blk, next_h,
-                                                 &summary)) {
+        enum utxo_apply_shielded_gate_result sg =
+            utxo_apply_shielded_history_gate(db, &blk, next_h, &summary);
+        if (sg == UTXO_SHIELDED_GATE_ERROR) {
             ua_fatal_permanent_blocker(next_h,
-                                       "shielded anchor store failure");
+                                       "shielded history gate store failure");
             free_delta(&summary);
             block_free(&blk);
             return JOB_FATAL;
         }
+        if (sg == UTXO_SHIELDED_GATE_HOLD) {
+            atomic_store(&g_history_hold_height, (int64_t)next_h);
+            atomic_store(&g_history_hold_kind,
+                         strcmp(summary.failure_kind, "nullifier-history-gap")
+                             == 0 ? 1 : 2);
+            free_delta(&summary);
+            block_free(&blk);
+            return JOB_IDLE;
+        }
     }
 
-    /* Shielded-nullifier double-spend gate (C-3) — BEFORE the coins write,
-     * under the same author gate. May flip summary.ok to a consensus reject
-     * (which then takes the regular counter/log/JOB_BLOCKED path below); a
-     * store error is fatal like any other in-txn store failure. */
     if (summary.ok && utxo_projection_get_author() == UTXO_AUTHOR_STAGE) {
         if (!utxo_apply_check_and_insert_nullifiers(db, &blk, next_h,
                                                     &summary)) {
@@ -670,43 +683,10 @@ bool utxo_apply_stage_init(struct main_state *ms)
      * honesty boundary: zero means a from-genesis store; a nonzero value means
      * the prefix is absent and unknown anchors must fail closed until the
      * owner-gated body backfill completes. */
-    uint64_t anchor_cursor = stage_cursor_persisted(db, STAGE_NAME, STAGE_NAME);
-    if (anchor_cursor > (uint64_t)INT64_MAX ||
-        !anchor_kv_initialize_history(db, (int64_t)anchor_cursor)) {
+    if (!utxo_apply_shielded_history_initialize(db)) {
         pthread_mutex_unlock(&g_lock);
         return false;
     }
-    utxo_apply_anchor_gap_blocker_refresh(db);
-
-    /* Consensus shielded-nullifier set (C-3). Existence is probed BEFORE the
-     * ensure so FIRST creation can stamp the activation marker: heights
-     * at/below the cursor at activation were applied WITHOUT nullifier
-     * enforcement (their nullifiers are not in the table). The marker keeps
-     * `zcl_sql` forensics honest about where enforcement began AND drives
-     * the activation-gap blocker (refresh below). It is NOT a consensus
-     * input (no verdict reads it). Marker failure is non-fatal (logged). */
-    bool nf_existed = nullifier_kv_table_exists(db);
-    if (!nullifier_kv_ensure_schema(db)) {
-        pthread_mutex_unlock(&g_lock);
-        return false;
-    }
-    if (!nf_existed) {
-        char cur[24];
-        int len = snprintf(cur, sizeof(cur), "%llu",
-                           (unsigned long long)stage_cursor_persisted(
-                               db, STAGE_NAME, STAGE_NAME));
-        if (len <= 0 ||
-            !progress_meta_set_in_tx(db, "nullifier_kv.activation_cursor",
-                                     cur, (size_t)len))
-            LOG_WARN(STAGE_NAME,
-                     "[utxo_apply] nullifier_kv activation marker write "
-                     "failed (diagnostics-only, not retried)");
-    }
-    /* C-3 activation gap, owner-visible: pre-activation history has no
-     * nullifier rows (no backfill exists yet), so a marker > 0 registers
-     * the PERMANENT blocker UTXO_APPLY_NF_GAP_BLOCKER_ID every boot until
-     * an owner-gated backfill (or a from-genesis resync) closes the gap. */
-    utxo_apply_nullifier_gap_blocker_refresh(db);
 
     /* One-time backfill for existing datadirs that predate coins_applied_height:
      * seed the canonical contiguous frontier from the already-trusted utxo_apply
@@ -881,6 +861,8 @@ void utxo_apply_stage_shutdown(void)
     g_reader_user = NULL;
     g_lookup = NULL;
     g_lookup_user = NULL;
+    atomic_store(&g_history_hold_height, (int64_t)-1); atomic_store(
+        &g_history_hold_kind, 0);
     atomic_store(&g_ua_verified_total, (uint64_t)0);
     atomic_store(&g_ua_spend_unknown_total, (uint64_t)0);
     atomic_store(&g_ua_utxo_collision_total, (uint64_t)0);
@@ -888,6 +870,7 @@ void utxo_apply_stage_shutdown(void)
     atomic_store(&g_ua_coinbase_protect_total, (uint64_t)0);
     atomic_store(&g_ua_bad_cb_amount_total, (uint64_t)0);
     atomic_store(&g_ua_shielded_double_spend_total, (uint64_t)0);
+    atomic_store(&g_ua_shielded_anchor_reject_total, (uint64_t)0);
     atomic_store(&g_ua_upstream_failed_total, (uint64_t)0);
     atomic_store(&g_ua_internal_error_total, (uint64_t)0);
     atomic_store(&g_ua_reorg_unwound_total, (uint64_t)0);

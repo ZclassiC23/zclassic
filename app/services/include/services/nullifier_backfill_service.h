@@ -14,11 +14,13 @@
 #include <stdint.h>
 
 struct block;
+struct main_state;
 struct node_db;
 struct sqlite3;
 
 #define NULLIFIER_BACKFILL_ACTIVATION_KEY "nullifier_kv.activation_cursor"
 #define NULLIFIER_BACKFILL_RESUME_KEY "nullifier_kv.backfill_cursor"
+#define NULLIFIER_BACKFILL_CHAIN_KEY "nullifier_kv.backfill_chain_binding"
 
 typedef bool (*nullifier_backfill_read_block_fn)(
     struct block *out,
@@ -28,6 +30,9 @@ typedef bool (*nullifier_backfill_read_block_fn)(
     bool *found_out);
 
 struct nullifier_backfill_config {
+    /* Selected-chain authority for the complete run.  node.db height rows are
+     * only body locations; they never select or authenticate a chain. */
+    struct main_state *main;
     struct node_db *ndb;
     struct sqlite3 *progress_db;
     const char *datadir;

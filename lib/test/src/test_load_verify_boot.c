@@ -22,6 +22,8 @@
 #include "test/test_helpers.h"
 
 #include "config/boot.h"
+#include "config/boot_shielded_seed.h"
+#include "config/boot_snapshot_install.h"
 #include "chain/chain.h"
 #include "models/database.h"
 #include "models/block.h"
@@ -29,6 +31,8 @@
 #include "services/seed_integrity_gate.h"
 #include "storage/progress_store.h"
 #include "storage/coins_kv.h"
+#include "storage/anchor_kv.h"
+#include "storage/nullifier_kv.h"
 #include "chain/checkpoints.h"
 #include "chain/utxo_snapshot_loader.h"
 #include "core/uint256.h"
@@ -509,6 +513,107 @@ int test_load_verify_boot(void)
         checkpoints_set_sha3_override_for_test(&cp_ovr);
         LV_CHECK("(e) rewrite matching snapshot for authority-store recovery",
                  lv_write(snap_path, &ok_snap));
+
+        uint8_t old_nf[32] = {0xA5};
+        uint8_t old_txid[32] = {0xC3};
+        LV_CHECK("(e0) seed stale complete shielded history",
+                 test_complete_genesis_shielded_replay(pdb) &&
+                 nullifier_kv_add(pdb, old_nf, NULLIFIER_POOL_SAPLING, 7));
+        LV_CHECK("(e0) seed pre-transition coin",
+                 coins_kv_add(pdb, old_txid, 0, 99, 1, false,
+                              (const uint8_t *)"\x51", 1));
+        boot_shielded_interrupt_after_boundary_for_test(true);
+        boot_load_snapshot_at_own_height_reset(&ndb, snap_path, dir, NULL, true);
+        int64_t nf_boundary = 0, sprout_boundary = 0, sapling_boundary = 0;
+        bool nf_found = false, sprout_found = false, sapling_found = false;
+        bool old_nf_found = true;
+        LV_CHECK("(e0) interruption leaves pre-reset coins untouched",
+                 coins_kv_count(pdb) == 1);
+        LV_CHECK("(e0) interruption already published positive shielded boundary",
+                 nullifier_kv_activation_cursor(pdb, &nf_boundary, &nf_found) &&
+                 anchor_kv_activation_cursor(pdb, ANCHOR_POOL_SPROUT,
+                                              &sprout_boundary, &sprout_found) &&
+                 anchor_kv_activation_cursor(pdb, ANCHOR_POOL_SAPLING,
+                                              &sapling_boundary, &sapling_found) &&
+                 nf_found && sprout_found && sapling_found &&
+                 nf_boundary == 1234 && sprout_boundary == 1234 &&
+                 sapling_boundary == 1234);
+        LV_CHECK("(e0) interruption cannot retain stale nullifier rows",
+                 nullifier_kv_get(pdb, old_nf, NULLIFIER_POOL_SAPLING,
+                                  &old_nf_found, NULL) && !old_nf_found);
+
+        bool marker_matches = false;
+        bool marker_pending = false;
+        LV_CHECK("(e0) interrupted install is a global pending boot gate",
+                 boot_snapshot_install_marker_pending(pdb, &marker_pending) &&
+                     marker_pending);
+        LV_CHECK("(e0) interrupted install leaves matching durable marker",
+                 boot_snapshot_install_marker_blocks_resume(
+                     pdb, 1234, ok_snap.count, ok_snap.body_sha3,
+                     &marker_matches) && marker_matches);
+        bool bound_pending = false;
+        LV_CHECK("(e0) pending gate accepts exact fully verified artifact",
+                 boot_snapshot_install_pending_artifact_matches(
+                     pdb, snap_path, &bound_pending) && bound_pending);
+        marker_matches = true;
+        LV_CHECK("(e0) mismatched marker identity still blocks resume",
+                 boot_snapshot_install_marker_blocks_resume(
+                     pdb, 1234, ok_snap.count + 1, ok_snap.body_sha3,
+                     &marker_matches) && !marker_matches);
+        struct lv_built interrupted_bad_snap;
+        lv_build_snapshot(&interrupted_bad_snap, /*tamper=*/true);
+        LV_CHECK("(e0) replace pending artifact with corrupt same-header file",
+                 lv_write(snap_path, &interrupted_bad_snap));
+        bound_pending = false;
+        LV_CHECK("(e0) pending gate rejects corrupt same-header artifact",
+                 !boot_snapshot_install_pending_artifact_matches(
+                     pdb, snap_path, &bound_pending) && bound_pending);
+        LV_CHECK("(e0) restore exact pending artifact",
+                 lv_write(snap_path, &ok_snap));
+
+        /* Restart on the same healthy authority store. The marker must defeat
+         * RESUME-FAST, rerun the verified loader, and clear only after the
+         * durable tip/trusted-base seed succeeds. */
+        boot_load_snapshot_at_own_height_reset(&ndb, snap_path, dir, NULL,
+                                               true);
+        int32_t interrupted_applied = -1;
+        bool interrupted_found = false;
+        LV_CHECK("(e0) restart converges interrupted install",
+                 coins_kv_count(pdb) == (int64_t)ok_snap.count &&
+                 coins_kv_get_applied_height(pdb, &interrupted_applied,
+                                             &interrupted_found) &&
+                 interrupted_found && interrupted_applied == 1235);
+        LV_CHECK("(e0) successful tip seed then clears marker",
+                 !boot_snapshot_install_marker_blocks_resume(
+                     pdb, 1234, ok_snap.count, ok_snap.body_sha3, NULL));
+        LV_CHECK("(e0) converged install clears global pending boot gate",
+                 boot_snapshot_install_marker_pending(pdb, &marker_pending) &&
+                     !marker_pending);
+        bound_pending = true;
+        LV_CHECK("(e0) no pending journal needs no loader artifact",
+                 boot_snapshot_install_pending_artifact_matches(
+                     pdb, NULL, &bound_pending) && !bound_pending);
+
+        /* Model a kill after the standalone applied-height COMMIT: authority
+         * is true, but the in-progress marker must still force a destructive
+         * verified reseed. A poison coin proves the fast-resume path did not
+         * run. */
+        uint8_t poison_txid[32] = {0xE7};
+        LV_CHECK("(e0b) arm applied-height crash marker",
+                 boot_snapshot_install_marker_begin(
+                     pdb, 1234, ok_snap.count, ok_snap.body_sha3));
+        LV_CHECK("(e0b) add poison coin to partial authority fixture",
+                 coins_kv_add(pdb, poison_txid, 0, 7, 1234, false,
+                              (const uint8_t *)"\x51", 1) &&
+                 coins_kv_is_proven_authority(pdb, NULL));
+        boot_load_snapshot_at_own_height_reset(&ndb, snap_path, dir, NULL,
+                                               true);
+        LV_CHECK("(e0b) marker suppresses RESUME-FAST and removes poison",
+                 coins_kv_count(pdb) == (int64_t)ok_snap.count &&
+                 !coins_kv_exists(pdb, poison_txid, 0));
+        LV_CHECK("(e0b) converged retry clears marker",
+                 !boot_snapshot_install_marker_blocks_resume(
+                     pdb, 1234, ok_snap.count, ok_snap.body_sha3, NULL));
 
         progress_store_close();
         LV_CHECK("(e1) corrupt progress.kv fixture written",

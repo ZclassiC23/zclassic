@@ -37,6 +37,16 @@ bool utxo_apply_check_and_insert_anchors(struct sqlite3 *db,
                                          int height,
                                          struct delta_summary *summary);
 
+/* Reindex-only variant for a bounded shielded_history_begin_full_replay()
+ * session.  It is identical to the normal consensus predicate except that an
+ * explicitly session-proven, never-yet-populated pool may start from its
+ * protocol empty frontier while the public completeness marker stays
+ * positive.  Exact next-height session evidence is mandatory; no normal
+ * reducer caller may use this entry point. */
+bool utxo_apply_check_and_insert_anchors_full_replay(
+    struct sqlite3 *db, const struct block *blk, int height,
+    struct delta_summary *summary);
+
 /* Register/clear the durable history-gap blocker from anchor_state. */
 void utxo_apply_anchor_gap_blocker_refresh(struct sqlite3 *db);
 

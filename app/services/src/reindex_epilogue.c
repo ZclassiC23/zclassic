@@ -20,6 +20,7 @@
 #include "models/database.h"
 #include "services/seed_integrity_gate.h"
 #include "storage/coins_kv.h"
+#include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "validation/chainstate.h"
@@ -212,6 +213,17 @@ static bool derive_authority_from_node_db_utxos(struct node_db *ndb,
                    "anchor=%d) — incomplete",
                    hstar, expect_hstar, tip_h,
                    (int)REDUCER_FRONTIER_TRUSTED_ANCHOR);
+    }
+
+    /* Only the full reindex caller folded genesis..tip through the bounded
+     * shielded replay writer. Keep snapshot-import state incomplete. For a
+     * reindex, all three marker-zero writes plus replay-session retirement are
+     * ONE final transaction after every other epilogue check succeeded. */
+    if (strcmp(source, "reindex") == 0 &&
+        !shielded_history_publish_full_replay_complete(pdb, tip_h)) {
+        reindex_epi_page(tip_h, "shielded_completion_publish_failed");
+        LOG_RETURN(false, "reindex_epi",
+                   "shielded completion publish failed h=%d", tip_h);
     }
 
     LOG_INFO("reindex_epi",

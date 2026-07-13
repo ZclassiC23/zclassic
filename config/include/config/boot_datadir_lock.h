@@ -11,10 +11,10 @@ extern "C" {
 
 /* Single-process guard for the selected datadir.
  *
- * Returns false only when the datadir is owned by a running process or the
- * datadir path cannot be represented safely. PID-file creation failure remains
- * non-fatal to preserve the historical boot posture: warn loudly, then proceed
- * without a lock rather than refusing an otherwise usable local node. */
+ * Acquisition holds a nonblocking OS file lock until release.  The PID file is
+ * retained after release and is diagnostic only; leaving the inode in place
+ * avoids an unlink/recreate race that could admit two writers.  Any failure to
+ * establish or durably record the lock fails closed. */
 bool boot_datadir_lock_acquire(const char *datadir);
 void boot_datadir_lock_release(void);
 

@@ -10,6 +10,7 @@
 
 #include "test/test_helpers.h"
 
+#include "storage/anchor_kv.h"
 #include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
 
@@ -43,6 +44,44 @@ static int64_t nk_count(sqlite3 *db)
     return n;
 }
 
+static bool nk_marker_is(sqlite3 *db, const char *want)
+{
+    char buf[24] = {0};
+    size_t len = 0;
+    bool found = false;
+    size_t want_len = strlen(want);
+    return progress_meta_get(db, "nullifier_kv.activation_cursor",
+                             buf, sizeof(buf), &len, &found) &&
+           found && len == want_len && memcmp(buf, want, want_len) == 0;
+}
+
+static bool nk_all_history_markers_are(sqlite3 *db, int64_t want)
+{
+    int64_t sprout = -1, sapling = -1, nf = -1;
+    bool sprout_found = false, sapling_found = false, nf_found = false;
+    return anchor_kv_activation_cursor(
+               db, ANCHOR_POOL_SPROUT, &sprout, &sprout_found) &&
+           anchor_kv_activation_cursor(
+               db, ANCHOR_POOL_SAPLING, &sapling, &sapling_found) &&
+           nullifier_kv_activation_cursor(db, &nf, &nf_found) &&
+           sprout_found && sapling_found && nf_found &&
+           sprout == want && sapling == want && nf == want;
+}
+
+static bool nk_replay_advance(sqlite3 *db, int64_t height, int64_t target)
+{
+    char *err = NULL;
+    bool ok = sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, &err) ==
+                  SQLITE_OK &&
+              shielded_history_full_replay_advance_in_tx(
+                  db, height, target) &&
+              sqlite3_exec(db, "COMMIT", NULL, NULL, &err) == SQLITE_OK;
+    if (!ok)
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+    if (err) sqlite3_free(err);
+    return ok;
+}
+
 int test_nullifier_kv(void);
 int test_nullifier_kv(void)
 {
@@ -54,10 +93,53 @@ int test_nullifier_kv(void)
     sqlite3 *db = progress_store_db();
     NK_CHECK("db handle", db != NULL);
 
-    /* Existence probe + ensure idempotence. */
+    /* First adoption is atomic: if the marker insert fails, schema creation
+     * rolls back too, so a crash/failure cannot leave a table that later looks
+     * complete merely because it exists. */
     NK_CHECK("table absent before ensure", !nullifier_kv_table_exists(db));
+    NK_CHECK("failure trigger installs",
+             sqlite3_exec(db,
+                 "CREATE TRIGGER fail_nf_marker BEFORE INSERT ON progress_meta "
+                 "WHEN NEW.key='nullifier_kv.activation_cursor' BEGIN "
+                 "SELECT RAISE(ABORT,'marker refused'); END",
+                 NULL, NULL, NULL) == SQLITE_OK);
+    NK_CHECK("marker failure rejects first adoption",
+             !nullifier_kv_initialize_history(db, 42));
+    NK_CHECK("failed adoption rolled schema back",
+             !nullifier_kv_table_exists(db));
+    NK_CHECK("failure trigger drops",
+             sqlite3_exec(db, "DROP TRIGGER fail_nf_marker", NULL, NULL,
+                          NULL) == SQLITE_OK);
+
+    /* A precreated empty table plus absent marker models the old DDL/marker
+     * crash window. Initializing at a nonzero reducer cursor must stamp the
+     * unknown prefix, never infer completeness from table existence. */
     NK_CHECK("ensure_schema", nullifier_kv_ensure_schema(db));
     NK_CHECK("table present after ensure", nullifier_kv_table_exists(db));
+    NK_CHECK("precreated table initializes conservative cursor",
+             nullifier_kv_initialize_history(db, 42));
+    NK_CHECK("nonzero adoption marker is explicit", nk_marker_is(db, "42"));
+    NK_CHECK("existing marker is never overwritten",
+             nullifier_kv_initialize_history(db, 99) &&
+             nk_marker_is(db, "42"));
+    NK_CHECK("test removes marker",
+             progress_meta_delete(db, "nullifier_kv.activation_cursor"));
+    {
+        int64_t cursor = -1;
+        bool found = true;
+        NK_CHECK("strict cursor reports missing as unknown",
+                 nullifier_kv_activation_cursor(db, &cursor, &found) &&
+                 !found);
+    }
+    NK_CHECK("from-genesis adoption writes explicit zero",
+             nullifier_kv_initialize_history(db, 0) && nk_marker_is(db, "0"));
+    {
+        int64_t cursor = -1;
+        bool found = false;
+        NK_CHECK("strict cursor reads explicit zero",
+                 nullifier_kv_activation_cursor(db, &cursor, &found) &&
+                 found && cursor == 0);
+    }
     NK_CHECK("ensure_schema idempotent", nullifier_kv_ensure_schema(db));
     NK_CHECK("count empty == 0", nk_count(db) == 0);
 
@@ -145,6 +227,97 @@ int test_nullifier_kv(void)
                  !fc);
         /* The h=100/150/200 rows from earlier sections are out of range. */
         NK_CHECK("out-of-range rows untouched", nk_count(db) == 2);
+    }
+
+    /* Assisted snapshot/reset boundary is one transaction across BOTH pools.
+     * A forced marker failure must restore prior anchors, marker, and rows. */
+    NK_CHECK("bounded genesis replay seeds explicit complete control",
+             test_complete_genesis_shielded_replay(db));
+    NK_CHECK("general reset cannot publish marker zero",
+             !shielded_history_reset_to_boundary(db, 0) &&
+             nk_all_history_markers_are(db, 0));
+    NK_CHECK("combined reset control row added",
+             nullifier_kv_add(db, n1, NULLIFIER_POOL_SAPLING, 7));
+    NK_CHECK("combined reset failure trigger installs",
+             sqlite3_exec(db,
+                 "CREATE TRIGGER fail_nf_reset_marker BEFORE INSERT ON progress_meta "
+                 "WHEN NEW.key='nullifier_kv.activation_cursor' BEGIN "
+                 "SELECT RAISE(ABORT,'reset marker refused'); END",
+                 NULL, NULL, NULL) == SQLITE_OK);
+    NK_CHECK("combined reset marker failure rolls back",
+             !shielded_history_reset_to_boundary(db, 42));
+    bool retained = false;
+    NK_CHECK("combined reset rollback retains nullifier row",
+             nullifier_kv_get(db, n1, NULLIFIER_POOL_SAPLING,
+                              &retained, NULL) && retained);
+    int64_t sprout_cursor = -1, sapling_cursor = -1;
+    bool sprout_found = false, sapling_found = false;
+    NK_CHECK("combined reset rollback retains anchor cursors",
+             anchor_kv_activation_cursor(db, ANCHOR_POOL_SPROUT,
+                                         &sprout_cursor, &sprout_found) &&
+             anchor_kv_activation_cursor(db, ANCHOR_POOL_SAPLING,
+                                         &sapling_cursor, &sapling_found) &&
+             sprout_found && sapling_found &&
+             sprout_cursor == 0 && sapling_cursor == 0 &&
+             nk_marker_is(db, "0"));
+    NK_CHECK("combined reset failure trigger drops",
+             sqlite3_exec(db, "DROP TRIGGER fail_nf_reset_marker",
+                          NULL, NULL, NULL) == SQLITE_OK);
+    const int64_t replay_target = 2;
+    const int64_t replay_boundary = replay_target + 1;
+    NK_CHECK("full replay starts all components positive/incomplete",
+             shielded_history_begin_full_replay(db, replay_target) &&
+             nk_all_history_markers_are(db, replay_boundary));
+    NK_CHECK("full replay row inserted while marker remains positive",
+             nullifier_kv_add(db, n1, NULLIFIER_POOL_SAPLING, 7));
+    NK_CHECK("premature completion before genesis-to-target refuses",
+             !shielded_history_publish_full_replay_complete(
+                 db, replay_target) &&
+             nk_all_history_markers_are(db, replay_boundary));
+    NK_CHECK("partial replay advances genesis only",
+             nk_replay_advance(db, 0, replay_target));
+    NK_CHECK("partial replay still reports every component incomplete",
+             nk_all_history_markers_are(db, replay_boundary));
+    NK_CHECK("out-of-order replay advance refuses",
+             !nk_replay_advance(db, 2, replay_target) &&
+             nk_all_history_markers_are(db, replay_boundary));
+    NK_CHECK("bounded replay reaches target in exact order",
+             nk_replay_advance(db, 1, replay_target) &&
+             nk_replay_advance(db, 2, replay_target));
+    NK_CHECK("completion failure trigger installs",
+             sqlite3_exec(db,
+                 "CREATE TRIGGER fail_nf_complete BEFORE INSERT ON progress_meta "
+                 "WHEN NEW.key='nullifier_kv.activation_cursor' BEGIN "
+                 "SELECT RAISE(ABORT,'completion refused'); END",
+                 NULL, NULL, NULL) == SQLITE_OK);
+    NK_CHECK("failed completion keeps history incomplete",
+             !shielded_history_publish_full_replay_complete(
+                 db, replay_target) &&
+             nk_all_history_markers_are(db, replay_boundary));
+    retained = false;
+    NK_CHECK("failed completion preserves rebuilt rows",
+             nullifier_kv_get(db, n1, NULLIFIER_POOL_SAPLING,
+                              &retained, NULL) && retained);
+    NK_CHECK("completion failure trigger drops",
+             sqlite3_exec(db, "DROP TRIGGER fail_nf_complete",
+                          NULL, NULL, NULL) == SQLITE_OK);
+    NK_CHECK("successful full replay atomically publishes all three zeros",
+             shielded_history_publish_full_replay_complete(
+                 db, replay_target) &&
+             nk_all_history_markers_are(db, 0));
+    retained = false;
+    NK_CHECK("completion publication does not clear rebuilt rows",
+             nullifier_kv_get(db, n1, NULLIFIER_POOL_SAPLING,
+                              &retained, NULL) && retained);
+    NK_CHECK("malformed activation marker installs",
+             progress_meta_set(db, "nullifier_kv.activation_cursor",
+                               "junk", 4));
+    {
+        int64_t cursor = 0;
+        bool found = true;
+        NK_CHECK("malformed activation marker fails closed",
+                 !nullifier_kv_activation_cursor(db, &cursor, &found) &&
+                 !found);
     }
 
     progress_store_close();

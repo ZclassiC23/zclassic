@@ -6,8 +6,8 @@
  * recovery rung: the producer now writes nullifiers for all forward-applied
  * blocks, but pre-activation datadirs need a one-time populate-only walk.
  * The service replays historical block bodies only far enough to feed the
- * existing utxo_apply nullifier writer, then clears the diagnostics blocker
- * marker when the bounded historical gap has been populated. */
+ * existing utxo_apply nullifier writer, then commits an explicit zero
+ * completeness marker when the bounded historical gap has been populated. */
 // repair-rung-ok:test_nullifier_backfill_service
 // nullifier_backfill_dump_state_json, implements the diagnostics_dump_fn
 // typedef (CLAUDE.md "Adding state introspection": `bool
@@ -17,6 +17,7 @@
 // a candidate for struct zcl_result conversion.
 
 #include "services/nullifier_backfill_service.h"
+#include "nullifier_backfill_chain.h"
 
 #include "jobs/utxo_apply_delta.h"
 #include "jobs/utxo_apply_nullifiers.h"
@@ -28,6 +29,7 @@
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -37,6 +39,105 @@
 #include <string.h>
 
 #define NBF_SUBSYS "nullifier_backfill"
+
+struct nbf_nullifier_entry {
+    uint8_t bytes[32];
+    int pool;
+};
+
+static bool nbf_collect_nullifiers(const struct block *blk,
+                                   struct nbf_nullifier_entry **entries_out,
+                                   size_t *count_out)
+{
+    if (entries_out) *entries_out = NULL;
+    if (count_out) *count_out = 0;
+    if (!blk || !entries_out || !count_out)
+        LOG_FAIL(NBF_SUBSYS, "collect_nullifiers: invalid args");
+    size_t count = 0;
+    for (size_t i = 0; i < blk->num_vtx; i++) {
+        const struct transaction *tx = &blk->vtx[i];
+        if (tx->num_joinsplit > (SIZE_MAX - count) / 2u ||
+            tx->num_shielded_spend > SIZE_MAX - count -
+                                       tx->num_joinsplit * 2u)
+            LOG_FAIL(NBF_SUBSYS, "collect_nullifiers: count overflow");
+        count += tx->num_joinsplit * 2u + tx->num_shielded_spend;
+    }
+    if (count == 0)
+        return true;
+    struct nbf_nullifier_entry *entries = zcl_calloc(
+        count, sizeof(*entries), "nullifier_backfill_entries");
+    if (!entries)
+        return false;
+    size_t at = 0;
+    for (size_t i = 0; i < blk->num_vtx; i++) {
+        const struct transaction *tx = &blk->vtx[i];
+        for (size_t j = 0; j < tx->num_joinsplit; j++) {
+            for (size_t k = 0; k < 2; k++) {
+                memcpy(entries[at].bytes,
+                       tx->v_joinsplit[j].nullifiers[k].data, 32);
+                entries[at++].pool = NULLIFIER_POOL_SPROUT;
+            }
+        }
+        for (size_t j = 0; j < tx->num_shielded_spend; j++) {
+            memcpy(entries[at].bytes,
+                   tx->v_shielded_spend[j].nullifier.data, 32);
+            entries[at++].pool = NULLIFIER_POOL_SAPLING;
+        }
+    }
+    *entries_out = entries;
+    *count_out = count;
+    return true;
+}
+
+static bool nbf_reconcile_preloaded_nullifiers(sqlite3 *db,
+                                               const struct block *blk,
+                                               int64_t height)
+{
+    struct nbf_nullifier_entry *entries = NULL;
+    size_t count = 0;
+    if (!nbf_collect_nullifiers(blk, &entries, &count))
+        LOG_RETURN(false, NBF_SUBSYS,
+                   "reconcile_preloaded: collect failed h=%lld",
+                   (long long)height);
+    bool ok = true;
+    for (size_t i = 0; ok && i < count; i++) {
+        for (size_t j = 0; j < i; j++) {
+            if (entries[i].pool == entries[j].pool &&
+                memcmp(entries[i].bytes, entries[j].bytes, 32) == 0) {
+                LOG_WARN(NBF_SUBSYS,
+                         "reconcile_preloaded: duplicate within block h=%lld",
+                         (long long)height);
+                ok = false;
+                break;
+            }
+        }
+    }
+    for (size_t i = 0; ok && i < count; i++) {
+        bool found = false;
+        int64_t stored_height = -1;
+        if (!nullifier_kv_get(db, entries[i].bytes, entries[i].pool,
+                              &found, &stored_height)) {
+            ok = false;
+            break;
+        }
+        if (found && stored_height != height) {
+            LOG_WARN(NBF_SUBSYS,
+                     "reconcile_preloaded: height mismatch want=%lld got=%lld",
+                     (long long)height, (long long)stored_height);
+            ok = false;
+        }
+    }
+    for (size_t i = 0; ok && i < count; i++) {
+        bool found = false;
+        if (!nullifier_kv_get(db, entries[i].bytes, entries[i].pool,
+                              &found, NULL) ||
+            (!found && !nullifier_kv_add(db, entries[i].bytes,
+                                         entries[i].pool, height)))
+            ok = false;
+    }
+    free(entries);
+    return ok;
+}
 
 static bool nbf_parse_i64(const char *buf, int64_t *out)
 {
@@ -142,6 +243,69 @@ static bool nbf_set_resume_in_tx(sqlite3 *db, int64_t next_height)
     return true;
 }
 
+static struct zcl_result nbf_reset_for_generation(
+    sqlite3 *db,
+    int64_t activation,
+    const struct nbf_chain_binding *binding)
+{
+    bool ok;
+
+    if (!nbf_tx_begin(db))
+        return ZCL_ERR(-10, "begin failed while resetting backfill generation");
+    ok = nullifier_kv_reset_in_tx(db, activation) &&
+         progress_meta_delete_in_tx(db, NULLIFIER_BACKFILL_RESUME_KEY);
+    if (ok && binding)
+        ok = nbf_chain_binding_store_in_tx(db, binding) &&
+             nbf_set_resume_in_tx(db, 0);
+    else if (ok)
+        ok = progress_meta_delete_in_tx(db, NULLIFIER_BACKFILL_CHAIN_KEY);
+    if (!ok) {
+        (void)nbf_tx_finish(db, false);
+        LOG_WARN(NBF_SUBSYS, "reset_for_generation: reset failed");
+        return ZCL_ERR(-11, "failed to reset nullifier backfill generation");
+    }
+    if (!nbf_tx_finish(db, true))
+        return ZCL_ERR(-12, "commit failed resetting backfill generation");
+    utxo_apply_nullifier_gap_blocker_refresh(db);
+    return ZCL_OK;
+}
+
+static struct zcl_result nbf_prepare_generation(
+    sqlite3 *db,
+    int64_t activation,
+    const struct nbf_chain_binding *captured,
+    bool resume_found,
+    int64_t resume,
+    int64_t *start_out)
+{
+    struct nbf_chain_binding stored;
+    bool binding_found = false;
+    bool binding_valid = false;
+
+    if (!start_out)
+        return ZCL_ERR(-13, "prepare_generation missing start output");
+    ZCL_CHECK(nbf_chain_binding_read(db, &stored, &binding_found,
+                                     &binding_valid));
+
+    if (binding_found && binding_valid &&
+        nbf_chain_binding_equal(&stored, captured)) {
+        *start_out = resume_found ? resume : 0;
+        return ZCL_OK;
+    }
+
+    /* Rows without this exact receipt are not evidence, even when they came
+     * from a legacy v3 preload: an unbound superset can false-reject a valid
+     * selected-chain spend.  Discard every unbound/malformed/mismatched set
+     * and deterministically reconstruct it from the selected prefix. */
+    LOG_WARN(NBF_SUBSYS,
+             "prepare_generation: stale/unproven generation discarded "
+             "binding_found=%d binding_valid=%d resume_found=%d",
+             binding_found, binding_valid, resume_found);
+    ZCL_CHECK(nbf_reset_for_generation(db, activation, captured));
+    *start_out = 0;
+    return ZCL_OK;
+}
+
 static bool nbf_default_read_block(struct block *out, int64_t height,
                                    const char *datadir, void *user,
                                    bool *found_out)
@@ -201,11 +365,16 @@ static struct zcl_result nbf_backfill_one(
                        (long long)height);
     }
     if (!summary.ok) {
-        (void)nbf_tx_finish(db, false);
-        return ZCL_ERR(-23, "historical nullifier duplicate at height %lld "
-                            "kind=%s",
-                       (long long)height,
-                       summary.failure_kind ? summary.failure_kind : "(null)");
+        if (!summary.status ||
+            strcmp(summary.status, "shielded_double_spend") != 0 ||
+            !nbf_reconcile_preloaded_nullifiers(db, blk, height)) {
+            (void)nbf_tx_finish(db, false);
+            return ZCL_ERR(-23, "historical nullifier conflict at height %lld "
+                                "kind=%s",
+                           (long long)height,
+                           summary.failure_kind ? summary.failure_kind :
+                                                  "(null)");
+        }
     }
     if (!nbf_set_resume_in_tx(db, height + 1)) {
         (void)nbf_tx_finish(db, false);
@@ -219,18 +388,55 @@ static struct zcl_result nbf_backfill_one(
     return ZCL_OK;
 }
 
-static struct zcl_result nbf_finish_complete(sqlite3 *db)
+static struct zcl_result nbf_finish_complete(
+    const struct nullifier_backfill_config *cfg,
+    sqlite3 *db,
+    int64_t activation,
+    const struct nbf_chain_binding *bound)
 {
     bool ok;
+    static const char complete[] = "0";
+    struct nbf_chain_binding current;
+    struct nbf_chain_binding persisted;
+    bool persisted_found = false;
+    bool persisted_valid = false;
 
     if (!nbf_tx_begin(db))
         return ZCL_ERR(-30, "begin failed while clearing nullifier gap");
-    ok = progress_meta_delete_in_tx(db, NULLIFIER_BACKFILL_ACTIVATION_KEY) &&
+    /* Final compare-and-set.  The canonical reducer lock order is
+     * progress_store_tx_lock -> active_chain.write_lock (tip_finalize uses
+     * the same edge).  Holding progress here prevents reducer tip publication
+     * between this comparison and the durable marker commit.  Owner-gated
+     * boot runs this before P2P/runtime services, so no alternate chain writer
+     * is live. */
+    struct zcl_result capture =
+        nbf_chain_binding_capture(cfg, activation, &current);
+    struct zcl_result receipt =
+        nbf_chain_binding_read(db, &persisted, &persisted_found,
+                               &persisted_valid);
+    if (!capture.ok || !receipt.ok || !persisted_found || !persisted_valid ||
+        !nbf_chain_binding_equal(bound, &current) ||
+        !nbf_chain_binding_equal(bound, &persisted)) {
+        (void)nbf_tx_finish(db, false);
+        LOG_WARN(NBF_SUBSYS,
+                 "finish_complete: selected chain changed; discarding run");
+        if (capture.ok)
+            ZCL_CHECK(nbf_reset_for_generation(db, activation, &current));
+        else
+            ZCL_CHECK(nbf_reset_for_generation(db, activation, NULL));
+        return ZCL_ERR(-33, "selected chain changed during nullifier backfill; "
+                            "generation discarded and restart required");
+    }
+    /* Completeness is explicit. An absent marker is unknown and first-adoption
+     * initialization at a nonzero reducer cursor must conservatively recreate
+     * a gap, so deleting this marker would lose the backfill proof on reboot. */
+    ok = progress_meta_set_in_tx(db, NULLIFIER_BACKFILL_ACTIVATION_KEY,
+                                 complete, sizeof(complete) - 1) &&
          progress_meta_delete_in_tx(db, NULLIFIER_BACKFILL_RESUME_KEY);
     if (!ok) {
         (void)nbf_tx_finish(db, false);
-        LOG_WARN(NBF_SUBSYS, "finish_complete: marker delete failed");
-        return ZCL_ERR(-31, "failed to clear nullifier gap markers");
+        LOG_WARN(NBF_SUBSYS, "finish_complete: marker update failed");
+        return ZCL_ERR(-31, "failed to persist nullifier completion marker");
     }
     if (!nbf_tx_finish(db, true))
         return ZCL_ERR(-32, "commit failed while clearing nullifier gap");
@@ -250,8 +456,10 @@ struct zcl_result nullifier_backfill_service_run(
     sqlite3 *db;
     int64_t activation = 0;
     int64_t resume = 0;
+    int64_t start = 0;
     bool activation_found = false;
     bool resume_found = false;
+    struct nbf_chain_binding binding;
 
     if (!report)
         report = &local_report;
@@ -274,13 +482,19 @@ struct zcl_result nullifier_backfill_service_run(
     ZCL_CHECK(nbf_read_meta_i64(db, NULLIFIER_BACKFILL_ACTIVATION_KEY,
                                 &activation, &activation_found));
     report->activation_cursor = activation_found ? activation : 0;
-    if (!activation_found || activation <= 0) {
+    if (!activation_found) {
+        LOG_WARN(NBF_SUBSYS,
+                 "run: activation marker absent; history coverage unknown");
+        return ZCL_ERR(-49, "nullifier activation marker absent; initialize "
+                            "history coverage before backfill");
+    }
+    if (activation == 0) {
         report->already_complete = true;
         report->completed = true;
         utxo_apply_nullifier_gap_blocker_refresh(db);
         return ZCL_OK;
     }
-    if (activation > INT_MAX) {
+    if (activation < 0 || activation > INT_MAX) {
         LOG_WARN(NBF_SUBSYS, "run: activation cursor too high: %lld",
                  (long long)activation);
         return ZCL_ERR(-43, "activation cursor out of range: %lld",
@@ -297,6 +511,10 @@ struct zcl_result nullifier_backfill_service_run(
                        (long long)resume, (long long)activation);
     }
 
+    ZCL_CHECK(nbf_chain_binding_capture(cfg, activation, &binding));
+    ZCL_CHECK(nbf_prepare_generation(db, activation, &binding,
+                                     resume_found, resume, &start));
+
     reader = cfg->read_block ? cfg->read_block : nbf_default_read_block;
     reader_user = cfg->read_block ? cfg->read_block_user : cfg->ndb;
     if (!reader) {
@@ -308,7 +526,6 @@ struct zcl_result nullifier_backfill_service_run(
         return ZCL_ERR(-46, "default block reader requires node db/datadir");
     }
 
-    int64_t start = resume_found ? resume : 0;
     report->start_height = start;
     report->target_exclusive = activation;
     report->next_height = start;
@@ -335,6 +552,12 @@ struct zcl_result nullifier_backfill_service_run(
                            (long long)h);
         }
 
+        one = nbf_chain_body_verify(&binding, &blk, h);
+        if (!one.ok) {
+            block_free(&blk);
+            return one;
+        }
+
         one = nbf_backfill_one(db, &blk, h);
         block_free(&blk);
         if (!one.ok)
@@ -343,18 +566,17 @@ struct zcl_result nullifier_backfill_service_run(
         report->next_height = h + 1;
     }
 
-    ZCL_CHECK(nbf_finish_complete(db));
+    ZCL_CHECK(nbf_finish_complete(cfg, db, activation, &binding));
     report->completed = true;
     return ZCL_OK;
 }
 
 /* See CLAUDE.md "Adding state introspection". Reentrant-safe: reads the
  * two durable progress.kv markers this owner-gated one-shot job leaves
- * behind (present == a backfill was started and NULLIFIER_BACKFILL_RESUME_KEY
- * < NULLIFIER_BACKFILL_ACTIVATION_KEY means it is still mid-run; both
- * absent means either "never needed" or "already completed" — the
- * companion `utxo_apply.nullifier_backfill_gap` blocker, visible via
- * `zcl_state subsystem=blocker`, distinguishes those two). No allocation;
+ * behind (positive activation plus a smaller resume cursor means mid-run;
+ * explicit zero means complete; absent is unknown/uninitialized). The companion
+ * `utxo_apply.nullifier_backfill_gap` blocker remains visible for unknown or
+ * positive coverage. No allocation;
  * progress_store_tx_lock is the same brief lock nbf_read_meta_i64 always
  * takes. */
 bool nullifier_backfill_dump_state_json(struct json_value *out,
@@ -389,7 +611,9 @@ bool nullifier_backfill_dump_state_json(struct json_value *out,
 
     const char *status;
     if (!activation_found)
-        status = "not_needed_or_complete";
+        status = "unknown_uninitialized";
+    else if (activation == 0)
+        status = "complete";
     else if (resume_found && resume < activation)
         status = "in_progress";
     else

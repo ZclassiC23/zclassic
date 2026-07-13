@@ -211,6 +211,10 @@ int test_rm_rf_recursive(const char *path);
 void test_make_tmpdir(char *buf, size_t n, const char *prefix,
                       const char *tag);
 
+/* Build the smallest exact bounded replay fixture (genesis only) and publish
+ * shielded completeness through the production atomic completion API. */
+bool test_complete_genesis_shielded_replay(sqlite3 *db);
+
 /* Zero a consensus_params and set powLimit to all-ones (trivially-easy
  * target) for deterministic PoW in tests. */
 void test_make_easy_consensus_params(struct consensus_params *p);
@@ -677,6 +681,10 @@ int test_block_log_legacy(void);
 int test_replay_verify(void);
 int test_utxo_snapshot_inmem(void);
 int test_snapshot_apply_coins_kv(void);
+int test_consensus_state_snapshot_install(void);
+int test_consensus_state_snapshot_export(void);
+int test_consensus_state_chain_binding(void);
+int test_file_tree_ops(void);
 int test_hodl_history_port(void);
 int test_node_health_store_port(void);
 int test_db_maintenance_port(void);

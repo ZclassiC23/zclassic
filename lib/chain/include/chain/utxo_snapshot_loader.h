@@ -52,6 +52,19 @@ struct uss_record {
     uint8_t        is_coinbase;
 };
 
+/* Independently recomputed transparent component of any legacy USS v1-v3
+ * import artifact. New producers target zcl.consensus_state_bundle.v1 rather
+ * than extending this format again.
+ * `sha3_hash` covers ONLY the canonical UTXO records, never a trailing v2/v3
+ * shielded section.  This is deliberately distinct from uss_header.sha3_hash,
+ * which commits the complete payload and therefore cannot be compared to the
+ * compiled UTXO checkpoint once a shielded section is present. */
+struct uss_utxo_component {
+    uint8_t  sha3_hash[32];
+    uint64_t count;
+    int64_t  total_supply;
+};
+
 struct uss_handle;
 
 /* Open a sidecar file. mmap'd MAP_PRIVATE PROT_READ.
@@ -64,9 +77,11 @@ struct uss_handle;
  * ~200 ms on AVX-512 and binds the body before any UTXO is
  * inserted into the database.
  *
- * If `expected_sha3` is non-NULL, additionally compares hdr.sha3_hash
- * to that 32-byte buffer. Useful to bind the sidecar to a
- * compile-time checkpoint. */
+ * If `expected_sha3` is non-NULL, additionally compares the FULL payload
+ * digest in hdr.sha3_hash to that buffer. This can bind legacy v1 (whose
+ * payload is only UTXOs) to a transparent checkpoint. It must not be used to
+ * compare v2/v3 full-payload digests to a transparent-only checkpoint; use
+ * uss_utxo_component_compute() for that independent component. */
 struct uss_handle *uss_open(const char *path,
                             bool verify_full_sha3,
                             const uint8_t *expected_sha3,
@@ -81,8 +96,19 @@ typedef bool (*uss_record_cb)(const struct uss_record *r, void *ctx);
  * Returns count emitted, or -1 on truncation. */
 int64_t uss_iter(struct uss_handle *h, uss_record_cb cb, void *ctx);
 
-/* Snapshot format version (1 = UTXO-only, 2 = UTXO + Sapling frontier,
+/* Recompute the transparent component from the decoded record stream using
+ * the single canonical UTXO encoder.  Returns false on truncation, malformed
+ * coin values/coinbase flags, count drift, or signed supply overflow.  The
+ * caller must compare all three outputs to its independently trusted
+ * checkpoint; the snapshot header is not treated as that authority. */
+bool uss_utxo_component_compute(struct uss_handle *h,
+                                struct uss_utxo_component *out,
+                                char *err, size_t err_sz);
+
+/* Legacy import format version (1 = UTXO-only, 2 = UTXO + Sapling frontier,
  * 3 = UTXO + shielded section [Sapling + Sprout frontiers + nullifier set]).
+ * These encodings remain readable for recovery compatibility but are frozen;
+ * none is the canonical complete-state publishing format.
  * 0 on NULL handle. */
 uint32_t uss_version(const struct uss_handle *h);
 

@@ -23,7 +23,9 @@
 #include "storage/progress_store.h"
 #include "storage/coins_kv.h"
 #include "storage/anchor_kv.h"
+#include "storage/nullifier_kv.h"
 #include "config/boot_shielded_seed.h"
+#include "config/boot_snapshot_install.h"
 #include "storage/disk_block_io.h"       /* block_index_have_data_readable */
 #include "config/boot_internal.h"        /* boot_index_clear_coins_state */
 #include "config/mint_anchor_progress.h" /* mint_anchor_progress_* */
@@ -63,7 +65,7 @@ void boot_refold_staged_init(bool refold_staged)
     (void)refold_progress_boot_init(progress_store_db(), refold_staged);
 }
 
-void boot_refold_staged_reset(struct node_db *ndb)
+static void boot_mint_anchor_genesis_reset(struct node_db *ndb)
 {
     sqlite3 *rpdb = progress_store_db();
     if (!rpdb) {
@@ -93,8 +95,7 @@ void boot_refold_staged_reset(struct node_db *ndb)
     static const char *const k_refold_tables[] = {
         "validate_headers_log", "body_fetch_log", "body_persist_log",
         "script_validate_log", "proof_validate_log", "utxo_apply_log",
-        "tip_finalize_log", "utxo_apply_delta", "nullifiers",
-        "created_outputs",
+        "tip_finalize_log", "utxo_apply_delta", "created_outputs",
     };
     static const char *const k_refold_stages[] = {
         "header_admit", "validate_headers", "body_fetch", "body_persist",
@@ -129,7 +130,8 @@ void boot_refold_staged_reset(struct node_db *ndb)
             refold_ok = false;
     if (refold_ok && !coins_kv_set_applied_height_in_tx(rpdb, 0))
         refold_ok = false;
-    if (refold_ok && !anchor_kv_reset_in_tx(rpdb, 0))
+    if (refold_ok && (!anchor_kv_reset_in_tx(rpdb, 0) ||
+                      !nullifier_kv_reset_in_tx(rpdb, 0)))
         refold_ok = false;
     if (refold_ok) {
         (void)progress_meta_delete_in_tx(rpdb, REDUCER_TRUSTED_BASE_HEIGHT_KEY);
@@ -230,9 +232,8 @@ static size_t boot_snapshot_drop_bodiless_have_data_above_seed(
          * carry borrowed HAVE_DATA whose bodies were never shipped, and EVERY
          * have-data-gated walker (node_db_catchup, bg_validation, wallet_scan,
          * pprev-repair, utxo_mirror) then read-storms them — the crash. The
-         * snapshot is the consensus authority at/below seed_h, so those bodies
-         * are not needed; H* stays clamped at the seed anchor (proven-authority
-         * rungs), it does not depend on below-seed body rows. Protect ONLY the
+         * selected snapshot is the operational assisted base at/below seed_h;
+         * those bodies are not needed for readiness. Protect ONLY the
          * seed block itself (its state is the snapshot's anchor). */
         if (!p || p->nHeight == seed_h)
             continue;
@@ -315,13 +316,12 @@ size_t boot_snapshot_drop_bodiless_have_data_above_seed_for_test(
                                                            trust_existing_block_files);
 }
 #endif
-
-/* Read-only probe: is a SHA3-verified anchor snapshot reachable for THIS
- * checkpoint? True iff a file exists at mint_snapshot_path AND uss_open verifies
- * its full body SHA3 against cp->sha3_hash (verify_full_sha3=true binds the
- * compiled checkpoint root) AND hdr.count == cp->utxo_count. This is the EXACT
- * "usable verified snapshot" predicate boot_anchor_seed_from_snapshot
- * (lines below) and boot_load_verify_snapshot_eligible apply before they trust a
+/* Read-only probe: is a fully integrity-checked legacy anchor artifact
+ * reachable for THIS transparent checkpoint? True iff the file has an exact,
+ * fully body-SHA3-verified layout and its independently recomputed UTXO
+ * height/hash/root/count/supply all equal the compiled checkpoint. This exact
+ * predicate is shared by boot_anchor_seed_from_snapshot and
+ * boot_load_verify_snapshot_eligible before they trust a
  * snapshot — factored here so the from-anchor AUTO-ARM can DECLINE (instead of
  * falling into the node.db reseed + FATAL) when no verified snapshot exists. No
  * coins_kv mutation: mmaps read-only, closes immediately. */
@@ -336,10 +336,12 @@ static bool anchor_snapshot_verified_reachable(struct node_db *ndb,
     char err[256] = {0};
     struct uss_header hdr;
     struct uss_handle *h = uss_open(path, /*verify_full_sha3=*/true,
-                                    cp->sha3_hash, &hdr, err, sizeof(err));
+                                    /*expected_sha3=*/NULL,
+                                    &hdr, err, sizeof(err));
     if (!h)
-        return false;  /* absent OR header/body SHA3 mismatch → not reachable */
-    bool ok = (hdr.count == cp->utxo_count);
+        return false;  /* absent OR malformed/body-SHA3 mismatch */
+    bool ok = boot_legacy_uss_matches_checkpoint(
+        h, &hdr, cp, err, sizeof(err));
     uss_close(h);
     return ok;
 }
@@ -440,10 +442,10 @@ bool boot_snapshot_apply_to_coins_kv(sqlite3 *progress_db,
     return true;
 }
 
-/* Re-seed coins_kv from the MINTED, SHA3-committed anchor snapshot (the artifact
- * the -mint-anchor ceremony produced). uss_open verifies the body SHA3 AND binds
- * it to the compiled checkpoint root (expected_sha3 = cp->sha3_hash), so a loaded
- * set is ALREADY proven against the checkpoint before a single coin lands.
+/* Re-seed coins_kv from the MINTED, SHA3-committed legacy anchor artifact (the
+ * artifact the -mint-anchor ceremony produced). uss_open verifies the complete
+ * payload SHA3 and legacy_uss_matches_checkpoint independently binds its
+ * transparent component to the checkpoint before a single coin lands.
  * Returns true iff the snapshot was present, verified, and fully loaded into
  * coins_kv; false (with *present telling whether a file existed at all) when no
  * snapshot is available or it failed verification — the caller then falls back to
@@ -460,16 +462,17 @@ static bool boot_anchor_seed_from_snapshot(struct node_db *ndb, sqlite3 *rpdb,
     char err[256] = {0};
     struct uss_header hdr;
     struct uss_handle *h = uss_open(path, /*verify_full_sha3=*/true,
-                                    cp->sha3_hash, &hdr, err, sizeof(err));
+                                    /*expected_sha3=*/NULL,
+                                    &hdr, err, sizeof(err));
     if (!h)
         return false;  /* absent or failed verify → fall back to node.db reseed */
     if (present) *present = true;
 
-    if (hdr.count != cp->utxo_count) {
-        LOG_WARN("boot", "[boot] -refold-from-anchor: snapshot %s count=%llu != "
-                 "checkpoint %llu — ignoring the artifact", path,
-                 (unsigned long long)hdr.count,
-                 (unsigned long long)cp->utxo_count);
+    if (!boot_legacy_uss_matches_checkpoint(
+            h, &hdr, cp, err, sizeof(err))) {
+        LOG_WARN("boot", "[boot] -refold-from-anchor: legacy artifact %s "
+                 "does not match checkpoint height/hash/root/count/supply "
+                 "(%s) — ignoring it", path, err[0] ? err : "component mismatch");
         uss_close(h);
         return false;
     }
@@ -491,8 +494,8 @@ static bool boot_anchor_seed_from_snapshot(struct node_db *ndb, sqlite3 *rpdb,
     return ok;
 }
 
-/* B2 — the -refold-from-anchor reset (config/boot.h). Sibling of
- * boot_refold_staged_reset EXCEPT:
+/* B2 — the -refold-from-anchor reset (config/boot.h). Unlike the contained
+ * legacy staged refold:
  *   (i)   coins_kv is FULL-reset (coins_kv_reset_for_reseed) — a height-bounded
  *         DELETE cannot restore spent-below-anchor coins, so we re-seed the
  *         WHOLE SHA3-verified anchor set. The source is the MINTED snapshot
@@ -606,8 +609,7 @@ void boot_refold_from_anchor_reset(struct node_db *ndb)
     static const char *const k_refold_tables[] = {
         "validate_headers_log", "body_fetch_log", "body_persist_log",
         "script_validate_log", "proof_validate_log", "utxo_apply_log",
-        "tip_finalize_log", "utxo_apply_delta", "nullifiers",
-        "created_outputs",
+        "tip_finalize_log", "utxo_apply_delta", "created_outputs",
     };
     static const char *const k_refold_stages[] = {
         "header_admit", "validate_headers", "body_fetch", "body_persist",
@@ -645,7 +647,8 @@ void boot_refold_from_anchor_reset(struct node_db *ndb)
     /* The UTXO snapshot does not carry historical Sprout/Sapling roots.
      * Record that absence explicitly: the fold must backfill [0,anchor)
      * before accepting an unknown shielded root. */
-    if (refold_ok && !anchor_kv_reset_in_tx(rpdb, anchor))
+    if (refold_ok && (!anchor_kv_reset_in_tx(rpdb, anchor) ||
+                      !nullifier_kv_reset_in_tx(rpdb, anchor)))
         refold_ok = false;
     if (refold_ok && seeded_from_minted_snapshot) {
         uint8_t one = 1;
@@ -695,7 +698,7 @@ void boot_refold_from_anchor_reset(struct node_db *ndb)
 
 /* -load-snapshot-at-own-height=PATH (config/boot.h). EXPLICIT-ONLY recovery
  * loader. Sibling of boot_refold_from_anchor_reset EXCEPT:
- *   (i)   the snapshot is SELF-verified — uss_open(path, verify_full_sha3=true,
+ *   (i)   uss_open(path, verify_full_sha3=true,
  *         expected_sha3=NULL) recomputes the body SHA3 and compares it to the
  *         file's OWN hdr.sha3_hash; it is NOT bound to the compiled checkpoint.
  *         We additionally require uss_iter to consume EXACTLY hdr.count records
@@ -706,8 +709,7 @@ void boot_refold_from_anchor_reset(struct node_db *ndb)
  *         checkpoint seeds at its real height and the fold climbs from there.
  *   (iii) the 8 stage cursors are forced to hdr.height, coins_applied_height =
  *         hdr.height+1 (utxo_apply next-height convention), tip_finalize seeded
- *         AT hdr.height with hdr.anchor_block_hash (trusted seed: the
- *         self-SHA3-verified base).
+ *         AT hdr.height (assisted; headers do not commit state contents).
  * The staged pipeline then folds FORWARD over on-disk BODIES from hdr.height to
  * the active tip running the REAL script/proof/utxo_apply/tip_finalize stages.
  *
@@ -715,26 +717,6 @@ void boot_refold_from_anchor_reset(struct node_db *ndb)
  * operator-supplied path); a normal boot never reaches it. */
 
 /* FIX 3 seam (see boot.h). PURE: no side effects. */
-bool boot_snapshot_anchor_hash_matches(const unsigned char *index_block_hash,
-                                       const unsigned char *snapshot_anchor_hash)
-{
-    if (!index_block_hash || !snapshot_anchor_hash)
-        return false;
-    return memcmp(index_block_hash, snapshot_anchor_hash, 32) == 0;
-}
-
-static bool snapshot_headers_equal(const struct uss_header *a,
-                                   const struct uss_header *b)
-{
-    return a && b &&
-           a->version == b->version &&
-           a->height == b->height &&
-           a->count == b->count &&
-           a->total_supply == b->total_supply &&
-           memcmp(a->anchor_block_hash, b->anchor_block_hash, 32) == 0 &&
-           memcmp(a->sha3_hash, b->sha3_hash, 32) == 0;
-}
-
 static bool boot_load_snapshot_resume_seed_from_authority(
     const struct uss_header *hdr,
     sqlite3 *rpdb,
@@ -1002,9 +984,7 @@ char *boot_autodetect_bundle_snapshot(const char *datadir)
     if (!datadir || !datadir[0])
         return NULL;
 
-    /* block_index.bin (the PoW header index) must be alongside the snapshot:
-     * the loader consensus-binds the snapshot's anchor to the in-memory header
-     * chain, which is populated from this file on a normal boot. */
+    /* block_index.bin is required to check chain location, not state contents. */
     char bi_path[1100];
     int bn = snprintf(bi_path, sizeof(bi_path), "%s/block_index.bin", datadir);
     if (bn < 0 || (size_t)bn >= sizeof(bi_path))
@@ -1069,8 +1049,8 @@ char *boot_autodetect_bundle_snapshot(const char *datadir)
         LOG_WARN("boot",
                  "[boot] starter-pack snapshot %s is present but block_index.bin "
                  "is NOT in the datadir — the snapshot seed needs the header "
-                 "index to consensus-bind its anchor. Download block_index.bin "
-                 "from the same release; using normal P2P sync this run.",
+                 "index to check its chain location, not authenticate contents. "
+                 "Download block_index.bin; using normal P2P sync this run.",
                  best_name);
         return NULL;
     }
@@ -1098,25 +1078,10 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
                     "load_snapshot_at_own_height empty_path");
         _exit(EXIT_FAILURE);
     }
+    boot_snapshot_install_require_chain_context(ms);
 
-    /* (0) RESUME-FAST — if coins_kv is ALREADY the proven authority at/above the
-     * snapshot's seed height, the persisted coin set + stage logs are sufficient:
-     * a normal boot recomputes H* from them and serves tip in seconds. Wiping and
-     * RE-SEEDING here would re-fold (header_tip - seed_h) blocks on EVERY restart
-     * for zero gain (the stopgap turned every restart into a full re-fold). Skip
-     * the wipe+re-seed+re-fold in that case and let the normal boot resume from
-     * the persisted authority. Re-seed only when coins_kv is absent / corrupt /
-     * BELOW the seed (those cases fall through to the full path below, byte-for-
-     * byte unchanged — the fresh/corrupt fallback is preserved). The peek is
-     * READ-ONLY (verify_full_sha3=false → header-only mmap, no body re-hash, no
-     * coin written); on ANY peek failure we fall through to the full-verify open
-     * below, which fail-closes on a genuinely corrupt snapshot exactly as before.
-     * This is the SAME proven-authority gate the snapshot-autodetect path
-     * (boot.c) and -load-verify path already enforce; only the explicit flag
-     * omitted it. The skip never SEEDS a set — it only declines to wipe a coins_kv
-     * that is INDEPENDENTLY proven by the 3-rung predicate, so a forged/wrong
-     * snapshot can never cause a wrong resume (a real internal tear surfaces as a
-     * named H* gap that the reducer refuses to serve past, never a silent serve). */
+    /* RESUME-FAST declines to wipe independently accepted local authority; the
+     * read-only snapshot peek does not authenticate its state contents. */
     {
         char peek_err[256] = {0};
         struct uss_header peek_hdr;
@@ -1126,31 +1091,47 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
         if (peek) {
             const int32_t peek_seed_h = (int32_t)peek_hdr.height;
             int32_t applied = -1;
-            const bool resume =
-                coins_kv_is_proven_authority(progress_store_db(), &applied) &&
-                applied >= peek_seed_h + 1;
+            bool marker_matches = false, install_pending = true;
+            const bool resume = boot_snapshot_install_resume_allowed(
+                progress_store_db(), &peek_hdr, &applied, &install_pending,
+                &marker_matches);
             uss_close(peek);
+            if (install_pending)
+                LOG_WARN("boot", "[boot] snapshot install pending/read-failed "
+                         "(binding=%s): RESUME-FAST disabled; rerunning",
+                         marker_matches ? "matches" : "unknown_or_mismatch");
             if (resume) {
                 bool repaired = boot_load_snapshot_resume_seed_from_authority(
                     &peek_hdr, progress_store_db(), ms, applied);
+                if (!repaired) {
+                    fprintf(stderr,
+                            "FATAL: -load-snapshot-at-own-height: persisted "
+                            "coins authority exists at h=%d but reducer "
+                            "resume repair failed; REFUSING to report a "
+                            "successful recovery\n", applied - 1);
+                    event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                                "load_snapshot resume_repair_failed "
+                                "applied=%d seed_h=%d", applied,
+                                peek_seed_h);
+                    _exit(EXIT_FAILURE);
+                }
                 LOG_INFO("boot",
-                         "[boot] -load-snapshot-at-own-height: coins_kv is the "
-                         "proven authority at h=%d (>= snapshot seed h=%d) — "
+                         "[boot] -load-snapshot-at-own-height: coins_kv satisfies the "
+                         "operational authority predicate at h=%d (>= snapshot seed h=%d) — "
                          "RESUMING from the persisted coin set; skipping the "
                          "re-seed + ~%d-block re-fold (stage_resume_repair=%s).",
                          applied - 1, peek_seed_h, applied - 1 - peek_seed_h,
-                         repaired ? "ok_or_unneeded" : "not_applied");
+                         "ok_or_unneeded");
                 event_emitf(EV_RECOVERY_ACTION, 0,
                             "load_snapshot_at_own_height resume_skip applied=%d "
-                            "seed_h=%d stage_resume_repair=%s", applied,
-                            peek_seed_h,
-                            repaired ? "ok_or_unneeded" : "not_applied");
+                            "seed_h=%d stage_resume_repair=ok_or_unneeded",
+                            applied, peek_seed_h);
                 return;
             }
         }
     }
 
-    /* (i) Open + SELF-verify the snapshot against its OWN header SHA3 (NOT the
+    /* (i) Open + verify the snapshot body digest against its header (NOT the
      * compiled checkpoint). expected_sha3=NULL skips the checkpoint binding;
      * verify_full_sha3=true still recomputes the whole body and compares it to
      * hdr.sha3_hash, so a corrupt/forged body is rejected before any coin lands. */
@@ -1160,7 +1141,7 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
                                     /*expected_sha3=*/NULL, &hdr, err, sizeof(err));
     if (!h) {
         fprintf(stderr, "FATAL: -load-snapshot-at-own-height: uss_open(%s) failed "
-                "(self-SHA3 verify): %s — REFUSING to seed\n", path, err);
+                "(body SHA3 verify): %s — REFUSING to seed\n", path, err);
         event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
                     "load_snapshot_at_own_height uss_open_failed path=%s err=%s",
                     path, err);
@@ -1185,10 +1166,8 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
     uint32_t embedded_sprout_len = 0;
     uint64_t embedded_nullifier_count = 0;
 
-    /* (ii) CONSENSUS CROSS-CHECK — bind the snapshot to THIS node's PoW-proven
-     * header chain. The self-SHA3 verify above proves the file is internally
-     * consistent but binds it to NOTHING on the real chain: a self-consistent
-     * FORGED snapshot at an arbitrary height would otherwise seed coins_kv.
+    /* Require the snapshot to name this node's validated header at its height.
+     * Body SHA3 proves file integrity, not state derivation or contents.
      * Require the snapshot's hdr.anchor_block_hash to byte-equal the in-memory
      * active-chain block hash at seed_h (both internal little-endian; the
      * snapshot writer fed cp->block_hash, same representation as
@@ -1224,8 +1203,8 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
             /* Distinguish two NULL-slot causes:
              *
              *  (a) Headers simply not synced to seed_h yet (hdr_tip < seed_h) —
-             *      e.g. a FRESH datadir. We cannot consensus-bind the anchor
-             *      NOW, but a hard FATAL is the wrong answer: degrade to a WARN
+             *      e.g. a FRESH datadir. We cannot check its chain location NOW;
+             *      that never authenticates contents. Degrade to a WARN
              *      and RETURN cleanly so the node falls back to normal P2P IBD
              *      and downloads headers/blocks the usual way. (Auto-seeding the
              *      snapshot once headers later reach seed_h is a follow-up — the
@@ -1253,8 +1232,8 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
             fprintf(stderr,
                     "FATAL: -load-snapshot-at-own-height: the in-memory active "
                     "chain has NO block at the snapshot height h=%d — cannot "
-                    "consensus-bind the snapshot's anchor hash (header tip h=%d). "
-                    "REFUSING to seed.\n",
+                    "check its declared chain location (header tip h=%d). This "
+                    "does not authenticate state contents. REFUSING to seed.\n",
                     seed_h, hdr_tip);
             event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
                         "load_snapshot_at_own_height no_index_block seed_h=%d",
@@ -1278,12 +1257,10 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
         }
         fprintf(stderr,
                 "[boot] -load-snapshot-at-own-height: anchor hash MATCHES the "
-                "in-binary PoW header at h=%d — snapshot is consensus-bound to "
-                "this chain\n", seed_h);
+                "validated local header at h=%d — chain location verified; "
+                "snapshot state contents remain assisted/unproven\n", seed_h);
     } else {
-        LOG_WARN("boot", "[boot] -load-snapshot-at-own-height: no main_state "
-                 "passed (unit-test path?) — SKIPPING the anchor-hash consensus "
-                 "cross-check; the loaded set is NOT bound to a PoW header");
+        LOG_WARN("boot", "[boot] ZCL_TESTING fixture has no anchor binding");
     }
 
     uss_close(h);
@@ -1306,6 +1283,29 @@ retry_authority_store:
                     "load_snapshot_at_own_height progress_store_not_open");
         _exit(EXIT_FAILURE);
     }
+
+    /* Interim crash convergence (not atomic): journal before mutation. */
+    if (!boot_snapshot_install_marker_begin(rpdb, seed_h, hdr.count,
+                                            hdr.sha3_hash)) {
+        if (!authority_retry_used) {
+            authority_retry_used = true;
+            if (reopen_progress_store_after_verified_snapshot(datadir, &rpdb,
+                    "install_marker_begin_failed"))
+                goto retry_authority_store;
+        }
+        fprintf(stderr, "FATAL: snapshot install marker failed before mutation\n");
+        event_emitf(EV_BOOT_VALIDATION_FAILED, 0, "load_snapshot install_marker_begin_failed");
+        _exit(EXIT_FAILURE);
+    }
+    /* Publish an incomplete-history boundary before destructive coin writes. */
+    if (!boot_shielded_prepare_assisted_boundary(rpdb, seed_h)) {
+        fprintf(stderr, "FATAL: snapshot shielded boundary failed h=%d\n", seed_h);
+        event_emitf(EV_BOOT_VALIDATION_FAILED, 0, "load_snapshot shielded_boundary_failed h=%d", seed_h);
+        _exit(EXIT_FAILURE);
+    }
+#ifdef ZCL_TESTING
+    if (boot_shielded_consume_boundary_interrupt_for_test()) return;
+#endif
 
     /* Neutralize the cold-import seed provenance so the later stage init
      * (block_index_loader_seed_stages_from_cold_import) does not re-stamp the
@@ -1333,7 +1333,7 @@ retry_authority_store:
     struct uss_header hdr2;
     h = uss_open(path, /*verify_full_sha3=*/true,
                  /*expected_sha3=*/NULL, &hdr2, err2, sizeof(err2));
-    if (!h || !snapshot_headers_equal(&hdr, &hdr2)) {
+    if (!h || !boot_snapshot_install_headers_equal(&hdr, &hdr2)) {
         fprintf(stderr,
                 "FATAL: -load-snapshot-at-own-height: snapshot changed after "
                 "verification (%s) — refusing to seed\n",
@@ -1356,7 +1356,7 @@ retry_authority_store:
             goto retry_authority_store;
         h = uss_open(path, /*verify_full_sha3=*/true,
                      /*expected_sha3=*/NULL, &hdr2, err2, sizeof(err2));
-        if (!h || !snapshot_headers_equal(&hdr, &hdr2)) {
+        if (!h || !boot_snapshot_install_headers_equal(&hdr, &hdr2)) {
             fprintf(stderr,
                     "FATAL: -load-snapshot-at-own-height: snapshot changed "
                     "while recovering authority store (%s) — refusing to seed\n",
@@ -1399,7 +1399,7 @@ retry_authority_store:
         _exit(EXIT_FAILURE);
     }
     fprintf(stderr,
-            "[boot] -load-snapshot-at-own-height: SELF-verified snapshot %s "
+            "[boot] -load-snapshot-at-own-height: digest-verified assisted snapshot %s "
             "(body SHA3 OK, height=%d, count=%llu) — seeded coins_kv\n",
             path, seed_h, (unsigned long long)hdr.count);
 
@@ -1668,7 +1668,7 @@ retry_authority_store:
     };
     static const char *const k_coins_tables[] = {
         "script_validate_log", "proof_validate_log", "utxo_apply_log",
-        "tip_finalize_log", "utxo_apply_delta", "nullifiers",
+        "tip_finalize_log", "utxo_apply_delta",
     };
     bool refold_ok = true;
     char *refold_err = NULL;
@@ -1738,16 +1738,14 @@ retry_authority_store:
         refold_ok = false;
     if (!refold_ok)
         sqlite3_exec(rpdb, "ROLLBACK", NULL, NULL, NULL);
-    if (refold_err)
+    if (refold_err) {
         sqlite3_free(refold_err);
+        refold_err = NULL;
+    }
     progress_store_tx_unlock();
 
     if (!refold_ok) {
         if (!authority_retry_used) {
-            if (refold_err) {
-                sqlite3_free(refold_err);
-                refold_err = NULL;
-            }
             authority_retry_used = true;
             if (reopen_progress_store_after_verified_snapshot(
                     datadir, &rpdb, "stage_cursor_arm_failed"))
@@ -1762,13 +1760,17 @@ retry_authority_store:
         _exit(EXIT_FAILURE);
     }
 
-    /* (iii) Seed the tip_finalize served-tip prefix AT hdr.height with the
-     * snapshot's own anchor_block_hash (trusted seed — the self-SHA3-verified
-     * base). */
-    if (!tip_finalize_stage_seed_anchor(seed_h, hdr.anchor_block_hash, true))
-        LOG_WARN("boot", "[boot] -load-snapshot-at-own-height: tip_finalize anchor "
-                 "seed returned false (stage not yet wired?) — the runtime "
-                 "authority re-seeds from the coins tip");
+    /* Seed every durable reducer anchor; retain the journal until success. */
+    if (!tip_finalize_stage_seed_anchor(seed_h, hdr.anchor_block_hash, true)) {
+        fprintf(stderr, "FATAL: snapshot tip anchor failed h=%d; journal retained\n", seed_h);
+        event_emitf(EV_BOOT_VALIDATION_FAILED, 0, "load_snapshot tip_finalize_seed_failed h=%d", seed_h);
+        _exit(EXIT_FAILURE);
+    }
+    if (!boot_snapshot_install_marker_clear(rpdb)) {
+        fprintf(stderr, "FATAL: snapshot journal clear failed after tip seed h=%d\n", seed_h);
+        event_emitf(EV_BOOT_VALIDATION_FAILED, 0, "load_snapshot install_marker_final_clear_failed h=%d", seed_h);
+        _exit(EXIT_FAILURE);
+    }
 
     free(embedded_frontier);
     embedded_frontier = NULL;
@@ -1777,7 +1779,7 @@ retry_authority_store:
 
     fprintf(stderr,
             "[boot] -load-snapshot-at-own-height: coin set RE-SEEDED + "
-            "self-verified (count=%llu, body SHA3 OK) at h=%d; coins-dependent "
+            "digest-verified assisted state (count=%llu, body SHA3 OK) at h=%d; coins-dependent "
             "stages (script_validate/proof_validate/utxo_apply/tip_finalize) "
             "forced to h=%d, coins-independent stages "
             "(header_admit/validate_headers/body_fetch/body_persist) KEPT at the "
@@ -1788,15 +1790,13 @@ retry_authority_store:
 }
 
 /* -load-verify-boot eligibility probe (config/boot.h). Pure: decides whether a
- * NORMAL boot should route the verified-snapshot load+anchor-fold instead of the
- * cold-import seed. Reuses mint_snapshot_path + uss_open (the EXISTING loader's
- * SHA3 verification — never reimplemented). See boot.h for the full contract.
+ * NORMAL boot should route the verified legacy-artifact load+anchor-fold instead
+ * of the cold-import seed. Reuses the exact loader + shared transparent-component
+ * checkpoint predicate. See boot.h for the full contract.
  *
- * SAFETY (load-bearing): a snapshot whose recomputed SHA3 != the compiled
- * checkpoint makes uss_open return NULL (header expected_sha3 memcmp OR full-body
- * SHA3 memcmp in the loader) → this returns FALSE → the caller runs the proven
- * path and NO bad set is ever routed toward coins_kv. A healthy coins_kv (proven
- * authority) also returns FALSE → an already-seeded node is NEVER reset. */
+ * SAFETY (load-bearing): malformed/full-payload corruption fails uss_open;
+ * transparent checkpoint mismatch fails legacy_uss_matches_checkpoint. Either
+ * returns FALSE before mutation. A healthy coins authority also returns FALSE. */
 bool boot_load_verify_snapshot_eligible(struct node_db *ndb,
                                         struct sqlite3 *progress_db)
 {
@@ -1818,32 +1818,32 @@ bool boot_load_verify_snapshot_eligible(struct node_db *ndb,
     if (!mint_snapshot_path(ndb, path, sizeof(path)))
         return false;
 
-    /* (1)+(2) Present + verified: uss_open binds expected_sha3 = cp->sha3_hash
-     * AND recomputes the full body SHA3 (verify_full_sha3=true). A NULL return
-     * means absent OR header-magic/version/expected-sha3 mismatch OR body-SHA3
-     * mismatch — every "no usable baked snapshot" case. Read-only mmap; closed
-     * immediately (no coins_kv mutation in this probe). */
+    /* (1)+(2) Present + verified: first bind every byte and the exact legacy
+     * layout, then bind the independently recomputed transparent component.
+     * Read-only mmap; no coins_kv mutation in this probe. */
     char err[256] = {0};
     struct uss_header hdr;
     struct uss_handle *h = uss_open(path, /*verify_full_sha3=*/true,
-                                    cp->sha3_hash, &hdr, err, sizeof(err));
+                                    /*expected_sha3=*/NULL,
+                                    &hdr, err, sizeof(err));
     if (!h)
         return false;  /* absent or failed SHA3/header verify → safe fallback */
 
-    bool count_ok = (hdr.count == cp->utxo_count);
+    bool checkpoint_ok =
+        boot_legacy_uss_matches_checkpoint(h, &hdr, cp, err, sizeof(err));
     uss_close(h);
-    if (!count_ok) {
-        LOG_WARN("boot", "[boot] -load-verify-boot: snapshot %s count=%llu != "
-                 "checkpoint %llu — ignoring the artifact, running the proven "
-                 "boot path", path, (unsigned long long)hdr.count,
-                 (unsigned long long)cp->utxo_count);
+    if (!checkpoint_ok) {
+        LOG_WARN("boot", "[boot] -load-verify-boot: legacy artifact %s does "
+                 "not match checkpoint height/hash/root/count/supply (%s) — "
+                 "running the proven boot path", path,
+                 err[0] ? err : "component mismatch");
         return false;
     }
 
     LOG_INFO("boot", "[boot] -load-verify-boot: verified baked anchor snapshot "
              "present (%s, SHA3 == compiled checkpoint, count=%llu) and coins_kv "
-             "is not yet the proven authority — routing the LOAD+VERIFY anchor "
-             "seed + anchor->tip delta fold", path,
+             "does not satisfy operational authority predicate — routing the "
+             "LOAD+VERIFY anchor seed + anchor->tip delta fold", path,
              (unsigned long long)cp->utxo_count);
     return true;
 }
@@ -2014,8 +2014,8 @@ bool boot_refold_from_anchor_arm_if_torn(struct main_state *ms,
 
 /* -mint-anchor (config/boot.h). The ANCHOR-SET MINT boot-time reset:
  *   (1) reset the staged reducer to GENESIS exactly like -refold-staged
- *       (boot_refold_staged_reset truncates coins_kv, forces the 8 cursors to
- *       0, clears the *_log rows + node.db mirror commitment keys) so the fold
+ *       (boot_mint_anchor_genesis_reset truncates coins_kv, forces the cursors
+ *       to 0, and clears reducer logs + node.db commitment keys) so the fold
  *       re-derives every coin from the on-disk BODIES, never the borrowed
  *       node.db `utxos` mirror;
  *   (2) cap the fold at the compiled SHA3 UTXO checkpoint anchor — header_admit
@@ -2052,7 +2052,7 @@ void boot_mint_anchor_reset(struct node_db *ndb, bool fast)
                 legacy_adopted ? ", legacy marker adopted" : "");
     } else {
         /* (1) genesis reset — identical machinery to -refold-staged. */
-        boot_refold_staged_reset(ndb);
+        boot_mint_anchor_genesis_reset(ndb);
         if (!mint_anchor_progress_mark(progress_store_db(), cp)) {
             fprintf(stderr,
                     "FATAL: -mint-anchor: could not persist the checkpoint-"

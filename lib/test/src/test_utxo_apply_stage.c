@@ -12,8 +12,10 @@
 #include "primitives/transaction.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "jobs/utxo_apply_nullifiers.h"
+#include "jobs/utxo_apply_anchors.h"
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/tip_finalize_stage.h"
+#include "storage/anchor_kv.h"
 #include "storage/coins_kv.h"
 #include "storage/disk_block_io.h"
 #include "storage/nullifier_kv.h"
@@ -65,6 +67,7 @@ struct synth_chain_uv {
     struct external_utxo *ext;
     int                 n;
     int                 upstream_fail_height;
+    int                 read_calls;
     enum uv_fail_kind   fail_kind;
 };
 
@@ -127,6 +130,30 @@ static bool uv_security_posture_nullifier_gap(bool expect_gap,
                           "run_shielded_history_backfill_or_from_genesis_refold")
             == 0;
     }
+    json_free(&root);
+    return ok;
+}
+
+static bool uv_security_posture_anchor_gap(bool expect_gap,
+                                           int64_t expect_sapling_cursor)
+{
+    struct json_value root;
+    json_init(&root);
+    json_set_object(&root);
+    agent_push_security_posture_json(&root, "security_posture", NULL);
+    const struct json_value *posture = json_get(&root, "security_posture");
+    bool ok = posture && posture->type == JSON_OBJ;
+    ok = ok && json_get_bool(json_get(posture, "anchor_backfill_gap")) ==
+        expect_gap;
+    ok = ok && json_get_int(json_get(
+        posture, "sapling_anchor_activation_cursor")) ==
+        expect_sapling_cursor;
+    ok = ok && json_get_bool(json_get(posture,
+                                      "anchor_history_complete")) ==
+        !expect_gap;
+    if (expect_gap)
+        ok = ok && strcmp(json_get_str(json_get(posture, "status")),
+                          "review_required_anchor_backfill_gap") == 0;
     json_free(&root);
     return ok;
 }
@@ -207,6 +234,7 @@ static bool fake_reader(struct block *out, const struct block_index *bi,
     struct synth_chain_uv *sc = user;
     if (!out || !bi || !sc || bi->nHeight < 0 || bi->nHeight >= sc->n)
         return false;
+    sc->read_calls++;
     return test_block_copy(out, &sc->bodies[bi->nHeight], "uv_tx_copy");
 }
 
@@ -524,6 +552,22 @@ static int64_t uv_nf_rows_at(sqlite3 *db, int height)
     return n;
 }
 
+/* COUNT(*) of canonical coin rows created at `height`. -1 on error. */
+static int64_t uv_coin_rows_at(sqlite3 *db, int height)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT COUNT(*) FROM coins WHERE height = ?",
+            -1, &st, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int(st, 1, height);
+    int64_t n = -1;
+    if (sqlite3_step(st) == SQLITE_ROW)
+        n = sqlite3_column_int64(st, 0);
+    sqlite3_finalize(st);
+    return n;
+}
+
 /* True iff the utxo_apply.apply_failed blocker reason contains `needle`
  * (block_apply_failure embeds "status=... kind=..." in the reason). */
 static bool uv_blocker_reason_has(const char *needle)
@@ -535,6 +579,29 @@ static bool uv_blocker_reason_has(const char *needle)
             strstr(snaps[i].reason, needle) != NULL)
             return true;
     return false;
+}
+
+static bool uv_blocker_fire_count(const char *id, uint32_t *count_out)
+{
+    struct blocker_snapshot snaps[16];
+    int n = blocker_snapshot_all(snaps, 16);
+    for (int i = 0; i < n; i++) {
+        if (strcmp(snaps[i].id, id) == 0) {
+            if (count_out) *count_out = snaps[i].fire_count;
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool uv_meta_is(sqlite3 *db, const char *key, const char *want)
+{
+    char buf[24] = {0};
+    size_t len = 0;
+    bool found = false;
+    size_t want_len = strlen(want);
+    return progress_meta_get(db, key, buf, sizeof(buf), &len, &found) &&
+           found && len == want_len && memcmp(buf, want, want_len) == 0;
 }
 
 /* True iff the utxo_apply dump_state JSON contains `needle` — the counter
@@ -1175,8 +1242,8 @@ int test_utxo_apply_stage(void)
 
     /* (g) C-3 ACTIVATION GAP blocker: a marker > 0 (table first created on
      * a datadir with already-applied history) must surface the PERMANENT
-     * utxo_apply.nullifier_backfill_gap blocker; a 0/absent marker (a
-     * from-genesis store) must clear it. Drives the production refresh
+     * utxo_apply.nullifier_backfill_gap blocker; only explicit 0 (a
+     * from-genesis or fully backfilled store) may clear it. Drives the refresh
      * directly against the live registry. */
     {
         char dir[256]; struct main_state ms; struct synth_chain_uv sc;
@@ -1204,6 +1271,19 @@ int test_utxo_apply_stage(void)
                      BLOCKER_PERMANENT);
         UV_CHECK("nf gap: security posture exposes review-required gap",
                  uv_security_posture_nullifier_gap(true, 3134000));
+        UV_CHECK("nf gap: transparent-only blocks still advance",
+                 utxo_apply_stage_drain(100) == 2 &&
+                     utxo_apply_stage_cursor() == 2);
+        UV_CHECK("nf gap: transparent h=1 coins were committed",
+                 uv_coin_rows_at(db, 1) > 0);
+        UV_CHECK("nf gap: absent marker simulated",
+                 progress_meta_delete(db,
+                                      "nullifier_kv.activation_cursor"));
+        utxo_apply_nullifier_gap_blocker_refresh(db);
+        UV_CHECK("nf gap: absent marker is unknown, not complete",
+                 utxo_apply_nullifier_gap_snapshot(&nf_cursor, &nf_gap) &&
+                     nf_cursor == -1 && nf_gap &&
+                     blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID));
         UV_CHECK("nf gap: marker reset",
                  progress_meta_set(db, "nullifier_kv.activation_cursor",
                                    "0", 1));
@@ -1216,6 +1296,290 @@ int test_utxo_apply_stage(void)
         UV_CHECK("nf gap: security posture clears nullifier gap",
                  uv_security_posture_nullifier_gap(false, 0));
         uv_teardown(dir, &ms, &sc);
+    }
+
+    /* (h) OLD-NULLIFIER PARITY CONTROL.  These paired fixtures model the same
+     * candidate spend against (1) zclassicd/full history, where its below-seed
+     * nullifier N is present, and (2) a truncated snapshot store, where N is
+     * absent but the positive activation marker truthfully records that gap.
+     * The full view must produce zclassicd's exact duplicate verdict; the
+     * truncated view must HOLD rather than falsely accept. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        blocker_clear("utxo_apply.apply_failed");
+        UV_CHECK("nf old full: setup",
+                 uv_setup("nf_old_full", 2, UV_FAIL_NONE, -1, dir,
+                          sizeof(dir), &ms, &sc) == 0);
+        const uint8_t tag[1] = { 0x91 };
+        uint8_t old_nf[32];
+        uv_nf_bytes(old_nf, tag[0], 0x73);
+        UV_CHECK("nf old full: candidate spend attaches",
+                 uv_add_sapling_spends(&sc.bodies[1].vtx[1], tag, 1, 0x73));
+        UV_CHECK("nf old full: complete state contains N below seed",
+                 nullifier_kv_add(progress_store_db(), old_nf,
+                                  NULLIFIER_POOL_SAPLING, 0));
+        UV_CHECK("nf old full: zclassicd-parity duplicate is rejected",
+                 utxo_apply_stage_drain(100) == 1 &&
+                     utxo_apply_stage_cursor() == 1);
+        UV_CHECK("nf old full: exact zclassicd status",
+                 uv_blocker_reason_has("status=shielded_double_spend"));
+        UV_CHECK("nf old full: exact zclassicd reject kind",
+                 uv_blocker_reason_has(
+                     "kind=bad-txns-joinsplit-requirements-not-met"));
+        UV_CHECK("nf old full: rejected h=1 authored no coins/nullifiers",
+                 uv_coin_rows_at(progress_store_db(), 1) == 0 &&
+                     uv_nf_rows_at(progress_store_db(), 1) == 0 &&
+                     uv_nf_rows_at(progress_store_db(), 0) == 1);
+        blocker_clear("utxo_apply.apply_failed");
+        uv_teardown(dir, &ms, &sc);
+    }
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        blocker_clear("utxo_apply.apply_failed");
+        UV_CHECK("nf old truncated: setup",
+                 uv_setup("nf_old_truncated", 2, UV_FAIL_NONE, -1, dir,
+                          sizeof(dir), &ms, &sc) == 0);
+        const uint8_t tag[1] = { 0x91 };
+        uint8_t old_nf[32]; bool found = true;
+        uv_nf_bytes(old_nf, tag[0], 0x73);
+        UV_CHECK("nf old truncated: candidate spend attaches",
+                 uv_add_sapling_spends(&sc.bodies[1].vtx[1], tag, 1, 0x73));
+        UV_CHECK("nf old truncated: positive history-gap marker",
+                 progress_meta_set(progress_store_db(),
+                                   "nullifier_kv.activation_cursor", "1", 1));
+        UV_CHECK("nf old truncated: N is absent from partial state",
+                 nullifier_kv_get(progress_store_db(), old_nf,
+                                  NULLIFIER_POOL_SAPLING, &found, NULL) &&
+                     !found);
+        UV_CHECK("nf old truncated: candidate is held fail-closed",
+                 utxo_apply_stage_drain(100) == 1 &&
+                     utxo_apply_stage_cursor() == 1);
+        UV_CHECK("nf old truncated: causal permanent blocker remains visible",
+                 blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID) &&
+                     blocker_class_for(UTXO_APPLY_NF_GAP_BLOCKER_ID) ==
+                         BLOCKER_PERMANENT);
+        UV_CHECK("nf old truncated: no transient peer-invalid blocker",
+                 !blocker_exists("utxo_apply.apply_failed"));
+        UV_CHECK("nf old truncated: no peer-invalid reject was counted",
+                 uv_dump_has("\"shielded_double_spend_total\":0") &&
+                     uv_dump_has("\"shielded_anchor_reject_total\":0"));
+        uint32_t nf_fires_before = 0, nf_fires_after = 0;
+        UV_CHECK("nf old truncated: causal blocker fire count readable",
+                 uv_blocker_fire_count(UTXO_APPLY_NF_GAP_BLOCKER_ID,
+                                       &nf_fires_before));
+        int reads_before_retry = sc.read_calls;
+        UV_CHECK("nf old truncated: retry parks JOB_IDLE",
+                 utxo_apply_stage_step_once() == JOB_IDLE &&
+                     sc.read_calls == reads_before_retry);
+        UV_CHECK("nf old truncated: retry creates no blocker churn",
+                 uv_blocker_fire_count(UTXO_APPLY_NF_GAP_BLOCKER_ID,
+                                       &nf_fires_after) &&
+                     nf_fires_after == nf_fires_before &&
+                     !blocker_exists("utxo_apply.apply_failed"));
+        UV_CHECK("nf old truncated: held h=1 authored no coins/nullifiers",
+                 uv_coin_rows_at(progress_store_db(), 1) == 0 &&
+                     uv_nf_rows_at(progress_store_db(), 1) == 0);
+        {
+            int row_ok = -1; char status[32]; char kind[32];
+            UV_CHECK("nf old truncated: scratch log row rolled back",
+                     !log_row_at(progress_store_db(), 1, &row_ok, status,
+                                 sizeof(status), kind, sizeof(kind)) &&
+                         row_ok == -1);
+        }
+        blocker_clear("utxo_apply.apply_failed");
+        uv_teardown(dir, &ms, &sc);
+    }
+
+    /* (h2) Old crash-window regression: a precreated empty nullifier table
+     * with no marker at a nonzero reducer cursor must be adopted as incomplete.
+     * Stage restart atomically stamps the cursor and holds the first spend. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        blocker_clear(UTXO_APPLY_NF_GAP_BLOCKER_ID);
+        UV_CHECK("nf absent marker: setup",
+                 uv_setup("nf_absent_marker", 2, UV_FAIL_NONE, -1, dir,
+                          sizeof(dir), &ms, &sc) == 0);
+        sqlite3 *db = progress_store_db();
+        utxo_apply_stage_shutdown();
+        UV_CHECK("nf absent marker: table remains precreated",
+                 nullifier_kv_table_exists(db));
+        UV_CHECK("nf absent marker: simulate nonzero cursor",
+                 exec_sql(db,
+                     "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at) "
+                     "VALUES('utxo_apply',1,1)"));
+        UV_CHECK("nf absent marker: simulate old missing marker",
+                 progress_meta_delete(db,
+                                      "nullifier_kv.activation_cursor"));
+        UV_CHECK("nf absent marker: restart initializes safely",
+                 utxo_apply_stage_init(&ms));
+        utxo_apply_stage_set_reader(fake_reader, &sc);
+        utxo_apply_stage_set_lookup(fake_lookup, &sc);
+        UV_CHECK("nf absent marker: cursor stamped positive",
+                 uv_meta_is(db, "nullifier_kv.activation_cursor", "1"));
+        const uint8_t tag[1] = { 0x96 };
+        UV_CHECK("nf absent marker: spend attaches",
+                 uv_add_sapling_spends(&sc.bodies[1].vtx[1], tag, 1, 0x77));
+        UV_CHECK("nf absent marker: first spend is held",
+                 utxo_apply_stage_step_once() == JOB_IDLE &&
+                     utxo_apply_stage_cursor() == 1);
+        UV_CHECK("nf absent marker: causal blocker visible",
+                 blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID));
+        UV_CHECK("nf absent marker: no h=1 state authored",
+                 uv_coin_rows_at(db, 1) == 0 && uv_nf_rows_at(db, 1) == 0);
+        uv_teardown(dir, &ms, &sc);
+    }
+
+    {
+        /* A storage/schema failure while reading the adoption cursor must not
+         * be reinterpreted as complete genesis history. */
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        UV_CHECK("history cursor read error: setup",
+                 uv_setup("history_cursor_error", 2, UV_FAIL_NONE, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        sqlite3 *db = progress_store_db();
+        utxo_apply_stage_shutdown();
+        UV_CHECK("history cursor read error: clear old markers",
+                 exec_sql(db, "DELETE FROM anchor_state") &&
+                     progress_meta_delete(
+                         db, "nullifier_kv.activation_cursor"));
+        UV_CHECK("history cursor read error: break cursor store",
+                 exec_sql(db, "DROP TABLE stage_cursor"));
+        UV_CHECK("history cursor read error: init fails closed",
+                 !utxo_apply_stage_init(&ms));
+        int64_t cursor = -1; bool found = true;
+        UV_CHECK("history cursor read error: no anchor completeness stamped",
+                 anchor_kv_activation_cursor(
+                     db, ANCHOR_POOL_SAPLING, &cursor, &found) && !found);
+        UV_CHECK("history cursor read error: no nullifier completeness stamped",
+                 nullifier_kv_activation_cursor(db, &cursor, &found) && !found);
+        uv_teardown(dir, &ms, &sc);
+    }
+
+    {
+        /* Missing stage_cursor on a nonempty authority is not a virgin store:
+         * derive a positive incomplete boundary from coins_applied_height. */
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        UV_CHECK("history cursor lost: setup",
+                 uv_setup("history_cursor_lost", 2, UV_FAIL_NONE, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        sqlite3 *db = progress_store_db();
+        UV_CHECK("history cursor lost: establish nonempty authority",
+                 utxo_apply_stage_drain(1) == 1 && coins_kv_count(db) > 0);
+        utxo_apply_stage_shutdown();
+        UV_CHECK("history cursor lost: remove cursor and markers",
+                 exec_sql(db,
+                     "DELETE FROM stage_cursor WHERE name='utxo_apply'") &&
+                     exec_sql(db, "DELETE FROM anchor_state") &&
+                     progress_meta_delete(
+                         db, "nullifier_kv.activation_cursor"));
+        UV_CHECK("history cursor lost: init adopts conservative boundary",
+                 utxo_apply_stage_init(&ms));
+        int64_t anchor_cursor = -1; bool anchor_found = false;
+        UV_CHECK("history cursor lost: anchor history remains incomplete",
+                 anchor_kv_activation_cursor(
+                     db, ANCHOR_POOL_SAPLING, &anchor_cursor,
+                     &anchor_found) && anchor_found && anchor_cursor == 1);
+        UV_CHECK("history cursor lost: nullifier history remains incomplete",
+                 uv_meta_is(db, "nullifier_kv.activation_cursor", "1") &&
+                     blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID));
+        uv_teardown(dir, &ms, &sc);
+    }
+
+    /* (i) Relevant anchor adoption gaps are also unconditional spend holds.
+     * Empty roots would otherwise resolve as protocol-defined FOUND, so these
+     * cases prove the preflight checks completeness, not only point lookup. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        blocker_clear("utxo_apply.apply_failed");
+        blocker_clear(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID);
+        UV_CHECK("anchor gap sapling: setup",
+                 uv_setup("anchor_gap_sapling", 2, UV_FAIL_NONE, -1, dir,
+                          sizeof(dir), &ms, &sc) == 0);
+        const uint8_t tag[1] = { 0x92 };
+        UV_CHECK("anchor gap sapling: spend attaches with empty root",
+                 uv_add_sapling_spends(&sc.bodies[1].vtx[1], tag, 1, 0x74));
+        UV_CHECK("anchor gap sapling: mark membership prefix incomplete",
+                 exec_sql(progress_store_db(),
+                          "UPDATE anchor_state SET activation_cursor=1 "
+                          "WHERE pool=1"));
+        UV_CHECK("anchor gap sapling: spend held",
+                 utxo_apply_stage_drain(100) == 1 &&
+                     utxo_apply_stage_cursor() == 1);
+        UV_CHECK("anchor gap sapling: causal blocker only",
+                 blocker_exists(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID) &&
+                     blocker_class_for(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID) ==
+                         BLOCKER_PERMANENT &&
+                     !blocker_exists("utxo_apply.apply_failed"));
+        UV_CHECK("anchor gap sapling: security posture exposes gap",
+                 uv_security_posture_anchor_gap(true, 1));
+        UV_CHECK("anchor gap sapling: no peer-invalid reject was counted",
+                 uv_dump_has("\"shielded_anchor_reject_total\":0"));
+        UV_CHECK("anchor gap sapling: authored no h=1 state",
+                 uv_coin_rows_at(progress_store_db(), 1) == 0 &&
+                     uv_nf_rows_at(progress_store_db(), 1) == 0);
+        blocker_clear("utxo_apply.apply_failed");
+        blocker_clear(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID);
+        uv_teardown(dir, &ms, &sc);
+    }
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        blocker_clear("utxo_apply.apply_failed");
+        blocker_clear(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID);
+        UV_CHECK("anchor gap sprout: setup",
+                 uv_setup("anchor_gap_sprout", 2, UV_FAIL_NONE, -1, dir,
+                          sizeof(dir), &ms, &sc) == 0);
+        UV_CHECK("anchor gap sprout: JoinSplit attaches with empty root",
+                 uv_add_joinsplit_nfs(&sc.bodies[1].vtx[1],
+                                      0x93, 0x94, 0x75));
+        UV_CHECK("anchor gap sprout: mark membership prefix incomplete",
+                 exec_sql(progress_store_db(),
+                          "UPDATE anchor_state SET activation_cursor=1 "
+                          "WHERE pool=0"));
+        UV_CHECK("anchor gap sprout: JoinSplit held",
+                 utxo_apply_stage_drain(100) == 1 &&
+                     utxo_apply_stage_cursor() == 1);
+        UV_CHECK("anchor gap sprout: causal blocker only",
+                 blocker_exists(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID) &&
+                     blocker_class_for(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID) ==
+                         BLOCKER_PERMANENT &&
+                     !blocker_exists("utxo_apply.apply_failed"));
+        UV_CHECK("anchor gap sprout: no peer-invalid reject was counted",
+                 uv_dump_has("\"shielded_anchor_reject_total\":0"));
+        UV_CHECK("anchor gap sprout: authored no h=1 state",
+                 uv_coin_rows_at(progress_store_db(), 1) == 0 &&
+                     uv_nf_rows_at(progress_store_db(), 1) == 0);
+        blocker_clear("utxo_apply.apply_failed");
+        blocker_clear(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID);
+        uv_teardown(dir, &ms, &sc);
+    }
+
+    /* (j) Malformed durable completeness evidence is a store-fatal hold, not a
+     * value that strtoll silently converts to the complete marker 0. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_uv sc;
+        blocker_clear("utxo_apply.fatal_store");
+        UV_CHECK("nf malformed: setup",
+                 uv_setup("nf_malformed", 2, UV_FAIL_NONE, -1, dir,
+                          sizeof(dir), &ms, &sc) == 0);
+        const uint8_t tag[1] = { 0x95 };
+        UV_CHECK("nf malformed: spend attaches",
+                 uv_add_sapling_spends(&sc.bodies[1].vtx[1], tag, 1, 0x76));
+        UV_CHECK("nf malformed: corrupt marker written",
+                 progress_meta_set(progress_store_db(),
+                                   "nullifier_kv.activation_cursor",
+                                   "12x", 3));
+        UV_CHECK("nf malformed: transparent h=0 advances then spend is fatal",
+                 utxo_apply_stage_drain(100) == 1 &&
+                     utxo_apply_stage_cursor() == 1);
+        UV_CHECK("nf malformed: named permanent store blocker",
+                 blocker_exists("utxo_apply.fatal_store") &&
+                     blocker_class_for("utxo_apply.fatal_store") ==
+                         BLOCKER_PERMANENT);
+        UV_CHECK("nf malformed: h=1 authored no coins/nullifiers",
+                 uv_coin_rows_at(progress_store_db(), 1) == 0 &&
+                     uv_nf_rows_at(progress_store_db(), 1) == 0);
+        uv_teardown(dir, &ms, &sc);
+        blocker_clear("utxo_apply.fatal_store");
     }
 
     /* FIX C regression pin (job-fatal-blocker, utxo_apply_stage.c step_apply

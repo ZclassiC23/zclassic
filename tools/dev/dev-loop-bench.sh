@@ -3,7 +3,8 @@
 #
 # Controlled developer-loop latency benchmark. Safe cases run build/check
 # paths only. The hot-swap and process-reload cases are skipped unless the
-# operator explicitly sets ZCL_DEV_BENCH_ACTIVATE=1.
+# operator supplies explicit commands; the repository's public activation
+# commands remain contained and cannot produce activation-SLO evidence.
 
 set -uo pipefail
 
@@ -19,6 +20,11 @@ RELOAD_TARGET_MS="${ZCL_DEV_BENCH_RELOAD_TARGET_MS:-8000}"
 TMP_DIR=""
 OUTPUT_TMP=""
 ANY_FAILURE=0
+SOURCE_SUPERSEDED=0
+PREREQUISITE_FAILED=0
+CAMPAIGN_SOURCE_FINGERPRINT=""
+FINAL_SOURCE_FINGERPRINT=""
+BENCHMARK_CONTRACT_FINGERPRINT=""
 
 declare -A CASE_COMMAND CASE_STATUS CASE_CONFIGURED CASE_REQUIRES_ACTIVATION
 declare -A CASE_P50 CASE_P95 CASE_SUCCESSES CASE_FAILURES CASE_LAST_RC
@@ -45,10 +51,11 @@ usage()
         'Default: benchmark no-op/controller/service/header check+link paths;' \
         'skip hot-swap and process reload. No service is activated by default.' \
         '' \
-        'Activation opt-in:' \
+        'Custom activation fixtures (not publication authority):' \
         '  ZCL_DEV_BENCH_ACTIVATE=1' \
         '  ZCL_DEV_BENCH_CMD_HOTSWAP=<persistent-process swap command>' \
-        '  ZCL_DEV_BENCH_CMD_RELOAD=<transactional reload command>' \
+        '  ZCL_DEV_BENCH_CMD_RELOAD=<transactional reload fixture>' \
+        '  Repository activation commands still refuse during containment.' \
         '' \
         'Other controls: ZCL_DEV_BENCH_ITERATIONS, ZCL_DEV_BENCH_WARMUP,' \
         'ZCL_DEV_BENCH_OUTPUT, and ZCL_DEV_BENCH_CMD_<case> overrides.'
@@ -70,10 +77,15 @@ is_true()
 
 json_escape()
 {
-    printf '%s' "$1" | sed \
-        -e 's/\\/\\\\/g' \
-        -e 's/"/\\"/g' \
-        -e ':a;N;$!ba;s/\n/\\n/g'
+    local value="$1"
+    value="${value//\\/\\\\}"
+    value="${value//\"/\\\"}"
+    value="${value//$'\b'/\\b}"
+    value="${value//$'\f'/\\f}"
+    value="${value//$'\n'/\\n}"
+    value="${value//$'\r'/\\r}"
+    value="${value//$'\t'/\\t}"
+    printf '%s' "$value"
 }
 
 cleanup()
@@ -91,6 +103,66 @@ clock_ns()
     else
         printf '%s000000000' "$(date +%s)"
     fi
+}
+
+# Bind every sample to the complete visible source overlay, not merely to the
+# set of dirty path names. The tracked overlay is Git's binary diff from HEAD;
+# the untracked overlay is a canonical, metadata-bounded tar stream. Including
+# the complete index-tag stream also makes hidden-bit changes visible. This is
+# a benchmark supersession guard, not publication authority.
+capture_source_fingerprint()
+{
+    local fingerprint untracked rc
+    untracked="$(mktemp "${TMPDIR:-/tmp}/zcl-dev-bench-paths.XXXXXX")" ||
+        return 2
+    fingerprint="$(
+        (
+            cd "$ROOT" || exit 2
+            git ls-files --others --exclude-standard -z |
+                LC_ALL=C sort -z > "$untracked" || exit 2
+            {
+                printf 'zcl.dev_bench_source.v1\0H\0' &&
+                git rev-parse --verify HEAD &&
+                printf '\0I\0' &&
+                git ls-files -v -z &&
+                printf '\0D\0' &&
+                git diff --binary --no-ext-diff --no-renames HEAD -- &&
+                printf '\0U\0' &&
+                {
+                    [ ! -s "$untracked" ] ||
+                        tar --no-recursion --format=posix --sort=name \
+                            --mtime=@0 --owner=0 --group=0 --numeric-owner \
+                            --pax-option=delete=atime,delete=ctime \
+                            --null --files-from="$untracked" -cf -
+                }
+            } | sha256sum | awk '{print $1}'
+        )
+    )"
+    rc=$?
+    rm -f "$untracked"
+    [ "$rc" -eq 0 ] || return 2
+    [[ "$fingerprint" =~ ^[0-9a-fA-F]{64}$ ]] || return 2
+    printf '%s' "${fingerprint,,}"
+}
+
+source_fingerprint_matches_campaign()
+{
+    local current
+    current="$(capture_source_fingerprint)" || return 2
+    if [ "$current" != "$CAMPAIGN_SOURCE_FINGERPRINT" ]; then
+        printf '[dev-loop-bench] source superseded expected=%s actual=%s\n' \
+            "$CAMPAIGN_SOURCE_FINGERPRINT" "$current" >&2
+        return 3
+    fi
+}
+
+capture_benchmark_contract_fingerprint()
+{
+    local fingerprint
+    fingerprint="$(sha256sum "$SCRIPT_DIR/dev-loop-bench.sh" |
+        awk '{print $1}')" || return 2
+    [[ "$fingerprint" =~ ^[0-9a-fA-F]{64}$ ]] || return 2
+    printf '%s' "${fingerprint,,}"
 }
 
 default_safe_watch_command()
@@ -142,8 +214,10 @@ percentile_nearest_rank()
 run_case()
 {
     local name="$1" command="${CASE_COMMAND[$1]}" total run start end elapsed rc
+    local command_rc fingerprint_rc
     local samples="$TMP_DIR/$name.samples" case_log
     local successes=0 failures=0 last_rc=0
+    local superseded=false failed=false
     case_log="$(dirname "$OUTPUT")/logs/$name.log"
     mkdir -p "$(dirname "$case_log")"
     : > "$case_log"
@@ -170,26 +244,109 @@ run_case()
         CASE_LAST_RC[$name]=0
         return
     fi
+    if [ "$SOURCE_SUPERSEDED" -eq 1 ]; then
+        CASE_STATUS[$name]="skipped_source_superseded"
+        CASE_P50[$name]=null
+        CASE_P95[$name]=null
+        CASE_SUCCESSES[$name]=0
+        CASE_FAILURES[$name]=0
+        CASE_LAST_RC[$name]=0
+        return
+    fi
+    if [ "$PREREQUISITE_FAILED" -eq 1 ]; then
+        CASE_STATUS[$name]="skipped_prior_failure"
+        CASE_P50[$name]=null
+        CASE_P95[$name]=null
+        CASE_SUCCESSES[$name]=0
+        CASE_FAILURES[$name]=0
+        CASE_LAST_RC[$name]=0
+        return
+    fi
+
+    # A case is not allowed to start against a source tree different from the
+    # campaign epoch. This catches an external edit before paying any build or
+    # test cost, even when the child command has no source-CAS of its own.
+    source_fingerprint_matches_campaign >> "$case_log" 2>&1
+    rc=$?
+    if [ "$rc" -ne 0 ]; then
+        CASE_SUCCESSES[$name]=0
+        CASE_FAILURES[$name]=1
+        CASE_LAST_RC[$name]="$rc"
+        CASE_P50[$name]=null
+        CASE_P95[$name]=null
+        if [ "$rc" -eq 3 ]; then
+            CASE_STATUS[$name]="superseded"
+            SOURCE_SUPERSEDED=1
+        else
+            CASE_STATUS[$name]="failed"
+            ANY_FAILURE=1
+            PREREQUISITE_FAILED=1
+        fi
+        return
+    fi
 
     total=$((WARMUP + ITERATIONS))
     log "case=$name warmup=$WARMUP measured=$ITERATIONS"
     for ((run = 1; run <= total; run++)); do
+        source_fingerprint_matches_campaign >> "$case_log" 2>&1
+        fingerprint_rc=$?
+        if [ "$fingerprint_rc" -ne 0 ]; then
+            failures=$((failures + 1))
+            last_rc="$fingerprint_rc"
+            if [ "$fingerprint_rc" -eq 3 ]; then
+                superseded=true
+                SOURCE_SUPERSEDED=1
+            else
+                failed=true
+                ANY_FAILURE=1
+                PREREQUISITE_FAILED=1
+            fi
+            break
+        fi
+
         start="$(clock_ns)"
         (cd "$ROOT" && /bin/sh -c "$command") >> "$case_log" 2>&1
-        rc=$?
+        command_rc=$?
         end="$(clock_ns)"
         elapsed=$(( (end - start + 999999) / 1000000 ))
-        last_rc="$rc"
+
+        # An edit during the child invalidates its timing regardless of the
+        # child exit code. Check immediately so even the final iteration can
+        # never be accepted from a mixed source epoch.
+        source_fingerprint_matches_campaign >> "$case_log" 2>&1
+        fingerprint_rc=$?
+        if [ "$fingerprint_rc" -ne 0 ]; then
+            failures=$((failures + 1))
+            last_rc="$fingerprint_rc"
+            if [ "$fingerprint_rc" -eq 3 ]; then
+                superseded=true
+                SOURCE_SUPERSEDED=1
+            else
+                failed=true
+                ANY_FAILURE=1
+                PREREQUISITE_FAILED=1
+            fi
+            break
+        fi
+
+        last_rc="$command_rc"
+        if [ "$command_rc" -ne 0 ]; then
+            failures=$((failures + 1))
+            if [ "$command_rc" -eq 3 ]; then
+                superseded=true
+                SOURCE_SUPERSEDED=1
+            else
+                failed=true
+                ANY_FAILURE=1
+                PREREQUISITE_FAILED=1
+            fi
+            break
+        fi
         if [ "$run" -le "$WARMUP" ]; then
-            [ "$rc" -eq 0 ] || failures=$((failures + 1))
             continue
         fi
-        if [ "$rc" -eq 0 ]; then
-            printf '%s\n' "$elapsed" >> "$samples"
-            successes=$((successes + 1))
-        else
-            failures=$((failures + 1))
-        fi
+        printf '%s\n' "$elapsed" >> "$samples"
+        successes=$((successes + 1))
     done
 
     CASE_SUCCESSES[$name]="$successes"
@@ -197,9 +354,13 @@ run_case()
     CASE_LAST_RC[$name]="$last_rc"
     CASE_P50[$name]="$(percentile_nearest_rank "$samples" 50)"
     CASE_P95[$name]="$(percentile_nearest_rank "$samples" 95)"
-    if [ "$failures" -gt 0 ] || [ "$successes" -ne "$ITERATIONS" ]; then
+    if [ "$superseded" = true ]; then
+        CASE_STATUS[$name]="superseded"
+    elif [ "$failed" = true ] || [ "$failures" -gt 0 ] ||
+         [ "$successes" -ne "$ITERATIONS" ]; then
         CASE_STATUS[$name]="failed"
         ANY_FAILURE=1
+        PREREQUISITE_FAILED=1
     else
         CASE_STATUS[$name]="passed"
     fi
@@ -236,8 +397,9 @@ slo_case_status()
 emit_artifact()
 {
     local destination="$1" tmp generated_at epoch hostname kernel cpu_count
-    local commit dirty=false source_fingerprint hot_status reload_status
-    local overall_evaluable=false next_action sep="" name
+    local commit dirty=false worktree_status_fingerprint
+    local hot_status reload_status source_stable=false
+    local overall_evaluable=false next_action sep="" name status
     mkdir -p "$(dirname "$destination")"
     tmp="$(mktemp "$(dirname "$destination")/.bench-latest.json.XXXXXX")" ||
         fail 'could not create atomic benchmark staging file'
@@ -251,17 +413,26 @@ emit_artifact()
     if ! git -C "$ROOT" diff-index --quiet HEAD -- 2>/dev/null; then
         dirty=true
     fi
-    source_fingerprint="$(
+    worktree_status_fingerprint="$(
         git -C "$ROOT" status --porcelain=v1 --untracked-files=normal 2>/dev/null |
-        sha256sum | awk '{print $1}' || printf unavailable)"
+        sha256sum | awk '{print $1}')" || worktree_status_fingerprint=unavailable
+    FINAL_SOURCE_FINGERPRINT="$(capture_source_fingerprint 2>/dev/null)" ||
+        FINAL_SOURCE_FINGERPRINT=unavailable
+    if [ "$FINAL_SOURCE_FINGERPRINT" = "$CAMPAIGN_SOURCE_FINGERPRINT" ]; then
+        source_stable=true
+    fi
     hot_status="$(slo_case_status hot_swap "$HOTSWAP_TARGET_MS")"
     reload_status="$(slo_case_status process_reload "$RELOAD_TARGET_MS")"
     if [ "$hot_status" != not_measured ] &&
        [ "$reload_status" != not_measured ]; then
         overall_evaluable=true
     fi
-    if ! is_true "$ACTIVATE"; then
-        next_action="rerun with ZCL_DEV_BENCH_ACTIVATE=1 and explicit persistent hot-swap/reload commands before making activation SLO claims"
+    if [ "$SOURCE_SUPERSEDED" -eq 1 ]; then
+        next_action="source epoch changed during the verify-only benchmark; rerun when the workspace is stable or set an isolated ZCL_DEV_BENCH_ROOT"
+    elif [ "$ANY_FAILURE" -ne 0 ]; then
+        next_action="inspect the first failed case; dependent benchmark cases were skipped instead of retrying the same broken prerequisite"
+    elif ! is_true "$ACTIVATE"; then
+        next_action="verify-only baseline recorded; runtime publication is contained, so activation SLOs are intentionally not measured"
     elif [ "$hot_status" = miss ] || [ "$reload_status" = miss ]; then
         next_action="inspect the per-case logs and optimize the measured miss"
     elif [ "$hot_status" = pass ] && [ "$reload_status" = pass ]; then
@@ -273,18 +444,30 @@ emit_artifact()
     {
         printf '{\n'
         printf '  "schema":"zcl.dev_loop_bench.v1",\n'
-        printf '  "status":"%s",\n' \
-            "$([ "$ANY_FAILURE" -eq 0 ] && printf ok || printf failed)"
+        if [ "$ANY_FAILURE" -ne 0 ]; then
+            status=failed
+        elif [ "$SOURCE_SUPERSEDED" -eq 1 ]; then
+            status=superseded
+        else
+            status=ok
+        fi
+        printf '  "status":"%s",\n' "$status"
         printf '  "generated_at_utc":"%s",\n' "$(json_escape "$generated_at")"
         printf '  "generated_at_epoch":%s,\n' "$epoch"
         printf '  "artifact":"%s",\n' "$(json_escape "$destination")"
         printf '  "host":{"hostname":"%s","kernel":"%s","cpu_count":%s},\n' \
             "$(json_escape "$hostname")" "$(json_escape "$kernel")" "$cpu_count"
-        printf '  "source":{"build_commit":"%s","dirty":%s,"worktree_status_sha256":"%s"},\n' \
-            "$(json_escape "$commit")" "$dirty" "$source_fingerprint"
-        printf '  "configuration":{"iterations":%s,"warmup":%s,"activation_opt_in":%s},\n' \
-            "$ITERATIONS" "$WARMUP" \
-            "$(is_true "$ACTIVATE" && printf true || printf false)"
+        printf '  "source":{"build_commit":"%s","dirty":%s,' \
+            "$(json_escape "$commit")" "$dirty"
+        printf '"worktree_status_sha256":"%s",' "$worktree_status_fingerprint"
+        printf '"campaign_source_sha256":"%s","final_source_sha256":"%s",' \
+            "$CAMPAIGN_SOURCE_FINGERPRINT" "$FINAL_SOURCE_FINGERPRINT"
+        printf '"source_stable":%s},\n' "$source_stable"
+        printf '  "configuration":{"iterations":%s,"warmup":%s,' \
+            "$ITERATIONS" "$WARMUP"
+        printf '"activation_opt_in":%s,"benchmark_contract_sha256":"%s"},\n' \
+            "$(is_true "$ACTIVATE" && printf true || printf false)" \
+            "$BENCHMARK_CONTRACT_FINGERPRINT"
         printf '  "cases":[\n'
         for name in "${CASES[@]}"; do
             printf '%s    {' "$sep"
@@ -301,7 +484,7 @@ emit_artifact()
             printf ',"p50_ms":%s,"p95_ms":%s,' \
                 "${CASE_P50[$name]}" "${CASE_P95[$name]}"
             printf '"log":"%s"}' "$(json_escape "${CASE_LOG[$name]}")"
-            sep=",\n"
+            sep=$',\n'
         done
         printf '\n  ],\n'
         printf '  "slo":{"evaluable":%s,' "$overall_evaluable"
@@ -318,7 +501,7 @@ emit_artifact()
 
 run_benchmark()
 {
-    local name
+    local name status
     [ -d "$ROOT" ] || fail "repository root does not exist: $ROOT"
     is_uint "$ITERATIONS" && [ "$ITERATIONS" -gt 0 ] ||
         fail 'ZCL_DEV_BENCH_ITERATIONS must be a positive integer'
@@ -326,6 +509,15 @@ run_benchmark()
     is_uint "$HOTSWAP_TARGET_MS" && is_uint "$RELOAD_TARGET_MS" ||
         fail 'SLO targets must be non-negative integers'
     is_true "$ACTIVATE" >/dev/null || true
+    ANY_FAILURE=0
+    SOURCE_SUPERSEDED=0
+    PREREQUISITE_FAILED=0
+    FINAL_SOURCE_FINGERPRINT=""
+    BENCHMARK_CONTRACT_FINGERPRINT="$(
+        capture_benchmark_contract_fingerprint)" ||
+        fail 'could not fingerprint benchmark contract'
+    CAMPAIGN_SOURCE_FINGERPRINT="$(capture_source_fingerprint)" ||
+        fail 'could not capture complete source fingerprint'
 
     TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/zcl-dev-loop-bench.XXXXXX")" ||
         fail 'could not create temporary workspace'
@@ -336,17 +528,36 @@ run_benchmark()
         run_case "$name"
     done
     emit_artifact "$OUTPUT"
-    log "artifact=$OUTPUT status=$([ "$ANY_FAILURE" -eq 0 ] && printf ok || printf failed)"
-    return "$ANY_FAILURE"
+    if [ "$ANY_FAILURE" -ne 0 ]; then
+        status=failed
+    elif [ "$SOURCE_SUPERSEDED" -eq 1 ]; then
+        status=superseded
+    else
+        status=ok
+    fi
+    log "artifact=$OUTPUT status=$status"
+    [ "$ANY_FAILURE" -eq 0 ] || return 1
+    [ "$SOURCE_SUPERSEDED" -eq 0 ] || return 3
+    return 0
 }
 
 self_test()
 {
-    local sandbox first second
+    local sandbox first second third fourth fifth marker rc
+    local failure_runs failure_marker fresh_status stale_status legacy_status
     sandbox="$(mktemp -d "${TMPDIR:-/tmp}/zcl-dev-loop-selftest.XXXXXX")" ||
         return 1
     ROOT="$sandbox/repo"
     mkdir -p "$ROOT"
+    git -C "$ROOT" init -q || { rm -rf "$sandbox"; return 1; }
+    git -C "$ROOT" config user.name zcl-dev-loop-selftest
+    git -C "$ROOT" config user.email dev-loop-selftest@invalid
+    printf 'baseline\n' > "$ROOT/source.txt"
+    git -C "$ROOT" add source.txt &&
+        git -C "$ROOT" commit -qm baseline || {
+            rm -rf "$sandbox"
+            return 1
+        }
     ITERATIONS=3
     WARMUP=1
     ACTIVATE=0
@@ -371,6 +582,15 @@ self_test()
         rm -rf "$sandbox"
         return 1
     }
+    if command -v jq >/dev/null 2>&1; then
+        jq -e '.schema == "zcl.dev_loop_bench.v1" and
+               (.cases | type == "array") and
+               (.cases | length == 6)' "$first" >/dev/null || {
+            printf '[dev-loop-bench-selftest] FAIL: safe artifact is not valid contract JSON\n' >&2
+            rm -rf "$sandbox"
+            return 1
+        }
+    fi
 
     cleanup
     TMP_DIR=""
@@ -386,15 +606,230 @@ self_test()
         rm -rf "$sandbox"
         return 1
     }
+
+    cleanup
+    TMP_DIR=""
+    ACTIVATE=0
+    third="$sandbox/superseded.json"
+    marker="$sandbox/should-not-run"
+    OUTPUT="$third"
+    ZCL_DEV_BENCH_CMD_CONTROLLER='exit 3'
+    ZCL_DEV_BENCH_CMD_SERVICE="printf ran > '$marker'"
+    ZCL_DEV_BENCH_CMD_HEADER="printf ran > '$marker'"
+    export ZCL_DEV_BENCH_CMD_CONTROLLER ZCL_DEV_BENCH_CMD_SERVICE
+    export ZCL_DEV_BENCH_CMD_HEADER
+    run_benchmark >/dev/null
+    rc=$?
+    [ "$rc" -eq 3 ] && [ ! -e "$marker" ] &&
+    grep -q '"status":"superseded"' "$third" &&
+    grep -q '"name":"one_service".*"status":"skipped_source_superseded"' "$third" &&
+    grep -q '"name":"one_header".*"status":"skipped_source_superseded"' "$third" || {
+        printf '[dev-loop-bench-selftest] FAIL: superseded source did not stop redundant cases\n' >&2
+        rm -rf "$sandbox"
+        return 1
+    }
+    if command -v jq >/dev/null 2>&1; then
+        jq -e '.status == "superseded"' "$third" >/dev/null || {
+            printf '[dev-loop-bench-selftest] FAIL: superseded artifact is not valid contract JSON\n' >&2
+            rm -rf "$sandbox"
+            return 1
+        }
+    fi
+
+    # A child that returns success after an external source edit must not
+    # contribute a timing sample. The post-iteration fingerprint catches the
+    # drift and the remaining verify-only cases never execute.
+    cleanup
+    TMP_DIR=""
+    fourth="$sandbox/fingerprint-drift.json"
+    marker="$sandbox/drift-later-case-ran"
+    OUTPUT="$fourth"
+    ZCL_DEV_BENCH_CMD_CONTROLLER="printf 'external edit\\n' >> '$ROOT/source.txt'"
+    ZCL_DEV_BENCH_CMD_SERVICE="printf ran > '$marker'"
+    ZCL_DEV_BENCH_CMD_HEADER="printf ran > '$marker'"
+    export ZCL_DEV_BENCH_CMD_CONTROLLER ZCL_DEV_BENCH_CMD_SERVICE
+    export ZCL_DEV_BENCH_CMD_HEADER
+    run_benchmark >/dev/null
+    rc=$?
+    [ "$rc" -eq 3 ] && [ ! -e "$marker" ] &&
+    grep -q '"name":"one_controller".*"status":"superseded"' "$fourth" &&
+    grep -q '"name":"one_service".*"status":"skipped_source_superseded"' "$fourth" &&
+    grep -q '"source_stable":false' "$fourth" || {
+        printf '[dev-loop-bench-selftest] FAIL: external source drift was accepted or repeated\n' >&2
+        rm -rf "$sandbox"
+        return 1
+    }
+    git -C "$ROOT" restore -- source.txt || {
+        rm -rf "$sandbox"
+        return 1
+    }
+
+    # Any ordinary nonzero result is a broken prerequisite, not a reason to
+    # repeat the same compile failure for every sample and later case.
+    cleanup
+    TMP_DIR=""
+    fifth="$sandbox/failure-fast.json"
+    failure_runs="$sandbox/failure-runs"
+    failure_marker="$sandbox/failure-later-case-ran"
+    OUTPUT="$fifth"
+    ZCL_DEV_BENCH_CMD_CONTROLLER="printf 'attempt\\n' >> '$failure_runs'; exit 1"
+    ZCL_DEV_BENCH_CMD_SERVICE="printf ran > '$failure_marker'"
+    ZCL_DEV_BENCH_CMD_HEADER="printf ran > '$failure_marker'"
+    export ZCL_DEV_BENCH_CMD_CONTROLLER ZCL_DEV_BENCH_CMD_SERVICE
+    export ZCL_DEV_BENCH_CMD_HEADER
+    run_benchmark >/dev/null
+    rc=$?
+    [ "$rc" -eq 1 ] && [ "$(wc -l < "$failure_runs" | tr -d ' ')" -eq 1 ] &&
+    [ ! -e "$failure_marker" ] &&
+    grep -q '"name":"one_controller".*"status":"failed".*"failures":1' "$fifth" &&
+    grep -q '"name":"one_service".*"status":"skipped_prior_failure"' "$fifth" &&
+    grep -q '"name":"one_header".*"status":"skipped_prior_failure"' "$fifth" || {
+        printf '[dev-loop-bench-selftest] FAIL: nonzero result was retried or later cases ran\n' >&2
+        rm -rf "$sandbox"
+        return 1
+    }
+    if command -v jq >/dev/null 2>&1; then
+        jq -e '.status == "failed" and .source.source_stable == true' \
+            "$fifth" >/dev/null || {
+            printf '[dev-loop-bench-selftest] FAIL: fail-fast artifact is invalid JSON\n' >&2
+            rm -rf "$sandbox"
+            return 1
+        }
+    fi
+
+    # Status is authoritative only for the exact source and benchmark
+    # contract that produced the artifact. A current artifact passes through
+    # byte-for-byte; a subsequent source edit yields compact stale metadata.
+    fresh_status="$sandbox/status-fresh.json"
+    stale_status="$sandbox/status-stale.json"
+    OUTPUT="$fifth"
+    emit_status > "$fresh_status"
+    cmp -s "$fifth" "$fresh_status" || {
+        printf '[dev-loop-bench-selftest] FAIL: current status did not preserve fresh artifact\n' >&2
+        rm -rf "$sandbox"
+        return 1
+    }
+    printf 'status drift\n' >> "$ROOT/source.txt"
+    emit_status > "$stale_status"
+    grep -q '"status":"stale"' "$stale_status" &&
+    grep -q '"reason":"artifact_source_superseded"' "$stale_status" &&
+    grep -q '"artifact_status":"failed"' "$stale_status" &&
+    grep -q '"source_stable":false' "$stale_status" || {
+        printf '[dev-loop-bench-selftest] FAIL: stale source artifact remained authoritative\n' >&2
+        rm -rf "$sandbox"
+        return 1
+    }
+    if command -v jq >/dev/null 2>&1; then
+        jq -e '.status == "stale" and
+               .reason == "artifact_source_superseded"' \
+            "$stale_status" >/dev/null || {
+            printf '[dev-loop-bench-selftest] FAIL: stale status is invalid JSON\n' >&2
+            rm -rf "$sandbox"
+            return 1
+        }
+    fi
+    git -C "$ROOT" restore -- source.txt || {
+        rm -rf "$sandbox"
+        return 1
+    }
+
+    # Pre-binding artifacts from the older benchmark contract fail closed as
+    # stale rather than surfacing old cases as if they described this tree.
+    legacy_status="$sandbox/status-legacy.json"
+    OUTPUT="$sandbox/legacy.json"
+    printf '{"schema":"zcl.dev_loop_bench.v1","status":"failed"}\n' > "$OUTPUT"
+    emit_status > "$legacy_status"
+    grep -q '"status":"stale"' "$legacy_status" &&
+    grep -q '"reason":"artifact_missing_source_binding"' "$legacy_status" || {
+        printf '[dev-loop-bench-selftest] FAIL: legacy artifact was not marked stale\n' >&2
+        rm -rf "$sandbox"
+        return 1
+    }
     rm -rf "$sandbox"
     TMP_DIR=""
-    printf '[dev-loop-bench-selftest] PASS: safe skips, opt-in activation, samples, percentiles, JSON artifact\n'
+    printf '[dev-loop-bench-selftest] PASS: valid JSON, content-bound epoch, fail-fast failure/supersession, safe skips, samples, percentiles\n'
+}
+
+emit_status_problem()
+{
+    local status="$1" reason="$2" artifact_status="$3"
+    local age="$4" stored_source="$5" current_source="$6"
+    local stored_contract="$7" current_contract="$8"
+    printf '{"schema":"zcl.dev_loop_bench.v1","status":"%s",' \
+        "$(json_escape "$status")"
+    printf '"artifact_status":"%s","reason":"%s",' \
+        "$(json_escape "$artifact_status")" "$(json_escape "$reason")"
+    printf '"artifact":"%s","artifact_age_seconds":%s,' \
+        "$(json_escape "$OUTPUT")" "$age"
+    printf '"source":{"artifact_final_source_sha256":"%s",' \
+        "$(json_escape "$stored_source")"
+    printf '"current_source_sha256":"%s","source_stable":false},' \
+        "$(json_escape "$current_source")"
+    printf '"configuration":{"artifact_benchmark_contract_sha256":"%s",' \
+        "$(json_escape "$stored_contract")"
+    printf '"current_benchmark_contract_sha256":"%s"},' \
+        "$(json_escape "$current_contract")"
+    printf '"slo":{"evaluable":false,'
+    printf '"hot_swap":{"target_p95_ms":%s,"p95_ms":null,"status":"not_measured"},' \
+        "$HOTSWAP_TARGET_MS"
+    printf '"process_reload":{"target_p95_ms":%s,"p95_ms":null,"status":"not_measured"}},' \
+        "$RELOAD_TARGET_MS"
+    printf '"agent_next_action":"rerun make dev-loop-bench on a stable source epoch; stale or invalid evidence is never authoritative"}\n'
 }
 
 emit_status()
 {
     if [ -r "$OUTPUT" ]; then
-        sed -n '1,$p' "$OUTPUT"
+        local artifact_status generated age now reason=""
+        local stored_source current_source stored_contract current_contract
+        if command -v jq >/dev/null 2>&1 &&
+           ! jq -e '.schema == "zcl.dev_loop_bench.v1"' "$OUTPUT" \
+                >/dev/null 2>&1; then
+            emit_status_problem invalid invalid_artifact_json unknown null \
+                unavailable unavailable unavailable unavailable
+            return 0
+        fi
+        artifact_status="$(sed -n \
+            's/^[[:space:]]*"status":"\([^"]*\)".*/\1/p' \
+            "$OUTPUT" | head -1)"
+        generated="$(sed -n \
+            's/^[[:space:]]*"generated_at_epoch":\([0-9][0-9]*\).*/\1/p' \
+            "$OUTPUT" | head -1)"
+        stored_source="$(sed -n \
+            's/.*"final_source_sha256":"\([0-9a-fA-F]*\)".*/\1/p' \
+            "$OUTPUT" | head -1)"
+        stored_contract="$(sed -n \
+            's/.*"benchmark_contract_sha256":"\([0-9a-fA-F]*\)".*/\1/p' \
+            "$OUTPUT" | head -1)"
+        [ -n "$artifact_status" ] || artifact_status=unknown
+        now="$(date +%s)"
+        if [[ "$generated" =~ ^[0-9]+$ ]] && [ "$now" -ge "$generated" ]; then
+            age=$((now - generated))
+        else
+            age=null
+        fi
+        current_contract="$(capture_benchmark_contract_fingerprint)" ||
+            current_contract=unavailable
+        current_source="$(capture_source_fingerprint 2>/dev/null)" ||
+            current_source=unavailable
+        if [[ ! "$stored_source" =~ ^[0-9a-fA-F]{64}$ ]] ||
+           [[ ! "$stored_contract" =~ ^[0-9a-fA-F]{64}$ ]]; then
+            reason=artifact_missing_source_binding
+        elif [ "$current_contract" = unavailable ] ||
+             [ "$current_source" = unavailable ]; then
+            reason=current_source_fingerprint_unavailable
+        elif [ "${stored_contract,,}" != "$current_contract" ]; then
+            reason=benchmark_contract_changed
+        elif [ "${stored_source,,}" != "$current_source" ]; then
+            reason=artifact_source_superseded
+        fi
+        if [ -z "$reason" ]; then
+            sed -n '1,$p' "$OUTPUT"
+            return 0
+        fi
+        emit_status_problem stale "$reason" "$artifact_status" "$age" \
+            "${stored_source:-unavailable}" "$current_source" \
+            "${stored_contract:-unavailable}" "$current_contract"
         return 0
     fi
     printf '{"schema":"zcl.dev_loop_bench.v1","status":"missing",'
@@ -404,7 +839,7 @@ emit_status()
         "$HOTSWAP_TARGET_MS"
     printf '"process_reload":{"target_p95_ms":%s,"p95_ms":null,"status":"not_measured"}},' \
         "$RELOAD_TARGET_MS"
-    printf '"agent_next_action":"run make dev-loop-bench; opt into activation only for declared reference-host SLO proof"}\n'
+    printf '"agent_next_action":"run make dev-loop-bench for a verify-only baseline; runtime publication is contained"}\n'
 }
 
 case "${1:-}" in
