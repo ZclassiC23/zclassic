@@ -1545,7 +1545,9 @@ int test_tip_finalize_stage(void)
         json_init(&v);
         TF_CHECK("dump: returns true",
                  tip_finalize_dump_state_json(&v, NULL));
-        char buf[1024];
+        char buf[2048];   /* headroom: dump grew step-latency/rate fields
+                            * (lane 1.1, app/jobs/include/jobs/stage_helpers.h
+                            * stage_dump_counters()) */
         size_t n = json_write(&v, buf, sizeof(buf));
         TF_CHECK("dump: serializes", n > 0 && n < sizeof(buf));
         TF_CHECK("dump: stage_name",
@@ -1559,6 +1561,18 @@ int test_tip_finalize_stage(void)
                  strstr(buf, "\"last_precondition_height\":-1") != NULL);
         TF_CHECK("dump: last_precondition_reason empty",
                  strstr(buf, "\"last_precondition_reason\":\"\"") != NULL);
+        /* Lane 1.1 (per-stage step latency/rate metrics) — see the matching
+         * block in test_utxo_apply_stage.c for the full rationale. */
+        TF_CHECK("dump: last_step_us key present",
+                 strstr(buf, "\"last_step_us\":") != NULL);
+        TF_CHECK("dump: step_us_ewma key present",
+                 strstr(buf, "\"step_us_ewma\":") != NULL);
+        TF_CHECK("dump: steps_per_sec_ewma key present",
+                 strstr(buf, "\"steps_per_sec_ewma\":") != NULL);
+        TF_CHECK("dump: last_step_us > 0",
+                 json_get_int(json_get(&v, "last_step_us")) > 0);
+        TF_CHECK("dump: step_us_ewma > 0",
+                 json_get_int(json_get(&v, "step_us_ewma")) > 0);
         json_free(&v);
         tf_teardown(dir, &ms, &sc);
     }

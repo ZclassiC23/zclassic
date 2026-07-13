@@ -303,17 +303,47 @@ static inline void reducer_extend_window_to_candidate(struct main_state *ms,
 }
 
 /* Emit the four generic stage-machine counters (advanced/blocked/idle/error)
- * into a *_dump_state_json object. These come straight off the stage_t and are
- * identical across every Job stage; the stage's distinctive counters stay
- * inline at each call site. No-op when s is NULL (stage not yet started). */
+ * PLUS step-latency/rate observability into a *_dump_state_json object. These
+ * come straight off the stage_t and are identical across every Job stage; the
+ * stage's distinctive counters stay inline at each call site. No-op when s is
+ * NULL (stage not yet started).
+ *
+ * Step-latency fields (see util/stage.h "Step timing" for the write side):
+ *   last_step_us       — duration of the most recent step() call, us.
+ *   step_us_ewma        — EWMA (alpha 1/16) of step duration, us.
+ *   steps_per_sec_ewma  — derived at dump time as 1e6 / step_us_ewma; 0.0
+ *                         before the first step (step_us_ewma is still 0,
+ *                         avoiding a divide-by-zero). Not stored — this
+ *                         keeps step_us_ewma the single source of truth for
+ *                         "how long a step takes" instead of two counters
+ *                         that could drift apart.
+ *   steps_total         — sum of advanced/blocked/idle/error_count, i.e. how
+ *                         many times stage_run_once actually ran the step()
+ *                         body. Not stored separately (each of the four
+ *                         counters already persists this information); this
+ *                         is a dump-time convenience sum so a caller doesn't
+ *                         have to add the four fields itself. */
 static inline void stage_dump_counters(struct json_value *out, const stage_t *s)
 {
     if (!s)
         return;
-    json_push_kv_int(out, "advanced_count", (int64_t)stage_advanced_count(s));
-    json_push_kv_int(out, "blocked_count",  (int64_t)stage_blocked_count(s));
-    json_push_kv_int(out, "idle_count",     (int64_t)stage_idle_count(s));
-    json_push_kv_int(out, "error_count",    (int64_t)stage_error_count(s));
+    uint64_t advanced = stage_advanced_count(s);
+    uint64_t blocked  = stage_blocked_count(s);
+    uint64_t idle     = stage_idle_count(s);
+    uint64_t error    = stage_error_count(s);
+    json_push_kv_int(out, "advanced_count", (int64_t)advanced);
+    json_push_kv_int(out, "blocked_count",  (int64_t)blocked);
+    json_push_kv_int(out, "idle_count",     (int64_t)idle);
+    json_push_kv_int(out, "error_count",    (int64_t)error);
+    json_push_kv_int(out, "steps_total",
+                     (int64_t)(advanced + blocked + idle + error));
+
+    int64_t last_us = stage_last_step_us(s);
+    int64_t ewma_us  = stage_step_us_ewma(s);
+    json_push_kv_int(out, "last_step_us", last_us);
+    json_push_kv_int(out, "step_us_ewma", ewma_us);
+    json_push_kv_real(out, "steps_per_sec_ewma",
+                      ewma_us > 0 ? (1000000.0 / (double)ewma_us) : 0.0);
 }
 
 /* Emit the three universal opening fields of a *_dump_state_json object —

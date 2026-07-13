@@ -124,6 +124,36 @@ uint64_t stage_blocked_count(const stage_t *s);
 uint64_t stage_idle_count(const stage_t *s);
 uint64_t stage_error_count(const stage_t *s);
 
+/* ── Step timing (for observability — "how fast is this stage stepping") ─
+ *
+ * stage_run_once() times exactly one thing: the call to the stage's own
+ * `step` function (the per-stage step_once body), the same seam every one
+ * of the eight Job stages flows through. Every outcome (ADVANCED, BLOCKED,
+ * IDLE, FATAL) is timed and folded in — this answers "is this stage's step
+ * function getting slower" independent of whether it happens to be finding
+ * work right now.
+ *
+ * last_step_us  — wall-clock duration (via GetTimeMicros()) of the most
+ *                 recent step() call, floored to 1 (GetTimeMicros() has
+ *                 ~1us granularity, so a sub-tick step is reported as 1,
+ *                 not 0 — 0 is reserved for "never sampled", i.e. before
+ *                 the first step).
+ * step_us_ewma  — exponential moving average of step duration, alpha = 1/16
+ *                 (integer arithmetic: ewma += (sample - ewma) / 16), seeded
+ *                 directly from the first sample so there is no slow ramp
+ *                 from zero. 0 before the first step.
+ *
+ * Both are updated with a plain atomic_store after the step returns — the
+ * struct is single-writer (see "Threading" above), and dump readers on other
+ * threads tolerate a benign torn/stale read exactly like the existing
+ * advanced/blocked/idle/error counters, so no lock is taken here. A caller
+ * wanting a rate can derive steps_per_sec ≈ 1e6 / step_us_ewma; that is
+ * computed at dump time (see app/jobs/include/jobs/stage_helpers.h
+ * stage_dump_counters()) rather than stored, so there is exactly one new
+ * unit of state per stage (the duration), not a second redundant counter. */
+int64_t stage_last_step_us(const stage_t *s);
+int64_t stage_step_us_ewma(const stage_t *s);
+
 /* Initialize the `stage_cursor` table on the given DB handle. Safe to
  * call repeatedly. */
 bool stage_table_ensure(sqlite3 *db);

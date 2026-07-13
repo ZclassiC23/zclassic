@@ -1025,6 +1025,34 @@ int test_utxo_apply_stage(void)
         UV_CHECK("dump: cursor=2", strstr(buf, "\"cursor\":2") != NULL);
         UV_CHECK("dump: verified_total=2",
                  strstr(buf, "\"verified_total\":2") != NULL);
+        /* Lane 1.1 (per-stage step latency/rate metrics): the shared
+         * stage_dump_counters() helper adds these keys to every one of the
+         * eight stage dumpstates for free (see app/jobs/include/jobs/
+         * stage_helpers.h). Two blocks were driven above via drain(100),
+         * which stops at the first non-ADVANCED step_once() — so the drain
+         * issues one extra IDLE probe after the two ADVANCED steps
+         * (STAGE_DRAIN_IMPL breaks on the first result != JOB_ADVANCED).
+         * steps_total must equal the sum of the four verdict counters
+         * rather than a hardcoded 2, so this doesn't hardcode that drain
+         * internal. */
+        int64_t adv = json_get_int(json_get(&v, "advanced_count"));
+        int64_t blk = json_get_int(json_get(&v, "blocked_count"));
+        int64_t idl = json_get_int(json_get(&v, "idle_count"));
+        int64_t err = json_get_int(json_get(&v, "error_count"));
+        UV_CHECK("dump: advanced_count=2", adv == 2);
+        UV_CHECK("dump: steps_total == sum of verdict counters",
+                 json_get_int(json_get(&v, "steps_total")) ==
+                     adv + blk + idl + err);
+        UV_CHECK("dump: last_step_us key present",
+                 strstr(buf, "\"last_step_us\":") != NULL);
+        UV_CHECK("dump: step_us_ewma key present",
+                 strstr(buf, "\"step_us_ewma\":") != NULL);
+        UV_CHECK("dump: steps_per_sec_ewma key present",
+                 strstr(buf, "\"steps_per_sec_ewma\":") != NULL);
+        UV_CHECK("dump: last_step_us > 0",
+                 json_get_int(json_get(&v, "last_step_us")) > 0);
+        UV_CHECK("dump: step_us_ewma > 0",
+                 json_get_int(json_get(&v, "step_us_ewma")) > 0);
         json_free(&v);
         uv_teardown(dir, &ms, &sc);
     }
