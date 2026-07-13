@@ -155,9 +155,23 @@ int test_stage(void)
         STG_CHECK("cursor=1 after first", stage_cursor(s) == 1);
         STG_CHECK("step invoked once", u.times_called == 1);
 
+        /* Lane 1.1 (per-stage step latency/rate metrics): a step just ran,
+         * so both fields must now be positive and equal (one sample seeds
+         * the EWMA directly — see stage_record_step_timing). */
+        STG_CHECK("last_step_us > 0 after first step",
+                  stage_last_step_us(s) > 0);
+        STG_CHECK("step_us_ewma > 0 after first step",
+                  stage_step_us_ewma(s) > 0);
+        STG_CHECK("step_us_ewma seeded from first sample",
+                  stage_step_us_ewma(s) == stage_last_step_us(s));
+
         r = stage_run_once(s, db);
         STG_CHECK("second run advances", r == JOB_ADVANCED);
         STG_CHECK("cursor=2 after second", stage_cursor(s) == 2);
+        STG_CHECK("last_step_us still > 0 after second step",
+                  stage_last_step_us(s) > 0);
+        STG_CHECK("step_us_ewma still > 0 after second step",
+                  stage_step_us_ewma(s) > 0);
 
         STG_CHECK("advanced_count=2", stage_advanced_count(s) == 2);
         STG_CHECK("blocked_count=0",  stage_blocked_count(s) == 0);
@@ -196,6 +210,11 @@ int test_stage(void)
         STG_CHECK("blocked_count=1", stage_blocked_count(s) == 1);
         STG_CHECK("blocker recorded",
                   blocker_exists("stage-blocked-fixture"));
+        /* Step timing is recorded for every verdict, not just ADVANCED —
+         * a stage that is stuck naming the same blocker every tick still
+         * needs its step latency visible. */
+        STG_CHECK("last_step_us > 0 after BLOCKED step",
+                  stage_last_step_us(s) > 0);
 
         stage_destroy(s);
         sqlite3_close(db);
@@ -213,6 +232,8 @@ int test_stage(void)
         STG_CHECK("idle returns IDLE", r == JOB_IDLE);
         STG_CHECK("cursor unchanged after IDLE", stage_cursor(s) == 0);
         STG_CHECK("idle_count=1", stage_idle_count(s) == 1);
+        STG_CHECK("last_step_us > 0 after IDLE step",
+                  stage_last_step_us(s) > 0);
 
         stage_destroy(s);
         sqlite3_close(db);

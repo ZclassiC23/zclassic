@@ -23,6 +23,7 @@
 #include "platform/time_compat.h"
 #include "util/stage.h"
 
+#include "core/utiltime.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -50,6 +51,12 @@ struct stage {
     _Atomic uint64_t blocked_count;
     _Atomic uint64_t idle_count;
     _Atomic uint64_t error_count;
+
+    /* Step timing — see util/stage.h "Step timing" for the contract. Written
+     * only from inside stage_run_once() (single-writer, matches the counters
+     * above); read lock-free from dump_state_json on other threads. */
+    _Atomic int64_t last_step_us;
+    _Atomic int64_t step_us_ewma;
 };
 
 /* ── Helpers ───────────────────────────────────────────────────────── */
@@ -250,6 +257,8 @@ stage_t *stage_create(const char *name, stage_step_fn step, void *user)
     atomic_store(&s->blocked_count,  0u);
     atomic_store(&s->idle_count,     0u);
     atomic_store(&s->error_count,    0u);
+    atomic_store(&s->last_step_us,   0);
+    atomic_store(&s->step_us_ewma,   0);
     return s;
 }
 
@@ -279,6 +288,36 @@ uint64_t stage_idle_count(const stage_t *s)
 { return s ? atomic_load(&s->idle_count) : 0u; }
 uint64_t stage_error_count(const stage_t *s)
 { return s ? atomic_load(&s->error_count) : 0u; }
+
+int64_t stage_last_step_us(const stage_t *s)
+{ return s ? atomic_load(&s->last_step_us) : 0; }
+int64_t stage_step_us_ewma(const stage_t *s)
+{ return s ? atomic_load(&s->step_us_ewma) : 0; }
+
+/* EWMA update, alpha = 1/16, integer arithmetic (matches the kernel's other
+ * load-average-style smoothing, e.g. the supervisor's tick-age tracking):
+ * next = prev + (sample - prev) / 16. The first sample seeds the EWMA
+ * directly (prev == 0 is indistinguishable from "never sampled", and a
+ * seeded start avoids a many-step ramp from zero on stages that step
+ * rarely). Called only from stage_run_once(), which is single-writer per
+ * stage_t (see "Threading" in util/stage.h), so plain atomic_load/store is
+ * sufficient — no read-modify-write race is possible. */
+static void stage_record_step_timing(stage_t *s, int64_t elapsed_us)
+{
+    if (!s || elapsed_us < 0)
+        return;
+    /* GetTimeMicros() has ~1us granularity: a trivial step body (a fixture,
+     * or a real step that only touches in-memory state) can complete inside
+     * the same tick as its start read, measuring exactly 0. Floor to 1 so a
+     * step that genuinely ran is always distinguishable from "never sampled"
+     * (also 0, before the first step) rather than aliasing onto it. */
+    if (elapsed_us == 0)
+        elapsed_us = 1;
+    atomic_store(&s->last_step_us, elapsed_us);
+    int64_t prev = atomic_load(&s->step_us_ewma);
+    int64_t next = (prev == 0) ? elapsed_us : prev + (elapsed_us - prev) / 16;
+    atomic_store(&s->step_us_ewma, next);
+}
 
 /* ── Batched drain (one COMMIT per batch, not one per step) ─────────────
  *
@@ -465,7 +504,13 @@ job_result_t stage_run_once(stage_t *s, sqlite3 *db)
         return stage_note_fatal(s, "BEGIN IMMEDIATE failed");
     }
 
+    /* Time exactly the per-stage step body — the single seam every one of
+     * the eight Job stages flows through (see util/stage.h "Step timing").
+     * One GetTimeMicros() pair per step is cheap relative to the step
+     * itself (SQL reads/writes, block parsing, proof verification). */
+    int64_t step_t0 = GetTimeMicros();
     job_result_t r = s->step(&ctx);
+    stage_record_step_timing(s, GetTimeMicros() - step_t0);
 
     if (r == JOB_ADVANCED) {
         if (ctx.cursor_out <= cur) {
