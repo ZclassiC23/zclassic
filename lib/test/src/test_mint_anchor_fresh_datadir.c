@@ -142,12 +142,21 @@ static int test_mfd_scenario_a_fresh_empty_preflight_refuses(void)
     test_fmt_tmpdir(dir, sizeof(dir), "mint_anchor_fresh_datadir", "a_empty");
     mfd_mkdir_p(dir);
 
+    /* Hermetic: the bodies check falls back to the legacy zclassicd source
+     * ($HOME/.zclassic/blocks), which exists on a dev box — point it at an
+     * empty dir so "fresh" means fresh everywhere. */
+    char empty_legacy[300];
+    snprintf(empty_legacy, sizeof(empty_legacy), "%s/empty-legacy", dir);
+    mfd_mkdir_p(empty_legacy);
+    setenv("ZCL_MINT_PREFLIGHT_LEGACY_BLOCKS_DIR", empty_legacy, 1);
+
     struct json_value report;
     json_init(&report);
 
     int64_t t0 = GetTimeMicros();
     bool all_ok = boot_mint_anchor_preflight_run_all(dir, &report);
     int64_t elapsed_us = GetTimeMicros() - t0;
+    unsetenv("ZCL_MINT_PREFLIGHT_LEGACY_BLOCKS_DIR");
 
     MFD_CHECK("(a) terminal reached under wall-clock budget (<10s)",
               elapsed_us < MFD_A_BUDGET_US);
