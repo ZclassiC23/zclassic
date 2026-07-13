@@ -100,6 +100,7 @@
 #include "controllers/zslp_controller.h"
 #include "wallet/wallet.h"
 #include "wallet/wallet_sqlite.h"
+#include "wallet/wallet_keystore.h"
 #include "wallet/wallet_canary.h"
 #include "wallet/wallet_db.h"
 #include "sapling/params_init.h"
@@ -1219,6 +1220,15 @@ bool app_init(struct app_context *ctx)
                g_wallet.num_wallet_tx,
                g_wallet.best_block_height);
 
+        /* Backward compat: an existing wallet opens regardless of the
+         * at-rest policy, but without a passphrase its keys are plaintext
+         * on disk — warn every boot rather than imply it is encrypted. */
+        if (pre_open_key_rows > 0 &&
+            wallet_at_rest_creation_policy() != WALLET_AT_REST_ENCRYPTED)
+            fprintf(stderr, "WARNING: wallet private keys are stored "
+                "UNENCRYPTED at rest in node.db (no ZCL_WALLET_PASSPHRASE); "
+                "anyone with datadir read access can drain every coin.\n");
+
         /* STATE E: canary self-test. Writes then reads a fresh random
          * probe through the same sqlite handle the node will use for
          * user RPCs. A failure here is STATE E — if keys exist on
@@ -1324,8 +1334,26 @@ bool app_init(struct app_context *ctx)
     }
 
     if (g_wallet.keystore.num_keys == 0) {
-        /* Genuinely empty wallet — generate the initial keypool and
-         * flush. This is STATE A/B's terminal action. */
+        /* Genuinely empty wallet — first-run creation. Consult the
+         * encryption-at-rest policy BEFORE minting any key material.
+         * Without a passphrase (ZCL_WALLET_PASSPHRASE) the transparent
+         * WIF keys, Sapling spending keys, and HD seed would be written
+         * to node.db in PLAINTEXT. Refuse to do that silently: require
+         * a passphrase, or an explicit, loud `-allow-plaintext-wallet`
+         * opt-in. This only blocks *creating* a new plaintext wallet —
+         * an existing plaintext wallet still opens (warned, above). */
+        enum wallet_boot_wallet_action act =
+            wallet_at_rest_boot_decision(wallet_at_rest_creation_policy(),
+                                         ctx->mint_anchor, ctx->operator_lane);
+        wallet_at_rest_boot_report(act, ctx->operator_lane);
+        if (act == WALLET_BOOT_REFUSE) {
+            event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                        "wallet_plaintext_creation_refused");
+            exit(1);
+        }
+        if (act == WALLET_BOOT_CREATE_PLAINTEXT)
+            event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                        "wallet_plaintext_created_optin");
         wallet_top_up_key_pool(&g_wallet, DEFAULT_KEYPOOL_SIZE);
         int64_t initial_pool_generation =
             wallet_key_pool_generation_ceiling(&g_wallet);

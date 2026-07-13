@@ -4,6 +4,7 @@
 
 #include "test/test_helpers.h"
 #include "wallet/wallet_keystore.h"
+#include "config/boot.h"   /* wallet_at_rest_boot_decision + operator lanes */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -310,6 +311,113 @@ static int test_null_passphrase(void)
     return failures;
 }
 
+/* ── At-rest creation policy ─────────────────────────────────── */
+
+static int test_at_rest_creation_policy(void)
+{
+    int failures = 0;
+
+    /* Snapshot + clear the env vars the policy reads so the test is
+     * independent of the caller's environment. */
+    const char *saved_pass  = getenv("ZCL_WALLET_PASSPHRASE");
+    const char *saved_optin = getenv("ZCL_ALLOW_PLAINTEXT_WALLET");
+    char *pass_copy  = saved_pass  ? strdup(saved_pass)  : NULL;
+    char *optin_copy = saved_optin ? strdup(saved_optin) : NULL;
+
+    TEST("wallet_keystore: at-rest creation policy (refuse/encrypt/opt-in)") {
+        /* No passphrase + no opt-in => REFUSE (do not silently create
+         * a plaintext wallet). */
+        unsetenv("ZCL_WALLET_PASSPHRASE");
+        unsetenv("ZCL_ALLOW_PLAINTEXT_WALLET");
+        ASSERT(wallet_at_rest_creation_policy() == WALLET_AT_REST_REFUSE);
+
+        /* Passphrase set => ENCRYPTED, and it wins over the opt-in. */
+        setenv("ZCL_WALLET_PASSPHRASE", "correct horse", 1);
+        ASSERT(wallet_at_rest_creation_policy() == WALLET_AT_REST_ENCRYPTED);
+        setenv("ZCL_ALLOW_PLAINTEXT_WALLET", "1", 1);
+        ASSERT(wallet_at_rest_creation_policy() == WALLET_AT_REST_ENCRYPTED);
+
+        /* Opt-in without passphrase => PLAINTEXT_OPTIN. */
+        unsetenv("ZCL_WALLET_PASSPHRASE");
+        setenv("ZCL_ALLOW_PLAINTEXT_WALLET", "1", 1);
+        ASSERT(wallet_at_rest_creation_policy() == WALLET_AT_REST_PLAINTEXT_OPTIN);
+
+        /* Empty passphrase and opt-in="0" do NOT count. */
+        setenv("ZCL_WALLET_PASSPHRASE", "", 1);
+        setenv("ZCL_ALLOW_PLAINTEXT_WALLET", "0", 1);
+        ASSERT(wallet_at_rest_creation_policy() == WALLET_AT_REST_REFUSE);
+        PASS();
+    } _test_next:;
+
+    /* Restore the environment. */
+    if (pass_copy)  setenv("ZCL_WALLET_PASSPHRASE", pass_copy, 1);
+    else            unsetenv("ZCL_WALLET_PASSPHRASE");
+    if (optin_copy) setenv("ZCL_ALLOW_PLAINTEXT_WALLET", optin_copy, 1);
+    else            unsetenv("ZCL_ALLOW_PLAINTEXT_WALLET");
+    free(pass_copy);
+    free(optin_copy);
+
+    return failures;
+}
+
+/* ── Boot-site creation decision (policy × mint × lane) ─────────── */
+
+static int test_at_rest_boot_decision(void)
+{
+    int failures = 0;
+
+    TEST("wallet_keystore: boot decision matrix (mint/lane/passphrase)") {
+        /* Passphrase (ENCRYPTED) wins in every context, mint or not. */
+        ASSERT(wallet_at_rest_boot_decision(
+                   WALLET_AT_REST_ENCRYPTED, false,
+                   ZCL_OPERATOR_LANE_CANONICAL) == WALLET_BOOT_CREATE_ENCRYPTED);
+        ASSERT(wallet_at_rest_boot_decision(
+                   WALLET_AT_REST_ENCRYPTED, true,
+                   ZCL_OPERATOR_LANE_UNKNOWN) == WALLET_BOOT_CREATE_ENCRYPTED);
+
+        /* Explicit opt-in proceeds (plaintext) in every context. */
+        ASSERT(wallet_at_rest_boot_decision(
+                   WALLET_AT_REST_PLAINTEXT_OPTIN, false,
+                   ZCL_OPERATOR_LANE_CANONICAL) == WALLET_BOOT_CREATE_PLAINTEXT);
+
+        /* REFUSE policy + canonical / unknown (interactive default) => REFUSE. */
+        ASSERT(wallet_at_rest_boot_decision(
+                   WALLET_AT_REST_REFUSE, false,
+                   ZCL_OPERATOR_LANE_CANONICAL) == WALLET_BOOT_REFUSE);
+        ASSERT(wallet_at_rest_boot_decision(
+                   WALLET_AT_REST_REFUSE, false,
+                   ZCL_OPERATOR_LANE_UNKNOWN) == WALLET_BOOT_REFUSE);
+
+        /* REFUSE policy + offline mint producer => exempt (proceed quietly),
+         * regardless of lane. mint-anchor-fast is covered (it implies
+         * mint_anchor at the boot site). */
+        ASSERT(wallet_at_rest_boot_decision(
+                   WALLET_AT_REST_REFUSE, true,
+                   ZCL_OPERATOR_LANE_UNKNOWN) == WALLET_BOOT_CREATE_MINT_EXEMPT);
+        ASSERT(wallet_at_rest_boot_decision(
+                   WALLET_AT_REST_REFUSE, true,
+                   ZCL_OPERATOR_LANE_CANONICAL) == WALLET_BOOT_CREATE_MINT_EXEMPT);
+
+        /* REFUSE policy + declared non-canonical automated lane
+         * (dev/soak/test/copy) => downgrade to plaintext (proceed, warn). */
+        ASSERT(wallet_at_rest_boot_decision(
+                   WALLET_AT_REST_REFUSE, false,
+                   ZCL_OPERATOR_LANE_DEV) == WALLET_BOOT_CREATE_PLAINTEXT);
+        ASSERT(wallet_at_rest_boot_decision(
+                   WALLET_AT_REST_REFUSE, false,
+                   ZCL_OPERATOR_LANE_SOAK) == WALLET_BOOT_CREATE_PLAINTEXT);
+        ASSERT(wallet_at_rest_boot_decision(
+                   WALLET_AT_REST_REFUSE, false,
+                   ZCL_OPERATOR_LANE_TEST) == WALLET_BOOT_CREATE_PLAINTEXT);
+        ASSERT(wallet_at_rest_boot_decision(
+                   WALLET_AT_REST_REFUSE, false,
+                   ZCL_OPERATOR_LANE_COPY) == WALLET_BOOT_CREATE_PLAINTEXT);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
 /* ── Entry point ────────────────────────────────────────────── */
 
 int test_wallet_keystore(void);
@@ -318,6 +426,8 @@ int test_wallet_keystore(void)
 {
     int failures = 0;
 
+    failures += test_at_rest_creation_policy();
+    failures += test_at_rest_boot_decision();
     failures += test_round_trip();
     failures += test_wrong_passphrase_rejected();
     failures += test_tampered_ciphertext_rejected();

@@ -1,7 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "config/boot.h"
+#include "wallet/wallet_keystore.h"
 
+#include <stdio.h>
 #include <string.h>
 
 void app_context_defaults(struct app_context *ctx)
@@ -151,4 +153,92 @@ bool app_operator_lane_parse(const char *name,
         return true;
     }
     return false;
+}
+
+/* A declared, non-canonical operator lane (dev/soak/test/copy) is an
+ * automated development/soak/CI/copy-prove datadir that boots fresh and
+ * unattended: it must NOT hard-refuse on the first-run wallet gate or
+ * re-baselining such a datadir would wedge. CANONICAL and UNKNOWN (the
+ * default / interactive node) are NOT in this set — they keep REFUSE. */
+static bool operator_lane_is_automated_noncanonical(enum zcl_operator_lane lane)
+{
+    switch (lane) {
+    case ZCL_OPERATOR_LANE_DEV:
+    case ZCL_OPERATOR_LANE_SOAK:
+    case ZCL_OPERATOR_LANE_TEST:
+    case ZCL_OPERATOR_LANE_COPY:
+        return true;
+    case ZCL_OPERATOR_LANE_CANONICAL:
+    case ZCL_OPERATOR_LANE_UNKNOWN:
+    default:
+        return false;
+    }
+}
+
+enum wallet_boot_wallet_action
+wallet_at_rest_boot_decision(enum wallet_at_rest_policy policy,
+                             bool is_mint,
+                             enum zcl_operator_lane lane)
+{
+    /* Operator intent wins in every context: a passphrase encrypts, an
+     * explicit -allow-plaintext-wallet opt-in proceeds (loudly). */
+    switch (policy) {
+    case WALLET_AT_REST_ENCRYPTED:
+        return WALLET_BOOT_CREATE_ENCRYPTED;
+    case WALLET_AT_REST_PLAINTEXT_OPTIN:
+        return WALLET_BOOT_CREATE_PLAINTEXT;
+    case WALLET_AT_REST_REFUSE:
+    default:
+        break;
+    }
+
+    /* policy == REFUSE (no passphrase, no opt-in). Two contexts must not
+     * be blocked by the funds-safety gate: */
+
+    /* (1) The OFFLINE anchor-mint producer (-mint-anchor / -mint-anchor-
+     *     fast). Its datadir is a transient, no-spend throwaway that folds
+     *     bodies and exits after writing the snapshot — a REFUSE here would
+     *     break the mint/refold cure producers. Exempt silently (quiet
+     *     INFO at the call site — no funds are ever held here). */
+    if (is_mint)
+        return WALLET_BOOT_CREATE_MINT_EXEMPT;
+
+    /* (2) A declared, non-canonical automated lane (dev/soak/test/copy)
+     *     boots fresh datadirs unattended and must not wedge. Downgrade to
+     *     the loud plaintext-opt-in behavior (proceed, warn every boot). */
+    if (operator_lane_is_automated_noncanonical(lane))
+        return WALLET_BOOT_CREATE_PLAINTEXT;
+
+    /* Canonical, unknown, or the interactive default: keep REFUSE — the
+     * security posture. No silent plaintext wallet mint on a real node. */
+    return WALLET_BOOT_REFUSE;
+}
+
+void wallet_at_rest_boot_report(enum wallet_boot_wallet_action action,
+                                enum zcl_operator_lane lane)
+{
+    switch (action) {
+    case WALLET_BOOT_CREATE_ENCRYPTED:
+        break; /* passphrase supplied — keys wrapped at rest, no notice */
+    case WALLET_BOOT_CREATE_MINT_EXEMPT:
+        fprintf(stderr, "INFO: offline mint-anchor producer — creating a "
+            "transient plaintext wallet (throwaway datadir, no funds held).\n");
+        break;
+    case WALLET_BOOT_CREATE_PLAINTEXT:
+        fprintf(stderr, "\n*** WARNING: creating a NEW wallet with private "
+            "keys stored UNENCRYPTED at rest in node.db (anyone with datadir "
+            "read access can drain every coin). Proceeding because "
+            "-allow-plaintext-wallet was given or this is a non-canonical "
+            "operator lane (%s); set ZCL_WALLET_PASSPHRASE to encrypt "
+            "instead. ***\n\n", app_operator_lane_name(lane));
+        break;
+    case WALLET_BOOT_REFUSE:
+    default:
+        fprintf(stderr, "\nFATAL: refusing to create a new PLAINTEXT wallet "
+            "— private keys (transparent WIF, Sapling spending keys, HD seed) "
+            "would be stored UNENCRYPTED in node.db. Set ZCL_WALLET_PASSPHRASE "
+            "to encrypt at rest (recommended), or pass -allow-plaintext-wallet "
+            "to accept the risk explicitly (logged loudly every boot).\n\n");
+        break;
+    }
 }

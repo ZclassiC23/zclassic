@@ -39,6 +39,22 @@ uint32_t wks_default_iterations(void)
     return (uint32_t)v;
 }
 
+enum wallet_at_rest_policy wallet_at_rest_creation_policy(void)
+{
+    /* A non-empty passphrase means keys are wrapped before they hit
+     * disk — the safe default. */
+    const char *pass = getenv("ZCL_WALLET_PASSPHRASE");
+    if (pass && *pass) return WALLET_AT_REST_ENCRYPTED;
+
+    /* Explicit, loud opt-in to a plaintext wallet. Treat unset, empty,
+     * and "0" as "not opted in". */
+    const char *optin = getenv("ZCL_ALLOW_PLAINTEXT_WALLET");
+    if (optin && *optin && strcmp(optin, "0") != 0)
+        return WALLET_AT_REST_PLAINTEXT_OPTIN;
+
+    return WALLET_AT_REST_REFUSE;
+}
+
 static bool derive_key(const char *passphrase, const uint8_t salt[WKS_SALT_LEN],
                         uint32_t iters, uint8_t key_out[WKS_KEY_LEN])
 {

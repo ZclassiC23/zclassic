@@ -125,6 +125,37 @@ uint32_t wks_envelope_iterations(const uint8_t *envelope, size_t env_len);
  * [WKS_MIN_ITERS, WKS_MAX_ITERS]). */
 uint32_t wks_default_iterations(void);
 
+/* ── Encryption-at-rest creation policy ───────────────────────── *
+ *
+ * Wallet private material (transparent WIF keys, Sapling spending
+ * keys, HD seed) is written to node.db plaintext unless a passphrase
+ * is supplied (ZCL_WALLET_PASSPHRASE). Silently minting a brand-new
+ * plaintext wallet is a funds-safety footgun, so the first-run
+ * creation path must consult this policy before generating the
+ * initial keypool.
+ *
+ * The decision is purely environment-driven (no wallet handle
+ * needed) so it is trivially testable and consistent with the other
+ * ZCL_WALLET_* knobs read by this module:
+ *
+ *   - ZCL_WALLET_PASSPHRASE   non-empty  -> ENCRYPTED
+ *   - ZCL_ALLOW_PLAINTEXT_WALLET set/true -> PLAINTEXT_OPTIN
+ *     (the node maps the `-allow-plaintext-wallet` CLI flag onto
+ *      this env var; treated as false when unset, empty, or "0")
+ *   - otherwise                          -> REFUSE
+ *
+ * Backward compatibility: an EXISTING plaintext wallet must keep
+ * opening. REFUSE only blocks creating a NEW plaintext wallet; the
+ * caller loads existing keys regardless and merely warns. */
+enum wallet_at_rest_policy {
+    WALLET_AT_REST_ENCRYPTED = 0,   /* passphrase present */
+    WALLET_AT_REST_PLAINTEXT_OPTIN, /* explicit loud opt-in */
+    WALLET_AT_REST_REFUSE,          /* no passphrase, no opt-in */
+};
+
+/* Evaluate the creation policy from the environment. Pure/reentrant. */
+enum wallet_at_rest_policy wallet_at_rest_creation_policy(void);
+
 #ifdef __cplusplus
 }
 #endif
