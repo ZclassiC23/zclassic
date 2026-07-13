@@ -67,6 +67,20 @@ echo "code-measured: test_groups=$code_test_groups port_interfaces=$code_ports p
 DOC=docs/CODEBASE_MAP.md
 [ -f "$DOC" ] || { echo "FAIL: $DOC not found" >&2; exit 1; }
 
+# --fix: the code is authoritative, so a mismatch is ALWAYS resolved by
+# rewriting the declared values from the code-measured ones. No human (or
+# agent) should ever hand-edit these numbers or resolve a merge conflict on
+# them — run this, commit, done.
+if [ "${1:-}" = "--fix" ]; then
+    sed -i \
+        -e "s/^\(test_groups[[:space:]]*:\).*/\1 $code_test_groups/" \
+        -e "s/^\(port_interfaces[[:space:]]*:\).*/\1 $code_ports/" \
+        -e "s/^\(persistence_adapters[[:space:]]*:\).*/\1 $code_adapters/" \
+        -e "s/^\(condition_registrations[[:space:]]*:\).*/\1 $code_conditions/" \
+        "$DOC"
+    echo "fixed: DOC-COUNTS block in $DOC rewritten from code-measured values"
+fi
+
 block=$(awk '/<!-- DOC-COUNTS-BEGIN -->/{f=1;next} /<!-- DOC-COUNTS-END -->/{f=0} f' "$DOC")
 if [ -z "${block//[[:space:]]/}" ]; then
     echo "FAIL: missing or empty <!-- DOC-COUNTS-BEGIN/END --> block in $DOC"
