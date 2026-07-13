@@ -39,6 +39,36 @@ bool write_block_to_disk(struct block *b, struct disk_block_pos *pos,
                          const char *datadir,
                          const unsigned char message_start[4]);
 
+/* ── Deferred block-body fdatasync (batched to a drain boundary) ──────
+ * write_block_to_disk() normally fflush()es + fdatasync()s the blk*.dat fd
+ * once per block. On the reducer fold / catch-up drain that per-block
+ * fdatasync is an ext4 journal-commit barrier (the drive thread parks in
+ * jbd2_log_wait_commit) — the dominant wait when the CPU is otherwise idle.
+ *
+ * In deferred mode write_block_to_disk() still fflush()es the stdio buffer to
+ * the kernel (so a concurrent reader sees the bytes via the page cache) but
+ * SKIPS the fdatasync, recording the (datadir, nFile) it wrote as pending.
+ * disk_block_io_sync_pending() fdatasync()s every distinct pending file once
+ * and clears the synced entries; a file touched across a rotation is simply
+ * another pending entry, so all files a batch wrote are synced together.
+ *
+ * Crash-ordering invariant: the reducer drive enables deferred mode and the
+ * stage drain fires disk_block_io_sync_pending() BEFORE its outer COMMIT (the
+ * stage_batch_end pre-commit hook, util/stage.h). So no durable stage marker
+ * (body_persist_log row, stage cursor) is committed while the block bytes it
+ * references are still unsynced. Deferred mode is scoped to that drive; every
+ * other write_block_to_disk() caller (import, tests) keeps the immediate
+ * per-block fdatasync. Guarded by the same mutex write_block_to_disk() holds. */
+void disk_block_io_set_deferred_sync(bool enabled);
+bool disk_block_io_deferred_sync_enabled(void);
+
+/* fdatasync every distinct blk*.dat file that a deferred write left pending,
+ * then drop the successfully-synced entries. Returns false if any file could
+ * not be synced (those entries are KEPT pending so a retry re-attempts them);
+ * the caller must NOT let a durable marker commit on a false return. A no-op
+ * (returns true) when nothing is pending — cheap to call on every commit. */
+bool disk_block_io_sync_pending(void);
+
 bool read_block_from_disk(struct block *b, const struct disk_block_pos *pos,
                           const char *datadir);
 

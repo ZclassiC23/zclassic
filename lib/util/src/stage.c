@@ -296,6 +296,15 @@ static _Atomic bool g_batch_open = false;
  * on every begin. */
 static _Atomic bool g_batch_dirty = false;
 
+/* Pre-commit hook (see util/stage.h). Set once at boot before any drain
+ * thread runs, so a plain pointer read in stage_batch_end() is race-free. */
+static stage_batch_precommit_fn g_precommit_hook = NULL;
+
+void stage_batch_set_precommit_hook(stage_batch_precommit_fn fn)
+{
+    g_precommit_hook = fn;
+}
+
 bool stage_batch_active(void)
 {
     return atomic_load(&g_batch_open);
@@ -339,6 +348,19 @@ bool stage_batch_end(sqlite3 *db, bool commit)
     if (!atomic_load(&g_batch_open)) {
         /* No batch open — nothing to finish. Treat as benign no-op. */
         return true;
+    }
+    /* Ordering seam: before the outer COMMIT, give the pre-commit hook a
+     * chance to flush any on-disk artifact a committed row will reference
+     * (deferred block-body fdatasync). A veto (false) means those bytes are
+     * NOT durable, so committing the rows that reference them would break the
+     * crash-ordering invariant — ROLLBACK the whole batch instead. Only on the
+     * commit path; a ROLLBACK never needs the flush. */
+    if (commit && g_precommit_hook && !g_precommit_hook()) {
+        fprintf(stderr, "[stage] batch pre-commit hook vetoed COMMIT; "  // obs-ok:stage-commit-failure
+                "rolling back\n");
+        sqlite3_exec(db, "ROLLBACK", NULL, NULL, NULL);
+        atomic_store(&g_batch_open, false);
+        return false;
     }
     char *err = NULL;
     const char *fini = commit ? "COMMIT" : "ROLLBACK";

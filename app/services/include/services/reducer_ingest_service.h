@@ -33,4 +33,17 @@ int reducer_drain_to_convergence(void);
  * the total number of stage advances. */
 int reducer_drain_to_convergence_unbudgeted(void);
 
+/* ── Batched block-body fdatasync scoping (reducer_body_fsync.c) ─────────
+ * Bracket a reducer drive so the per-block block-file fdatasync
+ * (write_block_to_disk in reducer_persist_ingested_body_locked) is deferred to
+ * the stage drain-batch boundary instead of firing once per block. enter()
+ * registers the stage_batch_end pre-commit hook once (fdatasync every deferred
+ * body BEFORE the stage cursor / *_log rows that reference it commit) and turns
+ * on disk_block_io deferred mode; exit() does a final flush and leaves deferred
+ * mode so unrelated write_block_to_disk callers keep their immediate sync. Call
+ * both while holding the controller mutex + reducer drive, one exit per enter
+ * before every reducer_drive_exit(). */
+void reducer_enter_batched_body_sync(void);
+void reducer_exit_batched_body_sync(void);
+
 #endif /* ZCL_REDUCER_INGEST_SERVICE_H */

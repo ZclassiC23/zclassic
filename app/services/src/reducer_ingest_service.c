@@ -200,7 +200,9 @@ int reducer_kick_unbudgeted(struct chain_activation_controller *ctl)
      * active-chain window. Full validation is unchanged. */
     zcl_mutex_lock(&ctl->mutex);
     reducer_drive_enter();
+    reducer_enter_batched_body_sync();
     int advanced = reducer_drain_to_convergence_unbudgeted();
+    reducer_exit_batched_body_sync();
     reducer_drive_exit();
     zcl_mutex_unlock(&ctl->mutex);
     return advanced;
@@ -525,6 +527,7 @@ bool reducer_stage_p2p_block_for_catchup(
 
     zcl_mutex_lock(&ctl->mutex);
     reducer_drive_enter();
+    reducer_enter_batched_body_sync();
 
     struct block_index *bi = block_map_find(&ctl->ms->map_block_index,
                                             &block_hash);
@@ -536,6 +539,7 @@ bool reducer_stage_p2p_block_for_catchup(
             break;
     }
     if (!bi) {
+        reducer_exit_batched_body_sync();
         reducer_drive_exit();
         zcl_mutex_unlock(&ctl->mutex);
         validation_state_invalid(out, false, REJECT_INVALID,
@@ -552,6 +556,7 @@ bool reducer_stage_p2p_block_for_catchup(
             ctl->ms->pindex_best_header, ctl->ms->pindex_best_header->nHeight);
 
     int staged_height = bi->nHeight;
+    reducer_exit_batched_body_sync();
     reducer_drive_exit();
     zcl_mutex_unlock(&ctl->mutex);
 
@@ -628,6 +633,7 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
      * drive and can lock in a permanent failure row for the block being
      * ingested. Cleared before every return below (mutex unlock points). */
     reducer_drive_enter();
+    reducer_enter_batched_body_sync();
     (void)force; /* relay pre-filter gating lives in the admit producer */
     /* Runtime re-seed ONLY when the finalize cursor is genuinely BEHIND the
      * served tip's own transition (cursor < T, e.g. after a repair clamp).
@@ -686,6 +692,7 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
     }
     if (!reducer_persist_ingested_body_locked(ctl, &block_hash, pblock, out,
                                               true)) {
+        reducer_exit_batched_body_sync();
         reducer_drive_exit();
         zcl_mutex_unlock(&ctl->mutex);
         return false;
@@ -734,6 +741,7 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
      * header/stateful rejects are recorded at the ingested height. */
     struct block_index *tip = active_chain_tip(&ctl->ms->chain_active);
     int target_h = ingested ? ingested->nHeight : (tip ? tip->nHeight : 0);
+    reducer_exit_batched_body_sync();
     reducer_drive_exit();
     zcl_mutex_unlock(&ctl->mutex);
 

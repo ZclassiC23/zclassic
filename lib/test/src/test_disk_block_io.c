@@ -430,6 +430,138 @@ static int test_write_allocates_append_position(void)
     return failures;
 }
 
+/* Read an entire file into a malloc'd buffer. Returns bytes read, -1 on error.
+ * Caller frees *out. */
+static long slurp_file(const char *path, unsigned char **out)
+{
+    *out = NULL;
+    FILE *f = fopen(path, "rb");
+    if (!f) return -1;
+    if (fseek(f, 0, SEEK_END) != 0) { fclose(f); return -1; }
+    long sz = ftell(f);
+    if (sz < 0) { fclose(f); return -1; }
+    if (fseek(f, 0, SEEK_SET) != 0) { fclose(f); return -1; }
+    unsigned char *buf = malloc(sz > 0 ? (size_t)sz : 1); // raw-alloc-ok:test-fixture
+    if (!buf) { fclose(f); return -1; }
+    size_t n = fread(buf, 1, (size_t)sz, f);
+    fclose(f);
+    if ((long)n != sz) { free(buf); return -1; }
+    *out = buf;
+    return sz;
+}
+
+/* Deferred-sync mode must produce a byte-identical block file to immediate
+ * mode, must record a pending file (not fdatasync inline), and the file must
+ * be readable back both before and after disk_block_io_sync_pending(). This is
+ * the "batch does not change WHAT is written, only WHEN it is synced" contract
+ * plus the at-tip degrade-to-identical guarantee. */
+static int test_deferred_sync_byte_identical(void)
+{
+    int failures = 0;
+    char dir_immediate[256], dir_deferred[256];
+    snprintf(dir_immediate, sizeof(dir_immediate),
+             "./test-tmp/%d_disk_io_imm", (int)getpid());
+    snprintf(dir_deferred, sizeof(dir_deferred),
+             "./test-tmp/%d_disk_io_def", (int)getpid());
+    mkdir("./test-tmp", 0755);
+    for (int i = 0; i < 2; i++) {
+        const char *d = i == 0 ? dir_immediate : dir_deferred;
+        char blocks[512];
+        mkdir(d, 0755);
+        snprintf(blocks, sizeof(blocks), "%s/blocks", d);
+        mkdir(blocks, 0755);
+    }
+
+    TEST("deferred_sync: byte-identical file + pending set + readback") {
+        /* Immediate mode (default). */
+        if (disk_block_io_deferred_sync_enabled()) {
+            printf("FAIL (deferred mode leaked on from a prior test)\n");
+            failures++; goto _test_next;
+        }
+        struct disk_block_pos pos_imm;
+        disk_block_pos_init(&pos_imm);
+        if (!write_test_block(dir_immediate, &pos_imm, 424242)) {
+            printf("FAIL (immediate write)\n"); failures++; goto _test_next;
+        }
+
+        /* Deferred mode: same block. Must NOT sync inline — record pending. */
+        disk_block_io_set_deferred_sync(true);
+        if (!disk_block_io_deferred_sync_enabled()) {
+            printf("FAIL (deferred flag not set)\n"); failures++;
+            disk_block_io_set_deferred_sync(false); goto _test_next;
+        }
+        struct disk_block_pos pos_def;
+        disk_block_pos_init(&pos_def);
+        if (!write_test_block(dir_deferred, &pos_def, 424242)) {
+            printf("FAIL (deferred write)\n"); failures++;
+            disk_block_io_set_deferred_sync(false); goto _test_next;
+        }
+
+        /* Body must be readable from the page cache BEFORE the deferred sync
+         * (so body_persist's read-back does not spuriously requeue). */
+        struct block pre;
+        if (!read_block_from_disk_pread(&pre, &pos_def, dir_deferred)) {
+            printf("FAIL (deferred readback before sync)\n"); failures++;
+            disk_block_io_set_deferred_sync(false); goto _test_next;
+        }
+        bool pre_ok = pre.header.nTime == 424242;
+        block_free(&pre);
+        if (!pre_ok) {
+            printf("FAIL (wrong block before sync)\n"); failures++;
+            disk_block_io_set_deferred_sync(false); goto _test_next;
+        }
+
+        /* Flush the deferred sync, then leave deferred mode. */
+        if (!disk_block_io_sync_pending()) {
+            printf("FAIL (sync_pending returned false)\n"); failures++;
+            disk_block_io_set_deferred_sync(false); goto _test_next;
+        }
+        disk_block_io_set_deferred_sync(false);
+
+        /* The two block files must be byte-for-byte identical: deferral changes
+         * only WHEN bytes are synced, never the bytes. */
+        char path_imm[600], path_def[600];
+        struct disk_block_pos f0 = { .nFile = 0, .nPos = 0 };
+        get_block_pos_filename(path_imm, sizeof(path_imm), dir_immediate, &f0, "blk");
+        get_block_pos_filename(path_def, sizeof(path_def), dir_deferred, &f0, "blk");
+        unsigned char *bi = NULL, *bd = NULL;
+        long ni = slurp_file(path_imm, &bi);
+        long nd = slurp_file(path_def, &bd);
+        bool identical = (ni > 0 && ni == nd && bi && bd &&
+                          memcmp(bi, bd, (size_t)ni) == 0);
+        free(bi); free(bd);
+        if (!identical) {
+            printf("FAIL (files differ imm=%ld def=%ld)\n", ni, nd);
+            failures++; goto _test_next;
+        }
+
+        /* Readback after sync still succeeds. */
+        struct block post;
+        if (!read_block_from_disk_pread(&post, &pos_def, dir_deferred)) {
+            printf("FAIL (deferred readback after sync)\n"); failures++;
+            goto _test_next;
+        }
+        bool post_ok = post.header.nTime == 424242;
+        block_free(&post);
+        if (!post_ok) {
+            printf("FAIL (wrong block after sync)\n"); failures++; goto _test_next;
+        }
+
+        /* A second sync with nothing pending is a benign no-op → true. */
+        if (!disk_block_io_sync_pending()) {
+            printf("FAIL (empty sync_pending should be true)\n"); failures++;
+            goto _test_next;
+        }
+        printf("OK\n");
+    }
+    _test_next:
+    /* Never leak deferred mode into sibling tests. */
+    disk_block_io_set_deferred_sync(false);
+    cleanup_test_dir(dir_immediate);
+    cleanup_test_dir(dir_deferred);
+    return failures;
+}
+
 /* ── Entry point ─────────────────────────────────────────── */
 
 int test_disk_block_io(void)
@@ -444,5 +576,6 @@ int test_disk_block_io(void)
     failures += test_pread_accepts_frame_offset();
     failures += test_set_have_data_verified();
     failures += test_write_allocates_append_position();
+    failures += test_deferred_sync_byte_identical();
     return failures;
 }

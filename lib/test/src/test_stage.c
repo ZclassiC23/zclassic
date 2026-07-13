@@ -97,6 +97,18 @@ static int64_t scratch_count(sqlite3 *db)
     return n;
 }
 
+/* Spy pre-commit hook: counts invocations and returns a settable verdict, so a
+ * test can prove stage_batch_end() fires the hook BEFORE the outer COMMIT (a
+ * false verdict must ROLLBACK the batch — the crash-ordering seam that keeps a
+ * durable stage marker from outliving an unsynced on-disk artifact). */
+static _Atomic int g_precommit_calls = 0;
+static bool g_precommit_verdict = true;
+static bool spy_precommit(void)
+{
+    atomic_fetch_add(&g_precommit_calls, 1);
+    return g_precommit_verdict;
+}
+
 int test_stage(void)
 {
     printf("\n=== stage tests ===\n");
@@ -300,6 +312,69 @@ int test_stage(void)
                   r == JOB_ADVANCED && stage_cursor(s2) == 8);
 
         stage_destroy(s2);
+        sqlite3_close(db);
+        unlink(path);
+    }
+
+    /* ── batch pre-commit hook (crash-ordering seam) ─────────────── */
+    {
+        const char *path = "test_stage_precommit.db";
+        unlink(path);
+        sqlite3 *db = open_db_with_schema(path);
+        STG_CHECK("precommit: db open", db != NULL);
+
+        stage_batch_set_precommit_hook(spy_precommit);
+
+        /* Permit path: hook fires on commit, batch commits, row is durable. */
+        atomic_store(&g_precommit_calls, 0);
+        g_precommit_verdict = true;
+        STG_CHECK("precommit: batch_begin", stage_batch_begin(db));
+        sqlite3_exec(db, "INSERT INTO scratch(v) VALUES (7)", NULL, NULL, NULL);
+        STG_CHECK("precommit: commit end ok", stage_batch_end(db, true));
+        STG_CHECK("precommit: hook fired once on commit",
+                  atomic_load(&g_precommit_calls) == 1);
+        STG_CHECK("precommit: committed row durable", scratch_count(db) == 1);
+        STG_CHECK("precommit: batch closed after commit", !stage_batch_active());
+
+        /* ROLLBACK never calls the hook (nothing is being made durable). */
+        atomic_store(&g_precommit_calls, 0);
+        STG_CHECK("precommit: batch_begin 2", stage_batch_begin(db));
+        sqlite3_exec(db, "INSERT INTO scratch(v) VALUES (8)", NULL, NULL, NULL);
+        STG_CHECK("precommit: rollback end ok", stage_batch_end(db, false));
+        STG_CHECK("precommit: hook NOT fired on rollback",
+                  atomic_load(&g_precommit_calls) == 0);
+        STG_CHECK("precommit: rolled-back row absent", scratch_count(db) == 1);
+
+        /* Veto path: hook returns false → COMMIT is refused and the batch is
+         * rolled back, so the row that referenced the (would-be) unsynced
+         * artifact never becomes durable. This is the ordering proof: a hook
+         * that ran AFTER commit could not undo it. */
+        atomic_store(&g_precommit_calls, 0);
+        g_precommit_verdict = false;
+        STG_CHECK("precommit: batch_begin 3", stage_batch_begin(db));
+        sqlite3_exec(db, "INSERT INTO scratch(v) VALUES (9)", NULL, NULL, NULL);
+        STG_CHECK("precommit: veto end returns false",
+                  !stage_batch_end(db, true));
+        STG_CHECK("precommit: hook fired once on veto",
+                  atomic_load(&g_precommit_calls) == 1);
+        STG_CHECK("precommit: vetoed row NOT durable (rolled back)",
+                  scratch_count(db) == 1);
+        STG_CHECK("precommit: batch closed after veto", !stage_batch_active());
+
+        /* Un-register: subsequent commits proceed with no hook. MUST run so the
+         * process-global hook does not leak into sibling test groups. */
+        stage_batch_set_precommit_hook(NULL);
+        g_precommit_verdict = true;
+        atomic_store(&g_precommit_calls, 0);
+        STG_CHECK("precommit: batch_begin 4", stage_batch_begin(db));
+        sqlite3_exec(db, "INSERT INTO scratch(v) VALUES (10)", NULL, NULL, NULL);
+        STG_CHECK("precommit: commit after unregister",
+                  stage_batch_end(db, true));
+        STG_CHECK("precommit: no hook after unregister",
+                  atomic_load(&g_precommit_calls) == 0);
+        STG_CHECK("precommit: row durable after unregister",
+                  scratch_count(db) == 2);
+
         sqlite3_close(db);
         unlink(path);
     }
