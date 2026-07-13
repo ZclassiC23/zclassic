@@ -24,7 +24,8 @@ gate_require_scanned "${#supdom_files[@]}" 1 check_supervisor_domain \
 # masked >=2 (a non-GNU grep rejecting \s, an unreadable file) as "no hits"
 # → PASS off a broken scan. Check the exit explicitly.
 set +e
-RAW=$(grep -rnE '(^|[^A-Za-z0-9_])supervisor_register\s*\(' "${SUPDOM_ROOTS[@]}" --include='*.c')
+RAW=$(grep -rnE '(^|[^A-Za-z0-9_])supervisor_register\s*\(' "${SUPDOM_ROOTS[@]}" \
+      --include='*.c' --exclude='_*fixture*tmp*.c')
 grc=$?
 set -e
 if [ "$grc" -ge 2 ]; then

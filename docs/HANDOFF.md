@@ -14,7 +14,68 @@
 
 # HANDOFF — current state (2026-07-13)
 
-## 0. 2026-07-13 afternoon session — what landed, what's next
+## 0. 2026-07-13 evening session — resilience program Phase 0 landed; receipt producer FOLDING
+
+**The "silently stuck" class is now unrepresentable on the mint/reducer drive.**
+Verify with `git log origin/main` (tip `1fa9d7887` at write time). Landed, all
+gated (lint + build-only + focused groups + full suite where noted):
+
+1. **Mint-fold livelock fix** (`d94499e7a`): one `reducer_kick_unbudgeted`
+   could grind 64×2000 blocks fsync-bound inside ONE call (hours) while every
+   telemetry surface only observes between calls, and the drive measured
+   progress via coins applied-height (lags 50k under `-fold-inram`). The kick
+   now returns on frontier stall + a 3s wall-clock budget
+   (`ZCL_MINT_KICK_BUDGET_MS`); the drive reads `utxo_apply_stage_cursor()`;
+   a walled fold registers blocker `mint_fold.frontier_walled` naming the
+   wall stage + all 8 cursors. New drain seam file
+   `app/services/src/reducer_drain.c`.
+2. **Drive observability** (`0e7f9a8b6`, `33ad2ad02`): `reducer_drive_guard`
+   records entry time + driver label; condition `reducer_drive_watchdog`
+   fires blocker `reducer_drive_stuck` on age>60s with frozen cursor;
+   `dumpstate reducer_drive` shows label/age/both progress measures.
+3. **Run-all mint preflight** (`599804901`, fixed `b2bff631b`):
+   `-mint-anchor` names EVERY unmet precondition with remedies in one report
+   before any datadir mutation (`boot_mint_anchor_preflight_run_all`,
+   `dumpstate mint_preflight`); the bodies check accepts the legacy
+   `~/.zclassic/blocks` source boot links from
+   (`ZCL_MINT_PREFLIGHT_LEGACY_BLOCKS_DIR` overrides for hermetic tests).
+4. **`ops.debug.backtrace`** (`016a16858`): live per-thread stack dumps from
+   a running node (async-signal-safe SIGRTMIN+2; perf/ptrace are blocked on
+   this box) + `dumpstate self_backtrace`. Unit-proven; live-RPC proof
+   pending a serving node on a new binary.
+5. **Fresh-mint e2e composition test** (`test_mint_anchor_fresh_datadir`):
+   every terminal is named (preflight refusal / `frontier_walled` blocker /
+   ceiling reached) under a wall-clock budget — a timeout is a failure.
+6. **Per-stage step metrics** (`1fa9d7887`): all 8 stage dumpstates now carry
+   `last_step_us`, `step_us_ewma`, `steps_total`, `steps_per_sec_ewma`.
+7. Session-earlier landings: **shielded-backfill suffix fix** (`6663220fb`,
+   boot no longer walks 3.18M entries on 73% of boots — the skip gate could
+   never pass since the whole chain has only ~915 shielded-value blocks),
+   `blkidx.validate_recover` boot submark split, publication-CAS decision
+   module (`2d1905b9c`), session rekey fail-closed hardening (`d049fefe2`),
+   fresh-datadir mint reset fix (`9aa208f67`), hooks-gate self-heal
+   (`b004612dd`).
+
+**The fresh receipt-owning producer is RUNNING and FOLDING with live
+telemetry**: unit `zclassic23-mint-receipt` (canonical name — the owner rule
+is no -v2/-v3 suffixes), datadir `~/.zclassic-c23-mint-receipt`, immutable
+binary `016a16858`, receipt session open (`profile=checkpoint_fold`), ~20-29
+blk/s with `mint-progress.log` ticking (ETA ~29-43h to anchor 3,056,758).
+The two OLD producers remain untouched (`~/.zclassic-c23-anchor-mint` PID
+3329835, `zclassic23-mint-fast-v2.service`); they can never pass the receipt
+contract — when the receipt producer finishes, IT is the exporter-admissible
+cure source (then: exporter → publication CAS → candidate-store publisher →
+copy-prove per §2).
+
+**The program plan** (approved): `/home/rhett/.claude/plans/toasty-snacking-breeze.md` —
+remaining lanes: 0.5 advance-or-blocker drain contract (in flight at write
+time, branch `wf/drain-advance-or-blocker`), 1.3 scan telemetry, 1.4 stall
+escalation, 1.6 fold-path swallowed errors, 2.2 boot-matrix test, 2.3
+importblockindex round-trip, 2.4 kill-9 extension, 2.5 gate fixtures, 2.6
+seed promotion, 2.7 ratchet burn-downs, 3.x DRY (snapshot codec after the
+cure bundle work; lib/ size ratchet; sqlite-txn helper; silent_bool family).
+
+## 0-prev. 2026-07-13 afternoon session — what landed, what's next
 
 Four pushes to `main` this session (verify with `git log origin/main`):
 

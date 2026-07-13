@@ -61,7 +61,7 @@ while IFS= read -r file; do
     fi
     violations=$((violations + 1))
     echo "$file: not in a known shape folder (expected one of: controllers, services, models, jobs, supervisors, conditions, events, views)" >&2
-done < <(find app -type f -name '*.c' | sort)
+done < <(find app -type f -name '*.c' ! -name '_*fixture*tmp*.c' | sort)
 
 echo "[framework_shape_check] scanned $scanned .c files in app/"
 echo "[framework_shape_check] $violations violation(s) found (mode: $MODE)"

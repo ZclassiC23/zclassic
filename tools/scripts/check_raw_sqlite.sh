@@ -101,7 +101,8 @@ done <<< "$raw_hits"
 exec_scan=$(
     find app tools lib config src \
         \( -path '*/vendor/*' -o -path '*/build/*' -o -path '*/test/*' \) -prune \
-        -o \( -name '*.c' -o -name '*.h' \) -type f -print |
+        -o \( \( -name '*.c' -o -name '*.h' \) \
+              ! -name '_*fixture*tmp*.c' \) -type f -print |
     while IFS= read -r path; do
         [[ "$path" == "app/models/include/models/activerecord.h" ]] && continue
         awk -v path="$path" '
