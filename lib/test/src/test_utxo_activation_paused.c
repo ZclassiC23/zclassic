@@ -1133,6 +1133,100 @@ int test_utxo_activation_paused(void)
     }
 
     {
+        /* Regression for the missing cooldown_secs/cooldown_max_rearms: a
+         * requested snapshot recovery gets accepted (svc moves to
+         * NEGOTIATING) but the negotiation never completes -- local height
+         * never reaches target and svc never reaches SNAPSYNC_COMPLETE --
+         * so the witness keeps failing and every backoff-spaced tick accrues
+         * another attempt against the SAME persistent, external-dependency
+         * fault (a peer that never finishes negotiating). Before this fix
+         * cooldown_secs was 0 ("legacy"), so condition_cooldown_rearm()
+         * refused to reset the attempt budget once attempts hit
+         * max_attempts=3 and the engine latched EV_OPERATOR_NEEDED forever
+         * without ever calling the remedy again. Drive the same persistent
+         * local-import-exhausted stall past max_attempts and assert the
+         * engine re-arms and calls the remedy again instead of latching. */
+        reset_conditions();
+        struct fake_clock clock;
+        fake_clock_install(&clock, 7500);
+        bool ok = true;
+        struct main_state ms;
+        struct block_index tip;
+        struct block_index best_header;
+        struct node_db ndb;
+        struct snapshot_sync_service svc;
+        uint8_t block_hash[32];
+        uint8_t chain_work[32];
+
+        memset(&tip, 0, sizeof(tip));
+        memset(&best_header, 0, sizeof(best_header));
+        memset(block_hash, 0x54, sizeof(block_hash));
+        memset(chain_work, 0x58, sizeof(chain_work));
+        main_state_init(&ms);
+        tip.nHeight = 100;
+        tip.nStatus = BLOCK_VALID_SCRIPTS | BLOCK_HAVE_DATA;
+        best_header.nHeight = 110;
+        ms.pindex_best_header = &best_header;
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
+
+        ok = ok && node_db_open(&ndb, ":memory:");
+        ok = ok && seed_snapshot_manifest_db(&ndb, block_hash, chain_work);
+        snapsync_init(&svc, &ndb);
+
+        condition_engine_set_main_state(&ms);
+        sync_monitor_init();
+        sync_monitor_set_context(NULL, NULL, &ms);
+        sync_monitor_test_set_local_recovery(true, true, 101, 3,
+                                             "next-child-missing");
+        tip_wedged_resnapshot_test_set_runtime(&ndb, &svc);
+        register_tip_wedged_resnapshot();
+
+        condition_engine_tick();  /* attempt 1/3 */
+        ok = ok && tip_wedged_resnapshot_test_remedy_calls() == 1;
+        ok = ok && condition_engine_get_active_count() == 1;
+
+        fake_clock_set(&clock, 7801);  /* +301s: past backoff_secs (300) */
+        condition_engine_tick();  /* attempt 2/3 */
+        ok = ok && tip_wedged_resnapshot_test_remedy_calls() == 2;
+        ok = ok && condition_engine_get_active_count() == 1;
+
+        fake_clock_set(&clock, 8102);  /* +301s */
+        condition_engine_tick();  /* attempt 3/3 -- hits max_attempts */
+        ok = ok && tip_wedged_resnapshot_test_remedy_calls() == 3;
+        ok = ok && condition_engine_get_active_count() == 1;
+
+        struct condition_runtime_snapshot snap;
+        memset(&snap, 0, sizeof(snap));
+        ok = ok && condition_engine_get_registered_snapshot(
+                       "tip_wedged_resnapshot", &snap);
+        ok = ok && snap.max_attempts == 3;
+        ok = ok && snap.attempts == 3;
+        ok = ok && snap.operator_needed_emitted;
+        ok = ok && snap.cooldown_secs == 600;
+        ok = ok && snap.cooldown_max_rearms == 0;
+
+        /* Past max_attempts, past backoff -- without cooldown_secs this
+         * would stay latched at operator_needed forever and the remedy
+         * would never run again. */
+        fake_clock_set(&clock, 8403);  /* +301s */
+        condition_engine_tick();
+        ok = ok && tip_wedged_resnapshot_test_remedy_calls() == 4;
+        ok = ok && condition_engine_get_active_count() == 1;
+
+        memset(&snap, 0, sizeof(snap));
+        ok = ok && condition_engine_get_registered_snapshot(
+                       "tip_wedged_resnapshot", &snap);
+        ok = ok && snap.attempts < snap.max_attempts;  /* re-armed, not latched */
+
+        UAP_CHECK("tip_wedged_resnapshot re-arms on cooldown past "
+                  "max_attempts instead of latching forever", ok);
+        snapsync_reset(&svc);
+        node_db_close(&ndb);
+        main_state_free(&ms);
+        clock_reset_default();
+    }
+
+    {
         reset_conditions();
         struct fake_clock clock;
         fake_clock_install(&clock, 8000);

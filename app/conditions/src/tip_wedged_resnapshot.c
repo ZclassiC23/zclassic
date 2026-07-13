@@ -287,6 +287,18 @@ static struct condition c_tip_wedged_resnapshot = {
     .poll_secs = 5,
     .backoff_secs = 300,
     .max_attempts = 3,
+    /* Continue-with-cooldown (sticky-node plan #7): a wedged tip needing
+     * snapshot recovery depends on external state (peer manifests, a
+     * negotiation partner) — never a local deterministic-unrecoverable
+     * fault. Before this fix cooldown_secs was 0 ("legacy"), so a recovery
+     * that stayed accepted-but-unwitnessed (snapshot sync busy/negotiating,
+     * never reaching target or SNAPSYNC_COMPLETE) latched EV_OPERATOR_NEEDED
+     * permanently after 3 attempts and never retried. Re-arm every 10
+     * minutes, UNBOUNDED (cooldown_max_rearms = 0), matching every sibling
+     * network-dependent condition (peer_floor_violated, header_stall_at_
+     * height, sync_state_stuck, snapshot_negotiation_stalled, ...). */
+    .cooldown_secs = 600,
+    .cooldown_max_rearms = 0,
     .detect = detect_tip_wedged_resnapshot,
     .remedy = remedy_tip_wedged_resnapshot,
     .witness = witness_tip_wedged_resnapshot,

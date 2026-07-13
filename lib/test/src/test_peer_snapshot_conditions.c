@@ -217,6 +217,77 @@ int test_peer_snapshot_conditions(void)
     }
 
     {
+        /* Regression for the missing cooldown_secs/cooldown_max_rearms: an
+         * INBOUND peer stays far ahead of local height. The remedy
+         * (connman_force_outbound_rotation) only disconnects OUTBOUND
+         * peers, so an inbound peer that keeps reporting a high height
+         * makes this a persistent, never-witnessed fault — max_attempts=1
+         * is reached on the very first remedy call. Before this fix
+         * cooldown_secs was 0 ("legacy"), so condition_cooldown_rearm()
+         * refused to reset the attempt budget and the engine latched
+         * EV_OPERATOR_NEEDED forever without ever calling the remedy again
+         * (observed live: paging every 3600s for 27h, zero re-attempts).
+         * Drive the same persistent lag past max_attempts and assert the
+         * engine re-arms and calls the remedy again instead of latching. */
+        struct fake_clock_peer_snapshot clock;
+        fake_clock_install(&clock, 6000);
+        struct connman cm;
+        struct download_manager dm;
+        struct main_state ms;
+        reset_peer_snapshot_conditions(&cm, &dm, &ms);
+        bool ok = true;
+        register_sync_violation_lag();
+
+        struct block_index tip = {0};
+        tip.nHeight = 100;
+        ok = ok && active_chain_move_window_tip(&ms.chain_active, &tip);
+        struct p2p_node peer = {0};
+        peer.id = 7;
+        peer.starting_height = 250;
+        peer.state = PEER_ACTIVE;
+        peer.services = NODE_NETWORK;
+        peer.inbound = true;  /* survives connman_force_outbound_rotation */
+        struct p2p_node *peers[1] = { &peer };
+        cm.manager.nodes = peers;
+        cm.manager.num_nodes = 1;
+
+        condition_engine_tick();  /* primes first_seen/last_local baseline */
+        ok = ok && sync_violation_lag_test_remedy_calls() == 0;
+
+        fake_clock_set(&clock, 6601);  /* past SYNC_VIOLATION_SECS (600) */
+        condition_engine_tick();  /* attempt 1/1 -- hits max_attempts */
+        ok = ok && sync_violation_lag_test_remedy_calls() == 1;
+        ok = ok && !peer.disconnect;  /* inbound peer is never rotated away */
+        ok = ok && condition_engine_get_active_count() == 1;  /* unwitnessed */
+
+        struct condition_runtime_snapshot snap;
+        memset(&snap, 0, sizeof(snap));
+        ok = ok && condition_engine_get_registered_snapshot(
+                       "sync_violation_lag", &snap);
+        ok = ok && snap.max_attempts == 1;
+        ok = ok && snap.attempts == 1;
+        ok = ok && snap.operator_needed_emitted;
+        ok = ok && snap.cooldown_secs == 600;
+        ok = ok && snap.cooldown_max_rearms == 0;
+
+        /* Same fault persists well past both the engine's cooldown_secs
+         * (600) and the remedy's own internal SYNC_VIOLATION_COOLDOWN_SECS
+         * (3600) repeat-suppression, past max_attempts. Without
+         * cooldown_secs this would stay latched at operator_needed forever
+         * and the remedy would never run again. */
+        fake_clock_set(&clock, 10202);
+        condition_engine_tick();
+        ok = ok && sync_violation_lag_test_remedy_calls() == 2;
+        ok = ok && condition_engine_get_active_count() == 1;
+
+        PEER_SNAPSHOT_CHECK(
+            "sync violation lag re-arms on cooldown past max_attempts "
+            "instead of latching forever",
+            ok);
+        cleanup_peer_snapshot_conditions();
+    }
+
+    {
         struct fake_clock_peer_snapshot clock;
         fake_clock_install(&clock, 4000);
         struct connman cm;
