@@ -1683,6 +1683,9 @@ static void print_usage(const char *prog)
     printf("  -profile=<name>     Service profile: full, zclassic-only, explorer, onion-node, legacy-compat\n");
     printf("  -operator-lane=<name>  Operator lane: canonical, soak, dev, test, copy\n");
     printf("  -nolegacyimport     Do not auto-read/link ~/.zclassic during boot\n");
+    printf("  -allow-plaintext-wallet  Create a new wallet UNENCRYPTED at rest\n");
+    printf("                      (loud opt-in; otherwise set ZCL_WALLET_PASSPHRASE\n");
+    printf("                      or first-run wallet creation refuses).\n");
     printf("  -backfill-nullifiers  One-shot owner-gated C-3 nullifier history backfill\n");
     printf("  -enforce-sapling-root  Reject ANY hashFinalSaplingRoot mismatch\n");
     printf("                      (default OFF: only all-zeros is rejected).\n");
@@ -2848,6 +2851,14 @@ int main(int argc, char **argv)
         else if (strcmp(argv[i], "-nobgvalidation") == 0) ctx.no_bg_validation = true;
         else if (strcmp(argv[i], "-mcp-inprocess") == 0) mcp_inprocess = true;
         else if (strcmp(argv[i], "-nolegacyimport") == 0) ctx.no_legacy_auto_import = true;
+        else if (strcmp(argv[i], "-allow-plaintext-wallet") == 0) {
+            /* Explicit, loud opt-in to a plaintext wallet at rest. Read
+             * by the wallet at-rest creation policy at boot (see
+             * lib/wallet/src/wallet_keystore.c). Without this flag AND
+             * without ZCL_WALLET_PASSPHRASE, first-run wallet creation
+             * refuses rather than silently minting unencrypted keys. */
+            setenv("ZCL_ALLOW_PLAINTEXT_WALLET", "1", 1);
+        }
         else if (strcmp(argv[i], "-rebuildfromlog") == 0) ctx.boot_from_log = true;
         else if (strcmp(argv[i], "-leveldb-no-verify-checksums") == 0) {
             /* Turns off LevelDB checksum verification for both point

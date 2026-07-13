@@ -10,6 +10,7 @@
 #include "core/random.h"
 #include "crypto/chacha20poly1305.h"
 #include "crypto/pbkdf2_sha256.h"
+#include "support/cleanse.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -61,7 +62,7 @@ static bool wbs_aead_encrypt(const uint8_t *plain, size_t plain_len,
     size_t mac_len = aad_len + pad_aad + plain_len + pad_ct + 16;
     uint8_t *mac_buf = zcl_calloc(1, mac_len > 0 ? mac_len : 1, "aead_encrypt mac_buf");
     if (!mac_buf) {
-        memset(poly_block, 0, sizeof(poly_block));
+        memory_cleanse(poly_block, sizeof(poly_block));
         LOG_FAIL("wallet_backup", "aead_encrypt: mac_buf alloc failed (%zu bytes)", mac_len);
     }
     size_t pos = 0;
@@ -74,8 +75,8 @@ static bool wbs_aead_encrypt(const uint8_t *plain, size_t plain_len,
 
     poly1305_mac(mac_buf, pos, poly_block, tag_out);
 
-    memset(mac_buf,    0, mac_len);
-    memset(poly_block, 0, sizeof(poly_block));
+    memory_cleanse(mac_buf, mac_len);
+    memory_cleanse(poly_block, sizeof(poly_block));
     free(mac_buf);
     return true;
 }
@@ -96,7 +97,7 @@ static bool wbs_aead_decrypt(const uint8_t *ciphertext, size_t plain_len,
     size_t mac_len = aad_len + pad_aad + plain_len + pad_ct + 16;
     uint8_t *mac_buf = zcl_calloc(1, mac_len > 0 ? mac_len : 1, "aead_decrypt mac_buf");
     if (!mac_buf) {
-        memset(poly_block, 0, sizeof(poly_block));
+        memory_cleanse(poly_block, sizeof(poly_block));
         LOG_FAIL("wallet_backup", "aead_decrypt: mac_buf alloc failed (%zu bytes)", mac_len);
     }
     size_t pos = 0;
@@ -110,14 +111,14 @@ static bool wbs_aead_decrypt(const uint8_t *ciphertext, size_t plain_len,
     uint8_t computed[16];
     poly1305_mac(mac_buf, pos, poly_block, computed);
 
-    memset(mac_buf,    0, mac_len);
-    memset(poly_block, 0, sizeof(poly_block));
+    memory_cleanse(mac_buf, mac_len);
+    memory_cleanse(poly_block, sizeof(poly_block));
     free(mac_buf);
 
     /* Constant-time tag compare. */
     uint8_t diff = 0;
     for (int i = 0; i < 16; i++) diff |= tag[i] ^ computed[i];
-    memset(computed, 0, sizeof(computed));
+    memory_cleanse(computed, sizeof(computed));
     if (diff != 0) LOG_FAIL("wallet_backup", "aead_decrypt: tag verification failed");
 
     /* Tag verified - now decrypt. */
@@ -236,7 +237,7 @@ struct zcl_result wallet_backup_encrypt_file(const char *src_path,
     uint8_t *out = zcl_malloc(out_len, "wallet_backup encrypt_buf");
     if (!out) {
         free(plain);
-        memset(key, 0, sizeof(key));
+        memory_cleanse(key, sizeof(key));
         return ZCL_ERR(-3, "encrypt_file: malloc failed (%zu bytes) for %s", out_len, src_path);
     }
     memcpy(out, header, sizeof(header));
@@ -248,8 +249,8 @@ struct zcl_result wallet_backup_encrypt_file(const char *src_path,
                                 out + sizeof(header),
                                 out + sizeof(header) + plen);
     /* Scrub sensitive material promptly. */
-    memset(key, 0, sizeof(key));
-    memset(plain, 0, plen);
+    memory_cleanse(key, sizeof(key));
+    memory_cleanse(plain, plen);
     free(plain);
 
     if (!ok) {
@@ -316,7 +317,7 @@ struct zcl_result wallet_backup_decrypt_file(const char *src_path,
         plain = zcl_malloc(plain_len, "wallet_backup decrypt_buf");
         if (!plain) {
             free(enc);
-            memset(key, 0, sizeof(key));
+            memory_cleanse(key, sizeof(key));
             return ZCL_ERR(-7, "decrypt_file: malloc failed (%zu bytes) for %s", plain_len, src_path);
         }
     }
@@ -326,17 +327,17 @@ struct zcl_result wallet_backup_decrypt_file(const char *src_path,
     bool ok = wbs_aead_decrypt(ciphertext, plain_len,
                                 enc, WALLET_BACKUP_ENC_HEADER_LEN,
                                 tag, nonce, key, plain);
-    memset(key, 0, sizeof(key));
+    memory_cleanse(key, sizeof(key));
     free(enc);
 
     if (!ok) {
-        if (plain) memset(plain, 0, plain_len);
+        if (plain) memory_cleanse(plain, plain_len);
         free(plain);
         return ZCL_ERR(-8, "decrypt_file: AEAD decryption failed for %s", src_path);
     }
 
     bool wrote = wbs_write_file_atomic(dst_path, plain, plain_len);
-    if (plain) memset(plain, 0, plain_len);
+    if (plain) memory_cleanse(plain, plain_len);
     free(plain);
     if (!wrote)
         return ZCL_ERR(-9, "decrypt_file: failed to write %s", dst_path);

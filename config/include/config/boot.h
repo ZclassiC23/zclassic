@@ -11,6 +11,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+/* enum wallet_at_rest_policy — the pure, env-driven creation policy the
+ * boot-site wallet decision folds node context into. Leaf header (only
+ * stdint/stddef/stdbool), no config dependency, so no include cycle. */
+#include "wallet/wallet_keystore.h"
+
 enum zcl_runtime_profile {
     ZCL_RUNTIME_FULL = 0,
     ZCL_RUNTIME_ZCLASSIC_ONLY,
@@ -218,6 +223,48 @@ bool app_runtime_profile_has_file_service(enum zcl_runtime_profile profile);
 const char *app_operator_lane_name(enum zcl_operator_lane lane);
 bool app_operator_lane_parse(const char *name,
                              enum zcl_operator_lane *out);
+
+/* ── First-run wallet creation: boot-site decision ────────────────── *
+ *
+ * wallet_at_rest_creation_policy() (lib/wallet) is the pure, env-driven
+ * read of operator intent (passphrase / -allow-plaintext-wallet opt-in /
+ * neither). It deliberately knows nothing about node context. This
+ * boot-site helper folds in the two facts the wallet lib must NOT depend
+ * on — whether this boot is the OFFLINE anchor-mint producer
+ * (ctx->mint_anchor, which also covers -mint-anchor-fast since that is
+ * only honored with -mint-anchor) and which operator lane the node was
+ * launched in — to yield the final first-run creation action.
+ *
+ * Decision matrix (policy × context):
+ *
+ *   ENCRYPTED  (ZCL_WALLET_PASSPHRASE)   -> CREATE_ENCRYPTED  (any context)
+ *   PLAINTEXT_OPTIN (-allow-plaintext-wallet)
+ *                                        -> CREATE_PLAINTEXT  (any context)
+ *   REFUSE + offline mint producer       -> MINT_EXEMPT (quiet, proceed)
+ *   REFUSE + declared non-canonical lane
+ *          (dev / soak / test / copy)    -> CREATE_PLAINTEXT (loud, proceed)
+ *   REFUSE + canonical / unknown /
+ *          interactive default           -> REFUSE (FATAL — no silent mint)
+ *
+ * Pure + reentrant: no globals, no env reads (policy is passed in), so it
+ * is unit-testable without app_init. */
+enum wallet_boot_wallet_action {
+    WALLET_BOOT_CREATE_ENCRYPTED = 0, /* passphrase present — wrapped at rest */
+    WALLET_BOOT_CREATE_PLAINTEXT,     /* proceed plaintext, LOUD warning */
+    WALLET_BOOT_CREATE_MINT_EXEMPT,   /* offline throwaway mint — quiet INFO */
+    WALLET_BOOT_REFUSE,               /* FATAL: refuse a silent plaintext mint */
+};
+
+enum wallet_boot_wallet_action
+wallet_at_rest_boot_decision(enum wallet_at_rest_policy policy,
+                             bool is_mint,
+                             enum zcl_operator_lane lane);
+
+/* Emit the operator-facing stderr notice for a first-run wallet-creation
+ * action (INFO for the offline mint, loud WARNING for a plaintext create,
+ * FATAL text for REFUSE). Pure stderr I/O — the caller owns exit()/events. */
+void wallet_at_rest_boot_report(enum wallet_boot_wallet_action action,
+                                enum zcl_operator_lane lane);
 
 bool app_init(struct app_context *ctx);
 void app_shutdown(void);
