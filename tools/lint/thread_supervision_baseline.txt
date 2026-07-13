@@ -1,0 +1,64 @@
+# Thread-supervision baseline (Gate #23 — check_thread_supervision.sh).
+#
+# Long-running threads spawned via thread_registry_spawn that are NOT yet on
+# the supervisor liveness tree. Each line: "<thread-name>  <disposition>
+# <one-line justification>". The FIRST token (the thread name literal, as
+# passed to thread_registry_spawn) is what the gate matches; the rest is
+# documentation for humans.
+#
+# RATCHET: this list may only SHRINK. To remove an entry, give the thread a
+# liveness contract via util/thread_liveness.h (exemplar:
+# lib/health/src/heartbeat.c) or an inline // supervised: / //
+# thread-supervision-ok: marker at the spawn site, then delete the line. A
+# stale entry (thread renamed/removed/now-covered) fails the gate, forcing
+# the count down.
+#
+# ── disposition: bounded ──────────────────────────────────────────────────
+# One-shot / bounded-lifetime background jobs. They TERMINATE on their own;
+# a hang surfaces as a thread_registry straggler at the shutdown join and via
+# the job's own progress logging, so a per-job liveness contract would be
+# churn. Register-on-start/retire-on-join is future work if any proves flaky.
+zcl_chain_fix    bounded  one-shot chain-integrity repair (app/conditions/src/chain_integrity_failed.c)
+zcl_snap_idx     bounded  one-shot snapshot block-index import (snapshot_controller_import.c)
+zcl_snap_utxo    bounded  one-shot snapshot UTXO import (snapshot_controller_import.c)
+zcl_snap_wallet  bounded  one-shot snapshot wallet import (snapshot_controller_import.c)
+zcl_snap_txidx   bounded  one-shot snapshot tx-index import (snapshot_controller_txindex.c)
+zcl_catchup      bounded  one-shot catch-up sync job (sync_controller_catchup_jobs.c)
+zcl_db_import    bounded  one-shot legacy-db import job (sync_controller_catchup_jobs.c)
+zcl_utxo_dec     bounded  bounded UTXO-decode worker, joined at import end (node_db_import_service.c)
+zcl_utxo_wr      bounded  bounded UTXO-writer, joined at import end (node_db_import_service.c)
+zcl_hodl_ref     bounded  one-shot explorer HODL-page refresh per task (explorer_pages_hodl.c)
+zcl_blk_scan     bounded  boot-time block-file scan worker, joined (boot_block_file_scan.c)
+bg_quick_check   bounded  boot-time fast-restart quick check, joined (boot_fast_restart.c)
+#
+# ── disposition: io-blocking ──────────────────────────────────────────────
+# Threads that block INDEFINITELY on accept()/recv()/poll() and process one
+# unit per wake. A wall-clock heartbeat deadline would false-fire on a
+# legitimately quiet socket; the honest next step is a LIVENESS-ONLY contract
+# (deadline=0, no-progress=0) heartbeating at each accept/dispatch boundary —
+# tracked here until that per-loop wiring lands. Higher-level P2P/RPC health
+# is already observed by net.outbound_floor / chain.chain_tip_watchdog.
+zcl_dns_seed     io-blocking  P2P DNS-seed resolver loop (connman.c)
+zcl_connman_sock io-blocking  P2P socket handler loop (connman.c)
+zcl_connman_open io-blocking  P2P outbound-connection opener loop (connman.c)
+zcl_connman_msg  io-blocking  P2P message handler loop (connman.c)
+zcl_fs_wkr       io-blocking  file-market chunk-serving worker (file_service.c)
+zcl_fs_server    io-blocking  file-market accept loop (file_service.c)
+zcl_fs_manifest  io-blocking  file-market manifest server loop (file_service.c)
+zcl_https_wkr    io-blocking  HTTPS request worker (https_server.c)
+zcl_https_listen io-blocking  HTTPS accept loop (https_server.c)
+zcl_http_listen  io-blocking  HTTP accept loop (https_server.c)
+zcl_p2p_ingest   io-blocking  P2P message-ingest loop (msgprocessor.c)
+zcl_tor_monitor  io-blocking  Tor onion-status monitor loop (tor_integration.c)
+zcl_tor          io-blocking  embedded Tor main loop (tor_integration.c)
+zcl_ws_pump      io-blocking  websocket event-pump loop (ws_events.c)
+zcl_async_rpc    io-blocking  async-RPC queue worker, condvar-blocked (async_rpc_queue.c)
+zcl_rpc_worker   io-blocking  RPC request worker (httpserver.c)
+zcl_rpc_listen   io-blocking  RPC accept loop (httpserver.c)
+zcl_rpc_tls      io-blocking  RPC TLS accept loop (httpserver.c)
+zcl_rpc_cookie   io-blocking  RPC cookie-rotation loop (httpserver.c)
+#
+# ── disposition: cpu-bound ────────────────────────────────────────────────
+# Runs only while mining is enabled; solves Equihash in a tight loop with no
+# natural heartbeat boundary. Liveness-only contract is future work.
+zcl_miner        cpu-bound  Equihash miner worker, active only while mining (lib/mining/src/gen.c)

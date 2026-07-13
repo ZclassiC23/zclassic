@@ -2205,6 +2205,135 @@ static int t_service_result_convergence_ratchet(void)
     return failures;
 }
 
+/* Gate #23 — universal thread supervision ratchet. Runs hermetically via the
+ * ZCL_THREADSUP_SCAN_ROOTS / ZCL_THREADSUP_BASELINE overrides so it never
+ * touches the live tree/baseline: an unaccounted thread_registry_spawn trips
+ * the gate; a baseline entry OR a // supervised: marker clears it; a stale
+ * baseline entry (no matching uncovered spawn) trips it (shrink-only). */
+#define THREADSUP_SCRIPT_REL   "tools/lint/check_thread_supervision.sh"
+#define THREADSUP_SCAN_DIR_REL "test-tmp/_threadsup_scan_dir_tmp"
+#define THREADSUP_KEEP_REL     "test-tmp/_threadsup_scan_dir_tmp/keep.c"
+#define THREADSUP_FIXTURE_REL  "test-tmp/_threadsup_scan_dir_tmp/_threadsup_probe_tmp.c"
+#define THREADSUP_BASELINE_REL "test-tmp/_threadsup_baseline_tmp.txt"
+
+static int t_thread_supervision_ratchet(void)
+{
+    int failures = 0;
+    char test_tmp[PATH_MAX];
+    char scan_dir[PATH_MAX];
+    char keep_path[PATH_MAX];
+    char fixture_path[PATH_MAX];
+    char baseline_path[PATH_MAX];
+
+    if (repo_path(test_tmp, sizeof(test_tmp), "test-tmp") != 0 ||
+        repo_path(scan_dir, sizeof(scan_dir), THREADSUP_SCAN_DIR_REL) != 0 ||
+        repo_path(keep_path, sizeof(keep_path), THREADSUP_KEEP_REL) != 0 ||
+        repo_path(fixture_path, sizeof(fixture_path),
+                  THREADSUP_FIXTURE_REL) != 0 ||
+        repo_path(baseline_path, sizeof(baseline_path),
+                  THREADSUP_BASELINE_REL) != 0) {
+        fprintf(stderr, "[lint-gate] could not resolve thread-supervision "
+                        "fixture paths\n");
+        return 1;
+    }
+    (void)mkdir(test_tmp, 0700);
+    (void)mkdir(scan_dir, 0700);
+
+    /* Non-spawning keep file so the non-empty-scan floor is always met. */
+    int wrote_keep = write_file(keep_path, "int threadsup_keep_placeholder;\n");
+
+    /* Case A: an unaccounted spawn + EMPTY baseline must trip. */
+    int wrote_fixture_spawn = write_file(fixture_path,
+        "void demo(void)\n"
+        "{\n"
+        "    thread_registry_spawn(\"zcl_probe_thread\", worker, 0, 0);\n"
+        "}\n");
+    int wrote_empty_baseline = write_file(baseline_path, "");
+    int unaccounted_rc =
+        (wrote_keep == 0 && wrote_fixture_spawn == 0 &&
+         wrote_empty_baseline == 0)
+            ? run_gate_script_with_env2(THREADSUP_SCRIPT_REL,
+                  "ZCL_THREADSUP_SCAN_ROOTS", THREADSUP_SCAN_DIR_REL,
+                  "ZCL_THREADSUP_BASELINE", THREADSUP_BASELINE_REL)
+            : -999;
+    char un_out_path[PATH_MAX];
+    char *un_out = NULL;
+    int un_read =
+        (unaccounted_rc >= 0 &&
+         repo_path(un_out_path, sizeof(un_out_path),
+                   "test-tmp/zcl_gate_lint.out") == 0)
+            ? read_entire_file(un_out_path, &un_out)
+            : -1;
+
+    /* Case B: same fixture, thread now BASELINED — must pass. */
+    int wrote_baseline_entry = write_file(baseline_path,
+        "zcl_probe_thread  bounded  self-test fixture thread\n");
+    int baselined_rc =
+        wrote_baseline_entry == 0
+            ? run_gate_script_with_env2(THREADSUP_SCRIPT_REL,
+                  "ZCL_THREADSUP_SCAN_ROOTS", THREADSUP_SCAN_DIR_REL,
+                  "ZCL_THREADSUP_BASELINE", THREADSUP_BASELINE_REL)
+            : -999;
+
+    /* Case C: same thread, EMPTY baseline but the spawn now carries a
+     * // supervised: marker — must pass. */
+    int wrote_fixture_marked = write_file(fixture_path,
+        "void demo(void)\n"
+        "{\n"
+        "    // supervised:zcl_probe_thread\n"
+        "    thread_registry_spawn(\"zcl_probe_thread\", worker, 0, 0);\n"
+        "}\n");
+    int wrote_empty_baseline2 = write_file(baseline_path, "");
+    int marked_rc =
+        (wrote_fixture_marked == 0 && wrote_empty_baseline2 == 0)
+            ? run_gate_script_with_env2(THREADSUP_SCRIPT_REL,
+                  "ZCL_THREADSUP_SCAN_ROOTS", THREADSUP_SCAN_DIR_REL,
+                  "ZCL_THREADSUP_BASELINE", THREADSUP_BASELINE_REL)
+            : -999;
+
+    /* Case D: fixture no longer spawns, baseline still lists the thread —
+     * must trip as a STALE (shrink-only) entry. */
+    int wrote_fixture_nospawn = write_file(fixture_path,
+        "int threadsup_fixture_now_quiet;\n");
+    int wrote_baseline_stale = write_file(baseline_path,
+        "zcl_probe_thread  bounded  self-test fixture thread\n");
+    int stale_rc =
+        (wrote_fixture_nospawn == 0 && wrote_baseline_stale == 0)
+            ? run_gate_script_with_env2(THREADSUP_SCRIPT_REL,
+                  "ZCL_THREADSUP_SCAN_ROOTS", THREADSUP_SCAN_DIR_REL,
+                  "ZCL_THREADSUP_BASELINE", THREADSUP_BASELINE_REL)
+            : -999;
+    char stale_out_path[PATH_MAX];
+    char *stale_out = NULL;
+    int stale_read =
+        (stale_rc >= 0 &&
+         repo_path(stale_out_path, sizeof(stale_out_path),
+                   "test-tmp/zcl_gate_lint.out") == 0)
+            ? read_entire_file(stale_out_path, &stale_out)
+            : -1;
+
+    (void)unlink(fixture_path);
+    (void)unlink(keep_path);
+    (void)unlink(baseline_path);
+    (void)rmdir(scan_dir);
+
+    TEST("[lint-gate] thread-supervision ratchet: unaccounted/stale trip, baselined/marked pass") {
+        ASSERT(unaccounted_rc != 0);
+        ASSERT(un_read == 0);
+        ASSERT(un_out != NULL && strstr(un_out, "unaccounted") != NULL);
+        ASSERT(baselined_rc == 0);
+        ASSERT(marked_rc == 0);
+        ASSERT(stale_rc != 0);
+        ASSERT(stale_read == 0);
+        ASSERT(stale_out != NULL && strstr(stale_out, "STALE") != NULL);
+        PASS();
+    } _test_next:;
+
+    free(un_out);
+    free(stale_out);
+    return failures;
+}
+
 /* E3 — shape-includes-header HARD: a condition file that includes neither
  * framework/condition.h nor a conditions/ header trips the gate; removing
  * it restores green. */
@@ -2699,6 +2828,8 @@ static int t_lint_gates_fail_loud_on_empty_scan(void)
         "tools/scripts/check_no_secret_printf.sh", "ZCL_SECRET_PRINTF_SCAN_DIRS", empty_dir);
     failures += meta_gate_empty_scan_trips(
         "tools/lint/check_supervisor_domain.sh", "ZCL_SUPDOM_SCAN_ROOTS", empty_dir);
+    failures += meta_gate_empty_scan_trips(
+        "tools/lint/check_thread_supervision.sh", "ZCL_THREADSUP_SCAN_ROOTS", empty_dir);
 
     /* The reorg-ratchet gate's hollow vector is a DRIFTED file list (a tracked
      * stage-log store moved/renamed), not an empty scan dir. Point its file
@@ -7370,6 +7501,7 @@ int test_make_lint_gates(void)
     failures += t_model_ar_lifecycle_gate();
     failures += t_e2_one_result_type();
     failures += t_service_result_convergence_ratchet();
+    failures += t_thread_supervision_ratchet();
     failures += t_e3_shape_includes_header();
     failures += t_e4_projections_pure();
     failures += t_domain_purity();

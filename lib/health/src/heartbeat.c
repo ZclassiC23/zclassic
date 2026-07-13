@@ -7,10 +7,12 @@
 #include "health/heartbeat.h"
 #include "core/utiltime.h"
 #include "json/json.h"
+#include "util/thread_liveness.h"
 #include "util/thread_registry.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -39,6 +41,17 @@ static _Atomic bool    g_running = false;
 static _Atomic bool    g_started = false;
 static pthread_t       g_sweeper;
 static _Atomic int     g_check_interval_ms = 1000;
+
+/* Supervisor liveness: the sweeper is the very thread whose 8.6 h silent
+ * wedge (2026-05-21) motivated the supervisor. It now heartbeats onto the
+ * tree so a repeat is a named blocker, not a silent stop. deadline=120 s
+ * (interval defaults to 1 s; retunable, but far under the deadline);
+ * progress marker = sweep count; no-progress gate disabled (the deadline
+ * already covers a frozen loop). */
+static struct thread_liveness_child g_sweep_child = {
+    .id = SUPERVISOR_INVALID_ID
+};
+static _Atomic uint64_t g_sweep_count = 0;
 
 void health_set_check_interval_ms(int ms)
 {
@@ -223,6 +236,10 @@ static void *sweeper_thread(void *arg)
     (void)arg;
     while (atomic_load(&g_running)) {
         sweep_once();
+        /* Heartbeat onto the supervisor tree (atomic-only; zero behavior
+         * change). Marker advances every sweep so a frozen loop is visible. */
+        thread_liveness_beat(&g_sweep_child,
+                             (int64_t)atomic_fetch_add(&g_sweep_count, 1) + 1);
         int interval_ms = atomic_load(&g_check_interval_ms);
         struct timespec ts = {
             .tv_sec  = interval_ms / 1000,
@@ -240,6 +257,7 @@ bool health_start(void)
         return true; /* already running */
 
     atomic_store(&g_running, true);
+    // supervised:zcl_health_sweep (thread_liveness_register below)
     int rc = thread_registry_spawn("zcl_health_sweep", sweeper_thread,
                                        NULL, &g_sweeper);
     if (rc != 0) {
@@ -248,6 +266,9 @@ bool health_start(void)
         atomic_store(&g_started, false);
         return false;
     }
+    (void)thread_liveness_register(&g_sweep_child, "zcl_health_sweep",
+                                   /*deadline_secs=*/120,
+                                   /*progress_quiet_us=*/0);
     return true;
 }
 
@@ -258,6 +279,7 @@ void health_stop(void)
         return; /* not running */
     atomic_store(&g_running, false);
     pthread_join(g_sweeper, NULL);
+    thread_liveness_retire(&g_sweep_child);
 }
 
 void health_reset_for_test(void)

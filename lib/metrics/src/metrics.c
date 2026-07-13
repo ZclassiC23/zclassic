@@ -13,6 +13,7 @@
 #include "util/timedata.h"
 #include "event/event.h"
 #include "sync/sync_state.h"
+#include "util/thread_liveness.h"
 #include "util/thread_registry.h"
 #include <pthread.h>
 #include <stdio.h>
@@ -25,6 +26,13 @@ _Atomic uint64_t g_eh_solver_runs = 0;
 
 static int64_t g_start_time = 0;
 static pthread_t g_metrics_thread;
+/* Supervisor liveness: the metrics printer loops on a 1 s cadence. It
+ * heartbeats onto the tree (deadline=120 s) with the loop count as its
+ * progress marker; no-progress gate disabled (the deadline covers a frozen
+ * loop). See util/thread_liveness.h. */
+static struct thread_liveness_child g_metrics_child = {
+    .id = SUPERVISOR_INVALID_ID
+};
 /* Single-spawn guard for the module-level g_metrics_thread. Two concurrent
  * metrics_start() calls must not both spawn and overwrite the handle (which
  * would orphan one thread); the winner of this CAS is the only spawner, and
@@ -321,8 +329,13 @@ static void *metrics_thread_fn(void *arg)
         metrics_print_art();
     }
 
+    int64_t metrics_beats = 0;
     while (atomic_load(&ctx->running)) {
         int lines = 1;
+
+        /* Heartbeat onto the supervisor tree (atomic-only; zero behavior
+         * change). Loop count is the progress marker. */
+        thread_liveness_beat(&g_metrics_child, ++metrics_beats);
 
         if (is_tty)
             printf("\033[J");
@@ -421,6 +434,7 @@ bool metrics_start(struct metrics_context *ctx)
     }
 
     atomic_store(&ctx->running, true);
+    // supervised:zcl_metrics (thread_liveness_register below)
     if (thread_registry_spawn("zcl_metrics", metrics_thread_fn, ctx,
                                   &g_metrics_thread) != 0) {
         perror("metrics_start: thread_registry_spawn");
@@ -428,6 +442,9 @@ bool metrics_start(struct metrics_context *ctx)
         atomic_store(&g_metrics_started, false);
         return false;
     }
+    (void)thread_liveness_register(&g_metrics_child, "zcl_metrics",
+                                   /*deadline_secs=*/120,
+                                   /*progress_quiet_us=*/0);
     ctx->thread_started = true;
     return true;
 }
@@ -441,5 +458,6 @@ void metrics_stop(struct metrics_context *ctx)
         return; /* not running */
     atomic_store(&ctx->running, false);
     pthread_join(g_metrics_thread, NULL);
+    thread_liveness_retire(&g_metrics_child);
     ctx->thread_started = false;
 }

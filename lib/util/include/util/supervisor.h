@@ -48,7 +48,14 @@
 #include <stdint.h>
 
 #define SUPERVISOR_NAME_MAX 40
-#define SUPERVISOR_CAP      32
+/* Static registry capacity. Raised 32 -> 64 (2026-07-13, wf/universal-
+ * supervision) when the cross-cutting infrastructure threads in lib/ and
+ * config/ (health sweep, metrics, event dispatch, RPC-timeout, DB
+ * worker/checkpoint — via util/thread_liveness.h) joined the tree as ROOT
+ * children on top of the ~30 existing chain/net/op-domain children. Sizes
+ * the g_contracts[]/snapshot stack arrays; keep generous headroom so a
+ * register never silently drops a child on a fully-featured boot. */
+#define SUPERVISOR_CAP      64
 #define SUPERVISOR_DOMAIN_CAP 16
 
 typedef int supervisor_child_id;
