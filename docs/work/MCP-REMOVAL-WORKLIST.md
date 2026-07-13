@@ -91,7 +91,7 @@ replacement needed).
 | docs/HANDOFF.md:216 | `zclassic23 mcpcall zcl_status` | invocation | `zclassic23 status` | W2 | **NEW** — `docs/HANDOFF.md` not in §1.6 inventory at all |
 | docs/work/fast-path.md:81 | `make agent-mcp-call-hot TOOL=<tool>` | build-glob | `zclassic23 <leaf>` | W2 | **NEW** — file absent from §1.6 |
 | docs/work/fast-path.md:173 | `build/bin/zclassic23 mcpcall zcl_status` | invocation | `zclassic23 status` | W2 | **NEW** |
-| docs/work/FUTURE-CLAUDE-FIX-THIS.md:552 | `-mcp` (documented default) | doc-reference | delete; `-mcp` flag removed W3 | W2 | **NEW** — file absent from §1.6 |
+| docs/work/archive/FUTURE-CLAUDE-FIX-THIS.md:552 | `-mcp` (documented default) | doc-reference | delete; `-mcp` flag removed W3 | W2 | **NEW** — file absent from §1.6 |
 | README.md:10 | "a built-in MCP server" | doc-reference | "native command registry" | W2 | **NEW** — README.md entirely absent from §1.6 |
 | README.md:244 | `## Claude integration (MCP)` | doc-reference | delete entire section; native command examples | W2 | **NEW** |
 | README.md:302 | `└── MCP ~100 typed tools on stdio (-mcp)` | doc-reference | "Native command registry ~100 commands" | W2 | **NEW** |
@@ -202,7 +202,7 @@ replacement needed).
 itemize even though it names the broader `make agent-mcp-call*` target
 elsewhere): `docs/BUILD.md:43-45`, `docs/GETTING_STARTED.md:61-62`,
 `docs/CODEBASE_MAP.md:191,334`, `docs/HANDOFF.md:216`,
-`docs/work/fast-path.md:81,173`, `docs/work/FUTURE-CLAUDE-FIX-THIS.md:552`.
+`docs/work/fast-path.md:81,173`, `docs/work/archive/FUTURE-CLAUDE-FIX-THIS.md:552`.
 
 ### Line-drift flag (not "new" but worth a plan refresh)
 

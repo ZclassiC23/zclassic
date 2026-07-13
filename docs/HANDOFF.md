@@ -3,7 +3,7 @@
 > full pre-slim history: [`HANDOFF-HISTORY-2026-07.md`](work/archive/HANDOFF-HISTORY-2026-07.md)).
 >
 > **⚡ Incoming developer, start here:** this file, then
-> [`work/HANDOFF-2026-07-12-evening.md`](work/HANDOFF-2026-07-12-evening.md)
+> [`work/archive/HANDOFF-2026-07-12-evening.md`](work/archive/HANDOFF-2026-07-12-evening.md)
 > for the original un-wedge recipe. The live facts and corrected producer
 > evidence below supersede that dated recipe where they differ.
 >

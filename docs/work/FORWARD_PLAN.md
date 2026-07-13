@@ -162,7 +162,7 @@ jump the queue.
       (`lib/storage/src/coins_view_sqlite.c`), table-derived height/count,
       + `_save_anchored`/`_load_anchor` in `lib/coins/src/utxo_commitment.{c,h}`,
       + re-validating heal in `coins_reconcile_stale_anchor`. Design-of-record
-      [`coins-commitment-persist-plan.md`](./coins-commitment-persist-plan.md)
+      [`coins-commitment-persist-plan.md`](./archive/coins-commitment-persist-plan.md)
       (adversary-vetted; original verdict DO_NOT_APPLY → corrected design at
       top). **Do NOT apply live without owner go.**
 - [ ] Persist `utxo_sha3` at finalized-tip so the self-heal has a fresh input.
@@ -221,5 +221,5 @@ Architecture axis (~90% done): [`../REFACTOR_STATUS.md`](../REFACTOR_STATUS.md),
 [`../FRAMEWORK.md`](../FRAMEWORK.md). The only remaining size debt is the three
 `config/` boot files (`boot.c`, `boot_services.c`, `boot_index.c`), frozen
 shrink-only by the size gate; seam plan in
-[`boot-decomposition-seams.md`](./boot-decomposition-seams.md). Safe-execution
+[`boot-decomposition-seams.md`](./archive/boot-decomposition-seams.md). Safe-execution
 method for any consensus-critical change: [`fast-path.md`](./fast-path.md).

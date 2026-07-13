@@ -202,7 +202,7 @@ a borrowed copy.**
   (`test_make_lint_gates.c`, `FRAMEWORK.md` §5). Re-audit `check_one_write_path`,
   `check_stage_log_reorg_unsafe_ratchet`, `check_projections_pure` **before** the
   Act-3 deletions, so a hollow gate can't let a forbidden pattern back in via a
-  renamed symbol. Doc: [`lint-gate-hollowness-audit.md`](./lint-gate-hollowness-audit.md).
+  renamed symbol. Doc: [`lint-gate-hollowness-audit.md`](./archive/lint-gate-hollowness-audit.md).
 - **(c) Delete confirmed-dead scaffolding** — `lib/validation/src/verify_queue.c:130`
   is `additive_unwired` (no non-test callers) + the other confirmed-dead paths.
 - **(d) CI invariant:** no path advances `coins_applied_height` without the

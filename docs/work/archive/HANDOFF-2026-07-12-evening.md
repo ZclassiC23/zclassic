@@ -38,13 +38,13 @@ A large session just pushed **9 lanes** to `main` (`2678b7e51 → d5a682c64`, +7
   trustless. It remains useful as advisory/copy evidence only. Fast readiness
   must stay explicitly assisted until local full-history verification promotes
   the exact complete state; see `SOVEREIGN-NETWORK-ROADMAP.md`.
-- LB-1 parallel verify pool: **deleted** from the tree; rebuild per `docs/work/lb1-wiring-design.md` (throughput multiplier, **not** required for the cure).
+- LB-1 parallel verify pool: **deleted** from the tree; rebuild per `docs/work/archive/lb1-wiring-design.md` (throughput multiplier, **not** required for the cure).
 
 ## 2. Multi-user-server / game-platform foundation (P0 libraries — built, not yet wired into runtime)
 
 Parity-safe library code; no runtime listener/session wired yet. This is the substrate for a crypto-authenticated multi-user shell + a P2P C23 game-dev/self-publish platform.
 - **crypto**: `lib/crypto/{hkdf_sha256,x25519_safe}` + `lib/session/{noise_handshake (NK for client↔server + XX for peers, pattern-parameterized), session_transport (AEAD record framing)}`.
-- **sandbox**: `lib/platform/os_sandbox_linux.c` — rootless user-namespace + Landlock + seccomp deny-list + rlimit builders + `SANDBOX_SESSION_CHILD`. **Empirically probe-verified rootless on this box** (`docs/work/session-substrate-probes.md`).
+- **sandbox**: `lib/platform/os_sandbox_linux.c` — rootless user-namespace + Landlock + seccomp deny-list + rlimit builders + `SANDBOX_SESSION_CHILD`. **Empirically probe-verified rootless on this box** (`docs/work/archive/session-substrate-probes.md`).
 - **no-shell-outs**: `lib/util/{file_tree_ops (fd-based recursive copy/remove), spawn (no-shell fork/exec)}`. The ~11 call-site conversions + the `check-no-shell-out` gate are **NOT done** yet.
 - **accounts**: `app/models/{principal,auth_challenge}` + `app/services/{auth_login_service,authz_policy}` + `config/commands/accounts.def` + the command-registry **authority ceiling** gate (`lib/kernel/command_registry.c`). secp256k1 challenge-response login; role→capability; migration **v26**; commands under `app.auth.*`/`app.account.*`.
 
