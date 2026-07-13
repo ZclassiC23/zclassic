@@ -1,10 +1,15 @@
 # AGENT_API.md — native API for AI coding operators
 
-ZClassic23's agent API is the native binary and the MCP tools backed by the
-same native RPC methods. Shell wrappers are compatibility shims only.
-Future feature work should follow `docs/AGENT_ARCHITECTURE.md`: REST resource
-first, database schema, ActiveRecord model, validations, relationships, service
-workflow, REST route contract, then typed MCP/native surface.
+The agent interface is the **native command registry** (`zclassic23 <command>`);
+[`docs/NATIVE_COMMAND_INTERFACE.md`](./NATIVE_COMMAND_INTERFACE.md) is the primary
+reference. The legacy MCP tools listed here are backed by the same native RPC
+methods and are being removed in W3 (see
+[`docs/work/MCP-REMOVAL-PLAN.md`](./work/MCP-REMOVAL-PLAN.md)) — prefer the native
+command in every row below; the `zcl_*` MCP column is transitional. Shell
+wrappers are compatibility shims only. New feature work follows
+[`docs/AGENT_ARCHITECTURE.md`](./AGENT_ARCHITECTURE.md): REST resource first,
+database schema, ActiveRecord model, validations, relationships, service
+workflow, REST route contract, then the native surface.
 
 ## First calls
 

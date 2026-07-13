@@ -6,7 +6,7 @@
   positioning this verdict protects), `docs/adr/0002-sealed-consensus-core.md`
   (the structural-boundary pattern this ADR reuses for confinement),
   [`docs/work/os-substrate-plan.md`](../work/os-substrate-plan.md) (the
-  three-rung working plan), [`docs/work/lb1-wiring-design.md`](../work/lb1-wiring-design.md)
+  three-rung working plan), [`docs/work/archive/lb1-wiring-design.md`](../work/archive/lb1-wiring-design.md)
   (the bounded verify-pool design cited in Evidence (a)).
 
 ---
@@ -65,7 +65,7 @@ The one genuine **execution-parallelism** gap this review found is real:
 script/proof verification (ECDSA, Groth16) runs serially on the drive
 thread while the rest of the machine's cores sit idle. The answer already
 has a design:
-[`docs/work/lb1-wiring-design.md`](../work/lb1-wiring-design.md) specifies a
+[`docs/work/archive/lb1-wiring-design.md`](../work/archive/lb1-wiring-design.md) specifies a
 bounded verify pool gated behind `-par=N` (default parallel, `-par=1` the
 bit-for-bit serial oracle — the correctness rollback). **Correction to an
 earlier framing of this evidence:** the pool's scaffold code

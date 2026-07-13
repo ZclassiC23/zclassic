@@ -9,7 +9,7 @@
 > remains restricted until background self-verification promotes it. Canonical
 > is currently wedged at H*=3,176,325 on incomplete shielded history; commit
 > `ab512d577` fixed only the earlier transparent-loader failure. Current plan:
-> [`SOVEREIGN-NETWORK-ROADMAP.md`](./SOVEREIGN-NETWORK-ROADMAP.md).
+> [`SOVEREIGN-NETWORK-ROADMAP.md`](../SOVEREIGN-NETWORK-ROADMAP.md).
 >
 > Built 2026-06-20 from a grounded, adversarially-verified research pass. Every
 > claim here is file:line-checked or a live measurement.

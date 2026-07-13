@@ -1,7 +1,7 @@
 # The Detective's Forward Plan
 
 > **SUPERSEDED by [`docs/work/sticky-node-plan.md`](sticky-node-plan.md)** — kept for
-> planning lineage. Its Case 2 also lives in [`docs/work/self-verified-tip-plan.md`](self-verified-tip-plan.md).
+> planning lineage. Its Case 2 also lives in [`docs/work/self-verified-tip-plan.md`](../self-verified-tip-plan.md).
 > Read the sticky-node plan for the live plan of record.
 
 *Synthesized 2026-06-25 from a 5-lane code-grounded recon (workflow `wtr79ytvz`)

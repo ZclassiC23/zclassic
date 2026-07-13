@@ -2,7 +2,7 @@
 
 **Status: DESIGN (2026-07-02). Plan of record for making "stuck-needs-a-human"
 structurally impossible.** Supersedes per-class whack-a-mole; absorbs
-`sticky-node-plan.md` and `never-stuck-plan.md` §1b. Grounded in a 6-mapper
+`archive/sticky-node-plan.md` and `never-stuck-plan.md` §1b. Grounded in a 6-mapper
 code audit + live forensics of the stall active while this was written.
 
 ## 0. The live specimen (2026-07-02, observed on main)

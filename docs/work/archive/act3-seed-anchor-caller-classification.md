@@ -1,6 +1,6 @@
 # Act 3 prep — `tip_finalize_stage_seed_anchor` caller classification + Act 4a XOR resolution
 
-> Wave-1 Lane E of [`self-verified-tip-plan.md`](./self-verified-tip-plan.md).
+> Wave-1 Lane E of [`self-verified-tip-plan.md`](../self-verified-tip-plan.md).
 > **Analysis only — no production source mutated.** Verify fresh before any
 > deletion; specifics rot.
 

@@ -186,7 +186,7 @@ load-bearing for blocking the running binary.
 it lived (`domain/consensus/`, `lib/consensus/`, `lib/chain/`, `lib/core/`)
 and rely solely on a `check-consensus-parity`-style gate scanning a hardcoded
 path list. Rejected: a hardcoded path list is exactly the kind of thing the
-lint-gate-hollowness audit (`docs/work/lint-gate-hollowness-audit.md`) found
+lint-gate-hollowness audit (`docs/work/archive/lint-gate-hollowness-audit.md`) found
 goes silently stale — a new consensus file added under an existing directory
 but outside the listed sub-paths escapes the gate with the build still
 green. A physical `core/` tree makes "is this consensus" a single glob
