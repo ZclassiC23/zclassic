@@ -34,9 +34,8 @@ void store_pow_challenge(int64_t product_id, char peer_id_hex[65]);
  * (Keccak-f[1600], FIPS 202) from scratch in plain JS — no CDN, no
  * external dependency — because browsers have no native SHA3, only
  * SHA-2, so fast_sync_verify_pow's SHA3-256(peer_id||timestamp||nonce)
- * scheme can't be solved via window.crypto.subtle. Verified byte-for-byte
- * against Node's native `sha3-256` digest for empty/short/multi-block
- * inputs before landing.
+ * scheme can't be solved via window.crypto.subtle. Its digests match
+ * Node's native `sha3-256` for empty/short/multi-block inputs.
  *
  * On DOMContentLoaded, wires <form id='orderForm'> (data-pow-peer /
  * data-pow-ts / data-pow-bits attributes, written by serve_product_detail
