@@ -2966,6 +2966,15 @@ int main(int argc, char **argv)
      * sets the respawn flag for a genuine-liveness stall when off-systemd). */
     g_saved_argv = argv;
 
+    /* ONE preflight naming ALL unmet -mint-anchor producer preconditions
+     * upfront (config/src/boot_mint_anchor_preflight.c), BEFORE app_init
+     * opens/mutates node.db, progress.kv, or wallet.dat. Replaces the
+     * historical one-FATAL-at-a-time surfacing (missing legacy block index ->
+     * FATAL on one run; missing bodies -> silent stall on the next). Every
+     * check is read-only; a failure here means app_init never runs. */
+    if (ctx.mint_anchor && !boot_mint_anchor_preflight_run_all(ctx.datadir, NULL))
+        return 1;
+
     if (!app_init(&ctx)) {
         fprintf(stderr, "Initialization failed.\n");
         return 1;

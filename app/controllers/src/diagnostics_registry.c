@@ -70,6 +70,7 @@
 #include "storage/mempool_projection.h"
 #include "storage/peers_projection.h"
 #include "storage/progress_store.h"
+#include "config/boot.h"
 #include "storage/small_projections.h"
 #include "storage/utxo_projection.h"
 #include "storage/znam_projection.h"
@@ -368,6 +369,14 @@ static const struct diagnostics_dump_entry g_dumpers[] = {
                      "utxo_count, supply, block_hash, ratified, sealed_at, self_sha3 valid" },
     { "progress",    progress_store_dump_state_json,
                      "progress.kv: open/path/stage_cursor row count" },
+    { "mint_preflight", boot_mint_anchor_preflight_dump_state_json,
+                     "last -mint-anchor producer preflight run (run_all): "
+                     "have_report, all_ok, per-check {name,ok,why,remedy} — "
+                     "datadir_lock_acquirable, "
+                     "legacy_block_index_covers_anchor, "
+                     "bodies_present_sampled, disk_headroom, "
+                     "no_leftover_interrupted_run_artifacts, "
+                     "fold_inram_memory_estimate" },
     { "refold",      refold_progress_dump_state_json,
                      "refold/mint mode: in_progress + from_anchor cached flags, compiled trusted_anchor, "
                      "durable progress.kv keys (durable_in_progress/from_anchor), from_anchor_target_tip" },
