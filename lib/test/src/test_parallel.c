@@ -61,7 +61,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(test_png_writer) X(shared_validators_zcl_address) \
     X(script) X(net) X(netbase_split_host_port) X(transaction) X(mempool) X(accept_to_mempool) X(rpc) X(sqlite) \
     X(activerecord) X(validation) X(sapling_lazy_init) X(sapling) X(sapling_crypto) \
-    X(bn254) X(merkle_tree) X(merkle_malleability) X(slp) X(models) X(core) X(znam) X(htlc) \
+    X(bn254) X(merkle_tree) X(merkle_malleability) X(slp) X(models) X(core) X(znam) X(znam_site) X(htlc) \
     X(swap_settlement) \
     X(file_market) X(strong_params) X(json) X(robustness) X(wallet) \
     X(primitives) X(bloom) X(coins) X(store) X(blog) X(api) \
@@ -82,12 +82,12 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(db_txn) X(sync_service) X(node_db_catchup_service) X(catchup_lifecycle_service) \
     X(utxo_mirror_sync) X(snapshot_sync_service) \
     X(file_controller) X(file_ops) X(file_service_pow_gate) \
-    X(file_tree_ops) X(integrity) X(rolling_anchor_service) \
+    X(file_tree_ops) X(spawn) X(integrity) X(rolling_anchor_service) \
     X(protocols) \
     X(chain_restore_planner) X(chain_restore_service) \
     X(chain_activation_controller) \
     X(mcp_router) X(dev_mcp_rpc_bridge) X(mcp_controllers) X(mcp_middleware) X(mcp_metrics) \
-    X(mcp_baseline) X(hotswap_loader) X(hotswap_simnet) X(dev_platform) \
+    X(mcp_baseline) X(hotswap_loader) X(hotswap_simnet) X(hotswap_module) X(dev_platform) \
     X(dev_activation) \
     X(command_registry_catalog) \
     X(native_api_contract) \
@@ -142,7 +142,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(wallet_flush_rollback) X(log_json) X(http_middleware) \
     X(rpc_timeout) X(wallet_keystore) X(wallet_sqlite_enc) \
     X(zcl_result) X(netaddr_classify) X(wallet_sqlite_open_errors) X(watch_only) \
-    X(coin_selection) X(disk_monitor) X(db_maintenance) \
+    X(coin_selection) X(disk_monitor) X(network_monitor) X(db_maintenance) \
     X(mempool_limits) X(addrman_integrity) X(ibd_throttle) \
     X(consensus_reject_events) X(consensus_reject_index) \
     X(chain_rollback) X(alerts) X(ws_events) X(trace) X(phgr13_fix) \

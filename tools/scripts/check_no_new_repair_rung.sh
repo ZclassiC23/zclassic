@@ -27,6 +27,9 @@
 # *health*.c files are not matched.
 set -euo pipefail
 
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
+
 BASELINE=tools/scripts/repair_rung_baseline.txt
 [ -f "$BASELINE" ] || touch "$BASELINE"
 
@@ -61,7 +64,7 @@ while IFS= read -r f; do
     [ -f "$f" ] || continue
     is_repair_rung_base "${f##*/}" || continue
     rung_files+=("$f")
-done < <(find app -type f -name '*.c' | sort)
+done < <(find app -type f -name '*.c' "${LINT_FIND_PRUNE_ARGS[@]}" | sort)
 
 # One batched `grep -lE` over the candidate set names every file that carries
 # a `// repair-rung-ok:<cite>` marker, instead of a grep fork per candidate.

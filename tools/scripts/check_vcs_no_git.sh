@@ -20,6 +20,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT"
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
 
 VCS_DIR="lib/vcs"
 if [[ ! -d "$VCS_DIR" ]]; then
@@ -34,7 +36,7 @@ fi
 # ignore target; that is not a git invocation. Any bare `git` still fails.
 PATTERN='(?<!\.)\bgit\b|\bexec[lv][ep]*[[:space:]]*\(|\bexecve[[:space:]]*\(|\bsystem[[:space:]]*\(|\bpopen[[:space:]]*\(|\bfork[[:space:]]*\('
 
-hits=$(grep -rnP "$PATTERN" "$VCS_DIR" --include='*.c' --include='*.h')
+hits=$(grep -rnP "$PATTERN" "$VCS_DIR" --include='*.c' --include='*.h' "${LINT_GREP_EXCLUDE_ARGS[@]}")
 rc=$?
 if [[ $rc -ge 2 ]]; then
     echo "check_vcs_no_git: FATAL — grep exited $rc scanning $VCS_DIR." >&2

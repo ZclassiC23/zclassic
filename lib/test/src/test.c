@@ -983,6 +983,7 @@ int main(int argc, char **argv)
     failures += test_models();
     failures += test_core();
     failures += test_znam();
+    { extern int test_znam_site(void); failures += test_znam_site(); }
     failures += test_htlc();
     failures += test_swap_settlement();
     failures += test_file_market();
@@ -1127,6 +1128,7 @@ int main(int argc, char **argv)
     failures += test_file_controller();
     failures += test_file_ops();
     failures += test_file_tree_ops();
+    failures += test_spawn();
     failures += test_integrity();
     failures += test_rolling_anchor_service();
     failures += test_protocols();
@@ -1137,6 +1139,7 @@ int main(int argc, char **argv)
     failures += test_dev_mcp_rpc_bridge();
     failures += test_hotswap_loader();
     failures += test_hotswap_simnet();
+    failures += test_hotswap_module();
     failures += test_dev_platform();
     failures += test_command_registry_catalog();
     failures += test_native_api_contract();
@@ -1251,6 +1254,7 @@ int main(int argc, char **argv)
     { extern int test_watch_only(void); failures += test_watch_only(); }
     { extern int test_coin_selection(void); failures += test_coin_selection(); }
     failures += test_disk_monitor();
+    { extern int test_network_monitor(void); failures += test_network_monitor(); }
     failures += test_db_maintenance();
     failures += test_mempool_limits();
     failures += test_addrman_integrity();

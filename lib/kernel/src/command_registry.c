@@ -31,9 +31,20 @@ struct zcl_command_handler_snapshot {
     uint32_t generation;
     size_t count;
     struct zcl_command_handler_override slots[ZCL_COMMAND_HANDLER_OVERRIDE_MAX];
+    /* In-flight dispatches that acquired THIS snapshot. Held across the
+     * override handler call so a hot-swap loader can dlclose a superseded .so
+     * only after every retired snapshot referencing it has drained to zero.
+     * Snapshots themselves are NEVER freed, so acquire's optimistic increment
+     * can never touch reclaimed memory (see handler_snapshot_acquire). */
+    _Atomic uint32_t refs;
+    /* Immutable publish list (append-only, never freed); walked by the
+     * quiescence query. Links every published snapshot newest-first. */
+    struct zcl_command_handler_snapshot *published_prev;
 };
 
 static struct zcl_command_handler_snapshot *_Atomic g_active_handlers = NULL;
+/* Head of the append-only publish list (newest snapshot). Never freed. */
+static struct zcl_command_handler_snapshot *_Atomic g_published_head = NULL;
 static atomic_flag g_handler_write_lock = ATOMIC_FLAG_INIT;
 static const struct zcl_command_registry *_Atomic g_active_registry = NULL;
 
@@ -49,17 +60,74 @@ static inline void handler_write_unlock(void)
     atomic_flag_clear_explicit(&g_handler_write_lock, memory_order_release);
 }
 
-static zcl_command_handler_fn handler_override_lookup(const char *path)
+static zcl_command_handler_fn snapshot_lookup(
+    const struct zcl_command_handler_snapshot *snap, const char *path)
 {
-    const struct zcl_command_handler_snapshot *snap =
-        atomic_load_explicit(&g_active_handlers, memory_order_acquire);
     if (!snap || !path)
-        return NULL; /* zero-overhead fast path when no snapshot exists */
+        return NULL;
     for (size_t i = 0; i < snap->count; i++) {
         if (snap->slots[i].path && strcmp(snap->slots[i].path, path) == 0)
             return snap->slots[i].handler;
     }
     return NULL;
+}
+
+static zcl_command_handler_fn handler_override_lookup(const char *path)
+{
+    const struct zcl_command_handler_snapshot *snap =
+        atomic_load_explicit(&g_active_handlers, memory_order_acquire);
+    if (!snap) /* zero-overhead fast path when no snapshot exists */
+        return NULL;
+    return snapshot_lookup(snap, path);
+}
+
+/* Acquire the active override snapshot for the duration of a dispatch,
+ * incrementing its in-flight refcount. Returns NULL when no override is
+ * installed (the common, zero-RMW fast path). The optimistic increment +
+ * revalidate is UAF-safe because snapshots are never freed: if the snapshot
+ * was retired between the load and the increment, the revalidate fails and we
+ * decrement and retry; a retired snapshot's refs can never rise into a
+ * VALIDATED state again (no reader can newly load a pointer the active slot no
+ * longer holds), so its refcount is monotone-draining to zero. */
+static struct zcl_command_handler_snapshot *handler_snapshot_acquire(void)
+{
+    for (;;) {
+        struct zcl_command_handler_snapshot *snap =
+            atomic_load_explicit(&g_active_handlers, memory_order_acquire);
+        if (!snap)
+            return NULL;
+        atomic_fetch_add_explicit(&snap->refs, 1, memory_order_acq_rel);
+        if (atomic_load_explicit(&g_active_handlers, memory_order_acquire) == snap)
+            return snap; /* still current: reference validated */
+        atomic_fetch_sub_explicit(&snap->refs, 1, memory_order_acq_rel);
+        /* snap was retired between load and incref; retry with the newer one. */
+    }
+}
+
+static void handler_snapshot_release(struct zcl_command_handler_snapshot *snap)
+{
+    if (snap)
+        atomic_fetch_sub_explicit(&snap->refs, 1, memory_order_release);
+}
+
+/* True iff every RETIRED override snapshot (published but no longer active) has
+ * drained to a zero in-flight refcount — i.e. no dispatch can still be inside a
+ * superseded handler. A hot-swap loader polls this before dlclosing a
+ * superseded module .so. The active snapshot is skipped (it is always live).
+ * The publish list is append-only and never freed, so the walk is UAF-safe. */
+bool zcl_command_registry_all_retired_quiesced(void)
+{
+    const struct zcl_command_handler_snapshot *active =
+        atomic_load_explicit(&g_active_handlers, memory_order_acquire);
+    const struct zcl_command_handler_snapshot *p =
+        atomic_load_explicit(&g_published_head, memory_order_acquire);
+    for (; p; p = p->published_prev) {
+        if (p == active)
+            continue;
+        if (atomic_load_explicit(&p->refs, memory_order_acquire) != 0)
+            return false;
+    }
+    return true;
 }
 
 void zcl_command_registry_set_active(const struct zcl_command_registry *registry)
@@ -196,6 +264,10 @@ bool zcl_command_registry_replace_batch(
     else
         memset(next, 0, sizeof(*next));
     next->generation = next_generation;
+    /* A fresh snapshot starts with no in-flight readers and is not yet linked
+     * into the publish list (the memcpy copied old's bookkeeping). */
+    atomic_store_explicit(&next->refs, 0, memory_order_relaxed);
+    next->published_prev = NULL;
 
     /* Merge: overwrite an existing override slot with the same path, else
      * append. Capacity is bounded by ZCL_COMMAND_HANDLER_OVERRIDE_MAX. */
@@ -223,6 +295,12 @@ bool zcl_command_registry_replace_batch(
         next->slots[idx] = *ovr;
     }
 
+    /* Link into the append-only publish list BEFORE swapping the active
+     * pointer, so the quiescence walk (head then active) always finds the
+     * active snapshot in the list. Both stores happen under the write lock. */
+    next->published_prev =
+        atomic_load_explicit(&g_published_head, memory_order_acquire);
+    atomic_store_explicit(&g_published_head, next, memory_order_release);
     atomic_store_explicit(&g_active_handlers, next, memory_order_release);
     handler_write_unlock();
     return true;
@@ -1325,10 +1403,19 @@ size_t zcl_command_registry_execute_json(
 
     /* Consult the hot-swap override snapshot for this resolved leaf before
      * falling back to the immutable catalog handler column. When no snapshot
-     * is published this is a single atomic load + NULL check (zero overhead). */
-    zcl_command_handler_fn handler = handler_override_lookup(spec->path);
-    if (!handler)
-        handler = spec->handler;
+     * is published this is a single atomic load + NULL check (zero overhead).
+     * When an override IS used, hold a ref on its snapshot across the handler
+     * call so a hot-swap loader cannot dlclose the .so out from under us
+     * (epoch/refcount drain — zcl_command_registry_all_retired_quiesced). */
+    struct zcl_command_handler_snapshot *held = handler_snapshot_acquire();
+    zcl_command_handler_fn override =
+        held ? snapshot_lookup(held, spec->path) : NULL;
+    zcl_command_handler_fn handler = override ? override : spec->handler;
+    if (!override && held) {
+        /* Builtin handler lives in the immutable binary — no ref needed. */
+        handler_snapshot_release(held);
+        held = NULL;
+    }
 
     struct zcl_command_reply reply;
     zcl_command_reply_init(&reply, spec->output_schema);
@@ -1433,6 +1520,8 @@ size_t zcl_command_registry_execute_json(
     }
     if (exit_code)
         *exit_code = reply.exit_code;
+    /* Release the override snapshot ref (NULL-safe) now the handler has run. */
+    handler_snapshot_release(held);
     zcl_command_reply_free(&reply);
     return result;
 }

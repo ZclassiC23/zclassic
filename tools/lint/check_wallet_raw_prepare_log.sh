@@ -42,12 +42,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT" || exit 1
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
 BASELINE="tools/lint/wallet_raw_prepare_log_baseline.txt"
 MODE="${ZCL_LINT_MODE:-FAIL}"
 
 scan() {
   local files
-  files=$(grep -rl 'sqlite3_prepare_v2(' app lib --include='*.c' 2>/dev/null \
+  files=$(grep -rl 'sqlite3_prepare_v2(' app lib --include='*.c' "${LINT_GREP_EXCLUDE_ARGS[@]}" 2>/dev/null \
             | grep -vE '^tools/lint/' || true)
   [ -n "$files" ] || return 0
   # shellcheck disable=SC2086

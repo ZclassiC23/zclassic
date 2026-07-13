@@ -13,6 +13,8 @@ set -euo pipefail
 
 ROOT="${1:-$(cd "$(dirname "$0")/../.." && pwd)}"
 cd "$ROOT"
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
 
 SYMBOL='stage_repair_coin_backfill_try('
 DEF_FILE='app/jobs/src/stage_repair_coin_backfill.c'
@@ -39,7 +41,7 @@ while IFS= read -r f; do
     else
         bad+=("$f:$count")
     fi
-done < <(grep -rlF --include='*.c' "$SYMBOL" "${SCAN_ROOTS[@]}" 2>/dev/null | sort -u)
+done < <(grep -rlF --include='*.c' "$SYMBOL" "${SCAN_ROOTS[@]}" "${LINT_GREP_EXCLUDE_ARGS[@]}" 2>/dev/null | sort -u)
 
 if [ "${#bad[@]}" = "0" ] && [ "$allowed_count" = "1" ]; then
     echo "check_no_new_coin_backfill_caller: clean — one allowed production caller"

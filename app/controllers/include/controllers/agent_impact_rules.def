@@ -152,7 +152,7 @@ AGENT_IMPACT_RULE("app/controllers/src/wallet_diagnostic_*.c|app/controllers/src
 AGENT_IMPACT_RULE("app/controllers/src/wallet_controller.c|app/controllers/src/wallet_controller_multisig.c|app/controllers/include/controllers/wallet_controller_internal.h", "wallet wallet_persistence_cycle make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/include/controllers/wallet_view_internal.h|app/controllers/src/wallet_view_*.c|app/views/src/wallet_gui.c", "wallet_view wallet make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/include/controllers/repair_controller_internal.h|app/controllers/src/repair_controller_*.c", "rpc_safety syncdiag_rpc make_lint_gates")
-AGENT_IMPACT_RULE("app/controllers/src/name_controller.c|app/controllers/src/name_service_directory_controller.c|app/controllers/src/name_service_directory_filter_controller.c|app/controllers/include/controllers/name_controller.h|app/models/src/znam.c|app/models/include/models/znam.h|lib/znam/*|lib/test/src/test_znam.c", "znam protocols api make_lint_gates")
+AGENT_IMPACT_RULE("app/controllers/src/name_controller.c|app/controllers/src/name_service_directory_controller.c|app/controllers/src/name_service_directory_filter_controller.c|app/controllers/src/name_site_controller.c|app/controllers/include/controllers/name_controller.h|app/views/src/name_view.c|app/views/include/views/name_view.h|app/models/src/znam.c|app/models/include/models/znam.h|lib/znam/*|lib/test/src/test_znam.c|lib/test/src/test_znam_site.c", "znam protocols api make_lint_gates")
 AGENT_IMPACT_RULE("lib/zslp/*|lib/test/src/test_slp.c|lib/test/src/test_protocols.c|lib/script/include/script/op_return_push.h", "slp protocols make_lint_gates")
 AGENT_IMPACT_RULE("lib/net/src/zmsg.c|lib/net/include/net/zmsg.h|app/models/src/zmsg.c|app/models/include/models/zmsg.h|app/controllers/src/messaging_controller.c|app/jobs/src/tip_finalize_post_step.c|lib/test/src/test_simnet_zmsg_onchain.c", "protocols simnet_zmsg_onchain test_zmsg_memo_codec models mcp_controllers make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_test_zmsg_memo_codec.c", "test_zmsg_memo_codec make_lint_gates")
@@ -290,6 +290,11 @@ AGENT_IMPACT_RULE("app/jobs/include/jobs/stage_helpers.h|app/jobs/src/header_adm
 AGENT_IMPACT_RULE("lib/storage/src/mempool_projection.c|lib/storage/src/utxo_projection.c|lib/storage/src/znam_projection.c|lib/storage/src/wallet_projection.c|lib/storage/src/contacts_projection.c|lib/storage/src/onion_announcements_projection.c|lib/storage/src/hodl_history_projection.c|lib/storage/src/peers_projection.c", "health_rollup projections make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/db_maintenance.c|app/services/src/disk_monitor.c", "health_rollup make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/disk_monitor.c|app/services/include/services/disk_monitor.h|app/services/src/ibd_throttle.c|app/services/include/services/ibd_throttle.h|lib/test/src/test_disk_monitor.c|lib/test/src/test_ibd_throttle.c", "disk_monitor ibd_throttle sticky_conditions storage_reclaim make_lint_gates")
+/* Network monitoring station: per-peer chain-intelligence model, the supervised
+ * sampler service, the three redundant fall-behind/fork/partition conditions,
+ * the boot fan-out tap, the dumpstate registry, and the core.network.chain_view
+ * command all share the network_monitor focused test group. */
+AGENT_IMPACT_RULE("app/services/src/network_monitor.c|app/services/include/services/network_monitor.h|app/models/src/peer_chain_observation.c|app/models/include/models/peer_chain_observation.h|app/conditions/src/net_tip_regression.c|app/conditions/include/conditions/net_tip_regression.h|app/conditions/src/net_fork_detected.c|app/conditions/include/conditions/net_fork_detected.h|app/conditions/src/net_partition_suspected.c|app/conditions/include/conditions/net_partition_suspected.h|config/src/boot_msg_callbacks.c|config/src/boot_network_monitor.c|config/include/config/boot_network_monitor.h|lib/test/src/test_network_monitor.c", "network_monitor condition_engine make_lint_gates")
 
 /* Unified transactional dev loop, status, indexing, and benchmark contracts. */
 AGENT_IMPACT_RULE("tools/dev/watch-dev-lane.sh|tools/dev/deploy-dev-lane.sh|tools/dev/deploy-dev-lane-selftest.sh|tools/dev/recover-dev-lane.sh|tools/dev/recover-dev-lane-selftest.sh|deploy/zcl23-dev.service", "syncdiag_rpc mcp_controllers make_lint_gates")
@@ -297,7 +302,7 @@ AGENT_IMPACT_RULE("tools/dev/agent-dev-status.sh|tools/dev/agent-doctor.sh|app/c
 AGENT_IMPACT_RULE("tools/dev/generate-compdb.sh|tools/dev/dev-loop-bench.sh", "syncdiag_rpc mcp_controllers make_lint_gates")
 AGENT_IMPACT_RULE("tools/dev/hotswap-running-dev.sh", "dev_mcp_rpc_bridge hotswap_loader hotswap_simnet mcp_router mcp_controllers make_lint_gates")
 AGENT_IMPACT_RULE("tools/mcp/dev_rpc_bridge.c|tools/mcp/dev_rpc_bridge.h|config/src/boot_services.c|lib/test/src/test_dev_mcp_rpc_bridge.c", "dev_mcp_rpc_bridge hotswap_loader mcp_router mcp_controllers rpc make_lint_gates")
-AGENT_IMPACT_RULE("config/commands/*|config/include/config/command_catalog.h|config/src/command_catalog.c|lib/kernel/src/command_registry.c|lib/kernel/include/kernel/command_registry.h|tools/command/*|lib/test/src/test_command_registry_catalog.c", "command_registry_catalog native_api_contract command_handler_snapshot dev_platform make_lint_gates")
+AGENT_IMPACT_RULE("config/commands/*|config/include/config/command_catalog.h|config/src/command_catalog.c|lib/kernel/src/command_registry.c|lib/kernel/include/kernel/command_registry.h|tools/command/*|lib/test/src/test_command_registry_catalog.c", "command_registry_catalog native_api_contract command_handler_snapshot hotswap_module dev_platform make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_command_handler_snapshot.c", "command_handler_snapshot command_registry_catalog native_api_contract make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_native_api_contract.c|docs/API_REFERENCE.md", "native_api_contract command_registry_catalog make_lint_gates")
 
@@ -305,7 +310,7 @@ AGENT_IMPACT_RULE("lib/test/src/test_native_api_contract.c|docs/API_REFERENCE.md
 AGENT_IMPACT_RULE("app/models/src/principal.c|app/models/include/models/principal.h|app/models/src/auth_challenge.c|app/models/include/models/auth_challenge.h", "principal_authz auth_login command_authority models make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/authz_policy.c|app/services/include/services/authz_policy.h|app/services/src/auth_login_service.c|app/services/include/services/auth_login_service.h", "principal_authz auth_login command_authority make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/account_controller.c|config/commands/accounts.def", "command_authority command_registry_catalog native_api_contract make_lint_gates")
-AGENT_IMPACT_RULE("lib/kernel/src/command_registry.c|lib/kernel/include/kernel/command_registry.h", "command_authority command_registry_catalog native_api_contract command_handler_snapshot make_lint_gates")
+AGENT_IMPACT_RULE("lib/kernel/src/command_registry.c|lib/kernel/include/kernel/command_registry.h", "command_authority command_registry_catalog native_api_contract command_handler_snapshot hotswap_module make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_principal_authz.c", "principal_authz make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_auth_login.c", "auth_login make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_command_authority.c", "command_authority make_lint_gates")
@@ -350,7 +355,7 @@ AGENT_IMPACT_RULE("app/controllers/src/api_controller_dispatch.c|app/controllers
  * can break either the leaf-handler override snapshot proof
  * (command_handler_snapshot) or the loader/simnet manifest contract
  * (hotswap_loader, hotswap_simnet). */
-AGENT_IMPACT_RULE("tools/command/native_dev_hotswap.c|tools/command/native_dev_hotswap.h|config/commands/dev.def|lib/hotswap/*|config/hotswap_eligible.def", "hotswap_loader hotswap_simnet command_handler_snapshot make_lint_gates")
+AGENT_IMPACT_RULE("tools/command/native_dev_hotswap.c|tools/command/native_dev_hotswap.h|config/commands/dev.def|lib/hotswap/*|config/hotswap_eligible.def|config/hotswap_swappable.def|tools/lint/check_hotswap_swappable_shape.sh|lib/test/fixtures/hotswap_swappable_bad_shape.def|lib/test/src/test_hotswap_module.c|app/controllers/src/status_native_handlers.c", "hotswap_loader hotswap_simnet hotswap_module command_handler_snapshot make_lint_gates")
 AGENT_IMPACT_RULE("tools/scripts/remote_node_update.sh|tools/scripts/lane_recover.sh|deploy/examples/zclassic23-self-update.service|deploy/examples/zclassic23-self-update.timer", "make_lint_gates")
 
 /* Instant dev loop Wave 1/2: Tier-2 fast restart (clean-shutdown marker + skip). */

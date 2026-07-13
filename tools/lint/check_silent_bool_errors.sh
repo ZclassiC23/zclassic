@@ -32,8 +32,11 @@
 #   ZCL_LINT_MODE=UPDATE ./tools/lint/check_silent_bool_errors.sh   # shrink/regen baseline
 set -u
 
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT" || exit 1
+# shellcheck source=tools/lint/scan_exclusions.sh
+source "$SCRIPT_DIR/scan_exclusions.sh"
 BASELINE="tools/lint/silent_bool_errors_baseline.txt"
 DIRS="app/controllers/src app/services/src app/jobs/src app/conditions/src app/models/src app/views/src app/supervisors/src app/events/src"
 MODE="${ZCL_LINT_MODE:-FAIL}"
@@ -41,7 +44,7 @@ MODE="${ZCL_LINT_MODE:-FAIL}"
 scan() {
   for d in $DIRS; do
     [ -d "$d" ] || continue
-    grep -rn 'return false;' "$d" --include='*.c' 2>/dev/null \
+    grep -rn 'return false;' "$d" --include='*.c' "${LINT_GREP_EXCLUDE_ARGS[@]}" 2>/dev/null \
       | grep -vE 'LOG_ERR|LOG_FAIL|LOG_RETURN|LOG_WARN|LOG_NULL|log_json' \
       | grep -vE '(//|/\*) raw-return-ok:' \
       | while IFS= read -r hit; do

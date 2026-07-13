@@ -38,12 +38,14 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
 
 # Files that own a transition into ACTIVATION_READY. Today this is the single
 # block-connection authority; the glob keeps the gate honest if the authority
 # is ever split or relocated within app/services/.
 mapfile -t files < <(grep -rlE 'activation_set_state[[:space:]]*\([^;]*ACTIVATION_READY' \
-                        app/services/src --include='*.c' 2>/dev/null | sort || true)
+                        app/services/src --include='*.c' "${LINT_GREP_EXCLUDE_ARGS[@]}" 2>/dev/null | sort || true)
 
 # FAIL-LOUD preflight (never report "clean" off an empty discovery). The
 # producer finds the READY authority by grepping for the setter + the enum. If

@@ -18,6 +18,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 # shellcheck source=tools/lint/gate_lib.sh
 . tools/lint/gate_lib.sh
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
 
 # Scan roots are overridable via ZCL_OWP_SCAN_ROOTS (space-separated) so the
 # lint-gate self-test can point the gate at an EMPTY dir and prove the
@@ -58,6 +60,7 @@ mapfile -t scan_files < <(find $SCAN_ROOTS -type f \( -name '*.c' -o -name '*.h'
     ! -path '*/test/*' \
     ! -path 'tools/scripts/*' \
     ! -path 'tools/lint/*' \
+    "${LINT_FIND_PRUNE_ARGS[@]}" \
     2>/dev/null | sort)
 SCAN_FLOOR=200
 [ -n "${SCAN_FLOOR_OVERRIDE:-}" ] && SCAN_FLOOR=1

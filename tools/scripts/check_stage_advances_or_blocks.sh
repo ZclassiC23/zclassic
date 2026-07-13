@@ -30,6 +30,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 # shellcheck source=tools/lint/gate_lib.sh
 . tools/lint/gate_lib.sh
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
 
 # Jobs dir is overridable via ZCL_JOBS_DIR so the lint-gate self-test can point
 # the gate at an EMPTY dir and prove the non-empty-floor preflight fires.
@@ -62,7 +64,7 @@ fi
 # Fail-loud preflight: the *.c file set under JOBS_DIR must be non-empty. An
 # empty find result (a moved dir, despite -d above passing on a now-empty dir)
 # would skip the loop and pass hollow.
-mapfile -t scan_files < <(find "$JOBS_DIR" -type f -name '*.c' 2>/dev/null | sort)
+mapfile -t scan_files < <(find "$JOBS_DIR" -type f -name '*.c' "${LINT_FIND_PRUNE_ARGS[@]}" 2>/dev/null | sort)
 gate_require_scanned "${#scan_files[@]}" 1 check_stage_advances_or_blocks \
     "no *.c under '$JOBS_DIR'"
 

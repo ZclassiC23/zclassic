@@ -14,6 +14,8 @@ ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 BASELINE="$SCRIPT_DIR/no_raw_sqlite_in_controllers_baseline.txt"
 
 cd "$ROOT"
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
 
 # Load baseline (set of relative file paths allowed to carry raw sqlite).
 declare -A BASELINED=()
@@ -35,7 +37,7 @@ done
 matches=$(
     grep -rn --include='*.c' --include='*.h' \
         -E '\bsqlite3_prepare_v2\s*\(|\bsqlite3_exec\s*\(' \
-        "${roots[@]}" 2>/dev/null \
+        "${roots[@]}" "${LINT_GREP_EXCLUDE_ARGS[@]}" 2>/dev/null \
     | grep -v '// raw-controller-sql-ok' \
     || true
 )

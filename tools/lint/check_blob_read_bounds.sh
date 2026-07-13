@@ -6,11 +6,14 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$ROOT"
+# shellcheck source=tools/lint/scan_exclusions.sh
+source "$ROOT/tools/lint/scan_exclusions.sh"
 
 fail=0
 shopt -s nullglob
 
 for f in app/models/src/*.c; do
+    lint_path_is_excluded "$f" && continue
     awk '
     function trim(s) {
         sub(/^[ \t]+/, "", s)

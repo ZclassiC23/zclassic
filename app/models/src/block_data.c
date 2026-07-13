@@ -1,11 +1,29 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "models/block_data.h"
+#include "util/file_tree_ops.h"
+#include "util/log_macros.h"
 #include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+
+/* Glob-equivalent filter for the fd-based tree copy: selects only regular
+ * files whose name matches `<prefix>*.dat` (i.e. "blk*.dat" / "rev*.dat"),
+ * replacing the shell `cp -au 'src'/blk*.dat 'dst'/` glob without a shell.
+ * ctx is a `const char *` prefix ("blk" or "rev"). */
+static bool dat_glob_filter(const char *name, bool is_dir, void *ctx)
+{
+    if (is_dir || !name || !ctx)
+        return false;
+    const char *prefix = ctx;
+    size_t pl = strlen(prefix);
+    if (strncmp(name, prefix, pl) != 0)
+        return false;
+    size_t nl = strlen(name);
+    return nl >= 4 && strcmp(name + nl - 4, ".dat") == 0;
+}
 
 static void count_dat_files(const char *dir, const char *prefix,
                             int *count, int64_t *bytes)
@@ -70,23 +88,31 @@ bool block_data_save(struct block_data *bd)
     if (stat(bd->dst_dir, &st) != 0)
         mkdir(bd->dst_dir, 0700);
 
-    char cmd[4096];
-
+    /* `cp -au 'src'/blk*.dat 'dst'/` — copy newer-or-missing blk*.dat files,
+     * preserving their timestamps (cp -a), via the single fd-based walker with
+     * a glob-equivalent filter. No shell. */
     printf("block_data: copying %d blk files (%.1f GB)...\n",
            bd->num_blk_files,
            (double)bd->blk_bytes / (1024.0 * 1024.0 * 1024.0));
     fflush(stdout);
-    snprintf(cmd, sizeof(cmd),
-             "cp -au '%s'/blk*.dat '%s'/ 2>/dev/null", bd->src_dir, bd->dst_dir);
-    bd->copy_blk_ok = (system(cmd) == 0);
+    struct zcl_result rb = zcl_tree_copy(
+        bd->src_dir, bd->dst_dir,
+        ZCL_COPY_UPDATE_ONLY | ZCL_COPY_PRESERVE_TIMES,
+        dat_glob_filter, (void *)"blk");
+    bd->copy_blk_ok = rb.ok;
+    if (!rb.ok)
+        LOG_WARN("block_data", "blk copy failed: %s", rb.message);
 
     if (bd->num_rev_files > 0) {
         printf("block_data: copying %d rev files...\n", bd->num_rev_files);
         fflush(stdout);
-        snprintf(cmd, sizeof(cmd),
-                 "cp -au '%s'/rev*.dat '%s'/ 2>/dev/null",
-                 bd->src_dir, bd->dst_dir);
-        bd->copy_rev_ok = (system(cmd) == 0);
+        struct zcl_result rr = zcl_tree_copy(
+            bd->src_dir, bd->dst_dir,
+            ZCL_COPY_UPDATE_ONLY | ZCL_COPY_PRESERVE_TIMES,
+            dat_glob_filter, (void *)"rev");
+        bd->copy_rev_ok = rr.ok;
+        if (!rr.ok)
+            LOG_WARN("block_data", "rev copy failed: %s", rr.message);
     } else {
         bd->copy_rev_ok = true;
     }

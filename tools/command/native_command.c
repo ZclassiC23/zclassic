@@ -768,6 +768,63 @@ void zcl_native_handle_ops_state(const struct zcl_command_request *request,
     json_free(&body);
 }
 
+void zcl_native_handle_network_chain_view(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+
+    /* The reachable-network chain view lives in the running node's
+     * network_monitor subsystem; surface it through the same SELECT-only
+     * dumpstate RPC that ops.state uses, pinned to that subsystem. */
+    bridge_ensure_rpc_client();
+    char *result = mcp_node_rpc("dumpstate", "[\"network_monitor\"]");
+    if (!result) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                               ZCL_COMMAND_EXIT_TRANSIENT, "NODE_UNAVAILABLE",
+                               "dispatch", true, false,
+                               "the node did not return the network view",
+                               "network_monitor");
+        (void)zcl_command_reply_add_next(reply, "core.status", "{}",
+                                         "confirm the node is running");
+        return;
+    }
+    struct json_value body;
+    if (!json_read(&body, result, strlen(result)) || body.type != JSON_OBJ) {
+        json_free(&body);
+        free(result);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "BAD_STATE_BODY",
+                               "serialize", false, false,
+                               "network view returned a non-object body",
+                               "network_monitor");
+        return;
+    }
+    free(result);
+    const struct json_value *err = json_get(&body, "error");
+    const struct json_value *ecode = json_get(&body, "code");
+    const struct json_value *emsg = json_get(&body, "message");
+    if ((err && !json_is_null(err)) ||
+        (ecode && ecode->type == JSON_INT && emsg && emsg->type == JSON_STR)) {
+        const char *msg = NULL;
+        if (err && err->type == JSON_OBJ)
+            msg = json_get_str(json_get(err, "message"));
+        else if (emsg && emsg->type == JSON_STR)
+            msg = json_get_str(emsg);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_FAILED, "STATE_ERROR",
+                               "execute", false, false,
+                               msg && msg[0] ? msg
+                                             : "network view reported an error",
+                               "network_monitor");
+        json_free(&body);
+        return;
+    }
+    zcl_native_bridge_project(request, &body, reply);
+    json_free(&body);
+}
+
 void zcl_native_handle_ops_selftest(const struct zcl_command_request *request,
                                     struct zcl_command_reply *reply)
 {

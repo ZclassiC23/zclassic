@@ -4,6 +4,7 @@
 
 #include "util/alerts.h"
 #include "util/sd_notify.h"
+#include "util/spawn.h"
 #include "event/event.h"
 #include "core/utiltime.h"
 
@@ -55,12 +56,14 @@ static void sink_log(const char *rule_name, const char *payload)
             "[ALERT] %s: %s\n", rule_name, payload);
 }
 
-/* Fire-and-forget webhook POST via fork+exec.  The child process
- * calls curl and exits immediately — we don't wait for it.
- * This is safe because:
- *   - Alerts are rare events (a few per hour at most)
- *   - The child is isolated
- *   - SIGCHLD is handled (we set SA_NOCLDWAIT below) */
+/* Fire-and-forget webhook POST via the no-shell spawn primitive. Alerts are
+ * rare (a few per hour at most). zcl_spawn_detached double-forks + setsid()s,
+ * so the grandchild that runs curl is reparented to init/subreaper and can
+ * NEVER become a zombie of this process — which is precisely why alerts_init()
+ * no longer installs SA_NOCLDWAIT (that process-wide install was what made
+ * every other system()'s return code untrustworthy tree-wide). No shell:
+ * argv is passed directly to execvp; stdout/stderr → /dev/null (log_path
+ * NULL). */
 static void sink_webhook(const char *url, const char *rule_name,
                           const char *payload)
 {
@@ -74,24 +77,12 @@ static void sink_webhook(const char *url, const char *rule_name,
         rule_name, payload, (long long)(GetTime()));
     if (n < 0 || (size_t)n >= sizeof(body)) return;
 
-    pid_t pid = fork();
-    if (pid == 0) {
-        /* Child — exec curl.  Stdin/stdout/stderr are inherited but
-         * we redirect them to /dev/null so nothing leaks. */
-        int devnull = open("/dev/null", 0);
-        if (devnull >= 0) {
-            dup2(devnull, STDIN_FILENO);
-            dup2(devnull, STDOUT_FILENO);
-            dup2(devnull, STDERR_FILENO);
-            if (devnull > 2) close(devnull);
-        }
-        execlp("curl", "curl", "-s", "-X", "POST",
-               "-H", "Content-Type: application/json",
-               "-d", body, "--max-time", "5",
-               url, (char *)NULL);
-        _exit(127);  /* exec failed */
-    }
-    /* Parent — do not wait.  SIGCHLD is SA_NOCLDWAIT. */
+    const char *const argv[] = {
+        "curl", "-s", "-X", "POST",
+        "-H", "Content-Type: application/json",
+        "-d", body, "--max-time", "5", url, NULL
+    };
+    (void)zcl_spawn_detached(argv, NULL);
 }
 
 /* ── Core logic ──────────────────────────────────────────────── */
@@ -283,12 +274,16 @@ void alerts_init(void)
         g_webhook_enabled = true;
     }
 
-    /* Suppress zombie children from webhook forks */
-    struct sigaction sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sa_handler = SIG_DFL;
-    sa.sa_flags = SA_NOCLDWAIT;
-    sigaction(SIGCHLD, &sa, NULL);
+    /* No SIGCHLD/SA_NOCLDWAIT install here anymore. The webhook sink launches
+     * curl via zcl_spawn_detached (double-fork + setsid), whose grandchild is
+     * reparented to init/subreaper and can never be a zombie of this process,
+     * so the old process-wide SA_NOCLDWAIT disposition is unnecessary. Its
+     * removal is the LAST step of os-substrate Rung 0 (docs/work/
+     * os-substrate-plan.md §1): it was the reason every system()'s return
+     * code was untrustworthy tree-wide, so it could only be removed once every
+     * other shell-out site had migrated off system()/popen(). With the default
+     * SIGCHLD disposition restored, zcl_spawn_capture()'s waitpid() now yields
+     * real child exit codes. */
 
     /* Register seed rules */
     size_t seed_count = sizeof(k_seed_rules) / sizeof(k_seed_rules[0]);

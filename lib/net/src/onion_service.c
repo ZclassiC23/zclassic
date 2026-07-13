@@ -839,6 +839,16 @@ size_t onion_service_handle_request(const char *method,
                                     onion_ctx()->datadir);
     }
 
+    /* ZCL Names — name→site resolution (/n/<name>) + registry (/names).
+     * Same handler is wired into the HTTPS dispatch chain, so a name
+     * resolves identically over onion and HTTPS. */
+    if (strncmp(path, "/n/", 3) == 0 || strncmp(path, "/names", 6) == 0) {
+        extern size_t name_site_handle_request(const char *, const char *,
+            const uint8_t *, size_t, uint8_t *, size_t);
+        return name_site_handle_request(method, path, body, body_len,
+                                        response, response_max);
+    }
+
     /* Blog (static files from datadir) */
     if (strncmp(path, "/blog", 5) == 0) {
         struct onion_context *ctx = onion_ctx();

@@ -49,8 +49,8 @@ lib/sim/src/simnet_wire.c 1496
 lib/storage/src/coins_kv.c 918
 lib/storage/src/coins_ram.c 1298
 lib/storage/src/coins_view_sqlite.c 1247
-lib/storage/src/utxo_projection.c 1055
-lib/storage/src/znam_projection.c 887
+lib/storage/src/utxo_projection.c 978
+lib/storage/src/znam_projection.c 873
 lib/validation/src/chainstate.c 936
 lib/validation/src/connect_block.c 896
 lib/wallet/src/wallet.c 1713

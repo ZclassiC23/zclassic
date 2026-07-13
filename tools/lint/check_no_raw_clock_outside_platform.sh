@@ -8,6 +8,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 
 cd "$ROOT"
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
 
 roots=()
 for root in app lib config tools; do
@@ -17,7 +19,7 @@ done
 matches=$(
     grep -rn --include='*.c' --include='*.h' \
         -E '\bclock_gettime\s*\(|\bgettimeofday\s*\(|\btime\s*\(\s*NULL\s*\)|\bgetrandom\s*\(' \
-        "${roots[@]}" 2>/dev/null \
+        "${roots[@]}" "${LINT_GREP_EXCLUDE_ARGS[@]}" 2>/dev/null \
     | grep -v '^lib/platform/' \
     | grep -v '^tools/lint/check_no_raw_clock_outside_platform.sh:' \
     | grep -v '// platform-ok' \
