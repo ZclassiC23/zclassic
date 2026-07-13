@@ -45,10 +45,14 @@
 #include "supervisors/net_supervisor.h"
 #include "supervisors/staged_sync_supervisor.h"
 #include "storage/progress_store.h"
+#include "util/blocker.h"
+#include "util/reducer_drive_guard.h"
 #include "util/safe_alloc.h"
 #include "util/supervisor.h"
 #include "validation/main_state.h"
 
+#include <stdatomic.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define SPT_CHECK(name, expr) do { \
@@ -89,6 +93,25 @@ static const char *const k_staged_children[] = {
     "staged.utxo_apply",
     "staged.tip_finalize",
 };
+
+/* Stub Job-ABI functions for staged_sync_supervisor_test_run_stage_tick()
+ * (stall-escalation / reducer_drive_active() publication checks below) — a
+ * synthetic stage that never actually touches progress.kv, so the counter
+ * proves whether staged_stage_tick's reducer_drive_active() skip branch
+ * really skips the drain call. */
+static _Atomic int g_spt_drain_calls = 0;
+#define SPT_STUB_CURSOR         4242ull
+#define SPT_STUB_UPSTREAM_CURSOR 4200ull
+
+static int spt_stub_drain(int max_steps)
+{
+    (void)max_steps;
+    atomic_fetch_add(&g_spt_drain_calls, 1);
+    return 0;
+}
+
+static uint64_t spt_stub_cursor(void) { return SPT_STUB_CURSOR; }
+static uint64_t spt_stub_upstream_cursor(void) { return SPT_STUB_UPSTREAM_CURSOR; }
 
 static struct p2p_node *spt_add_healthy_outbound(struct connman *cm,
                                                   unsigned char last_octet)
@@ -255,6 +278,120 @@ int test_supervisor_production_tree(void)
                          snap.stall_fires == 1);
     }
 
+    /* ── Stall escalation (lane 1.4): M consecutive quiet windows name a
+     * typed "stage_stalled_<name>" blocker; a real advance clears it. Pure
+     * decision function — no clock, no live contract — same shape as
+     * reducer_drain.c's reducer_drain_spin_observe(). */
+    {
+        blocker_reset_for_testing();
+        int64_t window_us = staged_sync_supervisor_test_quiet_window_us();
+        bool escalated = false;
+
+        /* 1 window < default M=2 -> no blocker yet. */
+        staged_sync_supervisor_test_apply_stall_escalation(
+            "staged.body_persist", "staged.body_fetch",
+            /*cursor=*/100, /*upstream_cursor=*/105, /*have_upstream=*/true,
+            /*quiet_us=*/window_us, &escalated);
+        SPT_CHECK("1 quiet window (< default M=2) does not escalate",
+                  !escalated &&
+                  !blocker_exists("stage_stalled_body_persist"));
+
+        /* 2 windows >= default M=2 -> escalate. */
+        staged_sync_supervisor_test_apply_stall_escalation(
+            "staged.body_persist", "staged.body_fetch",
+            100, 105, true, 2 * window_us, &escalated);
+        SPT_CHECK("2 quiet windows (>= default M=2) escalate",
+                  escalated && blocker_exists("stage_stalled_body_persist"));
+        SPT_CHECK("escalated blocker is TRANSIENT",
+                  blocker_class_for("stage_stalled_body_persist") ==
+                      BLOCKER_TRANSIENT);
+
+        struct blocker_snapshot bsnap[BLOCKER_CAP];
+        int bn = blocker_snapshot_all(bsnap, BLOCKER_CAP);
+        bool reason_ok = false;
+        for (int i = 0; i < bn; i++) {
+            if (strcmp(bsnap[i].id, "stage_stalled_body_persist") == 0) {
+                reason_ok = strstr(bsnap[i].reason, "body_persist") != NULL &&
+                            strstr(bsnap[i].reason, "body_fetch") != NULL &&
+                            strstr(bsnap[i].reason, "cursor=100") != NULL;
+                break;
+            }
+        }
+        SPT_CHECK("blocker reason names stage/upstream/cursor", reason_ok);
+
+        /* A real advance (quiet resets to 0) clears the blocker. */
+        staged_sync_supervisor_test_apply_stall_escalation(
+            "staged.body_persist", "staged.body_fetch",
+            106, 106, true, 0, &escalated);
+        SPT_CHECK("real advance clears the escalated blocker",
+                  !escalated &&
+                  !blocker_exists("stage_stalled_body_persist"));
+
+        /* header_admit has no upstream reducer stage (pipeline head) — must
+         * not crash and must still escalate/clear correctly. */
+        bool ha_escalated = false;
+        staged_sync_supervisor_test_apply_stall_escalation(
+            "staged.header_admit", "", /*cursor=*/50, /*upstream_cursor=*/0,
+            /*have_upstream=*/false, 2 * window_us, &ha_escalated);
+        SPT_CHECK("no-upstream stage (header_admit) escalates",
+                  ha_escalated &&
+                  blocker_exists("stage_stalled_header_admit"));
+        staged_sync_supervisor_test_apply_stall_escalation(
+            "staged.header_admit", "", 51, 0, false, 0, &ha_escalated);
+        SPT_CHECK("no-upstream stage clears on advance",
+                  !ha_escalated &&
+                  !blocker_exists("stage_stalled_header_admit"));
+
+        /* Env override: ZCL_STAGE_STALL_ESCALATE_WINDOWS=1 escalates after
+         * just 1 quiet window instead of the default 2. */
+        setenv("ZCL_STAGE_STALL_ESCALATE_WINDOWS", "1", 1);
+        bool ov_escalated = false;
+        staged_sync_supervisor_test_apply_stall_escalation(
+            "staged.utxo_apply", "staged.proof_validate",
+            200, 205, true, window_us, &ov_escalated);
+        SPT_CHECK("ZCL_STAGE_STALL_ESCALATE_WINDOWS=1 escalates after 1 window",
+                  ov_escalated && blocker_exists("stage_stalled_utxo_apply"));
+        unsetenv("ZCL_STAGE_STALL_ESCALATE_WINDOWS");
+
+        blocker_reset_for_testing();
+    }
+
+    /* ── reducer_drive_active() skip branch publishes the drive's age_us as
+     * progress_marker instead of a blind (frozen-cursor) heartbeat, and
+     * skips the drain call entirely — so dumpstate supervisor shows WHY a
+     * stage isn't ticking instead of looking wedged at its pre-drive
+     * cursor. Drives staged_stage_tick end-to-end via a synthetic stage
+     * (spt_stub_drain/spt_stub_cursor), reusing the already
+     * main_state_init()'d `staged_ms`. */
+    {
+        atomic_store(&g_spt_drain_calls, 0);
+        bool esc = false;
+
+        int64_t marker = staged_sync_supervisor_test_run_stage_tick(
+            "staged.spt_test_stage", "staged.spt_test_upstream",
+            spt_stub_drain, spt_stub_cursor, spt_stub_upstream_cursor,
+            &staged_ms, &esc);
+        SPT_CHECK("normal tick publishes the stage's own cursor",
+                  marker == (int64_t)SPT_STUB_CURSOR);
+        SPT_CHECK("normal tick drains the stage",
+                  atomic_load(&g_spt_drain_calls) == 1);
+
+        reducer_drive_enter_labeled("spt-test-drive");
+        int64_t age_before = reducer_drive_age_us();
+        marker = staged_sync_supervisor_test_run_stage_tick(
+            "staged.spt_test_stage", "staged.spt_test_upstream",
+            spt_stub_drain, spt_stub_cursor, spt_stub_upstream_cursor,
+            &staged_ms, &esc);
+        int64_t age_after = reducer_drive_age_us();
+        SPT_CHECK("drive-active tick publishes the drive's age, not the cursor",
+                  marker != (int64_t)SPT_STUB_CURSOR &&
+                  marker >= age_before && marker <= age_after);
+        SPT_CHECK("drive-active tick skips the drain call",
+                  atomic_load(&g_spt_drain_calls) == 1);
+        reducer_drive_exit();
+    }
+
+    blocker_reset_for_testing();
     main_state_free(&staged_ms);
     supervisor_reset_for_testing();
     staged_sync_supervisor_test_reset_runtime();

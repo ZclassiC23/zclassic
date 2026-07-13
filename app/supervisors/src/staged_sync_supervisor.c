@@ -17,12 +17,14 @@
  * message — stays as tiny named functions/strings the table points at. */
 
 #include "supervisors/staged_sync_supervisor.h"
+#include "util/blocker.h"
 #include "util/log_macros.h"
 #include "util/reducer_drive_guard.h"
 #include "supervisors/domains.h"
 #include "storage/progress_store.h"
 #include "validation/main_logic.h"
 
+#include "platform/time_compat.h"  /* platform_time_monotonic_us */
 #include "util/supervisor.h"
 #include "jobs/refold_cadence.h"   /* accelerated drain batch + tick, mint/refold only */
 #include "jobs/header_admit_stage.h"
@@ -38,6 +40,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>   /* getenv, strtol */
 #include <string.h>
 
 /* Generous progress-quiet window shared by all eight stages:
@@ -46,6 +49,26 @@
  * waiting on input, so this is intentionally longer than the 900s
  * COORD_ESC_QUIET_US escalation window in chain_supervisor.c. */
 #define STAGED_STAGE_QUIET_US ((int64_t)1800 * 1000 * 1000)
+
+/* Stall-escalation policy (task: consecutive-quiet-window escalation).
+ * Default M=2, i.e. 2 * STAGED_STAGE_QUIET_US = 60 min of continuously
+ * frozen progress before staged_stage_tick names a typed
+ * "stage_stalled_<name>" blocker (see staged_stage_stall_escalation_apply
+ * below). Env override for operator tuning and tests. */
+#define STAGE_STALL_ESCALATE_WINDOWS_DEFAULT 2
+
+static int staged_stage_escalate_windows(void)
+{
+    const char *v = getenv("ZCL_STAGE_STALL_ESCALATE_WINDOWS");
+    if (!v || !v[0])
+        return STAGE_STALL_ESCALATE_WINDOWS_DEFAULT;
+    char *end = NULL;
+    long n = strtol(v, &end, 10);
+    if (end == v || n < 1)
+        return STAGE_STALL_ESCALATE_WINDOWS_DEFAULT;
+    if (n > 1000000) n = 1000000;
+    return (int)n;
+}
 
 /* One stage of the eight-stage reducer pipeline. The function pointers
  * match the stage Job ABI exactly: init(struct main_state*)->bool,
@@ -64,12 +87,29 @@ struct staged_stage_desc {
     uint64_t  (*cursor)(void);
     int         batch;              /* max steps drained per tick */
     void      (*log_stall)(void);   /* per-stage stall LOG_WARN body */
+    /* The immediately-preceding pipeline stage, wired explicitly (not
+     * derived via pointer arithmetic into g_stages, which would be
+     * undefined behavior for a desc built outside that array — see the
+     * ZCL_TESTING run_stage_tick entry point at the bottom of this file).
+     * NULL/NULL for header_admit, the pipeline head (no upstream reducer
+     * stage — it waits on the live network tip instead). */
+    const char *upstream_name;
+    uint64_t  (*upstream_cursor)(void);
 
     /* mutable runtime state, owned by this translation unit */
     struct liveness_contract contract;
     supervisor_child_id      id;    /* SUPERVISOR_INVALID_ID until registered */
     struct main_state       *ms;
     bool                     init_ok;
+    /* Stall-escalation state (single-writer: staged_stage_tick, the
+     * supervisor thread only). True once the "stage_stalled_<name>"
+     * blocker is standing; cleared the instant real progress resumes. See
+     * staged_stage_stall_escalation_apply()'s comment for how this predicate
+     * differs from "stage_spin_<name>" and "reducer_drive_stuck". */
+    bool                     stall_escalated;
+    /* Edge-triggered dedup for the reducer_drive_active() skip-branch LOG_INFO
+     * (logged once per skip streak, not every 2s tick). */
+    bool                     drive_skip_logged;
 };
 
 /* ---- per-stage stall bodies (the only genuinely per-stage code) ---- */
@@ -130,41 +170,51 @@ static void tip_finalize_log_stall(void)
 
 /* The eight stages in EXACT pipeline order (header_admit → … →
  * tip_finalize). Each INIT_DESC row binds one stage's name, init/drain/
- * cursor entry points, batch macro, init-failure WARN text, and stall
- * body. The register-failure WARN, period=2s, and the shared quiet window
- * are uniform and applied by the generic helper below. */
-#define INIT_DESC(NM, FAILMSG, PFX, BATCH)              \
+ * cursor entry points, batch macro, init-failure WARN text, stall body, and
+ * its upstream stage's name + cursor reader (NULL/NULL for header_admit,
+ * the pipeline head). The register-failure WARN, period=2s, and the shared
+ * quiet window are uniform and applied by the generic helper below. */
+#define INIT_DESC(NM, FAILMSG, PFX, BATCH, UPNAME, UPCURSOR)  \
     { .name = (NM), .init_fail_msg = (FAILMSG),         \
       .init = PFX##_stage_init, .drain = PFX##_stage_drain, \
       .cursor = PFX##_stage_cursor, .batch = (BATCH),   \
       .log_stall = PFX##_log_stall,                     \
+      .upstream_name = (UPNAME), .upstream_cursor = (UPCURSOR), \
       .id = SUPERVISOR_INVALID_ID, .ms = NULL }
 
 static struct staged_stage_desc g_stages[] = {
     INIT_DESC("staged.header_admit",
               "[supervisor] WARN staged.header_admit init failed — " "stage not running this boot",
-              header_admit, HEADER_ADMIT_BATCH_PER_TICK),
+              header_admit, HEADER_ADMIT_BATCH_PER_TICK,
+              NULL, NULL),
     INIT_DESC("staged.validate_headers",
               "[supervisor] WARN staged.validate_headers init failed — " "validator not running this boot",
-              validate_headers, VH_BATCH_PER_TICK),
+              validate_headers, VH_BATCH_PER_TICK,
+              "staged.header_admit", header_admit_stage_cursor),
     INIT_DESC("staged.body_fetch",
               "[supervisor] WARN staged.body_fetch init failed — " "fetch not running this boot",
-              body_fetch, BODY_FETCH_BATCH_PER_TICK),
+              body_fetch, BODY_FETCH_BATCH_PER_TICK,
+              "staged.validate_headers", validate_headers_stage_cursor),
     INIT_DESC("staged.body_persist",
               "[supervisor] WARN staged.body_persist init failed — " "persist not running this boot",
-              body_persist, BODY_PERSIST_BATCH_PER_TICK),
+              body_persist, BODY_PERSIST_BATCH_PER_TICK,
+              "staged.body_fetch", body_fetch_stage_cursor),
     INIT_DESC("staged.script_validate",
               "[supervisor] WARN staged.script_validate init failed — " "script validation not running this boot",
-              script_validate, SCRIPT_VALIDATE_BATCH_PER_TICK),
+              script_validate, SCRIPT_VALIDATE_BATCH_PER_TICK,
+              "staged.body_persist", body_persist_stage_cursor),
     INIT_DESC("staged.proof_validate",
               "[supervisor] WARN staged.proof_validate init failed — " "proof validation not running this boot",
-              proof_validate, PROOF_VALIDATE_BATCH_PER_TICK),
+              proof_validate, PROOF_VALIDATE_BATCH_PER_TICK,
+              "staged.script_validate", script_validate_stage_cursor),
     INIT_DESC("staged.utxo_apply",
               "[supervisor] WARN staged.utxo_apply init failed — " "UTXO apply not running this boot",
-              utxo_apply, UTXO_APPLY_BATCH_PER_TICK),
+              utxo_apply, UTXO_APPLY_BATCH_PER_TICK,
+              "staged.proof_validate", proof_validate_stage_cursor),
     INIT_DESC("staged.tip_finalize",
               "[supervisor] WARN staged.tip_finalize init failed — " "tip finalize not running this boot",
-              tip_finalize, TIP_FINALIZE_BATCH_PER_TICK),
+              tip_finalize, TIP_FINALIZE_BATCH_PER_TICK,
+              "staged.utxo_apply", utxo_apply_stage_cursor),
 };
 
 #undef INIT_DESC
@@ -193,6 +243,104 @@ static void staged_sync_apply_progress_durability(struct main_state *ms)
         atomic_store(&g_progress_sync_ibd, want);
 }
 
+/* Strip the "staged." domain prefix off a stage's dotted supervisor name
+ * ("staged.body_persist" -> "body_persist"), for compact blocker ids and
+ * reason text. */
+static const char *staged_stage_short_name(const char *dotted_name)
+{
+    if (!dotted_name) return "unknown";
+    const char *dot = strchr(dotted_name, '.');
+    return dot ? dot + 1 : dotted_name;
+}
+
+/* Build the "stage_stalled_<name>" blocker id into `buf` (>= BLOCKER_ID_MAX). */
+static void staged_stage_blocker_id(char *buf, size_t buflen,
+                                    const char *dotted_name)
+{
+    snprintf(buf, buflen, "stage_stalled_%s",
+             staged_stage_short_name(dotted_name));
+}
+
+/* Stall-escalation decision — a pure function of the caller-supplied
+ * quiet duration, no clock reads and no liveness_contract access, so tests
+ * can drive it directly (same shape as reducer_drain.c's
+ * reducer_drain_spin_observe()). `quiet_us` is elapsed time since this
+ * stage's progress_marker last actually changed; `escalated` is the
+ * caller-owned per-stage flag (staged_stage_tick passes &d->stall_escalated
+ * in production) used only to avoid a redundant blocker_clear() call on
+ * every healthy tick — blocker_set() is already self-rate-limiting, so the
+ * SET side is safe to call repeatedly while the condition holds.
+ *
+ * DISTINCT PREDICATE, not a duplicate of:
+ *   - "stage_spin_<name>" (app/services/src/reducer_drain.c): fires when a
+ *     stage reports advance>0 for K consecutive DRAIN ROUNDS inside one
+ *     bounded reducer_drain_core() call while its own cursor stays frozen —
+ *     a reported-vs-durable-cursor divergence at drain-round granularity.
+ *   - "reducer_drive_stuck" (app/conditions/src/reducer_drive_watchdog.c):
+ *     fires when a SYNCHRONOUS reducer drive (reducer_drive_guard.h) has
+ *     been continuously active for too long without the utxo_apply cursor
+ *     moving — a drive-AGE predicate.
+ * This one fires when a stage's OWN progress_marker has been wall-clock
+ * quiet, at supervisor tick granularity (period=2s, windows of
+ * STAGED_STAGE_QUIET_US=30min each), for M consecutive windows — it is the
+ * escalation of the existing log_stall() one-shot WARN (staged_stage_stall
+ * below), which only fires once per continuous freeze because the
+ * supervisor's own NO_PROGRESS gate is edge-triggered
+ * (lib/util/src/supervisor.c). Computed here from staged_stage_tick every
+ * 2s (not from the edge-triggered on_stall callback) precisely so it does
+ * not need to re-arm that edge or duplicate its bookkeeping. */
+static void staged_stage_stall_escalation_apply(const char *dotted_name,
+                                                 const char *upstream_dotted_name,
+                                                 uint64_t cursor,
+                                                 uint64_t upstream_cursor,
+                                                 bool have_upstream,
+                                                 int64_t quiet_us,
+                                                 bool *escalated)
+{
+    int windows = quiet_us > 0 ? (int)(quiet_us / STAGED_STAGE_QUIET_US) : 0;
+    int m = staged_stage_escalate_windows();
+
+    char id[BLOCKER_ID_MAX];
+    staged_stage_blocker_id(id, sizeof(id), dotted_name);
+
+    if (windows >= m) {
+        char reason[BLOCKER_REASON_MAX];
+        if (have_upstream) {
+            snprintf(reason, sizeof(reason),
+                "stage=%s frozen cursor=%llu upstream=%s:%llu quiet=%llds "
+                "windows=%d/%d(threshold) — wall-clock quiet at supervisor "
+                "tick granularity, distinct from stage_spin_%s/"
+                "reducer_drive_stuck (drain-round/drive-age predicates)",
+                staged_stage_short_name(dotted_name),
+                (unsigned long long)cursor,
+                staged_stage_short_name(upstream_dotted_name),
+                (unsigned long long)upstream_cursor,
+                (long long)(quiet_us / 1000000), windows, m,
+                staged_stage_short_name(dotted_name));
+        } else {
+            snprintf(reason, sizeof(reason),
+                "stage=%s frozen cursor=%llu (no upstream reducer stage — "
+                "waits on the live network tip) quiet=%llds "
+                "windows=%d/%d(threshold) — wall-clock quiet at supervisor "
+                "tick granularity, distinct from stage_spin_%s/"
+                "reducer_drive_stuck (drain-round/drive-age predicates)",
+                staged_stage_short_name(dotted_name),
+                (unsigned long long)cursor,
+                (long long)(quiet_us / 1000000), windows, m,
+                staged_stage_short_name(dotted_name));
+        }
+        struct blocker_record r;
+        if (blocker_init(&r, id, "staged_sync_supervisor",
+                         BLOCKER_TRANSIENT, reason)) {
+            (void)blocker_set(&r);
+            if (escalated) *escalated = true;
+        }
+    } else if (escalated && *escalated) {
+        blocker_clear(id);
+        *escalated = false;
+    }
+}
+
 /* Generic per-stage tick: drain a bounded batch each tick — keeps
  * progress.kv churn low and avoids starving other supervisor children —
  * then publish the cursor and heartbeat. Recovers its stage from the
@@ -210,13 +358,37 @@ static void staged_stage_tick(struct liveness_contract *c)
      * window, which is not under the per-stage progress.kv lock, so draining a
      * stage here concurrently with that drive races and can record a permanent
      * failure row for the block being ingested. No-op for live network sync,
-     * where reducer_ingest_block is never on the path so the flag stays 0; we
-     * still heartbeat so the liveness contract does not trip on the skip. */
+     * where reducer_ingest_block is never on the path so the flag stays 0.
+     *
+     * Publish WHY this stage isn't ticking instead of a blind heartbeat: the
+     * progress_marker becomes the active drive's age_us (reducer_drive_guard.h)
+     * rather than the stage's own (now-frozen) cursor. Two effects: (1)
+     * dumpstate supervisor shows a genuinely moving number instead of one that
+     * LOOKS wedged at the pre-drive cursor for as long as the drive runs
+     * (which can be hours for a mint/refold fold); (2) because it is
+     * non-frozen, it also keeps THIS child's own quiet-window math — both the
+     * built-in supervisor NO_PROGRESS gate and staged_stage_stall_escalation_
+     * apply() above — from misreading a legitimate long drive as a stalled
+     * stage. The drive's string label (only available via
+     * reducer_drive_label(), not through the numeric-only supervisor child
+     * fields) goes to node.log once per skip streak — see `dumpstate
+     * reducer_drive` for the live value. */
     if (reducer_drive_active()) {
-        supervisor_progress(d->id, (int64_t)d->cursor());
+        if (!d->drive_skip_logged) {
+            LOG_INFO("supervisor",
+                     "%s yielding to active reducer drive label=%s "
+                     "age_us=%lld — publishing drive age as progress_marker "
+                     "(see dumpstate reducer_drive for the label)",
+                     d->name, reducer_drive_label(),
+                     (long long)reducer_drive_age_us());
+            d->drive_skip_logged = true;
+        }
+        supervisor_progress(d->id, reducer_drive_age_us());
         supervisor_tick(d->id);
         return;
     }
+    if (d->drive_skip_logged) d->drive_skip_logged = false;
+
     /* Drain batch: the stage default (d->batch) on a normal live node —
      * refold_cadence_drain_batch returns its argument unchanged when
      * refold_cadence_active() is false, so the live hot path is unchanged.
@@ -224,8 +396,27 @@ static void staged_stage_tick(struct liveness_contract *c)
      * ZCL_REFOLD_DRAIN_BATCH (default 2000). Batch size never changes WHAT a
      * stage folds — only the commit cadence and latency. */
     (void)d->drain(refold_cadence_drain_batch(d->batch));
-    supervisor_progress(d->id, (int64_t)d->cursor());
+    uint64_t cur = d->cursor();
+    supervisor_progress(d->id, (int64_t)cur);
     supervisor_tick(d->id);
+
+    /* Stall escalation: after M consecutive STAGED_STAGE_QUIET_US windows of
+     * frozen progress (default M=2, 60 min; env ZCL_STAGE_STALL_ESCALATE_
+     * WINDOWS), name a typed "stage_stalled_<name>" blocker instead of only
+     * the one-shot log_stall() WARN. quiet_us is read from the SAME
+     * progress_changed_at_us the supervisor's own built-in NO_PROGRESS gate
+     * maintains (updated by the supervisor_progress() call just above), so
+     * this reads as "wall-clock quiet since the last real cursor advance"
+     * without any extra clock/cursor bookkeeping of our own. */
+    int64_t now      = platform_time_monotonic_us();
+    int64_t changed   = atomic_load(&d->contract.progress_changed_at_us);
+    int64_t quiet_us  = now - changed;
+    bool have_upstream = d->upstream_cursor != NULL;
+    uint64_t upstream_cursor = have_upstream ? d->upstream_cursor() : 0;
+    const char *upstream_name = d->upstream_name ? d->upstream_name : "";
+    staged_stage_stall_escalation_apply(d->name, upstream_name, cur,
+                                        upstream_cursor, have_upstream,
+                                        quiet_us, &d->stall_escalated);
 }
 
 /* Generic per-stage stall: defer to the stage's own LOG_WARN body. */
@@ -341,9 +532,19 @@ void staged_sync_supervisor_shutdown_stages(void)
     if (g_stages[0].init_ok) header_admit_stage_shutdown();
 
     for (size_t i = 0; i < STAGED_STAGE_COUNT; i++) {
+        /* Resolve any standing stall-escalation blocker before the stage's
+         * identity/contract state resets — an unregistered stage that still
+         * "owns" a live blocker is a ghost fact nothing will ever clear. */
+        if (g_stages[i].stall_escalated) {
+            char id[BLOCKER_ID_MAX];
+            staged_stage_blocker_id(id, sizeof(id), g_stages[i].name);
+            blocker_clear(id);
+        }
         g_stages[i].id = SUPERVISOR_INVALID_ID;
         g_stages[i].ms = NULL;
         g_stages[i].init_ok = false;
+        g_stages[i].stall_escalated = false;
+        g_stages[i].drive_skip_logged = false;
         memset(&g_stages[i].contract, 0, sizeof(g_stages[i].contract));
     }
     atomic_store(&g_progress_sync_ibd, -1);
@@ -363,5 +564,58 @@ void staged_sync_supervisor_register(struct main_state *ms)
 void staged_sync_supervisor_test_reset_runtime(void)
 {
     staged_sync_supervisor_shutdown_stages();
+}
+
+int64_t staged_sync_supervisor_test_quiet_window_us(void)
+{
+    return STAGED_STAGE_QUIET_US;
+}
+
+void staged_sync_supervisor_test_apply_stall_escalation(
+    const char *dotted_name, const char *upstream_dotted_name,
+    uint64_t cursor, uint64_t upstream_cursor, bool have_upstream,
+    int64_t quiet_us, bool *escalated)
+{
+    staged_stage_stall_escalation_apply(dotted_name, upstream_dotted_name,
+                                        cursor, upstream_cursor,
+                                        have_upstream, quiet_us, escalated);
+}
+
+int64_t staged_sync_supervisor_test_run_stage_tick(
+    const char *name, const char *upstream_name,
+    int (*drain)(int max_steps), uint64_t (*cursor)(void),
+    uint64_t (*upstream_cursor)(void),
+    struct main_state *ms, bool *stall_escalated_inout)
+{
+    struct staged_stage_desc d;
+    memset(&d, 0, sizeof(d));
+    d.name          = name;
+    d.init_fail_msg = "staged_sync_supervisor_test_run_stage_tick";
+    d.drain         = drain;
+    d.cursor        = cursor;
+    d.batch         = 1;
+    d.log_stall     = NULL;   /* on_stall is never invoked on this path */
+    d.upstream_name   = upstream_name;
+    d.upstream_cursor = upstream_cursor;
+    d.ms      = ms;
+    d.init_ok = true;
+    if (stall_escalated_inout) d.stall_escalated = *stall_escalated_inout;
+
+    liveness_contract_init(&d.contract, name);
+    d.contract.ctx = &d;
+    /* staged_stage_tick's supervisor_progress()/supervisor_tick() calls
+     * look the contract up BY ID through the global registry, not via the
+     * pointer we hold here — a real (even if throwaway) registration is
+     * required or those calls silently no-op against d.contract. Same
+     * chain-domain path staged_stage_register() uses in production. */
+    supervisor_domains_init();
+    d.id = supervisor_register_in_domain(g_chain_sup, &d.contract);
+
+    staged_stage_tick(&d.contract);
+
+    int64_t marker = atomic_load(&d.contract.progress_marker);
+    if (stall_escalated_inout) *stall_escalated_inout = d.stall_escalated;
+    supervisor_unregister(d.id);
+    return marker;
 }
 #endif
