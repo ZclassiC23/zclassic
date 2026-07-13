@@ -56,6 +56,37 @@ static void inc_stall(struct liveness_contract *self)
     if (cc) atomic_fetch_add(&cc->stall_calls, 1);
 }
 
+/* Restart-policy probe: a fake worker whose on_respawn just records the call.
+ * When `redie` is set, it re-marks the worker EXITED (simulates a worker that
+ * dies again immediately) so the storm cap can be exercised deterministically
+ * without real threads or real time. */
+struct restart_probe {
+    _Atomic int  respawn_calls;
+    _Atomic int  stall_calls;
+    _Atomic bool redie;
+};
+
+static bool probe_respawn(struct liveness_contract *self)
+{
+    struct restart_probe *p = (struct restart_probe *)self->ctx;
+    if (!p) return true;
+    atomic_fetch_add(&p->respawn_calls, 1);
+    /* Mimic a real worker: on a successful respawn the fresh worker publishes
+     * its own state on entry — ALIVE normally, or EXITED if it dies at once
+     * (redie, to exercise the storm cap). The supervisor holds RESTARTING while
+     * on_respawn runs and never writes ALIVE itself. */
+    atomic_store(&self->worker_state,
+                 atomic_load(&p->redie) ? SUPERVISOR_WORKER_EXITED
+                                        : SUPERVISOR_WORKER_ALIVE);
+    return true;   /* handled */
+}
+
+static void probe_stall(struct liveness_contract *self)
+{
+    struct restart_probe *p = (struct restart_probe *)self->ctx;
+    if (p) atomic_fetch_add(&p->stall_calls, 1);
+}
+
 int test_supervisor(void)
 {
     printf("\n=== supervisor tests ===\n");
@@ -438,6 +469,111 @@ int test_supervisor(void)
         SUP_CHECK("dump has root_orphans array of size 2",
             kids && json_size(kids) == 2);
         json_free(&v);
+    }
+
+    /* ── restart policy: names + default is TEMPORARY ───────────────── */
+    SUP_CHECK("policy_name(TEMPORARY)",
+        strcmp(supervisor_restart_policy_name(SUPERVISOR_RESTART_TEMPORARY),
+               "temporary") == 0);
+    SUP_CHECK("policy_name(TRANSIENT)",
+        strcmp(supervisor_restart_policy_name(SUPERVISOR_RESTART_TRANSIENT),
+               "transient") == 0);
+    SUP_CHECK("policy_name(PERMANENT)",
+        strcmp(supervisor_restart_policy_name(SUPERVISOR_RESTART_PERMANENT),
+               "permanent") == 0);
+    {
+        struct liveness_contract c;
+        liveness_contract_init(&c, "policy.default");
+        SUP_CHECK("init defaults restart_policy to TEMPORARY",
+            atomic_load(&c.restart_policy) == SUPERVISOR_RESTART_TEMPORARY);
+        SUP_CHECK("init defaults worker_state to UNKNOWN",
+            atomic_load(&c.worker_state) == SUPERVISOR_WORKER_UNKNOWN);
+    }
+
+    /* ── TEMPORARY child that dies stays dead (current behavior) ─────── */
+    supervisor_reset_for_testing();
+    {
+        static struct liveness_contract c;
+        static struct restart_probe p;
+        memset(&p, 0, sizeof p);
+        liveness_contract_init(&c, "restart.temporary");
+        c.ctx = &p;
+        c.on_respawn = probe_respawn;      /* present, but policy is TEMPORARY */
+        supervisor_child_id id = supervisor_register(&c);
+        supervisor_worker_alive(id);
+        supervisor_worker_exited(id);      /* the worker dies */
+        supervisor_sweep_once_for_testing();
+        SUP_CHECK("TEMPORARY child is never respawned",
+            atomic_load(&p.respawn_calls) == 0);
+        SUP_CHECK("TEMPORARY dead worker stays EXITED",
+            atomic_load(&c.worker_state) == SUPERVISOR_WORKER_EXITED);
+        SUP_CHECK("TEMPORARY restart_count stays 0",
+            atomic_load(&c.restart_count) == 0u);
+    }
+
+    /* ── PERMANENT child that dies is respawned (once, then left alive) ─ */
+    supervisor_reset_for_testing();
+    {
+        static struct liveness_contract c;
+        static struct restart_probe p;
+        memset(&p, 0, sizeof p);
+        liveness_contract_init(&c, "restart.permanent");
+        c.ctx = &p;
+        c.on_respawn = probe_respawn;
+        supervisor_child_id id = supervisor_register(&c);
+        supervisor_set_restart_policy(id, SUPERVISOR_RESTART_PERMANENT,
+                                      /*N=*/5, /*M_secs=*/60);
+        supervisor_worker_alive(id);
+
+        supervisor_sweep_once_for_testing();     /* healthy: no respawn */
+        SUP_CHECK("PERMANENT alive worker is not respawned",
+            atomic_load(&p.respawn_calls) == 0);
+
+        supervisor_worker_exited(id);            /* the worker dies */
+        supervisor_sweep_once_for_testing();
+        SUP_CHECK("PERMANENT dead worker is respawned once",
+            atomic_load(&p.respawn_calls) == 1);
+        SUP_CHECK("respawn marks the worker ALIVE again",
+            atomic_load(&c.worker_state) == SUPERVISOR_WORKER_ALIVE);
+        SUP_CHECK("restart_count advanced to 1",
+            atomic_load(&c.restart_count) == 1u);
+
+        supervisor_sweep_once_for_testing();     /* alive again: no re-respawn */
+        SUP_CHECK("no double-respawn while the worker is alive",
+            atomic_load(&p.respawn_calls) == 1);
+    }
+
+    /* ── restart storm: N+1 deaths in the window → give up + name blocker ─ */
+    supervisor_reset_for_testing();
+    {
+        static struct liveness_contract c;
+        static struct restart_probe p;
+        memset(&p, 0, sizeof p);
+        atomic_store(&p.redie, true);        /* every respawn re-dies at once */
+        liveness_contract_init(&c, "restart.storm");
+        c.ctx = &p;
+        c.on_respawn = probe_respawn;
+        c.on_stall   = probe_stall;
+        supervisor_child_id id = supervisor_register(&c);
+        /* Huge window so all deaths fall inside it — deterministic, no clock. */
+        supervisor_set_restart_policy(id, SUPERVISOR_RESTART_PERMANENT,
+                                      /*N=*/3, /*M_secs=*/3600);
+        supervisor_worker_alive(id);
+        supervisor_worker_exited(id);        /* first death */
+
+        for (int i = 0; i < 10; i++) supervisor_sweep_once_for_testing();
+
+        SUP_CHECK("storm caps respawns at intensity_max (3)",
+            atomic_load(&p.respawn_calls) == 3);
+        SUP_CHECK("storm reaches restart_count == cap",
+            atomic_load(&c.restart_count) == 3u);
+        SUP_CHECK("storm sets REPEATED_RESTART stall reason",
+            atomic_load(&c.stall_reason) ==
+                SUPERVISOR_STALL_REPEATED_RESTART);
+        SUP_CHECK("storm fires on_stall exactly once (sticky, no re-fire)",
+            atomic_load(&p.stall_calls) == 1);
+        SUP_CHECK("storm stops respawning after escalation",
+            atomic_load(&p.respawn_calls) == 3);
     }
 
     /* Restore default tick period for any later tests. */

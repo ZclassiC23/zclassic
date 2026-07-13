@@ -76,6 +76,47 @@ enum supervisor_stall_reason {
 
 const char *supervisor_stall_reason_name(enum supervisor_stall_reason r);
 
+/* Erlang/OTP-style restart policy for a supervised child. Default is
+ * TEMPORARY (== 0, the zero-initialized value) so a child that does NOT opt
+ * in keeps the historical named-blocker-only behavior — the supervisor names a
+ * typed blocker on stall and never respawns. A child opts in by declaring one
+ * of the restart policies below AND providing an `on_respawn` callback.
+ *
+ * Which threads may be PERMANENT (safe to auto-restart): ONLY pure, stateless
+ * periodic-loop workers with NO consensus/shared mutable state — re-entering
+ * the loop from scratch must be a no-op on correctness. The consensus reducer
+ * stages, the reducer drive, and the DB worker/checkpointer threads MUST stay
+ * TEMPORARY: respawning them mid-fold is a correctness hazard, so they keep the
+ * named-blocker + operator model. See docs/DEFENSIVE_CODING.md (Gate #23). */
+enum supervisor_restart_policy {
+    SUPERVISOR_RESTART_TEMPORARY = 0, /* never auto-restart (default) */
+    SUPERVISOR_RESTART_TRANSIENT,     /* restart only on abnormal exit */
+    SUPERVISOR_RESTART_PERMANENT,     /* always restart while the node runs */
+};
+
+const char *supervisor_restart_policy_name(enum supervisor_restart_policy p);
+
+/* Liveness signal that distinguishes "thread died" from "thread slow". The
+ * worker publishes it: ALIVE at loop entry (and on every heartbeat — a beating
+ * thread is alive), EXITED right before it returns. The supervisor reads it to
+ * decide restart-vs-stall. Honesty caveat: a hard SIGSEGV takes down the whole
+ * process (POSIX C has no per-thread crash recovery), so the recoverable
+ * failure is an abnormal RETURN from the worker loop, not an independent
+ * segfault. The respawn path additionally reaps/guards with pthread_tryjoin_np
+ * so a false EXITED (caught mid-return) can never double-spawn a live thread. */
+enum supervisor_worker_state {
+    SUPERVISOR_WORKER_UNKNOWN = 0,    /* never spawned / not tracked */
+    SUPERVISOR_WORKER_ALIVE,          /* worker is running its loop (worker-set) */
+    SUPERVISOR_WORKER_EXITED,         /* worker returned; candidate for restart
+                                       * (worker-set, just before return) */
+    SUPERVISOR_WORKER_RESTARTING,     /* supervisor claimed the death and is
+                                       * respawning — a single-writer (supervisor)
+                                       * state the worker never writes, so a fast
+                                       * new worker's EXITED can never be lost to
+                                       * the claim. Cleared to ALIVE by the fresh
+                                       * worker entering its loop. */
+};
+
 struct json_value; /* fwd; see json/json.h */
 
 /* The liveness contract. Caller (the child being supervised) owns a
@@ -125,6 +166,22 @@ struct liveness_contract {
     _Atomic uint32_t restart_count;
     _Atomic int64_t  last_restart_us;
 
+    /* restart policy (Erlang/OTP). Default TEMPORARY (0) ⇒ no auto-restart.
+     *   - restart_policy:      child-set once via supervisor_set_restart_policy
+     *   - worker_state:        child-published (ALIVE/EXITED); supervisor reads
+     *   - restart_intensity_max / restart_period_us: the OTP intensity/period
+     *     cap — at most N restarts within M microseconds; the (N+1)th trip
+     *     inside the window escalates to a sticky SUPERVISOR_STALL_REPEATED_
+     *     RESTART instead of infinite respawn.
+     *   - restart_window_start_us / restarts_in_window: supervisor-owned window
+     *     bookkeeping. */
+    _Atomic int      restart_policy;        /* enum supervisor_restart_policy */
+    _Atomic int      worker_state;          /* enum supervisor_worker_state */
+    _Atomic int64_t  restart_intensity_max; /* N: max restarts per window */
+    _Atomic int64_t  restart_period_us;     /* M: window length (us) */
+    _Atomic int64_t  restart_window_start_us;
+    _Atomic uint32_t restarts_in_window;
+
     /* internal tracking (supervisor-owned) */
     _Atomic int64_t  progress_changed_at_us;
     _Atomic int64_t  last_progress_seen;
@@ -133,6 +190,16 @@ struct liveness_contract {
     void  *ctx;
     void (*on_tick)(struct liveness_contract *self);
     void (*on_stall)(struct liveness_contract *self);
+    /* Respawn callback (restartable children only). The supervisor calls it on
+     * its own thread when the child's worker_state is EXITED and the restart
+     * policy + intensity cap permit. It MUST re-create the worker thread (via
+     * thread_registry_spawn) and return true when it has handled the death
+     * (spawned a fresh worker, or definitively failed to and wants the attempt
+     * counted); it returns false ONLY when the worker turned out to still be
+     * alive (a false EXITED caught mid-return) so the supervisor does not count
+     * it and re-checks next sweep. NULL ⇒ the child is never auto-restarted
+     * regardless of policy. */
+    bool (*on_respawn)(struct liveness_contract *self);
 };
 
 /* Initialize a contract in-place. Safe to call on uninit memory.
@@ -187,6 +254,22 @@ void supervisor_set_deadline(supervisor_child_id id, int64_t secs);
 void supervisor_set_progress_max_quiet(supervisor_child_id id,
                                        int64_t microseconds);
 
+/* ── Restart policy (Erlang/OTP) ───────────────────────────────────── */
+
+/* Opt a child into auto-restart. `policy` selects TEMPORARY (default; no
+ * restart) / TRANSIENT / PERMANENT. `intensity_max` (N) and `period_secs` (M)
+ * form the storm cap: at most N restarts within M seconds, else the supervisor
+ * gives up and names a sticky SUPERVISOR_STALL_REPEATED_RESTART. The caller
+ * must also set `c->on_respawn` (typically before register). O(1) atomics. */
+void supervisor_set_restart_policy(supervisor_child_id id,
+                                   enum supervisor_restart_policy policy,
+                                   int64_t intensity_max, int64_t period_secs);
+
+/* Worker publishes its liveness. ALIVE at loop entry / on (re)spawn; EXITED
+ * right before the worker returns. O(1) atomic store. */
+void supervisor_worker_alive(supervisor_child_id id);
+void supervisor_worker_exited(supervisor_child_id id);
+
 /* ── Lifecycle ─────────────────────────────────────────────────────── */
 
 /* Spawn the dedicated supervisor thread (name: "zcl_supervisor"). Safe
@@ -220,6 +303,11 @@ void supervisor_request_min_tick_ms(int ms);
  * this to keep test_supervisor side-effect free. */
 #ifdef ZCL_TESTING
 void supervisor_reset_for_testing(void);
+
+/* Run exactly one supervisor sweep synchronously on the CALLING thread (no
+ * dedicated supervisor thread, no real-time wait). Lets restart-policy tests
+ * drive death→respawn→storm deterministically. Production never calls this. */
+void supervisor_sweep_once_for_testing(void);
 #endif
 
 /* ── Introspection (zcl_state subsystem=supervisor) ────────────────── */
@@ -237,6 +325,9 @@ struct supervisor_snapshot {
     uint32_t ticks_run;
     uint32_t stall_fires;
     uint32_t restart_count;
+    int      restart_policy;         /* enum supervisor_restart_policy */
+    int      worker_state;           /* enum supervisor_worker_state */
+    uint32_t restarts_in_window;
 };
 
 /* Fill `out` with up to `max` snapshots. Returns the number written. */

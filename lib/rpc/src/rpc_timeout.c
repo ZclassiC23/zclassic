@@ -293,6 +293,9 @@ static void *watchdog_fn(void *arg)
         pthread_mutex_lock(&mgr->lock);
     }
     pthread_mutex_unlock(&mgr->lock);
+    /* Abnormal-exit signal for the supervisor's die-vs-stall decision. A
+     * graceful stop marks the child complete first, so this is ignored there. */
+    thread_liveness_worker_exited(&g_rpc_timeout_child);
     return NULL;
 }
 
@@ -309,17 +312,26 @@ bool rpc_timeout_start_watchdog(struct rpc_timeout_mgr *mgr)
     mgr->watchdog_running = true;
     pthread_mutex_unlock(&mgr->lock);
 
-    // supervised:zcl_rpc_timeout (thread_liveness_register below)
+    /* SAFE PERMANENT auto-restart: the watchdog is a pure periodic sweep of
+     * the timeout registry; all persistent state lives on `mgr`, not the
+     * thread, so re-entering the loop from scratch (re-locking mgr->lock) is a
+     * no-op on correctness. Storm cap: 5 restarts / 60 s → permanent
+     * "thread_restart_storm_zcl_rpc_timeout" blocker. The worker tid lives in
+     * g_rpc_timeout_child.worker_tid so respawn + stop share one handle. */
+    // supervised:zcl_rpc_timeout (thread_liveness_register_restartable below)
     if (thread_registry_spawn("zcl_rpc_timeout", watchdog_fn, mgr,
-                                  &mgr->watchdog_thread) != 0) {
+                                  &g_rpc_timeout_child.worker_tid) != 0) {
         pthread_mutex_lock(&mgr->lock);
         mgr->watchdog_running = false;
         pthread_mutex_unlock(&mgr->lock);
         return false;
     }
-    (void)thread_liveness_register(&g_rpc_timeout_child, "zcl_rpc_timeout",
+    (void)thread_liveness_register_restartable(&g_rpc_timeout_child,
+                                   "zcl_rpc_timeout",
                                    /*deadline_secs=*/120,
-                                   /*progress_quiet_us=*/0);
+                                   /*progress_quiet_us=*/0,
+                                   watchdog_fn, mgr,
+                                   /*intensity_max=*/5, /*period_secs=*/60);
     mgr->watchdog_started = true;
     return true;
 }
@@ -329,13 +341,17 @@ void rpc_timeout_stop_watchdog(struct rpc_timeout_mgr *mgr)
     if (!mgr || !mgr->initialized) return;
     pthread_mutex_lock(&mgr->lock);
     bool was_started = mgr->watchdog_started;
-    mgr->watchdog_running = false;
-    pthread_cond_broadcast(&mgr->wakeup);
     pthread_mutex_unlock(&mgr->lock);
     if (was_started) {
-        pthread_join(mgr->watchdog_thread, NULL);
+        /* Mark complete FIRST (no more auto-restart), then signal the loop to
+         * exit, then join the current worker tid + retire. */
+        thread_liveness_stop_begin(&g_rpc_timeout_child);
+        pthread_mutex_lock(&mgr->lock);
+        mgr->watchdog_running = false;
+        pthread_cond_broadcast(&mgr->wakeup);
+        pthread_mutex_unlock(&mgr->lock);
+        thread_liveness_stop_finish(&g_rpc_timeout_child);
         mgr->watchdog_started = false;
-        thread_liveness_retire(&g_rpc_timeout_child);
     }
 }
 

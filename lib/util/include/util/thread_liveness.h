@@ -46,6 +46,7 @@
 #ifndef ZCL_THREAD_LIVENESS_H
 #define ZCL_THREAD_LIVENESS_H
 
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -56,12 +57,25 @@
 /* Caller owns a *static* instance. Initialize `.id = SUPERVISOR_INVALID_ID`
  * at the declaration (a zero-initialized static would look like the valid
  * child id 0 and defeat the idempotent-register guard). All other fields
- * are set by thread_liveness_register(). */
+ * are set by thread_liveness_register{,_restartable}(). */
 struct thread_liveness_child {
     struct liveness_contract contract;   /* ctx points back to this struct */
     supervisor_child_id      id;
     _Atomic bool             blocker_standing;
     char                     blocker_id[BLOCKER_ID_MAX];
+
+    /* Restart wiring (populated only by thread_liveness_register_restartable;
+     * a plain thread_liveness_register child leaves these zeroed and is never
+     * auto-restarted). The child owns the worker tid so respawn and graceful
+     * stop agree on a single, current handle. */
+    pthread_t                worker_tid;
+    _Atomic bool             worker_tid_set;
+    const char              *thread_name;      /* static; re-used on respawn */
+    void                    *(*worker_entry)(void *);
+    void                    *worker_arg;
+    pthread_mutex_t          restart_lock;     /* serializes respawn vs stop */
+    _Atomic bool             restart_lock_init;
+    char                     storm_blocker_id[BLOCKER_ID_MAX];
 };
 
 /* Register `c` as a supervised ROOT child named `name` (heartbeat-driven).
@@ -85,5 +99,51 @@ void thread_liveness_beat(struct thread_liveness_child *c, int64_t progress);
 /* Unregister on shutdown. Clears any standing blocker and removes the child
  * from the tree. Idempotent. */
 void thread_liveness_retire(struct thread_liveness_child *c);
+
+/* ── Bounded auto-restart (Erlang/OTP), for SAFE stateless workers ONLY ──
+ *
+ * Register `c` as a PERMANENT restartable ROOT child: if the worker thread
+ * EXITS abnormally (returns while the node is still running and the child is
+ * not marked complete), the supervisor respawns it — up to `intensity_max`
+ * (N) restarts within `period_secs` (M), after which it stops respawning and
+ * names a PERMANENT blocker "thread_restart_storm_<name>" (the node stays
+ * alive and named; it never infinite-spawns or crashes the process).
+ *
+ * ONLY use this for pure periodic-loop workers with NO consensus/shared
+ * mutable state — re-entering the loop from scratch must be a no-op on
+ * correctness (metrics printer, health sweeper, RPC-timeout watchdog). NEVER
+ * use it for a consensus reducer stage, the reducer drive, or the DB
+ * worker/checkpointer — respawning those mid-fold is a correctness hazard;
+ * they keep the plain thread_liveness_register (named-blocker) model.
+ *
+ * Preconditions: the caller has ALREADY spawned the initial worker into
+ * `c->worker_tid` via thread_registry_spawn(name, entry, arg, &c->worker_tid).
+ * `name`, `entry`, `arg` are re-used verbatim on every respawn; `name` and
+ * `arg` must have process lifetime. The worker loop must publish liveness with
+ * thread_liveness_worker_alive()/_exited() (below). Returns the child id or
+ * SUPERVISOR_INVALID_ID. Idempotent like thread_liveness_register. */
+supervisor_child_id thread_liveness_register_restartable(
+    struct thread_liveness_child *c, const char *name,
+    int64_t deadline_secs, int64_t progress_quiet_us,
+    void *(*entry)(void *), void *arg,
+    int64_t intensity_max, int64_t period_secs);
+
+/* Worker liveness for a restartable child. Call _alive() at the top of the
+ * worker loop (redundant with beat(), which also marks ALIVE) and _exited()
+ * on EVERY return path from the worker. O(1) atomics; no-op on a NULL/
+ * unregistered child. */
+void thread_liveness_worker_alive(struct thread_liveness_child *c);
+void thread_liveness_worker_exited(struct thread_liveness_child *c);
+
+/* Graceful stop for a restartable child, race-free against an in-flight
+ * respawn. Call sequence in the module's stop():
+ *   thread_liveness_stop_begin(c);   // mark complete (no more restarts) +
+ *                                    // drain any respawn in progress
+ *   <signal the worker loop to exit: set the module's own stop flag / wake>
+ *   thread_liveness_stop_finish(c);  // join the (current) worker tid + retire
+ * begin()/finish() must be paired. Safe on a child that was never restartable
+ * (falls back to a plain join+retire). */
+void thread_liveness_stop_begin(struct thread_liveness_child *c);
+void thread_liveness_stop_finish(struct thread_liveness_child *c);
 
 #endif /* ZCL_THREAD_LIVENESS_H */

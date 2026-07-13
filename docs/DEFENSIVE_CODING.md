@@ -382,6 +382,48 @@ assert green).
   `check-pthread-create`. The `SUPERVISOR_CAP` static registry was raised
   32→64 to seat the new root children.
 
+#### Bounded thread restart policy (Erlang/OTP), alongside Gate #23
+
+Universal supervision (Gate #23) makes a wedged/dead infra thread a *named
+blocker* instead of a silent stop. The restart policy goes one step further for
+threads that are safe to auto-restart: it *respawns* them under a bounded
+intensity cap (`lib/util/include/util/supervisor.h` +
+`util/thread_liveness.h`). The policy is opt-in per child; the default is
+`SUPERVISOR_RESTART_TEMPORARY`, i.e. unchanged named-blocker behavior.
+
+- **Policy enum** (`enum supervisor_restart_policy`): `TEMPORARY` (never
+  auto-restart — the default and the only policy for consensus/stateful
+  threads), `TRANSIENT` (restart only on abnormal exit), `PERMANENT` (always
+  restart while the node runs).
+- **Which threads may be PERMANENT — the safe-restart criterion:** ONLY a pure,
+  stateless *periodic-loop* worker with NO consensus/shared mutable state, where
+  re-entering the loop from scratch is a no-op on correctness. Today exactly
+  three qualify and opt in via `thread_liveness_register_restartable`:
+  `zcl_metrics` (stats printer + Prometheus gauge setter),
+  `zcl_health_sweep` (independent snapshot-and-dispatch each sweep), and
+  `zcl_rpc_timeout` (periodic timeout sweep; all persistent state lives on the
+  manager, not the thread). Everything else stays `TEMPORARY`. In particular
+  the **8 reducer stages, the reducer drive, and the DB worker/checkpointer MUST
+  stay TEMPORARY** — respawning them mid-fold is a correctness hazard; they keep
+  the named-blocker + operator model.
+- **Die-vs-stall detection:** the worker publishes an atomic
+  `worker_state` (ALIVE at loop entry / on every heartbeat, EXITED just before
+  it returns). A *slow* worker is still ALIVE (heartbeat lapsed → the existing
+  stall/named-blocker path); a *dead* worker is EXITED → the restart path.
+  Honesty caveat: a hard SIGSEGV takes down the whole process (POSIX C has no
+  per-thread crash recovery), so the recoverable failure is an abnormal RETURN
+  from the loop, not an independent segfault. The respawn additionally reaps and
+  guards with `pthread_tryjoin_np` (EBUSY ⇒ the worker is actually still alive ⇒
+  abort without spawning) so a false EXITED can never double-spawn a live
+  thread; a supervisor-only `RESTARTING` claim state prevents the reverse
+  lost-signal race.
+- **Restart-storm cap (OTP intensity/period):** at most N restarts within M
+  seconds per child (the three workers use N=5 / M=60 s). The (N+1)th death
+  inside the window stops respawning and names a PERMANENT blocker
+  `thread_restart_storm_<name>` — the node stays alive and named, and never
+  infinite-spawns or crashes the process. The cap is sticky (a resumed
+  heartbeat does not clear it); an operator diagnoses and restarts.
+
 `ZCL_LINT_MODE` (`WARN` | `RATCHET` | `FAIL`) selects mode for #18/#20; `make
 lint` runs them in `RATCHET`.
 

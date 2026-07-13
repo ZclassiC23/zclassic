@@ -39,7 +39,6 @@ static pthread_mutex_t g_mu = PTHREAD_MUTEX_INITIALIZER;
 
 static _Atomic bool    g_running = false;
 static _Atomic bool    g_started = false;
-static pthread_t       g_sweeper;
 static _Atomic int     g_check_interval_ms = 1000;
 
 /* Supervisor liveness: the sweeper is the very thread whose 8.6 h silent
@@ -247,6 +246,9 @@ static void *sweeper_thread(void *arg)
         };
         nanosleep(&ts, NULL);
     }
+    /* Abnormal-exit signal for the supervisor's die-vs-stall decision. A
+     * graceful stop marks the child complete first, so this is ignored there. */
+    thread_liveness_worker_exited(&g_sweep_child);
     return NULL;
 }
 
@@ -257,18 +259,27 @@ bool health_start(void)
         return true; /* already running */
 
     atomic_store(&g_running, true);
-    // supervised:zcl_health_sweep (thread_liveness_register below)
+    /* SAFE PERMANENT auto-restart: the sweeper is a pure snapshot-and-dispatch
+     * loop with no consensus/shared mutable state (each sweep is independent),
+     * so re-entering it from scratch is a no-op on correctness. Storm cap:
+     * 5 restarts / 60 s → permanent "thread_restart_storm_zcl_health_sweep"
+     * blocker. This is the very thread whose 8.6 h silent wedge motivated the
+     * supervisor — now a repeat death self-heals or names a blocker. */
+    // supervised:zcl_health_sweep (thread_liveness_register_restartable below)
     int rc = thread_registry_spawn("zcl_health_sweep", sweeper_thread,
-                                       NULL, &g_sweeper);
+                                       NULL, &g_sweep_child.worker_tid);
     if (rc != 0) {
         fprintf(stderr, "[health] sweeper spawn failed: rc=%d\n", rc);
         atomic_store(&g_running, false);
         atomic_store(&g_started, false);
         return false;
     }
-    (void)thread_liveness_register(&g_sweep_child, "zcl_health_sweep",
+    (void)thread_liveness_register_restartable(&g_sweep_child,
+                                   "zcl_health_sweep",
                                    /*deadline_secs=*/120,
-                                   /*progress_quiet_us=*/0);
+                                   /*progress_quiet_us=*/0,
+                                   sweeper_thread, NULL,
+                                   /*intensity_max=*/5, /*period_secs=*/60);
     return true;
 }
 
@@ -277,9 +288,9 @@ void health_stop(void)
     bool expected = true;
     if (!atomic_compare_exchange_strong(&g_started, &expected, false))
         return; /* not running */
-    atomic_store(&g_running, false);
-    pthread_join(g_sweeper, NULL);
-    thread_liveness_retire(&g_sweep_child);
+    thread_liveness_stop_begin(&g_sweep_child);   /* no more auto-restart */
+    atomic_store(&g_running, false);              /* signal the loop to exit */
+    thread_liveness_stop_finish(&g_sweep_child);  /* join current tid + retire */
 }
 
 void health_reset_for_test(void)

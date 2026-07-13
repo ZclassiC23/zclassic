@@ -25,18 +25,19 @@ _Atomic uint64_t g_transactions_validated = 0;
 _Atomic uint64_t g_eh_solver_runs = 0;
 
 static int64_t g_start_time = 0;
-static pthread_t g_metrics_thread;
 /* Supervisor liveness: the metrics printer loops on a 1 s cadence. It
  * heartbeats onto the tree (deadline=120 s) with the loop count as its
  * progress marker; no-progress gate disabled (the deadline covers a frozen
- * loop). See util/thread_liveness.h. */
+ * loop). The worker tid lives in g_metrics_child.worker_tid so the bounded
+ * auto-restart path and metrics_stop() share one current handle. See
+ * util/thread_liveness.h. */
 static struct thread_liveness_child g_metrics_child = {
     .id = SUPERVISOR_INVALID_ID
 };
-/* Single-spawn guard for the module-level g_metrics_thread. Two concurrent
- * metrics_start() calls must not both spawn and overwrite the handle (which
- * would orphan one thread); the winner of this CAS is the only spawner, and
- * metrics_stop() pairs with it so only the matching join runs. */
+/* Single-spawn guard for the metrics worker. Two concurrent metrics_start()
+ * calls must not both spawn and overwrite the handle (which would orphan one
+ * thread); the winner of this CAS is the only spawner, and metrics_stop()
+ * pairs with it so only the matching join runs. */
 static _Atomic bool g_metrics_started = false;
 
 void metrics_print_art(void)
@@ -419,6 +420,10 @@ static void *metrics_thread_fn(void *arg)
         if (is_tty)
             printf("\033[%dA", lines);
     }
+    /* Publish the abnormal-exit signal so the supervisor can distinguish a
+     * dead worker (respawn) from a slow one (stall). A graceful stop marks the
+     * child complete first, so this EXITED is ignored there. */
+    thread_liveness_worker_exited(&g_metrics_child);
     return NULL;
 }
 
@@ -434,17 +439,24 @@ bool metrics_start(struct metrics_context *ctx)
     }
 
     atomic_store(&ctx->running, true);
-    // supervised:zcl_metrics (thread_liveness_register below)
+    /* SAFE PERMANENT auto-restart: metrics is a pure periodic printer +
+     * Prometheus gauge setter with no consensus/shared mutable state, so
+     * re-entering its loop from scratch is a no-op on correctness. Storm cap:
+     * 5 restarts / 60 s → then a permanent "thread_restart_storm_zcl_metrics"
+     * blocker (never infinite-spawn). */
+    // supervised:zcl_metrics (thread_liveness_register_restartable below)
     if (thread_registry_spawn("zcl_metrics", metrics_thread_fn, ctx,
-                                  &g_metrics_thread) != 0) {
+                                  &g_metrics_child.worker_tid) != 0) {
         perror("metrics_start: thread_registry_spawn");
         atomic_store(&ctx->running, false);
         atomic_store(&g_metrics_started, false);
         return false;
     }
-    (void)thread_liveness_register(&g_metrics_child, "zcl_metrics",
+    (void)thread_liveness_register_restartable(&g_metrics_child, "zcl_metrics",
                                    /*deadline_secs=*/120,
-                                   /*progress_quiet_us=*/0);
+                                   /*progress_quiet_us=*/0,
+                                   metrics_thread_fn, ctx,
+                                   /*intensity_max=*/5, /*period_secs=*/60);
     ctx->thread_started = true;
     return true;
 }
@@ -456,8 +468,8 @@ void metrics_stop(struct metrics_context *ctx)
     bool expected = true;
     if (!atomic_compare_exchange_strong(&g_metrics_started, &expected, false))
         return; /* not running */
-    atomic_store(&ctx->running, false);
-    pthread_join(g_metrics_thread, NULL);
-    thread_liveness_retire(&g_metrics_child);
+    thread_liveness_stop_begin(&g_metrics_child);   /* no more auto-restart */
+    atomic_store(&ctx->running, false);             /* signal the loop to exit */
+    thread_liveness_stop_finish(&g_metrics_child);  /* join current tid + retire */
     ctx->thread_started = false;
 }
