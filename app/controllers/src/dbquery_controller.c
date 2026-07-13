@@ -4,7 +4,9 @@
  *
  * SELECT-only SQL passthrough against the node's SQLite database. Hard
  * validation: must start with SELECT, no semicolons, no DDL/DML
- * keywords, auto-LIMIT appended if missing, 2 s wall-clock budget
+ * keywords, no reference to wallet secret material (see
+ * dbq_secret_hit() below — denied regardless of wallet-encryption
+ * state), auto-LIMIT appended if missing, 2 s wall-clock budget
  * enforced via sqlite3_progress_handler, 100-row hard cap.
  *
  * Marked destructive in the MCP middleware (rate-limited) — not because
@@ -77,6 +79,60 @@ static bool sql_has_word(const char *sql, const char *word)
     return false;
 }
 
+/* ── Secret-material denylist ──────────────────────────────────────
+ *
+ * dbquery/zcl_sql is SELECT-only and DDL/DML-blocked, but it had no
+ * notion of *which* SELECTs are safe to run: `SELECT privkey FROM
+ * wallet_keys` was legal SQL and dumped the plaintext keystore past
+ * the (opt-in, often-unset) MCP bearer token, regardless of whether
+ * the wallet was encrypted at rest.
+ *
+ * These two lists are whole-word, case-insensitive substring checks
+ * against the *entire raw query text* (not just the FROM clause), so
+ * a hit inside a subquery, CTE, alias target, quoted/bracketed
+ * identifier, or SQL comment is still caught — SQLite's SELECT
+ * grammar has no way to construct a table/column identifier
+ * dynamically inside a single statement, so any real reference to a
+ * secret table or column must appear as a literal ASCII token
+ * somewhere in the query text. Whitespace and case variation between
+ * tokens don't matter because the scan is a raw string walk, not a
+ * tokenizer keyed on specific spacing.
+ *
+ * SECRET_TABLES are blocked wholesale — every column in these tables
+ * is wallet key material (private keys, extended spending keys, the
+ * HD seed), so there is no safe partial projection to carve out.
+ * SECRET_COLUMNS is defense-in-depth against a same-named column
+ * being added to an otherwise-public table later, or a query that
+ * transplants a secret column through a join/alias.
+ *
+ * Update SECRET_TABLES/SECRET_COLUMNS whenever
+ * app/models/src/database_schema.c gains new wallet secret material
+ * (see the wallet_keys / wallet_sapling_keys / wallet_seed DDL). Fail
+ * closed: if a query cannot be confidently proven secret-free, it is
+ * rejected. */
+static const char *const SECRET_TABLES[] = {
+    "wallet_keys",          /* privkey (transparent) */
+    "wallet_sapling_keys",  /* xsk (Sapling extended spending key) */
+    "wallet_seed",          /* seed (HD wallet seed) */
+};
+
+static const char *const SECRET_COLUMNS[] = {
+    "privkey", "xsk", "seed", "hdseed", "spending_key",
+    "spendingkey", "mnemonic", "master_key", "masterkey",
+};
+
+/* Returns the matched secret token, or NULL if the query is clean. */
+static const char *dbq_secret_hit(const char *sql)
+{
+    for (size_t i = 0; i < sizeof(SECRET_TABLES) / sizeof(SECRET_TABLES[0]); i++) {
+        if (sql_has_word(sql, SECRET_TABLES[i])) return SECRET_TABLES[i];
+    }
+    for (size_t i = 0; i < sizeof(SECRET_COLUMNS) / sizeof(SECRET_COLUMNS[0]); i++) {
+        if (sql_has_word(sql, SECRET_COLUMNS[i])) return SECRET_COLUMNS[i];
+    }
+    return NULL;
+}
+
 bool diag_rpc_dbquery(const struct json_value *params, bool help,
                       struct json_value *result)
 {
@@ -86,6 +142,8 @@ bool diag_rpc_dbquery(const struct json_value *params, bool help,
         "  - must start with SELECT (case-insensitive)\n"
         "  - no semicolons anywhere in the query\n"
         "  - DDL/DML keywords rejected (INSERT, UPDATE, DELETE, etc.)\n"
+        "  - wallet secret material denied (wallet_keys, "
+        "wallet_sapling_keys, wallet_seed, privkey/xsk/seed/etc.)\n"
         "  - LIMIT auto-appended if missing\n"
         "  - 2 s wall-clock budget enforced\n"
         "  - 100-row hard cap regardless of LIMIT\n"
@@ -134,6 +192,17 @@ bool diag_rpc_dbquery(const struct json_value *params, bool help,
             LOG_FAIL("diag", "dbquery: keyword '%s' not allowed",
                      blocked[i]);
         }
+    }
+
+    /* Secret-material denylist. Fails closed regardless of wallet
+     * encryption state — see the block comment above dbq_secret_hit(). */
+    const char *secret_hit = dbq_secret_hit(sql);
+    if (secret_hit) {
+        json_set_str(result,
+            "dbquery: query references secret wallet key material "
+            "and is denied");
+        LOG_FAIL("diag", "dbquery: denied secret reference '%s'",
+                 secret_hit);
     }
 
     struct node_db *ndb = app_runtime_node_db();
