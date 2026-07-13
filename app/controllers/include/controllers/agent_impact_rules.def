@@ -230,6 +230,7 @@ AGENT_IMPACT_RULE("lib/storage/src/anchor_kv.c|lib/storage/include/storage/ancho
 
 /* Coins view core + KV/SQLite backends. */
 AGENT_IMPACT_RULE("lib/coins/src/coins_view.c|lib/coins/include/coins/coins_view.h|lib/storage/src/coins_view_kv.c|lib/storage/src/coins_view_sqlite.c", "coins coins_view_atomicity connect_block_self_write make_lint_gates")
+AGENT_IMPACT_RULE("lib/storage/src/coins_view_projection.c|lib/storage/include/storage/coins_view_projection.h", "coins_view_projection make_lint_gates")
 
 /* Golden-height UTXO root ladder (generated table + live tripwire). */
 AGENT_IMPACT_RULE("lib/chain/src/utxo_root_ladder.c|lib/chain/include/chain/utxo_root_ladder.h|app/models/src/utxo_root_ladder_verify.c|app/models/include/models/utxo_root_ladder_verify.h|tools/gen_utxo_root_ladder.c|lib/test/src/test_utxo_root_ladder.c", "utxo_root_ladder make_lint_gates")

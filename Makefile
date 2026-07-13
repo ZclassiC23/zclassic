@@ -3432,8 +3432,9 @@ check-projections-pure:
 	@./tools/scripts/check_projections_pure.sh
 
 # Gate E6 — one chain-state write path (RATCHET). Legacy writer surfaces
-# are grandfathered in tools/scripts/one_write_path_baseline.txt and shrink
-# as B8 deletes them; new write surfaces fail.
+# would be grandfathered in tools/scripts/one_write_path_baseline.txt (empty
+# today — the legacy writers are already deleted); any new write surface
+# outside the reducer's single write path fails.
 check-one-write-path:
 	@echo "══ LINT: one write path (E6) ══"
 	@./tools/scripts/check_one_write_path.sh

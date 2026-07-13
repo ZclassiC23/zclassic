@@ -80,7 +80,7 @@ struct utxo_projection {
 static _Atomic(utxo_projection_t *) g_projection = NULL;
 static _Atomic(event_log_t *)       g_event_log  = NULL;
 
-/* B3 single-writer authority. STAGE is the production default:
+/* Single-writer authority. STAGE is the production default:
  * utxo_apply_stage authors the UTXO events and the legacy emitters no-op, so
  * exactly one writer (the reducer) drives the projection. Test binaries can
  * still flip to LEGACY to exercise the old emitter path. */

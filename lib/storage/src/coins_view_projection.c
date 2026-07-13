@@ -49,7 +49,7 @@ static bool cvp_batch_write_impl(void *self, struct coins_map *map_coins,
 {
     /* Read-only: the stage authors UTXO state via EV_UTXO_ADD/SPEND, so
      * flushing the legacy cache back into the projection would be a
-     * second writer — exactly what B3's single-writer authority forbids.
+     * second writer — exactly what the single-writer authority forbids.
      * Reaching here means the cache was wired to flush to the projection
      * backing, which is a programming error. */
     (void)self; (void)map_coins; (void)hash_block;

@@ -1,4 +1,5 @@
-# E6 ratchet baseline: legacy chain-state write surfaces to delete in B8.
+# E6 ratchet baseline: legacy chain-state write surfaces (now deleted; kept
+# empty as a ratchet floor).
 # Format: <file>:<line>: <matched source>
 #
 # The legacy validation engine (process_new_block / accept_block / connect_tip
