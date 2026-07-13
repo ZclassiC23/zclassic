@@ -1,0 +1,4 @@
+/* Lint-gate fixture: a swappable handler whose source_tu resolves under a
+ * forbidden consensus root. Used by the check_hotswap_swappable_shape self-test
+ * to prove the gate trips (exit 1). NOT a real allowlist. */
+HOTSWAP_SWAPPABLE("core.status", "lib/consensus/src/pow.c")

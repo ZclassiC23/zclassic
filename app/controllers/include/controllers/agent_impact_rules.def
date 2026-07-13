@@ -297,7 +297,7 @@ AGENT_IMPACT_RULE("tools/dev/agent-dev-status.sh|tools/dev/agent-doctor.sh|app/c
 AGENT_IMPACT_RULE("tools/dev/generate-compdb.sh|tools/dev/dev-loop-bench.sh", "syncdiag_rpc mcp_controllers make_lint_gates")
 AGENT_IMPACT_RULE("tools/dev/hotswap-running-dev.sh", "dev_mcp_rpc_bridge hotswap_loader hotswap_simnet mcp_router mcp_controllers make_lint_gates")
 AGENT_IMPACT_RULE("tools/mcp/dev_rpc_bridge.c|tools/mcp/dev_rpc_bridge.h|config/src/boot_services.c|lib/test/src/test_dev_mcp_rpc_bridge.c", "dev_mcp_rpc_bridge hotswap_loader mcp_router mcp_controllers rpc make_lint_gates")
-AGENT_IMPACT_RULE("config/commands/*|config/include/config/command_catalog.h|config/src/command_catalog.c|lib/kernel/src/command_registry.c|lib/kernel/include/kernel/command_registry.h|tools/command/*|lib/test/src/test_command_registry_catalog.c", "command_registry_catalog native_api_contract command_handler_snapshot dev_platform make_lint_gates")
+AGENT_IMPACT_RULE("config/commands/*|config/include/config/command_catalog.h|config/src/command_catalog.c|lib/kernel/src/command_registry.c|lib/kernel/include/kernel/command_registry.h|tools/command/*|lib/test/src/test_command_registry_catalog.c", "command_registry_catalog native_api_contract command_handler_snapshot hotswap_module dev_platform make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_command_handler_snapshot.c", "command_handler_snapshot command_registry_catalog native_api_contract make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_native_api_contract.c|docs/API_REFERENCE.md", "native_api_contract command_registry_catalog make_lint_gates")
 
@@ -305,7 +305,7 @@ AGENT_IMPACT_RULE("lib/test/src/test_native_api_contract.c|docs/API_REFERENCE.md
 AGENT_IMPACT_RULE("app/models/src/principal.c|app/models/include/models/principal.h|app/models/src/auth_challenge.c|app/models/include/models/auth_challenge.h", "principal_authz auth_login command_authority models make_lint_gates")
 AGENT_IMPACT_RULE("app/services/src/authz_policy.c|app/services/include/services/authz_policy.h|app/services/src/auth_login_service.c|app/services/include/services/auth_login_service.h", "principal_authz auth_login command_authority make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/account_controller.c|config/commands/accounts.def", "command_authority command_registry_catalog native_api_contract make_lint_gates")
-AGENT_IMPACT_RULE("lib/kernel/src/command_registry.c|lib/kernel/include/kernel/command_registry.h", "command_authority command_registry_catalog native_api_contract command_handler_snapshot make_lint_gates")
+AGENT_IMPACT_RULE("lib/kernel/src/command_registry.c|lib/kernel/include/kernel/command_registry.h", "command_authority command_registry_catalog native_api_contract command_handler_snapshot hotswap_module make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_principal_authz.c", "principal_authz make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_auth_login.c", "auth_login make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_command_authority.c", "command_authority make_lint_gates")
@@ -350,7 +350,7 @@ AGENT_IMPACT_RULE("app/controllers/src/api_controller_dispatch.c|app/controllers
  * can break either the leaf-handler override snapshot proof
  * (command_handler_snapshot) or the loader/simnet manifest contract
  * (hotswap_loader, hotswap_simnet). */
-AGENT_IMPACT_RULE("tools/command/native_dev_hotswap.c|tools/command/native_dev_hotswap.h|config/commands/dev.def|lib/hotswap/*|config/hotswap_eligible.def", "hotswap_loader hotswap_simnet command_handler_snapshot make_lint_gates")
+AGENT_IMPACT_RULE("tools/command/native_dev_hotswap.c|tools/command/native_dev_hotswap.h|config/commands/dev.def|lib/hotswap/*|config/hotswap_eligible.def|config/hotswap_swappable.def|tools/lint/check_hotswap_swappable_shape.sh|lib/test/fixtures/hotswap_swappable_bad_shape.def|lib/test/src/test_hotswap_module.c|app/controllers/src/status_native_handlers.c", "hotswap_loader hotswap_simnet hotswap_module command_handler_snapshot make_lint_gates")
 AGENT_IMPACT_RULE("tools/scripts/remote_node_update.sh|tools/scripts/lane_recover.sh|deploy/examples/zclassic23-self-update.service|deploy/examples/zclassic23-self-update.timer", "make_lint_gates")
 
 /* Instant dev loop Wave 1/2: Tier-2 fast restart (clean-shutdown marker + skip). */

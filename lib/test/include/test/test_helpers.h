@@ -327,6 +327,7 @@ int test_mcp_router(void);
 int test_dev_mcp_rpc_bridge(void);
 int test_hotswap_loader(void);
 int test_hotswap_simnet(void);
+int test_hotswap_module(void);
 int test_dev_platform(void);
 int test_command_registry_catalog(void);
 int test_native_api_contract(void);

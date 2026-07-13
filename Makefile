@@ -619,6 +619,34 @@ hotswap: $(VIEW_GEN_HEADERS)
 	@echo "hotswap: REFUSING — runtime publication and resident probing are contained; use make hotswap-so plus build/test verification" >&2
 	@exit 3
 
+.PHONY: hotswap-module-so
+# make hotswap-module-so HANDLER=core.status
+# Compile the single swappable TU that OWNS a handler (per the
+# config/hotswap_swappable.def allowlist) into a content-addressed,
+# single-handler module .so that exports `zcl_hotswap_module`. This is the REAL
+# (activatable) ABI's build path — deliberately NOT the whole-program LTO node
+# compile: ONE non-LTO `-fPIC -shared` translation unit, seconds not a relink.
+# Unresolved kernel symbols (mcp_node_rpc, json_*, zcl_native_bridge_run, ...)
+# bind against the -rdynamic dev node at dlopen. Prints the .so path as the LAST
+# line. The .so is loaded ONLY by hotswap_activate (dev-only, gated). See
+# docs/work/HOTSWAP.md "Real module ABI".
+hotswap-module-so: $(VIEW_GEN_HEADERS)
+	@if [ -z "$(HANDLER)" ]; then \
+	  echo "usage: make hotswap-module-so HANDLER=core.status" >&2; exit 2; fi
+	@set -eu; \
+	src="$$(sed -n 's/^[[:space:]]*HOTSWAP_SWAPPABLE("$(HANDLER)"[[:space:]]*,[[:space:]]*"\([^"]*\)").*/\1/p' config/hotswap_swappable.def | head -1)"; \
+	[ -n "$$src" ] || { echo "hotswap-module-so: handler '$(HANDLER)' is not on config/hotswap_swappable.def (the swappable shape-leaf allowlist)" >&2; exit 2; }; \
+	[ -f "$$src" ] || { echo "hotswap-module-so: source does not exist: $$src" >&2; exit 2; }; \
+	mkdir -p "$(HOTSWAP_OBJ_DIR)" "$(HOTSWAP_SO_DIR)"; \
+	safe="$$(printf '%s' "$(HANDLER)" | tr -c 'A-Za-z0-9_.-' '_')"; \
+	o="$(HOTSWAP_OBJ_DIR)/mod-$$safe-$(BUILD_COMMIT).o"; \
+	so="$(HOTSWAP_SO_DIR)/$$safe-$(BUILD_COMMIT).so"; \
+	$(CC) $(DEV_CFLAGS) -fPIC -DZCL_HOTSWAP_MODULE_GEN -c -o "$$o" "$$src" >&2; \
+	$(CC) -shared -Wl,--build-id=none -Wl,-z,relro -Wl,-z,now \
+	  -Wl,-z,noexecstack -o "$$so" "$$o" >&2; \
+	echo "hotswap-module-so: linked single-handler module candidate $$so" >&2; \
+	echo "$$so"
+
 # Full no-link syntax check across every TU in one shot (no incremental state).
 syntax-check: $(VIEW_GEN_HEADERS)
 	@$(CC) $(CFLAGS) -Wno-deprecated-declarations -fsyntax-only $(ALL_SRCS) $(NODE_ENTRY_SRCS) && echo "syntax-check: OK"
@@ -2875,6 +2903,13 @@ check-hotswap-eligible-scope:
 check-hotswap-static-state:
 	@tools/lint/check_hotswap_static_state.sh
 
+# THE HARD LINE for the REAL (activatable) module ABI: every swappable handler
+# (config/hotswap_swappable.def) must be owned by a controller/view/condition
+# LEAF — never a reducer/consensus/storage/supervisor TU. Self-tested in
+# test_make_lint_gates.c. See docs/work/HOTSWAP.md "Real module ABI".
+check-hotswap-swappable-shape:
+	@tools/lint/check_hotswap_swappable_shape.sh
+
 # Prove the RELEASE binary links none of the dev-only mutation entry points
 # (dispatcher, cycle, watcher, subprocess runner) NOR the native dev-lane
 # activation engine (tools/dev/dev_activation*.c: stop/start the unit, flip
@@ -3497,7 +3532,7 @@ check-honest-witness:
 	@echo "══ LINT: honest witness (E12) ══"
 	@ZCL_LINT_MODE=FAIL ./tools/lint/check_honest_witness.sh
 
-lint: check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-release-no-dev-symbols check-stable-publish-contained check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-thread-supervision check-file-purpose check-group-purpose check-no-orphan-placement check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vendor-provenance
+lint: check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-hotswap-swappable-shape check-release-no-dev-symbols check-stable-publish-contained check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-thread-supervision check-file-purpose check-group-purpose check-no-orphan-placement check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vendor-provenance
 	@echo "══ LINT: all checks passed ══"
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the

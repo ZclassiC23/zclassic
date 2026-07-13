@@ -350,6 +350,13 @@ bool zcl_command_registry_replace_batch(
 /* Active override-snapshot generation (0 = none published). */
 uint32_t zcl_command_registry_active_generation(void);
 
+/* True iff every RETIRED override snapshot (published but no longer active) has
+ * drained to a zero in-flight dispatch refcount — no dispatch can still be
+ * executing a superseded handler. A hot-swap loader polls this before it
+ * dlcloses a superseded module .so (epoch/refcount quiesce; see
+ * hotswap_activate). Lock-free; the publish list is append-only, never freed. */
+bool zcl_command_registry_all_retired_quiesced(void);
+
 /* Effective handler for `spec`: the active override for spec->path when one is
  * published, else spec->handler. NULL when neither exists. */
 zcl_command_handler_fn zcl_command_registry_effective_handler(

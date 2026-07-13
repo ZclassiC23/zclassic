@@ -21,6 +21,7 @@
  *   zclassic23 <method> [params...]   — RPC client to running node */
 
 #include "config/boot.h"
+#include "hotswap/hotswap_module.h"
 #include "rpc/client.h"
 #include "rpc/protocol.h"
 #include "net/file_service.h"
@@ -2114,6 +2115,9 @@ static void print_usage(const char *prog)
     printf("  -profile=<name>     Service profile: full, zclassic-only, explorer, onion-node, legacy-compat\n");
     printf("  -operator-lane=<name>  Operator lane: canonical, soak, dev, test, copy\n");
     printf("  -nolegacyimport     Do not auto-read/link ~/.zclassic during boot\n");
+    printf("  -hotswap-activate   Arm Tier-1 live hot-swap ACTIVATION (dev only;\n");
+    printf("                      also needs ZCL_HOTSWAP_ACTIVATE=1 and the exact\n");
+    printf("                      ~/.zclassic-c23-dev datadir; canonical refused).\n");
     printf("  -allow-plaintext-wallet  Create a new wallet UNENCRYPTED at rest\n");
     printf("                      (loud opt-in; otherwise set ZCL_WALLET_PASSPHRASE\n");
     printf("                      or first-run wallet creation refuses).\n");
@@ -3281,6 +3285,15 @@ int main(int argc, char **argv)
             atomic_store(&g_enforce_checkdatasig_sigops, true);
         }
         else if (strcmp(argv[i], "-nobgvalidation") == 0) ctx.no_bg_validation = true;
+        else if (strcmp(argv[i], "-hotswap-activate") == 0) {
+            /* Arm Tier-1 live hot-swap ACTIVATION for this resident node. This
+             * is only ONE of the two required gates: a live swap also needs
+             * ZCL_HOTSWAP_ACTIVATE=1 in the environment AND the exact dev
+             * datadir (~/.zclassic-c23-dev). The canonical datadir is refused
+             * unconditionally. Without this flag every hot-swap is verify-only.
+             * See hotswap_activation_authorized() (lib/hotswap). */
+            hotswap_set_activate_flag(true);
+        }
         else if (strcmp(argv[i], "-mcp-inprocess") == 0) mcp_inprocess = true;
         else if (strcmp(argv[i], "-nolegacyimport") == 0) ctx.no_legacy_auto_import = true;
         else if (strcmp(argv[i], "-allow-plaintext-wallet") == 0) {

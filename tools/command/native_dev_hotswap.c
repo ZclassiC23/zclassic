@@ -1,122 +1,245 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Native Tier-1 hot-swap command glue (Zero-MCP W1-B/C).
+ * Native Tier-1 hot-swap command glue (Zero-MCP W1-B/C + activation finish).
  *
- * The MCP-free successor of the MCP hot-swap surface:
- *   - tools/mcp/controllers/dev_hotswap_controller.c (h_zcl_agent_hotswap,
- *     hotswap_commit_mcp_routes), and
- *   - tools/mcp/dev_rpc_bridge.c (rpc_dev_hotswap, dev_bridge_register_impl),
- * re-homed here so it survives the later MCP deletion. Phase 0 keeps both
- * publication and resident candidate loading contained: dlopen executes ELF
- * constructors before manifest admission, so even a discard-only probe must
- * move to a disposable worker behind pre-load ELF/sidecar policy first.
+ * The MCP-free successor of the MCP hot-swap surface. The REAL, activatable
+ * machinery now lives here + lib/hotswap:
  *
- * Architecture: `zclassic23-dev dev hotswap apply` runs as a SEPARATE
- * short-lived process, so its CLI handler cannot re-point a leaf in the RUNNING
- * dev node's registry. The retained JSON-RPC (`dev_hotswap_native`) gives old
- * clients a typed refusal without reaching dlopen. Build/test/source checks
- * remain available through the verify-only watcher.
+ *   - `dev.hotswap.probe`  — VERIFY-ONLY, in the CLI's own throwaway process:
+ *     dlopen + ABI-validate + self_test of a module .so, NEVER commits. This is
+ *     the default dev-loop surface — it proves a swap WOULD work.
+ *   - `dev.hotswap.apply`  — forwards to the RESIDENT node's `dev_hotswap_native`
+ *     RPC (a separate CLI process cannot re-point the running node's registry).
+ *   - `dev_hotswap_native` — the resident RPC that actually performs the swap
+ *     IN the running node, gated by hotswap_activation_authorized(): default is
+ *     verify-only; a live swap needs BOTH `-hotswap-activate` AND
+ *     `ZCL_HOTSWAP_ACTIVATE=1` and the exact dev datadir (canonical refused).
  *
- * The ENTIRE executable surface (CLI handlers and resident RPC)
- * is `#ifdef ZCL_DEV_BUILD`. A release build links only the no-op
- * register_dev_native_hotswap_rpc() stub. */
+ * The superseded module .so is dlclose'd only after the command-registry
+ * override snapshots drain (registry_quiesced_cb -> epoch/refcount quiesce).
+ *
+ * The ENTIRE executable surface is `#ifdef ZCL_DEV_BUILD`; a release build links
+ * only the no-op register_dev_native_hotswap_rpc() stub. */
 
 #define _GNU_SOURCE
 #include "command/native_dev_hotswap.h"
 #include "command/native_command.h"
 
 #include "hotswap/hotswap.h"
+#include "hotswap/hotswap_module.h"
 #include "json/json.h"
+#include "kernel/command_registry.h"
 #include "mcp/rpc_client.h"
 #include "rpc/protocol.h"
 #include "rpc/server.h"
 
+#include <stdlib.h>
+#include <string.h>
+
 #ifdef ZCL_DEV_BUILD
 
-/* Positional params: [so_path, probe_leaf, (probe_only)] — the same shape
- * rpc_dev_hotswap uses, extended with an optional probe_only bool. */
+/* Publish ONE {handler_name, fn} override into the live command registry. */
+static bool registry_commit_cb(void *ctx, const char *handler_name,
+                               zcl_hotswap_handler_fn fn, uint32_t *out_gen,
+                               char *why, size_t why_sz)
+{
+    (void)ctx;
+    struct zcl_command_handler_override ovr = {
+        .path = handler_name, .handler = fn,
+    };
+    if (!zcl_command_registry_replace_batch(0, &ovr, 1, why, why_sz))
+        return false;
+    if (out_gen)
+        *out_gen = zcl_command_registry_active_generation();
+    return true;
+}
+
+/* Gate the dlclose of a superseded module .so on override-snapshot drain. */
+static bool registry_quiesced_cb(void *ctx)
+{
+    (void)ctx;
+    return zcl_command_registry_all_retired_quiesced();
+}
+
+/* Render a hotswap_activate_report into an already-init'd reply. */
+static void report_to_reply(struct zcl_command_reply *reply,
+                            const struct hotswap_activate_report *report)
+{
+    json_free(&reply->data);
+    json_init(&reply->data);
+    json_set_object(&reply->data);
+    json_push_kv_str(&reply->data, "schema", "zcl.hotswap_activate.v1");
+    json_push_kv_bool(&reply->data, "ok", report->ok);
+    json_push_kv_bool(&reply->data, "verify_only", report->verify_only);
+    json_push_kv_bool(&reply->data, "activated", report->activated);
+    json_push_kv_bool(&reply->data, "rolled_back", report->rolled_back);
+    json_push_kv_int(&reply->data, "generation", (int64_t)report->generation);
+    json_push_kv_str(&reply->data, "handler", report->handler_name);
+    json_push_kv_str(&reply->data, "artifact_sha256", report->artifact_sha256);
+    json_push_kv_str(&reply->data, "stage", report->stage);
+    if (report->error[0])
+        json_push_kv_str(&reply->data, "error", report->error);
+
+    if (report->ok) {
+        reply->status = ZCL_COMMAND_STATUS_PASSED;
+        reply->exit_code = ZCL_COMMAND_EXIT_OK;
+    } else {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
+            "HOTSWAP_REFUSED", report->stage[0] ? report->stage : "activate",
+            false, false,
+            report->error[0] ? report->error : "hot-swap refused",
+            report->handler_name);
+    }
+}
+
+/* Resident RPC: perform the swap IN this (running node) process.
+ * Positional params: [so_path, (activate_bool)]. activate defaults false
+ * (verify-only). A true activate is still gated by hotswap_activation_authorized
+ * inside hotswap_activate — no flag/env or a canonical datadir => typed refusal. */
 static bool rpc_dev_hotswap_native(const struct json_value *params, bool help,
                                    struct json_value *result)
 {
     if (help) {
         json_set_str(result,
-            "dev_hotswap_native \"/absolute/generation.so\" \"probe_leaf\" "
-            "( probe_only )");
+            "dev_hotswap_native \"/absolute/module.so\" ( activate )");
         return true;
     }
-    /* Resident lane guard: this RPC only ever runs in the dev node
-     * ~/.zclassic-c23-dev (the same lane hotswap_load_leaves enforces). */
     if (!hotswap_datadir_is_dev(mcp_rpc_client_datadir())) {
         json_rpc_error_full(result, RPC_FORBIDDEN_BY_SAFE_MODE,
             "native hot-swap available only in the running ~/.zclassic-c23-dev node",
             "dev_hotswap_native");
         return false;
     }
-    if (!params || params->type != JSON_ARR || json_size(params) < 2 ||
-        json_size(params) > 3) {
+    if (!params || params->type != JSON_ARR || json_size(params) < 1 ||
+        json_size(params) > 2) {
         json_rpc_error_full(result, RPC_INVALID_PARAMS,
-            "expected [so_path, probe_leaf, (probe_only)]", "dev_hotswap_native");
+            "expected [so_path, (activate)]", "dev_hotswap_native");
         return false;
     }
     const struct json_value *path_v = json_at(params, 0);
-    const struct json_value *probe_v = json_at(params, 1);
-    const struct json_value *only_v =
-        json_size(params) > 2 ? json_at(params, 2) : NULL;
-    if (!path_v || path_v->type != JSON_STR || !probe_v ||
-        probe_v->type != JSON_STR) {
+    const struct json_value *act_v = json_size(params) > 1 ? json_at(params, 1) : NULL;
+    if (!path_v || path_v->type != JSON_STR) {
         json_rpc_error_full(result, RPC_INVALID_PARAMS,
-            "so_path and probe_leaf must be strings", "dev_hotswap_native");
+            "so_path must be a string", "dev_hotswap_native");
         return false;
     }
     const char *so_path = json_get_str(path_v);
-    const char *probe_leaf = json_get_str(probe_v);
     if (!so_path || so_path[0] != '/') {
         json_rpc_error_full(result, RPC_INVALID_PARAMETER,
             "so_path must be absolute", "dev_hotswap_native");
         return false;
     }
-    if (!probe_leaf || !probe_leaf[0]) {
-        json_rpc_error_full(result, RPC_INVALID_PARAMETER,
-            "probe_leaf is required", "dev_hotswap_native");
-        return false;
-    }
-    bool probe_only = only_v && only_v->type == JSON_BOOL && json_get_bool(only_v);
-    json_rpc_error_full(
-        result, RPC_FORBIDDEN_BY_SAFE_MODE,
-        probe_only
-            ? "resident candidate probing is contained: pre-admission dlopen "
-              "can execute constructors/destructors; use the build/test-only "
-              "verify loop until a disposable worker and ELF policy land"
-            : "runtime hot-swap publication is contained until immutable source "
-              "epochs, complete proof receipts, resident CAS, and rollback are "
-              "one durable transaction",
-        "dev_hotswap_native");
-    return false;
+    bool activate = act_v && act_v->type == JSON_BOOL && json_get_bool(act_v);
+
+    struct hotswap_activate_report report;
+    hotswap_activate(so_path, mcp_rpc_client_datadir(), activate,
+                     registry_commit_cb, registry_quiesced_cb, NULL, &report);
+
+    /* Return the full report either way; the CLI renders ok/verify_only/error. */
+    json_set_object(result);
+    json_push_kv_str(result, "schema", "zcl.hotswap_activate.v1");
+    json_push_kv_bool(result, "ok", report.ok);
+    json_push_kv_bool(result, "verify_only", report.verify_only);
+    json_push_kv_bool(result, "activated", report.activated);
+    json_push_kv_bool(result, "rolled_back", report.rolled_back);
+    json_push_kv_int(result, "generation", (int64_t)report.generation);
+    json_push_kv_str(result, "handler", report.handler_name);
+    json_push_kv_str(result, "artifact_sha256", report.artifact_sha256);
+    json_push_kv_str(result, "stage", report.stage);
+    if (report.error[0])
+        json_push_kv_str(result, "error", report.error);
+    return report.ok;
 }
 
+/* CLI `dev hotswap apply`: forward to the resident node's dev_hotswap_native so
+ * the RUNNING node performs the gated swap. A separate CLI process cannot
+ * re-point the resident registry itself. */
 void zcl_native_handle_dev_hotswap_apply(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
-    (void)request;
-    zcl_command_reply_fail(
-        reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
-        "RUNTIME_PUBLICATION_CONTAINED", "authority", false, false,
-        "runtime hot-swap publication is contained until immutable source "
-        "epochs, complete proof receipts, resident CAS, and rollback are one "
-        "durable transaction",
-        "use the verify-only build/test loop; resident probing is also contained");
+    const char *so_path = json_get_str(json_get(request->input, "so_path"));
+    if (!so_path || so_path[0] != '/') {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+            ZCL_COMMAND_EXIT_INVALID, "HOTSWAP_BAD_INPUT", "validate", false,
+            false, "so_path (absolute) is required", "dev.hotswap.apply");
+        return;
+    }
+    /* Build [so_path, true] safely via the JSON writer. */
+    struct json_value arr, s, b;
+    json_init(&arr);
+    json_set_array(&arr);
+    json_init(&s);
+    json_set_str(&s, so_path);
+    json_push_back(&arr, &s);
+    json_free(&s);
+    json_init(&b);
+    json_set_bool(&b, true);
+    json_push_back(&arr, &b);
+    json_free(&b);
+    char params[1024];
+    size_t n = json_write(&arr, params, sizeof(params));
+    json_free(&arr);
+    if (n == 0 || n >= sizeof(params)) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+            ZCL_COMMAND_EXIT_INVALID, "HOTSWAP_BAD_INPUT", "serialize", false,
+            false, "so_path too long", "dev.hotswap.apply");
+        return;
+    }
+
+    char *resp = mcp_node_rpc("dev_hotswap_native", params);
+    if (!resp) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+            ZCL_COMMAND_EXIT_TRANSIENT, "HOTSWAP_NO_RESIDENT", "dispatch",
+            true, false, "resident node did not respond", "dev.hotswap.apply");
+        return;
+    }
+    struct json_value doc;
+    json_init(&doc);
+    bool parsed = json_read(&doc, resp, strlen(resp)) && doc.type == JSON_OBJ;
+    if (parsed) {
+        json_free(&reply->data);
+        json_init(&reply->data);
+        json_copy(&reply->data, &doc);
+        bool ok = json_get_bool(json_get(&doc, "ok"));
+        if (ok) {
+            reply->status = ZCL_COMMAND_STATUS_PASSED;
+            reply->exit_code = ZCL_COMMAND_EXIT_OK;
+        } else {
+            const char *err = json_get_str(json_get(&doc, "error"));
+            const char *stage = json_get_str(json_get(&doc, "stage"));
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                ZCL_COMMAND_EXIT_BLOCKED, "HOTSWAP_REFUSED",
+                stage && stage[0] ? stage : "activate", false, false,
+                err && err[0] ? err : "resident refused the swap",
+                "dev.hotswap.apply");
+        }
+    } else {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+            ZCL_COMMAND_EXIT_INTERNAL, "HOTSWAP_BAD_RESPONSE", "serialize",
+            false, false, "resident returned a non-object response",
+            "dev.hotswap.apply");
+    }
+    json_free(&doc);
+    free(resp);
 }
 
+/* CLI `dev hotswap probe`: VERIFY-ONLY in this throwaway CLI process. dlopen +
+ * ABI + self_test, never commits — the safest way to prove a swap would work. */
 void zcl_native_handle_dev_hotswap_probe(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
-    (void)request;
-    zcl_command_reply_fail(
-        reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
-        "RESIDENT_PROBE_CONTAINED", "pre_admission", false, false,
-        "resident candidate probing is contained because pre-admission dlopen "
-        "can execute constructors/destructors before ELF and manifest policy",
-        "use the build/test-only verify loop until disposable probe workers land");
+    const char *so_path = json_get_str(json_get(request->input, "so_path"));
+    if (!so_path || so_path[0] != '/') {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+            ZCL_COMMAND_EXIT_INVALID, "HOTSWAP_BAD_INPUT", "validate", false,
+            false, "so_path (absolute) is required", "dev.hotswap.probe");
+        return;
+    }
+    struct hotswap_activate_report report;
+    hotswap_activate(so_path, mcp_rpc_client_datadir(), /*request_activate=*/false,
+                     NULL, NULL, NULL, &report);
+    report_to_reply(reply, &report);
 }
 
 bool register_dev_native_hotswap_rpc(struct rpc_table *table,

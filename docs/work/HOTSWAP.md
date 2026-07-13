@@ -1,14 +1,98 @@
 # Tier-1 in-process hot-swap (DEV-ONLY)
 
-> **Phase-0 containment (2026-07-12):** no runtime hot-swap publication path
-> is enabled. `dev.hotswap.apply`, `make hotswap`, resident `dev_hotswap`,
-> legacy `zcl_agent_hotswap`, watcher publication modes, and direct hot-swap
-> scripts all refuse before `dlopen` or registry replacement. Resident probing
-> is contained too because constructors run before manifest admission. `make
-> hotswap-so`, `make hotswap-sim`, loader tests, and state inspection remain
-> available. The mechanism below documents the
-> in-tree implementation and target transaction; it is not publication
-> authority.
+> **Two tracks now exist. Read this first.**
+>
+> 1. **The manifest/staging pilot** (`mcp.routes` + `native.leaves`, everything
+>    below "Moving parts") stays **Phase-0 contained (2026-07-12)**: `make
+>    hotswap`, resident `dev_hotswap`, legacy `zcl_agent_hotswap`, watcher
+>    publication modes, and direct scripts all refuse before `dlopen` or registry
+>    replacement. `make hotswap-so`, `make hotswap-sim`, loader tests, and state
+>    inspection remain available.
+>
+> 2. **The REAL (activatable) module ABI** (`struct zcl_hotswap_module`, added
+>    `wf/hotswap-finish`) is the finished machinery — see
+>    "Real module ABI (activatable, gated)" immediately below. It is **default
+>    verify-only** and a live swap is **gated OFF** behind BOTH the
+>    `-hotswap-activate` flag AND `ZCL_HOTSWAP_ACTIVATE=1`, and REFUSES the
+>    canonical datadir. Canonical activation stays behind the owner's Phase-3
+>    ritual (NOT implemented here).
+
+## Real module ABI (activatable, gated)
+
+The "finished" single-handler hot-swap path. Unlike the manifest pilot (which
+re-points a whole controller's route/leaf table via a host vtable and NEVER
+dlcloses), a module `.so` carries ONE swappable leaf and the superseded `.so` is
+dlclose'd after in-flight dispatch drains.
+
+| Piece | Where |
+|-------|-------|
+| ABI struct + emitter + activation API | `lib/hotswap/include/hotswap/hotswap_module.h` |
+| Loader (dlopen/admit/self_test/commit/retire) + gate + telemetry | `lib/hotswap/src/hotswap_activate.c` |
+| Epoch/refcount drain + `zcl_command_registry_all_retired_quiesced()` | `lib/kernel/src/command_registry.c` |
+| Swappable allowlist (THE HARD LINE) | `config/hotswap_swappable.def` |
+| Hard-line lint gate + selftest | `tools/lint/check_hotswap_swappable_shape.sh`, `lib/test/src/test_make_lint_gates.c` |
+| Per-handler `.so` build path | `make hotswap-module-so HANDLER=core.status` → `build/hotswap/<handler>-<gitsha>.so` |
+| Resident RPC + CLI verify/apply | `tools/command/native_dev_hotswap.c` (`dev.hotswap.probe`/`apply`, `dev_hotswap_native`) |
+| Activation flag `-hotswap-activate` | `src/main.c` |
+| Tests | `lib/test/src/test_hotswap_module.c` |
+
+**The ABI.** Each swappable `.so` exports ONE data symbol `zcl_hotswap_module`:
+
+```c
+struct zcl_hotswap_module {
+    uint32_t abi_version;                     /* == ZCL_HOTSWAP_MODULE_ABI_V1 */
+    const char *handler_name;                 /* canonical READY read-only leaf */
+    zcl_hotswap_handler_fn fn;                /* replacement handler */
+    bool (*self_test)(char *err, size_t cap); /* module health hook */
+};
+```
+
+A missing symbol or a mismatched `abi_version` is refused **loudly** (logged +
+typed `stage`/`error`), and the handler is never called. `hotswap_module_admit()`
+is the pure, always-compiled gauntlet (ABI + fields + allowlist + self_test),
+unit-tested directly with fabricated structs.
+
+**Epoch/refcount quiesce.** Command dispatch acquires the active override
+snapshot with an optimistic refcount + revalidate (UAF-safe because snapshots
+are never freed) and holds it across the override handler call. To reclaim a
+superseded `.so`, the loader waits (bounded) until
+`zcl_command_registry_all_retired_quiesced()` reports every RETIRED snapshot has
+drained to a zero refcount, THEN dlcloses it. If drain cannot be confirmed the
+`.so` is kept mapped forever — the pilot's never-close fallback, always
+memory-safe. The no-override fast path stays zero-RMW.
+
+**THE HARD LINE.** Only shape-leaf handlers (controllers / views / conditions)
+may be swapped. `config/hotswap_swappable.def` is the allowlist;
+`check-hotswap-swappable-shape` (in `make lint`, self-tested) fails if any
+swappable `source_tu` resolves under a reducer stage, consensus validation, the
+storage engine, a supervisor, or any state root. The reducer stages, consensus,
+storage, and supervisors are NEVER swappable.
+
+**Activation gating (do NOT weaken).** Default is verify-only: `dev.hotswap.probe`
+(and the resident RPC with `activate=false`) dlopen + ABI-validate + self_test
+and NEVER commit. A live swap requires ALL of: the `-hotswap-activate` flag on
+the resident node, `ZCL_HOTSWAP_ACTIVATE=1` in its environment, and the exact
+`~/.zclassic-c23-dev` datadir — the canonical `~/.zclassic-c23` datadir is
+refused with a typed reason. `hotswap_activation_authorized()` is the single
+gate; verify-only results are always labeled `verify_only`. Telemetry:
+`zcl_state subsystem=hotswap` → `activation` object (flag/env/containment,
+counts, active slots, last activation/rejection).
+
+**Known v1 TODOs.** The module `self_test` is a structural OK; an isolated
+behavioral precommit probe (dispatch the candidate against an empty request and
+compare an expected schema before publish) is future work. The CLI→resident
+`apply` forward assumes the default dev datadir/port resolution.
+
+The manifest/staging pilot documentation follows unchanged.
+
+> **Phase-0 containment (2026-07-12) — manifest/staging pilot only:** the
+> pilot has no runtime publication path. `dev.hotswap.apply` now forwards to the
+> resident node's module-ABI path (above); `make hotswap`, resident
+> `dev_hotswap`, legacy `zcl_agent_hotswap`, watcher publication modes, and
+> direct hot-swap scripts still refuse before `dlopen` or registry replacement.
+> `make hotswap-so`, `make hotswap-sim`, loader tests, and state inspection
+> remain available. The mechanism below documents the pilot's in-tree
+> implementation and target transaction; it is not publication authority.
 
 The in-tree mechanism can compile a manifest-eligible stateless controller `.c`
 into a content-identified generation `.so`. Two provider classes exist:
