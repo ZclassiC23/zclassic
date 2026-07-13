@@ -35,6 +35,18 @@
                                           * leaves churn/cache headroom */
 #define DL_PEER_AVOID_COOLDOWN_SECS 30   /* temporarily avoid a peer after a
                                           * block request timeout */
+#define DL_TIP_BIAS_RESERVE 64           /* S2.3: count of the lowest-height
+                                          * (tip-adjacent, most-urgent) queue
+                                          * entries preferentially reserved for
+                                          * a peer whose bandwidth_score is
+                                          * >=2x a slower requester's. A slower
+                                          * peer skips past this reserve only
+                                          * when something eligible exists
+                                          * beyond it; it falls back INTO the
+                                          * reserve immediately when the queue
+                                          * is shallower or nothing else is
+                                          * eligible, so a slow peer is never
+                                          * starved (bias, not partition). */
 
 /* Dynamic limits — return aggressive values during IBD, conservative at tip.
  * These check sync_get_state() internally. Thread-safe. */

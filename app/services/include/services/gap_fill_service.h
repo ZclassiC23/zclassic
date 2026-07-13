@@ -76,11 +76,16 @@ struct gap_fill_window {
     bool has_work;
 };
 
-/* Pure window calculation used by the worker and pinned by tests. The body
- * fetch cursor is the reducer frontier: when it is behind active tip, gap-fill
- * must refill from body_fetch_cursor, not active_tip+1. */
+/* Pure window calculation used by the worker and pinned by tests.
+ * `floor_cursor` is the fastest safe upper bound on new download work — the
+ * caller passes the validate_headers cursor (header-only, decoupled from
+ * body-on-disk presence) rather than the body_fetch cursor, so a stall in
+ * the body-fetch reducer stage does not also stall on-disk body prefetch.
+ * When floor_cursor is behind active tip, gap-fill still refills from
+ * floor_cursor, not active_tip+1, as a defensive floor against running the
+ * window past validated headers. GAPFILL_WINDOW bounds the result. */
 bool gap_fill_compute_window(int active_tip_h, int best_header_h,
-                             uint64_t body_fetch_cursor,
+                             uint64_t floor_cursor,
                              struct gap_fill_window *out);
 
 /* Return the pprev node that starts the connectable bottom window, falling

@@ -952,6 +952,45 @@ bool dl_assignment_should_attempt(struct download_manager *dm,
     return should_attempt;
 }
 
+/* S2.3: best known bandwidth_score among other actively-tracked,
+ * non-loopback peers. Used only to decide whether *this* requester is
+ * demonstrably slower than some other known peer, gating the tip-adjacent
+ * bias below. Caller holds dm->cs. Bounded by DL_MAX_TRACKED_PEERS. */
+static uint32_t dl_best_bandwidth_score(const struct download_manager *dm)
+{
+    uint32_t best = 0;
+    for (size_t i = 0; i < dm->num_peers; i++) {
+        const struct dl_peer_stats *ps = &dm->peers[i];
+        if (!ps->active || ps->is_loopback)
+            continue;
+        if (ps->bandwidth_score > best)
+            best = ps->bandwidth_score;
+    }
+    return best;
+}
+
+/* S2.3: scan queue indices [scan_from, scan_to) for the first entry that
+ * does not avoid `peer_id`. Returns the index, or `scan_to` if none found.
+ * Records avoid-cooldown bookkeeping identically to the inline scan it
+ * replaces (avoid_blocked / earliest retry_after). Caller holds dm->cs. */
+static size_t dl_scan_queue_for_peer(struct download_manager *dm,
+                                     uint32_t peer_id, int64_t now,
+                                     size_t scan_from, size_t scan_to,
+                                     bool *avoid_blocked,
+                                     int64_t *retry_after)
+{
+    for (size_t i = scan_from; i < scan_to; i++) {
+        if (dl_queue_item_avoids_peer(dm, i, peer_id, now)) {
+            *avoid_blocked = true;
+            if (*retry_after == 0 || dm->queue_avoid_until[i] < *retry_after)
+                *retry_after = dm->queue_avoid_until[i];
+            continue;
+        }
+        return i;
+    }
+    return scan_to;
+}
+
 size_t dl_assign_to_peer(struct download_manager *dm,
                          uint32_t peer_id,
                          struct uint256 *out_hashes,
@@ -1017,26 +1056,50 @@ size_t dl_assign_to_peer(struct download_manager *dm,
     else if (active_before >= global_limit)
         assign_result = DL_ASSIGN_GLOBAL_WINDOW_FULL;
 
+    /* S2.3: bias the lowest-height (tip-adjacent, most-urgent) entries
+     * toward a demonstrably faster peer. The queue is height-sorted
+     * ascending, so indices [0, tip_bias_skip) are the tip-adjacent
+     * reserve. Skipped for loopback (already bypasses bandwidth scaling)
+     * and for peers with no established score yet (score 0 — a brand-new
+     * peer gets a fair first shot rather than being penalized on no
+     * evidence). `available` (this peer's quota) is computed independently,
+     * so a biased peer still gets its full quota, just sourced from beyond
+     * the reserve when possible. */
+    size_t tip_bias_skip = 0;
+    if (ps_assign && !ps_assign->is_loopback &&
+        ps_assign->bandwidth_score > 0) {
+        uint32_t best_score = dl_best_bandwidth_score(dm);
+        if (best_score >= ps_assign->bandwidth_score * 2)
+            tip_bias_skip = DL_TIP_BIAS_RESERVE;
+    }
+    if (tip_bias_skip > dm->queue_len)
+        tip_bias_skip = dm->queue_len;
+
     /* Pick the first non-avoided entry in height order. A timed-out hash
      * should be immediately available to other peers, but the same peer
      * that just failed it should not be allowed to grab it again while
-     * alternative peers are asking for work. */
+     * alternative peers are asking for work. When tip_bias_skip is set, a
+     * slower peer prefers entries beyond the tip-adjacent reserve, falling
+     * back INTO the reserve when nothing eligible lies beyond it (bias, not
+     * a hard partition — no starvation). When tip_bias_skip == 0 (loopback,
+     * unscored, or no faster peer known) this is byte-identical to the old
+     * whole-queue scan. */
     size_t assigned = 0;
     bool avoid_blocked = false;
     bool attempted_slot = false;
     int64_t retry_after = 0;
     while (assigned < available && dm->queue_len > 0) {
-        size_t pick = dm->queue_len;
-        for (size_t i = 0; i < dm->queue_len; i++) {
-            if (dl_queue_item_avoids_peer(dm, i, peer_id, now)) {
-                avoid_blocked = true;
-                if (retry_after == 0 ||
-                    dm->queue_avoid_until[i] < retry_after)
-                    retry_after = dm->queue_avoid_until[i];
-                continue;
-            }
-            pick = i;
-            break;
+        size_t bias_skip = tip_bias_skip < dm->queue_len
+                               ? tip_bias_skip : dm->queue_len;
+        size_t pick = dl_scan_queue_for_peer(dm, peer_id, now, bias_skip,
+                                             dm->queue_len, &avoid_blocked,
+                                             &retry_after);
+        if (pick == dm->queue_len && bias_skip > 0) {
+            /* Nothing eligible past the tip-adjacent reserve — fall back
+             * into the reserve itself so a slower peer still gets work
+             * rather than stalling. */
+            pick = dl_scan_queue_for_peer(dm, peer_id, now, 0, bias_skip,
+                                          &avoid_blocked, &retry_after);
         }
         if (pick == dm->queue_len)
             break;

@@ -1313,6 +1313,93 @@ static int test_gap_fill_registers_supervisor_contract(void)
     return failures;
 }
 
+/* S2.3: a peer with a well-established, much lower bandwidth_score must not
+ * claim the tip-adjacent (lowest-height) entries when a demonstrably faster
+ * peer is also known — but it must still receive work (bias, not a hard
+ * partition; no starvation). */
+static int test_dl_tip_bias_prefers_fast_peer(void)
+{
+    int failures = 0;
+    TEST("dl_assign_to_peer defers tip-adjacent entries to the faster peer") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        const int N = DL_TIP_BIAS_RESERVE + 32;
+        struct uint256 hs[DL_TIP_BIAS_RESERVE + 32];
+        for (int i = 0; i < N; i++) {
+            hs[i] = make_hash16((uint16_t)(500 + i));
+            int32_t height = 1000 + i; /* ascending: hs[0] most urgent */
+            dl_queue_blocks(&dm, &hs[i], &height, 1);
+        }
+
+        /* Register both peers (creates dl_peer_stats), then set a
+         * deterministic bandwidth_score directly via dl_peer_block_received
+         * so the bias decision does not depend on wall-clock timing. */
+        struct uint256 dummy[1];
+        dl_assign_to_peer(&dm, 1 /* fast */, dummy, 0);
+        dl_assign_to_peer(&dm, 2 /* slow */, dummy, 0);
+        dl_peer_block_received(&dm, 1, 100000);   /* 100ms -> high score */
+        dl_peer_block_received(&dm, 2, 4000000);  /* 4s -> low score */
+
+        /* Slow peer asks first. Must NOT get the most tip-adjacent block,
+         * and whatever it gets must come from beyond the reserve. */
+        struct uint256 slow_out[1];
+        ASSERT(dl_assign_to_peer(&dm, 2, slow_out, 1) == 1);
+        ASSERT(!uint256_eq(&slow_out[0], &hs[0]));
+        int slow_idx = -1;
+        for (int i = 0; i < N; i++)
+            if (uint256_eq(&slow_out[0], &hs[i])) { slow_idx = i; break; }
+        ASSERT(slow_idx >= DL_TIP_BIAS_RESERVE);
+
+        /* Fast peer asks next and must receive the true tip-adjacent blocks
+         * the slow peer deferred, in height order. */
+        struct uint256 fast_out[4];
+        ASSERT(dl_assign_to_peer(&dm, 1, fast_out, 4) == 4);
+        ASSERT(uint256_eq(&fast_out[0], &hs[0]));
+        ASSERT(uint256_eq(&fast_out[1], &hs[1]));
+        ASSERT(uint256_eq(&fast_out[2], &hs[2]));
+        ASSERT(uint256_eq(&fast_out[3], &hs[3]));
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* S2.3: when the queue is too shallow to support a reserve, the slow peer
+ * must still receive tip-adjacent work immediately — no starvation. */
+static int test_dl_tip_bias_no_starvation_shallow_queue(void)
+{
+    int failures = 0;
+    TEST("slow peer still gets tip-adjacent work when the queue is shallow") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        const int N = 5; /* well under DL_TIP_BIAS_RESERVE */
+        struct uint256 hs[5];
+        for (int i = 0; i < N; i++) {
+            hs[i] = make_hash16((uint16_t)(700 + i));
+            int32_t height = 2000 + i;
+            dl_queue_blocks(&dm, &hs[i], &height, 1);
+        }
+
+        struct uint256 dummy[1];
+        dl_assign_to_peer(&dm, 1 /* fast */, dummy, 0);
+        dl_assign_to_peer(&dm, 2 /* slow */, dummy, 0);
+        dl_peer_block_received(&dm, 1, 100000);
+        dl_peer_block_received(&dm, 2, 4000000);
+
+        struct uint256 out[5];
+        size_t got = dl_assign_to_peer(&dm, 2, out, 5);
+        ASSERT(got == 5); /* full quota despite being the slow peer */
+        ASSERT(uint256_eq(&out[0], &hs[0])); /* even the most urgent one */
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_download(void)
 {
     int failures = 0;
@@ -1348,6 +1435,8 @@ int test_download(void)
     failures += test_dl_lowest_height_first();
     failures += test_dl_sorted_across_paths();
     failures += test_dl_unknown_height_sorts_last();
+    failures += test_dl_tip_bias_prefers_fast_peer();
+    failures += test_dl_tip_bias_no_starvation_shallow_queue();
     failures += test_gap_fill_registers_supervisor_contract();
     return failures;
 }
