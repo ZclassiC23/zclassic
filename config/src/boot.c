@@ -2751,6 +2751,7 @@ bool app_init(struct app_context *ctx)
      * re-introduce the UAF. No relink is needed. */
 
     /* Validate coins/chain agreement and execute recovery */
+    t_reconcile_sub = boot_submark("blkidx.repair_relink", t_reconcile_sub);
     {
         struct boot_validation_result vr =
             validate_coins_chain_agreement(&g_state, &g_coins_tip,
@@ -3039,7 +3040,7 @@ bool app_init(struct app_context *ctx)
         }
     }
 
-    (void)boot_submark("blkidx.repair_relink", t_reconcile_sub);
+    (void)boot_submark("blkidx.validate_recover", t_reconcile_sub);
     printf("[boot] %-30s %lldms\n", "block_index_reconcile",
            (long long)(boot_clock_ms() - t_reconcile_blockindex));
 
