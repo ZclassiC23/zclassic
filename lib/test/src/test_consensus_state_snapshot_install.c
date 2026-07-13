@@ -4,6 +4,7 @@
 #include "test/test_helpers.h"
 
 #include "coins/utxo_commitment.h"
+#include "config/consensus_state_snapshot_export.h"
 #include "config/consensus_state_snapshot_install.h"
 #include "core/serialize.h"
 #include "core/uint256.h"
@@ -19,6 +20,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -61,7 +63,7 @@ static void fixture_proof_summaries(struct csi_fixture *f, uint8_t seed)
         "script_validate", "proof_validate", "utxo_apply", "tip_finalize",
     };
     static const bool hash_bound[CONSENSUS_STATE_BUNDLE_PROOF_COUNT] = {
-        true, true, true, false, true, true, false, false,
+        true, true, true, false, true, true, true, false,
     };
     for (size_t i = 0; i < CONSENSUS_STATE_BUNDLE_PROOF_COUNT; i++) {
         struct consensus_state_bundle_proof_summary *proof = &f->proofs[i];
@@ -88,7 +90,11 @@ enum csi_fault {
     CSI_WRONG_ANCHOR_DIGEST, CSI_WRONG_NF_DIGEST, CSI_BAD_TREE_ROOT,
     CSI_BAD_COMPLETE_CURSOR, CSI_ZERO_PROOF, CSI_TEXT_ANCHOR_POOL,
     CSI_TEXT_NF_POOL, CSI_WRONG_FRONTIER_ROOT, CSI_WRONG_FRONTIER_HEIGHT,
-    CSI_BAD_SOURCE_RECEIPT, CSI_EXTRA_SCHEMA_OBJECT, CSI_EXTRA_SCHEMA_COLUMN,
+    CSI_BAD_SOURCE_RECEIPT, CSI_BAD_SOURCE_EPOCH, CSI_UNKNOWN_PROFILE,
+    CSI_EMBEDDED_BUNDLE_SCHEMA, CSI_EMBEDDED_RECEIPT_SCHEMA,
+    CSI_TEXT_BLOCK_HASH, CSI_TEXT_PROOF_CURSOR, CSI_TEXT_COIN_VALUE,
+    CSI_REAL_ANCHOR_HEIGHT, CSI_REAL_NF_HEIGHT,
+    CSI_EXTRA_SCHEMA_OBJECT, CSI_EXTRA_SCHEMA_COLUMN,
 };
 
 static bool bundle_codec_kat(void)
@@ -106,16 +112,22 @@ static bool bundle_codec_kat(void)
         0x42,0x3b,0x6d,0x32,0xee,0x3a,0xc6,0x81,
     };
     static const uint8_t want_artifact[32] = {
-        0x1a,0x5c,0x1b,0x31,0x50,0x0b,0x86,0x08,
-        0x2d,0xf8,0x93,0x53,0x90,0x78,0x4d,0x37,
-        0xa7,0x7c,0x6f,0xe1,0xf2,0xb0,0x20,0x80,
-        0xec,0x51,0x15,0xad,0xf8,0x39,0xd6,0xc3,
+        0xb8,0x57,0xf6,0x79,0xdb,0xb2,0xe5,0x4b,
+        0x00,0xa5,0x05,0xc5,0x43,0xeb,0xb6,0x95,
+        0xec,0xdf,0x24,0xa2,0xb4,0x53,0x7d,0xd1,
+        0x6f,0x2b,0x67,0x62,0x9f,0x10,0x93,0x47,
+    };
+    static const uint8_t want_epoch[32] = {
+        0x9c,0x27,0xe6,0x7b,0x5b,0x02,0x1d,0x09,
+        0x3f,0x6d,0x5b,0x8d,0x66,0x04,0xb3,0x17,
+        0x0b,0xe0,0xda,0x01,0xfc,0xce,0x13,0xdb,
+        0xee,0xbc,0x1b,0x53,0xc8,0x56,0x96,0xf9,
     };
     static const uint8_t want_receipt[32] = {
-        0xbb,0xd1,0xf6,0xfa,0xdc,0xa1,0x0c,0x7a,
-        0xc9,0x72,0x70,0x2c,0x7f,0x8f,0x80,0xc0,
-        0xe7,0x06,0x7b,0x4e,0xf3,0xcb,0xc1,0xca,
-        0x43,0x15,0x47,0x52,0x1e,0xcb,0x18,0xf7,
+        0x60,0x19,0xf1,0x3c,0xd3,0xd2,0xab,0xff,
+        0x4c,0x76,0xc4,0x38,0x17,0xa2,0xda,0xcc,
+        0x51,0x53,0x5b,0xf5,0x9a,0x4b,0x31,0x58,
+        0x0b,0x0a,0x08,0xa2,0x65,0xba,0x4c,0x13,
     };
     static const uint8_t want_proof[32] = {
         0x86,0x5a,0x26,0x90,0xa7,0xe0,0x41,0xa8,
@@ -146,11 +158,18 @@ static bool bundle_codec_kat(void)
         receipt.source_tree_root[i] = (uint8_t)i;
         receipt.running_binary_digest[i] = (uint8_t)(32u + i);
         receipt.toolchain_digest[i] = (uint8_t)(64u + i);
-        receipt.chain_corpus_digest[i] = (uint8_t)(96u + i);
+        receipt.build_inputs_digest[i] = (uint8_t)(96u + i);
+        receipt.chain_corpus_digest[i] = (uint8_t)(128u + i);
     }
     snprintf(receipt.producer_commit, sizeof(receipt.producer_commit),
              "0123456789abcdef0123456789abcdef01234567");
+    receipt.source_clean = true;
+    receipt.validation_profile = CONSENSUS_STATE_VALIDATION_FULL;
     receipt.fold_cursor = 7;
+    consensus_state_source_epoch_digest(&receipt,
+                                        receipt.source_epoch_digest);
+    if (memcmp(receipt.source_epoch_digest, want_epoch, 32) != 0)
+        return false;
     consensus_state_source_receipt_digest(&receipt, out);
     if (memcmp(out, want_receipt, 32) != 0)
         return false;
@@ -171,6 +190,8 @@ static bool bundle_codec_kat(void)
     memset(&m, 0, sizeof(m));
     m.height = 7;
     m.history_complete = true;
+    m.source_clean = true;
+    m.validation_profile = CONSENSUS_STATE_VALIDATION_FULL;
     m.utxo_count = 3;
     m.total_supply = 99;
     m.anchor_count = 4;
@@ -236,6 +257,8 @@ static void fixture_artifact_digest(struct csi_fixture *f)
     m.height = f->height;
     memcpy(m.block_hash, f->block_hash, 32);
     m.history_complete = f->complete;
+    m.source_clean = f->receipt.source_clean;
+    m.validation_profile = f->receipt.validation_profile;
     m.activation_boundary = f->boundary;
     memcpy(m.utxo_root, f->utxo_root, 32);
     m.utxo_count = 2;
@@ -274,12 +297,17 @@ static bool fixture_init(struct csi_fixture *f, const char *dir,
         f->receipt.source_tree_root[i] = (uint8_t)(seed + i + 5u);
         f->receipt.running_binary_digest[i] = (uint8_t)(seed + i + 37u);
         f->receipt.toolchain_digest[i] = (uint8_t)(seed + i + 69u);
-        f->receipt.chain_corpus_digest[i] = (uint8_t)(seed + i + 101u);
+        f->receipt.build_inputs_digest[i] = (uint8_t)(seed + i + 101u);
+        f->receipt.chain_corpus_digest[i] = (uint8_t)(seed + i + 133u);
     }
     snprintf(f->receipt.producer_commit,
              sizeof(f->receipt.producer_commit),
              "0123456789abcdef0123456789abcdef01234567");
+    f->receipt.source_clean = true;
+    f->receipt.validation_profile = CONSENSUS_STATE_VALIDATION_FULL;
     f->receipt.fold_cursor = f->fold_cursor;
+    consensus_state_source_epoch_digest(&f->receipt,
+                                        f->receipt.source_epoch_digest);
     consensus_state_source_receipt_digest(&f->receipt,
                                           f->receipt.receipt_digest);
     memcpy(f->source, f->receipt.receipt_digest, 32);
@@ -355,6 +383,18 @@ static bool write_bundle(struct csi_fixture *f, enum csi_fault fault)
         f->frontier_height[ANCHOR_POOL_SPROUT]--;
     if (fault == CSI_BAD_SOURCE_RECEIPT)
         f->receipt.receipt_digest[0] ^= 1;
+    if (fault == CSI_BAD_SOURCE_EPOCH) {
+        f->receipt.source_epoch_digest[0] ^= 1;
+        consensus_state_source_receipt_digest(&f->receipt,
+                                              f->receipt.receipt_digest);
+        memcpy(f->source, f->receipt.receipt_digest, 32);
+    }
+    if (fault == CSI_UNKNOWN_PROFILE) {
+        f->receipt.validation_profile = 3;
+        consensus_state_source_receipt_digest(&f->receipt,
+                                              f->receipt.receipt_digest);
+        memcpy(f->source, f->receipt.receipt_digest, 32);
+    }
     fixture_artifact_digest(f);
 
     sqlite3 *db = NULL;
@@ -362,7 +402,8 @@ static bool write_bundle(struct csi_fixture *f, enum csi_fault fault)
         "CREATE TABLE bundle_meta("
         "singleton INTEGER PRIMARY KEY CHECK(singleton=1),"
         "schema TEXT NOT NULL,height INTEGER NOT NULL,block_hash BLOB NOT NULL,"
-        "history_complete INTEGER NOT NULL,activation_boundary INTEGER NOT NULL,"
+        "history_complete INTEGER NOT NULL,source_clean INTEGER NOT NULL,"
+        "validation_profile INTEGER NOT NULL,activation_boundary INTEGER NOT NULL,"
         "utxo_root BLOB NOT NULL,utxo_count INTEGER NOT NULL,"
         "total_supply INTEGER NOT NULL,anchor_digest BLOB NOT NULL,"
         "anchor_count INTEGER NOT NULL,sprout_frontier_root BLOB NOT NULL,"
@@ -378,8 +419,10 @@ static bool write_bundle(struct csi_fixture *f, enum csi_fault fault)
         "artifact_digest BLOB NOT NULL);"
         "CREATE TABLE source_receipt("
         "singleton INTEGER PRIMARY KEY CHECK(singleton=1),schema TEXT NOT NULL,"
-        "source_tree_root BLOB NOT NULL,running_binary_digest BLOB NOT NULL,"
-        "toolchain_digest BLOB NOT NULL,chain_corpus_digest BLOB NOT NULL,"
+        "source_epoch_digest BLOB NOT NULL,source_tree_root BLOB NOT NULL,"
+        "running_binary_digest BLOB NOT NULL,toolchain_digest BLOB NOT NULL,"
+        "build_inputs_digest BLOB NOT NULL,chain_corpus_digest BLOB NOT NULL,"
+        "source_clean INTEGER NOT NULL,validation_profile INTEGER NOT NULL,"
         "producer_commit TEXT NOT NULL,fold_cursor INTEGER NOT NULL,"
         "receipt_digest BLOB NOT NULL);"
         "CREATE TABLE bundle_proof("
@@ -408,7 +451,14 @@ static bool write_bundle(struct csi_fixture *f, enum csi_fault fault)
         sqlite3_reset(st); sqlite3_clear_bindings(st);
         sqlite3_bind_blob(st,1,f->coins[i].txid,32,SQLITE_STATIC);
         sqlite3_bind_int64(st,2,f->coins[i].vout);
-        sqlite3_bind_int64(st,3,f->coins[i].value);
+        if (fault == CSI_TEXT_COIN_VALUE && i == 0) {
+            char numeric_prefix[48];
+            snprintf(numeric_prefix, sizeof(numeric_prefix), "%lldx",
+                     (long long)f->coins[i].value);
+            sqlite3_bind_text(st,3,numeric_prefix,-1,SQLITE_TRANSIENT);
+        } else {
+            sqlite3_bind_int64(st,3,f->coins[i].value);
+        }
         sqlite3_bind_blob(st,4,f->coins[i].script,3,SQLITE_STATIC);
         sqlite3_bind_int(st,5,f->coins[i].height);
         sqlite3_bind_int(st,6,f->coins[i].coinbase?1:0);
@@ -418,18 +468,30 @@ static bool write_bundle(struct csi_fixture *f, enum csi_fault fault)
         sqlite3_finalize(st);
     st = NULL;
     if (ok) ok = sqlite3_prepare_v2(db,
-        "INSERT INTO source_receipt VALUES(1,?,?,?,?,?,?,?,?)",
+        "INSERT INTO source_receipt VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?)",
         -1,&st,NULL)==SQLITE_OK;
     if (ok) {
         int i=1;
-        sqlite3_bind_text(st,i++,CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA,-1,
-                          SQLITE_STATIC);
+        static const char bad_receipt_schema[] =
+            CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA "\0junk";
+        if (fault == CSI_EMBEDDED_RECEIPT_SCHEMA)
+            sqlite3_bind_text(st,i++,bad_receipt_schema,
+                              (int)sizeof(bad_receipt_schema)-1,
+                              SQLITE_STATIC);
+        else
+            sqlite3_bind_text(st,i++,CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA,-1,
+                              SQLITE_STATIC);
+        sqlite3_bind_blob(st,i++,f->receipt.source_epoch_digest,32,SQLITE_STATIC);
         sqlite3_bind_blob(st,i++,f->receipt.source_tree_root,32,SQLITE_STATIC);
         sqlite3_bind_blob(st,i++,f->receipt.running_binary_digest,32,
                           SQLITE_STATIC);
         sqlite3_bind_blob(st,i++,f->receipt.toolchain_digest,32,SQLITE_STATIC);
+        sqlite3_bind_blob(st,i++,f->receipt.build_inputs_digest,32,
+                          SQLITE_STATIC);
         sqlite3_bind_blob(st,i++,f->receipt.chain_corpus_digest,32,
                           SQLITE_STATIC);
+        sqlite3_bind_int(st,i++,f->receipt.source_clean?1:0);
+        sqlite3_bind_int(st,i++,f->receipt.validation_profile);
         sqlite3_bind_text(st,i++,f->receipt.producer_commit,40,SQLITE_STATIC);
         sqlite3_bind_int64(st,i++,f->receipt.fold_cursor);
         sqlite3_bind_blob(st,i++,f->receipt.receipt_digest,32,SQLITE_STATIC);
@@ -445,7 +507,14 @@ static bool write_bundle(struct csi_fixture *f, enum csi_fault fault)
         sqlite3_reset(st); sqlite3_clear_bindings(st);
         sqlite3_bind_int(st,1,(int)row);
         sqlite3_bind_text(st,2,p->component,-1,SQLITE_STATIC);
-        sqlite3_bind_int64(st,3,(sqlite3_int64)p->cursor);
+        if (fault == CSI_TEXT_PROOF_CURSOR && row == 0) {
+            char numeric_prefix[48];
+            snprintf(numeric_prefix, sizeof(numeric_prefix), "%llux",
+                     (unsigned long long)p->cursor);
+            sqlite3_bind_text(st,3,numeric_prefix,-1,SQLITE_TRANSIENT);
+        } else {
+            sqlite3_bind_int64(st,3,(sqlite3_int64)p->cursor);
+        }
         sqlite3_bind_int64(st,4,p->first_height);
         sqlite3_bind_int64(st,5,p->last_height);
         sqlite3_bind_int64(st,6,(sqlite3_int64)p->row_count);
@@ -460,11 +529,14 @@ static bool write_bundle(struct csi_fixture *f, enum csi_fault fault)
     for (size_t i = 0; ok && i < 2; i++) {
         sqlite3_reset(st); sqlite3_clear_bindings(st);
         if (fault == CSI_TEXT_ANCHOR_POOL && i == 0)
-            sqlite3_bind_text(st,1,"junk",-1,SQLITE_STATIC);
+            sqlite3_bind_text(st,1,"0x",-1,SQLITE_STATIC);
         else
             sqlite3_bind_int(st,1,f->anchors[i].pool);
         sqlite3_bind_blob(st,2,f->anchors[i].root,32,SQLITE_STATIC);
-        sqlite3_bind_int64(st,3,f->anchors[i].height);
+        if (fault == CSI_REAL_ANCHOR_HEIGHT && i == 0)
+            sqlite3_bind_double(st,3,(double)f->anchors[i].height + 0.25);
+        else
+            sqlite3_bind_int64(st,3,f->anchors[i].height);
         sqlite3_bind_blob(st,4,f->anchors[i].blob.data,
                           (int)f->anchors[i].blob.size,SQLITE_STATIC);
         ok = sqlite3_step(st) == SQLITE_DONE; // raw-sql-ok:test-fixture-seeding
@@ -477,24 +549,43 @@ static bool write_bundle(struct csi_fixture *f, enum csi_fault fault)
     for (size_t i = 0; ok && i < 2; i++) {
         sqlite3_reset(st); sqlite3_clear_bindings(st);
         if (fault == CSI_TEXT_NF_POOL && i == 0)
-            sqlite3_bind_text(st,1,"junk",-1,SQLITE_STATIC);
+            sqlite3_bind_text(st,1,"0x",-1,SQLITE_STATIC);
         else
             sqlite3_bind_int(st,1,f->nfs[i].pool);
         sqlite3_bind_blob(st,2,f->nfs[i].nf,32,SQLITE_STATIC);
-        sqlite3_bind_int64(st,3,f->nfs[i].height);
+        if (fault == CSI_REAL_NF_HEIGHT && i == 0)
+            sqlite3_bind_double(st,3,(double)f->nfs[i].height + 0.25);
+        else
+            sqlite3_bind_int64(st,3,f->nfs[i].height);
         ok = sqlite3_step(st) == SQLITE_DONE; // raw-sql-ok:test-fixture-seeding
     }
     if (st)
         sqlite3_finalize(st);
     st = NULL;
     if (ok) ok = sqlite3_prepare_v2(db,
-        "INSERT INTO bundle_meta VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO bundle_meta VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         -1,&st,NULL)==SQLITE_OK;
     if (ok) {
         int i=1;
-        sqlite3_bind_text(st,i++,CONSENSUS_STATE_BUNDLE_SCHEMA,-1,SQLITE_STATIC);
-        sqlite3_bind_int(st,i++,f->height); sqlite3_bind_blob(st,i++,f->block_hash,32,SQLITE_STATIC);
-        sqlite3_bind_int(st,i++,f->complete?1:0); sqlite3_bind_int64(st,i++,f->boundary);
+        static const char bad_bundle_schema[] =
+            CONSENSUS_STATE_BUNDLE_SCHEMA "\0junk";
+        if (fault == CSI_EMBEDDED_BUNDLE_SCHEMA)
+            sqlite3_bind_text(st,i++,bad_bundle_schema,
+                              (int)sizeof(bad_bundle_schema)-1,
+                              SQLITE_STATIC);
+        else
+            sqlite3_bind_text(st,i++,CONSENSUS_STATE_BUNDLE_SCHEMA,-1,
+                              SQLITE_STATIC);
+        sqlite3_bind_int(st,i++,f->height);
+        if (fault == CSI_TEXT_BLOCK_HASH)
+            sqlite3_bind_text(st,i++,(const char *)f->block_hash,32,
+                              SQLITE_STATIC);
+        else
+            sqlite3_bind_blob(st,i++,f->block_hash,32,SQLITE_STATIC);
+        sqlite3_bind_int(st,i++,f->complete?1:0);
+        sqlite3_bind_int(st,i++,f->receipt.source_clean?1:0);
+        sqlite3_bind_int(st,i++,f->receipt.validation_profile);
+        sqlite3_bind_int64(st,i++,f->boundary);
         sqlite3_bind_blob(st,i++,f->utxo_root,32,SQLITE_STATIC); sqlite3_bind_int64(st,i++,2);
         sqlite3_bind_int64(st,i++,f->supply); sqlite3_bind_blob(st,i++,f->anchor_digest,32,SQLITE_STATIC);
         sqlite3_bind_int64(st,i++,2);
@@ -635,6 +726,12 @@ struct candidate_sidecar_hook {
     bool created;
 };
 
+struct candidate_retained_writer_hook {
+    int dirfd;
+    int writer_fd;
+    bool ran;
+};
+
 static void candidate_create_sidecar(void *opaque)
 {
     struct candidate_sidecar_hook *hook=opaque;
@@ -643,6 +740,23 @@ static void candidate_create_sidecar(void *opaque)
                   O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0600);
     hook->created=fd>=0;
     if(fd>=0) close(fd);
+}
+
+static void candidate_retain_staging_writer(void *opaque)
+{
+    struct candidate_retained_writer_hook *hook=opaque;
+    hook->ran=true;
+    struct stat dir_st;
+    if(fstat(hook->dirfd,&dir_st)!=0) return;
+    for(int fd=3;fd<1024;fd++) {
+        struct stat st;
+        int flags=fcntl(fd,F_GETFL);
+        if(flags<0||(flags&O_ACCMODE)!=O_RDWR||fstat(fd,&st)!=0||
+           !S_ISREG(st.st_mode)||st.st_nlink!=0||st.st_dev!=dir_st.st_dev)
+            continue;
+        hook->writer_fd=fcntl(fd,F_DUPFD_CLOEXEC,1024);
+        break;
+    }
 }
 
 static bool candidate_build(
@@ -656,6 +770,23 @@ static bool candidate_build(
     request.output_name=name;
     request.failpoint=failpoint;
     return consensus_state_snapshot_candidate_build(artifact,&request,result);
+}
+
+struct candidate_thread_fixture {
+    const struct consensus_state_artifact_evidence *artifact;
+    int dirfd;
+    const char *name;
+    struct consensus_state_candidate_result result;
+    bool built;
+};
+
+static void *candidate_build_thread(void *opaque)
+{
+    struct candidate_thread_fixture *thread=opaque;
+    thread->built=candidate_build(thread->artifact,thread->dirfd,thread->name,
+                                  CONSENSUS_CANDIDATE_FAIL_NONE,
+                                  &thread->result);
+    return NULL;
 }
 
 static bool candidate_query_i64(sqlite3 *db,const char *sql,int64_t *out)
@@ -785,7 +916,11 @@ int test_consensus_state_snapshot_install(void)
         CSI_WRONG_ANCHOR_DIGEST,CSI_WRONG_NF_DIGEST,CSI_BAD_TREE_ROOT,
         CSI_BAD_COMPLETE_CURSOR,CSI_ZERO_PROOF,CSI_TEXT_ANCHOR_POOL,
         CSI_TEXT_NF_POOL,CSI_WRONG_FRONTIER_ROOT,CSI_WRONG_FRONTIER_HEIGHT,
-        CSI_BAD_SOURCE_RECEIPT,CSI_EXTRA_SCHEMA_OBJECT,
+        CSI_BAD_SOURCE_RECEIPT,CSI_BAD_SOURCE_EPOCH,CSI_UNKNOWN_PROFILE,
+        CSI_EMBEDDED_BUNDLE_SCHEMA,CSI_EMBEDDED_RECEIPT_SCHEMA,
+        CSI_TEXT_BLOCK_HASH,CSI_TEXT_PROOF_CURSOR,CSI_TEXT_COIN_VALUE,
+        CSI_REAL_ANCHOR_HEIGHT,CSI_REAL_NF_HEIGHT,
+        CSI_EXTRA_SCHEMA_OBJECT,
         CSI_EXTRA_SCHEMA_COLUMN};
     for(size_t i=0;i<sizeof(faults)/sizeof(faults[0]);i++) {
         CSI_CHECK("malformed bundle writes",write_bundle(&b,faults[i]));
@@ -826,11 +961,9 @@ int test_consensus_state_snapshot_install(void)
         fputs("not the admitted artifact", replacement);
         fclose(replacement);
     }
-    CSI_CHECK("evidence remains bound to original descriptor after path swap",
-              consensus_state_artifact_evidence_manifest_copy(
-                  artifact, &admitted_manifest) &&
-              admitted_manifest.height == b.height &&
-              memcmp(admitted_manifest.artifact_digest, b.artifact, 32) == 0);
+    CSI_CHECK("inode rename invalidates admitted metadata receipt",
+              !consensus_state_artifact_evidence_manifest_copy(
+                  artifact, &admitted_manifest));
     consensus_state_artifact_evidence_free(artifact);
     artifact = NULL;
     unlink(b.path);
@@ -854,6 +987,47 @@ int test_consensus_state_snapshot_install(void)
               !artifact_opened.ok && artifact == NULL);
     CSI_CHECK("artifact fixture returns immutable",
               chmod(b.path, 0400) == 0);
+
+    /* A retained writer can restore bytes and mtime after a temporary rewrite,
+     * but Linux advances ctime. Admission must bind ctime so that semantic
+     * reads cannot be detached from the final byte image this way. */
+    int retained_fd = -1;
+    bool retained_ready = chmod(b.path, 0600) == 0;
+    if (retained_ready)
+        retained_fd = open(b.path, O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+    if (retained_fd < 0 || chmod(b.path, 0400) != 0)
+        retained_ready = false;
+    artifact_opened = retained_ready
+        ? consensus_state_artifact_evidence_open(b.path, &artifact)
+        : ZCL_ERR(-1, "retained writer fixture setup failed");
+    CSI_CHECK("retained-writer fixture admits stable original",
+              artifact_opened.ok && artifact != NULL);
+    struct stat retained_before;
+    uint8_t original_byte = 0;
+    bool restored = artifact && retained_fd >= 0 &&
+        fstat(retained_fd, &retained_before) == 0 &&
+        pread(retained_fd, &original_byte, 1, 100) == 1;
+    uint8_t temporary_byte = (uint8_t)(original_byte ^ 1u);
+    if (restored)
+        restored = pwrite(retained_fd, &temporary_byte, 1, 100) == 1 &&
+                   fsync(retained_fd) == 0 &&
+                   pwrite(retained_fd, &original_byte, 1, 100) == 1 &&
+                   fsync(retained_fd) == 0;
+    struct timespec restore_times[2] = {
+        retained_before.st_atim, retained_before.st_mtim
+    };
+    if (restored)
+        restored = futimens(retained_fd, restore_times) == 0;
+    CSI_CHECK("retained writer restores exact bytes and mtime", restored);
+    CSI_CHECK("ctime still invalidates restored retained-writer receipt",
+              artifact &&
+              !consensus_state_artifact_evidence_revalidate(artifact));
+    consensus_state_artifact_evidence_free(artifact);
+    artifact = NULL;
+    if (retained_fd >= 0)
+        close(retained_fd);
+    CSI_CHECK("valid artifact restores after retained-writer test",
+              write_bundle(&b, CSI_VALID));
 
     artifact_opened = consensus_state_artifact_evidence_open(b.path, &artifact);
     CSI_CHECK("mutation fixture admits original artifact",
@@ -954,6 +1128,56 @@ int test_consensus_state_snapshot_install(void)
               active_is(db,&a));
     CSI_CHECK("candidate sidecar race fixture removes",
               unlinkat(candidate_dirfd,sidecar_hook.name,0)==0);
+
+    struct candidate_retained_writer_hook retained_writer={
+        .dirfd=candidate_dirfd,
+        .writer_fd=-1,
+    };
+    consensus_state_snapshot_export_test_set_after_staging_create_hook(
+        candidate_retain_staging_writer,&retained_writer);
+    struct consensus_state_candidate_result retained_writer_result;
+    CSI_CHECK("candidate retained writable descriptor refuses publication",
+              !candidate_build(artifact,candidate_dirfd,
+                               "retained-writer.progress.kv",
+                               CONSENSUS_CANDIDATE_FAIL_NONE,
+                               &retained_writer_result)&&
+              retained_writer_result.status==
+                  CONSENSUS_CANDIDATE_OUTPUT_ERROR&&
+              retained_writer.ran&&retained_writer.writer_fd>=0&&
+              candidate_output_absent(candidate_dirfd,
+                                      "retained-writer.progress.kv")&&
+              candidate_staging_count(dir)==0);
+    if(retained_writer.writer_fd>=0) close(retained_writer.writer_fd);
+
+    struct candidate_thread_fixture concurrent[2]={
+        {.artifact=artifact,.dirfd=candidate_dirfd,
+         .name="concurrent-a.progress.kv"},
+        {.artifact=artifact,.dirfd=candidate_dirfd,
+         .name="concurrent-b.progress.kv"},
+    };
+    pthread_t candidate_threads[2];
+    bool thread_a_started=pthread_create(
+        &candidate_threads[0],NULL,candidate_build_thread,&concurrent[0])==0;
+    bool thread_b_started=pthread_create(
+        &candidate_threads[1],NULL,candidate_build_thread,&concurrent[1])==0;
+    if(thread_a_started)
+        pthread_join(candidate_threads[0],NULL);
+    if(thread_b_started)
+        pthread_join(candidate_threads[1],NULL);
+    CSI_CHECK("shared evidence serializes concurrent candidate builds",
+              thread_a_started&&thread_b_started&&
+              concurrent[0].built&&concurrent[1].built&&
+              concurrent[0].result.status==
+                  CONSENSUS_CANDIDATE_VERIFIED_CONTAINED&&
+              concurrent[1].result.status==
+                  CONSENSUS_CANDIDATE_VERIFIED_CONTAINED);
+    CSI_CHECK("concurrent candidates publish complete immutable files",
+              !candidate_output_absent(candidate_dirfd,concurrent[0].name)&&
+              !candidate_output_absent(candidate_dirfd,concurrent[1].name)&&
+              candidate_staging_count(dir)==0);
+    (void)unlinkat(candidate_dirfd,concurrent[0].name,0);
+    (void)unlinkat(candidate_dirfd,concurrent[1].name,0);
+
     struct consensus_state_candidate_result candidate_result;
     CSI_CHECK("complete evidence builds contained candidate generation",
               candidate_build(artifact,candidate_dirfd,"candidate.progress.kv",
@@ -961,6 +1185,9 @@ int test_consensus_state_snapshot_install(void)
                               &candidate_result)&&
               candidate_result.status==
                   CONSENSUS_CANDIDATE_VERIFIED_CONTAINED&&
+              candidate_result.source_clean&&
+              candidate_result.validation_profile==
+                  CONSENSUS_STATE_VALIDATION_FULL&&
               candidate_result.height==b.height&&
               candidate_result.utxo_count==2&&
               candidate_result.anchor_count==2&&

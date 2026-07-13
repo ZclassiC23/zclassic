@@ -20,6 +20,8 @@ static struct consensus_state_bundle_manifest valid_manifest(void)
     memset(&manifest, 0, sizeof(manifest));
     manifest.height = 100;
     manifest.history_complete = true;
+    manifest.source_clean = true;
+    manifest.validation_profile = CONSENSUS_STATE_VALIDATION_FULL;
     manifest.sapling_frontier_height = 80;
     manifest.sprout_frontier_height = 70;
     manifest.source_fold_cursor = 101;
@@ -97,6 +99,14 @@ int test_consensus_state_chain_binding(void)
     CSB_CHECK("complete exact selected-chain binding passes",
               consensus_state_chain_binding_decide(
                   &manifest, &observation).ok);
+
+    struct consensus_state_bundle_manifest invalid_profile_manifest = manifest;
+    invalid_profile_manifest.validation_profile =
+        CONSENSUS_STATE_VALIDATION_INVALID;
+    consensus_state_bundle_artifact_digest(
+        &invalid_profile_manifest, invalid_profile_manifest.artifact_digest);
+    CSB_CHECK("unknown validation profile refuses",
+              rejected(&invalid_profile_manifest, &observation));
 
     struct consensus_state_chain_binding_observation bad = observation;
     bad.frontier_unchanged = false;

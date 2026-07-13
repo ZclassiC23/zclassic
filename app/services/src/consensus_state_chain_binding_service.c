@@ -71,6 +71,9 @@ static bool manifest_is_complete_and_self_bound(
         manifest->sapling_source_cursor != 0 ||
         manifest->nullifier_source_cursor != 0 ||
         manifest->source_fold_cursor != (int64_t)manifest->height + 1 ||
+        (manifest->validation_profile != CONSENSUS_STATE_VALIDATION_FULL &&
+         manifest->validation_profile !=
+             CONSENSUS_STATE_VALIDATION_CHECKPOINT_FOLD) ||
         !bytes_nonzero(manifest->block_hash) ||
         !bytes_nonzero(manifest->sapling_frontier_root) ||
         !bytes_nonzero(manifest->proof_manifest_digest) ||

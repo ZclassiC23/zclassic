@@ -69,8 +69,44 @@ component commitment; emits the canonical eight-row `bundle_proof`; preserves
 the source receipt; and verifies the result through the independent contained
 reader before an exact-inode, no-replace link. When H is the compiled checkpoint
 it also requires exact compiled hash/root/count/supply. The receipt's source-tree
-and toolchain digests are producer claims bound to the known executable—not an
-independent rebuild proof.
+root, toolchain digest, complete build-input digest, clean/dirty bit, and commit
+form one recomputable source epoch. Those values remain producer claims bound to
+the known executable—not an independent rebuild proof.
+
+The still-unpublished v1 contract distinguishes `full` validation from
+`checkpoint_fold`. Script, proof, and UTXO rows written by the fast mint say
+`checkpoint_fold`; they never say `verified`. That posture is contained at every
+serving edge: it cannot raise `BLOCK_VALID_SCRIPTS` or verified counters, cannot
+advance serving H*, tip finalization, or a repair authorizer, and cannot pass a
+normal serving boot. The canonical exporter accepts only `full`; a separate
+non-serving producer frontier and terminal generation receipt would have to be
+designed before checkpoint-fold state could be emitted by any future diagnostic
+writer. Serving H* and tip finalization must never be weakened to make such an
+export possible.
+
+The profile and source-clean bit remain bound by the source receipt, bundle
+manifest, and artifact digest, and the contained reader and candidate reader
+reject any mismatch or unknown value. A checkpoint fold proves exact
+transparent-state agreement at the compiled checkpoint only. It does not prove
+the signatures or shielded proofs that the fast producer explicitly skipped,
+does not establish complete history, and is never reported or published as full
+replay evidence.
+
+Each new script/proof row also carries the source epoch already prepared in
+`progress_meta`; missing/foreign epochs refuse export. This is a fail-closed
+legacy-row floor: old fast rows that said `verified` acquire a NULL column and
+cannot be authorized by inserting a receipt later. It is not yet the complete
+producer-generation receipt. Before any producer becomes callable, reset must
+atomically prepare and resume-check a generation digest binding the source
+epoch, running binary, validation profile, checkpoint tuple, toolchain/config,
+and a durable nonce; every row must carry that generation. Until that lands,
+there is intentionally no production setter/caller for the receipt or exporter.
+
+This correction does not introduce a bundle v2: no v1 producer is callable and
+no v1 artifact has been published. The first canonical writer and reader now
+agree on this one closed v1 encoding. A future schema suffix is reserved for an
+incompatible encoding change after v1 artifacts exist, not for implementation
+milestones or trust profiles.
 
 Both reducer consumers and export proof are hash-bound. Script and proof stage
 receipts carry the exact selected header hash; a missing, malformed, or foreign
@@ -95,12 +131,24 @@ directory fsync. Stale PID text is diagnostic only, symlink/hardlink aliases are
 refused, and release retains the inode to prevent split-lock races. This closes
 the basic two-writer prerequisite; it does not itself authorize state exchange.
 
-The two producers already running on 2026-07-13 predate the receipt contract.
-They are preserved evidence, not automatically admissible inputs. Do not
-backfill claims into a live producer database. A completed copy needs a
-separately reviewed ratification that hashes the actual preserved producer
-executable and binds immutable source/toolchain/corpus evidence, or a new
-receipt-owning producer must run without deleting the older inputs.
+Every newly invoked producer datadir is durably and permanently bound to either
+the full or checkpoint-fold lane before reset/resume. The binding survives a
+completed artifact and normal boot rejects every producer lane. Normal boot also
+rejects the older checkpoint-bound in-progress marker, which contains the two
+already-running pre-change producers as they exist on 2026-07-13. Their old fast
+rows say `verified`, and neither those rows nor the old marker records which
+crypto mode produced them. Pre-lane state is therefore never allowed to bind to
+the full lane: it may resume only after a conservative checkpoint-fold binding.
+Keep those datadirs isolated, resume the known fast producers only with the fast
+command, and never use or copy one as a serving-node datadir.
+
+There is an unavoidable forward-only limit: pre-change fast and full producers
+are byte-for-byte indistinguishable in these old rows. Code cannot retroactively
+infer a fact that was never recorded. Markerless legacy state is detected from
+its durable refold/applied frontier and receives the same checkpoint-fold-only
+posture. It cannot be ratified as full by backfilling a receipt. New source-epoch
+columns also remain NULL on legacy rows, so a later receipt cannot authorize
+them for canonical export.
 
 `consensus_state_chain_evidence_build()` is the separate process-singleton
 selected-chain binder. It accepts only the opaque descriptor-bound artifact
@@ -122,6 +170,9 @@ implemented and proven together:
 
 1. A full-history producer exports every transparent coin, Sapling/Sprout anchor
    row, and pool-qualified nullifier with exact component counts and digests.
+   A canonical sovereign candidate additionally requires `source_clean=true`
+   and validation profile `full`; checkpoint-fold or dirty evidence must remain
+   explicitly assisted/contained and can never be silently promoted.
 2. One single-use protected candidate must combine the artifact receipt and
    selected-chain evidence with sovereign trust posture, signed/expiring owner
    authority, exact target-store identity, lane, nonce, and rollback digest. It

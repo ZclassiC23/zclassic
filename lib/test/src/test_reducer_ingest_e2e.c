@@ -309,7 +309,7 @@ static bool rie_lookup(const struct uint256 *txid, uint32_t vout,
     return true; /* not found */
 }
 
-/* ── proof_validate seeding (upstream stage; covered elsewhere) ── */
+/* ── Exact upstream evidence seeding (covered by stage suites) ── */
 
 static bool rie_exec(sqlite3 *db, const char *sql)
 {
@@ -325,6 +325,15 @@ static bool seed_proof_validate(sqlite3 *db, const struct rie_branch *br,
     if (!db || !br || through_height < 0 || through_height >= br->n)
         return false;
     if (!rie_exec(db,
+        "CREATE TABLE IF NOT EXISTS header_admit_log ("
+        "  height INTEGER PRIMARY KEY, hash BLOB NOT NULL,"
+        "  parent_hash BLOB, admitted_at INTEGER NOT NULL)") ||
+        !rie_exec(db,
+        "CREATE TABLE IF NOT EXISTS validate_headers_log ("
+        "  height INTEGER PRIMARY KEY, hash BLOB NOT NULL,"
+        "  ok INTEGER NOT NULL, fail_reason TEXT,"
+        "  validated_at INTEGER NOT NULL)") ||
+        !rie_exec(db,
         "CREATE TABLE IF NOT EXISTS proof_validate_log ("
         "  height INTEGER PRIMARY KEY, status TEXT NOT NULL, ok INTEGER NOT NULL,"
         "  sapling_spends_total INTEGER NOT NULL,"
@@ -341,7 +350,10 @@ static bool seed_proof_validate(sqlite3 *db, const struct rie_branch *br,
         "  first_failure_serror INTEGER, validated_at INTEGER NOT NULL,"
         "  block_hash BLOB)"))
         return false;
-    sqlite3_stmt *st = NULL, *script_st = NULL;
+    sqlite3_stmt *st = NULL;
+    sqlite3_stmt *script_st = NULL;
+    sqlite3_stmt *header_st = NULL;
+    sqlite3_stmt *validate_st = NULL;
     if (sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO proof_validate_log "
         "(height, status, ok, sapling_spends_total, sapling_outputs_total,"
@@ -357,12 +369,29 @@ static bool seed_proof_validate(sqlite3 *db, const struct rie_branch *br,
         sqlite3_finalize(st);
         return false;
     }
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO header_admit_log "
+        "(height, hash, parent_hash, admitted_at) VALUES (?, ?, ?, 1)",
+        -1, &header_st, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO validate_headers_log "
+        "(height, hash, ok, fail_reason, validated_at) "
+        "VALUES (?, ?, 1, NULL, 1)",
+        -1, &validate_st, NULL) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        sqlite3_finalize(script_st);
+        sqlite3_finalize(header_st);
+        sqlite3_finalize(validate_st);
+        return false;
+    }
     for (int h = 0; h <= through_height; h++) {
         sqlite3_bind_int(st, 1, h);
         sqlite3_bind_blob(st, 2, br->hashes[h].data, 32, SQLITE_STATIC);
         if (sqlite3_step(st) != SQLITE_DONE) {
             sqlite3_finalize(st);
             sqlite3_finalize(script_st);
+            sqlite3_finalize(header_st);
+            sqlite3_finalize(validate_st);
             return false;
         }
         sqlite3_reset(st);
@@ -373,13 +402,41 @@ static bool seed_proof_validate(sqlite3 *db, const struct rie_branch *br,
         if (sqlite3_step(script_st) != SQLITE_DONE) {
             sqlite3_finalize(st);
             sqlite3_finalize(script_st);
+            sqlite3_finalize(header_st);
+            sqlite3_finalize(validate_st);
             return false;
         }
         sqlite3_reset(script_st);
         sqlite3_clear_bindings(script_st);
+
+        sqlite3_bind_int(header_st, 1, h);
+        sqlite3_bind_blob(header_st, 2, br->hashes[h].data, 32,
+                          SQLITE_STATIC);
+        if (h > 0)
+            sqlite3_bind_blob(header_st, 3, br->hashes[h - 1].data, 32,
+                              SQLITE_STATIC);
+        else
+            sqlite3_bind_null(header_st, 3);
+        sqlite3_bind_int(validate_st, 1, h);
+        sqlite3_bind_blob(validate_st, 2, br->hashes[h].data, 32,
+                          SQLITE_STATIC);
+        if (sqlite3_step(header_st) != SQLITE_DONE ||
+            sqlite3_step(validate_st) != SQLITE_DONE) {
+            sqlite3_finalize(st);
+            sqlite3_finalize(script_st);
+            sqlite3_finalize(header_st);
+            sqlite3_finalize(validate_st);
+            return false;
+        }
+        sqlite3_reset(header_st);
+        sqlite3_clear_bindings(header_st);
+        sqlite3_reset(validate_st);
+        sqlite3_clear_bindings(validate_st);
     }
     sqlite3_finalize(st);
     sqlite3_finalize(script_st);
+    sqlite3_finalize(header_st);
+    sqlite3_finalize(validate_st);
     if (sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO stage_cursor(name, cursor, updated_at) "
         "VALUES('proof_validate', ?, 1)", -1, &st, NULL) != SQLITE_OK)

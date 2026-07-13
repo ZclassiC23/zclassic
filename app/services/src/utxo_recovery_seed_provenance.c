@@ -26,6 +26,7 @@
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
+#include "util/log_macros.h"
 
 #include <stdint.h>
 
@@ -91,11 +92,11 @@ bool utxo_recovery_read_cold_import_seed(struct node_db *ndb,
 /* Clear all durable cold-import seed keys. Called from every UTXO wipe /
  * reimport-prepare so a stale key cannot outlive the coins it attests to.
  * Best-effort; the consumer's live coin-count cross-check is the backstop. */
-void utxo_recovery_clear_cold_import_seed(struct node_db *ndb)
+bool utxo_recovery_clear_cold_import_seed_checked(struct node_db *ndb)
 {
     if (!ndb)
-        return;
-    (void)node_db_exec(ndb,
+        return false;
+    bool ok = node_db_exec(ndb,
         "DELETE FROM node_state WHERE key IN ("
         "'cold_import_seed_anchor_height',"
         "'cold_import_seed_anchor_hash',"
@@ -107,5 +108,13 @@ void utxo_recovery_clear_cold_import_seed(struct node_db *ndb)
      * that action (the operator-prescribed remedy), so clear it here too —
      * otherwise a clean re-import would stay permanently blocked by a stale
      * blocker from the torn datadir it replaced. */
-    blocker_clear("seed.torn_import");
+    if (ok)
+        blocker_clear("seed.torn_import");
+    return ok;
+}
+
+void utxo_recovery_clear_cold_import_seed(struct node_db *ndb)
+{
+    if (ndb && !utxo_recovery_clear_cold_import_seed_checked(ndb))
+        LOG_WARN("utxo_recovery", "cold-import seed clear failed");
 }

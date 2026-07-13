@@ -111,6 +111,40 @@ static bool fc_make_log(sqlite3 *db, const char *table)
     return fc_exec(db, sql);
 }
 
+/* Canonical hash-bearing schemas needed by the serving frontier and by the
+ * tip-finalize exact-evidence gate.  Tests may leave them empty, but must not
+ * substitute height-only tables that make the fail-closed queries impossible
+ * to prepare. */
+static bool fc_make_exact_evidence_tables(sqlite3 *db)
+{
+    return fc_exec(db,
+        "CREATE TABLE IF NOT EXISTS header_admit_log ("
+        " height INTEGER PRIMARY KEY, hash BLOB NOT NULL,"
+        " parent_hash BLOB, admitted_at INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS validate_headers_log ("
+        " height INTEGER PRIMARY KEY, hash BLOB NOT NULL,"
+        " ok INTEGER NOT NULL, fail_reason TEXT,"
+        " validated_at INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS script_validate_log ("
+        " height INTEGER PRIMARY KEY, status TEXT NOT NULL,"
+        " ok INTEGER NOT NULL, tx_count INTEGER NOT NULL DEFAULT 0,"
+        " input_count INTEGER NOT NULL DEFAULT 0,"
+        " first_failure_txid BLOB, first_failure_vin INTEGER,"
+        " first_failure_serror INTEGER, validated_at INTEGER NOT NULL DEFAULT 1,"
+        " block_hash BLOB, source_epoch_digest BLOB);"
+        "CREATE TABLE IF NOT EXISTS proof_validate_log ("
+        " height INTEGER PRIMARY KEY, status TEXT NOT NULL,"
+        " ok INTEGER NOT NULL, sapling_spends_total INTEGER NOT NULL DEFAULT 0,"
+        " sapling_outputs_total INTEGER NOT NULL DEFAULT 0,"
+        " sprout_joinsplits_total INTEGER NOT NULL DEFAULT 0,"
+        " block_hash BLOB, source_epoch_digest BLOB,"
+        " first_failure_txid BLOB, first_failure_proof_type TEXT,"
+        " validated_at INTEGER NOT NULL DEFAULT 1);"
+        "CREATE TABLE IF NOT EXISTS utxo_apply_delta ("
+        " height INTEGER PRIMARY KEY, branch_hash BLOB NOT NULL,"
+        " spent_blob BLOB NOT NULL, added_blob BLOB NOT NULL)");
+}
+
 static bool fc_put_row(sqlite3 *db, const char *table, int height, int ok)
 {
     char sql[160];
@@ -287,15 +321,8 @@ static int fc_case_fresh_seed(void)
 
     /* The reducer-frontier scan needs every success-checked log table. */
     bool tables =
-        fc_exec(db,
-            "CREATE TABLE IF NOT EXISTS validate_headers_log ("
-            " height INTEGER PRIMARY KEY, ok INTEGER NOT NULL, hash BLOB)") &&
-        fc_exec(db,
-            "CREATE TABLE IF NOT EXISTS script_validate_log ("
-            " height INTEGER PRIMARY KEY, ok INTEGER NOT NULL,"
-            " block_hash BLOB)") &&
+        fc_make_exact_evidence_tables(db) &&
         fc_make_log(db, "body_persist_log") &&
-        fc_make_log(db, "proof_validate_log") &&
         /* utxo_apply_log needs the CANONICAL columns (not the minimal
          * fc_make_log shape): the seed under test stamps its trust row
          * with status/spent/added (task #31, cold-import row gap). */
@@ -478,9 +505,12 @@ static int fc_case_init_publishes_capped_cursor(void)
     return failures;
 }
 
-static bool fc_seed_utxo_apply(sqlite3 *db, int rows)
+static bool fc_seed_utxo_apply(sqlite3 *db, const struct fc_chain *sc,
+                               int rows)
 {
-    if (!fc_exec(db,
+    if (!db || !sc || !sc->hashes || rows < 0 || rows > FC_N ||
+        !fc_make_exact_evidence_tables(db) ||
+        !fc_exec(db,
             "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
             " height INTEGER PRIMARY KEY, status TEXT NOT NULL,"
             " ok INTEGER NOT NULL, spent_count INTEGER NOT NULL,"
@@ -489,17 +519,97 @@ static bool fc_seed_utxo_apply(sqlite3 *db, int rows)
             " first_failure_kind TEXT, first_failure_detail BLOB,"
             " applied_at INTEGER NOT NULL)"))
         return false;
-    for (int h = 0; h < rows; h++) {
-        char sql[200];
-        snprintf(sql, sizeof(sql),
-                 "INSERT OR REPLACE INTO utxo_apply_log"
-                 "(height,status,ok,spent_count,added_count,"
-                 " total_value_delta,applied_at) "
-                 "VALUES(%d,'verified',1,1,2,1,1)", h);
-        if (!fc_exec(db, sql))
-            return false;
+
+    sqlite3_stmt *header = NULL;
+    sqlite3_stmt *validate = NULL;
+    sqlite3_stmt *script = NULL;
+    sqlite3_stmt *proof = NULL;
+    sqlite3_stmt *utxo = NULL;
+    sqlite3_stmt *delta = NULL;
+    bool prepared =
+        sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO header_admit_log"
+            "(height,hash,parent_hash,admitted_at) VALUES(?,?,?,1)",
+            -1, &header, NULL) == SQLITE_OK &&
+        sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO validate_headers_log"
+            "(height,hash,ok,fail_reason,validated_at)"
+            " VALUES(?,?,1,NULL,1)",
+            -1, &validate, NULL) == SQLITE_OK &&
+        sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO script_validate_log"
+            "(height,status,ok,block_hash) VALUES(?,'verified',1,?)",
+            -1, &script, NULL) == SQLITE_OK &&
+        sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO proof_validate_log"
+            "(height,status,ok,block_hash) VALUES(?,'verified',1,?)",
+            -1, &proof, NULL) == SQLITE_OK &&
+        sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO utxo_apply_log"
+            "(height,status,ok,spent_count,added_count,"
+            " total_value_delta,applied_at)"
+            " VALUES(?,'verified',1,1,2,1,1)",
+            -1, &utxo, NULL) == SQLITE_OK &&
+        sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO utxo_apply_delta"
+            "(height,branch_hash,spent_blob,added_blob) VALUES(?,?,X'',X'')",
+            -1, &delta, NULL) == SQLITE_OK;
+    if (!prepared) {
+        sqlite3_finalize(header);
+        sqlite3_finalize(validate);
+        sqlite3_finalize(script);
+        sqlite3_finalize(proof);
+        sqlite3_finalize(utxo);
+        sqlite3_finalize(delta);
+        return false;
     }
-    return fc_seed_cursor(db, "utxo_apply", rows);
+
+    bool ok = true;
+    for (int h = 0; h < rows; h++) {
+        sqlite3_bind_int(header, 1, h);
+        sqlite3_bind_blob(header, 2, sc->hashes[h].data, 32, SQLITE_STATIC);
+        if (h > 0)
+            sqlite3_bind_blob(header, 3, sc->hashes[h - 1].data, 32,
+                              SQLITE_STATIC);
+        else
+            sqlite3_bind_null(header, 3);
+        sqlite3_bind_int(validate, 1, h);
+        sqlite3_bind_blob(validate, 2, sc->hashes[h].data, 32, SQLITE_STATIC);
+        sqlite3_bind_int(script, 1, h);
+        sqlite3_bind_blob(script, 2, sc->hashes[h].data, 32, SQLITE_STATIC);
+        sqlite3_bind_int(proof, 1, h);
+        sqlite3_bind_blob(proof, 2, sc->hashes[h].data, 32, SQLITE_STATIC);
+        sqlite3_bind_int(utxo, 1, h);
+        sqlite3_bind_int(delta, 1, h);
+        sqlite3_bind_blob(delta, 2, sc->hashes[h].data, 32, SQLITE_STATIC);
+        ok = sqlite3_step(header) == SQLITE_DONE &&
+             sqlite3_step(validate) == SQLITE_DONE &&
+             sqlite3_step(script) == SQLITE_DONE &&
+             sqlite3_step(proof) == SQLITE_DONE &&
+             sqlite3_step(utxo) == SQLITE_DONE &&
+             sqlite3_step(delta) == SQLITE_DONE;
+        sqlite3_reset(header);
+        sqlite3_clear_bindings(header);
+        sqlite3_reset(validate);
+        sqlite3_clear_bindings(validate);
+        sqlite3_reset(script);
+        sqlite3_clear_bindings(script);
+        sqlite3_reset(proof);
+        sqlite3_clear_bindings(proof);
+        sqlite3_reset(utxo);
+        sqlite3_clear_bindings(utxo);
+        sqlite3_reset(delta);
+        sqlite3_clear_bindings(delta);
+        if (!ok)
+            break;
+    }
+    sqlite3_finalize(header);
+    sqlite3_finalize(validate);
+    sqlite3_finalize(script);
+    sqlite3_finalize(proof);
+    sqlite3_finalize(utxo);
+    sqlite3_finalize(delta);
+    return ok && fc_seed_cursor(db, "utxo_apply", rows);
 }
 
 static int fc_case_held_cursor(void)
@@ -517,7 +627,7 @@ static int fc_case_held_cursor(void)
     struct fc_chain sc = {0};
     FC_CHECK("T7: chain 0..3 built", fc_chain_build(&sc, &ms));
     FC_CHECK("T7: utxo_apply rows 0..2 + cursor=3",
-             fc_seed_utxo_apply(db, 3));
+             fc_seed_utxo_apply(db, &sc, 3));
     FC_CHECK("T7: stage init", tip_finalize_stage_init(&ms));
 
     /* Finalize height 0 only: the cursor lands ON the rowless height 1. */

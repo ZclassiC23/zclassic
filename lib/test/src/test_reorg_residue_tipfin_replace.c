@@ -131,10 +131,15 @@ static bool seed_schema(sqlite3 *db)
             "fail_reason TEXT)") &&
         exec_sql(db,
             "CREATE TABLE IF NOT EXISTS proof_validate_log ("
-            "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL)") &&
+            "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+            "block_hash BLOB)") &&
         exec_sql(db,
             "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
             "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL)") &&
+        exec_sql(db,
+            "CREATE TABLE IF NOT EXISTS utxo_apply_delta ("
+            "height INTEGER PRIMARY KEY, branch_hash BLOB NOT NULL,"
+            "spent_blob BLOB NOT NULL, added_blob BLOB NOT NULL)") &&
         exec_sql(db,
             "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
             "height INTEGER PRIMARY KEY, status TEXT NOT NULL,"
@@ -220,14 +225,61 @@ static bool put_simple(sqlite3 *db, const char *table, int height, int ok_flag)
     return ok;
 }
 
+static bool put_proof(sqlite3 *db, int height, int ok_flag,
+                      const struct uint256 *hash)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO proof_validate_log"
+            "(height,status,ok,block_hash) VALUES(?,'verified',?,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_int(st, 2, ok_flag);
+    sqlite3_bind_blob(st, 3, hash->data, 32, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool put_utxo(sqlite3 *db, int height, int ok_flag,
+                     const struct uint256 *hash)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO utxo_apply_log(height,status,ok) "
+            "VALUES(?,'verified',?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_int(st, 2, ok_flag);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    if (!ok)
+        return false;
+
+    st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO utxo_apply_delta"
+            "(height,branch_hash,spent_blob,added_blob) "
+            "VALUES(?,?,x'',x'')",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_blob(st, 2, hash->data, 32, SQLITE_STATIC);
+    ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
 /* All five upstream value-checked logs ok=1 at `height`. */
 static bool put_upstream_ok(sqlite3 *db, int height, const struct uint256 *hash)
 {
     return put_validate(db, height, 1, hash) &&
            put_script(db, height, 1, hash) &&
            put_simple(db, "body_persist_log", height, 1) &&
-           put_simple(db, "proof_validate_log", height, 1) &&
-           put_simple(db, "utxo_apply_log", height, 1);
+           put_proof(db, height, 1, hash) &&
+           put_utxo(db, height, 1, hash);
 }
 
 static bool put_tip(sqlite3 *db, int height, const char *status, int ok_flag,

@@ -5,6 +5,7 @@
  * TU (file-size ceiling); shares the family's internal header. */
 
 #include "stage_repair_reducer_frontier_internal.h"
+#include "stage_repair_reducer_frontier_evidence.h"
 
 #include "jobs/stage_repair.h"
 #include "jobs/stage_repair_internal.h"
@@ -167,6 +168,7 @@ bool stage_reducer_frontier_purge_noncanonical(
      * (forward re-walk safe — the clamp target), heights below it are the
      * stale-script replay's domain (never clamped, warned below). */
     int lowest_stale_unapplied = -1;
+    int lowest_stale_utxo_unapplied = -1;
     int lowest_stale_replay_domain = -1;
     progress_store_tx_lock();
 
@@ -199,6 +201,7 @@ bool stage_reducer_frontier_purge_noncanonical(
         const char *hash_col;
     } hash_logs[] = {
         { "script_validate_log",  "block_hash" },
+        { "proof_validate_log",   "block_hash" },
         { "validate_headers_log", "hash" },
         { "body_fetch_log",       "hash" },
     };
@@ -242,10 +245,8 @@ bool stage_reducer_frontier_purge_noncanonical(
         for (size_t t = 0; t < sizeof(hash_logs) / sizeof(hash_logs[0]); t++) {
             char sql[160];
             snprintf(sql, sizeof(sql),
-                     "SELECT %s FROM %s WHERE height = ? "
-                     "AND length(%s) = 32",
-                     hash_logs[t].hash_col, hash_logs[t].table,
-                     hash_logs[t].hash_col);
+                     "SELECT %s FROM %s WHERE height = ?",
+                     hash_logs[t].hash_col, hash_logs[t].table);
             sqlite3_stmt *st = NULL;
             if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
                 LOG_WARN("stage_repair", "purge_noncanonical: prepare %s: %s",
@@ -257,8 +258,11 @@ bool stage_reducer_frontier_purge_noncanonical(
             bool mismatch = false;
             int step_rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
             if (step_rc == SQLITE_ROW) {
-                const void *blob = sqlite3_column_blob(st, 0);
-                mismatch = blob &&
+                int type = sqlite3_column_type(st, 0);
+                const void *blob = type == SQLITE_BLOB
+                    ? sqlite3_column_blob(st, 0) : NULL;
+                mismatch = type != SQLITE_BLOB || !blob ||
+                    sqlite3_column_bytes(st, 0) != 32 ||
                     memcmp(blob, ch->hash.data, 32) != 0;
             } else if (step_rc != SQLITE_DONE) {
                 LOG_WARN("stage_repair",
@@ -302,6 +306,54 @@ bool stage_reducer_frontier_purge_noncanonical(
                 goto done_locked;
             }
             out->noncanonical_purged++;
+        }
+        bool utxo_present = false;
+        bool utxo_matches = false;
+        if (!rf_utxo_branch_evidence_at(db, h, &ch->hash, &utxo_present,
+                                        &utxo_matches)) {
+            ok = false;
+            goto done_locked;
+        }
+        if (utxo_present && !utxo_matches) {
+            stale_here = true;
+            out->noncanonical_found++;
+            if (out->lowest_noncanonical < 0 ||
+                h < out->lowest_noncanonical)
+                out->lowest_noncanonical = h;
+            if (purge_allowed) {
+                if (lowest_stale_utxo_unapplied < 0)
+                    lowest_stale_utxo_unapplied = h;
+                if (apply) {
+                    if (!rf_purge_tx_begin(db, &tx_open)) {
+                        ok = false;
+                        goto done_locked;
+                    }
+                    static const char *const tables[] = {
+                        "utxo_apply_log", "utxo_apply_delta",
+                    };
+                    for (size_t t = 0; t < sizeof(tables) / sizeof(tables[0]);
+                         t++) {
+                        char sql[96];
+                        snprintf(sql, sizeof(sql),
+                                 "DELETE FROM %s WHERE height=?", tables[t]);
+                        sqlite3_stmt *del = NULL;
+                        if (sqlite3_prepare_v2(db, sql, -1, &del, NULL) !=
+                            SQLITE_OK) {
+                            ok = false;
+                            goto done_locked;
+                        }
+                        sqlite3_bind_int(del, 1, h);
+                        int drc = sqlite3_step(del); // raw-sql-ok:progress-kv-kernel-store
+                        if (drc != SQLITE_DONE) {
+                            sqlite3_finalize(del);
+                            ok = false;
+                            goto done_locked;
+                        }
+                        out->noncanonical_purged += sqlite3_changes(db) > 0;
+                        sqlite3_finalize(del);
+                    }
+                }
+            }
         }
         if (stale_here && apply && purge_allowed) {
             /* Hashless downstream rows at this height describe the same
@@ -353,8 +405,9 @@ bool stage_reducer_frontier_purge_noncanonical(
      * fresh verdicts from the persisted canonical bodies and deletes nothing.
      * validate_headers / body_fetch / body_persist / tip_finalize cursors
      * stay with their existing caller-side reconciles (header_admit-keyed
-     * scans survive the purge); the utxo_apply cursor is NEVER touched
-     * (coins double-apply — the refill coins-floor rule). */
+     * scans survive the purge). A branch-mismatched UTXO row is the exception:
+     * it is removed only at/above the durable coins frontier, then utxo_apply is
+     * aligned to that exact next-unapplied height so no coin can double-apply. */
     if (lowest_stale_unapplied >= 0) {
         if (apply && !rf_purge_tx_begin(db, &tx_open)) {
             ok = false;
@@ -384,6 +437,24 @@ bool stage_reducer_frontier_purge_noncanonical(
                      out->proof_validate_cursor_after,
                      lowest_stale_unapplied, out->hstar,
                      out->coins_applied_height, apply ? "" : "; dry-run");
+    }
+    if (lowest_stale_utxo_unapplied >= 0 && apply) {
+        int before = -1;
+        int after = -1;
+        bool clamped = false;
+        int target = out->coins_applied_height;
+        if (!rf_purge_tx_begin(db, &tx_open) ||
+            !rf_purge_clamp_cursor(db, true, "utxo_apply", target,
+                                   &before, &after, &clamped)) {
+            ok = false;
+            goto done_locked;
+        }
+        if (clamped)
+            LOG_WARN("stage_repair",
+                     "[stage_repair] purge_noncanonical aligned utxo_apply "
+                     "cursor=%d->%d to durable coins frontier after mixed-fork "
+                     "delta at h=%d", before, after,
+                     lowest_stale_utxo_unapplied);
     }
     if (lowest_stale_replay_domain >= 0)
         LOG_WARN("stage_repair",
@@ -467,11 +538,31 @@ static bool rf_tipfin_state_at(sqlite3 *db, int height,
     bool rc_ok = true;
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
-        *out_state = sqlite3_column_int(st, 0) != 0 ? RF_TIPFIN_OK
-                                                    : RF_TIPFIN_FAIL;
+        if (sqlite3_column_type(st, 0) != SQLITE_INTEGER ||
+            (sqlite3_column_int(st, 0) != 0 &&
+             sqlite3_column_int(st, 0) != 1)) {
+            LOG_WARN("stage_repair",
+                     "[stage_repair] malformed reorg-residue ok storage h=%d",
+                     height);
+            rc_ok = false;
+        } else {
+            *out_state = sqlite3_column_int(st, 0) == 1 ? RF_TIPFIN_OK
+                                                         : RF_TIPFIN_FAIL;
+        }
         if (status_out) {
-            const unsigned char *s = sqlite3_column_text(st, 1);
-            snprintf(status_out, 64, "%s", s ? (const char *)s : "");
+            int status_type = sqlite3_column_type(st, 1);
+            const unsigned char *s = status_type == SQLITE_TEXT
+                ? sqlite3_column_text(st, 1) : NULL;
+            int n = s ? sqlite3_column_bytes(st, 1) : -1;
+            if (!s || n < 0 || n >= 64 || memchr(s, '\0', (size_t)n)) {
+                LOG_WARN("stage_repair",
+                         "[stage_repair] malformed reorg-residue status h=%d",
+                         height);
+                rc_ok = false;
+            } else {
+                memcpy(status_out, s, (size_t)n);
+                status_out[n] = '\0';
+            }
         }
     } else if (rc != SQLITE_DONE) {
         LOG_WARN("stage_repair",
@@ -502,8 +593,10 @@ static bool rf_header_admit_hash_at(sqlite3 *db, int height,
     bool rc_ok = true;
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
-        const void *blob = sqlite3_column_blob(st, 0);
-        int blen = sqlite3_column_bytes(st, 0);
+        int type = sqlite3_column_type(st, 0);
+        const void *blob = type == SQLITE_BLOB
+            ? sqlite3_column_blob(st, 0) : NULL;
+        int blen = blob ? sqlite3_column_bytes(st, 0) : 0;
         if (blob && blen == 32) {
             memcpy(out->data, blob, 32);
             *found = true;

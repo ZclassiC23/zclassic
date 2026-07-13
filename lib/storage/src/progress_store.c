@@ -627,6 +627,56 @@ bool progress_meta_get(sqlite3 *db, const char *key,
     return ok;
 }
 
+bool progress_meta_get_blob_exact(sqlite3 *db, const char *key,
+                                  void *out_buf, size_t out_cap,
+                                  size_t *out_len, bool *out_found)
+{
+    if (out_found) *out_found = false;
+    if (out_len) *out_len = 0;
+    if (out_buf && out_cap > 0)
+        memset(out_buf, 0, out_cap);
+    if (!db || !key || !key[0]) return false;
+
+    progress_store_tx_lock();
+    sqlite3_stmt *stmt = NULL;
+    int rc = sqlite3_prepare_v2(db,
+        "SELECT value FROM progress_meta WHERE key = ?",
+        -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        progress_store_tx_unlock();
+        return false;
+    }
+    if (sqlite3_bind_text(stmt, 1, key, -1, SQLITE_TRANSIENT) != SQLITE_OK) {
+        sqlite3_finalize(stmt);
+        progress_store_tx_unlock();
+        return false;
+    }
+
+    rc = sqlite3_step(stmt);  // raw-sql-ok:kernel-primitive
+    bool ok = true;
+    if (rc == SQLITE_ROW) {
+        if (out_found) *out_found = true;
+        if (sqlite3_column_type(stmt, 0) != SQLITE_BLOB) {
+            ok = false;
+        } else {
+            int n = sqlite3_column_bytes(stmt, 0);
+            const void *blob = sqlite3_column_blob(stmt, 0);
+            if (n < 0 || (n > 0 && !blob) ||
+                (out_buf && (size_t)n > out_cap)) {
+                ok = false;
+            } else if (out_buf && n > 0) {
+                memcpy(out_buf, blob, (size_t)n);
+            }
+            if (ok && out_len) *out_len = (size_t)n;
+        }
+    } else if (rc != SQLITE_DONE) {
+        ok = false;
+    }
+    sqlite3_finalize(stmt);
+    progress_store_tx_unlock();
+    return ok;
+}
+
 static int64_t stage_cursor_count(sqlite3 *db)
 {
     sqlite3_stmt *stmt = NULL;

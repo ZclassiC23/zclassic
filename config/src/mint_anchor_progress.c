@@ -10,9 +10,190 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #define MINT_ANCHOR_MARKER_LEN 48
+#define MINT_ANCHOR_LANE_FULL 1
+#define MINT_ANCHOR_LANE_CHECKPOINT_FOLD 2
+
+static bool producer_lane_read(sqlite3 *db, uint8_t *lane, bool *found)
+{
+    size_t n = 0;
+    *lane = 0;
+    *found = false;
+    if (!progress_meta_get_blob_exact(db, MINT_ANCHOR_PRODUCER_LANE_KEY,
+                                      lane, 1, &n, found))
+        return false;
+    if (*found && (n != 1 ||
+                   (*lane != MINT_ANCHOR_LANE_FULL &&
+                    *lane != MINT_ANCHOR_LANE_CHECKPOINT_FOLD))) {
+        LOG_WARN("mint_anchor",
+                 "[mint-anchor] producer lane marker is malformed "
+                 "(value=%u bytes=%zu)", (unsigned)*lane, n);
+        return false;
+    }
+    return true;
+}
+
+/* A pre-lane producer cannot prove whether its earlier rows came from the full
+ * or crypto-skipping command.  Detect every durable legacy-resume shape before
+ * writing a lane marker; unknown history may be conservatively downgraded to
+ * checkpoint_fold, never promoted to full. */
+static bool producer_legacy_state_present(sqlite3 *db, bool *present)
+{
+    uint8_t marker[MINT_ANCHOR_MARKER_LEN] = {0};
+    size_t marker_n = 0;
+    bool marker_found = false;
+    if (!progress_meta_get_blob_exact(
+            db, MINT_ANCHOR_IN_PROGRESS_KEY, marker, sizeof(marker),
+            &marker_n, &marker_found))
+        return false;
+
+    uint8_t refold = 0;
+    size_t refold_n = 0;
+    bool refold_found = false;
+    if (!progress_meta_get_blob_exact(db, REFOLD_IN_PROGRESS_KEY,
+                                      &refold, sizeof(refold), &refold_n,
+                                      &refold_found))
+        return false;
+    if (refold_found && (refold_n != 1 || refold != 1)) {
+        LOG_WARN("mint_anchor", "[mint-anchor] legacy refold marker malformed");
+        return false;
+    }
+
+    int32_t applied = 0;
+    bool applied_found = false;
+    if (!coins_kv_get_applied_height(db, &applied, &applied_found))
+        return false;
+    *present = marker_found || refold_found || applied_found;
+    return true;
+}
+
+bool mint_anchor_producer_lane_bind(sqlite3 *db, bool checkpoint_fold)
+{
+    if (!db)
+        LOG_FAIL("mint_anchor", "producer lane bind: NULL db");
+    uint8_t want = checkpoint_fold ? MINT_ANCHOR_LANE_CHECKPOINT_FOLD
+                                   : MINT_ANCHOR_LANE_FULL;
+    uint8_t got = 0;
+    bool found = false;
+    if (!producer_lane_read(db, &got, &found))
+        LOG_FAIL("mint_anchor", "producer lane read failed");
+    if (found) {
+        if (got == want)
+            return true;
+        LOG_WARN("mint_anchor",
+                 "[mint-anchor] producer lane profile mismatch/malformed "
+                 "(stored=%u requested=%u); use the original mode "
+                 "or a fresh isolated producer datadir",
+                 (unsigned)got, (unsigned)want);
+        return false;
+    }
+    bool legacy = false;
+    if (!producer_legacy_state_present(db, &legacy))
+        LOG_FAIL("mint_anchor", "producer legacy-state inspection failed");
+    if (legacy && !checkpoint_fold) {
+        LOG_WARN("mint_anchor",
+                 "[mint-anchor] pre-lane producer state has no proof of its "
+                 "original crypto mode; refusing promotion to full. Resume "
+                 "only as checkpoint_fold or use a fresh producer datadir");
+        return false;
+    }
+    if (!progress_meta_set(db, MINT_ANCHOR_PRODUCER_LANE_KEY,
+                           &want, sizeof(want)))
+        LOG_FAIL("mint_anchor", "producer lane write failed");
+    return true;
+}
+
+static bool table_has_non_full_success(sqlite3 *db, const char *table,
+                                       bool allow_anchor, bool *found)
+{
+    *found = false;
+    sqlite3_stmt *stmt = NULL;
+    char sql[256];
+    int n = snprintf(sql, sizeof(sql),
+        "SELECT 1 FROM %s WHERE ok=1 AND "
+        "(typeof(status)!='text' OR (CAST(status AS BLOB)!=CAST('verified' AS BLOB) "
+        "AND (?=0 OR CAST(status AS BLOB)!=CAST('anchor' AS BLOB)))) "
+        "LIMIT 1", table);
+    if (n <= 0 || (size_t)n >= sizeof(sql))
+        return false;
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        const char *message = sqlite3_errmsg(db);
+        if (message && strstr(message, "no such table") != NULL)
+            return true;
+        LOG_WARN("mint_anchor", "[mint-anchor] mode scan %s failed: %s",
+                 table, message ? message : "unknown");
+        return false;
+    }
+    sqlite3_bind_int(stmt, 1, allow_anchor ? 1 : 0);
+    rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
+    *found = rc == SQLITE_ROW;
+    bool ok = rc == SQLITE_ROW || rc == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
+bool mint_anchor_normal_boot_allowed(sqlite3 *db, char *reason,
+                                     size_t reason_size)
+{
+    if (reason && reason_size)
+        reason[0] = '\0';
+    if (!db)
+        LOG_FAIL("mint_anchor", "normal boot gate: NULL db");
+    uint8_t in_progress[MINT_ANCHOR_MARKER_LEN] = {0};
+    size_t marker_size = 0;
+    bool marker_found = false;
+    if (!progress_meta_get_blob_exact(
+            db, MINT_ANCHOR_IN_PROGRESS_KEY, in_progress,
+            sizeof(in_progress), &marker_size, &marker_found))
+        LOG_FAIL("mint_anchor", "normal boot progress marker read failed");
+    if (marker_found) {
+        if (reason && reason_size)
+            snprintf(reason, reason_size,
+                     "datadir has an offline mint in-progress marker "
+                     "(%zu bytes); resume only with the producer command or "
+                     "install a verified artifact into a serving datadir",
+                     marker_size);
+        return false;
+    }
+    uint8_t lane = 0;
+    size_t n = 0;
+    bool found = false;
+    if (!progress_meta_get_blob_exact(db, MINT_ANCHOR_PRODUCER_LANE_KEY,
+                                      &lane, sizeof(lane), &n, &found))
+        LOG_FAIL("mint_anchor", "normal boot lane read failed");
+    if (found) {
+        if (reason && reason_size)
+            snprintf(reason, reason_size,
+                     "datadir is permanently bound to offline producer lane "
+                     "profile=%s; install its verified artifact into a separate "
+                     "serving datadir",
+                     n == 1 && lane == MINT_ANCHOR_LANE_FULL
+                         ? "full" : "checkpoint_fold_or_invalid");
+        return false;
+    }
+    static const char *const tables[] = {
+        "script_validate_log", "proof_validate_log", "utxo_apply_log",
+    };
+    for (size_t i = 0; i < sizeof(tables) / sizeof(tables[0]); i++) {
+        bool incompatible = false;
+        bool allow_anchor = strcmp(tables[i], "utxo_apply_log") == 0;
+        if (!table_has_non_full_success(db, tables[i], allow_anchor,
+                                        &incompatible))
+            return false;
+        if (incompatible) {
+            if (reason && reason_size)
+                snprintf(reason, reason_size,
+                         "%s contains non-full successful validation evidence; "
+                         "normal serving boot is contained", tables[i]);
+            return false;
+        }
+    }
+    return true;
+}
 
 static void map_wle32(uint8_t *p, uint32_t v)
 {
@@ -77,8 +258,8 @@ static bool read_matching_marker(sqlite3 *db,
     uint8_t buf[MINT_ANCHOR_MARKER_LEN] = {0};
     size_t n = 0;
     bool found = false;
-    if (!progress_meta_get(db, MINT_ANCHOR_IN_PROGRESS_KEY,
-                           buf, sizeof(buf), &n, &found))
+    if (!progress_meta_get_blob_exact(db, MINT_ANCHOR_IN_PROGRESS_KEY,
+                                      buf, sizeof(buf), &n, &found))
         LOG_FAIL("mint_anchor", "progress marker read failed");
 
     if (found_out)
@@ -144,6 +325,17 @@ bool mint_anchor_progress_can_resume(sqlite3 *db,
     if (!db || !cp)
         LOG_FAIL("mint_anchor", "can_resume: invalid args db=%p cp=%p",
                  (void *)db, (const void *)cp);
+
+    uint8_t lane = 0;
+    bool lane_found = false;
+    if (!producer_lane_read(db, &lane, &lane_found))
+        return false;
+    if (!lane_found) {
+        LOG_WARN("mint_anchor",
+                 "[mint-anchor] resume refused without a durable producer "
+                 "lane; bind the requested profile before resume inspection");
+        return false;
+    }
 
     bool found = false;
     bool matches = false;

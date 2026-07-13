@@ -108,9 +108,9 @@ static bool cca_build_schema(sqlite3 *db)
         "CREATE TABLE IF NOT EXISTS body_persist_log ("
         "  height INTEGER PRIMARY KEY, source TEXT, ok INTEGER NOT NULL);"
         "CREATE TABLE IF NOT EXISTS proof_validate_log ("
-        "  height INTEGER PRIMARY KEY, ok INTEGER NOT NULL);"
+        "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL);"
         "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
-        "  height INTEGER PRIMARY KEY, ok INTEGER NOT NULL,"
+        "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
         "  spent_count INTEGER, added_count INTEGER);"
         "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
         "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
@@ -141,7 +141,8 @@ static bool cca_put_ua_row(sqlite3 *db, int32_t height)
 {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
-            "INSERT OR REPLACE INTO utxo_apply_log(height,ok) VALUES(?,1)",
+            "INSERT OR REPLACE INTO utxo_apply_log(height,status,ok) "
+            "VALUES(?,'verified',1)",
             -1, &st, NULL) != SQLITE_OK)
         return false;
     sqlite3_bind_int64(st, 1, height);

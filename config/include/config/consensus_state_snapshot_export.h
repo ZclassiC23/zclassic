@@ -35,6 +35,8 @@ struct consensus_state_snapshot_export_request {
 struct consensus_state_export_result {
     enum consensus_state_export_status status;
     bool history_complete;
+    bool source_clean;
+    uint8_t validation_profile;
     int32_t height;
     uint64_t utxo_count;
     uint64_t anchor_count;
@@ -66,6 +68,8 @@ bool consensus_state_snapshot_export(
 void consensus_state_snapshot_export_test_set_after_output_bind_hook(
     void (*hook)(void *), void *ctx);
 void consensus_state_snapshot_export_test_set_after_staging_create_hook(
+    void (*hook)(void *), void *ctx);
+void consensus_state_snapshot_export_test_set_before_link_hook(
     void (*hook)(void *), void *ctx);
 #endif
 

@@ -6,7 +6,6 @@
 
 #include "consensus_state_snapshot_install_internal.h"
 
-#include "crypto/sha3.h"
 #include "util/log_macros.h"
 
 #include <errno.h>
@@ -175,37 +174,6 @@ bool consensus_state_candidate_output_sqlite_open(
     return true;
 }
 
-static bool descriptor_digest(int fd, uint8_t out[32])
-{
-    struct stat st;
-    if (fd < 0 || !out || fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
-        st.st_size <= 0)
-        return false;
-    struct sha3_256_ctx context;
-    sha3_256_init(&context);
-    uint8_t buffer[64u * 1024u];
-    off_t offset = 0;
-    while (offset < st.st_size) {
-        size_t want = sizeof(buffer);
-        off_t left = st.st_size - offset;
-        if (left < (off_t)want)
-            want = (size_t)left;
-        ssize_t got = pread(fd, buffer, want, offset);
-        if (got < 0 && errno == EINTR)
-            continue;
-        if (got <= 0)
-            return false;
-        sha3_256_write(&context, buffer, (size_t)got);
-        offset += got;
-    }
-    sha3_256_finalize(&context, out);
-    struct stat after;
-    return fstat(fd, &after) == 0 && st.st_dev == after.st_dev &&
-           st.st_ino == after.st_ino && st.st_size == after.st_size &&
-           st.st_mtim.tv_sec == after.st_mtim.tv_sec &&
-           st.st_mtim.tv_nsec == after.st_mtim.tv_nsec;
-}
-
 static bool output_link_fd(int source_fd, int destination_dirfd,
                            const char *destination_name)
 {
@@ -254,7 +222,12 @@ bool consensus_state_candidate_output_finalize(
             result, CONSENSUS_CANDIDATE_OUTPUT_ERROR,
             "candidate staging durability/seal failed");
     struct stat sealed;
-    if (fstat(fd, &sealed) != 0 || !S_ISREG(sealed.st_mode) ||
+    if (!consensus_export_seal_readonly(&output->binding, &sealed))
+        return consensus_state_candidate_fail(
+            result, CONSENSUS_CANDIDATE_OUTPUT_ERROR,
+            "candidate writable staging descriptor could not be retired");
+    fd = output->binding.temp_fd;
+    if (!S_ISREG(sealed.st_mode) ||
         sealed.st_nlink != 0 || sealed.st_dev != output->binding.temp_dev ||
         sealed.st_ino != output->binding.temp_ino ||
         (sealed.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) != 0)
@@ -295,11 +268,26 @@ bool consensus_state_candidate_output_finalize(
         return consensus_state_candidate_fail(
             result, CONSENSUS_CANDIDATE_INJECTED_FAILURE,
             "injected failure after candidate reopen");
-    if (!descriptor_digest(fd, result->candidate_file_digest))
+    if (!consensus_export_descriptor_digest(fd, result->candidate_file_digest))
         return consensus_state_candidate_fail(
             result, CONSENSUS_CANDIDATE_OUTPUT_ERROR,
             "candidate complete-file digest failed");
     candidate_run_before_link_hook();
+    uint8_t after_hook_digest[32];
+    struct stat after_hook;
+    if (!consensus_export_descriptor_digest(fd, after_hook_digest) ||
+        memcmp(after_hook_digest, result->candidate_file_digest, 32) != 0 ||
+        fstat(fd, &after_hook) != 0 || after_hook.st_dev != sealed.st_dev ||
+        after_hook.st_ino != sealed.st_ino || after_hook.st_nlink != 0 ||
+        after_hook.st_size != sealed.st_size ||
+        after_hook.st_mode != sealed.st_mode ||
+        after_hook.st_mtim.tv_sec != sealed.st_mtim.tv_sec ||
+        after_hook.st_mtim.tv_nsec != sealed.st_mtim.tv_nsec ||
+        after_hook.st_ctim.tv_sec != sealed.st_ctim.tv_sec ||
+        after_hook.st_ctim.tv_nsec != sealed.st_ctim.tv_nsec)
+        return consensus_state_candidate_fail(
+            result, CONSENSUS_CANDIDATE_OUTPUT_ERROR,
+            "candidate changed after immutable digest");
     if (!output_name_absent(output, output->binding.final_name) ||
         !output_sidecars_absent(output, output->binding.final_name) ||
         !output_link_fd(fd, output->binding.dirfd,
@@ -308,12 +296,15 @@ bool consensus_state_candidate_output_finalize(
             result, CONSENSUS_CANDIDATE_OUTPUT_ERROR,
             "candidate atomic no-replace link failed");
     struct stat final;
+    uint8_t published_digest[32];
     if (fstatat(output->binding.dirfd, output->binding.final_name, &final,
                 AT_SYMLINK_NOFOLLOW) != 0 || !S_ISREG(final.st_mode) ||
         !output_sidecars_absent(output, output->binding.final_name) ||
         final.st_dev != sealed.st_dev || final.st_ino != sealed.st_ino ||
         final.st_nlink != 1 || final.st_size != sealed.st_size ||
         (final.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) != 0 ||
+        !consensus_export_descriptor_digest(fd, published_digest) ||
+        memcmp(published_digest, result->candidate_file_digest, 32) != 0 ||
         fsync(output->binding.dirfd) != 0)
         return consensus_state_candidate_fail(
             result, CONSENSUS_CANDIDATE_OUTPUT_ERROR,

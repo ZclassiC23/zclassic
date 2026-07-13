@@ -110,8 +110,10 @@ for f in "$TEST_DIR"/test_*.c; do
     # rc 1 = genuinely unregistered; rc >=2 (fork failure under load, etc.)
     # must FATAL, not masquerade as an orphan — seen misreporting a
     # registered test right after a 32-worker suite run (2026-07-10).
+    # Feed grep with a here-string: `printf | grep -q` under pipefail can make
+    # printf receive SIGPIPE after grep's early match and falsely report 141.
     set +e
-    printf '%s\n' "$runs" | grep -qxF "$name"
+    grep -qxF "$name" <<< "$runs"
     grc=$?
     set -e
     if [ "$grc" -ge 2 ]; then

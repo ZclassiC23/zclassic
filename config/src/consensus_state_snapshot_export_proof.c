@@ -2,6 +2,7 @@
  * Frozen-source proof gate for zcl.consensus_state_bundle.v1 export. */
 
 #include "consensus_state_snapshot_export_internal.h"
+#include "consensus_state_sqlite_text.h"
 
 #include "crypto/sha3.h"
 #include "jobs/reducer_frontier.h"
@@ -27,16 +28,18 @@ struct export_stage_proof {
     const char *table;
     bool served_tip_cursor;
     const char *hash_column;
+    bool profile_bound;
+    bool source_epoch_bound;
 };
 
 static const struct export_stage_proof k_stages[] = {
-    {"validate_headers", "validate_headers_log", false, "hash"},
-    {"body_fetch", "body_fetch_log", false, "hash"},
-    {"body_persist", "body_persist_log", false, NULL},
-    {"script_validate", "script_validate_log", false, "block_hash"},
-    {"proof_validate", "proof_validate_log", false, "block_hash"},
-    {"utxo_apply", "utxo_apply_log", false, NULL},
-    {"tip_finalize", "tip_finalize_log", true, NULL},
+    {"validate_headers", "validate_headers_log", false, "hash", false, false},
+    {"body_fetch", "body_fetch_log", false, "hash", false, false},
+    {"body_persist", "body_persist_log", false, NULL, false, false},
+    {"script_validate", "script_validate_log", false, "block_hash", true, true},
+    {"proof_validate", "proof_validate_log", false, "block_hash", true, true},
+    {"utxo_apply", "utxo_apply_log", false, "branch_hash", true, false},
+    {"tip_finalize", "tip_finalize_log", true, NULL, false, false},
 };
 
 static void proof_u64(struct sha3_256_ctx *ctx, uint64_t value)
@@ -102,9 +105,10 @@ static bool running_binary_digest(uint8_t out[32])
 
 static bool copy_receipt_blob(sqlite3_stmt *st, int column, uint8_t out[32])
 {
+    if (sqlite3_column_type(st, column) != SQLITE_BLOB)
+        return false;
     const void *blob = sqlite3_column_blob(st, column);
-    if (sqlite3_column_type(st, column) != SQLITE_BLOB || !blob ||
-        sqlite3_column_bytes(st, column) != 32)
+    if (!blob || sqlite3_column_bytes(st, column) != 32)
         return false;
     memcpy(out, blob, 32);
     return true;
@@ -116,9 +120,11 @@ static bool prove_source_receipt(sqlite3 *db, int64_t fold_cursor,
                                  uint8_t source_digest[32])
 {
     static const char sql[] =
-        "SELECT singleton,schema,source_tree_root,running_binary_digest,"
-        "toolchain_digest,chain_corpus_digest,producer_commit,fold_cursor,"
-        "receipt_digest FROM consensus_state_source_receipt ORDER BY singleton";
+        "SELECT singleton,schema,source_epoch_digest,source_tree_root,"
+        "running_binary_digest,toolchain_digest,build_inputs_digest,"
+        "chain_corpus_digest,source_clean,validation_profile,producer_commit,"
+        "fold_cursor,receipt_digest "
+        "FROM consensus_state_source_receipt ORDER BY singleton";
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
         LOG_WARN(EXPORT_PROOF_SUBSYS, "source provenance receipt unavailable");
@@ -126,45 +132,61 @@ static bool prove_source_receipt(sqlite3 *db, int64_t fold_cursor,
     }
     memset(receipt, 0, sizeof(*receipt));
     int rc = sqlite3_step(st); // raw-sql-ok:progress-kv-kernel-store
-    const unsigned char *schema = rc == SQLITE_ROW
-                                      ? sqlite3_column_text(st, 1) : NULL;
-    const unsigned char *commit = rc == SQLITE_ROW
-                                      ? sqlite3_column_text(st, 6) : NULL;
-    bool ok = rc == SQLITE_ROW && schema && commit &&
+    int commit_type = rc == SQLITE_ROW ? sqlite3_column_type(st, 10)
+                                       : SQLITE_NULL;
+    const unsigned char *commit = commit_type == SQLITE_TEXT
+                                      ? sqlite3_column_text(st, 10) : NULL;
+    bool ok = rc == SQLITE_ROW && commit &&
               sqlite3_column_type(st, 0) == SQLITE_INTEGER &&
               sqlite3_column_int(st, 0) == 1 &&
-              sqlite3_column_type(st, 1) == SQLITE_TEXT &&
-              strcmp((const char *)schema,
-                     CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA) == 0 &&
-              copy_receipt_blob(st, 2, receipt->source_tree_root) &&
-              copy_receipt_blob(st, 3, receipt->running_binary_digest) &&
-              copy_receipt_blob(st, 4, receipt->toolchain_digest) &&
-              copy_receipt_blob(st, 5, receipt->chain_corpus_digest) &&
-              sqlite3_column_type(st, 6) == SQLITE_TEXT &&
-              sqlite3_column_bytes(st, 6) == 40 &&
-              sqlite3_column_type(st, 7) == SQLITE_INTEGER &&
-              sqlite3_column_int64(st, 7) == fold_cursor &&
-              copy_receipt_blob(st, 8, receipt->receipt_digest);
+              consensus_state_sqlite_text_equal(
+                  st, 1, CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA) &&
+              copy_receipt_blob(st, 2, receipt->source_epoch_digest) &&
+              copy_receipt_blob(st, 3, receipt->source_tree_root) &&
+              copy_receipt_blob(st, 4, receipt->running_binary_digest) &&
+              copy_receipt_blob(st, 5, receipt->toolchain_digest) &&
+              copy_receipt_blob(st, 6, receipt->build_inputs_digest) &&
+              copy_receipt_blob(st, 7, receipt->chain_corpus_digest) &&
+              sqlite3_column_type(st, 8) == SQLITE_INTEGER &&
+              (sqlite3_column_int(st, 8) == 0 ||
+               sqlite3_column_int(st, 8) == 1) &&
+              sqlite3_column_type(st, 9) == SQLITE_INTEGER &&
+              (sqlite3_column_int(st, 9) == CONSENSUS_STATE_VALIDATION_FULL ||
+               sqlite3_column_int(st, 9) ==
+                   CONSENSUS_STATE_VALIDATION_CHECKPOINT_FOLD) &&
+              commit_type == SQLITE_TEXT &&
+              sqlite3_column_bytes(st, 10) == 40 &&
+              sqlite3_column_type(st, 11) == SQLITE_INTEGER &&
+              sqlite3_column_int64(st, 11) == fold_cursor &&
+              copy_receipt_blob(st, 12, receipt->receipt_digest);
     if (ok) {
         memcpy(receipt->producer_commit, commit, 40);
         receipt->producer_commit[40] = '\0';
-        receipt->fold_cursor = sqlite3_column_int64(st, 7);
+        receipt->source_clean = sqlite3_column_int(st, 8) == 1;
+        receipt->validation_profile =
+            (uint8_t)sqlite3_column_int(st, 9);
+        receipt->fold_cursor = sqlite3_column_int64(st, 11);
         rc = sqlite3_step(st); // raw-sql-ok:progress-kv-kernel-store
         ok = rc == SQLITE_DONE;
     }
     sqlite3_finalize(st);
     uint8_t executable[32];
     uint8_t recomputed[32];
+    uint8_t source_epoch[32];
     if (ok)
-        ok = digest_nonzero(receipt->source_tree_root) &&
+        ok = digest_nonzero(receipt->source_epoch_digest) &&
+             digest_nonzero(receipt->source_tree_root) &&
              digest_nonzero(receipt->toolchain_digest) &&
+             digest_nonzero(receipt->build_inputs_digest) &&
              lowercase_full_commit(receipt->producer_commit) &&
              memcmp(receipt->chain_corpus_digest, chain_corpus_digest, 32) == 0 &&
              running_binary_digest(executable) &&
              memcmp(receipt->running_binary_digest, executable, 32) == 0;
     if (ok) {
+        consensus_state_source_epoch_digest(receipt, source_epoch);
         consensus_state_source_receipt_digest(receipt, recomputed);
-        ok = memcmp(receipt->receipt_digest, recomputed, 32) == 0 &&
+        ok = memcmp(receipt->source_epoch_digest, source_epoch, 32) == 0 &&
+             memcmp(receipt->receipt_digest, recomputed, 32) == 0 &&
              digest_nonzero(recomputed);
     }
     if (!ok) {
@@ -228,16 +250,23 @@ static bool prove_header_chain(sqlite3 *db, int32_t height,
     bool ok = true;
     int rc;
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) { // raw-sql-ok:progress-kv-kernel-store
-        const void *hash = sqlite3_column_blob(st, 1);
-        const void *parent = sqlite3_column_blob(st, 2);
-        int parent_len = sqlite3_column_bytes(st, 2);
-        int64_t row_height = sqlite3_column_int64(st, 0);
+        int height_type = sqlite3_column_type(st, 0);
+        int hash_type = sqlite3_column_type(st, 1);
+        int parent_type = sqlite3_column_type(st, 2);
+        const void *hash = hash_type == SQLITE_BLOB
+            ? sqlite3_column_blob(st, 1) : NULL;
+        const void *parent = parent_type == SQLITE_BLOB
+            ? sqlite3_column_blob(st, 2) : NULL;
+        int parent_len = parent ? sqlite3_column_bytes(st, 2) : 0;
+        int64_t row_height = height_type == SQLITE_INTEGER
+            ? sqlite3_column_int64(st, 0) : -1;
         bool genesis_parent = row_height == 0 &&
-                              sqlite3_column_type(st, 2) == SQLITE_NULL;
-        bool linked_parent = row_height > 0 && parent && parent_len == 32 &&
+                              parent_type == SQLITE_NULL;
+        bool linked_parent = row_height > 0 && parent_type == SQLITE_BLOB &&
+                             parent && parent_len == 32 &&
                              memcmp(parent, prior, 32) == 0;
-        if (sqlite3_column_type(st, 0) != SQLITE_INTEGER ||
-            sqlite3_column_type(st, 1) != SQLITE_BLOB || !hash ||
+        if (height_type != SQLITE_INTEGER ||
+            hash_type != SQLITE_BLOB || !hash ||
             sqlite3_column_bytes(st, 1) != 32 ||
             row_height != expected_height ||
             (!genesis_parent && !linked_parent)) {
@@ -270,12 +299,18 @@ static bool prove_header_chain(sqlite3 *db, int32_t height,
 static bool prove_stage_rows(sqlite3 *db,
                              const struct export_stage_proof *stage,
                              int32_t height, uint64_t cursor,
+                             uint8_t validation_profile,
+                             const uint8_t source_epoch_digest[32],
                              struct consensus_state_bundle_proof_summary *summary)
 {
-    char sql[256];
-    int n = snprintf(sql, sizeof(sql),
-                     "SELECT height,ok FROM %s WHERE height BETWEEN 0 AND ? "
-                     "ORDER BY height", stage->table);
+    char sql[384];
+    const char *columns = stage->source_epoch_bound
+        ? "height,ok,status,source_epoch_digest"
+        : stage->profile_bound ? "height,ok,status" : "height,ok";
+    int n = snprintf(
+        sql, sizeof(sql), "SELECT %s FROM %s "
+        "WHERE height BETWEEN 0 AND ? ORDER BY height", columns,
+        stage->table);
     if (n <= 0 || (size_t)n >= sizeof(sql))
         LOG_FAIL(EXPORT_PROOF_SUBSYS, "stage proof SQL overflow");
     sqlite3_stmt *st = NULL;
@@ -301,22 +336,52 @@ static bool prove_stage_rows(sqlite3 *db,
     sha3_256_write(&component, (const uint8_t *)stage->name,
                    strlen(stage->name));
     proof_u64(&component, cursor);
+    if (stage->source_epoch_bound)
+        sha3_256_write(&component, source_epoch_digest, 32);
 
     int64_t expected_height = 0;
     bool ok = true;
     int rc;
+    const char *required_status =
+        validation_profile == CONSENSUS_STATE_VALIDATION_FULL
+            ? "verified" : "checkpoint_fold";
+    size_t required_status_len = strlen(required_status);
     while ((rc = sqlite3_step(st)) == SQLITE_ROW) { // raw-sql-ok:progress-kv-kernel-store
-        int64_t row_height = sqlite3_column_int64(st, 0);
-        int verdict = sqlite3_column_int(st, 1);
-        if (sqlite3_column_type(st, 0) != SQLITE_INTEGER ||
-            sqlite3_column_type(st, 1) != SQLITE_INTEGER ||
-            row_height != expected_height || verdict != 1) {
+        int height_type = sqlite3_column_type(st, 0);
+        int verdict_type = sqlite3_column_type(st, 1);
+        int status_type = stage->profile_bound
+            ? sqlite3_column_type(st, 2) : SQLITE_NULL;
+        int epoch_type = stage->source_epoch_bound
+            ? sqlite3_column_type(st, 3) : SQLITE_NULL;
+        int64_t row_height = height_type == SQLITE_INTEGER
+            ? sqlite3_column_int64(st, 0) : -1;
+        int verdict = verdict_type == SQLITE_INTEGER
+            ? sqlite3_column_int(st, 1) : -1;
+        const unsigned char *status = status_type == SQLITE_TEXT
+                                          ? sqlite3_column_text(st, 2) : NULL;
+        const void *row_epoch = epoch_type == SQLITE_BLOB
+                                    ? sqlite3_column_blob(st, 3) : NULL;
+        if (height_type != SQLITE_INTEGER || verdict_type != SQLITE_INTEGER ||
+            row_height != expected_height || verdict != 1 ||
+            (stage->profile_bound &&
+             (status_type != SQLITE_TEXT || !status ||
+              sqlite3_column_bytes(st, 2) != (int)required_status_len ||
+              memcmp(status, required_status, required_status_len) != 0)) ||
+            (stage->source_epoch_bound &&
+             (epoch_type != SQLITE_BLOB || !row_epoch ||
+              sqlite3_column_bytes(st, 3) != 32 ||
+              memcmp(row_epoch, source_epoch_digest, 32) != 0))) {
             ok = false;
             break;
         }
         proof_u64(&component, (uint64_t)row_height);
         uint8_t accepted = 1;
         sha3_256_write(&component, &accepted, 1);
+        if (stage->profile_bound) {
+            proof_u64(&component, (uint64_t)required_status_len);
+            sha3_256_write(&component, (const uint8_t *)required_status,
+                           required_status_len);
+        }
         expected_height++;
     }
     if (rc != SQLITE_DONE || expected_height != (int64_t)height + 1)
@@ -324,8 +389,9 @@ static bool prove_stage_rows(sqlite3 *db,
     sqlite3_finalize(st);
     if (!ok) {
         LOG_WARN(EXPORT_PROOF_SUBSYS,
-                 "stage proof is not a complete ok=1 prefix table=%s height=%d",
-                 stage->table, height);
+                 "stage proof is not a complete profile-bound ok=1 prefix "
+                 "table=%s height=%d profile=%u",
+                 stage->table, height, (unsigned)validation_profile);
         return false;
     }
 
@@ -334,11 +400,26 @@ static bool prove_stage_rows(sqlite3 *db,
         sha3_256_finalize(&component, summary->component_digest);
         return true;
     }
-    n = snprintf(sql, sizeof(sql),
-                 "SELECT COUNT(*) FROM %s s JOIN header_admit_log h "
-                 "ON h.height=s.height AND h.hash=s.%s "
-                 "WHERE s.height BETWEEN 0 AND ? AND s.ok=1",
-                 stage->table, stage->hash_column);
+    if (strcmp(stage->name, "utxo_apply") == 0) {
+        n = snprintf(sql, sizeof(sql),
+                     "SELECT COUNT(*) FROM utxo_apply_log s "
+                     "JOIN utxo_apply_delta d ON d.height=s.height "
+                     "JOIN header_admit_log h ON h.height=s.height "
+                     "AND h.hash=d.branch_hash "
+                     "WHERE s.height BETWEEN 0 AND ? "
+                     "AND typeof(s.ok)='integer' AND s.ok=1 "
+                     "AND typeof(d.branch_hash)='blob' "
+                     "AND length(d.branch_hash)=32");
+    } else {
+        n = snprintf(sql, sizeof(sql),
+                     "SELECT COUNT(*) FROM %s s JOIN header_admit_log h "
+                     "ON h.height=s.height AND h.hash=s.%s "
+                     "WHERE s.height BETWEEN 0 AND ? "
+                     "AND typeof(s.ok)='integer' AND s.ok=1 "
+                     "AND typeof(s.%s)='blob' AND length(s.%s)=32",
+                     stage->table, stage->hash_column, stage->hash_column,
+                     stage->hash_column);
+    }
     if (n <= 0 || (size_t)n >= sizeof(sql))
         LOG_FAIL(EXPORT_PROOF_SUBSYS, "stage hash SQL overflow");
     st = NULL;
@@ -349,9 +430,10 @@ static bool prove_stage_rows(sqlite3 *db,
     }
     sqlite3_bind_int(st, 1, height);
     rc = sqlite3_step(st); // raw-sql-ok:progress-kv-kernel-store
-    int64_t hash_bound_count =
-        rc == SQLITE_ROW ? sqlite3_column_int64(st, 0) : -1;
-    ok = rc == SQLITE_ROW && sqlite3_column_type(st, 0) == SQLITE_INTEGER &&
+    int count_type = rc == SQLITE_ROW ? sqlite3_column_type(st, 0) : SQLITE_NULL;
+    int64_t hash_bound_count = rc == SQLITE_ROW && count_type == SQLITE_INTEGER
+        ? sqlite3_column_int64(st, 0) : -1;
+    ok = rc == SQLITE_ROW && count_type == SQLITE_INTEGER &&
          hash_bound_count == (int64_t)height + 1;
     if (ok)
         ok = sqlite3_step(st) == SQLITE_DONE; // raw-sql-ok:progress-kv-kernel-store
@@ -441,6 +523,20 @@ bool consensus_export_prove_source(
             result, CONSENSUS_EXPORT_MISSING_PROOF,
             "complete genesis-to-height header proof is unavailable");
 
+    if (!prove_source_receipt(source, manifest->source_fold_cursor,
+                              chain_corpus_digest, receipt,
+                              manifest->source_digest))
+        return consensus_export_fail(
+            result, CONSENSUS_EXPORT_MISSING_PROOF,
+            "durable producer source provenance receipt unavailable");
+    manifest->validation_profile = receipt->validation_profile;
+    manifest->source_clean = receipt->source_clean;
+    if (manifest->validation_profile != CONSENSUS_STATE_VALIDATION_FULL)
+        return consensus_export_fail(
+            result, CONSENSUS_EXPORT_MISSING_PROOF,
+            "checkpoint-fold state is non-serving producer evidence and "
+            "cannot be published by the canonical bundle exporter");
+
     /* Refresh the durable refold mode before computing H*: its floor is a
      * cached atomic, so a stale process value can otherwise validate the
      * wrong lattice. H* and the convention-aware durable tip must both name
@@ -467,13 +563,6 @@ bool consensus_export_prove_source(
         return consensus_export_fail(
             result, CONSENSUS_EXPORT_MISSING_PROOF,
             "durable served tip does not own expected height/hash");
-
-    if (!prove_source_receipt(source, manifest->source_fold_cursor,
-                              chain_corpus_digest, receipt,
-                              manifest->source_digest))
-        return consensus_export_fail(
-            result, CONSENSUS_EXPORT_MISSING_PROOF,
-            "durable producer source provenance receipt unavailable");
 
     memset(proofs, 0, sizeof(*proofs) * CONSENSUS_STATE_BUNDLE_PROOF_COUNT);
     snprintf(proofs[0].component, sizeof(proofs[0].component),
@@ -509,7 +598,9 @@ bool consensus_export_prove_source(
                 result, CONSENSUS_EXPORT_MISSING_PROOF,
                 "utxo cursor does not equal frozen coin generation");
         if (!prove_stage_rows(source, &k_stages[i], request->expected_height,
-                              cursor, &proofs[i + 1]))
+                              cursor, manifest->validation_profile,
+                              receipt->source_epoch_digest,
+                              &proofs[i + 1]))
             return consensus_export_fail(
                 result, CONSENSUS_EXPORT_MISSING_PROOF,
                 "complete reducer proof rows unavailable stage=%s",

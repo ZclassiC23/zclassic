@@ -7,6 +7,7 @@
 #include "storage/consensus_state_bundle_codec.h"
 
 #include <sqlite3.h>
+#include <sys/stat.h>
 #include <sys/types.h>
 
 #define CONSENSUS_EXPORT_NAME_MAX 256
@@ -29,6 +30,12 @@ struct consensus_export_output_binding {
 int consensus_export_fd_file_size(void);
 int consensus_export_fd_file_open(sqlite3_file *file, int retained_fd,
                                   int flags, int *out_flags);
+/* Replace the last owned writable staging descriptor with an exact O_RDONLY
+ * description of the same anonymous inode.  Call only after every SQLite
+ * writer is strictly closed. */
+bool consensus_export_seal_readonly(
+    struct consensus_export_output_binding *output, struct stat *sealed);
+bool consensus_export_descriptor_digest(int fd, uint8_t out[32]);
 
 bool consensus_export_fail(struct consensus_state_export_result *result,
                            enum consensus_state_export_status status,

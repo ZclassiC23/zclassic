@@ -45,11 +45,13 @@
 #include "config/boot.h"
 #include "config/mint_anchor_progress.h"
 
+#include <errno.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>          /* EXIT_FAILURE, getenv */
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>          /* _exit */
 #include <sqlite3.h>
 
@@ -67,6 +69,32 @@
 #include "event/event.h"                        /* event_emitf */
 #include "util/log_macros.h"
 #include "core/utiltime.h"                       /* GetTimeMicros */
+
+bool boot_mint_anchor_normal_boot_gate(sqlite3 *progress_db)
+{
+    char reason[512];
+    if (mint_anchor_normal_boot_allowed(progress_db, reason, sizeof(reason)))
+        return true;
+    fprintf(stderr, "FATAL: normal node boot refused by producer evidence "
+            "containment: %s\n",
+            reason[0] ? reason : "validation-profile scan failed");
+    event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                "producer_evidence_contained reason=%s",
+                reason[0] ? reason : "profile_scan_failed");
+    return false;
+}
+
+void boot_mint_anchor_require_producer_lane(sqlite3 *progress_db,
+                                            bool checkpoint_fold)
+{
+    if (mint_anchor_producer_lane_bind(progress_db, checkpoint_fold))
+        return;
+    fprintf(stderr, "FATAL: -mint-anchor producer datadir is bound to a "
+            "different validation profile; refusing mixed generations\n");
+    event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                "mint_anchor producer_lane_profile_mismatch");
+    _exit(EXIT_FAILURE);
+}
 
 /* The utxo_apply frontier is a NEXT-height cursor: applied-through `h` means
  * coins_applied_height == h+1. Read it; return -1 when unknown (absent). */
@@ -299,7 +327,7 @@ bool boot_mint_anchor_run(const char *datadir)
      * so a match here proves our independently-folded anchor set reproduces
      * zclassicd's checkpoint exactly. A MISMATCH means our fold disagrees with
      * the checkpoint (the h=478544 class): page EV_BOOT_VALIDATION_FAILED and
-     * _exit — NEVER publish an unproven artifact. */
+     * _exit — NEVER retain an unproven artifact. */
     bool sha3_match = memcmp(coins_sha3, cp->sha3_hash, 32) == 0;
     bool count_match = got_count == cp->utxo_count;
     if (!sha3_match || !count_match) {
@@ -312,7 +340,7 @@ bool boot_mint_anchor_run(const char *datadir)
                 "FATAL: -mint-anchor: minted anchor set FAILED the SHA3/count "
                 "check (count=%llu want=%llu, sha3=%s want=%s) — our genesis.."
                 "%d fold disagrees with the compiled checkpoint. Refusing to "
-                "publish; the artifact at %s is NOT trustworthy.\n",
+                "retain; the artifact at %s is NOT trustworthy.\n",
                 (unsigned long long)got_count,
                 (unsigned long long)cp->utxo_count, got_hex, want_hex,
                 anchor, out_path);
@@ -331,10 +359,12 @@ bool boot_mint_anchor_run(const char *datadir)
     for (int i = 0; i < 32; i++)
         snprintf(sha3_hex + 2 * i, 3, "%02x", coins_sha3[i]);
     fprintf(stderr,
-            "[mint-anchor] SUCCESS: minted the verified anchor UTXO set at h=%d "
+            "[mint-anchor] SUCCESS: minted a checkpoint-matching anchor UTXO "
+            "set at h=%d "
             "(count=%llu, supply=%lld zatoshi, coins_sha3=%s) — matches the "
             "compiled checkpoint. Locally self-minted legacy v3 current-state "
-            "candidate (history incomplete; canonical bundle not yet emitted): "
+            "candidate (history incomplete; non-serving and not canonically "
+            "publishable): "
             "%s\n",
             anchor, (unsigned long long)got_count, (long long)got_supply,
             sha3_hex, out_path);

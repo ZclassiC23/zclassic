@@ -7,6 +7,7 @@
 #include "jobs/mint_skip_crypto.h"
 
 #include <stdatomic.h>
+#include <string.h>
 
 /* Default OFF: a normal boot never calls _set, so both crypto step bodies see
  * `mint_skip_crypto_get() == false` and run the REAL per-block crypto —
@@ -21,4 +22,35 @@ void mint_skip_crypto_set(bool skip)
 bool mint_skip_crypto_get(void)
 {
     return atomic_load_explicit(&g_mint_skip_crypto, memory_order_relaxed);
+}
+
+enum mint_validation_evidence mint_validation_evidence_parse(
+    const void *bytes, size_t size)
+{
+    static const char verified[] = "verified";
+    static const char checkpoint[] = "checkpoint_fold";
+    if (bytes && size == sizeof(verified) - 1 &&
+        memcmp(bytes, verified, sizeof(verified) - 1) == 0)
+        return MINT_VALIDATION_EVIDENCE_VERIFIED;
+    if (bytes && size == sizeof(checkpoint) - 1 &&
+        memcmp(bytes, checkpoint, sizeof(checkpoint) - 1) == 0)
+        return MINT_VALIDATION_EVIDENCE_CHECKPOINT_FOLD;
+    return MINT_VALIDATION_EVIDENCE_INVALID;
+}
+
+enum mint_validation_evidence mint_validation_evidence_expected(bool skip)
+{
+    return skip ? MINT_VALIDATION_EVIDENCE_CHECKPOINT_FOLD
+                : MINT_VALIDATION_EVIDENCE_VERIFIED;
+}
+
+const char *mint_validation_evidence_status(
+    enum mint_validation_evidence evidence)
+{
+    switch (evidence) {
+    case MINT_VALIDATION_EVIDENCE_VERIFIED: return "verified";
+    case MINT_VALIDATION_EVIDENCE_CHECKPOINT_FOLD: return "checkpoint_fold";
+    case MINT_VALIDATION_EVIDENCE_INVALID: break;
+    }
+    return "invalid";
 }

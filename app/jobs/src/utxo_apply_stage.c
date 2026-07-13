@@ -278,6 +278,9 @@ static job_result_t step_apply(struct stage_step_ctx *c)
                                    "stage cursor persisted negative");
         return JOB_FATAL;
     }
+    bool skip_crypto = mint_skip_crypto_get();
+    enum mint_validation_evidence expected_evidence =
+        mint_validation_evidence_expected(skip_crypto);
     uint64_t pv_cursor = 0;
     if (!stage_cursor_read_or_zero(db, "proof_validate", STAGE_NAME,
                                    &pv_cursor)) {
@@ -321,6 +324,12 @@ static job_result_t step_apply(struct stage_step_ctx *c)
                                    "script_validate_log verdict read returned error");
         return JOB_FATAL;
     }
+    if (upstream.ok == 1 && sv_found == 1 && sv_row.ok == 1 &&
+        (upstream.evidence != expected_evidence ||
+         sv_row.evidence != expected_evidence))
+        return utxo_apply_evidence_refuse(c, next_h, expected_evidence,
+                                          upstream.evidence, sv_row.evidence);
+    utxo_apply_evidence_clear();
 
     struct block_index *bi = utxo_apply_select_apply_block(
         db, ms, next_h, sv_found == 1 ? &sv_row : NULL);
@@ -464,8 +473,9 @@ static job_result_t step_apply(struct stage_step_ctx *c)
         }
     }
 
-    if (summary.ok) {
+    if (summary.ok && !skip_crypto)
         atomic_fetch_add(&g_ua_verified_total, 1);
+    if (summary.ok) {
         atomic_fetch_add(&g_ua_total_outputs_added,
                          (uint64_t)summary.added_count);
         atomic_fetch_add(&g_ua_total_outputs_spent,
@@ -503,7 +513,9 @@ static job_result_t step_apply(struct stage_step_ctx *c)
                                          label);
     }
 
-    if (!utxo_apply_log_insert(db, next_h, summary.status, summary.ok,
+    const char *apply_status = summary.ok
+        ? mint_validation_evidence_status(expected_evidence) : summary.status;
+    if (!utxo_apply_log_insert(db, next_h, apply_status, summary.ok,
                     summary.spent_count, summary.added_count,
                     summary.total_value_delta, summary.failure_kind,
                     summary.ok ? NULL : summary.failure_detail)) {
@@ -846,6 +858,7 @@ void utxo_apply_stage_shutdown(void)
     /* Registry hygiene (tests re-init in-process): init re-registers the
      * gap blocker from the durable marker, so clearing here loses nothing. */
     blocker_clear(UTXO_APPLY_NF_GAP_BLOCKER_ID);
+    utxo_apply_evidence_clear();
     if (g_stage) {
         stage_destroy(g_stage);
         g_stage = NULL;

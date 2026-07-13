@@ -26,6 +26,7 @@
  * subsystem that OWNS the repair (the reducer_frontier log set), not for the
  * stage that observes it. */
 #define UA_UPSTREAM_HOLE_BLOCKER_ID "reducer_frontier.upstream_log_hole"
+#define UA_EVIDENCE_BLOCKER_ID "utxo_apply.upstream_evidence_mode"
 
 /* Fold-progress heartbeat cadence (Task A — mint/catch-up observability). One
  * LOG_INFO every UA_PROGRESS_LOG_EVERY applied heights so a from-genesis fold
@@ -195,6 +196,33 @@ void utxo_apply_upstream_hole_healed(int height)
         atomic_store(&g_ua_upstream_hole_consec, (uint64_t)0);
         blocker_clear(UA_UPSTREAM_HOLE_BLOCKER_ID);
     }
+}
+
+job_result_t utxo_apply_evidence_refuse(
+    struct stage_step_ctx *c, int height,
+    enum mint_validation_evidence expected,
+    enum mint_validation_evidence proof,
+    enum mint_validation_evidence script)
+{
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+             "height=%d success evidence proof=%s script=%s expected=%s; "
+             "coin application holds instead of crossing validation profiles",
+             height, mint_validation_evidence_status(proof),
+             mint_validation_evidence_status(script),
+             mint_validation_evidence_status(expected));
+    if (!c || !blocker_init(&c->blocker, UA_EVIDENCE_BLOCKER_ID, STAGE_NAME,
+                            BLOCKER_DEPENDENCY, reason))
+        return JOB_FATAL;
+    snprintf(c->blocker.escape_action, sizeof(c->blocker.escape_action),
+             "resume the matching offline producer or replay crypto stages");
+    c->blocker.retry_budget = -1;
+    return JOB_BLOCKED;
+}
+
+void utxo_apply_evidence_clear(void)
+{
+    blocker_clear(UA_EVIDENCE_BLOCKER_ID);
 }
 
 job_result_t utxo_apply_label_splice_refuse(struct stage_step_ctx *c,

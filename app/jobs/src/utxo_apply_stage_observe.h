@@ -7,6 +7,7 @@
 #ifndef ZCL_JOBS_UTXO_APPLY_STAGE_OBSERVE_H
 #define ZCL_JOBS_UTXO_APPLY_STAGE_OBSERVE_H
 
+#include "jobs/mint_skip_crypto.h"
 #include "util/stage.h"
 
 #include <stdatomic.h>
@@ -28,6 +29,13 @@ job_result_t utxo_apply_label_splice_refuse(struct stage_step_ctx *c,
                                             const struct uint256 *applying,
                                             const struct uint256 *verdict);
 void utxo_apply_label_splice_healed(int height);
+
+job_result_t utxo_apply_evidence_refuse(
+    struct stage_step_ctx *c, int height,
+    enum mint_validation_evidence expected,
+    enum mint_validation_evidence proof,
+    enum mint_validation_evidence script);
+void utxo_apply_evidence_clear(void);
 
 void utxo_apply_progress_note(int applied_height, uint64_t next_cursor);
 void utxo_apply_observe_reset(void);

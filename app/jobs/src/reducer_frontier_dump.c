@@ -241,8 +241,8 @@ static bool trusted_base_height_for_dump(sqlite3 *db, int32_t *out,
     uint8_t blob[8] = {0};
     size_t n = 0;
     bool present = false;
-    if (!progress_meta_get(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
-                           blob, sizeof(blob), &n, &present))
+    if (!progress_meta_get_blob_exact(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
+                                      blob, sizeof(blob), &n, &present))
         return false;
     if (!present)
         return true;
@@ -251,9 +251,14 @@ static bool trusted_base_height_for_dump(sqlite3 *db, int32_t *out,
                  "dump trusted_base blob malformed (len=%zu)", n);
         return false;
     }
-    int64_t v = 0;
+    uint64_t v = 0;
     for (int i = 7; i >= 0; i--)
         v = (v << 8) | blob[i];
+    if (v > INT32_MAX) {
+        LOG_WARN("reducer", "dump trusted_base height out of range (%llu)",
+                 (unsigned long long)v);
+        return false;
+    }
     *out = (int32_t)v;
     *found = true;
     return true;

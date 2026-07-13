@@ -10,6 +10,7 @@
 
 #include "core/arith_uint256.h"
 #include "core/uint256.h"
+#include "jobs/mint_skip_crypto.h"
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -18,6 +19,8 @@ struct sqlite3;
 
 struct utxo_apply_row {
     int ok;
+    enum mint_validation_evidence evidence;
+    bool is_anchor;
     int64_t spent_count;
     int64_t added_count;
 };

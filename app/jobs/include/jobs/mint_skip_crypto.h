@@ -11,22 +11,21 @@
  * fold — the set of coins is a pure function of WHICH outputs exist and WHICH
  * are spent (the bodies + the state rules), not of the signature/proof witness.
  *
- * SOUNDNESS — this mode is sound ONLY for PRODUCING the one anchor snapshot,
- * whose correctness is certified independently by the terminal hard-assert
- * (coins_kv_commitment(anchor) == g_sha3_checkpoint.sha3_hash AND count ==
- * the compiled utxo_count, boot_mint_anchor.c). By SHA3-256 collision
- * resistance a state-only fold whose result hashes to the trusted fingerprint
- * IS the fully-validated set. Any divergence the skipped crypto would have
- * caught (a block that should have been rejected, changing the coin set) yields
- * a DIFFERENT SHA3 → the assert FATALs and unlinks the artifact. So the skip
- * can only ever PRODUCE-AND-PUBLISH the correct set or REFUSE — never publish a
- * wrong one. It is NOT sound for validating the chain and NEVER gates a running
- * node's accept/reject decision.
+ * EVIDENCE LIMIT — the terminal checkpoint assertion proves that the resulting
+ * transparent coin set has the compiled SHA3/count/supply. It does NOT prove
+ * the skipped signatures or shielded proofs, does not establish complete
+ * historical anchors/nullifiers, and never makes this a full validation replay.
+ * Fast output therefore remains checkpoint-fold evidence until separately
+ * combined with the required shielded-history and publication proofs. It is
+ * NOT sound for validating the chain and NEVER gates a running node's
+ * accept/reject decision.
  *
  * MECHANISM — a process-global atomic bool. Both crypto step bodies read it
- * once per height; when ON they write the SAME "verified"/ok=true log row the
- * verified path writes (and script_validate still raises BLOCK_VALID_SCRIPTS),
- * so utxo_apply/tip_finalize are byte-identical downstream.
+ * once per height; when ON they write `checkpoint_fold`/ok=true, never
+ * `verified`. That status propagates through UTXO application and is excluded
+ * from serving validity, H*, tip finalization, repairs, and the canonical
+ * exporter. Coin application remains byte-identical; its authority posture does
+ * not.
  *
  * NORMAL-BOOT INVARIANT: the toggle defaults to OFF. A normal boot NEVER calls
  * mint_skip_crypto_set, so `if (mint_skip_crypto_get())` is provably never true
@@ -46,11 +45,26 @@
 #define ZCL_JOBS_MINT_SKIP_CRYPTO_H
 
 #include <stdbool.h>
+#include <stddef.h>
+
+/* Exact durable success evidence carried between the crypto/state stages.
+ * INVALID includes missing/non-TEXT/unknown/embedded-NUL values. */
+enum mint_validation_evidence {
+    MINT_VALIDATION_EVIDENCE_INVALID = 0,
+    MINT_VALIDATION_EVIDENCE_VERIFIED,
+    MINT_VALIDATION_EVIDENCE_CHECKPOINT_FOLD,
+};
+
+enum mint_validation_evidence mint_validation_evidence_parse(
+    const void *bytes, size_t size);
+enum mint_validation_evidence mint_validation_evidence_expected(bool skip);
+const char *mint_validation_evidence_status(
+    enum mint_validation_evidence evidence);
 
 /* Set the OFFLINE FAST-MINT crypto pass-through. true => script_validate and
- * proof_validate skip their per-block crypto and write the verified row
- * directly. ONLY the -mint-anchor driver (gated under ctx->mint_anchor) calls
- * this; a normal boot never does. */
+ * proof_validate skip their per-block crypto and write a checkpoint_fold row.
+ * ONLY the -mint-anchor driver (gated under ctx->mint_anchor) calls this; a
+ * normal boot never does. */
 void mint_skip_crypto_set(bool skip);
 
 /* Read the toggle. Cheap atomic read — safe from any stage thread. Returns

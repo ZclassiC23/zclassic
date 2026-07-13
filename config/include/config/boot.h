@@ -373,6 +373,12 @@ void boot_mint_anchor_reset(struct node_db *ndb, bool fast);
  * reach the anchor — bodies missing). Owner-gated; reads on-disk bodies +
  * coins_kv only. `datadir` is the active data directory. */
 bool boot_mint_anchor_run(const char *datadir);
+/* Read-only producer-marker/lane refusal before node.db, wallet, or progress.kv
+ * is opened for writing. */
+bool boot_mint_anchor_normal_boot_preflight(const char *datadir);
+bool boot_mint_anchor_normal_boot_gate(struct sqlite3 *progress_db);
+void boot_mint_anchor_require_producer_lane(struct sqlite3 *progress_db,
+                                            bool checkpoint_fold);
 bool boot_mint_anchor_should_log_progress(int32_t applied_through,
                                           int32_t anchor);
 

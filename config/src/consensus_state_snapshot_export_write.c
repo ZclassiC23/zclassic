@@ -21,7 +21,9 @@ static const char k_bundle_schema_sql[] =
     "CREATE TABLE bundle_meta("
     "singleton INTEGER PRIMARY KEY CHECK(singleton=1),"
     "schema TEXT NOT NULL,height INTEGER NOT NULL,block_hash BLOB NOT NULL,"
-    "history_complete INTEGER NOT NULL,activation_boundary INTEGER NOT NULL,"
+    "history_complete INTEGER NOT NULL,source_clean INTEGER NOT NULL,"
+    "validation_profile INTEGER NOT NULL,"
+    "activation_boundary INTEGER NOT NULL,"
     "utxo_root BLOB NOT NULL,utxo_count INTEGER NOT NULL,"
     "total_supply INTEGER NOT NULL,anchor_digest BLOB NOT NULL,"
     "anchor_count INTEGER NOT NULL,sprout_frontier_root BLOB NOT NULL,"
@@ -37,8 +39,10 @@ static const char k_bundle_schema_sql[] =
     "artifact_digest BLOB NOT NULL);"
     "CREATE TABLE source_receipt("
     "singleton INTEGER PRIMARY KEY CHECK(singleton=1),schema TEXT NOT NULL,"
-    "source_tree_root BLOB NOT NULL,running_binary_digest BLOB NOT NULL,"
-    "toolchain_digest BLOB NOT NULL,chain_corpus_digest BLOB NOT NULL,"
+    "source_epoch_digest BLOB NOT NULL,source_tree_root BLOB NOT NULL,"
+    "running_binary_digest BLOB NOT NULL,toolchain_digest BLOB NOT NULL,"
+    "build_inputs_digest BLOB NOT NULL,chain_corpus_digest BLOB NOT NULL,"
+    "source_clean INTEGER NOT NULL,validation_profile INTEGER NOT NULL,"
     "producer_commit TEXT NOT NULL,fold_cursor INTEGER NOT NULL,"
     "receipt_digest BLOB NOT NULL);"
     "CREATE TABLE bundle_proof("
@@ -98,6 +102,14 @@ static bool step_insert(sqlite3_stmt *st)
     return ok;
 }
 
+static bool column_int64_exact(sqlite3_stmt *st, int column, int64_t *out)
+{
+    if (sqlite3_column_type(st, column) != SQLITE_INTEGER)
+        return false;
+    *out = sqlite3_column_int64(st, column);
+    return true;
+}
+
 static bool copy_coins(sqlite3 *source, sqlite3 *destination,
                        struct consensus_state_bundle_manifest *manifest)
 {
@@ -116,24 +128,25 @@ static bool copy_coins(sqlite3 *source, sqlite3 *destination,
     bool ok = true;
     int rc;
     while ((rc = sqlite3_step(read)) == SQLITE_ROW) { // raw-sql-ok:progress-kv-kernel-store
-        const void *txid = sqlite3_column_blob(read, 0);
-        int64_t vout = sqlite3_column_int64(read, 1);
-        int64_t value = sqlite3_column_int64(read, 2);
-        const void *script = sqlite3_column_blob(read, 3);
-        int script_len = sqlite3_column_bytes(read, 3);
-        int64_t height = sqlite3_column_int64(read, 4);
-        int coinbase = sqlite3_column_int(read, 5);
-        if (sqlite3_column_type(read, 0) != SQLITE_BLOB || !txid ||
+        int txid_type = sqlite3_column_type(read, 0);
+        int script_type = sqlite3_column_type(read, 3);
+        const void *txid = txid_type == SQLITE_BLOB
+            ? sqlite3_column_blob(read, 0) : NULL;
+        const void *script = script_type == SQLITE_BLOB
+            ? sqlite3_column_blob(read, 3) : NULL;
+        int script_len = script ? sqlite3_column_bytes(read, 3) : 0;
+        int64_t vout = -1, value = -1, height = -1, coinbase = -1;
+        bool numeric = column_int64_exact(read, 1, &vout) &&
+                       column_int64_exact(read, 2, &value) &&
+                       column_int64_exact(read, 4, &height) &&
+                       column_int64_exact(read, 5, &coinbase);
+        if (txid_type != SQLITE_BLOB || !txid ||
             sqlite3_column_bytes(read, 0) != 32 ||
-            sqlite3_column_type(read, 1) != SQLITE_INTEGER || vout < 0 ||
-            vout > UINT32_MAX ||
-            sqlite3_column_type(read, 2) != SQLITE_INTEGER ||
+            !numeric || vout < 0 || vout > UINT32_MAX ||
             !MoneyRange(value) || supply > MAX_MONEY - value ||
-            sqlite3_column_type(read, 3) != SQLITE_BLOB || script_len < 0 ||
+            script_type != SQLITE_BLOB || script_len < 0 ||
             script_len > MAX_SCRIPT_SIZE ||
-            sqlite3_column_type(read, 4) != SQLITE_INTEGER || height < 0 ||
-            height > manifest->height ||
-            sqlite3_column_type(read, 5) != SQLITE_INTEGER ||
+            height < 0 || height > manifest->height ||
             (coinbase != 0 && coinbase != 1) || count == UINT64_MAX) {
             ok = false;
             break;
@@ -189,29 +202,34 @@ static bool copy_anchors(sqlite3 *source, sqlite3 *destination,
     bool ok = true;
     int rc;
     while ((rc = sqlite3_step(read)) == SQLITE_ROW) { // raw-sql-ok:progress-kv-kernel-store
-        int pool = sqlite3_column_int(read, 0);
-        const void *root = sqlite3_column_blob(read, 1);
-        int64_t height = sqlite3_column_int64(read, 2);
-        const void *tree = sqlite3_column_blob(read, 3);
-        int tree_len = sqlite3_column_bytes(read, 3);
-        if (sqlite3_column_type(read, 0) != SQLITE_INTEGER ||
+        int root_type = sqlite3_column_type(read, 1);
+        int tree_type = sqlite3_column_type(read, 3);
+        const void *root = root_type == SQLITE_BLOB
+            ? sqlite3_column_blob(read, 1) : NULL;
+        int64_t pool = -1, height = -1;
+        bool numeric = column_int64_exact(read, 0, &pool) &&
+                       column_int64_exact(read, 2, &height);
+        const void *tree = tree_type == SQLITE_BLOB
+            ? sqlite3_column_blob(read, 3) : NULL;
+        int tree_len = tree ? sqlite3_column_bytes(read, 3) : 0;
+        if (!numeric ||
             (pool != ANCHOR_POOL_SPROUT && pool != ANCHOR_POOL_SAPLING) ||
-            sqlite3_column_type(read, 1) != SQLITE_BLOB || !root ||
+            root_type != SQLITE_BLOB || !root ||
             sqlite3_column_bytes(read, 1) != 32 ||
-            sqlite3_column_type(read, 2) != SQLITE_INTEGER || height < 0 ||
-            height > manifest->height ||
-            sqlite3_column_type(read, 3) != SQLITE_BLOB || !tree ||
+            height < 0 || height > manifest->height ||
+            tree_type != SQLITE_BLOB || !tree ||
             tree_len <= 0 || count == UINT64_MAX) {
             ok = false;
             break;
         }
-        if (height == frontier_height[pool]) {
+        int pool_index = (int)pool;
+        if (height == frontier_height[pool_index]) {
             ok = false;
             break;
         }
-        if (height > frontier_height[pool]) {
-            frontier_height[pool] = height;
-            memcpy(frontier_root[pool], root, 32);
+        if (height > frontier_height[pool_index]) {
+            frontier_height[pool_index] = height;
+            memcpy(frontier_root[pool_index], root, 32);
         }
         consensus_state_bundle_anchor_digest_row(
             &digest, (uint8_t)pool, root, (uint64_t)height, tree,
@@ -264,15 +282,17 @@ static bool copy_nullifiers(sqlite3 *source, sqlite3 *destination,
     bool ok = true;
     int rc;
     while ((rc = sqlite3_step(read)) == SQLITE_ROW) { // raw-sql-ok:progress-kv-kernel-store
-        int pool = sqlite3_column_int(read, 0);
-        const void *nf = sqlite3_column_blob(read, 1);
-        int64_t height = sqlite3_column_int64(read, 2);
-        if (sqlite3_column_type(read, 0) != SQLITE_INTEGER ||
+        int nf_type = sqlite3_column_type(read, 1);
+        const void *nf = nf_type == SQLITE_BLOB
+            ? sqlite3_column_blob(read, 1) : NULL;
+        int64_t pool = -1, height = -1;
+        bool numeric = column_int64_exact(read, 0, &pool) &&
+                       column_int64_exact(read, 2, &height);
+        if (!numeric ||
             (pool != 0 && pool != 1) ||
-            sqlite3_column_type(read, 1) != SQLITE_BLOB || !nf ||
+            nf_type != SQLITE_BLOB || !nf ||
             sqlite3_column_bytes(read, 1) != 32 ||
-            sqlite3_column_type(read, 2) != SQLITE_INTEGER || height < 0 ||
-            height > manifest->height || count == UINT64_MAX) {
+            height < 0 || height > manifest->height || count == UINT64_MAX) {
             ok = false;
             break;
         }
@@ -304,14 +324,15 @@ static bool write_manifest(sqlite3 *db,
     consensus_state_bundle_artifact_digest(m, m->artifact_digest);
     static const char sql[] =
         "INSERT INTO bundle_meta("
-        "singleton,schema,height,block_hash,history_complete,"
+        "singleton,schema,height,block_hash,history_complete,source_clean,"
+        "validation_profile,"
         "activation_boundary,utxo_root,utxo_count,total_supply,anchor_digest,"
         "anchor_count,sprout_frontier_root,sprout_frontier_height,"
         "sapling_frontier_root,sapling_frontier_height,nullifier_digest,"
         "nullifier_count,sprout_source_cursor,sapling_source_cursor,"
         "nullifier_source_cursor,source_fold_cursor,proof_manifest_digest,"
         "source_digest,artifact_digest) VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,"
-        "?,?,?,?,?,?,?,?)";
+        "?,?,?,?,?,?,?,?,?,?)";
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
         return false;
@@ -323,6 +344,9 @@ static bool write_manifest(sqlite3 *db,
                                 SQLITE_STATIC) == SQLITE_OK &&
               sqlite3_bind_int(st, i++, m->history_complete ? 1 : 0) ==
                   SQLITE_OK &&
+              sqlite3_bind_int(st, i++, m->source_clean ? 1 : 0) ==
+                  SQLITE_OK &&
+              sqlite3_bind_int(st, i++, m->validation_profile) == SQLITE_OK &&
               sqlite3_bind_int64(st, i++, m->activation_boundary) ==
                   SQLITE_OK &&
               sqlite3_bind_blob(st, i++, m->utxo_root, 32, SQLITE_STATIC) ==
@@ -371,9 +395,10 @@ static bool write_source_receipt(
 {
     static const char sql[] =
         "INSERT INTO source_receipt("
-        "singleton,schema,source_tree_root,running_binary_digest,"
-        "toolchain_digest,chain_corpus_digest,producer_commit,fold_cursor,"
-        "receipt_digest) VALUES(1,?,?,?,?,?,?,?,?)";
+        "singleton,schema,source_epoch_digest,source_tree_root,"
+        "running_binary_digest,toolchain_digest,build_inputs_digest,"
+        "chain_corpus_digest,source_clean,validation_profile,producer_commit,"
+        "fold_cursor,receipt_digest) VALUES(1,?,?,?,?,?,?,?,?,?,?,?,?)";
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
         return false;
@@ -381,14 +406,22 @@ static bool write_source_receipt(
     bool ok = sqlite3_bind_text(st, i++,
                                 CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA, -1,
                                 SQLITE_STATIC) == SQLITE_OK &&
+              sqlite3_bind_blob(st, i++, receipt->source_epoch_digest, 32,
+                                SQLITE_STATIC) == SQLITE_OK &&
               sqlite3_bind_blob(st, i++, receipt->source_tree_root, 32,
                                 SQLITE_STATIC) == SQLITE_OK &&
               sqlite3_bind_blob(st, i++, receipt->running_binary_digest, 32,
                                 SQLITE_STATIC) == SQLITE_OK &&
               sqlite3_bind_blob(st, i++, receipt->toolchain_digest, 32,
                                 SQLITE_STATIC) == SQLITE_OK &&
+              sqlite3_bind_blob(st, i++, receipt->build_inputs_digest, 32,
+                                SQLITE_STATIC) == SQLITE_OK &&
               sqlite3_bind_blob(st, i++, receipt->chain_corpus_digest, 32,
                                 SQLITE_STATIC) == SQLITE_OK &&
+              sqlite3_bind_int(st, i++, receipt->source_clean ? 1 : 0) ==
+                  SQLITE_OK &&
+              sqlite3_bind_int(st, i++, receipt->validation_profile) ==
+                  SQLITE_OK &&
               sqlite3_bind_text(st, i++, receipt->producer_commit, 40,
                                 SQLITE_STATIC) == SQLITE_OK &&
               sqlite3_bind_int64(st, i++, receipt->fold_cursor) == SQLITE_OK &&

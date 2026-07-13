@@ -10,6 +10,7 @@
 #define ZCL_JOBS_SCRIPT_VALIDATE_LOG_STORE_H
 
 #include "core/uint256.h"
+#include "jobs/mint_skip_crypto.h"
 #include "script/script_error.h"
 
 #include <stdbool.h>
@@ -28,6 +29,7 @@ struct body_persist_row {
  * column report has_block_hash == false. */
 struct script_validate_verdict_row {
     int ok;
+    enum mint_validation_evidence evidence;
     bool has_block_hash;
     struct uint256 block_hash;  /* valid only when has_block_hash */
 };

@@ -477,13 +477,17 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     }
 
     struct validate_summary summary;
-    if (mint_skip_crypto_get()) {
+    bool skip_crypto = mint_skip_crypto_get();
+    if (skip_crypto) {
         /* OFFLINE FAST-MINT pass-through (jobs/mint_skip_crypto.h): SKIP the
-         * per-input ECDSA verify_script loop and synthesize the SAME "verified"
-         * summary the clean path produces (the contextual gate above still ran;
+         * per-input ECDSA verify_script loop.  The summary advances the state
+         * fold, but the durable status remains explicitly "checkpoint_fold" so
+         * no exporter can mistake this row for cryptographic verification (the
+         * contextual gate above still ran;
          * the coin SET is unchanged — utxo_apply is the state transition). The
-         * terminal SHA3==checkpoint hard-assert certifies it. Default OFF → a
-         * normal boot never reaches this branch. */
+         * terminal SHA3==checkpoint assertion certifies only the transparent
+         * fold; it does not certify skipped signatures. Default OFF → a normal
+         * boot never reaches this branch. */
         validate_summary_init(&summary);   /* ok=1, internal_error=0 */
         for (size_t ti = 0; ti < blk.num_vtx; ti++) {
             const struct transaction *tx = &blk.vtx[ti];
@@ -507,7 +511,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     if (!summary.ok && summary.internal_error)
         return sv_hold_unresolved(c, next_h, &summary, db, bi->phashBlock);
 
-    const char *status = "verified";
+    const char *status = skip_crypto ? "checkpoint_fold" : "verified";
     bool ok = true;
     const struct uint256 *fail_txid = NULL;
     int fail_vin = -1;
@@ -529,7 +533,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
                     next_h, ev_txhex, fail_vin, (int)fail_serror,
                     ScriptErrorString(fail_serror),
                     summary.reason[0] ? summary.reason : "script_invalid");
-    } else {
+    } else if (!skip_crypto) {
         atomic_fetch_add(&g_verified_total, 1);
         /* Raise the in-memory validity level to BLOCK_VALID_SCRIPTS, which
          * tip_finalize.preconditions_ok requires before publication. This is

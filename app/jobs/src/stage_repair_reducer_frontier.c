@@ -9,6 +9,7 @@
 
 #include "jobs/stage_repair.h"
 #include "jobs/stage_repair_internal.h"
+#include "stage_repair_reducer_frontier_evidence.h"
 #include "stage_repair_reducer_frontier_internal.h"
 
 #include "jobs/block_header_emit.h"
@@ -27,155 +28,6 @@
 #include <sqlite3.h>
 #include <stdint.h>
 #include <string.h>
-
-struct rf_log_evidence {
-    bool validate_ok_hash;
-    bool script_ok_hash;
-    bool body_ok;
-    bool proof_ok;
-    bool utxo_ok;
-};
-
-/* The five per-height evidence point reads, prepared ONCE per flag sweep and
- * reset/rebound per height: the sweep walks every height in (hstar, sweep_top]
- * while holding the progress + cs_main locks, so re-parsing this constant SQL
- * with a per-row sqlite3_prepare_v2 would pay the parser five times per height
- * under the locks. */
-struct rf_evidence_stmts {
-    sqlite3_stmt *validate_hash; /* ok, hash       FROM validate_headers_log */
-    sqlite3_stmt *script_hash;   /* ok, block_hash FROM script_validate_log  */
-    sqlite3_stmt *body_ok;       /* ok FROM body_persist_log  */
-    sqlite3_stmt *proof_ok;      /* ok FROM proof_validate_log */
-    sqlite3_stmt *utxo_ok;       /* ok FROM utxo_apply_log    */
-};
-
-static void rf_evidence_stmts_finalize(struct rf_evidence_stmts *es)
-{
-    sqlite3_finalize(es->validate_hash);
-    sqlite3_finalize(es->script_hash);
-    sqlite3_finalize(es->body_ok);
-    sqlite3_finalize(es->proof_ok);
-    sqlite3_finalize(es->utxo_ok);
-    memset(es, 0, sizeof(*es));
-}
-
-static bool rf_evidence_stmts_prepare(sqlite3 *db, struct rf_evidence_stmts *es)
-{
-    memset(es, 0, sizeof(*es));
-    if (sqlite3_prepare_v2(db,
-            "SELECT ok, hash FROM validate_headers_log WHERE height = ?",
-            -1, &es->validate_hash, NULL) == SQLITE_OK &&
-        sqlite3_prepare_v2(db,
-            "SELECT ok, block_hash FROM script_validate_log WHERE height = ?",
-            -1, &es->script_hash, NULL) == SQLITE_OK &&
-        sqlite3_prepare_v2(db,
-            "SELECT ok FROM body_persist_log WHERE height = ?",
-            -1, &es->body_ok, NULL) == SQLITE_OK &&
-        sqlite3_prepare_v2(db,
-            "SELECT ok FROM proof_validate_log WHERE height = ?",
-            -1, &es->proof_ok, NULL) == SQLITE_OK &&
-        sqlite3_prepare_v2(db,
-            "SELECT ok FROM utxo_apply_log WHERE height = ?",
-            -1, &es->utxo_ok, NULL) == SQLITE_OK)
-        return true;
-
-    LOG_WARN("stage_repair",
-             "[stage_repair] evidence stmt prepare failed: %s",
-             sqlite3_errmsg(db));
-    rf_evidence_stmts_finalize(es);
-    return false;
-}
-
-static bool log_ok_unlocked(sqlite3_stmt *st, const char *table, int height,
-                            bool *found, bool *ok)
-{
-    *found = false;
-    *ok = false;
-
-    sqlite3_reset(st);
-    sqlite3_bind_int(st, 1, height);
-
-    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
-    if (rc == SQLITE_ROW) {
-        *found = true;
-        *ok = sqlite3_column_int(st, 0) == 1;
-    } else if (rc != SQLITE_DONE) {
-        LOG_WARN("stage_repair",
-                 "[stage_repair] log_ok step failed table=%s h=%d rc=%d: %s",
-                 table, height, rc, sqlite3_errmsg(sqlite3_db_handle(st)));
-        return false;
-    }
-
-    return true;
-}
-
-static bool hash_log_ok_matches_unlocked(sqlite3_stmt *st, const char *table,
-                                         int height,
-                                         const struct uint256 *want,
-                                         bool *matches)
-{
-    *matches = false;
-    if (!want)
-        return true;
-
-    sqlite3_reset(st);
-    sqlite3_bind_int(st, 1, height);
-
-    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
-    if (rc == SQLITE_ROW) {
-        int row_ok = sqlite3_column_int(st, 0);
-        const void *blob = sqlite3_column_blob(st, 1);
-        int blen = sqlite3_column_bytes(st, 1);
-        if (row_ok == 1 && blob && blen == 32 &&
-            memcmp(blob, want->data, 32) == 0)
-            *matches = true;
-    } else if (rc != SQLITE_DONE) {
-        LOG_WARN("stage_repair",
-                 "[stage_repair] hash_log step failed table=%s h=%d rc=%d: %s",
-                 table, height, rc, sqlite3_errmsg(sqlite3_db_handle(st)));
-        return false;
-    }
-
-    return true;
-}
-
-static bool evidence_for_block_unlocked(struct rf_evidence_stmts *es,
-                                        const struct block_index *bi,
-                                        struct rf_log_evidence *ev)
-{
-    memset(ev, 0, sizeof(*ev));
-    if (!bi || !bi->phashBlock)
-        return true;
-
-    if (!hash_log_ok_matches_unlocked(es->validate_hash,
-                                      "validate_headers_log",
-                                      bi->nHeight, bi->phashBlock,
-                                      &ev->validate_ok_hash))
-        return false;
-    if (!hash_log_ok_matches_unlocked(es->script_hash,
-                                      "script_validate_log", bi->nHeight,
-                                      bi->phashBlock, &ev->script_ok_hash))
-        return false;
-
-    bool found = false;
-    if (!log_ok_unlocked(es->body_ok, "body_persist_log", bi->nHeight,
-                         &found, &ev->body_ok))
-        return false;
-    ev->body_ok = found && ev->body_ok;
-
-    found = false;
-    if (!log_ok_unlocked(es->proof_ok, "proof_validate_log", bi->nHeight,
-                         &found, &ev->proof_ok))
-        return false;
-    ev->proof_ok = found && ev->proof_ok;
-
-    found = false;
-    if (!log_ok_unlocked(es->utxo_ok, "utxo_apply_log", bi->nHeight,
-                         &found, &ev->utxo_ok))
-        return false;
-    ev->utxo_ok = found && ev->utxo_ok;
-    return true;
-}
 
 static bool block_pos_readable_hash(const struct block_index *bi,
                                     const char *datadir)
@@ -335,7 +187,7 @@ static bool reconcile_block_index_flags(
             continue;
 
         struct rf_log_evidence ev;
-        if (!evidence_for_block_unlocked(&es, bi, &ev)) {
+        if (!rf_evidence_for_block_unlocked(&es, bi, &ev)) {
             ok = false;
             break;
         }
@@ -384,7 +236,7 @@ static bool reconcile_block_index_flags(
         }
 
         if ((bi->nStatus & BLOCK_FAILED_MASK) &&
-            ev.script_ok_hash && ev.proof_ok && ev.utxo_ok) {
+            ev.script_ok_hash && ev.proof_ok_hash && ev.utxo_ok_hash) {
             if (apply)
                 bi->nStatus &= ~(unsigned)BLOCK_FAILED_MASK;
             out->failed_mask_cleared++;

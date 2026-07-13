@@ -8,6 +8,7 @@
 #include "crypto/sha3.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/sync.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -23,6 +24,7 @@
 #define INSTALL_SUBSYS "consensus_bundle_install"
 
 struct consensus_state_artifact_evidence {
+    zcl_mutex_t mutex;
     int artifact_fd;
     sqlite3 *bundle_db;
     struct stat identity;
@@ -85,6 +87,8 @@ static void artifact_receipt_digest_build(
     digest_u64(&ctx, (uint64_t)evidence->identity.st_mode);
     digest_u64(&ctx, (uint64_t)evidence->identity.st_mtim.tv_sec);
     digest_u64(&ctx, (uint64_t)evidence->identity.st_mtim.tv_nsec);
+    digest_u64(&ctx, (uint64_t)evidence->identity.st_ctim.tv_sec);
+    digest_u64(&ctx, (uint64_t)evidence->identity.st_ctim.tv_nsec);
     sha3_256_finalize(&ctx, out);
 }
 
@@ -146,7 +150,9 @@ static bool descriptor_identity_unchanged(int fd, const struct stat *before)
            before->st_size == after.st_size &&
            before->st_mode == after.st_mode &&
            before->st_mtim.tv_sec == after.st_mtim.tv_sec &&
-           before->st_mtim.tv_nsec == after.st_mtim.tv_nsec;
+           before->st_mtim.tv_nsec == after.st_mtim.tv_nsec &&
+           before->st_ctim.tv_sec == after.st_ctim.tv_sec &&
+           before->st_ctim.tv_nsec == after.st_ctim.tv_nsec;
 }
 
 static bool sidecars_absent(const char *path)
@@ -213,6 +219,7 @@ static void artifact_evidence_discard(
 {
     if (!evidence)
         return;
+    zcl_mutex_lock(&evidence->mutex);
     if (evidence->bundle_db) {
         (void)sqlite3_exec(evidence->bundle_db, "ROLLBACK", NULL, NULL, NULL);
         if (sqlite3_close(evidence->bundle_db) != SQLITE_OK)
@@ -221,6 +228,8 @@ static void artifact_evidence_discard(
     if (evidence->artifact_fd >= 0 && close(evidence->artifact_fd) != 0)
         LOG_WARN(INSTALL_SUBSYS, "bundle evidence descriptor close failed: %s",
                  strerror(errno));
+    zcl_mutex_unlock(&evidence->mutex);
+    zcl_mutex_destroy(&evidence->mutex);
     free(evidence);
 }
 
@@ -244,6 +253,7 @@ static struct zcl_result artifact_evidence_open_impl(
     if (!evidence)
         return ZCL_ERR(-3, "artifact evidence: allocation failed");
     memset(evidence, 0, sizeof(*evidence));
+    zcl_mutex_init(&evidence->mutex);
     evidence->artifact_fd = -1;
 
     if (!immutable_regular_file_open(bundle_path, &evidence->artifact_fd,
@@ -325,56 +335,87 @@ bool consensus_state_artifact_evidence_manifest_copy(
     const struct consensus_state_artifact_evidence *evidence,
     struct consensus_state_bundle_manifest *out)
 {
-    if (!evidence || !out || evidence->artifact_fd < 0 ||
-        !evidence->bundle_db ||
-        !consensus_state_artifact_evidence_revalidate(evidence))
+    if (!evidence || !out)
         return false;
-    *out = evidence->manifest;
-    return true;
+    zcl_mutex_lock((zcl_mutex_t *)&evidence->mutex);
+    bool ok = evidence->artifact_fd >= 0 && evidence->bundle_db &&
+        consensus_state_artifact_evidence_revalidate(evidence);
+    if (ok)
+        *out = evidence->manifest;
+    zcl_mutex_unlock((zcl_mutex_t *)&evidence->mutex);
+    return ok;
 }
 
 bool consensus_state_artifact_evidence_digest(
     const struct consensus_state_artifact_evidence *evidence,
     uint8_t out[32])
 {
-    if (!evidence || !out ||
-        !consensus_state_artifact_evidence_revalidate(evidence))
+    if (!evidence || !out)
         return false;
-    memcpy(out, evidence->manifest.artifact_digest, 32);
-    return true;
+    zcl_mutex_lock((zcl_mutex_t *)&evidence->mutex);
+    bool ok = consensus_state_artifact_evidence_revalidate(evidence);
+    if (ok)
+        memcpy(out, evidence->manifest.artifact_digest, 32);
+    zcl_mutex_unlock((zcl_mutex_t *)&evidence->mutex);
+    return ok;
 }
 
 bool consensus_state_artifact_evidence_revalidate(
     const struct consensus_state_artifact_evidence *evidence)
 {
+    if (!evidence)
+        return false;
+    zcl_mutex_lock((zcl_mutex_t *)&evidence->mutex);
     uint8_t current[32];
-    return evidence && evidence->artifact_fd >= 0 && evidence->bundle_db &&
+    bool ok = evidence->artifact_fd >= 0 && evidence->bundle_db &&
         descriptor_file_digest(evidence->artifact_fd, &evidence->identity,
                                current) &&
         memcmp(current, evidence->file_digest, 32) == 0;
+    zcl_mutex_unlock((zcl_mutex_t *)&evidence->mutex);
+    return ok;
 }
 
 bool consensus_state_artifact_evidence_receipt_digest(
     const struct consensus_state_artifact_evidence *evidence,
     uint8_t out[32])
 {
-    if (!evidence || !out ||
-        !consensus_state_artifact_evidence_revalidate(evidence))
+    if (!evidence || !out)
         return false;
-    memcpy(out, evidence->receipt_digest, 32);
+    zcl_mutex_lock((zcl_mutex_t *)&evidence->mutex);
+    bool ok = consensus_state_artifact_evidence_revalidate(evidence);
+    if (ok)
+        memcpy(out, evidence->receipt_digest, 32);
+    zcl_mutex_unlock((zcl_mutex_t *)&evidence->mutex);
+    return ok;
+}
+
+bool consensus_state_artifact_evidence_candidate_lease_begin(
+    const struct consensus_state_artifact_evidence *evidence,
+    struct consensus_state_bundle_manifest *manifest,
+    uint8_t receipt_digest[32], sqlite3 **db)
+{
+    if (!evidence || !manifest || !receipt_digest || !db)
+        return false;
+    *db = NULL;
+    zcl_mutex_lock((zcl_mutex_t *)&evidence->mutex);
+    if (!evidence->bundle_db ||
+        !consensus_state_artifact_evidence_revalidate(evidence)) {
+        LOG_WARN(INSTALL_SUBSYS,
+                 "artifact evidence lease refused: stale evidence");
+        zcl_mutex_unlock((zcl_mutex_t *)&evidence->mutex);
+        return false;
+    }
+    *manifest = evidence->manifest;
+    memcpy(receipt_digest, evidence->receipt_digest, 32);
+    *db = evidence->bundle_db;
     return true;
 }
 
-sqlite3 *consensus_state_artifact_evidence_db_borrowed(
+void consensus_state_artifact_evidence_candidate_lease_end(
     const struct consensus_state_artifact_evidence *evidence)
 {
-    if (!evidence || !evidence->bundle_db ||
-        !consensus_state_artifact_evidence_revalidate(evidence)) {
-        LOG_WARN(INSTALL_SUBSYS,
-                 "artifact evidence database borrow refused: stale evidence");
-        return NULL;
-    }
-    return evidence->bundle_db;
+    if (evidence)
+        zcl_mutex_unlock((zcl_mutex_t *)&evidence->mutex);
 }
 
 bool consensus_state_snapshot_install(
@@ -417,6 +458,8 @@ bool consensus_state_snapshot_install(
     if (ok && result) {
         result->height = manifest.height;
         result->history_complete = manifest.history_complete;
+        result->source_clean = manifest.source_clean;
+        result->validation_profile = manifest.validation_profile;
     }
     if (ok) {
         /* Containment is load-bearing. Presence of roots/cursors/digests and a
@@ -426,10 +469,14 @@ bool consensus_state_snapshot_install(
          * kill/reopen campaign proves the one-transaction publisher. */
         (void)install_fail(
             result, CONSENSUS_INSTALL_VERIFIED_CONTAINED,
-            "verified %s height=%d history=%s; activation contained pending "
+            "verified %s height=%d history=%s source=%s profile=%s; "
+            "activation contained pending "
             "bound proof authority, rollback generation, and crash proof",
             CONSENSUS_STATE_BUNDLE_SCHEMA, manifest.height,
-            manifest.history_complete ? "complete_claim" : "incomplete");
+            manifest.history_complete ? "complete_claim" : "incomplete",
+            manifest.source_clean ? "clean" : "dirty",
+            manifest.validation_profile == CONSENSUS_STATE_VALIDATION_FULL
+                ? "full" : "checkpoint_fold");
         ok = false;
     }
 

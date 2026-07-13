@@ -268,61 +268,132 @@ static bool seed_reducer_frontier_owner_schema(sqlite3 *db)
             "fail_reason TEXT);") &&
         exec_progress_sql(db,
             "CREATE TABLE IF NOT EXISTS proof_validate_log ("
-            "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL);") &&
+            "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+            "block_hash BLOB);") &&
         exec_progress_sql(db,
             "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
             "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL);") &&
+        exec_progress_sql(db,
+            "CREATE TABLE IF NOT EXISTS utxo_apply_delta ("
+            "height INTEGER PRIMARY KEY, branch_hash BLOB NOT NULL,"
+            "spent_blob BLOB NOT NULL, added_blob BLOB NOT NULL);") &&
         exec_progress_sql(db,
             "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
             "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
             "tip_hash BLOB);");
 }
 
-static bool seed_reducer_frontier_owner_rows(sqlite3 *db)
+static bool seed_reducer_frontier_owner_rows(
+    sqlite3 *db, const struct uint256 *h1, const struct uint256 *h2,
+    const struct uint256 *h3)
 {
     int a = REDUCER_FRONTIER_TRUSTED_ANCHOR;
-    char sql[4096];
+    char sql[1024];
     snprintf(sql, sizeof(sql),
         "INSERT OR REPLACE INTO stage_cursor(name,cursor,updated_at) VALUES"
         "('validate_headers',%d,1),('body_fetch',%d,1),"
         "('body_persist',%d,1),('script_validate',%d,1),"
         "('proof_validate',%d,1),('utxo_apply',%d,1),"
-        "('tip_finalize',%d,1);"
-        "INSERT OR REPLACE INTO header_admit_log"
-        "(height,hash,parent_hash,admitted_at) VALUES"
-        "(%d,zeroblob(32),NULL,1),(%d,zeroblob(32),zeroblob(32),1),"
-        "(%d,zeroblob(32),zeroblob(32),1);"
-        "INSERT OR REPLACE INTO validate_headers_log"
-        "(height,hash,ok,fail_reason,validated_at) "
-        "VALUES(%d,zeroblob(32),1,NULL,1);"
-        "INSERT OR REPLACE INTO script_validate_log"
-        "(height,status,ok,block_hash) VALUES(%d,'verified',1,zeroblob(32));"
-        "INSERT OR REPLACE INTO body_persist_log"
-        "(height,source,ok) VALUES(%d,'fixture',1);"
-        "INSERT OR REPLACE INTO proof_validate_log"
-        "(height,status,ok) VALUES(%d,'verified',1);"
-        "INSERT OR REPLACE INTO utxo_apply_log"
-        "(height,status,ok) VALUES(%d,'verified',1);"
-        "INSERT OR REPLACE INTO tip_finalize_log"
-        "(height,status,ok,tip_hash) VALUES(%d,'finalized',1,zeroblob(32));",
-        a + 4, a + 4, a + 4, a + 4, a + 4, a + 4, a + 4,
-        a + 1, a + 2, a + 3,
-        a + 1, a + 1, a + 1, a + 1, a + 1, a + 1);
+        "('tip_finalize',%d,1);",
+        a + 4, a + 4, a + 4, a + 4, a + 4, a + 4, a + 4);
     if (!exec_progress_sql(db, sql))
+        return false;
+
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO header_admit_log"
+            "(height,hash,parent_hash,admitted_at) VALUES(?,?,?,1)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    const struct uint256 *hashes[] = {h1, h2, h3};
+    bool ok = true;
+    for (int i = 0; ok && i < 3; i++) {
+        sqlite3_bind_int(st, 1, a + 1 + i);
+        sqlite3_bind_blob(st, 2, hashes[i]->data, 32, SQLITE_STATIC);
+        if (i == 0)
+            sqlite3_bind_null(st, 3);
+        else
+            sqlite3_bind_blob(st, 3, hashes[i - 1]->data, 32, SQLITE_STATIC);
+        ok = sqlite3_step(st) == SQLITE_DONE; // raw-sql-ok:test-seed
+        sqlite3_reset(st);
+        sqlite3_clear_bindings(st);
+    }
+    sqlite3_finalize(st);
+    if (!ok)
+        return false;
+
+    static const char *const statements[] = {
+        "INSERT OR REPLACE INTO validate_headers_log"
+        "(height,hash,ok,fail_reason,validated_at) VALUES(?,?,1,NULL,1)",
+        "INSERT OR REPLACE INTO script_validate_log"
+        "(height,status,ok,block_hash) VALUES(?,'verified',1,?)",
+        "INSERT OR REPLACE INTO proof_validate_log"
+        "(height,status,ok,block_hash) VALUES(?,'verified',1,?)",
+        "INSERT OR REPLACE INTO utxo_apply_delta"
+        "(height,branch_hash,spent_blob,added_blob) VALUES(?,?,X'',X'')",
+    };
+    for (size_t i = 0; ok && i < sizeof(statements) / sizeof(statements[0]);
+         i++) {
+        if (sqlite3_prepare_v2(db, statements[i], -1, &st, NULL) !=
+            SQLITE_OK) {
+            printf("utxo_activation_paused prepare failed: %s\n",
+                   sqlite3_errmsg(db));
+            ok = false;
+        } else {
+            sqlite3_bind_int(st, 1, a + 1);
+            sqlite3_bind_blob(st, 2, h1->data, 32, SQLITE_STATIC);
+            ok = sqlite3_step(st) == SQLITE_DONE; // raw-sql-ok:test-seed
+        }
+        sqlite3_finalize(st);
+        st = NULL;
+    }
+    static const char *const simple_statements[] = {
+        "INSERT OR REPLACE INTO body_persist_log"
+        "(height,source,ok) VALUES(?,'fixture',1)",
+        "INSERT OR REPLACE INTO utxo_apply_log"
+        "(height,status,ok) VALUES(?,'verified',1)",
+    };
+    for (size_t i = 0;
+         ok && i < sizeof(simple_statements) / sizeof(simple_statements[0]);
+         i++) {
+        if (sqlite3_prepare_v2(db, simple_statements[i], -1, &st, NULL) !=
+            SQLITE_OK) {
+            printf("utxo_activation_paused prepare failed: %s\n",
+                   sqlite3_errmsg(db));
+            ok = false;
+        } else {
+            sqlite3_bind_int(st, 1, a + 1);
+            ok = sqlite3_step(st) == SQLITE_DONE; // raw-sql-ok:test-seed
+        }
+        sqlite3_finalize(st);
+        st = NULL;
+    }
+    if (!ok)
+        return false;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO tip_finalize_log"
+            "(height,status,ok,tip_hash) VALUES(?,'finalized',1,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, a + 1);
+    sqlite3_bind_blob(st, 2, h2->data, 32, SQLITE_STATIC);
+    ok = sqlite3_step(st) == SQLITE_DONE; // raw-sql-ok:test-seed
+    sqlite3_finalize(st);
+    if (!ok)
         return false;
 
     uint8_t blob[8];
     uint64_t coins = (uint64_t)(a + 2);
     for (int i = 0; i < 8; i++)
         blob[i] = (uint8_t)(coins >> (8 * i));
-    sqlite3_stmt *st = NULL;
+    st = NULL;
     if (sqlite3_prepare_v2(db,
             "INSERT OR REPLACE INTO progress_meta(key,value) VALUES(?,?)",
             -1, &st, NULL) != SQLITE_OK)
         return false;
     sqlite3_bind_text(st, 1, "coins_applied_height", -1, SQLITE_STATIC);
     sqlite3_bind_blob(st, 2, blob, sizeof(blob), SQLITE_STATIC);
-    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
 }
@@ -626,7 +697,6 @@ int test_utxo_activation_paused(void)
                          "reducer_owner");
         ok = ok && progress_store_open(dir);
         ok = ok && seed_reducer_frontier_owner_schema(progress_store_db());
-        ok = ok && seed_reducer_frontier_owner_rows(progress_store_db());
 
         struct main_state ms;
         main_state_init(&ms);
@@ -638,6 +708,8 @@ int test_utxo_activation_paused(void)
         struct block_index *b3 = insert_reducer_owner_block(
             &ms, &h3, a + 3, b2,
             BLOCK_VALID_TREE | BLOCK_HAVE_DATA | BLOCK_FAILED_VALID);
+        ok = ok && seed_reducer_frontier_owner_rows(
+            progress_store_db(), &h1, &h2, &h3);
         ok = ok && b1 && b2 && b3 &&
              active_chain_move_window_tip(&ms.chain_active, b1);
 

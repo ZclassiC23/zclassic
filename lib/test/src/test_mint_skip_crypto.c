@@ -12,10 +12,9 @@
  *     runs the REAL per-input verify_script (the OP_TRUE prevouts pass);
  *     proof_validate runs the REAL proof verifier (the blocks carry no shielded
  *     proofs, so it verifies vacuously). utxo_apply folds the bodies.
- *   Run B (state-only): mint_skip_crypto ON. script_validate SKIPS verify_script
- *     and writes the verified row directly; proof_validate SKIPS the proof
- *     verifier and writes the verified row directly. utxo_apply folds the SAME
- *     bodies — UNCHANGED.
+ *   Run B (state-only): mint_skip_crypto ON. Both crypto stages skip their
+ *     verifier and write checkpoint_fold, never verified. utxo_apply folds the
+ *     SAME bodies — UNCHANGED.
  *
  * EXPECT: coins_kv_commitment(A) == coins_kv_commitment(B) AND count(A) ==
  * count(B). This is the load-bearing fact: state-only == validated for the UTXO
@@ -43,7 +42,9 @@
 #include "chain/checkpoints.h"
 #include "config/boot.h"
 #include "config/mint_anchor_progress.h"
+#include "models/database.h"
 #include "storage/coins_kv.h"
+#include "storage/consensus_state_bundle_codec.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/safe_alloc.h"
@@ -52,12 +53,34 @@
 #include "validation/main_state.h"
 
 #include <errno.h>
+#include <signal.h>
 #include <sqlite3.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
+
+/* Source-private reducer-log helpers under direct authority-type test. */
+bool script_validate_log_ensure_schema(sqlite3 *db);
+bool script_validate_log_insert(sqlite3 *db, int height,
+                                const char *status, bool ok,
+                                size_t tx_count, size_t input_count,
+                                const struct uint256 *first_failure_txid,
+                                int first_failure_vin,
+                                ScriptError first_failure_serror,
+                                const struct uint256 *block_hash);
+bool proof_validate_log_ensure_schema(sqlite3 *db);
+bool proof_validate_log_insert(sqlite3 *db, int height,
+                               const char *status, bool ok,
+                               size_t sapling_spends_total,
+                               size_t sapling_outputs_total,
+                               size_t sprout_joinsplits_total,
+                               const struct uint256 *block_hash,
+                               const struct uint256 *first_failure_txid,
+                               const char *first_failure_proof_type);
+bool boot_mint_anchor_genesis_reset(struct node_db *ndb);
 
 #define MSC_CHECK(name, expr) do { \
     printf("mint_skip_crypto: %s... ", (name)); \
@@ -240,6 +263,88 @@ static bool exec_sql(sqlite3 *db, const char *sql)
     return rc == SQLITE_OK;
 }
 
+static bool msc_identity_same(const struct stat *a, const struct stat *b)
+{
+    return a->st_dev == b->st_dev && a->st_ino == b->st_ino &&
+        a->st_nlink == b->st_nlink && a->st_size == b->st_size &&
+        a->st_mode == b->st_mode &&
+        a->st_mtim.tv_sec == b->st_mtim.tv_sec &&
+        a->st_mtim.tv_nsec == b->st_mtim.tv_nsec &&
+        a->st_ctim.tv_sec == b->st_ctim.tv_sec &&
+        a->st_ctim.tv_nsec == b->st_ctim.tv_nsec;
+}
+
+/* Leave a committed row only in a kill-9-surviving WAL.  The child keeps the
+ * SQLite connection open until the parent kills it, so no graceful close can
+ * checkpoint the row into progress.kv. */
+static bool msc_make_killed_wal(const char *dir, bool producer)
+{
+    char path[512];
+    int n = snprintf(path, sizeof(path), "%s/progress.kv", dir);
+    if (n <= 0 || (size_t)n >= sizeof(path))
+        return false;
+
+    int ready[2];
+    if (pipe(ready) != 0)
+        return false;
+    pid_t child = fork();
+    if (child < 0) {
+        close(ready[0]);
+        close(ready[1]);
+        return false;
+    }
+    if (child == 0) {
+        close(ready[0]);
+        sqlite3 *db = NULL;
+        bool ok = sqlite3_open(path, &db) == SQLITE_OK &&
+            sqlite3_exec(db, "PRAGMA journal_mode=WAL", NULL, NULL, NULL) ==
+                SQLITE_OK &&
+            sqlite3_exec(db, "PRAGMA synchronous=FULL", NULL, NULL, NULL) ==
+                SQLITE_OK &&
+            sqlite3_exec(db, "PRAGMA wal_autocheckpoint=0", NULL, NULL, NULL) ==
+                SQLITE_OK &&
+            sqlite3_exec(db,
+                "CREATE TABLE IF NOT EXISTS progress_meta("
+                "key TEXT PRIMARY KEY,value BLOB NOT NULL)",
+                NULL, NULL, NULL) == SQLITE_OK &&
+            sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)",
+                         NULL, NULL, NULL) == SQLITE_OK;
+        const char *insert = producer
+            ? "INSERT OR REPLACE INTO progress_meta(key,value) VALUES('"
+              MINT_ANCHOR_PRODUCER_LANE_KEY "',X'02')"
+            : "INSERT OR REPLACE INTO progress_meta(key,value) "
+              "VALUES('ordinary_serving_marker',X'01')";
+        if (ok)
+            ok = sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) ==
+                    SQLITE_OK &&
+                 sqlite3_exec(db, insert, NULL, NULL, NULL) == SQLITE_OK &&
+                 sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK;
+        const char token = ok ? 'R' : 'E';
+        (void)write(ready[1], &token, 1);
+        if (!ok)
+            _exit(2);
+        for (;;)
+            pause();
+    }
+
+    close(ready[1]);
+    char token = 0;
+    ssize_t got;
+    do {
+        got = read(ready[0], &token, 1);
+    } while (got < 0 && errno == EINTR);
+    close(ready[0]);
+    if (got == 1 && token == 'R')
+        (void)kill(child, SIGKILL);
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(child, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    return got == 1 && token == 'R' && waited == child &&
+        WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL;
+}
+
 /* Seed body_persist_log + its cursor so script_validate sees an ok=1 upstream
  * for every height (the stages it feeds are the ones under test). */
 static bool seed_body_persist(sqlite3 *db, int n)
@@ -276,9 +381,67 @@ static bool seed_body_persist(sqlite3 *db, int n)
  * (true). On success writes the resulting commitment + count + whether real
  * script crypto ran into the out params. Returns the count of script_validate
  * heights drained (== n on a clean fold). */
+static bool stage_rows_match(sqlite3 *db, const char *table, int rows,
+                             const char *status, const uint8_t epoch[32])
+{
+    bool script = strcmp(table, "script_validate_log") == 0;
+    bool proof = strcmp(table, "proof_validate_log") == 0;
+    bool utxo = strcmp(table, "utxo_apply_log") == 0;
+    if (!script && !proof && !utxo)
+        return false;
+    bool epoch_bound = !utxo;
+    char sql[160];
+    int size = snprintf(sql, sizeof(sql),
+        "SELECT height,status%s FROM %s ORDER BY height",
+        epoch_bound ? ",source_epoch_digest" : "", table);
+    if (size <= 0 || (size_t)size >= sizeof(sql))
+        return false;
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
+        return false;
+    int expected = 0;
+    int rc;
+    size_t status_size = strlen(status);
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        int status_type = sqlite3_column_type(stmt, 1);
+        int epoch_type = epoch_bound ? sqlite3_column_type(stmt, 2)
+                                     : SQLITE_BLOB;
+        const void *text = status_type == SQLITE_TEXT
+            ? sqlite3_column_text(stmt, 1) : NULL;
+        const void *row_epoch = epoch_bound
+            ? (epoch_type == SQLITE_BLOB ? sqlite3_column_blob(stmt, 2) : NULL)
+            : epoch;
+        if (sqlite3_column_type(stmt, 0) != SQLITE_INTEGER ||
+            sqlite3_column_int(stmt, 0) != expected ||
+            status_type != SQLITE_TEXT || !text ||
+            !row_epoch ||
+            sqlite3_column_bytes(stmt, 1) != (int)status_size ||
+            memcmp(text, status, status_size) != 0 ||
+            (epoch_bound && (epoch_type != SQLITE_BLOB ||
+             sqlite3_column_bytes(stmt, 2) != 32 ||
+             memcmp(row_epoch, epoch, 32) != 0))) {
+            sqlite3_finalize(stmt);
+            return false;
+        }
+        expected++;
+    }
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE && expected == rows;
+}
+
+struct fold_observation {
+    uint8_t commitment[32];
+    int64_t count;
+    uint64_t inputs_verified;
+    uint64_t script_verified;
+    uint64_t proof_verified;
+    uint64_t utxo_verified;
+    bool profile_rows;
+    bool all_script_valid;
+};
+
 static int run_fold(const char *tag, struct synth_chain *sc, bool skip,
-                    uint8_t commit_out[32], int64_t *count_out,
-                    uint64_t *inputs_verified_out)
+                    struct fold_observation *out)
 {
     char dir[256];
     struct main_state ms;
@@ -287,13 +450,25 @@ static int run_fold(const char *tag, struct synth_chain *sc, bool skip,
     mkdir_p(dir);
     int drained = -1;
     if (!progress_store_open(dir)) return -1;
+    memset(out, 0, sizeof(*out));
+    out->count = -1;
 
     memset(&ms, 0, sizeof(ms));
     active_chain_init(&ms.chain_active);
+    for (int h = 0; h < sc->n; h++)
+        sc->blocks[h].nStatus = BLOCK_HAVE_DATA;
     active_chain_move_window_tip(&ms.chain_active, &sc->blocks[sc->n - 1]);
 
     /* The toggle is process-global; set it BEFORE init/drive and clear after. */
     mint_skip_crypto_set(skip);
+
+    uint8_t epoch[32];
+    for (size_t i = 0; i < sizeof(epoch); i++)
+        epoch[i] = (uint8_t)(0x80u + i);
+    if (!progress_meta_set(progress_store_db(),
+                           CONSENSUS_STATE_SOURCE_EPOCH_META_KEY,
+                           epoch, sizeof(epoch)))
+        goto done;
 
     if (!seed_body_persist(progress_store_db(), sc->n)) goto done;
 
@@ -310,12 +485,24 @@ static int run_fold(const char *tag, struct synth_chain *sc, bool skip,
     (void)proof_validate_stage_drain(1000);
     (void)utxo_apply_stage_drain(1000);
 
-    if (inputs_verified_out)
-        *inputs_verified_out = script_validate_stage_inputs_verified_total();
-    if (count_out)
-        *count_out = coins_kv_count(progress_store_db());
-    if (commit_out)
-        (void)coins_kv_commitment(progress_store_db(), commit_out);
+    const char *expected_status = skip ? "checkpoint_fold" : "verified";
+    out->profile_rows =
+        stage_rows_match(progress_store_db(), "script_validate_log",
+                         sc->n, expected_status, epoch) &&
+        stage_rows_match(progress_store_db(), "proof_validate_log",
+                         sc->n, expected_status, epoch) &&
+        stage_rows_match(progress_store_db(), "utxo_apply_log",
+                         sc->n, expected_status, epoch);
+    out->inputs_verified = script_validate_stage_inputs_verified_total();
+    out->script_verified = script_validate_stage_verified_total();
+    out->proof_verified = proof_validate_stage_verified_total();
+    out->utxo_verified = utxo_apply_stage_verified_total();
+    out->count = coins_kv_count(progress_store_db());
+    (void)coins_kv_commitment(progress_store_db(), out->commitment);
+    out->all_script_valid = true;
+    for (int h = 0; h < sc->n; h++)
+        if ((sc->blocks[h].nStatus & BLOCK_VALID_MASK) != BLOCK_VALID_SCRIPTS)
+            out->all_script_valid = false;
 
 done:
     utxo_apply_stage_shutdown();
@@ -416,6 +603,8 @@ static int test_mint_anchor_progress_resume(void)
     if (!opened || !db)
         return failures + 1;
 
+    MSC_CHECK("mint progress: clean full producer lane binds",
+              mint_anchor_producer_lane_bind(db, false));
     int32_t through = -99;
     bool legacy = true;
     MSC_CHECK("mint progress: no marker does not resume",
@@ -465,6 +654,377 @@ static int test_mint_anchor_progress_resume(void)
     return failures;
 }
 
+static int test_mint_anchor_lane_containment(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_fmt_tmpdir(dir, sizeof(dir), "mint_skip_crypto", "producer_lane");
+    mkdir_p("./test-tmp");
+    mkdir_p(dir);
+    bool opened = progress_store_open(dir);
+    sqlite3 *db = opened ? progress_store_db() : NULL;
+    MSC_CHECK("producer lane: progress store opens", opened && db);
+    if (!opened || !db)
+        return failures + 1;
+
+    char reason[256];
+    MSC_CHECK("producer lane: clean serving datadir is allowed",
+              mint_anchor_normal_boot_allowed(db, reason, sizeof(reason)));
+    MSC_CHECK("producer lane: legitimate seed anchor row remains allowed",
+              exec_sql(db,
+                  "CREATE TABLE utxo_apply_log("
+                  "height INTEGER PRIMARY KEY,status TEXT,ok INTEGER);"
+                  "INSERT INTO utxo_apply_log VALUES(7,'anchor',1)") &&
+              mint_anchor_normal_boot_allowed(db, reason, sizeof(reason)));
+    MSC_CHECK("producer lane: embedded-NUL evidence is contained",
+              exec_sql(db,
+                  "INSERT INTO utxo_apply_log VALUES(8,"
+                  "CAST(X'7665726966696564006a756e6b' AS TEXT),1)") &&
+              !mint_anchor_normal_boot_allowed(db, reason, sizeof(reason)) &&
+              reason[0] != '\0');
+    MSC_CHECK("producer lane: remove hostile fixture row",
+              exec_sql(db, "DELETE FROM utxo_apply_log WHERE height=8"));
+    MSC_CHECK("producer lane: exact checkpoint evidence is contained",
+              exec_sql(db,
+                  "INSERT INTO utxo_apply_log VALUES(8,'checkpoint_fold',1)") &&
+              !mint_anchor_normal_boot_allowed(db, reason, sizeof(reason)) &&
+              reason[0] != '\0');
+    MSC_CHECK("producer lane: remove checkpoint fixture row",
+              exec_sql(db, "DELETE FROM utxo_apply_log WHERE height=8"));
+    MSC_CHECK("producer lane: malformed ok storage is not success",
+              exec_sql(db,
+                  "INSERT INTO utxo_apply_log VALUES(9,'verified',"
+                  "CAST('1x' AS TEXT))") &&
+              !utxo_apply_stage_succeeded_at(9));
+    MSC_CHECK("producer lane: remove malformed ok fixture row",
+              exec_sql(db, "DELETE FROM utxo_apply_log WHERE height=9"));
+
+    /* Pre-lane state is deliberately ambiguous: old full and old fast
+     * producers wrote the same durable rows. It may only be conservatively
+     * adopted as checkpoint_fold, never promoted to full. */
+    MSC_CHECK("producer lane: legacy applied frontier fixture",
+              msc_set_applied_height(db, 43));
+    MSC_CHECK("producer lane: legacy refold fixture",
+              refold_progress_mark_started(db));
+    MSC_CHECK("producer lane: unknown legacy mode cannot bind full",
+              !mint_anchor_producer_lane_bind(db, false));
+    {
+        uint8_t lane = 0;
+        size_t lane_n = 0;
+        bool lane_found = false;
+        MSC_CHECK("producer lane: refused full adoption writes no lane",
+                  progress_meta_get_blob_exact(
+                      db, MINT_ANCHOR_PRODUCER_LANE_KEY, &lane, sizeof(lane),
+                      &lane_n, &lane_found) && !lane_found);
+    }
+    MSC_CHECK("producer lane: unknown legacy mode downgrades to checkpoint",
+              mint_anchor_producer_lane_bind(db, true));
+    MSC_CHECK("producer lane: downgraded legacy can never become full",
+              !mint_anchor_producer_lane_bind(db, false));
+    msc_clear_refold_progress(db);
+
+    MSC_CHECK("producer lane: TEXT marker fixture writes",
+              exec_sql(db,
+                  "INSERT OR REPLACE INTO progress_meta(key,value) VALUES('"
+                  MINT_ANCHOR_IN_PROGRESS_KEY
+                  "',CAST('ZAM1-1x' AS TEXT))"));
+    MSC_CHECK("producer lane: TEXT marker cannot authorize resume",
+              !mint_anchor_progress_can_resume(db, &(struct sha3_utxo_checkpoint){0},
+                                               NULL, NULL));
+    MSC_CHECK("producer lane: TEXT marker contains normal boot",
+              !mint_anchor_normal_boot_allowed(db, reason, sizeof(reason)));
+    MSC_CHECK("producer lane: remove TEXT marker fixture",
+              progress_meta_delete(db, MINT_ANCHOR_IN_PROGRESS_KEY));
+    MSC_CHECK("producer lane: REAL marker fixture writes",
+              exec_sql(db,
+                  "INSERT OR REPLACE INTO progress_meta(key,value) VALUES('"
+                  MINT_ANCHOR_IN_PROGRESS_KEY "',1.25)"));
+    MSC_CHECK("producer lane: REAL marker contains normal boot",
+              !mint_anchor_normal_boot_allowed(db, reason, sizeof(reason)));
+    MSC_CHECK("producer lane: remove REAL marker fixture",
+              progress_meta_delete(db, MINT_ANCHOR_IN_PROGRESS_KEY));
+
+    uint8_t legacy_marker[48] = {0};
+    memcpy(legacy_marker, "ZAM1", 4);
+    MSC_CHECK("producer lane: legacy in-progress marker is written",
+              progress_meta_set(db, MINT_ANCHOR_IN_PROGRESS_KEY,
+                                legacy_marker, sizeof(legacy_marker)));
+    MSC_CHECK("producer lane: legacy producer cannot normal boot",
+              !mint_anchor_normal_boot_allowed(db, reason, sizeof(reason)) &&
+              strstr(reason, "in-progress marker") != NULL);
+    MSC_CHECK("producer lane: remove legacy marker fixture",
+              progress_meta_delete(db, MINT_ANCHOR_IN_PROGRESS_KEY));
+
+    MSC_CHECK("producer lane: numeric-prefix TEXT lane fixture writes",
+              exec_sql(db,
+                  "INSERT OR REPLACE INTO progress_meta(key,value) VALUES('"
+                  MINT_ANCHOR_PRODUCER_LANE_KEY "',CAST('2x' AS TEXT))"));
+    MSC_CHECK("producer lane: TEXT lane cannot authorize resume",
+              !mint_anchor_producer_lane_bind(db, true));
+    MSC_CHECK("producer lane: remove TEXT lane fixture",
+              progress_meta_delete(db, MINT_ANCHOR_PRODUCER_LANE_KEY));
+    MSC_CHECK("producer lane: REAL lane fixture writes",
+              exec_sql(db,
+                  "INSERT OR REPLACE INTO progress_meta(key,value) VALUES('"
+                  MINT_ANCHOR_PRODUCER_LANE_KEY "',2.0)"));
+    MSC_CHECK("producer lane: REAL lane cannot authorize resume",
+              !mint_anchor_producer_lane_bind(db, true));
+    MSC_CHECK("producer lane: REAL lane contains normal boot",
+              !mint_anchor_normal_boot_allowed(db, reason, sizeof(reason)));
+    MSC_CHECK("producer lane: remove REAL lane fixture",
+              progress_meta_delete(db, MINT_ANCHOR_PRODUCER_LANE_KEY));
+
+    MSC_CHECK("producer lane: checkpoint profile binds durably",
+              mint_anchor_producer_lane_bind(db, true));
+    MSC_CHECK("producer lane: same profile may resume",
+              mint_anchor_producer_lane_bind(db, true));
+    MSC_CHECK("producer lane: cross-profile resume is refused",
+              !mint_anchor_producer_lane_bind(db, false));
+    MSC_CHECK("producer lane: producer cannot become serving node",
+              !mint_anchor_normal_boot_allowed(db, reason, sizeof(reason)) &&
+              strstr(reason, "producer lane") != NULL);
+
+    progress_store_close();
+    opened = progress_store_open(dir);
+    db = opened ? progress_store_db() : NULL;
+    MSC_CHECK("producer lane: progress store reopens", opened && db);
+    MSC_CHECK("producer lane: restart cannot erase containment",
+              db && !mint_anchor_normal_boot_allowed(
+                  db, reason, sizeof(reason)) && reason[0] != '\0');
+    if (opened)
+        progress_store_close();
+
+    char progress_path[512],node_path[512],wallet_path[512];
+    snprintf(progress_path,sizeof(progress_path),"%s/progress.kv",dir);
+    snprintf(node_path,sizeof(node_path),"%s/node.db",dir);
+    snprintf(wallet_path,sizeof(wallet_path),"%s/wallet.dat",dir);
+    struct stat before,after;
+    bool stat_before=lstat(progress_path,&before)==0;
+    MSC_CHECK("producer lane: earliest preflight refuses producer datadir",
+              stat_before&&!boot_mint_anchor_normal_boot_preflight(dir));
+    MSC_CHECK("producer lane: preflight is read-only and precedes node/wallet",
+              lstat(progress_path,&after)==0&&
+              before.st_dev==after.st_dev&&before.st_ino==after.st_ino&&
+              before.st_size==after.st_size&&before.st_mode==after.st_mode&&
+              before.st_mtim.tv_sec==after.st_mtim.tv_sec&&
+              before.st_mtim.tv_nsec==after.st_mtim.tv_nsec&&
+              before.st_ctim.tv_sec==after.st_ctim.tv_sec&&
+              before.st_ctim.tv_nsec==after.st_ctim.tv_nsec&&
+              access(node_path,F_OK)!=0&&access(wallet_path,F_OK)!=0);
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static int test_normal_boot_preflight_killed_wal(void)
+{
+    int failures = 0;
+    for (int producer = 0; producer <= 1; producer++) {
+        char dir[256];
+        test_fmt_tmpdir(dir, sizeof(dir), "mint_skip_crypto",
+                        producer ? "killed_wal_producer" :
+                                   "killed_wal_benign");
+        mkdir_p("./test-tmp");
+        mkdir_p(dir);
+
+        bool made = msc_make_killed_wal(dir, producer != 0);
+        MSC_CHECK(producer ? "WAL preflight: producer kill-9 fixture"
+                           : "WAL preflight: benign kill-9 fixture",
+                  made);
+
+        char main_path[512], wal_path[512], shm_path[512];
+        int n1 = snprintf(main_path, sizeof(main_path), "%s/progress.kv", dir);
+        int n2 = snprintf(wal_path, sizeof(wal_path), "%s/progress.kv-wal", dir);
+        int n3 = snprintf(shm_path, sizeof(shm_path), "%s/progress.kv-shm", dir);
+        bool paths_ok = n1 > 0 && (size_t)n1 < sizeof(main_path) &&
+            n2 > 0 && (size_t)n2 < sizeof(wal_path) &&
+            n3 > 0 && (size_t)n3 < sizeof(shm_path);
+        bool shm_removed = paths_ok &&
+            (unlink(shm_path) == 0 || errno == ENOENT);
+        struct stat main_before, wal_before;
+        bool identity_ready = made && shm_removed &&
+            lstat(main_path, &main_before) == 0 &&
+            lstat(wal_path, &wal_before) == 0 && wal_before.st_size > 0 &&
+            access(shm_path, F_OK) != 0 && errno == ENOENT;
+        MSC_CHECK("WAL preflight: source is main plus non-empty WAL only",
+                  identity_ready);
+
+        bool allowed = identity_ready &&
+            boot_mint_anchor_normal_boot_preflight(dir);
+        MSC_CHECK(producer
+                      ? "WAL preflight: WAL-only producer marker is refused"
+                      : "WAL preflight: benign WAL-only row is allowed",
+                  producer ? identity_ready && !allowed : allowed);
+
+        struct stat main_after, wal_after;
+        bool unchanged = identity_ready &&
+            lstat(main_path, &main_after) == 0 &&
+            lstat(wal_path, &wal_after) == 0 &&
+            msc_identity_same(&main_before, &main_after) &&
+            msc_identity_same(&wal_before, &wal_after) &&
+            access(shm_path, F_OK) != 0 && errno == ENOENT;
+        MSC_CHECK("WAL preflight: source family remains exactly unchanged",
+                  unchanged);
+        test_cleanup_tmpdir(dir);
+    }
+    return failures;
+}
+
+static int deny_delete_authorizer(void *opaque, int action, const char *a,
+                                  const char *b, const char *c, const char *d)
+{
+    (void)opaque;
+    (void)a;
+    (void)b;
+    (void)c;
+    (void)d;
+    return action == SQLITE_DELETE ? SQLITE_DENY : SQLITE_OK;
+}
+
+static int test_mint_anchor_reset_fail_closed(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_fmt_tmpdir(dir, sizeof(dir), "mint_skip_crypto", "reset_fail_closed");
+    mkdir_p("./test-tmp");
+    mkdir_p(dir);
+    bool opened = progress_store_open(dir);
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    bool node_open = node_db_open(&ndb, ":memory:");
+    MSC_CHECK("reset failure: stores open", opened && node_open);
+    bool authorizer = node_open && sqlite3_set_authorizer(
+        ndb.db, deny_delete_authorizer, NULL) == SQLITE_OK;
+    MSC_CHECK("reset failure: DELETE fault arms", authorizer);
+    MSC_CHECK("reset failure: genesis reset refuses partial authority",
+              authorizer && !boot_mint_anchor_genesis_reset(&ndb));
+    uint8_t marker[64];
+    size_t marker_n = 0;
+    bool marker_found = false;
+    MSC_CHECK("reset failure: no resumable producer marker is minted",
+              progress_meta_get(progress_store_db(),
+                  MINT_ANCHOR_IN_PROGRESS_KEY, marker, sizeof(marker),
+                  &marker_n, &marker_found) && !marker_found);
+    if (node_open) {
+        (void)sqlite3_set_authorizer(ndb.db, NULL, NULL);
+        node_db_close(&ndb);
+    }
+    if (opened)
+        progress_store_close();
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+static bool msc_epoch_cell(sqlite3 *db, const char *table, int height,
+                           int *type_out, int *bytes_out, bool *found_out)
+{
+    *type_out = SQLITE_NULL;
+    *bytes_out = 0;
+    *found_out = false;
+    char sql[192];
+    int n = snprintf(sql, sizeof(sql),
+                     "SELECT source_epoch_digest FROM %s WHERE height=?",
+                     table);
+    if (n <= 0 || (size_t)n >= sizeof(sql))
+        return false;
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(stmt, 1, height);
+    int rc = sqlite3_step(stmt); // raw-sql-ok:test-fixture-verify
+    if (rc == SQLITE_ROW) {
+        *found_out = true;
+        *type_out = sqlite3_column_type(stmt, 0);
+        *bytes_out = sqlite3_column_bytes(stmt, 0);
+        rc = sqlite3_step(stmt); // raw-sql-ok:test-fixture-verify
+    }
+    sqlite3_finalize(stmt);
+    return rc == SQLITE_DONE;
+}
+
+static int test_source_epoch_authority_types(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_fmt_tmpdir(dir, sizeof(dir), "mint_skip_crypto", "source_epoch_type");
+    mkdir_p("./test-tmp");
+    mkdir_p(dir);
+    bool opened = progress_store_open(dir);
+    sqlite3 *db = opened ? progress_store_db() : NULL;
+    MSC_CHECK("source epoch: progress store opens", opened && db);
+    if (!opened || !db)
+        return failures + 1;
+    MSC_CHECK("source epoch: log schemas initialize",
+              script_validate_log_ensure_schema(db) &&
+              proof_validate_log_ensure_schema(db));
+
+    struct uint256 hash;
+    uint256_set_null(&hash);
+    hash.data[0] = 0x42;
+    MSC_CHECK("source epoch: numeric-prefix TEXT fixture writes",
+              exec_sql(db,
+                  "INSERT OR REPLACE INTO progress_meta(key,value) VALUES('"
+                  CONSENSUS_STATE_SOURCE_EPOCH_META_KEY
+                  "',CAST('123x' AS TEXT))"));
+    MSC_CHECK("source epoch: TEXT refuses script receipt publication",
+              !script_validate_log_insert(db, 1, "verified", true, 0, 0,
+                                          NULL, -1, SCRIPT_ERR_OK, &hash));
+    MSC_CHECK("source epoch: TEXT refuses proof receipt publication",
+              !proof_validate_log_insert(db, 1, "verified", true, 0, 0, 0,
+                                         &hash, NULL, NULL));
+
+    MSC_CHECK("source epoch: REAL fixture writes",
+              exec_sql(db,
+                  "INSERT OR REPLACE INTO progress_meta(key,value) VALUES('"
+                  CONSENSUS_STATE_SOURCE_EPOCH_META_KEY "',1.25)"));
+    MSC_CHECK("source epoch: REAL refuses script receipt publication",
+              !script_validate_log_insert(db, 2, "verified", true, 0, 0,
+                                          NULL, -1, SCRIPT_ERR_OK, &hash));
+    MSC_CHECK("source epoch: REAL refuses proof receipt publication",
+              !proof_validate_log_insert(db, 2, "verified", true, 0, 0, 0,
+                                         &hash, NULL, NULL));
+
+    MSC_CHECK("source epoch: optional legacy absence fixture",
+              progress_meta_delete(db, CONSENSUS_STATE_SOURCE_EPOCH_META_KEY));
+    MSC_CHECK("source epoch: absent epoch keeps legacy script receipt",
+              script_validate_log_insert(db, 3, "verified", true, 0, 0,
+                                         NULL, -1, SCRIPT_ERR_OK, &hash));
+    MSC_CHECK("source epoch: absent epoch keeps legacy proof receipt",
+              proof_validate_log_insert(db, 3, "verified", true, 0, 0, 0,
+                                        &hash, NULL, NULL));
+    int type = -1, bytes = -1;
+    bool found = false;
+    MSC_CHECK("source epoch: legacy script receipt is explicitly unbound",
+              msc_epoch_cell(db, "script_validate_log", 3, &type, &bytes,
+                             &found) && found && type == SQLITE_NULL);
+    MSC_CHECK("source epoch: legacy proof receipt is explicitly unbound",
+              msc_epoch_cell(db, "proof_validate_log", 3, &type, &bytes,
+                             &found) && found && type == SQLITE_NULL);
+
+    uint8_t epoch[32];
+    memset(epoch, 0xa5, sizeof(epoch));
+    MSC_CHECK("source epoch: exact BLOB authority writes",
+              progress_meta_set(db, CONSENSUS_STATE_SOURCE_EPOCH_META_KEY,
+                                epoch, sizeof(epoch)));
+    MSC_CHECK("source epoch: exact BLOB binds script receipt",
+              script_validate_log_insert(db, 4, "verified", true, 0, 0,
+                                         NULL, -1, SCRIPT_ERR_OK, &hash));
+    MSC_CHECK("source epoch: exact BLOB binds proof receipt",
+              proof_validate_log_insert(db, 4, "verified", true, 0, 0, 0,
+                                        &hash, NULL, NULL));
+    MSC_CHECK("source epoch: script receipt stores exact BLOB32",
+              msc_epoch_cell(db, "script_validate_log", 4, &type, &bytes,
+                             &found) && found && type == SQLITE_BLOB &&
+              bytes == 32);
+    MSC_CHECK("source epoch: proof receipt stores exact BLOB32",
+              msc_epoch_cell(db, "proof_validate_log", 4, &type, &bytes,
+                             &found) && found && type == SQLITE_BLOB &&
+              bytes == 32);
+
+    progress_store_close();
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_mint_skip_crypto(void);
 int test_mint_skip_crypto(void)
 {
@@ -480,14 +1040,9 @@ int test_mint_skip_crypto(void)
         return 1;
     }
 
-    uint8_t commit_full[32] = {0}, commit_skip[32] = {0};
-    int64_t count_full = -1, count_skip = -2;
-    uint64_t inputs_full = 0, inputs_skip = 999;
-
-    int drained_full = run_fold("full", &sc, /*skip=*/false,
-                                commit_full, &count_full, &inputs_full);
-    int drained_skip = run_fold("skip", &sc, /*skip=*/true,
-                                commit_skip, &count_skip, &inputs_skip);
+    struct fold_observation full, skip;
+    int drained_full = run_fold("full", &sc, /*skip=*/false, &full);
+    int drained_skip = run_fold("skip", &sc, /*skip=*/true, &skip);
 
     /* Both folds walked every height. */
     MSC_CHECK("full validation drains all heights", drained_full == N);
@@ -495,23 +1050,37 @@ int test_mint_skip_crypto(void)
 
     /* The load-bearing equivalence: the UTXO set is identical. */
     MSC_CHECK("count(full) == count(state-only)",
-              count_full == count_skip && count_full > 0);
+              full.count == skip.count && full.count > 0);
     MSC_CHECK("coins_kv commitment identical",
-              memcmp(commit_full, commit_skip, 32) == 0);
+              memcmp(full.commitment, skip.commitment, 32) == 0);
 
     /* Equivalence floor — the toggle is the ONLY difference: full validation
      * actually ran verify_script (inputs verified > 0); the state-only fold
      * skipped it (0). Proves the OFF path (a normal boot) runs real crypto. */
     MSC_CHECK("full validation ran verify_script (inputs_verified > 0)",
-              inputs_full > 0);
+              full.inputs_verified > 0);
     MSC_CHECK("state-only fold SKIPPED verify_script (inputs_verified == 0)",
-              inputs_skip == 0);
+              skip.inputs_verified == 0);
+    MSC_CHECK("full crypto rows bind prepared epoch as verified",
+              full.profile_rows);
+    MSC_CHECK("fast crypto rows bind prepared epoch as checkpoint_fold",
+              skip.profile_rows);
+    MSC_CHECK("full fold counts all three verified stages",
+              full.script_verified == N && full.proof_verified == N &&
+              full.utxo_verified == N);
+    MSC_CHECK("checkpoint fold never increments verified stage counters",
+              skip.script_verified == 0 && skip.proof_verified == 0 &&
+              skip.utxo_verified == 0);
+    MSC_CHECK("full fold raises BLOCK_VALID_SCRIPTS", full.all_script_valid);
+    MSC_CHECK("checkpoint fold cannot raise BLOCK_VALID_SCRIPTS",
+              !skip.all_script_valid);
 
     /* Sanity: a non-empty set actually folded. Each block creates 2 outputs
      * (coinbase + spend) and spends an EXTERNAL coin (not in this set), so 2
      * coins survive per block → 2*N coins. A non-trivial, non-empty fold makes
      * the commitment-equality above load-bearing (not a vacuous empty==empty). */
-    MSC_CHECK("folded a non-trivial UTXO set", count_full == (int64_t)(2 * N));
+    MSC_CHECK("folded a non-trivial UTXO set",
+              full.count == (int64_t)(2 * N));
 
     char *boot_src = read_source_file("config/src/boot.c");
     char *main_src = read_source_file("src/main.c");
@@ -568,6 +1137,10 @@ int test_mint_skip_crypto(void)
               boot_mint_anchor_should_log_progress(3056742, 3056758) &&
               boot_mint_anchor_should_log_progress(3056758, 3056758));
     failures += test_mint_anchor_progress_resume();
+    failures += test_mint_anchor_lane_containment();
+    failures += test_normal_boot_preflight_killed_wal();
+    failures += test_mint_anchor_reset_fail_closed();
+    failures += test_source_epoch_authority_types();
     free(boot_src);
     free(main_src);
 

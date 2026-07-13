@@ -67,6 +67,8 @@ static bool candidate_create_schema(sqlite3 *db)
         "singleton INTEGER PRIMARY KEY CHECK(singleton=1),"
         "schema TEXT NOT NULL,height INTEGER NOT NULL,block_hash BLOB NOT NULL,"
         "history_complete INTEGER NOT NULL CHECK(history_complete=1),"
+        "source_clean INTEGER NOT NULL CHECK(source_clean IN(0,1)),"
+        "validation_profile INTEGER NOT NULL CHECK(validation_profile IN(1,2)),"
         "activation_boundary INTEGER NOT NULL CHECK(activation_boundary=0),"
         "utxo_root BLOB NOT NULL,utxo_count INTEGER NOT NULL,"
         "total_supply INTEGER NOT NULL,anchor_digest BLOB NOT NULL,"
@@ -83,8 +85,10 @@ static bool candidate_create_schema(sqlite3 *db)
         "admission_receipt_digest BLOB NOT NULL);"
         "CREATE TABLE consensus_state_source_receipt("
         "singleton INTEGER PRIMARY KEY CHECK(singleton=1),schema TEXT NOT NULL,"
-        "source_tree_root BLOB NOT NULL,running_binary_digest BLOB NOT NULL,"
-        "toolchain_digest BLOB NOT NULL,chain_corpus_digest BLOB NOT NULL,"
+        "source_epoch_digest BLOB NOT NULL,source_tree_root BLOB NOT NULL,"
+        "running_binary_digest BLOB NOT NULL,toolchain_digest BLOB NOT NULL,"
+        "build_inputs_digest BLOB NOT NULL,chain_corpus_digest BLOB NOT NULL,"
+        "source_clean INTEGER NOT NULL,validation_profile INTEGER NOT NULL,"
         "producer_commit TEXT NOT NULL,fold_cursor INTEGER NOT NULL,"
         "receipt_digest BLOB NOT NULL);"
         "CREATE TABLE consensus_state_bundle_proof("
@@ -243,11 +247,12 @@ static bool candidate_copy_components(
             "injected failure after candidate nullifiers");
 
     if (!stream_copy(source, destination,
-            "SELECT singleton,schema,source_tree_root,running_binary_digest,"
-            "toolchain_digest,chain_corpus_digest,producer_commit,fold_cursor,"
-            "receipt_digest FROM source_receipt ORDER BY singleton",
-            "INSERT INTO consensus_state_source_receipt VALUES(?,?,?,?,?,?,?,?,?)",
-            9, &rows) || rows != 1 ||
+            "SELECT singleton,schema,source_epoch_digest,source_tree_root,"
+            "running_binary_digest,toolchain_digest,build_inputs_digest,"
+            "chain_corpus_digest,source_clean,validation_profile,producer_commit,"
+            "fold_cursor,receipt_digest FROM source_receipt ORDER BY singleton",
+            "INSERT INTO consensus_state_source_receipt VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)",
+            13, &rows) || rows != 1 ||
         !stream_copy(source, destination,
             "SELECT ordinal,component,cursor,first_height,last_height,row_count,"
             "hash_bound_count,component_digest FROM bundle_proof ORDER BY ordinal",
@@ -290,7 +295,7 @@ static bool candidate_write_control(
     sqlite3_stmt *stmt = NULL;
     static const char meta_sql[] =
         "INSERT INTO consensus_state_candidate_meta VALUES(1,"
-        "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
+        "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)";
     bool ok = sqlite3_prepare_v2(db, meta_sql, -1, &stmt, NULL) == SQLITE_OK;
     int i = 1;
 #define CANDIDATE_BIND(call) do { if (ok) ok = (call) == SQLITE_OK; } while (0)
@@ -300,6 +305,8 @@ static bool candidate_write_control(
     CANDIDATE_BIND(sqlite3_bind_blob(stmt, i++, manifest->block_hash, 32,
                                      SQLITE_STATIC));
     CANDIDATE_BIND(sqlite3_bind_int(stmt, i++, 1));
+    CANDIDATE_BIND(sqlite3_bind_int(stmt, i++, manifest->source_clean ? 1 : 0));
+    CANDIDATE_BIND(sqlite3_bind_int(stmt, i++, manifest->validation_profile));
     CANDIDATE_BIND(sqlite3_bind_int64(stmt, i++, 0));
     CANDIDATE_BIND(sqlite3_bind_blob(stmt, i++, manifest->utxo_root, 32,
                                      SQLITE_STATIC));
@@ -422,9 +429,9 @@ bool consensus_state_snapshot_candidate_build(
             "candidate build arguments/failpoint are invalid");
     struct consensus_state_bundle_manifest manifest;
     uint8_t admission_receipt[32];
-    if (!consensus_state_artifact_evidence_manifest_copy(evidence, &manifest) ||
-        !consensus_state_artifact_evidence_receipt_digest(
-            evidence, admission_receipt))
+    sqlite3 *source = NULL;
+    if (!consensus_state_artifact_evidence_candidate_lease_begin(
+            evidence, &manifest, admission_receipt, &source))
         return consensus_state_candidate_fail(
             result, CONSENSUS_CANDIDATE_REFUSED,
             "candidate artifact evidence is stale");
@@ -432,25 +439,26 @@ bool consensus_state_snapshot_candidate_build(
         manifest.sprout_source_cursor != 0 ||
         manifest.sapling_source_cursor != 0 ||
         manifest.nullifier_source_cursor != 0 ||
-        manifest.source_fold_cursor != (int64_t)manifest.height + 1)
-        return consensus_state_candidate_fail(
+        manifest.source_fold_cursor != (int64_t)manifest.height + 1) {
+        bool refused = consensus_state_candidate_fail(
             result, CONSENSUS_CANDIDATE_REFUSED,
             "candidate requires complete genesis-derived shielded history");
-    sqlite3 *source =
-        consensus_state_artifact_evidence_db_borrowed(evidence);
-    if (!source)
-        return consensus_state_candidate_fail(
-            result, CONSENSUS_CANDIDATE_REFUSED,
-            "candidate cannot borrow admitted artifact transaction");
+        consensus_state_artifact_evidence_candidate_lease_end(evidence);
+        return refused;
+    }
 
     struct consensus_state_candidate_output *output = zcl_calloc(
         1, sizeof(*output), "consensus_state_candidate_output");
-    if (!output)
-        return consensus_state_candidate_fail(
+    if (!output) {
+        bool failed = consensus_state_candidate_fail(
             result, CONSENSUS_CANDIDATE_OUTPUT_ERROR,
             "candidate output binding allocation failed");
+        consensus_state_artifact_evidence_candidate_lease_end(evidence);
+        return failed;
+    }
     if (!consensus_state_candidate_output_open(request, output, result)) {
         free(output);
+        consensus_state_artifact_evidence_candidate_lease_end(evidence);
         return false; // raw-return-ok:logged-by-callee
     }
     bool ok = true;
@@ -547,20 +555,28 @@ bool consensus_state_snapshot_candidate_build(
         consensus_state_candidate_output_cleanup(output);
         if (!output->binding.abandon_on_close)
             free(output);
+        consensus_state_artifact_evidence_candidate_lease_end(evidence);
         return false;
     }
 
     result->status = CONSENSUS_CANDIDATE_VERIFIED_CONTAINED;
+    result->source_clean = manifest.source_clean;
+    result->validation_profile = manifest.validation_profile;
     result->height = manifest.height;
     result->utxo_count = manifest.utxo_count;
     result->anchor_count = manifest.anchor_count;
     result->nullifier_count = manifest.nullifier_count;
     memcpy(result->artifact_digest, manifest.artifact_digest, 32);
     snprintf(result->reason, sizeof(result->reason),
-             "built immutable contained %s height=%d; active generation unchanged",
-             CONSENSUS_STATE_CANDIDATE_SCHEMA, manifest.height);
+             "built immutable contained %s height=%d source=%s profile=%s; "
+             "active generation unchanged",
+             CONSENSUS_STATE_CANDIDATE_SCHEMA, manifest.height,
+             manifest.source_clean ? "clean" : "dirty",
+             manifest.validation_profile == CONSENSUS_STATE_VALIDATION_FULL
+                 ? "full" : "checkpoint_fold");
     consensus_state_candidate_output_cleanup(output);
     if (!output->binding.abandon_on_close)
         free(output);
+    consensus_state_artifact_evidence_candidate_lease_end(evidence);
     return true;
 }

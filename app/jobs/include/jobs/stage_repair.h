@@ -46,6 +46,7 @@ enum stage_repair_tipfin_refused_log {
     STAGE_REPAIR_TIPFIN_LOG_PROOF_VALIDATE = 5,
     STAGE_REPAIR_TIPFIN_LOG_UTXO_APPLY = 6,
     STAGE_REPAIR_TIPFIN_LOG_TIP_FINALIZE = 7,
+    STAGE_REPAIR_TIPFIN_LOG_HEADER_ADMIT = 8,
 };
 
 struct stage_repair_header_solution_result {

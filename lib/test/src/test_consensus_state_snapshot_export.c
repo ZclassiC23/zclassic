@@ -61,6 +61,12 @@ struct cse_staging_link_fixture {
     bool ok;
 };
 
+struct cse_retained_writer_fixture {
+    int dirfd;
+    int writer_fd;
+    bool ran;
+};
+
 static void cse_final_race_after_create(void *opaque)
 {
     struct cse_final_race_fixture *f = opaque;
@@ -93,6 +99,25 @@ static void cse_staging_link_after_create(void *opaque)
         f->ok = n > 0 && (size_t)n < sizeof(source) &&
             linkat(AT_FDCWD, source, f->dirfd, f->alias,
                    AT_SYMLINK_FOLLOW) == 0;
+        break;
+    }
+}
+
+static void cse_retain_staging_writer(void *opaque)
+{
+    struct cse_retained_writer_fixture *f = opaque;
+    f->ran = true;
+    struct stat dir_st;
+    if (fstat(f->dirfd, &dir_st) != 0)
+        return;
+    for (int fd = 3; fd < 1024; fd++) {
+        struct stat st;
+        int flags = fcntl(fd, F_GETFL);
+        if (flags < 0 || (flags & O_ACCMODE) != O_RDWR ||
+            fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+            st.st_nlink != 0 || st.st_dev != dir_st.st_dev)
+            continue;
+        f->writer_fd = fcntl(fd, F_DUPFD_CLOEXEC, 1024);
         break;
     }
 }
@@ -195,13 +220,16 @@ static bool cse_binary_digest(uint8_t out[32])
     return ok;
 }
 
-static bool cse_seed_receipt(sqlite3 *db, uint8_t hash[2][32], bool corrupt)
+static bool cse_seed_receipt(sqlite3 *db, uint8_t hash[2][32],
+                             uint8_t validation_profile, bool corrupt)
 {
     if (!cse_exec(db,
             "CREATE TABLE IF NOT EXISTS consensus_state_source_receipt("
             "singleton INTEGER PRIMARY KEY,schema TEXT NOT NULL,"
-            "source_tree_root BLOB NOT NULL,running_binary_digest BLOB NOT NULL,"
-            "toolchain_digest BLOB NOT NULL,chain_corpus_digest BLOB NOT NULL,"
+            "source_epoch_digest BLOB NOT NULL,source_tree_root BLOB NOT NULL,"
+            "running_binary_digest BLOB NOT NULL,toolchain_digest BLOB NOT NULL,"
+            "build_inputs_digest BLOB NOT NULL,chain_corpus_digest BLOB NOT NULL,"
+            "source_clean INTEGER NOT NULL,validation_profile INTEGER NOT NULL,"
             "producer_commit TEXT NOT NULL,fold_cursor INTEGER NOT NULL,"
             "receipt_digest BLOB NOT NULL)"))
         return false;
@@ -210,24 +238,31 @@ static bool cse_seed_receipt(sqlite3 *db, uint8_t hash[2][32], bool corrupt)
     for (size_t i = 0; i < 32; i++) {
         receipt.source_tree_root[i] = (uint8_t)(0x31u + i);
         receipt.toolchain_digest[i] = (uint8_t)(0x71u + i);
+        receipt.build_inputs_digest[i] = (uint8_t)(0xb1u + i);
     }
     if (!cse_binary_digest(receipt.running_binary_digest))
         return false;
     cse_chain_corpus_digest(hash, receipt.chain_corpus_digest);
     snprintf(receipt.producer_commit, sizeof(receipt.producer_commit),
              "0123456789abcdef0123456789abcdef01234567");
+    receipt.source_clean = true;
+    receipt.validation_profile = validation_profile;
     receipt.fold_cursor = 2;
+    consensus_state_source_epoch_digest(&receipt,
+                                        receipt.source_epoch_digest);
     consensus_state_source_receipt_digest(&receipt, receipt.receipt_digest);
     if (corrupt)
         receipt.receipt_digest[0] ^= 1;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
             "INSERT OR REPLACE INTO consensus_state_source_receipt VALUES"
-            "(1,?,?,?,?,?,?,?,?)", -1, &st, NULL) != SQLITE_OK)
+            "(1,?,?,?,?,?,?,?,?,?,?,?,?)", -1, &st, NULL) != SQLITE_OK)
         return false;
     int i = 1;
     bool ok = sqlite3_bind_text(st, i++,
                                 CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA, -1,
+                                SQLITE_STATIC) == SQLITE_OK &&
+              sqlite3_bind_blob(st, i++, receipt.source_epoch_digest, 32,
                                 SQLITE_STATIC) == SQLITE_OK &&
               sqlite3_bind_blob(st, i++, receipt.source_tree_root, 32,
                                 SQLITE_STATIC) == SQLITE_OK &&
@@ -235,8 +270,14 @@ static bool cse_seed_receipt(sqlite3 *db, uint8_t hash[2][32], bool corrupt)
                                 SQLITE_STATIC) == SQLITE_OK &&
               sqlite3_bind_blob(st, i++, receipt.toolchain_digest, 32,
                                 SQLITE_STATIC) == SQLITE_OK &&
+              sqlite3_bind_blob(st, i++, receipt.build_inputs_digest, 32,
+                                SQLITE_STATIC) == SQLITE_OK &&
               sqlite3_bind_blob(st, i++, receipt.chain_corpus_digest, 32,
                                 SQLITE_STATIC) == SQLITE_OK &&
+              sqlite3_bind_int(st, i++, receipt.source_clean ? 1 : 0) ==
+                  SQLITE_OK &&
+              sqlite3_bind_int(st, i++, receipt.validation_profile) ==
+                  SQLITE_OK &&
               sqlite3_bind_text(st, i++, receipt.producer_commit, 40,
                                 SQLITE_STATIC) == SQLITE_OK &&
               sqlite3_bind_int64(st, i++, receipt.fold_cursor) == SQLITE_OK &&
@@ -244,6 +285,9 @@ static bool cse_seed_receipt(sqlite3 *db, uint8_t hash[2][32], bool corrupt)
                                 SQLITE_STATIC) == SQLITE_OK &&
               sqlite3_step(st) == SQLITE_DONE; // raw-sql-ok:test-fixture-seeding
     sqlite3_finalize(st);
+    if (ok)
+        ok = progress_meta_set(db, CONSENSUS_STATE_SOURCE_EPOCH_META_KEY,
+                               receipt.source_epoch_digest, 32);
     return ok;
 }
 
@@ -276,11 +320,16 @@ static bool cse_seed_source(sqlite3 *db, uint8_t hash[2][32], uint8_t nf[32])
         "CREATE TABLE body_persist_log("
         "height INTEGER PRIMARY KEY,ok INTEGER NOT NULL);"
         "CREATE TABLE script_validate_log("
-        "height INTEGER PRIMARY KEY,ok INTEGER NOT NULL,block_hash BLOB);"
+        "height INTEGER PRIMARY KEY,ok INTEGER NOT NULL,status TEXT NOT NULL,"
+        "block_hash BLOB,source_epoch_digest BLOB);"
         "CREATE TABLE proof_validate_log("
-        "height INTEGER PRIMARY KEY,ok INTEGER NOT NULL,block_hash BLOB);"
+        "height INTEGER PRIMARY KEY,ok INTEGER NOT NULL,status TEXT NOT NULL,"
+        "block_hash BLOB,source_epoch_digest BLOB);"
         "CREATE TABLE utxo_apply_log("
-        "height INTEGER PRIMARY KEY,ok INTEGER NOT NULL);"
+        "height INTEGER PRIMARY KEY,ok INTEGER NOT NULL,status TEXT NOT NULL);"
+        "CREATE TABLE utxo_apply_delta("
+        "height INTEGER PRIMARY KEY,branch_hash BLOB NOT NULL,"
+        "spent_blob BLOB NOT NULL,added_blob BLOB NOT NULL);"
         "CREATE TABLE tip_finalize_log("
         "height INTEGER PRIMARY KEY,ok INTEGER NOT NULL,status TEXT NOT NULL,"
         "tip_hash BLOB NOT NULL);"
@@ -290,7 +339,7 @@ static bool cse_seed_source(sqlite3 *db, uint8_t hash[2][32], uint8_t nf[32])
         "('script_validate',2,1),('proof_validate',2,1),"
         "('utxo_apply',2,1),('tip_finalize',1,1);"
         "INSERT INTO body_persist_log VALUES(0,1),(1,1);"
-        "INSERT INTO utxo_apply_log VALUES(0,1),(1,1);";
+        "INSERT INTO utxo_apply_log VALUES(0,1,'verified'),(1,1,'verified');";
     if (!cse_exec(db, schema) || !coins_kv_ensure_schema(db) ||
         !anchor_kv_initialize_history(db, 0) ||
         !nullifier_kv_initialize_history(db, 0))
@@ -301,6 +350,8 @@ static bool cse_seed_source(sqlite3 *db, uint8_t hash[2][32], uint8_t nf[32])
         hash[1][i] = (uint8_t)(0x61u + i);
         nf[i] = (uint8_t)(0xa1u + i);
     }
+    if (!cse_seed_receipt(db, hash, CONSENSUS_STATE_VALIDATION_FULL, false))
+        return false;
     if (!cse_insert_header(db, 0, hash[0], NULL) ||
         !cse_insert_header(db, 1, hash[1], hash[0]) ||
         !cse_insert_tip(db, 0, "finalized", hash[1]) ||
@@ -309,8 +360,16 @@ static bool cse_seed_source(sqlite3 *db, uint8_t hash[2][32], uint8_t nf[32])
     static const char *const hash_sql[] = {
         "INSERT INTO validate_headers_log VALUES(?,?,1)",
         "INSERT INTO body_fetch_log VALUES(?,?,1)",
-        "INSERT INTO script_validate_log(height,block_hash,ok) VALUES(?,?,1)",
-        "INSERT INTO proof_validate_log(height,block_hash,ok) VALUES(?,?,1)",
+        "INSERT INTO script_validate_log("
+        "height,block_hash,ok,status,source_epoch_digest) "
+        "VALUES(?,?,1,'verified',(SELECT value FROM progress_meta WHERE key='"
+        CONSENSUS_STATE_SOURCE_EPOCH_META_KEY "'))",
+        "INSERT INTO proof_validate_log("
+        "height,block_hash,ok,status,source_epoch_digest) "
+        "VALUES(?,?,1,'verified',(SELECT value FROM progress_meta WHERE key='"
+        CONSENSUS_STATE_SOURCE_EPOCH_META_KEY "'))",
+        "INSERT INTO utxo_apply_delta(height,branch_hash,spent_blob,added_blob) "
+        "VALUES(?,?,X'',X'')",
     };
     for (size_t table = 0; table < sizeof(hash_sql) / sizeof(hash_sql[0]);
          table++) {
@@ -347,7 +406,7 @@ static bool cse_seed_source(sqlite3 *db, uint8_t hash[2][32], uint8_t nf[32])
         !coins_kv_mark_self_folded(db) ||
         !cse_exec(db, "BEGIN IMMEDIATE") ||
         !coins_kv_set_applied_height_in_tx(db, 2) ||
-        !cse_exec(db, "COMMIT") || !cse_seed_receipt(db, hash, false)) {
+        !cse_exec(db, "COMMIT")) {
         (void)cse_exec(db, "ROLLBACK");
         return false;
     }
@@ -377,16 +436,52 @@ int test_consensus_state_snapshot_export(void)
     CSE_CHECK("output directory descriptor", output_dir_fd >= 0);
 
     char output[512];
+    char checkpoint_output[512];
+    char legacy_backfill_output[512];
+    char embedded_status_output[512];
+    char embedded_receipt_schema_output[512];
+    char utxo_profile_mismatch_output[512];
     char stale_proof_output[512];
+    char stale_utxo_output[512];
+    char profile_mismatch_output[512];
+    char reverse_profile_mismatch_output[512];
     char missing_output[512];
     char malformed_output[512];
+    char numeric_text_output[512];
+    char real_anchor_output[512];
+    char real_nullifier_output[512];
     snprintf(output, sizeof(output), "%s/complete.bundle.db", export_dir);
+    snprintf(checkpoint_output, sizeof(checkpoint_output),
+             "%s/checkpoint.bundle.db", export_dir);
+    snprintf(legacy_backfill_output, sizeof(legacy_backfill_output),
+             "%s/legacy-backfill.bundle.db", export_dir);
+    snprintf(embedded_status_output, sizeof(embedded_status_output),
+             "%s/embedded-status.bundle.db", export_dir);
+    snprintf(embedded_receipt_schema_output,
+             sizeof(embedded_receipt_schema_output),
+             "%s/embedded-receipt-schema.bundle.db", export_dir);
+    snprintf(utxo_profile_mismatch_output,
+             sizeof(utxo_profile_mismatch_output),
+             "%s/utxo-profile-mismatch.bundle.db", export_dir);
     snprintf(stale_proof_output, sizeof(stale_proof_output),
              "%s/stale-proof.bundle.db", export_dir);
+    snprintf(stale_utxo_output, sizeof(stale_utxo_output),
+             "%s/stale-utxo.bundle.db", export_dir);
+    snprintf(profile_mismatch_output, sizeof(profile_mismatch_output),
+             "%s/profile-mismatch.bundle.db", export_dir);
+    snprintf(reverse_profile_mismatch_output,
+             sizeof(reverse_profile_mismatch_output),
+             "%s/reverse-profile-mismatch.bundle.db", export_dir);
     snprintf(missing_output, sizeof(missing_output), "%s/missing.bundle.db",
              export_dir);
     snprintf(malformed_output, sizeof(malformed_output),
              "%s/malformed.bundle.db", export_dir);
+    snprintf(numeric_text_output, sizeof(numeric_text_output),
+             "%s/numeric-text.bundle.db", export_dir);
+    snprintf(real_anchor_output, sizeof(real_anchor_output),
+             "%s/real-anchor.bundle.db", export_dir);
+    snprintf(real_nullifier_output, sizeof(real_nullifier_output),
+             "%s/real-nullifier.bundle.db", export_dir);
     struct sha3_utxo_checkpoint checkpoint;
     memset(&checkpoint, 0, sizeof(checkpoint));
     checkpoint.height = 1;
@@ -409,6 +504,9 @@ int test_consensus_state_snapshot_export(void)
     CSE_CHECK("complete generation exports", exported &&
               result.status == CONSENSUS_EXPORT_EXPORTED &&
               result.history_complete && result.height == 1 &&
+              result.source_clean &&
+              result.validation_profile ==
+                  CONSENSUS_STATE_VALIDATION_FULL &&
               result.utxo_count == 1 && result.anchor_count == 2 &&
               result.nullifier_count == 1);
     CSE_CHECK("final artifact is immutable", lstat(output, &st) == 0 &&
@@ -426,7 +524,144 @@ int test_consensus_state_snapshot_export(void)
               !consensus_state_snapshot_install(db, &install_request,
                                                 &install_result) &&
               install_result.status == CONSENSUS_INSTALL_VERIFIED_CONTAINED &&
-              install_result.history_complete);
+              install_result.history_complete && install_result.source_clean &&
+              install_result.validation_profile ==
+                  CONSENSUS_STATE_VALIDATION_FULL);
+
+    struct consensus_state_export_result typed_result;
+    CSE_CHECK("numeric-prefix TEXT coin fixture writes",
+              cse_exec(db,
+                  "UPDATE coins SET value=CAST('5000x' AS TEXT)"));
+    request.output_name = "numeric-text.bundle.db";
+    CSE_CHECK("numeric-prefix TEXT coin cannot enter exported state",
+              !consensus_state_snapshot_export(db, &request, &typed_result) &&
+              typed_result.status == CONSENSUS_EXPORT_OUTPUT_ERROR &&
+              access(numeric_text_output, F_OK) != 0);
+    CSE_CHECK("restore exact INTEGER coin value",
+              cse_exec(db, "UPDATE coins SET value=5000"));
+
+    CSE_CHECK("REAL anchor-height fixture writes",
+              cse_exec(db, "UPDATE sprout_anchors SET height=1.25"));
+    request.output_name = "real-anchor.bundle.db";
+    CSE_CHECK("REAL anchor height cannot enter exported state",
+              !consensus_state_snapshot_export(db, &request, &typed_result) &&
+              typed_result.status == CONSENSUS_EXPORT_OUTPUT_ERROR &&
+              access(real_anchor_output, F_OK) != 0);
+    CSE_CHECK("restore exact INTEGER anchor height",
+              cse_exec(db, "UPDATE sprout_anchors SET height=1"));
+
+    CSE_CHECK("REAL nullifier-height fixture writes",
+              cse_exec(db, "UPDATE nullifiers SET height=1.25"));
+    request.output_name = "real-nullifier.bundle.db";
+    CSE_CHECK("REAL nullifier height cannot enter exported state",
+              !consensus_state_snapshot_export(db, &request, &typed_result) &&
+              typed_result.status == CONSENSUS_EXPORT_OUTPUT_ERROR &&
+              access(real_nullifier_output, F_OK) != 0);
+    CSE_CHECK("restore exact INTEGER nullifier height",
+              cse_exec(db, "UPDATE nullifiers SET height=1"));
+    request.output_name = "complete.bundle.db";
+
+    CSE_CHECK("simulate legacy crypto rows without prepared epoch",
+              cse_exec(db,
+                  "UPDATE script_validate_log SET source_epoch_digest=NULL;"
+                  "UPDATE proof_validate_log SET source_epoch_digest=NULL") &&
+              cse_seed_receipt(db, hash,
+                  CONSENSUS_STATE_VALIDATION_FULL, false));
+    request.output_name = "legacy-backfill.bundle.db";
+    struct consensus_state_export_result profile_result;
+    CSE_CHECK("backfilled receipt cannot authorize legacy crypto rows",
+              !consensus_state_snapshot_export(db, &request,
+                                               &profile_result) &&
+              profile_result.status == CONSENSUS_EXPORT_MISSING_PROOF &&
+              access(legacy_backfill_output, F_OK) != 0);
+    CSE_CHECK("restore prepared epoch row binding",
+              cse_exec(db,
+                  "UPDATE script_validate_log SET source_epoch_digest="
+                  "(SELECT value FROM progress_meta WHERE key='"
+                  CONSENSUS_STATE_SOURCE_EPOCH_META_KEY "');"
+                  "UPDATE proof_validate_log SET source_epoch_digest="
+                  "(SELECT value FROM progress_meta WHERE key='"
+                  CONSENSUS_STATE_SOURCE_EPOCH_META_KEY "')"));
+
+    CSE_CHECK("inject embedded-NUL status suffix",
+              cse_exec(db,
+                  "UPDATE script_validate_log SET status="
+                  "CAST(X'7665726966696564006a756e6b' AS TEXT)"));
+    request.output_name = "embedded-status.bundle.db";
+    CSE_CHECK("noncanonical status bytes cannot prefix-match",
+              !consensus_state_snapshot_export(db, &request,
+                                               &profile_result) &&
+              profile_result.status == CONSENSUS_EXPORT_MISSING_PROOF &&
+              access(embedded_status_output, F_OK) != 0);
+    CSE_CHECK("restore canonical full-validation status",
+              cse_exec(db,
+                  "UPDATE script_validate_log SET status='verified'"));
+
+    CSE_CHECK("inject embedded-NUL receipt schema suffix",
+              cse_exec(db,
+                  "UPDATE consensus_state_source_receipt SET schema="
+                  "schema||char(0)||'junk'"));
+    request.output_name = "embedded-receipt-schema.bundle.db";
+    CSE_CHECK("receipt schema requires exact bytes",
+              !consensus_state_snapshot_export(db, &request,
+                                               &profile_result) &&
+              profile_result.status == CONSENSUS_EXPORT_MISSING_PROOF &&
+              access(embedded_receipt_schema_output, F_OK) != 0);
+    CSE_CHECK("restore canonical receipt schema",
+              cse_exec(db,
+                  "UPDATE consensus_state_source_receipt SET schema='"
+                  CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA "'"));
+
+    CSE_CHECK("relabel only UTXO evidence as checkpoint-only",
+              cse_exec(db,
+                  "UPDATE utxo_apply_log SET status='checkpoint_fold'"));
+    request.output_name = "utxo-profile-mismatch.bundle.db";
+    CSE_CHECK("UTXO profile is bound and cannot be relabeled",
+              !consensus_state_snapshot_export(db, &request,
+                                               &profile_result) &&
+              profile_result.status == CONSENSUS_EXPORT_MISSING_PROOF &&
+              access(utxo_profile_mismatch_output, F_OK) != 0);
+    CSE_CHECK("restore canonical UTXO evidence",
+              cse_exec(db,
+                  "UPDATE utxo_apply_log SET status='verified'"));
+
+    CSE_CHECK("relabel crypto rows as checkpoint-only",
+              cse_exec(db,
+                  "UPDATE script_validate_log SET status='checkpoint_fold';"
+                  "UPDATE proof_validate_log SET status='checkpoint_fold';"
+                  "UPDATE utxo_apply_log SET status='checkpoint_fold'"));
+    request.output_name = "profile-mismatch.bundle.db";
+    CSE_CHECK("full receipt cannot export checkpoint-fold rows",
+              !consensus_state_snapshot_export(db, &request,
+                                               &profile_result) &&
+              profile_result.status == CONSENSUS_EXPORT_MISSING_PROOF &&
+              access(profile_mismatch_output, F_OK) != 0);
+    CSE_CHECK("seed checkpoint-fold receipt",
+              cse_seed_receipt(db, hash,
+                  CONSENSUS_STATE_VALIDATION_CHECKPOINT_FOLD, false));
+    request.output_name = "checkpoint.bundle.db";
+    struct consensus_state_export_result checkpoint_result;
+    CSE_CHECK("checkpoint fold is never canonically publishable",
+              !consensus_state_snapshot_export(db, &request,
+                                               &checkpoint_result) &&
+              checkpoint_result.status == CONSENSUS_EXPORT_MISSING_PROOF &&
+              strstr(checkpoint_result.reason, "non-serving") != NULL &&
+              access(checkpoint_output, F_OK) != 0);
+    CSE_CHECK("restore full-validation row status",
+              cse_exec(db,
+                  "UPDATE script_validate_log SET status='verified';"
+                  "UPDATE proof_validate_log SET status='verified';"
+                  "UPDATE utxo_apply_log SET status='verified'"));
+    request.output_name = "reverse-profile-mismatch.bundle.db";
+    CSE_CHECK("checkpoint receipt cannot export full-validation rows",
+              !consensus_state_snapshot_export(db, &request,
+                                               &profile_result) &&
+              profile_result.status == CONSENSUS_EXPORT_MISSING_PROOF &&
+              access(reverse_profile_mismatch_output, F_OK) != 0);
+    CSE_CHECK("restore full-validation receipt",
+              cse_seed_receipt(db, hash,
+                  CONSENSUS_STATE_VALIDATION_FULL, false));
+    request.output_name = "complete.bundle.db";
 
     struct consensus_state_export_result repeat_result;
     CSE_CHECK("existing final is never replaced",
@@ -460,7 +695,20 @@ int test_consensus_state_snapshot_export(void)
               bad_target_result.status == CONSENSUS_EXPORT_REFUSED);
 
     request.output_dir_fd = output_dir_fd;
-    static const char *const bad_names[] = {".", "..", "sub/file", "bad?uri"};
+    struct stat link_st;
+    request.output_name = "height-overflow.bundle.db";
+    request.expected_height = INT32_MAX;
+    CSE_CHECK("height whose next cursor overflows int32 refuses",
+              !consensus_state_snapshot_export(db, &request,
+                                               &bad_target_result) &&
+              bad_target_result.status == CONSENSUS_EXPORT_REFUSED &&
+              fstatat(output_dir_fd, request.output_name, &link_st,
+                      AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT);
+    request.expected_height = 1;
+    static const char *const bad_names[] = {
+        ".", "..", "sub/file", "bad?uri", "progress.kv",
+        "Progress.KV.candidate",
+    };
     bool bad_names_refused = true;
     for (size_t i = 0; i < sizeof(bad_names) / sizeof(bad_names[0]); i++) {
         request.output_name = bad_names[i];
@@ -476,7 +724,7 @@ int test_consensus_state_snapshot_export(void)
     if (consensus_state_snapshot_export(db, &request, &bad_target_result) ||
         bad_target_result.status != CONSENSUS_EXPORT_REFUSED)
         bad_names_refused = false;
-    CSE_CHECK("multi-component/dot/URI/oversized names refuse",
+    CSE_CHECK("active-store/multi-component/dot/URI/oversized names refuse",
               bad_names_refused);
 
     char symlink_output[512];
@@ -485,7 +733,6 @@ int test_consensus_state_snapshot_export(void)
     CSE_CHECK("existing output symlink fixture",
               symlink("complete.bundle.db", symlink_output) == 0);
     request.output_name = "link.bundle.db";
-    struct stat link_st;
     CSE_CHECK("existing output symlink refuses without replacement",
               !consensus_state_snapshot_export(db, &request,
                                                &bad_target_result) &&
@@ -526,6 +773,24 @@ int test_consensus_state_snapshot_export(void)
               fstatat(output_dir_fd, staging_link.alias, &link_st,
                       AT_SYMLINK_NOFOLLOW) == 0 && link_st.st_nlink == 1);
     (void)unlinkat(output_dir_fd, staging_link.alias, 0);
+
+    struct cse_retained_writer_fixture retained_writer = {
+        .dirfd = output_dir_fd,
+        .writer_fd = -1,
+    };
+    request.output_name = "retained-writer.bundle.db";
+    consensus_state_snapshot_export_test_set_after_staging_create_hook(
+        cse_retain_staging_writer, &retained_writer);
+    struct consensus_state_export_result retained_writer_result;
+    CSE_CHECK("retained writable staging descriptor refuses publication",
+              !consensus_state_snapshot_export(db, &request,
+                                               &retained_writer_result) &&
+              retained_writer_result.status == CONSENSUS_EXPORT_OUTPUT_ERROR &&
+              retained_writer.ran && retained_writer.writer_fd >= 0 &&
+              fstatat(output_dir_fd, request.output_name, &link_st,
+                      AT_SYMLINK_NOFOLLOW) != 0 && errno == ENOENT);
+    if (retained_writer.writer_fd >= 0)
+        (void)close(retained_writer.writer_fd);
 
     struct cse_parent_swap_fixture parent_swap;
     memset(&parent_swap, 0, sizeof(parent_swap));
@@ -590,6 +855,25 @@ int test_consensus_state_snapshot_export(void)
                   "UPDATE proof_validate_log SET block_hash=?2 WHERE height=?1",
                   1, hash[1]));
 
+    uint8_t stale_utxo_hash[32];
+    memcpy(stale_utxo_hash, hash[1], sizeof(stale_utxo_hash));
+    stale_utxo_hash[31] ^= 0xff;
+    CSE_CHECK("corrupt UTXO delta branch hash",
+              cse_insert_hash_row(db,
+                  "UPDATE utxo_apply_delta SET branch_hash=?2 WHERE height=?1",
+                  1, stale_utxo_hash));
+    request.output_name = "stale-utxo.bundle.db";
+    struct consensus_state_export_result stale_utxo_result;
+    CSE_CHECK("stale UTXO branch fails named and publishes nothing",
+              !consensus_state_snapshot_export(db, &request,
+                                               &stale_utxo_result) &&
+              stale_utxo_result.status == CONSENSUS_EXPORT_MISSING_PROOF &&
+              access(stale_utxo_output, F_OK) != 0);
+    CSE_CHECK("restore UTXO delta branch hash",
+              cse_insert_hash_row(db,
+                  "UPDATE utxo_apply_delta SET branch_hash=?2 WHERE height=?1",
+                  1, hash[1]));
+
     CSE_CHECK("remove required source receipt",
               cse_exec(db, "DELETE FROM consensus_state_source_receipt"));
     request.output_name = "missing.bundle.db";
@@ -600,7 +884,8 @@ int test_consensus_state_snapshot_export(void)
               access(missing_output, F_OK) != 0);
 
     CSE_CHECK("seed malformed source receipt",
-              cse_seed_receipt(db, hash, true));
+              cse_seed_receipt(db, hash,
+                  CONSENSUS_STATE_VALIDATION_FULL, true));
     request.output_name = "malformed.bundle.db";
     struct consensus_state_export_result malformed_result;
     CSE_CHECK("malformed receipt fails named and publishes nothing",
@@ -615,9 +900,20 @@ int test_consensus_state_snapshot_export(void)
     if (output_dir_fd >= 0)
         close(output_dir_fd);
     (void)unlink(output);
+    (void)unlink(checkpoint_output);
+    (void)unlink(legacy_backfill_output);
+    (void)unlink(embedded_status_output);
+    (void)unlink(embedded_receipt_schema_output);
+    (void)unlink(utxo_profile_mismatch_output);
     (void)unlink(stale_proof_output);
+    (void)unlink(stale_utxo_output);
+    (void)unlink(profile_mismatch_output);
+    (void)unlink(reverse_profile_mismatch_output);
     (void)unlink(missing_output);
     (void)unlink(malformed_output);
+    (void)unlink(numeric_text_output);
+    (void)unlink(real_anchor_output);
+    (void)unlink(real_nullifier_output);
     (void)rmdir(export_dir);
     (void)rmdir(dir);
     return failures;

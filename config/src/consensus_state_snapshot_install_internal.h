@@ -12,9 +12,14 @@ struct consensus_state_candidate_output {
     struct consensus_export_output_binding binding;
 };
 
-/* Borrowed immutable read transaction.  Only config/src candidate code may
- * use it, and only while the opaque evidence owner remains alive. */
-sqlite3 *consensus_state_artifact_evidence_db_borrowed(
+/* Serialized immutable read-transaction lease.  A successful begin holds the
+ * evidence mutex until end, so one NOMUTEX SQLite handle is never shared by
+ * concurrent candidate builders. */
+bool consensus_state_artifact_evidence_candidate_lease_begin(
+    const struct consensus_state_artifact_evidence *evidence,
+    struct consensus_state_bundle_manifest *manifest,
+    uint8_t receipt_digest[32], sqlite3 **db);
+void consensus_state_artifact_evidence_candidate_lease_end(
     const struct consensus_state_artifact_evidence *evidence);
 
 bool consensus_state_candidate_validate_reopened(

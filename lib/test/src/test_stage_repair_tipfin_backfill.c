@@ -100,10 +100,15 @@ static bool seed_schema(sqlite3 *db)
             "fail_reason TEXT)") &&
         exec_sql(db,
             "CREATE TABLE IF NOT EXISTS proof_validate_log ("
-            "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL)") &&
+            "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+            "block_hash BLOB)") &&
         exec_sql(db,
             "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
             "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL)") &&
+        exec_sql(db,
+            "CREATE TABLE IF NOT EXISTS utxo_apply_delta ("
+            "height INTEGER PRIMARY KEY, branch_hash BLOB NOT NULL,"
+            "spent_blob BLOB NOT NULL, added_blob BLOB NOT NULL)") &&
         exec_sql(db,
             "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
             "height INTEGER PRIMARY KEY, status TEXT NOT NULL,"
@@ -179,6 +184,64 @@ static bool put_script(sqlite3 *db, int height, int ok_flag,
     return ok;
 }
 
+static bool put_header(sqlite3 *db, int height, const struct uint256 *hash)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO header_admit_log"
+            "(height,hash,admitted_at) VALUES(?,?,1)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_blob(st, 2, hash->data, 32, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool put_proof(sqlite3 *db, int height, int ok_flag,
+                      const struct uint256 *hash)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO proof_validate_log"
+            "(height,status,ok,block_hash) VALUES(?,'verified',?,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_int(st, 2, ok_flag);
+    sqlite3_bind_blob(st, 3, hash->data, 32, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool put_utxo(sqlite3 *db, int height, int ok_flag,
+                     const struct uint256 *hash)
+{
+    sqlite3_stmt *st = NULL;
+    bool ok = sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO utxo_apply_log(height,status,ok) "
+        "VALUES(?,'verified',?)", -1, &st, NULL) == SQLITE_OK;
+    if (ok) {
+        sqlite3_bind_int(st, 1, height);
+        sqlite3_bind_int(st, 2, ok_flag);
+        ok = sqlite3_step(st) == SQLITE_DONE;
+    }
+    sqlite3_finalize(st);
+    st = NULL;
+    if (!ok || sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO utxo_apply_delta"
+            "(height,branch_hash,spent_blob,added_blob) VALUES(?,?,x'',x'')",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_blob(st, 2, hash->data, 32, SQLITE_STATIC);
+    ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
 static bool put_simple(sqlite3 *db, const char *table, int height, int ok_flag)
 {
     char sql[160];
@@ -231,10 +294,11 @@ static bool put_upstream_ok(sqlite3 *db, int height,
                             const struct uint256 *hash)
 {
     return put_validate(db, height, 1, hash) &&
+           put_header(db, height, hash) &&
            put_script(db, height, 1, hash) &&
            put_simple(db, "body_persist_log", height, 1) &&
-           put_simple(db, "proof_validate_log", height, 1) &&
-           put_simple(db, "utxo_apply_log", height, 1);
+           put_proof(db, height, 1, hash) &&
+           put_utxo(db, height, 1, hash);
 }
 
 static bool seed_coins_applied(sqlite3 *db, int64_t height)
@@ -756,9 +820,10 @@ int test_stage_repair_tipfin_backfill(void)
         bool seeded = true;
         for (int i = 1; i <= 5; i++) {
             seeded = seeded && put_validate(db, A + i, 1, &h[i]) &&
+                     put_header(db, A + i, &h[i]) &&
                      put_simple(db, "body_persist_log", A + i, 1) &&
-                     put_simple(db, "proof_validate_log", A + i, 1) &&
-                     put_simple(db, "utxo_apply_log", A + i, 1);
+                     put_proof(db, A + i, 1, &h[i]) &&
+                     put_utxo(db, A + i, 1, &h[i]);
             if (i != 3)
                 seeded = seeded && put_script(db, A + i, 1, &h[i]);
         }
@@ -821,7 +886,7 @@ int test_stage_repair_tipfin_backfill(void)
         for (int i = 1; i <= 4; i++)
             seeded = seeded && put_upstream_ok(db, A + i, &h[i]);
         seeded = seeded &&
-                 put_simple(db, "proof_validate_log", A + 2, 0) &&
+                 put_proof(db, A + 2, 0, &h[2]) &&
                  put_tip(db, A + 1, "finalized", 1, &h[2]) &&
                  put_tip(db, A + 4, "finalized", 1, &h[5]) &&
                  seed_coins_applied(db, A + 4);
@@ -903,6 +968,68 @@ int test_stage_repair_tipfin_backfill(void)
         test_cleanup_tmpdir(dir);
     }
 
+    {
+        char dir[256];
+        TIPFIN_CHECK("T4c proof-fork setup",
+                     open_fixture(dir,sizeof(dir),"t4c_proof_fork",A+5));
+        sqlite3 *db=progress_store_db();
+        struct uint256 h[6],fork;
+        for(int i=1;i<=5;i++) mk_hash(&h[i],A+i);
+        fork=h[2]; fork.data[31]^=0x5au;
+        bool seeded=true;
+        for(int i=1;i<=4;i++) seeded=seeded&&put_upstream_ok(db,A+i,&h[i]);
+        seeded=seeded&&put_proof(db,A+2,1,&fork)&&
+               put_tip(db,A+1,"finalized",1,&h[2])&&
+               put_tip(db,A+4,"finalized",1,&h[5])&&
+               seed_coins_applied(db,A+4);
+        TIPFIN_CHECK("T4c proof-fork seed",seeded);
+        struct stage_reducer_frontier_reconcile_result rr;
+        bool handled=false;
+        struct tip_row_view row;
+        TIPFIN_CHECK("T4c forked proof cannot authorize backfill",
+                     snapshot(db,&rr)&&rr.hstar==A+1&&
+                     stage_reducer_frontier_try_tipfin_backfill(
+                         db,true,&rr,&handled)&&!handled&&
+                     rr.tipfin_backfill_refused_reason==
+                         T_REFUSED_G3_MISSING_EVIDENCE&&
+                     rr.tipfin_backfill_refused_log==
+                         STAGE_REPAIR_TIPFIN_LOG_PROOF_VALIDATE&&
+                     tip_row_at(db,A+2,&row)&&!row.found);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
+    {
+        char dir[256];
+        TIPFIN_CHECK("T4d UTXO-fork setup",
+                     open_fixture(dir,sizeof(dir),"t4d_utxo_fork",A+5));
+        sqlite3 *db=progress_store_db();
+        struct uint256 h[6],fork;
+        for(int i=1;i<=5;i++) mk_hash(&h[i],A+i);
+        fork=h[2]; fork.data[31]^=0xa5u;
+        bool seeded=true;
+        for(int i=1;i<=4;i++) seeded=seeded&&put_upstream_ok(db,A+i,&h[i]);
+        seeded=seeded&&put_utxo(db,A+2,1,&fork)&&
+               put_tip(db,A+1,"finalized",1,&h[2])&&
+               put_tip(db,A+4,"finalized",1,&h[5])&&
+               seed_coins_applied(db,A+4);
+        TIPFIN_CHECK("T4d UTXO-fork seed",seeded);
+        struct stage_reducer_frontier_reconcile_result rr;
+        bool handled=false;
+        struct tip_row_view row;
+        TIPFIN_CHECK("T4d forked UTXO cannot authorize backfill",
+                     snapshot(db,&rr)&&rr.hstar==A+1&&
+                     stage_reducer_frontier_try_tipfin_backfill(
+                         db,true,&rr,&handled)&&!handled&&
+                     rr.tipfin_backfill_refused_reason==
+                         T_REFUSED_G3_MISSING_EVIDENCE&&
+                     rr.tipfin_backfill_refused_log==
+                         STAGE_REPAIR_TIPFIN_LOG_UTXO_APPLY&&
+                     tip_row_at(db,A+2,&row)&&!row.found);
+        progress_store_close();
+        test_cleanup_tmpdir(dir);
+    }
+
     /* ── T9 — panel-required exact live state ──
      * tip_finalize rowless span [S..C-1] + anchor ok=1 at C; script+proof
      * rowless at C == coins_applied; utxo rows through C-1; cursors at
@@ -925,7 +1052,8 @@ int test_stage_repair_tipfin_backfill(void)
         for (int i = 1; i <= 7; i++)  /* A+1 .. C-1: all five logs ok=1 */
             seeded = seeded && put_upstream_ok(db, A + i, &h[i]);
         /* At C: validate + body_persist present, script/proof/utxo rowless. */
-        seeded = seeded && put_validate(db, C, 1, &h[8]) &&
+        seeded = seeded && put_header(db, C, &h[8]) &&
+                 put_validate(db, C, 1, &h[8]) &&
                  put_simple(db, "body_persist_log", C, 1);
         /* tip_finalize: rows through S-1, rowless span, anchor ok=1 at C. */
         seeded = seeded &&
@@ -964,7 +1092,7 @@ int test_stage_repair_tipfin_backfill(void)
         /* Step 3 — simulated forward script/proof refill at C. */
         TIPFIN_CHECK("T9 simulated refill at C",
                      put_script(db, C, 1, &h[8]) &&
-                     put_simple(db, "proof_validate_log", C, 1));
+                     put_proof(db, C, 1, &h[8]));
 
         /* Step 4 — the boundary p=C-1 is written with both binders. */
         TIPFIN_CHECK("T9 snapshot at boundary",

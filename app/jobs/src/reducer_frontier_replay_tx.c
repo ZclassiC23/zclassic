@@ -10,6 +10,7 @@
 #include "stage_repair_reducer_frontier_internal.h"
 
 #include "jobs/created_outputs_index.h"
+#include "jobs/mint_skip_crypto.h"
 #include "jobs/script_validate_stage.h"
 #include "jobs/stage_repair_internal.h"
 #include "primitives/block.h"
@@ -71,6 +72,14 @@ static bool rf_replay_rewindable_utxo_row(sqlite3 *db, int height)
                  "[stage_repair] stale script repair refused: missing "
                  "utxo_apply_log row h=%d",
                  height);
+        sqlite3_finalize(st);
+        return false;
+    }
+    if (sqlite3_column_type(st, 0) != SQLITE_INTEGER ||
+        (sqlite3_column_int(st, 0) != 0 && sqlite3_column_int(st, 0) != 1)) {
+        LOG_WARN("stage_repair",
+                 "[stage_repair] stale script repair refused: malformed "
+                 "utxo ok storage h=%d", height);
         sqlite3_finalize(st);
         return false;
     }
@@ -229,7 +238,7 @@ bool reducer_frontier_replay_script_ok_at_unlocked(sqlite3 *db, int height,
     *out_ok = -1;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
-            "SELECT ok FROM script_validate_log WHERE height = ?",
+            "SELECT ok, status FROM script_validate_log WHERE height = ?",
             -1, &st, NULL) != SQLITE_OK) {
         LOG_WARN("stage_repair",
                  "[stage_repair] script_ok prepare failed h=%d: %s",
@@ -239,7 +248,18 @@ bool reducer_frontier_replay_script_ok_at_unlocked(sqlite3 *db, int height,
     sqlite3_bind_int(st, 1, height);
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
-        *out_ok = sqlite3_column_int(st, 0);
+        int ok = sqlite3_column_type(st, 0) == SQLITE_INTEGER
+            ? sqlite3_column_int(st, 0) : -1;
+        int status_type = sqlite3_column_type(st, 1);
+        const void *status = status_type == SQLITE_TEXT
+            ? sqlite3_column_text(st, 1) : NULL;
+        if (ok == 1)
+            *out_ok = status &&
+                mint_validation_evidence_parse(
+                    status, (size_t)sqlite3_column_bytes(st, 1)) ==
+                    MINT_VALIDATION_EVIDENCE_VERIFIED ? 1 : -1;
+        else if (ok == 0)
+            *out_ok = ok;
     } else if (rc != SQLITE_DONE) {
         LOG_WARN("stage_repair",
                  "[stage_repair] script_ok step failed h=%d rc=%d: %s",

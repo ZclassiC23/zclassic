@@ -43,7 +43,6 @@
 set -e
 CLI="$(dirname "$0")/../build/bin/zclassic-cli"
 [ -x "$CLI" ] || CLI="./build/bin/zclassic-cli"
-[ -x "$CLI" ] || { echo "zclassic-cli not found" >&2; exit 1; }
 
 systemd_show_value() {
     local service="$1" prop="$2"
@@ -588,6 +587,8 @@ if [ "${ZCL_TOOLS_Z_SELFTEST:-0}" = "1" ]; then
     tools_z_selftest
     exit $?
 fi
+
+[ -x "$CLI" ] || { echo "zclassic-cli not found" >&2; exit 1; }
 
 legacy_conf_value() {
     awk -F= -v k="$1" '

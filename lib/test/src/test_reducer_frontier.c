@@ -49,6 +49,9 @@ static bool build_schema(sqlite3 *db)
         "  updated_at INTEGER NOT NULL);"
         "CREATE TABLE IF NOT EXISTS progress_meta ("
         "  key TEXT PRIMARY KEY, value BLOB);"
+        "CREATE TABLE IF NOT EXISTS header_admit_log ("
+        "  height INTEGER PRIMARY KEY, hash BLOB NOT NULL,"
+        "  parent_hash BLOB, admitted_at INTEGER NOT NULL);"
         "CREATE TABLE IF NOT EXISTS validate_headers_log ("
         "  height INTEGER PRIMARY KEY, hash BLOB NOT NULL, ok INTEGER NOT NULL,"
         "  fail_reason TEXT, validated_at INTEGER);"
@@ -58,10 +61,14 @@ static bool build_schema(sqlite3 *db)
         "CREATE TABLE IF NOT EXISTS body_persist_log ("
         "  height INTEGER PRIMARY KEY, source TEXT, ok INTEGER NOT NULL);"
         "CREATE TABLE IF NOT EXISTS proof_validate_log ("
-        "  height INTEGER PRIMARY KEY, ok INTEGER NOT NULL);"
+        "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+        "  block_hash BLOB);"
         "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
-        "  height INTEGER PRIMARY KEY, ok INTEGER NOT NULL,"
+        "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
         "  spent_count INTEGER, added_count INTEGER);"
+        "CREATE TABLE IF NOT EXISTS utxo_apply_delta ("
+        "  height INTEGER PRIMARY KEY, branch_hash BLOB NOT NULL,"
+        "  spent_blob BLOB NOT NULL, added_blob BLOB NOT NULL);"
         "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
         "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
         "  tip_hash BLOB);";
@@ -144,9 +151,13 @@ static bool put_log_row(sqlite3 *db, const char *table, const char *hash_col,
                         const char *status)
 {
     char sql[256];
-    /* status column exists only on script_validate_log/tip_finalize_log; we
-     * pass status=NULL for the others and skip the column there. */
-    if (hash_col && status)
+    bool profile_bound = strcmp(table, "script_validate_log") == 0 ||
+                         strcmp(table, "proof_validate_log") == 0 ||
+                         strcmp(table, "utxo_apply_log") == 0;
+    /* Successful consensus-validation rows must carry the exact production
+     * evidence label. Failure rows retain their caller-supplied diagnosis. */
+    const char *row_status = profile_bound && ok == 1 ? "verified" : status;
+    if (hash_col && row_status)
         snprintf(sql, sizeof(sql),
                  "INSERT INTO %s(height,status,ok,%s) VALUES(?,?,?,?)",
                  table, hash_col);
@@ -154,7 +165,7 @@ static bool put_log_row(sqlite3 *db, const char *table, const char *hash_col,
         snprintf(sql, sizeof(sql),
                  "INSERT INTO %s(height,ok,%s) VALUES(?,?,?)",
                  table, hash_col);
-    else if (status)
+    else if (row_status)
         snprintf(sql, sizeof(sql),
                  "INSERT INTO %s(height,status,ok) VALUES(?,?,?)", table);
     else
@@ -169,8 +180,8 @@ static bool put_log_row(sqlite3 *db, const char *table, const char *hash_col,
     }
     int col = 1;
     sqlite3_bind_int64(st, col++, height);
-    if (status)
-        sqlite3_bind_text(st, col++, status, -1, SQLITE_STATIC);
+    if (row_status)
+        sqlite3_bind_text(st, col++, row_status, -1, SQLITE_STATIC);
     sqlite3_bind_int(st, col++, ok);
     if (hash_col) {
         if (hash) sqlite3_bind_blob(st, col++, hash, 32, SQLITE_STATIC);
@@ -195,18 +206,52 @@ static void synth_hash(uint8_t out[32], int32_t h, uint8_t tag)
     out[31] = tag;
 }
 
+static bool put_header_admit(sqlite3 *db, int32_t h,
+                             const uint8_t hash[32])
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT INTO header_admit_log(height,hash,admitted_at) "
+            "VALUES(?,?,0)", -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, h);
+    sqlite3_bind_blob(st, 2, hash, 32, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool put_utxo_delta(sqlite3 *db, int32_t h,
+                           const uint8_t hash[32])
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT INTO utxo_apply_delta"
+            "(height,branch_hash,spent_blob,added_blob) "
+            "VALUES(?,?,x'',x'')", -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, h);
+    sqlite3_bind_blob(st, 2, hash, 32, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
 /* Write a full consistent ok=1 row across ALL stage logs at height h, with
  * validate_headers.hash and script_validate.block_hash AGREEING (tag 0). */
 static bool put_consistent_height(sqlite3 *db, int32_t h)
 {
     uint8_t hh[32];
     synth_hash(hh, h, 0);
-    return put_log_row(db, "validate_headers_log", "hash", h, 1, hh, NULL)
+    return put_header_admit(db, h, hh)
+        && put_log_row(db, "validate_headers_log", "hash", h, 1, hh, NULL)
         && put_log_row(db, "script_validate_log", "block_hash", h, 1, hh,
                        "ok")
         && put_log_row(db, "body_persist_log", NULL, h, 1, NULL, NULL)
-        && put_log_row(db, "proof_validate_log", NULL, h, 1, NULL, NULL)
+        && put_log_row(db, "proof_validate_log", "block_hash", h, 1, hh,
+                       NULL)
         && put_log_row(db, "utxo_apply_log", NULL, h, 1, NULL, NULL)
+        && put_utxo_delta(db, h, hh)
         && put_log_row(db, "tip_finalize_log", NULL, h, 1, NULL, "ok");
 }
 
@@ -238,6 +283,47 @@ static bool put_validate_failure(sqlite3 *db, int32_t h, const char *reason)
 static bool put_tip_anchor(sqlite3 *db, int32_t h)
 {
     return put_log_row(db, "tip_finalize_log", NULL, h, 1, NULL, "anchor");
+}
+
+static bool set_log_status(sqlite3 *db, const char *table, int32_t height,
+                           const char *status)
+{
+    char sql[128];
+    int n = snprintf(sql, sizeof(sql),
+                     "UPDATE %s SET status=? WHERE height=?", table);
+    if (n < 0 || n >= (int)sizeof(sql))
+        return false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, status, -1, SQLITE_STATIC);
+    sqlite3_bind_int(st, 2, height);
+    bool ok = sqlite3_step(st) == SQLITE_DONE &&
+              sqlite3_changes(db) == 1;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool set_hash_value(sqlite3 *db, const char *table,
+                           const char *column, int32_t height,
+                           const void *value, int length, bool as_text)
+{
+    char sql[160];
+    int n = snprintf(sql, sizeof(sql), "UPDATE %s SET %s=? WHERE height=?",
+                     table, column);
+    if (n <= 0 || n >= (int)sizeof(sql))
+        return false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        return false;
+    int rc = as_text
+        ? sqlite3_bind_text(st, 1, value, length, SQLITE_STATIC)
+        : sqlite3_bind_blob(st, 1, value, length, SQLITE_STATIC);
+    sqlite3_bind_int(st, 2, height);
+    bool ok = rc == SQLITE_OK && sqlite3_step(st) == SQLITE_DONE &&
+              sqlite3_changes(db) == 1;
+    sqlite3_finalize(st);
+    return ok;
 }
 
 /* Set every reducer cursor to `c` (the next-height frame == tip+1 in these
@@ -286,6 +372,108 @@ static int case_consistent(void)
      * hstar != tip and this fails. */
     RF_CHECK("consistent: hstar == tip", hstar == tip);
     RF_CHECK("consistent: served_floor == tip", served == tip);
+
+    sqlite3_close(db);
+    return failures;
+}
+
+/* Every successful stage receipt above a trusted base must bind the same
+ * selected-chain hash.  A proof receipt from fork B beside headers/scripts
+ * from fork A, or a UTXO delta from B, cannot advance the serving frontier. */
+static int case_proof_and_utxo_fork_split(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) return 1;
+    RF_CHECK("proof-utxo-split: schema", build_schema(db));
+    RF_CHECK("proof-utxo-split: proven authority", stamp_proven_authority(db,A));
+    bool built = true;
+    for (int32_t h = A + 1; h <= A + 3; h++)
+        built = built && put_consistent_height(db, h);
+    RF_CHECK("proof-utxo-split: rows", built);
+    RF_CHECK("proof-utxo-split: cursors", set_all_cursors(db, A + 4));
+
+    uint8_t canonical[32], forked[32];
+    synth_hash(canonical, A + 2, 0);
+    synth_hash(forked, A + 2, 9);
+    RF_CHECK("proof-utxo-split: proof fork fixture",
+             set_hash_value(db, "proof_validate_log", "block_hash", A + 2,
+                            forked, 32, false));
+    int32_t hstar = -1, served = -1;
+    RF_CHECK("proof-utxo-split: proof computation",
+             reducer_frontier_compute_hstar(db, &hstar, &served));
+    RF_CHECK("proof-utxo-split: proof fork caps H*", hstar == A + 1);
+    RF_CHECK("proof-utxo-split: proof restore",
+             set_hash_value(db, "proof_validate_log", "block_hash", A + 2,
+                            canonical, 32, false));
+
+    RF_CHECK("proof-utxo-split: UTXO fork fixture",
+             set_hash_value(db, "utxo_apply_delta", "branch_hash", A + 2,
+                            forked, 32, false));
+    RF_CHECK("proof-utxo-split: UTXO computation",
+             reducer_frontier_compute_hstar(db, &hstar, &served));
+    RF_CHECK("proof-utxo-split: UTXO fork caps H*", hstar == A + 1);
+    static const char text_hash[] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    RF_CHECK("proof-utxo-split: text UTXO hash fixture",
+             set_hash_value(db, "utxo_apply_delta", "branch_hash", A + 2,
+                            text_hash, 32, true));
+    RF_CHECK("proof-utxo-split: text UTXO computation",
+             reducer_frontier_compute_hstar(db, &hstar, &served));
+    RF_CHECK("proof-utxo-split: text UTXO hash caps H*", hstar == A + 1);
+
+    sqlite3_close(db);
+    return failures;
+}
+
+/* Checkpoint-fold rows are transparent state-production evidence, never a
+ * serving validation receipt. Every consensus-validation column must cap H*
+ * below the first such row. A text-typed hash is likewise not a hash proof. */
+static int case_validation_evidence_contained(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) { return 1; }
+    RF_CHECK("evidence: schema", build_schema(db));
+    RF_CHECK("evidence: proven authority", stamp_proven_authority(db, A));
+
+    const int32_t tip = A + 3;
+    bool built = true;
+    for (int32_t h = A + 1; h <= tip; h++)
+        built = built && put_consistent_height(db, h);
+    RF_CHECK("evidence: rows built", built);
+    RF_CHECK("evidence: cursors", set_all_cursors(db, tip + 1));
+
+    static const char *const tables[] = {
+        "script_validate_log", "proof_validate_log", "utxo_apply_log",
+    };
+    for (size_t i = 0; i < sizeof(tables) / sizeof(tables[0]); i++) {
+        RF_CHECK("evidence: checkpoint row fixture",
+                 set_log_status(db, tables[i], A + 2, "checkpoint_fold"));
+        int32_t hstar = -1, served = -1;
+        RF_CHECK("evidence: checkpoint computation succeeds",
+                 reducer_frontier_compute_hstar(db, &hstar, &served));
+        RF_CHECK("evidence: checkpoint row caps H*", hstar == A + 1);
+        RF_CHECK("evidence: restore verified row",
+                 set_log_status(db, tables[i], A + 2, "verified"));
+    }
+
+    sqlite3_stmt *st = NULL;
+    bool text_hash = sqlite3_prepare_v2(db,
+        "UPDATE script_validate_log SET block_hash=? WHERE height=?",
+        -1, &st, NULL) == SQLITE_OK;
+    if (text_hash) {
+        static const char thirty_two_a[] = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        sqlite3_bind_text(st, 1, thirty_two_a, 32, SQLITE_STATIC);
+        sqlite3_bind_int(st, 2, A + 2);
+        text_hash = sqlite3_step(st) == SQLITE_DONE;
+    }
+    if (st)
+        sqlite3_finalize(st);
+    RF_CHECK("evidence: text-typed hash fixture", text_hash);
+    int32_t hstar = -1, served = -1;
+    RF_CHECK("evidence: malformed hash computation succeeds",
+             reducer_frontier_compute_hstar(db, &hstar, &served));
+    RF_CHECK("evidence: text-typed hash caps H*", hstar == A + 1);
 
     sqlite3_close(db);
     return failures;
@@ -443,6 +631,19 @@ static int case_durable_base_accepts_rowless_first(void)
     RF_CHECK("rowless-base: returns true", ok);
     RF_CHECK("rowless-base: hstar == durable base", hstar == base);
     RF_CHECK("rowless-base: served_floor == seed anchor", served == base);
+
+    RF_CHECK("rowless-base: exact-length TEXT authority planted",
+             sqlite3_exec(db,
+                 "UPDATE progress_meta SET value=CAST('12345678' AS TEXT) "
+                 "WHERE key='" REDUCER_TRUSTED_BASE_HEIGHT_KEY "'",
+                 NULL, NULL, NULL) == SQLITE_OK);
+    RF_CHECK("rowless-base: TEXT authority fails closed",
+             !reducer_frontier_compute_hstar(db, &hstar, &served));
+    RF_CHECK("rowless-base: high-bit BLOB authority planted",
+             put_int64_le_meta(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
+                               INT64_MIN));
+    RF_CHECK("rowless-base: high-bit BLOB authority fails closed",
+             !reducer_frontier_compute_hstar(db, &hstar, &served));
 
     sqlite3_close(db);
     return failures;
@@ -1241,6 +1442,8 @@ int test_reducer_frontier(void)
     int failures = 0;
     printf("\n--- reducer_frontier (L0 H* authority) ---\n");
     failures += case_consistent();
+    failures += case_proof_and_utxo_fork_split();
+    failures += case_validation_evidence_contained();
     failures += case_torn();
     failures += case_sparse_seed_anchor();
     failures += case_durable_base_accepts_rowless_first();

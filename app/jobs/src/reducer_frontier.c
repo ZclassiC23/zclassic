@@ -12,6 +12,8 @@
 
 #include "jobs/reducer_frontier.h"
 
+#include "reducer_frontier_evidence.h"
+#include "jobs/mint_skip_crypto.h"
 #include "jobs/refold_progress.h"
 #include "chain/chainparams.h"
 #include "chain/checkpoints.h"
@@ -181,6 +183,13 @@ static const struct frontier_log k_logs[] = {
 };
 static const int k_logs_n = (int)(sizeof(k_logs) / sizeof(k_logs[0]));
 
+static bool log_success_requires_full_validation(const char *table)
+{
+    return strcmp(table, "script_validate_log") == 0 ||
+           strcmp(table, "proof_validate_log") == 0 ||
+           strcmp(table, "utxo_apply_log") == 0;
+}
+
 /* Normalize a stage cursor to the "next height to process" frame the
  * contiguity / anchor-candidate scans expect. tip_finalize's served-tip
  * cursor C (served tip at C) is equivalent to next-height C+1 (its rows run
@@ -203,8 +212,10 @@ static bool log_ok_at(sqlite3 *db, const char *log_table, int32_t height,
     /* log_table is a fixed string from k_logs[] (never caller input), so the
      * concat below cannot inject. Bind the height parameter. */
     char sql[128];
+    bool profile_bound = log_success_requires_full_validation(log_table);
     int n = snprintf(sql, sizeof(sql),
-                     "SELECT ok FROM %s WHERE height = ?", log_table);
+                     "SELECT ok%s FROM %s WHERE height = ?",
+                     profile_bound ? ", status" : "", log_table);
     if (n < 0 || n >= (int)sizeof(sql))
         LOG_FAIL("reducer", "log_ok_at sql overflow for table=%s", log_table);
 
@@ -217,7 +228,18 @@ static bool log_ok_at(sqlite3 *db, const char *log_table, int32_t height,
     bool rc_ok = true;
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
-        *out = sqlite3_column_int(st, 0) != 0 ? LOG_ROW_OK : LOG_ROW_FAIL;
+        bool row_ok = sqlite3_column_type(st, 0) == SQLITE_INTEGER &&
+                      sqlite3_column_int(st, 0) == 1;
+        if (row_ok && profile_bound) {
+            int status_type = sqlite3_column_type(st, 1);
+            const void *status = status_type == SQLITE_TEXT
+                ? sqlite3_column_text(st, 1) : NULL;
+            row_ok = status &&
+                mint_validation_evidence_parse(
+                    status, (size_t)sqlite3_column_bytes(st, 1)) ==
+                    MINT_VALIDATION_EVIDENCE_VERIFIED;
+        }
+        *out = row_ok ? LOG_ROW_OK : LOG_ROW_FAIL;
     } else if (rc != SQLITE_DONE) {
         LOG_WARN("reducer", "step %s at h=%d failed: %s",
                  log_table, height, sqlite3_errmsg(db));
@@ -252,10 +274,11 @@ static bool log_contiguous_prefix(sqlite3 *db, const char *log_table,
      * height JUMP is a hole (a missing row) and the first ok=0 row is a
      * recorded failure — both terminate the contiguous prefix. */
     char sql[160];
+    bool profile_bound = log_success_requires_full_validation(log_table);
     int n = snprintf(sql, sizeof(sql),
-                     "SELECT height, ok FROM %s "
+                     "SELECT height, ok%s FROM %s "
                      "WHERE height > ? AND height < ? ORDER BY height",
-                     log_table);
+                     profile_bound ? ", status" : "", log_table);
     if (n < 0 || n >= (int)sizeof(sql))
         LOG_FAIL("reducer", "log_contiguous_prefix sql overflow for %s",
                  log_table);
@@ -273,7 +296,18 @@ static bool log_contiguous_prefix(sqlite3 *db, const char *log_table,
         int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
         if (rc == SQLITE_ROW) {
             int64_t h = sqlite3_column_int64(st, 0);
-            if (h != expect || sqlite3_column_int(st, 1) == 0)
+            bool row_ok = sqlite3_column_type(st, 1) == SQLITE_INTEGER &&
+                          sqlite3_column_int(st, 1) == 1;
+            if (row_ok && profile_bound) {
+                int status_type = sqlite3_column_type(st, 2);
+                const void *status = status_type == SQLITE_TEXT
+                    ? sqlite3_column_text(st, 2) : NULL;
+                row_ok = status &&
+                    mint_validation_evidence_parse(
+                        status, (size_t)sqlite3_column_bytes(st, 2)) ==
+                        MINT_VALIDATION_EVIDENCE_VERIFIED;
+            }
+            if (h != expect || !row_ok)
                 break;  /* hole (height jump) or ok=0 — contiguity ends */
             *h_contiguous = (int32_t)h;
             expect++;
@@ -377,8 +411,8 @@ static bool reducer_trusted_base_height(sqlite3 *db, int32_t *out,
     uint8_t blob[8] = {0};
     size_t n = 0;
     bool f = false;
-    if (!progress_meta_get(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
-                           blob, sizeof(blob), &n, &f))
+    if (!progress_meta_get_blob_exact(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
+                                      blob, sizeof(blob), &n, &f))
         return false;
     if (!f)
         return true;
@@ -387,9 +421,15 @@ static bool reducer_trusted_base_height(sqlite3 *db, int32_t *out,
                  "[reducer] trusted_base blob malformed (len=%zu)", n);
         return false;
     }
-    int64_t v = 0;
+    uint64_t v = 0;
     for (int i = 7; i >= 0; i--)
         v = (v << 8) | blob[i];
+    if (v > INT32_MAX) {
+        LOG_WARN("reducer",
+                 "[reducer] trusted_base height out of range (%llu)",
+                 (unsigned long long)v);
+        return false;
+    }
     *out = (int32_t)v;
     *found = true;
     return true;
@@ -469,116 +509,6 @@ static bool tip_finalize_served_floor(sqlite3 *db, int32_t *served_floor)
     }
     sqlite3_finalize(st);
     return rc_ok;
-}
-
-/* Fetch a 32-byte hash column from a *_log row. *found is set true only when
- * a row exists AND the column is a non-NULL 32-byte blob. Returns false on a
- * real SQLite error. A NULL hash (cold-import prefix) is success with
- * *found=false — it does NOT lower H* (C3). */
-static bool log_hash_at(sqlite3 *db, const char *log_table,
-                        const char *hash_col, int32_t height,
-                        uint8_t out[32], bool *found)
-{
-    *found = false;
-    char sql[160];
-    int n = snprintf(sql, sizeof(sql),
-                     "SELECT %s FROM %s WHERE height = ?",
-                     hash_col, log_table);
-    if (n < 0 || n >= (int)sizeof(sql))
-        LOG_FAIL("reducer", "log_hash_at sql overflow for %s.%s",
-                 log_table, hash_col);
-
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
-        LOG_FAIL("reducer", "prepare %s.%s failed: %s",
-                 log_table, hash_col, sqlite3_errmsg(db));
-    sqlite3_bind_int64(st, 1, (sqlite3_int64)height);
-
-    bool rc_ok = true;
-    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
-    if (rc == SQLITE_ROW) {
-        const void *blob = sqlite3_column_blob(st, 0);
-        int blen = sqlite3_column_bytes(st, 0);
-        if (blob && blen == 32) {
-            memcpy(out, blob, 32);
-            *found = true;
-        }
-    } else if (rc != SQLITE_DONE) {
-        LOG_WARN("reducer", "step %s.%s at h=%d failed: %s",
-                 log_table, hash_col, height, sqlite3_errmsg(db));
-        rc_ok = false;
-    }
-    sqlite3_finalize(st);
-    return rc_ok;
-}
-
-/* C3 — clamp H* at the height BELOW the first hash split between
- * validate_headers_log.hash and script_validate_log.block_hash. A split
- * counts only when BOTH rows are present with non-NULL 32-byte hashes that
- * differ. Walks anchor+1 .. *hstar; clamps on the first split.
- * Residual splits are now owned by maybe_repair_validate_script_hash_split()
- * (re-derive both verdicts from the canonical body). This clamp stays as the
- * safety floor and names the owner instead of silently freezing H* below the
- * split.
- *
- * Returns false on a DB read error. Caller holds progress_store_tx_lock(). */
-static bool apply_hash_agreement(sqlite3 *db, int32_t anchor, int32_t *hstar)
-{
-    if (*hstar <= anchor)
-        return true;
-
-    sqlite3_stmt *st = NULL;
-    if (sqlite3_prepare_v2(db,
-            "SELECT v.height, v.hash, s.block_hash "
-            "FROM validate_headers_log v "
-            "JOIN script_validate_log s ON s.height = v.height "
-            "WHERE v.height > ? AND v.height <= ? "
-            "AND length(v.hash) = 32 AND length(s.block_hash) = 32 "
-            "AND v.hash <> s.block_hash "
-            "ORDER BY v.height ASC LIMIT 1",
-            -1, &st, NULL) != SQLITE_OK)
-        LOG_FAIL("reducer", "prepare hash-agreement split scan failed: %s",
-                 sqlite3_errmsg(db));
-    sqlite3_bind_int64(st, 1, (sqlite3_int64)anchor);
-    sqlite3_bind_int64(st, 2, (sqlite3_int64)*hstar);
-
-    bool rc_ok = true;
-    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
-    if (rc == SQLITE_ROW) {
-        int h = sqlite3_column_int(st, 0);
-        const void *vh_blob = sqlite3_column_blob(st, 1);
-        const void *sv_blob = sqlite3_column_blob(st, 2);
-        uint8_t vh[32] = {0};
-        uint8_t sv[32] = {0};
-        if (vh_blob) memcpy(vh, vh_blob, 32);
-        if (sv_blob) memcpy(sv, sv_blob, 32);
-
-        /* Genuine residual split: clamp H* to h-1 (never below the anchor)
-         * so we never serve the unproven height, and NAME it loudly so the
-         * bounded repair owner's work is visible — never a silent freeze. */
-        *hstar = (h - 1 < anchor) ? anchor : (h - 1);
-        static struct log_throttle split_throttle = LOG_THROTTLE_INIT;
-        int64_t now = platform_time_wall_unix();
-        uint64_t reps = 0;
-        if (log_throttle_should_emit(&split_throttle, (uint64_t)(uint32_t)h,
-                                     now, 300, &reps))
-            LOG_WARN("reducer",
-                     "validate_headers vs script_validate hash split at "
-                     "h=%d (vh=%02x%02x%02x%02x sv=%02x%02x%02x%02x) — H* "
-                     "clamped to %d; owner = maybe_repair_validate_script_"
-                     "hash_split (re-derive from canonical body) "
-                     "repeated=%llu",
-                     h, vh[0], vh[1], vh[2], vh[3], sv[0], sv[1], sv[2],
-                     sv[3], *hstar, (unsigned long long)reps);
-    } else if (rc != SQLITE_DONE) {
-        LOG_WARN("reducer", "step hash-agreement split scan failed: %s",
-                 sqlite3_errmsg(db));
-        rc_ok = false;
-    }
-    sqlite3_finalize(st);
-    if (!rc_ok)
-        return false;
-    return true;
 }
 
 bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
@@ -666,7 +596,7 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
 
     /* C3 — hash agreement: cap H* below the first validate_headers vs
      * script_validate split within [anchor+1 .. hs]. */
-    if (!apply_hash_agreement(progress_db, anchor, &hs))
+    if (!reducer_frontier_apply_hash_agreement(progress_db, anchor, &hs))
         LOG_FAIL("reducer", "hash-agreement walk failed");
 
     /* C4 diagnostic — coins frontier vs utxo_apply's OWN applied frontier.
@@ -786,21 +716,4 @@ bool reducer_frontier_log_frontier_above(sqlite3 *progress_db,
         return false;  /* the failing inner read already logged the cause */
     *out_h = h;
     return true;
-}
-
-bool reducer_frontier_log_hash_at(sqlite3 *progress_db,
-                                  const char *log_table,
-                                  const char *hash_col,
-                                  int32_t height,
-                                  uint8_t out[32], bool *found)
-{
-    if (!progress_db || !log_table || !hash_col || !out || !found)
-        LOG_FAIL("reducer", "log_hash_at: NULL arg");
-
-    /* Recursive lock: safe whether or not the caller already holds it. */
-    progress_store_tx_lock();
-    bool ok = log_hash_at(progress_db, log_table, hash_col, height,
-                          out, found);
-    progress_store_tx_unlock();
-    return ok;
 }

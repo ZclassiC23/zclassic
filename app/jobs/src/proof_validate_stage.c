@@ -12,7 +12,6 @@
 #include "proof_validate_log_store.h"
 #include "proof_validate_stage_internal.h"
 #include "script_validate_log_store.h"
-
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "consensus/upgrades.h"
@@ -48,11 +47,8 @@
 #include <time.h>
 
 #define STAGE_NAME "proof_validate"
-
-/* struct script_validate_row + the proof_validate_log schema/read/write
- * helpers live in proof_validate_log_store.c (pure sqlite kernel helpers
- * below the AR layer). The zcl_state JSON dump lives in
- * proof_validate_stage_dump.c. */
+/* Log helpers live in proof_validate_log_store.c; the zcl_state JSON dump
+ * lives in proof_validate_stage_dump.c. */
 
 struct validate_summary {
     int ok;
@@ -111,9 +107,8 @@ static _Atomic int64_t g_pv_unresolved_height = -1;
 static _Atomic int64_t g_pv_unresolved_since_unix = 0;
 static _Atomic int64_t g_pv_unresolved_paged_height = -1;
 
-/* Clear the HOLD tracking once a height advances cleanly (verified /
- * proof_invalid / upstream_failed): the next internal_error, if any, restarts
- * the budget clock from scratch and the named blocker is released. */
+/* Clear HOLD tracking after a clean advance so the next internal error gets a
+ * fresh budget and releases the named blocker. */
 static void pv_unresolved_clear(void)
 {
     if (atomic_exchange(&g_pv_unresolved_height, (int64_t)-1) != (int64_t)-1) {
@@ -122,11 +117,8 @@ static void pv_unresolved_clear(void)
     }
 }
 
-/* HOLD the cursor on a transient internal_error at `height`: within the
- * blocked-since budget return JOB_IDLE (re-derive next tick, no ok=0 row
- * written); past the budget name ONE PERMANENT blocker + page the operator ONCE
- * and return JOB_BLOCKED. Never advances, never inserts a terminal row.
- * `fail_txid` / `fail_type` carry the offending tx + proof_type for the name. */
+/* HOLD transient internal_error at `height`; after the budget, name one
+ * permanent blocker and page once. Never advance or write a terminal row. */
 static job_result_t pv_hold_unresolved(struct stage_step_ctx *c, int height,
                                        const struct uint256 *fail_txid,
                                        const char *fail_type)
@@ -464,6 +456,9 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     if (!db) return JOB_IDLE;
     int next_h = (int)c->cursor_in;
     if (next_h < 0) return JOB_FATAL;
+    bool skip_crypto = mint_skip_crypto_get();
+    enum mint_validation_evidence expected_evidence =
+        mint_validation_evidence_expected(skip_crypto);
     uint64_t sv_cursor = 0;
     if (!stage_cursor_read_or_zero(db, "script_validate", STAGE_NAME,
                                    &sv_cursor))
@@ -495,6 +490,10 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     }
     if (!verdict_canonical)
         return proof_validate_upstream_verdict_refuse(c, next_h, upstream.ok);
+    if (upstream.ok == 1 && upstream.evidence != expected_evidence)
+        return proof_validate_upstream_evidence_refuse(
+            c, next_h, expected_evidence, upstream.evidence);
+    proof_validate_upstream_evidence_clear();
     if (upstream.ok == 0) {
         if (!proof_validate_log_insert(db, next_h, "upstream_failed", false,
                         0, 0, 0, bi->phashBlock, NULL, NULL))
@@ -512,7 +511,6 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
     }
-    bool skip_crypto = mint_skip_crypto_get();
     /* The sapling-params wait gate is a VERIFICATION precondition; in the
      * OFFLINE FAST-MINT pass-through we never call the proof verifier, so the
      * params need not be loaded. Keep the gate ONLY when actually verifying. */
@@ -545,13 +543,14 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     if (skip_crypto) {
         /* OFFLINE FAST-MINT pass-through (jobs/mint_skip_crypto.h): the
          * -mint-anchor-fast driver set the toggle. SKIP validate_block_proofs
-         * (Groth16 / Ed25519 / PHGR13 / binding-sig) and synthesize the "verified"
-         * summary so the success branch below writes ok=true and the cursor
-         * advances. The coin SET is unaffected (utxo_apply is the state
+         * (Groth16 / Ed25519 / PHGR13 / binding-sig) and synthesize an advancing
+         * summary with durable status "checkpoint_fold", never "verified". The
+         * coin SET is unaffected (utxo_apply is the state
          * transition; proofs only authorize shielded value, they do not change
          * which outpoints a block consumes). The terminal SHA3==checkpoint
-         * hard-assert in boot_mint_anchor.c certifies correctness; a divergence
-         * FATALs there. Default OFF → a normal boot never reaches this branch. */
+         * assertion certifies only the transparent fold, not skipped proofs. A
+         * divergence still aborts without publishing the minted DB. Default OFF
+         * → a normal boot never reaches this branch. */
         validate_summary_init(&summary);   /* ok=1, internal_error=0 */
     } else {
         validate_block_proofs(&blk, next_h, &summary);
@@ -571,7 +570,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         return pv_hold_unresolved(c, next_h, &summary.first_failure_txid,
                                   summary.first_failure_proof_type);
 
-    const char *status = "verified";
+    const char *status = skip_crypto ? "checkpoint_fold" : "verified";
     bool ok = true;
     const struct uint256 *fail_txid = NULL;
     const char *fail_type = NULL;
@@ -589,7 +588,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         event_emitf(EV_BLOCK_REJECTED, 0,
                     "proof_validate proof_invalid height=%d type=%s txid=%s",
                     next_h, fail_type ? fail_type : "unknown", fail_txid_hex);
-    } else {
+    } else if (!skip_crypto) {
         atomic_fetch_add(&g_verified_total, 1);
     }
 
@@ -651,6 +650,7 @@ void proof_validate_stage_shutdown(void)
 {
     proof_validate_upstream_hash_clear();
     proof_validate_upstream_verdict_clear();
+    proof_validate_upstream_evidence_clear();
     pthread_mutex_lock(&g_lock);
     if (g_stage) {
         stage_destroy(g_stage);

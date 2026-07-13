@@ -231,6 +231,46 @@ bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32],
         return false;
     }
 
+    /* Validate the raise-only authority before writing the pipeline-owned
+     * anchor row. A malformed local value must fail with zero new durable
+     * side effects; it must never be overwritten through SQLite coercion. */
+    int32_t prev_trusted_height = 0;
+    bool prev_trusted_found = false;
+    uint8_t trusted_height_blob[8] = {0};
+    size_t trusted_height_size = 0;
+    if (!progress_meta_get_blob_exact(
+            db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
+            trusted_height_blob, sizeof(trusted_height_blob),
+            &trusted_height_size, &prev_trusted_found)) {
+        LOG_WARN("tip_finalize",
+                 "[tip_finalize] trusted-base height read failed h=%d",
+                 height);
+        progress_store_tx_unlock();
+        return false;
+    }
+    if (prev_trusted_found &&
+        trusted_height_size != sizeof(trusted_height_blob)) {
+        LOG_WARN("tip_finalize",
+                 "[tip_finalize] trusted-base height malformed h=%d "
+                 "bytes=%zu", height, trusted_height_size);
+        progress_store_tx_unlock();
+        return false;
+    }
+    if (prev_trusted_found) {
+        uint64_t decoded = 0;
+        for (int i = 7; i >= 0; i--)
+            decoded = (decoded << 8) | trusted_height_blob[i];
+        if (decoded > INT32_MAX) {
+            LOG_WARN("tip_finalize",
+                     "[tip_finalize] trusted-base height out of range "
+                     "h=%d stored=%llu", height,
+                     (unsigned long long)decoded);
+            progress_store_tx_unlock();
+            return false;
+        }
+        prev_trusted_height = (int32_t)decoded;
+    }
+
     /* PRE-INSERT state for the FIX-3 seed-exemption verdict: a trusted
      * (SHA3-verified snapshot) seed is caller-declared; a fresh datadir is
      * recognised by the log being empty BEFORE the anchor row below is
@@ -257,33 +297,19 @@ bool tip_finalize_stage_seed_anchor(int height, const uint8_t hash[32],
      * starves reducer_trusted_anchor back to the compiled checkpoint the
      * moment the seed row is consumed, and the I4.3 sweep HOLD-wedges the
      * node over the legitimately log-less import region. */
-    {
-        int32_t prev_h = 0;
-        bool prev_found = false;
-        uint8_t blob[8] = {0};
-        size_t n = 0;
-        if (progress_meta_get(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
-                              blob, sizeof(blob), &n, &prev_found) &&
-            prev_found && n == sizeof(blob)) {
-            int64_t v = 0;
-            for (int i = 7; i >= 0; i--)
-                v = (v << 8) | blob[i];
-            prev_h = (int32_t)v;
-        }
-        if (!prev_found || height > prev_h) {
-            uint8_t hb[8];
-            for (int i = 0; i < 8; i++)
-                hb[i] = (uint8_t)(((uint64_t)height >> (8 * i)) & 0xff);
-            if (!progress_meta_set_in_tx(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
-                                         hb, sizeof(hb)) ||
-                !progress_meta_set_in_tx(db, REDUCER_TRUSTED_BASE_HASH_KEY,
-                                         hash, 32)) {
-                LOG_WARN("tip_finalize",
-                         "[tip_finalize] seed trusted-base write failed h=%d",
-                         height);
-                progress_store_tx_unlock();
-                return false;
-            }
+    if (!prev_trusted_found || height > prev_trusted_height) {
+        uint8_t hb[8];
+        for (int i = 0; i < 8; i++)
+            hb[i] = (uint8_t)(((uint64_t)height >> (8 * i)) & 0xff);
+        if (!progress_meta_set_in_tx(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
+                                     hb, sizeof(hb)) ||
+            !progress_meta_set_in_tx(db, REDUCER_TRUSTED_BASE_HASH_KEY,
+                                     hash, 32)) {
+            LOG_WARN("tip_finalize",
+                     "[tip_finalize] seed trusted-base write failed h=%d",
+                     height);
+            progress_store_tx_unlock();
+            return false;
         }
     }
 

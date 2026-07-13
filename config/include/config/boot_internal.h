@@ -62,6 +62,12 @@ bool reindex_chainstate(struct main_state *ms,
  * FATAL boot before -reindex-chainstate can run). Idempotent. */
 bool boot_index_clear_coins_state(struct node_db *ndb);
 
+/* Fail-closed reset used only by the immutable anchor producer lane. */
+bool boot_mint_anchor_genesis_reset(struct node_db *ndb);
+
+/* Seed a verified Sapling frontier after snapshot/refold reset. */
+void boot_seed_sapling_anchor_frontier_after_reset(struct main_state *state);
+
 /* -reindex-explorer driver: truncate every explorer projection + on-chain
  * ZNAM table and rewind the shared node.db catchup tip to the "no tip"
  * sentinel so the existing 0..tip backfill walk re-emits every projection

@@ -144,10 +144,15 @@ static bool seed_schema(sqlite3 *db)
             "fail_reason TEXT)") &&
         exec_sql(db,
             "CREATE TABLE IF NOT EXISTS proof_validate_log ("
-            "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL)") &&
+            "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+            "block_hash BLOB)") &&
         exec_sql(db,
             "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
             "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL)") &&
+        exec_sql(db,
+            "CREATE TABLE IF NOT EXISTS utxo_apply_delta ("
+            "height INTEGER PRIMARY KEY, branch_hash BLOB NOT NULL,"
+            "spent_blob BLOB NOT NULL, added_blob BLOB NOT NULL)") &&
         exec_sql(db,
             "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
             "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
@@ -290,12 +295,26 @@ static bool put_tip_log(sqlite3 *db, int height, int ok_flag,
 static bool put_upstream_ok(sqlite3 *db, int height,
                             const struct uint256 *hash)
 {
-    return put_hash_log(db, "validate_headers_log", "hash", height, 1, hash) &&
-           put_hash_log(db, "script_validate_log", "block_hash", height, 1,
-                        hash) &&
-           put_simple_log(db, "body_persist_log", height, 1) &&
-           put_simple_log(db, "proof_validate_log", height, 1) &&
-           put_simple_log(db, "utxo_apply_log", height, 1);
+    sqlite3_stmt *delta = NULL;
+    bool ok = put_hash_log(db, "validate_headers_log", "hash", height, 1,
+                           hash) &&
+              put_hash_log(db, "script_validate_log", "block_hash", height,
+                           1, hash) &&
+              put_simple_log(db, "body_persist_log", height, 1) &&
+              put_hash_log(db, "proof_validate_log", "block_hash", height,
+                           1, hash) &&
+              put_simple_log(db, "utxo_apply_log", height, 1) &&
+              sqlite3_prepare_v2(db,
+                  "INSERT OR REPLACE INTO utxo_apply_delta"
+                  "(height,branch_hash,spent_blob,added_blob) "
+                  "VALUES(?,?,X'',X'')", -1, &delta, NULL) == SQLITE_OK;
+    if (ok) {
+        sqlite3_bind_int(delta, 1, height);
+        sqlite3_bind_blob(delta, 2, hash->data, 32, SQLITE_STATIC);
+        ok = sqlite3_step(delta) == SQLITE_DONE; // raw-sql-ok:test-seed
+    }
+    sqlite3_finalize(delta);
+    return ok;
 }
 
 static bool delete_height(sqlite3 *db, const char *table, int height)

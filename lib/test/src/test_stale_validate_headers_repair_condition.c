@@ -43,6 +43,10 @@ static bool seed_schema(sqlite3 *db)
 {
     return
         exec_sql(db,
+            "CREATE TABLE IF NOT EXISTS header_admit_log ("
+            "height INTEGER PRIMARY KEY, hash BLOB NOT NULL,"
+            "parent_hash BLOB, admitted_at INTEGER NOT NULL)") &&
+        exec_sql(db,
             "CREATE TABLE IF NOT EXISTS validate_headers_log ("
             "height INTEGER PRIMARY KEY, hash BLOB NOT NULL, ok INTEGER NOT NULL,"
             "fail_reason TEXT, validated_at INTEGER NOT NULL)") &&
@@ -61,13 +65,15 @@ static bool seed_schema(sqlite3 *db)
             "block_hash BLOB)") &&
         exec_sql(db,
             "CREATE TABLE IF NOT EXISTS proof_validate_log ("
-            "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER)") &&
+            "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER,"
+            "block_hash BLOB)") &&
         exec_sql(db,
             "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
             "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER)") &&
         exec_sql(db,
             "CREATE TABLE IF NOT EXISTS utxo_apply_delta ("
-            "height INTEGER PRIMARY KEY)") &&
+            "height INTEGER PRIMARY KEY, branch_hash BLOB NOT NULL,"
+            "spent_blob BLOB NOT NULL, added_blob BLOB NOT NULL)") &&
         exec_sql(db,
             "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
             "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER)");
@@ -167,7 +173,9 @@ static bool seed_poison_rows(sqlite3 *db, int height, const char *vh_reason,
         "(height,status,ok) VALUES(%d,'upstream_failed',0);"
         "INSERT OR REPLACE INTO utxo_apply_log"
         "(height,status,ok) VALUES(%d,'upstream_failed',0);"
-        "INSERT OR REPLACE INTO utxo_apply_delta(height) VALUES(%d);"
+        "INSERT OR REPLACE INTO utxo_apply_delta"
+        "(height,branch_hash,spent_blob,added_blob) "
+        "VALUES(%d,zeroblob(32),X'',X'');"
         "INSERT OR REPLACE INTO tip_finalize_log"
         "(height,status,ok) VALUES(%d,'upstream_failed',0);",
         height, vh_ok, vh_reason ? vh_reason : "NULL",
@@ -189,22 +197,30 @@ static bool seed_finalized_tip(sqlite3 *db, int height)
 
 static bool seed_reducer_success(sqlite3 *db, int height)
 {
-    char sql[1024];
+    char sql[2048];
     snprintf(sql, sizeof(sql),
+        "INSERT OR REPLACE INTO header_admit_log"
+        "(height,hash,parent_hash,admitted_at) "
+        "VALUES(%d,zeroblob(32),zeroblob(32),1);"
         "INSERT OR REPLACE INTO validate_headers_log"
         "(height,hash,ok,fail_reason,validated_at) "
         "VALUES(%d,zeroblob(32),1,NULL,1);"
         "INSERT OR REPLACE INTO body_persist_log"
         "(height,source,ok,persisted_at) VALUES(%d,'test',1,1);"
         "INSERT OR REPLACE INTO script_validate_log"
-        "(height,status,ok,block_hash) VALUES(%d,'ok',1,zeroblob(32));"
+        "(height,status,ok,block_hash) "
+        "VALUES(%d,'verified',1,zeroblob(32));"
         "INSERT OR REPLACE INTO proof_validate_log"
-        "(height,status,ok) VALUES(%d,'ok',1);"
+        "(height,status,ok,block_hash) "
+        "VALUES(%d,'verified',1,zeroblob(32));"
         "INSERT OR REPLACE INTO utxo_apply_log"
-        "(height,status,ok) VALUES(%d,'ok',1);"
+        "(height,status,ok) VALUES(%d,'verified',1);"
+        "INSERT OR REPLACE INTO utxo_apply_delta"
+        "(height,branch_hash,spent_blob,added_blob) "
+        "VALUES(%d,zeroblob(32),X'',X'');"
         "INSERT OR REPLACE INTO tip_finalize_log"
         "(height,status,ok) VALUES(%d,'finalized',1);",
-        height, height, height, height, height, height);
+        height, height, height, height, height, height, height, height);
     return exec_sql(db, sql);
 }
 

@@ -45,6 +45,7 @@
 #include "tip_finalize_log_store.h"
 
 #include "jobs/stage_repair.h"
+#include "jobs/mint_skip_crypto.h"
 
 #include "core/arith_uint256.h"
 #include "core/uint256.h"
@@ -100,56 +101,6 @@ struct tipfin_p_eval {
     struct uint256 tip_hash;  /* the G5 binder hash; valid when WRITE */
 };
 
-const char *stage_repair_tipfin_refused_reason_label(int reason)
-{
-    switch ((enum stage_repair_tipfin_refused_reason)reason) {
-    case STAGE_REPAIR_TIPFIN_REFUSED_NONE:
-        return "none";
-    case STAGE_REPAIR_TIPFIN_REFUSED_G1_COIN_UNKNOWN:
-        return "G1_coin_unknown";
-    case STAGE_REPAIR_TIPFIN_REFUSED_G2_EVIDENCE_ROW:
-        return "G2_evidence_row";
-    case STAGE_REPAIR_TIPFIN_REFUSED_G2_ROW_PRESENT:
-        return "G2_row_present";
-    case STAGE_REPAIR_TIPFIN_REFUSED_G3_MISSING_EVIDENCE:
-        return "G3_missing_evidence";
-    case STAGE_REPAIR_TIPFIN_REFUSED_G4_AT_SERVED_FLOOR:
-        return "G4_at_served_floor";
-    case STAGE_REPAIR_TIPFIN_REFUSED_G5_BINDER_MISSING:
-        return "G5_binder_missing";
-    case STAGE_REPAIR_TIPFIN_REFUSED_G6_IN_TX_RECHECK:
-        return "G6_in_tx_recheck";
-    case STAGE_REPAIR_TIPFIN_REFUSED_G7_MARKER_SEEN:
-        return "G7_marker_seen";
-    case STAGE_REPAIR_TIPFIN_REFUSED_HSTAR_RANGE:
-        return "hstar_out_of_range";
-    }
-    return "unknown";
-}
-
-const char *stage_repair_tipfin_refused_log_label(int log)
-{
-    switch ((enum stage_repair_tipfin_refused_log)log) {
-    case STAGE_REPAIR_TIPFIN_LOG_UNKNOWN:
-        return "unknown";
-    case STAGE_REPAIR_TIPFIN_LOG_VALIDATE_HEADERS:
-        return "validate_headers_log";
-    case STAGE_REPAIR_TIPFIN_LOG_SCRIPT_VALIDATE:
-        return "script_validate_log";
-    case STAGE_REPAIR_TIPFIN_LOG_VALIDATE_SCRIPT_SPLIT:
-        return "validate_headers_log/script_validate_log split";
-    case STAGE_REPAIR_TIPFIN_LOG_BODY_PERSIST:
-        return "body_persist_log";
-    case STAGE_REPAIR_TIPFIN_LOG_PROOF_VALIDATE:
-        return "proof_validate_log";
-    case STAGE_REPAIR_TIPFIN_LOG_UTXO_APPLY:
-        return "utxo_apply_log";
-    case STAGE_REPAIR_TIPFIN_LOG_TIP_FINALIZE:
-        return "tip_finalize_log";
-    }
-    return "unknown";
-}
-
 static int tipfin_refused_log_code(const char *binding_log)
 {
     if (!binding_log)
@@ -169,21 +120,9 @@ static int tipfin_refused_log_code(const char *binding_log)
         return STAGE_REPAIR_TIPFIN_LOG_UTXO_APPLY;
     if (strcmp(binding_log, "tip_finalize_log") == 0)
         return STAGE_REPAIR_TIPFIN_LOG_TIP_FINALIZE;
+    if (strcmp(binding_log, "header_admit_log") == 0)
+        return STAGE_REPAIR_TIPFIN_LOG_HEADER_ADMIT;
     return STAGE_REPAIR_TIPFIN_LOG_UNKNOWN;
-}
-
-bool stage_repair_tipfin_refusal_is_pending_forward(
-    const struct stage_reducer_frontier_reconcile_result *rr)
-{
-    if (!rr || !rr->refused_coin_tear || !rr->coins_applied_found ||
-        rr->coins_applied_height < 0)
-        return false;
-    if (rr->tipfin_backfill_refused_reason !=
-            STAGE_REPAIR_TIPFIN_REFUSED_G3_MISSING_EVIDENCE &&
-        rr->tipfin_backfill_refused_reason !=
-            STAGE_REPAIR_TIPFIN_REFUSED_G5_BINDER_MISSING)
-        return false;
-    return rr->tipfin_backfill_refused_height >= rr->coins_applied_height;
 }
 
 static bool tipfin_row_state_at(sqlite3 *db, int height,
@@ -201,8 +140,17 @@ static bool tipfin_row_state_at(sqlite3 *db, int height,
     bool rc_ok = true;
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
-        *out = sqlite3_column_int(st, 0) != 0 ? TIPFIN_ROW_OK
-                                              : TIPFIN_ROW_FAIL;
+        if (sqlite3_column_type(st, 0) != SQLITE_INTEGER ||
+            (sqlite3_column_int(st, 0) != 0 &&
+             sqlite3_column_int(st, 0) != 1)) {
+            LOG_WARN("stage_repair",
+                     "[stage_repair] malformed tipfin ok storage h=%d",
+                     height);
+            rc_ok = false;
+        } else {
+            *out = sqlite3_column_int(st, 0) == 1 ? TIPFIN_ROW_OK
+                                                   : TIPFIN_ROW_FAIL;
+        }
     } else if (rc != SQLITE_DONE) {
         LOG_WARN("stage_repair",
                  "[stage_repair] tipfin row state step failed h=%d rc=%d: %s",
@@ -220,8 +168,11 @@ static bool tipfin_log_ok_at(sqlite3 *db, const char *table, int height,
     *found = false;
     *ok = false;
     char sql[128];
+    bool profile_bound = strcmp(table, "proof_validate_log") == 0 ||
+                         strcmp(table, "utxo_apply_log") == 0;
     int n = snprintf(sql, sizeof(sql),
-                     "SELECT ok FROM %s WHERE height = ?", table);
+                     "SELECT ok%s FROM %s WHERE height = ?",
+                     profile_bound ? ", status" : "", table);
     if (n < 0 || n >= (int)sizeof(sql))
         LOG_FAIL("stage_repair", "tipfin log_ok sql overflow table=%s", table);
 
@@ -234,7 +185,17 @@ static bool tipfin_log_ok_at(sqlite3 *db, const char *table, int height,
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
         *found = true;
-        *ok = sqlite3_column_int(st, 0) == 1;
+        *ok = sqlite3_column_type(st, 0) == SQLITE_INTEGER &&
+              sqlite3_column_int(st, 0) == 1;
+        if (*ok && profile_bound) {
+            int status_type = sqlite3_column_type(st, 1);
+            const void *status = status_type == SQLITE_TEXT
+                ? sqlite3_column_text(st, 1) : NULL;
+            *ok = status &&
+                mint_validation_evidence_parse(
+                    status, (size_t)sqlite3_column_bytes(st, 1)) ==
+                    MINT_VALIDATION_EVIDENCE_VERIFIED;
+        }
     } else if (rc != SQLITE_DONE) {
         LOG_WARN("stage_repair",
                  "[stage_repair] tipfin log_ok step failed table=%s h=%d "
@@ -253,9 +214,11 @@ static bool tipfin_log_ok_hash_at(sqlite3 *db, const char *table,
 {
     *ok_hash = false;
     char sql[160];
+    bool profile_bound = strcmp(table, "script_validate_log") == 0 ||
+                         strcmp(table, "proof_validate_log") == 0;
     int n = snprintf(sql, sizeof(sql),
-                     "SELECT ok, %s FROM %s WHERE height = ?",
-                     hash_col, table);
+                     "SELECT ok, %s%s FROM %s WHERE height = ?",
+                     hash_col, profile_bound ? ", status" : "", table);
     if (n < 0 || n >= (int)sizeof(sql))
         LOG_FAIL("stage_repair", "tipfin hash sql overflow table=%s", table);
 
@@ -267,9 +230,23 @@ static bool tipfin_log_ok_hash_at(sqlite3 *db, const char *table,
     bool rc_ok = true;
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
-        const void *blob = sqlite3_column_blob(st, 1);
-        int blen = sqlite3_column_bytes(st, 1);
-        if (sqlite3_column_int(st, 0) == 1 && blob && blen == 32) {
+        int hash_type = sqlite3_column_type(st, 1);
+        const void *blob = hash_type == SQLITE_BLOB
+            ? sqlite3_column_blob(st, 1) : NULL;
+        int blen = blob ? sqlite3_column_bytes(st, 1) : 0;
+        bool profile_ok = true;
+        if (profile_bound) {
+            int status_type = sqlite3_column_type(st, 2);
+            const void *status = status_type == SQLITE_TEXT
+                ? sqlite3_column_text(st, 2) : NULL;
+            profile_ok = status &&
+                mint_validation_evidence_parse(
+                    status, (size_t)sqlite3_column_bytes(st, 2)) ==
+                    MINT_VALIDATION_EVIDENCE_VERIFIED;
+        }
+        if (sqlite3_column_type(st, 0) == SQLITE_INTEGER &&
+            sqlite3_column_int(st, 0) == 1 && profile_ok &&
+            blob && blen == 32) {
             memcpy(out_hash, blob, 32);
             *ok_hash = true;
         }
@@ -284,6 +261,82 @@ static bool tipfin_log_ok_hash_at(sqlite3 *db, const char *table,
     return rc_ok;
 }
 
+/* Read a hash-only selected-chain row (header_admit has no ok column). */
+static bool tipfin_plain_hash_at(sqlite3 *db, const char *table,
+                                const char *hash_col, int height,
+                                uint8_t out_hash[32], bool *found)
+{
+    *found = false;
+    char sql[128];
+    int n = snprintf(sql, sizeof(sql),
+                     "SELECT %s FROM %s WHERE height = ?", hash_col, table);
+    if (n < 0 || n >= (int)sizeof(sql))
+        LOG_FAIL("stage_repair", "tipfin plain hash SQL overflow");
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        LOG_FAIL("stage_repair", "tipfin plain hash prepare failed: %s",
+                 sqlite3_errmsg(db));
+    sqlite3_bind_int(st, 1, height);
+    bool rc_ok = true;
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        int type = sqlite3_column_type(st, 0);
+        const void *blob = type == SQLITE_BLOB
+            ? sqlite3_column_blob(st, 0) : NULL;
+        if (blob && sqlite3_column_bytes(st, 0) == 32) {
+            memcpy(out_hash, blob, 32);
+            *found = true;
+        }
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("stage_repair", "tipfin plain hash step failed h=%d: %s",
+                 height, sqlite3_errmsg(db));
+        rc_ok = false;
+    }
+    sqlite3_finalize(st);
+    return rc_ok;
+}
+
+/* A UTXO verdict is branch-bound only through its transactionally co-written
+ * delta row.  Require both the exact verified log and a BLOB32 branch hash. */
+static bool tipfin_utxo_ok_hash_at(sqlite3 *db, int height,
+                                   uint8_t out_hash[32], bool *ok_hash)
+{
+    *ok_hash = false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT u.ok,u.status,d.branch_hash FROM utxo_apply_log u "
+            "LEFT JOIN utxo_apply_delta d ON d.height=u.height "
+            "WHERE u.height=?", -1, &st, NULL) != SQLITE_OK)
+        LOG_FAIL("stage_repair", "tipfin UTXO binder prepare failed: %s",
+                 sqlite3_errmsg(db));
+    sqlite3_bind_int(st, 1, height);
+    bool rc_ok = true;
+    int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        int ok_type = sqlite3_column_type(st, 0);
+        int status_type = sqlite3_column_type(st, 1);
+        int hash_type = sqlite3_column_type(st, 2);
+        const void *status = status_type == SQLITE_TEXT
+            ? sqlite3_column_text(st, 1) : NULL;
+        const void *hash = hash_type == SQLITE_BLOB
+            ? sqlite3_column_blob(st, 2) : NULL;
+        bool verified = status && mint_validation_evidence_parse(
+            status, (size_t)sqlite3_column_bytes(st, 1)) ==
+            MINT_VALIDATION_EVIDENCE_VERIFIED;
+        if (ok_type == SQLITE_INTEGER && sqlite3_column_int(st, 0) == 1 &&
+            verified && hash && sqlite3_column_bytes(st, 2) == 32) {
+            memcpy(out_hash, hash, 32);
+            *ok_hash = true;
+        }
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("stage_repair", "tipfin UTXO binder step failed h=%d: %s",
+                 height, sqlite3_errmsg(db));
+        rc_ok = false;
+    }
+    sqlite3_finalize(st);
+    return rc_ok;
+}
+
 /* The validate/script dual binder at `height`: both rows ok=1 with 32-byte
  * hashes that AGREE. On a miss, *missing_log names the failing side. */
 static bool tipfin_dual_binder_at(sqlite3 *db, int height, bool *bound,
@@ -292,13 +345,20 @@ static bool tipfin_dual_binder_at(sqlite3 *db, int height, bool *bound,
 {
     *bound = false;
     *missing_log = NULL;
-    uint8_t vh[32], sh[32];
-    bool v_ok = false, s_ok = false;
+    uint8_t vh[32], hh[32], sh[32];
+    bool v_ok = false, h_ok = false, s_ok = false;
     if (!tipfin_log_ok_hash_at(db, "validate_headers_log", "hash", height,
                                vh, &v_ok))
         return false;
     if (!v_ok) {
         *missing_log = "validate_headers_log";
+        return true;
+    }
+    if (!tipfin_plain_hash_at(db, "header_admit_log", "hash", height,
+                              hh, &h_ok))
+        return false;
+    if (!h_ok || memcmp(vh, hh, 32) != 0) {
+        *missing_log = "header_admit_log";
         return true;
     }
     if (!tipfin_log_ok_hash_at(db, "script_validate_log", "block_hash",
@@ -358,11 +418,7 @@ static bool tipfin_eval_p(sqlite3 *db, int p, int served_floor,
         ev->binding_log = missing;
         return true;
     }
-    static const char *const k_simple_logs[] = {
-        "body_persist_log",
-        "proof_validate_log",
-        "utxo_apply_log",
-    };
+    static const char *const k_simple_logs[] = { "body_persist_log" };
     for (size_t i = 0; i < sizeof(k_simple_logs) / sizeof(k_simple_logs[0]);
          i++) {
         bool found = false, okrow = false;
@@ -374,6 +430,27 @@ static bool tipfin_eval_p(sqlite3 *db, int p, int served_floor,
             ev->binding_log = k_simple_logs[i];
             return true;
         }
+    }
+    uint8_t proof_hash[32];
+    bool proof_ok = false;
+    if (!tipfin_log_ok_hash_at(db, "proof_validate_log", "block_hash", p,
+                               proof_hash, &proof_ok))
+        return false;
+    if (!proof_ok || memcmp(proof_hash, at_p.data, 32) != 0) {
+        ev->reason = TIPFIN_REFUSED_G3_MISSING_EVIDENCE;
+        ev->guard = "G3_missing_evidence";
+        ev->binding_log = "proof_validate_log";
+        return true;
+    }
+    uint8_t utxo_hash[32];
+    bool utxo_ok = false;
+    if (!tipfin_utxo_ok_hash_at(db, p, utxo_hash, &utxo_ok))
+        LOG_FAIL("stage_repair", "tipfin UTXO binder read failed h=%d", p);
+    if (!utxo_ok || memcmp(utxo_hash, at_p.data, 32) != 0) {
+        ev->reason = TIPFIN_REFUSED_G3_MISSING_EVIDENCE;
+        ev->guard = "G3_missing_evidence";
+        ev->binding_log = "utxo_apply_log";
+        return true;
     }
 
     /* G4 — STRICTLY below served finality: never write at/above the tip. */

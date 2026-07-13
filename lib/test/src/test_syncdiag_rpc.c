@@ -309,9 +309,9 @@ static bool syncdiag_seed_reducer_frontier_at_anchor(sqlite3 *db,
         "CREATE TABLE IF NOT EXISTS body_persist_log ("
         "  height INTEGER PRIMARY KEY, source TEXT, ok INTEGER NOT NULL);"
         "CREATE TABLE IF NOT EXISTS proof_validate_log ("
-        "  height INTEGER PRIMARY KEY, ok INTEGER NOT NULL);"
+        "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL);"
         "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
-        "  height INTEGER PRIMARY KEY, ok INTEGER NOT NULL,"
+        "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
         "  spent_count INTEGER, added_count INTEGER);"
         "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
         "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
@@ -530,7 +530,7 @@ static bool syncdiag_seed_lookahead_reducer_progress(int served_height)
         "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL)");
     ok = ok && syncdiag_exec_sql(db,
         "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
-        "height INTEGER PRIMARY KEY, ok INTEGER NOT NULL, "
+        "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL, "
         "spent_count INTEGER, added_count INTEGER)");
     ok = ok && syncdiag_exec_sql(db,
         "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
@@ -559,7 +559,8 @@ static bool syncdiag_seed_lookahead_reducer_progress(int served_height)
         served_height);
     ok = ok && syncdiag_seed_log_rows(db,
         "INSERT OR REPLACE INTO utxo_apply_log"
-        "(height, ok, spent_count, added_count) VALUES(?, 1, 0, 0)",
+        "(height, status, ok, spent_count, added_count) "
+        "VALUES(?, 'verified', 1, 0, 0)",
         served_height);
     ok = ok && syncdiag_seed_log_rows(db,
         "INSERT OR REPLACE INTO tip_finalize_log"

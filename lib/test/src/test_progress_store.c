@@ -245,6 +245,46 @@ int test_progress_store(void)
         PS_CHECK("get blob bytes match",
                  memcmp(out, payload, payload_len) == 0);
 
+        memset(out, 0, sizeof(out));
+        got = 0; found = false;
+        PS_CHECK("exact-BLOB get accepts BLOB storage",
+                 progress_meta_get_blob_exact(
+                     db, "k.blob", out, sizeof(out), &got, &found) &&
+                 found && got == payload_len &&
+                 memcmp(out, payload, payload_len) == 0);
+        PS_CHECK("exact-BLOB get reports missing without error",
+                 progress_meta_get_blob_exact(
+                     db, "k.exact-missing", out, sizeof(out), &got,
+                     &found) && !found && got == 0);
+
+        PS_CHECK("exact-BLOB TEXT fixture writes",
+                 sqlite3_exec(db,
+                     "INSERT OR REPLACE INTO progress_meta(key,value) "
+                     "VALUES('k.exact-text',CAST('123x' AS TEXT))",
+                     NULL, NULL, NULL) == SQLITE_OK);
+        got = 99; found = false;
+        PS_CHECK("exact-BLOB get rejects numeric-prefix TEXT authority",
+                 !progress_meta_get_blob_exact(
+                     db, "k.exact-text", out, sizeof(out), &got, &found) &&
+                 found && got == 0);
+        PS_CHECK("exact-BLOB REAL fixture writes",
+                 sqlite3_exec(db,
+                     "INSERT OR REPLACE INTO progress_meta(key,value) "
+                     "VALUES('k.exact-real',1.25)",
+                     NULL, NULL, NULL) == SQLITE_OK);
+        got = 99; found = false;
+        PS_CHECK("exact-BLOB get rejects REAL authority",
+                 !progress_meta_get_blob_exact(
+                     db, "k.exact-real", out, sizeof(out), &got, &found) &&
+                 found && got == 0);
+        PS_CHECK("exact-BLOB oversized fixture writes",
+                 progress_meta_set(db, "k.exact-long", out, sizeof(out)));
+        got = 99; found = false;
+        PS_CHECK("exact-BLOB get never truncates authority",
+                 !progress_meta_get_blob_exact(
+                     db, "k.exact-long", out, 4, &got, &found) && found &&
+                 got == 0);
+
         /* Out-of-band: get with NULL buffer reports length only. */
         got = 0;
         PS_CHECK("get blob with NULL buf reports length",

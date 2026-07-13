@@ -115,10 +115,15 @@ static bool seed_schema(sqlite3 *db)
             "fail_reason TEXT)") &&
         exec_sql(db,
             "CREATE TABLE IF NOT EXISTS proof_validate_log ("
-            "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL)") &&
+            "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+            "block_hash BLOB)") &&
         exec_sql(db,
             "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
             "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL)") &&
+        exec_sql(db,
+            "CREATE TABLE IF NOT EXISTS utxo_apply_delta ("
+            "height INTEGER PRIMARY KEY, branch_hash BLOB NOT NULL,"
+            "spent_blob BLOB NOT NULL, added_blob BLOB NOT NULL)") &&
         exec_sql(db,
             "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
             "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
@@ -224,6 +229,36 @@ static bool put_simple_log(sqlite3 *db, const char *table, int height,
     return ok;
 }
 
+static bool put_utxo_log(sqlite3 *db, int height, int ok_flag,
+                         const struct uint256 *hash)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO utxo_apply_log(height,status,ok) "
+            "VALUES(?,'verified',?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_int(st, 2, ok_flag);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    if (!ok)
+        return false;
+
+    st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO utxo_apply_delta"
+            "(height,branch_hash,spent_blob,added_blob) "
+            "VALUES(?,?,x'',x'')",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_blob(st, 2, hash->data, 32, SQLITE_STATIC);
+    ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
 /* Seed a REAL coin tear: poke an ok=0 row into utxo_apply_log at height K.
  * The coin-tear test now compares coins_applied against utxo_apply's OWN
  * contiguous ok=1 log prefix (reducer_frontier_log_frontier on
@@ -264,8 +299,9 @@ static bool put_upstream_ok(sqlite3 *db, int height,
            put_hash_log(db, "script_validate_log", "block_hash", height, 1,
                         hash) &&
            put_simple_log(db, "body_persist_log", height, 1) &&
-           put_simple_log(db, "proof_validate_log", height, 1) &&
-           put_simple_log(db, "utxo_apply_log", height, 1);
+           put_hash_log(db, "proof_validate_log", "block_hash", height, 1,
+                        hash) &&
+           put_utxo_log(db, height, 1, hash);
 }
 
 static bool seed_coins_applied(sqlite3 *db, int64_t height)
@@ -515,13 +551,16 @@ static bool setup_climb_fixture(struct rrw_fixture *fx, const char *tag, int top
             return false;
         if (!put_simple_log(db, "body_persist_log", h, 1))
             return false;
-        if (!put_simple_log(db, "proof_validate_log", h, 1))
+        if (!put_hash_log(db, "proof_validate_log", "block_hash", h, 1,
+                          &hh))
             return false;
         if (!put_tip_log(db, h, 1, &hh))
             return false;
     }
     /* utxo_apply: only A+1 ok=1; A+2..A+top are holes (the climbing stage). */
-    if (!put_simple_log(db, "utxo_apply_log", A + 1, 1))
+    struct uint256 first_hash;
+    synth_hash_h(&first_hash, A + 1);
+    if (!put_utxo_log(db, A + 1, 1, &first_hash))
         return false;
     /* Tear far above the climb so no pre-refusal repair can heal it. */
     if (!seed_coins_applied(db, A + top + 4))
@@ -771,7 +810,9 @@ int test_reducer_reconcile_witness(void)
             condition_engine_tick();
             /* Between ticks: fill the next utxo_apply hole so H* climbs by 1.
              * utxo_apply is the global MIN, so its contiguous frontier == H*. */
-            (void)put_simple_log(db, "utxo_apply_log", A + 1 + round, 1);
+            struct uint256 filled_hash;
+            synth_hash_h(&filled_hash, A + 1 + round);
+            (void)put_utxo_log(db, A + 1 + round, 1, &filled_hash);
         }
 
         struct condition_runtime_snapshot snap;

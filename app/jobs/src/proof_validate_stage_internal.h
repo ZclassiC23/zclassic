@@ -8,6 +8,7 @@
 #ifndef ZCL_JOBS_PROOF_VALIDATE_STAGE_INTERNAL_H
 #define ZCL_JOBS_PROOF_VALIDATE_STAGE_INTERNAL_H
 
+#include "jobs/mint_skip_crypto.h"
 #include "util/stage.h"
 
 #include <stdbool.h>
@@ -27,5 +28,10 @@ void proof_validate_upstream_hash_clear(void);
 job_result_t proof_validate_upstream_verdict_refuse(
     struct stage_step_ctx *ctx, int height, int verdict);
 void proof_validate_upstream_verdict_clear(void);
+job_result_t proof_validate_upstream_evidence_refuse(
+    struct stage_step_ctx *ctx, int height,
+    enum mint_validation_evidence expected,
+    enum mint_validation_evidence got);
+void proof_validate_upstream_evidence_clear(void);
 
 #endif /* ZCL_JOBS_PROOF_VALIDATE_STAGE_INTERNAL_H */

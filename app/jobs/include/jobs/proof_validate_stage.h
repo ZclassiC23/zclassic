@@ -21,6 +21,8 @@
     "proof_validate.stale_upstream_hash"
 #define PROOF_VALIDATE_INVALID_UPSTREAM_BLOCKER_ID \
     "proof_validate.invalid_upstream_verdict"
+#define PROOF_VALIDATE_UPSTREAM_EVIDENCE_BLOCKER_ID \
+    "proof_validate.upstream_evidence_mode"
 
 struct block;
 struct block_index;

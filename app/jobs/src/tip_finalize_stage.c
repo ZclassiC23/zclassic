@@ -8,11 +8,11 @@
 #include "jobs/reducer_frontier.h"
 #include "jobs/block_header_emit.h"
 #include "tip_finalize_anchor_internal.h"
+#include "tip_finalize_evidence.h"
 #include "tip_finalize_stage_durable.h"
 #include "tip_finalize_post_step.h"
 #include "tip_finalize_log_store.h"
 #include "tip_finalize_stage_observe.h"
-#include "script_validate_log_store.h"
 
 #include "chain/chain.h"
 #include "core/arith_uint256.h"
@@ -196,32 +196,6 @@ static bool header_lookahead_extends_tip(const struct block_index *old_tip,
     return uint256_eq(candidate->pprev->phashBlock, old_tip->phashBlock);
 }
 
-/* Authoritative, reorg-safe script-validity check for the finalize gate.
- *
- * The block_index BLOCK_VALID_SCRIPTS bit consulted by precondition_block_reason
- * is a best-effort in-RAM mirror (set + emitted opportunistically by
- * script_validate_stage) that can drift CLEAR on a restored datadir — stranding
- * tip_finalize on a block whose scripts the reducer DID validate. The reducer's
- * script_validate_log is the authority: ok=1 is written only after the consensus
- * verifier passed every input (no assumevalid/checkpoint shortcut).
- *
- * The log is keyed by height, so a height-only read is reorg-UNSAFE: an orphaned
- * block that once held this height left an ok=1 row under a DIFFERENT hash.
- * We therefore trust ok=1 ONLY when the row's block_hash equals the hash of the
- * block being finalized — the same hash-identity guard reducer_read_back_verdict
- * applies to tip_finalize_log. Rows predating the block_hash column are NULL and
- * are never trusted. Returns 1 iff ok=1 AND block_hash == want_hash; else 0. */
-static int finalize_script_log_ok(sqlite3 *db, int height, const struct uint256 *want_hash)
-{
-    if (!db || !want_hash)
-        return 0;
-    struct script_validate_verdict_row row;
-    if (script_validate_log_verdict_at(db, height, &row) != 1)
-        return 0;  /* absent row or store error (logged by the accessor) */
-    return (row.ok == 1 && row.has_block_hash &&
-            uint256_eq(&row.block_hash, want_hash)) ? 1 : 0;
-}
-
 static bool finalized_row_active_match(sqlite3 *db, int row_height,
                                        bool *out_known, bool *out_matches)
 {
@@ -354,6 +328,7 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
     }
 
     if (upstream.ok == 0) {
+        tip_finalize_evidence_clear();
         struct arith_uint256 zero;
         arith_uint256_set_zero(&zero);
         if (!log_insert(db, next_h, "upstream_failed", false, &zero, -1, 0, NULL))
@@ -415,11 +390,30 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
             TIP_FINALIZE_BLOCKED_LOOKAHEAD_MISSING);
         return JOB_IDLE;
     }
-    if (!old_tip) {
+    if (!old_tip || !old_tip->phashBlock) {
         tip_finalize_observe_mark_blocked(
             TIP_FINALIZE_BLOCKED_TIP_MISSING);
         return JOB_IDLE;
     }
+
+    bool anchor_row_compatible = upstream.is_anchor ||
+        upstream.evidence == MINT_VALIDATION_EVIDENCE_VERIFIED;
+    int anchor_ready = anchor_row_compatible
+        ? tip_finalize_trusted_anchor_at(db, next_h, old_tip->phashBlock) : 0;
+    if (anchor_ready < 0)
+        return JOB_FATAL;
+    if (upstream.ok != 1)
+        return tip_finalize_evidence_refuse(c, next_h, upstream.evidence);
+    if (anchor_ready != 1) {
+        int evidence_ready = tip_finalize_full_evidence_at(
+            db, next_h, old_tip->phashBlock);
+        if (evidence_ready < 0)
+            return JOB_FATAL;
+        if (upstream.evidence != MINT_VALIDATION_EVIDENCE_VERIFIED ||
+            evidence_ready != 1)
+            return tip_finalize_evidence_refuse(c, next_h, upstream.evidence);
+    }
+    tip_finalize_evidence_clear();
 
     struct arith_uint256 work_delta;
     arith_uint256_set_zero(&work_delta);
@@ -479,7 +473,8 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
     if (transient_reason != NULL &&
         strcmp(transient_reason, "not_script_valid") == 0 &&
         !(new_tip->nStatus & BLOCK_FAILED_MASK) &&
-        finalize_script_log_ok(db, new_tip->nHeight, new_tip->phashBlock) == 1) {
+        tip_finalize_script_evidence_at(
+            db, new_tip->nHeight, new_tip->phashBlock) == 1) {
         new_tip->nStatus = (new_tip->nStatus & ~(unsigned)BLOCK_VALID_MASK)
                            | BLOCK_VALID_SCRIPTS;
         block_index_emit_header_event(new_tip, "tip_finalize_selfheal",
@@ -761,6 +756,7 @@ STAGE_DRAIN_IMPL(tip_finalize)
 
 void tip_finalize_stage_shutdown(void)
 {
+    tip_finalize_evidence_clear();
     pthread_mutex_lock(&g_lock);
     if (g_stage) {
         stage_destroy(g_stage);

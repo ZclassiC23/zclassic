@@ -51,7 +51,7 @@ int utxo_apply_log_at(sqlite3 *db, int height,
     out->ok = -1;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
-        "SELECT ok, spent_count, added_count "
+        "SELECT ok, status, spent_count, added_count "
         "FROM utxo_apply_log WHERE height = ?",
         -1, &st, NULL) != SQLITE_OK) {
         LOG_WARN("tip_finalize", "[tip_finalize] utxo_apply_log prepare failed: %s", sqlite3_errmsg(db));
@@ -61,9 +61,23 @@ int utxo_apply_log_at(sqlite3 *db, int height,
     int found = 0;
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
-        out->ok = sqlite3_column_int(st, 0);
-        out->spent_count = sqlite3_column_int64(st, 1);
-        out->added_count = sqlite3_column_int64(st, 2);
+        if (sqlite3_column_type(st, 0) == SQLITE_INTEGER) {
+            int ok_value = sqlite3_column_int(st, 0);
+            out->ok = (ok_value == 0 || ok_value == 1) ? ok_value : -1;
+        }
+        int status_type = sqlite3_column_type(st, 1);
+        const void *status = status_type == SQLITE_TEXT
+            ? sqlite3_column_text(st, 1) : NULL;
+        if (status)
+            out->evidence = mint_validation_evidence_parse(
+                status, (size_t)sqlite3_column_bytes(st, 1));
+        out->is_anchor = status &&
+                         sqlite3_column_bytes(st, 1) == 6 &&
+                         memcmp(status, "anchor", 6) == 0;
+        out->spent_count = sqlite3_column_type(st, 2) == SQLITE_INTEGER
+            ? sqlite3_column_int64(st, 2) : -1;
+        out->added_count = sqlite3_column_type(st, 3) == SQLITE_INTEGER
+            ? sqlite3_column_int64(st, 3) : -1;
         found = 1;
     }
     sqlite3_finalize(st);
@@ -155,15 +169,22 @@ bool finalized_tip_row_at(sqlite3 *db, int height,
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
         out->found = true;
-        out->ok = sqlite3_column_int(st, 0) != 0;
-        const void *blob = sqlite3_column_blob(st, 1);
-        int n = sqlite3_column_bytes(st, 1);
+        out->ok = sqlite3_column_type(st, 0) == SQLITE_INTEGER &&
+                  sqlite3_column_int64(st, 0) == 1;
+        int hash_type = sqlite3_column_type(st, 1);
+        const void *blob = hash_type == SQLITE_BLOB
+            ? sqlite3_column_blob(st, 1) : NULL;
+        int n = blob ? sqlite3_column_bytes(st, 1) : 0;
         if (blob && n == 32) {
             memcpy(out->tip_hash.data, blob, 32);
             out->has_tip_hash = true;
         }
-        const unsigned char *status = sqlite3_column_text(st, 2);
-        out->is_anchor = (status && strcmp((const char *)status, "anchor") == 0);
+        int status_type = sqlite3_column_type(st, 2);
+        const unsigned char *status = status_type == SQLITE_TEXT
+            ? sqlite3_column_text(st, 2) : NULL;
+        out->is_anchor = status &&
+                         sqlite3_column_bytes(st, 2) == 6 &&
+                         memcmp(status, "anchor", 6) == 0;
     } else if (rc != SQLITE_DONE) {
         LOG_WARN("tip_finalize", "[tip_finalize] finalized row step failed rc=%d: %s", rc, sqlite3_errmsg(db));
         sqlite3_finalize(st);

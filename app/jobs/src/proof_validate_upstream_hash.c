@@ -71,3 +71,29 @@ void proof_validate_upstream_verdict_clear(void)
 {
     blocker_clear(PROOF_VALIDATE_INVALID_UPSTREAM_BLOCKER_ID);
 }
+
+job_result_t proof_validate_upstream_evidence_refuse(
+    struct stage_step_ctx *ctx, int height,
+    enum mint_validation_evidence expected,
+    enum mint_validation_evidence got)
+{
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+             "height=%d script_validate_log success evidence=%s, expected=%s; "
+             "proof validation holds instead of crossing validation profiles",
+             height, mint_validation_evidence_status(got),
+             mint_validation_evidence_status(expected));
+    if (!ctx || !blocker_init(&ctx->blocker,
+            PROOF_VALIDATE_UPSTREAM_EVIDENCE_BLOCKER_ID, "proof_validate",
+            BLOCKER_DEPENDENCY, reason))
+        return JOB_FATAL;
+    snprintf(ctx->blocker.escape_action, sizeof(ctx->blocker.escape_action),
+             "resume the matching offline producer or replay script_validate");
+    ctx->blocker.retry_budget = -1;
+    return JOB_BLOCKED;
+}
+
+void proof_validate_upstream_evidence_clear(void)
+{
+    blocker_clear(PROOF_VALIDATE_UPSTREAM_EVIDENCE_BLOCKER_ID);
+}

@@ -13,6 +13,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <sqlite3.h>
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -42,10 +43,22 @@ bool consensus_export_fail(struct consensus_state_export_result *result,
 
 static bool output_name_valid(const char *name)
 {
+    static const char active[] = "progress.kv";
     if (!name || !name[0] || strchr(name, '/') || strchr(name, '?') ||
         strchr(name, '#') || strchr(name, '%') || strcmp(name, ".") == 0 ||
         strcmp(name, "..") == 0)
         return false;
+    for (size_t i = 0; i < sizeof(active) - 1; i++) {
+        unsigned char c = (unsigned char)name[i];
+        if (c == '\0')
+            break;
+        if (c >= 'A' && c <= 'Z')
+            c = (unsigned char)(c - 'A' + 'a');
+        if (c != (unsigned char)active[i])
+            break;
+        if (i == sizeof(active) - 2)
+            return false;
+    }
     return strlen(name) < CONSENSUS_EXPORT_NAME_MAX - 48;
 }
 
@@ -358,6 +371,8 @@ static void (*g_after_output_bind_hook)(void *) = NULL;
 static void *g_after_output_bind_ctx = NULL;
 static void (*g_after_staging_create_hook)(void *) = NULL;
 static void *g_after_staging_create_ctx = NULL;
+static void (*g_before_link_hook)(void *) = NULL;
+static void *g_before_link_ctx = NULL;
 
 void consensus_state_snapshot_export_test_set_after_output_bind_hook(
     void (*hook)(void *), void *ctx)
@@ -371,6 +386,13 @@ void consensus_state_snapshot_export_test_set_after_staging_create_hook(
 {
     g_after_staging_create_hook = hook;
     g_after_staging_create_ctx = ctx;
+}
+
+void consensus_state_snapshot_export_test_set_before_link_hook(
+    void (*hook)(void *), void *ctx)
+{
+    g_before_link_hook = hook;
+    g_before_link_ctx = ctx;
 }
 
 static void output_run_after_bind_hook(void)
@@ -392,9 +414,20 @@ static void output_run_after_staging_create_hook(void)
     if (hook)
         hook(ctx);
 }
+
+static void output_run_before_link_hook(void)
+{
+    void (*hook)(void *) = g_before_link_hook;
+    void *ctx = g_before_link_ctx;
+    g_before_link_hook = NULL;
+    g_before_link_ctx = NULL;
+    if (hook)
+        hook(ctx);
+}
 #else
 static void output_run_after_bind_hook(void) { }
 static void output_run_after_staging_create_hook(void) { }
+static void output_run_before_link_hook(void) { }
 #endif
 
 bool consensus_export_open_temp(struct consensus_export_output_binding *output,
@@ -465,6 +498,8 @@ static bool manifests_equal(
 {
     return a->height == b->height &&
            a->history_complete == b->history_complete &&
+           a->source_clean == b->source_clean &&
+           a->validation_profile == b->validation_profile &&
            a->activation_boundary == b->activation_boundary &&
            a->utxo_count == b->utxo_count &&
            a->total_supply == b->total_supply &&
@@ -502,7 +537,10 @@ bool consensus_export_finalize_temp(
                                      "bundle fsync/immutable mode failed");
 
     struct stat before;
-    if (fstat(output->temp_fd, &before) != 0 || !S_ISREG(before.st_mode) ||
+    if (!consensus_export_seal_readonly(output, &before))
+        return consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,
+                                     "bundle writable staging descriptor retained");
+    if (!S_ISREG(before.st_mode) ||
         before.st_dev != output->temp_dev || before.st_ino != output->temp_ino ||
         before.st_nlink != 0 ||
         (before.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) != 0)
@@ -549,6 +587,25 @@ bool consensus_export_finalize_temp(
             result, CONSENSUS_EXPORT_OUTPUT_ERROR,
             "independent immutable bundle validation failed");
 
+    uint8_t sealed_digest[32];
+    uint8_t after_hook_digest[32];
+    if (!consensus_export_descriptor_digest(output->temp_fd, sealed_digest))
+        return consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,
+                                     "sealed bundle complete-file digest failed");
+    output_run_before_link_hook();
+    struct stat after_hook;
+    if (!consensus_export_descriptor_digest(output->temp_fd, after_hook_digest) ||
+        memcmp(sealed_digest, after_hook_digest, 32) != 0 ||
+        fstat(output->temp_fd, &after_hook) != 0 ||
+        after_hook.st_dev != after.st_dev || after_hook.st_ino != after.st_ino ||
+        after_hook.st_nlink != 0 || after_hook.st_size != after.st_size ||
+        after_hook.st_mode != after.st_mode ||
+        after_hook.st_mtim.tv_sec != after.st_mtim.tv_sec ||
+        after_hook.st_mtim.tv_nsec != after.st_mtim.tv_nsec ||
+        after_hook.st_ctim.tv_sec != after.st_ctim.tv_sec ||
+        after_hook.st_ctim.tv_nsec != after.st_ctim.tv_nsec)
+        return consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,
+                                     "bundle changed after immutable validation");
     if (!output_name_absent(output, output->final_name) ||
         !output_sidecars_absent(output) ||
         !output_link_fd(output->temp_fd, output->dirfd,
@@ -556,6 +613,7 @@ bool consensus_export_finalize_temp(
         return consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,
                                      "atomic no-replace bundle publish failed");
     struct stat published;
+    uint8_t published_digest[32];
     if (!output_final_identity_matches(output, &published) ||
         published.st_size != after.st_size ||
         published.st_mtim.tv_sec != after.st_mtim.tv_sec ||
@@ -563,6 +621,8 @@ bool consensus_export_finalize_temp(
         published.st_ctim.tv_sec < after.st_ctim.tv_sec ||
         (published.st_ctim.tv_sec == after.st_ctim.tv_sec &&
          published.st_ctim.tv_nsec < after.st_ctim.tv_nsec) ||
+        !consensus_export_descriptor_digest(output->temp_fd, published_digest) ||
+        memcmp(sealed_digest, published_digest, 32) != 0 ||
         fsync(output->dirfd) != 0) {
         /* Never unlink after a separate identity check: a concurrent name
          * replacement could turn cleanup into deletion of an unrelated file.
@@ -596,6 +656,7 @@ bool consensus_state_snapshot_export(
         return consensus_export_fail(result, CONSENSUS_EXPORT_REFUSED,
                                      "source is not the owned progress.kv handle");
     if (request->expected_height < 0 ||
+        request->expected_height >= INT32_MAX ||
         !digest_nonzero(request->expected_block_hash))
         return consensus_export_fail(result, CONSENSUS_EXPORT_REFUSED,
                                      "invalid expected source height/hash");
@@ -678,14 +739,19 @@ bool consensus_state_snapshot_export(
     if (result) {
         result->status = CONSENSUS_EXPORT_EXPORTED;
         result->history_complete = true;
+        result->source_clean = manifest.source_clean;
+        result->validation_profile = manifest.validation_profile;
         result->height = manifest.height;
         result->utxo_count = manifest.utxo_count;
         result->anchor_count = manifest.anchor_count;
         result->nullifier_count = manifest.nullifier_count;
         memcpy(result->artifact_digest, manifest.artifact_digest, 32);
         snprintf(result->reason, sizeof(result->reason),
-                 "exported immutable %s height=%d",
-                 CONSENSUS_STATE_BUNDLE_SCHEMA, manifest.height);
+                 "exported immutable %s height=%d source=%s profile=%s",
+                 CONSENSUS_STATE_BUNDLE_SCHEMA, manifest.height,
+                 manifest.source_clean ? "clean" : "dirty",
+                 manifest.validation_profile == CONSENSUS_STATE_VALIDATION_FULL
+                     ? "full" : "checkpoint_fold");
     }
     output_binding_close(output);
     if (!output->abandon_on_close)

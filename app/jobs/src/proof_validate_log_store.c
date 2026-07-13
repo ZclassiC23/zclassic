@@ -5,24 +5,25 @@
 #include "proof_validate_log_store.h"
 
 #include "platform/time_compat.h"
+#include "storage/consensus_state_bundle_codec.h"
+#include "storage/progress_store.h"
 #include "util/log_macros.h"
 
 #include <sqlite3.h>
 #include <stdint.h>
 #include <string.h>
 
-static bool add_block_hash_if_missing(sqlite3 *db)
+static bool add_column_if_missing(sqlite3 *db, const char *sql,
+                                  const char *column)
 {
     char *error = NULL;
-    if (sqlite3_exec(db,
-            "ALTER TABLE proof_validate_log ADD COLUMN block_hash BLOB",
-            NULL, NULL, &error) == SQLITE_OK)
+    if (sqlite3_exec(db, sql, NULL, NULL, &error) == SQLITE_OK)
         return true;
     bool duplicate = error &&
         strstr(error, "duplicate column name") != NULL;
     if (!duplicate)
         LOG_WARN("proof_validate",
-                 "[proof_validate] block_hash migration failed: %s",
+                 "[proof_validate] %s migration failed: %s", column,
                  error ? error : "(no message)");
     if (error) sqlite3_free(error);
     return duplicate;
@@ -39,6 +40,7 @@ bool proof_validate_log_ensure_schema(sqlite3 *db)
         "  sapling_outputs_total   INTEGER NOT NULL,"
         "  sprout_joinsplits_total INTEGER NOT NULL,"
         "  block_hash              BLOB,"
+        "  source_epoch_digest     BLOB,"
         "  first_failure_txid      BLOB,"
         "  first_failure_proof_type TEXT,"
         "  validated_at            INTEGER NOT NULL"
@@ -49,7 +51,13 @@ bool proof_validate_log_ensure_schema(sqlite3 *db)
         if (err) sqlite3_free(err);
         return false;
     }
-    return add_block_hash_if_missing(db);
+    return add_column_if_missing(
+               db, "ALTER TABLE proof_validate_log ADD COLUMN block_hash BLOB",
+               "block_hash") &&
+           add_column_if_missing(
+               db, "ALTER TABLE proof_validate_log ADD COLUMN "
+                   "source_epoch_digest BLOB",
+               "source_epoch_digest");
 }
 
 int proof_validate_script_validate_log_at(sqlite3 *db, int height,
@@ -59,7 +67,7 @@ int proof_validate_script_validate_log_at(sqlite3 *db, int height,
     out->ok = -1;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
-        "SELECT ok, block_hash FROM script_validate_log WHERE height = ?",
+        "SELECT ok, status, block_hash FROM script_validate_log WHERE height = ?",
         -1, &st, NULL) != SQLITE_OK) {
         LOG_WARN("proof_validate", "[proof_validate] script_validate_log prepare failed: %s", sqlite3_errmsg(db));
         return -1;  // raw-return-ok:logged-above
@@ -70,10 +78,17 @@ int proof_validate_script_validate_log_at(sqlite3 *db, int height,
     if (rc == SQLITE_ROW) {
         out->ok = sqlite3_column_type(st, 0) == SQLITE_INTEGER
                     ? sqlite3_column_int(st, 0) : -1;
-        const void *hash = sqlite3_column_blob(st, 1);
-        int hash_size = sqlite3_column_bytes(st, 1);
-        if (sqlite3_column_type(st, 1) == SQLITE_BLOB && hash &&
-            hash_size == 32) {
+        int status_type = sqlite3_column_type(st, 1);
+        const void *status = status_type == SQLITE_TEXT
+            ? sqlite3_column_text(st, 1) : NULL;
+        if (status)
+            out->evidence = mint_validation_evidence_parse(
+                status, (size_t)sqlite3_column_bytes(st, 1));
+        int hash_type = sqlite3_column_type(st, 2);
+        const void *hash = hash_type == SQLITE_BLOB
+            ? sqlite3_column_blob(st, 2) : NULL;
+        int hash_size = hash ? sqlite3_column_bytes(st, 2) : 0;
+        if (hash && hash_size == 32) {
             memcpy(out->block_hash.data, hash, 32);
             out->has_block_hash = true;
         }
@@ -92,16 +107,32 @@ bool proof_validate_log_insert(sqlite3 *db, int height,
                                const struct uint256 *first_failure_txid,
                                const char *first_failure_proof_type)
 {
+    uint8_t source_epoch[32] = {0};
+    size_t source_epoch_size = 0;
+    bool source_epoch_found = false;
+    progress_store_tx_lock();
+    if (!progress_meta_get_blob_exact(
+            db, CONSENSUS_STATE_SOURCE_EPOCH_META_KEY,
+            source_epoch, sizeof(source_epoch), &source_epoch_size,
+            &source_epoch_found) ||
+        (source_epoch_found && source_epoch_size != sizeof(source_epoch))) {
+        LOG_WARN("proof_validate",
+                 "[proof_validate] malformed source epoch authority h=%d",
+                 height);
+        progress_store_tx_unlock();
+        return false;
+    }
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO proof_validate_log "
         "(height, status, ok, sapling_spends_total, "
         " sapling_outputs_total, sprout_joinsplits_total, "
         " block_hash, first_failure_txid, first_failure_proof_type, "
-        " validated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        " validated_at, source_epoch_digest) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         LOG_WARN("proof_validate", "[proof_validate] prepare insert failed: %s", sqlite3_errmsg(db));
+        progress_store_tx_unlock();
         return false;
     }
     sqlite3_bind_int64(stmt, 1, (sqlite3_int64)height);
@@ -125,8 +156,22 @@ bool proof_validate_log_insert(sqlite3 *db, int height,
     else
         sqlite3_bind_null(stmt, 9);
     sqlite3_bind_int64(stmt, 10, (sqlite3_int64)platform_time_wall_unix());
+    if (source_epoch_found)
+        rc = sqlite3_bind_blob(stmt, 11, source_epoch,
+                               (int)sizeof(source_epoch), SQLITE_STATIC);
+    else
+        rc = sqlite3_bind_null(stmt, 11);
+    if (rc != SQLITE_OK) {
+        LOG_WARN("proof_validate",
+                 "[proof_validate] source epoch bind failed height=%d",
+                 height);
+        sqlite3_finalize(stmt);
+        progress_store_tx_unlock();
+        return false;
+    }
     rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(stmt);
+    progress_store_tx_unlock();
     if (rc != SQLITE_DONE) {
         LOG_WARN("proof_validate", "[proof_validate] insert height=%d rc=%d", height, rc);
         return false;

@@ -125,6 +125,13 @@ bool progress_meta_set(sqlite3 *db, const char *key,
 bool progress_meta_get(sqlite3 *db, const char *key,
                        void *out_buf, size_t out_cap,
                        size_t *out_len, bool *out_found);
+/* Authority-bearing metadata must use this reader. It accepts only SQLite's
+ * exact BLOB storage class and never truncates into `out_buf`; TEXT/INTEGER/
+ * REAL values that SQLite could coerce to bytes fail closed. A missing key is
+ * still a successful read with out_found=false. */
+bool progress_meta_get_blob_exact(sqlite3 *db, const char *key,
+                                  void *out_buf, size_t out_cap,
+                                  size_t *out_len, bool *out_found);
 bool progress_meta_delete(sqlite3 *db, const char *key);
 
 /* Transactional variant — caller has an outer BEGIN IMMEDIATE on `db`.

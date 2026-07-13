@@ -115,6 +115,9 @@ static bool vsh_build_schema(sqlite3 *db)
         "  cursor INTEGER NOT NULL, updated_at INTEGER NOT NULL);"
         "CREATE TABLE IF NOT EXISTS progress_meta (key TEXT PRIMARY KEY,"
         "  value BLOB);"
+        "CREATE TABLE IF NOT EXISTS header_admit_log ("
+        "  height INTEGER PRIMARY KEY, hash BLOB NOT NULL,"
+        "  parent_hash BLOB, admitted_at INTEGER NOT NULL);"
         "CREATE TABLE IF NOT EXISTS validate_headers_log ("
         "  height INTEGER PRIMARY KEY, hash BLOB NOT NULL, ok INTEGER NOT NULL,"
         "  fail_reason TEXT, validated_at INTEGER);"
@@ -127,10 +130,14 @@ static bool vsh_build_schema(sqlite3 *db)
         "CREATE TABLE IF NOT EXISTS body_persist_log ("
         "  height INTEGER PRIMARY KEY, source TEXT, ok INTEGER NOT NULL);"
         "CREATE TABLE IF NOT EXISTS proof_validate_log ("
-        "  height INTEGER PRIMARY KEY, ok INTEGER NOT NULL);"
+        "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+        "  block_hash BLOB);"
         "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
-        "  height INTEGER PRIMARY KEY, ok INTEGER NOT NULL,"
+        "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
         "  spent_count INTEGER, added_count INTEGER);"
+        "CREATE TABLE IF NOT EXISTS utxo_apply_delta ("
+        "  height INTEGER PRIMARY KEY, branch_hash BLOB NOT NULL,"
+        "  spent_blob BLOB NOT NULL, added_blob BLOB NOT NULL);"
         "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
         "  height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
         "  tip_hash BLOB);";
@@ -178,7 +185,7 @@ static bool vsh_put_sv(sqlite3 *db, int32_t h, bool corrupt)
     if (sqlite3_prepare_v2(db,
             "INSERT OR REPLACE INTO script_validate_log"
             "(height,status,ok,tx_count,input_count,validated_at,block_hash)"
-            " VALUES(?,'valid',1,0,0,0,?)",
+            " VALUES(?,'verified',1,0,0,0,?)",
             -1, &st, NULL) != SQLITE_OK)
         return false;
     sqlite3_bind_int64(st, 1, h);
@@ -201,8 +208,19 @@ static bool vsh_put_simple(sqlite3 *db, const char *sql, int32_t h)
 
 static bool vsh_put_pv(sqlite3 *db, int32_t h)
 {
-    return vsh_put_simple(db,
-        "INSERT OR REPLACE INTO proof_validate_log(height,ok) VALUES(?,1)", h);
+    uint8_t hash[32];
+    fill_hash(hash, h, false);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO proof_validate_log"
+            "(height,status,ok,block_hash) VALUES(?,'verified',1,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int64(st, 1, h);
+    sqlite3_bind_blob(st, 2, hash, 32, SQLITE_TRANSIENT);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;  // raw-sql-ok:test-seed
+    sqlite3_finalize(st);
+    return ok;
 }
 
 static bool vsh_put_bp(sqlite3 *db, int32_t h)
@@ -215,7 +233,41 @@ static bool vsh_put_bp(sqlite3 *db, int32_t h)
 static bool vsh_put_ua(sqlite3 *db, int32_t h)
 {
     return vsh_put_simple(db,
-        "INSERT OR REPLACE INTO utxo_apply_log(height,ok) VALUES(?,1)", h);
+        "INSERT OR REPLACE INTO utxo_apply_log(height,status,ok) "
+        "VALUES(?,'verified',1)", h);
+}
+
+static bool vsh_put_chain_binding(sqlite3 *db, int32_t h)
+{
+    uint8_t hash[32];
+    uint8_t parent[32];
+    fill_hash(hash, h, false);
+    fill_hash(parent, h - 1, false);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO header_admit_log"
+            "(height,hash,parent_hash,admitted_at) VALUES(?,?,?,1)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int64(st, 1, h);
+    sqlite3_bind_blob(st, 2, hash, 32, SQLITE_TRANSIENT);
+    sqlite3_bind_blob(st, 3, parent, 32, SQLITE_TRANSIENT);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;  // raw-sql-ok:test-seed
+    sqlite3_finalize(st);
+    if (!ok)
+        return false;
+
+    st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO utxo_apply_delta"
+            "(height,branch_hash,spent_blob,added_blob) VALUES(?,?,x'',x'')",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int64(st, 1, h);
+    sqlite3_bind_blob(st, 2, hash, 32, SQLITE_TRANSIENT);
+    ok = sqlite3_step(st) == SQLITE_DONE;  // raw-sql-ok:test-seed
+    sqlite3_finalize(st);
+    return ok;
 }
 
 static bool vsh_put_tf(sqlite3 *db, int32_t h)
@@ -308,9 +360,8 @@ static bool vsh_vh_row_present(sqlite3 *db, int32_t h)
  * proof_validate_log.status / utxo_apply_log.status (the value_overflow +
  * stale_proof ladder) and the body_fetch_log / header_admit_log columns that
  * the PHASE A-C minimal schema omits, so the production fixture builds its own
- * orchestrator-compatible schema. proof/utxo `status` are nullable so the
- * existing vsh_put_pv/vsh_put_ua helpers (which omit it) round-trip while the
- * `WHERE status='value_overflow'/'internal_error'` probes simply never match. */
+ * orchestrator-compatible schema. Successful proof/UTXO rows use the exact
+ * `verified` evidence label consumed by the serving reducer. */
 static bool vsh_prod_exec(sqlite3 *db, const char *sql)
 {
     char *err = NULL;
@@ -344,9 +395,13 @@ static bool vsh_prod_schema(sqlite3 *db)
         " height INTEGER PRIMARY KEY, hash BLOB, source TEXT, bytes INTEGER,"
         " fetched_at INTEGER, ok INTEGER, fail_reason TEXT);"
         "CREATE TABLE IF NOT EXISTS proof_validate_log("
-        " height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL);"
+        " height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+        " block_hash BLOB);"
         "CREATE TABLE IF NOT EXISTS utxo_apply_log("
         " height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS utxo_apply_delta("
+        " height INTEGER PRIMARY KEY, branch_hash BLOB NOT NULL,"
+        " spent_blob BLOB NOT NULL, added_blob BLOB NOT NULL);"
         "CREATE TABLE IF NOT EXISTS tip_finalize_log("
         " height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
         " tip_hash BLOB);");
@@ -468,6 +523,7 @@ int test_validate_script_hash_split_repair(void)
             && vsh_put_bp(pk, h)
             && vsh_put_pv(pk, h)
             && vsh_put_ua(pk, h)
+            && vsh_put_chain_binding(pk, h)
             && vsh_put_tf(pk, h);
     }
     VSH_CHECK("six logs seeded A+1..A+5 (script hash corrupt @ A+3)", seeded);
@@ -648,6 +704,7 @@ int test_validate_script_hash_split_repair(void)
                 && vsh_put_bp(pd, h)
                 && vsh_put_pv(pd, h)
                 && vsh_put_ua(pd, h)
+                && vsh_put_chain_binding(pd, h)
                 && vsh_put_tf(pd, h)
                 && vsh_prod_put_bf(pd, h)
                 && vsh_prod_put_ha(pd, h);

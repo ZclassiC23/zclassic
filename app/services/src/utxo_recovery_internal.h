@@ -134,6 +134,7 @@ void utxo_recovery_write_cold_import_seed(struct node_db *ndb,
                                           const struct uint256 *hash,
                                           int64_t utxo_count);
 void utxo_recovery_clear_cold_import_seed(struct node_db *ndb);
+bool utxo_recovery_clear_cold_import_seed_checked(struct node_db *ndb);
 
 /* Read the durable cold-import seed anchor identity (height + 32B hash).
  * Returns true and fills *out_height / *out_hash ONLY when both keys are

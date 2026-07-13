@@ -250,7 +250,7 @@ static bool seed_body_persist(sqlite3 *db, int n, int upstream_fail_height)
     for (int h = 0; h < n; h++) {
         int ok = (h == upstream_fail_height) ? 0 : 1;
         sqlite3_bind_int(st, 1, h);
-        sqlite3_bind_text(st, 2, ok ? "verified" : "merkle_mismatch",
+        sqlite3_bind_text(st, 2, ok ? "verified" : "upstream_failed",
                           -1, SQLITE_STATIC);
         sqlite3_bind_int(st, 3, ok);
         if (sqlite3_step(st) != SQLITE_DONE) {
@@ -397,6 +397,33 @@ int test_script_validate_stage(void)
         SV_CHECK("upstream_failed: h=2 ok=0", ok == 0);
         SV_CHECK("upstream_failed: h=2 status",
                  strcmp(status, "upstream_failed") == 0);
+        sv_teardown(dir, &ms, &sc);
+    }
+
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_sv sc;
+        SV_CHECK("upstream_storage: setup",
+                 sv_setup("upstream_storage", 2, -1, dir, sizeof(dir),
+                          &ms, &sc) == 0);
+        SV_CHECK("upstream_storage: BLOB ok fixture",
+                 exec_sql(progress_store_db(),
+                          "UPDATE body_persist_log SET ok=X'01' "
+                          "WHERE height=0"));
+        SV_CHECK("upstream_storage: BLOB ok cannot advance",
+                 script_validate_stage_step_once() != JOB_ADVANCED &&
+                 script_validate_stage_cursor() == 0);
+        SV_CHECK("upstream_storage: restore ok and inject NUL source",
+                 exec_sql(progress_store_db(),
+                          "UPDATE body_persist_log SET ok=1,"
+                          "source=CAST(X'76657269666965640078' AS TEXT) "
+                          "WHERE height=0"));
+        SV_CHECK("upstream_storage: embedded-NUL source cannot advance",
+                 script_validate_stage_step_once() != JOB_ADVANCED &&
+                 script_validate_stage_cursor() == 0);
+        int ok = -1, vin = -2; char status[32];
+        SV_CHECK("upstream_storage: no verdict was authored",
+                 !log_row_at(progress_store_db(), 0, &ok, status,
+                             sizeof(status), &vin));
         sv_teardown(dir, &ms, &sc);
     }
 

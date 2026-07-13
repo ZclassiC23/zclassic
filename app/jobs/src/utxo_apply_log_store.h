@@ -9,6 +9,7 @@
 #define ZCL_JOBS_UTXO_APPLY_LOG_STORE_H
 
 #include "core/uint256.h"
+#include "jobs/mint_skip_crypto.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -19,6 +20,7 @@ struct sqlite3;
 /* One upstream proof_validate_log ok-flag at a given height. */
 struct proof_validate_row {
     int ok;
+    enum mint_validation_evidence evidence;
     bool has_block_hash;
     struct uint256 block_hash;
 };

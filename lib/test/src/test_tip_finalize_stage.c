@@ -22,6 +22,10 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+/* Source-private exact trusted-anchor evidence predicate under type KAT. */
+int tip_finalize_trusted_anchor_at(sqlite3 *db, int height,
+                                   const struct uint256 *block_hash);
+
 #define TF_CHECK(name, expr) do { \
     printf("tip_finalize: %s... ", (name)); \
     if ((expr)) printf("OK\n"); \
@@ -274,6 +278,33 @@ static bool seed_simple_log_tf(sqlite3 *db, const char *table,
     return seed_cursor_tf(db, cursor_name, n);
 }
 
+static bool seed_proof_log_tf(sqlite3 *db, struct synth_chain_tf *sc, int n)
+{
+    if (!exec_sql(db,
+        "CREATE TABLE IF NOT EXISTS proof_validate_log ("
+        "height INTEGER PRIMARY KEY,status TEXT NOT NULL,ok INTEGER NOT NULL,"
+        "block_hash BLOB)"))
+        return false;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO proof_validate_log"
+        "(height,status,ok,block_hash) VALUES(?,'verified',1,?)",
+        -1, &st, NULL) != SQLITE_OK)
+        return false;
+    for (int h = 0; h < n; h++) {
+        sqlite3_bind_int(st, 1, h);
+        sqlite3_bind_blob(st, 2, sc->hashes[h].data, 32, SQLITE_STATIC);
+        if (sqlite3_step(st) != SQLITE_DONE) {
+            sqlite3_finalize(st);
+            return false;
+        }
+        sqlite3_reset(st);
+        sqlite3_clear_bindings(st);
+    }
+    sqlite3_finalize(st);
+    return seed_cursor_tf(db, "proof_validate", n);
+}
+
 /* Seed validate_headers_log (height, hash, ok) for h in [0, n) at ok=1 with
  * the synthetic chain hash, plus its cursor at n. The reducer reads .hash for
  * the C3 hash-agreement check. */
@@ -305,6 +336,69 @@ static bool seed_validate_headers_tf(sqlite3 *db, struct synth_chain_tf *sc,
     return seed_cursor_tf(db, "validate_headers", n);
 }
 
+static bool seed_hash_authority_tf(sqlite3 *db, struct synth_chain_tf *sc,
+                                   int n)
+{
+    if (!exec_sql(db,
+        "CREATE TABLE IF NOT EXISTS header_admit_log ("
+        "height INTEGER PRIMARY KEY,hash BLOB NOT NULL,parent_hash BLOB,"
+        "admitted_at INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS utxo_apply_delta ("
+        "height INTEGER PRIMARY KEY,branch_hash BLOB NOT NULL,"
+        "spent_blob BLOB NOT NULL,added_blob BLOB NOT NULL)"))
+        return false;
+    sqlite3_stmt *header = NULL;
+    sqlite3_stmt *delta = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO header_admit_log"
+            "(height,hash,parent_hash,admitted_at) VALUES(?,?,?,1)",
+            -1, &header, NULL) != SQLITE_OK ||
+        sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO utxo_apply_delta"
+            "(height,branch_hash,spent_blob,added_blob) VALUES(?,?,X'',X'')",
+            -1, &delta, NULL) != SQLITE_OK) {
+        sqlite3_finalize(header);
+        sqlite3_finalize(delta);
+        return false;
+    }
+    bool ok = true;
+    for (int h = 0; ok && h < n; h++) {
+        sqlite3_bind_int(header, 1, h);
+        sqlite3_bind_blob(header, 2, sc->hashes[h].data, 32, SQLITE_STATIC);
+        if (h > 0)
+            sqlite3_bind_blob(header, 3, sc->hashes[h - 1].data, 32,
+                              SQLITE_STATIC);
+        else
+            sqlite3_bind_null(header, 3);
+        sqlite3_bind_int(delta, 1, h);
+        sqlite3_bind_blob(delta, 2, sc->hashes[h].data, 32, SQLITE_STATIC);
+        ok = sqlite3_step(header) == SQLITE_DONE &&
+             sqlite3_step(delta) == SQLITE_DONE;
+        sqlite3_reset(header);
+        sqlite3_clear_bindings(header);
+        sqlite3_reset(delta);
+        sqlite3_clear_bindings(delta);
+    }
+    sqlite3_finalize(header);
+    sqlite3_finalize(delta);
+    return ok;
+}
+
+static bool set_utxo_branch_tf(sqlite3 *db, int height,
+                               const struct uint256 *hash)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "UPDATE utxo_apply_delta SET branch_hash=? WHERE height=?",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_blob(st, 1, hash->data, 32, SQLITE_STATIC);
+    sqlite3_bind_int(st, 2, height);
+    bool ok = sqlite3_step(st) == SQLITE_DONE && sqlite3_changes(db) == 1;
+    sqlite3_finalize(st);
+    return ok;
+}
+
 /* Seed ALL upstream reducer logs (validate_headers, script_validate,
  * body_persist, proof_validate) ok=1 for h in [0, n), so the MIN-fold in
  * reducer_frontier_compute_hstar can actually reach the synthetic frontier
@@ -315,7 +409,8 @@ static bool seed_validate_headers_tf(sqlite3 *db, struct synth_chain_tf *sc,
  * H* then equals MIN over all six contiguous ok=1 prefixes. */
 static bool seed_upstream_logs_tf(sqlite3 *db, struct synth_chain_tf *sc, int n)
 {
-    if (!seed_validate_headers_tf(db, sc, n))
+    if (!seed_validate_headers_tf(db, sc, n) ||
+        !seed_hash_authority_tf(db, sc, n))
         return false;
     for (int h = 0; h < n; h++)
         if (!seed_script_log(db, h, 1, &sc->hashes[h]))
@@ -323,7 +418,7 @@ static bool seed_upstream_logs_tf(sqlite3 *db, struct synth_chain_tf *sc, int n)
     if (!seed_cursor_tf(db, "script_validate", n))
         return false;
     return seed_simple_log_tf(db, "body_persist_log", "body_persist", n) &&
-           seed_simple_log_tf(db, "proof_validate_log", "proof_validate", n);
+           seed_proof_log_tf(db, sc, n);
 }
 
 /* Re-derive H* directly from the durable state, under the progress lock the
@@ -477,6 +572,8 @@ static int tf_setup(const char *tag, int log_rows,
 
     if (!seed_utxo_apply(progress_store_db(), log_rows,
                          upstream_fail_height))
+        return 3;
+    if (!seed_upstream_logs_tf(progress_store_db(), sc, log_rows))
         return 3;
     if (!tip_finalize_stage_init(ms)) return 4;
     tip_finalize_stage_set_utxo_counter(fake_utxo_count, sc);
@@ -642,6 +739,116 @@ int test_tip_finalize_stage(void)
         tf_teardown(dir, &ms, &sc);
     }
 
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        TF_CHECK("checkpoint_evidence: setup",
+                 tf_setup("checkpoint_evidence", 3, TF_FAIL_NONE, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        TF_CHECK("checkpoint_evidence: relabel complete upstream tuple",
+                 exec_sql(progress_store_db(),
+                     "UPDATE script_validate_log SET status='checkpoint_fold' "
+                     "WHERE height=0;"
+                     "UPDATE proof_validate_log SET status='checkpoint_fold' "
+                     "WHERE height=0;"
+                     "UPDATE utxo_apply_log SET status='checkpoint_fold' "
+                     "WHERE height=0"));
+        TF_CHECK("checkpoint_evidence: cannot finalize",
+                 tip_finalize_stage_step_once() == JOB_BLOCKED);
+        TF_CHECK("checkpoint_evidence: cursor stays before contained row",
+                 tip_finalize_stage_cursor() == 0);
+        TF_CHECK("checkpoint_evidence: names causal blocker",
+                 blocker_exists("tip_finalize.validation_evidence"));
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        TF_CHECK("forked_utxo_evidence: setup",
+                 tf_setup("forked_utxo_evidence",3,TF_FAIL_NONE,-1,
+                          dir,sizeof(dir),&ms,&sc)==0);
+        struct uint256 fork=sc.hashes[0];
+        fork.data[31]^=0x5au;
+        TF_CHECK("forked_utxo_evidence: corrupt branch receipt",
+                 set_utxo_branch_tf(progress_store_db(),0,&fork));
+        TF_CHECK("forked_utxo_evidence: cannot finalize",
+                 tip_finalize_stage_step_once()==JOB_BLOCKED&&
+                 tip_finalize_stage_cursor()==0&&
+                 blocker_exists("tip_finalize.validation_evidence"));
+        tf_teardown(dir,&ms,&sc);
+    }
+
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        int row_ok = -1;
+        char status[32];
+        TF_CHECK("anchor_storage: setup",
+                 tf_setup("anchor_storage", 4, TF_FAIL_NONE, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        TF_CHECK("anchor_storage: seed trusted height",
+                 tip_finalize_stage_seed_anchor(3, sc.hashes[3].data, true));
+        TF_CHECK("anchor_storage: isolate anchor-only authority",
+                 exec_sql(progress_store_db(),
+                     "UPDATE utxo_apply_log SET status='anchor' WHERE height=3;"
+                     "DELETE FROM script_validate_log WHERE height=3;"
+                     "DELETE FROM proof_validate_log WHERE height=3"));
+        TF_CHECK("anchor_storage: numeric-prefix TEXT height fixture",
+                 exec_sql(progress_store_db(),
+                     "UPDATE progress_meta SET value=CAST('3x' AS TEXT) "
+                     "WHERE key='" REDUCER_TRUSTED_BASE_HEIGHT_KEY "'"));
+        TF_CHECK("anchor_storage: malformed authority refuses seed atomically",
+                 !tip_finalize_stage_seed_anchor(
+                     4, sc.hashes[3].data, true) &&
+                 !log_row_at(progress_store_db(), 4, &row_ok,
+                             status, sizeof(status), NULL, NULL));
+        TF_CHECK("anchor_storage: TEXT height authority fails closed",
+                 tip_finalize_trusted_anchor_at(
+                     progress_store_db(), 3, &sc.hashes[3]) == -1);
+        uint8_t high_bit_height[8] = {0, 0, 0, 0, 0, 0, 0, 0x80};
+        TF_CHECK("anchor_storage: high-bit BLOB height fixture",
+                 progress_meta_set(
+                     progress_store_db(), REDUCER_TRUSTED_BASE_HEIGHT_KEY,
+                     high_bit_height, sizeof(high_bit_height)));
+        TF_CHECK("anchor_storage: high-bit authority refuses seed atomically",
+                 !tip_finalize_stage_seed_anchor(
+                     4, sc.hashes[3].data, true) &&
+                 !log_row_at(progress_store_db(), 4, &row_ok,
+                             status, sizeof(status), NULL, NULL));
+        uint8_t trusted_height[8] = {3, 0, 0, 0, 0, 0, 0, 0};
+        TF_CHECK("anchor_storage: exact BLOB height restores authority",
+                 progress_meta_set(
+                     progress_store_db(), REDUCER_TRUSTED_BASE_HEIGHT_KEY,
+                     trusted_height, sizeof(trusted_height)) &&
+                 tip_finalize_trusted_anchor_at(
+                     progress_store_db(), 3, &sc.hashes[3]) == 1);
+        TF_CHECK("anchor_storage: REAL hash fixture",
+                 exec_sql(progress_store_db(),
+                     "UPDATE progress_meta SET value=1.25 WHERE key='"
+                     REDUCER_TRUSTED_BASE_HASH_KEY "'"));
+        TF_CHECK("anchor_storage: REAL hash authority fails closed",
+                 tip_finalize_trusted_anchor_at(
+                     progress_store_db(), 3, &sc.hashes[3]) == -1);
+        TF_CHECK("anchor_storage: exact BLOB hash restores authority",
+                 progress_meta_set(
+                     progress_store_db(), REDUCER_TRUSTED_BASE_HASH_KEY,
+                     sc.hashes[3].data, sizeof(sc.hashes[3].data)) &&
+                 tip_finalize_trusted_anchor_at(
+                     progress_store_db(), 3, &sc.hashes[3]) == 1);
+        TF_CHECK("anchor_storage: TEXT ok cannot authorize",
+                 exec_sql(progress_store_db(),
+                     "UPDATE tip_finalize_log SET ok=CAST('1x' AS TEXT) "
+                     "WHERE height=3") &&
+                 tip_finalize_stage_step_once() == JOB_BLOCKED &&
+                 tip_finalize_stage_cursor() == 3);
+        blocker_clear("tip_finalize.validation_evidence");
+        TF_CHECK("anchor_storage: TEXT hash cannot authorize",
+                 exec_sql(progress_store_db(),
+                     "UPDATE tip_finalize_log SET ok=1,"
+                     "tip_hash=CAST(tip_hash AS TEXT) WHERE height=3") &&
+                 tip_finalize_stage_step_once() == JOB_BLOCKED &&
+                 tip_finalize_stage_cursor() == 3);
+        tf_teardown(dir, &ms, &sc);
+    }
+
     /* Live-frontier no-skip (task #30 root cause, forensic 2026-06-12 at
      * h=3144857): every chain_set_active_tip re-anchors the JUST-PUBLISHED
      * tip via set_authoritative_tip. The old height+1 anchor target bumped
@@ -673,6 +880,8 @@ int test_tip_finalize_stage(void)
         ok_setup = ok_setup &&
             active_chain_move_window_tip(&ms.chain_active, &sc.blocks[3]);
         ok_setup = ok_setup && seed_utxo_apply(progress_store_db(), 3, -1);
+        ok_setup = ok_setup &&
+            seed_upstream_logs_tf(progress_store_db(), &sc, 3);
         ok_setup = ok_setup && tip_finalize_stage_init(&ms);
         tip_finalize_stage_set_utxo_counter(fake_utxo_count, &sc);
         TF_CHECK("noskip: setup", ok_setup);
@@ -696,6 +905,8 @@ int test_tip_finalize_stage(void)
         ok_setup = block_map_insert(&ms.map_block_index,
                                     sc.blocks[4].phashBlock, &sc.blocks[4]);
         ok_setup = ok_setup && seed_utxo_apply(progress_store_db(), 4, -1);
+        ok_setup = ok_setup &&
+            seed_upstream_logs_tf(progress_store_db(), &sc, 4);
         TF_CHECK("noskip: successor arrival setup", ok_setup);
         TF_CHECK("noskip: successor publishes on FIRST arrival",
                  tip_finalize_stage_step_once() == JOB_ADVANCED);

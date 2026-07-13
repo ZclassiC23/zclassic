@@ -45,6 +45,8 @@ enum consensus_state_install_status {
 struct consensus_state_install_result {
     enum consensus_state_install_status status;
     bool history_complete;
+    bool source_clean;
+    uint8_t validation_profile;
     int32_t height;
     char reason[192];
 };
@@ -86,6 +88,8 @@ struct consensus_state_candidate_request {
 
 struct consensus_state_candidate_result {
     enum consensus_state_candidate_status status;
+    bool source_clean;
+    uint8_t validation_profile;
     int32_t height;
     uint64_t utxo_count;
     uint64_t anchor_count;

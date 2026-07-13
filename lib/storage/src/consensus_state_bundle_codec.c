@@ -69,6 +69,9 @@ void consensus_state_bundle_artifact_digest(
     sha3_256_write(&ctx, m->block_hash, 32);
     uint8_t complete = m->history_complete ? 1 : 0;
     sha3_256_write(&ctx, &complete, 1);
+    uint8_t source_clean = m->source_clean ? 1 : 0;
+    sha3_256_write(&ctx, &source_clean, 1);
+    sha3_256_write(&ctx, &m->validation_profile, 1);
     digest_u64(&ctx, (uint64_t)m->activation_boundary);
     sha3_256_write(&ctx, m->utxo_root, 32);
     digest_u64(&ctx, m->utxo_count);
@@ -98,13 +101,36 @@ void consensus_state_source_receipt_digest(
     static const char domain[] =
         "zcl.consensus_state_source_receipt.v1/receipt";
     sha3_256_write(&ctx, (const uint8_t *)domain, sizeof(domain));
+    sha3_256_write(&ctx, receipt->source_epoch_digest, 32);
     sha3_256_write(&ctx, receipt->source_tree_root, 32);
     sha3_256_write(&ctx, receipt->running_binary_digest, 32);
     sha3_256_write(&ctx, receipt->toolchain_digest, 32);
+    sha3_256_write(&ctx, receipt->build_inputs_digest, 32);
     sha3_256_write(&ctx, receipt->chain_corpus_digest, 32);
+    uint8_t source_clean = receipt->source_clean ? 1 : 0;
+    sha3_256_write(&ctx, &source_clean, 1);
+    sha3_256_write(&ctx, &receipt->validation_profile, 1);
     digest_u64(&ctx, 40);
     sha3_256_write(&ctx, (const uint8_t *)receipt->producer_commit, 40);
     digest_u64(&ctx, (uint64_t)receipt->fold_cursor);
+    sha3_256_finalize(&ctx, out);
+}
+
+void consensus_state_source_epoch_digest(
+    const struct consensus_state_source_receipt *receipt, uint8_t out[32])
+{
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+    static const char domain[] =
+        "zcl.consensus_state_source_epoch.v1/identity";
+    sha3_256_write(&ctx, (const uint8_t *)domain, sizeof(domain));
+    sha3_256_write(&ctx, receipt->source_tree_root, 32);
+    sha3_256_write(&ctx, receipt->toolchain_digest, 32);
+    sha3_256_write(&ctx, receipt->build_inputs_digest, 32);
+    uint8_t source_clean = receipt->source_clean ? 1 : 0;
+    sha3_256_write(&ctx, &source_clean, 1);
+    digest_u64(&ctx, 40);
+    sha3_256_write(&ctx, (const uint8_t *)receipt->producer_commit, 40);
     sha3_256_finalize(&ctx, out);
 }
 

@@ -7,6 +7,7 @@
  * via utxo_apply_stage_internal.h; reads here are atomic_load only. */
 
 #include "jobs/utxo_apply_stage.h"
+#include "jobs/mint_skip_crypto.h"
 #include "utxo_apply_stage_internal.h"
 
 #include "storage/progress_store.h"
@@ -29,12 +30,21 @@ bool utxo_apply_stage_succeeded_at(int height)
     sqlite3_stmt *st = NULL;
     bool ok = false;
     int rc = sqlite3_prepare_v2(db,
-            "SELECT ok FROM utxo_apply_log WHERE height = ?",
+            "SELECT ok, status FROM utxo_apply_log WHERE height = ?",
             -1, &st, NULL);
     if (rc == SQLITE_OK) {
         sqlite3_bind_int(st, 1, height);
-        if (sqlite3_step(st) == SQLITE_ROW)  // raw-sql-ok:progress-kv-kernel-store
-            ok = sqlite3_column_int(st, 0) == 1;
+        if (sqlite3_step(st) == SQLITE_ROW) { // raw-sql-ok:progress-kv-kernel-store
+            int status_type = sqlite3_column_type(st, 1);
+            const void *status = status_type == SQLITE_TEXT
+                ? sqlite3_column_text(st, 1) : NULL;
+            ok = sqlite3_column_type(st, 0) == SQLITE_INTEGER &&
+                 sqlite3_column_int(st, 0) == 1 &&
+                 status &&
+                 mint_validation_evidence_parse(
+                     status, (size_t)sqlite3_column_bytes(st, 1)) ==
+                     MINT_VALIDATION_EVIDENCE_VERIFIED;
+        }
         sqlite3_finalize(st);
     } else {
         /* This accessor gates reducer_pending_body_is_accepted: a silent

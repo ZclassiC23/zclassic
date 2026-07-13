@@ -5,6 +5,8 @@
 #include "script_validate_log_store.h"
 
 #include "platform/time_compat.h"
+#include "storage/consensus_state_bundle_codec.h"
+#include "storage/progress_store.h"
 #include "util/log_macros.h"
 
 #include <sqlite3.h>
@@ -41,7 +43,8 @@ bool script_validate_log_ensure_schema(sqlite3 *db)
         "  first_failure_vin  INTEGER,"
         "  first_failure_serror INTEGER,"
         "  validated_at       INTEGER NOT NULL,"
-        "  block_hash         BLOB"
+        "  block_hash         BLOB,"
+        "  source_epoch_digest BLOB"
         ")";
     char *err = NULL;
     if (sqlite3_exec(db, sql, NULL, NULL, &err) != SQLITE_OK) {
@@ -56,6 +59,10 @@ bool script_validate_log_ensure_schema(sqlite3 *db)
         return false;
     if (!add_column_if_missing(db,
             "ALTER TABLE script_validate_log ADD COLUMN block_hash BLOB"))
+        return false;
+    if (!add_column_if_missing(db,
+            "ALTER TABLE script_validate_log ADD COLUMN "
+            "source_epoch_digest BLOB"))
         return false;
     return true;
 }
@@ -76,12 +83,37 @@ int script_validate_body_persist_log_at(sqlite3 *db, int height,
     int found = 0;
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
-        const unsigned char *src = sqlite3_column_text(st, 0);
-        if (src)
-            snprintf(out->source, sizeof(out->source), "%s",
-                     (const char *)src);
-        out->ok = sqlite3_column_int(st, 1);
+        int source_type = sqlite3_column_type(st, 0);
+        int ok_type = sqlite3_column_type(st, 1);
+        const unsigned char *src = source_type == SQLITE_TEXT
+            ? sqlite3_column_text(st, 0) : NULL;
+        int source_size = src ? sqlite3_column_bytes(st, 0) : -1;
+        int ok_value = ok_type == SQLITE_INTEGER
+            ? sqlite3_column_int(st, 1) : -1;
+        bool source_ok = src && source_size > 0 &&
+            source_size < (int)sizeof(out->source) &&
+            !memchr(src, '\0', (size_t)source_size) &&
+            ((ok_value == 1 && source_size == 8 &&
+              memcmp(src, "verified", 8) == 0) ||
+             (ok_value == 0 && source_size == 15 &&
+              memcmp(src, "upstream_failed", 15) == 0));
+        if (!source_ok) {
+            LOG_WARN("script_validate",
+                     "[script_validate] malformed body_persist_log row h=%d",
+                     height);
+            sqlite3_finalize(st);
+            return -1;  // raw-return-ok:logged-above
+        }
+        memcpy(out->source, src, (size_t)source_size);
+        out->source[source_size] = '\0';
+        out->ok = ok_value;
         found = 1;
+    } else if (rc != SQLITE_DONE) {
+        LOG_WARN("script_validate",
+                 "[script_validate] body_persist_log step failed h=%d rc=%d: %s",
+                 height, rc, sqlite3_errmsg(db));
+        sqlite3_finalize(st);
+        return -1;  // raw-return-ok:logged-above
     }
     sqlite3_finalize(st);
     return found;
@@ -93,7 +125,7 @@ int script_validate_log_verdict_at(sqlite3 *db, int height,
     memset(out, 0, sizeof(*out));
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
-        "SELECT ok, block_hash FROM script_validate_log WHERE height = ?",
+        "SELECT ok, status, block_hash FROM script_validate_log WHERE height = ?",
         -1, &st, NULL) != SQLITE_OK) {
         LOG_WARN("script_validate",
                  "[script_validate] verdict_at prepare failed: %s",
@@ -110,9 +142,17 @@ int script_validate_log_verdict_at(sqlite3 *db, int height,
     if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
         out->ok = sqlite3_column_type(st, 0) == SQLITE_INTEGER
                     ? sqlite3_column_int(st, 0) : -1;
-        const void *blob = sqlite3_column_blob(st, 1);
-        if (sqlite3_column_type(st, 1) == SQLITE_BLOB && blob &&
-            sqlite3_column_bytes(st, 1) == 32) {
+        int status_type = sqlite3_column_type(st, 1);
+        const void *status = status_type == SQLITE_TEXT
+            ? sqlite3_column_text(st, 1) : NULL;
+        if (status)
+            out->evidence = mint_validation_evidence_parse(
+                status, (size_t)sqlite3_column_bytes(st, 1));
+        int hash_type = sqlite3_column_type(st, 2);
+        const void *blob = hash_type == SQLITE_BLOB
+            ? sqlite3_column_blob(st, 2) : NULL;
+        if (blob &&
+            sqlite3_column_bytes(st, 2) == 32) {
             memcpy(out->block_hash.data, blob, 32);
             out->has_block_hash = true;
         }
@@ -130,15 +170,31 @@ bool script_validate_log_insert(sqlite3 *db, int height,
                                 ScriptError first_failure_serror,
                                 const struct uint256 *block_hash)
 {
+    uint8_t source_epoch[32] = {0};
+    size_t source_epoch_size = 0;
+    bool source_epoch_found = false;
+    progress_store_tx_lock();
+    if (!progress_meta_get_blob_exact(
+            db, CONSENSUS_STATE_SOURCE_EPOCH_META_KEY,
+            source_epoch, sizeof(source_epoch), &source_epoch_size,
+            &source_epoch_found) ||
+        (source_epoch_found && source_epoch_size != sizeof(source_epoch))) {
+        LOG_WARN("script_validate",
+                 "[script_validate] malformed source epoch authority h=%d",
+                 height);
+        progress_store_tx_unlock();
+        return false;
+    }
     sqlite3_stmt *stmt = NULL;
     int rc = sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO script_validate_log "
         "(height, status, ok, tx_count, input_count, first_failure_txid, "
-        " first_failure_vin, first_failure_serror, validated_at, block_hash) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+        " first_failure_vin, first_failure_serror, validated_at, block_hash, "
+        " source_epoch_digest) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         LOG_WARN("script_validate", "[script_validate] prepare insert failed: %s", sqlite3_errmsg(db));
+        progress_store_tx_unlock();
         return false;
     }
     sqlite3_bind_int64(stmt, 1, (sqlite3_int64)height);
@@ -167,8 +223,22 @@ bool script_validate_log_insert(sqlite3 *db, int height,
         sqlite3_bind_blob(stmt, 10, block_hash->data, 32, SQLITE_STATIC);
     else
         sqlite3_bind_null(stmt, 10);
+    if (source_epoch_found)
+        rc = sqlite3_bind_blob(stmt, 11, source_epoch,
+                               (int)sizeof(source_epoch), SQLITE_STATIC);
+    else
+        rc = sqlite3_bind_null(stmt, 11);
+    if (rc != SQLITE_OK) {
+        LOG_WARN("script_validate",
+                 "[script_validate] source epoch bind failed height=%d",
+                 height);
+        sqlite3_finalize(stmt);
+        progress_store_tx_unlock();
+        return false;
+    }
     rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(stmt);
+    progress_store_tx_unlock();
     if (rc != SQLITE_DONE) {
         LOG_WARN("script_validate", "[script_validate] insert height=%d rc=%d", height, rc);
         return false;

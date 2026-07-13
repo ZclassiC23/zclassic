@@ -110,10 +110,15 @@ static bool seed_schema(sqlite3 *db)
             "fail_reason TEXT)") &&
         exec_sql(db,
             "CREATE TABLE IF NOT EXISTS proof_validate_log ("
-            "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL)") &&
+            "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
+            "block_hash BLOB)") &&
         exec_sql(db,
             "CREATE TABLE IF NOT EXISTS utxo_apply_log ("
             "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL)") &&
+        exec_sql(db,
+            "CREATE TABLE IF NOT EXISTS utxo_apply_delta ("
+            "height INTEGER PRIMARY KEY, branch_hash BLOB NOT NULL,"
+            "spent_blob BLOB NOT NULL, added_blob BLOB NOT NULL)") &&
         exec_sql(db,
             "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
             "height INTEGER PRIMARY KEY, status TEXT, ok INTEGER NOT NULL,"
@@ -256,17 +261,35 @@ static bool put_simple_log(sqlite3 *db, const char *table, int height,
 }
 
 static bool put_proof_status(sqlite3 *db, int height, int ok_flag,
-                             const char *status)
+                             const char *status,
+                             const struct uint256 *hash)
 {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
             "INSERT OR REPLACE INTO proof_validate_log"
-            "(height,status,ok) VALUES(?,?,?)",
+            "(height,status,ok,block_hash) VALUES(?,?,?,?)",
             -1, &st, NULL) != SQLITE_OK)
         return false;
     sqlite3_bind_int(st, 1, height);
     sqlite3_bind_text(st, 2, status, -1, SQLITE_STATIC);
     sqlite3_bind_int(st, 3, ok_flag);
+    sqlite3_bind_blob(st, 4, hash->data, 32, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool put_utxo_delta(sqlite3 *db, int height,
+                           const struct uint256 *hash)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO utxo_apply_delta"
+            "(height,branch_hash,spent_blob,added_blob) "
+            "VALUES(?,?,x'',x'')", -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_blob(st, 2, hash->data, 32, SQLITE_STATIC);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
@@ -379,8 +402,10 @@ static bool put_upstream_ok(sqlite3 *db, int height,
            put_hash_log(db, "script_validate_log", "block_hash", height, 1,
                         hash) &&
            put_simple_log(db, "body_persist_log", height, 1) &&
-           put_simple_log(db, "proof_validate_log", height, 1) &&
-           put_simple_log(db, "utxo_apply_log", height, 1);
+           put_hash_log(db, "proof_validate_log", "block_hash", height, 1,
+                        hash) &&
+           put_simple_log(db, "utxo_apply_log", height, 1) &&
+           put_utxo_delta(db, height, hash);
 }
 
 static bool seed_coins_applied(sqlite3 *db, int64_t height)
@@ -507,6 +532,9 @@ static bool make_fixture_block_readable(struct rfrl_fixture *fx, int slot)
            put_body_fetch_ok(db, fx->idx[slot]->nHeight, &fx->hashes[slot]) &&
            put_hash_log(db, "script_validate_log", "block_hash",
                         fx->idx[slot]->nHeight, 1, &fx->hashes[slot]) &&
+           put_hash_log(db, "proof_validate_log", "block_hash",
+                        fx->idx[slot]->nHeight, 1, &fx->hashes[slot]) &&
+           put_utxo_delta(db, fx->idx[slot]->nHeight, &fx->hashes[slot]) &&
            active_chain_move_window_tip(&fx->ms.chain_active, fx->idx[3]);
 }
 
@@ -755,6 +783,43 @@ int test_reducer_frontier_reconcile_light(void)
                    (fx.idx[3]->nStatus & BLOCK_FAILED_MASK) == 0 &&
                    applied.failed_mask_cleared == 1);
 
+        teardown_fixture(&fx);
+    }
+
+    {
+        struct rfrl_fixture fx;
+        RFRL_CHECK("failed-mask proof split: setup",
+                   setup_fixture(&fx, "failed_mask_proof_split"));
+        sqlite3 *db = progress_store_db();
+        struct uint256 fork = fx.hashes[3];
+        fork.data[31] ^= 0x5au;
+        RFRL_CHECK("failed-mask proof split: seed forked proof receipt",
+                   put_hash_log(db, "proof_validate_log", "block_hash",
+                                A + 3, 1, &fork));
+        struct stage_reducer_frontier_reconcile_result rr;
+        RFRL_CHECK("failed-mask proof split: reconcile completes",
+                   stage_reducer_frontier_reconcile_light(db, &fx.ms, &rr));
+        RFRL_CHECK("failed-mask proof split: failure evidence retained",
+                   (fx.idx[3]->nStatus & BLOCK_FAILED_MASK) != 0 &&
+                   rr.failed_mask_cleared == 0);
+        teardown_fixture(&fx);
+    }
+
+    {
+        struct rfrl_fixture fx;
+        RFRL_CHECK("failed-mask UTXO split: setup",
+                   setup_fixture(&fx, "failed_mask_utxo_split"));
+        sqlite3 *db = progress_store_db();
+        struct uint256 fork = fx.hashes[3];
+        fork.data[31] ^= 0xa5u;
+        RFRL_CHECK("failed-mask UTXO split: seed forked delta receipt",
+                   put_utxo_delta(db, A + 3, &fork));
+        struct stage_reducer_frontier_reconcile_result rr;
+        RFRL_CHECK("failed-mask UTXO split: reconcile completes",
+                   stage_reducer_frontier_reconcile_light(db, &fx.ms, &rr));
+        RFRL_CHECK("failed-mask UTXO split: failure evidence retained",
+                   (fx.idx[3]->nStatus & BLOCK_FAILED_MASK) != 0 &&
+                   rr.failed_mask_cleared == 0);
         teardown_fixture(&fx);
     }
 
@@ -1356,7 +1421,8 @@ int test_reducer_frontier_reconcile_light(void)
                    seed_cursor(db, "utxo_apply", A + 2) &&
                    put_script_status(db, A + 2, 1, "verified",
                                      &fx.hashes[2]) &&
-                   put_proof_status(db, A + 2, 0, "internal_error"));
+                   put_proof_status(db, A + 2, 0, "internal_error",
+                                    &fx.hashes[2]));
 
         struct stage_reducer_frontier_reconcile_result dry;
         RFRL_CHECK("readable stale-proof: dry-run succeeds",

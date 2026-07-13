@@ -132,7 +132,9 @@ bool stage_reducer_frontier_find_lowest_script_validate_refill_hole_unlocked(
         "FROM body_persist_log b "
         "LEFT JOIN script_validate_log s ON s.height = b.height "
         "WHERE b.height >= ? AND b.height <= ? "
-        "AND b.ok = 1 AND s.height IS NULL "
+        "AND b.ok = 1 AND (s.height IS NULL OR (s.ok=1 AND "
+        "(typeof(s.status)!='text' OR "
+        "CAST(s.status AS BLOB)!=CAST('verified' AS BLOB)))) "
         "ORDER BY b.height ASC LIMIT 1",
         start_height, end_height, out_height);
 }
@@ -148,7 +150,10 @@ bool stage_reducer_frontier_find_lowest_proof_validate_refill_hole_unlocked(
         "FROM script_validate_log s "
         "LEFT JOIN proof_validate_log p ON p.height = s.height "
         "WHERE s.height >= ? AND s.height <= ? "
-        "AND s.ok = 1 AND p.height IS NULL "
+        "AND s.ok = 1 AND typeof(s.status)='text' AND "
+        "CAST(s.status AS BLOB)=CAST('verified' AS BLOB) AND "
+        "(p.height IS NULL OR (p.ok=1 AND (typeof(p.status)!='text' OR "
+        "CAST(p.status AS BLOB)!=CAST('verified' AS BLOB)))) "
         "ORDER BY s.height ASC LIMIT 1",
         start_height, end_height, out_height);
 }
