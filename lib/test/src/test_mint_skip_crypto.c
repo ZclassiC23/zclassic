@@ -880,6 +880,34 @@ static int deny_delete_authorizer(void *opaque, int action, const char *a,
     return action == SQLITE_DELETE ? SQLITE_DENY : SQLITE_OK;
 }
 
+/* A brand-new producer datadir has no legacy node.db header_admit_log
+ * mirror; the genesis reset must treat that as already-reset, not refuse
+ * (regression: fresh -mint-anchor datadir FATALed on the missing table). */
+static int test_mint_anchor_reset_fresh_datadir(void)
+{
+    int failures = 0;
+    char dir[256];
+    test_fmt_tmpdir(dir, sizeof(dir), "mint_skip_crypto", "reset_fresh");
+    mkdir_p("./test-tmp");
+    mkdir_p(dir);
+    bool opened = progress_store_open(dir);
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    bool node_open = node_db_open(&ndb, ":memory:");
+    MSC_CHECK("fresh reset: stores open", opened && node_open);
+    bool no_mirror = node_open &&
+        !node_db_exec(&ndb, "SELECT 1 FROM header_admit_log LIMIT 1");
+    MSC_CHECK("fresh reset: legacy header_admit_log mirror absent", no_mirror);
+    MSC_CHECK("fresh reset: genesis reset completes on a fresh datadir",
+              opened && node_open && boot_mint_anchor_genesis_reset(&ndb));
+    if (node_open)
+        node_db_close(&ndb);
+    if (opened)
+        progress_store_close();
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 static int test_mint_anchor_reset_fail_closed(void)
 {
     int failures = 0;
@@ -1139,6 +1167,7 @@ int test_mint_skip_crypto(void)
     failures += test_mint_anchor_progress_resume();
     failures += test_mint_anchor_lane_containment();
     failures += test_normal_boot_preflight_killed_wal();
+    failures += test_mint_anchor_reset_fresh_datadir();
     failures += test_mint_anchor_reset_fail_closed();
     failures += test_source_epoch_authority_types();
     free(boot_src);

@@ -9,6 +9,7 @@
 #include "storage/coins_kv.h"
 #include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 
 #include <sqlite3.h>
@@ -17,6 +18,31 @@
 
 /* Declared by the UTXO recovery service's private contract. */
 bool utxo_recovery_clear_cold_import_seed_checked(struct node_db *ndb);
+
+/* The node.db header_admit_log is a legacy mirror (see boot_refold_staged.c);
+ * a fresh producer datadir never creates it, so a missing table is already
+ * reset. An existing table that fails to clear still fails closed. */
+static bool clear_legacy_header_admit_mirror(struct node_db *ndb)
+{
+    sqlite3_stmt *stmt = NULL;
+    if (!node_db_prepare_readonly_query(ndb,
+            "SELECT 1 FROM sqlite_master WHERE type='table' "
+            "AND name='header_admit_log'", &stmt)) {
+        LOG_WARN("boot",
+            "-mint-anchor: legacy header_admit_log mirror probe failed");
+        return false;
+    }
+    int rc = AR_STEP_ROW_READONLY(stmt);
+    sqlite3_finalize(stmt);
+    if (rc == SQLITE_DONE)
+        return true;
+    if (rc != SQLITE_ROW) {
+        LOG_WARN("boot",
+            "-mint-anchor: legacy header_admit_log mirror probe rc=%d", rc);
+        return false;
+    }
+    return node_db_exec(ndb, "DELETE FROM header_admit_log");
+}
 
 bool boot_mint_anchor_genesis_reset(struct node_db *ndb)
 {
@@ -31,7 +57,7 @@ bool boot_mint_anchor_genesis_reset(struct node_db *ndb)
         node_db_state_set(ndb, "leveldb_utxo_migrated", NULL, 0);
     phase1_ok = phase1_ok && coins_kv_reset_for_reseed(rpdb) &&
         boot_index_clear_coins_state(ndb) &&
-        node_db_exec(ndb, "DELETE FROM header_admit_log") &&
+        clear_legacy_header_admit_mirror(ndb) &&
         node_db_state_set(ndb, "sapling_tree", NULL, 0) &&
         node_db_state_set(ndb, "sapling_tree_rescan_height", NULL, 0);
     if (!phase1_ok) {
