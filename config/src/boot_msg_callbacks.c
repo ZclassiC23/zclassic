@@ -16,6 +16,7 @@
 #include "services/chain_state_service.h"
 #include "services/chain_tip.h"
 #include "services/quorum_oracle_service.h"
+#include "services/network_monitor.h"
 #include "services/sync_monitor.h"
 #include "controllers/sync_controller.h"
 #include "models/peer.h"
@@ -243,6 +244,10 @@ void boot_record_peer_header_vote(uint32_t peer_id,
 {
     (void)ctx;
     quorum_oracle_record_peer_header_vote(peer_id, height, hash_hex);
+    /* Fan out the same already-flowing accepted-header (peer_id, height, hash)
+     * to the network monitor for per-peer tip-hash / fork intelligence. No new
+     * wire message: this taps the existing header-vote callback. */
+    network_monitor_note_peer_header(peer_id, height, hash_hex);
 }
 
 void boot_wallet_tx_accepted(const struct transaction *tx, void *ctx)

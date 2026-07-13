@@ -47,6 +47,7 @@
 #include "services/disk_monitor.h"
 #include "services/ibd_throttle.h"
 #include "services/db_maintenance.h"
+#include "config/boot_network_monitor.h"
 #include "controllers/wallet_scan.h"
 #include "util/blocker.h"
 #include "util/boot_status.h"
@@ -926,7 +927,9 @@ static bool boot_register_maintenance_services(void)
     return zcl_service_kernel_register(&g_maintenance_kernel,
                                        &wallet_backup_spec) &&
            zcl_service_kernel_register(&g_maintenance_kernel,
-                                       &db_maintenance_spec);
+                                       &db_maintenance_spec) &&
+           boot_register_network_monitor_service(&g_maintenance_kernel,
+                                                 &g_node_db);
 }
 
 static void boot_step_start_disk_and_ibd_guards(const char *datadir)

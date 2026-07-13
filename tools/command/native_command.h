@@ -187,6 +187,15 @@ void zcl_native_handle_ops_state(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* core.network.chain_view — the reachable-network chain view (modal tip, max
+ * advertised height, our delta, fork clusters) from the node's network_monitor.
+ * Reads the running node's network_monitor dumpstate over the SELECT-only RPC;
+ * the MCP router/middleware is never entered. Bound by
+ * config/src/command_catalog.c. */
+void zcl_native_handle_network_chain_view(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* ops.selftest — node-free registry self-test (the native successor of the MCP
  * `zcl_self_test mode=registry`). Sweeps every catalog leaf for the static
  * well-formedness the registry guarantees (READY ⇒ dispatchable handler +

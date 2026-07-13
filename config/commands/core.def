@@ -268,6 +268,18 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
+ZCL_COMMAND_READY_READ(
+    "core.network.chain_view", "core.network", "",
+    "Reachable-network chain view: modal tip, max height, our delta, forks",
+    "network,chain,view,fork,tip,modal,consensus,behind",
+    "zcl.command.empty_input.v1",
+    "zcl.network_chain_view.v1", "", "",
+    "zclassic23 core network chain_view",
+    ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_network_chain_view)
 ZCL_COMMAND_BRANCH("core.network.peers", "core.network",
                    "Connected peers", ZCL_COMMAND_LAYER_CORE)
 ZCL_COMMAND_READY_READ(

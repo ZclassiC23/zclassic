@@ -36,6 +36,6 @@ app/services/src/sticky_escalator.c 873
 app/services/src/sync_monitor.c 811
 app/views/src/explorer_pages_hodl.c 1853
 app/views/src/explorer_pages_view.c 823
-config/src/boot.c 3939
+config/src/boot.c 3942
 config/src/boot_refold_staged.c 2025
 config/src/boot_services.c 1634

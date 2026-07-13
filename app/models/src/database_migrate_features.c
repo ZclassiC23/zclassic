@@ -443,6 +443,38 @@ int node_db_migrate_features(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 27) {
+        /* v27: network-monitor per-peer chain-intelligence history. One row
+         * per sampled peer per monitor tick (best height, learnable tip hash,
+         * version/user-agent, latency, first/last seen). Purely observational —
+         * never read by consensus/chain selection. Bounded retention: the
+         * network monitor prunes to the newest N rows. Idempotent on a pre-v27
+         * db. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS peer_chain_observations ("
+            "id INTEGER PRIMARY KEY AUTOINCREMENT,"
+            "peer_id INTEGER NOT NULL,"
+            "addr TEXT NOT NULL DEFAULT '',"
+            "user_agent TEXT NOT NULL DEFAULT '',"
+            "version INTEGER NOT NULL DEFAULT 0,"
+            "best_height INTEGER NOT NULL DEFAULT -1,"
+            "tip_hash TEXT NOT NULL DEFAULT '',"
+            "latency_us INTEGER NOT NULL DEFAULT 0,"
+            "inbound INTEGER NOT NULL DEFAULT 0,"
+            "first_seen INTEGER NOT NULL DEFAULT 0,"
+            "last_seen INTEGER NOT NULL DEFAULT 0,"
+            "observed_at INTEGER NOT NULL)");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_peer_chain_obs_observed_at "
+            "ON peer_chain_observations(observed_at DESC)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('027')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 27);
+        current_ver = 27;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }
