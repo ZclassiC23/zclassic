@@ -252,6 +252,8 @@ int utxo_recovery_clean_above_tip(struct node_db *ndb,
 
 /* Backfill sprout_value/sapling_value into SQLite blocks table
  * from block files on disk. Idempotent — skips already-populated.
+ * Covers the whole active chain (height 1..tip); the boot path uses the
+ * cursor-bounded suffix walk below, not this force-full variant.
  * On success returns ZCL_OK and, if out_updated != NULL, writes the
  * count of blocks updated. On failure returns a non-ok zcl_result
  * (-50/-51 = invalid args, -52 = write/persistence failure) and leaves
@@ -261,6 +263,28 @@ struct zcl_result utxo_recovery_backfill_shielded(struct node_db *ndb,
                                      struct main_state *state,
                                      const char *datadir,
                                      int *out_updated);
+
+/* Backfill blocks.{sprout,sapling}_value for the height suffix
+ * (start_height-1, tip_height] via active-chain height lookups (NOT a full
+ * block-map scan). Only rows carrying a nonzero JoinSplit/Sapling value are
+ * written. The durable `shielded_backfill_height` cursor is advanced to the
+ * highest height actually resolved, inside the same transaction as the covering
+ * rows (crash-safe), and only ever forward. Returns the same zcl_result codes
+ * as utxo_recovery_backfill_shielded(). */
+struct zcl_result utxo_recovery_backfill_shielded_range(struct node_db *ndb,
+                                     struct db_service *dbsvc,
+                                     struct main_state *state,
+                                     const char *datadir,
+                                     int start_height,
+                                     int tip_height,
+                                     int *out_updated);
+
+/* Pure planner for the cursor-gated suffix backfill: given the persisted
+ * cursor `done_cursor` (-1 if unset) and the current `tip_height`, return the
+ * first height to (re)compute — done_cursor+1, or 1 when unset — when
+ * (done_cursor, tip_height] is non-empty and tip_height > 1000. Returns 0 to
+ * SKIP (cursor already covers the tip, or tip too shallow). */
+int utxo_recovery_shielded_backfill_start(int64_t done_cursor, int tip_height);
 
 /* Boot-time shielded-value backfill, cursor-gated. Ensures
  * blocks.{sprout,sapling}_value are populated through tip_height, skipping the
