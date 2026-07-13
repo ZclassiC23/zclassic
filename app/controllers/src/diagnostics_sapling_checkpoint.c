@@ -76,12 +76,7 @@ bool sapling_checkpoint_dump_state_json(struct json_value *out,
             snprintf(reason_buf, sizeof(reason_buf),
                      "last_load_detail=missing_or_corrupt");
         }
-        struct json_value health = {0};
-        json_set_object(&health);
-        json_push_kv_bool(&health, "ok", ok);
-        json_push_kv_str(&health, "reason", reason_buf);
-        json_push_kv(out, "_health", &health);
-        json_free(&health);
+        diag_push_health(out, ok, reason_buf);
     }
     return true;
 }

@@ -306,7 +306,7 @@ struct utxo_import_result utxo_recovery_import_ldb(
         res.utxo_count = imported_count;
 
         const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
-        /* PART B1 (import-gate-spec.md): the utxo_sha3 stamp is an HONEST
+        /* The utxo_sha3 stamp is an HONEST
          * cryptographic certificate ONLY when the imported set matches the
          * COMPILED checkpoint. Stamping at a non-checkpoint height made
          * gate_commitment_check recompute the SHA3 over the SAME table and
@@ -327,7 +327,7 @@ struct utxo_import_result utxo_recovery_import_ldb(
         } else {
             /* Double-check actual row count before wiping — the SHA3
              * function might have missed data due to a stale snapshot, but
-             * the UTXOs are actually in the table. Wave 2: consult the
+             * the UTXOs are actually in the table. Consult the
              * CANONICAL coins_kv count too (0 pre-seed in cold-import, so
              * the mirror count stays the live signal; max keeps both honest). */
             int64_t actual = node_db_utxo_count(ctx->ndb);
@@ -384,7 +384,7 @@ struct utxo_import_result utxo_recovery_import_ldb(
                                                      node_db_utxo_count(ctx->ndb));
 
             /* Check 5, cold-import half: arm the seed gate's commitment
-             * check (trust model: seed_integrity_gate.h). PART B1: stamp
+             * check (trust model: seed_integrity_gate.h). Stamp
              * ONLY at a genuine compiled-checkpoint match — never at a
              * non-checkpoint height, where the stamp would be a vacuous
              * self-certificate of the imported (possibly torn) set. */
@@ -488,7 +488,7 @@ struct chain_restore_result utxo_recovery_restore_chain_tip(
     }
 
     struct uint256 best_hash;
-    /* Wave 2: the restore anchor is the DERIVED coins-best when the durable
+    /* The restore anchor is the DERIVED coins-best when the durable
      * logs resolve a hash for it; the in-RAM coins cache (seeded from the
      * node_state projection key) is the legacy fallback. */
     uint256_set_null(&best_hash);

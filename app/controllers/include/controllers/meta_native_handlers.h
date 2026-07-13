@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Transport-neutral re-homed bodies for MCP meta-domain read tools
- * (ZERO-MCP W0-A). Called by both the MCP wrapper
+ *. Called by both the MCP wrapper
  * (tools/mcp/controllers/meta_controller.c) and the future native
  * command bridge (tools/command/native_command.c) — see
  * controllers/native_handler_body.h for the shared contract these

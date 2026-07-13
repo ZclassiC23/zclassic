@@ -5,7 +5,7 @@
  *
  * Why this exists
  * ----------------
- * Before Round 6, "blocked" was a string. legacy_mirror_sync_service
+ * Previously, "blocked" was a string. legacy_mirror_sync_service
  * stored a `char activation_blocker[128]` text field; chain_advance_
  * coordinator's `mir->blocked` was a bare bool computed from whether
  * that string was non-empty. There was no way to ask:
@@ -20,7 +20,7 @@
  * (~5/sec at peak), 193+ counter increments in 10 s of telemetry —
  * because the underlying recorder had no de-duplication and the
  * coordinator had no durable way to distinguish a transient blocker
- * from a permanent one. The Round 5 supervisor was firing recoveries,
+ * from a permanent one. The supervisor was firing recoveries,
  * but the recovery target itself was wedged behind a typeless blocker
  * that had no escape.
  *

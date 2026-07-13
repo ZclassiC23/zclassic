@@ -398,44 +398,46 @@ uint64_t utxo_projection_catch_up(utxo_projection_t *p)
 
 /* ── One-time anchor-seed for UTXO commitment parity ──────────────── */
 
-int64_t utxo_projection_seed_from_legacy(utxo_projection_t *p,
-                                         sqlite3 *legacy_db)
+/* Shared seed body: clear the utxo table and bulk-copy every row from
+ * src_table (the same six-column txid,vout,value,script,height,is_coinbase
+ * layout as legacy `utxos`) into p->db under one IMMEDIATE transaction,
+ * then stamp last_consumed_offset + the anchor_seeded meta flag. `label`
+ * ("seed" / "snapshot-seed") prefixes every exec/read diagnostic context.
+ * Returns rows copied, or -1 on failure (transaction rolled back). */
+static int64_t seed_from_table(utxo_projection_t *p, sqlite3 *src_db,
+                               const char *src_table, const char *label)
 {
-    if (!p || !p->db || !legacy_db) {
-        fprintf(stderr,  // obs-ok:utxo-projection-seed
-                "[utxo_projection] anchor-seed: null arg\n");
-        return -1;
-    }
-    if (meta_get_u64(p->db, "anchor_seeded") != 0) {
-        fprintf(stderr,  // obs-ok:utxo-projection-seed
-                "[utxo_projection] anchor-seed refused: already seeded\n");
-        return -1;
-    }
-
     /* Capture the log head BEFORE the copy so any block that connects
      * during the scan has its events re-applied by a later catch_up
      * (idempotently) rather than skipped. */
     uint64_t log_head = p->log ? event_log_size(p->log) : 0;
 
-    if (!exec_sql(p->db, "BEGIN IMMEDIATE", "seed begin"))
+    char begin_ctx[64], clear_ctx[64], rollback_ctx[64], commit_ctx[64];
+    snprintf(begin_ctx,    sizeof begin_ctx,    "%s begin",    label);
+    snprintf(clear_ctx,    sizeof clear_ctx,    "%s clear",    label);
+    snprintf(rollback_ctx, sizeof rollback_ctx, "%s rollback", label);
+    snprintf(commit_ctx,   sizeof commit_ctx,   "%s commit",   label);
+
+    if (!exec_sql(p->db, "BEGIN IMMEDIATE", begin_ctx))
         return -1;
 
-    /* Clear any tail-delta rows so the seed is a clean snapshot of
-     * coins.db, not a merge that could strand a since-spent tail UTXO. */
-    if (!exec_sql(p->db, "DELETE FROM utxo", "seed clear")) {
-        exec_sql(p->db, "ROLLBACK", "seed rollback");
+    /* Clear any tail-delta rows so the seed is a clean snapshot of the
+     * source set, not a merge that could strand a since-spent tail UTXO. */
+    if (!exec_sql(p->db, "DELETE FROM utxo", clear_ctx)) {
+        exec_sql(p->db, "ROLLBACK", rollback_ctx);
         return -1;
     }
 
+    char sel[128];
+    snprintf(sel, sizeof sel,
+             "SELECT txid,vout,value,script,height,is_coinbase "
+             "FROM %s ORDER BY txid,vout", src_table);
     sqlite3_stmt *rd = NULL;
-    if (sqlite3_prepare_v2(legacy_db,
-            "SELECT txid,vout,value,script,height,is_coinbase "
-            "FROM utxos ORDER BY txid,vout",
-            -1, &rd, NULL) != SQLITE_OK) {
+    if (sqlite3_prepare_v2(src_db, sel, -1, &rd, NULL) != SQLITE_OK) {
         fprintf(stderr,  // obs-ok:utxo-projection-seed
-                "[utxo_projection] seed read prepare failed: %s\n",
-                sqlite3_errmsg(legacy_db));
-        exec_sql(p->db, "ROLLBACK", "seed rollback");
+                "[utxo_projection] %s read prepare failed: %s\n",
+                label, sqlite3_errmsg(src_db));
+        exec_sql(p->db, "ROLLBACK", rollback_ctx);
         return -1;
     }
     sqlite3_stmt *ins = NULL;
@@ -444,7 +446,7 @@ int64_t utxo_projection_seed_from_legacy(utxo_projection_t *p,
             "(txid,vout,value,height,is_coinbase,script) VALUES(?,?,?,?,?,?)",
             -1, &ins, NULL) != SQLITE_OK) {
         sqlite3_finalize(rd);
-        exec_sql(p->db, "ROLLBACK", "seed rollback");
+        exec_sql(p->db, "ROLLBACK", rollback_ctx);
         return -1;
     }
 
@@ -487,12 +489,28 @@ int64_t utxo_projection_seed_from_legacy(utxo_projection_t *p,
              meta_set_u64(p->db, "anchor_seeded", 1);
 
     if (!exec_sql(p->db, ok ? "COMMIT" : "ROLLBACK",
-                  ok ? "seed commit" : "seed rollback") || !ok) {
+                  ok ? commit_ctx : rollback_ctx) || !ok) {
         p->last_consumed_offset = meta_get_u64(p->db, "last_consumed_offset");
         return -1;
     }
     p->last_consumed_offset = log_head;
     return rows;
+}
+
+int64_t utxo_projection_seed_from_legacy(utxo_projection_t *p,
+                                         sqlite3 *legacy_db)
+{
+    if (!p || !p->db || !legacy_db) {
+        fprintf(stderr,  // obs-ok:utxo-projection-seed
+                "[utxo_projection] anchor-seed: null arg\n");
+        return -1;
+    }
+    if (meta_get_u64(p->db, "anchor_seeded") != 0) {
+        fprintf(stderr,  // obs-ok:utxo-projection-seed
+                "[utxo_projection] anchor-seed refused: already seeded\n");
+        return -1;
+    }
+    return seed_from_table(p, legacy_db, "utxos", "seed");
 }
 
 /* ── Cold-start anchor-seed from the fast_sync SHA3 snapshot ────────── */
@@ -510,92 +528,11 @@ int64_t utxo_projection_seed_from_snapshot(utxo_projection_t *p,
                 "[utxo_projection] snapshot-seed refused: already seeded\n");
         return -1;
     }
-
-    /* Capture the log head BEFORE the copy so any block that connects
-     * during the scan has its events re-applied by a later catch_up
-     * (idempotently) rather than skipped. */
-    uint64_t log_head = p->log ? event_log_size(p->log) : 0;
-
-    if (!exec_sql(p->db, "BEGIN IMMEDIATE", "snapshot-seed begin"))
-        return -1;
-
-    /* Clear any tail-delta rows so the seed is a clean snapshot of the
-     * verified staging set, not a merge that could strand a since-spent
-     * tail UTXO. */
-    if (!exec_sql(p->db, "DELETE FROM utxo", "snapshot-seed clear")) {
-        exec_sql(p->db, "ROLLBACK", "snapshot-seed rollback");
-        return -1;
-    }
-
     /* SNAPSYNC_STAGING_TABLE == "snapshot_staging_utxos" (the fast_sync
      * staging table populated by snapshot_fetch + verified by SHA3 before
      * promotion). Same column layout as legacy `utxos`. */
-    sqlite3_stmt *rd = NULL;
-    if (sqlite3_prepare_v2(staging_db,
-            "SELECT txid,vout,value,script,height,is_coinbase "
-            "FROM snapshot_staging_utxos ORDER BY txid,vout",
-            -1, &rd, NULL) != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:utxo-projection-seed
-                "[utxo_projection] snapshot-seed read prepare failed: %s\n",
-                sqlite3_errmsg(staging_db));
-        exec_sql(p->db, "ROLLBACK", "snapshot-seed rollback");
-        return -1;
-    }
-    sqlite3_stmt *ins = NULL;
-    if (sqlite3_prepare_v2(p->db,
-            "INSERT OR REPLACE INTO utxo"
-            "(txid,vout,value,height,is_coinbase,script) VALUES(?,?,?,?,?,?)",
-            -1, &ins, NULL) != SQLITE_OK) {
-        sqlite3_finalize(rd);
-        exec_sql(p->db, "ROLLBACK", "snapshot-seed rollback");
-        return -1;
-    }
-
-    int64_t rows = 0;
-    bool ok = true;
-    int rrc;
-    while ((rrc = sqlite3_step(rd)) == SQLITE_ROW) {  // raw-sql-ok:projection-primitive
-        const uint8_t *txid = (const uint8_t *)sqlite3_column_blob(rd, 0);
-        int txid_len = sqlite3_column_bytes(rd, 0);
-        if (!txid || txid_len < 32) continue;  /* skip malformed */
-        uint32_t vout   = (uint32_t)sqlite3_column_int(rd, 1);
-        int64_t  value  = sqlite3_column_int64(rd, 2);
-        const uint8_t *script = (const uint8_t *)sqlite3_column_blob(rd, 3);
-        int script_len  = sqlite3_column_bytes(rd, 3);
-        int32_t  height = sqlite3_column_int(rd, 4);
-        int      is_cb  = sqlite3_column_int(rd, 5);
-
-        sqlite3_bind_blob (ins, 1, txid, 32, SQLITE_TRANSIENT);
-        sqlite3_bind_int  (ins, 2, (int)vout);
-        sqlite3_bind_int64(ins, 3, (sqlite3_int64)value);
-        sqlite3_bind_int64(ins, 4, (sqlite3_int64)height);
-        sqlite3_bind_int  (ins, 5, is_cb ? 1 : 0);
-        if (script && script_len > 0)
-            sqlite3_bind_blob(ins, 6, script, script_len, SQLITE_TRANSIENT);
-        else
-            sqlite3_bind_blob(ins, 6, "", 0, SQLITE_STATIC);
-
-        int irc = sqlite3_step(ins);  // raw-sql-ok:projection-primitive
-        sqlite3_reset(ins);
-        sqlite3_clear_bindings(ins);
-        if (irc != SQLITE_DONE) { ok = false; break; }
-        rows++;
-    }
-    if (ok && rrc != SQLITE_DONE) ok = false;  /* read cursor error */
-    sqlite3_finalize(rd);
-    sqlite3_finalize(ins);
-
-    if (ok)
-        ok = meta_set_u64(p->db, "last_consumed_offset", log_head) &&
-             meta_set_u64(p->db, "anchor_seeded", 1);
-
-    if (!exec_sql(p->db, ok ? "COMMIT" : "ROLLBACK",
-                  ok ? "snapshot-seed commit" : "snapshot-seed rollback") || !ok) {
-        p->last_consumed_offset = meta_get_u64(p->db, "last_consumed_offset");
-        return -1;
-    }
-    p->last_consumed_offset = log_head;
-    return rows;
+    return seed_from_table(p, staging_db, "snapshot_staging_utxos",
+                           "snapshot-seed");
 }
 
 bool utxo_projection_reseed_from_coins_kv(utxo_projection_t *p,
@@ -1018,21 +955,7 @@ bool utxo_projection_dump_state_json(struct json_value *out, const char *key)
     {
         uint64_t fails = atomic_load_explicit(&g_emit_fail_total,
                                               memory_order_relaxed);
-        bool ok = p != NULL && fails == 0;
-        struct json_value health = {0};
-        json_set_object(&health);
-        json_push_kv_bool(&health, "ok", ok);
-        char reason_buf[128] = "";
-        if (!p)
-            snprintf(reason_buf, sizeof(reason_buf),
-                     "utxo_projection not open");
-        else if (fails > 0)
-            snprintf(reason_buf, sizeof(reason_buf),
-                     "utxo_projection emit_fail_total=%llu",
-                     (unsigned long long)fails);
-        json_push_kv_str(&health, "reason", reason_buf);
-        json_push_kv(out, "_health", &health);
-        json_free(&health);
+        projection_push_health(out, "utxo_projection", p, fails);
     }
     if (!p) return true;
 

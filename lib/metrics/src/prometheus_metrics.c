@@ -1262,7 +1262,7 @@ size_t metrics_prometheus_render_prometheus(char *buf, size_t cap)
         "zcl_consensus_reject_delta %lld\n",
         (long long)rdelta);
 
-    /* ── Typed blocker block (Round 6 C5) ──────────────────────
+    /* ── Typed blocker block ──────────────────────
      *
      * Live counts per class + escape-dispatch total. The blocker
      * primitive's own JSON dumper is exposed via the zcl_blockers

@@ -17,7 +17,7 @@
  * forward at the spend height and then genuinely reject block H's re-spend
  * (verified forward semantics; see design §2 "Terminal linkage").
  *
- * Chain binding (design B1): the persisted record carries a running
+ * Chain binding: the persisted record carries a running
  * last-scanned hash. EVERY block processed — chunk start, kill-9 resume,
  * and mid-chunk alike — must prev-link (blk.hashPrevBlock) against that
  * persisted lineage before it is examined, and the lineage then advances to

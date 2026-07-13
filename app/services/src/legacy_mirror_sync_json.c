@@ -149,12 +149,7 @@ bool legacy_mirror_sync_dump_state_json(struct json_value *out,
     bool blocker_active = legacy_mirror_sync_blocker_is_active(&s);
     bool operator_action_required =
         blocker_active && legacy_mirror_sync_blocker_should_surface(&s, false);
-    struct json_value health = {0};
-    json_set_object(&health);
-    json_push_kv_bool(&health, "ok", !operator_action_required);
-    json_push_kv_str(&health, "reason",
+    diag_push_health(out, !operator_action_required,
                      operator_action_required ? blocker_code : "");
-    json_push_kv(out, "_health", &health);
-    json_free(&health);
     return true;
 }

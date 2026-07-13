@@ -129,12 +129,7 @@ static inline void sync_monitor_push_local_recovery_health_json(
                  "local recovery mode=%s retries_exhausted at "
                  "missing_height=%d retry_count=%d: %s", lr->mode,
                  lr->missing_height, lr->retry_count, lr->last_reason);
-    struct json_value health = {0};
-    json_set_object(&health);
-    json_push_kv_bool(&health, "ok", !stuck);
-    json_push_kv_str(&health, "reason", reason_buf);
-    json_push_kv(out, "_health", &health);
-    json_free(&health);
+    diag_push_health(out, !stuck, reason_buf);
 }
 
 #ifdef ZCL_TESTING

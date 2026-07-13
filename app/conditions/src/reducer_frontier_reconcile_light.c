@@ -181,7 +181,7 @@ static bool detect_reducer_frontier_reconcile_light(void)
      * next tick falls through to the normal self-repair. (Both clear helpers are
      * cheap no-ops when not refolding or still below their target.)
      *
-     * B2 — a from-ANCHOR refold (refold_from_anchor_active()) clears when the
+     * A from-ANCHOR refold (refold_from_anchor_active()) clears when the
      * fold's utxo_apply cursor reaches the durable RESUME TARGET (the tip it is
      * climbing to), NOT the trusted anchor (the fold STARTS at the anchor). A
      * from-genesis refold keeps the original anchor-crossing clear edge. */

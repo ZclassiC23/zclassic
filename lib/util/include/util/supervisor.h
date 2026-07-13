@@ -5,7 +5,7 @@
  *
  * Why this exists
  * ----------------
- * Before Round 5, every periodic check in the node ticked on a single
+ * Previously, every periodic check in the node ticked on a single
  * shared sweeper thread (`zcl_health_sweep` in lib/health/heartbeat.c).
  * On 2026-05-21 that sweeper wedged for 8.6 h: `sync_watchdog.checks_run`
  * stayed at 0 the whole time, no `EV_TIP_STALE` fired, and the node

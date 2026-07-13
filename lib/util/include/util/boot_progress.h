@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Boot-progress liveness signal (Wave 11B).
+ * Boot-progress liveness signal.
  *
  * Long-running synchronous operations (snapshot bulk INSERT,
  * block-by-block catchup, UTXO replay) can take tens of seconds to

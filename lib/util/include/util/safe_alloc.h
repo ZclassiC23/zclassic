@@ -18,7 +18,7 @@
 #include <stdbool.h>
 #include <string.h>
 
-/* ── Phase 6c allocation fault injection ─────────────────────────
+/* ── Allocation fault injection ─────────────────────────
  *
  * Inactive by default. When armed with a label, the next checked allocation
  * with that exact label returns NULL once and clears the hook. The caller must

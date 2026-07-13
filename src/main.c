@@ -2026,7 +2026,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
  * only by the self-respawn execv after a clean app_shutdown. */
 static char **g_saved_argv = NULL;
 
-/* Round 6 Part 3: alarm-based shutdown watchdog. Async-signal-safe.
+/* Alarm-based shutdown watchdog. Async-signal-safe.
  * Previous implementation used pthread_create from the signal handler
  * (not AS-safe) — under some kernel/glibc combinations the watchdog
  * thread never got CPU time and systemd's TimeoutStopSec=90 s fired

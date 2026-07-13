@@ -173,7 +173,7 @@ bool coin_backfill_hole_row_matches_unlocked(struct sqlite3 *db, int height,
                                              const struct uint256 *hash,
                                              bool *match);
 
-/* Direct operator paging (design B4): typed blocker + EV_OPERATOR_NEEDED
+/* Direct operator paging: typed blocker + EV_OPERATOR_NEEDED
  * from this Job — paging never depends on condition-engine attempt
  * exhaustion. Once-latched per (H,holehash,status); the slot is claimed
  * only AFTER the blocker actually registered, so a failed emission

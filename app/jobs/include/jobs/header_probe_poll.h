@@ -8,7 +8,7 @@
  *
  * Why this shape:
  *   - The heartbeat ring is a shared sweeper thread (single point of
- *     failure; Round 5 supervisor split was motivated by an 8.6 h
+ *     failure; the supervisor split was motivated by an 8.6 h
  *     wedge of that thread). Moving each periodic to its own
  *     supervisor child gives operators (and `zcl_state
  *     subsystem=supervisor`) visibility into stall age + ticks_run.

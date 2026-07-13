@@ -55,6 +55,13 @@ bool json_push_kv_int(struct json_value *obj, const char *key, int64_t i);
 bool json_push_kv_real(struct json_value *obj, const char *key, double d);
 bool json_push_kv_bool(struct json_value *obj, const char *key, bool b);
 
+/* Push the reserved `_health` object — { "ok": <ok>, "reason": <reason> } —
+ * onto `out` (see the "Adding state introspection" convention). Consolidates
+ * the identical dumpstate `_health` tail used across the subsystem/projection
+ * dumpers; `reason` is copied by json_push_kv_str, so a caller-owned stack
+ * buffer is fine. */
+void diag_push_health(struct json_value *out, bool ok, const char *reason);
+
 void json_copy(struct json_value *dst, const struct json_value *src);
 size_t json_size(const struct json_value *v);
 bool json_empty(const struct json_value *v);

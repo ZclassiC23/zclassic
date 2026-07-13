@@ -349,7 +349,7 @@ bool snapsync_awaiting_utxos(void)
     if (st.state == SNAPSYNC_COMPLETE)
         return false;
 
-    /* Wave 2: the CANONICAL store decides "a real UTXO set exists" — the
+    /* The CANONICAL store decides "a real UTXO set exists" — the
      * mirror count / node_state anchor below are legacy fallbacks only. */
     if (coins_kv_count(progress_store_db()) > 100000)
         return false;  /* real UTXO set exists (coins_kv authority) */

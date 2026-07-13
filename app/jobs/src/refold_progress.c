@@ -23,7 +23,7 @@
  * Conservative default: false (== normal boot, floor stays at the anchor). */
 static _Atomic bool g_refold_in_progress = false;
 
-/* B2 — the from-ANCHOR sub-mode cache. A from-anchor refold sets BOTH this and
+/* The from-ANCHOR sub-mode cache. A from-anchor refold sets BOTH this and
  * g_refold_in_progress; this one keeps the L0 floor at the compiled anchor (the
  * fold starts AT the anchor) instead of letting refold_in_progress() drop it to
  * 0 as the from-genesis refold does. Conservative default false (normal boot). */

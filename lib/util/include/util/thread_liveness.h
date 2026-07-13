@@ -11,13 +11,13 @@
  *
  * Why this exists
  * ----------------
- * Round 5 gave app-side services (disk_monitor, gap_fill, …) a supervisor
+ * The supervisor tree gave app-side services (disk_monitor, gap_fill, …) a
  * liveness contract, but the cross-cutting infrastructure threads that live
  * in lib/ and config/ (the health sweeper, the metrics printer, the async
  * event dispatcher, the RPC-timeout watchdog, the DB worker + WAL
  * checkpointer) were spawned through thread_registry_spawn and then never
  * appeared on the supervisor tree — a wedged loop there was silent, exactly
- * the failure mode Round 5 was built to make impossible. Those TUs cannot
+ * the failure mode the supervisor was built to make impossible. Those TUs cannot
  * include the app-side domain header (`supervisors/domains.h`) without a
  * lib-layering violation (Gate #15), so they register a ROOT child through
  * this lib/util adapter instead of a domain.

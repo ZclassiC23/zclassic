@@ -1,7 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * simnet — deterministic, RAM-only single-node chain harness (Phase 6d
- * foundation slice).
+ * simnet — deterministic, RAM-only single-node chain harness.
  *
  * The keystone the token / name / spend simulators build on: assemble a
  * block, drive it through the REAL consensus code (connect_block()), and

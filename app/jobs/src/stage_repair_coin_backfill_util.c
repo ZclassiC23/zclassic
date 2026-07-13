@@ -696,9 +696,6 @@ bool coin_backfill_dump_state_json(struct json_value *out, const char *key)
                        r.status == COIN_BACKFILL_REFUSED_SPENT ||
                        r.status == COIN_BACKFILL_REFUSED_UNPROVABLE ||
                        r.status == COIN_BACKFILL_MARKER_SEEN;
-        struct json_value health = {0};
-        json_set_object(&health);
-        json_push_kv_bool(&health, "ok", !blocked);
         char reason_buf[192] = "";
         if (blocked) {
             snprintf(reason_buf, sizeof(reason_buf),
@@ -706,9 +703,7 @@ bool coin_backfill_dump_state_json(struct json_value *out, const char *key)
                      coin_backfill_status_name(r.status), r.hole_height,
                      r.refuse_reason);
         }
-        json_push_kv_str(&health, "reason", reason_buf);
-        json_push_kv(out, "_health", &health);
-        json_free(&health);
+        diag_push_health(out, !blocked, reason_buf);
     }
     return true;
 }

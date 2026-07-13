@@ -375,7 +375,7 @@ static bool node_db_sync_connect_block_local(struct node_db *ndb,
             } else if (tsize < 500000 && pindex->nHeight > 500000) {
                 /* Tree is clearly incomplete — auto-flag for rebuild.
                  * Accept blocks so the node keeps running. The tree
-                 * will be rebuilt at next boot (Phase 1.2). */
+                 * will be rebuilt at next boot. */
                 if (!atomic_load(&g_sapling_tree_rebuilding)) {
                     atomic_store(&g_sapling_tree_rebuilding, true);
                     LOG_WARN("sync", "Sapling tree incomplete " "(size=%zu at h=%d) — flagged for rebuild", tsize, pindex->nHeight);

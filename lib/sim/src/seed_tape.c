@@ -167,7 +167,7 @@ static uint64_t tape_rng_u64(void *user)
      * for platform_rng_u64 is "reentrant if the test wants concurrent
      * draws". The seed_tape primitive serializes via a simple atomic
      * compare-exchange on the first lane to keep determinism even
-     * under multi-thread tests. The simulator harness (Phase 6c) will
+     * under multi-thread tests. The simulator harness will
      * tighten this once we have a real scheduler. */
     atomic_fetch_add_explicit(&t->rng_count, 1, memory_order_relaxed);
     return xoshiro_next(&t->rng);

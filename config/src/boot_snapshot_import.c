@@ -240,7 +240,7 @@ bool boot_import_snapshot_db(struct node_db *ndb,
                 sqlite3_errmsg(ndb->db));
         ok = false;
     }
-    /* WRITE-TIME VERIFICATION (mirrors utxo_recovery_restore.c Part B1):
+    /* WRITE-TIME VERIFICATION (mirrors utxo_recovery_restore.c):
      * before COMMIT, recompute the SHA3 over the just-installed set. At the
      * compiled checkpoint height there is a cryptographic ground truth, so
      * REJECT unless (root,count) byte-match it — a peer's per-chunk transport

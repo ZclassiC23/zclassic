@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Transport-neutral operator read compositions (ZERO-MCP W0-A).
+ * Transport-neutral operator read compositions.
  *
  * The re-homed composition bodies of the operator read tools (zcl_status,
  * zcl_kpi, zcl_syncdiag, zcl_blockers, zcl_timeline, zcl_agent_diagnose,
@@ -667,7 +667,7 @@ char *zcl_native_postmortem_list_body(const struct json_value *args,
     return body;
 }
 
-/* ── Tier-1 hot-swap: native.leaves generation entrypoint (W1-B/C) ──────
+/* ── Tier-1 hot-swap: native.leaves generation entrypoint ──────
  * Dev-only (compiled only under -DZCL_HOTSWAP_GEN, a generation .so build;
  * expands to nothing in the node/release TU — see ZCL_HOTSWAP_EXPORT_LEAVES
  * in lib/hotswap/include/hotswap/hotswap.h). Stages every native command

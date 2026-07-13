@@ -666,9 +666,6 @@ bool utxo_parity_dump_state_json(struct json_value *out, const char *key)
      * anything paging" summary, comment a few lines up) — no new health
      * logic. */
     {
-        struct json_value health = {0};
-        json_set_object(&health);
-        json_push_kv_bool(&health, "ok", !drift_flag);
         char reason_buf[160] = "";
         if (drift_flag) {
             snprintf(reason_buf, sizeof(reason_buf),
@@ -678,9 +675,7 @@ bool utxo_parity_dump_state_json(struct json_value *out, const char *key)
                      (long long)atomic_load(&g_parity.mismatches),
                      (long long)atomic_load(&g_parity.last_mismatch_height));
         }
-        json_push_kv_str(&health, "reason", reason_buf);
-        json_push_kv(out, "_health", &health);
-        json_free(&health);
+        diag_push_health(out, !drift_flag, reason_buf);
     }
     return true;
 }

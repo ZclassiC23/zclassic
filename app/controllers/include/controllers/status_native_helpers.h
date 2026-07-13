@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Transport-neutral status/blocker composition helpers (ZERO-MCP W0-A).
+ * Transport-neutral status/blocker composition helpers.
  *
  * This is the shared helper web the operator read compositions build on:
  * defaulted JSON accessors, RPC/dumpstate envelope folding, the peer

@@ -706,7 +706,7 @@ int vcs_revert(struct vcs_repo *r, const uint8_t target_commit[32],
     if (sr != VCS_OK)
         return sr;  /* propagate VCS_REFUSED / VCS_ERR */
 
-    /* Binary-generation relink half (Wave 3.3). The source revert + forward
+    /* Binary-generation relink half. The source revert + forward
      * commit above already stand — append-only, never undone — regardless of
      * what happens below. */
     if (relink && relink->activate_generation) {

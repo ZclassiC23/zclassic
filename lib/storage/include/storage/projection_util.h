@@ -29,6 +29,7 @@
 #ifndef ZCL_STORAGE_PROJECTION_UTIL_H
 #define ZCL_STORAGE_PROJECTION_UTIL_H
 
+#include "json/json.h"
 #include "platform/time_compat.h"
 
 #include <inttypes.h>
@@ -99,6 +100,26 @@ static inline size_t bounded_strlen(const char *s, size_t max)
     while (n <= max && s[n] != '\0')
         n++;
     return n;
+}
+
+/* Standard projection `_health` dumper shared by the eight event-log
+ * projections: ok = (projection open && no emit failures); reason =
+ * "<proj_name> not open" when closed, or "<proj_name> emit_fail_total=N"
+ * when an emit has failed. Pushes the reserved `_health` object onto `out`.
+ * reason_buf is sized for the longest projection name — no truncation. */
+static inline void projection_push_health(struct json_value *out,
+                                          const char *proj_name,
+                                          const void *p, uint64_t fails)
+{
+    bool ok = p != NULL && fails == 0;
+    char reason_buf[192] = "";
+    if (!p)
+        snprintf(reason_buf, sizeof(reason_buf), "%s not open", proj_name);
+    else if (fails > 0)
+        snprintf(reason_buf, sizeof(reason_buf),
+                 "%s emit_fail_total=%llu", proj_name,
+                 (unsigned long long)fails);
+    diag_push_health(out, ok, reason_buf);
 }
 
 #endif /* ZCL_STORAGE_PROJECTION_UTIL_H */

@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Transport-neutral body functions for the diagnostics MCP tools, re-homed
- * out of tools/mcp/controllers/diagnostics_controller.c (ZERO-MCP W0-A). See
+ * out of tools/mcp/controllers/diagnostics_controller.c. See
  * controllers/native_handler_body.h for the shared contract. Both the MCP
  * wrapper handlers in diagnostics_controller.c and the native command
  * bridge call these directly. */

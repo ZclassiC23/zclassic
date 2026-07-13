@@ -1,8 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Transport-neutral re-homed bodies for zcl_listunspent /
- * zcl_listtransactions / zcl_gettransaction / zcl_listaddresses
- * (ZERO-MCP W0-A). Each function is the argument-parsing plus
+ * zcl_listtransactions / zcl_gettransaction / zcl_listaddresses.
+ * Each function is the argument-parsing plus
  * RPC-composition core of the legacy MCP handler in
  * tools/mcp/controllers/wallet_controller.c, with the MCP-specific error
  * envelope stripped out — see controllers/native_handler_body.h for the
@@ -154,7 +154,7 @@ char *zcl_native_listaddresses_body(const struct json_value *args,
     return out;
 }
 
-/* ── Tier-1 hot-swap: native.leaves generation entrypoint (W1-B/C) ──────
+/* ── Tier-1 hot-swap: native.leaves generation entrypoint ──────
  * Dev-only (compiled only under -DZCL_HOTSWAP_GEN, a generation .so build;
  * expands to nothing in the node/release TU — see ZCL_HOTSWAP_EXPORT_LEAVES
  * in lib/hotswap/include/hotswap/hotswap.h). Stages every native command

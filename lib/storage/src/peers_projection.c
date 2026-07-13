@@ -457,21 +457,7 @@ bool peers_projection_dump_state_json(struct json_value *out, const char *key)
     {
         uint64_t fails = atomic_load_explicit(&g_emit_fail_total,
                                               memory_order_relaxed);
-        bool ok = p != NULL && fails == 0;
-        struct json_value health = {0};
-        json_set_object(&health);
-        json_push_kv_bool(&health, "ok", ok);
-        char reason_buf[128] = "";
-        if (!p)
-            snprintf(reason_buf, sizeof(reason_buf),
-                     "peers_projection not open");
-        else if (fails > 0)
-            snprintf(reason_buf, sizeof(reason_buf),
-                     "peers_projection emit_fail_total=%llu",
-                     (unsigned long long)fails);
-        json_push_kv_str(&health, "reason", reason_buf);
-        json_push_kv(out, "_health", &health);
-        json_free(&health);
+        projection_push_health(out, "peers_projection", p, fails);
     }
     if (!p) return true;
     json_push_kv_str(out, "path", p->path);
