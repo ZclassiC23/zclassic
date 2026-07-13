@@ -1,0 +1,31 @@
+/* THE HARD LINE — swappable-handler allowlist for the REAL module ABI.
+ *
+ * Consumer must define:
+ *   HOTSWAP_SWAPPABLE(handler_name, source_tu)
+ *
+ * handler_name  A canonical, READY, read-only leaf command path. hotswap_activate
+ *               refuses at runtime any handler_name absent from this list; the
+ *               command-registry commit additionally re-checks READY + read-only.
+ * source_tu     The shape-leaf translation unit that owns the handler. It MUST be
+ *               a controller / view / condition — a shape LEAF. It may NEVER be a
+ *               reducer stage, consensus validation, the storage engine, a
+ *               supervisor, or any state root. This is what makes activation safe.
+ *
+ * Two things enforce the hard line and must never disagree:
+ *   - check-hotswap-swappable-shape (make lint): fails if any source_tu resolves
+ *     under a forbidden root (core/, lib/consensus/, lib/validation/,
+ *     lib/storage/, lib/net/, lib/coins/, lib/chain/, lib/mining/, app/jobs/,
+ *     lib/kernel/, lib/supervisor/, app/supervisors/) or is not under an allowed
+ *     shape folder (app/controllers/, app/views/, app/conditions/). Self-tested
+ *     in lib/test/src/test_make_lint_gates.c.
+ *   - hotswap_handler_is_swappable() (runtime): #includes this file to build the
+ *     compiled allowlist consulted before any dlopen'd handler is published.
+ *
+ * Keep this DATA ONLY (no C tokens beyond the macro invocations). */
+
+/* Read-only status projection (controller leaf; tolerates empty args). */
+HOTSWAP_SWAPPABLE("core.status", "app/controllers/src/status_native_handlers.c")
+/* Read-only peer-incident projection (controller leaf). */
+HOTSWAP_SWAPPABLE("core.network.peers.incidents", "app/controllers/src/net_native_handlers.c")
+/* Read-only operator metrics projection (controller leaf). */
+HOTSWAP_SWAPPABLE("ops.metrics", "app/controllers/src/meta_native_handlers.c")

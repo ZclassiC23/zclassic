@@ -8,6 +8,7 @@
  * manifest has passed the host ABI/capability/provenance/state contract. */
 
 #include "hotswap/hotswap.h"
+#include "hotswap/hotswap_module.h"
 
 #include "crypto/sha256.h"
 #include "json/json.h"
@@ -414,6 +415,10 @@ bool hotswap_dump_state_json(struct json_value *out, const char *key)
     json_push_kv(out, "last_rejection", &last);
     json_free(&last);
     pthread_mutex_unlock(&g_lock);
+
+    /* Merge the REAL (activatable) module-ABI subsystem's telemetry into the
+     * same `zcl_state subsystem=hotswap` document (takes its own lock). */
+    hotswap_activate_dump_json(out);
     return true;
 }
 

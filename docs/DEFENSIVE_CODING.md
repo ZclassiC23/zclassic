@@ -534,6 +534,7 @@ add/remove a gate.
 - `check-hotswap-dev-only`
 - `check-hotswap-eligible-scope`
 - `check-hotswap-static-state`
+- `check-hotswap-swappable-shape`
 - `check-release-no-dev-symbols`
 - `check-vcs-no-git`
 <!-- LINT-GATES-END -->

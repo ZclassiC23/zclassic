@@ -68,6 +68,11 @@
     "lib/test/fixtures/hotswap_manifest_bad_static.def"
 #define HOTSWAP_NO_MACRO_MANIFEST_REL \
     "lib/test/fixtures/hotswap_manifest_no_macro.def"
+#define HOTSWAP_SWAPPABLE_SCRIPT_REL \
+    "tools/lint/check_hotswap_swappable_shape.sh"
+#define HOTSWAP_SWAPPABLE_MANIFEST_REL "config/hotswap_swappable.def"
+#define HOTSWAP_SWAPPABLE_BAD_MANIFEST_REL \
+    "lib/test/fixtures/hotswap_swappable_bad_shape.def"
 #define GIT_HOOKS_SCRIPT_REL "tools/scripts/check_git_hooks_installed.sh"
 #define GIT_HOOKS_PRE_PUSH_REL "tools/githooks/pre-push"
 
@@ -2776,6 +2781,34 @@ static int t_hotswap_eligible_scope_gate(void)
         /* Recovery: back on the real manifest the gate passes again. */
         ASSERT(run_hotswap_gate_with_manifest(HOTSWAP_SCOPE_SCRIPT_REL,
                                               HOTSWAP_MANIFEST_REL) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Run the swappable-shape gate against a specific allowlist fixture by
+ * exporting ZCL_HOTSWAP_SWAPPABLE_MANIFEST (resolved to an absolute path). */
+static int run_hotswap_swappable_gate(const char *manifest_rel)
+{
+    char manifest_abs[PATH_MAX];
+    if (repo_path(manifest_abs, sizeof(manifest_abs), manifest_rel) != 0)
+        return -1;
+    return run_gate_script_with_env(HOTSWAP_SWAPPABLE_SCRIPT_REL,
+                                    "ZCL_HOTSWAP_SWAPPABLE_MANIFEST",
+                                    manifest_abs);
+}
+
+static int t_hotswap_swappable_shape_gate(void)
+{
+    int failures = 0;
+    TEST("hotswap swappable-shape gate: real allowlist passes, forbidden root trips") {
+        /* The committed allowlist is all shape-leaf surfaces → clean (exit 0). */
+        ASSERT(run_hotswap_swappable_gate(HOTSWAP_SWAPPABLE_MANIFEST_REL) == 0);
+        /* A seeded allowlist that points a handler at a lib/consensus TU trips
+         * the gate (exit 1) — proof the hard line is not hollow. */
+        ASSERT(run_hotswap_swappable_gate(HOTSWAP_SWAPPABLE_BAD_MANIFEST_REL) == 1);
+        /* Recovery: back on the real allowlist the gate passes again. */
+        ASSERT(run_hotswap_swappable_gate(HOTSWAP_SWAPPABLE_MANIFEST_REL) == 0);
         PASS();
     } _test_next:;
     return failures;
@@ -7511,6 +7544,7 @@ int test_make_lint_gates(void)
     failures += t_e12_honest_witness();
     failures += t_gate21_supervisor_worker_lockin();
     failures += t_hotswap_eligible_scope_gate();
+    failures += t_hotswap_swappable_shape_gate();
     failures += t_hotswap_static_state_gate();
     failures += t_lint_gates_fail_loud_on_empty_scan();
     return failures;
