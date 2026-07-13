@@ -36,7 +36,7 @@ static void frame_aad(uint32_t epoch, uint32_t wire_len, uint8_t aad[7])
 /* REKEY (transport-design §7): k_next = first 32 bytes of
  * ChaCha20-Poly1305(k, nonce96(2^64-1), aad="", plaintext=32×0x00). Resets the
  * per-direction counter and increments the epoch. */
-static void rekey_direction(uint8_t key[32], uint32_t *epoch,
+static bool rekey_direction(uint8_t key[32], uint32_t *epoch,
                             uint64_t *counter, uint64_t *bytes_epoch)
 {
     uint8_t nonce[12];
@@ -44,14 +44,20 @@ static void rekey_direction(uint8_t key[32], uint32_t *epoch,
     uint8_t zero[32] = {0};
     uint8_t ct[32 + SESSION_TAG_LEN];
     /* one-shot AEAD over 32 zero bytes; take the ciphertext (not the tag). */
-    if (chacha20poly1305_encrypt(zero, sizeof(zero), NULL, 0, nonce, key, ct)) {
+    bool ok = chacha20poly1305_encrypt(zero, sizeof(zero), NULL, 0, nonce,
+                                       key, ct);
+    if (ok)
         memcpy(key, ct, 32);
-    }
     memory_cleanse(ct, sizeof(ct));
     memory_cleanse(zero, sizeof(zero));
+    /* A failed derivation must NOT reset the counter — that would resume at
+     * nonce 0 under the OLD key. Leave state untouched and fail closed. */
+    if (!ok)
+        return false;
     *epoch += 1;
     *counter = 0;
     *bytes_epoch = 0;
+    return true;
 }
 
 void session_transport_init(struct session_transport *t,
@@ -75,7 +81,9 @@ bool session_transport_encrypt(struct session_transport *t,
     /* Rekey the send direction before this frame if a threshold is crossed. */
     if (t->send_n >= SESSION_REKEY_FRAME_LIMIT ||
         t->send_bytes_epoch >= SESSION_REKEY_BYTE_LIMIT) {
-        rekey_direction(t->send_key, &t->send_epoch, &t->send_n, &t->send_bytes_epoch);
+        if (!rekey_direction(t->send_key, &t->send_epoch, &t->send_n,
+                             &t->send_bytes_epoch))
+            LOG_FAIL("session", "encrypt: send rekey failed; refusing frame");
     }
 
     /* inner plaintext = [channel tag][payload] */
@@ -125,7 +133,9 @@ bool session_transport_decrypt(struct session_transport *t,
     /* Rekey the recv direction in lockstep with the sender (same thresholds). */
     if (t->recv_n >= SESSION_REKEY_FRAME_LIMIT ||
         t->recv_bytes_epoch >= SESSION_REKEY_BYTE_LIMIT) {
-        rekey_direction(t->recv_key, &t->recv_epoch, &t->recv_n, &t->recv_bytes_epoch);
+        if (!rekey_direction(t->recv_key, &t->recv_epoch, &t->recv_n,
+                             &t->recv_bytes_epoch))
+            LOG_FAIL("session", "decrypt: recv rekey failed; refusing frame");
     }
 
     uint8_t nonce[12]; frame_nonce(t->recv_n, nonce);
