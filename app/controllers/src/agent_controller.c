@@ -12,6 +12,7 @@
 #include "json/json.h"
 #include "rpc/server.h"
 #include "util/clientversion.h"
+#include "util/spawn.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -62,21 +63,20 @@ static void agent_collect_optional_status(struct json_value *out,
                                           const char *command,
                                           const char *schema)
 {
+    /* Split the trusted command on whitespace into argv; run no-shell spawn. */
     char buf[65536];
-    size_t used = 0;
-    int rc = -1;
-    FILE *pipe = popen(command, "r");
-    if (pipe) {
-        while (used + 1 < sizeof(buf)) {
-            size_t n = fread(buf + used, 1, sizeof(buf) - used - 1, pipe);
-            used += n;
-            if (n == 0) break;
-        }
-        rc = pclose(pipe);
-    }
-    buf[used] = '\0';
+    char cmdcopy[1024];
+    const char *argv[64];
+    size_t argc = 0;
+    buf[0] = '\0';
+    if (snprintf(cmdcopy, sizeof(cmdcopy), "%s", command ? command : "")
+            < (int)sizeof(cmdcopy))
+        argc = zcl_argv_split(cmdcopy, argv, 64);
+    int rc = argc ? zcl_spawn_capture(argv, buf, sizeof(buf), 30000) : -1;
+    size_t used = strlen(buf);
+
     struct json_value parsed = {0};
-    if (pipe && used + 1 < sizeof(buf) &&
+    if (argc &&
         json_read(&parsed, buf, used) && parsed.type == JSON_OBJ &&
         strcmp(json_get_str(json_get(&parsed, "schema")), schema) == 0) {
         *out = parsed;

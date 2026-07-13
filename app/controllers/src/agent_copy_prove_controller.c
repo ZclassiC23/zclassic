@@ -43,6 +43,7 @@
 #include "json/json.h"
 #include "platform/time_compat.h"
 #include "util/safe_alloc.h"
+#include "util/spawn.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -191,27 +192,6 @@ static void cp_mkdir_p(const char *path)
         }
     }
     mkdir(tmp, 0700);
-}
-
-/* ── shell quoting (defense in depth over the allowlists above) ───── */
-
-static void cp_shell_squote(const char *in, char *out, size_t out_sz)
-{
-    size_t o = 0;
-    if (out_sz == 0) return;
-    out[o++] = '\'';
-    for (const char *p = in; p && *p && o + 5 < out_sz; p++) {
-        if (*p == '\'') {
-            out[o++] = '\'';
-            out[o++] = '\\';
-            out[o++] = '\'';
-            out[o++] = '\'';
-        } else {
-            out[o++] = *p;
-        }
-    }
-    if (o + 1 < out_sz) out[o++] = '\'';
-    out[o] = '\0';
 }
 
 /* ── synchronous "queued" pre-write ─────────────────────────────────
@@ -392,56 +372,58 @@ bool rpc_agent_copy_prove(const struct json_value *params, bool help,
         return true;
     }
 
-    char q_slug[160], q_status[1200], q_src[1200], q_launch_log[1300];
-    cp_shell_squote(slug, q_slug, sizeof(q_slug));
-    cp_shell_squote(status_file, q_status, sizeof(q_status));
     char launch_log[1200];
     snprintf(launch_log, sizeof(launch_log), "%s.launch.log", status_file);
-    cp_shell_squote(launch_log, q_launch_log, sizeof(q_launch_log));
 
-    char cmd[6000];
-    int n = snprintf(cmd, sizeof(cmd),
-        "nohup %s %s --status-file=%s --deadline=%lld%s%s",
-        script, q_slug, q_status, (long long)deadline_secs,
-        full ? " --full" : "", no_run ? " --no-run" : "");
-    if (n > 0 && src && src[0] && (size_t)n < sizeof(cmd)) {
-        cp_shell_squote(src, q_src, sizeof(q_src));
-        n += snprintf(cmd + n, sizeof(cmd) - (size_t)n, " --src=%s", q_src);
-    }
-    if (n > 0 && expect_climb_past >= 0 && (size_t)n < sizeof(cmd)) {
-        n += snprintf(cmd + n, sizeof(cmd) - (size_t)n,
-                      " --expect-climb-past=%lld",
-                      (long long)expect_climb_past);
-    }
-    if (n > 0 && args && args[0] && (size_t)n < sizeof(cmd)) {
-        /* args tokens are allowlist-validated above (alnum/-_.:=,/ only,
-         * each starting with '-') so no shell metacharacter can be
-         * present; they are safe to append unquoted as argv words. */
-        n += snprintf(cmd + n, sizeof(cmd) - (size_t)n, " -- %s", args);
-    }
-    if (n > 0 && (size_t)n < sizeof(cmd)) {
-        n += snprintf(cmd + n, sizeof(cmd) - (size_t)n,
-                      " > %s 2>&1 < /dev/null &", q_launch_log);
-    }
-    if (n < 0 || (size_t)n >= sizeof(cmd)) {
-        json_push_kv_str(result, "status", "error");
-        json_push_kv_str(result, "error", "command_too_long");
-        // obs-ok:agent-copy-prove-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
-        fprintf(stderr, "[agent_copy_prove] %s:%d %s(): command exceeded "
-                "%zu bytes for slug=%s\n", __FILE__, __LINE__, __func__,
-                sizeof(cmd), slug);
-        return true;
-    }
+    /* Build an argv vector for the detached runner. No shell: no quoting,
+     * no `nohup ... &`. zcl_spawn_detached double-forks + setsid()s (so the
+     * grandchild is reparented to init and never a zombie) and redirects the
+     * grandchild's stdout+stderr to launch_log itself — replacing the old
+     * `> launch_log 2>&1 < /dev/null &`. */
+    char opt_status[1200], opt_deadline[64], opt_src[1200], opt_climb[64];
+    snprintf(opt_status, sizeof(opt_status), "--status-file=%s", status_file);
+    snprintf(opt_deadline, sizeof(opt_deadline), "--deadline=%lld",
+             (long long)deadline_secs);
 
-    int rc = system(cmd);
-    if (rc != 0) {
+    const char *argv[128];
+    size_t argc = 0;
+    argv[argc++] = script;
+    argv[argc++] = slug;
+    argv[argc++] = opt_status;
+    argv[argc++] = opt_deadline;
+    if (full)   argv[argc++] = "--full";
+    if (no_run) argv[argc++] = "--no-run";
+    if (src && src[0]) {
+        snprintf(opt_src, sizeof(opt_src), "--src=%s", src);
+        argv[argc++] = opt_src;
+    }
+    if (expect_climb_past >= 0) {
+        snprintf(opt_climb, sizeof(opt_climb), "--expect-climb-past=%lld",
+                 (long long)expect_climb_past);
+        argv[argc++] = opt_climb;
+    }
+    /* args: allowlist-validated above (each token begins with '-', charset
+     * [A-Za-z0-9_.:=,/-]); split on whitespace into argv words after a `--`
+     * separator — the exact tokens the old `-- %s` shell suffix produced. */
+    char args_copy[1024];
+    if (args && args[0]) {
+        argv[argc++] = "--";
+        if (snprintf(args_copy, sizeof(args_copy), "%s", args)
+                < (int)sizeof(args_copy))
+            argc += zcl_argv_split(args_copy, argv + argc,
+                                   (sizeof(argv) / sizeof(argv[0])) - argc);
+    }
+    argv[argc] = NULL;
+
+    struct zcl_result sp = zcl_spawn_detached(argv, launch_log);
+    if (!sp.ok) {
         json_push_kv_str(result, "status", "error");
         json_push_kv_str(result, "error", "spawn_failed");
-        json_push_kv_int(result, "spawn_exit_code", rc);
+        json_push_kv_str(result, "detail", sp.message);
         // obs-ok:agent-copy-prove-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
-        fprintf(stderr, "[agent_copy_prove] %s:%d %s(): system() launch "
-                "failed rc=%d for slug=%s cmd=%s\n", __FILE__, __LINE__,
-                __func__, rc, slug, cmd);
+        fprintf(stderr, "[agent_copy_prove] %s:%d %s(): spawn_detached "
+                "failed for slug=%s: %s\n", __FILE__, __LINE__,
+                __func__, slug, sp.message);
         return true;
     }
 

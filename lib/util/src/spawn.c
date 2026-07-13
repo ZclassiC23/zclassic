@@ -243,3 +243,21 @@ int zcl_spawn_capture(const char *const argv[], char *buf, size_t cap,
     if (WIFSIGNALED(status)) return 128 + WTERMSIG(status);
     return 0;
 }
+
+/* ── zcl_argv_split ──────────────────────────────────────────────────── */
+
+size_t zcl_argv_split(char *str, const char *argv[], size_t max)
+{
+    if (!argv || max == 0)
+        return 0;
+    size_t n = 0;
+    if (str) {
+        char *save = NULL;
+        for (char *tok = strtok_r(str, " \t\r\n", &save);
+             tok && n < max - 1;
+             tok = strtok_r(NULL, " \t\r\n", &save))
+            argv[n++] = tok;
+    }
+    argv[n] = NULL;
+    return n;
+}

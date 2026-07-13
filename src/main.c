@@ -26,6 +26,8 @@
 #include "net/file_service.h"
 #include "util/thread_registry.h"
 #include "util/util.h"
+#include "util/file_tree_ops.h"
+#include "util/spawn.h"
 #include <sqlite3.h>
 #include "json/json.h"
 #include "views/wallet_gui.h"
@@ -1198,19 +1200,19 @@ static bool cli_service_exec_arg(const char *key, char *out, size_t out_size)
         return false;
     out[0] = '\0';
 
-    FILE *f = popen(
-        "systemctl --user show zclassic23 -p ExecStart --value 2>/dev/null",
-        "r");
-    if (!f)
-        return false;
-
+    /* `systemctl --user show zclassic23 -p ExecStart --value` — capture its
+     * stdout via the no-shell spawn primitive. stderr is discarded by
+     * zcl_spawn_capture (matches the old `2>/dev/null`); the exit code is not
+     * needed (the old code ignored pclose's return too). */
+    const char *const argv[] = {
+        "systemctl", "--user", "show", "zclassic23",
+        "-p", "ExecStart", "--value", NULL
+    };
     char buf[8192];
-    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-    int close_rc = pclose(f);
-    (void)close_rc;
+    zcl_spawn_capture(argv, buf, sizeof(buf), 5000);
+    size_t n = strlen(buf);
     if (n == 0)
         return false;
-    buf[n] = '\0';
 
     char needle[64];
     int written = snprintf(needle, sizeof(needle), "-%s=", key);
@@ -2963,15 +2965,25 @@ int main(int argc, char **argv)
                 if (slash) *slash = '\0'; else snprintf(ddir, sizeof(ddir), ".");
                 char tmp_parent[900];
                 snprintf(tmp_parent, sizeof(tmp_parent), "%s/bidx_import_tmp", ddir);
-                char cmd[2400];
-                snprintf(cmd, sizeof(cmd),
-                         "rm -rf '%s' && mkdir -p '%s/blocks' && "
-                         "cp -a '%s/blocks/index' '%s/blocks/index'",
-                         tmp_parent, tmp_parent, snap_dir, tmp_parent);
                 printf("Copying block index (source LOCK present)...\n");
                 fflush(stdout);
-                if (system(cmd) != 0) {
-                    fprintf(stderr, "Failed to copy block index\n");
+                /* `rm -rf tmp_parent && mkdir -p tmp_parent/blocks &&
+                 *  cp -a snap_dir/blocks/index tmp_parent/blocks/index` — the
+                 * fd-based walker, no shell. PRESERVE_TIMES matches cp -a. */
+                char src_index[1100], dst_blocks[1100], dst_index[1200];
+                snprintf(src_index, sizeof(src_index), "%s/blocks/index", snap_dir);
+                snprintf(dst_blocks, sizeof(dst_blocks), "%s/blocks", tmp_parent);
+                snprintf(dst_index, sizeof(dst_index), "%s/blocks/index", tmp_parent);
+                struct zcl_result rrm = zcl_tree_remove(tmp_parent);
+                struct zcl_result rmk = rrm.ok ? zcl_mkdir_p(dst_blocks, 0755)
+                                               : rrm;
+                struct zcl_result rcp = rmk.ok
+                    ? zcl_tree_copy(src_index, dst_index,
+                                    ZCL_COPY_PRESERVE_TIMES, NULL, NULL)
+                    : rmk;
+                if (!rcp.ok) {
+                    fprintf(stderr, "Failed to copy block index: %s\n",
+                            rcp.message);
                     return 1;
                 }
                 char tmp_lock[1100];
@@ -2987,10 +2999,11 @@ int main(int argc, char **argv)
         bool ok = snapshot_import_block_index(import_parent, db_path, true, &count);
         int64_t t1 = (int64_t)time(NULL);
         if (tmp_cleanup[0]) {
-            char rmcmd[1200];
-            snprintf(rmcmd, sizeof(rmcmd), "rm -rf '%s'", tmp_cleanup);
-            if (system(rmcmd) != 0)
-                fprintf(stderr, "warning: failed to clean temp %s\n", tmp_cleanup);
+            /* `rm -rf tmp_cleanup` via the fd-based walker (no shell). */
+            struct zcl_result rmc = zcl_tree_remove(tmp_cleanup);
+            if (!rmc.ok)
+                fprintf(stderr, "warning: failed to clean temp %s: %s\n",
+                        tmp_cleanup, rmc.message);
         }
         if (!ok) {
             fprintf(stderr, "Block-index import failed\n");

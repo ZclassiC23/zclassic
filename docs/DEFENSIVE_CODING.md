@@ -337,6 +337,18 @@ assert green).
   wall-clock/monotonic through the platform clock and entropy through platform
   RNG. Override `// platform-ok` on the line.
 
+- **Gate: `check-no-shellouts`** (FAIL) —
+  `tools/lint/check_no_shellouts.sh`. Bans `system(`, `popen(`, `execlp(` in
+  the resident node binary's own code (`app/`, `lib/` excl. `lib/test/`,
+  `src/`, `config/`). Every shell-out has been migrated onto the two in-tree
+  primitives — `lib/util` `file_tree_ops` (`zcl_tree_copy` / `zcl_tree_remove`,
+  fd-based, no shell) and `lib/util` `spawn` (`zcl_spawn_detached` /
+  `zcl_spawn_capture`, argv-array, no `/bin/sh`). This is os-substrate Rung 0
+  (`docs/work/os-substrate-plan.md` §1) and the precondition for a future
+  seccomp `execve` deny-list. Standalone dev/bench/CLI binaries under `tools/`
+  and the `lib/test/` fixtures are out of scope. Override `// shellout-ok` for
+  a documented, reviewed exception.
+
 - **Gate #20: `check-no-raw-sqlite-in-controllers`** (RATCHET, was WARN) —
   `tools/lint/check_no_raw_sqlite_in_controllers.sh`. Bans
   `sqlite3_prepare_v2(` / `sqlite3_exec(` in `app/controllers/` and
@@ -479,6 +491,7 @@ add/remove a gate.
 - `check-model-validation`
 - `check-no-raw-clock-outside-platform`
 - `check-no-raw-sqlite-in-controllers`
+- `check-no-shellouts`
 - `check-no-authoritative-ram-state`
 - `check-no-new-borrowed-seed`
 - `check-no-new-coin-backfill-caller`

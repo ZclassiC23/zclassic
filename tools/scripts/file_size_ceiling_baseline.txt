@@ -27,7 +27,7 @@ app/controllers/src/swap_controller.c 1013
 app/jobs/src/reducer_frontier.c 806
 app/jobs/src/stage_repair_reducer_frontier.c 814
 app/jobs/src/tip_finalize_stage.c 816
-app/jobs/src/utxo_apply_stage.c 938
+app/jobs/src/utxo_apply_stage.c 937
 app/services/src/block_index_loader.c 844
 app/services/src/chain_state_service.c 810
 app/services/src/node_db_catchup_service.c 860
@@ -36,6 +36,6 @@ app/services/src/sticky_escalator.c 873
 app/services/src/sync_monitor.c 811
 app/views/src/explorer_pages_hodl.c 1853
 app/views/src/explorer_pages_view.c 823
-config/src/boot.c 3949
-config/src/boot_refold_staged.c 2107
+config/src/boot.c 3939
+config/src/boot_refold_staged.c 2025
 config/src/boot_services.c 1634

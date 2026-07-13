@@ -13,6 +13,7 @@
 
 #include "utxo_recovery_internal.h"
 #include "util/log_macros.h"
+#include "util/file_tree_ops.h"
 
 #include <dirent.h>
 #include <stdint.h>
@@ -64,27 +65,28 @@ struct zcl_result utxo_recovery_copy_chainstate_stable(const char *cs_path,
     if (!cs_path || !import_path)
         return ZCL_ERR(-3, "copy_chainstate_stable: NULL path");
 
-    char cmd[2300];
-    int n = snprintf(cmd, sizeof(cmd), "rm -rf '%s' && cp -a '%s' '%s'",
-                     import_path, cs_path, import_path);
-    if (n <= 0 || (size_t)n >= sizeof(cmd))
-        return ZCL_ERR(-3, "copy_chainstate_stable: path too long");
-
     const int max_copy_attempts = 6;
     for (int attempt = 1; attempt <= max_copy_attempts; attempt++) {
         uint64_t sig_before = chainstate_dir_signature(cs_path);
-        /* IMPORTANT: system()'s return value is NOT trustworthy here.  The node
-         * installs SIGCHLD with SA_NOCLDWAIT (lib/util/src/alerts.c), so the
-         * cp child is auto-reaped and system()'s internal waitpid() fails with
-         * ECHILD, returning -1 even when `cp` succeeded byte-for-byte.  Ignore
-         * the code and prove the copy structurally instead: (1) the source did
-         * not change during the copy (point-in-time), and (2) the destination
-         * is a COMPLETE image of it.  chainstate_dir_signature folds
-         * (name,size,mtime_ns) over every entry and `cp -a` preserves all three
-         * on the same filesystem, so a complete copy has dest_sig == source
-         * sig; a torn/failed cp (vanished SST, disk-full) does not. */
-        int rc = system(cmd);
-        (void)rc;
+        /* `rm -rf import_path && cp -a cs_path import_path`, via the single
+         * fd-based tree walker (no shell). ZCL_COPY_PRESERVE_TIMES is
+         * LOAD-BEARING: correctness is proven structurally, not by the copy's
+         * return code — (1) the source did not change during the copy
+         * (point-in-time, which no copy return can attest), and (2) the
+         * destination is a COMPLETE image of it. chainstate_dir_signature
+         * folds (name,size,mtime_ns) over every entry, so dest_sig == source
+         * sig only when the copy preserved mtime_ns exactly (what PRESERVE_TIMES
+         * guarantees, matching the old `cp -a`); a torn/failed copy (vanished
+         * SST, disk-full) does not match. The copy's own error return is still
+         * logged as a hint, but the signature comparison below is the gate. */
+        (void)zcl_tree_remove(import_path);
+        struct zcl_result cp = zcl_tree_copy(cs_path, import_path,
+                                             ZCL_COPY_PRESERVE_TIMES,
+                                             NULL, NULL);
+        if (!cp.ok)
+            LOG_WARN("utxo_recovery",
+                     "chainstate copy attempt %d/%d reported: %s",
+                     attempt, max_copy_attempts, cp.message);
         uint64_t sig_after = chainstate_dir_signature(cs_path);
         uint64_t dest_sig  = chainstate_dir_signature(import_path);
         if (sig_before != 0 && sig_before == sig_after && dest_sig == sig_after)
