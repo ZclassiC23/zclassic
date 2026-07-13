@@ -2245,6 +2245,26 @@ bench: zclassic23
 bench-crypto-verify: zclassic23
 	@$(ZCLASSIC23_BIN) -bench-crypto-verify
 
+# Crypto-vs-Rust microbenchmark: times EVERY consensus-path C crypto primitive
+# (Equihash verify, Groth16/BLS12-381 output verify, BLS12-381 pairing + Fp mul,
+# secp256k1 ECDSA verify, ed25519 verify, SHA256, SHA3-256, BLAKE2b) as a
+# flake-resistant MEDIAN ns/op, prints machine-readable CRYPTOPERF lines, and
+# APPENDS the medians to docs/bench-history.csv.
+.PHONY: bench-crypto-vs-rust
+bench-crypto-vs-rust: zclassic23
+	@$(ZCLASSIC23_BIN) -bench-crypto-vs-rust
+
+# The STANDING crypto-perf gate (docs/CRYPTO_PERF.md): measure C live and
+# enforce (a) the RATCHET — no C primitive may regress beyond the flake margin;
+# the baseline may only shrink — and (b) the RATIO vs Rust — primitives that
+# beat Rust must stay ahead (hard fail on lost lead); primitives behind Rust
+# (Groth16 today) print a loud "BEHIND RUST — optimize" line but do NOT fail.
+# DELIBERATELY NOT in the default `make lint` aggregate (timing flakes under CI
+# load) — run it in a quiet context. Passes on current main = today's numbers.
+.PHONY: check-crypto-perf
+check-crypto-perf: zclassic23
+	@ZCL_CRYPTO_PERF_BIN=$(ZCLASSIC23_BIN) tools/scripts/check_crypto_perf.sh
+
 bench-regress: zclassic23
 	@$(ZCLASSIC23_BIN) -bench-regress
 

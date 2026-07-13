@@ -53,6 +53,25 @@ cannot "get fast" and pass the gate.
 | 2026-07-10 | de89ee8d4 | Equihash 200,9 solution verify | **~120.6 µs/op** (~8,300 ops/s) | `check_equihash_solution` on a baked real (200,9) witness (`lib/test/include/test/verify_bench_fixture.h`); AMD Ryzen 9 7950X3D. |
 | 2026-07-10 | de89ee8d4 | Groth16 BLS12-381 output-proof verify | **~7.85 ms/op** (~127 ops/s) | `sapling_check_output` (full pure-C23 BLS12-381 pairing) on a real prover output proof; needs `~/.zcash-params`; AMD Ryzen 9 7950X3D. |
 
+## Crypto-vs-Rust standing invariant (`make check-crypto-perf`)
+
+The above two-primitive bench is subsumed by the **standing "beat Rust"
+invariant** — see [`CRYPTO_PERF.md`](./CRYPTO_PERF.md). `make bench-crypto-vs-rust`
+times **every** consensus-path C crypto primitive (Equihash verify,
+Groth16/BLS12-381 output verify, BLS12-381 pairing + Fp mul, secp256k1 ECDSA
+verify, ed25519 verify, SHA256, SHA3-256, BLAKE2b) as a flake-resistant **median
+of N** ns/op and appends the rows here. `make check-crypto-perf`
+(`tools/scripts/check_crypto_perf.sh`, NOT in the default `make lint` aggregate —
+timing flakes under load) then gates against `tools/crypto_perf_baseline.csv`:
+a **ratchet** (each C primitive may only get faster; the baseline is a ceiling
+that only shrinks) plus a **ratio-vs-Rust** rule (primitives that beat Rust must
+stay ahead — hard fail on a lost lead; primitives behind Rust, e.g. Groth16
+today, print a loud `BEHIND RUST — optimize` line but do not fail). Hollow-fast
+is forbidden by the `crypto_perf_selftest` test group + in-harness teeth. As of
+the 2026-07-13 baseline we BEAT Rust on Equihash verify, ECDSA verify, and
+BLAKE2b; the elliptic-curve/pairing/Groth16 stack, ed25519, and SHA256 (no
+SHA-NI) are the tracked optimize targets.
+
 ## Native rebuild benchmark (`rebuild_recent` tool)
 
 | date | commit | N blocks | rebuild ms | blocks/s | bytes | notes |
