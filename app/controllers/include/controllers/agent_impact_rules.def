@@ -114,6 +114,10 @@ AGENT_IMPACT_RULE("config/src/boot_services.c", "make_lint_gates syncdiag_rpc su
 AGENT_IMPACT_RULE("app/supervisors/src/staged_sync_supervisor.c|app/supervisors/include/supervisors/staged_sync_supervisor.h", "supervisor supervisor_production_tree supervisor_domains make_lint_gates")
 AGENT_IMPACT_RULE("config/src/boot_msg_callbacks.c|app/services/src/reducer_ingest_service.c|app/services/src/reducer_drain.c|app/services/src/reducer_body_fsync.c|app/services/include/services/reducer_ingest_service.h|app/services/include/services/chain_activation_service.h", "reducer_block_ingest_gate reducer_ingest_e2e disk_block_io stage msg_handlers body_fetch_missing_have_data_condition sync_watchdog_conditions make_lint_gates")
 AGENT_IMPACT_RULE("lib/test/src/test_reducer_step_drain_harness.c|config/src/boot_mint_anchor.c|app/services/src/reducer_ingest_service.c|app/services/src/reducer_drain.c", "reducer_step_drain_harness reducer_ondemand_genesis_seed mint_fold_livelock mint_skip_crypto make_lint_gates")
+/* Fresh-datadir -mint-anchor composition test: preflight (unit-style call) +
+ * the SAME reducer_kick_unbudgeted / frontier-walled harness as
+ * test_mint_fold_livelock above — never a silent timeout/stall terminal. */
+AGENT_IMPACT_RULE("lib/test/src/test_mint_anchor_fresh_datadir.c|config/src/boot_mint_anchor_preflight.c|config/src/boot_mint_anchor.c|app/services/src/reducer_ingest_service.c|app/services/src/reducer_drain.c", "mint_anchor_fresh_datadir mint_skip_crypto mint_anchor_preflight make_lint_gates")
 AGENT_IMPACT_RULE("config/src/boot.c|config/src/boot_index.c|config/src/boot_refold*.c|config/include/config/boot_internal.h|lib/test/src/test_load_verify_boot.c", "boot_refold_window_extend chain_state_repo load_verify_boot make_lint_gates")
 AGENT_IMPACT_RULE("config/src/boot_refold_staged_containment.c|lib/test/src/test_boot_refold_window_extend.c", "boot_refold_window_extend make_lint_gates")
 AGENT_IMPACT_RULE("app/services/include/services/anchor_selfmint.h|app/services/src/anchor_selfmint.c|lib/test/src/test_anchor_selfmint.c", "anchor_selfmint refold_retro_validate refold_from_anchor_fatal make_lint_gates")
