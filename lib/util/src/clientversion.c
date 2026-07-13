@@ -12,9 +12,29 @@ const char CLIENT_NAME[] = "ZClassic23";
 #define ZCL_BUILD_COMMIT "unknown"
 #endif
 
+/* Exact 40-hex commit + clean flag, baked as -D macros by the Makefile and
+ * refreshed here through the same commit stamp that keeps ZCL_BUILD_COMMIT
+ * current. See the header for why this getter is not a static inline. */
+#ifndef ZCL_BUILD_COMMIT_FULL
+#define ZCL_BUILD_COMMIT_FULL "unknown"
+#endif
+#ifndef ZCL_BUILD_CLEAN
+#define ZCL_BUILD_CLEAN 0
+#endif
+
 const char *zcl_build_commit(void)
 {
     return ZCL_BUILD_COMMIT;
+}
+
+const char *zcl_build_commit_full(void)
+{
+    return ZCL_BUILD_COMMIT_FULL;
+}
+
+bool zcl_build_source_clean(void)
+{
+    return ZCL_BUILD_CLEAN != 0;
 }
 
 void FormatVersion(int nVersion, char *out, size_t out_size)

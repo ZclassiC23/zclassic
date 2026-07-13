@@ -683,6 +683,7 @@ int test_utxo_snapshot_inmem(void);
 int test_snapshot_apply_coins_kv(void);
 int test_consensus_state_snapshot_install(void);
 int test_consensus_state_snapshot_export(void);
+int test_consensus_state_producer_receipt(void);
 int test_consensus_state_chain_binding(void);
 int test_file_tree_ops(void);
 int test_hodl_history_port(void);

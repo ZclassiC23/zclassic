@@ -19,6 +19,12 @@ endif
 # tree until the index is refreshed. Refreshing compares content and clears the
 # false positive, while a genuinely modified tree still reports -dirty.
 BUILD_COMMIT := $(shell git rev-parse --short HEAD 2>/dev/null || echo unknown)$(shell git update-index -q --refresh >/dev/null 2>&1; git diff-index --quiet HEAD -- 2>/dev/null || echo -dirty)
+# Exact 40-hex commit + clean flag for the producer source receipt. Baked into
+# clientversion.o only; the BUILD_COMMIT stamp below already forces that TU
+# stale whenever HEAD or the tree's clean-ness changes (BUILD_COMMIT carries the
+# -dirty suffix), so these two derived values ride the same refresh.
+BUILD_COMMIT_FULL := $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+BUILD_CLEAN := $(shell git update-index -q --refresh >/dev/null 2>&1; git diff-index --quiet HEAD -- 2>/dev/null && echo 1 || echo 0)
 BUILD_DIR = build
 BIN_DIR = $(BUILD_DIR)/bin
 OBJ_DIR = $(BUILD_DIR)/obj
@@ -204,7 +210,7 @@ CFLAGS = -std=c23 -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) -flto=a
 	-Wno-stringop-overflow -Wno-unused-result \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(MCP_INCLUDES) $(DEVLOOP_INCLUDES) $(APP_SDK_INCLUDES) \
 	-Ilib/test/include \
-	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE -DZCL_BUILD_COMMIT=\"$(BUILD_COMMIT)\" -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
+	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE -DZCL_BUILD_COMMIT=\"$(BUILD_COMMIT)\" -DZCL_BUILD_COMMIT_FULL=\"$(BUILD_COMMIT_FULL)\" -DZCL_BUILD_CLEAN=$(BUILD_CLEAN) -Ivendor/include $(GTK_DEF) $(GTK_CFLAGS) \
 	$(WEBKIT_DEF) $(WEBKIT_CFLAGS)
 LDFLAGS = -pthread -flto=auto -rdynamic $(HARDEN_LDFLAGS)
 ZCL_DEV_OPT ?= -Og
