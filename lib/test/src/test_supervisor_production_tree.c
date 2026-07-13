@@ -50,11 +50,14 @@
 #include "util/safe_alloc.h"
 #include "util/supervisor.h"
 #include "util/thread_liveness.h"
+#include "util/thread_registry.h"
 #include "validation/main_state.h"
 
+#include <pthread.h>
 #include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #define SPT_CHECK(name, expr) do { \
     printf("supervisor_production_tree: %s... ", (name)); \
@@ -82,6 +85,54 @@ static int find_child_snapshot(const char *child_name,
     }
     if (out_count) *out_count = matches;
     return found;
+}
+
+/* ── Restart-policy real-thread fixture ────────────────────────────────
+ * A SAFE stateless stub worker for exercising the bounded auto-restart path
+ * end-to-end (real thread + real supervisor thread + thread_liveness respawn).
+ * `die_through` gives per-incarnation kill control with NO cascade: an
+ * incarnation whose number is <= die_through returns; a later respawn (a higher
+ * number) keeps running. That lets a test kill exactly one worker, or force a
+ * restart storm, deterministically. */
+struct spt_restart_worker {
+    struct thread_liveness_child *child;
+    _Atomic int  incarnations;   /* ++ as each worker enters its loop */
+    _Atomic int  die_through;    /* incarnations with id <= this exit */
+    _Atomic bool stop_all;       /* graceful shutdown for all incarnations */
+};
+
+static void *spt_restart_worker_fn(void *arg)
+{
+    struct spt_restart_worker *w = (struct spt_restart_worker *)arg;
+    int me = atomic_fetch_add(&w->incarnations, 1) + 1;
+    thread_liveness_worker_alive(w->child);
+    while (!atomic_load(&w->stop_all) && atomic_load(&w->die_through) < me) {
+        thread_liveness_beat(w->child, me);
+        struct timespec ts = { 0, 2 * 1000000L };  /* 2 ms */
+        nanosleep(&ts, NULL);
+    }
+    thread_liveness_worker_exited(w->child);
+    return NULL;
+}
+
+static bool spt_poll_int_ge(_Atomic int *v, int target, int timeout_ms)
+{
+    for (int i = 0; i < timeout_ms; i++) {
+        if (atomic_load(v) >= target) return true;
+        struct timespec ts = { 0, 1000000L };  /* 1 ms */
+        nanosleep(&ts, NULL);
+    }
+    return atomic_load(v) >= target;
+}
+
+static bool spt_poll_blocker(const char *id, int timeout_ms)
+{
+    for (int i = 0; i < timeout_ms; i++) {
+        if (blocker_exists(id)) return true;
+        struct timespec ts = { 0, 1000000L };  /* 1 ms */
+        nanosleep(&ts, NULL);
+    }
+    return blocker_exists(id);
 }
 
 static const char *const k_staged_children[] = {
@@ -476,6 +527,95 @@ int test_supervisor_production_tree(void)
 
         blocker_reset_for_testing();
         supervisor_reset_for_testing();
+    }
+
+    /* ── Bounded auto-restart, end-to-end (real thread + supervisor) ──────
+     * The die-vs-stall + respawn + storm-cap path exercised with a real worker
+     * thread, the real supervisor thread, and the real thread_liveness respawn
+     * (pthread_tryjoin_np reap). Distinct from the pure engine unit tests in
+     * test_supervisor.c (which stub on_respawn) — here we prove a genuinely
+     * dead thread is replaced by a NEW thread, and that a persistently-dying
+     * worker trips a PERMANENT restart-storm blocker instead of infinite
+     * respawn. */
+    {
+        supervisor_reset_for_testing();
+        blocker_reset_for_testing();
+        thread_registry_reset_for_test();
+
+        static struct thread_liveness_child rc = { .id = SUPERVISOR_INVALID_ID };
+        rc.id = SUPERVISOR_INVALID_ID;  /* re-arm across the sequential runner */
+        static struct spt_restart_worker w;
+        memset(&w, 0, sizeof w);
+        w.child = &rc;
+
+        supervisor_set_tick_ms_for_testing(5);
+        SPT_CHECK("supervisor_start for the restart test", supervisor_start());
+
+        /* Module owns the initial spawn (per the _restartable contract). */
+        int srr = thread_registry_spawn("zcl_spt_restart",
+                                        spt_restart_worker_fn, &w,
+                                        &rc.worker_tid);  // thread-supervision-ok:test-fixture-restartable
+        SPT_CHECK("initial restartable worker spawns", srr == 0);
+        supervisor_child_id rid = thread_liveness_register_restartable(
+            &rc, "zcl_spt_restart", /*deadline_secs=*/0, /*progress_quiet_us=*/0,
+            spt_restart_worker_fn, &w, /*intensity_max=*/3, /*period_secs=*/3600);
+        SPT_CHECK("restartable register returns a valid child id", rid >= 0);
+        SPT_CHECK("worker reaches incarnation 1",
+                  spt_poll_int_ge(&w.incarnations, 1, 1000));
+
+        memset(&snap, 0, sizeof(snap));
+        count = 0;
+        idx = find_child_snapshot("zcl_spt_restart", &snap, &count);
+        SPT_CHECK("restartable child on the tree exactly once, PERMANENT",
+                  idx >= 0 && count == 1 &&
+                  snap.restart_policy == SUPERVISOR_RESTART_PERMANENT);
+
+        /* Kill incarnation 1 only → the supervisor respawns a NEW thread. The
+         * incarnation counter advancing to 2 is the honest proof that a fresh
+         * worker thread actually ran (a new tid). We do NOT assert pthread_t
+         * inequality: glibc recycles the opaque pthread_t handle after a join,
+         * so an equal value does not mean the same thread. */
+        atomic_store(&w.die_through, 1);
+        SPT_CHECK("dead worker is respawned — a new worker thread (new tid) runs",
+                  spt_poll_int_ge(&w.incarnations, 2, 2000));
+        idx = find_child_snapshot("zcl_spt_restart", &snap, &count);
+        SPT_CHECK("restart_count advanced after the respawn",
+                  idx >= 0 && snap.restart_count >= 1);
+        SPT_CHECK("no restart-storm blocker after a single restart",
+                  !blocker_exists("thread_restart_storm_zcl_spt_restart"));
+
+        /* Now make EVERY incarnation die immediately → force the storm cap. */
+        atomic_store(&w.die_through, 100000);
+        SPT_CHECK("persistent death trips the PERMANENT restart-storm blocker",
+                  spt_poll_blocker("thread_restart_storm_zcl_spt_restart", 3000));
+        SPT_CHECK("restart-storm blocker is PERMANENT",
+                  blocker_class_for("thread_restart_storm_zcl_spt_restart") ==
+                      BLOCKER_PERMANENT);
+
+        /* Respawns must stop at the cap: capture the count, wait, prove it
+         * doesn't keep climbing (no infinite respawn). */
+        idx = find_child_snapshot("zcl_spt_restart", &snap, &count);
+        uint32_t restarts_at_storm = snap.restart_count;
+        struct timespec settle = { 0, 100 * 1000000L };  /* 100 ms */
+        nanosleep(&settle, NULL);
+        idx = find_child_snapshot("zcl_spt_restart", &snap, &count);
+        SPT_CHECK("respawns stop after the storm cap (no infinite respawn)",
+                  idx >= 0 && snap.restart_count == restarts_at_storm &&
+                  snap.restart_count == 3);
+        SPT_CHECK("storm sets the REPEATED_RESTART stall reason",
+                  idx >= 0 &&
+                  snap.stall_reason == SUPERVISOR_STALL_REPEATED_RESTART);
+
+        /* Graceful teardown: no more restarts, stop all incarnations, join. */
+        thread_liveness_stop_begin(&rc);
+        atomic_store(&w.stop_all, true);
+        thread_liveness_stop_finish(&rc);
+        supervisor_stop();
+        supervisor_set_tick_ms_for_testing(1000);
+
+        blocker_reset_for_testing();
+        supervisor_reset_for_testing();
+        thread_registry_reset_for_test();
     }
 
     printf("supervisor_production_tree: %d failures\n", failures);

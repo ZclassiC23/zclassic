@@ -63,6 +63,16 @@ const char *supervisor_stall_reason_name(enum supervisor_stall_reason r)
     return "(invalid)";
 }
 
+const char *supervisor_restart_policy_name(enum supervisor_restart_policy p)
+{
+    switch (p) {
+    case SUPERVISOR_RESTART_TEMPORARY: return "temporary";
+    case SUPERVISOR_RESTART_TRANSIENT: return "transient";
+    case SUPERVISOR_RESTART_PERMANENT: return "permanent";
+    }
+    return "(invalid)";
+}
+
 /* ── Init / registry ───────────────────────────────────────────────── */
 
 void liveness_contract_init(struct liveness_contract *c, const char *name)
@@ -277,7 +287,101 @@ void supervisor_set_progress_max_quiet(supervisor_child_id id,
     atomic_store(&c->progress_max_quiet_us, microseconds);
 }
 
+void supervisor_set_restart_policy(supervisor_child_id id,
+                                   enum supervisor_restart_policy policy,
+                                   int64_t intensity_max, int64_t period_secs)
+{
+    struct liveness_contract *c = contract_for(id);
+    if (!c) {
+        fprintf(stderr,  // obs-ok:supervisor-invalid-child
+            "[supervisor] set_restart_policy: invalid/unregistered child_id=%d "
+            "— ignored (child keeps the default TEMPORARY policy)\n", (int)id);
+        return;
+    }
+    if (intensity_max < 1) intensity_max = 1;
+    atomic_store(&c->restart_intensity_max, intensity_max);
+    atomic_store(&c->restart_period_us,
+                 period_secs > 0 ? period_secs * 1000000 : 0);
+    atomic_store(&c->restart_window_start_us, platform_time_monotonic_us());
+    atomic_store(&c->restarts_in_window, 0u);
+    atomic_store(&c->restart_policy, (int)policy);
+}
+
+void supervisor_worker_alive(supervisor_child_id id)
+{
+    struct liveness_contract *c = contract_for(id);
+    if (!c) return;
+    atomic_store(&c->worker_state, SUPERVISOR_WORKER_ALIVE);
+}
+
+void supervisor_worker_exited(supervisor_child_id id)
+{
+    struct liveness_contract *c = contract_for(id);
+    if (!c) return;
+    atomic_store(&c->worker_state, SUPERVISOR_WORKER_EXITED);
+}
+
 /* ── Supervisor loop ───────────────────────────────────────────────── */
+
+/* Bounded restart engine (OTP intensity/period). Runs on the supervisor
+ * thread, single-writer for every field it touches here. Called once per child
+ * per sweep, BEFORE the stall block so a storm escalation sets stall_reason and
+ * the stall block then skips the child. Pure contract math + the on_respawn
+ * callback — no pthread/thread_registry knowledge (that lives in the caller's
+ * on_respawn, e.g. util/thread_liveness.c), which keeps this unit-testable. */
+static void maybe_restart(struct liveness_contract *c, int64_t now)
+{
+    int policy = atomic_load(&c->restart_policy);
+    if (policy == SUPERVISOR_RESTART_TEMPORARY) return;   /* opt-in only */
+    if (!c->on_respawn) return;
+    if (atomic_load(&c->completed)) return;
+    if (atomic_load(&c->worker_state) != SUPERVISOR_WORKER_EXITED) return;
+    /* Already gave up (sticky): never respawn again this boot. */
+    if (atomic_load(&c->stall_reason) == SUPERVISOR_STALL_REPEATED_RESTART)
+        return;
+
+    /* Roll the intensity window forward if it has elapsed. */
+    int64_t win_us = atomic_load(&c->restart_period_us);
+    if (win_us > 0) {
+        int64_t start = atomic_load(&c->restart_window_start_us);
+        if ((now - start) > win_us) {
+            atomic_store(&c->restart_window_start_us, now);
+            atomic_store(&c->restarts_in_window, 0u);
+        }
+    }
+
+    /* Storm cap: the (N+1)th restart inside the window escalates instead of
+     * respawning. Sticky REPEATED_RESTART ⇒ node stays alive + named, never
+     * infinite-spawns. */
+    int64_t cap = atomic_load(&c->restart_intensity_max);
+    if (cap < 1) cap = 1;
+    if ((int64_t)atomic_load(&c->restarts_in_window) >= cap) {
+        int expected = SUPERVISOR_STALL_NONE;
+        if (atomic_compare_exchange_strong(&c->stall_reason,
+                &expected, SUPERVISOR_STALL_REPEATED_RESTART)) {
+            atomic_fetch_add(&c->stall_fires, 1u);
+            if (c->on_stall) c->on_stall(c);
+        }
+        return;
+    }
+
+    /* Claim the death by CAS EXITED → RESTARTING. RESTARTING is a state only
+     * the supervisor writes, so it cannot clobber a fast new worker's EXITED
+     * (the lost-signal race): on_respawn never writes ALIVE — the fresh worker
+     * does, on entry. On a false EXITED (worker still terminating) on_respawn
+     * restores EXITED and returns false, so we count nothing and retry next
+     * sweep. The single supervisor thread is the only claimer, so the CAS never
+     * contends with itself. */
+    int expected = SUPERVISOR_WORKER_EXITED;
+    if (!atomic_compare_exchange_strong(&c->worker_state, &expected,
+                                        SUPERVISOR_WORKER_RESTARTING))
+        return;   /* state moved under us; re-check next sweep */
+    if (c->on_respawn(c)) {
+        atomic_fetch_add(&c->restarts_in_window, 1u);
+        atomic_fetch_add(&c->restart_count, 1u);
+        atomic_store(&c->last_restart_us, now);
+    }
+}
 
 static void sweep_once(void)
 {
@@ -329,6 +433,12 @@ static void sweep_once(void)
                 atomic_fetch_add(&c->ticks_run, 1u);
             }
         }
+
+        /* Bounded restart policy (OTP): a restartable child whose worker has
+         * EXITED is respawned here, or escalated to REPEATED_RESTART on storm.
+         * Runs before the stall block: a storm sets stall_reason, which the
+         * block below then honors (skips). TEMPORARY children are a no-op. */
+        maybe_restart(c, now);
 
         /* Edge-triggered stall fires. Only on the rising edge:
          * stall_reason transitions NONE → something. */
@@ -473,6 +583,11 @@ void supervisor_reset_for_testing(void)
     pthread_mutex_unlock(&g_lock);
     atomic_store(&g_tick_ms, 1000);
 }
+
+void supervisor_sweep_once_for_testing(void)
+{
+    sweep_once();
+}
 #endif
 
 /* ── Introspection ─────────────────────────────────────────────────── */
@@ -508,6 +623,9 @@ int supervisor_snapshot_all(struct supervisor_snapshot *out, int max)
         out[i].ticks_run        = atomic_load(&c->ticks_run);
         out[i].stall_fires      = atomic_load(&c->stall_fires);
         out[i].restart_count    = atomic_load(&c->restart_count);
+        out[i].restart_policy   = atomic_load(&c->restart_policy);
+        out[i].worker_state     = atomic_load(&c->worker_state);
+        out[i].restarts_in_window = atomic_load(&c->restarts_in_window);
     }
     pthread_mutex_unlock(&g_lock);
     return n;
@@ -603,6 +721,12 @@ static void push_contract_json(struct json_value *arr,
                       atomic_load(&c->stall_fires));
     json_push_kv_int (&child, "restart_count",
                       atomic_load(&c->restart_count));
+    json_push_kv_str (&child, "restart_policy",
+                      supervisor_restart_policy_name(
+                          (enum supervisor_restart_policy)
+                          atomic_load(&c->restart_policy)));
+    json_push_kv_int (&child, "restarts_in_window",
+                      atomic_load(&c->restarts_in_window));
     json_push_back(arr, &child);
     json_free(&child);
 }
