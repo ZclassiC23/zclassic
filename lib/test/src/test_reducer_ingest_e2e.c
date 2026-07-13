@@ -978,6 +978,21 @@ int test_reducer_ingest_e2e(void)
     RIE_CHECK("teardown: utxo author restored to STAGE",
               utxo_projection_get_author() == UTXO_AUTHOR_STAGE);
 
+    /* Advance-or-blocker false-fire proof: healthy folds + a legitimately
+     * blocked invalid height (scenario 2) must never name a stage as spinning
+     * — every advancing stage moved its own cursor, and the blocked stage was
+     * idle (advance=0), not a spin. */
+    {
+        struct blocker_snapshot snaps[BLOCKER_CAP];
+        int bn = blocker_snapshot_all(snaps, BLOCKER_CAP);
+        bool any_spin = false;
+        for (int i = 0; i < bn; i++)
+            if (strncmp(snaps[i].id, "stage_spin_", 11) == 0)
+                any_spin = true;
+        RIE_CHECK("teardown: no stage_spin_* blocker fired (no false-fire)",
+                  !any_spin);
+    }
+
     printf("=== reducer-ingest end-to-end: %d failures ===\n", failures);
     return failures;
 }

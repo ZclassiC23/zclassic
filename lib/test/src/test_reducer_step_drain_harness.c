@@ -35,6 +35,7 @@
 #include "script/script.h"
 #include "services/chain_activation_service.h"
 #include "services/header_admit_inbox.h"
+#include "services/reducer_drain.h"
 #include "storage/disk_block_io.h"
 #include "storage/event_log.h"
 #include "storage/progress_store.h"
@@ -187,6 +188,19 @@ static bool sd_log_text(sqlite3 *db, const char *table, const char *col,
     }
     sqlite3_finalize(st);
     return found;
+}
+
+/* True iff NO "stage_spin_*" blocker is currently registered — the false-fire
+ * assertion for the advance-or-blocker contract (a healthy fold must never name
+ * a stage as spinning). */
+static bool sd_no_stage_spin_blocker(void)
+{
+    struct blocker_snapshot snaps[BLOCKER_CAP];
+    int n = blocker_snapshot_all(snaps, BLOCKER_CAP);
+    for (int i = 0; i < n; i++)
+        if (strncmp(snaps[i].id, "stage_spin_", 11) == 0)
+            return false;
+    return true;
 }
 
 int test_reducer_step_drain_harness(void);
@@ -730,6 +744,14 @@ int test_mint_fold_livelock(void)
                    (unsigned long long)ha_after, advanced,
                    (long long)elapsed_us);
 
+        /* False-fire proof: the walled frontier is a genuine wall (body_fetch
+         * idle, utxo_apply idle), not a spin — the advance-or-blocker
+         * reconciliation must NOT name any stage as spinning. header_admit /
+         * validate_headers advance their OWN cursors (so they are progress, not
+         * spin), and the frontier-stall break exits well before K rounds. */
+        ML_CHECK("walled: no stage_spin_* blocker fired (no false-fire)",
+                 sd_no_stage_spin_blocker());
+
         /* Fail-closed diagnosis: the drive loop's reporter must register the
          * typed PERMANENT blocker naming the walled stage with all cursors. */
         boot_mint_anchor_report_frontier_walled(progress_store_db(),
@@ -883,6 +905,12 @@ int test_mint_fold_livelock(void)
             ML_CHECK("healthy: converged at the ceiling (second kick = 0)",
                      again == 0);
 
+            /* False-fire proof (advance-or-blocker contract): a healthy fold
+             * moves every advancing stage's own cursor, so the reconciliation
+             * must NOT have named any stage as spinning. */
+            ML_CHECK("healthy: no stage_spin_* blocker fired (no false-fire)",
+                     sd_no_stage_spin_blocker());
+
             mint_fold_ceiling_set(MINT_FOLD_NO_CEILING);
             activation_controller_destroy(&ctl);
             block_free(&blk1);
@@ -905,5 +933,97 @@ int test_mint_fold_livelock(void)
 
     chain_params_select(CHAIN_MAIN);
     printf("=== mint-fold livelock guard: %d failures ===\n", failures);
+    return failures;
+}
+
+/* ── Regression guard: ADVANCE-OR-BLOCKER contract (0.5) ──────────────────────
+ * The drain core's per-round reconciliation: a stage that reports advances>0
+ * while its OWN cursor never moves is, after K consecutive rounds, a named
+ * "stage_spin_<name>" blocker (TRANSIENT, owner reducer_drain) carrying the
+ * stage, round count, steps reported, and frozen cursor height — and cursor
+ * movement clears it. This drives reducer_drain_spin_observe() directly (the
+ * exact predicate the drain core applies per stage per round) with a synthetic
+ * stub stage that reports advance=1 every round but leaves its cursor frozen,
+ * so the contract is tested without spinning up the eight production stages. */
+int test_reducer_drain_spin_contract(void);
+int test_reducer_drain_spin_contract(void)
+{
+    int failures = 0;
+    blocker_module_init();
+    reducer_drain_spin_reset_for_testing();
+
+    const int K = ZCL_STAGE_SPIN_ROUNDS_DEFAULT; /* compile-time default = 8 */
+    const int idx = 0;
+    const char *name = "teststage";
+    const char *blk_id = "stage_spin_teststage";
+    const uint64_t frozen = 100;
+
+    /* Rounds 1..K-1: advance reported, cursor frozen — streak builds but has
+     * NOT yet reached the threshold, so no blocker fires. */
+    for (int r = 1; r < K; r++) {
+        reducer_drain_spin_observe(idx, name, /*advance=*/1, frozen, frozen, K);
+        char label[96];
+        snprintf(label, sizeof(label),
+                 "spin: no blocker before K (round %d/%d)", r, K);
+        SD_CHECK(label, !blocker_exists(blk_id));
+    }
+
+    /* Round K: the K-th consecutive advance-yet-frozen round trips the blocker. */
+    reducer_drain_spin_observe(idx, name, /*advance=*/1, frozen, frozen, K);
+    SD_CHECK("spin: blocker stage_spin_teststage present at K rounds",
+             blocker_exists(blk_id));
+    SD_CHECK("spin: blocker class is TRANSIENT",
+             blocker_class_for(blk_id) == (int)BLOCKER_TRANSIENT);
+
+    /* Payload: names the stage, the round count, steps reported, frozen cursor,
+     * and is owned by reducer_drain. */
+    {
+        struct blocker_snapshot snaps[BLOCKER_CAP];
+        int n = blocker_snapshot_all(snaps, BLOCKER_CAP);
+        bool found = false, has_stage = false, has_rounds = false,
+             has_steps = false, has_height = false, owner_ok = false;
+        for (int i = 0; i < n; i++) {
+            if (strcmp(snaps[i].id, blk_id) != 0)
+                continue;
+            found = true;
+            has_stage  = strstr(snaps[i].reason, "stage=teststage") != NULL;
+            has_rounds = strstr(snaps[i].reason, "consecutive drain rounds") != NULL;
+            has_steps  = strstr(snaps[i].reason, "steps_reported=") != NULL;
+            has_height = strstr(snaps[i].reason, "height 100") != NULL;
+            owner_ok   = strcmp(snaps[i].owner_subsystem, "reducer_drain") == 0;
+            if (!(has_stage && has_rounds && has_steps && has_height && owner_ok))
+                printf("  >> spin: reason='%s' owner='%s'\n",
+                       snaps[i].reason, snaps[i].owner_subsystem);
+        }
+        SD_CHECK("spin: payload names the stage", found && has_stage);
+        SD_CHECK("spin: payload carries the round count", found && has_rounds);
+        SD_CHECK("spin: payload carries steps_reported", found && has_steps);
+        SD_CHECK("spin: payload carries the frozen cursor height",
+                 found && has_height);
+        SD_CHECK("spin: blocker owned by reducer_drain", found && owner_ok);
+    }
+
+    /* The dumpstate accessor reflects the streak while it stands. */
+    {
+        struct reducer_stage_spin_entry snap[REDUCER_DRAIN_NUM_STAGES];
+        int m = reducer_drain_spin_snapshot(snap, REDUCER_DRAIN_NUM_STAGES);
+        bool ok = (m >= 1) && snap[idx].rounds_frozen >= (uint32_t)K &&
+                  snap[idx].steps_reported >= (uint64_t)K;
+        SD_CHECK("spin: dumpstate accessor reports rounds_frozen>=K", ok);
+    }
+
+    /* Cursor movement clears the blocker and resets the streak. */
+    reducer_drain_spin_observe(idx, name, /*advance=*/1, frozen, frozen + 1, K);
+    SD_CHECK("spin: cursor movement clears the blocker",
+             !blocker_exists(blk_id));
+    {
+        struct reducer_stage_spin_entry snap[REDUCER_DRAIN_NUM_STAGES];
+        (void)reducer_drain_spin_snapshot(snap, REDUCER_DRAIN_NUM_STAGES);
+        SD_CHECK("spin: streak reset after cursor movement",
+                 snap[idx].rounds_frozen == 0);
+    }
+
+    reducer_drain_spin_reset_for_testing();
+    printf("=== reducer drain spin contract: %d failures ===\n", failures);
     return failures;
 }

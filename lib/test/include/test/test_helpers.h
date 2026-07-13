@@ -459,6 +459,7 @@ int test_reducer_ingest_e2e(void);
 int test_reducer_step_drain_harness(void);
 int test_reducer_ondemand_genesis_seed(void);
 int test_mint_fold_livelock(void);
+int test_reducer_drain_spin_contract(void);
 int test_stage_reducer_unwedge(void);
 int test_stage_repair_coin_backfill(void);
 int test_reducer_frontier_reconcile_light(void);

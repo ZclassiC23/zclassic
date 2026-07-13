@@ -13,6 +13,7 @@
 #include "jobs/utxo_apply_stage.h"
 #include "json/json.h"
 #include "platform/time_compat.h"
+#include "services/reducer_drain.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
@@ -241,6 +242,37 @@ bool reducer_drive_dump_state_json(struct json_value *out, const char *key)
                                 atomic_load(&g_last_fire_unix));
     ok = ok && json_push_kv_int(out, "utxo_apply_cursor",
                                 (int64_t)reducer_drive_watchdog_read_cursor());
+
+    /* Advance-or-blocker spin counters (app/services/src/reducer_drain.c): a
+     * "stage_spin" object naming any stage that reported drain advances while
+     * its own cursor stayed frozen. Emitted only when at least one stage is
+     * nonzero (a healthy drive shows nothing); per-stage nested objects carry
+     * {rounds_frozen, steps_reported}. The accessor does lock-free atomic reads
+     * with no allocation. */
+    struct reducer_stage_spin_entry spin[REDUCER_DRAIN_NUM_STAGES];
+    int spin_n = reducer_drain_spin_snapshot(spin, REDUCER_DRAIN_NUM_STAGES);
+    int spin_nonzero = 0;
+    for (int i = 0; i < spin_n; i++)
+        if (spin[i].rounds_frozen > 0)
+            spin_nonzero++;
+    if (spin_nonzero > 0) {
+        struct json_value spin_obj = {0};
+        json_set_object(&spin_obj);
+        for (int i = 0; i < spin_n; i++) {
+            if (spin[i].rounds_frozen == 0)
+                continue;
+            struct json_value one = {0};
+            json_set_object(&one);
+            json_push_kv_int(&one, "rounds_frozen",
+                             (int64_t)spin[i].rounds_frozen);
+            json_push_kv_int(&one, "steps_reported",
+                             (int64_t)spin[i].steps_reported);
+            json_push_kv(&spin_obj, spin[i].name, &one);
+            json_free(&one);
+        }
+        ok = ok && json_push_kv(out, "stage_spin", &spin_obj);
+        json_free(&spin_obj);
+    }
 
     /* coins_applied_height is the LAGGING measure (the durable coins_kv
      * frontier vs. the immediate in-memory utxo_apply cursor above) — the
