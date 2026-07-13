@@ -14,6 +14,70 @@
 
 # HANDOFF — current state (2026-07-13)
 
+## 0. 2026-07-13 afternoon session — what landed, what's next
+
+Four pushes to `main` this session (verify with `git log origin/main`):
+
+1. **`a8ae25a65`** — the previously-uncommitted 2026-07-13 hardening slice
+   (contained exporter/validator, fail-closed shielded completeness, §2 below)
+   committed, rebased onto the parallel `28d9e24b6` line, and gated. Includes:
+   the stable-publish containment gate now scans with **stock `grep -E`**
+   (this machine has no real ripgrep binary — `rg` here is a Claude Code shell
+   shim; the gate fail-closed contract is unchanged, override env is
+   `ZCL_CONTAINMENT_GREP`), the E1 baseline for `utxo_apply_stage.c`
+   reconciled to the honest merged value 938 (still a shrink vs the previous
+   949), and impact-rule mappings for the whole slice.
+2. **`440a5dcf3`** — **producer-owned source receipt**
+   (`config/src/consensus_state_producer_receipt.c`): `-mint-anchor` now
+   opens a durable receipt session at start (running-executable SHA3 +
+   source-identity claim, source-epoch digest published so every fold stage
+   row is stamped) and finalizes at completion (corpus digest + fold cursor
+   binding). A NEWLY STARTED producer passes the contained exporter's
+   admission end-to-end; tampered/missing receipts refuse. **Finding: the two
+   already-running producers cannot pass this contract as-is** (their fold
+   rows predate the epoch key) — ratifying them still needs the separately
+   reviewed offline path, or start a fresh receipt-owning producer.
+3. **`f7de76557`** — dev-infra: transient lint-gate fixtures
+   (`_*fixture*.c`, the same contract as `devloop_plan.c`) are excluded from
+   the agent-fast-ci changed-file scan (they were racing watcher/pre-push
+   scans into spurious "no focused test mapping" failures), and the lint-gate
+   selftests retry `fork()` on EAGAIN/ENOMEM (rotating false baseline
+   failures under concurrent LTO-link memory pressure).
+4. **batch-body-fsync merge** (this push) — **the measured fold bottleneck
+   fix**: profiling the fast producer found 88% of main-thread samples in
+   `jbd2_log_wait_commit` (~20% CPU use) caused by the unconditional
+   per-block `fflush`+`fdatasync` in `write_block_to_disk`
+   (`lib/storage/src/disk_block_io.c`). The reducer drive now defers block-file
+   syncs and a `stage_batch_end` **pre-commit hook** fdatasyncs every pending
+   file BEFORE the outer COMMIT (a failed sync vetoes the commit →
+   ROLLBACK), so no durable stage marker can outrun its block bytes. Mint
+   drains collapse ~2000 syncs/batch to 1; the at-tip path degrades to
+   identical behavior. Neither running producer was touched — they still run
+   old binaries.
+
+**Next steps for the incoming developer, in order:**
+
+- **Cure:** consider starting ONE fresh receipt-owning producer with the
+  new binary (batched fsync + receipt) on a NEW datadir as a low-priority
+  transient unit (pattern: `zclassic23-mint-fast-v2.service`, weight 50).
+  Mind IO contention with the two running producers (do NOT stop or touch
+  them or their datadirs) and disk headroom. With the fsync fix its fold
+  should be substantially faster than both existing producers; it becomes
+  the honest exporter-admissible source. Then continue §2 "Next job"
+  (publication CAS + candidate-store publisher + copy-prove).
+- **Secure transport:** `wf/secure-transport-p0` branch is EMPTY — the P0
+  work (Noise-style handshake, HKDF-SHA256, X25519 wrapper, AEAD record
+  layer + tests, transport-only) is commit **`2e80d9cb9`** on
+  `worktree-agent-a403ed900cdce77aa`, forked from `2678b7e51`. A reconcile
+  lane stalled and its uncommitted merge was lost with its worktree; redo:
+  merge onto current main, adversarially review (contributory-behavior
+  check, RFC 5869 vectors, nonce/rekey overflow fail-closed, transcript
+  binding, zero consensus-path contact), gate, then merge.
+- **Gotcha:** lanes running `make install-hooks` in agent worktrees rewrite
+  the SHARED `core.hooksPath` to an absolute path, which fails the
+  hooks-installed lint gate; re-set with `git config core.hooksPath
+  tools/githooks` before pushing.
+
 ## 1. The live node — the wedge
 
 The public daily-driver (`~/.zclassic-c23` : 18232) is **wedged at
