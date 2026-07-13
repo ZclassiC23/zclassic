@@ -138,6 +138,106 @@ static int test_old_metadata_is_ignored(void)
     return failures;
 }
 
+static int test_assisted_full_validation_remains_bound_to_snapshot(void)
+{
+    int failures = 0;
+    struct auth_fixture f;
+    if (!auth_fixture_init(&f))
+        return 1;
+
+    struct chain_evidence_controller_snapshot_meta m = auth_manifest(&f);
+    if (chain_evidence_controller_import_snapshot_evidence(&f.authority, &m)
+            != CEC_OK ||
+        chain_evidence_controller_mark_fully_validated(
+            &f.authority, &m.utxo_sha3) != CEC_OK)
+        failures++;
+
+    struct chain_evidence_controller_view view;
+    chain_evidence_controller_snapshot(&f.authority, &view);
+    if (view.state != CEC_FULLY_VALIDATED ||
+        view.full_validation_origin !=
+            CEC_FULL_VALIDATION_ASSISTED_SNAPSHOT ||
+        !view.snapshot_evidence_loaded ||
+        !view.snapshot_evidence.full_validation_complete)
+        failures++;
+
+    if (!node_db_exec(&f.ndb,
+            "DELETE FROM node_state WHERE key='cec.snapshot_evidence'"))
+        failures++;
+    chain_evidence_controller_snapshot(&f.authority, &view);
+    if (view.state != CEC_FULLY_VALIDATED ||
+        view.snapshot_evidence_loaded ||
+        view.snapshot_evidence.full_validation_complete)
+        failures++;
+
+    auth_fixture_free(&f);
+    return failures;
+}
+
+static int test_genesis_full_history_promotes_without_snapshot(void)
+{
+    int failures = 0;
+    struct auth_fixture f;
+    if (!auth_fixture_init(&f))
+        return 1;
+
+    struct chain_evidence_controller_tip_request req = {
+        .new_tip = &f.blocks[1],
+        .utxo_max_height = 1,
+        .update_header_tip = true,
+        .reason = "unit.genesis_full_history",
+    };
+    req.verified.source_class = CEC_SOURCE_CLASS_NATIVE_P2P;
+    req.verified.publish_state = CEC_PUBLISH_LOCAL_EVIDENCE;
+    req.verified.header_ancestry_linked = true;
+    req.verified.chainwork_recomputed = true;
+    req.verified.nakamoto_selected_best_work = true;
+    req.verified.block_bytes_hash_checked = true;
+    if (chain_evidence_controller_promote_tip(&f.authority, &req) != CEC_OK)
+        failures++;
+
+    struct uint256 full_history_utxo;
+    memset(full_history_utxo.data, 0x6d, sizeof(full_history_utxo.data));
+    if (chain_evidence_controller_mark_fully_validated(
+            &f.authority, &full_history_utxo) != CEC_OK)
+        failures++;
+
+    struct chain_evidence_controller_view view;
+    chain_evidence_controller_snapshot(&f.authority, &view);
+    if (view.state != CEC_FULLY_VALIDATED ||
+        view.full_validation_origin !=
+            CEC_FULL_VALIDATION_GENESIS_HISTORY ||
+        view.snapshot_evidence_loaded ||
+        !view.active_tip_evidence.full_validation_complete)
+        failures++;
+
+    auth_fixture_free(&f);
+    return failures;
+}
+
+static int test_assisted_missing_evidence_cannot_fall_through_to_genesis(void)
+{
+    int failures = 0;
+    struct auth_fixture f;
+    if (!auth_fixture_init(&f))
+        return 1;
+
+    struct chain_evidence_controller_snapshot_meta m = auth_manifest(&f);
+    if (chain_evidence_controller_import_snapshot_evidence(&f.authority, &m)
+            != CEC_OK)
+        failures++;
+    if (!node_db_exec(&f.ndb,
+            "DELETE FROM node_state WHERE key='cec.snapshot_evidence'"))
+        failures++;
+    if (chain_evidence_controller_mark_fully_validated(
+            &f.authority, &m.utxo_sha3) != CEC_REJECTED_PERSIST ||
+        f.authority.state != CEC_CONTRADICTION_FROZEN)
+        failures++;
+
+    auth_fixture_free(&f);
+    return failures;
+}
+
 static int test_csr_commit_does_not_write_evidence_metadata(void)
 {
     int failures = 0;
@@ -1201,6 +1301,10 @@ int test_chain_evidence_controller(void)
     failures += test_request_startup_reconcile_lifts_freeze_after_relink();
     failures += test_manifest_missing_proofs_freezes();
     failures += test_old_metadata_is_ignored();
+    failures += test_assisted_full_validation_remains_bound_to_snapshot();
+    failures += test_genesis_full_history_promotes_without_snapshot();
+    failures +=
+        test_assisted_missing_evidence_cannot_fall_through_to_genesis();
     failures += test_csr_commit_does_not_write_evidence_metadata();
     failures += test_verified_local_block_bootstraps_tip_evidence();
     failures += test_incomplete_evidence_tip_promotion_rejected();

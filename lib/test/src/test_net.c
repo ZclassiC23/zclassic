@@ -3,6 +3,7 @@
 #define _DEFAULT_SOURCE
 #include "platform/time_compat.h"
 #include "test/test_helpers.h"
+#include "config/boot_snapshot_offer.h"
 #include "primitives/transaction.h"
 #include "chain/chainparams.h"
 #include "net/version.h"
@@ -3076,6 +3077,7 @@ int test_net(void)
         memset(published.block_hash, 0x11, sizeof(published.block_hash));
         memset(published.merkle_root, 0x22, sizeof(published.merkle_root));
 
+        boot_snapshot_offer_test_set_trust_override(1);
         bool ok = published.chunk_hashes != NULL;
         ok = ok && msg_processor_publish_manifest(&published);
         ok = ok && published.chunk_hashes == NULL;
@@ -3087,6 +3089,7 @@ int test_net(void)
         ok = ok && header.chunk_hashes == NULL;
         msg_processor_invalidate_manifest();
         ok = ok && !msg_processor_get_manifest_header(&header);
+        boot_snapshot_offer_test_set_trust_override(-1);
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -3136,6 +3139,7 @@ int test_net(void)
         memset(published.mmr_root, 0x33, sizeof(published.mmr_root));
         memset(published.mmb_root, 0x44, sizeof(published.mmb_root));
 
+        boot_snapshot_offer_test_set_trust_override(1);
         msg_processor_invalidate_offer();
         bool ok = !msg_processor_get_offer(&cached);
         msg_processor_update_offer(&published);
@@ -3147,8 +3151,13 @@ int test_net(void)
         ok = ok && cached.utxo_root[0] == 0x22;
         ok = ok && cached.mmr_root[0] == 0x33;
         ok = ok && cached.mmb_root[0] == 0x44;
+        boot_snapshot_offer_test_set_trust_override(0);
+        ok = ok && !msg_processor_get_offer(&cached);
+        ok = ok && cached.height == 0;
+        boot_snapshot_offer_test_set_trust_override(1);
         msg_processor_invalidate_offer();
         ok = ok && !msg_processor_get_offer(&cached);
+        boot_snapshot_offer_test_set_trust_override(-1);
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -3843,6 +3852,7 @@ skip_parallel_tests:
         offer1.height = 100;
         offer2.height = 200;
 
+        boot_snapshot_offer_test_set_trust_override(1);
         uint64_t offer_v0 = msg_processor_offer_cache_version();
         msg_processor_update_offer(&offer1);
         uint64_t offer_v1 = msg_processor_offer_cache_version();
@@ -3880,6 +3890,9 @@ skip_parallel_tests:
             ok = ok && msg_processor_get_manifest_header(&manifest_out);
             ok = ok && manifest_out.num_chunks == 1;
             ok = ok && manifest_out.chunk_size == 128;
+            boot_snapshot_offer_test_set_trust_override(0);
+            ok = ok && !msg_processor_get_manifest_header(&manifest_out);
+            boot_snapshot_offer_test_set_trust_override(1);
 
             manifest2.num_chunks = 2;
             manifest2.chunk_size = 64;
@@ -3962,6 +3975,7 @@ skip_parallel_tests:
         msg_processor_invalidate_offer();
         msg_processor_invalidate_manifest();
         msg_processor_invalidate_block_manifest();
+        boot_snapshot_offer_test_set_trust_override(-1);
     }
 
     /* ── Robustness: peer_misbehaving accumulates and bans ── */

@@ -681,37 +681,51 @@ static void note_terminal(const struct p2p_node *node, const char *reason,
                           const char *event_name, bool timeout, bool reject)
 {
     char addr[256];
+    bool recorded = false;
     addr_key_from_node(node, addr, sizeof(addr));
     pthread_mutex_lock(&g_pl.lock);
     struct peer_lifecycle_entry *e = entry_for_node_locked(node, true);
     if (e) {
-        int64_t now = GetTime();
-        bool pre_handshake =
-            e->handshake_complete_seq <= e->connected_seq;
-        e->last_seen = now;
-        snprintf(e->last_reason, sizeof(e->last_reason), "%s",
-                 reason ? reason : "");
-        e->terminal_seq = ++g_pl.seq;
-        if (timeout) {
-            e->timeout++;
-            e->timeout_at = now;
-        } else if (reject) {
-            e->rejected++;
-            e->rejected_at = now;
-        } else {
-            e->disconnected++;
-            e->disconnected_at = now;
+        /* A timeout/reject marks the connection terminal before connman's
+         * normal cleanup sweep calls note_disconnected() for the same node.
+         * Count and emit exactly one causal terminal outcome per connected
+         * generation; otherwise every timed-out pre-handshake connection is
+         * reported twice and cleanup overwrites the useful first reason.
+         * connected_seq advances on reconnect, re-arming the next generation.
+         * terminal_seq==0 deliberately admits a first terminal observation
+         * even when a caller did not publish note_connected() beforehand. */
+        bool terminal_already_recorded =
+            e->terminal_seq > 0 && e->terminal_seq >= e->connected_seq;
+        if (!terminal_already_recorded) {
+            int64_t now = GetTime();
+            bool pre_handshake =
+                e->handshake_complete_seq <= e->connected_seq;
+            e->last_seen = now;
+            snprintf(e->last_reason, sizeof(e->last_reason), "%s",
+                     reason ? reason : "");
+            e->terminal_seq = ++g_pl.seq;
+            if (timeout) {
+                e->timeout++;
+                e->timeout_at = now;
+                g_pl.totals.timeout++;
+            } else if (reject) {
+                e->rejected++;
+                e->rejected_at = now;
+                g_pl.totals.rejected++;
+            } else {
+                e->disconnected++;
+                e->disconnected_at = now;
+                g_pl.totals.disconnected++;
+            }
+            if (pre_handshake) {
+                g_pl.totals.pre_handshake_disconnects++;
+                e->pre_handshake_disconnects++;
+            }
+            recorded = true;
         }
-        if (pre_handshake)
-            g_pl.totals.pre_handshake_disconnects++;
-        if (pre_handshake)
-            e->pre_handshake_disconnects++;
     }
-    if (timeout) g_pl.totals.timeout++;
-    else if (reject) g_pl.totals.rejected++;
-    else g_pl.totals.disconnected++;
     pthread_mutex_unlock(&g_pl.lock);
-    if (node) {
+    if (recorded && node) {
         event_emitf(timeout ? EV_PEER_CONNECT_TIMEOUT :
                     reject ? EV_PEER_HANDSHAKE_FAILURE :
                     EV_TCP_DISCONNECTED,

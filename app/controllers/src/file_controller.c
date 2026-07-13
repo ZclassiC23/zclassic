@@ -8,6 +8,7 @@
 #include "controllers/blockchain_controller.h"
 #include "controllers/file_controller.h"
 #include "controllers/strong_params.h"
+#include "config/boot_snapshot_offer.h"
 #include "views/format_helpers.h"
 #include "crypto/sha3.h"
 #include "encoding/utilstrencodings.h"
@@ -42,6 +43,42 @@ static struct file_context g_file_ctx = {
 static struct file_context *file_ctx(void)
 {
     return &g_file_ctx;
+}
+
+static bool file_snapshot_state_allowed(void)
+{
+    return boot_snapshot_offer_state_is_sovereign(NULL, 0);
+}
+
+static bool file_snapshot_serving_allowed(const char *datadir)
+{
+    return boot_snapshot_offer_artifact_is_eligible(datadir, NULL, 0);
+}
+
+/* A manifest can outlive the state epoch that built it. Strip snapshot chunks
+ * from caller-owned copies whenever trust is no longer sovereign, then rebuild
+ * the aggregate byte count/root so REST/RPC never advertises stale authority. */
+static void file_manifest_strip_snapshot(struct file_manifest *fm)
+{
+    if (!fm)
+        return;
+    uint32_t dst = 0;
+    uint64_t total = 0;
+    for (uint32_t src = 0; src < fm->num_chunks; src++) {
+        if (fm->chunks[src].file_index == 254)
+            continue;
+        if (dst != src)
+            fm->chunks[dst] = fm->chunks[src];
+        total += fm->chunks[dst].size;
+        dst++;
+    }
+    fm->num_chunks = dst;
+    fm->total_bytes = total;
+    struct sha3_256_ctx root;
+    sha3_256_init(&root);
+    for (uint32_t i = 0; i < fm->num_chunks; i++)
+        sha3_256_write(&root, fm->chunks[i].sha3, sizeof(fm->chunks[i].sha3));
+    sha3_256_finalize(&root, fm->root_hash);
 }
 
 static bool file_artifact_path(char *path, size_t path_size,
@@ -94,8 +131,15 @@ static bool file_manifest_cache_has_required_exports(const struct file_manifest 
                                                      const char *datadir)
 {
     struct stat snap_st;
+    bool snapshot_allowed = file_snapshot_serving_allowed(datadir);
 
-    if (file_artifact_exists(datadir, 254, 1000000, &snap_st) &&
+    if (!snapshot_allowed && file_manifest_has_file_index(fm, 254)) {
+        printf("file_manifest: cached consensus_snapshot.db is not sovereign; "
+               "rebuilding without file_index=254\n");
+        return false;
+    }
+    if (snapshot_allowed &&
+        file_artifact_exists(datadir, 254, 1000000, &snap_st) &&
         !file_manifest_has_file_index(fm, 254)) {
         printf("file_manifest: consensus_snapshot.db exists but cached "
                "manifest omits file_index=254, rebuilding\n");
@@ -155,7 +199,10 @@ bool file_controller_get_manifest_copy(struct file_manifest *out)
     else
         memset(out, 0, sizeof(*out));
     bool ok = ctx->manifest_valid;
+    const char *datadir = ctx->datadir;
     pthread_mutex_unlock(&ctx->manifest_mutex);
+    if (ok && !file_snapshot_serving_allowed(datadir))
+        file_manifest_strip_snapshot(out);
     return ok;
 }
 
@@ -197,17 +244,26 @@ void file_controller_get_manifest_status(struct file_manifest_status *out)
     if (!out)
         return;
 
+    struct file_manifest serving_manifest = {0};
     pthread_mutex_lock(&ctx->manifest_mutex);
     status.datadir_configured = (ctx->datadir != NULL);
     status.manifest_valid = ctx->manifest_valid;
     if (ctx->manifest_valid) {
-        status.num_chunks = ctx->manifest.num_chunks;
-        status.total_bytes = ctx->manifest.total_bytes;
-        status.snapshot_served = file_manifest_has_file_index(&ctx->manifest, 254);
-        status.block_index_served = file_manifest_has_file_index(&ctx->manifest, 253);
+        serving_manifest = ctx->manifest;
     }
     const char *datadir = ctx->datadir;
     pthread_mutex_unlock(&ctx->manifest_mutex);
+
+    if (status.manifest_valid) {
+        if (!file_snapshot_serving_allowed(datadir))
+            file_manifest_strip_snapshot(&serving_manifest);
+        status.num_chunks = serving_manifest.num_chunks;
+        status.total_bytes = serving_manifest.total_bytes;
+        status.snapshot_served =
+            file_manifest_has_file_index(&serving_manifest, 254);
+        status.block_index_served =
+            file_manifest_has_file_index(&serving_manifest, 253);
+    }
 
     if (datadir) {
         status.snapshot_present = file_artifact_exists(datadir, 254, 1000000, NULL);
@@ -438,7 +494,7 @@ bool file_manifest_build(struct file_manifest *fm, const char *datadir)
         }
     }
 
-    /* Serve consensus snapshot as file_index=254.
+    /* Serve consensus snapshot as file_index=254 only from sovereign state.
      * SECURITY: node.db contains private wallet keys/txns.
      * We export ONLY public consensus tables (blocks, utxos,
      * addresses, chain_stats) into a separate snapshot file.
@@ -448,7 +504,8 @@ bool file_manifest_build(struct file_manifest *fm, const char *datadir)
         snprintf(snap_path, sizeof(snap_path),
                  "%s/consensus_snapshot.db", datadir);
         struct stat snap_st;
-        if (stat(snap_path, &snap_st) == 0 && snap_st.st_size > 1000000) {
+        if (file_snapshot_serving_allowed(datadir) &&
+            stat(snap_path, &snap_st) == 0 && snap_st.st_size > 1000000) {
             printf("file_manifest: adding consensus_snapshot.db (%.0f MB)\n",
                    (double)snap_st.st_size / (1024.0*1024.0));
             hash_file_chunks(snap_path, 254, fm);
@@ -464,9 +521,9 @@ bool file_manifest_build(struct file_manifest *fm, const char *datadir)
         sha3_256_write(&ctx, fm->chunks[i].sha3, 32);
     sha3_256_finalize(&ctx, fm->root_hash);
 
-    /* Embed current MMR root as evidence anchor.
-     * Receivers verify: MMR root matches expected value for this chain.
-     * This binds the file data to the PoW-secured block hash chain. */
+    /* Embed the current auxiliary MMR root as peer evidence. Receivers can
+     * verify internal consistency with the advertised manifest/history; this
+     * is not a ZClassic consensus or PoW commitment to file/state bytes. */
     {
         uint64_t leaves = 0;
         if (rpc_blockchain_mmr_snapshot(fm->mmr_root, &leaves, NULL) &&
@@ -491,7 +548,10 @@ bool file_manifest_build(struct file_manifest *fm, const char *datadir)
 const struct file_chunk *file_manifest_find(const struct file_manifest *fm,
                                              const uint8_t sha3[32])
 {
+    bool snapshot_allowed = file_snapshot_state_allowed();
     for (uint32_t i = 0; i < fm->num_chunks; i++) {
+        if (fm->chunks[i].file_index == 254 && !snapshot_allowed)
+            continue;
         if (memcmp(fm->chunks[i].sha3, sha3, 32) == 0)
             return &fm->chunks[i];
     }
@@ -501,6 +561,16 @@ const struct file_chunk *file_manifest_find(const struct file_manifest *fm,
 bool file_chunk_read(const struct file_chunk *chunk, const char *datadir,
                      uint8_t **out, uint32_t *out_size)
 {
+    if (out)
+        *out = NULL;
+    if (out_size)
+        *out_size = 0;
+    if (!chunk || !datadir || !out || !out_size)
+        LOG_FAIL("file", "chunk_read: invalid argument");
+    if (chunk->file_index == 254 &&
+        !file_snapshot_serving_allowed(datadir))
+        LOG_FAIL("file", "chunk_read: consensus snapshot withheld because "
+                          "full-state history is not sovereign");
     char path[576];
     if (!file_artifact_path(path, sizeof(path), datadir, chunk->file_index))
         LOG_FAIL("file", "chunk_read: cannot build path for file_index=%u", (unsigned)chunk->file_index);

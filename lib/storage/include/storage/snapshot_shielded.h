@@ -1,13 +1,14 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * snapshot_shielded — the v3 UTXO-snapshot SHIELDED section.
+ * snapshot_shielded — the frozen legacy USS v3 SHIELDED section.
  *
  * A v1 snapshot carries only the UTXO records; a v2 snapshot appends a single
  * Sapling commitment-tree frontier ([u32 len][blob]).  A v3 snapshot extends
  * that to also carry the SPROUT commitment-tree frontier and the complete
- * consensus NULLIFIER set, so a fresh node seeded from the snapshot can
- * install the shielded state that gates the first post-seed Sapling/Sprout
- * transaction WITHOUT borrowing a zclassicd chainstate (the birth defect: a
+ * current NULLIFIER set. This can seed a useful current frontier while an
+ * explicit historical gap remains: the format does not carry historical
+ * anchor rows and must never be labeled a sovereign complete-state cure. The
+ * original birth defect was a
  * seed that reset the anchor adoption cursor above genesis over an EMPTY
  * sapling_anchors table, so the first shielded spend fails closed forever).
  *
@@ -68,7 +69,7 @@ bool snapshot_shielded_write(FILE *out, struct sha3_256_ctx *ctx,
  *   - the Sprout active-chain frontier (anchor_kv_latest_tree SPROUT),
  *   - every nullifier revealed at height <= `height` (both pools),
  * all in freshly-malloc'd buffers OWNED by `*out`. Pass the result straight to
- * coins_kv_snapshot_write to emit a v3 self-verified shielded snapshot, then
+ * coins_kv_snapshot_write to emit a legacy v3 current-state artifact, then
  * release the buffers with snapshot_shielded_free_collected.
  *
  * FAILS LOUD (returns false, logs, writes nothing to *out) when a frontier is

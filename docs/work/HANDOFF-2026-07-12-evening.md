@@ -9,13 +9,19 @@ A large session just pushed **9 lanes** to `main` (`2678b7e51 → d5a682c64`, +7
 **The un-wedge = ACT 3 of `docs/work/self-verified-tip-plan.md`. Exact steps:**
 1. **Mint the shielded anchor artifact** (landed this push: U1's accelerated, observable, resumable mint — ~hours not days):
    ```bash
-   MINTDIR=$HOME/.zclassic-c23-mint-fast; rm -rf "$MINTDIR"; mkdir -p "$MINTDIR"
-   build/bin/zclassic23 -datadir="$MINTDIR" --importblockindex $HOME/.zclassic   # ~60-74s
+   MINTDIR=$HOME/.zclassic-c23-mint-new-copy; mkdir -p "$MINTDIR"
+   build/bin/zclassic23 --importblockindex "$HOME/.zclassic" "$MINTDIR/node.db" # ~60-74s
    ZCL_FOLD_INRAM=1 ZCL_REFOLD_DRAIN_BATCH=2000 ZCL_REFOLD_TICK_MS=250 \
      build/bin/zclassic23 -datadir="$MINTDIR" -mint-anchor -fold-inram
    tail -f "$MINTDIR/mint-progress.log"     # height/rate/eta, readable from disk
    # success -> $MINTDIR/utxo-anchor.snapshot (v3 shielded, SHA3==checkpoint hard-asserted at boot_mint_anchor.c:194)
    ```
+   `--importblockindex` is recognized only as argv[1]. Putting
+   `-datadir="$MINTDIR"` first starts a normal node instead of importing the
+   legacy block index. The imported index's body positions are valid only with
+   the exact source `blk*.dat` corpus; matching a foreign block filename is not
+   proof. Always use a new isolated producer path and copy-proof it—never delete
+   or rewrite a running producer or serving datadir.
    NOTE: an older mint has run ~88h on `~/.zclassic-c23-anchor-mint` (opaque, in-RAM, PID 3329835) — check whether it emitted `utxo-anchor.snapshot` first; if so, reuse it.
 2. **Copy-prove** (never live surgery): `cp -a` the wedged datadir; boot the copy with `-refold-from-anchor` + the artifact; **gate on G-SOV** (`self-verified-tip-plan.md:63-68,223-236`): H\* climbs past 3,176,326, `coins_applied_height==H*+1`, refold marker present. Tooling: `tools/repro_on_copy.sh`.
 3. **Owner-authorized live deploy** with staged rollback. Do NOT also delete the borrowed seed / flip `-refold-from-anchor` default here (later ACT-3 step).
@@ -27,7 +33,11 @@ A large session just pushed **9 lanes** to `main` (`2678b7e51 → d5a682c64`, +7
 
 **Fast leads (analysis only, not built):**
 - The "142s boot" is **stale** — a fix landed on main; warm restart is now 58–92s. Next bottleneck = an **untimed** section of `block_index_reconcile` (`validate_coins_chain_agreement` + `utxo_recovery_execute`, `config/src/boot.c:2802-2820`). Cheapest fix: add one `boot_submark("blkidx.validate_recover", …)` after line 2832 to split its cost out. Boot spikes correlate with the concurrent mint process's host contention.
-- Trustless 60s fast-sync: keystone B1 is landed (per-height SHA3 `utxo_root` in the PoW MMB leaf, `lib/chain/mmb.c:81`); remaining = wire the **negative-path gate** — assert `leaf.utxo_root` vs peers in `app/services/snapshot_verify.c:321-333` (currently stops at chain_work), + ADR + adversarial test.
+- **Superseded fast-sync lead:** a per-height SHA3 `utxo_root` in an auxiliary
+  MMB leaf is not committed by ZClassic headers and cannot make peer state
+  trustless. It remains useful as advisory/copy evidence only. Fast readiness
+  must stay explicitly assisted until local full-history verification promotes
+  the exact complete state; see `SOVEREIGN-NETWORK-ROADMAP.md`.
 - LB-1 parallel verify pool: **deleted** from the tree; rebuild per `docs/work/lb1-wiring-design.md` (throughput multiplier, **not** required for the cure).
 
 ## 2. Multi-user-server / game-platform foundation (P0 libraries — built, not yet wired into runtime)

@@ -25,9 +25,9 @@ line: **PASS / FAIL / BLOCKED(reason)**.
 The three **synced-node-dependent** criteria — **C3** (cold-start sync to tip),
 **C6** (168h soak), **C8** (consensus parity over the soak window) — CANNOT
 pass until the node holds a clean synced tip on the **sovereign foundation** and
-accrues a clean window. The forward-sync wedge that previously blocked this is
-FIXED (the node reaches tip on the stopgap); these stay **BLOCKED(needs synced
-node)** by construction until the foundation is sovereign + the window accrues —
+accrues a clean window. Canonical is currently wedged at H\*=3,176,325 on
+incomplete shielded history; these stay **BLOCKED(needs synced node)** by
+construction until the complete state cure is copy-proven + the window accrues —
 no hermetic slice can stand in for "a fresh node reached the real ~3.15M-block
 tip in <10min" or "168h clean wall-clock". The reporter probes the live node
 (`zcl-rpc getblockchaininfo`): when `blocks != headers` (not at tip) the
@@ -42,18 +42,18 @@ human-readable echo of the same regression.
 
 ## The map
 
-| # | MVP.md criterion | Mechanical check `make mvp` runs | Full-claim resource | Status (wedge fixed; gated on sovereign foundation + soak) |
+| # | MVP.md criterion | Mechanical check `make mvp` runs | Full-claim resource | Status (canonical wedged; cure before soak) |
 |---|---|---|---|---|
 | C1 | Single-binary install on clean Ubuntu/Debian | `ci_symbol_floor_gate.sh` (portability GLIBC/GLIBCXX/CXXABI floor) + built-binary existence | full claim = real `make install` + `systemctl --user start` → `make ci-install-linger` (a `mvp-verify` member) | **PASS** — symbol-floor + binaries present; install mechanism proven by `make ci-install` / `ci-install-linger` |
 | C2 | Tor onion bootstrap in <60s | `test_zcl` slice `ZCL_TEST_ONLY=onion_slice` (<60s budget + v3 address format) + Tor-egress probe | real <60s over Tor needs egress → `make mvp-onion-local` | **PASS** when Tor egress present (else BLOCKED(needs Tor egress)) |
-| C3 | Cold-start sync to tip in <10 min | `test_zcl` slice `ZCL_TEST_ONLY=cold_start` (sync FSM → at_tip, ~7s) | real <10min sync to the ~3.15M-block tip needs a serving peer + a fresh node | **BLOCKED(needs synced node)** — FSM slice PASS; the live node now reaches and re-seeds to tip on restart via the at-own-height snapshot, and `make mvp-coldstart-local` now run-passes the fixture-gated operator-bundle seed proof (`block_index.bin` + `utxo-seed-*.snapshot`, self-verified in 17s on 2026-07-08). The full fresh zclassic23→zclassic23 <10min sync-to-tip proof is `make mvp-coldstart-to-tip-local` and is still pending. |
+| C3 | Cold-start sync to tip in <10 min | `test_zcl` slice `ZCL_TEST_ONLY=cold_start` (sync FSM → at_tip, ~7s) | real <10min sync to the ~3.15M-block tip needs a serving peer + a fresh node | **BLOCKED(needs synced node)** — FSM slice PASS; the at-own-height loader historically reached tip and `make mvp-coldstart-local` run-passed a fixture bundle seed in 17s on 2026-07-08, but canonical is now wedged on incomplete shielded history. Neither is the full fresh zclassic23→zclassic23 <10min proof; `make mvp-coldstart-to-tip-local` remains pending. |
 | C4 | Receive shielded payment end-to-end | `test_zcl` slices `shielded_receive` + `shielded_receive_persist` (params-free RECEIVE half: note→ivk→z-balance→durable reopen) + `~/.zcash-params` probe | full Groth16 t→z send+decrypt needs ~770MB proving params → `make test-shielded-payment` | **PASS** when params present (else BLOCKED(needs ~/.zcash-params)) |
 | C5 | List + sell file via store | `test_zcl` slices `store_e2e` + `store_e2e_shielded` (in-process store + seeded note + ivk-decrypt + memo-bound) | full list→shielded-pay→.onion file transfer needs a live serving node + a real buyer | **BLOCKED(needs synced node)** — slices PASS; full purchase path needs a live node + buyer (see `c5-real-shielded-purchase-plan.md`) |
-| C6 | 7-day soak, zero operator intervention | `soak_evidence.sh judge` over accumulated samples (MET=PASS, NOT_MET=FAIL, INSUFFICIENT=BLOCKED), GATED on the live node being synced+accruing | 168h clean wall-clock on a synced, tip-tracking node | **BLOCKED(needs synced node)** — gated on the sovereign foundation + a clean 168h window accruing (the wedge that blocked soak is fixed); the judge's read of historical samples is shown for context only, never earns PASS |
+| C6 | 7-day soak, zero operator intervention | `soak_evidence.sh judge` over accumulated samples (MET=PASS, NOT_MET=FAIL, INSUFFICIENT=BLOCKED), GATED on the live node being synced+accruing | 168h clean wall-clock with gap ≤1, exact same-height hash, complete security posture, continuous evidence, and no intervention | **BLOCKED(needs synced node)** — canonical is wedged and the formal judge is `NOT_MET`; historical/one-block-lookahead samples are context only and never earn PASS |
 | C7 | Recover from kill -9 in <2 min | `test_zcl` slices `kill9` (node.db SIGKILL UTXO-atomicity) + `chain_advance_atomicity` | full-binary kill-9 → peer-tip recovery → `make test-crash-bootstrap` + `make test-two-node-peer-tip` (mvp-verify members; isolated regtest, no synced mainnet needed) | **PASS** — SQLite-atomicity teeth PASS; the full-binary harnesses run on fresh isolated regtest (independent of the wedged mainnet node) |
 | C8 | Consensus parity with zclassicd | `test_zcl` slice `parity_slice` (mismatch-detection machinery: consistent set→0, injected outpoint→DETECTED) | 0 byte-mismatches vs a live `zclassicd` oracle over the soak window; needs an EXACT reference (`gettxoutsetinfo` is height-only) + the soak window | **BLOCKED(needs synced node + exact oracle)** — detection machinery PASS; full claim needs a live oracle + soak |
 
-## Current scoreboard (this host; wedge fixed, gated on sovereign foundation + soak)
+## Current scoreboard (this host; canonical wedged, cure before soak)
 
 ```
 MRS (full operator claim PASS): 4 / 8
@@ -64,10 +64,10 @@ FAIL: 0   (nothing false-greens)
 ```
 
 This matches MVP.md's own MRS of 4/8 (C1/C2/C4/C7 ✅). The 4 BLOCKED criteria
-are gated on the **sovereign foundation + a clean soak window** (the forward-sync
-wedge that previously blocked forward progress is FIXED — the node reaches tip on
-the stopgap; cure design: `never-stuck-plan.md`). When the node holds a sovereign
-synced tip + accrues a clean soak window, C3/C5/C6/C8 flip from BLOCKED to PASS
+are gated on the **sovereign foundation + a clean soak window**. Canonical is
+currently held at H\*=3,176,325 on incomplete shielded history (cure design:
+`self-verified-tip-plan.md`). When the node holds a sovereign synced tip and a
+fresh exact-parity window accrues, C3/C5/C6/C8 can flip from BLOCKED to PASS
 automatically — the reporter re-probes the live node and the soak judge each run.
 
 ## How the false-green guard works

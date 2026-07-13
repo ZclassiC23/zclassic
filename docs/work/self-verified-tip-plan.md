@@ -26,9 +26,11 @@ network's best valid chain — or name, precisely, the one input it is missing.*
 In plain language: **a detective who has all the evidence names the suspect, or
 names exactly which clue he is missing — he never just stops.**
 
-The node already holds every clue (block bodies on disk) and a notarized
-case-file-to-date (the baked PoW-bound SHA3 checkpoint @3,056,758, hard-verified
-at `lib/chain/src/checkpoints.c:86-104`). The one defect: it reads conclusions
+The node already holds every clue (block bodies on disk) and a locally pinned
+case-file checkpoint (the baked SHA3 checkpoint @3,056,758, recorded at
+`lib/chain/src/checkpoints.c:86-104`). The checkpoint is not a ZClassic-header
+state commitment; sovereignty comes from reproducing it from validated bodies.
+The one defect: it reads conclusions
 off **index cards** — persisted `*_log.ok` cursors and a *borrowed* `coins_kv`
 copy minted by `zclassicd` (`app/services/src/utxo_recovery_restore.c:369`) —
 instead of re-deriving from the evidence, because re-deriving is currently too

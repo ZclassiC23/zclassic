@@ -1177,8 +1177,8 @@ static int test_snapshot_offer_mmr_field(void)
 {
     int failures = 0;
     TEST("snapshot_offer includes MMR root field") {
-        /* Verify the struct layout includes mmr_root between
-         * utxo_root and num_utxos — critical for PoW chain binding */
+        /* Verify the struct layout includes the auxiliary mmr_root between
+         * utxo_root and num_utxos. This checks serialization, not PoW binding. */
         struct snapshot_offer offer;
         memset(&offer, 0, sizeof(offer));
 

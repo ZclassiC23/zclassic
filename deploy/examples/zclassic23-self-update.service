@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 safe self-update warm/build lane
+Description=ZClassic23 read-only remote source/service status lane
 Documentation=file:%h/github/zclassic23/docs/AGENT_API.md
 Wants=network-online.target
 After=network-online.target
@@ -7,14 +7,14 @@ After=network-online.target
 [Service]
 Type=oneshot
 WorkingDirectory=%h/github/zclassic23
-Environment=ZCL_REMOTE_DRY_RUN=0
-Environment=ZCL_REMOTE_BUILD=fast-rebuild
+Environment=ZCL_REMOTE_DRY_RUN=1
+Environment=ZCL_REMOTE_BUILD=none
 Environment=ZCL_REMOTE_RESTART=0
 Environment=ZCL_REMOTE_UNIT=zclassic23-test.service
 ExecStart=%h/github/zclassic23/tools/scripts/remote_node_update.sh self
 TimeoutStartSec=1800
 
-# Warm source/build caches without competing with serving nodes.
+# Observe source/service status without competing with serving nodes.
 Nice=15
 CPUWeight=10
 IOWeight=10

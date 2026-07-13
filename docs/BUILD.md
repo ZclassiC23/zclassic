@@ -46,29 +46,24 @@ build/bin/zclassic23-dev status             # dev-lane native status (was: agent
 make agent-doctor
 make agent-dev-status
 build/bin/zclassic23-dev agentdevstatus
-make agent-stage-dev
 build/bin/zclassic23-dev agentbuild
 ```
 
 `make dev-watch` is the save-driven AI/operator loop. It debounces and
 coalesces changed files, asks the shared `agentimpact` rules for the smallest
-focused verification set, and chooses one of five explicit modes:
+focused verification set, and defaults to verify-only mode:
 
-- `MODE=auto` selects the smallest proven-safe path. An exact
-  `config/hotswap_eligible.def` match can use the running dev node's
-  authenticated `dev_hotswap` RPC bridge through the default
-  `tools/dev/hotswap-running-dev.sh` transport. Transport-unavailable exit 69
-  falls back to process reload; ABI, manifest, self-test, commit, or probe
-  rejection remains a visible failed cycle. Mixed changes and header/dependency
-  fan-out use reload.
-- `MODE=hotswap` requires every changed translation unit to satisfy the v2
-  stateless MCP contract. Missing eligibility or transport is a rejection, not
-  an unsafe fallback.
-- `MODE=reload` builds and transactionally activates an immutable dev binary
-  generation.
-- `MODE=stage` builds and preflights an immutable generation without stopping
-  the running process.
+- `MODE=verify` (the default) runs `make ff` and records a verdict without
+  linking, hot-swapping, or activating a runtime generation.
+- `MODE=auto`, `MODE=apply`, `MODE=hotswap`, `MODE=reload`, and `MODE=stage`
+  are Phase-0 contained and fail before any runtime publication or staging.
+  They do not fall back to another activation path.
 - `MODE=check` runs classification and focused checks without activation.
+
+Only `verify` and `check` are public watcher modes today. The historical
+activation machinery remains in-tree for tests and completion of the unified
+transaction, but it is not an operator authority. Watch-command override
+environment variables are accepted only by the hermetic `--self-test` path.
 
 Each attempted save writes one authoritative `zcl.dev_cycle.v1` record under
 `~/.local/state/zclassic23-dev/cycles/`, atomically refreshes
@@ -81,27 +76,43 @@ executable `agent_next_action`. `make dev-watch` uses
 fallback. `make dev-watch-selftest` is the deterministic, node-free contract
 test.
 
+`make dev-activation-selftest` exercises the otherwise unreachable activation
+machinery only inside a mode-0700 `/tmp` fixture. The deploy script requires a
+mode-0600 sentinel through a bound inherited file descriptor, exact
+fixture-local paths, an inert candidate, and allowlisted fake service commands.
+No public environment variable can enable this mode or target the real dev
+HOME/unit.
+
+`make agent-dev-recover` is likewise read-only planning. Public `ARGS=--apply`
+and direct `recover-dev-lane.sh --apply` refuse before generation relinking,
+datadir replacement, or service commands. `make dev-recovery-selftest` proves
+the retained transaction only through its own inherited-FD, fixture-bound
+capability and fake service-command allowlist.
+
 The registry-owned C23 development plane is the preferred direct interface:
 
 ```bash
 build/bin/zclassic23-dev dev loop ensure \
-  --input='{"root":"/home/rhett/github/zclassic23"}'
+  --input='{"root":"/home/rhett/github/zclassic23","mode":"verify"}'
 build/bin/zclassic23-dev dev loop status
 build/bin/zclassic23-dev dev loop wait \
   --input='{"after_epoch":0,"timeout_ms":30000}'
-build/bin/zclassic23-dev dev change apply \
-  --input='{"files":["tools/mcp/controllers/meta_controller.c"]}'
+make hotswap-so FILES=app/controllers/src/status_native_handlers.c
+make t ONLY=hotswap_loader
+make hotswap-sim
 ```
 
-`ensure` is singleton/idempotent and returns the watcher ID used by
-`dev loop stop`. The dev executable defaults this confined command tree to the
+`ensure` is singleton/idempotent, defaults to `mode:"verify"`, and returns the
+watcher ID used by `dev loop stop`. Changing an active watcher's mode requires
+stopping it first. The dev executable defaults this confined command tree to the
 `dev` operator lane, so the documented commands work without an environment
 prefix; an explicit canonical or soak lane still fails closed. The native
-cycle returns one bounded verdict after classify, proof, build, publication,
-probe, and provenance. The shell watcher remains a compatibility/operator
-surface over the same plan and activation contracts.
+cycle returns one bounded verdict after classify, proof, and build. Attempts to
+select `auto`/`apply`, call `dev.change.apply`, or publish through hot-swap
+return a structured containment refusal. The shell watcher remains a
+verify/check compatibility surface.
 
-Process reloads are content-addressed under
+The intended process-reload transaction is content-addressed under
 `~/.local/lib/zclassic23-dev/<generation>/`. Candidate `agentbuild`, tool
 catalog, MCP self-test, and build identity are checked before the old process is
 disturbed. Activation takes a nonblocking lock and flips atomic `current` and
@@ -109,14 +120,17 @@ disturbed. Activation takes a nonblocking lock and flips atomic `current` and
 RPC, agent/operator contracts, and MCP health. A failed candidate is
 quarantined; the activator restores `last-good`, restarts once, and verifies the
 recovery. Canonical and soak services, ports, and datadirs are rejected by the
-dev-lane guards. For a production-flag candidate in the same isolated lane use
-`ZCL_DEV_DEPLOY_BUILD=strict make deploy-dev`; this does not relax release,
-consensus, or full-suite gates.
+dev-lane guards. During Phase-0, `make deploy-dev`, `make deploy-dev-fast`,
+`make agent-deploy-fast`, `make agent-stage-dev`, and the direct deploy/hot-swap
+scripts hard-refuse unconditionally. A caller-supplied source identity cannot
+re-enable them. `dev.vcs.revert` remains source-only with
+`relink_generation=false`; `true` refuses before the source revert. This does
+not relax release, consensus, or full-suite gates.
 
 `make agent-loop` remains the manual one-shot loop. It runs the cache-aware fast
-checks; set `ZCL_AGENT_LOOP_BIN=1` to also link the local dev binary, or
-`ZCL_AGENT_LOOP_DEPLOY=dev` to transactionally reload the dev lane with the
-fast dev build.
+checks; set `ZCL_AGENT_LOOP_BIN=1` to also link the local dev binary.
+`ZCL_AGENT_LOOP_DEPLOY=stage|dev` reaches a contained backend and cannot stage
+or reload the dev lane.
 Native commands (`zclassic23 status`, `zclassic23 dumpstate <subsystem>`,
 `zclassic23 discover help`) are the agent interface going forward. The legacy
 typed-MCP one-shots below are removed in the zero-MCP W3 delete.
@@ -146,9 +160,9 @@ When that status reports `auto_reindex_stale_candidate=true`, run
 `make agent-clear-stale-dev-reindex`; it archives the dev-lane marker only after
 the dev RPC serves at or above the marker anchor, and never touches canonical or
 soak.
-When the dev service is busy and should not be restarted, `make agent-stage-dev`
-builds, preflights, and stages an immutable generation without restarting the
-`zcl23-dev` service.
+No busy-service path stages a generation during containment. `make
+agent-stage-dev` refuses; build and preflight must remain non-publishing until
+the complete transaction is implemented.
 
 Foreground candidate preflight uses `zcl_self_test {"mode":"registry"}`. It
 validates every route and generated input schema inside the candidate without
@@ -170,32 +184,33 @@ samples plus p50/p95 values. Hot-swap and reload are skipped unless the operator
 explicitly opts into activation, so an SLO is never claimed from build-only
 timings. `zclassic23 agentbuild` also exposes the latest benchmark status.
 
-In-process generation v2 is deliberately narrower than process reload. It
+In-process generation v2 is deliberately narrower than process reload. Its
+loader, simulator, and build paths remain available, but resident probing and
+every commit/publication entry point are Phase-0 contained. The intended mechanism
 admits only manifest-eligible, stateless MCP route providers; it stages the
 whole route batch, validates ABI/capabilities/provenance, runs the generation
 self-test, and atomically publishes one resident router snapshot. REST,
 diagnostics, services, models, storage, events, conditions, supervisors,
 network/wallet/crypto state, reducers, consensus, and bootstrap ownership remain
-`reload_required`. A committed hot-swap is process-local and disappears on
-restart. The watcher schedules an asynchronous `fast-rebuild` after success so
-the source-tree binary converges, then preflights it into an immutable `staged`
-generation; it does not silently flip `current`. A verified process reload is
-still the durable activation boundary. Inspect provenance with
-`zcl_state subsystem=hotswap` (`zcl.hotswap_generation.v2`). The dev-only
-`dev_hotswap` and non-destructive `dev_mcp_call` JSON-RPC methods dispatch
-through the resident router only on the exact isolated dev datadir; release,
-canonical, and soak nodes never register them. The normal persistent command is:
+`reload_required`. If publication is re-enabled after the transactional gates
+land, a committed hot-swap will remain process-local and disappear on restart;
+durable convergence must use the same receipt-bound activation transaction.
+No watcher currently schedules or stages a post-swap generation. Inspect any
+pre-containment provenance with
+`zcl_state subsystem=hotswap` (`zcl.hotswap_generation.v2`). The legacy
+resident mutation method returns `runtime_publication_contained`; release,
+canonical, and soak nodes never register it. Build and verify without resident
+loading:
 
 ```bash
-make hotswap FILES=tools/mcp/controllers/app_controller.c PROBE=zcl_name_list
+make hotswap-so FILES=app/controllers/src/status_native_handlers.c
+make t ONLY=hotswap_loader
+make hotswap-sim
 ```
 
-It builds the generation and sends `dev_hotswap` to the already-running
-isolated dev node; it does not create or restart a service. The watcher's
-default `tools/dev/hotswap-running-dev.sh` transport uses the same bridge. Its
-exit 69 means only that the persistent RPC transport is unavailable, permitting
-`MODE=auto` to fall back to transactional reload; any generation/probe failure
-returns a different status and is never hidden by fallback. Run
+`make hotswap`, both native hot-swap commands,
+`tools/dev/hotswap-running-dev.sh`, and legacy `zcl_agent_hotswap` always
+refuse and never call the loader. Run
 `make hotswap-sim` for the focused deterministic simulated-network proof, and
 `make sim-fast` for the broader checked-in scenarios plus seeded replay sweep.
 Each successful mapping keeps both its code mapping and the exact artifact
@@ -362,6 +377,10 @@ to build for the host CPU only.
 
 ## Reproducible / signed releases
 
-`tools/release.sh` produces a reproducible build and an optional GPG signature
-(waivable with `--unsigned`). See `docs/SECURITY_AND_INTEGRITY.md` for the
+`tools/release.sh` is a legacy local packaging primitive with deterministic
+flags and GPG support. `--unsigned` produces only a local-development artifact;
+it is not eligible for stable publication. Stable release publication remains
+contained until exact-candidate evidence, two independently provisioned
+byte-identical builds, complete manifests/SBOM/provenance, and the required
+offline signatures are enforced. See `docs/SECURITY_AND_INTEGRITY.md` for the
 integrity model.

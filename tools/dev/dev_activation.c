@@ -801,6 +801,17 @@ static int dev_run_locked(struct dev_activation_txn *txn, bool already_staged)
         return DEV_ACTIVATION_E_PREFLIGHT;
     }
 
+    if (ops->source_epoch_cas && ops->source_epoch_cas(ops->ctx) != 0) {
+        dev_set_status(r, "superseded", "source_epoch_superseded",
+                       "source changed after candidate preflight; running generation untouched");
+        snprintf(r->failure_capsule, sizeof(r->failure_capsule),
+                 "source epoch compare-and-swap refused publication");
+        (void)dev_activation_write_deploy_state(txn);
+        fprintf(stderr, "[dev-activation] REFUSED: source epoch superseded; "
+                        "running process and current generation untouched\n");
+        return DEV_ACTIVATION_E_PREFLIGHT;
+    }
+
     if (txn->req->mode == DEV_ACTIVATION_MODE_STAGE_ONLY) {
         (void)dev_activation_link_generation(txn, "staged",
                                              txn->candidate_generation);

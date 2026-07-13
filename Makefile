@@ -277,11 +277,11 @@ check-vendor-provenance:
 $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
 	tools/scripts/build_vendor.sh $(notdir $@)
 
-.PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy deploy-dev remote-node-update remote-node-update-json lane-health lane-recover check-agent-cli check-restart-follow \
+.PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy deploy-dev remote-node-plan remote-node-plan-json remote-node-update remote-node-update-json lane-health lane-recover check-agent-cli check-restart-follow \
         background-fuzz background-coverage background-tests install-quality-linger quality-linger-status pre-push-ci \
         coverage coverage-clean docs-mcp docs-mcp-check ci audit release \
         bench bench-crypto-verify bench-regress \
-        lint check-malloc check-silent-errors check-raw-sqlite check-vcs-no-git check-raw-malloc \
+        lint check-malloc check-silent-errors check-raw-sqlite check-vcs-no-git check-raw-malloc check-stable-publish-contained \
         check-coins-lookup-nullcheck check-observability-pairing \
         check-silent-errors-services check-silent-errors-controllers \
         check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool \
@@ -447,7 +447,7 @@ test-parallel: test_parallel
 # the default `all`), so running build/bin/test_parallel directly after editing a test
 # can false-green an old binary or report "matched no groups" for a new test.
 # `make t ONLY=<group>` always rebuilds the harness first, closing that trap.
-.PHONY: t t-fast t-changed ff syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop dev-watch dev-watch-once dev-watch-selftest dev-activation-selftest dev-loop-selftest agent-index dev-loop-bench dev-loop-bench-selftest hotswap-sim immutable-history-canaries historical-canaries agent-mcp-call agent-mcp-call-hot agent-mcp-call-dev agent-dev-status agent-dev-recover dev-recovery-selftest agent-clear-stale-dev-reindex agent-doctor stage-dev-bin agent-stage-dev deploy-dev-fast agent-deploy-fast
+.PHONY: t t-fast t-changed ff syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop dev-watch dev-watch-once dev-watch-selftest dev-activation-selftest dev-loop-selftest native-dev-loop-wait-selftest agent-index dev-loop-bench dev-loop-bench-selftest hotswap-sim immutable-history-canaries historical-canaries agent-mcp-call agent-mcp-call-hot agent-mcp-call-dev agent-dev-status agent-dev-recover dev-recovery-selftest agent-clear-stale-dev-reindex agent-doctor stage-dev-bin agent-stage-dev deploy-dev-fast agent-deploy-fast
 
 # Run ONE test group, always rebuilding the harness first:
 #   make t ONLY=service_state_driver
@@ -535,8 +535,8 @@ HOTSWAP_SO_DIR  = $(BUILD_DIR)/hotswap
 
 .PHONY: hotswap-so hotswap
 # make hotswap-so FILES="tools/mcp/controllers/app_controller.c ..."
-# Compile one manifest-admitted stateless provider into an immutable,
-# input-addressed generation.  The digest covers the compiler identity, exact
+# Compile one manifest-admitted stateless provider into a read-only,
+# input-addressed candidate. The digest covers the compiler identity, exact
 # C23/dev flags, source identity, and fully preprocessed source (therefore every
 # included/generated header).  It is embedded in zcl_hotswap_manifest_v2 and
 # the .so path is the LAST line printed.  Multiple providers remain
@@ -589,12 +589,18 @@ hotswap-so: $(VIEW_GEN_HEADERS)
 	  -c -o "$$tmp_o" "$$selected" >&2; \
 	$(CC) -shared -Wl,--build-id=none -Wl,-z,relro -Wl,-z,now \
 	  -Wl,-z,noexecstack -o "$$tmp_so" "$$tmp_o" >&2; \
+	artifact_digest="$$(sha256sum "$$tmp_so" | awk '{print $$1}')"; \
+	if [ -e "$$o" ] && ! cmp -s "$$tmp_o" "$$o"; then \
+	  echo "hotswap-so: REFUSING mismatched existing object $$o" >&2; exit 3; fi; \
+	if [ -e "$$so" ] && ! cmp -s "$$tmp_so" "$$so"; then \
+	  echo "hotswap-so: REFUSING mismatched existing candidate $$so" >&2; exit 3; fi; \
 	if [ ! -e "$$o" ]; then mv "$$tmp_o" "$$o"; else rm -f "$$tmp_o"; fi; \
 	if [ ! -e "$$so" ]; then mv "$$tmp_so" "$$so"; else rm -f "$$tmp_so"; fi; \
-	printf '{"schema":"zcl.hotswap_build.v2","input_digest":"%s","source":"%s","artifact":"%s"}\n' \
-	  "$$digest" "$$selected" "$$so" > "$(HOTSWAP_SO_DIR)/gen-$$digest.json.tmp"; \
+	chmod a-w "$$o" "$$so"; \
+	printf '{"schema":"zcl.hotswap_build.v2","input_digest":"%s","artifact_sha256":"%s","source":"%s","artifact":"%s","publishable":false}\n' \
+	  "$$digest" "$$artifact_digest" "$$selected" "$$so" > "$(HOTSWAP_SO_DIR)/gen-$$digest.json.tmp"; \
 	mv -f "$(HOTSWAP_SO_DIR)/gen-$$digest.json.tmp" "$(HOTSWAP_SO_DIR)/gen-$$digest.json"; \
-	echo "hotswap-so: linked immutable $$so" >&2; \
+	echo "hotswap-so: linked read-only, unpublishable candidate $$so" >&2; \
 	echo "$$so"
 
 # make hotswap FILES="..." [PROBE=zcl_tool]
@@ -604,15 +610,8 @@ hotswap-so: $(VIEW_GEN_HEADERS)
 # restart.  This target never starts/stops any service and can never target the
 # canonical or soak lane.
 hotswap: $(VIEW_GEN_HEADERS)
-	@if [ -z "$(FILES)" ]; then \
-	  echo "usage: make hotswap FILES=\"tools/mcp/controllers/app_controller.c\" [PROBE=zcl_name_list]" >&2; \
-	  exit 2; fi
-	@files="$$(mktemp "$(BUILD_DIR)/.hotswap-files.XXXXXX")"; \
-	trap 'rm -f "$$files"' EXIT HUP INT TERM; \
-	for f in $(FILES); do printf '%s\n' "$$f" >> "$$files"; done; \
-	ZCL_DEV_HOTSWAP_FILES_FILE="$$files" \
-	  ZCL_DEV_HOTSWAP_PROBE="$(PROBE)" \
-	  tools/dev/hotswap-running-dev.sh
+	@echo "hotswap: REFUSING — runtime publication and resident probing are contained; use make hotswap-so plus build/test verification" >&2
+	@exit 3
 
 # Full no-link syntax check across every TU in one shot (no incremental state).
 syntax-check: $(VIEW_GEN_HEADERS)
@@ -647,9 +646,9 @@ immutable-history-canaries historical-canaries:
 	@$(MAKE) --no-print-directory t-fast ONLY=consensus_parity
 	@echo "immutable-history-canaries: PASS (fast historic KATs; full replay gates: make replay-canary-anchor / make replay-canary-genesis)"
 
-# One-command AI/operator development loop. Default is checks only. Opt into a
-# runnable dev binary, no-restart dev-lane staging, or dev-lane hot-swap without changing the safe fast-ci
-# contract:
+# One-command AI/operator development loop. Runtime activation selectors remain
+# accepted only to return the hard containment refusal while the transactional
+# epoch/proof/rollback protocol is unfinished:
 #   make agent-loop
 #   ZCL_AGENT_LOOP_BIN=1 make agent-loop
 #   ZCL_AGENT_LOOP_DEPLOY=stage make agent-loop
@@ -671,15 +670,15 @@ agent-loop agent-dev-loop:
 	esac
 
 # JavaScript-like save loop for C: debounce relevant source changes, classify
-# them, run the smallest mapped verification path, and update ONLY the isolated
-# zcl23-dev lane. `auto` prefers a proven persistent hot-swap and otherwise
-# uses transactional immutable process activation. Canonical and soak are
-# never targets.
+# them, and run the smallest mapped verification path. The default is
+# verify-only and never updates a running process. Runtime publication modes
+# are rejected before compilation or activation. Canonical and soak are never
+# targets.
 dev-watch:
-	@ZCL_DEV_WATCH_MODE="$${MODE:-$${ZCL_DEV_WATCH_MODE:-auto}}" tools/dev/watch-dev-lane.sh
+	@ZCL_DEV_WATCH_MODE="$${MODE:-$${ZCL_DEV_WATCH_MODE:-verify}}" tools/dev/watch-dev-lane.sh
 
 dev-watch-once:
-	@ZCL_DEV_WATCH_ONCE=1 ZCL_DEV_WATCH_MODE="$${MODE:-$${ZCL_DEV_WATCH_MODE:-auto}}" tools/dev/watch-dev-lane.sh
+	@ZCL_DEV_WATCH_ONCE=1 ZCL_DEV_WATCH_MODE="$${MODE:-$${ZCL_DEV_WATCH_MODE:-verify}}" tools/dev/watch-dev-lane.sh
 
 dev-watch-selftest:
 	@tools/dev/watch-dev-lane.sh --self-test
@@ -702,18 +701,25 @@ dev-loop-bench-selftest:
 hotswap-sim: test_parallel_fast
 	@ulimit -s unlimited && $(TEST_PARALLEL_FAST_BIN) --only=hotswap_simnet
 
-dev-loop-selftest: dev-watch-selftest dev-activation-selftest dev-loop-bench-selftest hotswap-sim
+native-dev-loop-wait-selftest: dev-bin
+	@tools/dev/native-dev-loop-wait-selftest.sh
+
+dev-loop-selftest: dev-watch-selftest dev-activation-selftest dev-loop-bench-selftest native-dev-loop-wait-selftest hotswap-sim
 	@echo "dev-loop-selftest: PASS"
 
-remote-node-update:
+remote-node-plan:
 	@if [ -n "$${ZCL_REMOTE_HOST:-}" ]; then \
 	    tools/scripts/remote_node_update.sh "$$ZCL_REMOTE_HOST"; \
 	else \
 	    tools/scripts/remote_node_update.sh $${ZCL_REMOTE_HOSTS:-}; \
 	fi
 
-remote-node-update-json:
-	@ZCL_REMOTE_JSON=1 $(MAKE) --no-print-directory remote-node-update
+remote-node-plan-json:
+	@ZCL_REMOTE_JSON=1 $(MAKE) --no-print-directory remote-node-plan
+
+remote-node-update remote-node-update-json:
+	@echo "$@: REFUSING — remote apply/install/restart is contained; use make remote-node-plan" >&2
+	@exit 3
 
 # ── Live-truth diagnosis + safe reproduction ─────────────────────────────
 # diagnose-gap: one-shot three-orthogonal-views dump + root-cause verdict over
@@ -750,11 +756,11 @@ $(eval $(call BUILD_NODE_TOOL,wallet_dump,tools/wallet_dump.c))
 $(eval $(call BUILD_NODE_TOOL,snapshot_from_coinskv,tools/snapshot_from_coinskv.c))
 $(eval $(call BUILD_NODE_TOOL,mint_v2_snapshot,tools/mint_v2_snapshot.c))
 
-# ── Bootstrap starter-pack: produce + SELF-PROVE a publishable bundle ──────
-# Turns the one-command bundle producer (mint_v2_snapshot) into a self-verified,
-# checksummed, manifested, publishable artifact. LOCAL-ONLY: nothing here needs
-# the network at build time. The ONLY network step is `make bootstrap-publish`
-# (a `gh` upload), and it refuses to run unless the copy-prove has passed.
+# ── Bootstrap starter-pack: produce + COPY-PROVE a local candidate bundle ─
+# Turns the one-command bundle producer (mint_v2_snapshot) into a body-digest-
+# verified, checksummed, manifested local candidate. Stable publication is deliberately
+# disabled until commit-bound quality/release evidence exists; copy proof alone
+# grants no network-publication authority.
 #
 #   make bootstrap            Mint a bundle from a COPY of a synced datadir, then
 #                             boot a FRESH /tmp datadir from that bundle with
@@ -765,9 +771,8 @@ $(eval $(call BUILD_NODE_TOOL,mint_v2_snapshot,tools/mint_v2_snapshot.c))
 #   make bootstrap-manifest   (Re)generate ONLY SHA256SUMS over an existing
 #                             bundle dir (the rich manifest.json is authored by
 #                             mint_v2_snapshot; this target does not rewrite it).
-#   make bootstrap-publish    `gh release create starterpack-<seed_h>` over the
-#                             bundle. GATED on the copy-prove marker; tag is
-#                             derived from the manifest's seed_height.
+#   make bootstrap-publish    Fail-closed containment target. It publishes
+#                             nothing until the stable evidence factory lands.
 #
 # Env (override on the command line, e.g. `make bootstrap ZCL_BOOTSTRAP_SRC=...`):
 #   ZCL_BOOTSTRAP_SRC       Source datadir to mint from. MUST be a SYNCED datadir
@@ -856,7 +861,7 @@ bootstrap: $(ZCLASSIC23_BIN) $(BIN_DIR)/mint_v2_snapshot $(ZCL_RPC_BIN)
 	printf 'seed_height=%s\ngit_head=%s\nproved_utc=%s\nfirst_hstar=%s\nclimbed_to=%s\n' \
 	  "$$SEED_H" "$$(git rev-parse HEAD 2>/dev/null || echo unknown)" \
 	  "$$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$$first" "$$cur" > "$$OUT/.copyprove-ok"; \
-	echo "[bootstrap] COPY-PROVE PASSED — bundle in $$OUT is self-verified (seed=$$SEED_H, H* $$first -> $$cur)"
+	echo "[bootstrap] COPY-PROVE PASSED — assisted bundle in $$OUT passed byte-integrity and climb checks (seed=$$SEED_H, H* $$first -> $$cur)"
 	@: 'mint_v2_snapshot already wrote the authoritative SHA256SUMS + rich (schema_version 2) manifest.json'
 	@: 'during the mint step above — do NOT regenerate them here (the shell bootstrap-manifest writes a leaner'
 	@: 'schema that would DROP anchor_block_hash / snapshot_sha3 / utxo_count / total_supply / build_commit).'
@@ -881,21 +886,12 @@ bootstrap-manifest:
 	echo "[bootstrap-manifest] verify with: ( cd $$OUT && sha256sum -c SHA256SUMS )"
 
 bootstrap-publish:
-	@set -eu; \
-	OUT='$(ZCL_BOOTSTRAP_OUT)'; \
-	[ -d "$$OUT" ] || { echo "bootstrap-publish: no bundle dir: $$OUT" >&2; exit 1; }; \
-	[ -f "$$OUT/.copyprove-ok" ] || { echo "bootstrap-publish: REFUSING — no copy-prove marker ($$OUT/.copyprove-ok). Run 'make bootstrap' first." >&2; exit 1; }; \
-	[ -f "$$OUT/manifest.json" ] || { echo "bootstrap-publish: no manifest.json — run 'make bootstrap-manifest'." >&2; exit 1; }; \
-	SEED_H="$$(sed -n 's/.*\"seed_height\"[[:space:]]*:[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$$OUT/manifest.json" | head -1)"; \
-	[ -n "$$SEED_H" ] || { echo "bootstrap-publish: cannot read seed_height from $$OUT/manifest.json" >&2; exit 1; }; \
-	PROVED_H="$$(sed -n 's/^seed_height=\([0-9][0-9]*\)$$/\1/p' "$$OUT/.copyprove-ok" | head -1)"; \
-	[ "$$PROVED_H" = "$$SEED_H" ] || { echo "bootstrap-publish: REFUSING — copy-prove marker is for seed $$PROVED_H but manifest says $$SEED_H (stale). Re-run 'make bootstrap'." >&2; exit 1; }; \
-	command -v gh >/dev/null 2>&1 || { echo "bootstrap-publish: gh CLI not found (gh is the only network step)" >&2; exit 1; }; \
-	TAG="starterpack-$$SEED_H"; \
-	echo "[bootstrap-publish] creating GitHub release $$TAG from $$OUT/* (copy-prove verified, seed=$$SEED_H)"; \
-	gh release create "$$TAG" $$OUT/* \
-	  --title "ZClassic23 starter pack @ height $$SEED_H" \
-	  --notes "Fast-sync starter pack (block index + SHA3-self-verified UTXO snapshot) at seed height $$SEED_H. Drop block_index.bin + utxo-seed-$$SEED_H.snapshot into a fresh datadir and run zclassic23 with NO extra flags — it seeds + folds to tip. Integrity: sha256sum -c SHA256SUMS. See docs/BOOTSTRAPPING.md."
+	@echo "bootstrap-publish: REFUSING — stable starter-pack publication is contained" >&2
+	@echo "  Copy proof alone is not publication authority. Canonical sync/security," >&2
+	@echo "  exact-candidate fuzz, coverage, reproducibility, soak, signed manifest," >&2
+	@echo "  and immutable release-evidence gates are not all implemented and green." >&2
+	@echo "  Local bundle production remains available via 'make bootstrap'." >&2
+	@exit 2
 
 $(BIN_DIR)/session: $(TMPL_GEN) $(BUILD_COMMIT_STAMP) tools/session.c $(ALL_SRCS)
 	@mkdir -p $(dir $@)
@@ -1879,7 +1875,7 @@ mvp-onion-local: test_zcl
 # serving node + real wall-clock and cannot be hermetic. The nearest REAL proof
 # is the snapshot authority boot: cold_start_test.sh starts a fresh /tmp datadir
 # from the local operator bundle (block_index.bin + utxo-seed-*.snapshot) and
-# asserts >1M UTXOs are self-verified + seeded in <90s. It falls back to
+# asserts >1M UTXOs are body-digest verified + seeded in <90s. It falls back to
 # consensus_snapshot.db only for checkpoint-height fixtures. This wraps the
 # underlying script directly for mvp-verify with the same SKIP-not-FAIL
 # discipline as mvp-onion-local: cold_start_test.sh exits 2 when the fixture or
@@ -2413,15 +2409,16 @@ seed-anchor-snapshot:
 # Deploy the freshly-built binary to the DEV linger lane (isolated datadir
 # ~/.zclassic-c23-dev + ports 8053/18252) — where code-in-progress runs live
 # instead of rotting unrun in git. NEVER touches the operator-gated live node.
-# First run bootstraps via two-step cold import; later runs hot-swap the binary.
+# These are internal activation backends: the native `dev change apply` command
+# supplies ZCL_DEV_SOURCE_ID after proving the exact complete dirty epoch.
+# Calling them directly without that compare-and-swap capability fails closed.
 deploy-dev:
-	@./tools/dev/deploy-dev-lane.sh
+	@echo "deploy-dev: REFUSING — runtime publication is contained pending transactional epoch/proof/rollback receipts" >&2
+	@exit 3
 
 deploy-dev-fast agent-deploy-fast:
-	@$(MAKE) fast-rebuild
-	@ZCL_DEV_DEPLOY_BUILD=fast ZCL_DEV_USE_PREBUILT=1 \
-	  ZCL_DEV_BUILD_ARTIFACT="$(abspath $(ZCLASSIC23_DEV_BIN))" \
-	  ./tools/dev/deploy-dev-lane.sh
+	@echo "agent-deploy-fast: REFUSING — runtime publication is contained pending transactional epoch/proof/rollback receipts" >&2
+	@exit 3
 
 agent-mcp-call:
 	@if [ -z "$(TOOL)" ]; then \
@@ -2463,10 +2460,9 @@ agent-mcp-call-dev:
 agent-dev-status:
 	@tools/dev/agent-dev-status.sh $(ARGS)
 
-# Reversible fresh-datadir recovery for the isolated dev lane. Dry-run is the
-# default; pass ARGS=--apply only after staging/selecting the intended immutable
-# generation. The transaction archives the old datadir and rolls it back on any
-# loader, executable-identity, RPC, or agent-contract proof failure.
+# Read-only fresh-datadir recovery plan for the isolated dev lane. Phase-0
+# contains public ARGS=--apply; only dev-recovery-selftest reaches the retained
+# transaction inside its inherited-FD, fixture-bound harness.
 agent-dev-recover:
 	@tools/dev/recover-dev-lane.sh $(ARGS)
 
@@ -2480,10 +2476,8 @@ agent-doctor:
 	@tools/dev/agent-doctor.sh $(ARGS)
 
 stage-dev-bin agent-stage-dev:
-	@$(MAKE) fast-rebuild
-	@ZCL_DEV_DEPLOY_BUILD=fast ZCL_DEV_USE_PREBUILT=1 \
-	  ZCL_DEV_BUILD_ARTIFACT="$(abspath $(ZCLASSIC23_DEV_BIN))" \
-	  ./tools/dev/deploy-dev-lane.sh --stage
+	@echo "agent-stage-dev: REFUSING — runtime publication is contained pending transactional epoch/proof/rollback receipts" >&2
+	@exit 3
 
 lane-health:
 	@./tools/scripts/lane_health.sh
@@ -2500,19 +2494,25 @@ background-coverage:
 background-tests:
 	@./tools/scripts/background_quality_lane.sh tests
 
-.PHONY: install-self-update-linger self-update-status
-install-self-update-linger:
+.PHONY: install-remote-status-linger remote-status install-self-update-linger self-update-status
+install-remote-status-linger:
 	@install -d "$(HOME)/.config/systemd/user"
-	@install -m 644 deploy/examples/zclassic23-self-update.service "$(HOME)/.config/systemd/user/zclassic23-self-update.service"
-	@install -m 644 deploy/examples/zclassic23-self-update.timer "$(HOME)/.config/systemd/user/zclassic23-self-update.timer"
+	@install -m 644 deploy/examples/zclassic23-self-update.service "$(HOME)/.config/systemd/user/zclassic23-remote-status.service"
+	@install -m 644 deploy/examples/zclassic23-self-update.timer "$(HOME)/.config/systemd/user/zclassic23-remote-status.timer"
 	@systemctl --user daemon-reload
-	@systemctl --user enable --now zclassic23-self-update.timer
-	@echo "installed safe self-update warm/build lane: zclassic23-self-update.timer"
-	@echo "status: make self-update-status"
+	@systemctl --user enable --now zclassic23-remote-status.timer
+	@echo "installed read-only remote status timer: zclassic23-remote-status.timer"
+	@echo "status: make remote-status"
 
-self-update-status:
-	@systemctl --user list-timers zclassic23-self-update.timer --no-pager 2>/dev/null || true
-	@systemctl --user status zclassic23-self-update.service zclassic23-self-update.timer --no-pager -n 20 2>/dev/null || true
+remote-status:
+	@systemctl --user list-timers zclassic23-remote-status.timer --no-pager 2>/dev/null || true
+	@systemctl --user status zclassic23-remote-status.service zclassic23-remote-status.timer --no-pager -n 20 2>/dev/null || true
+
+install-self-update-linger:
+	@echo "install-self-update-linger: REFUSING — self-update/build publication is contained; use install-remote-status-linger for read-only observation" >&2
+	@exit 3
+
+self-update-status: remote-status
 
 .PHONY: install-remote-test-node-linger remote-test-node-status
 install-remote-test-node-linger:
@@ -2550,7 +2550,7 @@ quality-linger-status:
 	@systemctl --user status zclassic23-fuzz.service zclassic23-coverage.service zclassic23-test-suite.service --no-pager -n 12 2>/dev/null || true
 	@./tools/scripts/background_quality_lane.sh status
 
-release: vendor-ready
+release:
 	@./tools/release.sh
 
 # Install the tracked git hooks (shared across all worktrees via core.hooksPath).
@@ -2857,6 +2857,14 @@ check-hotswap-static-state:
 # binary is present.
 check-release-no-dev-symbols:
 	@tools/lint/check_release_no_dev_symbols.sh
+
+# Phase-0 release containment.  Remove this gate only in the same reviewed
+# change that lands immutable exact-candidate evidence, signed manifests, and
+# the stable publisher; a copy-proof marker alone never authorizes upload.
+check-stable-publish-contained:
+	@echo "══ LINT: stable network publishing contained ══"
+	@bash tools/scripts/check_stable_publish_containment.sh --self-test
+	@bash tools/scripts/check_stable_publish_containment.sh
 
 check-raw-malloc:
 	@echo "══ LINT: raw malloc/calloc/realloc in production code ══"
@@ -3453,7 +3461,7 @@ check-honest-witness:
 	@echo "══ LINT: honest witness (E12) ══"
 	@ZCL_LINT_MODE=FAIL ./tools/lint/check_honest_witness.sh
 
-lint: check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-release-no-dev-symbols check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-purpose check-group-purpose check-no-orphan-placement check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vendor-provenance
+lint: check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-release-no-dev-symbols check-stable-publish-contained check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-file-purpose check-group-purpose check-no-orphan-placement check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vendor-provenance
 	@echo "══ LINT: all checks passed ══"
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the

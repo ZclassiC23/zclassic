@@ -120,8 +120,11 @@ connect path is tracked as a hardening item, not a claimed property.
   copy before deployment. The isolated node harness refuses live datadirs and
   live ports and runs on throwaway `/tmp/zcl23-*` state.
 - **Release integrity:** `tools/release.sh` builds with deterministic release
-  flags, writes `BUILDINFO`, emits a SHA3-256 attestation, and requires GPG
-  signing unless the operator explicitly passes `--unsigned`.
+  flags, writes `BUILDINFO`, emits a SHA3-256 attestation, and supports GPG.
+  Its `--unsigned` output is explicitly local-development-only. Stable
+  publication is contained until exact-candidate quality evidence,
+  independently reproduced bytes, complete SBOM/provenance/manifests, and the
+  required offline signature quorum are all enforced.
 - **Dependency provenance:** vendored and ported third-party code is tracked in
   [`ATTRIBUTIONS.md`](./ATTRIBUTIONS.md), [`../NOTICE`](../NOTICE), and the
   repository tree. Packaging of several static libraries is still a known

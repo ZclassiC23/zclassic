@@ -2,7 +2,7 @@
 
 ## Vision — Personal Sovereignty Stack
 
-ZClassic23 is one ~15 MB self-contained C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, P2P messaging (plaintext P2P channel; on-chain Sapling-memo channel implemented — requires Sapling params + a passing prover self-test to send), cross-chain atomic swaps (BTC/LTC/DOGE; redeem/refund/settlement: in progress), a P2P game framework, and a native command registry (with a legacy MCP server, removed in W3). **Claude is a first-class operator via 100+ typed native commands** — not just an observer. Cold sync to tip in ~60 seconds via FlyClient + SHA3 UTXO snapshots (design target — see `docs/HANDOFF.md`; today's proven recovery is the two-step header-import + boot, ~25 min). Silent halts are unreachable by construction — a stall is always a named blocker or a growing tip gap, never a quiet stop (chain progress is a stage cursor on disk); the node can still halt, it just cannot do so without saying so. Bugs become 64-bit seeds in a deterministic simulator. Build flags for reproducibility are in place (pinned `-march`, `SOURCE_DATE_EPOCH`, dropped build-id, deterministic tarball) with optional GPG signing (sign optional, can be waived with --unsigned) — byte-identity is not yet proven by a build-twice-and-compare gate. **One binary, one onion, one stack — your sovereign personal computing surface.**
+ZClassic23 is one ~15 MB self-contained C23 binary that runs a full ZClassic node (Equihash 200,9 PoW, Sapling shielded txs), an embedded Tor onion service, a block explorer, a shielded wallet, a P2P file marketplace, ZNAM name registry, P2P messaging (plaintext P2P channel; on-chain Sapling-memo channel implemented — requires Sapling params + a passing prover self-test to send), cross-chain atomic swaps (BTC/LTC/DOGE; redeem/refund/settlement: in progress), a P2P game framework, and a native command registry (with a legacy MCP server, removed in W3). **Claude is a first-class operator via 100+ typed native commands** — not just an observer. Cold sync to tip in ~60 seconds via FlyClient + SHA3 UTXO snapshots (design target — see `docs/HANDOFF.md`; today's proven recovery is the two-step header-import + boot, ~25 min). Silent halts are unreachable by construction — a stall is always a named blocker or a growing tip gap, never a quiet stop (chain progress is a stage cursor on disk); the node can still halt, it just cannot do so without saying so. Bugs become 64-bit seeds in a deterministic simulator. Deterministic build flags and a legacy GPG-capable packaging script exist, but byte identity is not yet proven by a two-builder gate; unsigned output is local-development-only and stable publication remains contained. **One binary, one onion, one stack — your sovereign personal computing surface.**
 
 See [`docs/HOW_THE_NODE_WORKS.md`](./docs/HOW_THE_NODE_WORKS.md) for the plain-language mental model (the node as a state machine), [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) for the canonical architecture (the Prime Directive, the Ten Laws of Beauty, and the eight shapes), [`docs/AGENT_ARCHITECTURE.md`](./docs/AGENT_ARCHITECTURE.md) for the concrete future-agent feature slice (REST resources, ActiveRecord, validations, relationships, schema, services, native surfaces), [`docs/ARCHITECTURE_DIAGRAMS.md`](./docs/ARCHITECTURE_DIAGRAMS.md) for current subsystem/boot topology, and [`docs/adr/0001-personal-sovereignty-stack.md`](./docs/adr/0001-personal-sovereignty-stack.md) for the 2026-05-22 pivot rationale.
 
@@ -38,12 +38,16 @@ Plain meaning: the **sovereign cure** is the self-verified UTXO rebuild that
 starts from the in-binary SHA3/PoW checkpoint, folds real block bodies forward,
 then deletes the borrowed `zclassicd`-minted seed path.
 
-**Current bootstrap = the consolidated daily-driver loader** — a snapshot whose
-anchor hash is consensus-bound to the in-binary PoW header re-seeds `coins_kv`
-and raises the reducer trusted base to the seed height, so the node reaches tip
-(deployed via `-load-snapshot-at-own-height` + commit `ab512d577`, verified live
-2026-06-23; a borrowed-but-consensus-bound stopgap — the self-verified
-`-refold-from-anchor` rebuild that deletes the borrow is in flight, see HANDOFF §3).
+**Current canonical state is wedged, not synced.** As of 2026-07-12 the public
+daily-driver is held at H\*=3,176,325 by incomplete historical shielded anchors
+and nullifiers; verify the live value before acting. The consolidated loader did
+previously seed transparent `coins_kv` from a `zclassicd`-minted snapshot and
+reach tip, but matching that artifact's anchor hash to a validated local header
+binds only its height/hash location. ZClassic headers do **not** commit the UTXO,
+Sapling/Sprout frontier, or nullifier contents, so the borrowed state is not
+PoW- or consensus-bound content. The cure must install complete independently
+validated transparent and shielded state atomically and pass copy proof; the
+current v1-oriented refold reset must not discard v3 shielded sections.
 
 **The legacy TWO-step recipe still works** (verified 2026-06-11: hash-identical
 tip vs zclassicd at multiple heights, ~25 min total, warm-reboot-proven; this is
@@ -76,15 +80,16 @@ is a regression floor, not a liveness proof.
 ## Current focus — **Ship v1 (MVP 8/8)**
 
 > **Check the live node before treating MVP/soak as the active mission.** The
-> forward-sync wedge class is **FIXED** (commit `ab512d577`, verified live
-> 2026-06-23) — the consolidated daily-driver loader reaches the network tip via a
-> borrowed-but-consensus-bound stopgap, so soak time can now accrue. The remaining gate is the **sovereign cure**
-> (self-verified `-refold-from-anchor` rebuild/cutover that deletes the borrowed seed) **+ accumulated
-> soak hours**, not un-wedging. Verify live state with `zcl_status` /
-> [`docs/HANDOFF.md`](./docs/HANDOFF.md) — never assume "synced" from a doc.
-> Wedge-class cure design: [`docs/work/never-stuck-plan.md`](./docs/work/never-stuck-plan.md).
+> canonical node is currently wedged at H\*=3,176,325 on the permanent
+> `utxo_apply.anchor_backfill_gap` / nullifier-history dependency. A prior
+> transparent borrowed seed reaching tip did not prove complete shielded state.
+> No canonical soak time is clean evidence while this gap exists; cure and
+> copy-prove the complete state first, then start a fresh exact-parity soak
+> window. Current truth: [`docs/HANDOFF.md`](./docs/HANDOFF.md). Cure design:
+> [`docs/work/self-verified-tip-plan.md`](./docs/work/self-verified-tip-plan.md).
 
-**The active #1 track is zero-MCP removal.** The owner directive is to
+**The active #1 track is the sovereign shielded-state cure and copy proof.**
+Zero-MCP removal remains the secondary development track. The owner directive is to
 delete the MCP server entirely — the native CLI (`zclassic23 <command>`) is
 becoming the ONLY agent interface. W0 (bridge re-homed to
 `app/controllers`) + W1-A (kernel handler-snapshot) + W1-B/C (Tier-1
@@ -98,7 +103,7 @@ navigator subsystem (`lib/codeindex/` + a `code` command branch) is also in
 flight alongside it.
 
 **The v1 bar is [`docs/MVP.md`](./docs/MVP.md)** — 8 operator acceptance criteria; v1 = MRS 8/8.
-**THE plan is [`docs/work/FORWARD_PLAN.md`](./docs/work/FORWARD_PLAN.md)** — MVP-anchored, covering the autonomous / owner-gated / operational critical path. Current live state is in [`docs/HANDOFF.md`](./docs/HANDOFF.md). **#1 priority: CI-enforce the MVP criteria and accumulate soak time.**
+**THE plan is [`docs/work/FORWARD_PLAN.md`](./docs/work/FORWARD_PLAN.md)** — MVP-anchored, covering the autonomous / owner-gated / operational critical path. Current live state is in [`docs/HANDOFF.md`](./docs/HANDOFF.md). **#1 priority: complete and copy-prove the sovereign shielded-state cure; only then start a fresh exact-candidate soak.**
 
 **The framework/architecture refactor is ~90% done and OFF the v1 path — do not jump the queue.** [`docs/FRAMEWORK.md`](./docs/FRAMEWORK.md) is the canonical architecture (the Prime Directive, Ten Laws, eight shapes); [`docs/REFACTOR_STATUS.md`](./docs/REFACTOR_STATUS.md) is the architecture debt board. Both are reference, not the mission. Every `.c` under `app/` still lives in exactly one of eight shape folders, lint-enforced.
 
@@ -272,13 +277,19 @@ This enables fully decentralized peer discovery even when DNS seeds are unavaila
 
 A fresh node is *designed* to sync 3M+ blocks in ~60 seconds (design target — the stack below is built but not yet the proven cold-start; today's proven cold-sync is the two-step `--importblockindex` + boot, ~25 min, see the Tenacity section and `docs/HANDOFF.md`):
 
-1. **FlyClient** — 50 random block samples with MMB (Merkle Mountain Belt) inclusion proofs. Each sample verified for PoW. Security: ≥150 bits against any minority adversary.
+1. **FlyClient** — sampled header/PoW evidence. The auxiliary MMB and any
+   `utxo_root` it carries are not committed by ZClassic headers and cannot
+   authenticate peer-provided state.
 
-2. **SHA3 UTXO Snapshot** — Complete UTXO set transferred and verified against SHA3-256 commitment. 1.3M UTXOs in canonical order.
+2. **SHA3 UTXO Snapshot** — a canonical-order UTXO payload transferred with a
+   SHA3-256 byte-integrity commitment. A peer-provided root proves consistency
+   with that peer's manifest, not consensus provenance.
 
 3. **Delta sync** — Headers + blocks from snapshot height to tip via standard P2P.
 
-The node is designed to be fully operational after step 2 (~60s target). Background validation optionally re-verifies every historical signature and proof.
+The ~60-second goal is assisted operational readiness, not sovereignty. Mining,
+wallet spending, snapshot re-serving, and canonical publication remain disabled
+until complete-state validation and local full-history promotion succeed.
 
 Key MCP tools: `zcl_mmb`, `zcl_utxocommitment`, `zcl_syncstate`, `zcl_validationstatus`
 
@@ -358,7 +369,10 @@ Build/test/deploy commands, the fast inner loop, and the push traps are in
 the **`zclassic23-dev` skill** — the short version: `make build-only`
 (compile-check), `make -j$(nproc)` (full build), `make test` /
 `make test-parallel` (the canonical runner — never `test_zcl` directly),
-`make lint`, `make deploy` (owner-gated live) / `make deploy-dev`.
+`make lint`, and `make deploy` (owner-gated canonical only). Public
+`make deploy-dev*`, `make agent-deploy-fast`, and recovery apply entry points
+are contained and refuse; use build, verify, plan, and probe surfaces during
+Phase 0.
 
 Note on `-j`: each binary is ONE whole-program `cc` over ~660–1400 `.c` files
 (LTO), so `-j$(nproc)` only overlaps the 2–3 separate binaries + the LTO link,

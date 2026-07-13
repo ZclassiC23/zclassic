@@ -135,10 +135,11 @@ bool boot_import_snapshot_db(struct node_db *ndb,
      * binding here, so a forged snapshot at an arbitrary height would otherwise
      * be installed as ground truth (forged-money / consensus divergence).
      * REFUSE to promote an above-checkpoint peer snapshot — fall back to safe
-     * P2P IBD. The anchor-bound operator bundle path
-     * (boot_load_snapshot_at_own_height_reset, which cross-checks the snapshot
-     * anchor against the PoW-proven block_index) is the supported way to seed
-     * above the checkpoint; it does NOT use this function. */
+     * P2P IBD. The assisted operator bundle path
+     * (boot_load_snapshot_at_own_height_reset, which checks that the snapshot
+     * anchor names a validated block_index location) is the supported way to
+     * seed above the checkpoint; that location check does not authenticate
+     * UTXO/shielded contents, and the path does NOT use this function. */
     {
         const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
         if (cp && snap_height > (int64_t)cp->height) {

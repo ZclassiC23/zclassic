@@ -266,6 +266,31 @@ static void hotswap_push_probe_error(struct json_value *root,
 static int h_zcl_agent_hotswap(const struct mcp_request *req,
                                struct mcp_response *res)
 {
+    /* Legacy MCP must never remain an alternate publication authority while
+     * the native transaction is contained.  Keep the route only long enough
+     * to return an explicit, machine-readable refusal during zero-MCP
+     * migration; do not reach dlopen or a registry commit. */
+    (void)req;
+    struct json_value contained;
+    json_init(&contained);
+    json_set_object(&contained);
+    json_push_kv_bool(&contained, "ok", false);
+    json_push_kv_str(&contained, "error", "runtime_publication_contained");
+    json_push_kv_str(&contained, "rejection_stage", "authority");
+    json_push_kv_str(
+        &contained, "detail",
+        "legacy MCP hot-swap cannot publish; resident candidate probing is "
+        "also contained until disposable workers, pre-load ELF policy, "
+        "immutable epochs, and proof receipts are transactional");
+    char *contained_body =
+        hotswap_json_to_body(&contained, "contained hotswap response");
+    json_free(&contained);
+    if (!contained_body)
+        return mcp_res_set_oom(res, 0, "mcp.dev.hotswap",
+                               "contained hotswap response");
+    res->body = contained_body;
+    return 0;
+
     const char *so_path = json_get_str(json_get(req->args, "so_path"));
     const char *probe   = json_get_str(json_get(req->args, "probe_tool"));
 
@@ -353,9 +378,8 @@ static const struct mcp_param_spec p_agent_hotswap[] = {
 
 static const struct mcp_tool_route k_dev_hotswap_routes[] = {
     { "zcl_agent_hotswap", "ops",
-      "DEV-ONLY: dlopen a generation .so into the running dev node and "
-      "atomically re-point its MCP routes with no restart. Hot-swaps are "
-      "ephemeral — they revert on restart; persist via a normal rebuild.",
+      "DEV-ONLY legacy compatibility route: runtime publication is contained; "
+      "always returns runtime_publication_contained and never calls dlopen.",
       p_agent_hotswap, PARAM_COUNT(p_agent_hotswap),
       h_zcl_agent_hotswap, .flags = MCP_TOOL_FLAG_DESTRUCTIVE },
 };

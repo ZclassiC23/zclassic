@@ -1,9 +1,17 @@
 # Tier-1 in-process hot-swap (DEV-ONLY)
 
-An AI agent edits a manifest-eligible stateless controller `.c`, compiles it
-into a content-identified generation `.so`, and loads it into a **running dev
-node** without a restart. Two provider classes exist and run **dual-run** side
-by side:
+> **Phase-0 containment (2026-07-12):** no runtime hot-swap publication path
+> is enabled. `dev.hotswap.apply`, `make hotswap`, resident `dev_hotswap`,
+> legacy `zcl_agent_hotswap`, watcher publication modes, and direct hot-swap
+> scripts all refuse before `dlopen` or registry replacement. Resident probing
+> is contained too because constructors run before manifest admission. `make
+> hotswap-so`, `make hotswap-sim`, loader tests, and state inspection remain
+> available. The mechanism below documents the
+> in-tree implementation and target transaction; it is not publication
+> authority.
+
+The in-tree mechanism can compile a manifest-eligible stateless controller `.c`
+into a content-identified generation `.so`. Two provider classes exist:
 
 - **`mcp.routes`** (original pilot — everything below through "Known limits"
   describes it) — re-points routes in the resident **MCP router**.
@@ -12,9 +20,9 @@ by side:
   Tier-1 hot-swap keeps working after the MCP server is deleted (W3). See
   `docs/work/project_zero_mcp_directive_2026-07-11.md` for the deletion plan.
 
-Generation v2 stages every route/leaf, validates the complete set and ABI
-manifest, runs its self-test, then publishes one immutable snapshot with one
-atomic store. Any failure publishes zero routes/leaves.
+Generation v2 can stage every route/leaf, validate the complete set and ABI
+manifest, and run its self-test. Public entry points stop before its commit
+callback. Any probe failure publishes zero routes/leaves.
 
 **This is dev-only. The release binary is 100% static with zero `dlopen`.**
 Every dynamic-loading line lives behind `#ifdef ZCL_DEV_BUILD`; a release build
@@ -25,9 +33,9 @@ lint gate (no `dlopen`/`dlsym`/`dlclose` outside `lib/hotswap/`, and inside
 
 ## ⚠️ Ephemerality
 
-A hot-swap lives only for the lifetime of the process it was loaded into, and
-only in that process. **It reverts on restart.** To make a change permanent,
-rebuild normally (`make dev-bin` / `make deploy-dev`) and commit the source.
+When publication is eventually re-enabled, a hot-swap will live only for the
+lifetime of the process it was loaded into and revert on restart. `make
+dev-bin` may build a converged binary today, but `make deploy-dev` is contained.
 Generations are never `dlclose`'d (a deliberate leak) so an in-flight call that
 already entered old code stays valid. Each accepted generation also retains
 the descriptor for the exact inode loaded through `/proc/self/fd/N`. Reusing
@@ -35,9 +43,9 @@ that descriptor number while an older handle remains mapped can make `dlopen`
 return the older cached object for a different path; the pinned descriptor is
 therefore part of generation identity, not an accidental file leak.
 
-`dev-watch auto` starts an asynchronous immutable binary build and preflight
-stage after a successful swap. That removes compilation from the foreground
-latency path, but the staged binary is not silently promoted: the next
+The target `dev-watch auto` design starts an asynchronous immutable binary
+build and preflight stage after a successful swap. No watcher currently runs
+that publication path. Once re-enabled, the next
 transactional reload still verifies it and preserves rollback semantics.
 
 ## Moving parts
@@ -46,19 +54,19 @@ transactional reload still verifies it and preserves rollback semantics.
 |-------|-------|
 | Loader (`hotswap_load`, registry, `zcl_state` dumper) | `lib/hotswap/` |
 | Immutable router snapshots + transactional batch commit | `tools/mcp/router.{c,h}` |
-| Driving MCP tool `zcl_agent_hotswap` | `tools/mcp/controllers/dev_hotswap_controller.c` |
+| Contained legacy MCP apply `zcl_agent_hotswap` | `tools/mcp/controllers/dev_hotswap_controller.c` |
 | v2 manifest + `ZCL_HOTSWAP_EXPORT_ROUTES` macro | `lib/hotswap/include/hotswap/hotswap.h` |
 | Eligible controller TUs (each exports its own `k_routes[]`) | `tools/mcp/controllers/{app,meta,chain,net,wallet}_controller.c` |
 | Runtime eligibility allowlist | `config/hotswap_eligible.def` |
 | Persistent dev RPC bridge | `tools/mcp/dev_rpc_bridge.{c,h}` (`dev_hotswap`, read-only `dev_mcp_call`) |
-| Build/verification targets | `make hotswap-so`, `make hotswap`, `make hotswap-sim` |
+| Build/verification targets | `make hotswap-so`, contained `make hotswap`, `make hotswap-sim` |
 | `zcl_state subsystem=hotswap` | `zcl.hotswap_generation.v2` provenance/status |
 | **`native.leaves` (W1-B/C)** loader entrypoint `hotswap_load_leaves` | `lib/hotswap/` (`hotswap_loader.c`) |
 | Atomic leaf-handler override layer + `zcl_command_registry_replace_batch` | `lib/kernel/src/command_registry.c` |
 | v3 host + `ZCL_HOTSWAP_EXPORT_LEAVES` macro | `lib/hotswap/include/hotswap/hotswap.h` |
 | Eligible native TUs (each exports its own `k_leaves[]` trampoline table) | `app/controllers/src/{status,wallet,net,meta,chain}_native_handlers.c` |
 | Native seam a trampoline calls into its own body | `zcl_native_bridge_run()` in `tools/command/native_command.c` |
-| Native dev commands `dev.hotswap.apply` / `dev.hotswap.probe` | `config/commands/dev.def`, `tools/command/native_dev_hotswap.{c,h}` |
+| Native commands: contained `dev.hotswap.apply` and `dev.hotswap.probe` | `config/commands/dev.def`, `tools/command/native_dev_hotswap.{c,h}` |
 | Resident RPC the CLI forwards to | `dev_hotswap_native` in `tools/mcp/dev_rpc_bridge.c` |
 
 Zero new external dependencies: plain `$(CC) -shared` + libc `dlopen` (`-ldl`,
@@ -91,14 +99,8 @@ global scope, so the new handler runs against the live node's state.
 # Prints the .so path as its last line.
 make hotswap-so FILES="tools/mcp/controllers/app_controller.c"
 
-# Build + commit inside the already-running isolated dev node. This never
-# starts/stops a service and fails when that resident RPC is unavailable.
-make hotswap FILES="tools/mcp/controllers/app_controller.c" PROBE=zcl_name_list
-
-# Or drive the persistent RPC directly (exact dev datadir; .so under /tmp or
-# build/hotswap):
-build/bin/zclassic23-dev -datadir="$HOME/.zclassic-c23-dev" -rpcport=18252 \
-  dev_hotswap /abs/path/gen-<sha256>.so zcl_name_list
+# Verify loader policy without entering a resident node.
+make t ONLY=hotswap_loader
 
 # Inspect the resident generation through the non-destructive bridge:
 build/bin/zclassic23-dev -datadir="$HOME/.zclassic-c23-dev" -rpcport=18252 \
@@ -108,44 +110,21 @@ build/bin/zclassic23-dev -datadir="$HOME/.zclassic-c23-dev" -rpcport=18252 \
 make hotswap-sim
 ```
 
-`zcl_agent_hotswap` returns `{ok, gen, replaced:[names], probe:{…}}`. It is
-flagged destructive (rate-gated, skipped by `zcl_self_test`). The loader refuses
-everything except the exact dev datadir (`~/.zclassic-c23-dev`), including
-canonical, legacy, soak, copied/test, empty, and arbitrary datadirs.
+`make hotswap`, resident `dev_hotswap`, and `zcl_agent_hotswap` return a
+containment refusal. They do not use exact-dev-lane eligibility as authority and
+never reach the loader.
 
 ### Which process gets swapped
 
-`make hotswap` sends the authenticated `dev_hotswap` JSON-RPC request to the
-already-running node at the exact dev datadir/port. That handler dispatches
-`zcl_agent_hotswap` against a resident MCP router in the same process, so later
-`dev_mcp_call` requests observe the committed generation. The generic bridge
-refuses destructive MCP tools; only the narrow `dev_hotswap` method may mutate
-the resident generation. Release, canonical, soak, test, copy, and arbitrary
-datadirs do not register either RPC method.
+No process gets swapped during containment. All native, resident-RPC, MCP, Make,
+and direct-script apply paths refuse before loading a candidate. The read-only
+`dev_mcp_call` and hot-swap state dump remain diagnostic surfaces.
 
-The separate `mcpcall zcl_agent_hotswap ...` spelling still runs a one-shot
-helper process and is useful only as a node-free loader smoke test; it must not
-be described as a persistent swap.
+## End-to-end proof without publication
 
-## End-to-end demo (no running node required)
-
-```sh
-sh tools/scripts/hotswap_demo.sh
-```
-
-It builds `zclassic23-dev` once, then for EVERY eligible controller in
-`config/hotswap_eligible.def` compiles it into a v2 generation, dispatches
-`zcl_agent_hotswap` in one exact-dev-datadir `mcpcall` process, and asserts the
-transaction commits with source/input/artifact provenance and re-points a
-read-only route that TU owns. A harness sync-check fails loud if an eligible TU
-has no proof entry (or vice-versa). It does not alter the running service.
-Expected tail:
-
-```
-PASS: tools/mcp/controllers/app_controller.c committed a v2 generation re-pointing zcl_name_list
-...
-== hotswap_demo: 5 passed, 0 failed over eligible TUs ==
-```
+Use `make hotswap-sim` and the focused loader tests below. The former
+commit-oriented `hotswap_demo.sh` and resident probe are not public proof paths
+while loading/publication are contained.
 
 ## Tests
 
@@ -204,11 +183,8 @@ independently. Every eligible TU is proven end-to-end by
 - There are no state migrations or background callback leases in this pilot.
   That is safe because admitted code is stateless, declares no quiescence, and
   old text is never unmapped. Stateful modules remain refused.
-- `dev-watch auto` uses the resident dev RPC by default. Only transport
-  unavailability (exit 69, normally an older dev generation) permits automatic
-  reload fallback; generation rejection does not. After a successful swap the
-  watcher asynchronously builds and preflights an immutable binary generation
-  so source and process state can converge at the next transactional reload.
+- `dev-watch auto` is contained. It never calls the resident RPC, never falls
+  back on exit 69, and never schedules a post-swap binary stage.
 
 ## `native.leaves` provider (Zero-MCP re-target, Wave W1-B/C)
 
@@ -218,8 +194,9 @@ class, which re-points routes in the resident **MCP router**
 (`docs/work/project_zero_mcp_directive_2026-07-11.md`) deletes the MCP router
 in Wave 3, so Tier-1 hot-swap needed a second, MCP-free provider class that
 re-points **native command leaves** in the **kernel command registry**
-instead. Both provider classes are **dual-run** today — publishing a
-`mcp.routes` generation does not touch `native.leaves` and vice versa; a
+instead. Both provider classes remain in-tree for dual-run tests, but neither
+has a public publication authority today. When re-enabled, publishing a
+`mcp.routes` generation must not touch `native.leaves` and vice versa; a
 controller pair (e.g. `tools/mcp/controllers/status_controller.c` and
 `app/controllers/src/status_native_handlers.c`) may each carry their own
 `ZCL_HOTSWAP_EXPORT_*` macro and be swapped independently.
@@ -317,36 +294,21 @@ commands (`config/commands/dev.def`, handlers in
 `tools/mcp/` so it survives the W3 MCP delete):
 
 ```sh
-zclassic23-dev dev hotswap apply --input='{"so_path":"/tmp/gen.so","probe_leaf":"core.status"}'
 zclassic23-dev dev hotswap probe --input='{"so_path":"/tmp/gen.so","probe_leaf":"core.status"}'
 ```
 
-Both are **CLI handlers running as a short-lived process** — they cannot
-re-point a leaf in the *running* dev node's registry directly, so they
-forward the request over JSON-RPC to the already-running node via a new
-resident method, `dev_hotswap_native` (registered in
-`tools/mcp/dev_rpc_bridge.c`'s `dev_bridge_register_impl()` through
-`register_dev_native_hotswap_rpc()`). That handler runs
-`hotswap_load_leaves()` **in-process** in the resident dev node, so the leaf
-re-point happens in the RUNNING dev node — exactly the "which process gets
-swapped" contract the `mcp.routes` pilot already has.
+The two command IDs remain registered as typed compatibility refusals during
+containment:
 
-- **`dev.hotswap.apply`** commits: `hotswap_commit_native_leaves()` in
-  `tools/command/native_dev_hotswap.c` stages the whole batch then calls
-  `zcl_command_registry_replace_batch()` — all-or-nothing publish.
-- **`dev.hotswap.probe`** stages + self-tests **without** publishing:
-  `hotswap_probe_native_leaves()` validates the staged batch shape
-  (non-empty paths, non-NULL handlers, count within
-  `ZCL_HOTSWAP_GEN_MAX_REPLACED`) and returns success without ever calling
-  `replace_batch()` — the resident override snapshot is untouched.
-- Both CLI handlers resolve their JSON-RPC target from the exact dev-lane
-  defaults (`$HOME/.zclassic-c23-dev`, port 18252,
-  `hotswap_cli_ensure_rpc_client()`) unless a caller-side RPC client is
-  already initialized. See the `TODO(W1)` below.
-- The resident `dev_hotswap_native` RPC itself is lane-guarded the same way
-  as the MCP pilot's `dev_hotswap`: it 403s outside the exact dev datadir
-  (`hotswap_datadir_is_dev()`), and `register_dev_native_hotswap_rpc()`
-  registers as a successful no-op on any other lane or on a release build.
+- **`dev.hotswap.apply`** returns `runtime_publication_contained` before
+  `dlopen`, resident forwarding, or `zcl_command_registry_replace_batch()`.
+- **`dev.hotswap.probe`** returns `resident_probe_contained` before resident
+  forwarding or `dlopen`. A discard-only in-process probe is still unsafe:
+  ELF constructors execute before manifest validation and destructors execute
+  at `dlclose`.
+- The resident `dev_hotswap_native` RPC returns the same refusal even on the
+  exact dev datadir. Re-enable only with a disposable worker, pre-load
+  sidecar/ELF/import policy, immutable artifact receipt, and bounded fixtures.
 
 ### Eligibility for `native.leaves`
 
@@ -395,14 +357,15 @@ handler's param-arity check) — never assume it from the leaf name.**
 
 ### Known v1 TODOs
 
-- **Isolated precommit probe.** `hotswap_commit_native_leaves()`
+- **Isolated precommit behavioral probe.** Before publication may be
+  re-enabled, `hotswap_commit_native_leaves()`
   (`tools/command/native_dev_hotswap.c`) has a `TODO(W1)`: it does not yet
   look up the probe leaf's spec and invoke the candidate handler against an
   empty request before publish. Today's v1 guards are the generation
   self-test (loader-side) plus `zcl_command_registry_replace_batch()`'s
   READY / read-only / non-branch / non-duplicate validation — a dry
-  precommit probe needs a new registry lookup+invoke API and is deferred
-  rather than blocking the batch publish.
+  precommit probe needs a typed registry lookup+invoke API. Containment must
+  remain until that probe and its expected output schema are enforced.
 - **CLI datadir/port resolution.** `hotswap_cli_ensure_rpc_client()`
   (`tools/command/native_dev_hotswap.c`) has a `TODO(W1)`: the CLI resolves
   the dev datadir/port from fixed defaults
@@ -461,8 +424,9 @@ above. Generated build trees, local agent worktrees, and caches are pruned
 from the tracked walk, and stale stat-cache rows are deleted during the
 background baseline so steady-state cost follows the real source change set.
 
-**Generation binding, per cycle type:**
-- Hot-swap (`resident_commit`): the `artifact_sha256` field already returned
+**Historical/pre-containment generation binding, per cycle type:** no current
+cycle can produce the hot-swap or reload cases below.
+- Hot-swap (`resident_commit`): the `artifact_sha256` field returned
   by `dev_hotswap` / `zcl_agent_hotswap` (see
   `tools/mcp/controllers/dev_hotswap_controller.c`) — the sha256 of the exact
   `.so` this cycle `dlopen`'d.
@@ -485,30 +449,34 @@ refusal**: editing a file under a sealed glob (see `vcs/vcs_seal.h` —
 default set `core/`, `domain/consensus/`, `lib/consensus/`, `lib/validation/`,
 `lib/chain/`, `lib/mining/`, `app/jobs/`) without a granted one-shot unseal
 token adds `"vcs_sealed_refusal":true` alongside `"vcs_error"`. At this
-integration point the refusal is **advisory only** — by the time
-`finish_cycle` runs, the cycle's own hot-swap/reload publish has already
-happened, so a refused anchor means only "this cycle's source snapshot did
-not land," not "the running binary was blocked." This ZVCS-side check remains
-as a defense-in-depth backstop; the **pre-publish core refusal** below (Wave
-2.4) is the one that structurally blocks the running binary.
+integration point the refusal remains a source-integrity signal. During
+Phase-0 no cycle publishes before `finish_cycle`: runtime publication is
+already contained at the entry point. Sealed-path anchoring is defense in
+depth, not authority to activate code.
 
-## Transactional reload: native engine (Wave 3.2, opt-in)
+## Transactional reload: native engine (implemented machinery, contained)
 
-The `transactional_reload` action has two backends now. Both stop the running
+Neither backend below is reachable from a public publication entry point.
+`ZCL_DEV_NATIVE_ACTIVATION`, `ZCL_DEV_SOURCE_ID`, or a direct Make/script call
+cannot opt into activation. The detail is retained as implementation to finish
+behind the unified source/proof/CAS/accept/rollback transaction.
+
+The `transactional_reload` implementation has two backends. When re-enabled
+behind that transaction, both stop the running
 `zcl23-dev.service`, atomically flip the `current` generation symlink,
 restart, and verify the exact `/proc` executable identity before declaring
 success — rolling back to the previous generation on any preflight/verify
 failure. What differs is HOW:
 
-- **Shell path (default, byte-identical to before Wave 3.2).**
+- **Shell path (pre-containment design).**
   `devloop_cycle.c`'s `transactional_reload` label shells out to `make
   agent-deploy-fast`, which runs `make fast-rebuild` then drives
   `tools/dev/deploy-dev-lane.sh` — the proven bash transaction. This is what
-  runs when `ZCL_DEV_NATIVE_ACTIVATION` is unset (or any value other than
-  `1`/`true`/`yes`).
-- **Native engine (opt-in).** Set `ZCL_DEV_NATIVE_ACTIVATION=1` in the
-  environment of the dev-loop watcher (or the one-shot `dev change cycle`
-  invocation). The reload site still runs `make fast-rebuild` (a build step
+  was selected when `ZCL_DEV_NATIVE_ACTIVATION` was unset.
+- **Native engine (hermetic/test seam during containment).** The former
+  selection used `ZCL_DEV_NATIVE_ACTIVATION=1`. Public watcher and one-shot
+  entry points now refuse before consulting it. The reload implementation runs
+  `make fast-rebuild` (a build step
   common to both backends — the engine never builds), then calls
   `dev_activation_run()` (`tools/dev/dev_activation.{h,c}`) directly with a
   request built from the exact dev-lane constants
@@ -523,29 +491,20 @@ failure. What differs is HOW:
   the reload site logs a warning and falls back to the shell path for that
   one cycle.
 
-  `native_dev_command.c`'s `dev.vcs.revert` relink seam
-  (`dev_vcs_revert_relink_ops()`) honors the same switch: with
-  `ZCL_DEV_NATIVE_ACTIVATION=1` it calls
-  `dev_activation_activate_generation()` (the Wave 3.3 revert hook — activate
-  an already-staged generation by its 32-byte sha, no rebuild) instead of the
-  shell fallback's always-rebuild-from-source. Unlike the shell fallback,
-  the native activator correctly tells a full binary-generation hash apart
-  from a bare hotswap `.so` hash: a hotswap-anchored commit was never staged
-  as a `gen-<sha>/zclassic23-dev` directory, so
-  `dev_activation_activate_generation()` fails staging and the seam reports
-  `VCS_EPARTIAL` (source reverted, binary relink refused) exactly per
-  `vcs.h`'s documented contract — never a guessed rebuild.
+  The retained `dev.vcs.revert` relink seam can exercise
+  `dev_activation_activate_generation()` in hermetic tests. The public command
+  refuses `relink_generation=true` before the source revert; source-only
+  `relink_generation=false` remains available.
 
-**Why a runtime env check, not a second `#ifdef`.** The whole native engine
+**Retained runtime selection seam.** The whole native engine
 already compiles only into `ZCL_DEV_BUILD`/`ZCL_TESTING` binaries (see
 `dev_activation.h`'s own header comment and `check-release-no-dev-symbols`);
 a second compile-time gate on top would only let one flag value exist per
-already-built dev binary. `ZCL_DEV_NATIVE_ACTIVATION` follows the same idiom
+already-built dev binary. `ZCL_DEV_NATIVE_ACTIVATION` followed the same idiom
 `deploy-dev-lane.sh` already uses for its own adjacent switches
-(`ZCL_DEV_USE_PREBUILT`, `ZCL_DEV_SKIP_BUILD`), so one already-deployed
-`zclassic23-dev` can A/B the native engine against the proven shell path with
-one env var and no rebuild — see `dev_activation_native_enabled()` in
-`tools/dev/devloop.h`.
+(`ZCL_DEV_USE_PREBUILT`, `ZCL_DEV_SKIP_BUILD`). It remains useful to hermetic
+engine tests, but no environment value authorizes public activation — see
+`dev_activation_native_enabled()` in `tools/dev/devloop.h`.
 
 **What is and isn't hermetically tested.** Both call sites' actual reload
 bodies exec real processes (`make`, `systemctl`, `git`) and are therefore
@@ -558,16 +517,19 @@ no-process-exec — is factored into `dev_activation_native_enabled()` /
 `dev_activation_request_from_cycle()` / `dev_activation_map_result()`
 (`tools/dev/devloop.h` / `devloop_cycle.c`) and covered by `test_dev_platform`.
 
-**Proof bar before `ZCL_DEV_NATIVE_ACTIVATION=1` becomes the default:**
-`test_dev_activation`, `test_dev_platform`, and `test_vcs_devloop` green
-(regression floor) **plus** at least one real dev-lane native activation —
-run a dev-loop cycle with `ZCL_DEV_NATIVE_ACTIVATION=1` against the live
-`zcl23-dev.service` and confirm `zcl_agent_dev_status` (or `dev generation
-current`) shows the new generation active and verified, matching what
-`make agent-deploy-fast` already proves today. Until that lands, this stays
-opt-in and the shell path remains load-bearing.
+**Proof bar before any activation entry point is re-enabled:** complete
+immutable source epochs, proof receipts, signed authority, a resident
+expected-epoch compare-and-swap, durable prepared/accepted records, exact
+post-publication probes, and deterministic rollback first. Then keep
+`test_dev_activation`, `test_dev_platform`, and `test_vcs_devloop` green and
+copy-prove a real isolated dev-lane activation. No environment opt-in can
+substitute for those prerequisites.
 
 ## Core refusal — the fast loop cannot auto-publish sealed consensus (Wave 2.4)
+
+The generic Phase-0 containment now blocks every runtime publication before
+this narrower defense matters. A Core unseal token authorizes source handling
+only; it does not authorize hot-swap, reload, stage, or generation relinking.
 
 **What an agent sees when it edits `core/`.** The top-level `core/` tree is the
 sealed consensus core (the predicates + static, height-keyed parameter tables

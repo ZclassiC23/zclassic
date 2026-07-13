@@ -276,6 +276,51 @@ int blocker_snapshot_all(struct blocker_snapshot *out, int max)
     return blocker_snapshot_all_with_meta(out, max, NULL, NULL, NULL);
 }
 
+int blocker_causal_priority(enum blocker_class c, const char *id)
+{
+    /* A disk/resource failure can prevent every recovery write, so retain the
+     * generic class ordering above the history-specific refinement. */
+    if (c == BLOCKER_RESOURCE)
+        return 4000;
+
+    if (c == BLOCKER_PERMANENT && id) {
+        if (strcmp(id, "utxo_apply.anchor_backfill_gap") == 0)
+            return 3500;
+        if (strcmp(id, "utxo_apply.nullifier_backfill_gap") == 0)
+            return 3400;
+    }
+
+    switch (c) {
+    case BLOCKER_PERMANENT:  return 3000;
+    case BLOCKER_DEPENDENCY: return 2000;
+    case BLOCKER_TRANSIENT:  return 1000;
+    case BLOCKER_RESOURCE:   return 4000;
+    }
+    return 0;
+}
+
+const struct blocker_snapshot *blocker_select_dominant(
+    const struct blocker_snapshot *snapshots, int count)
+{
+    if (!snapshots || count <= 0)
+        return NULL;
+
+    const struct blocker_snapshot *dominant = NULL;
+    int priority = -1;
+    for (int i = 0; i < count; i++) {
+        const struct blocker_snapshot *candidate = &snapshots[i];
+        int candidate_priority = blocker_causal_priority(
+            (enum blocker_class)candidate->class, candidate->id);
+        if (!dominant || candidate_priority > priority ||
+            (candidate_priority == priority &&
+             candidate->age_us > dominant->age_us)) {
+            dominant = candidate;
+            priority = candidate_priority;
+        }
+    }
+    return dominant;
+}
+
 int blocker_count_by_class(enum blocker_class c)
 {
     pthread_mutex_lock(&g_lock);

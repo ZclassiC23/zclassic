@@ -29,14 +29,14 @@ the frontier cap is exempted and the cursor is set UNCONDITIONALLY.
 |---|-----------|--------------|---------|-----|
 | 1 | `app/services/src/reducer_ingest_service.c:447` | `false` (runtime re-seed) | **KEEP** | Live at-tip fold. Re-seeds the finalize cursor ONLY when it is genuinely behind the served tip (`cursor < anchor_tip->nHeight`, after a repair clamp). This is the steady-state forward-progress path — the consensus-critical live writer. Deleting it re-introduces the served-tip-trails-by-one defect (task #30). |
 | 2 | `app/services/src/reducer_ingest_service.c:470` | `false` (runtime re-seed) | **KEEP** | Regtest-only on-demand bootstrap (gated `params->fMineBlocksOnDemand && nHeight==0 && cursor==0`). Seeds the genesis anchor row ONCE for a fresh genesis-only node so the first `generate` can finalize. Byte-inert off regtest (the bool is the first AND-term). Needed for the regtest test surface; not a cold-import borrow. |
-| 3 | `app/services/src/snapshot_apply.c:91` | `true` (SHA3-verified snapshot) | **KEEP** | Fast-sync snapshot apply. The seed rides a SHA3-verified UTXO snapshot whose anchor hash is consensus-bound — this is the sovereign-compatible fast-sync trust root, NOT the borrowed `zclassicd`-chainstate copy. It stays after the cure (it is the FlyClient + SHA3 path the plan keeps). |
+| 3 | `app/services/src/snapshot_apply.c:91` | `true` (digest-verified assisted snapshot) | **KEEP, restricted** | Fast-sync snapshot apply. The anchor hash verifies chain location only; ZClassic headers do not commit the UTXO payload. Keep it as an assisted-readiness path with mining/wallet/re-serving disabled until background sovereignty promotion, not as a sovereign trust root. |
 | 4 | `app/services/src/block_index_loader_rebuild.c:745` | `true` | **DELETE** (after the cure ships) | Cold-import seeder. Fires only when the node is wedged (`H - H* > COLD_IMPORT_SEED_TRIGGER_GAP`) on a legacy `--importblockindex $HOME/.zclassic` datadir; stamps `coins_applied_height = H+1` and the anchor at the imported tip `H`. This is exactly the borrowed-foundation path the cure (`-refold-from-anchor` default + delete `utxo_recovery_restore.c:369`) removes. |
 | 5 | `app/services/src/reindex_epilogue.c:178` | `true` | **DELETE** (after the cure ships) | Reindex (`-reindex-chainstate`) cold-import seeder. trusted_seed=true is justified as "from-genesis full replay through connect_block", but the seed itself is the same stamp-the-cursor-to-an-imported-tip mechanism. Once the default cold start is the self-derived from-anchor refold, reindex's separate stamping path is redundant with the fold and is part of the carve. **Sequence after Act-3 #2 (flip default) — reindex must route through the from-anchor refold first, else deleting this seed leaves reindex unable to finalize.** |
 | 6 | `app/jobs/src/tip_finalize_anchor.c:155` | — | n/a (DEFINITION) | The function itself. Not deleted — KEEP callers (#1–#3) still need it. The carve removes call sites #4/#5 only; the symbol survives. |
 
 ### KEEP / DELETE summary
 
-- **KEEP (3):** `reducer_ingest_service.c:447` (live fold), `reducer_ingest_service.c:470` (regtest bootstrap), `snapshot_apply.c:91` (SHA3-verified fast-sync). These are the live / from-anchor / snapshot consensus-compatible paths the plan keeps. Deleting any of them trips a live predicate (forward-progress finalize, regtest finalize, fast-sync finalize respectively).
+- **KEEP (3):** `reducer_ingest_service.c:447` (live fold), `reducer_ingest_service.c:470` (regtest bootstrap), `snapshot_apply.c:91` (body-digest-verified assisted fast-sync). These are the live / from-anchor / assisted-snapshot paths the plan keeps. Deleting any of them trips a live predicate (forward-progress finalize, regtest finalize, fast-sync finalize respectively); keeping the snapshot path does not promote its trust posture.
 - **DELETE after the cure (2):** `block_index_loader_rebuild.c:745` (legacy cold-import wedge-heal), `reindex_epilogue.c:178` (reindex cold-import seed). Both are the borrowed/imported-tip stamping path; remove them in dependency order per `archive/architecture-deletion-plan.md`, AFTER Act-3 #2 makes the from-anchor refold the default cold start.
 - The plan's prose named 9 callers and 5 in an earlier draft; the live HEAD has **6 production call sites** (2 of them the two `reducer_ingest_service.c` re-seeds), classified above. The plan's headline KEEP/DELETE split holds: KEEP `reducer_ingest_service.c` + `snapshot_apply.c` + the from-anchor refold; DELETE `block_index_loader_rebuild.c` + `reindex_epilogue.c`.
 
@@ -81,12 +81,14 @@ writer of the `xor_accumulator` into the commitment MMR
    nothing. connect_block, PoW, the reducer fold, and fast-sync verify never
    consult the commitment MMR.
 
-5. **Fast-sync uses a REAL root, not this one.** Snapshot verification computes
+5. **Fast-sync carries a real SHA3 root, but not a consensus commitment.** Snapshot verification computes
    `fast_sync_compute_utxo_root_db` (a real SHA3 over the UTXO table) into the
-   snapshot offer's `utxo_root` (`snapshot_offer.c:207`). The FlyClient-proven
-   object is the `mmb_leaf`, which already carries the real persisted
+   snapshot offer's `utxo_root` (`snapshot_offer.c:207`). The auxiliary
+   FlyClient/MMB object is the `mmb_leaf`, which carries the real persisted
    `boundary_root` (`blockchain_controller.c:189` →
-   `coins_kv_boundary_root_get`), validated by `test_keystone_utxo_binding.c`.
+   `coins_kv_boundary_root_get`), with byte sensitivity validated by
+   `test_keystone_utxo_binding.c`. ZClassic headers commit neither that field
+   nor the MMB root, so it cannot authenticate peer state.
    The commitment MMR's XOR `utxo_root` is on neither path.
 
 ### Implication
@@ -95,8 +97,9 @@ The Act-4a "enforce `boundary_root` vs delete the XOR path" fork resolves to
 **delete**. The commitment MMR fed by `xor_accumulator` is forgeable AND
 unreferenced — enforcing a real root into a structure nothing reads would be
 adding code, not subtracting (against the project's subtraction doctrine). The
-real per-height UTXO binding already lives in the MMB leaf (`boundary_root`,
-keystone B1, `b2482a6ff`). Act-4a's clean move:
+real per-height UTXO fingerprint is carried in the auxiliary MMB leaf
+(`boundary_root`, `b2482a6ff`) for evidence only; it is not a PoW/consensus
+binding. Act-4a's clean move:
 
 1. Delete `rpc_blockchain_maybe_commit` + the commitment-MMR state
    (`g_commitment_mmr`, init/save/get) — confirmed-dead scaffolding (Act-4c

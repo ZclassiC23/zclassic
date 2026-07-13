@@ -4,8 +4,9 @@
  * coins_kv (progress.kv) at a given height + block hash. Read-only over the
  * coins set; emits the SAME canonical stream as the -mint-anchor ceremony
  * and the anchor self-mint, so the resulting file is loadable by
- * -load-snapshot-at-own-height (which self-SHA3-verifies the body and binds
- * hdr.anchor_block_hash to the in-memory active chain at the seed height).
+ * -load-snapshot-at-own-height (which verifies the body SHA3 and checks that
+ * hdr.anchor_block_hash names the in-memory active-chain location at the seed
+ * height; that location check does not authenticate the state contents).
  *
  * Usage:
  *   snapshot_from_coinskv <datadir> <height> <blockhash_display_hex> <out_path>
@@ -49,8 +50,10 @@ int main(int argc, char **argv)
         return 2;
     }
     /* --shielded: also collect the Sapling+Sprout frontier + nullifier set from
-     * the already-folded datadir and emit a self-verified shielded snapshot
-     * (the cure seed). Without it, a coins-only snapshot as before. */
+     * the already-folded datadir and emit a section-bearing, body-digest-
+     * verified snapshot candidate. This does not independently prove the
+     * source datadir or the Sprout/nullifier history. Without it, emit a
+     * coins-only snapshot as before. */
     bool want_shielded = (argc == 6 && strcmp(argv[5], "--shielded") == 0);
     if (argc == 6 && !want_shielded) {
         fprintf(stderr, "unknown 5th arg '%s' (expected --shielded)\n", argv[5]);

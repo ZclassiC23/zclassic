@@ -49,6 +49,30 @@ static int64_t dl_peer_avoid_deadline(int64_t now)
     return now + cooldown;
 }
 
+static void dl_generation_advance(uint64_t *generation)
+{
+    (*generation)++;
+    if (*generation == 0)
+        *generation = 1;
+}
+
+static bool dl_assign_result_is_parkable(int result)
+{
+    return result == DL_ASSIGN_NO_QUEUE ||
+           result == DL_ASSIGN_PEER_WINDOW_FULL ||
+           result == DL_ASSIGN_GLOBAL_WINDOW_FULL ||
+           result == DL_ASSIGN_PEER_AVOID_COOLDOWN;
+}
+
+static uint64_t dl_assign_dependency_generation(
+    const struct download_manager *dm, int result)
+{
+    if (result == DL_ASSIGN_NO_QUEUE ||
+        result == DL_ASSIGN_PEER_AVOID_COOLDOWN)
+        return dm->queue_generation;
+    return dm->capacity_generation;
+}
+
 const char *dl_assign_result_name(int result)
 {
     switch (result) {
@@ -82,6 +106,8 @@ void dl_init(struct download_manager *dm)
 {
     memset(dm, 0, sizeof(*dm));
     zcl_mutex_init(&dm->cs);
+    dm->queue_generation = 1;
+    dm->capacity_generation = 1;
     dm->num_slots = INITIAL_SLOTS;
     dm->slots = zcl_calloc(dm->num_slots, sizeof(struct dl_in_flight), "dl_slots");
     dm->queue_cap = INITIAL_QUEUE;
@@ -408,13 +434,29 @@ static void dl_queue_remove_at(struct download_manager *dm, size_t idx)
 static struct dl_peer_stats *dl_find_peer(struct download_manager *dm,
                                            uint32_t peer_id, bool create)
 {
+    struct dl_peer_stats *reusable = NULL;
     for (size_t i = 0; i < dm->num_peers; i++) {
-        if (dm->peers[i].peer_id == peer_id)
+        if (dm->peers[i].peer_id == peer_id) {
+            if (create && !dm->peers[i].active) {
+                dm->peers[i].active = true;
+                dm->peers[i].zero_assign_generation = 0;
+                dm->peers[i].zero_assign_retry_after = 0;
+                dm->peers[i].zero_assign_global_limit = 0;
+                dm->peers[i].zero_assign_result = DL_ASSIGN_NONE;
+            }
             return &dm->peers[i];
+        }
+        if (!dm->peers[i].active && !reusable)
+            reusable = &dm->peers[i];
     }
-    if (!create || dm->num_peers >= 256)
+    if (!create)
         return NULL;
-    struct dl_peer_stats *p = &dm->peers[dm->num_peers++];
+    struct dl_peer_stats *p = reusable;
+    if (!p) {
+        if (dm->num_peers >= DL_MAX_TRACKED_PEERS)
+            return NULL;
+        p = &dm->peers[dm->num_peers++];
+    }
     memset(p, 0, sizeof(*p));
     p->peer_id = peer_id;
     p->active = true;
@@ -576,6 +618,7 @@ uint32_t dl_mark_received(struct download_manager *dm,
      * for proper probe chain handling after deletions. */
     dm->num_active--;
     dm->total_received++;
+    dl_generation_advance(&dm->capacity_generation);
 
     struct dl_peer_stats *ps = dl_find_peer(dm, peer_id, false);
     if (ps) {
@@ -635,6 +678,10 @@ size_t dl_check_timeouts(struct download_manager *dm, int64_t now)
      * ever arrives — will look identical to an unsolicited push. */
     if (reassigned > 0)
         dm->last_forced_settle_time = now;
+    if (reassigned > 0)
+        dl_generation_advance(&dm->queue_generation);
+    if (reassigned > 0)
+        dl_generation_advance(&dm->capacity_generation);
 
     /* Compact hash table if it has many dead gaps */
     maybe_grow(dm);
@@ -683,6 +730,10 @@ size_t dl_peer_disconnected(struct download_manager *dm, uint32_t peer_id)
     if (requeued > 0)
         event_emitf(EV_BLOCK_REQUESTED, peer_id,
                     "peer disconnect: %zu blocks requeued", requeued);
+    if (requeued > 0)
+        dl_generation_advance(&dm->queue_generation);
+    if (requeued > 0)
+        dl_generation_advance(&dm->capacity_generation);
 
     zcl_mutex_unlock(&dm->cs);
     return requeued;
@@ -821,6 +872,9 @@ size_t dl_queue_blocks(struct download_manager *dm,
     free(mau);
     free(stage);
 
+    if (added > 0)
+        dl_generation_advance(&dm->queue_generation);
+
     zcl_mutex_unlock(&dm->cs);
     return added;
 }
@@ -829,6 +883,7 @@ void dl_queue_priority(struct download_manager *dm,
                        const struct uint256 *hash, int32_t height)
 {
     zcl_mutex_lock(&dm->cs);
+    bool changed = false;
 
     /* Skip if already in-flight */
     struct dl_in_flight *s = find_slot(dm, hash, false);
@@ -841,8 +896,15 @@ void dl_queue_priority(struct download_manager *dm,
     if (qset_contains(dm, hash)) {
         for (size_t j = 0; j < dm->queue_len; j++) {
             if (uint256_eq(&dm->queue[j], hash)) {
+                int64_t now = (int64_t)platform_time_wall_time_t();
+                if (dm->queue_heights[j] == height &&
+                    dm->queue_avoid_until[j] <= now) {
+                    zcl_mutex_unlock(&dm->cs);
+                    return;
+                }
                 qset_remove(dm, hash);
                 dl_queue_remove_at(dm, j);
+                changed = true;
                 break;
             }
         }
@@ -853,9 +915,41 @@ void dl_queue_priority(struct download_manager *dm,
      * a priority block (always tip-adjacent / lowest-height in practice)
      * lands at the front and is fetched first — without breaking the
      * single sorted invariant that makes tail-starvation impossible. */
-    dl_queue_push(dm, hash, height, 0, 0);
+    if (dl_queue_push(dm, hash, height, 0, 0))
+        changed = true;
+    if (changed)
+        dl_generation_advance(&dm->queue_generation);
 
     zcl_mutex_unlock(&dm->cs);
+}
+
+static bool dl_assignment_peer_is_parked(const struct download_manager *dm,
+                                         const struct dl_peer_stats *ps,
+                                         int64_t now)
+{
+    if (!ps || !dl_assign_result_is_parkable(ps->zero_assign_result) ||
+        ps->zero_assign_generation != dl_assign_dependency_generation(
+            dm, ps->zero_assign_result))
+        return false;
+    if ((ps->zero_assign_result == DL_ASSIGN_PEER_WINDOW_FULL ||
+         ps->zero_assign_result == DL_ASSIGN_GLOBAL_WINDOW_FULL) &&
+        ps->zero_assign_global_limit != dl_get_max_in_flight_total())
+        return false;
+    return ps->zero_assign_retry_after <= 0 ||
+           now < ps->zero_assign_retry_after;
+}
+
+bool dl_assignment_should_attempt(struct download_manager *dm,
+                                  uint32_t peer_id)
+{
+    if (!dm)
+        return false;
+    zcl_mutex_lock(&dm->cs);
+    struct dl_peer_stats *ps = dl_find_peer(dm, peer_id, false);
+    bool should_attempt = !dl_assignment_peer_is_parked(
+        dm, ps, (int64_t)platform_time_wall_time_t());
+    zcl_mutex_unlock(&dm->cs);
+    return should_attempt;
 }
 
 size_t dl_assign_to_peer(struct download_manager *dm,
@@ -864,6 +958,12 @@ size_t dl_assign_to_peer(struct download_manager *dm,
                          size_t max_assign)
 {
     zcl_mutex_lock(&dm->cs);
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    struct dl_peer_stats *ps_assign = dl_find_peer(dm, peer_id, true);
+    if (dl_assignment_peer_is_parked(dm, ps_assign, now)) {
+        zcl_mutex_unlock(&dm->cs);
+        return 0;
+    }
     size_t queue_before = dm->queue_len;
     size_t active_before = dm->num_active;
 
@@ -875,7 +975,6 @@ size_t dl_assign_to_peer(struct download_manager *dm,
         if (dm->slots[i].active && dm->slots[i].peer_id == peer_id)
             peer_count++;
     }
-    struct dl_peer_stats *ps_assign = dl_find_peer(dm, peer_id, false);
     size_t peer_limit = DL_MAX_IN_FLIGHT_PER_PEER; /* default for new peers */
     if (ps_assign && ps_assign->is_loopback) {
         /* K2: loopback has no WAN-fairness constraint and effectively
@@ -925,12 +1024,15 @@ size_t dl_assign_to_peer(struct download_manager *dm,
     size_t assigned = 0;
     bool avoid_blocked = false;
     bool attempted_slot = false;
-    int64_t now = (int64_t)platform_time_wall_time_t();
+    int64_t retry_after = 0;
     while (assigned < available && dm->queue_len > 0) {
         size_t pick = dm->queue_len;
         for (size_t i = 0; i < dm->queue_len; i++) {
             if (dl_queue_item_avoids_peer(dm, i, peer_id, now)) {
                 avoid_blocked = true;
+                if (retry_after == 0 ||
+                    dm->queue_avoid_until[i] < retry_after)
+                    retry_after = dm->queue_avoid_until[i];
                 continue;
             }
             pick = i;
@@ -961,14 +1063,29 @@ size_t dl_assign_to_peer(struct download_manager *dm,
     }
 
     if (assigned > 0) {
-        struct dl_peer_stats *ps = dl_find_peer(dm, peer_id, true);
-        if (ps) ps->blocks_requested += (uint32_t)assigned;
+        if (ps_assign) {
+            ps_assign->blocks_requested += (uint32_t)assigned;
+            ps_assign->zero_assign_generation = 0;
+            ps_assign->zero_assign_retry_after = 0;
+            ps_assign->zero_assign_global_limit = 0;
+            ps_assign->zero_assign_result = DL_ASSIGN_NONE;
+        }
         assign_result = DL_ASSIGN_ASSIGNED;
     } else if (!attempted_slot && avoid_blocked &&
                assign_result == DL_ASSIGN_ASSIGNED) {
         assign_result = DL_ASSIGN_PEER_AVOID_COOLDOWN;
     } else if (assign_result == DL_ASSIGN_ASSIGNED) {
         assign_result = DL_ASSIGN_NO_SLOT;
+    }
+
+    if (assigned == 0 && ps_assign &&
+        dl_assign_result_is_parkable(assign_result)) {
+        ps_assign->zero_assign_generation = dl_assign_dependency_generation(
+            dm, assign_result);
+        ps_assign->zero_assign_retry_after =
+            assign_result == DL_ASSIGN_PEER_AVOID_COOLDOWN ? retry_after : 0;
+        ps_assign->zero_assign_global_limit = global_limit;
+        ps_assign->zero_assign_result = assign_result;
     }
 
     dm->assign_attempts++;
@@ -1037,7 +1154,10 @@ void dl_set_peer_loopback(struct download_manager *dm,
     if (!dm) return;
     zcl_mutex_lock(&dm->cs);
     struct dl_peer_stats *ps = dl_find_peer(dm, peer_id, true);
-    if (ps) ps->is_loopback = is_loopback;
+    if (ps && ps->is_loopback != is_loopback) {
+        ps->is_loopback = is_loopback;
+        dl_generation_advance(&dm->capacity_generation);
+    }
     zcl_mutex_unlock(&dm->cs);
 }
 
@@ -1098,7 +1218,7 @@ void dl_get_diagnostics(struct download_manager *dm,
     if (!dm)
         return;
 
-    uint32_t peer_ids[256];
+    uint32_t peer_ids[DL_MAX_TRACKED_PEERS];
     size_t peer_count = 0;
     int64_t now = (int64_t)platform_time_wall_time_t();
     int timeout = dl_get_request_timeout_secs();
@@ -1117,6 +1237,8 @@ void dl_get_diagnostics(struct download_manager *dm,
     out->last_assign_peer_limit = dm->last_assign_peer_limit;
     out->last_assign_global_limit = dm->last_assign_global_limit;
     out->last_assign_result = dm->last_assign_result;
+    out->queue_generation = dm->queue_generation;
+    out->capacity_generation = dm->capacity_generation;
     out->total_orphaned = dm->total_orphaned;
     out->accounting_drift = (int64_t)dm->total_requested -
                             (int64_t)dm->total_received -
@@ -1192,6 +1314,8 @@ size_t dl_drain_for_backpressure(struct download_manager *dm)
     for (size_t i = 0; i < dm->num_slots; i++)
         dm->slots[i].active = false;
     dm->num_active = 0;
+    if (drained > 0)
+        dl_generation_advance(&dm->capacity_generation);
 
     zcl_mutex_unlock(&dm->cs);
     return drained;

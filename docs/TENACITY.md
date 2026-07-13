@@ -11,20 +11,19 @@ Companion docs: `docs/work/canonical-frontier-derived-state-plan.md` (the what),
 `docs/CONSENSUS_PARITY_DOCTRINE.md` (the parity bar),
 `docs/work/fast-path.md` (diagnose on a COPY, never live).
 
-The cold-import wedge **class is FIXED** (2026-06-23): commit `ab512d577`
-("bind a snapshot above coins-best by extending the active-chain window") plus a
-complete, SHA3-verified snapshot at h=3,156,809 loaded via
-`-load-snapshot-at-own-height` seed the full UTXO set ABOVE the old torn-seed
-wedge and fold FORWARD, so the loader never re-touches block 3,156,171 — the node
-now reaches and holds the network tip. Still BORROWED, not full sovereignty: that
-3,156,809 snapshot is minted from the zclassicd oracle; its block hash is
-consensus-bound to the in-binary PoW header, but its UTXO-set CONTENT is not yet
-re-derived from genesis. The remaining work is the **sovereign cure** — self-mint
-a from-genesis SHA3 anchor at compiled checkpoint h=3,056,758, cut over via
-`-refold-from-anchor`, then delete the borrowed-seed loader — in flight: design
-`docs/work/never-stuck-plan.md`, current posture `docs/HANDOFF.md`. Verify live
-state from `zcl_status`, never from this doc. The six principles below are timeless
-doctrine, independent of that status.
+Commit `ab512d577` fixed the earlier transparent coins-above-seed loader failure,
+but it did **not** close the wedge class. As of 2026-07-12 canonical is held at
+H\*=3,176,325 because historical shielded anchors and nullifiers are incomplete.
+The borrowed h=3,156,809 artifact's payload SHA3 proves file integrity and its
+anchor hash identifies a validated local header; neither proves that its UTXO,
+Sapling/Sprout, or nullifier contents were derived from the chain because
+ZClassic headers commit none of those state roots. The **sovereign cure** is a
+complete state rebuild/install with independent component checks, atomic
+promotion, and copy proof. A v3 snapshot carrying shielded sections must not be
+sent through the current v1-oriented refold reset that can discard them. Current
+posture: `docs/HANDOFF.md`; design: `docs/work/self-verified-tip-plan.md`. Verify
+live state from `zclassic23 status`, never from this doctrine document. The six
+principles below are timeless, independent of that status.
 
 ---
 

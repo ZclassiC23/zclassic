@@ -42,7 +42,9 @@ void rpc_blockchain_mmb_save(struct node_db *ndb);
 bool rpc_blockchain_mmb_snapshot(uint8_t root[32], uint64_t *num_leaves,
                                  uint32_t *num_mountains);
 
-/* Commitment MMR — binds UTXO state to PoW chain every 100 blocks.
+/* Advisory commitment MMR — associates locally recorded UTXO roots with the
+ * node's header history every 100 blocks. ZClassic headers do not commit these
+ * roots, so peer-provided values are not consensus/PoW-bound state.
  * Each leaf: SHA3(height || block_hash || utxo_root).
  * Used to verify imported UTXO snapshots without replaying history. */
 void rpc_blockchain_commitment_mmr_init_from_state(struct node_db *ndb);

@@ -707,7 +707,7 @@ int main(int argc, char **argv)
                                          /*expected_sha3=*/NULL, &vhdr,
                                          verr, sizeof(verr));
         if (!vh) {
-            fprintf(stderr, "[mint-v2] SELF-ATTEST FAILED: re-open + body-SHA3 "
+            fprintf(stderr, "[mint-v2] BODY-INTEGRITY FAILED: re-open + body-SHA3 "
                     "verify of %s failed (%s) — UNLINKING (refusing to publish a "
                     "bad artifact)\n", out_path, verr);
             unlink(out_path);
@@ -723,7 +723,7 @@ int main(int argc, char **argv)
         uss_close(vh);
         if (!ok_ver || !ok_h || !ok_cnt || !ok_sup || !ok_anc || !ok_sha3) {
             fprintf(stderr,
-                    "[mint-v2] SELF-ATTEST FAILED: in-file header disagrees with "
+                    "[mint-v2] BODY-INTEGRITY FAILED: in-file header disagrees with "
                     "the mint intent (version_ok=%d height_ok=%d count_ok=%d "
                     "supply_ok=%d anchor_ok=%d sha3_ok=%d) — UNLINKING %s\n",
                     ok_ver, ok_h, ok_cnt, ok_sup, ok_anc, ok_sha3, out_path);
@@ -731,7 +731,7 @@ int main(int argc, char **argv)
             node_db_close(&ndb);
             return 1;
         }
-        fprintf(stderr, "[mint-v2] SELF-ATTEST OK: re-read body SHA3 matches the "
+        fprintf(stderr, "[mint-v2] BODY-INTEGRITY OK: re-read body SHA3 matches the "
                 "header, and count/supply/anchor/height equal the mint intent "
                 "(count=%llu supply=%lld height=%d)\n",
                 (unsigned long long)got_count, (long long)got_supply, seed_h);

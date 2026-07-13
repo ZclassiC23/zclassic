@@ -89,10 +89,11 @@ int test_snapshot_complete_resume_condition(void)
 
         ok = ok && snapshot_complete_resume_test_remedy_calls() == 1;
         ok = ok && sync_get_state() == SYNC_HEADERS_DOWNLOAD;
-        ok = ok && active_chain_tip(&ms.chain_active) == &snap;
-        ok = ok && ms.pindex_best_header == &snap;
-        ok = ok && condition_engine_get_active_count() == 0;
-        SCR_CHECK("complete snapshot activates tip and resumes headers", ok);
+        ok = ok && active_chain_tip(&ms.chain_active) == NULL;
+        ok = ok && ms.pindex_best_header == NULL;
+        ok = ok && condition_engine_get_active_count() == 1;
+        SCR_CHECK("legacy complete snapshot is contained and resumes headers",
+                  ok);
         cleanup_scr(&ms);
     }
 

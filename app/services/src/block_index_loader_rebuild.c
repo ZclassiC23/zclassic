@@ -62,9 +62,9 @@ struct projection_fold_ctx {
 };
 
 /* Fold one disk_block_index row into the in-memory map. Copies the same
- * scalar fields block_index_db.c maps, OMITTING the +1703 file-0 fixup
- * (the projection's nDataPos is this node's own body_persist position,
- * not a zclassicd-LDB position). pprev is linked in a second pass below
+ * scalar fields block_index_db.c maps. Payload positions are exact offsets
+ * for both LevelDB and projection records; no file-0 translation is valid.
+ * pprev is linked in a second pass below
  * (the iterate order is height ASC, but a sibling/orphan can precede its
  * parent at the same height, so we must resolve pprev after all rows
  * are inserted — exactly as the flat/LevelDB loaders do). */
@@ -86,7 +86,7 @@ static bool projection_fold_cb(const uint8_t hash[32],
 
     pindex->nHeight              = dbi->nHeight;
     pindex->nFile                = dbi->nFile;
-    pindex->nDataPos             = dbi->nDataPos;   /* no +1703 fixup */
+    pindex->nDataPos             = dbi->nDataPos;
     pindex->nUndoPos             = dbi->nUndoPos;
     pindex->nVersion             = dbi->nVersion;
     pindex->hashMerkleRoot       = dbi->hashMerkleRoot;

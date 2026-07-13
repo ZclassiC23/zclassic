@@ -11,6 +11,7 @@
 #include "api_controller_internal.h"
 #include "config/runtime.h"
 #include "controllers/agent_first_call.h"
+#include "controllers/agent_security_posture.h"
 #include "controllers/strong_params.h"
 #include "event_agent_summary.h"
 #include "framework/condition.h"
@@ -22,6 +23,7 @@
 #include "services/legacy_mirror_sync_service.h"
 #include "services/node_health_service.h"
 #include "sync/sync_state.h"
+#include "util/blocker.h"
 #include "util/clientversion.h"
 
 #include <stdint.h>
@@ -316,12 +318,25 @@ static bool rpc_healthcheck_full(const struct json_value *params,
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.healthcheck.v1");
     json_push_kv_str(result, "api_version", "v1");
-    json_push_kv_str(result, "status", "ok");
     json_push_kv_str(result, "result_completeness", "full");
     json_push_kv_bool(result, "partial_result", false);
 
     struct node_health_snapshot health;
     node_health_collect(&health, NULL, NULL);
+    struct agent_security_posture posture;
+    agent_security_posture_collect(&posture, NULL);
+    struct blocker_snapshot blockers[BLOCKER_CAP];
+    int blocker_count = blocker_snapshot_all(blockers, BLOCKER_CAP);
+    const struct blocker_snapshot *dominant =
+        blocker_select_dominant(blockers, blocker_count);
+    const struct blocker_snapshot *authority_blocker =
+        api_blocker_hard_gates_public_serving(dominant) ? dominant : NULL;
+    const struct blocker_snapshot *warning_blocker =
+        dominant && !authority_blocker ? dominant : NULL;
+    bool public_serving = health.serving && !authority_blocker &&
+        agent_security_posture_allows_public_serving(&posture);
+    bool public_healthy = health.healthy && public_serving;
+    json_push_kv_str(result, "status", public_healthy ? "ok" : "blocked");
     json_push_kv_str(result, "build_commit", zcl_build_commit());
     json_push_kv_str(result, "sync_state", sync_state_name(health.sync_state));
 
@@ -345,16 +360,26 @@ static bool rpc_healthcheck_full(const struct json_value *params,
                      health.last_error_age_seconds);
     json_push_kv_bool(&checks, "last_error_recent",
                       health.last_error_recent);
-    json_push_kv_bool(&checks, "serving", health.serving);
-    if (health.blocking_reason[0])
+    json_push_kv_bool(&checks, "serving", public_serving);
+    if (authority_blocker)
+        json_push_kv_str(&checks, "blocking_reason",
+                         authority_blocker->id);
+    else if (posture.review_required)
+        json_push_kv_str(&checks, "blocking_reason", posture.status);
+    else if (health.blocking_reason[0])
         json_push_kv_str(&checks, "blocking_reason",
                          health.blocking_reason);
-    json_push_kv_bool(&checks, "warning", health.warning);
+    json_push_kv_bool(&checks, "warning",
+                      health.warning || warning_blocker != NULL);
     json_push_kv_int(&checks, "warning_count",
-                     (int64_t)health.warning_count);
+                     (int64_t)health.warning_count +
+                     (warning_blocker ? 1 : 0));
     if (health.warning_reasons[0])
         json_push_kv_str(&checks, "warning_reasons",
                          health.warning_reasons);
+    if (warning_blocker)
+        json_push_kv_str(&checks, "typed_blocker_warning",
+                         warning_blocker->id);
     if (health.last_error_type[0])
         json_push_kv_str(&checks, "last_error_type",
                          health.last_error_type);
@@ -570,12 +595,14 @@ static bool rpc_healthcheck_full(const struct json_value *params,
     json_push_kv_int(&checks, "tip_advance_age_seconds",
                      health.tip_advance_age_seconds);
 
-    json_push_kv_bool(result, "healthy", health.healthy);
-    json_push_kv_bool(result, "serving", health.serving);
+    json_push_kv_bool(result, "healthy", public_healthy);
+    json_push_kv_bool(result, "serving", public_serving);
     json_push_kv_int(result, "warning_count",
-                     (int64_t)health.warning_count);
+                     (int64_t)health.warning_count +
+                     (warning_blocker ? 1 : 0));
     json_push_kv(result, "checks", &checks);
     json_free(&checks);
+    agent_push_security_posture_json(result, "security_posture", NULL);
 
     return true;
 }

@@ -56,14 +56,17 @@ size_t mmr_serialize(const struct mmr *m, uint8_t *buf, size_t buflen);
 bool mmr_deserialize(struct mmr *m, const uint8_t *buf, size_t len);
 
 /* ── Unified commitment leaf ──────────────────────────── */
-/* A commitment leaf binds block data + UTXO state + file chunks
- * at a given height. One leaf every COMMITMENT_INTERVAL blocks.
- * This is the minimum unit of trust for a new node:
- *   - block_hash:  proves PoW chain at this height
- *   - utxo_root:   proves UTXO set state (SHA3 over all UTXOs)
- *   - data_root:   proves raw file data (SHA3 over chunk hashes)
+/* An auxiliary commitment leaf hashes block data + UTXO state + file chunks
+ * at a given height. One leaf every COMMITMENT_INTERVAL blocks. It detects
+ * mutation relative to the same supplied MMR root, but ZClassic headers do
+ * not commit that root. Therefore it is evidence, not consensus authority:
+ *   - block_hash:  names the validated chain location
+ *   - utxo_root:   hashes the asserted UTXO set (SHA3 over all UTXOs)
+ *   - data_root:   hashes the asserted raw file data (SHA3 over chunk hashes)
  *
- * A new node only needs: MMR root + latest commitment + delta blocks.
+ * A new node still needs an explicit assisted trust posture or local
+ * full-history verification; MMR root + latest commitment + delta is not
+ * sufficient for sovereignty.
  * Energy cost: one SHA3 per commitment (microseconds). */
 
 #define MMR_COMMITMENT_INTERVAL 100  /* ~20 minutes between commits */

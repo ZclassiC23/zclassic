@@ -4,7 +4,8 @@ set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 DEPLOY="$REPO/tools/dev/deploy-dev-lane.sh"
-SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/zcl-dev-activation-selftest.XXXXXX")"
+SANDBOX="$(mktemp -d /tmp/zcl-dev-activation-selftest.XXXXXX)"
+chmod 700 "$SANDBOX"
 HOME_DIR="$SANDBOX/home"
 GEN_ROOT="$HOME_DIR/.local/lib/zclassic23-dev"
 ARTIFACT="$SANDBOX/candidate-zclassic23-dev"
@@ -12,6 +13,14 @@ RUNNING="$SANDBOX/running-exe"
 COMMAND_LOG="$SANDBOX/commands.log"
 OUTPUT="$SANDBOX/output.log"
 OLD_GENERATION="legacy-aaaa"
+CAPABILITY_FILE="$SANDBOX/.deploy-dev-lane-selftest-capability"
+CAPABILITY_TOKEN="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+[[ "$CAPABILITY_TOKEN" =~ ^[0-9a-f]{64}$ ]] || {
+    printf '[dev-activation-selftest] FAIL: could not mint fixture capability\n' >&2
+    exit 1
+}
+printf '%s\n' "$CAPABILITY_TOKEN" > "$CAPABILITY_FILE"
+chmod 600 "$CAPABILITY_FILE"
 
 cleanup() {
     [ ! -d "$SANDBOX" ] || chmod -R u+w "$SANDBOX" 2>/dev/null || true
@@ -68,16 +77,16 @@ candidate_generation_from_state() {
 
 run_deploy() {
     local preflight="$1" probe="$2" running_exe_command="$3"
+    local stop_command="${SELFTEST_STOP_COMMAND_OVERRIDE:-printf \"stop\\n\" >> \"\$ZCL_TEST_LOG\"; rm -f \"\$ZCL_TEST_RUNNING\"}"
     shift 3
     env \
         HOME="$HOME_DIR" \
         ZCL_DEV_GENERATION_ROOT="$GEN_ROOT" \
-        ZCL_DEV_ACTIVATION_TEST_MODE=1 \
         ZCL_DEV_SKIP_BUILD=1 \
         ZCL_DEV_BUILD_ARTIFACT="$ARTIFACT" \
         ZCL_DEV_BUILD_COMMIT_OVERRIDE=test-build \
         ZCL_DEV_PREFLIGHT_COMMAND="$preflight" \
-        ZCL_DEV_STOP_COMMAND='printf "stop\n" >> "$ZCL_TEST_LOG"; rm -f "$ZCL_TEST_RUNNING"' \
+        ZCL_DEV_STOP_COMMAND="$stop_command" \
         ZCL_DEV_START_COMMAND='readlink -f "$ZCL_DEV_GENERATION_ROOT/current/zclassic23-dev" > "$ZCL_TEST_RUNNING"; printf "start\n" >> "$ZCL_TEST_LOG"' \
         ZCL_DEV_RESET_FAILED_COMMAND='printf "reset\n" >> "$ZCL_TEST_LOG"' \
         ZCL_DEV_DAEMON_RELOAD_COMMAND='printf "reload\n" >> "$ZCL_TEST_LOG"' \
@@ -89,7 +98,74 @@ run_deploy() {
         ZCL_DEV_PROBE_INTERVAL_MS=20 \
         ZCL_TEST_RUNNING="$RUNNING" \
         ZCL_TEST_LOG="$COMMAND_LOG" \
-        bash "$DEPLOY" "$@" > "$OUTPUT" 2>&1
+        bash "$DEPLOY" --internal-self-test "$SANDBOX" 8 \
+        "$@" 8< "$CAPABILITY_FILE" > "$OUTPUT" 2>&1
+}
+
+test_public_environment_cannot_authorize() {
+    local rc signal="$SANDBOX/public-env-reached"
+    prepare_case
+    rm -f "$signal"
+    set +e
+    env HOME="$HOME_DIR" \
+        ZCL_DEV_GENERATION_ROOT="$GEN_ROOT" \
+        ZCL_DEV_ACTIVATION_TEST_MODE=1 \
+        ZCL_DEV_STOP_COMMAND="touch '$signal'" \
+        bash "$DEPLOY" > "$OUTPUT" 2>&1
+    rc=$?
+    set -e
+    assert_eq "$rc" 3 "public test-mode environment did not refuse"
+    [ ! -e "$signal" ] || fail "public environment reached an injected command"
+    assert_eq "$(current_generation)" "$OLD_GENERATION" \
+        "public environment changed current"
+    assert_file_contains "$OUTPUT" 'runtime generation publication is contained' \
+        "public environment refusal missing"
+    printf '[dev-activation-selftest] PASS: public environment cannot mint activation authority\n'
+}
+
+test_internal_capability_is_fixture_bound() {
+    local rc
+    prepare_case
+    set +e
+    env HOME="$HOME_DIR" bash "$DEPLOY" \
+        --internal-self-test "$SANDBOX" 8 > "$OUTPUT" 2>&1
+    rc=$?
+    set -e
+    assert_eq "$rc" 3 "closed capability fd did not refuse"
+    assert_file_contains "$OUTPUT" 'capability fd is not bound' \
+        "closed capability fd refusal missing"
+
+    set +e
+    env HOME="$SANDBOX/not-the-fixture-home" bash "$DEPLOY" \
+        --internal-self-test "$SANDBOX" 8 \
+        8< "$CAPABILITY_FILE" > "$OUTPUT" 2>&1
+    rc=$?
+    set -e
+    assert_eq "$rc" 3 "fixture capability accepted a different HOME"
+    assert_file_contains "$OUTPUT" 'paths escaped the isolated fixture' \
+        "wrong-HOME fixture refusal missing"
+    assert_eq "$(current_generation)" "$OLD_GENERATION" \
+        "invalid internal capability changed current"
+    [ ! -s "$COMMAND_LOG" ] || fail "invalid internal capability reached service commands"
+    printf '[dev-activation-selftest] PASS: internal capability is fd- and fixture-bound\n'
+}
+
+test_internal_capability_rejects_command_injection() {
+    local rc signal="$SANDBOX/injected-command-reached"
+    prepare_case
+    rm -f "$signal"
+    set +e
+    SELFTEST_STOP_COMMAND_OVERRIDE="touch '$signal'" \
+        run_deploy true true 'cat "$ZCL_TEST_RUNNING"'
+    rc=$?
+    set -e
+    assert_eq "$rc" 3 "internal capability accepted a command override"
+    [ ! -e "$signal" ] || fail "internal capability executed a command override"
+    assert_file_contains "$OUTPUT" 'invalid internal self-test environment' \
+        "command-override refusal missing"
+    assert_eq "$(current_generation)" "$OLD_GENERATION" \
+        "command override changed current"
+    printf '[dev-activation-selftest] PASS: internal capability rejects command injection\n'
 }
 
 test_preflight_untouched() {
@@ -231,6 +307,9 @@ test_default_stop_window_outlives_node_backstop() {
     printf '[dev-activation-selftest] PASS: default stop window outlives node backstop\n'
 }
 
+test_public_environment_cannot_authorize
+test_internal_capability_is_fixture_bound
+test_internal_capability_rejects_command_injection
 test_preflight_untouched
 test_stage_untouched
 test_success_promotes_candidate

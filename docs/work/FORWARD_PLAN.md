@@ -11,44 +11,36 @@
 
 ---
 
-## #1 PRIORITY — CI-enforce the MVP criteria + accumulate soak/canary/seal evidence
+## #1 PRIORITY — cure canonical shielded state, then earn clean evidence
 
-> **The forward-sync wedge class is FIXED.** The fix is commit `ab512d577`
-> ("fix(boot): bind a snapshot above coins-best by extending the active-chain
-> window"). On boot, `-load-snapshot-at-own-height` loads a COMPLETE,
-> SHA3-verified UTXO snapshot at a height ABOVE coins-best (live: h=3,156,809,
-> file `utxo-seed-3156809.snapshot`); when the seed height is above coins-best
-> the loader now calls `active_chain_extend_window(&ms->chain_active,
-> ms->pindex_best_header)` (`config/src/boot_refold_staged.c` ~line 568) to widen
-> the active-chain window forward to the PoW-proven header tip instead of
-> FATAL-ing "Run --importblockindex". Seeding the full set above the old wedge
-> block (3,156,171) and folding FORWARD never re-touches it, so the node now
-> **REACHES AND STAYS at the network tip** (proven on a datadir copy + the live
-> deploy). This is still a borrowed-but-consensus-bound STOPGAP: the snapshot's
-> block hash is consensus-bound to the in-binary PoW header, but its UTXO-set
-> CONTENT is still minted from the zclassicd oracle, not yet re-derived from
-> genesis. Verify live state with `zcl_status` — do
-> not assume from a doc. The remaining work is the **sovereign cure**, plainly:
-> self-verified UTXO rebuild. It folds real block bodies forward from the
-> verified checkpoint, cuts over, then deletes the borrowed-seed machinery
-> (~715 LOC): [`never-stuck-plan.md`](./never-stuck-plan.md)
-> + the ordered worksheet [`archive/sync-fix-plan-2026-06-21.md`](./archive/sync-fix-plan-2026-06-21.md).
-> The **aesthetic-aligned canonical statement** (Prime Directive + Ten Laws, the
-> detective frame: Acts 0–4 + the `G-SOV` sovereignty gate) is
-> [`self-verified-tip-plan.md`](./self-verified-tip-plan.md).
-> The P0/P1/P2 subtask backlog is in [`../HANDOFF.md`](../HANDOFF.md) §4. Hardening
-> program of record: [`archive/tenacity-roadmap.md`](./archive/tenacity-roadmap.md) (carries the
-> merged rock-solid recovery-program L1/L2 items) +
-> [`archive/stability-improvements-2026-06-16.md`](./archive/stability-improvements-2026-06-16.md).
+> **Canonical is wedged now.** As of 2026-07-12 the public node is held at
+> H\*=3,176,325 by incomplete historical shielded anchors and nullifiers.
+> `ab512d577` repaired an earlier transparent snapshot-loader failure; it did
+> not prove or install complete shielded history. A snapshot payload digest and
+> a matching validated anchor header authenticate the artifact and its chain
+> location, but ZClassic headers do not commit UTXO, Sapling/Sprout, or
+> nullifier roots. Those contents are therefore borrowed, not PoW-bound.
+>
+> Immediate order: enforce fail-closed shielded history and truthful causal
+> status → build one complete atomic state installer → copy-prove H\* climb,
+> exact parity, warm restart, kill-9 resume, and malformed-input no-publish →
+> request owner-gated canonical deployment → begin a fresh evidence window.
+> Do not feed a shielded v3 artifact through the current v1-oriented refold reset
+> that can discard its shielded sections. Current truth is
+> [`../HANDOFF.md`](../HANDOFF.md); cure details are
+> [`self-verified-tip-plan.md`](./self-verified-tip-plan.md). The durable Phase
+> 0–6 hierarchy and promotion gates are in
+> [`SOVEREIGN-NETWORK-ROADMAP.md`](./SOVEREIGN-NETWORK-ROADMAP.md).
 > Copy-prove every recovery path on a datadir COPY before live; gate on H\* climb.
 
-**The #1 work now:** promote ◐ slice-gates to full ✅ CI gates and accumulate
-soak/canary/seal evidence (first seal ratification expected at grid 3,146,000,
-`zcl_state subsystem=seal`) — only ✅ moves the MRS; the **Critical path**
-checklist below is the detail. Cold-import bootstrap hardening = a write-time
-import correctness gate (REFUTED: float-H* (consensus-unsafe) + build-L2
-(forbidden rung); delete the ladder LAST); root-cause on the preserved
-fixture, datadir COPY never live ([`fast-path.md`](./fast-path.md)).
+**The #1 work now:** finish the complete shielded-state installer and prove the
+cure on a canonical datadir copy. CI-gate promotion may proceed in parallel on
+isolated lanes, but canonical soak/canary/seal evidence does not accrue while
+the node is wedged. Only after H\* climb, complete security posture, and exact
+same-height parity are copy-proven may a fresh evidence window begin. Root-cause
+on the preserved fixture, datadir COPY never live
+([`fast-path.md`](./fast-path.md)); delete recovery ladders only after their
+replacement and rollback are proven.
 
 **Standing method (never skip):** copy-prove on a fixture before live; NEVER
 delete `tip_finalize_log` rows; NEVER lower the public tip below `coins_best`;
@@ -62,10 +54,11 @@ remaining criteria honest but do not promote them to ✅.
 
 ## Critical path — AUTONOMOUS / OWNER-GATED / OPERATIONAL
 
-Ordering principle: **land the sovereign cure (fold-forward from our own
-checkpoint, cut over off the stopgap) → make v1 measurable in CI → prove
-features → soak.** The wedge that blocked forward progress is fixed; refactor
-debt does not block a working sovereign node and must not jump the queue.
+Ordering principle: **land the complete sovereign state cure → prove sustained
+exact parity and liveness → make evidence commit-bound → finish native
+transactional hot swap / zero-MCP → build the sandboxed App and publishing
+planes.** Refactor debt does not block a working sovereign node and must not
+jump the queue.
 
 ### A. AUTONOMOUS (do now — no live mutation, no owner gate)
 - [x] **Criterion tests are real CI gates (hermetic slices)** — `make ci` chains
@@ -203,8 +196,10 @@ debt does not block a working sovereign node and must not jump the queue.
 - [x] **zclassicd oracle up** (2026-06-12) — RPC 8232 reachable; the C8 parity
       oracle runs against it continuously (read-only; per doctrine never stop
       `zclassicd`).
-- [ ] **Run the 7-day soak (C6)** — IN FLIGHT on `zclassic23-soak`: live node +
-      load, RSS plateau, zero manual restarts — measure against
+- [ ] **Run the 7-day soak (C6)** — NOT ACCRUING on canonical while its shielded
+      history is incomplete. After cure/copy proof, rebaseline an exact release
+      candidate and require gap ≤1, exact same-height hash, complete security
+      posture, continuous evidence, RSS plateau, and zero manual restarts — measure against
       [`../USER_BENCHMARKS.md`](../USER_BENCHMARKS.md) /
       [`../BENCHMARKS_LOG.md`](../BENCHMARKS_LOG.md).
 - [ ] **Full-binary kill-9 (C7)** — extend `make chaos`
@@ -213,12 +208,10 @@ debt does not block a working sovereign node and must not jump the queue.
       proves it; remaining = hermetic-CI promotion). Operator coverage:
       [`../RUNBOOK.md`](../RUNBOOK.md).
 
-**Gating summary:** the forward-sync wedge is FIXED — the node reaches tip on a
-borrowed-but-consensus-bound stopgap, so C3/C6/C8 are now gated on the **sovereign
-foundation** (`-refold-from-anchor` cutover + the ~715-LOC subtraction,
-[`never-stuck-plan.md`](./never-stuck-plan.md)) **+ accumulated soak time**, not on
-un-wedging; CI promotion (A) gates honest measurement; the boot refactor gates
-nothing v1.
+**Gating summary:** C3/C6/C8 are blocked on the current canonical shielded-state
+wedge. The next promotion is the complete atomic cure plus copy proof; only then
+can a fresh exact-parity 168-hour window begin. CI promotion (A) gates honest
+measurement; the boot refactor gates nothing v1.
 
 ---
 

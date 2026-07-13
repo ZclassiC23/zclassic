@@ -14,11 +14,21 @@ extern "C" {
 #define ZCL_DEVLOOP_MAX_FILES 256
 #define ZCL_DEVLOOP_PATH_MAX 1024
 #define ZCL_DEVLOOP_OUTPUT_MAX 65536
+#define ZCL_DEVLOOP_WATCH_LOCK_REL ".cache/zcl-dev-watch.lock"
 
 enum zcl_devloop_action {
     ZCL_DEVLOOP_CHECK = 0,
     ZCL_DEVLOOP_HOTSWAP,
     ZCL_DEVLOOP_RELOAD,
+};
+
+/* Publication intent is an explicit caller decision.  Persistent watchers use
+ * VERIFY_ONLY by default; only an operator-invoked apply/auto path may select
+ * APPLY.  Keeping this separate from the file-classification action prevents a
+ * consensus/reload classification from bypassing watcher containment. */
+enum zcl_devloop_publish_mode {
+    ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY = 0,
+    ZCL_DEVLOOP_PUBLISH_APPLY,
 };
 
 struct zcl_devloop_plan {
@@ -46,6 +56,7 @@ struct zcl_devloop_process_result {
     int64_t elapsed_ms;
     char output[ZCL_DEVLOOP_OUTPUT_MAX];
     size_t output_len;
+    bool output_truncated;
 };
 
 bool zcl_devloop_is_method(const char *method);
@@ -108,7 +119,35 @@ bool zcl_devloop_baseline_launch(const char *repo_root);
 int zcl_devloop_run_cycle(const char *repo_root,
                           const char *const *files,
                           size_t file_count);
+int zcl_devloop_run_cycle_mode(const char *repo_root,
+                               const char *const *files,
+                               size_t file_count,
+                               enum zcl_devloop_publish_mode publish_mode);
+bool zcl_devloop_publish_mode_applies(
+    enum zcl_devloop_publish_mode publish_mode);
+const char *zcl_devloop_publish_mode_name(
+    enum zcl_devloop_publish_mode publish_mode);
+enum zcl_devloop_publish_mode zcl_devloop_default_watch_publish_mode(void);
+bool zcl_devloop_changed_set_exact(const char *const *requested,
+                                   size_t requested_count,
+                                   const char *const *discovered,
+                                   size_t discovered_count,
+                                   char *why, size_t why_len);
+/* Validate the observed event paths as bounded wake hints, then derive the
+ * authoritative plan exclusively from the complete Git-visible dirty set.
+ * A docs-only event therefore cannot hide a dirty consensus/Core path. */
+bool zcl_devloop_plan_discovered_changes(
+    const char *const *observed, size_t observed_count,
+    const char *const *discovered, size_t discovered_count,
+    struct zcl_devloop_plan *out);
+/* Pure path builder shared by the native watcher's flock acquisition and its
+ * regression tests.  repo_root must already identify the worktree whose lane
+ * is being watched; distinct worktrees consequently receive distinct locks. */
+bool zcl_devloop_watch_lock_path(const char *repo_root,
+                                 char *out, size_t out_sz);
 int zcl_devloop_watch(const char *repo_root);
+int zcl_devloop_watch_mode(const char *repo_root,
+                           enum zcl_devloop_publish_mode publish_mode);
 int zcl_devloop_print_status(void);
 int zcl_devloop_run_sim(const char *repo_root);
 int zcl_devloop_app_describe(const char *repo_root, const char *app_id);
@@ -128,14 +167,13 @@ size_t zcl_devloop_app_simulate_json(const char *app_id, uint64_t seed,
 
 /* ── Wave 3.2 native activation engine — dev-lane wiring ───────────────
  *
- * devloop_cycle.c's transactional_reload site (the RELOAD action's finish
- * line) and native_dev_command.c's dev.vcs.revert relink seam both need to
- * decide, per cycle, whether to drive the native transactional activation
+ * The implementation remains testable while all public callers are hard-
+ * contained. A future complete publication transaction may decide whether to
+ * drive the native transactional activation
  * engine (tools/dev/dev_activation.h: dev_activation_run() /
  * dev_activation_activate_generation()) or keep shelling out to the proven
- * `make agent-deploy-fast` path. The three helpers below are the shared,
- * pure (no process exec, no disk I/O beyond getenv()) glue both call sites
- * use to make that decision and build/interpret the engine's request and
+ * backend or a replacement. The three helpers below are pure (no process
+ * exec, no disk I/O beyond getenv()) glue used to build/interpret its request and
  * result -- see docs/work/HOTSWAP.md "Transactional reload: native engine".
  *
  * Guarded the same way dev_activation.h's own entry points are
@@ -151,17 +189,11 @@ size_t zcl_devloop_app_simulate_json(const char *app_id, uint64_t seed,
 #define PATH_MAX 4096
 #endif
 
-/* True iff ZCL_DEV_NATIVE_ACTIVATION selects the native engine for this
- * process instead of the shell path. A RUNTIME env check, not a second
- * compile-time gate: the whole engine already compiles only into
- * ZCL_DEV_BUILD/ZCL_TESTING binaries, so gating it a second way at compile
- * time would only let one flag value exist per already-built binary. A
- * runtime check matches the idiom the dev lane already uses for adjacent
- * A/B switches (ZCL_DEV_USE_PREBUILT, ZCL_DEV_SKIP_BUILD in
- * deploy-dev-lane.sh) and lets one already-deployed zclassic23-dev flip
- * between the native engine and the proven shell path with no rebuild.
- * Default OFF (unset, empty, or any value other than "1"/"true"/"yes"):
- * today's `make agent-deploy-fast` shell path runs byte-identically. */
+/* True iff ZCL_DEV_NATIVE_ACTIVATION selects the retained native engine in
+ * code paths that already possess internal test authority. This runtime
+ * selector is NOT activation authority: public watcher/apply entrypoints
+ * refuse before consulting it, and deploy-dev-lane.sh accepts machinery tests
+ * only through its inherited-FD, fixture-bound self-test capability. */
 bool dev_activation_native_enabled(void);
 
 /* Caller-owned storage backing a struct dev_activation_request built by

@@ -146,6 +146,23 @@ static int dev_op_preflight(void *ctx, const char *cand_bin,
     return 0;
 }
 
+static int dev_op_source_epoch_cas(void *ctx)
+{
+    const struct dev_activation_request *req = ctx;
+    if (!req->source_identity ||
+        strlen(req->source_identity) != 64 ||
+        strspn(req->source_identity, "0123456789abcdefABCDEF") != 64)
+        return -1;
+    char tool[PATH_MAX];
+    int n = snprintf(tool, sizeof(tool), "%s/tools/dev/source-identity.sh",
+                     req->repo_root);
+    if (n <= 0 || (size_t)n >= sizeof(tool))
+        return -1;
+    const char *argv[] = { tool, "verify", req->source_identity, NULL };
+    struct zcl_devloop_process_result res = {0};
+    return dev_run_argv(req->repo_root, argv, 30000, &res);
+}
+
 static int dev_op_activation_probe(void *ctx, const char *gen_id,
                                    const char *expected_commit)
 {
@@ -188,6 +205,7 @@ void dev_activation_default_ops(const struct dev_activation_request *req,
     out->service_main_pid = dev_op_main_pid;
     out->running_exe = dev_op_running_exe;
     out->preflight = dev_op_preflight;
+    out->source_epoch_cas = dev_op_source_epoch_cas;
     out->activation_probe = dev_op_activation_probe;
     out->ctx = (void *)req;
 }

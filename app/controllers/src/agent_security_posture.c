@@ -8,11 +8,17 @@
 #include "json/json.h"
 #include "services/chain_evidence_authority_service.h"
 #include "storage/anchor_kv.h"
+#include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 
 #include <stdio.h>
+#include <stdatomic.h>
 #include <string.h>
+
+#ifdef ZCL_TESTING
+static _Atomic int g_test_review_required = -1;
+#endif
 
 static void posture_str(char *dst, size_t dst_sz, const char *src)
 {
@@ -45,11 +51,27 @@ static void posture_collect_bootstrap(struct agent_security_posture *out,
     chain_evidence_controller_snapshot(&cec, &view);
     out->snapshot_anchor_height = view.snapshot_anchor_height;
     out->snapshot_evidence_present =
-        view.snapshot_anchor_height >= 0 ||
-        view.snapshot_evidence.source_class == CEC_SOURCE_CLASS_SNAPSHOT;
+        view.snapshot_evidence_loaded &&
+        (view.snapshot_anchor_height >= 0 ||
+         view.snapshot_evidence.source_class == CEC_SOURCE_CLASS_SNAPSHOT ||
+         view.snapshot_evidence.full_validation_complete);
     out->snapshot_full_validation_complete =
-        view.state == CEC_FULLY_VALIDATED ||
+        view.state == CEC_FULLY_VALIDATED &&
+        view.snapshot_evidence_loaded &&
+        view.full_validation_origin ==
+            CEC_FULL_VALIDATION_ASSISTED_SNAPSHOT &&
         view.snapshot_evidence.full_validation_complete;
+    posture_str(out->full_history_validation_origin,
+                sizeof(out->full_history_validation_origin),
+                chain_evidence_full_validation_origin_name(
+                    view.full_validation_origin));
+    out->full_history_validation_complete =
+        view.state == CEC_FULLY_VALIDATED &&
+        (view.full_validation_origin ==
+             CEC_FULL_VALIDATION_GENESIS_HISTORY ||
+         (view.full_validation_origin ==
+              CEC_FULL_VALIDATION_ASSISTED_SNAPSHOT &&
+          out->snapshot_full_validation_complete));
     out->snapshot_utxo_sha3_verified =
         view.snapshot_evidence.utxo_sha3_verified;
     out->snapshot_flyclient_verified =
@@ -60,14 +82,21 @@ static void posture_collect_bootstrap(struct agent_security_posture *out,
         out->snapshot_evidence_present &&
         !out->snapshot_full_validation_complete;
 
-    if (out->snapshot_full_validation_complete) {
+    if (out->full_history_validation_complete &&
+        view.full_validation_origin ==
+            CEC_FULL_VALIDATION_GENESIS_HISTORY) {
         posture_str(out->bootstrap_model, sizeof(out->bootstrap_model),
-                    "full_history_validated");
+                    "genesis_full_history_validated");
+        posture_str(out->full_history_validation_state,
+                    sizeof(out->full_history_validation_state), "complete");
+    } else if (out->snapshot_full_validation_complete) {
+        posture_str(out->bootstrap_model, sizeof(out->bootstrap_model),
+                    "assisted_snapshot_promoted_by_full_history_validation");
         posture_str(out->full_history_validation_state,
                     sizeof(out->full_history_validation_state), "complete");
     } else if (out->snapshot_evidence_present) {
         posture_str(out->bootstrap_model, sizeof(out->bootstrap_model),
-                    "borrowed_but_consensus_bound_snapshot");
+                    "assisted_snapshot_chain_location_verified");
         posture_str(out->full_history_validation_state,
                     sizeof(out->full_history_validation_state),
                     "snapshot_seed_not_from_genesis_verified");
@@ -78,37 +107,6 @@ static void posture_collect_bootstrap(struct agent_security_posture *out,
                     sizeof(out->full_history_validation_state),
                     "unknown_no_snapshot_evidence");
     }
-}
-
-static void posture_collect_nullifiers(struct agent_security_posture *out)
-{
-    bool gap = false;
-
-    if (!out)
-        return;
-    out->progress_store_available = progress_store_db() != NULL;
-    if (!out->progress_store_available) {
-        posture_str(out->nullifier_history_state,
-                    sizeof(out->nullifier_history_state),
-                    "unknown_no_progress_store");
-        return;
-    }
-    if (!utxo_apply_nullifier_gap_snapshot(
-            &out->nullifier_activation_cursor, &gap)) {
-        posture_str(out->nullifier_history_state,
-                    sizeof(out->nullifier_history_state),
-                    "unknown_runtime_snapshot_not_ready");
-        return;
-    }
-    out->nullifier_cursor_known = true;
-    out->nullifier_backfill_gap = gap ||
-        blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID);
-    out->nullifier_history_complete = !out->nullifier_backfill_gap;
-    posture_str(out->nullifier_history_state,
-                sizeof(out->nullifier_history_state),
-                out->nullifier_backfill_gap
-                    ? "gap_below_activation_cursor"
-                    : "complete_from_genesis_or_backfilled");
 }
 
 static void posture_collect_anchors(struct agent_security_posture *out)
@@ -158,6 +156,45 @@ static void posture_collect_anchors(struct agent_security_posture *out)
                         : "complete_from_genesis_or_backfilled");
 }
 
+static void posture_collect_nullifiers(struct agent_security_posture *out)
+{
+    bool found = false;
+    int64_t cursor = -1;
+    struct sqlite3 *db;
+
+    if (!out)
+        return;
+    db = progress_store_db();
+    out->progress_store_available = db != NULL;
+    if (!out->progress_store_available) {
+        posture_str(out->nullifier_history_state,
+                    sizeof(out->nullifier_history_state),
+                    "unknown_no_progress_store");
+        return;
+    }
+    progress_store_tx_lock();
+    bool read_ok = nullifier_kv_activation_cursor(db, &cursor, &found);
+    progress_store_tx_unlock();
+    if (!read_ok) {
+        posture_str(out->nullifier_history_state,
+                    sizeof(out->nullifier_history_state),
+                    "unknown_activation_read_failed");
+        return;
+    }
+    out->nullifier_cursor_known = found;
+    out->nullifier_activation_cursor = found ? cursor : -1;
+    out->nullifier_backfill_gap = !found || cursor > 0 ||
+        blocker_exists(UTXO_APPLY_NF_GAP_BLOCKER_ID);
+    out->nullifier_history_complete = !out->nullifier_backfill_gap;
+    posture_str(out->nullifier_history_state,
+                sizeof(out->nullifier_history_state),
+                !out->nullifier_cursor_known
+                    ? "unknown_missing_activation_provenance"
+                    : out->nullifier_backfill_gap
+                        ? "gap_below_activation_cursor"
+                        : "complete_from_genesis_or_backfilled");
+}
+
 static void posture_finalize(struct agent_security_posture *out)
 {
     if (!out)
@@ -166,7 +203,7 @@ static void posture_finalize(struct agent_security_posture *out)
         !out->node_db_available ||
         !out->progress_store_available ||
         out->trusted_state_present ||
-        !out->snapshot_full_validation_complete ||
+        !out->full_history_validation_complete ||
         !out->anchor_cursor_known ||
         out->anchor_backfill_gap ||
         !out->anchor_history_complete ||
@@ -191,7 +228,7 @@ static void posture_finalize(struct agent_security_posture *out)
         posture_str(out->next_action, sizeof(out->next_action),
                     "query_running_node_datadir_security_posture");
     } else if (out->trusted_state_present ||
-               !out->snapshot_full_validation_complete) {
+               !out->full_history_validation_complete) {
         posture_str(out->status, sizeof(out->status),
                     "review_required_bootstrap_trust");
         posture_str(out->next_action, sizeof(out->next_action),
@@ -215,9 +252,26 @@ void agent_security_posture_collect(struct agent_security_posture *out,
     out->sapling_anchor_activation_cursor = -1;
     out->nullifier_activation_cursor = -1;
     posture_collect_bootstrap(out, ndb);
+    out->progress_store_available = progress_store_db() != NULL;
     posture_collect_anchors(out);
     posture_collect_nullifiers(out);
     posture_finalize(out);
+#ifdef ZCL_TESTING
+    int override = atomic_load(&g_test_review_required);
+    if (override >= 0) {
+        out->review_required = override != 0;
+        posture_str(out->status, sizeof(out->status),
+                    out->review_required ? "review_required_test" : "ok");
+        posture_str(out->next_action, sizeof(out->next_action),
+                    out->review_required ? "test_review" : "none");
+    }
+#endif
+}
+
+bool agent_security_posture_allows_public_serving(
+    const struct agent_security_posture *posture)
+{
+    return posture && !posture->review_required;
 }
 
 void agent_push_security_posture_json(struct json_value *out, const char *key,
@@ -234,6 +288,8 @@ void agent_push_security_posture_json(struct json_value *out, const char *key,
     json_push_kv_int(&obj, "schema_version", 1);
     json_push_kv_str(&obj, "status", p.status);
     json_push_kv_bool(&obj, "review_required", p.review_required);
+    json_push_kv_bool(&obj, "public_serving_allowed",
+        agent_security_posture_allows_public_serving(&p));
     json_push_kv_bool(&obj, "node_db_available", p.node_db_available);
     json_push_kv_bool(&obj, "progress_store_available",
                       p.progress_store_available);
@@ -246,6 +302,10 @@ void agent_push_security_posture_json(struct json_value *out, const char *key,
                      p.snapshot_anchor_height);
     json_push_kv_bool(&obj, "snapshot_full_validation_complete",
                       p.snapshot_full_validation_complete);
+    json_push_kv_bool(&obj, "full_history_validation_complete",
+                      p.full_history_validation_complete);
+    json_push_kv_str(&obj, "full_history_validation_origin",
+                     p.full_history_validation_origin);
     json_push_kv_bool(&obj, "snapshot_utxo_sha3_verified",
                       p.snapshot_utxo_sha3_verified);
     json_push_kv_bool(&obj, "snapshot_flyclient_verified",
@@ -278,10 +338,16 @@ void agent_push_security_posture_json(struct json_value *out, const char *key,
                      p.nullifier_history_state);
     json_push_kv_str(&obj, "next_action", p.next_action);
     json_push_kv_str(&obj, "semantics",
-                     "serving/healthy are liveness signals; "
-                     "security_posture names bootstrap and shielded-history "
-                     "trust gaps that can require review while the node stays "
-                     "available");
+                     "public serving and healthy fail closed while bootstrap "
+                     "or shielded-history trust requires review");
     json_push_kv(out, key && key[0] ? key : "security_posture", &obj);
     json_free(&obj);
 }
+
+#ifdef ZCL_TESTING
+void agent_security_posture_test_override_review_required(int required)
+{
+    atomic_store(&g_test_review_required,
+                 required < 0 ? -1 : (required != 0));
+}
+#endif

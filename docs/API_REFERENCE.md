@@ -91,7 +91,7 @@ metadata, not a second implementation.
 | `status` | `zclassic23 status` | compat → `zclassic23 status` (alias `agent`; dispatches via the pre-existing native `agent` status path, not yet the registry handler) | read / public | Compact node status and next action |
 | `core` | `zclassic23 core` | ready (branch) | read / public | Consensus-bound node capabilities |
 | `app` | `zclassic23 app` | ready (branch) | read / public | Capability-scoped sovereign applications |
-| `dev` | `zclassic23 dev` | ready (branch) | read / public | Native edit, proof, and publication loop |
+| `dev` | `zclassic23 dev` | ready (branch) | read / public | Native edit and proof loop; runtime publication is contained |
 | `ops` | `zclassic23 ops` | ready (branch) | read / public | Bounded diagnosis and node operations |
 | `discover` | `zclassic23 discover` | ready (branch) | read / public | Search and describe the command registry |
 
@@ -236,7 +236,16 @@ scope for every `core.*`/`ops.*` leaf is `local | dev | canonical | soak`
 
 ---
 
-## `dev.*` — native edit, proof, and publication loop (checkout-local, never RPC/REST/MCP-bound)
+## `dev.*` — native edit and proof loop (runtime publication contained)
+
+Phase-0 deliberately refuses every runtime-generation publication authority.
+`dev.change.apply`, `dev.hotswap.apply`, `auto`/`apply` watchers, direct
+activation backends, and generation-relinking revert cannot mutate a running
+generation. Build, plan, simulate, verify-only watch, and `.so` construction
+remain available. Resident probing is also contained because pre-admission
+`dlopen` can execute constructors. This containment is removed only when an
+immutable source epoch, complete proof receipts, resident expected-epoch CAS,
+durable acceptance, and exact rollback form one transaction.
 
 🔧 = dev-gated (`ZCL_COMMAND_DEV_READ`/`_COMMAND`): `ready` only in a
 `ZCL_DEV_BUILD` (`zclassic23-dev`); this release binary reports `compat`
@@ -274,26 +283,27 @@ generation activation.
 | Path | CLI | Avail | Input (required) | Output schema | Summary |
 |---|---|---|---|---|---|
 | `dev.change.plan` | `dev change plan --input='{"files":[...]}'` | ready | `files` | `zcl.dev_plan.v1` | Classify files and select the smallest proof |
-| `dev.change.apply` 🔧 | `dev change apply --input='{"files":[...]}'` (alias `dev.change.cycle`) | compat → `zclassic23-dev dev change cycle` | `files`, job | `zcl.dev_cycle.v1` | One classify → proof → build → publication transaction |
-| `dev.vcs.revert` 🔧 | `dev vcs revert --input='{"to":"<64-hex>","relink_generation":true}'` | compat → `zclassic23-dev dev vcs revert <to> [--relink-generation]` | `to,relink_generation` (**`to`**), reversible | `zcl.dev_vcs_revert.v1` | Restore checkout to a prior ZVCS commit, optionally relinking the running binary generation — release stub fails closed `DEV_BUILD_REQUIRED`/BLOCKED, never mutates |
+| `dev.change.apply` 🔧 | `dev change apply --input='{"files":[...]}'` (alias `dev.change.cycle`) | **contained — always refuses before publication** | `files`, job | `zcl.dev_cycle.v1` | Registered compatibility entry point; returns `publication_contained`, never activates a generation |
+| `dev.vcs.revert` 🔧 | `dev vcs revert --input='{"to":"<64-hex>","relink_generation":false}'` | dev build: source-only revert ready | `to,relink_generation` (**`to`**), reversible | `zcl.dev_vcs_revert.v1` | Append a source revert when `relink_generation=false`; `true` refuses before VCS mutation while generation publication is contained. Release builds remain `DEV_BUILD_REQUIRED`/BLOCKED |
 | `dev.vcs.seal.grant` 🔧 | `dev vcs seal grant --input='{"reason":"...","confirm":true}'` | compat → `zclassic23-dev dev vcs seal grant ...` | `reason,confirm` (**`reason`**) | `zcl.dev_vcs_seal_grant.v1` | Mint a one-shot ZVCS unseal token for the current worktree's sealed content — release stub fails closed `DEV_BUILD_REQUIRED`/BLOCKED regardless of `confirm` |
 
 ### `dev.hotswap.*` (Tier-1 in-process hot-swap)
 
 | Path | CLI | Avail | Input (required) | Output schema | Summary |
 |---|---|---|---|---|---|
-| `dev.hotswap.apply` 🔧 | `dev hotswap apply --input='{"so_path":"...","probe_leaf":"..."}'` | compat → same command on `zclassic23-dev` | `so_path,probe_leaf` (**`so_path`**) | `zcl.dev_hotswap.v1` | dlopen a `native.leaves` generation `.so`, atomically re-point command leaves, no restart |
-| `dev.hotswap.probe` 🔧 | `dev hotswap probe --input='{"so_path":"...","probe_leaf":"..."}'` | compat → same, dry-run | `so_path,probe_leaf` (**`so_path`**) | `zcl.dev_hotswap.v1` | Stage and self-test a generation `.so` WITHOUT publishing |
+| `dev.hotswap.apply` 🔧 | `dev hotswap apply --input='{"so_path":"...","probe_leaf":"..."}'` | **contained — always refuses before `dlopen`** | `so_path,probe_leaf` (**`so_path`**) | `zcl.dev_hotswap.v1` | Registered compatibility entry point; returns `runtime_publication_contained` and never re-points command leaves |
+| `dev.hotswap.probe` 🔧 | `dev hotswap probe --input='{"so_path":"...","probe_leaf":"..."}'` | **contained — always refuses before `dlopen`** | `so_path,probe_leaf` (**`so_path`**) | `zcl.dev_hotswap.v1` | Registered compatibility entry point; returns `resident_probe_contained` pending disposable-worker and ELF admission |
 
 See [`docs/work/HOTSWAP.md`](./work/HOTSWAP.md) for the full mechanism, ABI,
-and eligibility rules; these two leaves are the native successor of the
-MCP-only `zcl_agent_hotswap` tool (Zero-MCP Wave W1-B/C).
+eligibility rules, and re-enable gates. The native leaves replace the former
+MCP-only design; both native apply and legacy `zcl_agent_hotswap` are currently
+contained. Native probing is contained too.
 
 ### `dev.loop.*` (persistent save-to-verdict watcher)
 
 | Path | CLI | Avail | Input (required) | Output schema | Summary |
 |---|---|---|---|---|---|
-| `dev.loop.ensure` 🔧 | `dev loop ensure --input='{"root":"."}'` (alias `dev.loop.watch`) | compat → `zclassic23-dev dev loop ensure` | `root`, idempotent | `zcl.dev_loop_status.v1` | Idempotently ensure one persistent native watcher |
+| `dev.loop.ensure` 🔧 | `dev loop ensure --input='{"root":".","mode":"verify"}'` (alias `dev.loop.watch`) | compat → `zclassic23-dev dev loop ensure` | optional `root,mode`; idempotent | `zcl.dev_loop_status.v1` | Ensure one verify-only watcher; `auto`/`apply` modes are rejected while publication is contained |
 | `dev.loop.status` 🔧 | `dev loop status` (alias `dev.loop.heartbeat`) | compat → `zclassic23-dev dev loop heartbeat` | none | `zcl.dev_loop_status.v1` | Read watcher identity, epoch, latest verdict |
 | `dev.loop.wait` 🔧 | `dev loop wait --input='{"after_epoch":41}'` | compat → `zclassic23-dev dev loop wait` | `after_epoch,timeout_ms,view` | `zcl.dev_cycle.v1` | Wait for one verdict after a source epoch (persistent latency) |
 | `dev.loop.events` | `dev loop events --format=jsonl` | planned | `after,heartbeat_ms`, stream | `zcl.dev_loop_event.v1` | Stream resumable source and cycle events — *resumable NDJSON journal not implemented* |

@@ -30,12 +30,13 @@ CI signal that the soak machinery and RSS-plateau logic are sound.
 
 It is **not** the acceptance run. The real #3 (≥ 30-day MTBF) and #4
 (≤ 1 GB steady-state RSS) require **168 h+ of live wall time under real
-tx load** with zero operator restarts. The node now holds tip AND
-finalizes forward (forward-sync wedge cleared by `ab512d577` via a
-complete SHA3-verified snapshot at h=3,156,809 loaded above the old
-wedge), so soak wall-time can finally accrue; the snapshot is still
-borrowed from the zclassicd oracle (sovereign from-genesis cure
-pending). Run that with `make soak-7day` against the installed node.
+tx load** with zero operator restarts. Canonical is currently wedged at
+H\*=3,176,325 on incomplete historical shielded anchors/nullifiers, so its
+current wall time is not clean soak evidence. `ab512d577` fixed an earlier
+transparent-loader failure but did not prove complete shielded state. After a
+complete atomic cure passes copy proof, start a fresh exact-same-height-parity
+window with complete security posture and zero intervention. Run that with
+`make soak-7day` against the pinned candidate.
 
 > **Gap to call out:** `make soak-7day` defaults to a **7-day** window,
 > while this table's #3 target is **30 days**. The 7-day target is the

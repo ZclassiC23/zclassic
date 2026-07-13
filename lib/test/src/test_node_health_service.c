@@ -13,6 +13,7 @@
 #include "services/chain_evidence_authority_service.h"
 #include "services/chain_evidence_persistence_service.h"
 #include "services/chain_state_service.h"
+#include "services/legacy_mirror_sync_service.h"
 #include "services/sync_monitor.h"
 #include "storage/progress_store.h"
 #include "event/event.h"
@@ -1056,6 +1057,70 @@ int test_node_health_service(void)
         rpc_net_set_connman(NULL);
         net_manager_free(&cm.manager);
         mirror_consensus_reset_for_test();
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("node_health_service: same-height mirror hash gap fails health... ");
+    {
+        struct node_health_snapshot health;
+        struct main_state ms;
+        struct connman cm;
+        struct net_address addr;
+        struct p2p_node *node = NULL;
+        struct block_index tip;
+        struct uint256 h_tip;
+        struct legacy_mirror_sync_stats mirror = {0};
+        bool ok = true;
+
+        memset(&health, 0, sizeof(health));
+        memset(&ms, 0, sizeof(ms));
+        memset(&cm, 0, sizeof(cm));
+        memset(&addr, 0, sizeof(addr));
+        legacy_mirror_sync_reset_for_test();
+        ok = ok && health_test_init_main_tip(&ms, &tip, &h_tip, 151,
+                                             151, 0);
+        ok = ok && health_test_init_connman_peer(&cm, &addr, &node,
+                                                 "mirror-hash-gap-peer",
+                                                 tip.nHeight);
+        if (ok) {
+            (void)node;
+            node_health_test_set_log_head_override(tip.nHeight);
+            sync_set_state(SYNC_FINDING_PEERS, "test");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD, "test");
+            sync_set_state(SYNC_BLOCKS_DOWNLOAD, "test");
+            sync_set_state(SYNC_CONNECTING_BLOCKS, "test");
+            sync_set_state(SYNC_AT_TIP, "test");
+            mirror.enabled = true;
+            mirror.running = true;
+            mirror.reachable = true;
+            mirror.local_height = tip.nHeight;
+            mirror.legacy_height = tip.nHeight;
+            legacy_mirror_sync_test_set_stats(&mirror, &ms);
+            node_health_collect(&health, NULL, &ms);
+
+            ok = health.synced && health.has_peers && !health.healthy;
+            ok = ok && strcmp(
+                health.degraded_reason,
+                "mirror_same_height_hash_unavailable_or_mismatch") == 0;
+
+            snprintf(mirror.zclassic23_hash,
+                     sizeof(mirror.zclassic23_hash), "%064x", 1);
+            snprintf(mirror.zclassicd_hash,
+                     sizeof(mirror.zclassicd_hash), "%064x", 2);
+            legacy_mirror_sync_test_set_stats(&mirror, &ms);
+            memset(&health, 0, sizeof(health));
+            node_health_collect(&health, NULL, &ms);
+            ok = ok && !health.healthy && strcmp(
+                health.degraded_reason,
+                "mirror_same_height_hash_unavailable_or_mismatch") == 0;
+        }
+
+        node_health_test_set_log_head_override(-2);
+        main_state_free(&ms);
+        rpc_net_set_connman(NULL);
+        net_manager_free(&cm.manager);
+        legacy_mirror_sync_reset_for_test();
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

@@ -1041,6 +1041,35 @@ static char *mock_target_blocker_dump(void)
                   "\"reason\":\"2 active target blockers\"}}}");
 }
 
+static char *mock_causal_blocker_dump(void)
+{
+    return strdup("{\"subsystem\":\"blocker\","
+                  "\"captured_at\":1782240010,"
+                  "\"state\":{\"active_count\":4,"
+                  "\"permanent_count\":3,\"transient_count\":1,"
+                  "\"dependency_count\":0,\"resource_count\":0,"
+                  "\"escape_dispatched_total\":0,\"rate_limit_ms\":250,"
+                  "\"blockers\":[{"
+                  "\"id\":\"script_validate.prevout_unresolved\","
+                  "\"owner\":\"script_validate\","
+                  "\"class\":\"permanent\",\"age_us\":900000000,"
+                  "\"reason\":\"downstream symptom\"},{"
+                  "\"id\":\"peer_floor.no_eligible_peers\","
+                  "\"owner\":\"net\","
+                  "\"class\":\"transient\",\"age_us\":1000000000,"
+                  "\"reason\":\"peer symptom\"},{"
+                  "\"id\":\"utxo_apply.nullifier_backfill_gap\","
+                  "\"owner\":\"utxo_apply\","
+                  "\"class\":\"permanent\",\"age_us\":2000000,"
+                  "\"reason\":\"nullifier history incomplete\"},{"
+                  "\"id\":\"utxo_apply.anchor_backfill_gap\","
+                  "\"owner\":\"utxo_apply\","
+                  "\"class\":\"permanent\",\"age_us\":1000000,"
+                  "\"reason\":\"anchor history incomplete\"}],"
+                  "\"_health\":{\"ok\":false,"
+                  "\"reason\":\"4 active target blockers\"}}}");
+}
+
 static char *mock_operator_healthy_rpc(const char *method,
                                        const char *params_json);
 
@@ -1383,6 +1412,14 @@ static char *mock_status_rpc_with_target_blockers(const char *method,
         g_target_blocker_rpc_calls++;
         return mock_target_blocker_dump();
     }
+    return mock_status_rpc(method, params_json);
+}
+
+static char *mock_status_rpc_with_causal_blockers(const char *method,
+                                                   const char *params_json)
+{
+    if (mock_is_blocker_dump(method, params_json))
+        return mock_causal_blocker_dump();
     return mock_status_rpc(method, params_json);
 }
 
@@ -4436,6 +4473,43 @@ static int test_zcl_status_uses_target_blockers_not_proxy_registry(void)
     return failures;
 }
 
+static int test_zcl_status_prefers_causal_history_gap(void)
+{
+    int failures = 0;
+    TEST("controllers: zcl_status prefers causal shielded-history gap") {
+        register_all();
+        mcp_rpc_client_set_test_hook(mock_status_rpc_with_causal_blockers);
+        struct json_value args;
+        json_init(&args);
+        json_set_object(&args);
+        char *body = mcp_router_dispatch("zcl_status", &args);
+        mcp_rpc_client_set_test_hook(NULL);
+        ASSERT(body != NULL);
+
+        struct json_value root;
+        ASSERT(json_read(&root, body, strlen(body)));
+        const struct json_value *dominant =
+            json_get(&root, "dominant_blocker");
+        ASSERT(dominant != NULL && !json_is_null(dominant));
+        ASSERT_STR_EQ(json_get_str(json_get(dominant, "id")),
+                      "utxo_apply.anchor_backfill_gap");
+        const struct json_value *blockers = json_get(&root, "blockers");
+        ASSERT(blockers != NULL);
+        const struct json_value *summary_dom =
+            json_get(blockers, "dominant");
+        ASSERT(summary_dom != NULL);
+        ASSERT_STR_EQ(json_get_str(json_get(summary_dom, "id")),
+                      "utxo_apply.anchor_backfill_gap");
+
+        json_free(&root);
+        json_free(&args);
+        free(body);
+        PASS();
+    } _test_next:;
+    mcp_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
 static int test_zcl_blockers_matches_target_state(void)
 {
     int failures = 0;
@@ -6119,6 +6193,7 @@ int test_mcp_controllers(void)
     failures += test_zcl_status_missing_peer_height_is_unknown();
     failures += test_zcl_status_missing_peer_direction_is_unknown();
     failures += test_zcl_status_uses_target_blockers_not_proxy_registry();
+    failures += test_zcl_status_prefers_causal_history_gap();
     failures += test_zcl_blockers_matches_target_state();
     failures += test_zcl_kpi_invalid_child_stays_parseable();
     failures += test_zcl_kpi_peer_error_never_becomes_brace_count();

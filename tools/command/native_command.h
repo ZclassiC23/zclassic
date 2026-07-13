@@ -278,9 +278,8 @@ void zcl_native_handle_dev_generation_history(
 void zcl_native_handle_dev_diagnose_latest(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
-/* dev.hotswap.apply / dev.hotswap.probe — Tier-1 in-process hot-swap of native
- * command leaves. Short-lived CLI processes that forward over JSON-RPC to the
- * resident dev node (see tools/command/native_dev_hotswap.c). */
+/* Both hot-swap commands are hard-contained compatibility entrypoints; probe
+ * must not dlopen candidates in the resident node before ELF admission. */
 void zcl_native_handle_dev_hotswap_apply(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

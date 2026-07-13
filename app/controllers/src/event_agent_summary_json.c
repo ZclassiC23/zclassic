@@ -85,6 +85,10 @@ static void agent_summary_push_health_json(
                       h->operator_action_required);
     json_push_kv_bool(&health_obj, "operator_latch_suppressed_by_mirror",
                       h->operator_latch_suppressed_by_mirror);
+    json_push_kv_bool(&health_obj, "hard_typed_blocker",
+                      h->hard_typed_blocker);
+    json_push_kv_str(&health_obj, "dominant_typed_blocker",
+                     h->dominant_blocker_id);
     json_push_kv_str(&health_obj, "operator_latch_detail",
                      h->operator_needed_detail);
     json_push_kv_int(&health_obj, "operator_latch_since_unix",

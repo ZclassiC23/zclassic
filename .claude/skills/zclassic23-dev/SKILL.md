@@ -1,7 +1,7 @@
 ---
 name: zclassic23-dev
-description: Use when developing on the ZClassic23 codebase (this repo) — onboarding, understanding the architecture, or making any code change. Covers the fast native dev loop (drop-in-C watcher, hot-swap tiers, dev change apply, typed-commands-over-bash, workflows of tiered subagents, the push traps), the node's state-machine model, the eight code shapes / where things live, the inviolable rules (consensus parity, copy-prove before live, defensive-coding gates), build/test/deploy, and the don't-re-chase traps. Invoke for "how does this codebase work", "how do I develop efficiently here", "how do I add or change X here", "be a zclassic23 developer", or before editing zclassic23 source.
-version: 1.1.0
+description: Use when developing on the ZClassic23 codebase (this repo) — onboarding, understanding the architecture, or making any code change. Covers the verify-only native dev loop, runtime-publication containment, typed-commands-over-bash, workflows of tiered subagents, the push traps, the node's state-machine model, the eight code shapes / where things live, the inviolable rules (consensus parity, copy-prove before live, defensive-coding gates), build/test/deploy, and the don't-re-chase traps. Invoke for "how does this codebase work", "how do I develop efficiently here", "how do I add or change X here", "be a zclassic23 developer", or before editing zclassic23 source.
+version: 1.2.0
 ---
 
 # Being a ZClassic23 developer
@@ -31,18 +31,20 @@ Before you Read a file or `grep`, ask the in-tree **code navigator** (`lib/codei
 - `zclassic23 code refs --input='{"name":"<symbol>"}'` → every call site as `file:line`. Answers "who calls X? / what breaks if I change it?" (e.g. it flags a caller a delete must handle before you've opened a single file).
 - `zclassic23 code find` / `code file` / `code group` → text search / a file's symbol surface / a directory's surface. Run `zclassic23 discover schema <leaf>` for the exact input keys.
 
-The index is derived and read-only. The full efficient loop is **`code sym`/`code refs` to understand (cheap) → `Edit` the `.c` → the watcher auto-builds+tests+reloads → `dev status` to confirm → `dev vcs` to revert.** Understand → edit → proven-in-reality, minimum tokens, minimum thinking.
+The index is derived and read-only. The current efficient loop is **`code sym`/`code refs` to understand (cheap) → `Edit` the `.c` → the watcher builds+tests in verify-only mode → `dev status` to confirm → preserve the candidate evidence for review.** Runtime publication is contained; a green verdict does not change a running generation.
 
 ## Develop fast — the native dev loop (this is how you stay efficient)
 
-The platform exists so you **drop in C and let the machine build+test+run it.** Do not hand-run every step or drop to bash to inspect — that is the slow path the platform was built to remove.
+The platform exists so you **drop in C and let the machine classify, build, and test it.** Do not hand-run every step or drop to bash to inspect — that is the slow path the platform was built to remove.
 
-1. **Persistent watcher (default loop):** `zclassic23-dev dev loop ensure` (or `make dev-watch [MODE=auto|hotswap|reload]`) once. Then just **Edit `.c`** — it auto-runs classify→prove→build→publish per save; read the verdict with `zclassic23-dev dev status` (`dev.status`) or block on `dev loop wait`. One-shot alternative: `dev change plan --input='{"files":[...]}'` (classify + smallest proof) then `dev change apply --input='{"files":[...]}'` (the whole cycle in one transaction, ~60 s).
-2. **Two speed tiers — know which you're on:** **hot-swap (sub-second)** `dlopen`s a `.so` into the running dev node, no restart — ONLY the handler/controller TUs in `config/hotswap_eligible.def` (~9: MCP controllers + `*_native_handlers.c`); land presentation-layer work there to stay fast. **reload (~60 s)** is any boot/service-state or ABI change (`dev change apply` → `action:reload`) — correct, just slower.
-3. **Typed commands over bash — always.** `zclassic23 status` (compact status), `dumpstate <subsystem>` (= old `zcl_state`), `discover help|search <q>`, `dev status` — instead of `ss`/`ps`/`tail`/`grep`. **Every reach for bash to inspect the node is a missing typed command — add it** (a read leaf in the hot-swap-eligible handler layer = a sub-second build). The registry is the ONLY agent interface going forward (zero-MCP; MCP is deleted in W3).
+1. **Persistent watcher (default loop):** `zclassic23-dev dev loop ensure` (or `make dev-watch`) once. Then just **Edit `.c`** — it runs classify→prove→build in verify-only mode and never changes the running generation; read the verdict with `zclassic23-dev dev status` (`dev.status`) or block on `dev loop wait`. Publication watcher modes and direct generation-application commands are containment probes: they refuse before compilation, loader activity, service control, or generation relinking.
+2. **Two verification tiers — know which proof you need:** eligible stateless handler changes may build a candidate shared object and run `dev.hotswap.probe` without changing the resident registry. Everything else uses the mapped compile/test/replay lane and produces a reload candidate only. Neither tier currently publishes or restarts a process.
+3. **Typed commands over bash — always.** `zclassic23 status` (compact status), `dumpstate <subsystem>` (= old `zcl_state`), `discover help|search <q>`, `dev status` — instead of `ss`/`ps`/`tail`/`grep`. **Every reach for bash to inspect the node is a missing typed command — add it.** The registry is the ONLY agent interface going forward (zero-MCP; MCP is deleted in W3).
 4. **Big refactor/test campaigns → workflows of tiered subagents.** Author a `Workflow` (Opus for hard lanes, Sonnet for scoped, to save tokens); each lane runs in an isolated worktree (`isolation:'worktree'`), self-gates (build + focused test + `make lint`), and commits its green work to a `wf/<name>` branch. You then merge the green branches to main and push. Orchestrate + review; the fleet does the volume.
 5. **Push flow + its two traps:** `make lint && make build-only`, run the mapped focused tests, then `git push` (hook runs `make pre-push-ci`). **Trap A (impact-rules):** every changed `.c` must map to a focused group in `app/controllers/include/controllers/agent_impact_rules.def` or the push is BLOCKED ("no focused test mapping") — add the mapping. **Trap B (pre-push SIGPIPE):** git may not drain the hook's stdout, so a GREEN `make pre-push-ci` can die with `make[2]: write error: stdout` and spuriously block — confirm green out-of-band (`make pre-push-ci >log 2>&1; echo $?` → 0) then `git push --no-verify` (verified, not skipped).
-6. **ZVCS:** each green cycle auto-anchors a source+binary snapshot; `dev vcs` = one-command source+binary revert; sealed-core changes are refused before publish (`check-core-seal`).
+6. **ZVCS:** each green cycle may anchor candidate source/artifact evidence. Source revert is available only with generation relinking disabled; relinking remains contained. Sealed-core changes require the owner unseal ritual (`check-core-seal`).
+
+**Phase 3 reopening gate (future, not current authority):** publication may return only as one durable transaction that resolves an immutable source epoch, derives the complete dependency/proof plan, enforces signed seal authority, records proof receipts, validates and behaviorally probes the candidate, compare-and-swaps the expected resident epoch, persists prepared provenance, quiesces and atomically publishes the complete generation, probes through the public registry, and then durably accepts or restores the exact prior generation. Until every step and rollback proof exists, verify-only is the platform contract.
 
 ## The model in four lines
 
@@ -99,8 +101,11 @@ model / healer / MCP tool / reducer stage / lint gate" is in `docs/CODEBASE_MAP.
 - `make -j$(nproc)` — full build (`zclassic23`, `test_zcl`, `zclassic-cli`).
 - `make test` / `make test-parallel` — the canonical test runner. **Use this, not `test_zcl`.**
 - `make lint` — all gates; must pass before tests. `make ci` — lint + build + tests + checks.
-- `make deploy` (owner-gated, live) / `make deploy-dev` (dev node). `make deploy` rm's the stale binary
-  first (a stale binary was a real multi-day outage) and verifies `build_commit`.
+- `make deploy` is owner-gated live deployment. All public dev-lane publication,
+  stage, hot-swap, relink, and recovery-apply paths currently hard-refuse;
+  source identities and environment variables grant no activation authority.
+  `make deploy` rm's the stale binary first
+  (a stale binary was a real multi-day outage) and verifies `build_commit`.
 - Gate every change: `make` + `make lint` + `make test-parallel` (read the `N passed, M failed` line).
 
 ## The agent surface — native command registry (MCP is being removed)

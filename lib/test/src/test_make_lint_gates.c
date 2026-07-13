@@ -3029,6 +3029,13 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(script, "build/bin/zclassic23-dev") != NULL);
         ASSERT(strstr(script, "case \"$DEV_DEPLOY_BUILD\"") != NULL);
         ASSERT(strstr(script, "strict)") != NULL);
+        ASSERT(strstr(script,
+                      "\"$CANDIDATE_BIN\" --importblockindex \"$LEGACY_SRC\"")
+               != NULL);
+        ASSERT(strstr(script,
+                      "\"$CANDIDATE_BIN\" -datadir=\"$DEV_DATADIR\" --importblockindex")
+               == NULL);
+        ASSERT(strstr(script, "\"$DEV_DATADIR/node.db\"") != NULL);
         ASSERT(strstr(makefile, "deploy-dev-fast agent-deploy-fast") != NULL);
         ASSERT(strstr(script, "probe_agent_contract") != NULL);
         ASSERT(strstr(script, "ZCL_DEV_AGENT_TIMEOUT") != NULL);
@@ -3043,7 +3050,10 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(agent_status, "\"role\":\"worker\"") != NULL);
         ASSERT(strstr(agent_status, "noncanonical_dev_only") != NULL);
         ASSERT(strstr(agent_status, "never_touches_live_or_soak") != NULL);
-        ASSERT(strstr(agent_status, "make agent-stage-dev") != NULL);
+        ASSERT(strstr(agent_status, "\"runtime_publication\":false") != NULL);
+        ASSERT(strstr(agent_status, "publication_blocker") != NULL);
+        ASSERT(strstr(agent_status, "source identity is not activation authority")
+               != NULL);
         ASSERT(strstr(agent_status, "make agent-dev-recover") != NULL);
         ASSERT(strstr(agent_status,
                       "pending_auto_reindex_requires_explicit_recovery_boot")
@@ -3053,7 +3063,9 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(agent_status,
                       "make agent-clear-stale-dev-reindex") != NULL);
         ASSERT(strstr(agent_status,
-                      "ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY=1") != NULL);
+                      "recovery_apply_authority") != NULL);
+        ASSERT(strstr(agent_status,
+                      "contained; no environment override") != NULL);
         ASSERT(strstr(clear_script, "zcl.agent_dev_reindex_clear.v1") != NULL);
         ASSERT(strstr(clear_script, "stale_marker_proven") != NULL);
         ASSERT(strstr(clear_script, "marker_anchor_above_served_height")
@@ -3141,16 +3153,22 @@ static int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(lane_recover,
                       "header_import_skipped_snapshot_not_newer")
                != NULL);
+        ASSERT(strstr(lane_recover, "runtime_recovery_contained") != NULL);
+        ASSERT(strstr(lane_recover, "\"runtime_publication\":false")
+               != NULL);
+        ASSERT(strstr(lane_recover, "\"mutation_contained\":true")
+               != NULL);
+        ASSERT(strstr(lane_recover, "\"apply_authority\":\"none\"")
+               != NULL);
+        ASSERT(strstr(lane_recover, "refuse_public_apply") != NULL);
+        ASSERT(strstr(lane_recover, "selftest_apply_refused") != NULL);
         ASSERT(strstr(lane_recover, "ZCL_LANE_RECOVERY_IMPORT_TIMEOUT")
-               != NULL);
-        ASSERT(strstr(lane_recover, "--importblockindex") != NULL);
-        ASSERT(strstr(lane_recover, "\"$bin\" --importblockindex \"$legacy\" \"$target_db\"")
-               != NULL);
-        ASSERT(strstr(lane_recover, "ZCL_LANE_SNAPSHOT_LOADER_FLAG") != NULL);
-        ASSERT(strstr(lane_recover, "systemctl --user restart \"$unit\"")
-               != NULL);
+               == NULL);
+        ASSERT(strstr(lane_recover, "--importblockindex") == NULL);
+        ASSERT(strstr(lane_recover, "ZCL_LANE_SNAPSHOT_LOADER_FLAG") == NULL);
+        ASSERT(strstr(lane_recover, "systemctl") == NULL);
         ASSERT(strstr(lane_recover, "ZCL_LANE_RECOVERY_SEED_SOURCE") != NULL);
-        ASSERT(strstr(lane_recover, "ZCL_LANE_RECOVERY_LEGACY_SRC") != NULL);
+        ASSERT(strstr(lane_recover, "ZCL_LANE_RECOVERY_LEGACY_SRC") == NULL);
         ASSERT(strstr(lane_recover, "python") == NULL);
         ASSERT(run_gate_script_with_env("tools/scripts/lane_recover.sh",
                                         "ZCL_LANE_RECOVERY_SELFTEST",
@@ -3346,8 +3364,13 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "tools/dev/agent-dev-status.sh") != NULL);
         ASSERT(strstr(buf, "tools/dev/agent-doctor.sh") != NULL);
         ASSERT(strstr(buf, "stage-dev-bin agent-stage-dev") != NULL);
-        ASSERT(strstr(buf, "ZCL_DEV_USE_PREBUILT=1") != NULL);
-        ASSERT(strstr(buf, "deploy-dev-lane.sh --stage") != NULL);
+        ASSERT(strstr(buf, "agent-stage-dev: REFUSING") != NULL);
+        ASSERT(strstr(buf, "agent-deploy-fast: REFUSING") != NULL);
+        ASSERT(strstr(buf,
+                      "runtime publication is contained pending transactional")
+               != NULL);
+        ASSERT(strstr(buf, "ZCL_DEV_USE_PREBUILT=1") == NULL);
+        ASSERT(strstr(buf, "deploy-dev-lane.sh --stage") == NULL);
         ASSERT(strstr(buf, "mktemp \"$(ZCL_AGENT_DEV_BIN).next.XXXXXX\"")
                == NULL);
         /* zero-MCP note (docs/work/MCP-REMOVAL-WORKLIST.md W2, "no native
@@ -3727,7 +3750,7 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "docs/GETTING_STARTED.md") != NULL);
         ASSERT(strstr(buf, "Public start here") != NULL);
         ASSERT(strstr(buf, "make dev-bin") != NULL);
-        ASSERT(strstr(buf, "488 parallel groups") != NULL);
+        ASSERT(strstr(buf, "592 registered parallel groups") != NULL);
         ASSERT(strstr(buf, "build/bin/zclassic23 agentops") != NULL);
         ASSERT(strstr(buf, "| jq") == NULL);
         free(buf);
@@ -3804,58 +3827,36 @@ static int t_remote_node_update_contract(void)
         ASSERT(strstr(script, "ZCL_REMOTE_BRANCH") != NULL);
         ASSERT(strstr(script, "ZCL_REMOTE_MAIN_REF") != NULL);
         ASSERT(strstr(script, "only origin/main may be used") != NULL);
-        ASSERT(strstr(script, "git fetch --prune origin main") != NULL);
-        ASSERT(strstr(script, "git merge --ff-only origin/main") != NULL);
+        ASSERT(strstr(script, "git ls-remote --exit-code origin refs/heads/main")
+               != NULL);
+        ASSERT(strstr(script, "git fetch") == NULL);
+        ASSERT(strstr(script, "git merge --") == NULL);
         ASSERT(strstr(script, "remote checkout must be $expect_branch")
                != NULL);
-        ASSERT(strstr(script, "remote update branch must be main") != NULL);
+        ASSERT(strstr(script, "remote planning branch must be main") != NULL);
         ASSERT(strstr(script, "ZCL_REMOTE_ALLOW_DIRTY") != NULL);
-        ASSERT(strstr(script, "make fast-rebuild") != NULL);
-        ASSERT(strstr(script, "make zclassic23") != NULL);
         ASSERT(strstr(script, "ZCL_REMOTE_INSTALL_BIN") != NULL);
+        ASSERT(strstr(script, "ZCL_REMOTE_INSTALL_ARTIFACT") != NULL);
         ASSERT(strstr(script, "ZCL_REMOTE_RESTART") != NULL);
         ASSERT(strstr(script, "ZCL_REMOTE_JSON") != NULL);
         ASSERT(strstr(script, "ZCL_DEPLOY_ALLOW_CANONICAL=1") != NULL);
-        ASSERT(strstr(script,
-                      "ZCL_DEPLOY_ALLOW_CANONICAL=$(shell_quote") != NULL);
-        ASSERT(strstr(script,
-                      "ZCL_DEPLOY_ALLOW_CANONICAL=\"${ZCL_DEPLOY_ALLOW_CANONICAL:-0}\"")
-               != NULL);
         ASSERT(strstr(script, "--json") != NULL);
+        ASSERT(strstr(script, "--selftest") != NULL);
         ASSERT(strstr(script, "json_escape") != NULL);
         ASSERT(strstr(script, "emit_json_summary") != NULL);
-        ASSERT(strstr(script, "missing_vendor_archives") != NULL);
-        ASSERT(strstr(script, "preflight_build") != NULL);
-        ASSERT(strstr(script, "preflight_failed") != NULL);
-        ASSERT(strstr(script, "missing_build_tool:c++_or_cmake") != NULL);
-        ASSERT(strstr(script, "missing_build_tool:c++_or_g++") != NULL);
-        ASSERT(strstr(script, "require_cxx_for_preflight") != NULL);
-        ASSERT(strstr(script, "\\\"error\\\"") != NULL);
-        ASSERT(strstr(script, "git_fetch_failed") != NULL);
-        ASSERT(strstr(script, "build_failed:$build") != NULL);
-        ASSERT(strstr(script, "install_failed:$install_bin") != NULL);
-        ASSERT(strstr(script, "restart_failed:$unit") != NULL);
+        ASSERT(strstr(script, "runtime_publication_contained") != NULL);
+        ASSERT(strstr(script, "runtime_publication\":false") != NULL);
+        ASSERT(strstr(script, "mutation_contained\":true") != NULL);
+        ASSERT(strstr(script, "refuse_public_mutation_request") != NULL);
+        ASSERT(strstr(script, "selftest_refusal") != NULL);
+        ASSERT(strstr(script, "SSH before refusing mutation") != NULL);
         ASSERT(strstr(script, "\\\"plan\\\"") != NULL);
         ASSERT(strstr(script, "\\\"safe_next_action\\\"") != NULL);
         ASSERT(strstr(script, "printf '%s\\n' \"$json\"") != NULL);
-        const char *dry_done = strstr(script, "log \"dry_run_complete=1\"");
-        const char *dry_summary =
-            strstr(script,
-                   "emit_json_summary \"ok\" \"$plan\" 0 0 0 0 \"$head\"");
-        ASSERT(dry_done != NULL);
-        ASSERT(dry_summary != NULL);
-        ASSERT(dry_done < dry_summary);
-        const char *complete_done =
-            strstr(script,
-                   "log \"complete=1 final_head=$final_head active=$active\"");
-        const char *complete_summary =
-            strstr(script,
-                   "emit_json_summary \"ok\" \"$plan\" \"$updated\"");
-        ASSERT(complete_done != NULL);
-        ASSERT(complete_summary != NULL);
-        ASSERT(complete_done < complete_summary);
-        ASSERT(strstr(script, "tools/deploy_guard.sh") != NULL);
-        ASSERT(strstr(script, "zcl.agent_deploy_guard.v1") != NULL);
+        ASSERT(strstr(script, "make fast-rebuild") == NULL);
+        ASSERT(strstr(script, "make zclassic23") == NULL);
+        ASSERT(strstr(script, "systemctl --user restart") == NULL);
+        ASSERT(strstr(script, "install -m") == NULL);
         ASSERT(strstr(script, "No Python or jq is required") != NULL);
         ASSERT(strstr(script, "python") == NULL);
         free(script);
@@ -3863,23 +3864,30 @@ static int t_remote_node_update_contract(void)
 
         ASSERT(repo_path(path, sizeof(path), "Makefile") == 0);
         ASSERT(read_entire_file(path, &makefile) == 0);
-        ASSERT(strstr(makefile, "remote-node-update:") != NULL);
-        ASSERT(strstr(makefile, "remote-node-update-json:") != NULL);
+        ASSERT(strstr(makefile, "remote-node-plan:") != NULL);
+        ASSERT(strstr(makefile, "remote-node-plan-json:") != NULL);
+        ASSERT(strstr(makefile, "remote-node-update remote-node-update-json:")
+               != NULL);
+        ASSERT(strstr(makefile, "remote apply/install/restart is contained")
+               != NULL);
         ASSERT(strstr(makefile, "ZCL_REMOTE_JSON=1") != NULL);
         ASSERT(strstr(makefile, "tools/scripts/remote_node_update.sh")
                != NULL);
         ASSERT(strstr(makefile, "CXX_STDLIB_LDFLAGS") != NULL);
         ASSERT(strstr(makefile, "$(CXX) -print-file-name=libstdc++.a")
                != NULL);
+        ASSERT(strstr(makefile, "install-remote-status-linger:") != NULL);
+        ASSERT(strstr(makefile, "remote-status:") != NULL);
         ASSERT(strstr(makefile, "install-self-update-linger:") != NULL);
-        ASSERT(strstr(makefile, "self-update-status:") != NULL);
+        ASSERT(strstr(makefile, "self-update/build publication is contained")
+               != NULL);
         ASSERT(strstr(makefile, "install-remote-test-node-linger:") != NULL);
         ASSERT(strstr(makefile, "remote-test-node-status:") != NULL);
         ASSERT(strstr(makefile, "zclassic23-remote-test-node.service") != NULL);
         ASSERT(strstr(makefile, "zclassic23-remote-test.env.example") != NULL);
-        ASSERT(strstr(makefile, "zclassic23-self-update.timer") != NULL);
+        ASSERT(strstr(makefile, "zclassic23-remote-status.timer") != NULL);
         ASSERT(strstr(makefile,
-                      "systemctl --user enable --now zclassic23-self-update.timer")
+                      "systemctl --user enable --now zclassic23-remote-status.timer")
                != NULL);
         free(makefile);
         makefile = NULL;
@@ -3903,6 +3911,10 @@ static int t_remote_node_update_contract(void)
         ASSERT(read_entire_file(path, &fast_ci) == 0);
         ASSERT(strstr(fast_ci, "tools/scripts/remote_node_update.sh")
                != NULL);
+        ASSERT(strstr(fast_ci, "tools/scripts/lane_recover.sh") != NULL);
+        ASSERT(strstr(fast_ci,
+                      "tools/scripts/check_stable_publish_containment.sh")
+               != NULL);
         ASSERT(strstr(fast_ci,
                       "deploy/examples/zclassic23-remote-test-node.service")
                != NULL);
@@ -3923,27 +3935,29 @@ static int t_remote_node_update_contract(void)
         ASSERT(read_entire_file(path, &agent) == 0);
         ASSERT(strstr(agent, "remote_node_update") != NULL);
         ASSERT(strstr(agent, "zcl.remote_node_update.v1") != NULL);
-        ASSERT(strstr(agent, "make remote-node-update") != NULL);
-        ASSERT(strstr(agent, "json_dry_run_command") != NULL);
+        ASSERT(strstr(agent, "make remote-node-plan") != NULL);
+        ASSERT(strstr(agent, "json_plan_command") != NULL);
         ASSERT(strstr(agent, "json_summary") != NULL);
-        ASSERT(strstr(agent, "fast_forward_only") != NULL);
-        ASSERT(strstr(agent, "restart_default") != NULL);
+        ASSERT(strstr(agent, "no_fetch") != NULL);
+        ASSERT(strstr(agent, "runtime_publication") != NULL);
+        ASSERT(strstr(agent, "install_restart_contained") != NULL);
         free(agent);
         agent = NULL;
 
         ASSERT(repo_path(path, sizeof(path), "docs/AGENT_API.md") == 0);
         ASSERT(read_entire_file(path, &doc) == 0);
-        ASSERT(strstr(doc, "## Remote Node Updates") != NULL);
+        ASSERT(strstr(doc, "## Remote Node Planning") != NULL);
         ASSERT(strstr(doc, "zcl.remote_node_update.v1") != NULL);
-        ASSERT(strstr(doc, "make remote-node-update") != NULL);
-        ASSERT(strstr(doc, "make remote-node-update-json") != NULL);
+        ASSERT(strstr(doc, "make remote-node-plan") != NULL);
+        ASSERT(strstr(doc, "make remote-node-plan-json") != NULL);
         ASSERT(strstr(doc, "ZCL_REMOTE_JSON=1") != NULL);
-        ASSERT(strstr(doc, "status:\"error\"") != NULL);
-        ASSERT(strstr(doc, "git merge --ff-only origin/main") != NULL);
-        ASSERT(strstr(doc, "ZCL_REMOTE_RESTART=0") != NULL);
-        ASSERT(strstr(doc, "direct C++11 fallback") != NULL);
+        ASSERT(strstr(doc, "git ls-remote") != NULL);
+        ASSERT(strstr(doc, "runtime_publication_contained") != NULL);
+        ASSERT(strstr(doc, "before SSH, fetch, merge, build") != NULL);
+        ASSERT(strstr(doc, "never fetches or changes") != NULL);
+        ASSERT(strstr(doc, "make install-remote-status-linger") != NULL);
+        ASSERT(strstr(doc, "make remote-status") != NULL);
         ASSERT(strstr(doc, "make install-self-update-linger") != NULL);
-        ASSERT(strstr(doc, "make self-update-status") != NULL);
         ASSERT(strstr(doc, "make install-remote-test-node-linger") != NULL);
         ASSERT(strstr(doc, "make remote-test-node-status") != NULL);
         ASSERT(strstr(doc, "MemoryHigh=24G") != NULL);
@@ -3999,7 +4013,8 @@ static int t_remote_node_update_contract(void)
                       "Documentation=file:%h/github/zclassic23/docs/AGENT_API.md")
                != NULL);
         ASSERT(strstr(service, "remote_node_update.sh self") != NULL);
-        ASSERT(strstr(service, "ZCL_REMOTE_BUILD=fast-rebuild") != NULL);
+        ASSERT(strstr(service, "ZCL_REMOTE_BUILD=none") != NULL);
+        ASSERT(strstr(service, "ZCL_REMOTE_DRY_RUN=1") != NULL);
         ASSERT(strstr(service, "ZCL_REMOTE_RESTART=0") != NULL);
         ASSERT(strstr(service, "MemoryHigh=8G") != NULL);
         ASSERT(strstr(service, "IOSchedulingClass=idle") != NULL);
@@ -5143,7 +5158,7 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(agent_doc_buf, "make agent-loop") != NULL);
         ASSERT(strstr(agent_doc_buf, "ZCL_AGENT_LOOP_BIN=1") != NULL);
-        ASSERT(strstr(agent_doc_buf, "ZCL_AGENT_LOOP_DEPLOY=dev") != NULL);
+        ASSERT(strstr(agent_doc_buf, "ZCL_AGENT_LOOP_DEPLOY=stage|dev") != NULL);
         ASSERT(strstr(agent_doc_buf, "make build-only") != NULL);
         ASSERT(strstr(agent_doc_buf, "make fast-rebuild") != NULL);
         ASSERT(strstr(agent_doc_buf, "make dev-bin") != NULL);
@@ -5160,7 +5175,9 @@ static int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "automation_deploy_ok") != NULL);
         ASSERT(strstr(agent_doc_buf, "operator_lane_name") != NULL);
         ASSERT(strstr(agent_doc_buf, "preferred_deploy_target") != NULL);
-        ASSERT(strstr(agent_doc_buf, "agent-deploy.json") != NULL);
+        ASSERT(strstr(agent_doc_buf,
+                      "Runtime generation publication is Phase-0 contained")
+               != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.agent_dev_deploy.v1") != NULL);
         ASSERT(strstr(agent_doc_buf,
                       "requires_operator_confirmation") != NULL);
@@ -5225,14 +5242,19 @@ static int t_mvp_reporters_resolve_live_service_rpc_contract(void)
     int failures = 0;
     char *scoreboard = NULL;
     char *gate = NULL;
+    char *evidence = NULL;
     TEST("MVP reporters resolve the live service datadir and RPC port") {
         char scoreboard_path[PATH_MAX];
         char gate_path[PATH_MAX];
+        char evidence_path[PATH_MAX];
         ASSERT(repo_path(scoreboard_path, sizeof(scoreboard_path),
                          "tools/scripts/mvp_scoreboard.sh") == 0);
         ASSERT(repo_path(gate_path, sizeof(gate_path), "tools/mvp_gate.sh") == 0);
+        ASSERT(repo_path(evidence_path, sizeof(evidence_path),
+                         "tools/scripts/soak_evidence.sh") == 0);
         ASSERT(read_entire_file(scoreboard_path, &scoreboard) == 0);
         ASSERT(read_entire_file(gate_path, &gate) == 0);
+        ASSERT(read_entire_file(evidence_path, &evidence) == 0);
 
         ASSERT(strstr(scoreboard, "ZCL_NODE_UNIT=\"${ZCL_NODE_UNIT:-zclassic23}\"")
                != NULL);
@@ -5257,6 +5279,12 @@ static int t_mvp_reporters_resolve_live_service_rpc_contract(void)
         ASSERT(strstr(scoreboard,
                       "clean 168h evidence is not established yet")
                != NULL);
+        ASSERT(strstr(scoreboard, "rpc_live operatorsnapshot") != NULL);
+        ASSERT(strstr(scoreboard, "LIVE_SECURITY_OK") != NULL);
+        ASSERT(strstr(scoreboard,
+                      "[ \"$LIVE_SECURITY_OK\" != \"1\" ]") != NULL);
+        ASSERT(strstr(scoreboard,
+                      "security posture review-free + soak-evidence") != NULL);
 
         ASSERT(strstr(gate, "ZCL_NODE_UNIT=\"${ZCL_NODE_UNIT:-$ZCL_SOAK_UNIT}\"")
                != NULL);
@@ -5284,10 +5312,29 @@ static int t_mvp_reporters_resolve_live_service_rpc_contract(void)
         ASSERT(strstr(gate, "z_gettotalbalance did not answer") != NULL);
         ASSERT(strstr(gate, "\"datadir\":\"%s\"") != NULL);
         ASSERT(strstr(gate, "\"rpcport\":%s") != NULL);
+        ASSERT(strstr(gate, "SECURITY_SNAPSHOT=\"$(rpc operatorsnapshot)\"")
+               != NULL);
+        ASSERT(strstr(gate, "SECURITY_POSTURE_OK") != NULL);
+        ASSERT(strstr(gate,
+                      "elif [[ \"$SECURITY_POSTURE_OK\" != 1 ]]") != NULL);
+
+        ASSERT(strstr(evidence, "ZCL_SOAK_SECURITY_CMD") != NULL);
+        ASSERT(strstr(evidence, "security_review_required") != NULL);
+        ASSERT(strstr(evidence, "window_eligible") != NULL);
+        ASSERT(strstr(evidence,
+                      "security_review_required_in_%d_of_%d_samples")
+               != NULL);
+        ASSERT(strstr(evidence,
+                      "security_posture_unknown_in_%d_of_%d_samples")
+               != NULL);
+        ASSERT(strstr(evidence,
+                      "security_posture_gap_in_%d_of_%d_samples")
+               != NULL);
         PASS();
     } _test_next:;
     free(scoreboard);
     free(gate);
+    free(evidence);
     return failures;
 }
 

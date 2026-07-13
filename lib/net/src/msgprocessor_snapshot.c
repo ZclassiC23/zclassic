@@ -25,6 +25,7 @@
 #include "platform/time_compat.h"
 #include "msgprocessor_internal.h"
 
+#include "config/boot_snapshot_offer.h"
 #include "net/addrman.h"
 #include "net/download.h"
 #include "net/fast_sync.h"
@@ -517,6 +518,11 @@ static bool msg_block_manifest_is_reasonable(
     return true;
 }
 
+static bool msg_snapshot_serving_allowed(void)
+{
+    return boot_snapshot_offer_state_is_sovereign(NULL, 0);
+}
+
 /* Thread-safe accessor: update cached snapshot offer from boot.c */
 void msg_processor_update_offer(const struct snapshot_offer *offer)
 {
@@ -533,6 +539,14 @@ bool msg_processor_get_offer(struct snapshot_offer *offer)
 {
     if (!offer)
         LOG_FAIL("net", "offer output pointer is NULL");
+
+    /* The cache is not authority.  A node can become assisted after an offer
+     * was prepared (for example during recovery), so re-check the complete
+     * state trust boundary before every advertisement or serving batch. */
+    if (!msg_snapshot_serving_allowed()) {
+        memset(offer, 0, sizeof(*offer));
+        return false;
+    }
 
     pthread_mutex_lock(&g_offer_mutex);
     bool ok = atomic_load(&g_cached_offer_valid);
@@ -601,6 +615,10 @@ bool msg_processor_get_manifest_header(struct sync_manifest *out)
 {
     if (!out)
         LOG_FAIL("net", "manifest output pointer is NULL");
+    if (!msg_snapshot_serving_allowed()) {
+        memset(out, 0, sizeof(*out));
+        return false;
+    }
 
     pthread_mutex_lock(&g_manifest_mutex);
     bool ok = atomic_load(&g_cached_manifest_valid);
@@ -621,6 +639,8 @@ bool msg_processor_copy_manifest_hashes(uint8_t (**out_hashes)[32],
         LOG_FAIL("net", "copy_manifest_hashes: NULL output");
     *out_hashes = NULL;
     *out_count = 0;
+    if (!msg_snapshot_serving_allowed())
+        return false;
 
     pthread_mutex_lock(&g_manifest_mutex);
     bool ok = atomic_load(&g_cached_manifest_valid)
@@ -1632,7 +1652,8 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                 printf("Peer %s: zchunkreq raw %u\n",
                        node->addr_name, chunk_index);
                 uint32_t num_chunks = atomic_load(&g_cached_manifest_num_chunks);
-                if (!atomic_load(&g_cached_manifest_valid) ||
+                if (!msg_snapshot_serving_allowed() ||
+                    !atomic_load(&g_cached_manifest_valid) ||
                     num_chunks == 0) {
                     printf("Peer %s: zchunkreq but no manifest ready\n",
                            node->addr_name);
@@ -1675,13 +1696,21 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                                                    chunk->entries[i].script_len);
                         }
 
-                        p2p_node_begin_message(node, MSG_CHUNK_DATA,
-                                               mp->params->pchMessageStart);
-                        p2p_node_write_message_data(node, cs.data, cs.size);
-                        p2p_node_end_message(node);
-                        printf("Peer %s: served zchunk %u (%u entries, %zu bytes)\n",
-                               node->addr_name, chunk_index,
-                               chunk->num_entries, cs.size);
+                        if (msg_snapshot_serving_allowed()) {
+                            p2p_node_begin_message(
+                                node, MSG_CHUNK_DATA,
+                                mp->params->pchMessageStart);
+                            p2p_node_write_message_data(node, cs.data,
+                                                        cs.size);
+                            p2p_node_end_message(node);
+                            printf("Peer %s: served zchunk %u (%u entries, "
+                                   "%zu bytes)\n", node->addr_name,
+                                   chunk_index, chunk->num_entries, cs.size);
+                        } else {
+                            printf("Peer %s: zchunk %u withheld after trust "
+                                   "state changed\n", node->addr_name,
+                                   chunk_index);
+                        }
                         stream_free(&cs);
                     } else {
                         printf("Peer %s: failed to serve zchunk %u\n",

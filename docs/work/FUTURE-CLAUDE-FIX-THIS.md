@@ -1,4 +1,9 @@
-# FUTURE-CLAUDE — FIX THIS (canonical work list, 2026-06-23 — UPDATED: node is UNWEDGED at tip (commit ab512d577); the forward-sync wedge is RESOLVED. The remaining mission is the SOVEREIGN CURE (delete the borrowed loader), NOT un-wedging. Items below that present the wedge as live are HISTORICAL until corrected.)
+# FUTURE-CLAUDE — historical 2026-06-23 work list (superseded)
+
+> **2026-07-12 correction:** canonical is wedged at H*=3,176,325 on incomplete
+> shielded anchors/nullifiers. `ab512d577` fixed only the earlier transparent
+> loader. Use `HANDOFF.md`, `FORWARD_PLAN.md`, and
+> `SOVEREIGN-NETWORK-ROADMAP.md`; the numbered narrative below is historical.
 
 Grounded in four FRESH analyses done this session (NOT recycled narrative — the
 owner purged 55 story files because recycled narratives caused ~103 re-halts).
@@ -12,15 +17,16 @@ the wedge to the moving tip), NEVER "booted without FATAL." Copy-prove on a
 
 ## 1. TL;DR (read this, then §2)
 
-1. RESOLVED (was HARD-WEDGED at `blocks=3,156,170` under the OLD torn seed). The node
-   is now UNWEDGED at the network tip (>3,156,900, climbing; `verificationprogress=1`),
+1. HISTORICAL: the older transparent wedge at `blocks=3,156,170` was repaired and the node
+   temporarily reached the network tip (>3,156,900, `verificationprogress=1`),
    fixed by commit `ab512d577` (extends the active-chain WINDOW above coins-best in
-   `config/src/boot_refold_staged.c:568`) PLUS loading a COMPLETE SHA3-verified snapshot
+   `config/src/boot_refold_staged.c:568`) PLUS loading a borrowed transparent
+   snapshot whose body SHA3 was verified
    at h=3,156,809 (`utxo-seed-3156809.snapshot`, count 1,344,918) that folds FORWARD
    and never re-touches block 3,156,171. RESTART now SELF-HEALS: it re-seeds 3,156,809
    + folds forward (~13 min). STILL BORROWED — the 3,156,809 snapshot is minted from
-   the zclassicd oracle (consensus-bound to the in-binary PoW header, UTXO content not
-   yet re-derived from genesis); the cure below remains the goal.
+   the zclassicd oracle; its height/hash matched a validated header but its state
+   contents were not consensus-bound or re-derived from genesis.
 2. Historical root (the OLD wedge): the torn seed `utxo-stopgap-3151901.snapshot`
    (count 1,344,817) was MISSING prevout `21876e8b…` that block 3,156,171 legitimately
    spends; `script_validate_log[3156171].ok=0 prevout_unresolved` capped the MIN-fold,
@@ -256,11 +262,11 @@ proof. Items already on the CRITICAL PATH are referenced, not repeated.
 
 ### P0 — halt / nudge / fork (all collapse onto the §3 cutover)
 
-> NOTE 2026-06-23: the forward-sync HARD HALT below is RESOLVED on the live node
-> (now at the network tip) by commit `ab512d577` + the COMPLETE 3,156,809 snapshot.
-> These entries are retained as the HISTORICAL root and the still-relevant
-> SOVEREIGNTY rationale (they motivate the CP-8 cutover/idempotency reasoning); the
-> node is NOT currently halted.
+> **CORRECTION 2026-07-12:** `ab512d577` resolved the specific transparent
+> prevout halt below and temporarily reached tip from the borrowed 3,156,809
+> artifact. It did not prove complete shielded state. Canonical is currently
+> held at H*=3,176,325 by incomplete anchor/nullifier history. These entries
+> remain the historical root and sovereignty rationale, not current health.
 
 - **forward-sync HARD HALT — borrowed seed incomplete (HISTORICAL, now RESOLVED).**
   See TL;DR + CP-7.

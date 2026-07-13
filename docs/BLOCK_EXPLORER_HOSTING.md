@@ -226,10 +226,13 @@ This matters because there are two ways to reach tip:
 | Bootstrap | UTXO set | Historical block bodies | Body-derived projections (tokens, tx/address history below the seed) |
 |---|---|---|---|
 | **Full sync** (P2P from genesis, or legacy `--importblockindex` of a `zclassicd` datadir) | complete | **on disk** | **complete** — explorer shows everything |
-| **Snapshot loader** (`-load-snapshot-at-own-height=<utxo-seed-H>.snapshot`) | complete @ H | **only blocks above H** (fetched P2P after seed) | **empty/partial below H** — tokens, old tx/address pages, names blank |
+| **Snapshot loader** (`-load-snapshot-at-own-height=<utxo-seed-H>.snapshot`) | assisted payload @ H; digest + chain location checked, derivation unproven | **only blocks above H** (fetched P2P after seed) | **empty/partial below H** — tokens, old tx/address pages, names blank |
 
-The snapshot carries the *UTXO set* at height H, not the bodies. So a
-snapshot-loader node reaches tip fast and is fully consensus-correct, but its
+The snapshot carries a claimed UTXO set at height H, not the bodies. Its digest
+protects the transferred bytes and its anchor matches a validated header, but
+ZClassic headers do not commit UTXO or shielded roots. An assisted loader can
+become operational quickly, but it is not sovereign or suitable for stable
+wallet spending until full-history promotion; its
 explorer will show **no ZSLP tokens, no historical tx/address lookups, no ZNAM
 names registered below H** — because those genesis transactions live in bodies
 the node skipped. Symptom: `/explorer/tokens` returns `200` but lists nothing;
@@ -238,9 +241,10 @@ the node skipped. Symptom: `/explorer/tokens` returns `200` but lists nothing;
 
 **Decide the node's role:**
 
-- **Consensus / wallet / "reach tip and stay robust" node** → snapshot loader is
-  ideal. The missing historical projections don't affect validation or your
-  wallet (the wallet rescans the chain it has + your keys).
+- **Consensus / wallet / "reach tip and stay robust" node** → prefer locally
+  self-verified full-history state. An assisted snapshot may shorten readiness,
+  but keep wallet spending, mining, and snapshot re-serving disabled until
+  sovereignty promotion proves complete state.
 - **Public canonical explorer** (e.g. a domain you publish) → it must serve the
   full history, so run it as a **full-history node**. Either let it P2P-sync
   bodies from genesis, or on a box that already has a `zclassicd` archive use the

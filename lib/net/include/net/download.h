@@ -31,6 +31,8 @@
 #define DL_REQUEST_TIMEOUT_SECS_IBD 15   /* reassign after this many seconds (during IBD) */
 #define DL_STALL_TIMEOUT_SECS     120    /* disconnect peer after this */
 #define DL_WINDOW_SIZE            512    /* blocks to request per batch */
+#define DL_MAX_TRACKED_PEERS      512    /* above connman's <=200 live peers;
+                                          * leaves churn/cache headroom */
 #define DL_PEER_AVOID_COOLDOWN_SECS 30   /* temporarily avoid a peer after a
                                           * block request timeout */
 
@@ -69,6 +71,12 @@ struct dl_peer_stats {
     bool     is_loopback;           /* K2: peer at 127.0.0.0/8 or ::1; gets
                                      * DL_MAX_IN_FLIGHT_PER_LOOPBACK window
                                      * and bypasses bandwidth-score scaling */
+    uint64_t zero_assign_generation; /* dependency generation of the most
+                                      * recent parkable zero-result attempt */
+    int64_t  zero_assign_retry_after; /* cooldown deadline; 0 means wait only
+                                       * for the relevant generation to move */
+    size_t   zero_assign_global_limit;
+    int      zero_assign_result;
 };
 
 /* Cheap operator/AI diagnostics over the current in-flight set. Sentinel
@@ -99,6 +107,10 @@ struct dl_diagnostics {
     uint64_t last_assign_peer_limit;
     uint64_t last_assign_global_limit;
     int      last_assign_result;
+
+    /* Reason-specific dependency generations for zero-result parking. */
+    uint64_t queue_generation;
+    uint64_t capacity_generation;
     uint64_t total_orphaned;    /* requests settled without a body:
                                  * disconnect-requeue + backpressure drain */
     int64_t  accounting_drift;  /* requested - received - timed_out -
@@ -130,7 +142,7 @@ struct download_manager {
     size_t               num_active;    /* current in-flight count */
 
     /* Per-peer stats */
-    struct dl_peer_stats peers[256];
+    struct dl_peer_stats peers[DL_MAX_TRACKED_PEERS];
     size_t               num_peers;
 
     /* Download window: blocks we need but haven't requested yet */
@@ -184,6 +196,8 @@ struct download_manager {
     uint64_t last_assign_peer_limit;
     uint64_t last_assign_global_limit;
     int      last_assign_result;
+    uint64_t queue_generation;
+    uint64_t capacity_generation;
 
     /* Byte throughput tracking */
     uint64_t total_bytes_received;   /* total block bytes downloaded */
@@ -258,6 +272,13 @@ size_t dl_assign_to_peer(struct download_manager *dm,
                          uint32_t peer_id,
                          struct uint256 *out_hashes,
                          size_t max_assign);
+
+/* Cheap preflight for callers that would otherwise scan the in-flight table
+ * before dl_assign_to_peer(). False means this peer already produced a
+ * parkable zero result for the current dependency generation. Different
+ * peers remain independently eligible, preserving multi-peer fetch. */
+bool dl_assignment_should_attempt(struct download_manager *dm,
+                                  uint32_t peer_id);
 
 /* K2: mark a peer as loopback so dl_assign_to_peer uses
  * DL_MAX_IN_FLIGHT_PER_LOOPBACK and bypasses bandwidth-score scaling.

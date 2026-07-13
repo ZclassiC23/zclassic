@@ -55,6 +55,8 @@ struct snapsync_apply_chunk_ctx {
 struct snapsync_finalize_ctx {
     struct snapshot_sync_service *svc;
     bool ok;
+    bool activation_attempted;
+    struct zcl_result activation_result;
 };
 
 /* ── Lock helpers (defined in snapshot_sync_service.c) ─────────── */

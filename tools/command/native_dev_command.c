@@ -4,13 +4,9 @@
  * (docs/NATIVE_COMMAND_INTERFACE.md §7). These bind the registry catalog's dev
  * subtree to the checkout-local read-only producers: App manifest describe /
  * plan / simulate, source-change classification, the Core/App boundary law,
- * the latest native cycle verdict, and dev.vcs.revert — the one-command
- * source+binary revert (vcs_revert(), lib/vcs/) that, when relink_generation
- * is requested, activates the reverted commit's bound binary generation so
- * the RUNNING node matches the reverted source. lib/vcs/ itself stays
- * git-free and process-spawn-free (the ZVCS sovereignty gate,
- * check-vcs-no-git); the relink activator that closes the binary half lives
- * here, entirely outside lib/vcs/.
+ * the latest native cycle verdict, and dev.vcs.revert. Source-only append-only
+ * reverts remain available; generation relinking is contained until immutable
+ * source epochs and complete publication proof receipts are transactional.
  *
  * The read-only checkout producers compile into both binaries.  Executors and
  * watcher/generation lifecycle handlers live below ZCL_DEV_BUILD, so a release
@@ -484,6 +480,18 @@ static void dev_fail_with_data(struct zcl_command_reply *reply, int rc,
 void zcl_native_handle_dev_change_apply(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
+    (void)request;
+    zcl_command_reply_fail(
+        reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
+        "RUNTIME_PUBLICATION_CONTAINED", "authority", false, false,
+        "development generation publication is contained until immutable "
+        "source epochs, complete proof receipts, resident CAS, and rollback "
+        "are one durable transaction",
+        "use dev.change.plan and the verify-only watcher to produce candidate evidence");
+    return;
+
+    /* Future transaction body. The unconditional authority gate above reaches
+     * no build, loader, service-control, or generation-activation side effect. */
     const char *files[ZCL_DEVLOOP_MAX_FILES];
     size_t count = 0;
     char why[160];
@@ -537,14 +545,24 @@ static bool dev_mkdirs(const char *path)
     return mkdir(copy, 0700) == 0 || errno == EEXIST;
 }
 
-static bool dev_watch_paths(char lock[PATH_MAX], char log[PATH_MAX])
+static bool dev_watch_paths(const char *repo_root,
+                            char lock[PATH_MAX], char log[PATH_MAX])
+{
+    char dir[PATH_MAX];
+    if (!repo_root || !repo_root[0] || !dev_state_dir(dir) ||
+        !zcl_devloop_watch_lock_path(repo_root, lock, PATH_MAX))
+        return false;
+    int on = snprintf(log, PATH_MAX, "%s/native-watch.log", dir);
+    return on > 0 && on < PATH_MAX;
+}
+
+static bool dev_legacy_watch_lock_path(char lock[PATH_MAX])
 {
     char dir[PATH_MAX];
     if (!dev_state_dir(dir))
         return false;
-    int ln = snprintf(lock, PATH_MAX, "%s/native-watch.lock", dir);
-    int on = snprintf(log, PATH_MAX, "%s/native-watch.log", dir);
-    return ln > 0 && ln < PATH_MAX && on > 0 && on < PATH_MAX;
+    int n = snprintf(lock, PATH_MAX, "%s/native-watch.lock", dir);
+    return n > 0 && n < PATH_MAX;
 }
 
 static bool dev_pid_is_watcher(pid_t pid)
@@ -574,14 +592,41 @@ static bool dev_pid_is_watcher(pid_t pid)
     return base && strcmp(base + 1, "zclassic23-dev") == 0;
 }
 
-/* A busy advisory lock is the ownership proof; the PID is diagnostic and is
- * additionally executable-checked before stop ever sends a signal. */
-static bool dev_watcher_active(pid_t *pid_out)
+static bool dev_pid_cwd_matches_root(pid_t pid, const char *repo_root)
 {
-    char lock[PATH_MAX], log[PATH_MAX], buf[64] = {0};
-    if (pid_out)
-        *pid_out = 0;
-    if (!dev_watch_paths(lock, log))
+    if (pid <= 1 || !repo_root || !repo_root[0])
+        return false;
+    char proc[64], cwd[PATH_MAX], root[PATH_MAX];
+    int n = snprintf(proc, sizeof(proc), "/proc/%ld/cwd", (long)pid);
+    if (n <= 0 || n >= (int)sizeof(proc) || !realpath(repo_root, root))
+        return false;
+    ssize_t got = readlink(proc, cwd, sizeof(cwd) - 1);
+    if (got <= 0 || (size_t)got >= sizeof(cwd))
+        return false;
+    cwd[got] = 0;
+    return strcmp(cwd, root) == 0;
+}
+
+struct dev_watcher_info {
+    pid_t pid;
+    enum zcl_devloop_publish_mode publish_mode;
+    char mode_name[16];
+};
+
+/* A busy advisory lock is the ownership proof; the PID is diagnostic and is
+ * executable-checked only before stop ever sends a signal.  This deliberately
+ * recognizes both the native watcher and the shell compatibility watcher so
+ * either owner excludes the other.  New lock records bind the watcher mode
+ * (`pid verify|auto`).  A pid-only record is an already-running
+ * pre-containment watcher, whose historical behavior was auto publication, so
+ * it is reported truthfully as legacy-auto. */
+static bool dev_watcher_active_at(const char *lock,
+                                  struct dev_watcher_info *info_out)
+{
+    char buf[64] = {0};
+    if (info_out)
+        memset(info_out, 0, sizeof(*info_out));
+    if (!lock || !lock[0])
         return false;
     int fd = open(lock, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
     if (fd < 0)
@@ -601,13 +646,64 @@ static bool dev_watcher_active(pid_t *pid_out)
         return false;
     char *end = NULL;
     long value = strtol(buf, &end, 10);
-    if (!end || (*end != '\n' && *end != 0) || value <= 1)
+    if (!end || value <= 1)
         return false;
+    while (*end == ' ' || *end == '\t')
+        end++;
+    enum zcl_devloop_publish_mode publish_mode = ZCL_DEVLOOP_PUBLISH_APPLY;
+    const char *mode_name = "legacy-auto";
+    if (*end != '\n' && *end != 0) {
+        char *mode_end = end;
+        while (*mode_end && *mode_end != '\n' && *mode_end != ' ' &&
+               *mode_end != '\t')
+            mode_end++;
+        size_t mode_len = (size_t)(mode_end - end);
+        if (mode_len == strlen("verify") &&
+            memcmp(end, "verify", mode_len) == 0) {
+            publish_mode = ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY;
+            mode_name = "verify";
+        } else if (mode_len == strlen("auto") &&
+                   memcmp(end, "auto", mode_len) == 0) {
+            publish_mode = ZCL_DEVLOOP_PUBLISH_APPLY;
+            mode_name = "auto";
+        } else {
+            return false;
+        }
+        while (*mode_end == ' ' || *mode_end == '\t')
+            mode_end++;
+        if (*mode_end != '\n' && *mode_end != 0)
+            return false;
+    }
     pid_t pid = (pid_t)value;
-    if (!dev_pid_is_watcher(pid))
+    if (info_out) {
+        info_out->pid = pid;
+        info_out->publish_mode = publish_mode;
+        (void)snprintf(info_out->mode_name, sizeof(info_out->mode_name), "%s",
+                       mode_name);
+    }
+    return true;
+}
+
+static bool dev_watcher_active(const char *repo_root,
+                               struct dev_watcher_info *info_out)
+{
+    char lock[PATH_MAX], log[PATH_MAX], legacy[PATH_MAX];
+    bool have_worktree_lock = dev_watch_paths(repo_root, lock, log);
+    if (have_worktree_lock && dev_watcher_active_at(lock, info_out))
+        return true;
+    /* Transitional compatibility for a watcher started by a pre-singleflight
+     * binary.  Scope the legacy HOME-global lease back to that process's
+     * actual cwd so it cannot serialize unrelated worktrees.  New watchers
+     * never take the legacy lock. */
+    struct dev_watcher_info old = {0};
+    if (!dev_legacy_watch_lock_path(legacy) ||
+        (have_worktree_lock && strcmp(legacy, lock) == 0) ||
+        !dev_watcher_active_at(legacy, &old) ||
+        !dev_pid_is_watcher(old.pid) ||
+        !dev_pid_cwd_matches_root(old.pid, repo_root))
         return false;
-    if (pid_out)
-        *pid_out = pid;
+    if (info_out)
+        *info_out = old;
     return true;
 }
 
@@ -640,13 +736,40 @@ static bool dev_read_cycle(struct json_value *out)
     return complete && n > 0 && json_read(out, body, n) && out->type == JSON_OBJ;
 }
 
-static void dev_emit_loop_status(struct zcl_command_reply *reply)
+/* `dev.loop.wait` declares zcl.dev_cycle.v1, so return that cycle directly.
+ * Loop identity belongs to `dev.loop.status`; nesting the cycle in a
+ * zcl.dev_loop_status.v1 document made callers violate the declared schema
+ * and spend an extra parse step to reach the verdict.  The file-generation
+ * epoch is appended so the returned document can feed the next wait without
+ * another status round trip. */
+static bool dev_emit_cycle_verdict(struct zcl_command_reply *reply,
+                                   int64_t epoch)
 {
-    pid_t pid = 0;
-    bool active = dev_watcher_active(&pid);
+    struct json_value cycle;
+    if (!dev_read_cycle(&cycle))
+        return false;
+    json_free(&reply->data);
+    json_init(&reply->data);
+    json_copy(&reply->data, &cycle);
+    json_free(&cycle);
+    if (!json_get(&reply->data, "epoch"))
+        (void)json_push_kv_int(&reply->data, "epoch", epoch);
+    return true;
+}
+
+static void dev_emit_loop_status(const char *repo_root,
+                                 struct zcl_command_reply *reply)
+{
+    struct dev_watcher_info info = {0};
+    bool active = dev_watcher_active(repo_root, &info);
     (void)json_push_kv_str(&reply->data, "schema", "zcl.dev_loop_status.v1");
     (void)json_push_kv_bool(&reply->data, "active", active);
-    (void)json_push_kv_int(&reply->data, "watcher_id", (int64_t)pid);
+    (void)json_push_kv_int(&reply->data, "watcher_id", (int64_t)info.pid);
+    (void)json_push_kv_str(&reply->data, "mode",
+                           active ? info.mode_name : "");
+    (void)json_push_kv_bool(
+        &reply->data, "runtime_publication",
+        active && zcl_devloop_publish_mode_applies(info.publish_mode));
     (void)json_push_kv_int(&reply->data, "epoch", dev_cycle_epoch());
     struct json_value cycle;
     if (dev_read_cycle(&cycle)) {
@@ -655,13 +778,47 @@ static void dev_emit_loop_status(struct zcl_command_reply *reply)
     }
 }
 
+static bool dev_requested_watch_mode(const struct json_value *input,
+                                     enum zcl_devloop_publish_mode *mode_out,
+                                     const char **name_out)
+{
+    const struct json_value *mode_v = json_get(input, "mode");
+    const char *mode = mode_v && mode_v->type == JSON_STR
+        ? json_get_str(mode_v) : "verify";
+    if (strcmp(mode, "verify") == 0) {
+        *mode_out = ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY;
+        *name_out = "verify";
+        return true;
+    }
+    if (strcmp(mode, "auto") == 0 || strcmp(mode, "apply") == 0) {
+        *mode_out = ZCL_DEVLOOP_PUBLISH_APPLY;
+        *name_out = "auto";
+        return true;
+    }
+    return false;
+}
+
 void zcl_native_handle_dev_loop_ensure(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
-    pid_t existing = 0;
-    if (dev_watcher_active(&existing)) {
-        dev_emit_loop_status(reply);
-        (void)json_push_kv_bool(&reply->data, "created", false);
+    enum zcl_devloop_publish_mode requested_mode;
+    const char *requested_mode_name = NULL;
+    if (!dev_requested_watch_mode(request->input, &requested_mode,
+                                  &requested_mode_name)) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "INVALID_WATCH_MODE",
+                               "normalize", false, false,
+                               "mode must be verify",
+                               "mode");
+        return;
+    }
+    if (zcl_devloop_publish_mode_applies(requested_mode)) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
+            "RUNTIME_PUBLICATION_CONTAINED", "authority", false, false,
+            "apply/auto watchers are contained until immutable source epochs, "
+            "complete proof receipts, resident CAS, and rollback are one durable transaction",
+            "start the watcher with mode=verify");
         return;
     }
     const struct json_value *root_v = json_get(request->input, "root");
@@ -670,11 +827,31 @@ void zcl_native_handle_dev_loop_ensure(
     char root[PATH_MAX], makefile[PATH_MAX], lock[PATH_MAX], log[PATH_MAX];
     if (!requested || !realpath(requested, root) ||
         snprintf(makefile, sizeof(makefile), "%s/Makefile", root) <= 0 ||
-        access(makefile, R_OK) != 0 || !dev_watch_paths(lock, log)) {
+        access(makefile, R_OK) != 0 || !dev_watch_paths(root, lock, log)) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INVALID, "INVALID_WATCH_ROOT",
                                "confinement", false, false,
                                "watch root must be a zclassic23 checkout", "root");
+        return;
+    }
+    struct dev_watcher_info existing = {0};
+    if (dev_watcher_active(root, &existing)) {
+        if (existing.publish_mode != requested_mode) {
+            char evidence[96];
+            (void)snprintf(evidence, sizeof(evidence),
+                           "running_mode=%s requested_mode=%s watcher_id=%ld",
+                           existing.mode_name, requested_mode_name,
+                           (long)existing.pid);
+            dev_emit_loop_status(root, reply);
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
+                "WATCHER_MODE_MISMATCH", "ownership", false, false,
+                "existing watcher must be stopped before changing publication mode",
+                evidence);
+            return;
+        }
+        dev_emit_loop_status(root, reply);
+        (void)json_push_kv_bool(&reply->data, "created", false);
         return;
     }
     char state_dir[PATH_MAX];
@@ -706,20 +883,21 @@ void zcl_native_handle_dev_loop_ensure(
             (void)dup2(log_fd, STDERR_FILENO);
             close(log_fd);
         }
-        int rc = zcl_devloop_watch(root);
+        int rc = zcl_devloop_watch_mode(root, requested_mode);
         _exit(rc == 0 ? 0 : 1);
     }
-    pid_t started = 0;
-    for (int i = 0; i < 100 && !dev_watcher_active(&started); i++)
+    struct dev_watcher_info started = {0};
+    for (int i = 0; i < 100 && !dev_watcher_active(root, &started); i++)
         usleep(20000);
-    if (started <= 1) {
+    if (started.pid <= 1 || started.publish_mode != requested_mode ||
+        !dev_pid_is_watcher(started.pid)) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_FAILED, "WATCH_START_FAILED",
                                "start", true, false,
                                "watcher did not acquire its singleton lock", log);
         return;
     }
-    dev_emit_loop_status(reply);
+    dev_emit_loop_status(root, reply);
     (void)json_push_kv_bool(&reply->data, "created", true);
     (void)json_push_kv_str(&reply->data, "root", root);
 }
@@ -727,8 +905,7 @@ void zcl_native_handle_dev_loop_ensure(
 void zcl_native_handle_dev_loop_status(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
-    (void)request;
-    dev_emit_loop_status(reply);
+    dev_emit_loop_status(dev_source_root(request), reply);
 }
 
 static bool dev_input_int(const struct json_value *input, const char *key,
@@ -762,10 +939,8 @@ void zcl_native_handle_dev_loop_wait(
     int64_t deadline_us = platform_time_monotonic_us() + timeout_ms * 1000;
     for (;;) {
         int64_t epoch = dev_cycle_epoch();
-        if (epoch > after) {
-            dev_emit_loop_status(reply);
+        if (epoch > after && dev_emit_cycle_verdict(reply, epoch))
             return;
-        }
         if (platform_time_monotonic_us() >= deadline_us)
             break;
         usleep(25000);
@@ -798,37 +973,38 @@ void zcl_native_handle_dev_loop_stop(
                                "watcher_id");
         return;
     }
-    pid_t active = 0;
-    if (!dev_watcher_active(&active)) {
-        dev_emit_loop_status(reply);
+    struct dev_watcher_info active = {0};
+    const char *repo_root = dev_source_root(request);
+    if (!dev_watcher_active(repo_root, &active)) {
+        dev_emit_loop_status(repo_root, reply);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
                                ZCL_COMMAND_EXIT_BLOCKED, "WATCHER_NOT_RUNNING",
                                "stop", false, false,
                                "no native watcher owns the singleton lock", "");
         return;
     }
-    if ((int64_t)active != requested || !dev_pid_is_watcher(active)) {
+    if ((int64_t)active.pid != requested || !dev_pid_is_watcher(active.pid)) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
                                ZCL_COMMAND_EXIT_BLOCKED, "WATCHER_ID_MISMATCH",
                                "confinement", false, false,
                                "refusing to signal a different process", "watcher_id");
         return;
     }
-    if (kill(active, SIGTERM) != 0) {
+    if (kill(active.pid, SIGTERM) != 0) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_FAILED, "WATCHER_STOP_FAILED",
                                "stop", true, false,
                                "SIGTERM could not be delivered", strerror(errno));
         return;
     }
-    pid_t still = 0;
+    struct dev_watcher_info still = {0};
     for (int i = 0; i < 250; i++) {
-        if (!dev_watcher_active(&still))
+        if (!dev_watcher_active(repo_root, &still))
             break;
         usleep(20000);
     }
-    dev_emit_loop_status(reply);
-    if (dev_watcher_active(&still))
+    dev_emit_loop_status(repo_root, reply);
+    if (dev_watcher_active(repo_root, &still))
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_FAILED, "WATCHER_STOP_TIMEOUT",
                                "stop", true, false,
@@ -1104,8 +1280,9 @@ void zcl_native_handle_dev_diagnose_latest(
 #endif /* ZCL_DEV_BUILD */
 
 /* ── dev.vcs.revert — relink activator seam ──────────────────────────
- * Two activators are wired behind the ONE seam every caller goes through,
- * dev_vcs_revert_relink_ops():
+ * These activators are retained for the future transactional implementation,
+ * but deliberately have no caller: relink_generation is refused before VCS
+ * mutation below.
  *
  *   - dev_vcs_shell_fallback_activate() (wave 3.3, the long-standing
  *     default): rebuilds the binary from the just-reverted source tree and
@@ -1129,11 +1306,50 @@ void zcl_native_handle_dev_diagnose_latest(
  *     then reports VCS_EPARTIAL exactly per vcs.h's documented contract,
  *     rather than the shell fallback's blunter "always rebuild" guess.
  *
- * dev_vcs_revert_relink_ops() picks between them at call time via
+ * The dormant selector picks between them at call time via
  * dev_activation_native_enabled() (the same runtime env switch
  * devloop_cycle.c's transactional-reload site uses) — default OFF, so
  * today's shell-fallback behavior is unchanged unless the dev lane opts in. */
 #ifdef ZCL_DEV_BUILD
+static bool dev_capture_source_identity(const char *root, char out[65])
+{
+    char tool[PATH_MAX];
+    int n = snprintf(tool, sizeof(tool), "%s/tools/dev/source-identity.sh",
+                     root);
+    if (n <= 0 || (size_t)n >= sizeof(tool))
+        return false;
+    const char *argv[] = { tool, "capture", NULL };
+    struct zcl_devloop_process_result result = {0};
+    if (!zcl_devloop_process_run(root, argv, 30000, &result) ||
+        result.exit_code != 0 || result.timed_out || result.term_signal != 0 ||
+        result.output_truncated)
+        return false;
+    size_t len = result.output_len;
+    while (len > 0 && (result.output[len - 1] == '\n' ||
+                       result.output[len - 1] == '\r'))
+        len--;
+    if (len != 64 || strspn(result.output, "0123456789abcdefABCDEF") < len)
+        return false;
+    memcpy(out, result.output, len);
+    out[len] = 0;
+    return true;
+}
+
+static bool dev_verify_source_identity(const char *root,
+                                       const char identity[65])
+{
+    char tool[PATH_MAX];
+    int n = snprintf(tool, sizeof(tool), "%s/tools/dev/source-identity.sh",
+                     root);
+    if (n <= 0 || (size_t)n >= sizeof(tool))
+        return false;
+    const char *argv[] = { tool, "verify", identity, NULL };
+    struct zcl_devloop_process_result result = {0};
+    return zcl_devloop_process_run(root, argv, 30000, &result) &&
+           result.exit_code == 0 && !result.timed_out &&
+           result.term_signal == 0;
+}
+
 static bool dev_vcs_shell_fallback_activate(const uint8_t gen_sha256[32],
                                             void *ctx)
 {
@@ -1144,8 +1360,16 @@ static bool dev_vcs_shell_fallback_activate(const uint8_t gen_sha256[32],
     const char *root = getenv("ZCL_DEV_SOURCE_ROOT");
     if (!root || !root[0])
         root = ".";
+    char identity[65], source_arg[96];
+    if (!dev_capture_source_identity(root, identity))
+        return false;
+    int n = snprintf(source_arg, sizeof(source_arg), "ZCL_DEV_SOURCE_ID=%s",
+                     identity);
+    if (n <= 0 || (size_t)n >= sizeof(source_arg))
+        return false;
     const char *argv[] = {
-        "make", "--no-print-directory", "agent-deploy-fast", NULL
+        "make", "--no-print-directory", "agent-deploy-fast", source_arg,
+        NULL
     };
     struct zcl_devloop_process_result result;
     if (!zcl_devloop_process_run(root, argv, 900000, &result))
@@ -1169,15 +1393,22 @@ static bool dev_vcs_native_activate(const uint8_t gen_sha256[32], void *ctx)
     struct dev_activation_cycle_request creq;
     if (!dev_activation_request_from_cycle(root, "", &creq))
         return false;
+    char identity[65];
+    if (!dev_capture_source_identity(root, identity))
+        return false;
+    creq.req.source_identity = identity;
     struct dev_activation_ops ops;
     dev_activation_default_ops(&creq.req, &ops);
     struct dev_activation_result result = {0};
+    if (!dev_verify_source_identity(root, identity))
+        return false;
     int rc = dev_activation_activate_generation(gen_sha256, &creq.req, &ops,
                                                 &result);
     return rc == DEV_ACTIVATION_OK;
 }
 
-static struct vcs_revert_relink_ops dev_vcs_revert_relink_ops(void)
+static __attribute__((unused)) struct vcs_revert_relink_ops
+dev_vcs_revert_relink_ops(void)
 {
     if (dev_activation_native_enabled())
         return (struct vcs_revert_relink_ops){
@@ -1215,6 +1446,16 @@ void zcl_native_handle_dev_vcs_revert(
     const char *to_hex = json_get_str(json_get(request->input, "to"));
     bool relink_generation =
         json_get_bool(json_get(request->input, "relink_generation"));
+    if (relink_generation) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
+            "RUNTIME_PUBLICATION_CONTAINED", "authority", false, false,
+            "source revert with generation relinking is contained until "
+            "immutable source epochs, proof receipts, resident CAS, and "
+            "rollback are one durable transaction",
+            "retry with relink_generation=false to create only the append-only source revert");
+        return;
+    }
 
     uint8_t target[32];
     if (!to_hex || strlen(to_hex) != 64 || !IsHex(to_hex) ||
@@ -1241,10 +1482,8 @@ void zcl_native_handle_dev_vcs_revert(
         return;
     }
 
-    struct vcs_revert_relink_ops ops = dev_vcs_revert_relink_ops();
     uint8_t new_commit[32] = {0};
-    int rc = vcs_revert(r, target, relink_generation ? &ops : NULL,
-                        new_commit);
+    int rc = vcs_revert(r, target, NULL, new_commit);
     vcs_close(r);
 
     /* Only VCS_OK / VCS_EPARTIAL actually write out_new_commit (vcs_revert

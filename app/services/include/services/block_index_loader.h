@@ -121,8 +121,8 @@ void block_index_forward_pass(struct block_index **sorted, size_t count);
  *   1. block_index_projection_catch_up(bip) — drain the event log.
  *   2. block_index_projection_iterate — fold every disk_block_index into
  *      ms->map_block_index via chainstate_insert_block_index (fields per
- *      block_index_db.c, OMITTING the +1703 file-0 fixup since the
- *      projection's nDataPos is this node's own body_persist position).
+ *      block_index_db.c. Block-file payload positions are copied exactly;
+ *      the projection records this node's own positions in the same format).
  *   3. Link pprev via the carried hashPrev.
  *   4. Forward pass: recompute nChainWork, nChainTx, skip links, branch
  *      ids, failed-child propagation (mirrors load_block_index post-load).

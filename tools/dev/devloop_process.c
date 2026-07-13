@@ -21,12 +21,14 @@ static void capture_tail(struct zcl_devloop_process_result *out,
 {
     const size_t cap = sizeof(out->output) - 1;
     if (len >= cap) {
+        out->output_truncated = true;
         memcpy(out->output, data + len - cap, cap);
         out->output_len = cap;
     } else {
         size_t overflow = out->output_len + len > cap
             ? out->output_len + len - cap : 0;
         if (overflow > 0) {
+            out->output_truncated = true;
             memmove(out->output, out->output + overflow,
                     out->output_len - overflow);
             out->output_len -= overflow;

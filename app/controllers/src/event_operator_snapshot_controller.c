@@ -229,6 +229,29 @@ static void operator_push_lane_safety_fields(struct json_value *summary)
     json_free(&holder);
 }
 
+static void operator_push_security_posture(
+    struct json_value *parent, const struct operator_capture *capture)
+{
+    struct json_value posture = {0};
+
+    json_set_object(&posture);
+    json_push_kv_str(&posture, "schema", "zcl.security_posture_gate.v1");
+    json_push_kv_int(&posture, "schema_version", 1);
+    json_push_kv_str(&posture, "status",
+                     capture->security_posture_status[0]
+                         ? capture->security_posture_status : "unknown");
+    json_push_kv_bool(&posture, "review_required",
+                      capture->security_review_required);
+    json_push_kv_bool(&posture, "public_serving_allowed",
+                      !capture->security_review_required);
+    json_push_kv_str(&posture, "next_action",
+                     capture->security_posture_next_action[0]
+                         ? capture->security_posture_next_action
+                         : "inspect security posture");
+    json_push_kv(parent, "security_posture", &posture);
+    json_free(&posture);
+}
+
 static void operator_build_summary(struct json_value *summary,
                                    const struct operator_capture *capture,
                                    const struct operator_verdict *verdict)
@@ -270,6 +293,13 @@ static void operator_build_summary(struct json_value *summary,
     json_push_kv_bool(summary, "serving", verdict->serving);
     json_push_kv_bool(summary, "operator_needed",
                       verdict->operator_needed);
+    json_push_kv_bool(summary, "security_review_required",
+                      capture->security_review_required);
+    json_push_kv_bool(summary, "security_posture_ok",
+                      !capture->security_review_required);
+    json_push_kv_str(summary, "security_posture_status",
+                     capture->security_posture_status[0]
+                         ? capture->security_posture_status : "unknown");
     json_push_kv_str(summary, "primary_blocker", verdict->primary);
     json_push_kv_str(summary, "blocking_reason", verdict->primary);
     json_push_kv_str(summary, "next_action", verdict->next_action);
@@ -415,9 +445,15 @@ static void operator_build_snapshot(struct json_value *result,
                      (int64_t)capture->sequence);
     json_push_kv_str(result, "status", verdict.status);
     json_push_kv_bool(result, "healthy", verdict.healthy);
+    json_push_kv_bool(result, "serving", verdict.serving);
     json_push_kv_bool(result, "verdict_complete", verdict.complete);
+    json_push_kv_bool(result, "security_review_required",
+                      capture->security_review_required);
+    json_push_kv_bool(result, "security_posture_ok",
+                      !capture->security_review_required);
     json_push_kv_str(result, "primary_blocker", verdict.primary);
     json_push_kv_str(result, "next_action", verdict.next_action);
+    operator_push_security_posture(result, capture);
 
     struct json_value capture_json = {0};
     json_set_object(&capture_json);
@@ -603,6 +639,10 @@ static void operator_build_snapshot(struct json_value *result,
     operator_push_invariant(
         &invariants, "blocker_counts", "pass",
         "per-class counts are derived from one locked blocker entry copy");
+    operator_push_invariant(
+        &invariants, "security_posture",
+        capture->security_review_required ? "fail" : "pass",
+        "healthy and serving require a review-free security posture");
     const char *peer_direction_status =
         !capture->peers.direction_known ? "unknown"
         : capture->peers.inbound_count + capture->peers.outbound_count ==

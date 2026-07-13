@@ -52,8 +52,9 @@ void mmb_hash_leaf(const struct mmb_leaf *leaf, uint8_t out[32])
      *          nBits_LE || sapling_root || chain_work || utxo_root)
      * Total preimage: 1 + 140 = 141 bytes. utxo_root is folded LAST so the
      * absorb order matches the documented field layout and the round-trip
-     * binding test (a height-H boundary leaf's utxo_root == the committed
-     * coins_kv set at H) checks the exact bytes that go into the leaf hash. */
+     * sensitivity test checks that a height-H boundary leaf's auxiliary
+     * utxo_root affects the exact bytes hashed. This is not a ZClassic-header
+     * or PoW commitment to the UTXO contents. */
     uint8_t buf[1 + MMB_LEAF_PREIMAGE_SIZE];
     buf[0] = MMB_TAG_LEAF;
     size_t pos = 1;

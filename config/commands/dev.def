@@ -163,7 +163,7 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_DEV_COMMAND(
     "dev.change.apply", "dev.change", "dev.change.cycle",
-    "Run one classify, proof, build, and publication transaction",
+    "Contained publication entrypoint: returns RUNTIME_PUBLICATION_CONTAINED",
     "change,apply,build,hotswap,reload,rollback", "zcl.dev_change_input.v1",
     "zcl.dev_cycle.v1", "files", "", "zclassic23 dev change apply --input='{\"files\":[\"apps/social/app.def\"]}'",
     ZCL_COMMAND_EFFECT_MUTATE,
@@ -182,7 +182,7 @@ ZCL_COMMAND_BRANCH("dev.vcs", "dev", "One-command source+binary revert",
 
 ZCL_COMMAND_DEV_COMMAND(
     "dev.vcs.revert", "dev.vcs", "", "Restore the checkout to a prior ZVCS "
-    "commit, optionally relinking the running binary generation",
+    "commit; generation relinking is currently contained",
     "vcs,revert,rollback,generation,relink", "zcl.dev_vcs_revert_input.v1",
     "zcl.dev_vcs_revert.v1", "to,relink_generation", "to",
     "zclassic23 dev vcs revert --input='{\"to\":\"<64-hex commit id>\","
@@ -227,9 +227,8 @@ ZCL_COMMAND_BRANCH("dev.hotswap", "dev",
                    ZCL_COMMAND_LAYER_DEV)
 
 ZCL_COMMAND_DEV_COMMAND(
-    "dev.hotswap.apply", "dev.hotswap", "", "dlopen a native.leaves generation "
-    ".so into the running dev node and atomically re-point its command leaves "
-    "with no restart",
+    "dev.hotswap.apply", "dev.hotswap", "", "Contained hot-swap publication "
+    "entrypoint: returns RUNTIME_PUBLICATION_CONTAINED without dlopen",
     "hotswap,apply,leaves,generation,relink", "zcl.dev_hotswap_input.v1",
     "zcl.dev_hotswap.v1", "so_path,probe_leaf", "so_path",
     "zclassic23-dev dev hotswap apply --input='{\"so_path\":\"/tmp/gen.so\","
@@ -246,8 +245,8 @@ ZCL_COMMAND_DEV_COMMAND(
     "\"probe_leaf\":\"...\"}'")
 
 ZCL_COMMAND_DEV_READ(
-    "dev.hotswap.probe", "dev.hotswap", "", "Read-only precommit: stage and "
-    "self-test a native.leaves generation .so WITHOUT publishing it",
+    "dev.hotswap.probe", "dev.hotswap", "", "Contained resident probe: "
+    "returns RESIDENT_PROBE_CONTAINED without dlopen",
     "hotswap,probe,precommit,leaves,generation", "zcl.dev_hotswap_input.v1",
     "zcl.dev_hotswap.v1", "so_path,probe_leaf", "so_path",
     "zclassic23-dev dev hotswap probe --input='{\"so_path\":\"/tmp/gen.so\","
@@ -257,15 +256,16 @@ ZCL_COMMAND_DEV_READ(
     ZCL_COMMAND_CAP_HOTSWAP,
     ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_DRY_RUN,
     zcl_native_handle_dev_hotswap_probe,
-    "in-process hot-swap probe requires a dev build",
+    "resident hot-swap probing requires a dev build",
     "zclassic23-dev dev hotswap probe --input='{\"so_path\":\"...\","
     "\"probe_leaf\":\"...\"}'")
 
 ZCL_COMMAND_DEV_COMMAND(
     "dev.loop.ensure", "dev.loop", "dev.loop.watch",
-    "Idempotently ensure one persistent native watcher", "loop,ensure,watcher,inotify",
+    "Ensure one verify-only watcher; publication modes are contained",
+    "loop,ensure,watcher,inotify,verify,containment",
     "zcl.dev_loop_ensure_input.v1", "zcl.dev_loop_status.v1",
-    "root", "", "zclassic23 dev loop ensure --input='{\"root\":\".\"}'",
+    "root,mode", "", "zclassic23 dev loop ensure --input='{\"root\":\".\",\"mode\":\"verify\"}'",
     ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_DEV_MUTATION, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
@@ -275,7 +275,7 @@ ZCL_COMMAND_DEV_COMMAND(
     ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_dev_loop_ensure,
     "watcher ownership requires the dev-only executor",
-    "zclassic23-dev dev loop ensure")
+    "zclassic23-dev dev loop ensure --input='{\"mode\":\"verify\"}'")
 
 ZCL_COMMAND_DEV_READ(
     "dev.loop.status", "dev.loop", "dev.loop.heartbeat",

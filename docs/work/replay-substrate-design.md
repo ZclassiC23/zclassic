@@ -1,4 +1,8 @@
-> NOTE 2026-06-23: the forward-sync wedge this doc's Convergence note treats as live was RESOLVED by commit ab512d577 (a complete SHA3-verified snapshot at h=3,156,809 bound above the wedge; node now at tip). The from-genesis refold described here remains the sovereign cure (still-borrowed snapshot), and the D2 replay GATE below is unaffected and still valid.
+> **CORRECTION 2026-07-12:** `ab512d577` repaired the earlier transparent-loader
+> failure and temporarily reached tip from a borrowed h=3,156,809 snapshot. It
+> did not prove complete shielded state. Canonical is now held at H*=3,176,325
+> by incomplete anchor/nullifier history; the snapshot's height/hash match does
+> not authenticate its contents. The replay gate below remains valid.
 
 # Full-history replay substrate — design (2026-06-21)
 

@@ -218,9 +218,10 @@ bool boot_profile_has_onion(const struct app_context *ctx);
 
 /* FIX 1 (loader_owns_seed) — PURE seam for the daily-driver seed-clobber guard
  * at app_init_services (boot_services.c). When -load-snapshot-at-own-height is
- * set the loader at boot.c ALREADY re-seeded coins_kv from the self-verified
- * snapshot at its OWN height, forced the 8 stage cursors there, and raised the
- * tip_finalize trusted base; it is the authoritative seed for this boot. Both
+ * set the loader at boot.c ALREADY re-seeded coins_kv from the body-digest-
+ * verified assisted snapshot at its OWN height, forced the 8 stage cursors
+ * there, and raised the tip_finalize trusted base; it is the selected
+ * operational seed for this boot, not sovereign state. Both
  * fallback seeders (boot_refold_from_anchor_arm_if_torn AND
  * block_index_loader_seed_stages_from_cold_import) would CLOBBER it — dropping
  * the trusted base back to the compiled checkpoint and re-wedging forward sync.

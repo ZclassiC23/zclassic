@@ -1,4 +1,8 @@
-> **UPDATE 2026-06-23:** the coins-wedge / boot-FATAL blocker noted in the intro below is RESOLVED by commit ab512d577 (a complete snapshot bound above coins-best by extending the active-chain window); the live node now reaches the network tip (~3,156,944, snapshot still borrowed from zclassicd), so these four hazards can finally be boot-validated under live reorg. Body retained as the prior code-read analysis.
+> **CORRECTION 2026-07-12:** `ab512d577` repaired the earlier transparent
+> coins-loader failure, but the borrowed snapshot did not prove complete state.
+> Canonical is now held at H*=3,176,325 by incomplete shielded anchor/nullifier
+> history. These hazards remain valid analysis, but live validation waits for
+> the complete-state cure and copy proof.
 
 # Consensus-gated concurrency hazards (boot-validation blocked)
 
@@ -6,8 +10,8 @@ Status: **root-caused + verified by direct code reads (2026-06-03).** These are
 real cross-thread hazards in the consensus/chain-advance path, documented here
 with precise fixes. Each fix changes locking on the **live chain path** and MUST
 be boot-validated for both correctness AND absence of deadlock under live reorg
-before applying — currently **BLOCKED by the §3 coins-wedge** (a fresh boot
-FATAL-halts at the coins-integrity gate before P2P). NONE is the already-fixed
+before applying — currently **BLOCKED by the canonical shielded-history wedge**
+and the requirement to copy-prove the complete-state cure first. NONE is the already-fixed
 `phashBlock` UAF.
 
 ## 1 — bg_validation_service.c lock-free `chain_active` read (HIGHEST value — a real UAF)

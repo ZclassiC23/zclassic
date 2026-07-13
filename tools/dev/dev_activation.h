@@ -96,6 +96,12 @@ struct dev_activation_ops {
      * the expected build stamp the candidate must self-report. */
     int (*preflight)(void *ctx, const char *cand_bin, const char *build_commit);
 
+    /* Final source-epoch compare-and-swap after candidate preflight and
+     * immediately before staging publication or service stop. Optional for
+     * hermetic fake ops; the real default op fails closed without a bound
+     * request source identity. */
+    int (*source_epoch_cas)(void *ctx);
+
     /* Post-restart readiness probe for the activated generation `gen_id`.
      * `expected_commit` is the generation manifest's build_commit. */
     int (*activation_probe)(void *ctx, const char *gen_id,
@@ -115,6 +121,7 @@ struct dev_activation_request {
     const char *artifact_path;  /* prebuilt candidate binary (executable) */
     const char *build_commit;   /* recorded build stamp */
     const char *build_type;     /* "fast" | "strict" | ... (state file field) */
+    const char *source_identity;/* 64-hex complete dirty source epoch */
     const char *gen_root;       /* content-addressed generation store root */
     const char *datadir;        /* must resolve to ~/.zclassic-c23-dev */
     const char *unit;           /* must be "zcl23-dev.service" */

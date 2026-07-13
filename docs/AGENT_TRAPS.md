@@ -44,13 +44,18 @@ historical fixture passes, then deploy/restart intentionally.
   `tools/scripts/public_explorer_smoke.sh`; it checks both `/api/v1/hodl` and
   `/explorer/hodl` without `jq` and fails on "refresh", "not processed",
   "retry", or "waiting" user-visible states.
-- **`deploy-dev` does not overwrite/hot-swap one installed binary anymore.** It
-  stages a content-addressed generation below
-  `~/.local/lib/zclassic23-dev/`, preflights it while the old process serves,
-  atomically flips `current`, and verifies exact `/proc` identity plus
-  RPC/agent/MCP health. Failure quarantines the candidate and restores and
-  verifies `last-good` once. Do not bypass this with a direct copy plus
-  `systemctl restart`; that discards the rollback proof.
+- **There is currently no runtime-generation publication authority.**
+  `dev.change.apply`, `dev.hotswap.apply`, publication watcher modes,
+  `make hotswap`, `deploy-dev*`, `agent-deploy-fast`, `agent-stage-dev`, and
+  the direct deploy/hot-swap scripts all hard-refuse. Remote update/install/
+  restart variables and `lane_recover --apply` also refuse before SSH, file,
+  datadir, or service mutation. A source ID, environment switch, or direct
+  script call does not bypass containment. Use build, simulation, read-only
+  plans and verify/check watch only; resident hot-swap probing is contained.
+- **Dev recovery is plan-only during containment.** `make agent-dev-recover`
+  is read-only. `ARGS=--apply`, direct `recover-dev-lane.sh --apply`, and test
+  environment variables cannot relink an existing generation or restart the
+  service; only the isolated inherited-FD self-test reaches recovery machinery.
 - **“Non-consensus” does not automatically mean hot-swappable.** The v2 loader
   admits only exact `config/hotswap_eligible.def` entries that export a
   stateless MCP route manifest with the required ABI, capabilities, hashes,
@@ -58,36 +63,18 @@ historical fixture passes, then deploy/restart intentionally.
   services, models, storage, events, conditions, supervisors, networking,
   wallet/key/crypto state, reducers, and process ownership are
   `reload_required`. Never widen the allowlist to silence that blocker.
-- **Do not substitute a one-shot call for the persistent bridge.**
-  `make hotswap FILES=tools/mcp/controllers/app_controller.c` sends the
-  authenticated `dev_hotswap` JSON-RPC to the already-running isolated dev
-  node, so that resident process changes. By contrast, direct
-  `zclassic23-dev dev change apply --input='{"files":[...]}'` (or the legacy,
-  removed-in-W3 `mcpcall zcl_agent_hotswap`) loads the `.so` into a
-  short-lived helper and then exits. The dev-only `dev_hotswap` / native
-  `dev change apply` methods are absent from release, canonical, and soak
-  nodes. Read `zclassic23-dev dumpstate hotswap` (legacy: `zcl_state
-  subsystem=hotswap`) in the same resident process before claiming a
-  generation is active.
-- **Exit 69 is a transport signal, not a generic hot-swap failure.** The
-  watcher defaults to `tools/dev/hotswap-running-dev.sh`. Only “resident bridge
-  unavailable” returns 69 and allows `MODE=auto` to fall back to transactional
-  reload. Manifest/ABI/capability/hash/self-test/commit/probe rejection returns
-  a different status and must remain a visible failed cycle; do not hide a bad
-  generation behind a successful reload.
-- **Hot-swap success is ephemeral.** It disappears on process restart. The
-  watcher's asynchronous `fast-rebuild` converges the source-tree binary and
-  preflights an immutable `staged` generation, but it does not flip `current`
-  or turn the in-memory generation into a durable activation; the next
-  transactional process reload is still the boundary. Successful old generation
-  text deliberately remains mapped so in-flight calls can finish safely. The
-  matching artifact fd also stays pinned: closing it would let a later
-  `/proc/self/fd/N` load alias the older dynamic-loader cache entry.
+- **Do not interpret a contained hot-swap call as a transport failure.**
+  `make hotswap`, `tools/dev/hotswap-running-dev.sh`, native
+  `dev.hotswap.apply`, and legacy `zcl_agent_hotswap` refuse before `dlopen` or
+  resident RPC mutation. There is no exit-69 reload fallback and no successful
+  committed generation to inspect during containment.
+- **ZVCS revert is source-only.** `dev.vcs.revert` is available with
+  `relink_generation=false`. Passing `true` refuses before the source revert;
+  it never rebuilds, activates, or guesses a binary generation.
 - **Do not infer latency SLOs from a safe/default benchmark run.**
-  `make dev-loop-bench` skips hot-swap and process-reload activation unless the
-  operator explicitly opts in. Only the `zcl.dev_loop_bench.v1` p95 fields from
-  measured activation cases can support the ≤1 s hot-swap or ≤8 s reload
-  claims; a miss remains a miss.
+  `make dev-loop-bench` cannot opt into hot-swap or process-reload activation
+  while containment is active. Build/check timings cannot support hot-swap or
+  reload SLO claims.
 - **Do not hand-maintain `compile_commands.json`.** Run `make agent-index`.
   It derives commands from the real `DEV_OBJS` recipes, including generated
   headers and the target-specific `-Og`/hot-bucket `-O2` split, then records
@@ -120,7 +107,7 @@ historical fixture passes, then deploy/restart intentionally.
 
 ### Dead scaffolding — do NOT wire into consensus thinking it's missing
 
-- **The `xor_accumulator`-fed commitment MMR is RPC-export-only / dead.** `rpc_blockchain_maybe_commit` (`blockchain_controller.c:262`, `c.utxo_root=xor_accumulator` at `:285`) has ZERO runtime callers; the commitment-MMR root is read only by the `getcommitmentmmr`/`auditchain` export RPCs (`blockchain_controller_mmr.c`); no consensus path reads it. The real per-height UTXO binding lives in the MMB leaf (keystone `b2482a6ff`). So the Act-4a fix is to DELETE the XOR path, NOT to enforce `boundary_root` into it.
+- **The `xor_accumulator`-fed commitment MMR is RPC-export-only / dead.** `rpc_blockchain_maybe_commit` (`blockchain_controller.c:262`, `c.utxo_root=xor_accumulator` at `:285`) has ZERO runtime callers; the commitment-MMR root is read only by the `getcommitmentmmr`/`auditchain` export RPCs (`blockchain_controller_mmr.c`); no consensus path reads it. The MMB leaf's auxiliary `utxo_root` is also not a ZClassic-header commitment, so it cannot bind peer state to PoW. Delete the dead XOR path; keep snapshots assisted until local full-history promotion.
 
 ### Shipped but DEFAULT-OFF — present, not active (see also section 3 for why)
 

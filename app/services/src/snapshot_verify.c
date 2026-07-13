@@ -5,12 +5,12 @@
  * Owns the FlyClient challenge/response wire format, the FlyClient
  * proof verification gate, and the SHA3-256 finalization over staging UTXOs.
  * On SHA3 pass it hands off to snapshot_apply via
- * snapsync_stage_promote_active_internal. */
+ * snapsync_stage_promote_active_internal. Runtime activation is currently
+ * contained there until the unified canonical installer exists. */
 
 #include "net/snapshot_sync_contract.h"
 #include "services/chain_evidence_authority_service.h"
 #include "models/database.h"
-#include "models/db_txn.h"
 #include "models/mmb_leaf_store.h"
 #include "chain/mmb.h"
 #include "chain/mmr.h"                  /* MMR_COMMITMENT_INTERVAL boundary */
@@ -165,7 +165,7 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
                 /* Plain fprintf (not LOG_ERR/LOG_FAIL — those return, and we
                  * must route through snapsync_finalize_fail_internal below so
                  * staging is discarded and the FAILED event is emitted). */
-                fprintf(stderr,
+                fprintf(stderr,  // obs-ok:paired-with-checkpoint-fail-event-and-result
                         "[snapshot_sync] %s:%d %s(): anchor_root_mismatch height=%d "
                         "compiled_root=%s local_root=%s compiled_count=%llu "
                         "local_count=%llu root_ok=%d count_ok=%d\n",
@@ -193,39 +193,31 @@ static bool snapsync_finalize_write(struct node_db *ndb, void *ctx)
             .mmb_flyclient_proof_verified = fc_verified,
         };
 
-        /* Atomic activation: replace active UTXOs and update all snapshot
-         * metadata together. A crash before commit leaves active UTXOs
-         * unchanged and boot cleanup discards staging; a crash after commit
-         * leaves a complete promoted set. */
-        {
-            DB_TXN_SCOPE(txn, ndb, "snapsync.atomic_activate");
-            if (!txn)
-                LOG_FAIL("snapshot_sync", "finalize_write: failed to open db_txn for atomic activation");
+        /* The activation service owns the complete canonical transaction.
+         * Today it returns the containment result before its first mutation;
+         * keeping this handoff outside a node.db-only transaction prevents a
+         * future installer from being falsely wrapped in partial atomicity. */
+        finalize->activation_attempted = true;
+        finalize->activation_result =
+            snapsync_stage_promote_active_internal(ndb, svc, local_root,
+                                                   local_count,
+                                                   &snapshot_verified);
+        if (finalize->activation_result.ok)
+            finalize->activation_result = ZCL_ERR(
+                SNAPSYNC_ACTIVATION_CONTAINED_ERROR_CODE,
+                "peer snapshot activation cannot publish COMPLETE until "
+                "consensus_state_snapshot_install is available");
 
-            if (!snapsync_stage_promote_active_internal(ndb, svc, local_root,
-                                                       local_count,
-                                                       &snapshot_verified).ok)
-                LOG_FAIL("snapshot_sync", "finalize_write: atomic activation failed");
-
-            if (!db_txn_commit(txn))
-                LOG_FAIL("snapshot_sync", "finalize_write: db_txn_commit failed for atomic activation");
-        }
-        if (!snapsync_exit_turbo_mode_internal(svc).ok)
-            LOG_FAIL("snapshot_sync", "finalize_write: exit_turbo_mode failed after SHA3 pass");
-        snapsync_service_lock_internal();
-        svc->state = SNAPSYNC_COMPLETE;
-        snapsync_set_state(SNAPSYNC_COMPLETE, "SHA3 verified");
-        snapsync_service_unlock_internal();
-
+        /* Independent verifier-side containment: changing the apply service's
+         * return value alone can never publish COMPLETE. Removing this branch
+         * is part of the future unified-installer activation transaction. */
+        snapsync_mark_failed_internal(
+            svc, "peer snapshot activation contained: unified installer required");
         event_emitf(EV_SNAPSYNC_VERIFIED, serving_peer_id,
-                    "sha3=PASSED flyclient=%s utxos=%llu elapsed=%.1fs",
-                    fc_verified ? "PASSED" : "SKIPPED",
-                    (unsigned long long)local_count, elapsed_s);
-        event_emitf(EV_UTXO_CHECKPOINT_PASS, 0,
-                    "snapshot SHA3 PASSED count=%llu",
-                    (unsigned long long)local_count);
-        finalize->ok = true;
-        return true;
+                    "snapshot=VERIFIED activation=CONTAINED blocker=%s "
+                    "staging_preserved=true",
+                    SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID);
+        return false;
     } else {
         char exp[65], got[65];
         HexStr(svc->offered_utxo_root, 32, false, exp, sizeof(exp));
@@ -284,6 +276,8 @@ struct zcl_result snapsync_finalize(struct snapshot_sync_service *svc)
                 event_emitf(EV_SNAPSYNC_VERIFIED, 0,
                             "snapshot=FAILED reason=turbo_exit_failed path=finalize_failed_state");
         }
+        if (ctx.activation_attempted && !ctx.activation_result.ok)
+            return ctx.activation_result;
         return ZCL_ERR(-3, "finalize: write path failed");
     }
     snapsync_service_lock_internal();

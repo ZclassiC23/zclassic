@@ -183,7 +183,7 @@ auto_reindex_json() {
 }
 
 worker_lane_json() {
-    printf '{"name":"dev","role":"worker","purpose":"fresh-build development lane for frequent agent iteration","unit":"%s","datadir":"%s","rpcport":"%s","mutation_policy":"noncanonical_dev_only","canonical_guard":"never_touches_live_or_soak","status_command":"make agent-dev-status","deploy_command":"make agent-deploy-fast","stage_command":"tools/dev/deploy-dev-lane.sh --stage","legacy_stage_command":"make agent-stage-dev","recover_command":"make agent-dev-recover"}' \
+    printf '{"name":"dev","role":"worker","purpose":"fresh-build development lane for frequent agent iteration","unit":"%s","datadir":"%s","rpcport":"%s","mutation_policy":"noncanonical_dev_only","canonical_guard":"never_touches_live_or_soak","runtime_publication":false,"publication_blocker":"immutable epoch/proof/resident-CAS/rollback transaction incomplete","status_command":"make agent-dev-status","deploy_command":"contained; use verify-only dev loop","stage_command":"contained; build artifacts only","legacy_stage_command":"contained; source identity is not activation authority","recover_command":"make agent-dev-recover","recovery_plan_only":true,"recovery_apply_blocker":"runtime publication and generation relinking are contained"}' \
         "$(json_escape "$UNIT")" "$(json_escape "$DEV_DATADIR")" \
         "$(json_escape "$DEV_RPCPORT")"
 }
@@ -413,14 +413,14 @@ next_action() {
         if [ "$stale_candidate" = "true" ]; then
             printf 'make agent-clear-stale-dev-reindex'
         else
-            printf 'make agent-dev-recover (or ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY=1 for a deliberate recovery boot)'
+            printf 'make agent-dev-recover'
         fi
     elif [ "$rpc_status" = "ok" ]; then
         printf 'zclassic23-dev status'
     elif [ "$active_state" = "active" ]; then
         printf 'wait; tail -f %s' "$NODE_LOG"
     else
-        printf 'make agent-deploy-fast'
+        printf "%s" "build/bin/zclassic23-dev dev change apply --input='{\"files\":[\"<complete-dirty-set>\"]}'"
     fi
 }
 
@@ -494,7 +494,7 @@ emit_json() {
     printf '  "deploy_blocker": %s,\n' "$deploy_blocker"
     printf '  "deploy_blocker_reason": "%s",\n' \
         "$(json_escape "$deploy_blocker_reason")"
-    printf '  "explicit_recovery_env": "ZCL_DEV_ALLOW_AUTO_REINDEX_DEPLOY",\n'
+    printf '  "recovery_apply_authority": "contained; no environment override",\n'
     printf '  "agent_contract_ready_for_marker_clear": "%s",\n' \
         "$(json_escape "$agent_ready")"
     printf '  "agent_contract_marker_clear_reason": "%s",\n' \

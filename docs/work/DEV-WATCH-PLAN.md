@@ -1,5 +1,14 @@
 # Dev watch loop: fast feedback without weakening production
 
+> **Phase-0 containment (2026-07-12):** runtime generation publication is
+> disabled while the complete immutable source-epoch/proof-receipt/resident-CAS/
+> acceptance/rollback transaction is unfinished. Public watchers support only
+> `verify` and `check`. `auto`, `apply`, `hotswap`, `reload`, and `stage` refuse
+> before mutation. `dev.change.apply`, direct deploy/stage/hot-swap backends,
+> and legacy/native hot-swap apply refuse too. `dev.vcs.revert` is source-only;
+> `relink_generation=true` refuses before reverting. Publication behavior below
+> is target design unless explicitly marked verification-only.
+
 ## Outcome
 
 The C equivalent of JavaScript live reload should be a supervised **process
@@ -24,7 +33,8 @@ generation if bounded probes fail. Canonical and soak lanes are never touched.
 - `deploy/zcl23-dev.service`: isolated datadir `~/.zclassic-c23-dev` and ports
   8053/18252.
 - `make agent-stage-dev`, `make agent-deploy-fast`, and
-  `tools/dev/deploy-dev-lane.sh`: staging, dev-only restart, and basic probes.
+  `tools/dev/deploy-dev-lane.sh`: contained staging/dev activation backends;
+  each currently refuses unconditionally before publication.
 - `make agent-mcp-call-dev`, `zcl_tools_list`, and bounded candidate-local
   `zcl_self_test {"mode":"registry"}`: candidate
   and running-node introspection.
@@ -39,10 +49,7 @@ The host has `ccache`, but no `mold`, `lld`, `inotifywait`, `entr`, or
 The bounded watcher is now available:
 
 ```bash
-make dev-watch                         # auto: smallest proven safe path
-MODE=hotswap make dev-watch             # require manifest + persistent transport
-MODE=reload make dev-watch              # transactional process generation
-MODE=stage make dev-watch               # immutable generation, no restart
+make dev-watch                         # verify-only: prove, never activate
 MODE=check make dev-watch               # compile/test feedback only
 ZCL_DEV_WATCH_ONCE_FILES=lib/net/src/msg_tx.c make dev-watch-once
 make dev-watch-selftest
@@ -51,16 +58,24 @@ make dev-loop-bench
 ```
 
 `tools/dev/watch-dev-lane.sh` uses `inotifywait` when installed and otherwise
-polls a SHA-256 digest over a sorted path/mtime/size manifest. It debounces and
+polls a SHA-256 digest over a sorted path/mtime/size manifest, including the
+sealed `core/` tree. It debounces and
 coalesces editor saves, forwards only the changed paths through
 `ZCL_FAST_CHANGED_FILES_FILE` + `ZCL_FAST_CHANGED_FILES_ONLY=1`, runs the
 existing fast focused gate, classifies against `config/hotswap_eligible.def`,
-and either checks, stages, or calls the transactional reload path. A failed
-check or rebuild never invokes activation, and the watcher remains alive for
-the next save.
-Changes that arrive during a check or link suppress activation and schedule one
-coalesced follow-up from the newest tree. `--once` and injectable commands give
-the shell self-test a deterministic, node-free path.
+and runs verification only. A failed check or rebuild never invokes activation,
+and the watcher remains alive for the next save. Publication modes are
+recognized only to return a refusal. Before publication can be re-enabled,
+every request must require its requested/event
+paths to equal the complete tracked-modified/deleted plus non-ignored untracked
+Git set. Any assume-unchanged or skip-worktree bit refuses. A content identity
+over HEAD, paths, modes, file bytes, symlink targets, and deletions is captured
+before proofs and compared again immediately before resident commit, staging,
+or transactional activation. Changes arriving during any phase supersede the
+epoch and publish nothing. The self-test covers omitted Core edits, hidden
+index bits, and a same-path concurrent mutation in the final CAS window.
+`--once` and injectable commands give the shell self-test a deterministic,
+node-free path.
 
 Every attempted cycle atomically writes `zcl.dev_cycle.v1` below
 `~/.local/state/zclassic23-dev/cycles/`, refreshes `latest-cycle.json`, and
@@ -70,9 +85,10 @@ status, a failure capsule, and one executable `agent_next_action`.
 
 Controls: `ZCL_DEV_WATCH_POLL_MS`, `ZCL_DEV_WATCH_DEBOUNCE_MS`,
 `ZCL_DEV_WATCH_BACKEND=auto|poll|inotify`,
-`ZCL_DEV_WATCH_MODE=auto|hotswap|reload|stage|check`, and
-`ZCL_DEV_WATCH_INITIAL=1`. `deploy` and `off` remain compatibility aliases for
-`reload` and `check`.
+`ZCL_DEV_WATCH_MODE=verify|check`, and `ZCL_DEV_WATCH_INITIAL=1` are the public
+controls. Publication mode names remain parseable only so they can fail with
+an explicit containment reason. Test command overrides are confined to the
+hermetic `--self-test` entry point.
 
 Process activation is content-addressed and immutable under
 `~/.local/lib/zclassic23-dev/`. A nonblocking activation lock serializes flips;
@@ -81,17 +97,13 @@ old process is stopped. A failed warm probe restores and verifies last-good,
 then quarantines the rejected generation. The systemd unit executes
 `current/zclassic23-dev`, never an overwritten singleton.
 
-`auto` uses the authenticated, dev-only `dev_hotswap` RPC through
-`tools/dev/hotswap-running-dev.sh`, so a successful swap changes the resident
-systemd dev process. Exit 69 means that an older runtime does not expose the
-bridge and permits an explicit transactional reload fallback; ABI, manifest,
-probe, or generation failures remain rejected and are never hidden by a
-reload. The v2 stateless MCP pilot is all-or-zero, but REST, diagnostics,
-services, models, storage adapters, events, conditions, supervisors, and every
-stateful module remain `reload_required` until one resident
-provider/state/quiescence contract covers them.
+`auto` and `hotswap` do not call the former authenticated `dev_hotswap` RPC.
+`tools/dev/hotswap-running-dev.sh` itself refuses, and no exit code permits a
+reload fallback. Use `make hotswap-so`, loader tests, and `make hotswap-sim`
+for non-publishing validation. Resident probing is contained until a disposable
+worker and pre-load ELF policy exist.
 
-### 1. Transactional activation — implemented
+### 1. Transactional activation — machinery implemented, authority contained
 
 Harden `tools/dev/deploy-dev-lane.sh` before automatic watching:
 
@@ -122,12 +134,11 @@ following behavior:
   immediate follow-up from the newest tree.
 - Forward event paths through `ZCL_FAST_CHANGED_FILES_FILE` and
   `ZCL_FAST_CHANGED_FILES_ONLY=1` so a large dirty tree does not test everything.
-- Run focused fast CI without live probes, then `fast-rebuild` and the existing
-  isolated dev activation. Candidate MCP preflight and transactional rollback
-  remain coupled to step 1 above.
+- Run focused fast CI without live probes and record the verdict. The
+  activation branch now stops at the Phase-0 refusal.
 - Keep watching after failures and print one actionable summary.
 
-Target feedback:
+Future post-containment feedback:
 
 ```text
 [check 1.2s] [link 2.8s] [preflight pass] [restart] [ready gen=<id>]
@@ -149,8 +160,8 @@ watcher heartbeat, index freshness, mapped tests, and MCP probe outcomes.
 `make agent-index` derives `compile_commands.json` from dry-runs of the exact
 dev-object recipes, preserving generated-header prerequisites and the `-Og` /
 hot-bucket `-O2` split. clangd is optional. `make dev-loop-bench` writes a
-machine-readable percentile artifact; activation cases are skipped unless the
-operator explicitly opts in, so an SLO is never inferred from a build-only run.
+machine-readable percentile artifact; activation cases remain skipped during
+containment, so an SLO is never inferred from a build-only run.
 
 ## Required tests
 

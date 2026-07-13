@@ -15,6 +15,7 @@ struct agent_security_posture {
     bool progress_store_available;
     bool snapshot_evidence_present;
     bool trusted_state_present;
+    bool full_history_validation_complete;
     bool snapshot_full_validation_complete;
     bool snapshot_utxo_sha3_verified;
     bool snapshot_flyclient_verified;
@@ -31,6 +32,7 @@ struct agent_security_posture {
     int64_t nullifier_activation_cursor;
     char status[48];
     char bootstrap_model[64];
+    char full_history_validation_origin[32];
     char full_history_validation_state[48];
     char anchor_history_state[64];
     char nullifier_history_state[64];
@@ -39,7 +41,13 @@ struct agent_security_posture {
 
 void agent_security_posture_collect(struct agent_security_posture *out,
                                     struct node_db *ndb);
+bool agent_security_posture_allows_public_serving(
+    const struct agent_security_posture *posture);
 void agent_push_security_posture_json(struct json_value *out, const char *key,
                                       struct node_db *ndb);
+
+#ifdef ZCL_TESTING
+void agent_security_posture_test_override_review_required(int required);
+#endif
 
 #endif /* ZCL_CONTROLLERS_AGENT_SECURITY_POSTURE_H */

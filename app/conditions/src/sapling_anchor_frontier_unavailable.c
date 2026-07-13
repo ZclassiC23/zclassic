@@ -17,7 +17,9 @@
  *            frontier's own root MUST equal the block's hashFinalSaplingRoot at
  *            the checkpoint height, and the checkpoint height must sit in the
  *            safe window [activation, stall_height) — otherwise refuse.
- *   tier 1b— BORROWED-but-consensus-bound frontier from the co-located, LIVE
+ *   tier 1b— BORROWED frontier from the co-located, LIVE
+ *             zclassicd; a matching block/header locates it but does not
+ *             consensus-bind shielded state
  *            zclassicd chainstate LevelDB ($HOME/.zclassic/chainstate; same
  *            trust model as the legacy bootstrap).  Take a point-in-time copy
  *            (never touch the live dir), look up the Sapling anchor tree keyed
@@ -492,4 +494,3 @@ void register_sapling_anchor_frontier_unavailable(void)
 {
     (void)condition_register(&c_sapling_anchor_frontier_unavailable);
 }
-

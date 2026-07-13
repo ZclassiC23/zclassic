@@ -15,6 +15,9 @@
 
 static int g_lifecycle_disconnect_events;
 static char g_lifecycle_disconnect_payload[EVENT_PAYLOAD_SIZE];
+static int g_lifecycle_terminal_timeout_events;
+static int g_lifecycle_terminal_reject_events;
+static int g_lifecycle_terminal_disconnect_events;
 
 static void lifecycle_disconnect_observer(enum event_type type,
                                           uint32_t peer_id,
@@ -31,6 +34,25 @@ static void lifecycle_disconnect_observer(enum event_type type,
     if (payload && n > 0)
         memcpy(g_lifecycle_disconnect_payload, payload, n);
     g_lifecycle_disconnect_payload[n] = '\0';
+}
+
+static void lifecycle_terminal_observer(enum event_type type,
+                                        uint32_t peer_id,
+                                        const void *payload,
+                                        uint32_t payload_len,
+                                        void *ctx)
+{
+    (void)payload;
+    (void)payload_len;
+    (void)ctx;
+    if (peer_id != 7803)
+        return;
+    if (type == EV_PEER_CONNECT_TIMEOUT)
+        g_lifecycle_terminal_timeout_events++;
+    else if (type == EV_PEER_HANDSHAKE_FAILURE)
+        g_lifecycle_terminal_reject_events++;
+    else if (type == EV_TCP_DISCONNECTED)
+        g_lifecycle_terminal_disconnect_events++;
 }
 
 static void test_addr_ipv4(struct net_address *addr,
@@ -359,6 +381,101 @@ static int test_peer_lifecycle_counters(void)
         ASSERT(json_get_int(json_get(addnode, "zclassic23_handshakes")) == 1);
         ASSERT(json_get_int(json_get(addnode, "zclassic_c23_handshakes")) == 1);
         json_free(&dump);
+    } TEST_END
+    return failures;
+}
+
+static int test_peer_lifecycle_terminal_idempotency(void)
+{
+    int failures = 0;
+    TEST_CASE("peer_lifecycle: terminal outcome is once per connection")
+    {
+        struct net_address addr;
+        struct p2p_node node;
+        struct peer_lifecycle_summary s;
+        struct json_value peer;
+
+        peer_lifecycle_reset_for_test();
+        memset(&node, 0, sizeof(node));
+        test_addr_ipv4(&addr, 198, 51, 100, 78, 8033);
+        node.addr = addr;
+        node.id = 7803;
+        node.state = PEER_CONNECTING;
+        snprintf(node.addr_name, sizeof(node.addr_name),
+                 "198.51.100.78:8033");
+        event_log_init();
+        g_lifecycle_terminal_timeout_events = 0;
+        g_lifecycle_terminal_reject_events = 0;
+        g_lifecycle_terminal_disconnect_events = 0;
+        ASSERT(event_observe(EV_PEER_CONNECT_TIMEOUT,
+                             lifecycle_terminal_observer, NULL));
+        ASSERT(event_observe(EV_PEER_HANDSHAKE_FAILURE,
+                             lifecycle_terminal_observer, NULL));
+        ASSERT(event_observe(EV_TCP_DISCONNECTED,
+                             lifecycle_terminal_observer, NULL));
+
+        /* connman records the timeout first, then its cleanup sweep reports
+         * the same node disconnected. Cleanup and any duplicate timeout must
+         * not manufacture extra terminal or pre-handshake incidents. */
+        peer_lifecycle_note_connected(&node,
+                                      PEER_LIFECYCLE_SOURCE_ADDNODE);
+        peer_lifecycle_note_timeout(&node, "handshake");
+        peer_lifecycle_note_disconnected(&node, "cleanup");
+        peer_lifecycle_note_timeout(&node, "handshake-duplicate");
+        peer_lifecycle_get_summary(&s);
+        ASSERT(s.connected == 1);
+        ASSERT(s.timeout == 1);
+        ASSERT(s.rejected == 0);
+        ASSERT(s.disconnected == 0);
+        ASSERT(s.pre_handshake_disconnects == 1);
+        ASSERT(g_lifecycle_terminal_timeout_events == 1);
+        ASSERT(g_lifecycle_terminal_reject_events == 0);
+        ASSERT(g_lifecycle_terminal_disconnect_events == 0);
+
+        json_init(&peer);
+        ASSERT(peer_lifecycle_peer_json(&node, &peer));
+        ASSERT(json_get_int(json_get(&peer, "timeout")) == 1);
+        ASSERT(json_get_int(json_get(&peer, "disconnected")) == 0);
+        ASSERT(json_get_int(json_get(&peer,
+                                     "pre_handshake_disconnects")) == 1);
+        ASSERT(strcmp(json_get_str(json_get(&peer, "last_reason")),
+                      "handshake") == 0);
+        json_free(&peer);
+
+        /* A new connected generation re-arms exactly one terminal outcome. */
+        peer_lifecycle_note_connected(&node,
+                                      PEER_LIFECYCLE_SOURCE_ADDNODE);
+        peer_lifecycle_note_reject(&node, "protocol-too-old");
+        peer_lifecycle_note_disconnected(&node, "cleanup");
+        peer_lifecycle_get_summary(&s);
+        ASSERT(s.connected == 2);
+        ASSERT(s.timeout == 1);
+        ASSERT(s.rejected == 1);
+        ASSERT(s.disconnected == 0);
+        ASSERT(s.pre_handshake_disconnects == 2);
+        ASSERT(g_lifecycle_terminal_timeout_events == 1);
+        ASSERT(g_lifecycle_terminal_reject_events == 1);
+        ASSERT(g_lifecycle_terminal_disconnect_events == 0);
+
+        /* A handshaked generation's ordinary cleanup is independently
+         * counted, but is not a pre-handshake incident. */
+        peer_lifecycle_note_connected(&node,
+                                      PEER_LIFECYCLE_SOURCE_ADDNODE);
+        peer_lifecycle_note_handshake_complete(&node);
+        peer_lifecycle_note_disconnected(&node, "cleanup");
+        peer_lifecycle_note_disconnected(&node, "cleanup-duplicate");
+        peer_lifecycle_get_summary(&s);
+        ASSERT(s.connected == 3);
+        ASSERT(s.timeout == 1);
+        ASSERT(s.rejected == 1);
+        ASSERT(s.disconnected == 1);
+        ASSERT(s.pre_handshake_disconnects == 2);
+        ASSERT(g_lifecycle_terminal_timeout_events == 1);
+        ASSERT(g_lifecycle_terminal_reject_events == 1);
+        ASSERT(g_lifecycle_terminal_disconnect_events == 1);
+        event_clear_observers(EV_PEER_CONNECT_TIMEOUT);
+        event_clear_observers(EV_PEER_HANDSHAKE_FAILURE);
+        event_clear_observers(EV_TCP_DISCONNECTED);
     } TEST_END
     return failures;
 }
@@ -1309,6 +1426,7 @@ int test_peer_lifecycle(void)
     failures += test_peer_lifecycle_skips_inbound_ephemeral_cache();
     failures += test_peer_lifecycle_inbound_ephemeral_skip_is_not_incident();
     failures += test_peer_lifecycle_counters();
+    failures += test_peer_lifecycle_terminal_idempotency();
     failures += test_peer_lifecycle_addr_lookup();
     failures += test_peer_lifecycle_inbound_source_bucket();
     failures += test_peer_lifecycle_duplicate_connect_duration();

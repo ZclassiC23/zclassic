@@ -1,19 +1,19 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Keystone binding test — the per-height UTXO root carried in the PoW-proven
- * MMB leaf MUST equal the committed coins_kv set at that height, and that
- * binding must survive a FlyClient-style inclusion proof + verify.
+ * Auxiliary UTXO/MMB consistency test — the per-height root carried in the
+ * locally built MMB leaf must equal the committed coins_kv set and survive the
+ * auxiliary inclusion proof. ZClassic headers do not commit this root, so this
+ * test is NOT proof that peer-provided state is consensus/PoW-bound.
  *
  * This is the literal check the keystone exists to make true:
  *   "a height-H boundary leaf's utxo_root == the committed UTXO set at H".
  * It proves three things end-to-end:
  *   (1) the boundary root the live connect path records (coins_kv_commitment)
  *       round-trips through the persisted boundary table;
- *   (2) the leaf carrying that root proves + verifies under the MMB root
- *       (the binding is inside the FlyClient-proven object, not beside it);
+ *   (2) the leaf carrying that root verifies under the same auxiliary MMB root;
  *   (3) mutating one UTXO changes coins_kv_commitment, so a state-wrong coin
- *       at a height-correct boundary is DETECTABLE — the exact wedge class the
- *       keystone closes.
+ *       at a height-correct boundary is detectable once local derivation or an
+ *       independently trusted root supplies authority.
  */
 
 #include "test/test_helpers.h"
@@ -59,7 +59,7 @@ int test_keystone_utxo_binding(void)
 
     int boundary = MMR_COMMITMENT_INTERVAL; /* H = 100, a real boundary */
 
-    TEST("keystone: a height-H boundary leaf's utxo_root == committed set at H") {
+    TEST("auxiliary boundary leaf carries the locally computed UTXO root at H") {
         ASSERT(progress_store_open(dir));
         sqlite3 *db = progress_store_db();
         ASSERT(db != NULL);
@@ -119,8 +119,9 @@ int test_keystone_utxo_binding(void)
         mmb_hash_leaf(&leaf_at_boundary, bound_leaf_hash);
         ASSERT(memcmp(proof.leaf_hash, bound_leaf_hash, 32) == 0);
 
-        /* THE keystone assertion: the root inside the PoW-proven leaf equals
-         * the committed coins_kv set at H. */
+        /* Auxiliary-field assertion: the root carried in the leaf equals the
+         * locally computed coins_kv set at H. ZClassic headers do not commit
+         * this field or the MMB root. */
         ASSERT(memcmp(leaf_at_boundary.utxo_root, root_expected, 32) == 0);
 
         /* State-wrong coin is DETECTABLE: mutate one UTXO value, recompute the

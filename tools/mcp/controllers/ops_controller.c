@@ -407,7 +407,19 @@ static int h_zcl_operator_summary_compat(const struct mcp_request *req,
     const char *next_tool = "zcl_status";
     const char *next_tool2 = "";
     char primary_blocker_buf[192] = {0};
-    if (health_operator_needed) {
+    if (blocker_operator_needed) {
+        status = "operator_needed";
+        if (target_dominant_id[0]) {
+            snprintf(primary_blocker_buf, sizeof(primary_blocker_buf),
+                     "typed_blocker:%s", target_dominant_id);
+            primary_blocker = primary_blocker_buf;
+        } else {
+            primary_blocker = "typed_blocker_operator_needed";
+        }
+        next_action = "inspect authoritative target-node blockers";
+        next_tool = "zcl_blockers";
+        next_tool2 = "zcl_state";
+    } else if (health_operator_needed) {
         status = "operator_needed";
         primary_blocker = "operator_needed";
         if (operator_needed_detail[0]) {
@@ -420,18 +432,6 @@ static int h_zcl_operator_summary_compat(const struct mcp_request *req,
         next_action = "inspect active conditions and operator-needed detail";
         next_tool = "zcl_conditions";
         next_tool2 = "zcl_node_log";
-    } else if (blocker_operator_needed) {
-        status = "operator_needed";
-        if (target_dominant_id[0]) {
-            snprintf(primary_blocker_buf, sizeof(primary_blocker_buf),
-                     "typed_blocker:%s", target_dominant_id);
-            primary_blocker = primary_blocker_buf;
-        } else {
-            primary_blocker = "typed_blocker_operator_needed";
-        }
-        next_action = "inspect authoritative target-node blockers";
-        next_tool = "zcl_blockers";
-        next_tool2 = "zcl_state";
     } else if (serving_known && !serving) {
         status = "blocked";
         primary_blocker = health_blocking_reason[0]

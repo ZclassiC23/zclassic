@@ -9,6 +9,7 @@
  * caller's response buffer. */
 #include "platform/time_compat.h"
 #include "controllers/api_controller.h"
+#include "controllers/agent_security_posture.h"
 #include "controllers/block_intake_json.h"
 #include "controllers/blockchain_controller.h"
 #include "controllers/download_stats_json.h"
@@ -43,6 +44,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "util/log_macros.h"
+#include "util/blocker.h"
 #include "util/safe_alloc.h"
 
 static struct snapshot_sync_service *api_snapshot_sync(bool *initialized)
@@ -130,18 +132,40 @@ size_t api_serve_downloadstats(uint8_t *response, size_t response_max)
 size_t api_serve_health(uint8_t *response, size_t response_max)
 {
     struct node_health_snapshot health = {0};
-    node_health_collect(&health, g_api_ctx.node_db ?
-        g_api_ctx.node_db : app_runtime_node_db(),
-        g_api_ctx.main_state);
+    struct node_db *ndb = g_api_ctx.node_db ? g_api_ctx.node_db
+                                            : app_runtime_node_db();
+    node_health_collect(&health, ndb, g_api_ctx.main_state);
+    struct agent_security_posture posture;
+    agent_security_posture_collect(&posture, ndb);
+    struct blocker_snapshot blockers[BLOCKER_CAP];
+    int blocker_count = blocker_snapshot_all(blockers, BLOCKER_CAP);
+    const struct blocker_snapshot *dominant =
+        blocker_select_dominant(blockers, blocker_count);
+    const struct blocker_snapshot *authority_blocker =
+        api_blocker_hard_gates_public_serving(dominant) ? dominant : NULL;
+    const struct blocker_snapshot *warning_blocker =
+        dominant && !authority_blocker ? dominant : NULL;
+    size_t public_warning_count = health.warning_count +
+        (warning_blocker ? 1u : 0u);
+    char public_warning_reasons[sizeof(health.warning_reasons) +
+                                BLOCKER_ID_MAX + 2] = {0};
+    snprintf(public_warning_reasons, sizeof(public_warning_reasons),
+             "%s%s%s", health.warning_reasons,
+             health.warning_reasons[0] && warning_blocker ? "," : "",
+             warning_blocker ? warning_blocker->id : "");
+    bool public_serving = health.serving && !authority_blocker &&
+        agent_security_posture_allows_public_serving(&posture);
+    bool public_healthy = health.healthy && public_serving;
 
     struct json_value body;
     json_init(&body);
     json_set_object(&body);
     json_push_kv_str(&body, "schema", "zcl.health.v1");
     api_json_add_freshness(&body, "served_tip", -1);
-    json_push_kv_bool(&body, "healthy", health.healthy);
-    json_push_kv_bool(&body, "serving", health.serving);
-    json_push_kv_int(&body, "warning_count", (int64_t)health.warning_count);
+    json_push_kv_bool(&body, "healthy", public_healthy);
+    json_push_kv_bool(&body, "serving", public_serving);
+    json_push_kv_int(&body, "warning_count",
+                     (int64_t)public_warning_count);
     json_push_kv_str(&body, "sync_state", sync_state_name(health.sync_state));
 
     struct json_value chain;
@@ -252,23 +276,30 @@ size_t api_serve_health(uint8_t *response, size_t response_max)
     struct json_value status;
     json_init(&status);
     json_set_object(&status);
-    json_push_kv_bool(&status, "serving", health.serving);
+    json_push_kv_bool(&status, "serving", public_serving);
     json_push_kv_bool(&status, "operator_latch_recovered",
                       health.operator_latch_recovered);
-    api_json_push_kv_nullable_str(&status, "blocking_reason",
-                                  health.blocking_reason);
-    json_push_kv_bool(&status, "warning", health.warning);
+    api_json_push_kv_nullable_str(
+        &status, "blocking_reason",
+        authority_blocker ? authority_blocker->id :
+        posture.review_required ? posture.status : health.blocking_reason);
+    json_push_kv_bool(&status, "warning", public_warning_count > 0);
     json_push_kv_int(&status, "warning_count",
-                     (int64_t)health.warning_count);
+                     (int64_t)public_warning_count);
     api_json_push_kv_nullable_str(&status, "warning_reasons",
-                                  health.warning_reasons);
+                                  public_warning_reasons);
+    api_json_push_kv_nullable_str(&status, "typed_blocker_warning",
+                                  warning_blocker
+                                      ? warning_blocker->id : "");
     api_json_push_kv_nullable_str(&status, "degraded_reason",
                                   health.degraded_reason);
     json_push_kv(&body, "status", &status);
     json_free(&status);
 
+    agent_push_security_posture_json(&body, "security_posture", ndb);
+
     size_t n = api_json_status(response, response_max,
-        health.healthy ? "200 OK" : "503 Service Unavailable", &body);
+        public_healthy ? "200 OK" : "503 Service Unavailable", &body);
     json_free(&body);
     return n;
 }
@@ -534,6 +565,9 @@ size_t api_serve_node_status(uint8_t *response, size_t response_max)
     json_push_kv_int(&body, "defer_proof_validation_below_height",
                      g_deferred_proof_validation_below_height);
     json_push_kv_int(&body, "uptime_seconds", health.uptime_seconds);
+    agent_push_security_posture_json(
+        &body, "security_posture",
+        g_api_ctx.node_db ? g_api_ctx.node_db : app_runtime_node_db());
 
     size_t n = api_json_ok(response, response_max, &body);
     json_free(&body);

@@ -106,6 +106,24 @@ void syncsvc_assign_peer_blocks(struct sync_block_batch *batch,
     if (!dm || !node || !out_hashes || out_cap == 0)
         return;
 
+    /* Reject handshake/behind peers before touching the manager's in-flight
+     * table. The load-sensitive plan is recomputed below after the cheap
+     * eligibility-only pass. */
+    syncsvc_plan_block_assignment(&plan, node, 0, our_height);
+    batch->should_assign = plan.should_assign;
+    if (!plan.should_assign)
+        return;
+
+    /* Keep network assignment event-driven. A peer that already returned a
+     * structural zero for this exact queue/window generation stays parked;
+     * another peer is independently eligible, and enqueue/receive/timeout
+     * advances the manager generation. This removes the old 100 ms
+     * re-scan storm without weakening multi-peer body fetch. */
+    dl_set_peer_loopback(dm, (uint32_t)node->id,
+                         net_addr_is_local(&node->addr.svc.addr));
+    if (!dl_assignment_should_attempt(dm, (uint32_t)node->id))
+        return;
+
     batch->in_flight_before = dl_peer_in_flight(dm, (uint32_t)node->id);
     syncsvc_plan_block_assignment(&plan, node, batch->in_flight_before,
                                   our_height);
@@ -118,8 +136,6 @@ void syncsvc_assign_peer_blocks(struct sync_block_batch *batch,
     /* K2: keep the download manager's per-peer state in sync with the
      * peer's network class so dl_assign_to_peer picks the right cap.
      * Idempotent; cheap; no harm in calling on every assignment. */
-    dl_set_peer_loopback(dm, (uint32_t)node->id,
-                         net_addr_is_local(&node->addr.svc.addr));
     batch->assigned = dl_assign_to_peer(dm, (uint32_t)node->id,
                                         out_hashes, plan.max_assign);
 }

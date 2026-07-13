@@ -54,13 +54,20 @@ make agent-doctor            # combined build/dev-lane/test-failure next action
 make agent-dev-status        # no-build dev-lane status + next safe action
 make agent-clear-stale-dev-reindex # clear proven-stale dev auto-reindex marker
 build/bin/zclassic23-dev agentdevstatus   # native typed dev-lane status
-make agent-stage-dev         # stage dev binary for next linger restart without stopping service
+make agent-stage-dev         # contained: refuses; runtime staging/publication is disabled
 make t-fast ONLY=<group>     # one test group
-make agent-loop              # default AI/operator loop; fast-ci plus optional dev knobs
+make agent-loop              # default AI/operator verification loop; no runtime deploy
 make fast-ci                 # cache-aware lint/build/focused-test loop
 build/bin/zclassic23 status               # native node status (registry replaces MCP)
 build/bin/zclassic23-dev status           # dev-lane native status
 ```
+
+Runtime generation publication is Phase-0 contained. Native apply commands,
+auto/apply watcher modes, `make hotswap`, `deploy-dev*`,
+`agent-deploy-fast`, direct activation scripts, and generation-relinking revert
+all refuse. Use verify/check watch, builds, tests, simulations,
+`make hotswap-so` plus build/test verification while the unified immutable
+source/proof/CAS/rollback transaction is completed.
 
 Build details, dependency versions, and reproducible-release notes are in
 `docs/BUILD.md`.

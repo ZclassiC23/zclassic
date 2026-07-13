@@ -13,7 +13,7 @@
  *
  *   1. classify: an eligible-TU edit classifies to hotswap, not a full
  *      rebuild (zcl_devloop_plan_files — tools/dev/devloop.h).
- *   2. a sealed core/ edit refuses with the structured envelope and CLI
+ *   2. a sealed core/ apply is contained before authority, even with a token
  *      exit-3 semantics, BEFORE any publish step and regardless of
  *      ZCL_DEV_BUILD (zcl_devloop_run_cycle + zcl_devloop_refusal_json —
  *      the refusal check in devloop_cycle.c runs before the ZCL_DEV_BUILD
@@ -137,12 +137,12 @@ static int t_classify_hotswap(void)
     return failures;
 }
 
-/* ── test 2: sealed core/ edit refuses, exit 3, structured envelope ──── */
+/* ── test 2: apply containment precedes sealed-core authority ───────── */
 
 static int t_sealed_refusal(void)
 {
     int failures = 0;
-    TEST("golden dev cycle: sealed core/ edit refuses with structured envelope (exit 3)") {
+    TEST("golden dev cycle: sealed core apply is contained with structured envelope (exit 3)") {
         char dir[512];
         test_make_tmpdir(dir, sizeof(dir), "golden_dev_cycle", "sealed");
         char *saved_home = getenv("HOME");
@@ -156,20 +156,19 @@ static int t_sealed_refusal(void)
         int rc = zcl_devloop_run_cycle(dir, core, 2);
         ASSERT_EQ(rc, 3);  /* blocked-by-precondition, before any publish */
 
-        /* The refusal was persisted as the zcl.dev_cycle.v1 verdict. */
+        /* Phase-0 publication containment is persisted before seal authority. */
         char verdict[8192];
         size_t vn = read_native_cycle(dir, verdict, sizeof(verdict));
         ASSERT(vn > 0);
         struct json_value v = {0};
         ASSERT(json_read(&v, verdict, vn));
         ASSERT_STR_EQ(json_get_str(json_get(&v, "schema")), "zcl.dev_cycle.v1");
-        ASSERT_STR_EQ(json_get_str(json_get(&v, "status")), "refused");
+        ASSERT_STR_EQ(json_get_str(json_get(&v, "status")), "blocked");
         ASSERT_STR_EQ(json_get_str(json_get(&v, "reason")),
-                      "sealed_consensus_core");
-        ASSERT_STR_EQ(json_get_str(json_get(&v, "manifest")),
-                      "core/MANIFEST.sha3");
-        ASSERT(strstr(json_get_str(json_get(&v, "unseal")),
-                      "make core-unseal") != NULL);
+                      "consensus_or_chain_state_is_never_swappable");
+        ASSERT_STR_EQ(json_get_str(json_get(&v, "phase")),
+                      "publication_contained");
+        ASSERT(!json_get_bool(json_get(&v, "runtime_published")));
         json_free(&v);
 
         /* The envelope itself: only the sealed member names in "paths". */
@@ -179,17 +178,14 @@ static int t_sealed_refusal(void)
         ASSERT(strstr(body, "core/consensus/src/check_block.c") != NULL);
         ASSERT(strstr(body, "docs/notes.md") == NULL);
 
-        /* A valid unseal token lets the SAME cycle proceed past the
-         * refusal (still not necessarily a publish in this non-dev-build
-         * harness — see test_dev_platform.c's identical note — the
-         * load-bearing assertion is simply "did not refuse"). */
+        /* A valid unseal token is never publication authority. */
         char tok[PATH_MAX];
         snprintf(tok, sizeof(tok), "%s/.core-unseal-token", dir);
         FILE *tf = fopen(tok, "w");
         ASSERT(tf != NULL);
         if (tf) { fputs("golden unseal\n", tf); fclose(tf); }
         int rc2 = zcl_devloop_run_cycle(dir, core, 2);
-        ASSERT(rc2 != 3);
+        ASSERT_EQ(rc2, 3);
 
         if (saved_home) {
             setenv("HOME", saved_home, 1);

@@ -39,7 +39,8 @@ sync, cleared when `bg_validation` completes full chain verification).
 
 **SHA3-256:**
 - UTXO set commitment (canonical order: txid+vout+value+script+height)
-- Snapshot integrity (FlyClient + SHA3 binding)
+- Assisted snapshot byte integrity (SHA3) plus advisory FlyClient header evidence;
+  neither authenticates peer-provided state as a ZClassic consensus commitment
 
 **RIPEMD-160 + SHA-256:**
 - hash160 for P2PKH/P2SH addresses

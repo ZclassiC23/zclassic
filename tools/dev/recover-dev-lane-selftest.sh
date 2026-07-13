@@ -5,7 +5,16 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 RECOVER="$SCRIPT_DIR/recover-dev-lane.sh"
-SANDBOX="$(mktemp -d "${TMPDIR:-/tmp}/zcl-dev-recovery-selftest.XXXXXX")"
+SANDBOX="$(mktemp -d /tmp/zcl-dev-recovery-selftest.XXXXXX)"
+chmod 700 "$SANDBOX"
+CAPABILITY_FILE="$SANDBOX/.recover-dev-lane-selftest-capability"
+CAPABILITY_TOKEN="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+[[ "$CAPABILITY_TOKEN" =~ ^[0-9a-f]{64}$ ]] || {
+    printf '[dev-recovery-selftest] FAIL: could not mint fixture capability\n' >&2
+    exit 1
+}
+printf '%s\n' "$CAPABILITY_TOKEN" > "$CAPABILITY_FILE"
+chmod 600 "$CAPABILITY_FILE"
 
 cleanup()
 {
@@ -60,20 +69,97 @@ run_recovery()
 {
     local home="$1" txn="$2" verify="$3" service_log="$4" generation="${5:-}"
     local args=(--apply)
+    local stop_command="${RECOVERY_SELFTEST_STOP_OVERRIDE:-printf 'stop\\n' >> '$service_log'}"
     [ -z "$generation" ] || args+=(--generation "$generation")
     HOME="$home" \
-    ZCL_DEV_RECOVERY_TEST_MODE=1 \
     ZCL_DEV_RECOVERY_TXN_ID="$txn" \
     ZCL_DEV_RECOVERY_BUNDLE_DIR="$home/.zclassic-c23-dev" \
     ZCL_DEV_RECOVERY_MIN_PAYLOAD_BYTES=1 \
     ZCL_DEV_RECOVERY_TIMEOUT=1 \
-    ZCL_DEV_RECOVERY_STOP_COMMAND="printf 'stop\\n' >> '$service_log'" \
+    ZCL_DEV_RECOVERY_STOP_COMMAND="$stop_command" \
     ZCL_DEV_RECOVERY_START_COMMAND="printf 'start\\n' >> '$service_log'" \
     ZCL_DEV_RECOVERY_DAEMON_RELOAD_COMMAND="printf 'reload\\n' >> '$service_log'" \
     ZCL_DEV_RECOVERY_RESET_FAILED_COMMAND="printf 'reset\\n' >> '$service_log'" \
     ZCL_DEV_RECOVERY_ACTIVE_COMMAND=false \
     ZCL_DEV_RECOVERY_VERIFY_COMMAND="$verify" \
-    "$RECOVER" "${args[@]}"
+    "$RECOVER" --internal-self-test "$SANDBOX" 8 "${args[@]}" \
+        8< "$CAPABILITY_FILE"
+}
+
+test_public_environment_cannot_authorize_apply()
+{
+    local home="$SANDBOX/public-home"
+    local generation="gen-2222222222222222222222222222222222222222222222222222222222222222"
+    local root service_log output rc
+    root="$home/.local/lib/zclassic23-dev"
+    service_log="$home/service.log"
+    output="$home/public-apply.out"
+    make_generation "$home" "$generation"
+    make_wedged_lane "$home" "$generation"
+    set +e
+    HOME="$home" \
+    ZCL_DEV_RECOVERY_TEST_MODE=1 \
+    ZCL_DEV_RECOVERY_STOP_COMMAND="touch '$service_log'" \
+    "$RECOVER" --apply --generation "$generation" > "$output" 2>&1
+    rc=$?
+    set -e
+    [ "$rc" -eq 3 ] || fail "public test-mode environment returned $rc, expected 3"
+    grep -q 'dev recovery apply is contained' "$output" ||
+        fail "public apply refusal omitted containment reason"
+    [ ! -e "$service_log" ] || fail "public environment reached a service command"
+    [ "$(readlink "$root/current")" = "$generation" ] ||
+        fail "public environment changed current generation"
+    [ -f "$home/.zclassic-c23-dev/auto_reindex_request" ] ||
+        fail "public environment mutated the dev datadir"
+}
+
+test_internal_capability_is_fixture_bound()
+{
+    local home="$SANDBOX/capability-home"
+    local generation="gen-3333333333333333333333333333333333333333333333333333333333333333"
+    local output="$home/capability.out" rc
+    make_generation "$home" "$generation"
+    make_wedged_lane "$home" "$generation"
+    set +e
+    HOME="$home" "$RECOVER" --internal-self-test "$SANDBOX" 8 \
+        --apply --generation "$generation" > "$output" 2>&1
+    rc=$?
+    set -e
+    [ "$rc" -eq 3 ] || fail "closed recovery capability fd returned $rc"
+    grep -q 'fd is not bound to sentinel' "$output" ||
+        fail "closed recovery capability refusal missing"
+
+    set +e
+    HOME="$SANDBOX/not-the-fixture-home" "$RECOVER" \
+        --internal-self-test "$SANDBOX" 8 --apply --generation "$generation" \
+        8< "$CAPABILITY_FILE" > "$output" 2>&1
+    rc=$?
+    set -e
+    [ "$rc" -eq 3 ] || fail "recovery capability accepted a different HOME"
+    grep -q 'invalid internal self-test capability' "$output" ||
+        fail "wrong-HOME recovery refusal missing"
+}
+
+test_internal_capability_rejects_command_injection()
+{
+    local home="$SANDBOX/injection-home"
+    local generation="gen-4444444444444444444444444444444444444444444444444444444444444444"
+    local service_log="$home/service.log" signal="$home/injection-reached"
+    local output="$home/injection.out" rc
+    make_generation "$home" "$generation"
+    make_wedged_lane "$home" "$generation"
+    set +e
+    RECOVERY_SELFTEST_STOP_OVERRIDE="touch '$signal'" \
+        run_recovery "$home" success true "$service_log" "$generation" \
+        > "$output" 2>&1
+    rc=$?
+    set -e
+    [ "$rc" -eq 3 ] || fail "recovery command injection returned $rc"
+    grep -q 'ZCL_DEV_RECOVERY_STOP_COMMAND' "$output" ||
+        fail "recovery command-injection refusal missing"
+    [ ! -e "$signal" ] || fail "recovery capability executed injected command"
+    [ "$(readlink "$home/.local/lib/zclassic23-dev/current")" = "$generation" ] ||
+        fail "recovery command injection changed current generation"
 }
 
 test_success_archives_and_commits()
@@ -174,7 +260,7 @@ test_plan_is_read_only_and_canonical_refused()
     dd="$home/.zclassic-c23-dev"
     make_generation "$home" "$generation"
     make_wedged_lane "$home" "$generation"
-    HOME="$home" ZCL_DEV_RECOVERY_TEST_MODE=1 \
+    HOME="$home" \
         ZCL_DEV_RECOVERY_BUNDLE_DIR="$home/.zclassic-c23-dev" \
         ZCL_DEV_RECOVERY_MIN_PAYLOAD_BYTES=1 \
         ZCL_DEV_RECOVERY_TXN_ID=plan "$RECOVER" --plan >/dev/null ||
@@ -182,7 +268,7 @@ test_plan_is_read_only_and_canonical_refused()
     archive_count="$(find "$home" -maxdepth 1 -name '.zclassic-c23-dev.recovery-*' | wc -l)"
     [ "$archive_count" -eq 0 ] || fail "plan mode mutated the datadir"
 
-    if HOME="$home" ZCL_DEV_RECOVERY_TEST_MODE=1 \
+    if HOME="$home" \
        ZCL_DEV_RECOVERY_BUNDLE_DIR="$home/.zclassic-c23-dev" \
        ZCL_DEV_RECOVERY_DATADIR="$home/.zclassic-c23" \
        ZCL_DEV_RECOVERY_MIN_PAYLOAD_BYTES=1 \
@@ -209,7 +295,6 @@ test_signal_rolls_back_transaction()
     make_wedged_lane "$home" "$generation"
 
     HOME="$home" \
-    ZCL_DEV_RECOVERY_TEST_MODE=1 \
     ZCL_DEV_RECOVERY_TXN_ID="$txn" \
     ZCL_DEV_RECOVERY_BUNDLE_DIR="$dd" \
     ZCL_DEV_RECOVERY_MIN_PAYLOAD_BYTES=1 \
@@ -220,7 +305,9 @@ test_signal_rolls_back_transaction()
     ZCL_DEV_RECOVERY_RESET_FAILED_COMMAND="printf 'reset\\n' >> '$service_log'" \
     ZCL_DEV_RECOVERY_ACTIVE_COMMAND=false \
     ZCL_DEV_RECOVERY_VERIFY_COMMAND="touch '$started'; sleep 2" \
-    "$RECOVER" --apply --generation "$generation" >/dev/null 2>&1 &
+    "$RECOVER" --internal-self-test "$SANDBOX" 8 \
+        --apply --generation "$generation" \
+        8< "$CAPABILITY_FILE" >/dev/null 2>&1 &
     pid=$!
     for _ in $(seq 1 100); do
         [ -f "$started" ] && break
@@ -241,8 +328,11 @@ test_signal_rolls_back_transaction()
         fail "signal rollback verdict missing"
 }
 
+test_public_environment_cannot_authorize_apply
+test_internal_capability_is_fixture_bound
+test_internal_capability_rejects_command_injection
 test_success_archives_and_commits
 test_failed_proof_restores_old_lane
 test_plan_is_read_only_and_canonical_refused
 test_signal_rolls_back_transaction
-printf '[dev-recovery-selftest] PASS: v2 archive/seed/commit, proof+signal rollback, confinement, and plan purity\n'
+printf '[dev-recovery-selftest] PASS: public apply containment, fd-bound fixture authority, archive/seed/commit, proof+signal rollback, and plan purity\n'

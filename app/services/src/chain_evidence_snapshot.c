@@ -116,6 +116,12 @@ void chain_evidence_controller_snapshot(
     if (authority->ndb &&
         node_db_state_get_int(authority->ndb, "cec.publish_state", &v))
         out->publish_state = (enum chain_evidence_publish_state)v;
+    v = CEC_FULL_VALIDATION_UNKNOWN;
+    if (authority->ndb &&
+        node_db_state_get_int(authority->ndb,
+                              "cec.full_validation_origin", &v))
+        out->full_validation_origin =
+            (enum chain_evidence_full_validation_origin)v;
     v = 0;
     if (authority->ndb &&
         node_db_state_get_int(authority->ndb,
@@ -126,8 +132,17 @@ void chain_evidence_controller_snapshot(
                                     &out->block_index_evidence_state).ok;
     (void)chain_evidence_store_load(authority->ndb, "cec.active_tip_evidence",
                                     &out->active_tip_evidence).ok;
-    (void)chain_evidence_store_load(authority->ndb, "cec.snapshot_evidence",
-                                    &out->snapshot_evidence).ok;
+    out->snapshot_evidence_loaded =
+        chain_evidence_store_load(authority->ndb, "cec.snapshot_evidence",
+                                  &out->snapshot_evidence).ok;
+    /* Backward-readable assisted evidence: releases predating the explicit
+     * origin key already bound FULLY_VALIDATED to this durable record.  Never
+     * infer genesis provenance from the state enum alone. */
+    if (out->full_validation_origin == CEC_FULL_VALIDATION_UNKNOWN &&
+        out->state == CEC_FULLY_VALIDATED &&
+        out->snapshot_evidence_loaded &&
+        out->snapshot_evidence.full_validation_complete)
+        out->full_validation_origin = CEC_FULL_VALIDATION_ASSISTED_SNAPSHOT;
     (void)chain_evidence_store_load(authority->ndb, "cec.header_chain_evidence",
                                     &out->header_chain_evidence).ok;
     if (out->active_tip_source_class == CEC_SOURCE_CLASS_UNKNOWN &&

@@ -132,6 +132,9 @@ run_slice() {
 # Returns the live node's health JSON on stdout, or empty if unreachable.
 LIVE_JSON=""
 LIVE_REACHABLE=0
+LIVE_SECURITY_JSON=""
+LIVE_SECURITY_KNOWN=0
+LIVE_SECURITY_OK=0
 rpc_live() {
     if [ -n "${ZCL_RPCCONNECT:-}" ]; then
         timeout 8 env "ZCL_DATADIR=$LIVE_DATADIR" "ZCL_RPCPORT=$LIVE_RPCPORT" \
@@ -149,6 +152,17 @@ probe_live_node() {
     [ -n "$out" ] || return 1
     LIVE_JSON="$out"
     LIVE_REACHABLE=1
+    local security
+    security="$(rpc_live operatorsnapshot 2>/dev/null)" || security=""
+    LIVE_SECURITY_JSON="$security"
+    if printf '%s' "$security" | grep -qE \
+        '"security_review_required"[ ]*:[ ]*(true|false)'; then
+        LIVE_SECURITY_KNOWN=1
+        if printf '%s' "$security" | grep -qE \
+            '"security_review_required"[ ]*:[ ]*false'; then
+            LIVE_SECURITY_OK=1
+        fi
+    fi
     return 0
 }
 
@@ -181,7 +195,7 @@ if [ "$LIVE_REACHABLE" = "1" ]; then
     else
         LIVE_SYNCED="no"
     fi
-    echo "live node: REACHABLE datadir=$LIVE_DATADIR rpcport=$LIVE_RPCPORT height=${LIVE_HEIGHT:-?} headers=${LIVE_HEADERS:-?} gap=${LIVE_GAP:-?} synced=${LIVE_SYNCED:-?}"
+    echo "live node: REACHABLE datadir=$LIVE_DATADIR rpcport=$LIVE_RPCPORT height=${LIVE_HEIGHT:-?} headers=${LIVE_HEADERS:-?} gap=${LIVE_GAP:-?} synced=${LIVE_SYNCED:-?} security_known=$LIVE_SECURITY_KNOWN security_ok=$LIVE_SECURITY_OK"
 else
     echo "live node: UNREACHABLE via datadir=$LIVE_DATADIR rpcport=$LIVE_RPCPORT (stopped / not serving RPC) — synced-node criteria BLOCKED by construction"
 fi
@@ -360,17 +374,18 @@ echo ""
         reason="$(printf '%s' "$verdict_line" | grep -oE 'reason=[^ ]+' | cut -d= -f2)"
     fi
     rm -f "$judge_log"
-    if [ "$LIVE_REACHABLE" != "1" ] || [ "${LIVE_SYNCED:-no}" != "yes" ]; then
+    if [ "$LIVE_REACHABLE" != "1" ] || [ "${LIVE_SYNCED:-no}" != "yes" ] ||
+       [ "$LIVE_SECURITY_OK" != "1" ]; then
         # No clean window can be currently accruing — the live node is not
         # synced/serving. BLOCKED by construction. Report the judge's read of
         # any historical evidence for context, but it does NOT earn PASS.
         VERDICT[6]="BLOCKED"
-        DETAIL[6]="needs synced node — live node not synced/serving (height=${LIVE_HEIGHT:-stopped}, gap=${LIVE_GAP:-?}), so NO clean 168h window is accruing; soak-evidence judge over historical samples: VERDICT=${v:-NONE} reason=${reason:-no_window}"
+        DETAIL[6]="needs synced, review-free node — live node not eligible (height=${LIVE_HEIGHT:-stopped}, gap=${LIVE_GAP:-?}, security_known=$LIVE_SECURITY_KNOWN, security_ok=$LIVE_SECURITY_OK), so NO clean 168h window is accruing; soak-evidence judge over historical samples: VERDICT=${v:-NONE} reason=${reason:-no_window}"
     elif [ -z "$verdict_line" ]; then
         VERDICT[6]="BLOCKED"; DETAIL[6]="soak-evidence judge printed no VERDICT line (rc=$jrc) — no soak window to judge"
     else
         case "$v" in
-            MET) VERDICT[6]="PASS"; FULL_PASS[6]=1; DETAIL[6]="live node synced + soak-evidence VERDICT=MET over the 168h window" ;;
+            MET) VERDICT[6]="PASS"; FULL_PASS[6]=1; DETAIL[6]="live node synced, security posture review-free + soak-evidence VERDICT=MET over the 168h window" ;;
             NOT_MET) VERDICT[6]="BLOCKED"; DETAIL[6]="soak-evidence VERDICT=NOT_MET reason=$reason — clean 168h evidence is not established yet; live node is synced, so a new window can accrue" ;;
             *) VERDICT[6]="BLOCKED"; DETAIL[6]="soak-evidence VERDICT=INSUFFICIENT reason=$reason — clean window accruing but not yet 168h" ;;
         esac

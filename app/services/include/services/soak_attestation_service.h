@@ -7,6 +7,8 @@
  * <datadir>/soak_attestation.jsonl:
  *   {"ts":<unix>,"height":<N>,"healthy":<bool>,
  *    "degraded_reason":"<string-or-empty>",
+ *    "security_review_required":<bool>,"security_posture_ok":<bool>,
+ *    "window_eligible":<bool>,
  *    "build_commit":"<hash>","uptime_s":<N>}
  *
  * The line log is bounded (rotate at 50 MB to a single .1 suffix) and

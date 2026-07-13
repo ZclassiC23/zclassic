@@ -715,6 +715,19 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         snprintf(snapshot->mirror_lag_breach_severity,
                  sizeof(snapshot->mirror_lag_breach_severity), "%s",
                  ms.lag_breach_severity);
+        bool same_height_hash_gap =
+            ms.enabled && ms.reachable && ms.lag_known &&
+            ms.local_height >= 0 && ms.legacy_height >= 0 &&
+            ms.local_height == ms.legacy_height &&
+            !ms.tip_hashes_agree;
+        if (same_height_hash_gap) {
+            if (snapshot->degraded_reason[0] == '\0') {
+                snprintf(snapshot->degraded_reason,
+                         sizeof(snapshot->degraded_reason),
+                         "mirror_same_height_hash_unavailable_or_mismatch");
+            }
+            snapshot->healthy = false;
+        }
         if (ms.unsafe_overrides_total > 0) {
             if (snapshot->degraded_reason[0] == '\0') {
                 snprintf(snapshot->degraded_reason,

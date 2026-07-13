@@ -8,6 +8,7 @@
 #include "services/node_health_service.h"
 #include "sync/sync_state.h"
 #include "util/alerts.h"
+#include "util/blocker.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -52,6 +53,7 @@ struct agent_fast_snapshot {
     bool operator_action_required;
     bool operator_latch_recovered;
     bool operator_latch_suppressed_by_mirror;
+    bool hard_typed_blocker;
     bool validation_pack_ok;
     bool provable_tip_published;
     bool tor_enabled;
@@ -135,6 +137,7 @@ struct agent_fast_snapshot {
     int warning_count;
     char warning_reasons[256];
     char blocking_reason[ZCL_NODE_HEALTH_REASON_LEN];
+    char dominant_blocker_id[BLOCKER_ID_MAX];
     char operator_needed_detail[ALERT_OPERATOR_NEEDED_DETAIL_LEN];
     char last_error_type[64];
     char projection_state[32];

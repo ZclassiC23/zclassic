@@ -36,8 +36,10 @@ struct fake_ctx {
     char fail_reload_gen[80]; /* daemon-reload fails for this generation */
     char fail_probe_gen[80];  /* activation probe fails for this generation */
     int preflight_result;     /* 0 => preflight passes */
+    int source_cas_result;    /* 0 => source epoch still matches */
     bool service_up;
     int stop_calls, start_calls, reload_calls, probe_calls, preflight_calls;
+    int source_cas_calls;
 };
 
 /* Read the generation id the `current` link points at into out. */
@@ -130,6 +132,13 @@ static int fk_probe(void *ctx, const char *gen_id, const char *commit)
     return 0;
 }
 
+static int fk_source_cas(void *ctx)
+{
+    struct fake_ctx *c = ctx;
+    c->source_cas_calls++;
+    return c->source_cas_result;
+}
+
 static void fake_ops_init(struct dev_activation_ops *ops, struct fake_ctx *c)
 {
     memset(ops, 0, sizeof(*ops));
@@ -141,6 +150,7 @@ static void fake_ops_init(struct dev_activation_ops *ops, struct fake_ctx *c)
     ops->service_main_pid = fk_main_pid;
     ops->running_exe = fk_running_exe;
     ops->preflight = fk_preflight;
+    ops->source_epoch_cas = fk_source_cas;
     ops->activation_probe = fk_probe;
     ops->ctx = c;
 }
@@ -365,6 +375,43 @@ static int test_happy_activation(void)
         ASSERT(json_get_bool(json_get(&v, "rollback_available")));
         json_free(&v);
 
+        sandbox_exit(&sb);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_source_epoch_cas_refuses_before_stop(void)
+{
+    int failures = 0;
+    TEST("dev_activation: superseded source epoch refuses after preflight before stop") {
+        struct sandbox sb;
+        sandbox_enter(&sb, "source_cas");
+        char artifact[PATH_MAX];
+        snprintf(artifact, sizeof(artifact), "%s/cand", sb.home);
+        ASSERT(write_fake_binary(artifact, 'S'));
+
+        struct fake_ctx c = { .source_cas_result = 1, .service_up = true };
+        snprintf(c.gen_root, sizeof(c.gen_root), "%s", sb.gen_root);
+        struct dev_activation_ops ops;
+        fake_ops_init(&ops, &c);
+        struct dev_activation_request req;
+        base_request(&req, &sb, artifact);
+        struct dev_activation_result r;
+
+        int rc = dev_activation_run(&req, &ops, &r);
+        ASSERT_EQ(rc, DEV_ACTIVATION_E_PREFLIGHT);
+        ASSERT_EQ(c.preflight_calls, 1);
+        ASSERT_EQ(c.source_cas_calls, 1);
+        ASSERT_EQ(c.stop_calls, 0);
+        ASSERT(c.service_up);
+        ASSERT_STR_EQ(r.activation_status, "superseded");
+        ASSERT_STR_EQ(r.verify_status, "source_epoch_superseded");
+        ASSERT(strstr(r.failure_capsule, "compare-and-swap") != NULL);
+
+        char current[PATH_MAX];
+        snprintf(current, sizeof(current), "%s/current", sb.gen_root);
+        ASSERT(access(current, F_OK) != 0);
         sandbox_exit(&sb);
         PASS();
     } _test_next:;
@@ -906,6 +953,7 @@ int test_dev_activation(void)
 {
     int failures = 0;
     failures += test_happy_activation();
+    failures += test_source_epoch_cas_refuses_before_stop();
     failures += test_confinement_refusals();
     failures += test_lock_busy();
     failures += test_preflight_fail_untouched();

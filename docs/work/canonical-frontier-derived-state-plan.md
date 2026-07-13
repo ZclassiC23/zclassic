@@ -1,4 +1,4 @@
-> **2026-06-23 update:** The live forward-sync wedge this plan targets is RESOLVED on the live node (`~/.zclassic-c23` unwedged at the network tip, h≈3,156,944) by commit `ab512d577`, which binds a complete SHA3-verified snapshot above coins-best and folds forward past the block (3,156,171) that wedged the older torn seed. This canonical "derive state from the log, delete the heal ladder" design remains the still-pending END GOAL (the borrowed-snapshot loader is not yet replaced by the sovereign self-minted from-genesis anchor) — read the body below as a design-of-record, not as the current live posture.
+> **2026-07-12 correction:** `ab512d577` repaired the earlier transparent-loader failure and temporarily reached tip, but canonical is now wedged at H*=3,176,325 on incomplete shielded anchors/nullifiers. The borrowed artifact's digest and matching header verify bytes and chain location, not state derivation. This derive-state/delete-heal-ladder design remains historical input; current gates are in `SOVEREIGN-NETWORK-ROADMAP.md`.
 
 # Canonical frontier-derived state — two gates, delete the heal ladder
 

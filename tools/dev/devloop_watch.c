@@ -204,14 +204,14 @@ static bool collect_events(struct watch_context *ctx)
     return saw;
 }
 
-static int open_singleton_lock(void)
+static int open_singleton_lock(const char *repo_root,
+                               enum zcl_devloop_publish_mode publish_mode)
 {
-    const char *home = getenv("HOME");
-    if (!home || !home[0])
-        return -1;
     char dir[PATH_MAX], path[PATH_MAX];
-    snprintf(dir, sizeof(dir), "%s/.local/state/zclassic23-dev", home);
-    snprintf(path, sizeof(path), "%s/native-watch.lock", dir);
+    int dn = snprintf(dir, sizeof(dir), "%s/.cache", repo_root);
+    if (dn <= 0 || (size_t)dn >= sizeof(dir) ||
+        !zcl_devloop_watch_lock_path(repo_root, path, sizeof(path)))
+        return -1;
     if (!mkdirs(dir))
         return -1;
     int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
@@ -221,14 +221,28 @@ static int open_singleton_lock(void)
         return -1;
     }
     if (ftruncate(fd, 0) == 0)
-        dprintf(fd, "%ld\n", (long)getpid());
+        dprintf(fd, "%ld %s\n", (long)getpid(),
+                zcl_devloop_publish_mode_name(publish_mode));
     return fd;
 }
 
-int zcl_devloop_watch(const char *repo_root)
+int zcl_devloop_watch_mode(const char *repo_root,
+                           enum zcl_devloop_publish_mode publish_mode)
 {
     struct watch_context ctx = {0};
     const char *root = repo_root && repo_root[0] ? repo_root : ".";
+    const char *mode_name = zcl_devloop_publish_mode_name(publish_mode);
+    if (!mode_name) {
+        fprintf(stderr, "[devloop] watch: invalid publication mode\n");
+        return 2;
+    }
+    if (zcl_devloop_publish_mode_applies(publish_mode)) {
+        fprintf(stderr,
+                "[devloop] watch: runtime publication is contained; use "
+                "verify mode until immutable epochs and proof receipts are "
+                "transactional\n");
+        return 3;
+    }
     if (!realpath(root, ctx.root)) {
         fprintf(stderr, "[devloop] watch: cannot resolve repository root: %s\n",
                 strerror(errno));
@@ -240,9 +254,10 @@ int zcl_devloop_watch(const char *repo_root)
         fprintf(stderr, "[devloop] watch: root has no readable Makefile\n");
         return 2;
     }
-    int lock_fd = open_singleton_lock();
+    int lock_fd = open_singleton_lock(ctx.root, publish_mode);
     if (lock_fd < 0) {
-        fprintf(stderr, "[devloop] watch: another native watcher owns the lane\n");
+        fprintf(stderr,
+                "[devloop] watch: another watcher owns this worktree lane\n");
         return 1;
     }
     ctx.fd = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
@@ -260,8 +275,11 @@ int zcl_devloop_watch(const char *repo_root)
     signal(SIGTERM, watch_signal);
     printf("{\"schema\":\"zcl.dev_watch_heartbeat.v1\","
            "\"status\":\"watching\",\"pid\":%ld,\"directories\":%zu,"
-           "\"root\":\"%s\",\"agent_next_action\":\"edit code\"}\n",
-           (long)getpid(), ctx.dir_count, ctx.root);
+           "\"root\":\"%s\",\"mode\":\"%s\","
+           "\"runtime_publication\":%s,"
+           "\"agent_next_action\":\"edit code\"}\n",
+           (long)getpid(), ctx.dir_count, ctx.root, mode_name,
+           zcl_devloop_publish_mode_applies(publish_mode) ? "true" : "false");
     fflush(stdout);
 
     while (!g_watch_stop) {
@@ -298,7 +316,8 @@ int zcl_devloop_watch(const char *repo_root)
         const char *files[ZCL_DEVLOOP_MAX_FILES];
         for (size_t i = 0; i < ctx.changed_count; i++)
             files[i] = ctx.changed[i];
-        (void)zcl_devloop_run_cycle(ctx.root, files, ctx.changed_count);
+        (void)zcl_devloop_run_cycle_mode(ctx.root, files, ctx.changed_count,
+                                         publish_mode);
         ctx.changed_count = 0;
     }
 
@@ -309,13 +328,27 @@ int zcl_devloop_watch(const char *repo_root)
     return 0;
 }
 
+int zcl_devloop_watch(const char *repo_root)
+{
+    return zcl_devloop_watch_mode(repo_root,
+                                  zcl_devloop_default_watch_publish_mode());
+}
+
 #else
+
+int zcl_devloop_watch_mode(const char *repo_root,
+                           enum zcl_devloop_publish_mode publish_mode)
+{
+    (void)repo_root;
+    (void)publish_mode;
+    fprintf(stderr, "[devloop] watch is compiled out of release builds\n");
+    return 2;
+}
 
 int zcl_devloop_watch(const char *repo_root)
 {
-    (void)repo_root;
-    fprintf(stderr, "[devloop] watch is compiled out of release builds\n");
-    return 2;
+    return zcl_devloop_watch_mode(repo_root,
+                                  zcl_devloop_default_watch_publish_mode());
 }
 
 #endif

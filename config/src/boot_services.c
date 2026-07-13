@@ -788,16 +788,16 @@ bool app_init_services(struct app_context *ctx,
              * explicitly opted in with -allow-clearnet-snapshot-fetch.
              *
              * SECURITY: these seeds are unauthenticated (clearnet, no TLS, no
-             * in-binary PoW-root binding). The file_service per-chunk SHA3 only
+             * ZClassic state commitment). The file_service per-chunk SHA3 only
              * proves the bytes match the SERVING PEER's own manifest, NOT that
              * the chainstate is the real consensus set — and boot_import_snapshot_db
-             * only consensus-verifies a snapshot AT the single compiled
+             * only independently checks state AT the single locally compiled
              * checkpoint, trusting anything above it on the peer's word. So a
              * MITM or a malicious seed could otherwise seed a FORGED UTXO set
              * into a default cold start (forged-money / consensus divergence).
              * Default OFF: a fresh node falls back to safe P2P IBD or the
-             * operator bundle (-load-snapshot-at-own-height, which IS anchor-
-             * bound to the in-binary PoW header). An explicit -fileservice=PEER
+             * operator bundle (its height/hash check remains assisted state).
+             * An explicit -fileservice=PEER
              * above is always honored (the operator chose that peer).
              *
              * Also skipped in connect-only mode, where all bootstrap data must

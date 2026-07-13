@@ -602,6 +602,8 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_init(&dev);
     json_set_object(&dev);
     json_push_kv_bool(&dev, "enabled", true);
+    json_push_kv_bool(&dev, "runtime_publication", false);
+    json_push_kv_str(&dev, "publication_blocker", "immutable epoch/proof/resident-CAS/rollback transaction incomplete");
     json_push_kv_str(&dev, "command", "make fast-rebuild");
     json_push_kv_str(&dev, "alias", "make dev-bin; make zclassic23-dev");
     json_push_kv_str(&dev, "agent_loop_binary",
@@ -798,10 +800,10 @@ bool rpc_agent_build(const struct json_value *params, bool help,
                              "no-build typed MCP call against the installed zcl23-dev linger lane");
     agent_push_build_command(&commands, "stage_dev_binary",
                              "make agent-stage-dev",
-                             "build and atomically stage the dev binary for the next zcl23-dev restart without stopping the service");
+                             "contained entrypoint: refuses until the complete publication transaction exists");
     agent_push_build_command(&commands, "fast_dev_deploy",
                              "make agent-deploy-fast",
-                             "fast dev-lane hot-swap using build/bin/zclassic23-dev");
+                             "contained entrypoint: refuses until the complete publication transaction exists");
     agent_push_build_command(&commands, "strict_focused_test",
                              "make t ONLY=<group>",
                              "strict rebuilt harness for relevant tests");
@@ -868,25 +870,24 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_push_kv_str(&remote, "schema", "zcl.remote_node_update.v1");
     json_push_kv_str(&remote, "script",
                      "tools/scripts/remote_node_update.sh");
-    json_push_kv_str(&remote, "make_target", "make remote-node-update");
-    json_push_kv_str(&remote, "dry_run_command",
+    json_push_kv_str(&remote, "make_target", "make remote-node-plan");
+    json_push_kv_str(&remote, "plan_command",
                      "tools/scripts/remote_node_update.sh rhett@host");
-    json_push_kv_str(&remote, "json_dry_run_command",
+    json_push_kv_str(&remote, "json_plan_command",
                      "tools/scripts/remote_node_update.sh --json rhett@host");
-    json_push_kv_str(&remote, "self_update_example",
+    json_push_kv_str(&remote, "status_timer_example",
                      "deploy/examples/zclassic23-self-update.timer");
     json_push_kv_str(&remote, "default_behavior",
-                     "dry-run remote main check; no install or restart");
-    json_push_kv_str(&remote, "enabled_update",
-                     "ZCL_REMOTE_DRY_RUN=0 ZCL_REMOTE_BUILD=fast-rebuild tools/scripts/remote_node_update.sh host");
-    json_push_kv_str(&remote, "release_install",
-                     "ZCL_REMOTE_DRY_RUN=0 ZCL_REMOTE_BUILD=release ZCL_REMOTE_INSTALL_BIN=$HOME/bin/zclassic23 tools/scripts/remote_node_update.sh host");
+                     "read-only remote main and service observation");
     json_push_kv_bool(&remote, "main_only", true);
-    json_push_kv_bool(&remote, "fast_forward_only", true);
+    json_push_kv_bool(&remote, "no_fetch", true);
     json_push_kv_bool(&remote, "json_summary", true);
-    json_push_kv_bool(&remote, "restart_default", false);
-    json_push_kv_str(&remote, "restart_guard",
-                     "ZCL_REMOTE_RESTART=1 routes through tools/deploy_guard.sh / zcl.agent_deploy_guard.v1");
+    json_push_kv_bool(&remote, "runtime_publication", false);
+    json_push_kv_bool(&remote, "install_restart_contained", true);
+    json_push_kv_str(&remote, "publication_blocker",
+                     "immutable source epoch, exact proof receipts, resident CAS, and rollback transaction incomplete");
+    json_push_kv_str(&remote, "canonical_deploy",
+                     "owner-gated make deploy only");
     json_push_kv(result, "remote_node_update", &remote);
     json_free(&remote);
 

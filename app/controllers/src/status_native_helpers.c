@@ -14,6 +14,7 @@
 #include "controllers/status_native_helpers.h"
 
 #include "json/json.h"
+#include "util/blocker.h"
 #include "util/safe_alloc.h"
 
 #include <errno.h>
@@ -430,12 +431,35 @@ void status_push_lane_safety_fields(
 
 int blocker_status_priority(const char *class_name)
 {
-    if (!class_name) return 0;
-    if (strcmp(class_name, "resource") == 0) return 400;
-    if (strcmp(class_name, "permanent") == 0) return 300;
-    if (strcmp(class_name, "dependency") == 0) return 200;
-    if (strcmp(class_name, "transient") == 0) return 100;
+    if (!class_name)
+        return 0;
+    if (strcmp(class_name, "resource") == 0)
+        return blocker_causal_priority(BLOCKER_RESOURCE, NULL);
+    if (strcmp(class_name, "permanent") == 0)
+        return blocker_causal_priority(BLOCKER_PERMANENT, NULL);
+    if (strcmp(class_name, "dependency") == 0)
+        return blocker_causal_priority(BLOCKER_DEPENDENCY, NULL);
+    if (strcmp(class_name, "transient") == 0)
+        return blocker_causal_priority(BLOCKER_TRANSIENT, NULL);
     return 0;
+}
+
+static int status_blocker_causal_priority(const struct json_value *candidate)
+{
+    const char *class_name = json_get_str(json_get(candidate, "class"));
+    enum blocker_class blocker_class;
+    if (class_name && strcmp(class_name, "resource") == 0)
+        blocker_class = BLOCKER_RESOURCE;
+    else if (class_name && strcmp(class_name, "permanent") == 0)
+        blocker_class = BLOCKER_PERMANENT;
+    else if (class_name && strcmp(class_name, "dependency") == 0)
+        blocker_class = BLOCKER_DEPENDENCY;
+    else if (class_name && strcmp(class_name, "transient") == 0)
+        blocker_class = BLOCKER_TRANSIENT;
+    else
+        return 0;
+    return blocker_causal_priority(
+        blocker_class, json_get_str(json_get(candidate, "id")));
 }
 
 bool status_json_equal(const struct json_value *a,
@@ -508,8 +532,7 @@ const struct json_value *status_dominant_blocker(
         const struct json_value *candidate = json_at(blockers, i);
         if (!candidate || candidate->type != JSON_OBJ)
             continue;
-        int prio = blocker_status_priority(
-            json_get_str(json_get(candidate, "class")));
+        int prio = status_blocker_causal_priority(candidate);
         if (!dominant || prio > dominant_prio ||
             (prio == dominant_prio &&
              json_get_int(json_get(candidate, "age_us")) >

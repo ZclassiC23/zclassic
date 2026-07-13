@@ -9,11 +9,13 @@
 
 #include "services/operator_snapshot_service.h"
 
+#include "controllers/agent_security_posture.h"
 #include "net/download.h"
 #include "net/msgprocessor.h"
 #include "platform/time_compat.h"
 #include "services/sync_monitor.h"
 
+#include <stdio.h>
 #include <stdatomic.h>
 #include <string.h>
 
@@ -23,6 +25,8 @@ static _Atomic uint64_t g_operator_snapshot_sequence;
 
 static void operator_collect_components(struct operator_capture *capture)
 {
+    struct agent_security_posture posture;
+
     agent_peer_snapshot_collect(&capture->peers, sync_monitor_connman());
 
     struct download_manager *download = msg_get_download_mgr();
@@ -57,6 +61,13 @@ static void operator_collect_components(struct operator_capture *capture)
         capture->operator_latch_detail,
         sizeof(capture->operator_latch_detail),
         &capture->operator_latch_since_unix);
+    agent_security_posture_collect(&posture, NULL);
+    capture->security_review_required = posture.review_required;
+    snprintf(capture->security_posture_status,
+             sizeof(capture->security_posture_status), "%s", posture.status);
+    snprintf(capture->security_posture_next_action,
+             sizeof(capture->security_posture_next_action), "%s",
+             posture.next_action);
     legacy_mirror_sync_stats_cached_snapshot(&capture->mirror);
 }
 
@@ -112,33 +123,25 @@ static bool operator_frontier_order_ok(const struct operator_capture *capture)
         capture->chain.indexed.height <= capture->chain.header.height;
 }
 
-static int operator_blocker_priority(int blocker_class)
+static bool operator_mirror_same_height_hash_gap(
+    const struct operator_capture *capture)
 {
-    switch (blocker_class) {
-    case BLOCKER_RESOURCE:   return 400;
-    case BLOCKER_PERMANENT:  return 300;
-    case BLOCKER_DEPENDENCY: return 200;
-    case BLOCKER_TRANSIENT:  return 100;
-    default:                 return 0;
-    }
+    const struct legacy_mirror_sync_stats *mirror =
+        capture ? &capture->mirror : NULL;
+    return mirror && mirror->enabled && mirror->reachable &&
+           mirror->lag_known && mirror->local_height >= 0 &&
+           mirror->legacy_height >= 0 &&
+           mirror->local_height == mirror->legacy_height &&
+           !mirror->tip_hashes_agree;
 }
 
 const struct blocker_snapshot *operator_snapshot_dominant_blocker(
     const struct operator_capture *capture)
 {
-    const struct blocker_snapshot *dominant = NULL;
-    int priority = -1;
-    for (int i = 0; i < capture->blocker_count; i++) {
-        const struct blocker_snapshot *candidate = &capture->blockers[i];
-        int candidate_priority = operator_blocker_priority(candidate->class);
-        if (!dominant || candidate_priority > priority ||
-            (candidate_priority == priority &&
-             candidate->age_us > dominant->age_us)) {
-            dominant = candidate;
-            priority = candidate_priority;
-        }
-    }
-    return dominant;
+    if (!capture)
+        return NULL;
+    return blocker_select_dominant(capture->blockers,
+                                   capture->blocker_count);
 }
 
 struct operator_verdict operator_snapshot_classify(
@@ -154,7 +157,8 @@ struct operator_verdict operator_snapshot_classify(
         .chain_consistent = chain_frontier_snapshot_consistent(&capture->chain),
     };
     verdict.serving = capture->chain.served.height_known &&
-                      capture->chain.served.height > 0;
+                      capture->chain.served.height > 0 &&
+                      !capture->security_review_required;
     verdict.gap_known = capture->critical_frontier_stable &&
                         verdict.chain_consistent;
     if (verdict.gap_known) {
@@ -169,41 +173,62 @@ struct operator_verdict operator_snapshot_classify(
     verdict.complete = capture->critical_frontier_stable &&
                        operator_snapshot_chain_bindings_known(capture) &&
                        verdict.chain_consistent && peer_complete &&
-                       capture->download_known && capture->sync_state_known;
+                       capture->download_known && capture->sync_state_known &&
+                       !operator_mirror_same_height_hash_gap(capture) &&
+                       !capture->security_review_required;
     bool hard_typed_blocker =
         capture->blocker_class_count[BLOCKER_PERMANENT] > 0 ||
         capture->blocker_class_count[BLOCKER_RESOURCE] > 0;
     verdict.operator_needed = capture->operator_latch_active ||
                               hard_typed_blocker ||
-                              capture->conditions.unresolved_critical_count > 0;
+                              capture->conditions.unresolved_critical_count > 0 ||
+                              capture->security_review_required;
     const struct blocker_snapshot *dominant =
         operator_snapshot_dominant_blocker(capture);
 
-    if (capture->operator_latch_active) {
-        verdict.status = "operator_needed";
-        verdict.primary = capture->operator_latch_detail[0]
-            ? capture->operator_latch_detail : "operator_needed";
-        verdict.next_action = "inspect active conditions and operator latch";
-        verdict.next_tool = "zcl_conditions";
-        verdict.next_tool2 = "zcl_node_log";
-    } else if (hard_typed_blocker) {
+    if (hard_typed_blocker) {
         verdict.status = "operator_needed";
         verdict.primary = dominant ? dominant->id
                                    : "typed_blocker_operator_needed";
         verdict.next_action = "inspect authoritative typed blockers";
         verdict.next_tool = "zcl_blockers";
         verdict.next_tool2 = "zcl_state";
+    } else if (capture->operator_latch_active) {
+        verdict.status = "operator_needed";
+        verdict.primary = capture->operator_latch_detail[0]
+            ? capture->operator_latch_detail : "operator_needed";
+        verdict.next_action = "inspect active conditions and operator latch";
+        verdict.next_tool = "zcl_conditions";
+        verdict.next_tool2 = "zcl_node_log";
     } else if (capture->conditions.unresolved_critical_count > 0) {
         verdict.status = "operator_needed";
         verdict.primary = "critical_condition_unresolved";
         verdict.next_action = "inspect exhausted critical self-heal conditions";
         verdict.next_tool = "zcl_conditions";
         verdict.next_tool2 = "zcl_node_log";
+    } else if (capture->security_review_required) {
+        verdict.status = "operator_needed";
+        verdict.primary = capture->security_posture_status[0]
+            ? capture->security_posture_status
+            : "security_posture_review_required";
+        verdict.next_action = capture->security_posture_next_action[0]
+            ? capture->security_posture_next_action
+            : "inspect security posture before serving";
+        verdict.next_tool = "zcl_operator_snapshot";
+        verdict.next_tool2 = "zcl_state";
     } else if (!verdict.serving) {
         verdict.status = "blocked";
         verdict.primary = "not_serving";
         verdict.next_action = "restore a published provable frontier";
         verdict.next_tool = "zcl_status";
+    } else if (operator_mirror_same_height_hash_gap(capture)) {
+        verdict.status = "degraded";
+        verdict.primary =
+            "mirror_same_height_hash_unavailable_or_mismatch";
+        verdict.next_action =
+            "obtain exact same-height hashes and resolve the disagreement";
+        verdict.next_tool = "zcl_syncdiag";
+        verdict.next_tool2 = "zcl_state";
     } else if (capture->blocker_count > 0) {
         verdict.status = "degraded";
         verdict.primary = dominant ? dominant->id : "typed_blocker_active";

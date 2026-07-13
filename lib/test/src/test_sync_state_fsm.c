@@ -174,16 +174,18 @@ static int test_snapsync_fsm_rejects_idle_to_complete(void)
     return failures;
 }
 
-static int test_snapsync_fsm_accepts_legal_chain(void)
+static int test_snapsync_fsm_contains_complete_transition(void)
 {
     int failures = 0;
-    TEST("snapsync FSM: IDLE → NEGOTIATING → RECEIVING → VERIFYING → COMPLETE → IDLE") {
+    TEST("snapsync FSM: VERIFYING cannot publish COMPLETE without installer receipt") {
         reset_snapsync_state();
         ASSERT(snapsync_set_state(SNAPSYNC_NEGOTIATING, "t1"));
         ASSERT(snapsync_set_state(SNAPSYNC_RECEIVING,   "t2"));
         ASSERT(snapsync_set_state(SNAPSYNC_VERIFYING,   "t3"));
-        ASSERT(snapsync_set_state(SNAPSYNC_COMPLETE,    "t4"));
-        ASSERT(snapsync_set_state(SNAPSYNC_IDLE,        "t5"));
+        ASSERT(!snapsync_set_state(SNAPSYNC_COMPLETE,   "contained"));
+        ASSERT(snapsync_get_state() == SNAPSYNC_VERIFYING);
+        ASSERT(snapsync_set_state(SNAPSYNC_FAILED,      "contained"));
+        ASSERT(snapsync_set_state(SNAPSYNC_IDLE,        "t4"));
         ASSERT(snapsync_get_state() == SNAPSYNC_IDLE);
         PASS();
     } _test_next:;
@@ -200,6 +202,6 @@ int test_sync_state_fsm(void)
     failures += test_sync_fsm_conditional_transition_is_race_safe();
     failures += test_sync_state_name_covers_all_states();
     failures += test_snapsync_fsm_rejects_idle_to_complete();
-    failures += test_snapsync_fsm_accepts_legal_chain();
+    failures += test_snapsync_fsm_contains_complete_transition();
     return failures;
 }

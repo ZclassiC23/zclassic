@@ -20,6 +20,7 @@
  * The service is reset between cases so each case starts clean. */
 
 #include "test/test_helpers.h"
+#include "controllers/agent_security_posture.h"
 #include "services/soak_attestation_service.h"
 #include "json/json.h"
 
@@ -87,6 +88,7 @@ static int test_line_format(void)
     int failures = 0;
     TEST("soak_attestation: single tick writes well-formed JSON line") {
         soak_attestation_reset_for_test();
+        agent_security_posture_test_override_review_required(0);
         make_tmpdir();
         soak_attestation_init(g_tmpdir);
         soak_attestation_tick();
@@ -102,6 +104,9 @@ static int test_line_format(void)
                   has_json_key(buf, "height")          &&
                   has_json_key(buf, "healthy")         &&
                   has_json_key(buf, "degraded_reason") &&
+                  has_json_key(buf, "security_review_required") &&
+                  has_json_key(buf, "security_posture_ok") &&
+                  has_json_key(buf, "window_eligible") &&
                   has_json_key(buf, "build_commit")    &&
                   has_json_key(buf, "uptime_s");
         if (!ok) {
@@ -121,6 +126,43 @@ static int test_line_format(void)
         }
         PASS();
     } _done_fmt:;
+    agent_security_posture_test_override_review_required(-1);
+    soak_attestation_reset_for_test();
+    cleanup_tmpdir();
+    return failures;
+}
+
+static int test_security_posture_breaks_window(void)
+{
+    int failures = 0;
+    TEST("soak_attestation: review-required posture is window-ineligible") {
+        soak_attestation_reset_for_test();
+        agent_security_posture_test_override_review_required(1);
+        make_tmpdir();
+        soak_attestation_init(g_tmpdir);
+        soak_attestation_tick();
+
+        char buf[1024] = {0};
+        bool ok = read_primary(buf, sizeof(buf)) &&
+            strstr(buf, "\"healthy\":false") != NULL &&
+            strstr(buf, "\"security_review_required\":true") != NULL &&
+            strstr(buf, "\"security_posture_ok\":false") != NULL &&
+            strstr(buf, "\"window_eligible\":false") != NULL &&
+            strstr(buf, "\"degraded_reason\":\"review_required_test\"") != NULL;
+
+        struct json_value state = {0};
+        ok = ok && soak_dump_state_json(&state, NULL);
+        ok = ok && !json_get_bool(json_get(&state, "last_healthy"));
+        ok = ok && !json_get_bool(json_get(&state,
+                                            "last_window_eligible"));
+        ok = ok && json_get_bool(json_get(
+            &state, "last_security_review_required"));
+        json_free(&state);
+
+        if (ok) PASS();
+        else { printf("FAIL: line=%s\n", buf); failures++; }
+    }
+    agent_security_posture_test_override_review_required(-1);
     soak_attestation_reset_for_test();
     cleanup_tmpdir();
     return failures;
@@ -343,6 +385,7 @@ int test_soak_attestation(void)
 {
     int failures = 0;
     failures += test_line_format();
+    failures += test_security_posture_breaks_window();
     failures += test_rotation();
     failures += test_state_dump();
     failures += test_write_failure_counter();

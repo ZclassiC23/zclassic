@@ -20,6 +20,14 @@
 #                               page cache and runs 3x high), or null
 #               mainpid         systemd MainPID at sample time (forensic
 #                               signal for restart-ambiguity analysis), or null
+#               security_review_required
+#                               operator snapshot security gate, or null when
+#                               the target cannot prove its posture
+#               security_posture_ok
+#                               true only when review_required is explicitly
+#                               false; unknown is fail-closed
+#               window_eligible true iff RPC evidence and security posture
+#                               are both eligible for soak accrual
 #               ok              true iff BOTH RPCs answered
 #             If a node is unreachable the line is STILL appended with
 #             ok:false and nulls — a hole in the evidence is itself
@@ -40,6 +48,9 @@
 #               - no sampling hole > HOLE_THRESHOLD (2h cadence-doubling
 #                 + 15 min slack);
 #               - no operator intervention detected;
+#               - every sample has an explicitly review-free security
+#                 posture; review_required breaks the window and missing
+#                 posture evidence is INSUFFICIENT;
 #               - the SOAK node answered in all but <= (100-GAP0_MIN_PCT)%
 #                 of window samples — a node whose RPC is dead/wedged for
 #                 the week (unit active, RPC unanswering, no restart: the
@@ -95,6 +106,7 @@
 #   ZCL_ZD_RPC_CMD         command printing the zclassicd getblockcount JSON
 #   ZCL_SOAK_SHOW_CMD      command printing `systemctl show` key=value lines
 #   ZCL_SOAK_RSS_CMD       command printing a "VmRSS: <n> kB" line
+#   ZCL_SOAK_SECURITY_CMD  command printing operatorsnapshot JSON
 #   ZCL_SOAK_NOW           epoch override for "now" in the judge staleness
 #                          math (test seam — keeps the selftest hermetic)
 #
@@ -135,12 +147,23 @@ rpc_height() {
     printf '%s' "$out" | sed -n 's/.*"result":\([0-9][0-9]*\).*/\1/p' | head -n1
 }
 
+# rpc_security_review_required <cmd>: print true|false only when the target
+# emits the exact operator-snapshot gate. Missing/invalid output is empty and
+# therefore window-ineligible; an old target can never inherit a green soak.
+rpc_security_review_required() {
+    local out
+    out="$(bash -c "$1" 2>/dev/null || true)"
+    printf '%s' "$out" |
+        grep -oE '"security_review_required"[[:space:]]*:[[:space:]]*(true|false)' |
+        head -n1 | sed -E 's/.*:[[:space:]]*//' || true
+}
+
 # ── collect ────────────────────────────────────────────────────────
 
 cmd_collect() {
     mkdir -p "$EVIDENCE_DIR"
 
-    local ts soak_cmd zd_cmd show_cmd
+    local ts soak_cmd zd_cmd security_cmd show_cmd
     ts="$(date +%s)"
 
     # The two reader-VERIFIED query commands (zcl-rpc is env-configured
@@ -148,6 +171,7 @@ cmd_collect() {
     # JSON params string).
     soak_cmd="${ZCL_SOAK_RPC_CMD:-ZCL_DATADIR=\"\$HOME/.zclassic-c23-soak\" ZCL_RPCPORT=18242 \"$REPO_ROOT/build/bin/zcl-rpc\" getblockcount}"
     zd_cmd="${ZCL_ZD_RPC_CMD:-ZCL_DATADIR=\"\$HOME/.zclassic\" ZCL_RPCPORT=8232 \"$REPO_ROOT/build/bin/zcl-rpc\" getblockcount}"
+    security_cmd="${ZCL_SOAK_SECURITY_CMD:-ZCL_DATADIR=\"\$HOME/.zclassic-c23-soak\" ZCL_RPCPORT=18242 \"$REPO_ROOT/build/bin/zcl-rpc\" operatorsnapshot}"
     show_cmd="${ZCL_SOAK_SHOW_CMD:-systemctl --user show $SOAK_UNIT -p NRestarts -p ActiveEnterTimestamp -p MainPID}"
 
     local soak_height zd_height
@@ -161,6 +185,13 @@ cmd_collect() {
 
     local ok="false"
     [ -n "$soak_height" ] && [ -n "$zd_height" ] && ok="true"
+
+    local security_review_required security_posture_ok="false"
+    security_review_required="$(rpc_security_review_required "$security_cmd")"
+    [ "$security_review_required" = "false" ] && security_posture_ok="true"
+    local window_eligible="false"
+    [ "$ok" = "true" ] && [ "$security_posture_ok" = "true" ] &&
+        window_eligible="true"
 
     # systemd restart/uptime accounting. MainPID changes on every recycle
     # — re-read it every sample, never cache.
@@ -184,10 +215,11 @@ cmd_collect() {
     rss_kb="$(printf '%s' "$rss_line" | sed -n 's/.*VmRSS:[[:space:]]*\([0-9][0-9]*\)[[:space:]]*kB.*/\1/p' | head -n1)"
 
     local line
-    line="$(printf '{"ts":%s,"soak_height":%s,"zd_height":%s,"gap":%s,"nrestarts":%s,"active_enter_ts":%s,"rss_kb":%s,"mainpid":%s,"ok":%s}' \
+    line="$(printf '{"ts":%s,"soak_height":%s,"zd_height":%s,"gap":%s,"nrestarts":%s,"active_enter_ts":%s,"rss_kb":%s,"mainpid":%s,"security_review_required":%s,"security_posture_ok":%s,"window_eligible":%s,"ok":%s}' \
         "$ts" "$(jnum "$soak_height")" "$(jnum "$zd_height")" "$(jnum "$gap")" \
         "$(jnum "$nrestarts")" "$(jnum "$aet_epoch")" "$(jnum "$rss_kb")" \
-        "$(jnum "$mainpid")" "$ok")"
+        "$(jnum "$mainpid")" "${security_review_required:-null}" \
+        "$security_posture_ok" "$window_eligible" "$ok")"
 
     # flock-serialized append: timer run + ad-hoc operator run can never
     # interleave a torn line. The lock acquire is BOUNDED (-w 30) and its
@@ -214,6 +246,9 @@ cmd_collect() {
 
     if [ "$ok" != "true" ]; then
         echo "soak-evidence: WARN node unreachable (soak_height=$(jnum "$soak_height") zd_height=$(jnum "$zd_height")) — ok:false recorded" >&2
+    fi
+    if [ "$security_posture_ok" != "true" ]; then
+        echo "soak-evidence: WARN security posture is ${security_review_required:-unknown} — window_eligible:false recorded" >&2
     fi
     echo "soak-evidence: appended file=$EVIDENCE_FILE"
     echo "$line"
@@ -270,6 +305,9 @@ cmd_judge() {
             n++
             ts[n]   = t + 0
             okv[n]  = ($0 ~ /"ok":true/) ? 1 : 0
+            secok[n] = ($0 ~ /"security_posture_ok":true/) ? 1 : 0
+            secrev[n] = ($0 ~ /"security_review_required":true/) ? 1 : 0
+            secknown[n] = ($0 ~ /"security_review_required":(true|false)/ && $0 ~ /"security_posture_ok":(true|false)/) ? 1 : 0
             shv[n]  = fld($0, "soak_height")
             zdv[n]  = fld($0, "zd_height")
             gapv[n] = fld($0, "gap")
@@ -294,6 +332,8 @@ cmd_judge() {
 
             hole_max = 0; op = 0; ambiguous = 0; ok_cnt = 0; gap0 = 0; gapgt0 = 0
             soak_null = 0; zd_null = 0
+            security_review = 0; security_unknown = 0; security_gap = 0
+            eligible_cnt = 0
             max_gap = ""; nr_first = ""; nr_last = ""
             rss_first = ""; rss_last = ""
             prev_t = ""; prev_nr = ""; prev_aet = ""
@@ -306,6 +346,10 @@ cmd_judge() {
                 # the ORACLE was missing (gap unprovable, soak alive).
                 if (!isnum(shv[i]))      soak_null++
                 else if (!isnum(zdv[i])) zd_null++
+                if (secrev[i]) security_review++
+                if (!secknown[i]) security_unknown++
+                if (secknown[i] && !secok[i]) security_gap++
+                if (okv[i] && secok[i]) eligible_cnt++
                 if (okv[i] && isnum(gapv[i])) {
                     ok_cnt++
                     g = gapv[i] + 0
@@ -350,6 +394,7 @@ cmd_judge() {
             printf "soak-evidence: max_sampling_hole_sec=%d hole_threshold_sec=%d\n", hole_max, hole_thr
             printf "soak-evidence: restarts_in_window=%s ambiguous_restarts=%d operator_interventions=%d (NRestarts delta; in-binary watchdog self-recycles count as AUTONOMOUS recovery — count reported, the criterion text decides; ambiguous = restarts in AET-jump intervals where a manual reset-then-climb is indistinguishable at hourly sampling resolution; strict soak_harness math counts ANY observed downtime as FAIL_CRASH)\n", restarts, ambiguous, op
             printf "soak-evidence: ok_samples=%d/%d soak_null_samples=%d zd_null_samples=%d samples_with_gap_gt0=%d max_gap=%s gap0_pct=%.2f\n", ok_cnt, cnt, soak_null, zd_null, gapgt0, (max_gap == "" ? "null" : max_gap ""), gap0_pct
+            printf "soak-evidence: window_eligible_samples=%d/%d security_review_required_samples=%d security_posture_unknown_samples=%d security_posture_gap_samples=%d\n", eligible_cnt, cnt, security_review, security_unknown, security_gap
             printf "soak-evidence: rss_first_kb=%s rss_last_kb=%s\n", (rss_first == "" ? "null" : rss_first ""), (rss_last == "" ? "null" : rss_last "")
 
             # Verdict ladder — deterministic priority, parsed data only.
@@ -363,6 +408,8 @@ cmd_judge() {
                 v = "INSUFFICIENT"; reason = sprintf("window_short_%ds_lt_%ds_slack%ds", covered_sec, wh * 3600, slack)
             } else if (op > 0) {
                 v = "NOT_MET"; reason = sprintf("operator_intervention_detected_x%d", op)
+            } else if (security_review > 0) {
+                v = "NOT_MET"; reason = sprintf("security_review_required_in_%d_of_%d_samples", security_review, cnt)
             } else if (hole_max > hole_thr) {
                 v = "NOT_MET"; reason = sprintf("sampling_hole_%ds_gt_%ds", hole_max, hole_thr)
             } else if (soak_null * 100 > cnt * (100 - gap0_min)) {
@@ -373,6 +420,10 @@ cmd_judge() {
                 v = "INSUFFICIENT"; reason = sprintf("oracle_coverage_thin_ok_%d_of_%d", ok_cnt, cnt)
             } else if (gap0_pct < gap0_min) {
                 v = "NOT_MET"; reason = sprintf("gap_nonzero_in_%d_of_%d_ok_samples", ok_cnt - gap0, ok_cnt)
+            } else if (security_unknown > 0) {
+                v = "INSUFFICIENT"; reason = sprintf("security_posture_unknown_in_%d_of_%d_samples", security_unknown, cnt)
+            } else if (security_gap > 0) {
+                v = "NOT_MET"; reason = sprintf("security_posture_gap_in_%d_of_%d_samples", security_gap, cnt)
             } else {
                 v = "MET"; reason = sprintf("covered_%.1fh_hole_max_%ds_gap0_%.2fpct", covered, hole_max, gap0_pct)
             }
@@ -425,7 +476,7 @@ st_judge() {
 
 # st_line <file> <ts> <gap> <nr> <aet> <rss>  (ok:true, heights derived)
 st_line() {
-    printf '{"ts":%d,"soak_height":%d,"zd_height":%d,"gap":%d,"nrestarts":%d,"active_enter_ts":%d,"rss_kb":%d,"ok":true}\n' \
+    printf '{"ts":%d,"soak_height":%d,"zd_height":%d,"gap":%d,"nrestarts":%d,"active_enter_ts":%d,"rss_kb":%d,"security_review_required":false,"security_posture_ok":true,"window_eligible":true,"ok":true}\n' \
         "$2" $((3000000 + ($2 % 100000))) $((3000000 + ($2 % 100000) + $3)) "$3" "$4" "$5" "$6" >> "$1"
 }
 
@@ -568,6 +619,56 @@ cmd_selftest() {
     st_judge "$tmp/green" 168 $((last_ts + 2592000)) INSUFFICIENT "stale_evidence_age_2592000s" 2 stale-green
     st_judge "$tmp/green" 168 $((last_ts + 2592000)) MET "" 0 stale-green-allow-stale --allow-stale
 
+    # M) One explicit review-required sample breaks the clean window even
+    #    though every height, gap, cadence, and restart fact is green.
+    f="$tmp/security-review"; mkdir -p "$f"
+    for ((i = 0; i <= 168; i++)); do
+        ts=$((base + i * 3600))
+        if [ "$i" -eq 80 ]; then
+            printf '{"ts":%d,"soak_height":3000000,"zd_height":3000000,"gap":0,"nrestarts":1,"active_enter_ts":%d,"rss_kb":1500000,"security_review_required":true,"security_posture_ok":false,"window_eligible":false,"ok":true}\n' \
+                "$ts" "$aet" >> "$f/evidence.jsonl"
+        else
+            st_line "$f/evidence.jsonl" "$ts" 0 1 "$aet" 1500000
+        fi
+    done
+    st_judge "$f" 168 "$fresh" NOT_MET \
+        "security_review_required_in_1_of_169_samples" 1 \
+        security-review-breaks-window
+
+    # N) A legacy/unknown posture sample also cannot bridge a green window.
+    #    Unknown evidence is not a demonstrated failure, so it is
+    #    INSUFFICIENT rather than NOT_MET, but it can never earn MET.
+    f="$tmp/security-unknown"; mkdir -p "$f"
+    for ((i = 0; i <= 168; i++)); do
+        ts=$((base + i * 3600))
+        if [ "$i" -eq 80 ]; then
+            printf '{"ts":%d,"soak_height":3000000,"zd_height":3000000,"gap":0,"nrestarts":1,"active_enter_ts":%d,"rss_kb":1500000,"ok":true}\n' \
+                "$ts" "$aet" >> "$f/evidence.jsonl"
+        else
+            st_line "$f/evidence.jsonl" "$ts" 0 1 "$aet" 1500000
+        fi
+    done
+    st_judge "$f" 168 "$fresh" INSUFFICIENT \
+        "security_posture_unknown_in_1_of_169_samples" 2 \
+        security-unknown-breaks-window
+
+    # P) A known but internally ineligible posture pair also breaks the
+    #    window. This catches corrupt/inconsistent evidence independently of
+    #    the explicit review-required spelling.
+    f="$tmp/security-gap"; mkdir -p "$f"
+    for ((i = 0; i <= 168; i++)); do
+        ts=$((base + i * 3600))
+        if [ "$i" -eq 80 ]; then
+            printf '{"ts":%d,"soak_height":3000000,"zd_height":3000000,"gap":0,"nrestarts":1,"active_enter_ts":%d,"rss_kb":1500000,"security_review_required":false,"security_posture_ok":false,"window_eligible":false,"ok":true}\n' \
+                "$ts" "$aet" >> "$f/evidence.jsonl"
+        else
+            st_line "$f/evidence.jsonl" "$ts" 0 1 "$aet" 1500000
+        fi
+    done
+    st_judge "$f" 168 "$fresh" NOT_MET \
+        "security_posture_gap_in_1_of_169_samples" 1 \
+        security-gap-breaks-window
+
     # L) reset-then-climb ambiguity: NRestarts 5 -> 7 with an AET jump at
     #    i=100 (could be 2 autonomous recycles OR a manual reset + 8
     #    recycles inside one cadence — indistinguishable at hourly
@@ -593,13 +694,14 @@ cmd_selftest() {
         export ZCL_SOAK_EVIDENCE_DIR="$f"
         export ZCL_SOAK_RPC_CMD="echo '{\"result\":105,\"error\":null,\"id\":1}'"
         export ZCL_ZD_RPC_CMD="echo '{\"result\":107,\"error\":null,\"id\":1}'"
+        export ZCL_SOAK_SECURITY_CMD="echo '{\"result\":{\"security_review_required\":false}}'"
         export ZCL_SOAK_SHOW_CMD="printf 'MainPID=4242\nNRestarts=3\nActiveEnterTimestamp=Fri 2026-06-12 23:25:11 UTC\n'"
         export ZCL_SOAK_RSS_CMD="echo 'VmRSS:    123456 kB'"
         bash "$SELF" collect > /dev/null
     ) || st_fail "case=collect-up collect exited non-zero"
     grep -q '"soak_height":105,"zd_height":107,"gap":2,"nrestarts":3,' "$f/evidence.jsonl" \
         || { cat "$f/evidence.jsonl" >&2; st_fail "case=collect-up wrong fields"; }
-    grep -q '"rss_kb":123456,"mainpid":4242,"ok":true}' "$f/evidence.jsonl" \
+    grep -q '"rss_kb":123456,"mainpid":4242,"security_review_required":false,"security_posture_ok":true,"window_eligible":true,"ok":true}' "$f/evidence.jsonl" \
         || { cat "$f/evidence.jsonl" >&2; st_fail "case=collect-up wrong rss/mainpid/ok"; }
     echo "selftest: ok case=collect-up"
 
@@ -610,14 +712,32 @@ cmd_selftest() {
         export ZCL_SOAK_EVIDENCE_DIR="$f"
         export ZCL_SOAK_RPC_CMD="false"
         export ZCL_ZD_RPC_CMD="false"
+        export ZCL_SOAK_SECURITY_CMD="false"
         export ZCL_SOAK_SHOW_CMD="false"
         export ZCL_SOAK_RSS_CMD="false"
         bash "$SELF" collect > /dev/null 2>&1
     ) || st_fail "case=collect-down collect must exit 0 on unreachable nodes"
-    grep -q '"soak_height":null,"zd_height":null,"gap":null,"nrestarts":null,"active_enter_ts":null,"rss_kb":null,"mainpid":null,"ok":false}' \
+    grep -q '"soak_height":null,"zd_height":null,"gap":null,"nrestarts":null,"active_enter_ts":null,"rss_kb":null,"mainpid":null,"security_review_required":null,"security_posture_ok":false,"window_eligible":false,"ok":false}' \
         "$f/evidence.jsonl" \
         || { cat "$f/evidence.jsonl" >&2; st_fail "case=collect-down wrong null line"; }
     echo "selftest: ok case=collect-down"
+
+    # O) A reachable, perfectly aligned node with review_required still
+    #    records a non-accruing sample.
+    f="$tmp/collect-review"; mkdir -p "$f"
+    (
+        export ZCL_SOAK_EVIDENCE_DIR="$f"
+        export ZCL_SOAK_RPC_CMD="echo '{\"result\":105}'"
+        export ZCL_ZD_RPC_CMD="echo '{\"result\":105}'"
+        export ZCL_SOAK_SECURITY_CMD="echo '{\"result\":{\"security_review_required\":true}}'"
+        export ZCL_SOAK_SHOW_CMD="printf 'MainPID=4242\nNRestarts=0\nActiveEnterTimestamp=Fri 2026-06-12 23:25:11 UTC\n'"
+        export ZCL_SOAK_RSS_CMD="echo 'VmRSS: 123456 kB'"
+        bash "$SELF" collect > /dev/null 2>&1
+    ) || st_fail "case=collect-review collect exited non-zero"
+    grep -q '"security_review_required":true,"security_posture_ok":false,"window_eligible":false,"ok":true}' \
+        "$f/evidence.jsonl" \
+        || { cat "$f/evidence.jsonl" >&2; st_fail "case=collect-review accrued"; }
+    echo "selftest: ok case=collect-review"
 
     echo "selftest: PASS"
 }

@@ -84,7 +84,9 @@ imply it, enforced at the single cursor-write chokepoint (not caller
 discipline):
 - **RAISE rule**: a cursor moves up only in a transaction that inserts the
   covering row (the normal `stage.c:441-476` step already does this) or
-  raises the trusted base itself in the same tx with a consensus-bound hash.
+  raises the trusted base itself in the same tx with the complete state
+  commitment and explicit trust posture. A block hash alone names a chain
+  location; it does not authenticate UTXO or shielded state.
   `seed_exempt` (caller-declared trust) is DELETED; the only exemption is
   `target <= trusted_base+1` where the base is a durable crypto-vetted fact.
 - **DELETE rule**: a transaction deleting a row at h must, in the same
@@ -138,8 +140,8 @@ refold armed → page** — every rung real, bounded, auto-terminating.
 and H\* has not advanced for T, a single watchdog fires a universal,
 rung-escalating repair ladder at the named blocker height; rung 1 re-derives
 everything at h from the canonical body with no knowledge of the birth
-mechanism; rungs strictly strengthen; the final rung (refold from the newest
-self-verified rolling anchor) cannot fail while disk and peers exist — so
+mechanism; rungs strictly strengthen; the final rung (restore a locally
+produced complete-state recovery seal and refold) is separately copy-proven — so
 class-specific healers become fast-path optimizations, never correctness
 requirements.
 
@@ -399,8 +401,9 @@ behind a recursive mutex); the operator_needed-latch chain was caught.
 - The fold's refusal to advance past an unproven height (consensus safety).
 - Consensus parity: rungs re-execute the SAME validation code — never skip,
   never force-accept.
-- One authority: rungs repair stage logs/coins from bodies + PoW-bound
-  anchors; no projection or heuristic ever gates or rolls back the fold
+- One authority: rungs repair stage logs/coins from locally validated bodies +
+  explicit trust-state anchors; no projection, peer claim, or heuristic ever
+  gates or rolls back the fold
   (the commitment-audit lesson, kept).
 
 ## 6. Observability debts found during diagnosis (fix alongside)

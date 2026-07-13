@@ -518,6 +518,7 @@ static int test_dev_branch_leaves(void)
             ASSERT(s->handler == NULL);
             ASSERT(s->compat_target != NULL && s->compat_target[0]);
         }
+
         PASS();
     } _test_next:;
     return failures;
@@ -629,6 +630,14 @@ static int test_dev_vcs_revert_release_stub(void)
         (void)json_push_kv_str(&input, "to",
                                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
                                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        (void)json_push_kv_bool(&input, "relink_generation", true);
+
+        const struct zcl_command_spec *spec =
+            find_spec(zcl_command_catalog(), "dev.vcs.revert");
+        char why[128] = {0};
+        ASSERT(spec != NULL);
+        ASSERT(zcl_command_registry_input_validate(spec, &input, why,
+                                                   sizeof(why)));
 
         struct zcl_command_request request = {
             .spec = NULL,

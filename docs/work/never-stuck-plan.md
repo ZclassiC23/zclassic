@@ -1,19 +1,18 @@
 # THE BIG PLAN — prove the foundation, fold forward, delete the lie-cover
 
-> **STATUS (2026-06-23): the forward-sync wedge is RESOLVED on main** — commit
-> `ab512d577` ("fix(boot): bind a snapshot above coins-best by extending the
-> active-chain window") loads a COMPLETE, SHA3-verified snapshot at h=3,156,809
-> (count 1,344,918) via `-load-snapshot-at-own-height` and folds FORWARD, so the
-> fold never re-touches the block (3,156,171) that wedged the older TORN seed
-> (`utxo-stopgap-3151901.snapshot`, missing prevout `21876e8b`). The live node
-> `~/.zclassic-c23` is at the network tip (getblockcount ~3,156,944,
-> verificationprogress=1). This doc is **retained as the design of record for the
+> **STATUS (2026-07-12): canonical is wedged at H*=3,176,325** on incomplete
+> shielded anchor/nullifier history. Commit `ab512d577` repaired the earlier
+> transparent-loader failure and temporarily reached tip from the borrowed
+> h=3,156,809 artifact; it did not prove complete state. This doc is retained
+> as historical diagnosis and as input to the current sovereign cure, but the
+> authoritative gates are in `SOVEREIGN-NETWORK-ROADMAP.md`. It remains the
+> design record for the
 > sovereign cure** (fold forward from our own checkpoint, then delete the
 > borrowed-seed machinery) + the never-stuck hardening map + the per-100-block
-> UTXO-ladder/keystone design. **Still BORROWED — not full sovereignty:** the
-> 3,156,809 snapshot is minted from the zclassicd oracle; its block hash is
-> consensus-bound to the in-binary PoW header, but its UTXO-set content is not yet
-> re-derived from genesis. So the sovereign cure (self-mint a from-genesis SHA3
+> UTXO-ladder investigation. **Still BORROWED — not full sovereignty:** the
+> snapshot is minted from the zclassicd oracle; its height/hash matches a
+> validated header, but ZClassic headers commit neither its UTXO nor shielded
+> contents. So the sovereign cure (self-mint a from-genesis SHA3
 > anchor at compiled checkpoint 3,056,758 → `-refold-from-anchor` cutover → DELETE
 > the borrowed loader) remains the END GOAL, not done. The dated "LIVE
 > RE-VERIFICATION" section below (pinned tip 3,151,411, H\*=3,056,759, the
@@ -318,14 +317,19 @@ block hash correct). You cannot bisect or bounded-repair a fault you never finge
 - Finality window: `ZCL_FINALITY_DEPTH 10` (`main_constants.h:33`), `zcl_immutable_height` (`sync_evidence_policy.c:11`).
 - ONE canonical (script-inclusive, zclassicd-verified) SHA3 UTXO fingerprint, single rung: `checkpoints.c:86` (h=3,056,758); the runtime stamp is a single `node_state 'utxo_sha3'` (INSERT OR REPLACE — at most one stored).
 - The correctly-shaped per-100-block ladder is **DEFINED but DEAD**: the Commitment MMR, leaf `{height, block_hash, utxo_root, data_root}` (`mmr.h:120,122-126`), appended by `rpc_blockchain_maybe_commit` (`blockchain_controller.c:243`) — which has **zero callers on the connect path** (`tip_finalize_post_step.c:184-197` appends only the block-hash MMR + the MMB header leaf), so the ladder is never populated. Its `utxo_root` is the **XOR accumulator** (`blockchain_controller.c:266`), which omits scriptPubKey → **not byte-comparable** to the canonical SHA3.
-- MMB/FlyClient is a **header/PoW ladder only** — leaf binds `{block_hash,height,nBits,sapling_root,chain_work}`, **no utxo_root** (`mmb.h:41-48`). This is B1's keystone gap.
+- MMB/FlyClient proves sampled header work, while the current auxiliary leaf
+  also carries `utxo_root`. ZClassic headers do **not** commit that field or the
+  MMB root, so it remains a peer assertion rather than a PoW state binding.
 - A working **binary-search locator** already exists (`mirror_divergence_locator.c:168-193`) — but it bisects against the **external zclassicd** over block hashes, not a self-committed ladder, not UTXO state.
 - Bounded-window **repair** already clamps to `tip−10` (`utxo_apply_delta_reorg.c`).
 
-**Composition (this is B1+B2+B5 stated as one loop):** on the connect path, fold each
-finalized block once and record a per-height **canonical** UTXO fingerprint (revive the
-Commitment MMR with the SHA3 root, bound to PoW per B1); point the bisect at the
-**self-committed** ladder (not zclassicd); trigger the existing bounded-window repair.
+**Corrected composition:** on the connect path, fold each finalized block once and
+record a per-height locally derived canonical UTXO fingerprint for diagnosis and
+same-node restoration. An auxiliary Commitment MMR can make that ladder tamper-
+evident within the node's own evidence chain, but it is not a ZClassic header
+commitment and cannot authenticate peer state. Point local bisect/restore at this
+ladder and keep assisted snapshots in assisted trust until full-history promotion;
+trigger the existing bounded-window repair.
 Then verify/locate/repair are **self-contained and O(log n + window)** — fast,
 never-lies, never-stuck, the same property.
 
@@ -380,8 +384,10 @@ doctrine); confirm `utxo_apply_delta_reorg.c` refuses unwinds deeper than
 
 ## 2. Invariants (true by construction)
 
-- **I1** No coin enters state except by `utxo_apply` folding a verified block, OR a
-  snapshot whose UTXO root is bound to a PoW-proven chain. No row-count acceptance.
+- **I1** No coin enters sovereign state except by `utxo_apply` folding verified
+  blocks or by atomically restoring a locally self-minted complete-state seal with
+  its applicable proof manifest. Peer/release snapshots remain explicitly assisted;
+  height/hash matching never promotes their contents. No row-count acceptance.
   *Lint* `check-no-rowcount-install`; *test* `test_cold_import_requires_proof`.
 - **I2** No stage cursor stamped forward without a real per-stage log row. Delete the
   `seed_exempt` bypass. *Lint* `check-no-seed-exempt-stamp`; assert H*==MIN(real cursors).
@@ -395,27 +401,29 @@ doctrine); confirm `utxo_apply_delta_reorg.c` refuses unwinds deeper than
 
 ## 3. Step 0 — immediate live recovery (no new code, copy-prove first)
 
-The live node is now UNWEDGED at the network tip (commit `ab512d577` loads a complete
-SHA3-verified snapshot at h=3,156,809 above the former wedge and folds forward), so this
-Step-0 two-step cold-import recovery is **no longer the live posture** — it stays here as a
-still-available fallback. The recipe (prior live recovery, now resolved): on a COPY first
+The 2026-06-23 node briefly reached tip after `ab512d577` repaired the
+transparent loader, but canonical is now wedged at H*=3,176,325 on incomplete
+shielded history. This Step-0 recipe remains only a fallback. On a COPY first
 (`cp -a`, `--importblockindex` then normal boot), verify tip==network + healthy + hash-match
 vs zclassicd at ≥2 heights, then deploy to live. `rm -f build/bin/zclassic23` + verify
 build_commit. Band-aid to unblock soak, NOT the cure.
 
 ## 4. The build (ordered, each copy-proven + replayed before live)
 
-- **B1 — Bind the UTXO set to PoW (keystone, senior).** Q2 found the **fatal gap**
+- **B1 — SUPERSEDED: do not claim an auxiliary root binds UTXO state to PoW.**
+  Q2 correctly found the missing commitment
   (`mmb.h:10`): the MMB leaf is `block_hash||height||timestamp||nBits||sapling_root||
   chain_work` — **no UTXO commitment**, and `chain_work`/`nBits` are attacker-chosen.
-  SHA3 only proves bytes hash to the root the *peer claimed*. Add a UTXO commitment to the
-  proof + reconcile sampled work against the offered chain_work. Pure-additive (no validity
-  change) but consensus-sensitive + HIGH risk → own ADR + adversarial negative test (forged
-  set with matching self-root must REJECT). **Gates everything.**
-- **B2 — Wire `snapsync_verify_flyclient` into the cold-import door** (today reachable only
-  from `msgprocessor_snapshot.c:1093`). Precondition: B1 landed.
+  SHA3 only proves bytes hash to the root the *peer claimed*. Because ZClassic
+  headers commit no UTXO root, adding one to a peer-built auxiliary proof does
+  not close that gap. Keep peer/release snapshots explicitly assisted and
+  promote only after local full-history verification; never change consensus
+  first. **This correction gates everything.**
+- **B2 — Assisted-only FlyClient gate.** It may authenticate advertised header
+  work and manifest integrity, but cannot promote snapshot state to sovereign.
 - **B3 — Delete the row-count heuristic (`utxo_recovery_restore.c:323`) + the `seed_exempt`
-  stamp (`stage_anchor.c:257`).** The wound itself. After B2 the only seed is a proven snapshot.
+  stamp (`stage_anchor.c:257`).** Delete only after the atomic complete-state
+  installer and background sovereignty promotion replace it.
 - **B4 — Logs truly append-only / reorg-correct** — re-key the 7 stage logs to
   `(height, block_hash)`, readers select active-hash. Schema change touching consensus reads
   → replay real reorg history first. MEDIUM-HIGH risk.
@@ -432,8 +440,10 @@ build_commit. Band-aid to unblock soak, NOT the cure.
   have ZERO gap rows, so the fold re-runs full script+proof validation for ~94k real blocks
   (e.g. block 3,151,412 carries a tx with vin=17). Parallelize `script_validate` only if the
   first real measurement demands.
-- **B6 — Honest cold-sync = verify snapshot (B1+B2) → apply at proven height → fold to tip (B5).**
-  No zclassicd anywhere. Must beat MVP C3 (<10 min).
+- **B6 — Honest cold readiness = verify assisted bundle integrity → install
+  at an exact validated chain location → fold to tip (B5).** Keep the trust
+  posture assisted until independent full-history promotion. No zclassicd
+  runtime dependency. Must beat MVP C3 (<10 min) without calling it sovereign.
 - **B7 — Honest recovery from a FORWARD false-reject (the SECOND wedge root).** Verified
   2026-06-18 (workflow `w78oa8h3o`): the wedge is NOT single-rooted. One structural pin (H*
   honestly refusing a non-contiguous log) has TWO independent causes — the borrowed-import
@@ -483,7 +493,7 @@ keeping the height-keyed logs reorg-correct.
 
 Lighter-model fan-out: per-file deletions + include/registry/boot-spec edits, condition
 de-registration, `INSERT OR REPLACE`→`INSERT` sweeps, the new grep lint gates.
-Senior care: B1 (PoW binding), B4 (active-hash reader), B2/B3 (the flip), every
+Senior care: assisted-trust boundaries, B4 (active-hash reader), B2/B3 (the flip), every
 real-history replay, D2's fork-HOLD stub edits.
 
 ## 7. Honest residuals (measure before irreversible cuts)
@@ -500,14 +510,15 @@ real-history replay, D2's fork-HOLD stub edits.
    concrete blocker is a real spend at h=3,151,412 (tx 4e9565…, vin=17) of a coin born in the
    unfolded gap → absent from the snapshot-seeded `coins_kv` → `coin_backfill` latched
    `REFUSED_SPENT` (durable, survives reboot). **This specific 3,151,412 blocker is no longer
-   live** — it was dissolved by the `ab512d577` complete-snapshot-at-3,156,809-and-fold-forward
+   live** — it was dissolved by the `ab512d577` borrowed-transparent-snapshot-at-3,156,809-and-fold-forward
    approach, which never re-touches the wedge block; the analysis is kept because it documents
    why the fold cost is still unmeasured (the from-anchor/from-genesis fold wall-clock remains
    estimated, not measured). On-disk UNDO is also missing for the top ~14k
    blocks (present only checkpoint..~3,137,000), so a forward re-fold (bodies-only) is the
    viable path; rewind-from-undo is not.
-2. **B1 is design work, not wiring** — where the UTXO commitment binds is unresolved +
-   consensus-sensitive → ADR + adversarial review before code.
+2. **B1's proposed PoW binding is impossible above current ZClassic consensus.**
+   Keep auxiliary UTXO commitments as advisory evidence and use explicit
+   assisted trust plus local full-history promotion; never change consensus first.
 3. **Restart-durability after cold re-import** is a separate root cause; confirm whether B6
    inherently fixes it.
 4. **`utxo_mirror_sync` (node.db utxos)** — KEEP pending proof it's a pure rebuildable cache.
@@ -516,9 +527,8 @@ real-history replay, D2's fork-HOLD stub edits.
 
 ## 8. First concrete step
 
-(a) `cp -a ~/.zclassic-c23 ~/.zclassic-c23-step0-copy-…` and run the proven recovery — note
-the live node is already unwedged at tip (`ab512d577`), so this is now a fallback recovery
-rather than a currently-needed action. (b) ~~`rebuild_recent 3056758` to time
+(a) `cp -a ~/.zclassic-c23 ~/.zclassic-c23-step0-copy-…` and reproduce the
+shielded wedge/cure on the copy; canonical is not healthy. (b) ~~`rebuild_recent 3056758` to time
 the fold~~ — **invalid; deleted** (verified 2026-06-18). There is no offline from-checkpoint
 fold verb, so the fold can't be timed yet (see Residual #1). The real first build step is
 therefore **B2**: wire a snapshot-seed-then-fold trigger that rewinds the reducer to the

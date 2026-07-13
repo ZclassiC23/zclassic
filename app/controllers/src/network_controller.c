@@ -4,6 +4,7 @@
 
 #include "platform/time_compat.h"
 #include "controllers/agent_controller.h"
+#include "controllers/agent_security_posture.h"
 #include "controllers/network_controller.h"
 #include "controllers/node_binary_identity_json.h"
 #include "util/log_macros.h"
@@ -358,8 +359,13 @@ static bool rpc_bootstrapstatus(const struct json_value *params, bool help,
     bool protocol_ok = PROTOCOL_VERSION >= MIN_PEER_PROTO_VERSION;
     bool listening = counts.listen_socket_count > 0;
     bool has_tip = advertised_height > 0;
-    bool p2p_serving =
+    bool transport_ready =
         has_connman && listening && node_network && protocol_ok && has_tip;
+    struct agent_security_posture security_posture;
+    agent_security_posture_collect(&security_posture, NULL);
+    bool security_posture_ok =
+        agent_security_posture_allows_public_serving(&security_posture);
+    bool p2p_serving = transport_ready && security_posture_ok;
     bool addr_relay_ready = counts.addrman_entries > 0;
     bool beta6_fast = p2p_serving && node_bootstrap;
     bool zcl23_fast = p2p_serving && node_zcl23;
@@ -369,6 +375,12 @@ static bool rpc_bootstrapstatus(const struct json_value *params, bool help,
     json_push_kv_int(result, "schema_version",
                      BOOTSTRAP_STATUS_SCHEMA_VERSION);
     json_push_kv_bool(result, "ok", p2p_serving);
+    json_push_kv_bool(result, "transport_ready", transport_ready);
+    json_push_kv_bool(result, "security_review_required",
+                      security_posture.review_required);
+    json_push_kv_bool(result, "security_posture_ok", security_posture_ok);
+    json_push_kv_str(result, "security_posture_status",
+                     security_posture.status);
     json_push_kv_str(result, "readiness",
                      network_bootstrap_readiness_label(p2p_serving,
                                                        addr_relay_ready));
@@ -510,6 +522,7 @@ static bool rpc_bootstrapstatus(const struct json_value *params, bool help,
     json_push_kv_bool(&beta6, "serving", beta6_fast);
     json_push_kv_int(&beta6, "chunk_size_bytes", 1024 * 1024);
     json_push_kv_str(&beta6, "current_blocker",
+                     !security_posture_ok ? security_posture.status :
                      node_bootstrap ? "" :
                      "NODE_BOOTSTRAP service not implemented in zclassic23");
     json_push_str_array(&beta6, "messages", beta6_msgs,
@@ -529,6 +542,11 @@ static bool rpc_bootstrapstatus(const struct json_value *params, bool help,
         json_push_string_item(&blockers, "protocol_below_min_peer_version");
     if (!has_tip)
         json_push_string_item(&blockers, "provable_tip_not_published");
+    if (!security_posture_ok)
+        json_push_string_item(&blockers,
+                              security_posture.status[0]
+                                  ? security_posture.status
+                                  : "security_posture_review_required");
     if (!node_bootstrap)
         json_push_string_item(&blockers,
                               "beta6_NODE_BOOTSTRAP_not_advertised");

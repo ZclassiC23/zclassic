@@ -8,6 +8,12 @@
 #include "validation/main_state.h"
 #include "consensus/params.h"
 
+static struct block_index *test_block_index_insert(void *ctx,
+                                                    const struct uint256 *hash)
+{
+    return chainstate_insert_block_index((struct chainstate *)ctx, hash);
+}
+
 int test_chain(void)
 {
     int failures = 0;
@@ -583,6 +589,55 @@ int test_chain(void)
             stream_free(&s2);
         } else { printf("FAIL (ser)\n"); failures++; }
         stream_free(&s);
+    }
+
+    printf("block_tree_db load preserves exact body position... ");
+    {
+        char path[256];
+        snprintf(path, sizeof(path), "/tmp/test_btdb_pos_%d", (int)getpid());
+        test_cleanup_tmpdir(path);
+
+        struct block_tree_db btdb;
+        bool opened = block_tree_db_open(&btdb, path, 1 << 20, false, true);
+        struct disk_block_index written;
+        disk_block_index_init(&written);
+        written.nHeight = 1;
+        written.nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_TRANSACTIONS;
+        written.nTx = 1;
+        written.nFile = 0;
+        written.nDataPos = 1711; /* h=1 in the canonical blk00000 file. */
+        written.nVersion = 4;
+        written.nTime = 1478414242;
+        written.nBits = 0x1f07ffff;
+        written.hashPrev.data[0] = 1;
+        written.hashMerkleRoot.data[0] = 2;
+
+        bool ok = opened &&
+                  block_tree_db_write_block_index(&btdb, &written);
+        struct chainstate loaded;
+        chainstate_init(&loaded);
+        if (ok)
+            ok = block_tree_db_load_block_index_guts(
+                &btdb, test_block_index_insert, &loaded);
+
+        struct uint256 hash;
+        disk_block_index_get_hash(&written, &hash);
+        struct block_index *got = block_map_find(&loaded.map_block_index,
+                                                 &hash);
+        ok = ok && got && got->nFile == 0 && got->nDataPos == 1711 &&
+             (got->nStatus & BLOCK_HAVE_DATA) != 0;
+
+        if (ok)
+            printf("OK\n");
+        else {
+            printf("FAIL (file=%d pos=%u)\n", got ? got->nFile : -1,
+                   got ? got->nDataPos : 0);
+            failures++;
+        }
+        chainstate_free(&loaded);
+        if (opened)
+            block_tree_db_close(&btdb);
+        test_cleanup_tmpdir(path);
     }
 
     printf("block serialize/deserialize roundtrip... ");

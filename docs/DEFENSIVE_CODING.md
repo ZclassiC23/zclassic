@@ -448,6 +448,7 @@ add/remove a gate.
 - `check-vendor-provenance`
 - `check-doc-no-false-deleted`
 - `check-stage-log-reorg-unsafe`
+- `check-stable-publish-contained`
 - `check-zclassicd-reach-allowlist`
 - `check-no-csr-lock-on-finalize-drive`
 - `check-mint-skip-crypto-offline-only`

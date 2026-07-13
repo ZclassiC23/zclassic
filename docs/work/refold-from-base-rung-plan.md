@@ -47,7 +47,9 @@ if the sentinel is pending set `ctx->load_snapshot_at_own_height = <artifact for
 and clear it → routes into the wired `boot_load_snapshot_at_own_height_reset`
 (`config/src/boot_refold_staged.c:646`, on `sticky/sapling-frontier`):
 self-verifies body SHA3; `coins_kv_reset_for_reseed`; re-seeds via `uss_iter`;
-consensus-binds the base (`boot_snapshot_anchor_hash_matches`, FATAL on mismatch);
+matches the base to a validated chain location
+(`boot_snapshot_anchor_hash_matches`, FATAL on mismatch) without claiming that
+the header authenticates snapshot contents;
 installs the v2 Sapling frontier and **skips `sapling_tree_rebuild`**; two-tier
 cursor reset (header/body stages stay at MAX(current,seed_h); coins stages
 `script_validate/proof_validate/utxo_apply/tip_finalize` forced down to seed_h +
@@ -65,8 +67,9 @@ landed contiguous: `coins_applied_height == provable_tip+1` and
 ## (e) Safety / termination
 Bounded attempts + TERMINAL (sentinel clone of `boot_auto_reindex.c`,
 `BOOT_REFOLD_FROM_BASE_MAX≈3`); idempotent (deterministic reseed; count keyed on
-base/episode); base `B ≥ REDUCER_FRONTIER_TRUSTED_ANCHOR` and consensus-bound
-(FATAL on forged anchor); **no validity rule lowered** (re-runs the same stages —
+base/episode); base `B ≥ REDUCER_FRONTIER_TRUSTED_ANCHOR` and exact chain-location
+match (FATAL on a mismatched anchor), with assisted state kept in its explicit
+trust posture; **no validity rule lowered** (re-runs the same stages —
 E13 safe); the sentinel is never in any derived-state wipe set, and the
 validate_headers/nStatus clear happens once at boot before stages start, so it
 cannot race the live 300s `watchdog_check_stuck` BLOCK_FAILED churn.

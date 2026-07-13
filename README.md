@@ -19,14 +19,17 @@ agent operate the node through ~100 typed commands (`zclassic23 <command>`).
 none are yet end-to-end CI-verified across a live soak. Don't rely on it as your
 only mainnet node yet.
 
-It runs on ZClassic mainnet on the `zclassicd` consensus floor and **reaches the
-network tip** via a **borrowed-but-consensus-bound stopgap**: it seeds from a
-UTXO snapshot whose anchor hash is bound to the in-binary PoW header, rather than
-folding that set from its own checkpoint. The **sovereign cold-start cure** —
-fold real block bodies forward from the verified checkpoint, then delete the
-borrowed-seed machinery — is in flight; its design is in
-[`docs/work/never-stuck-plan.md`](docs/work/never-stuck-plan.md). For current live
-state, ask the running node (`zcl_status`) or read
+It runs on ZClassic mainnet on the `zclassicd` consensus floor, but the public
+canonical node is currently **wedged at H\*=3,176,325** by incomplete historical
+shielded anchors/nullifiers. A borrowed snapshot previously brought its
+transparent state to tip. Its anchor hash is checked against a validated local
+header, but ZClassic headers do not commit the snapshot's UTXO or shielded-state
+contents; do not call those contents consensus- or PoW-bound. The **sovereign
+cold-start cure** must fold or independently validate complete transparent,
+Sapling, Sprout, and nullifier state, install it atomically, and pass copy proof
+before canonical deployment. Its design is in
+[`docs/work/self-verified-tip-plan.md`](docs/work/self-verified-tip-plan.md). For
+current live state, ask the running node (`zclassic23 status`) or read
 [`docs/HANDOFF.md`](docs/HANDOFF.md) — this file does not track it. The other known
 soft spot: **off-chain ZMSG is plaintext on the wire**.
 
@@ -187,13 +190,13 @@ reported as `null` plus an error, never as a synthetic zero.
 
 ## Bootstrapping to tip
 
-**Fast path for a fresh clone — tip in one sitting (~minutes).** Download a
-published, prebuilt block index plus a SHA3-self-verified UTXO snapshot (the
+**Legacy assisted starter pack (isolated/copy lanes only).** A historical
+prebuilt block index plus digest-verified UTXO snapshot exists (the
 [`starterpack-3155842`](https://github.com/ZclassiC23/zclassic/releases/tag/starterpack-3155842)
-release), drop both into the datadir, and boot. The snapshot is **not blindly
-trusted**: at boot the node recomputes its SHA3 body hash and checks its anchor
-block hash against the PoW header compiled into the binary — a tampered or
-wrong-chain snapshot is refused (`config/src/boot_refold_staged.c`).
+release). At boot the node recomputes its SHA3 body hash and checks the claimed
+anchor height/hash against the validated local header chain. That detects
+changed bytes and the wrong chain location; it does not prove UTXO or shielded
+contents. Stable starter-pack publication is currently disabled.
 
 ```bash
 # 1. Download both assets from the release (block_index.bin 543 MB + snapshot 105 MB)
@@ -213,19 +216,23 @@ build/bin/zclassic23 -datadir="$DATADIR" \
   -load-snapshot-at-own-height="$DATADIR/utxo-seed-3155842.snapshot"
 ```
 
-`getblockcount` jumps to ~**3,155,842** within seconds, then climbs to the
-network tip in minutes as the node folds forward over P2P block bodies. Full
-walkthrough + expected boot log: [`docs/BOOTSTRAPPING.md`](docs/BOOTSTRAPPING.md).
+The borrowed seed may initialize the held frontier near **3,155,842**, but the
+current fail-closed shielded-history gate intentionally stops at the first
+spend whose anchor/nullifier prefix is unproven. Do not expect this v2 artifact
+to reach tip under the current safety posture. See
+[`docs/BOOTSTRAPPING.md`](docs/BOOTSTRAPPING.md).
 
 **Other paths:**
 
-- **Plain start, no starter pack** — a fresh node syncs honestly from genesis
-  over P2P; fully trustless but **long** (~hours). This is the default if you
-  skip the starter pack.
+- **Plain start, no starter pack** — the from-genesis P2P path is the sovereignty
+  target, but its current end-to-end time/completeness claim is not proven. The
+  proven recovery floor remains header import plus normal boot with a local
+  `zclassicd` archive.
 - **Native P2P fast sync (designed, not yet the everyday proof):** pull the
-  SHA3-verified snapshot directly from another zclassic23 peer (FlyClient/MMB
-  proof bound to the PoW chain), targeting tip in ~a minute once the native peer
-  network is established. Details: [`docs/SYNC.md`](docs/SYNC.md) "Method 1".
+  digest-verified snapshot directly from another zclassic23 peer. FlyClient/MMB
+  authenticates advertised header work, not peer UTXO contents; this remains an
+  assisted-readiness design, not a sovereign minute-sync claim. Details:
+  [`docs/SYNC.md`](docs/SYNC.md) "Method 1".
 - **From a local `zclassicd` (~25 min, dev bootstrap):** if you already run the
   C++ node, import headers first, then boot:
 
@@ -330,7 +337,8 @@ zclassic23 (~15 MB, static)
   ([`docs/DEFENSIVE_CODING.md`](docs/DEFENSIVE_CODING.md)): every write through the
   ActiveRecord lifecycle, every error logs context, every alloc checked, every
   long loop on a supervisor liveness tree.
-- **Tests:** `make test` (488 parallel groups); bugs become 64-bit seeds in a
+- **Tests:** `make test` (592 registered parallel groups at the 2026-07-12
+  audit); bugs become 64-bit seeds in a
   deterministic simulator ([`docs/CHAOS_HARNESS.md`](docs/CHAOS_HARNESS.md)).
 - **Crash recovery is demonstrable:** `make test-crash-bootstrap` runs a
   hermetic kill-9 / restart harness (`tools/crash_recovery_test.c`, isolated
@@ -339,7 +347,10 @@ zclassic23 (~15 MB, static)
 - **Gates are local:** `make lint` + `make ci` (not GitHub Actions).
 - **Deploy builds fresh:** `make deploy` rebuilds the binary and verifies the
   running `build_commit` — never ships stale code.
-- **Reproducible builds**, optional GPG signing (`tools/release.sh`).
+- **Release work is contained:** deterministic flags and legacy GPG-capable
+  packaging exist, but stable publication waits for exact-candidate evidence,
+  two-builder byte identity, and required offline signatures. Unsigned output is
+  local-development-only.
 
 ## Operating
 

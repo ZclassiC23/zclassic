@@ -5,12 +5,11 @@
  * tools/mcp/dev_rpc_bridge.c's rpc_dev_hotswap, kept entirely off tools/mcp/
  * so it survives the later MCP deletion.
  *
- * dev.hotswap.apply / dev.hotswap.probe run as SHORT-LIVED CLI processes, so
- * their handlers cannot re-point leaves in the RUNNING dev node's registry
- * directly. They forward over JSON-RPC to the resident dev node, which runs the
- * actual dlopen + zcl_command_registry_replace_batch in-process. This file
- * declares the resident-node RPC registration; the CLI handlers themselves are
- * declared in command/native_command.h under ZCL_DEV_BUILD. */
+ * dev.hotswap.probe and dev.hotswap.apply are hard-contained until a
+ * disposable probe worker, pre-load ELF admission, immutable artifacts, and
+ * the complete source/proof/rollback transaction exist. This file declares
+ * the resident typed-refusal RPC registration; CLI handlers are declared in
+ * command/native_command.h under ZCL_DEV_BUILD. */
 
 #ifndef ZCL_TOOLS_NATIVE_DEV_HOTSWAP_H
 #define ZCL_TOOLS_NATIVE_DEV_HOTSWAP_H

@@ -21,6 +21,8 @@ fail()
     exit 2
 }
 
+fail 'runtime publication and resident probing are contained; use make hotswap-so plus build/test verification'
+
 json_escape()
 {
     printf '%s' "$1" | sed \
@@ -60,6 +62,31 @@ case "$PROBE" in
 esac
 
 cd "$ROOT" || fail "cannot enter repository: $ROOT"
+
+# Bind the artifact/probe transaction to the complete dirty source epoch.  A
+# standalone invocation may capture its own epoch only when the one requested
+# provider is the exact dirty set (a clean-tree reapply remains allowed).  The
+# watcher passes the identity it captured before proofs, which is compared now
+# and again at the resident commit boundary.
+complete_text="$("$ROOT/tools/dev/source-identity.sh" paths)" ||
+    fail 'complete dirty-set discovery failed'
+complete_dirty=()
+if [ -n "$complete_text" ]; then
+    mapfile -t complete_dirty <<< "$complete_text"
+fi
+if [ "${#complete_dirty[@]}" -gt 0 ] &&
+   { [ "${#complete_dirty[@]}" -ne 1 ] ||
+     [ "${complete_dirty[0]}" != "$source_file" ]; }; then
+    fail "requested provider is not the exact complete dirty set"
+fi
+captured_source_id="$("$ROOT/tools/dev/source-identity.sh" capture)" ||
+    fail 'source identity capture failed'
+expected_source_id="${ZCL_DEV_SOURCE_ID:-$captured_source_id}"
+[[ "$expected_source_id" =~ ^[0-9a-fA-F]{64}$ ]] ||
+    fail 'ZCL_DEV_SOURCE_ID must be 64 hex characters'
+[ "${expected_source_id,,}" = "${captured_source_id,,}" ] ||
+    fail 'source epoch was already superseded before hot-swap build'
+
 so="$(make --no-print-directory hotswap-so FILES="$source_file")" || exit 1
 [ -n "$so" ] && [ -r "$so" ] || fail 'hotswap-so produced no readable artifact'
 case "$so" in /*) ;; *) so="$ROOT/$so" ;; esac
@@ -98,6 +125,14 @@ if [ "$smoke_rc" -ne 0 ] ||
     printf '[dev-hotswap] pre-commit generation/probe smoke failed; resident node was untouched\n' >&2
     exit 1
 fi
+
+# Final source compare-and-swap occurs after the real candidate probe and
+# immediately before the resident registry commit.  Save/rename/delete races
+# publish nothing and return a distinct refusal instead.
+"$ROOT/tools/dev/source-identity.sh" verify "$expected_source_id" >/dev/null || {
+    printf '[dev-hotswap] source epoch superseded; resident node was untouched\n' >&2
+    exit 3
+}
 
 : > "$err_file"
 set +e

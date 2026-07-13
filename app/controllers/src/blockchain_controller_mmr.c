@@ -83,7 +83,7 @@ bool rpc_getcommitmentmmr(const struct json_value *params, bool help,
     (void)params;
     RPC_HELP(help, result,
         "getcommitmentmmr\n"
-        "\nReturns the commitment MMR root (binds UTXO state to PoW chain).\n"
+        "\nReturns the advisory commitment MMR root (not a ZClassic consensus state commitment).\n"
         "Each leaf: SHA3(height || block_hash || utxo_root) every 100 blocks.\n"
         "Used to verify imported UTXO snapshots without replaying history.\n");
 

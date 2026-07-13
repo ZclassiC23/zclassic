@@ -116,11 +116,12 @@ no new tool, no MCP plumbing.
   still carry legacy debt.
 
 **Being deleted (transient, ≈3330 production lines per the plan):** today the coin
-set is seeded once on boot from a near-tip snapshot minted by an external
-`zclassicd`. That snapshot is **consensus-bound** — it is checked against the SHA3
-UTXO checkpoint compiled into the binary (`get_sha3_utxo_checkpoint()`), and the
-restore path refuses to install a non-matching tip (`utxo_recovery_frontier_gate.c`)
-— so it is safe, but it is **borrowed**, not re-derived from genesis. The plan
+set can be seeded on boot from a near-tip snapshot minted by an external
+`zclassicd`. Its payload SHA3 authenticates the file bytes and its anchor hash
+must match a validated local header. That proves the selected chain location,
+not the derivation of UTXO or shielded state: ZClassic headers commit none of
+the UTXO, Sapling/Sprout frontier, or nullifier roots. The state is therefore
+**borrowed**, not consensus-bound or re-derived from genesis. The plan
 (`docs/work/self-verified-tip-plan.md`, and `docs/work/archive/sync-fix-plan-2026-06-21.md`
 for the ordered steps) replaces it with a **self-verified UTXO anchor rebuild**:
 the internal boot path is `-refold-from-anchor`
@@ -128,8 +129,9 @@ the internal boot path is `-refold-from-anchor`
 rebuilds the coin set from that compiled checkpoint forward, then deletes the
 borrowed-seed path and the older recovery-import code that fed it (≈3330 LOC
 production fully deletable, plus PRUNE-not-delete tear paths that keep their
-crash-recovery slice). Until that lands, the one place the node is not fully
-sovereign is its coin-set starting point. (Verify whether the cure has shipped via
+crash-recovery slice). Canonical is currently wedged at H\*=3,176,325 because
+its historical shielded anchors/nullifiers are incomplete; a complete atomic
+state install and copy proof must precede live cutover. (Verify whether the cure has shipped via
 `zclassic23 refold`, `docs/HANDOFF.md`, and the live node — do not assume from
 this page.)
 

@@ -380,6 +380,25 @@ static int test_sync_service_assigns_peer_blocks(void)
         ASSERT(uint256_eq(&assigned[0], &queued[0]));
         ASSERT(uint256_eq(&assigned[1], &queued[1]));
 
+        /* One empty-queue result records the peer's dependency generation;
+         * later message cycles remain parked until queue/window state moves. */
+        syncsvc_assign_peer_blocks(&batch, &dm, &node, assigned,
+                                   DL_WINDOW_SIZE, /*our_height=*/100);
+        struct dl_diagnostics before_park;
+        dl_get_diagnostics(&dm, &before_park);
+        ASSERT(before_park.assign_attempts == 2);
+        ASSERT(before_park.last_assign_result == DL_ASSIGN_NO_QUEUE);
+
+        syncsvc_assign_peer_blocks(&batch, &dm, &node, assigned,
+                                   DL_WINDOW_SIZE, /*our_height=*/100);
+        struct dl_diagnostics after_park;
+        dl_get_diagnostics(&dm, &after_park);
+        ASSERT(batch.should_assign);
+        ASSERT(batch.assigned == 0);
+        ASSERT(after_park.assign_attempts == before_park.assign_attempts);
+        ASSERT(after_park.assign_zero_results ==
+               before_park.assign_zero_results);
+
         dl_free(&dm);
         PASS();
     } _test_next:;

@@ -406,11 +406,11 @@ bool block_tree_db_load_block_index_guts(struct block_tree_db *btdb,
         pindex->nHeight = dbi.nHeight;
         pindex->nFile = dbi.nFile;
         pindex->nDataPos = dbi.nDataPos;
-        /* Fix file 0 offset: zclassicd's LDB positions for blk00000.dat
-         * exclude the genesis block (1695 bytes + 8-byte header = 1703).
-         * Our block files include it, so add the offset for file 0. */
-        if (dbi.nFile == 0 && dbi.nDataPos > 0 && dbi.nHeight > 0)
-            pindex->nDataPos += 1703;
+        /* CDiskBlockIndex nDataPos is already the payload offset in the
+         * corresponding blkNNNNN.dat file. Preserve it byte-for-byte.
+         * Translating file-0 positions here corrupts every early body read
+         * when the exact zclassicd files are linked into the C23 datadir
+         * (for example h=1 is 1711, not 1711 + 1703). */
         pindex->nUndoPos = dbi.nUndoPos;
         /* hashSproutAnchor not stored in block_index (Sprout deprecated) */
         pindex->nVersion = dbi.nVersion;

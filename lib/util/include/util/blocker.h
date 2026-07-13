@@ -166,6 +166,17 @@ int blocker_snapshot_all_with_meta(struct blocker_snapshot *out, int max,
                                    int *escape_dispatched_out,
                                    int *rate_limit_ms_out);
 
+/* Causal operator-status ordering. Resource exhaustion remains the highest
+ * generic class; the two shielded-history gaps outrank other permanent
+ * symptoms (for example script_validate.prevout_unresolved) because those
+ * downstream symptoms cannot be cured until the missing consensus history is
+ * restored. All status surfaces use this one selector so they cannot disagree
+ * about the primary blocker. The returned pointer aliases caller-owned
+ * `snapshots` and remains valid only as long as that array does. */
+int blocker_causal_priority(enum blocker_class c, const char *id);
+const struct blocker_snapshot *blocker_select_dominant(
+    const struct blocker_snapshot *snapshots, int count);
+
 /* Count of active blockers in a class. */
 int blocker_count_by_class(enum blocker_class c);
 

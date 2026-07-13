@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Copyright 2026 Rhett Creighton - Apache License 2.0
 #
-# Plan or apply bounded recovery for NONCANONICAL zclassic23 lanes.
-# The canonical public node is observe-only here by construction.
+# Plan bounded recovery for NONCANONICAL zclassic23 lanes.
+# The planner is observe-only by construction. It contains no snapshot-copy,
+# unit-write, header-import, or service-control implementation.
 
 set -euo pipefail
 
@@ -19,15 +20,14 @@ usage() {
     cat <<'USAGE'
 usage: tools/scripts/lane_recover.sh [dev|soak|all] [--apply] [--json] [--import-headers]
 
-Plans recovery for dev/soak lane lag. With --apply it may install the tracked
-noncanonical unit file, write a snapshot-loader drop-in, copy the canonical
-seed snapshot into a noncanonical datadir, daemon-reload, and restart only that
-noncanonical unit.
+Plans recovery for dev/soak lane lag. `--apply` is a containment probe and
+always refuses before reading lane health or changing a unit, datadir,
+snapshot, drop-in, block index, or service. ZCL_LANE_RECOVERY_APPLY=1 has the
+same fail-closed behavior.
 
---import-headers runs the documented `--importblockindex $HOME/.zclassic`
-header import for the selected noncanonical lane before restart. This is useful
-when the loader snapshot is newer than the lane's current height. If the
-snapshot is not newer, the flag is ignored unless
+--import-headers adds the documented header-import step to the proposed plan.
+It never executes the import. If the loader snapshot is not newer, the step is
+omitted unless
 ZCL_LANE_RECOVERY_ALLOW_STALE_HEADER_IMPORT=1 is set; stale legacy block-index
 imports can make recovery slower without improving the lane.
 
@@ -79,6 +79,23 @@ json_bool() {
     esac
 }
 
+is_true() {
+    case "${1:-}" in
+        1|true|TRUE|yes|YES|on|ON) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+refuse_public_apply() {
+    is_true "$APPLY" || return 0
+    if [ "$JSON" = "1" ]; then
+        printf '%s\n' '{"schema":"zcl.lane_recovery_plan.v1","status":"blocked","error":"runtime_recovery_contained","apply":false,"runtime_publication":false,"mutation_contained":true,"apply_authority":"none","safe_next_action":"run the read-only lane recovery plan and obtain separately reviewed activation authority"}'
+    fi
+    printf '%s\n' \
+        'lane-recover: REFUSE: runtime recovery mutation is contained; --apply and ZCL_LANE_RECOVERY_APPLY are not activation authority' >&2
+    exit 3
+}
+
 json_string_field() {
     local body="$1" key="$2"
     printf '%s\n' "$body" \
@@ -105,51 +122,12 @@ json_number_field() {
         | head -1
 }
 
-is_safe_path() {
-    case "${1:-}" in
-        ""|*".."*|*[$'\n\r\t']*|*" "*) return 1 ;;
-        /*) return 0 ;;
-        *) return 1 ;;
-    esac
-}
-
-lane_unit() {
-    case "$1" in
-        dev) printf 'zcl23-dev.service' ;;
-        soak) printf 'zclassic23-soak.service' ;;
-        *) return 1 ;;
-    esac
-}
-
 lane_datadir() {
     case "$1" in
         dev) printf '%s/.zclassic-c23-dev' "$HOME" ;;
         soak) printf '%s/.zclassic-c23-soak' "$HOME" ;;
         *) return 1 ;;
     esac
-}
-
-lane_binary() {
-    case "$1" in
-        dev) printf '%s/.local/bin/zclassic23-dev' "$HOME" ;;
-        soak) printf '%s/.local/bin/zclassic23-soak' "$HOME" ;;
-        *) return 1 ;;
-    esac
-}
-
-lane_unit_source() {
-    case "$1" in
-        dev) printf '%s/deploy/zcl23-dev.service' "$REPO_ROOT" ;;
-        soak) printf '%s/deploy/examples/zclassic23-soak-node.service' "$REPO_ROOT" ;;
-        *) return 1 ;;
-    esac
-}
-
-dropin_path() {
-    local unit
-    unit="$(lane_unit "$1")" || return 1
-    printf '%s/.config/systemd/user/%s.d/80-snapshot-loader.conf' \
-        "$HOME" "$unit"
 }
 
 health_json() {
@@ -204,78 +182,12 @@ snapshot_height_from_path() {
     esac
 }
 
-copy_seed_snapshot() {
-    local lane="$1" dst_dir="$2" src base dst
-    src="$(canonical_seed_snapshot)" ||
-        die "no canonical seed snapshot found; cannot seed $lane"
-    is_safe_path "$src" || die "unsafe seed source path: $src"
-    [ -f "$src" ] || die "seed source missing: $src"
-    mkdir -p "$dst_dir"
-    base="${src##*/}"
-    dst="$dst_dir/$base"
-    if [ "$src" != "$dst" ]; then
-        install -m 0644 "$src" "$dst"
-    fi
-    printf '%s\n' "$dst"
-}
-
-install_lane_unit() {
-    local lane="$1" unit src dst
-    unit="$(lane_unit "$lane")" || die "invalid lane: $lane"
-    src="$(lane_unit_source "$lane")" || die "invalid lane: $lane"
-    dst="$HOME/.config/systemd/user/$unit"
-    [ -f "$src" ] || die "missing tracked unit source: $src"
-    install -d "$HOME/.config/systemd/user"
-    install -m 0644 "$src" "$dst"
-}
-
-write_loader_dropin() {
-    local lane="$1" snapshot="$2" drop dir
-    is_safe_path "$snapshot" || die "unsafe snapshot path: $snapshot"
-    [ -f "$snapshot" ] || die "snapshot path missing: $snapshot"
-    drop="$(dropin_path "$lane")" || die "invalid lane: $lane"
-    dir="${drop%/*}"
-    mkdir -p "$dir"
-    {
-        printf '# Managed by tools/scripts/lane_recover.sh. Noncanonical lane only.\n'
-        printf '[Service]\n'
-        printf 'Environment="ZCL_LANE_SNAPSHOT_LOADER_FLAG=-load-snapshot-at-own-height=%s"\n' "$snapshot"
-    } > "$drop"
-}
-
-restart_lane() {
-    local lane="$1" unit
-    unit="$(lane_unit "$lane")" || die "invalid lane: $lane"
-    systemctl --user daemon-reload
-    systemctl --user restart "$unit"
-}
-
-import_headers_for_lane() {
-    local lane="$1" unit bin datadir legacy target_db
-    unit="$(lane_unit "$lane")" || die "invalid lane: $lane"
-    bin="$(lane_binary "$lane")" || die "invalid lane: $lane"
-    datadir="$(lane_datadir "$lane")" || die "invalid lane: $lane"
-    legacy="${ZCL_LANE_RECOVERY_LEGACY_SRC:-$HOME/.zclassic}"
-    target_db="$datadir/node.db"
-    [ -x "$bin" ] || die "lane binary missing or not executable: $bin"
-    [ -d "$legacy" ] || die "legacy header source missing: $legacy"
-    [ -f "$target_db" ] || die "target node.db missing: $target_db"
-    log "$lane importing headers from $legacy before loader restart"
-    systemctl --user stop "$unit" 2>/dev/null || true
-    if command -v timeout >/dev/null 2>&1; then
-        timeout "${ZCL_LANE_RECOVERY_IMPORT_TIMEOUT:-1200}s" \
-            "$bin" --importblockindex "$legacy" "$target_db"
-    else
-        "$bin" --importblockindex "$legacy" "$target_db"
-    fi
-}
-
 emit_plan() {
     local lane="$1" action="$2" hint="$3" snapshot="$4" reason="$5" applies="$6"
     local canonical_refused=0
     case "$lane" in live|canonical|main) canonical_refused=1 ;; esac
     if [ "$JSON" = "1" ]; then
-        printf '{"schema":"zcl.lane_recovery_plan.v1","lane":"%s","action":"%s","recovery_hint":"%s","snapshot_path":"%s","reason":"%s","apply":%s,"canonical_refused":%s}\n' \
+        printf '{"schema":"zcl.lane_recovery_plan.v1","lane":"%s","action":"%s","recovery_hint":"%s","snapshot_path":"%s","reason":"%s","apply":%s,"canonical_refused":%s,"runtime_publication":false,"mutation_contained":true,"apply_authority":"none"}\n' \
             "$(json_escape "$lane")" \
             "$(json_escape "$action")" \
             "$(json_escape "$hint")" \
@@ -332,11 +244,9 @@ recover_lane() {
         action="restart_noncanonical_lane"
     fi
 
-    if [ "$action" = "copy_seed_install_loader_restart" ] && [ "$APPLY" = "1" ]; then
-        snapshot="$(copy_seed_snapshot "$lane" "$datadir")"
-        snapshot_seed_height="$(snapshot_height_from_path "$snapshot" || true)"
+    if [ "$action" = "copy_seed_install_loader_restart" ] && [ -z "$snapshot" ]; then
+        snapshot="$(canonical_seed_snapshot || true)"
     fi
-
     if [ -n "$snapshot" ] && [ -z "$snapshot_seed_height" ]; then
         snapshot_seed_height="$(snapshot_height_from_path "$snapshot" || true)"
     fi
@@ -371,48 +281,14 @@ recover_lane() {
         esac
     fi
 
-    emit_plan "$lane" "$action" "$hint" "$snapshot" "${status:-unknown}:${reason:-unknown}" "$APPLY"
-
-    [ "$APPLY" = "1" ] || return 0
-
-    case "$action" in
-        none|inspect_only)
-            log "$lane has no bounded automatic recovery action"
-            ;;
-        install_loader_dropin_restart|copy_seed_install_loader_restart)
-            [ -n "$snapshot" ] || die "$lane needs a snapshot path for loader recovery"
-            install_lane_unit "$lane"
-            write_loader_dropin "$lane" "$snapshot"
-            restart_lane "$lane"
-            ;;
-        import_headers_install_loader_restart|copy_seed_import_headers_install_loader_restart)
-            [ -n "$snapshot" ] || die "$lane needs a snapshot path for loader recovery"
-            install_lane_unit "$lane"
-            write_loader_dropin "$lane" "$snapshot"
-            import_headers_for_lane "$lane"
-            restart_lane "$lane"
-            ;;
-        import_headers_restart)
-            import_headers_for_lane "$lane"
-            restart_lane "$lane"
-            ;;
-        restart_noncanonical_lane)
-            restart_lane "$lane"
-            ;;
-        remove_dev_reindex_override_restart)
-            rm -f "$HOME/.config/systemd/user/zcl23-dev.service.d/reindex.conf"
-            restart_lane "$lane"
-            ;;
-        *)
-            die "unhandled action: $action"
-            ;;
-    esac
+    emit_plan "$lane" "$action" "$hint" "$snapshot" \
+        "${status:-unknown}:${reason:-unknown}" 0
 }
 
 selftest_case() {
     local name="$1" lane="$2" expect_rc="$3" body="$4"
     local rc=0
-    ZCL_LANE_RECOVERY_HEALTH_JSON="$body" \
+    HOME="$ZCL_LANE_SELFTEST_HOME" ZCL_LANE_RECOVERY_HEALTH_JSON="$body" \
         env -u ZCL_LANE_RECOVERY_SELFTEST "$0" "$lane" --json >/dev/null 2>&1 || rc=$?
     if [ "$expect_rc" = "0" ] && [ "$rc" != "0" ]; then
         printf 'lane-recover selftest FAIL expected pass: %s rc=%s\n' "$name" "$rc" >&2
@@ -427,7 +303,7 @@ selftest_case() {
 selftest_case_contains() {
     local name="$1" lane="$2" body="$3" needle="$4" out rc
     rc=0
-    out="$(ZCL_LANE_RECOVERY_HEALTH_JSON="$body" \
+    out="$(HOME="$ZCL_LANE_SELFTEST_HOME" ZCL_LANE_RECOVERY_HEALTH_JSON="$body" \
         env -u ZCL_LANE_RECOVERY_SELFTEST "$0" "$lane" --json --import-headers 2>&1)" || rc=$?
     if [ "$rc" != "0" ]; then
         printf 'lane-recover selftest FAIL expected pass: %s rc=%s out=%s\n' \
@@ -441,8 +317,48 @@ selftest_case_contains() {
     fi
 }
 
+selftest_apply_refused() {
+    local name="$1" mode="$2" out rc=0
+    case "$mode" in
+        flag)
+            out="$(HOME="$ZCL_LANE_SELFTEST_HOME" \
+                env -u ZCL_LANE_RECOVERY_SELFTEST -u ZCL_LANE_RECOVERY_APPLY \
+                "$0" dev --json --apply 2>&1)" || rc=$?
+            ;;
+        env)
+            out="$(HOME="$ZCL_LANE_SELFTEST_HOME" \
+                ZCL_LANE_RECOVERY_APPLY=1 \
+                env -u ZCL_LANE_RECOVERY_SELFTEST \
+                "$0" dev --json 2>&1)" || rc=$?
+            ;;
+        *)
+            printf 'lane-recover selftest FAIL unknown refusal mode: %s\n' \
+                "$mode" >&2
+            exit 1
+            ;;
+    esac
+    [ "$rc" -eq 3 ] || {
+        printf 'lane-recover selftest FAIL expected contained exit 3: %s rc=%s out=%s\n' \
+            "$name" "$rc" "$out" >&2
+        exit 1
+    }
+    printf '%s\n' "$out" | grep -q 'runtime_recovery_contained' || {
+        printf 'lane-recover selftest FAIL missing containment body: %s out=%s\n' \
+            "$name" "$out" >&2
+        exit 1
+    }
+    [ -z "$(find "$ZCL_LANE_SELFTEST_HOME" -mindepth 1 -print -quit)" ] || {
+        printf 'lane-recover selftest FAIL apply mutated isolated HOME: %s\n' \
+            "$name" >&2
+        exit 1
+    }
+}
+
 selftest() {
-    local dev soak live stale_import
+    local sandbox dev soak live stale_import
+    sandbox="$(mktemp -d "${TMPDIR:-/tmp}/zcl-lane-plan-selftest.XXXXXX")"
+    ZCL_LANE_SELFTEST_HOME="$sandbox/home"
+    mkdir -p "$ZCL_LANE_SELFTEST_HOME"
     dev='{"lane":"dev","unit":"zcl23-dev","datadir":"/tmp/zcl-dev","role_ready":false,"status":"warn","reason":"lag_to_live_99","snapshot_path":"/tmp/zcl-dev/utxo-seed-10.snapshot","snapshot_loader_configured":false,"recovery_hint":"restart_with_load_snapshot_at_own_height"}'
     soak='{"lane":"soak","unit":"zclassic23-soak","datadir":"/tmp/zcl-soak","role_ready":false,"status":"warn","reason":"lag_to_live_99","snapshot_path":"","snapshot_loader_configured":false,"recovery_hint":"install_tip_seed_snapshot"}'
     live='{"lane":"live","unit":"zclassic23","datadir":"/tmp/zcl-live","role_ready":false,"status":"warn","reason":"lag_to_live_99","snapshot_path":"/tmp/zcl-live/utxo-seed-10.snapshot","snapshot_loader_configured":false,"recovery_hint":"restart_with_load_snapshot_at_own_height"}'
@@ -452,8 +368,13 @@ selftest() {
     selftest_case "canonical refused" live 1 "$live"
     selftest_case_contains "stale forced header import skipped" dev \
         "$stale_import" "header_import_skipped_snapshot_not_newer"
+    selftest_apply_refused "public --apply" flag
+    selftest_apply_refused "public apply env" env
+    rm -rf "$sandbox"
     printf 'lane-recover selftest PASS\n'
 }
+
+refuse_public_apply
 
 if [ "${ZCL_LANE_RECOVERY_SELFTEST:-0}" = "1" ]; then
     selftest

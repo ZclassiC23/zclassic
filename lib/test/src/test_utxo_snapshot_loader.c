@@ -11,6 +11,7 @@
 
 #include "test/test_helpers.h"
 #include "chain/utxo_snapshot_loader.h"
+#include "core/amount.h"
 #include "crypto/sha3.h"
 
 #include <stdio.h>
@@ -38,6 +39,24 @@ static void wle32(uint8_t *p, uint32_t v)
 { p[0]=(uint8_t)v; p[1]=(uint8_t)(v>>8); p[2]=(uint8_t)(v>>16); p[3]=(uint8_t)(v>>24); }
 static void wle64(uint8_t *p, uint64_t v)
 { for (int i=0;i<8;i++) p[i]=(uint8_t)(v>>(8*i)); }
+
+static bool write_snapshot_fixture(const char *path, uint8_t header[104],
+                                   const uint8_t *body, size_t body_len)
+{
+    struct sha3_256_ctx ctx;
+    uint8_t digest[32];
+    sha3_256_init(&ctx);
+    sha3_256_write(&ctx, body, body_len);
+    sha3_256_finalize(&ctx, digest);
+    memcpy(header + 72, digest, sizeof(digest));
+    FILE *f = fopen(path, "wb");
+    if (!f)
+        return false;
+    bool ok = fwrite(header, 1, 104, f) == 104 &&
+              fwrite(body, 1, body_len, f) == body_len &&
+              fclose(f) == 0;
+    return ok;
+}
 
 int test_utxo_snapshot_loader(void)
 {
@@ -127,6 +146,20 @@ int test_utxo_snapshot_loader(void)
         failures++;
     }
     else printf("OK\n");
+
+    printf("uss: independent UTXO component... ");
+    struct uss_utxo_component component;
+    char component_err[128] = {0};
+    if (!uss_utxo_component_compute(h, &component, component_err,
+                                    sizeof(component_err)) ||
+        component.count != 3 ||
+        component.total_supply != 50000 + 12345 + 99999 ||
+        memcmp(component.sha3_hash, sha3, 32) != 0) {
+        printf("FAIL (%s)\n", component_err);
+        failures++;
+    } else {
+        printf("OK\n");
+    }
     uss_close(h);
 
     /* ── v2 round-trip: records + embedded Sapling frontier section ──
@@ -182,6 +215,16 @@ int test_utxo_snapshot_loader(void)
         ok = ok && gotb && gotl == flen && memcmp(gotb, frontier, flen) == 0;
         struct cap_ctx cap2 = {0};
         ok = ok && uss_iter(hv, cap_cb, &cap2) == 3 && cap2.n == 3;
+        struct uss_utxo_component v2_component;
+        memset(&v2_component, 0, sizeof(v2_component));
+        ok = ok && uss_utxo_component_compute(
+            hv, &v2_component, e2, sizeof(e2));
+        ok = ok && v2_component.count == 3 &&
+            v2_component.total_supply == 50000 + 12345 + 99999 &&
+            memcmp(v2_component.sha3_hash, sha3, 32) == 0;
+        /* Full v2 payload includes the frontier and must not be confused with
+         * the independently recomputed transparent checkpoint. */
+        ok = ok && memcmp(v2sha3, v2_component.sha3_hash, 32) != 0;
         if (hv) uss_close(hv);
 
         /* v1 file (uncorrupted here) => version 1, no frontier. */
@@ -196,6 +239,87 @@ int test_utxo_snapshot_loader(void)
         }
         unlink(tmp2);
         if (ok) printf("OK\n"); else { printf("FAIL (e=%s)\n", e2); failures++; }
+    }
+
+    /* A valid body digest must not authorize an ambiguous legacy layout. */
+    printf("uss: exact legacy layout + canonical records... ");
+    {
+        bool ok = true;
+        const char *bad = "/tmp/zcl_test_uss_bad_layout.dat";
+        uint8_t bh[104];
+        uint8_t bb[4097];
+
+        memcpy(bh, header, sizeof(bh));
+        memcpy(bb, body, body_len);
+        bb[body_len] = 0x42;
+        ok = ok && write_snapshot_fixture(bad, bh, bb, body_len + 1);
+        char be[128] = {0};
+        struct uss_handle *bad_h = ok ?
+            uss_open(bad, true, NULL, NULL, be, sizeof(be)) : NULL;
+        ok = ok && !bad_h && strcmp(be, "v1 trailing payload bytes") == 0;
+        if (bad_h) uss_close(bad_h);
+
+        memcpy(bh, header, sizeof(bh));
+        bh[12] = 1;
+        ok = ok && write_snapshot_fixture(bad, bh, body, body_len);
+        memset(be, 0, sizeof(be));
+        bad_h = ok ? uss_open(bad, true, NULL, NULL, be, sizeof(be)) : NULL;
+        ok = ok && !bad_h &&
+             strcmp(be, "nonzero reserved header bytes") == 0;
+        if (bad_h) uss_close(bad_h);
+
+        memcpy(bh, header, sizeof(bh));
+        wle64(bh + 32, (uint64_t)(50000 + 12345 + 99999 + 1));
+        ok = ok && write_snapshot_fixture(bad, bh, body, body_len);
+        memset(be, 0, sizeof(be));
+        bad_h = ok ? uss_open(bad, true, NULL, NULL, be, sizeof(be)) : NULL;
+        struct uss_utxo_component bad_component;
+        ok = ok && bad_h &&
+             !uss_utxo_component_compute(bad_h, &bad_component,
+                                         be, sizeof(be)) &&
+             strstr(be, "UTXO supply mismatch") != NULL;
+        if (bad_h) uss_close(bad_h);
+
+        memcpy(bh, header, sizeof(bh));
+        memcpy(bb, body, body_len);
+        wle32(bb + 32, 2); /* first key now collides with/out-orders vout=2 */
+        ok = ok && write_snapshot_fixture(bad, bh, bb, body_len);
+        memset(be, 0, sizeof(be));
+        bad_h = ok ? uss_open(bad, true, NULL, NULL, be, sizeof(be)) : NULL;
+        ok = ok && bad_h &&
+             !uss_utxo_component_compute(bad_h, &bad_component,
+                                         be, sizeof(be)) &&
+             strstr(be, "UTXO order") != NULL;
+        if (bad_h) uss_close(bad_h);
+
+        memcpy(bh, header, sizeof(bh));
+        memcpy(bb, body, body_len);
+        bb[55] = 2; /* first record's is_coinbase byte */
+        ok = ok && write_snapshot_fixture(bad, bh, bb, body_len);
+        memset(be, 0, sizeof(be));
+        bad_h = ok ? uss_open(bad, true, NULL, NULL, be, sizeof(be)) : NULL;
+        ok = ok && bad_h &&
+             !uss_utxo_component_compute(bad_h, &bad_component,
+                                         be, sizeof(be)) &&
+             strstr(be, "coinbase") != NULL;
+        if (bad_h) uss_close(bad_h);
+
+        memcpy(bh, header, sizeof(bh));
+        memcpy(bb, body, body_len);
+        wle64(bb + 36, (uint64_t)MAX_MONEY + 1u);
+        wle64(bh + 32, (uint64_t)MAX_MONEY + 1u + 12345u + 99999u);
+        ok = ok && write_snapshot_fixture(bad, bh, bb, body_len);
+        memset(be, 0, sizeof(be));
+        bad_h = ok ? uss_open(bad, true, NULL, NULL, be, sizeof(be)) : NULL;
+        ok = ok && bad_h &&
+             !uss_utxo_component_compute(bad_h, &bad_component,
+                                         be, sizeof(be)) &&
+             strstr(be, "MoneyRange") != NULL;
+        if (bad_h) uss_close(bad_h);
+
+        unlink(bad);
+        if (ok) printf("OK\n");
+        else { printf("FAIL (%s)\n", be); failures++; }
     }
 
     /* Corruption detection. */

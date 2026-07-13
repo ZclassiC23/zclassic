@@ -58,6 +58,15 @@ enum chain_evidence_publish_state {
     CEC_PUBLISH_FROZEN_CONTRADICTION,
 };
 
+/* Durable provenance for CEC_FULLY_VALIDATED.  The state enum alone is not
+ * enough: assisted validation must remain bound to its snapshot evidence,
+ * while a genesis/full-history fold has no snapshot record by design. */
+enum chain_evidence_full_validation_origin {
+    CEC_FULL_VALIDATION_UNKNOWN = 0,
+    CEC_FULL_VALIDATION_GENESIS_HISTORY,
+    CEC_FULL_VALIDATION_ASSISTED_SNAPSHOT,
+};
+
 struct chain_evidence_controller {
     struct node_db *ndb;                 /* non-owning */
     struct chain_state_repository *csr;  /* non-owning */
@@ -119,6 +128,7 @@ struct chain_evidence_controller_view {
     bool has_coins_best_block_hash;
     enum chain_evidence_source_class active_tip_source_class;
     enum chain_evidence_publish_state publish_state;
+    enum chain_evidence_full_validation_origin full_validation_origin;
     bool missing_active_tip_evidence;
     bool publish_state_not_local;
     bool active_tip_hash_mismatch;
@@ -127,6 +137,7 @@ struct chain_evidence_controller_view {
     struct chain_evidence_record block_index_evidence_state;
     struct chain_evidence_record active_tip_evidence;
     struct chain_evidence_record snapshot_evidence;
+    bool snapshot_evidence_loaded;
     struct chain_evidence_record header_chain_evidence;
     char health_reason[128];
     char contradiction_reason[192];
@@ -136,6 +147,8 @@ const char *chain_evidence_controller_state_name(enum chain_evidence_controller_
 const char *chain_evidence_controller_result_name(enum chain_evidence_controller_result result);
 const char *chain_evidence_source_class_name(enum chain_evidence_source_class source);
 const char *chain_evidence_publish_state_name(enum chain_evidence_publish_state state);
+const char *chain_evidence_full_validation_origin_name(
+    enum chain_evidence_full_validation_origin origin);
 
 void chain_evidence_controller_init(struct chain_evidence_controller *authority,
                          struct node_db *ndb,

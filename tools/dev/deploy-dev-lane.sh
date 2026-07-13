@@ -13,21 +13,39 @@
 #   soak lane : ~/.zclassic-c23-soak  ports 8043 / 18242
 #   DEV lane  : ~/.zclassic-c23-dev   ports 8053 / 18252 (THIS script)
 #
-# Usage:
-#   tools/dev/deploy-dev-lane.sh           # activate transactionally
-#   tools/dev/deploy-dev-lane.sh --stage   # build + preflight, no restart
-#   tools/dev/deploy-dev-lane.sh --self-test
+# Public activation and staging are Phase-0 contained and always refuse.
+# `--self-test` proves the retained machinery only in an isolated fixture;
+# its internal capability is not environment-mintable.
+# Usage: tools/dev/deploy-dev-lane.sh --self-test
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO"
 
 MODE="activate"
+ACTIVATION_SELFTEST=0
+SELFTEST_ROOT=""
+SELFTEST_CAP_FD=""
 case "${1:-}" in
     "") ;;
     --stage) MODE="stage" ;;
     --self-test)
         exec bash "$REPO/tools/dev/deploy-dev-lane-selftest.sh"
+        ;;
+    --internal-self-test)
+        [ "$#" -ge 3 ] || {
+            echo "deploy-dev-lane: invalid internal self-test capability" >&2
+            exit 3
+        }
+        ACTIVATION_SELFTEST=1
+        SELFTEST_ROOT="$2"
+        SELFTEST_CAP_FD="$3"
+        shift 3
+        case "${1:-}" in
+            "") ;;
+            --stage) MODE="stage" ;;
+            *) echo "deploy-dev-lane: invalid internal self-test mode" >&2; exit 3 ;;
+        esac
         ;;
     --help|-h)
         sed -n '2,24p' "$0"
@@ -35,6 +53,11 @@ case "${1:-}" in
         ;;
     *) echo "usage: $0 [--stage|--self-test]" >&2; exit 2 ;;
 esac
+
+if [ "$ACTIVATION_SELFTEST" -ne 1 ]; then
+    echo "deploy-dev-lane: REFUSING — runtime generation publication is contained until immutable epochs, proof receipts, resident CAS, and rollback are one transaction" >&2
+    exit 3
+fi
 
 DEV_BIN="$HOME/.local/bin/zclassic23-dev"
 DEV_DATADIR="$HOME/.zclassic-c23-dev"
@@ -165,6 +188,109 @@ guard_pending_auto_reindex() {
     echo "[dev-lane] WARN: pending crash-only auto-reindex request anchor=$anchor count=$count; next boot will rebuild chainstate"
 }
 
+require_selftest_env_exact() {
+    local name="$1" expected="$2"
+    [ "${!name-}" = "$expected" ] || {
+        echo "deploy-dev-lane: invalid internal self-test environment: $name" >&2
+        exit 3
+    }
+}
+
+validate_internal_selftest_capability() {
+    local root capability observed fd_observed fd_path owner mode
+    [[ "$SELFTEST_CAP_FD" =~ ^[3-8]$ ]] || {
+        echo "deploy-dev-lane: invalid internal self-test capability fd" >&2
+        exit 3
+    }
+    root="$(readlink -f "$SELFTEST_ROOT" 2>/dev/null || true)"
+    [ -n "$root" ] && [ "$root" = "$SELFTEST_ROOT" ] &&
+        [ -d "$root" ] && [ ! -L "$root" ] || {
+        echo "deploy-dev-lane: invalid internal self-test root" >&2
+        exit 3
+    }
+    case "$root" in
+        /tmp/zcl-dev-activation-selftest.*) ;;
+        *)
+            echo "deploy-dev-lane: internal self-test root is not an isolated fixture" >&2
+            exit 3
+            ;;
+    esac
+    owner="$(stat -c '%u' "$root" 2>/dev/null || true)"
+    mode="$(stat -c '%a' "$root" 2>/dev/null || true)"
+    [ "$owner" = "$(id -u)" ] && [ "$mode" = "700" ] || {
+        echo "deploy-dev-lane: unsafe internal self-test root ownership/mode" >&2
+        exit 3
+    }
+
+    capability="$root/.deploy-dev-lane-selftest-capability"
+    [ -f "$capability" ] && [ ! -L "$capability" ] || {
+        echo "deploy-dev-lane: internal self-test capability is missing or unsafe" >&2
+        exit 3
+    }
+    owner="$(stat -c '%u' "$capability" 2>/dev/null || true)"
+    mode="$(stat -c '%a' "$capability" 2>/dev/null || true)"
+    [ "$owner" = "$(id -u)" ] && [ "$mode" = "600" ] || {
+        echo "deploy-dev-lane: unsafe internal self-test capability ownership/mode" >&2
+        exit 3
+    }
+    fd_path="$(readlink -f "/proc/$$/fd/$SELFTEST_CAP_FD" 2>/dev/null || true)"
+    [ "$fd_path" = "$capability" ] || {
+        echo "deploy-dev-lane: internal self-test capability fd is not bound to the sentinel" >&2
+        exit 3
+    }
+    IFS= read -r fd_observed <&"$SELFTEST_CAP_FD" || fd_observed=""
+    IFS= read -r observed < "$capability" || observed=""
+    [[ "$observed" =~ ^[0-9a-f]{64}$ ]] && [ "$fd_observed" = "$observed" ] || {
+        echo "deploy-dev-lane: internal self-test capability mismatch" >&2
+        exit 3
+    }
+
+    [ "$(readlink -m "$HOME")" = "$root/home" ] &&
+        [ "$(readlink -m "$GEN_ROOT")" = "$root/home/.local/lib/zclassic23-dev" ] &&
+        [ "$(readlink -m "$DEV_DATADIR")" = "$root/home/.zclassic-c23-dev" ] &&
+        [ "$(readlink -m "$BUILD_ARTIFACT")" = "$root/candidate-zclassic23-dev" ] &&
+        [ "$(readlink -m "${ZCL_TEST_RUNNING:-/invalid}")" = "$root/running-exe" ] &&
+        [ "$(readlink -m "${ZCL_TEST_LOG:-/invalid}")" = "$root/commands.log" ] || {
+        echo "deploy-dev-lane: internal self-test paths escaped the isolated fixture" >&2
+        exit 3
+    }
+    [ -f "$DEV_DATADIR/node.db" ] && [ ! -L "$DEV_DATADIR/node.db" ] || {
+        echo "deploy-dev-lane: internal self-test fixture node.db is missing or unsafe" >&2
+        exit 3
+    }
+    printf '#!/bin/sh\nprintf "candidate\\n"\n' | cmp -s - "$BUILD_ARTIFACT" || {
+        echo "deploy-dev-lane: internal self-test artifact is not the inert fixture" >&2
+        exit 3
+    }
+
+    require_selftest_env_exact ZCL_DEV_SKIP_BUILD 1
+    require_selftest_env_exact ZCL_DEV_BUILD_COMMIT_OVERRIDE test-build
+    require_selftest_env_exact ZCL_DEV_STOP_COMMAND \
+        'printf "stop\n" >> "$ZCL_TEST_LOG"; rm -f "$ZCL_TEST_RUNNING"'
+    require_selftest_env_exact ZCL_DEV_START_COMMAND \
+        'readlink -f "$ZCL_DEV_GENERATION_ROOT/current/zclassic23-dev" > "$ZCL_TEST_RUNNING"; printf "start\n" >> "$ZCL_TEST_LOG"'
+    require_selftest_env_exact ZCL_DEV_RESET_FAILED_COMMAND \
+        'printf "reset\n" >> "$ZCL_TEST_LOG"'
+    require_selftest_env_exact ZCL_DEV_DAEMON_RELOAD_COMMAND \
+        'printf "reload\n" >> "$ZCL_TEST_LOG"'
+    require_selftest_env_exact ZCL_DEV_ACTIVE_COMMAND \
+        'test -s "$ZCL_TEST_RUNNING"'
+    require_selftest_env_exact ZCL_DEV_PID_COMMAND 'printf "4242\n"'
+    require_selftest_env_exact ZCL_DEV_ACTIVATION_TIMEOUT 1
+    require_selftest_env_exact ZCL_DEV_PROBE_INTERVAL_MS 20
+    case "${ZCL_DEV_PREFLIGHT_COMMAND:-}" in true|false) ;;
+        *) echo "deploy-dev-lane: invalid internal self-test preflight" >&2; exit 3 ;;
+    esac
+    case "${ZCL_DEV_ACTIVATION_PROBE_COMMAND:-}" in
+        true|false|'[ "$EXPECTED_GENERATION" = "legacy-aaaa" ]') ;;
+        *) echo "deploy-dev-lane: invalid internal self-test probe" >&2; exit 3 ;;
+    esac
+    case "${ZCL_DEV_RUNNING_EXE_COMMAND:-}" in
+        'cat "$ZCL_TEST_RUNNING"'|'printf "%s\n" "$ZCL_DEV_GENERATION_ROOT/legacy-aaaa/zclassic23-dev"') ;;
+        *) echo "deploy-dev-lane: invalid internal self-test executable probe" >&2; exit 3 ;;
+    esac
+}
+
 validate_confinement() {
     local resolved_root canonical soak legacy injected
     case "$GEN_ROOT" in
@@ -193,7 +319,7 @@ validate_confinement() {
         echo "[dev-lane] FATAL: refusing non-dev datadir: $DEV_DATADIR" >&2; exit 2; }
     [ "$DEV_RPCPORT" = "18252" ] || {
         echo "[dev-lane] FATAL: refusing non-dev RPC port: $DEV_RPCPORT" >&2; exit 2; }
-    if [ "${ZCL_DEV_ACTIVATION_TEST_MODE:-0}" != "1" ]; then
+    if [ "$ACTIVATION_SELFTEST" -ne 1 ]; then
         for injected in ZCL_DEV_PREFLIGHT_COMMAND ZCL_DEV_STOP_COMMAND \
             ZCL_DEV_START_COMMAND ZCL_DEV_RESET_FAILED_COMMAND \
             ZCL_DEV_DAEMON_RELOAD_COMMAND ZCL_DEV_ACTIVE_COMMAND \
@@ -363,7 +489,7 @@ build_candidate() {
     fi
 
     if [ "${ZCL_DEV_SKIP_BUILD:-0}" = "1" ]; then
-        [ "${ZCL_DEV_ACTIVATION_TEST_MODE:-0}" = "1" ] || {
+        [ "$ACTIVATION_SELFTEST" -eq 1 ] || {
             echo "[dev-lane] FATAL: ZCL_DEV_SKIP_BUILD is test-only" >&2; exit 2; }
         [ -n "$BUILD_ARTIFACT" ] && [ -x "$BUILD_ARTIFACT" ] || {
             echo "[dev-lane] FATAL: test artifact missing/not executable" >&2; exit 2; }
@@ -541,6 +667,38 @@ preflight_candidate() {
     fi
 }
 
+validate_source_epoch_authority() {
+    local complete_paths
+    if [ "$ACTIVATION_SELFTEST" -eq 1 ]; then
+        return 0
+    fi
+    [[ "${ZCL_DEV_SOURCE_ID:-}" =~ ^[0-9a-fA-F]{64}$ ]] || {
+        echo "[dev-lane] REFUSING: activation requires ZCL_DEV_SOURCE_ID from an exact dev.change.apply source epoch" >&2
+        echo "[dev-lane] use the native apply command; direct deploy helpers are internal activation backends" >&2
+        exit 3
+    }
+    complete_paths="$("$REPO/tools/dev/source-identity.sh" paths)" || {
+        echo "[dev-lane] REFUSING: complete dirty-set discovery failed" >&2
+        exit 3
+    }
+    if grep -q '^core/' <<< "$complete_paths" &&
+       { [ ! -f "$REPO/.core-unseal-token" ] ||
+         [ -L "$REPO/.core-unseal-token" ]; }; then
+        echo "[dev-lane] REFUSING: sealed Core source requires the owner unseal ritual" >&2
+        exit 3
+    fi
+}
+
+verify_source_epoch_cas() {
+    if [ "$ACTIVATION_SELFTEST" -eq 1 ]; then
+        return 0
+    fi
+    if ! "$REPO/tools/dev/source-identity.sh" verify "$ZCL_DEV_SOURCE_ID" >/dev/null; then
+        echo "[dev-lane] REFUSING: source epoch changed after proof; candidate was not activated" >&2
+        return 1
+    fi
+}
+
 cleanup_dropins() {
     if [ -f "$STALE_REINDEX_DROPIN" ]; then
         if [ "${ZCL_DEV_ALLOW_REINDEX_DROPIN:-0}" = "1" ]; then
@@ -649,7 +807,8 @@ verify_running_generation() {
     local expected="$1" expected_bin
     expected_bin="$GEN_ROOT/$expected/zclassic23-dev"
     local deadline now pid exe interval_ms="${ZCL_DEV_PROBE_INTERVAL_MS:-250}"
-    # Clean boots on the consensus-bound dev starter are normally ~30-35s.
+    # Clean boots on the chain-location-checked assisted dev starter are
+    # normally ~30-35s; the payload is not a consensus commitment.
     # Leave enough headroom for a loaded workstation without misclassifying a
     # healthy immutable generation at the exact edge of its expected boot.
     local timeout_s="${ZCL_DEV_ACTIVATION_TIMEOUT:-60}"
@@ -743,6 +902,15 @@ trap emergency_rollback EXIT
 
 activate_candidate() {
     local reason
+    # This is the final source compare-and-swap.  It runs after candidate
+    # preflight and immediately before any service stop or generation-link
+    # mutation, so a concurrent save/rename/delete leaves the lane untouched.
+    if ! verify_source_epoch_cas; then
+        ACTIVATION_STATUS="superseded"
+        VERIFY_STATUS="source_epoch_superseded"
+        VERIFY_DETAIL="source changed after candidate preflight; running generation was untouched"
+        return 3
+    fi
     refresh_generation_state
     PREVIOUS_GENERATION="$CURRENT_GENERATION"
     if [ -n "$PREVIOUS_GENERATION" ]; then
@@ -767,7 +935,11 @@ activate_candidate() {
     if [ ! -f "$DEV_DATADIR/node.db" ]; then
         echo "[dev-lane] fresh datadir — two-step cold-import bootstrap"
         echo "[dev-lane]   step 1/2: header import from $LEGACY_SRC (read-only, LOCK-safe; never stops zclassicd)"
-        if ! "$CANDIDATE_BIN" -datadir="$DEV_DATADIR" --importblockindex "$LEGACY_SRC"; then
+        # The one-shot parser requires --importblockindex to be argv[1]. Its
+        # optional third positional argument is the target node.db path;
+        # putting -datadir first silently selects normal-node boot instead.
+        if ! "$CANDIDATE_BIN" --importblockindex "$LEGACY_SRC" \
+                "$DEV_DATADIR/node.db"; then
             reason="fresh-datadir header import failed"
             quarantine_candidate "$reason"
             rollback_to_previous "$reason" || true
@@ -809,7 +981,9 @@ activate_candidate() {
 }
 
 main() {
+    validate_internal_selftest_capability
     validate_confinement
+    validate_source_epoch_authority
     mkdir -p "$DEV_DATADIR" "$GEN_ROOT" "$REJECTED_DIR"
     guard_pending_auto_reindex
     acquire_activation_lock
@@ -831,6 +1005,13 @@ main() {
     fi
 
     if [ "$MODE" = "stage" ]; then
+        if ! verify_source_epoch_cas; then
+            ACTIVATION_STATUS="superseded"
+            VERIFY_STATUS="source_epoch_superseded"
+            VERIFY_DETAIL="source changed after candidate preflight; generation was not staged"
+            write_deploy_state "$VERIFY_STATUS" "$VERIFY_DETAIL"
+            return 3
+        fi
         atomic_generation_link staged "$CANDIDATE_GENERATION"
         ACTIVATION_STATUS="staged"
         VERIFY_STATUS="staged"

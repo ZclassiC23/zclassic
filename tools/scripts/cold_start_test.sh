@@ -4,7 +4,9 @@
 # Asserts that a fresh datadir can seed a fast rebuild authority from a local
 # cold-start fixture. Prefer the current secure operator-bundle shape:
 # block_index.bin + utxo-seed-*.snapshot loaded through
-# -load-snapshot-at-own-height, which consensus-binds the snapshot to the PoW
+# -load-snapshot-at-own-height, which checks the snapshot's claimed height/hash
+# against the validated header chain (the state payload is still assisted; a
+# ZClassic header does not commit UTXO or shielded roots)
 # header and exposes fast_rebuild_authority_ready through bootstrapstatus.
 #
 # The legacy fallback is a checkpoint-height consensus_snapshot.db import. A

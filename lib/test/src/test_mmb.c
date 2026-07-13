@@ -750,12 +750,13 @@ static int test_mmb_leaf_from_block(void)
     return failures;
 }
 
-/* The keystone field MUST be folded into the leaf preimage — a leaf that
- * differs ONLY in utxo_root must hash differently, or the binding is inert. */
+/* The auxiliary field MUST be folded into the leaf preimage — a leaf that
+ * differs ONLY in utxo_root must hash differently, or its byte-integrity
+ * signal is inert. This does not make it a ZClassic-header commitment. */
 static int test_mmb_leaf_utxo_root_sensitive(void)
 {
     int failures = 0;
-    TEST("mmb: leaf hash changes with utxo_root (keystone binding)") {
+    TEST("mmb: leaf hash changes with auxiliary utxo_root") {
         struct mmb_leaf l1, l2;
         make_test_leaf(&l1, 100);
         memset(l1.utxo_root, 0, 32);

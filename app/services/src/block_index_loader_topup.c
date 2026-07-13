@@ -110,8 +110,7 @@ static bool topup_row_cb(const uint8_t hash[32],
     if (!bi) {
         /* The loaders never saw this block (connected after the last
          * flat save). Insert it with the projection's full record —
-         * same field mapping as the -rebuildfromlog fold, no +1703
-         * file-0 fixup (the position is this node's own write). */
+         * the position is an exact payload offset written by this node. */
         bi = chainstate_insert_block_index((struct chainstate *)c->ms, &h);
         if (!bi) {
             c->failed = true;

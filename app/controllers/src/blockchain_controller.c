@@ -299,7 +299,7 @@ void rpc_blockchain_mmb_save(struct node_db *ndb)
         LOG_WARN("blockchain", "MMB state save failed");
 }
 
-/* ── Commitment MMR (UTXO state binding) ─────────────── */
+/* ── Auxiliary commitment MMR (advisory UTXO evidence) ───────── */
 
 static struct mmr g_commitment_mmr;
 static bool g_commitment_mmr_initialized = false;

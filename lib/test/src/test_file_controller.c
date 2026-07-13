@@ -3,6 +3,7 @@
 
 #include "platform/time_compat.h"
 #include "test/test_helpers.h"
+#include "config/boot_snapshot_offer.h"
 #include "controllers/file_controller.h"
 #include "net/file_service.h"
 #include "services/consensus_snapshot_export_service.h"
@@ -78,7 +79,9 @@ static bool build_snapshot_source_db(const char *db_path, bool include_all_table
         return false;
 
     sqlite3_exec(db, "PRAGMA journal_mode=OFF", NULL, NULL, NULL);
-    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS blocks(height INTEGER PRIMARY KEY, hash BLOB)", NULL, NULL, NULL);
+    sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS blocks("
+                     "height INTEGER PRIMARY KEY, hash BLOB, status INTEGER)",
+                 NULL, NULL, NULL);
     sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS addresses(address_hash BLOB, tx_count INTEGER)", NULL, NULL, NULL);
     sqlite3_exec(db, "CREATE TABLE IF NOT EXISTS chain_stats(height INTEGER)", NULL, NULL, NULL);
 
@@ -97,20 +100,24 @@ static bool build_snapshot_source_db(const char *db_path, bool include_all_table
             NULL, NULL, NULL);
     }
 
-    sqlite3_exec(db, "INSERT INTO blocks(height,hash) VALUES(0,x'00')", NULL, NULL, NULL);
+    sqlite3_exec(db, "INSERT INTO blocks(height,hash,status) "
+                     "VALUES(0,zeroblob(32),3)",
+                 NULL, NULL, NULL);
     if (include_all_tables) {
         sqlite3_exec(db,
             "INSERT INTO transactions VALUES(x'11',0)",
             NULL, NULL, NULL);
         sqlite3_exec(db, "BEGIN", NULL, NULL, NULL);
         rc = sqlite3_prepare_v2(db,
-                                "INSERT INTO utxos VALUES(x'11',?)",
+                                "INSERT INTO utxos VALUES(zeroblob(32),?)",
                                 -1, &utxo_insert, NULL);
         if (rc != SQLITE_OK || !utxo_insert) {
             sqlite3_close(db);
             return false;
         }
-        for (int i = 0; i < 1000; i++) {
+        /* Keep the locally exported artifact above the production 1 MB
+         * serving floor so manifest tests exercise the real path. */
+        for (int i = 0; i < 40000; i++) {
             sqlite3_bind_int(utxo_insert, 1, i);
             rc = sqlite3_step(utxo_insert);
             sqlite3_reset(utxo_insert);
@@ -134,6 +141,20 @@ static bool build_snapshot_source_db(const char *db_path, bool include_all_table
     sqlite3_close(db);
 
     return true;
+}
+
+static bool build_and_export_local_snapshot(const char *dir)
+{
+    char db_path[320];
+    char snap_path[320];
+    struct stat st;
+    snprintf(db_path, sizeof(db_path), "%s/node.db", dir);
+    snprintf(snap_path, sizeof(snap_path), "%s/consensus_snapshot.db", dir);
+    const uint8_t block_hash[32] = {0};
+    return build_snapshot_source_db(db_path, true) &&
+           consensus_snapshot_export_service_run_bound(
+               dir, 0, block_hash).ok &&
+           stat(snap_path, &st) == 0 && st.st_size > 1000000;
 }
 
 static bool sqlite_has_file(const char *path)
@@ -162,12 +183,53 @@ static int test_manifest_build_includes_snapshot(void)
 
         test_file_write_bytes(blk, 4096, 0x11);
         test_file_touch_age(blk, 7200);
-        test_file_write_bytes(snap, 1100000, 0x22);
+        bool ok = build_and_export_local_snapshot(dir);
 
+        boot_snapshot_offer_test_set_trust_override(1);
         memset(&fm, 0, sizeof(fm));
-        bool ok = file_manifest_build(&fm, dir);
+        ok = ok && file_manifest_build(&fm, dir);
         ok = ok && manifest_has_file_index(&fm, 254);
 
+        struct file_chunk snapshot_chunk = {0};
+        bool snapshot_found = false;
+        for (uint32_t i = 0; i < fm.num_chunks; i++) {
+            if (fm.chunks[i].file_index == 254) {
+                snapshot_chunk = fm.chunks[i];
+                snapshot_found = true;
+                break;
+            }
+        }
+        boot_snapshot_offer_test_set_trust_override(0);
+        uint8_t *bytes = (uint8_t *)(uintptr_t)1;
+        uint32_t bytes_len = 1;
+        ok = ok && snapshot_found;
+        ok = ok && file_manifest_find(&fm, snapshot_chunk.sha3) == NULL;
+        ok = ok && !file_chunk_read(&snapshot_chunk, dir, &bytes, &bytes_len);
+        ok = ok && bytes == NULL && bytes_len == 0;
+
+        /* A persisted sovereign cache must be rejected/rebuilt after a trust
+         * downgrade, so later REST/RPC manifest copies cannot advertise it. */
+        memset(&fm, 0, sizeof(fm));
+        ok = ok && file_manifest_build(&fm, dir);
+        ok = ok && !manifest_has_file_index(&fm, 254);
+
+        /* Global sovereignty cannot bless changed/downloaded bytes.  The
+         * exact locally exported digest is required at serving time. */
+        boot_snapshot_offer_test_set_trust_override(1);
+        FILE *tamper = fopen(snap, "r+b");
+        ok = ok && tamper != NULL;
+        if (tamper) {
+            ok = ok && fseek(tamper, 4096, SEEK_SET) == 0;
+            ok = ok && fputc(0xA5, tamper) != EOF;
+            ok = ok && fflush(tamper) == 0;
+            ok = ok && fdatasync(fileno(tamper)) == 0;
+            fclose(tamper);
+        }
+        memset(&fm, 0, sizeof(fm));
+        ok = ok && file_manifest_build(&fm, dir);
+        ok = ok && !manifest_has_file_index(&fm, 254);
+
+        boot_snapshot_offer_test_set_trust_override(-1);
         cleanup_manifest_test_dir(dir);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -194,6 +256,7 @@ static int test_manifest_cache_rebuilds_when_snapshot_appears(void)
         test_file_write_bytes(blk, 4096, 0x33);
         test_file_touch_age(blk, 7200);
 
+        boot_snapshot_offer_test_set_trust_override(1);
         memset(&fm, 0, sizeof(fm));
         bool ok = file_manifest_build(&fm, dir);
         ok = ok && !manifest_has_file_index(&fm, 254);
@@ -201,8 +264,14 @@ static int test_manifest_cache_rebuilds_when_snapshot_appears(void)
         test_file_write_bytes(snap, 1100000, 0x44);
         memset(&fm, 0, sizeof(fm));
         ok = ok && file_manifest_build(&fm, dir);
+        ok = ok && !manifest_has_file_index(&fm, 254);
+
+        ok = ok && build_and_export_local_snapshot(dir);
+        memset(&fm, 0, sizeof(fm));
+        ok = ok && file_manifest_build(&fm, dir);
         ok = ok && manifest_has_file_index(&fm, 254);
 
+        boot_snapshot_offer_test_set_trust_override(-1);
         cleanup_manifest_test_dir(dir);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -259,13 +328,15 @@ static int test_controller_refresh_manifest_api(void)
 
         test_file_write_bytes(blk, 4096, 0x77);
         test_file_touch_age(blk, 7200);
-        test_file_write_bytes(snap, 1100000, 0x88);
+        bool ok = build_and_export_local_snapshot(dir);
 
+        boot_snapshot_offer_test_set_trust_override(1);
         file_controller_init(dir);
-        bool ok = file_controller_refresh_manifest();
+        ok = ok && file_controller_refresh_manifest();
         ok = ok && file_controller_get_manifest_copy(&fm);
         ok = ok && manifest_has_file_index(&fm, 254);
 
+        boot_snapshot_offer_test_set_trust_override(-1);
         cleanup_manifest_test_dir(dir);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -293,13 +364,14 @@ static int test_manifest_status_reports_export_readiness(void)
 
         test_file_write_bytes(blk, 4096, 0x99);
         test_file_touch_age(blk, 7200);
-        test_file_write_bytes(snap, 1100000, 0xAA);
+        bool ok = build_and_export_local_snapshot(dir);
         test_file_write_bytes(flat, 1100000, 0xBB);
 
+        boot_snapshot_offer_test_set_trust_override(1);
         file_controller_init(dir);
         memset(&status, 0, sizeof(status));
         file_controller_get_manifest_status(&status);
-        bool ok = status.datadir_configured;
+        ok = ok && status.datadir_configured;
         ok = ok && !status.manifest_valid;
         ok = ok && status.snapshot_present;
         ok = ok && !status.snapshot_served;
@@ -317,6 +389,16 @@ static int test_manifest_status_reports_export_readiness(void)
         ok = ok && status.num_chunks > 0;
         ok = ok && status.total_bytes > 0;
 
+        /* The cached manifest is not authority: a live trust downgrade hides
+         * the snapshot immediately while preserving honest disk presence. */
+        boot_snapshot_offer_test_set_trust_override(0);
+        memset(&status, 0, sizeof(status));
+        file_controller_get_manifest_status(&status);
+        ok = ok && status.manifest_valid;
+        ok = ok && status.snapshot_present;
+        ok = ok && !status.snapshot_served;
+
+        boot_snapshot_offer_test_set_trust_override(-1);
         cleanup_manifest_test_dir(dir);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -375,11 +457,14 @@ static int test_file_export_snapshot_success(void)
         snprintf(db_path, sizeof(db_path), "%s/node.db", dir);
         snprintf(snap_path, sizeof(snap_path), "%s/consensus_snapshot.db", dir);
         ok = ok && build_snapshot_source_db(db_path, true);
-        ok = ok && truncate(db_path, 1100000) == 0;
 
         if (ok) {
-            ok = consensus_snapshot_export_service_run(dir).ok;
+            const uint8_t block_hash[32] = {0};
+            ok = consensus_snapshot_export_service_run_bound(
+                dir, 0, block_hash).ok;
             ok = ok && sqlite_has_file(snap_path);
+            ok = ok && consensus_snapshot_export_artifact_check(
+                dir, INT32_MAX).ok;
             ok = ok && sqlite3_open_v2(snap_path, &snap_db,
                                        SQLITE_OPEN_READONLY, NULL) == SQLITE_OK;
         }
@@ -401,6 +486,25 @@ static int test_file_export_snapshot_success(void)
             ok = ok && tables_count == 7;
             ok = ok && secret_tables == 0;
             sqlite3_close(snap_db);
+        }
+
+        /* The digest cache is not enough: a same-height local chain change
+         * must invalidate the stamped state binding immediately. */
+        sqlite3 *source_db = NULL;
+        if (ok && sqlite3_open_v2(db_path, &source_db,
+                SQLITE_OPEN_READWRITE, NULL) == SQLITE_OK && source_db) {
+            ok = sqlite3_exec(source_db,
+                "UPDATE blocks SET hash=x'01010101010101010101010101010101"
+                "01010101010101010101010101010101' WHERE height=0",
+                NULL, NULL, NULL) == SQLITE_OK;
+            sqlite3_close(source_db);
+            source_db = NULL;
+            ok = ok && !consensus_snapshot_export_artifact_check(
+                dir, INT32_MAX).ok;
+        } else {
+            ok = false;
+            if (source_db)
+                sqlite3_close(source_db);
         }
 
         cleanup_file_controller_test_dir(dir);
@@ -432,7 +536,9 @@ static int test_file_export_snapshot_fail_closes_partial(void)
         snprintf(snap_path, sizeof(snap_path), "%s/consensus_snapshot.db", dir);
         ok = ok && build_snapshot_source_db(db_path, false);
         ok = ok && truncate(db_path, 1100000) == 0;
-        ok = ok && !consensus_snapshot_export_service_run(dir).ok;
+        const uint8_t block_hash[32] = {0};
+        ok = ok && !consensus_snapshot_export_service_run_bound(
+            dir, 0, block_hash).ok;
         ok = ok && !sqlite_has_file(snap_path);
 
         cleanup_file_controller_test_dir(dir);

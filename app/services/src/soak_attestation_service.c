@@ -28,6 +28,7 @@
  * is a pure introspection query (bool = whether out was valid). */
 
 #include "services/soak_attestation_service.h"
+#include "controllers/agent_security_posture.h"
 #include "services/node_health_service.h"
 #include "json/json.h"
 #include "platform/time_compat.h"
@@ -61,6 +62,8 @@ static struct {
     _Atomic int64_t lines_written;
     _Atomic int64_t last_ts;
     _Atomic bool    last_healthy;
+    _Atomic bool    last_window_eligible;
+    _Atomic bool    last_security_review_required;
     _Atomic int64_t rotations;
     _Atomic int64_t write_failures;
 
@@ -164,10 +167,15 @@ void soak_attestation_tick(void)
      * reentrant; g_soak.lock must not be held here because the health path
      * itself may take csr->lock THEN coins_kv, and g_soak.lock is unrelated). */
     struct node_health_snapshot snap = {0};
+    struct agent_security_posture security_posture;
     node_health_collect(&snap, NULL, NULL);
+    agent_security_posture_collect(&security_posture, NULL);
 
     int64_t ts_now  = (int64_t)platform_time_wall_time_t();
-    bool    healthy = snap.healthy;
+    bool security_ok =
+        agent_security_posture_allows_public_serving(&security_posture);
+    bool healthy = snap.healthy && security_ok;
+    bool window_eligible = healthy && security_ok;
     int     height  = snap.tip_height;
     int64_t uptime  = snap.uptime_seconds;
 
@@ -198,11 +206,16 @@ void soak_attestation_tick(void)
     int line_len = snprintf(line, sizeof(line),
         "{\"ts\":%lld,\"height\":%d,\"healthy\":%s,"
         "\"degraded_reason\":\"%s\","
+        "\"security_review_required\":%s,"
+        "\"security_posture_ok\":%s,\"window_eligible\":%s,"
         "\"build_commit\":\"%s\",\"uptime_s\":%lld}\n",
         (long long)ts_now,
         height,
         healthy ? "true" : "false",
-        reason_esc,
+        security_ok ? reason_esc : security_posture.status,
+        security_posture.review_required ? "true" : "false",
+        security_ok ? "true" : "false",
+        window_eligible ? "true" : "false",
         commit ? commit : "unknown",
         (long long)uptime);
 
@@ -237,6 +250,9 @@ void soak_attestation_tick(void)
             int64_t total = atomic_fetch_add(&g_soak.lines_written, 1) + 1;
             atomic_store(&g_soak.last_ts, ts_now);
             atomic_store(&g_soak.last_healthy, healthy);
+            atomic_store(&g_soak.last_window_eligible, window_eligible);
+            atomic_store(&g_soak.last_security_review_required,
+                         security_posture.review_required);
 
             /* fsync every N lines to bound data-loss window. */
             if (g_soak.lines_since_fsync >= SOAK_ATTESTATION_FSYNC_EVERY) {
@@ -289,6 +305,8 @@ void soak_attestation_reset_for_test(void)
     atomic_store(&g_soak.lines_written, 0);
     atomic_store(&g_soak.last_ts,       0);
     atomic_store(&g_soak.last_healthy,  false);
+    atomic_store(&g_soak.last_window_eligible, false);
+    atomic_store(&g_soak.last_security_review_required, false);
     atomic_store(&g_soak.rotations,     0);
     atomic_store(&g_soak.write_failures, 0);
 }
@@ -317,6 +335,10 @@ bool soak_dump_state_json(struct json_value *out, const char *key)
                       atomic_load(&g_soak.last_ts));
     json_push_kv_bool(out, "last_healthy",
                       atomic_load(&g_soak.last_healthy));
+    json_push_kv_bool(out, "last_window_eligible",
+                      atomic_load(&g_soak.last_window_eligible));
+    json_push_kv_bool(out, "last_security_review_required",
+                      atomic_load(&g_soak.last_security_review_required));
     json_push_kv_int (out, "rotations",
                       atomic_load(&g_soak.rotations));
     json_push_kv_int (out, "write_failures",

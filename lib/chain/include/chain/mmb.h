@@ -49,11 +49,11 @@ struct mmb_leaf {
      * (coins_kv_commitment — the single canonical encoder, byte-identical to
      * zclassicd's gettxoutsetinfo set). Carried ONLY at boundary heights
      * (height % MMR_COMMITMENT_INTERVAL == 0); zero sentinel on the other 99
-     * heights. Because the leaf is the FlyClient-sampled, PoW-proven object,
-     * binding utxo_root here cryptographically ties the UTXO set to high-work
-     * chain state — a verifier that forces a boundary leaf as a mandatory
-     * sample can assert leaf.utxo_root == its own coins_kv_commitment of the
-     * offered set, collapsing the circular "trust the peer's offered root". */
+     * heights. This field is an auxiliary, peer-provided assertion: ZClassic
+     * headers do not commit the MMB root or any UTXO root. Folding it into the
+     * leaf detects mutation relative to that same auxiliary root, but does not
+     * tie peer state to PoW or collapse the circular trust in the offered
+     * root. Keep peer snapshots assisted until local full-history promotion. */
     uint8_t  utxo_root[32];
 };
 

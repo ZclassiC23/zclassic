@@ -22,6 +22,7 @@
 #include "services/anchor_selfmint.h"
 #include "services/node_health_service.h"
 #include "sync/sync_state.h"
+#include "util/blocker.h"
 #include "util/clientversion.h"
 
 #include <stdbool.h>
@@ -321,8 +322,7 @@ void api_milestone_status_json(struct json_value *result)
 {
     struct node_health_snapshot health = {0};
     node_health_collect(&health, g_api_ctx.node_db ?
-        g_api_ctx.node_db : app_runtime_node_db(),
-        g_api_ctx.main_state);
+        g_api_ctx.node_db : app_runtime_node_db(), g_api_ctx.main_state);
     struct json_value agent = {0};
     bool agent_ok = api_milestone_agent_snapshot(&agent);
     const struct json_value *agent_peers = json_get(&agent, "peers");
@@ -331,27 +331,16 @@ void api_milestone_status_json(struct json_value *result)
         json_get(&agent, "height_contract");
     bool agent_fields_complete = agent_ok;
 
-    api_milestone_require_field(&agent_fields_complete,
-                                api_json_has_str_field(&agent, "status"));
-    api_milestone_require_field(&agent_fields_complete,
-                                api_json_has_str_field(&agent,
-                                                       "readiness_status"));
+    api_milestone_require_field(&agent_fields_complete, api_json_has_str_field(&agent, "status"));
+    api_milestone_require_field(&agent_fields_complete, api_json_has_str_field(&agent, "readiness_status"));
     api_milestone_require_field(
         &agent_fields_complete,
         api_json_has_str_field(agent_height_contract, "status"));
-    api_milestone_require_field(&agent_fields_complete,
-                                api_json_has_bool_field(&agent, "healthy"));
-    api_milestone_require_field(&agent_fields_complete,
-                                api_json_has_bool_field(&agent, "serving"));
-    api_milestone_require_field(&agent_fields_complete,
-                                api_json_has_int_field(&agent,
-                                                       "served_height"));
-    api_milestone_require_field(&agent_fields_complete,
-                                api_json_has_int_field(&agent,
-                                                       "indexed_height"));
-    api_milestone_require_field(&agent_fields_complete,
-                                api_json_has_int_field(&agent,
-                                                       "header_height"));
+    api_milestone_require_field(&agent_fields_complete, api_json_has_bool_field(&agent, "healthy"));
+    api_milestone_require_field(&agent_fields_complete, api_json_has_bool_field(&agent, "serving"));
+    api_milestone_require_field(&agent_fields_complete, api_json_has_int_field(&agent, "served_height"));
+    api_milestone_require_field(&agent_fields_complete, api_json_has_int_field(&agent, "indexed_height"));
+    api_milestone_require_field(&agent_fields_complete, api_json_has_int_field(&agent, "header_height"));
     api_milestone_require_field(&agent_fields_complete,
                                 api_json_has_int_field(&agent,
                                                        "peer_best_height"));
@@ -404,11 +393,11 @@ void api_milestone_status_json(struct json_value *result)
                              target > served_height ? target - served_height : 0)
         : (target > served_height ? target - served_height : 0);
     bool live_healthy = agent_ok
-        ? api_json_bool_field(&agent, "healthy", health.healthy)
-        : health.healthy;
+        ? api_json_bool_field(&agent, "healthy", false)
+        : false;
     bool live_serving = agent_ok
-        ? api_json_bool_field(&agent, "serving", health.serving)
-        : health.serving;
+        ? api_json_bool_field(&agent, "serving", false)
+        : false;
     bool live_has_peers = agent_ok
         ? api_json_nested_bool_field(&agent, "peers", "has_peers",
                                      health.has_peers)
@@ -740,15 +729,16 @@ size_t api_serve_unsupported_version(const char *requested_version,
 size_t api_serve_node_summary(uint8_t *response, size_t response_max)
 {
     struct node_health_snapshot health = {0};
-    node_health_collect(&health, g_api_ctx.node_db ?
-        g_api_ctx.node_db : app_runtime_node_db(),
-        g_api_ctx.main_state);
-
-    /* Read the download counters off the health snapshot already
-     * collected above instead of re-fetching from the download manager. */
+    struct node_db *ndb = g_api_ctx.node_db ? g_api_ctx.node_db : app_runtime_node_db();
+    node_health_collect(&health, ndb, g_api_ctx.main_state);
+    struct agent_security_posture posture; agent_security_posture_collect(&posture, ndb);
+    struct blocker_snapshot blockers[BLOCKER_CAP];
+    int blocker_count = blocker_snapshot_all(blockers, BLOCKER_CAP);
+    const struct blocker_snapshot *dominant = blocker_select_dominant(blockers, blocker_count);
+    const struct blocker_snapshot *authority_blocker = api_blocker_hard_gates_public_serving(dominant) ? dominant : NULL;
+    const struct blocker_snapshot *warning_blocker = dominant && !authority_blocker ? dominant : NULL;
     struct download_stats_snapshot dl_snap;
     download_stats_snapshot_from_health(&dl_snap, &health);
-
     struct api_freshness_meta freshness;
     api_freshness_prepare(&freshness, "served_tip", health.tip_height);
     int64_t height = freshness.served_height;
@@ -760,16 +750,21 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
         target = health.peer_best_height;
     int64_t gap = target > height ? target - height : 0;
     int64_t index_gap = indexed_height > height ? indexed_height - height : 0;
-
     const char *status = "healthy";
     const char *primary = "none";
     const char *next_endpoint = "/api/v1/agent";
     bool material_gap = gap > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS;
-
     const char *summary = "node healthy at served frontier";
     bool operator_needed = false;
-
-    if (!health.serving) {
+    if (authority_blocker) {
+        status = "blocked"; primary = authority_blocker->id;
+        next_endpoint = "/api/v1/health"; summary = "node is held by an authoritative typed blocker";
+        operator_needed = true;
+    } else if (posture.review_required) {
+        status = "blocked"; primary = posture.status;
+        next_endpoint = "/api/v1/health"; summary = "consensus-state trust posture requires review";
+        operator_needed = true;
+    } else if (!health.serving) {
         status = "blocked";
         primary = health.blocking_reason[0] ? health.blocking_reason
                                             : "not_serving";
@@ -803,7 +798,6 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
         summary = "node health checks are degraded";
         operator_needed = health.warning_count > 0;
     }
-
     struct json_value body;
     json_init(&body);
     json_set_object(&body);
@@ -811,9 +805,14 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
     json_push_kv_str(&body, "api_version", ZCL_REST_API_VERSION);
     json_push_kv_str(&body, "build_commit", zcl_build_commit());
     json_push_kv_str(&body, "status", status);
-    json_push_kv_bool(&body, "healthy", health.healthy);
-    json_push_kv_bool(&body, "serving", health.serving);
+    bool public_serving = health.serving && !operator_needed &&
+        agent_security_posture_allows_public_serving(&posture);
+    json_push_kv_bool(&body, "healthy", health.healthy && public_serving); json_push_kv_bool(&body, "serving", public_serving);
     json_push_kv_bool(&body, "operator_needed", operator_needed);
+    json_push_kv_bool(&body, "warning", health.warning || warning_blocker != NULL);
+    json_push_kv_int(&body, "warning_count", (int64_t)health.warning_count + (warning_blocker ? 1 : 0));
+    if (health.warning_reasons[0]) json_push_kv_str(&body, "warning_reasons", health.warning_reasons);
+    if (warning_blocker) json_push_kv_str(&body, "typed_blocker_warning", warning_blocker->id);
     json_push_kv_bool(&body, "operator_latch_recovered",
                       health.operator_latch_recovered);
     json_push_kv_str(&body, "summary", summary);
@@ -822,7 +821,7 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
     agent_push_operator_lane_fields_json(&body);
     agent_push_operator_lane_json(&body, "operator_lane");
     agent_push_readiness_contract_json(
-        &body, "readiness", health.serving, health.has_peers,
+        &body, "readiness", public_serving, health.has_peers,
         operator_needed, health.validation_pack_ok, (int)gap,
         (int)index_gap, health.log_head_gap);
     json_push_kv_int(&body, "height", height);
@@ -842,11 +841,9 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
     json_push_kv_str(&body, "sync_state",
                      sync_state_name(health.sync_state));
     agent_push_restart_watchdog_json(&body, "restart_watchdog", NULL);
-
     struct agent_resource_snapshot resources;
     agent_resource_snapshot_collect(&resources);
     agent_push_resources_json(&body, "resources", &resources);
-
     struct json_value peers;
     json_init(&peers);
     json_set_object(&peers);
@@ -858,7 +855,6 @@ size_t api_serve_node_summary(uint8_t *response, size_t response_max)
                      (int64_t)health.zclassic_c23_peer_count);
     json_push_kv(&body, "peers", &peers);
     json_free(&peers);
-
     struct json_value download;
     json_init(&download);
     json_set_object(&download);

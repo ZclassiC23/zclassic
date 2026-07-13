@@ -5,6 +5,7 @@
 #include "net/snapshot_sync_contract.h"
 #include "services/snapshot_manifest.h"
 #include "config/db_service.h"
+#include "config/boot_snapshot_offer.h"
 #include "config/runtime.h"
 #include "coins/utxo_commitment.h"
 #include "core/serialize.h"
@@ -13,6 +14,12 @@
 #include "chain/mmb.h"
 #include "chain/mmr.h"
 #include "chain/checkpoints.h"
+#include "jobs/stage_helpers.h"
+#include "storage/anchor_kv.h"
+#include "storage/coins_kv.h"
+#include "storage/nullifier_kv.h"
+#include "storage/progress_store.h"
+#include "util/blocker.h"
 #include "validation/main_state.h"
 #include <string.h>
 #include <pthread.h>
@@ -47,6 +54,37 @@ static void build_snapshot_chunk(struct byte_stream *s)
     stream_write_u8(s, 0);
     stream_write_u8(s, (uint8_t)sizeof(script));
     stream_write_bytes(s, script, sizeof(script));
+}
+
+static int test_snapshot_offer_trust_policy(void)
+{
+    int failures = 0;
+    TEST("snapshot offer trust policy permits only complete sovereign state") {
+        ASSERT(boot_snapshot_offer_trust_policy(
+            true, true, true, 0, true, 0, true, 0));
+        ASSERT(!boot_snapshot_offer_trust_policy(
+            false, true, true, 0, true, 0, true, 0));
+        ASSERT(!boot_snapshot_offer_trust_policy(
+            true, false, true, 0, true, 0, true, 0));
+        ASSERT(!boot_snapshot_offer_trust_policy(
+            true, true, true, 1, true, 0, true, 0));
+        ASSERT(!boot_snapshot_offer_trust_policy(
+            true, true, true, 0, true, 1, true, 0));
+        ASSERT(!boot_snapshot_offer_trust_policy(
+            true, true, true, 0, true, 0, true, 1));
+        ASSERT(!boot_snapshot_offer_trust_policy(
+            true, true, false, 0, true, 0, true, 0));
+        char reason[96] = {0};
+        boot_snapshot_offer_test_set_trust_override(1);
+        boot_snapshot_offer_test_set_publication_override(-1);
+        ASSERT(!boot_snapshot_offer_state_is_sovereign(reason,
+                                                        sizeof(reason)));
+        ASSERT(strcmp(reason,
+                      "snapshot_payload_authority_binding_incomplete") == 0);
+        boot_snapshot_offer_test_set_trust_override(-1);
+        PASS();
+    } _test_next:;
+    return failures;
 }
 
 static void build_truncated_snapshot_chunk(struct byte_stream *s)
@@ -90,6 +128,38 @@ static int64_t count_table_rows(sqlite3 *db, const char *table)
         count = sqlite3_column_int64(st, 0);
     sqlite3_finalize(st);
     return count;
+}
+
+static bool snapshot_table_has_outpoint(sqlite3 *db, const char *table,
+                                        const uint8_t txid[32], int vout)
+{
+    sqlite3_stmt *st = NULL;
+    char sql[160];
+    bool found = false;
+
+    if (!db || !table || !txid)
+        return false;
+    int n = snprintf(sql, sizeof(sql),
+                     "SELECT 1 FROM %s WHERE txid=? AND vout=? LIMIT 1",
+                     table);
+    if (n <= 0 || (size_t)n >= sizeof(sql) ||
+        sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        return false;
+    if (sqlite3_bind_blob(st, 1, txid, 32, SQLITE_STATIC) == SQLITE_OK &&
+        sqlite3_bind_int(st, 2, vout) == SQLITE_OK)
+        found = sqlite3_step(st) == SQLITE_ROW;
+    sqlite3_finalize(st);
+    return found;
+}
+
+static bool snapshot_meta_is(sqlite3 *db, const char *key, const char *want)
+{
+    char buf[24] = {0};
+    size_t len = 0;
+    bool found = false;
+    size_t want_len = strlen(want);
+    return progress_meta_get(db, key, buf, sizeof(buf), &len, &found) &&
+           found && len == want_len && memcmp(buf, want, want_len) == 0;
 }
 
 static bool build_fc_chain(struct mmb *mmb,
@@ -535,11 +605,11 @@ static int test_snapshot_sync_service_fc_roundtrip(void)
     return failures;
 }
 
-static int test_snapshot_sync_service_activates_tip(void)
+static int test_snapshot_sync_service_contains_tip_activation(void)
 {
     int failures = 0;
 
-    TEST("snapshot sync service activates verified snapshot tip") {
+    TEST("snapshot sync contains verified snapshot tip activation") {
         struct snapshot_sync_service svc;
         struct main_state ms;
         struct block_index genesis, snap;
@@ -566,22 +636,26 @@ static int test_snapshot_sync_service_activates_tip(void)
         svc.offered_height = 1;
         svc.offered_peer_tip_height = 11;
 
-        ASSERT(snapsync_activate_verified_tip(&svc, &ms) == 1);
-        ASSERT(active_chain_tip(&ms.chain_active) == &snap);
-        ASSERT(ms.pindex_best_header == &snap);
+        blocker_clear(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID);
+        ASSERT(snapsync_activate_verified_tip(&svc, &ms) ==
+               SNAPSYNC_ACTIVATION_CONTAINED_ERROR_CODE);
+        ASSERT(active_chain_tip(&ms.chain_active) == NULL);
+        ASSERT(ms.pindex_best_header == NULL);
+        ASSERT(!blocker_exists(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID));
 
         main_state_free(&ms);
+        blocker_clear(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID);
         PASS();
     } _test_next:;
 
     return failures;
 }
 
-static int test_snapshot_sync_service_activates_fallback_tip(void)
+static int test_snapshot_sync_service_contains_fallback_tip(void)
 {
     int failures = 0;
 
-    TEST("snapshot sync creates anchor when tip hash not in block index") {
+    TEST("snapshot sync containment creates no fallback anchor") {
         struct snapshot_sync_service svc;
         struct main_state ms;
         struct block_index genesis, indexed, unindexed, too_high;
@@ -635,18 +709,18 @@ static int test_snapshot_sync_service_activates_fallback_tip(void)
         svc.offered_height = 2000;
         svc.offered_peer_tip_height = 2010;
 
-        /* After FlyClient+SHA3 verified snapshot, the function inserts a
-         * placeholder anchor at snapshot height and returns offered_height.
-         * The active chain is NOT modified (no pprev chain available). */
-        ASSERT(snapsync_activate_verified_tip(&svc, &ms) == 2000);
-        /* Anchor should be findable in block map */
-        ASSERT(block_map_find(&ms.map_block_index, &missing) != NULL);
-        ASSERT(block_map_find(&ms.map_block_index, &missing)->nHeight == 2000);
-        /* Snapshot anchor getter should return the placeholder */
-        ASSERT(snapsync_get_anchor() != NULL);
-        ASSERT(snapsync_get_anchor()->nHeight == 2000);
+        snapsync_set_anchor(NULL);
+        blocker_clear(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID);
+        ASSERT(snapsync_activate_verified_tip(&svc, &ms) ==
+               SNAPSYNC_ACTIVATION_CONTAINED_ERROR_CODE);
+        ASSERT(block_map_find(&ms.map_block_index, &missing) == NULL);
+        ASSERT(snapsync_get_anchor() == NULL);
+        ASSERT(active_chain_tip(&ms.chain_active) == NULL);
+        ASSERT(ms.pindex_best_header == NULL);
+        ASSERT(!blocker_exists(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID));
 
         main_state_free(&ms);
+        blocker_clear(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID);
         PASS();
     } _test_next:;
 
@@ -903,11 +977,11 @@ static int test_snapshot_sync_service_runtime_accessor(void)
     return failures;
 }
 
-static int test_snapshot_sync_service_db_service_chunk_finalize(void)
+static int test_snapshot_sync_service_db_service_chunk_contained(void)
 {
     int failures = 0;
 
-    TEST("snapshot sync service applies and finalizes chunks via runtime db service") {
+    TEST("snapshot sync verifies chunks but contains runtime activation") {
         struct snapshot_sync_service svc;
         struct node_db ndb;
         struct db_service dbsvc;
@@ -956,8 +1030,13 @@ static int test_snapshot_sync_service_db_service_chunk_finalize(void)
         memcpy(svc.offered_utxo_root, root, sizeof(root));
         ASSERT(db_service_begin_write(&dbsvc));
 
-        ASSERT(snapsync_finalize(&svc).ok);
-        ASSERT(svc.state == SNAPSYNC_COMPLETE);
+        blocker_clear(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID);
+        struct zcl_result finalized = snapsync_finalize(&svc);
+        ASSERT(!finalized.ok);
+        ASSERT(finalized.code == SNAPSYNC_ACTIVATION_CONTAINED_ERROR_CODE);
+        ASSERT(strstr(finalized.message,
+                      SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID) != NULL);
+        ASSERT(svc.state == SNAPSYNC_FAILED);
         ASSERT(!svc.turbo_active);
         node_db_get_status(&ndb, &st);
         ASSERT(!st.turbo_mode);
@@ -975,6 +1054,29 @@ static int test_snapshot_sync_service_db_service_chunk_finalize(void)
                                   cec_snapshot_evidence,
                                   sizeof(cec_snapshot_evidence),
                                   &cec_snapshot_evidence_len));
+        ASSERT(count_table_rows(ndb.db, "utxos") == 0);
+        ASSERT(count_table_rows(ndb.db, "snapshot_staging_utxos") == 1);
+        ASSERT(blocker_exists(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID));
+
+        /* A failed discard must retain FAILED + blocker + staged data. */
+        ASSERT(db_service_exec_write(
+            &dbsvc,
+            "CREATE TRIGGER snapsync_test_reject_discard "
+            "BEFORE DELETE ON snapshot_staging_utxos "
+            "BEGIN SELECT RAISE(ABORT, 'injected discard failure'); END"));
+        snapsync_reset(&svc);
+        ASSERT(svc.state == SNAPSYNC_FAILED);
+        ASSERT(blocker_exists(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID));
+        ASSERT(count_table_rows(ndb.db, "snapshot_staging_utxos") == 1);
+
+        /* The blocker must not poison serving health after a fully successful
+         * deterministic fallback to normal P2P/full-history sync. */
+        ASSERT(db_service_exec_write(
+            &dbsvc, "DROP TRIGGER snapsync_test_reject_discard"));
+        snapsync_reset(&svc);
+        ASSERT(svc.state == SNAPSYNC_IDLE);
+        ASSERT(!blocker_exists(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID));
+        ASSERT(count_table_rows(ndb.db, "snapshot_staging_utxos") == 0);
 
         stream_free(&chunk);
         app_runtime_set_current(NULL);
@@ -986,11 +1088,11 @@ static int test_snapshot_sync_service_db_service_chunk_finalize(void)
     return failures;
 }
 
-static int test_snapshot_sync_service_stages_before_activation(void)
+static int test_snapshot_sync_service_containment_preserves_canonical_state(void)
 {
     int failures = 0;
 
-    TEST("snapshot sync stages chunks without touching active UTXOs before activation") {
+    TEST("snapshot containment preserves node db coins shielded state and tip") {
         struct snapshot_sync_service svc;
         struct node_db ndb;
         struct db_service dbsvc;
@@ -998,6 +1100,11 @@ static int test_snapshot_sync_service_stages_before_activation(void)
         struct byte_stream chunk;
         uint8_t root[32];
         uint64_t count = 0;
+        uint8_t active_txid[32] = {0xa1};
+        uint8_t coin_txid[32] = {0xc1};
+        uint8_t stale_nf[32] = {0x5a};
+        bool old_nf_found = false;
+        int64_t old_nf_height = -1;
 
         memset(&svc, 0, sizeof(svc));
         memset(&runtime, 0, sizeof(runtime));
@@ -1015,14 +1122,34 @@ static int test_snapshot_sync_service_stages_before_activation(void)
         svc.offered_count = 1;
         svc.fc_verified = true;
         svc.serving_peer_id = 15;
+        svc.offered_height = 30;
         memset(svc.offered_block_hash, 0x44, sizeof(svc.offered_block_hash));
+
+        sqlite3 *pdb = progress_store_db();
+        ASSERT(pdb != NULL);
+        ASSERT(node_db_exec(&ndb,
+            "INSERT INTO utxos"
+            "(txid,vout,value,script,script_type,height,is_coinbase) "
+            "VALUES(X'A100000000000000000000000000000000000000000000000000000000000000',"
+            "7,777,X'51',0,4,0)"));
+        ASSERT(count_table_rows(ndb.db, "utxos") == 1);
+        ASSERT(test_complete_genesis_shielded_replay(pdb));
+        ASSERT(nullifier_kv_add(pdb, stale_nf, NULLIFIER_POOL_SAPLING, 1));
+        ASSERT(coins_kv_ensure_schema(pdb));
+        ASSERT(coins_kv_add(pdb, coin_txid, 9, 999, 5, false,
+                            (const uint8_t *)"\x51", 1));
+        int64_t coins_before = coins_kv_count(pdb);
+        uint64_t tip_cursor_before =
+            stage_cursor_persisted(pdb, "tip_finalize",
+                                   "snapshot_containment_test");
 
         ASSERT(snapsync_begin_receive(&svc).ok);
         build_snapshot_chunk(&chunk);
         ASSERT(snapsync_apply_chunk(&svc, chunk.data, chunk.size) == 1);
         ASSERT(db_service_commit_write(&dbsvc));
 
-        ASSERT(count_table_rows(ndb.db, "utxos") == 0);
+        ASSERT(count_table_rows(ndb.db, "utxos") == 1);
+        ASSERT(snapshot_table_has_outpoint(ndb.db, "utxos", active_txid, 7));
         ASSERT(count_table_rows(ndb.db, "snapshot_staging_utxos") == 1);
         utxo_commitment_sha3_compute_table(ndb.db, "snapshot_staging_utxos",
                                            root, &count);
@@ -1030,11 +1157,42 @@ static int test_snapshot_sync_service_stages_before_activation(void)
         memcpy(svc.offered_utxo_root, root, sizeof(root));
         ASSERT(db_service_begin_write(&dbsvc));
 
-        ASSERT(snapsync_finalize(&svc).ok);
+        blocker_clear(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID);
+        struct zcl_result finalized = snapsync_finalize(&svc);
+        ASSERT(!finalized.ok);
+        ASSERT(finalized.code == SNAPSYNC_ACTIVATION_CONTAINED_ERROR_CODE);
+        ASSERT(svc.state == SNAPSYNC_FAILED);
         ASSERT(count_table_rows(ndb.db, "utxos") == 1);
-        ASSERT(count_table_rows(ndb.db, "snapshot_staging_utxos") == 0);
+        ASSERT(snapshot_table_has_outpoint(ndb.db, "utxos", active_txid, 7));
+        ASSERT(count_table_rows(ndb.db, "snapshot_staging_utxos") == 1);
+        int64_t sprout_cursor = -1, sapling_cursor = -1;
+        bool sprout_found = false, sapling_found = false;
+        ASSERT(anchor_kv_activation_cursor(
+                   pdb, ANCHOR_POOL_SPROUT, &sprout_cursor, &sprout_found));
+        ASSERT(anchor_kv_activation_cursor(
+                   pdb, ANCHOR_POOL_SAPLING, &sapling_cursor, &sapling_found));
+        ASSERT(sprout_found && sapling_found &&
+               sprout_cursor == 0 && sapling_cursor == 0);
+        ASSERT(snapshot_meta_is(pdb, "nullifier_kv.activation_cursor", "0"));
+        ASSERT(nullifier_kv_get(pdb, stale_nf, NULLIFIER_POOL_SAPLING,
+                                &old_nf_found, &old_nf_height));
+        ASSERT(old_nf_found && old_nf_height == 1);
+        ASSERT(coins_kv_count(pdb) == coins_before);
+        int64_t coin_value = 0;
+        size_t coin_script_len = 0;
+        uint8_t coin_script[4] = {0};
+        ASSERT(coins_kv_get(pdb, coin_txid, 9, &coin_value,
+                            coin_script, sizeof(coin_script),
+                            &coin_script_len));
+        ASSERT(coin_value == 999 && coin_script_len == 1 &&
+               coin_script[0] == 0x51);
+        ASSERT(stage_cursor_persisted(pdb, "tip_finalize",
+                                      "snapshot_containment_test") ==
+               tip_cursor_before);
+        ASSERT(blocker_exists(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID));
 
         stream_free(&chunk);
+        blocker_clear(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID);
         app_runtime_set_current(NULL);
         db_service_stop(&dbsvc);
         node_db_close(&ndb);
@@ -1414,12 +1572,18 @@ static int test_snapshot_recovery_requires_flyclient_and_sha3(void)
         memcpy(svc.offered_utxo_root, staged_root, sizeof(staged_root));
         ASSERT(node_db_begin(&ndb));
         svc.fc_verified = true;
-        ASSERT(snapsync_handle_end(&svc, params.peer_id).ok);
-        ASSERT(svc.state == SNAPSYNC_COMPLETE);
+        blocker_clear(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID);
+        struct zcl_result contained =
+            snapsync_handle_end(&svc, params.peer_id);
+        ASSERT(!contained.ok);
+        ASSERT(contained.code == SNAPSYNC_ACTIVATION_CONTAINED_ERROR_CODE);
+        ASSERT(svc.state == SNAPSYNC_FAILED);
         ASSERT(count_table_rows(ndb.db, "utxos") == 1);
-        ASSERT(count_table_rows(ndb.db, "snapshot_staging_utxos") == 0);
+        ASSERT(count_table_rows(ndb.db, "snapshot_staging_utxos") == 1);
+        ASSERT(blocker_exists(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID));
 
         stream_free(&chunk);
+        blocker_clear(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID);
         snapsync_reset(&svc);
         node_db_close(&ndb);
         PASS();
@@ -1571,16 +1735,17 @@ static bool stage_one_and_hash(struct snapshot_sync_service *svc,
     return db_service_begin_write(dbsvc);
 }
 
-/* POSITIVE — no false-reject.
+/* POSITIVE verification, contained activation.
  * At the anchor height, a genuine set whose locally-computed commitment IS the
- * compiled checkpoint root must still be ACCEPTED. We install a test checkpoint
+ * compiled checkpoint root must pass validation and reach the containment gate.
+ * We install a test checkpoint
  * whose sha3_hash equals the local_root of the staged set — i.e. the genuine
- * anchor set by construction — and confirm finalize promotes it. */
-static int test_snapshot_anchor_bind_accepts_genuine_root(void)
+ * anchor set by construction — and prove it is retained but not promoted. */
+static int test_snapshot_anchor_bind_validates_then_contains_genuine_root(void)
 {
     int failures = 0;
 
-    TEST("snapshot anchor bind accepts the genuine checkpoint root") {
+    TEST("snapshot anchor bind validates genuine root then contains activation") {
         struct snapshot_sync_service svc;
         struct node_db ndb;
         struct db_service dbsvc;
@@ -1615,13 +1780,18 @@ static int test_snapshot_anchor_bind_accepts_genuine_root(void)
         svc.offered_height = anchor_h;
         memcpy(svc.offered_utxo_root, local_root, sizeof(local_root));
 
-        ASSERT(snapsync_finalize(&svc).ok);
-        ASSERT(svc.state == SNAPSYNC_COMPLETE);
-        ASSERT(count_table_rows(ndb.db, "utxos") == 1);
-        ASSERT(count_table_rows(ndb.db, "snapshot_staging_utxos") == 0);
+        blocker_clear(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID);
+        struct zcl_result contained = snapsync_finalize(&svc);
+        ASSERT(!contained.ok);
+        ASSERT(contained.code == SNAPSYNC_ACTIVATION_CONTAINED_ERROR_CODE);
+        ASSERT(svc.state == SNAPSYNC_FAILED);
+        ASSERT(count_table_rows(ndb.db, "utxos") == 0);
+        ASSERT(count_table_rows(ndb.db, "snapshot_staging_utxos") == 1);
+        ASSERT(blocker_exists(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID));
 
         checkpoints_reset_sha3_override_for_test();
         stream_free(&chunk);
+        blocker_clear(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID);
         app_runtime_set_current(NULL);
         db_service_stop(&dbsvc);
         node_db_close(&ndb);
@@ -1832,14 +2002,24 @@ static int test_snapshot_blacklist_survives_reset(void)
 int test_snapshot_sync_service(void)
 {
     int failures = 0;
+    char progress_dir[256];
+    test_make_tmpdir(progress_dir, sizeof(progress_dir),
+                     "snapshot_sync_service", "progress");
+    progress_store_close();
+    if (!progress_store_open(progress_dir)) {
+        fprintf(stderr, "snapshot_sync_service: progress store open failed\n");
+        test_cleanup_tmpdir(progress_dir);
+        return 1;
+    }
     failures += test_snapshot_sync_service_followups();
+    failures += test_snapshot_offer_trust_policy();
     failures += test_snapshot_sync_service_builds_pow();
     failures += test_snapshot_sync_service_stream_helpers();
     failures += test_snapshot_manifest_contract();
     failures += test_snapshot_manifest_recovery_contract();
     failures += test_snapshot_sync_service_fc_roundtrip();
-    failures += test_snapshot_sync_service_activates_tip();
-    failures += test_snapshot_sync_service_activates_fallback_tip();
+    failures += test_snapshot_sync_service_contains_tip_activation();
+    failures += test_snapshot_sync_service_contains_fallback_tip();
     failures += test_snapshot_reset_clears_non_owned_anchor();
     failures += test_snapshot_sync_service_prepare_serve_step();
     failures += test_snapshot_sync_service_prepare_serve_step_bad_input();
@@ -1850,8 +2030,8 @@ int test_snapshot_sync_service(void)
     failures += test_snapshot_sync_service_offer_churn();
     failures += test_snapshot_sync_service_db_service_runtime();
     failures += test_snapshot_sync_service_runtime_accessor();
-    failures += test_snapshot_sync_service_db_service_chunk_finalize();
-    failures += test_snapshot_sync_service_stages_before_activation();
+    failures += test_snapshot_sync_service_db_service_chunk_contained();
+    failures += test_snapshot_sync_service_containment_preserves_canonical_state();
     failures += test_snapshot_sync_service_boot_discards_staging();
     failures += test_snapshot_sync_service_finalize_mismatch();
     failures += test_snapshot_sync_service_chunk_apply_failure_fails_closed();
@@ -1861,7 +2041,7 @@ int test_snapshot_sync_service(void)
     failures += test_snapshot_recovery_request_rejects_unverified_manifest();
     failures += test_snapshot_recovery_requires_flyclient_and_sha3();
     failures += test_snapshot_local_recovery_manifest_builder();
-    failures += test_snapshot_anchor_bind_accepts_genuine_root();
+    failures += test_snapshot_anchor_bind_validates_then_contains_genuine_root();
     failures += test_snapshot_anchor_bind_rejects_fabricated_root();
     failures += test_snapshot_blacklist_add_query();
     failures += test_snapshot_blacklist_zero_peer();
@@ -1869,5 +2049,7 @@ int test_snapshot_sync_service(void)
     failures += test_snapshot_blacklist_multiple();
     failures += test_snapshot_blacklist_rejects_offer();
     failures += test_snapshot_blacklist_survives_reset();
+    progress_store_close();
+    test_cleanup_tmpdir(progress_dir);
     return failures;
 }

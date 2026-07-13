@@ -211,6 +211,51 @@ int test_blocker(void)
                   snaps[0].deadline_remaining_us < 0);
     }
 
+    {
+        struct blocker_snapshot snapshots[4] = {0};
+        snprintf(snapshots[0].id, sizeof(snapshots[0].id),
+                 "script_validate.prevout_unresolved");
+        snapshots[0].class = BLOCKER_PERMANENT;
+        snapshots[0].age_us = 900000000;
+        snprintf(snapshots[1].id, sizeof(snapshots[1].id),
+                 "utxo_apply.nullifier_backfill_gap");
+        snapshots[1].class = BLOCKER_PERMANENT;
+        snapshots[1].age_us = 2000000;
+        snprintf(snapshots[2].id, sizeof(snapshots[2].id),
+                 "utxo_apply.anchor_backfill_gap");
+        snapshots[2].class = BLOCKER_PERMANENT;
+        snapshots[2].age_us = 1000000;
+        snprintf(snapshots[3].id, sizeof(snapshots[3].id),
+                 "peer_floor.no_eligible_peers");
+        snapshots[3].class = BLOCKER_TRANSIENT;
+        snapshots[3].age_us = 1000000000;
+
+        const struct blocker_snapshot *dominant =
+            blocker_select_dominant(snapshots, 4);
+        BCK_CHECK("causal selector prefers anchor history gap",
+                  dominant == &snapshots[2]);
+        BCK_CHECK("anchor outranks nullifier history gap",
+                  blocker_causal_priority(BLOCKER_PERMANENT,
+                      snapshots[2].id) >
+                  blocker_causal_priority(BLOCKER_PERMANENT,
+                      snapshots[1].id));
+        BCK_CHECK("nullifier history outranks downstream permanent",
+                  blocker_causal_priority(BLOCKER_PERMANENT,
+                      snapshots[1].id) >
+                  blocker_causal_priority(BLOCKER_PERMANENT,
+                      snapshots[0].id));
+
+        snapshots[3].class = BLOCKER_RESOURCE;
+        snprintf(snapshots[3].id, sizeof(snapshots[3].id),
+                 "storage.disk_full");
+        dominant = blocker_select_dominant(snapshots, 4);
+        BCK_CHECK("resource exhaustion remains dominant",
+                  dominant == &snapshots[3]);
+        BCK_CHECK("causal selector rejects empty input",
+                  blocker_select_dominant(NULL, 4) == NULL &&
+                  blocker_select_dominant(snapshots, 0) == NULL);
+    }
+
     /* ── JSON dump ─────────────────────────────────────────────── */
     {
         blocker_reset_for_testing();

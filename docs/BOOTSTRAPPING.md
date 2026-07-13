@@ -1,21 +1,31 @@
-# Bootstrapping to tip (fast-sync starter pack)
+# Assisted bootstrap artifact (legacy starter pack)
 
-A freshly built `zclassic23` node can reach the chain tip in **minutes** instead
-of doing a full multi-hour P2P sync from genesis, by seeding from a published
-starter pack: a prebuilt block index plus a SHA3-self-verified UTXO snapshot.
+A freshly built `zclassic23` node can use a release-assisted starter pack: a
+prebuilt block index plus a digest-verified state snapshot. This is an assisted
+readiness path, not a sovereign or consensus proof.
 
-The snapshot is **not blindly trusted**. At boot the node recomputes the
-snapshot body's SHA3 hash and checks its anchor block hash against the PoW
-header compiled into the binary — a tampered or wrong-chain snapshot is refused.
+At boot the node recomputes the snapshot body's SHA3 hash and checks its anchor
+block hash against the validated local header chain. Those checks detect changed
+bytes and a wrong chain location. ZClassic headers do **not** commit UTXO,
+Sapling/Sprout, or nullifier roots, so they do not prove the payload contents.
 
-> Without the starter pack a fresh node still works; it just does the long P2P
-> header + body sync from genesis.
+> **Stable publication is contained.** `make bootstrap` may build a local
+> development artifact. `make bootstrap-publish` now always refuses: no stable
+> starter pack may upload until immutable exact-candidate quality, release,
+> reproducibility, signing, and complete-state copy-proof evidence is enforced.
+> Existing releases are legacy assisted artifacts, not current stable promises.
+
+> Without a pack, today's proven recovery is the two-step
+> `--importblockindex $HOME/.zclassic` followed by a normal boot with the legacy
+> datadir available (see `CLAUDE.md`). A trustless fresh P2P genesis-to-tip sync
+> remains a target, not a proven operational claim.
 
 ## The release
 
-The latest starter pack is published under the `starterpack-<height>` releases on
-`ZclassiC23/zclassic`. Each release contains four files, all produced in one shot
-by `tools/mint_v2_snapshot.c`:
+Legacy starter packs may exist under `starterpack-<height>` releases on
+`ZclassiC23/zclassic`. Use them only on an isolated/copy lane with explicit
+assisted-state posture. Each legacy release contains four files produced by
+`tools/mint_v2_snapshot.c`:
 
 | File | What it is |
 |------|------------|
@@ -46,21 +56,23 @@ sha256sum -c SHA256SUMS
 
 # 3. Boot normally — NO flags needed. The node autodetects a dropped-in
 #    bundle (block_index.bin + utxo-seed-<height>.snapshot in the datadir),
-#    SHA3-verifies the snapshot, consensus-binds its anchor to the in-binary
-#    PoW header, and seeds from it.
+#    SHA3-verifies the snapshot, checks its anchor against the local header
+#    chain, and seeds borrowed state from it.
 build/bin/zclassic23 -datadir="$DATADIR"
 ```
 
 ### Expected result
 
-`getblockcount` jumps to ~the seed height within seconds (not 0), then climbs to
-the network tip in minutes as the node folds forward over P2P block bodies. The
-boot log shows the autodetected seed being accepted:
+The held frontier may initialize near the seed height, but legacy v1/v2 packs
+carry no proven complete shielded history. The reducer now deliberately holds
+at the first affected spend; reaching tip is not an expected result until a
+complete-state installer/backfill proves anchors and nullifiers. The boot log
+shows the assisted seed being accepted:
 
 ```
 [boot] starter-pack snapshot utxo-seed-<height>.snapshot autodetected in datadir — seeding from it
-[boot] anchor hash MATCHES the in-binary PoW header at h=<height> — snapshot is consensus-bound to this chain
-[boot] SELF-verified snapshot ... (body SHA3 OK) — seeded coins_kv
+[boot] anchor hash MATCHES the validated local header at h=<height> — chain location verified
+[boot] digest-verified borrowed snapshot ... (body SHA3 OK) — seeded coins_kv
 ```
 
 ### Notes
@@ -69,18 +81,20 @@ boot log shows the autodetected seed being accepted:
   `utxo-seed-<digits>.snapshot` (highest height wins) and, when `block_index.bin`
   is present alongside it, auto-loads the bundle
   (`boot_autodetect_bundle_snapshot`). Just place both payload files in the
-  datadir and boot — the snapshot is still SHA3-verified and anchor-bound before
-  any coin lands, so autodetect is not a trust shortcut.
+  datadir and boot — the snapshot bytes and claimed chain location are checked
+  before any coin lands, but the state remains assisted.
 - `block_index.bin` must be in `<DATADIR>/block_index.bin` (read by filename) for
   autodetect to fire — without it the node logs that the header index is missing
-  and falls back to normal P2P sync.
+  and falls back to attempting the normal P2P path (whose fresh
+  genesis-to-tip operational proof remains open).
 - **Index ≥ seed coupling — ship both files from the SAME release.** The loader
-  anchor-binds the snapshot's seed-height block hash against the header chain
+  matches the snapshot's seed-height block hash against the validated header chain
   loaded from `block_index.bin`, so the index must reach **at least** the
   snapshot's seed height (the producer emits a contiguous genesis→seed index, so
   a matched pair always does). Pairing a newer `utxo-seed-<h>.snapshot` with an
   older `block_index.bin` that stops below `h` leaves the seed header absent: the
-  anchor-bind fails and the node degrades to normal P2P sync. Always take both
+  chain-location check fails and the node attempts normal P2P sync. This checks
+  location only; it does not authenticate the state contents. Always take both
   payload files from one `starterpack-<height>` release.
 - The seed height is read from the snapshot's **verified header**, not from the
   filename.
@@ -88,13 +102,12 @@ boot log shows the autodetected seed being accepted:
   override (it can point at a snapshot outside the datadir), but it is **not**
   required for the drop-in bundle above.
 - If a seed attempt fails, the node writes a `<snapshot>.failed` marker next to
-  the file and degrades to normal P2P sync on the next boot (no human cleanup
-  needed); delete the marker to retry the bundle. So a bad / stale / incompatible
-  bundle is self-healing — at worst it costs one restart before the node falls
-  back to a full P2P sync. A `.snapshot.failed` line in the log is the tell.
+  the file and attempts normal P2P sync on the next boot; delete the marker to
+  retry the bundle. This avoids a snapshot restart loop, but does not itself
+  prove genesis-to-tip progress. A `.snapshot.failed` line is the tell.
 - If that marker cannot be written (read-only datadir, ENOSPC, permission
   error, or a path too long to record safely), the node does **not** try the
-  snapshot. It skips the seed and uses normal P2P sync, because entering a
+  snapshot. It skips the seed and attempts normal P2P sync, because entering a
   fail-closed loader without durable failure memory could restart-loop forever.
 - **Opt out (full from-genesis sync).** There is no flag to toggle; autodetect
   fires only when a fresh datadir (`coins_kv` not yet the proven authority) holds

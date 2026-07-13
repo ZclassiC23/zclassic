@@ -6,6 +6,7 @@
 #include "platform/time_compat.h"
 #include "vcs/vcs_devloop.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
@@ -174,6 +175,94 @@ bool zcl_devloop_distill_first_error(const char *out, size_t len,
 }
 #endif /* ZCL_DEV_BUILD || ZCL_TESTING */
 
+bool zcl_devloop_changed_set_exact(const char *const *requested,
+                                   size_t requested_count,
+                                   const char *const *discovered,
+                                   size_t discovered_count,
+                                   char *why, size_t why_len)
+{
+    if (why && why_len > 0)
+        why[0] = 0;
+    if ((requested_count > 0 && !requested) ||
+        (discovered_count > 0 && !discovered) ||
+        requested_count > ZCL_DEVLOOP_MAX_FILES ||
+        discovered_count > ZCL_DEVLOOP_MAX_FILES) {
+        if (why && why_len > 0)
+            (void)snprintf(why, why_len, "changed_set_invalid_or_overflow");
+        return false;
+    }
+
+    for (size_t i = 0; i < requested_count; i++) {
+        if (!requested[i] || !requested[i][0]) {
+            if (why && why_len > 0)
+                (void)snprintf(why, why_len, "requested_path_invalid");
+            return false;
+        }
+        for (size_t j = i + 1; j < requested_count; j++) {
+            if (requested[j] && strcmp(requested[i], requested[j]) == 0) {
+                if (why && why_len > 0)
+                    (void)snprintf(why, why_len,
+                                   "requested_path_duplicate=%s", requested[i]);
+                return false;
+            }
+        }
+    }
+
+    for (size_t i = 0; i < discovered_count; i++) {
+        bool found = false;
+        for (size_t j = 0; j < requested_count; j++) {
+            if (requested[j] && discovered[i] &&
+                strcmp(discovered[i], requested[j]) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            if (why && why_len > 0)
+                (void)snprintf(why, why_len, "omitted_dirty_file=%s",
+                               discovered[i] ? discovered[i] : "<invalid>");
+            return false;
+        }
+    }
+    for (size_t i = 0; i < requested_count; i++) {
+        bool found = false;
+        for (size_t j = 0; j < discovered_count; j++) {
+            if (discovered[j] && strcmp(requested[i], discovered[j]) == 0) {
+                found = true;
+                break;
+            }
+        }
+        if (!found) {
+            if (why && why_len > 0)
+                (void)snprintf(why, why_len, "requested_file_not_dirty=%s",
+                               requested[i]);
+            return false;
+        }
+    }
+    return true;
+}
+
+bool zcl_devloop_plan_discovered_changes(
+    const char *const *observed, size_t observed_count,
+    const char *const *discovered, size_t discovered_count,
+    struct zcl_devloop_plan *out)
+{
+    struct zcl_devloop_plan observed_plan;
+    if (!zcl_devloop_plan_files(observed, observed_count, &observed_plan))
+        return false;
+    return zcl_devloop_plan_files(discovered, discovered_count, out);
+}
+
+bool zcl_devloop_watch_lock_path(const char *repo_root,
+                                 char *out, size_t out_sz)
+{
+    if (!repo_root || !repo_root[0] || !out || out_sz == 0)
+        return false;
+    int n = snprintf(out, out_sz, "%s/%s", repo_root,
+                     ZCL_DEVLOOP_WATCH_LOCK_REL);
+    return n > 0 && (size_t)n < out_sz;
+}
+
 #ifdef ZCL_DEV_BUILD
 static void output_capsule(const struct zcl_devloop_process_result *result,
                            char out[1024])
@@ -233,6 +322,186 @@ static bool repo_root_resolve(const char *requested, char out[PATH_MAX])
            stat(makefile, &st) == 0 && stat(git, &st) == 0;
 }
 
+struct devloop_changed_sources {
+    char paths[ZCL_DEVLOOP_MAX_FILES][ZCL_DEVLOOP_PATH_MAX];
+    const char *items[ZCL_DEVLOOP_MAX_FILES];
+    size_t count;
+};
+
+static bool changed_sources_add(struct devloop_changed_sources *set,
+                                const char *path, size_t path_len,
+                                char *why, size_t why_len)
+{
+    if (!set || !path || path_len == 0 || path_len >= ZCL_DEVLOOP_PATH_MAX) {
+        (void)snprintf(why, why_len, "changed_path_invalid_or_too_long");
+        return false;
+    }
+    char bounded[ZCL_DEVLOOP_PATH_MAX];
+    memcpy(bounded, path, path_len);
+    bounded[path_len] = 0;
+    for (size_t i = 0; i < set->count; i++) {
+        if (strcmp(set->items[i], bounded) == 0)
+            return true;
+    }
+    if (set->count >= ZCL_DEVLOOP_MAX_FILES) {
+        (void)snprintf(why, why_len, "changed_set_exceeds_%d_files",
+                       ZCL_DEVLOOP_MAX_FILES);
+        return false;
+    }
+    memcpy(set->paths[set->count], bounded, path_len + 1);
+    set->items[set->count] = set->paths[set->count];
+    set->count++;
+    return true;
+}
+
+static bool changed_sources_parse_nul(struct devloop_changed_sources *set,
+                                      const struct zcl_devloop_process_result *r,
+                                      char *why, size_t why_len)
+{
+    if (!r || r->output_truncated) {
+        (void)snprintf(why, why_len, "git_changed_set_output_truncated");
+        return false;
+    }
+    if (r->output_len == 0)
+        return true;
+    if (r->output[r->output_len - 1] != 0) {
+        (void)snprintf(why, why_len, "git_changed_set_missing_nul_boundary");
+        return false;
+    }
+    size_t pos = 0;
+    while (pos < r->output_len) {
+        const char *start = r->output + pos;
+        const char *end = memchr(start, 0, r->output_len - pos);
+        if (!end || end == start ||
+            !changed_sources_add(set, start, (size_t)(end - start),
+                                 why, why_len))
+            return false;
+        pos += (size_t)(end - start) + 1;
+    }
+    return true;
+}
+
+static int changed_source_item_cmp(const void *lhs, const void *rhs)
+{
+    const char *const *a = lhs;
+    const char *const *b = rhs;
+    return strcmp(*a, *b);
+}
+
+static bool discover_changed_sources(const char *root,
+                                     struct devloop_changed_sources *set,
+                                     char *why, size_t why_len)
+{
+    memset(set, 0, sizeof(*set));
+    struct zcl_devloop_process_result tracked = {0};
+    const char *tracked_argv[] = {
+        "git", "diff", "--name-only", "--no-renames", "-z", "HEAD", "--",
+        NULL
+    };
+    if (!zcl_devloop_process_run(root, tracked_argv, 15000, &tracked) ||
+        !result_ok(&tracked)) {
+        (void)snprintf(why, why_len, "git_diff_discovery_failed");
+        return false;
+    }
+    if (!changed_sources_parse_nul(set, &tracked, why, why_len))
+        return false;
+
+    struct zcl_devloop_process_result untracked = {0};
+    const char *untracked_argv[] = {
+        "git", "ls-files", "--others", "--exclude-standard", "-z", "--", NULL
+    };
+    if (!zcl_devloop_process_run(root, untracked_argv, 15000, &untracked) ||
+        !result_ok(&untracked)) {
+        (void)snprintf(why, why_len, "git_untracked_discovery_failed");
+        return false;
+    }
+    if (!changed_sources_parse_nul(set, &untracked, why, why_len))
+        return false;
+    qsort(set->items, set->count, sizeof(set->items[0]),
+          changed_source_item_cmp);
+    return true;
+}
+
+static bool parse_source_identity(const struct zcl_devloop_process_result *r,
+                                  char out[65], char *why, size_t why_len)
+{
+    out[0] = 0;
+    if (!r || !result_ok(r) || r->output_truncated) {
+        (void)snprintf(why, why_len, "source_identity_command_failed");
+        return false;
+    }
+    size_t len = r->output_len;
+    while (len > 0 && (r->output[len - 1] == '\n' ||
+                       r->output[len - 1] == '\r'))
+        len--;
+    if (len != 64) {
+        (void)snprintf(why, why_len, "source_identity_output_invalid");
+        return false;
+    }
+    for (size_t i = 0; i < len; i++) {
+        if (!isxdigit((unsigned char)r->output[i])) {
+            (void)snprintf(why, why_len, "source_identity_output_invalid");
+            return false;
+        }
+        out[i] = (char)tolower((unsigned char)r->output[i]);
+    }
+    out[64] = 0;
+    return true;
+}
+
+/* Capture/verify the complete dirty source epoch through the shared bounded
+ * gate used by the shell watcher and the final deploy boundary.  The helper
+ * hashes tracked modifications/deletions and untracked files, binds HEAD, and
+ * refuses assume-unchanged/skip-worktree index bits. */
+static bool source_identity_capture(const char *root, char out[65],
+                                    char *why, size_t why_len)
+{
+    char tool[PATH_MAX];
+    int n = snprintf(tool, sizeof(tool), "%s/tools/dev/source-identity.sh",
+                     root);
+    if (n <= 0 || (size_t)n >= sizeof(tool)) {
+        (void)snprintf(why, why_len, "source_identity_tool_path_invalid");
+        return false;
+    }
+    struct zcl_devloop_process_result r = {0};
+    const char *argv[] = { tool, "capture", NULL };
+    if (!zcl_devloop_process_run(root, argv, 30000, &r)) {
+        (void)snprintf(why, why_len, "source_identity_capture_failed");
+        return false;
+    }
+    if (!parse_source_identity(&r, out, why, why_len)) {
+        if (r.output_len > 0 && why && why_len > 0) {
+            size_t copy = r.output_len < why_len - 1 ? r.output_len
+                                                      : why_len - 1;
+            memcpy(why, r.output, copy);
+            why[copy] = 0;
+        }
+        return false;
+    }
+    return true;
+}
+
+static bool source_identity_verify(const char *root, const char expected[65],
+                                   char *why, size_t why_len)
+{
+    char tool[PATH_MAX];
+    int n = snprintf(tool, sizeof(tool), "%s/tools/dev/source-identity.sh",
+                     root);
+    if (n <= 0 || (size_t)n >= sizeof(tool)) {
+        (void)snprintf(why, why_len, "source_identity_tool_path_invalid");
+        return false;
+    }
+    struct zcl_devloop_process_result r = {0};
+    const char *argv[] = { tool, "verify", expected, NULL };
+    if (!zcl_devloop_process_run(root, argv, 30000, &r) || !result_ok(&r)) {
+        (void)snprintf(why, why_len, "source_epoch_superseded");
+        return false;
+    }
+    char actual[65];
+    return parse_source_identity(&r, actual, why, why_len) &&
+           strcmp(actual, expected) == 0;
+}
+
 static bool find_artifact(const char *root, const char *output,
                           char artifact[PATH_MAX])
 {
@@ -271,10 +540,13 @@ static bool build_hotswap_args(const char *artifact, const char *probe,
                                char out[PATH_MAX + 256])
 {
     if (!artifact || strchr(artifact, '"') || strchr(artifact, '\\') ||
-        !probe || strspn(probe, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_") != strlen(probe))
+        !probe ||
+        strspn(probe,
+               "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.") !=
+            strlen(probe))
         return false;
     int n = snprintf(out, PATH_MAX + 256,
-                     "{\"so_path\":\"%s\",\"probe_tool\":\"%s\"}",
+                     "--input={\"so_path\":\"%s\",\"probe_leaf\":\"%s\"}",
                      artifact, probe);
     return n > 0 && n < PATH_MAX + 256;
 }
@@ -383,7 +655,7 @@ static void hex_encode32(const uint8_t in[32], char out[65])
  * exercise them directly without a fake ops vtable — none of them execs a
  * process or performs I/O beyond getenv(). The actual engine call
  * (dev_activation_run / dev_activation_default_ops, both real-process-exec)
- * stays confined to the ZCL_DEV_BUILD-only zcl_devloop_run_cycle() body
+ * stays confined to the ZCL_DEV_BUILD-only zcl_devloop_run_cycle_mode() body
  * below. */
 #if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
 bool dev_activation_native_enabled(void)
@@ -516,7 +788,11 @@ static size_t cycle_json(const struct zcl_devloop_plan *plan,
         !appendf(out, out_sz, &pos, ",\"phase\":") ||
         !append_string(out, out_sz, &pos, phase) ||
         !appendf(out, out_sz, &pos,
-                 ",\"elapsed_ms\":%lld,\"files\":[",
+                 ",\"runtime_published\":%s,\"elapsed_ms\":%lld,\"files\":[",
+                 strcmp(status, "passed") == 0 &&
+                         (strcmp(phase, "resident_commit") == 0 ||
+                          strcmp(phase, "transactional_reload") == 0)
+                     ? "true" : "false",
                  (long long)elapsed_ms))
         return 0;
     for (size_t i = 0; i < file_count; i++) {
@@ -528,9 +804,11 @@ static size_t cycle_json(const struct zcl_devloop_plan *plan,
         !append_string(out, out_sz, &pos, capsule ? capsule : "") ||
         !appendf(out, out_sz, &pos, ",\"agent_next_action\":") ||
         !append_string(out, out_sz, &pos,
-                       strcmp(status, "passed") == 0
-                            ? "keep editing; native watch owns the next cycle"
-                            : "zclassic23-dev dev diagnose latest"))
+                       strcmp(status, "passed") != 0
+                           ? "zclassic23-dev dev diagnose latest"
+                           : strcmp(plan->action_name, "verify") == 0
+                               ? "run dev change apply explicitly to publish this verified edit"
+                               : "keep editing; native watch owns the next cycle"))
         return 0;
     if (vcs && vcs->attempted) {
         if (vcs->commit_hex[0] &&
@@ -709,17 +987,102 @@ static int emit_refusal(const char *const *files, size_t file_count)
     return 3;
 }
 
-int zcl_devloop_run_cycle(const char *repo_root,
-                          const char *const *files,
-                          size_t file_count)
+bool zcl_devloop_publish_mode_applies(
+    enum zcl_devloop_publish_mode publish_mode)
+{
+    return publish_mode == ZCL_DEVLOOP_PUBLISH_APPLY;
+}
+
+const char *zcl_devloop_publish_mode_name(
+    enum zcl_devloop_publish_mode publish_mode)
+{
+    switch (publish_mode) {
+    case ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY:
+        return "verify";
+    case ZCL_DEVLOOP_PUBLISH_APPLY:
+        return "auto";
+    }
+    return NULL;
+}
+
+enum zcl_devloop_publish_mode zcl_devloop_default_watch_publish_mode(void)
+{
+    return ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY;
+}
+
+int zcl_devloop_run_cycle_mode(const char *repo_root,
+                               const char *const *files,
+                               size_t file_count,
+                               enum zcl_devloop_publish_mode publish_mode)
 {
     struct zcl_devloop_plan plan;
     int64_t started_us = platform_time_monotonic_us();
+    if (!zcl_devloop_publish_mode_name(publish_mode)) {
+        fprintf(stderr, "[devloop] cycle: invalid publication mode\n");
+        return 2;
+    }
+    if ((file_count > 0 && !files) || file_count > ZCL_DEVLOOP_MAX_FILES) {
+        fprintf(stderr, "[devloop] cycle: invalid changed-file set\n");
+        return 2;
+    }
+    /* The caller's paths are bounded wake hints, never classification
+     * authority.  In a dev build the complete Git-visible dirty set replaces
+     * them before any plan, proof selection, sealed-Core decision, or verdict
+     * is produced. */
     if (!zcl_devloop_plan_files(files, file_count, &plan)) {
         fprintf(stderr, "[devloop] cycle: invalid changed-file set\n");
         return 2;
     }
-
+#ifdef ZCL_DEV_BUILD
+    char root[PATH_MAX] = {0};
+    char expected_source_identity[65] = {0};
+    if (!repo_root_resolve(repo_root, root))
+        return finish_cycle(&plan, files, file_count, "rejected",
+                            "changed_set_discovery", started_us,
+                            "repository root is not a real Git checkout",
+                            NULL, NULL);
+    struct devloop_changed_sources changed;
+    char changed_why[512] = {0};
+    if (!discover_changed_sources(root, &changed, changed_why,
+                                  sizeof(changed_why)))
+        return finish_cycle(&plan, files, file_count, "rejected",
+                            "changed_set_discovery", started_us,
+                            changed_why[0] ? changed_why
+                                           : "changed-set discovery failed",
+                            root, NULL);
+    if (!zcl_devloop_plan_discovered_changes(
+            files, file_count, changed.items, changed.count, &plan))
+        return finish_cycle(&plan, files, file_count, "rejected",
+                            "changed_set_discovery", started_us,
+                            "Git-visible changed set was invalid",
+                            root, NULL);
+    files = changed.items;
+    file_count = changed.count;
+    if (!source_identity_capture(root, expected_source_identity,
+                                 changed_why, sizeof(changed_why)))
+        return finish_cycle(&plan, files, file_count, "rejected",
+                            "source_identity", started_us,
+                            changed_why[0] ? changed_why
+                                           : "source identity capture failed",
+                            root, NULL);
+#endif
+    /* Phase-0 containment: no caller-selected mode is publication authority.
+     * Keep complete-source classification, builds, proofs, and candidate
+     * probes available in VERIFY_ONLY, but refuse APPLY before compilation,
+     * dlopen, service control, or generation relinking.  This remains closed
+     * until immutable source epochs, complete proof receipts, a resident
+     * expected-epoch CAS, durable accept/rollback receipts, and signed seal
+     * authority are one transaction. */
+    if (zcl_devloop_publish_mode_applies(publish_mode)) {
+        plan.action_name = "apply";
+        (void)finish_cycle(
+            &plan, files, file_count, "blocked", "publication_contained",
+            started_us,
+            "runtime publication is contained until the source epoch, proof "
+            "receipts, resident CAS, and rollback are durably bound",
+            NULL, NULL);
+        return 3;
+    }
     /* Core refusal, BEFORE any publish and BEFORE the dev-build gate (a
      * release binary refuses identically). A changed-file set touching the
      * sealed consensus core (core/ — what core/MANIFEST.sha3 pins) is
@@ -753,8 +1116,7 @@ int zcl_devloop_run_cycle(const char *repo_root,
                         "native mutation is compiled out of release builds",
                         NULL, NULL);
 #else
-    char root[PATH_MAX];
-    if (!repo_root_resolve(repo_root, root))
+    if (!root[0] && !repo_root_resolve(repo_root, root))
         return finish_cycle(&plan, files, file_count, "rejected",
                             "confinement", started_us,
                             "repository root is not a real zclassic23 checkout",
@@ -812,8 +1174,8 @@ int zcl_devloop_run_cycle(const char *repo_root,
                                 root, NULL);
 
         const char *smoke_argv[] = {
-            bin, datadir_flag, "-rpcport=18252", "mcpcall",
-            "zcl_agent_hotswap", args_json, NULL
+            bin, datadir_flag, "-rpcport=18252", "dev", "hotswap",
+            "probe", args_json, NULL
         };
         if (!zcl_devloop_process_run(root, smoke_argv, 15000, &result) ||
             !result_ok(&result) || !strstr(result.output, "\"ok\":true") ||
@@ -821,6 +1183,39 @@ int zcl_devloop_run_cycle(const char *repo_root,
             output_capsule(&result, capsule);
             return finish_cycle(&plan, files, file_count, "rejected",
                                 "precommit_probe", started_us, capsule,
+                                root, NULL);
+        }
+
+        /* Watchers stop after the real candidate probe.  The resident commit
+         * below is reachable only through an explicit apply/auto invocation;
+         * file classification (including a consensus-risk classification)
+         * can never grant publication authority. */
+        if (!zcl_devloop_publish_mode_applies(publish_mode)) {
+            plan.action_name = "verify";
+            char source_why[256] = {0};
+            if (!source_identity_verify(root, expected_source_identity,
+                                        source_why, sizeof(source_why)))
+                return finish_cycle(
+                    &plan, files, file_count, "superseded",
+                    "source_epoch_cas", started_us,
+                    source_why[0] ? source_why
+                                  : "source epoch changed during candidate probe",
+                    root, NULL);
+            fprintf(stderr,
+                    "[devloop] hot-swap candidate verified; runtime "
+                    "publication remains contained\n");
+            return finish_cycle(&plan, files, file_count, "passed",
+                                "precommit_probe", started_us, "",
+                                root, NULL);
+        }
+
+        char source_why[256] = {0};
+        if (!source_identity_verify(root, expected_source_identity,
+                                    source_why, sizeof(source_why))) {
+            return finish_cycle(&plan, files, file_count, "superseded",
+                                "source_epoch_cas", started_us,
+                                source_why[0] ? source_why
+                                              : "source epoch changed before resident commit",
                                 root, NULL);
         }
 
@@ -851,55 +1246,51 @@ int zcl_devloop_run_cycle(const char *repo_root,
                             root, generation_hex[0] ? generation_hex : NULL);
     }
 
-    /* MODE=verify / MODE=ff (A6): decouple "prove it compiles + tests +
-     * lints" from "deploy it to the running dev lane". When the persistent
-     * watcher runs in the opt-in verify mode, a plain RELOAD-classified edit
-     * runs the fast feed-forward `make ff` ladder (compile -> focused tests
-     * -> lint) and reports a verify verdict INSTEAD of paying the ~60s
-     * transactional dev-lane reload below; the operator deploys explicitly
-     * with `dev change apply`. The guard deliberately excludes consensus-risk
-     * and sealed-core edits — those MUST still take the heavy reload path so
-     * the proof surface is never weakened. Hotswap-eligible single-file edits
-     * were already handled and returned above; a registry-full hotswap that
-     * `goto`s the label below jumps PAST this guard and reloads heavily. */
+    /* The native watcher is verify-only by default.  This guard is
+     * unconditional across every RELOAD class, including consensus-risk and
+     * owner-unsealed core edits: verification authority never implies runtime
+     * publication authority.  Explicit `dev change apply` selects APPLY and
+     * proceeds to the transactional activation boundary below. */
     if (plan.action == ZCL_DEVLOOP_RELOAD &&
-        !plan.consensus_risk && !plan.sealed_core) {
-        const char *watch_mode = getenv("ZCL_DEV_WATCH_MODE");
-        if (watch_mode && (strcmp(watch_mode, "verify") == 0 ||
-                           strcmp(watch_mode, "ff") == 0)) {
-            plan.action_name = "verify";
-            const char *ff_argv[] = {
-                "make", "--no-print-directory", "ff", NULL
-            };
-            if (!zcl_devloop_process_run(root, ff_argv, 900000, &result) ||
-                !result_ok(&result)) {
-                output_capsule(&result, capsule);
-                fprintf(stderr,
-                        "[devloop] verify (make ff) failed — fix, then run "
-                        "`dev change apply` to deploy\n");
-                return finish_cycle(&plan, files, file_count, "rejected",
-                                    "verify", started_us,
-                                    capsule[0] ? capsule : "make ff failed",
-                                    root, NULL);
-            }
+        !zcl_devloop_publish_mode_applies(publish_mode)) {
+        plan.action_name = "verify";
+        const char *ff_argv[] = {
+            "make", "--no-print-directory", "ff", NULL
+        };
+        if (!zcl_devloop_process_run(root, ff_argv, 900000, &result) ||
+            !result_ok(&result)) {
+            output_capsule(&result, capsule);
             fprintf(stderr,
-                    "[devloop] verified in %llds — run `dev change apply` "
-                    "to deploy\n",
-                    (long long)((platform_time_monotonic_us() - started_us) /
-                                1000000));
-            return finish_cycle(&plan, files, file_count, "passed", "verify",
-                                started_us, "", root, NULL);
+                    "[devloop] verify (make ff) failed — fix, then run "
+                    "`dev change apply` to deploy\n");
+            return finish_cycle(&plan, files, file_count, "rejected",
+                                "verify", started_us,
+                                capsule[0] ? capsule : "make ff failed",
+                                root, NULL);
         }
+        char source_why[256] = {0};
+        if (!source_identity_verify(root, expected_source_identity,
+                                    source_why, sizeof(source_why)))
+            return finish_cycle(
+                &plan, files, file_count, "superseded", "source_epoch_cas",
+                started_us,
+                source_why[0] ? source_why
+                              : "source epoch changed during verification",
+                root, NULL);
+        fprintf(stderr,
+                "[devloop] verified in %llds — run `dev change apply` "
+                "to deploy\n",
+                (long long)((platform_time_monotonic_us() - started_us) /
+                            1000000));
+        return finish_cycle(&plan, files, file_count, "passed", "verify",
+                            started_us, "", root, NULL);
     }
 
 transactional_reload:
-    /* Wave 3.2: ZCL_DEV_NATIVE_ACTIVATION=1 routes this cycle through the
-     * native transactional activation engine (dev_activation_run()) instead
-     * of shelling out to deploy-dev-lane.sh. The build step is common to
-     * both paths (`make fast-rebuild`); only what happens to the freshly
-     * built artifact afterward differs. Default OFF — see
-     * dev_activation_native_enabled() in devloop.h for why this is a
-     * runtime env check rather than a second compile-time gate. */
+    /* Retained Wave 3.2 machinery. Public apply/auto entrypoints are
+     * contained before reaching this label; ZCL_DEV_NATIVE_ACTIVATION is an
+     * engine selector, never authority. Hermetic tests cover the engine while
+     * the immutable epoch/proof/CAS/rollback transaction is unfinished. */
     if (dev_activation_native_enabled()) {
         const char *build_argv[] = {
             "make", "--no-print-directory", "fast-rebuild", NULL
@@ -917,6 +1308,16 @@ transactional_reload:
         struct dev_activation_cycle_request creq;
         if (resolve_build_commit(root, build_commit) &&
             dev_activation_request_from_cycle(root, build_commit, &creq)) {
+            char source_why[256] = {0};
+            if (!source_identity_verify(root, expected_source_identity,
+                                        source_why, sizeof(source_why))) {
+                return finish_cycle(&plan, files, file_count, "superseded",
+                                    "source_epoch_cas", started_us,
+                                    source_why[0] ? source_why
+                                                  : "source epoch changed before activation",
+                                    root, NULL);
+            }
+            creq.req.source_identity = expected_source_identity;
             struct dev_activation_ops ops;
             dev_activation_default_ops(&creq.req, &ops);
             struct dev_activation_result ar = {0};
@@ -941,17 +1342,34 @@ transactional_reload:
          * and has its own fast-rebuild call (idempotent after the one just
          * run above). */
         fprintf(stderr,
-                "[devloop] native activation preconditions unmet; falling "
-                "back to the shell transactional-reload path\n");
+                "[devloop] retained native activation preconditions unmet; "
+                "shell backend remains publication-contained\n");
     }
 
-    /* Compatibility backend during the native activation extraction.  The
-     * LLM-facing plane is already C-only; this fixed argv is never a shell
-     * interpolation surface and preserves the proven transactional rollback
-     * behavior until ZCL_DEV_NATIVE_ACTIVATION is the default (see
-     * docs/work/HOTSWAP.md). */
+    /* Retained compatibility backend for hermetic transaction work. Public
+     * publication is contained before this label for every engine-selector
+     * value; this fixed argv is not activation authority. */
+    char source_arg[96];
+    int source_arg_n = snprintf(source_arg, sizeof(source_arg),
+                                "ZCL_DEV_SOURCE_ID=%s",
+                                expected_source_identity);
+    if (source_arg_n <= 0 || (size_t)source_arg_n >= sizeof(source_arg))
+        return finish_cycle(&plan, files, file_count, "rejected",
+                            "source_epoch_cas", started_us,
+                            "could not bind source identity to activation",
+                            root, NULL);
+    char source_why[256] = {0};
+    if (!source_identity_verify(root, expected_source_identity,
+                                source_why, sizeof(source_why))) {
+        return finish_cycle(&plan, files, file_count, "superseded",
+                            "source_epoch_cas", started_us,
+                            source_why[0] ? source_why
+                                          : "source epoch changed before activation",
+                            root, NULL);
+    }
     const char *reload_argv[] = {
-        "make", "--no-print-directory", "agent-deploy-fast", NULL
+        "make", "--no-print-directory", "agent-deploy-fast", source_arg,
+        NULL
     };
     if (!zcl_devloop_process_run(root, reload_argv, 900000, &result) ||
         !result_ok(&result)) {
@@ -970,6 +1388,16 @@ transactional_reload:
                         "transactional_reload", started_us, "",
                         root, generation_hex[0] ? generation_hex : NULL);
 #endif
+}
+
+/* A one-shot cycle is itself the explicit publication command.  Persistent
+ * watchers call zcl_devloop_run_cycle_mode(...VERIFY_ONLY) instead. */
+int zcl_devloop_run_cycle(const char *repo_root,
+                          const char *const *files,
+                          size_t file_count)
+{
+    return zcl_devloop_run_cycle_mode(repo_root, files, file_count,
+                                      ZCL_DEVLOOP_PUBLISH_APPLY);
 }
 
 int zcl_devloop_print_status(void)

@@ -82,20 +82,24 @@ shell scripts), `fuzz/`, `soak/`, `sim/` (deterministic replay), `dev/`,
 
 The unified local loop is `tools/dev/watch-dev-lane.sh` (`make dev-watch`): it
 classifies a coalesced save, runs the shared impact plan, and selects check,
-stage, transactional reload, or the narrow stateless-MCP hot-swap path.
-`tools/dev/deploy-dev-lane.sh` owns immutable content-addressed binary
-generations, the activation lock, `current`/`last-good` links, bounded probes,
-rollback, and rejection quarantine. `tools/dev/agent-dev-status.sh` is the
+stage, transactional reload, or the narrow stateless-MCP hot-swap path. Its
+public surface is currently verify/check only. `MODE=auto`/`apply`, direct
+`dev change apply`, runtime hot-swap, stage, reload, and generation relinking
+all fail closed during Phase-0 containment.
+`tools/dev/deploy-dev-lane.sh` contains the intended immutable
+content-addressed generation transaction (activation lock,
+`current`/`last-good` links, bounded probes, rollback, and rejection
+quarantine), but its public entry refuses before mutation. `tools/dev/agent-dev-status.sh` is the
 read-only `zcl.agent_dev_status.v1` view; `generate-compdb.sh` owns exact dev
 compilation-database generation and freshness; `dev-loop-bench.sh` owns the
 machine-readable latency evidence. Runtime hot-swap loading lives below the app
 layer in `lib/hotswap/`, while `tools/mcp/router.{c,h}` owns the one-snapshot
 MCP route commit. `tools/mcp/dev_rpc_bridge.{c,h}` registers the dev-only
-`dev_hotswap` / `dev_mcp_call` JSON-RPC bridge into that resident router only
-for the exact isolated dev datadir; the release build keeps a refusal stub.
-`tools/dev/hotswap-running-dev.sh` is the watcher's default persistent
-transport. Exit 69 alone means the bridge is unavailable and permits auto
-reload fallback; generation or probe rejection remains a hard failed cycle.
+bridge on the exact isolated dev datadir; mutation `dev_hotswap` is contained
+while read-only `dev_mcp_call` remains diagnostic. The release build keeps a
+refusal stub.
+`tools/dev/hotswap-running-dev.sh` is a contained former persistent transport;
+it always refuses. There is no auto-reload fallback during containment.
 
 ---
 
@@ -257,8 +261,10 @@ is removed in W3. Source of truth is the controller `k_routes[]` arrays.
   `agent_contracts.def`; it emits the same `zcl.public_status.v1` payload as
   `agent` and `GET /api/v1/agent`. Its `security_posture` object is owned by
   `app/controllers/src/agent_security_posture.c` and names the borrowed
-  snapshot/full-history-validation posture plus shielded-nullifier history
-  coverage.
+  snapshot/full-history-validation posture plus Sprout/Sapling anchor and
+  nullifier history coverage. Public `serving` and `healthy` fail closed while
+  that posture requires review; liveness-only internals remain separately
+  visible for diagnosis.
 - `zclassic23 agentmap` / `zcl_agent_map` — AI-coder map for the native/MCP
   operator surface: where code lives, which docs apply, and which tests cover
   each subsystem. The full contract guide is `docs/AGENT_API.md`.
@@ -564,31 +570,36 @@ Confirm the target before acting.
 | `make build-only` | Strict release-flag `cc -c` with depfile header tracking; use before push/release. |
 | `make fast-rebuild` | Fast local node binary alias for `make dev-bin`; cached per-file objects, no LTO, uses `ccache` automatically when installed. |
 | `make dev-bin` | Build `build/bin/zclassic23-dev` from cached per-file objects, non-LTO/unstripped, with hot consensus/crypto/script/validation buckets still optimized. Local iteration only; not deploy/release. |
-| `make dev-watch [MODE=auto\|hotswap\|reload\|stage\|check]` | Unified save loop. Coalesces changes, records the shared impact plan, chooses the smallest proven path, and writes one durable `zcl.dev_cycle.v1` verdict plus heartbeat per attempted save. `auto` reloads unless an exact stateless-MCP eligibility contract and persistent transport are both proven; canonical and soak are never activation targets. |
-| `build/bin/zclassic23-dev dev loop ensure/status/wait/stop` | Native C23 watcher lifecycle. `ensure` is singleton/idempotent, `status` returns identity + epoch + latest verdict, `wait` is bounded, and `stop` requires the exact watcher ID. The dev binary defaults this confined tree to lane `dev`; explicit non-dev lanes still deny mutation. |
-| `build/bin/zclassic23-dev dev change apply --input='{"files":[...]}'` | Run one bounded native classify/prove/build/publish transaction. A single admitted stateless controller hot-swaps the resident process; other source changes use verified transactional dev reload. |
+| `make dev-watch [MODE=verify\|check]` | Unified save loop. Both public modes prove and record without runtime activation. `auto`/`apply`/`hotswap`/`reload`/`stage` are recognized only to return a containment refusal. |
+| `build/bin/zclassic23-dev dev loop ensure/status/wait/stop` | Native C23 verify-watcher lifecycle. `ensure` is singleton/idempotent and accepts verify mode; publication modes refuse. `status` reports mode and containment posture, `wait` is bounded, and `stop` requires the exact watcher ID. |
+| `build/bin/zclassic23-dev dev change apply --input='{"files":[...]}'` | Contained compatibility entry point: returns `publication_contained` before runtime mutation. Use `dev change plan`, verify/check watch, and focused proofs. |
+| `build/bin/zclassic23-dev dev vcs revert --input='{"to":"<commit>","relink_generation":false}'` | Source-only revert remains available. `relink_generation=true` refuses before source mutation and cannot activate a binary. |
 | `make agent-index` | Atomically generate root `compile_commands.json` from dry-runs of the exact `DEV_OBJS` recipes, including generated headers and target-specific `-Og`/hot-bucket `-O2` flags. Writes hash/freshness metadata under `.cache/zcl-agent-index/`; clangd is optional. |
-| `make dev-loop-bench` | Run controlled developer-loop cases and write `zcl.dev_loop_bench.v1` raw samples plus p50/p95. Activation cases are skipped without explicit opt-in, so build/check timings cannot masquerade as hot-swap or reload SLO proof. |
+| `make dev-loop-bench` | Run controlled developer-loop cases and write `zcl.dev_loop_bench.v1` raw samples plus p50/p95. Activation cases remain skipped/contained, so build/check timings cannot masquerade as hot-swap or reload SLO proof. |
+| `make dev-activation-selftest` | Hermetically prove the contained activation machinery in a mode-0700 `/tmp` fixture. An inherited-FD sentinel and strict path/command allowlist prevent environment variables from authorizing a real dev-lane mutation. |
+| `make agent-dev-recover` | Read-only dev recovery plan. Public `ARGS=--apply` is contained and cannot relink a generation, replace the datadir, or restart the service. |
+| `make dev-recovery-selftest` | Hermetically prove retained recovery/rollback machinery through an inherited-FD capability bound to an isolated inert fixture. |
 | `make agent-dev-status` | No-build read-only dev-lane status. Reports the explicit worker-lane contract (`role=worker`, `mutation_policy=noncanonical_dev_only`, never live/soak), source/staged binaries, service PID, RPC or pre-RPC recovery, current/running/last-good generations, activation lock, rejected generations, rollback availability, current cycle/watcher heartbeat, latency and background-quality freshness, saved deploy state, auto-reindex marker, deploy blocker/reason, and next safe action. Use `ARGS=--json`, native `zclassic23 agentdevstatus`, or MCP `zcl_agent_dev_status` for `zcl.agent_dev_status.v1`. |
 | `make agent-clear-stale-dev-reindex` | Clears a proven-stale dev-lane `auto_reindex_request` by archiving it after the dev RPC is up and served height is at or above the marker anchor. Never touches canonical or soak. |
-| `make agent-stage-dev` | Build and preflight an immutable dev generation, then update only the `staged` link; the running process and `current` generation remain untouched. |
-| `make agent-loop` | Manual one-shot AI/operator loop. Runs `fast-ci`; set `ZCL_AGENT_LOOP_BIN=1` to also build `build/bin/zclassic23-dev`, or `ZCL_AGENT_LOOP_DEPLOY=dev` to transactionally reload the isolated dev lane. |
+| `make agent-stage-dev` | Phase-0 contained: always refuses before build/stage mutation. A caller-supplied source ID cannot authorize it. |
+| `make agent-loop` | Manual one-shot AI/operator verification loop. Runs `fast-ci`; `ZCL_AGENT_LOOP_BIN=1` may also build `build/bin/zclassic23-dev`. Runtime deployment remains contained. |
 | `make fast-ci` | Cache-aware edit loop: `lint-fast`, changed compile gate, focused mapped tests, and native live probe. Use `ZCL_FAST_TESTS=...`, `ZCL_FAST_LIVE=0`, `ZCL_FAST_CACHE=0`, `ZCL_FAST_CACHE_RESET=1` as needed. |
 | `make test` | Runs `test_parallel` (isolated per-process runner). **Use this**, not test_zcl. Green = regression floor, NOT a liveness proof. |
 | `make t ONLY=simnet` | Runs the deterministic simulator harness and the current action coverage matrix documented in `docs/SIMULATOR.md`. |
 | `make hotswap-sim` | Focused deterministic simulated-network proof for the dev hot-swap transaction. Use after loader/router/provider changes. |
 | `make sim-fast` | Broader deterministic network proof: chaos-harness slice, checked-in scenarios, and a bounded reproducible seed sweep. |
-| `make hotswap FILES=tools/mcp/controllers/app_controller.c [PROBE=zcl_name_list]` | Build a v2 generation and send the authenticated `dev_hotswap` RPC to the already-running isolated dev node. It changes that resident process, never starts/restarts a service, and is unavailable on release/canonical/soak nodes. `dev_mcp_call` is the companion non-destructive resident-probe RPC. |
-| `tools/dev/hotswap-running-dev.sh` | Default `dev-watch auto` persistent transport. It builds the one admitted provider and calls resident `dev_hotswap`; exit 69 permits reload fallback only when the bridge is unavailable. Manifest/ABI/self-test/commit/probe failures stay visible and do not fall through to reload. |
+| `make hotswap` | Phase-0 contained: refuses and directs the caller to `make hotswap-so` plus build/test verification. Resident probing is contained too. |
+| `tools/dev/hotswap-running-dev.sh` | Phase-0 contained direct transport: always refuses before RPC or loader activity. |
 | `make test-full` | Runs the `test_zcl` monolith (sequential). |
 | `make lint` | All 45+ `check-*` gates. Must pass before tests. HARD gates fail the build; RATCHET gates compare to baselines. |
 | `make ci` | lint + bench-regress + build + `test_parallel` (retry-once for flakes) + symbol-floor. Pre-push hook runs this. |
 | `make deploy` | `rm` stale binary, rebuild fresh, WAL checkpoint, `systemctl restart`, verify running `build_commit` (`deploy_verify.sh`). If RPC stays closed during crash-only recovery, the verifier reports the pre-RPC `reindex-chainstate` progress from `node.log`. |
-| `make deploy-dev` | Transactionally activate an immutable generation in the isolated dev node (ports 8053/18252) via `tools/dev/deploy-dev-lane.sh`. It preflights before stopping, flips atomic `current`/`last-good` links, verifies exact running identity plus RPC/agent/MCP health, and restores and verifies `last-good` once on failure. Rejected generations are quarantined. Never touches live/soak. Pending `auto_reindex_request` still fails closed unless the operator explicitly requests a recovery boot. |
-| `make deploy-dev-fast` / `make agent-deploy-fast` | Same generation transaction using cached non-LTO `build/bin/zclassic23-dev`. Use `ZCL_DEV_DEPLOY_BUILD=strict make deploy-dev` for a release-flag candidate in the isolated dev lane; release and consensus gates remain separate. |
+| `make deploy-dev` | Phase-0 contained: always refuses before stopping a service or moving a generation link. |
+| `make deploy-dev-fast` / `make agent-deploy-fast` | Phase-0 contained: always refuses; there is no public runtime-activation entry point. |
 | `zcl_state subsystem=hotswap` | Read `zcl.hotswap_generation.v2`: active/retired/rejected in-process generations, source/build/input/artifact provenance, mapped tests/probes, pinned-artifact identity, and last rejection. These generations are ephemeral and currently admit only stateless MCP routes; all other providers are `reload_required`. |
 | `make lane-health` | Read-only canonical/soak/dev lane status, lag, peers, listeners, memory pressure, and snapshot-loader hints. |
-| `make lane-recover LANE=dev` | Plan bounded noncanonical recovery as `zcl.lane_recovery_plan.v1`; set `ZCL_LANE_RECOVERY_APPLY=1` to restart only dev/soak. Canonical/live/main is refused. |
+| `make remote-node-plan ZCL_REMOTE_HOST=<host>` | Read-only `zcl.remote_node_update.v1` source/service plan using `git ls-remote`; no fetch, merge, build, install, or restart authority. Legacy `remote-node-update*` targets refuse. |
+| `make lane-recover LANE=dev` | Read-only bounded recovery plan as `zcl.lane_recovery_plan.v1`. Public `--apply` / `ZCL_LANE_RECOVERY_APPLY=1` refuses before unit, datadir, snapshot-copy, header-import, drop-in, daemon-reload, or restart mutation; canonical/live/main is also refused. |
 | `build/bin/test_zcl` | Run all tests directly. |
 | `build/bin/zclassic23 status` / `zclassic23 dumpstate <subsystem>` | Native-first status/state calls against the release binary — no build, no MCP. |
 | `zclassic23 discover help` / `discover search <q>` | Native-first tool discovery — the `zcl_tools_list` replacement. |

@@ -6,14 +6,21 @@
 # NONCANONICAL dev datadir.  The old datadir (including any auto-reindex
 # marker) is atomically archived and is never deleted.  A fresh datadir is
 # populated with a block-index/header bundle plus a UTXO snapshot; the node's
-# normal loader must then prove the snapshot body SHA3 and bind its anchor to
-# the copied PoW header chain before RPC readiness counts as success.
+# normal loader must then verify the snapshot body SHA3 and match its anchor to
+# the copied validated header-chain location before RPC readiness counts as
+# success. This is dev-lane recovery evidence, not state-sovereignty proof.
+# Public operation is plan-only during Phase-0 containment. `--apply` always
+# refuses; the mutation machinery is reachable only from its inherited-FD,
+# fixture-bound hermetic self-test.
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 cd "$REPO"
 
 MODE="plan"
+RECOVERY_SELFTEST=0
+SELFTEST_ROOT=""
+SELFTEST_CAP_FD=""
 REQUESTED_GENERATION="${ZCL_DEV_RECOVERY_GENERATION:-}"
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -31,6 +38,17 @@ while [ $# -gt 0 ]; do
         --self-test)
             exec bash "$REPO/tools/dev/recover-dev-lane-selftest.sh"
             ;;
+        --internal-self-test)
+            shift
+            [ $# -ge 2 ] || {
+                echo "recover-dev-lane: invalid internal self-test capability" >&2
+                exit 3
+            }
+            RECOVERY_SELFTEST=1
+            SELFTEST_ROOT="$1"
+            shift
+            SELFTEST_CAP_FD="$1"
+            ;;
         --help|-h)
             sed -n '2,20p' "$0"
             exit 0
@@ -42,6 +60,15 @@ while [ $# -gt 0 ]; do
     esac
     shift
 done
+
+if [ "$MODE" = "apply" ] && [ "$RECOVERY_SELFTEST" -ne 1 ]; then
+    echo "recover-dev-lane: REFUSING — dev recovery apply is contained; planning remains read-only" >&2
+    exit 3
+fi
+if [ "$RECOVERY_SELFTEST" -eq 1 ] && [ "$MODE" != "apply" ]; then
+    echo "recover-dev-lane: internal self-test capability is apply-only" >&2
+    exit 3
+fi
 
 UNIT="${ZCL_DEV_RECOVERY_UNIT:-zcl23-dev.service}"
 DEV_DATADIR="${ZCL_DEV_RECOVERY_DATADIR:-$HOME/.zclassic-c23-dev}"
@@ -288,6 +315,103 @@ running_executable()
     fi
 }
 
+recovery_selftest_refuse()
+{
+    printf '[dev-recovery] REFUSE: invalid internal self-test capability: %s\n' "$*" >&2
+    exit 3
+}
+
+require_recovery_selftest_env_exact()
+{
+    local name="$1" expected="$2"
+    [ "${!name-}" = "$expected" ] ||
+        recovery_selftest_refuse "$name"
+}
+
+validate_internal_recovery_selftest_capability()
+{
+    local root capability observed fd_observed fd_path owner mode home tail
+    local service_log binary found=0 expected_verify
+    [[ "$SELFTEST_CAP_FD" =~ ^[3-8]$ ]] ||
+        recovery_selftest_refuse "capability fd"
+    root="$(readlink -f "$SELFTEST_ROOT" 2>/dev/null || true)"
+    [ -n "$root" ] && [ "$root" = "$SELFTEST_ROOT" ] &&
+        [ -d "$root" ] && [ ! -L "$root" ] ||
+        recovery_selftest_refuse "fixture root"
+    case "$root" in /tmp/zcl-dev-recovery-selftest.*) ;;
+        *) recovery_selftest_refuse "fixture root locus" ;;
+    esac
+    owner="$(stat -c '%u' "$root" 2>/dev/null || true)"
+    mode="$(stat -c '%a' "$root" 2>/dev/null || true)"
+    [ "$owner" = "$(id -u)" ] && [ "$mode" = "700" ] ||
+        recovery_selftest_refuse "fixture root ownership/mode"
+
+    capability="$root/.recover-dev-lane-selftest-capability"
+    [ -f "$capability" ] && [ ! -L "$capability" ] ||
+        recovery_selftest_refuse "sentinel"
+    owner="$(stat -c '%u' "$capability" 2>/dev/null || true)"
+    mode="$(stat -c '%a' "$capability" 2>/dev/null || true)"
+    [ "$owner" = "$(id -u)" ] && [ "$mode" = "600" ] ||
+        recovery_selftest_refuse "sentinel ownership/mode"
+    fd_path="$(readlink -f "/proc/$$/fd/$SELFTEST_CAP_FD" 2>/dev/null || true)"
+    [ "$fd_path" = "$capability" ] ||
+        recovery_selftest_refuse "fd is not bound to sentinel"
+    IFS= read -r fd_observed <&"$SELFTEST_CAP_FD" || fd_observed=""
+    IFS= read -r observed < "$capability" || observed=""
+    [[ "$observed" =~ ^[0-9a-f]{64}$ ]] && [ "$fd_observed" = "$observed" ] ||
+        recovery_selftest_refuse "sentinel mismatch"
+
+    home="$(readlink -f "$HOME" 2>/dev/null || true)"
+    case "$home" in "$root"/*-home) ;;
+        *) recovery_selftest_refuse "HOME locus" ;;
+    esac
+    tail="${home#"$root"/}"
+    case "$tail" in */*) recovery_selftest_refuse "HOME depth" ;; esac
+    [ -d "$home" ] && [ ! -L "$home" ] ||
+        recovery_selftest_refuse "HOME shape"
+    [ "$(readlink -m "$DEV_DATADIR")" = "$home/.zclassic-c23-dev" ] &&
+        [ "$(readlink -m "$GEN_ROOT")" = "$home/.local/lib/zclassic23-dev" ] &&
+        [ "$(readlink -m "$STATE_DIR")" = "$home/.local/state/zclassic23-dev" ] &&
+        [ "$(readlink -m "$SOURCE_DIR")" = "$home/.zclassic-c23-dev" ] ||
+        recovery_selftest_refuse "fixture paths"
+    [ "$MIN_PAYLOAD_BYTES" = "1" ] ||
+        recovery_selftest_refuse "payload floor"
+    case "$VERIFY_TIMEOUT" in 1|10) ;;
+        *) recovery_selftest_refuse "verify timeout" ;;
+    esac
+    case "$TXN_ID" in success|failure|signal) ;;
+        *) recovery_selftest_refuse "transaction id" ;;
+    esac
+
+    service_log="$home/service.log"
+    require_recovery_selftest_env_exact ZCL_DEV_RECOVERY_STOP_COMMAND \
+        "printf 'stop\\n' >> '$service_log'"
+    require_recovery_selftest_env_exact ZCL_DEV_RECOVERY_START_COMMAND \
+        "printf 'start\\n' >> '$service_log'"
+    require_recovery_selftest_env_exact ZCL_DEV_RECOVERY_DAEMON_RELOAD_COMMAND \
+        "printf 'reload\\n' >> '$service_log'"
+    require_recovery_selftest_env_exact ZCL_DEV_RECOVERY_RESET_FAILED_COMMAND \
+        "printf 'reset\\n' >> '$service_log'"
+    require_recovery_selftest_env_exact ZCL_DEV_RECOVERY_ACTIVE_COMMAND false
+    [ -z "${ZCL_DEV_RECOVERY_PID_COMMAND:-}" ] &&
+        [ -z "${ZCL_DEV_RECOVERY_RUNNING_EXE_COMMAND:-}" ] ||
+        recovery_selftest_refuse "process probe injection"
+    expected_verify="touch '$home/verify-started'; sleep 2"
+    case "${ZCL_DEV_RECOVERY_VERIFY_COMMAND:-}" in
+        true|false|"$expected_verify") ;;
+        *) recovery_selftest_refuse "verify command" ;;
+    esac
+
+    for binary in "$GEN_ROOT"/gen-*/zclassic23-dev; do
+        [ -e "$binary" ] || continue
+        found=1
+        [ -f "$binary" ] && [ ! -L "$binary" ] &&
+            printf '#!/usr/bin/env bash\nexit 0\n' | cmp -s - "$binary" ||
+            recovery_selftest_refuse "generation fixture"
+    done
+    [ "$found" -eq 1 ] || recovery_selftest_refuse "missing generation fixture"
+}
+
 validate_confinement()
 {
     local canonical soak legacy expected injected
@@ -318,7 +442,7 @@ validate_confinement()
     is_uint "$MIN_PAYLOAD_BYTES" || die "invalid payload floor"
     case "$TXN_ID" in ""|*[!A-Za-z0-9_.-]*) die "unsafe transaction id" ;; esac
 
-    if [ "${ZCL_DEV_RECOVERY_TEST_MODE:-0}" != "1" ]; then
+    if [ "$RECOVERY_SELFTEST" -ne 1 ]; then
         for injected in ZCL_DEV_RECOVERY_STOP_COMMAND \
             ZCL_DEV_RECOVERY_START_COMMAND \
             ZCL_DEV_RECOVERY_DAEMON_RELOAD_COMMAND \
@@ -446,7 +570,7 @@ verify_recovery_default()
     while :; do
         pid="$(service_pid 2>/dev/null || true)"
         exe="$(running_executable "$pid" 2>/dev/null || true)"
-        proof_sha="$(grep -F -m1 -- 'SELF-verified snapshot' "$DEV_DATADIR/node.log" 2>/dev/null || true)"
+        proof_sha="$(grep -F -m1 -- 'digest-verified assisted snapshot' "$DEV_DATADIR/node.log" 2>/dev/null || true)"
         proof_frontier="$(grep -F -m1 -- 'installed the EMBEDDED Sapling frontier' "$DEV_DATADIR/node.log" 2>/dev/null || true)"
         proof_seed="$(grep -F -m1 -- 'coin set RE-SEEDED' "$DEV_DATADIR/node.log" 2>/dev/null || true)"
         if service_active && [ -n "$exe" ] &&
@@ -564,7 +688,7 @@ archive_false_rejection()
     tmp="${accepted}.tmp.$$"
     printf '{"schema":"zcl.dev_accepted_generation.v1","generation":"%s",' \
         "$CURRENT_GENERATION" > "$tmp"
-    printf '"accepted_at_utc":"%s","reason":"fresh dev recovery proved exact executable, snapshot SHA3/header binding, RPC, and agent contract",' \
+    printf '"accepted_at_utc":"%s","reason":"fresh dev recovery proved exact executable, snapshot SHA3 and chain-location match, RPC, and agent contract",' \
         "$(date -u +%FT%TZ)" >> "$tmp"
     printf '"superseded_rejection":"%s"}\n' "$(json_escape "$history")" >> "$tmp"
     mv "$tmp" "$accepted"
@@ -701,7 +825,7 @@ apply_recovery()
     archive_false_rejection
     write_coherent_deploy_state
     write_recovery_record "$DEV_DATADIR/recovery-origin.json" committed \
-        "snapshot body SHA3, anchor/header binding, exact executable, RPC, and agent contract proved"
+        "snapshot body SHA3, anchor/header chain-location match, exact executable, RPC, and agent contract proved"
     write_recovery_record "$RECOVERY_RECORD" committed \
         "fresh dev lane ready; old datadir retained at archive path"
     SWAPPED=0
@@ -732,6 +856,7 @@ trap on_exit EXIT
 trap 'on_signal 130' INT
 trap 'on_signal 143' TERM HUP
 
+[ "$RECOVERY_SELFTEST" -ne 1 ] || validate_internal_recovery_selftest_capability
 validate_confinement
 resolve_bundle
 resolve_target_generation

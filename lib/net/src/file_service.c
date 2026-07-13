@@ -7,6 +7,7 @@
  * overhead visible to observers, wire-speed on gigabit links. */
 
 #include "platform/time_compat.h"
+#include "config/boot_snapshot_offer.h"
 #include "net/file_manifest.h"
 #include "net/file_service.h"
 #include "util/log_json.h"
@@ -457,6 +458,11 @@ static _Atomic bool g_have_manifest = false;
 static pthread_mutex_t g_manifest_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_manifest_build_mutex = PTHREAD_MUTEX_INITIALIZER;
 
+static bool fs_snapshot_serving_allowed(void)
+{
+    return boot_snapshot_offer_artifact_is_eligible(g_fs_datadir, NULL, 0);
+}
+
 static bool fs_server_rebuild_manifest_locked(struct file_manifest *out)
 {
     struct file_manifest next = {0};
@@ -602,6 +608,7 @@ static void fs_handle_client_fd(int client_fd)
             manifest = g_server_fm;
             pthread_mutex_unlock(&g_manifest_mutex);
         }
+        bool snapshot_allowed = fs_snapshot_serving_allowed();
 
         if (type == FS_REQUEST && plen >= 8 &&
             memcmp(payload, "RNG", 3) == 0 && have_manifest) {
@@ -612,6 +619,9 @@ static void fs_handle_client_fd(int client_fd)
                             ((uint16_t)payload[6] << 8);
             if (end > manifest.num_chunks) end = manifest.num_chunks;
             for (uint32_t ci = start; ci < end && atomic_load(&g_fs_running); ci++) {
+                if (manifest.chunks[ci].file_index == 254 &&
+                    !snapshot_allowed)
+                    continue;
                 uint8_t *data = NULL;
                 uint32_t dsz = 0;
                 if (file_chunk_read(&manifest.chunks[ci], g_fs_datadir,
@@ -634,6 +644,9 @@ static void fs_handle_client_fd(int client_fd)
                    (double)manifest.total_bytes / (1024.0*1024.0*1024.0));
             for (uint32_t ci = 0; ci < manifest.num_chunks &&
                                  atomic_load(&g_fs_running); ci++) {
+                if (manifest.chunks[ci].file_index == 254 &&
+                    !snapshot_allowed)
+                    continue;
                 uint8_t *data = NULL;
                 uint32_t dsz = 0;
                 if (file_chunk_read(&manifest.chunks[ci], g_fs_datadir,
@@ -647,6 +660,9 @@ static void fs_handle_client_fd(int client_fd)
                    fs_session_mbps(&session));
         } else if (type == FS_MANIFEST && have_manifest) {
             for (uint32_t i = 0; i < manifest.num_chunks; i++) {
+                if (manifest.chunks[i].file_index == 254 &&
+                    !snapshot_allowed)
+                    continue;
                 uint8_t entry[45]; /* sha3(32)+size(4)+file_idx(1)+offset(8) */
                 memcpy(entry, manifest.chunks[i].sha3, 32);
                 entry[32] = (uint8_t)(manifest.chunks[i].size);

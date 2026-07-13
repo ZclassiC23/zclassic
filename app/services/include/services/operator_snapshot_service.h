@@ -44,6 +44,9 @@ struct operator_capture {
     bool operator_latch_active;
     int64_t operator_latch_since_unix;
     char operator_latch_detail[ALERT_OPERATOR_NEEDED_DETAIL_LEN];
+    bool security_review_required;
+    char security_posture_status[48];
+    char security_posture_next_action[96];
     struct legacy_mirror_sync_stats mirror;
 };
 

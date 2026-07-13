@@ -229,6 +229,126 @@ static int test_dl_assign_to_peer(void)
     return failures;
 }
 
+static int test_dl_assignment_generation_parking(void)
+{
+    int failures = 0;
+    TEST("zero assignment parks until manager dependency generation changes") {
+        struct download_manager dm;
+        dl_init(&dm);
+        struct uint256 out[1];
+        struct dl_diagnostics diag;
+
+        ASSERT(dl_assignment_should_attempt(&dm, 7));
+        ASSERT(dl_assign_to_peer(&dm, 7, out, 1) == 0);
+        dl_get_diagnostics(&dm, &diag);
+        ASSERT(diag.assign_attempts == 1);
+        ASSERT(diag.assign_zero_results == 1);
+        ASSERT(diag.last_assign_result == DL_ASSIGN_NO_QUEUE);
+
+        /* Both the cheap preflight and the defensive direct-call check stay
+         * parked. A 100 ms message-pump loop can no longer inflate actual
+         * assignment attempts while the queue/window state is unchanged. */
+        ASSERT(!dl_assignment_should_attempt(&dm, 7));
+        ASSERT(dl_assign_to_peer(&dm, 7, out, 1) == 0);
+        dl_get_diagnostics(&dm, &diag);
+        ASSERT(diag.assign_attempts == 1);
+        ASSERT(diag.assign_zero_results == 1);
+
+        /* Capacity movement is irrelevant to a peer parked because there is
+         * no queued work; a receipt must not wake every empty-queue peer. */
+        struct uint256 unrelated = make_hash(92);
+        ASSERT(dl_mark_requested(&dm, &unrelated, 899, 8));
+        ASSERT(dl_mark_received(&dm, &unrelated) == 8);
+        ASSERT(!dl_assignment_should_attempt(&dm, 7));
+
+        struct uint256 h = make_hash(93);
+        int32_t height = 900;
+        ASSERT(dl_queue_blocks(&dm, &h, &height, 1) == 1);
+        dl_get_diagnostics(&dm, &diag);
+        uint64_t queue_generation = diag.queue_generation;
+        dl_queue_priority(&dm, &h, height);
+        dl_get_diagnostics(&dm, &diag);
+        ASSERT(diag.queue_generation == queue_generation);
+        ASSERT(dl_assignment_should_attempt(&dm, 7));
+        ASSERT(dl_assign_to_peer(&dm, 7, out, 1) == 1);
+        ASSERT(uint256_eq(&out[0], &h));
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_dl_assignment_parking_is_per_peer(void)
+{
+    int failures = 0;
+    TEST("full peer parks while another peer remains eligible") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        struct uint256 hashes[DL_MAX_IN_FLIGHT_PER_PEER + 1];
+        int32_t heights[DL_MAX_IN_FLIGHT_PER_PEER + 1];
+        for (size_t i = 0; i < DL_MAX_IN_FLIGHT_PER_PEER + 1; i++) {
+            hashes[i] = make_hash((uint8_t)(i + 1));
+            hashes[i].data[1] = (uint8_t)(i >> 8);
+            heights[i] = 1000 + (int32_t)i;
+        }
+        ASSERT(dl_queue_blocks(&dm, hashes, heights,
+                               DL_MAX_IN_FLIGHT_PER_PEER + 1) ==
+               DL_MAX_IN_FLIGHT_PER_PEER + 1);
+
+        struct uint256 out[DL_MAX_IN_FLIGHT_PER_PEER];
+        ASSERT(dl_assign_to_peer(&dm, 11, out,
+                                 DL_MAX_IN_FLIGHT_PER_PEER) ==
+               DL_MAX_IN_FLIGHT_PER_PEER);
+        ASSERT(dl_assign_to_peer(&dm, 11, out, 1) == 0);
+        ASSERT(!dl_assignment_should_attempt(&dm, 11));
+
+        /* The generation cache is per peer: peer 12 can immediately take
+         * the remaining body instead of being suppressed behind peer 11. */
+        ASSERT(dl_assignment_should_attempt(&dm, 12));
+        ASSERT(dl_assign_to_peer(&dm, 12, out, 1) == 1);
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_dl_assignment_peer_cache_capacity_and_reuse(void)
+{
+    int failures = 0;
+    TEST("assignment parking tracks 300 active peers and reuses churn slots") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        for (uint32_t peer_id = 1; peer_id <= 300; peer_id++)
+            dl_set_peer_loopback(&dm, peer_id, false);
+        ASSERT(dm.num_peers == 300);
+
+        struct uint256 out[1];
+        ASSERT(dl_assignment_should_attempt(&dm, 301));
+        ASSERT(dl_assign_to_peer(&dm, 301, out, 1) == 0);
+        ASSERT(!dl_assignment_should_attempt(&dm, 301));
+
+        for (uint32_t peer_id = 1; peer_id <= 301; peer_id++)
+            ASSERT(dl_peer_disconnected(&dm, peer_id) == 0);
+        for (uint32_t peer_id = 302; peer_id <= 700; peer_id++) {
+            dl_set_peer_loopback(&dm, peer_id, false);
+            ASSERT(dl_peer_disconnected(&dm, peer_id) == 0);
+        }
+        ASSERT(dm.num_peers <= DL_MAX_TRACKED_PEERS);
+
+        ASSERT(dl_assignment_should_attempt(&dm, 701));
+        ASSERT(dl_assign_to_peer(&dm, 701, out, 1) == 0);
+        ASSERT(!dl_assignment_should_attempt(&dm, 701));
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_dl_peer_disconnected(void)
 {
     int failures = 0;
@@ -471,6 +591,7 @@ static int test_dl_timeout_retry_failover(void)
         ASSERT(dl_assign_to_peer(&dm, 1, out, 1) == 0);
         dl_get_diagnostics(&dm, &diag);
         ASSERT(diag.last_assign_result == DL_ASSIGN_PEER_AVOID_COOLDOWN);
+        ASSERT(!dl_assignment_should_attempt(&dm, 1));
         ASSERT(strcmp(dl_assign_result_name(diag.last_assign_result),
                       "peer_avoid_cooldown") == 0);
 
@@ -538,12 +659,25 @@ static int test_dl_timeout_retry_avoid_expiry(void)
         ASSERT(dl_mark_requested(&dm, &h1, 151, 1));
         ASSERT(dl_check_timeouts(&dm, now + timeout + 1) == 1);
 
+        struct uint256 out[1];
+        ASSERT(dl_assign_to_peer(&dm, 1, out, 1) == 0);
+        ASSERT(!dl_assignment_should_attempt(&dm, 1));
+
         zcl_mutex_lock(&dm.cs);
         ASSERT(dm.queue_len == 1);
         dm.queue_avoid_until[0] = now - 1;
+        bool found_peer = false;
+        for (size_t i = 0; i < dm.num_peers; i++) {
+            if (dm.peers[i].peer_id != 1)
+                continue;
+            dm.peers[i].zero_assign_retry_after = now - 1;
+            found_peer = true;
+            break;
+        }
         zcl_mutex_unlock(&dm.cs);
+        ASSERT(found_peer);
 
-        struct uint256 out[1];
+        ASSERT(dl_assignment_should_attempt(&dm, 1));
         ASSERT(dl_assign_to_peer(&dm, 1, out, 1) == 1);
         ASSERT(uint256_eq(&out[0], &h1));
 
@@ -1187,6 +1321,9 @@ int test_download(void)
     failures += test_dl_mark_received();
     failures += test_dl_queue_dedup();
     failures += test_dl_assign_to_peer();
+    failures += test_dl_assignment_generation_parking();
+    failures += test_dl_assignment_parking_is_per_peer();
+    failures += test_dl_assignment_peer_cache_capacity_and_reuse();
     failures += test_dl_peer_disconnected();
     failures += test_dl_settle_accounting();
     failures += test_dl_check_timeouts();

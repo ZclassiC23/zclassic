@@ -13,7 +13,7 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 DEFAULT_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ROOT="${ZCL_DEV_WATCH_ROOT:-$DEFAULT_ROOT}"
-MODE="${ZCL_DEV_WATCH_MODE:-auto}"
+MODE="${ZCL_DEV_WATCH_MODE:-verify}"
 POLL_MS="${ZCL_DEV_WATCH_POLL_MS:-500}"
 DEBOUNCE_MS="${ZCL_DEV_WATCH_DEBOUNCE_MS:-500}"
 BACKEND="${ZCL_DEV_WATCH_BACKEND:-auto}"
@@ -29,16 +29,20 @@ STAGE_COMMAND="${ZCL_DEV_WATCH_STAGE_COMMAND:-}"
 HOTSWAP_COMMAND="${ZCL_DEV_WATCH_HOTSWAP_COMMAND-$ROOT/tools/dev/hotswap-running-dev.sh}"
 HOTSWAP_MANIFEST="${ZCL_DEV_WATCH_HOTSWAP_MANIFEST:-$ROOT/config/hotswap_eligible.def}"
 STATE_DIR="${ZCL_DEV_WATCH_STATE_DIR:-$HOME/.local/state/zclassic23-dev}"
+PREACTIVATE_COMMAND="${ZCL_DEV_WATCH_PREACTIVATE_COMMAND:-}"
+WATCH_LOCK_REL=".cache/zcl-dev-watch.lock"
 
 STOP_REQUESTED=0
 CYCLE=0
 WORK=""
-FALLBACK_LOCK_DIR=""
 NEXT_MANIFEST=""
 SETTLED_MANIFEST=""
 SELECTED_PATH=""
 SELECTED_PROBE=""
 SELECTION_REASON=""
+CLASSIFIED_PATH=""
+CLASSIFICATION_REASON=""
+OBSERVED_FILES_FILE=""
 IMPACT_PLAN=""
 HEARTBEAT="$STATE_DIR/watcher-heartbeat.json"
 HOTSWAP_RESULT_FILE="${ZCL_DEV_HOTSWAP_RESULT:-$STATE_DIR/hotswap-latest.json}"
@@ -64,6 +68,8 @@ AGENT_NEXT_ACTION=""
 CHECK_RESULT="not_run"
 LINK_RESULT="not_run"
 ACTIVATION_RESULT="not_run"
+SOURCE_ID=""
+SOURCE_GATE_DETAIL=""
 
 log()
 {
@@ -86,10 +92,9 @@ fast changed-file checks plus the non-LTO dev rebuild, then optionally updates
 ONLY the isolated zcl23-dev lane.
 
 Environment:
-  ZCL_DEV_WATCH_MODE=auto|hotswap|reload|stage|check|verify
-                                      smallest safe path after green checks;
-                                      verify runs `make ff` and defers deploy
-                                      (native dev loop; `dev change apply`)
+  ZCL_DEV_WATCH_MODE=verify|check      verification only; runtime publication
+                                      modes are contained until immutable
+                                      epochs and proof receipts are complete
   ZCL_DEV_WATCH_POLL_MS=500           polling interval without inotifywait
   ZCL_DEV_WATCH_DEBOUNCE_MS=500       quiet window used to coalesce saves
   ZCL_DEV_WATCH_BACKEND=auto|poll|inotify
@@ -97,16 +102,12 @@ Environment:
   ZCL_DEV_WATCH_ONCE_FILES='a.c b.h'  exact once-mode paths
   ZCL_DEV_WATCH_ONCE_FILES_FILE=path  newline-delimited once-mode paths
   ZCL_DEV_WATCH_INITIAL=1             check current dirty relevant paths first
-  ZCL_DEV_WATCH_HOTSWAP_COMMAND=cmd   persistent dev-process swap transport;
-                                      defaults to the dev-only RPC bridge;
-                                      set empty to force reload fallback
   ZCL_DEV_WATCH_STATE_DIR=path        durable cycles + watcher heartbeat
   ZCL_DEV_WARM_CODEINDEX=1            warm lib/codeindex after each green
                                       cycle (default on); set 0 to disable
 
 Examples:
   make dev-watch
-  ZCL_DEV_WATCH_MODE=stage make dev-watch
   ZCL_DEV_WATCH_MODE=check make dev-watch
   ZCL_DEV_WATCH_ONCE_FILES=lib/net/src/msg_tx.c make dev-watch-once
 EOF
@@ -235,10 +236,20 @@ write_cycle_record()
         printf '  "captured_at_utc":"%s",\n' "$(json_escape "$now")"
         printf '  "watcher_pid":%s,\n' "$$"
         printf '  "requested_mode":"%s",\n' "$(json_escape "$MODE")"
+        printf '  "source_identity":"%s",\n' "$(json_escape "$SOURCE_ID")"
         printf '  "selected_path":"%s",\n' "$(json_escape "$SELECTED_PATH")"
         printf '  "selected_probe":"%s",\n' "$(json_escape "$SELECTED_PROBE")"
         printf '  "selection_reason":"%s",\n' "$(json_escape "$SELECTION_REASON")"
+        printf '  "classified_path":"%s",\n' "$(json_escape "$CLASSIFIED_PATH")"
+        printf '  "classification_reason":"%s",\n' "$(json_escape "$CLASSIFICATION_REASON")"
         printf '  "outcome":"%s",\n' "$(json_escape "$outcome")"
+        printf '  "observed_files":';
+        if [ -n "$OBSERVED_FILES_FILE" ] && [ -r "$OBSERVED_FILES_FILE" ]; then
+            json_array_from_file "$OBSERVED_FILES_FILE"
+        else
+            printf '[]'
+        fi
+        printf ',\n'
         printf '  "changed_files":'; json_array_from_file "$changed_file"; printf ',\n'
         printf '  "impact_plan":%s,\n' "$impact"
         printf '  "timings_ms":{"classification":%s,"check":%s,"link":%s,"activation":%s,"total":%s},\n' \
@@ -275,11 +286,23 @@ validate_options()
 {
     [ -d "$ROOT" ] || fail "repository root does not exist: $ROOT"
     case "$MODE" in
-        auto|hotswap|reload|stage|check|verify) ;;
-        deploy) MODE="reload" ;; # compatibility with the bounded watcher MVP
+        check|verify) ;;
+        auto|apply|hotswap|reload|stage|deploy)
+            fail "runtime publication mode '$MODE' is contained; use verify until immutable epochs and proof receipts are transactional"
+            ;;
         off) MODE="check" ;;     # compatibility with the bounded watcher MVP
-        *) fail "ZCL_DEV_WATCH_MODE must be auto, hotswap, reload, stage, check, or verify (got $MODE)" ;;
+        *) fail "ZCL_DEV_WATCH_MODE must be verify or check (got $MODE)" ;;
     esac
+    # These shell-command seams exist solely inside --self-test.  Accepting
+    # them in a public watcher would turn an environment variable into an
+    # arbitrary publication/proof authority.
+    [ -z "${ZCL_DEV_WATCH_CHECK_COMMAND+x}" ] &&
+    [ -z "${ZCL_DEV_WATCH_REBUILD_COMMAND+x}" ] &&
+    [ -z "${ZCL_DEV_WATCH_DEPLOY_COMMAND+x}" ] &&
+    [ -z "${ZCL_DEV_WATCH_STAGE_COMMAND+x}" ] &&
+    [ -z "${ZCL_DEV_WATCH_HOTSWAP_COMMAND+x}" ] &&
+    [ -z "${ZCL_DEV_WATCH_PREACTIVATE_COMMAND+x}" ] ||
+        fail "ZCL_DEV_WATCH_*_COMMAND overrides are confined to --self-test"
     case "$BACKEND" in
         auto|poll|inotify) ;;
         *) fail "ZCL_DEV_WATCH_BACKEND must be auto, poll, or inotify (got $BACKEND)" ;;
@@ -306,8 +329,8 @@ refresh_watch_paths()
 {
     local candidate
     WATCH_PATHS=()
-    for candidate in Makefile app application adapters config domain lib ports \
-        src tools vendor/include; do
+    for candidate in Makefile README.md AGENTS.md app application adapters \
+        config core docs domain lib ports src tools vendor/include; do
         [ -e "$ROOT/$candidate" ] && WATCH_PATHS+=("$candidate")
     done
     [ "${#WATCH_PATHS[@]}" -gt 0 ] ||
@@ -318,16 +341,86 @@ is_relevant_path()
 {
     local path="${1#./}"
     case "$path" in
-        Makefile|*.mk) return 0 ;;
-        app/*|application/*|adapters/*|config/*|domain/*|lib/*|ports/*|src/*|tools/*|vendor/include/*)
+        Makefile|README.md|AGENTS.md|docs/*.md|*.mk) return 0 ;;
+        app/*|application/*|adapters/*|config/*|core/*|domain/*|lib/*|ports/*|src/*|tools/*|vendor/include/*)
             case "$path" in
-                *.c|*.h|*.def|*.inc|*.mk|*.sh|*.py|*.css|*.js|*.html|*.tmpl)
+                *.c|*.h|*.def|*.inc|*.md|*.mk|*.service|*.sh|*.py|*.css|*.js|*.html|*.tmpl)
                     return 0
                     ;;
             esac
             ;;
     esac
     return 1
+}
+
+mode_publishes()
+{
+    case "$MODE" in
+        auto|hotswap|reload|stage) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# Publication authority covers the exact complete dirty Git set, never the
+# event subset a watcher happened to observe.  The shared identity gate also
+# refuses assume-unchanged/skip-worktree paths before they can hide a core edit.
+prepare_publication_source_epoch()
+{
+    local requested="$1" complete="$WORK/complete-dirty" normalized="$WORK/requested-dirty"
+    SOURCE_ID=""
+    SOURCE_GATE_DETAIL=""
+    (cd "$ROOT" && "$SCRIPT_DIR/source-identity.sh" paths) > "$complete" 2> "$WORK/source-identity.err" || {
+        SOURCE_GATE_DETAIL="$(tr '\r\n' '  ' < "$WORK/source-identity.err")"
+        [ -n "$SOURCE_GATE_DETAIL" ] || SOURCE_GATE_DETAIL="complete dirty-set discovery failed"
+        return 1
+    }
+    sed '/^$/d' "$requested" | LC_ALL=C sort -u > "$normalized"
+    if ! cmp -s "$normalized" "$complete"; then
+        local omitted unexpected
+        omitted="$(comm -13 "$normalized" "$complete" | head -1 || true)"
+        unexpected="$(comm -23 "$normalized" "$complete" | head -1 || true)"
+        if [ -n "$omitted" ]; then
+            SOURCE_GATE_DETAIL="omitted_dirty_file=$omitted"
+        elif [ -n "$unexpected" ]; then
+            SOURCE_GATE_DETAIL="requested_file_not_dirty=$unexpected"
+        else
+            SOURCE_GATE_DETAIL="requested dirty set is not exact"
+        fi
+        return 1
+    fi
+    if grep -q '^core/' "$complete" &&
+       { [ ! -f "$ROOT/.core-unseal-token" ] ||
+         [ -L "$ROOT/.core-unseal-token" ]; }; then
+        SOURCE_GATE_DETAIL="sealed_core_requires_owner_unseal"
+        return 1
+    fi
+    SOURCE_ID="$(cd "$ROOT" && "$SCRIPT_DIR/source-identity.sh" capture 2> "$WORK/source-identity.err")" || {
+        SOURCE_GATE_DETAIL="$(tr '\r\n' '  ' < "$WORK/source-identity.err")"
+        [ -n "$SOURCE_GATE_DETAIL" ] || SOURCE_GATE_DETAIL="source identity capture failed"
+        SOURCE_ID=""
+        return 1
+    }
+    [[ "$SOURCE_ID" =~ ^[0-9a-f]{64}$ ]] || {
+        SOURCE_GATE_DETAIL="source identity output was not 64 lowercase hex"
+        SOURCE_ID=""
+        return 1
+    }
+}
+
+verify_publication_source_epoch()
+{
+    mode_publishes || return 0
+    [ -n "$SOURCE_ID" ] || {
+        SOURCE_GATE_DETAIL="source identity was never captured"
+        return 1
+    }
+    if ! (cd "$ROOT" && "$SCRIPT_DIR/source-identity.sh" verify "$SOURCE_ID") \
+            > /dev/null 2> "$WORK/source-identity.err"; then
+        SOURCE_GATE_DETAIL="$(tr '\r\n' '  ' < "$WORK/source-identity.err")"
+        [ -n "$SOURCE_GATE_DETAIL" ] || SOURCE_GATE_DETAIL="source epoch superseded"
+        return 1
+    fi
+    return 0
 }
 
 # The manifest is cheap enough to poll: one find and one sort, with a SHA-256
@@ -341,6 +434,7 @@ write_manifest()
         find "${WATCH_PATHS[@]}" -type f \
             \( -name 'Makefile' -o -name '*.mk' -o -name '*.c' -o \
                -name '*.h' -o -name '*.def' -o -name '*.inc' -o \
+               -name '*.md' -o -name '*.service' -o \
                -name '*.sh' -o -name '*.py' -o -name '*.css' -o \
                -name '*.js' -o -name '*.html' -o -name '*.tmpl' \) \
             -printf '%T@:%s\t%p\n' 2>/dev/null | LC_ALL=C sort
@@ -420,6 +514,23 @@ dirty_relevant_paths()
     LC_ALL=C sort -u "$output" -o "$output"
 }
 
+# Events and once-mode lists are wake hints only.  Before every classification
+# derive the complete Git-visible dirty set through the same hidden-bit audit
+# used by the source-identity gate.  This prevents a docs event from concealing
+# an already-dirty Core TU or any other source/configuration input.
+discover_complete_dirty_paths()
+{
+    local output="$1" all="$WORK/complete-git-visible"
+    if ! (cd "$ROOT" && "$SCRIPT_DIR/source-identity.sh" paths) > "$all" \
+            2> "$WORK/complete-git-visible.err"; then
+        SOURCE_GATE_DETAIL="$(tr '\r\n' '  ' < "$WORK/complete-git-visible.err")"
+        [ -n "$SOURCE_GATE_DETAIL" ] ||
+            SOURCE_GATE_DETAIL="complete Git-visible dirty-set discovery failed"
+        return 1
+    fi
+    sed '/^$/d' "$all" | LC_ALL=C sort -u > "$output"
+}
+
 hotswap_probe_for_path()
 {
     local wanted="$1" entry_path entry_probe
@@ -469,7 +580,7 @@ classify_cycle()
             case "$path" in
                 *.h|*.def|*.inc)
                     blocker="$path: reload_required: dependency fan-out cannot be proven generation-local" ;;
-                app/jobs/*|lib/consensus/*|lib/validation/*|lib/storage/*|lib/net/*|lib/coins/*|domain/*|config/*|src/*)
+                core/*|app/jobs/*|lib/consensus/*|lib/validation/*|lib/storage/*|lib/net/*|lib/coins/*|domain/*|config/*|src/*)
                     blocker="$path: reload_required: consensus, state, wire, or process ownership is non-swappable" ;;
                 *) blocker="$path: reload_required: no stateless ABI/quiescence contract" ;;
             esac
@@ -496,6 +607,9 @@ classify_cycle()
         SELECTION_REASON="$blocker"
     fi
 
+    CLASSIFIED_PATH="$SELECTED_PATH"
+    CLASSIFICATION_REASON="$SELECTION_REASON"
+
     case "$MODE" in
         auto) ;;
         hotswap)
@@ -511,7 +625,8 @@ classify_cycle()
             ;;
         reload) SELECTED_PATH="reload"; SELECTED_PROBE=""; SELECTION_REASON="forced transactional process reload" ;;
         stage) SELECTED_PATH="stage"; SELECTED_PROBE=""; SELECTION_REASON="forced immutable generation staging without restart" ;;
-        check) SELECTED_PATH="check"; SELECTED_PROBE=""; SELECTION_REASON="forced verification-only path" ;;
+        check) SELECTED_PATH="check"; SELECTED_PROBE=""; SELECTION_REASON="forced verification-only path; classified_path=$CLASSIFIED_PATH: $CLASSIFICATION_REASON" ;;
+        verify) SELECTED_PATH="check"; SELECTED_PROBE=""; SELECTION_REASON="default verify-only execution; classified_path=$CLASSIFIED_PATH: $CLASSIFICATION_REASON; runtime publication requires explicit auto/apply mode" ;;
     esac
     CLASSIFY_MS=$(( $(clock_ms) - started ))
 }
@@ -604,6 +719,8 @@ run_check_command()
 {
     if [ -n "$CHECK_COMMAND" ]; then
         (cd "$ROOT" && /bin/sh -c "$CHECK_COMMAND")
+    elif [ "$MODE" = "verify" ]; then
+        (cd "$ROOT" && make --no-print-directory ff)
     else
         (cd "$ROOT" && tools/agent_fast_ci.sh)
     fi
@@ -628,7 +745,8 @@ run_activation_command()
             if [ -n "$STAGE_COMMAND" ]; then
                 (cd "$ROOT" && /bin/sh -c "$STAGE_COMMAND")
             else
-                (cd "$ROOT" && ZCL_DEV_DEPLOY_BUILD=fast \
+                (cd "$ROOT" && ZCL_DEV_SOURCE_ID="$SOURCE_ID" \
+                    ZCL_DEV_DEPLOY_BUILD=fast \
                     ZCL_DEV_USE_PREBUILT=1 \
                     ZCL_DEV_BUILD_ARTIFACT="$ROOT/build/bin/zclassic23-dev" \
                     tools/dev/deploy-dev-lane.sh --stage)
@@ -638,7 +756,8 @@ run_activation_command()
             if [ -n "$DEPLOY_COMMAND" ]; then
                 (cd "$ROOT" && /bin/sh -c "$DEPLOY_COMMAND")
             else
-                (cd "$ROOT" && ZCL_DEV_DEPLOY_BUILD=fast \
+                (cd "$ROOT" && ZCL_DEV_SOURCE_ID="$SOURCE_ID" \
+                    ZCL_DEV_DEPLOY_BUILD=fast \
                     ZCL_DEV_USE_PREBUILT=1 \
                     ZCL_DEV_BUILD_ARTIFACT="$ROOT/build/bin/zclassic23-dev" \
                     tools/dev/deploy-dev-lane.sh)
@@ -647,6 +766,7 @@ run_activation_command()
         hotswap)
             export ZCL_DEV_HOTSWAP_FILES_FILE="$ZCL_FAST_CHANGED_FILES_FILE"
             export ZCL_DEV_HOTSWAP_PROBE="$SELECTED_PROBE"
+            export ZCL_DEV_SOURCE_ID="$SOURCE_ID"
             (cd "$ROOT" && /bin/sh -c "$HOTSWAP_COMMAND")
             ;;
         rejected)
@@ -661,7 +781,7 @@ run_activation_command()
 
 schedule_async_immutable_build()
 {
-    local log_path="$STATE_DIR/async-immutable-build.log"
+    local log_path="$STATE_DIR/async-immutable-build.log" source_id="$SOURCE_ID"
     mkdir -p "$STATE_DIR"
     (
         # Do not let the convergence worker inherit/extend the watcher's
@@ -670,7 +790,9 @@ schedule_async_immutable_build()
         exec 9>&- 2>/dev/null || true
         cd "$ROOT" || exit 1
         make --no-print-directory fast-rebuild > "$log_path" 2>&1 &&
-        ZCL_DEV_DEPLOY_BUILD=fast ZCL_DEV_USE_PREBUILT=1 \
+        "$SCRIPT_DIR/source-identity.sh" verify "$source_id" >> "$log_path" 2>&1 &&
+        ZCL_DEV_SOURCE_ID="$source_id" ZCL_DEV_DEPLOY_BUILD=fast \
+            ZCL_DEV_USE_PREBUILT=1 \
             ZCL_DEV_BUILD_ARTIFACT="$ROOT/build/bin/zclassic23-dev" \
             tools/dev/deploy-dev-lane.sh --stage >> "$log_path" 2>&1
     ) &
@@ -704,7 +826,8 @@ elapsed_seconds()
 # Return: 0 accepted, 1 rejected, 3 superseded by a newer save.
 run_cycle()
 {
-    local changed_file="$1" expected_manifest="$2" started count phase_started rc
+    local observed_file="$1" expected_manifest="$2" started count phase_started rc
+    local changed_file="$WORK/cycle-complete-$((CYCLE + 1))"
     CYCLE=$((CYCLE + 1))
     started="$(date +%s)"
     CYCLE_STARTED_MS="$(clock_ms)"
@@ -719,9 +842,24 @@ run_cycle()
     CHECK_RESULT="not_run"
     LINK_RESULT="not_run"
     ACTIVATION_RESULT="not_run"
+    SOURCE_ID=""
+    SOURCE_GATE_DETAIL=""
+    CLASSIFIED_PATH=""
+    CLASSIFICATION_REASON=""
+    OBSERVED_FILES_FILE="$observed_file"
     ROLLBACK_STATUS="not_needed"
     LAST_OUTCOME="in_progress"
     write_heartbeat checking
+    if ! discover_complete_dirty_paths "$changed_file"; then
+        FAILURE_PHASE="changed_set_discovery"
+        FAILURE_DETAIL="$SOURCE_GATE_DETAIL"
+        AGENT_NEXT_ACTION="clear hidden Git index bits or repair Git discovery, then retry"
+        CLASSIFIED_PATH="unknown"
+        CLASSIFICATION_REASON="complete Git-visible changed set unavailable"
+        write_cycle_record "$observed_file" refused
+        log "cycle=$CYCLE refused before classification: $SOURCE_GATE_DETAIL"
+        return 1
+    fi
     count="$(sed '/^$/d' "$changed_file" | wc -l | tr -d ' ')"
 
     export ZCL_FAST_CHANGED_FILES_FILE="$changed_file"
@@ -735,7 +873,18 @@ run_cycle()
     classify_cycle "$changed_file"
     log "cycle=$CYCLE check files=$count mode=$MODE path=$SELECTED_PATH"
     log "cycle=$CYCLE reason=$SELECTION_REASON"
-    sed 's/^/[dev-watch]   changed: /' "$changed_file"
+    sed 's/^/[dev-watch]   observed: /' "$observed_file"
+    sed 's/^/[dev-watch]   classified: /' "$changed_file"
+
+    if mode_publishes &&
+       ! prepare_publication_source_epoch "$changed_file"; then
+        FAILURE_PHASE="changed_set_preflight"
+        FAILURE_DETAIL="$SOURCE_GATE_DETAIL"
+        AGENT_NEXT_ACTION="include the complete dirty set or clear hidden Git index bits; then retry explicit apply"
+        write_cycle_record "$changed_file" refused
+        log "cycle=$CYCLE refused before checks: $SOURCE_GATE_DETAIL"
+        return 1
+    fi
 
     if [ "$SELECTED_PATH" = "rejected" ]; then
         FAILURE_PHASE="classification"
@@ -792,6 +941,22 @@ run_cycle()
         fi
     fi
 
+    # Final compare-and-swap: no command that can stage, reload, or commit a
+    # resident generation is reached unless the exact source epoch captured
+    # before proofs is still byte-identical now.  The test seam mutates here
+    # to exercise save/rename/delete races without touching a real lane.
+    if [ -n "$PREACTIVATE_COMMAND" ]; then
+        (cd "$ROOT" && /bin/sh -c "$PREACTIVATE_COMMAND")
+    fi
+    if ! verify_publication_source_epoch; then
+        FAILURE_PHASE="source_epoch_cas"
+        FAILURE_DETAIL="$SOURCE_GATE_DETAIL"
+        AGENT_NEXT_ACTION="coalesce the newest complete dirty source epoch and rerun explicit apply"
+        write_cycle_record "$changed_file" superseded
+        log "cycle=$CYCLE superseded immediately before activation: $SOURCE_GATE_DETAIL"
+        return 3
+    fi
+
     phase_started="$(clock_ms)"
     run_activation_command
     rc=$?
@@ -825,6 +990,13 @@ run_cycle()
             write_cycle_record "$changed_file" superseded
             return 3
         fi
+        if ! verify_publication_source_epoch; then
+            FAILURE_PHASE="source_epoch_cas"
+            FAILURE_DETAIL="$SOURCE_GATE_DETAIL"
+            AGENT_NEXT_ACTION="coalesce the newest complete dirty source epoch and rerun explicit apply"
+            write_cycle_record "$changed_file" superseded
+            return 3
+        fi
         phase_started="$(clock_ms)"
         run_activation_command
         rc=$?
@@ -846,7 +1018,11 @@ run_cycle()
         return 1
     fi
 
-    AGENT_NEXT_ACTION="make agent-dev-status ARGS=--json"
+    if [ "$MODE" = "verify" ]; then
+        AGENT_NEXT_ACTION="MODE=auto ZCL_DEV_WATCH_ONCE_FILES_FILE=$changed_file make dev-watch-once"
+    else
+        AGENT_NEXT_ACTION="make agent-dev-status ARGS=--json"
+    fi
     write_cycle_record "$changed_file" accepted
     schedule_codeindex_warm
     case "$SELECTED_PATH" in
@@ -863,19 +1039,17 @@ run_cycle()
 
 acquire_single_watcher_lock()
 {
-    local lock_parent="$ROOT/.cache" lock_file="$ROOT/.cache/zcl-dev-watch.lock"
+    local lock_file="$ROOT/$WATCH_LOCK_REL" lock_parent
+    lock_parent="${lock_file%/*}"
     mkdir -p "$lock_parent"
-    if command -v flock >/dev/null 2>&1; then
-        exec 9>"$lock_file"
-        flock -n 9 || fail "another dev watcher already owns $lock_file"
-        return 0
-    fi
-
-    FALLBACK_LOCK_DIR="$lock_file.d"
-    if ! mkdir "$FALLBACK_LOCK_DIR" 2>/dev/null; then
-        fail "another dev watcher may own $FALLBACK_LOCK_DIR (remove it only if stale)"
-    fi
-    printf '%s\n' "$$" > "$FALLBACK_LOCK_DIR/pid"
+    command -v flock >/dev/null 2>&1 ||
+        fail "flock is required for the shared native/shell watcher lease"
+    # Open without truncating another owner's diagnostic payload.  Only the
+    # successful flock holder may replace it with its own pid/mode.
+    exec 9>>"$lock_file"
+    flock -n 9 || fail "another dev watcher already owns $lock_file"
+    : > "$lock_file"
+    printf '%s %s\n' "$$" "$MODE" >&9
 }
 
 cleanup()
@@ -883,7 +1057,6 @@ cleanup()
     LAST_OUTCOME="stopped"
     write_heartbeat stopped
     [ -n "$WORK" ] && rm -rf "$WORK"
-    [ -n "$FALLBACK_LOCK_DIR" ] && rm -rf "$FALLBACK_LOCK_DIR"
 }
 
 request_stop()
@@ -901,17 +1074,85 @@ selftest_fail()
 self_test()
 {
     local sandbox old new changed expected command_log rc latest
+    [ "$MODE" = "verify" ] ||
+        selftest_fail "public watcher default is not verify-only" || return 1
     sandbox="$(mktemp -d "${TMPDIR:-/tmp}/zcl-dev-watch-selftest.XXXXXX")" ||
         return 1
     ROOT="$sandbox/repo"
     WORK="$sandbox/work"
     STATE_DIR="$sandbox/state"
     HEARTBEAT="$STATE_DIR/watcher-heartbeat.json"
-    mkdir -p "$ROOT/app" "$ROOT/tools/dev" "$WORK"
+    mkdir -p "$ROOT/app" "$ROOT/core/consensus" "$ROOT/docs" \
+        "$ROOT/tools/dev" "$WORK"
     printf 'all:\n\t@true\n' > "$ROOT/Makefile"
+    printf '/build/\n/.cache/\n' > "$ROOT/.gitignore"
     printf 'int a;\n' > "$ROOT/app/a.c"
     printf 'int b;\n' > "$ROOT/app/b.h"
     printf 'int d;\n' > "$ROOT/app/d.c"
+    printf 'int consensus_value;\n' > "$ROOT/core/consensus/value.c"
+    printf '# handoff\n' > "$ROOT/docs/HANDOFF.md"
+    (
+        cd "$ROOT" || exit 1
+        git init -q
+        git config user.name dev-watch-selftest
+        git config user.email dev-watch-selftest@example.invalid
+        git add .
+        git commit -qm baseline
+    ) || { rm -rf "$sandbox"; return 1; }
+
+    # Public invocations must refuse every activation mode and every arbitrary
+    # shell-command override before source scanning or command execution. The
+    # self-test's in-process seams below remain available only because
+    # --self-test exits before validate_options().
+    if ZCL_DEV_WATCH_ROOT="$ROOT" ZCL_DEV_WATCH_MODE=auto \
+        "$SCRIPT_DIR/watch-dev-lane.sh" --once \
+        >"$sandbox/public-auto.out" 2>&1; then
+        selftest_fail "public auto watcher mode was not contained" || { rm -rf "$sandbox"; return 1; }
+    fi
+    grep -q 'runtime publication mode' "$sandbox/public-auto.out" ||
+        selftest_fail "public auto refusal omitted containment reason" || { rm -rf "$sandbox"; return 1; }
+    if ZCL_DEV_WATCH_ROOT="$ROOT" ZCL_DEV_WATCH_MODE=verify \
+        ZCL_DEV_WATCH_CHECK_COMMAND=true \
+        "$SCRIPT_DIR/watch-dev-lane.sh" --once \
+        >"$sandbox/public-override.out" 2>&1; then
+        selftest_fail "public watcher accepted a shell-command override" || { rm -rf "$sandbox"; return 1; }
+    fi
+    grep -q 'overrides are confined to --self-test' \
+        "$sandbox/public-override.out" ||
+        selftest_fail "public override refusal omitted confinement reason" || { rm -rf "$sandbox"; return 1; }
+    if HOME="$sandbox/home" "$SCRIPT_DIR/deploy-dev-lane.sh" \
+        >"$sandbox/public-deploy.out" 2>&1; then
+        selftest_fail "direct dev-lane deploy was not contained" || { rm -rf "$sandbox"; return 1; }
+    fi
+    grep -q 'runtime generation publication is contained' \
+        "$sandbox/public-deploy.out" ||
+        selftest_fail "direct deploy refusal omitted containment reason" || { rm -rf "$sandbox"; return 1; }
+    if HOME="$sandbox/home" "$SCRIPT_DIR/hotswap-running-dev.sh" \
+        >"$sandbox/public-hotswap.out" 2>&1; then
+        selftest_fail "direct resident hot-swap was not contained" || { rm -rf "$sandbox"; return 1; }
+    fi
+    grep -q 'runtime publication.*contained' "$sandbox/public-hotswap.out" ||
+        selftest_fail "direct hot-swap refusal omitted containment reason" || { rm -rf "$sandbox"; return 1; }
+
+    # The shell loop and native watcher share this exact worktree-local flock
+    # file.  Holding it through a separately opened descriptor must block a
+    # once-mode shell cycle before classification or checks.
+    if command -v flock >/dev/null 2>&1; then
+        mkdir -p "$ROOT/.cache"
+        (
+            exec 8>"$ROOT/$WATCH_LOCK_REL"
+            flock -n 8 || exit 2
+            if ZCL_DEV_WATCH_ROOT="$ROOT" \
+                ZCL_DEV_WATCH_STATE_DIR="$sandbox/lock-state" \
+                ZCL_DEV_WATCH_MODE=verify \
+                "$SCRIPT_DIR/watch-dev-lane.sh" --once \
+                >"$sandbox/lock.out" 2>&1; then
+                exit 3
+            fi
+            grep -q "another dev watcher already owns $ROOT/$WATCH_LOCK_REL" \
+                "$sandbox/lock.out"
+        ) || selftest_fail "shared worktree watcher lock did not exclude once mode" || { rm -rf "$sandbox"; return 1; }
+    fi
     refresh_watch_paths
 
     old="$WORK/old"
@@ -928,7 +1169,7 @@ self_test()
     grep -qx 'app/c.h' "$changed" || selftest_fail "created path missing" || { rm -rf "$sandbox"; return 1; }
 
     expected="$new"
-    printf 'app/a.c\napp/c.h\n' > "$changed"
+    printf 'app/a.c\napp/b.h\napp/c.h\n' > "$changed"
     command_log="$sandbox/commands.log"
     CHECK_COMMAND="printf 'check\\n' >> '$command_log'; exit 7"
     REBUILD_COMMAND="printf 'rebuild\\n' >> '$command_log'"
@@ -963,6 +1204,19 @@ self_test()
     [ "$(tr '\n' ' ' < "$command_log")" = "check " ] ||
         selftest_fail "check mode unexpectedly linked or activated a lane" || { rm -rf "$sandbox"; return 1; }
 
+    # Verify is the public default and must be stronger than a classifier: even
+    # a reload/consensus-shaped edit stops after verification.  Publication is
+    # reachable only after the operator explicitly selects auto/reload/hotswap.
+    MODE="verify"
+    : > "$command_log"
+    run_cycle "$changed" "$expected" >/dev/null 2>&1 ||
+        selftest_fail "green verify cycle rejected" || { rm -rf "$sandbox"; return 1; }
+    [ "$(tr '\n' ' ' < "$command_log")" = "check " ] ||
+        selftest_fail "verify mode unexpectedly linked or activated a lane" || { rm -rf "$sandbox"; return 1; }
+    grep -q 'runtime publication requires explicit auto/apply mode' \
+        "$STATE_DIR/latest-cycle.json" ||
+        selftest_fail "verify verdict did not record the containment reason" || { rm -rf "$sandbox"; return 1; }
+
     # Auto hot-swap is allowed only for exact manifest entries AND only when a
     # persistent-process transport is configured.  It skips the process link,
     # commits one hot-swap command, and writes the authoritative cycle record.
@@ -971,6 +1225,14 @@ self_test()
         'HOTSWAP_ELIGIBLE("app/a.c") HOTSWAP_PROBE("probe_a")' \
         'HOTSWAP_ELIGIBLE("app/d.c") HOTSWAP_PROBE("probe_d")' \
         > "$ROOT/config/hotswap_eligible.def"
+    (
+        cd "$ROOT" || exit 1
+        git add -A
+        git commit -qm hotswap-baseline
+    ) || { rm -rf "$sandbox"; return 1; }
+    printf 'int a = 2;\n' > "$ROOT/app/a.c"
+    write_manifest "$new" || { rm -rf "$sandbox"; return 1; }
+    expected="$new"
     HOTSWAP_MANIFEST="$ROOT/config/hotswap_eligible.def"
     HOTSWAP_COMMAND="printf 'hotswap:%s\\n' \"\$ZCL_DEV_HOTSWAP_PROBE\" >> '$command_log'"
     MODE="auto"
@@ -1007,6 +1269,9 @@ self_test()
     # must select the transactional reload boundary rather than invoke a
     # single-provider transport that will reject the file set.
     HOTSWAP_COMMAND="printf 'hotswap:%s\n' \"\$ZCL_DEV_HOTSWAP_PROBE\" >> '$command_log'"
+    printf 'int d = 2;\n' > "$ROOT/app/d.c"
+    write_manifest "$new" || { rm -rf "$sandbox"; return 1; }
+    expected="$new"
     printf 'app/a.c\napp/d.c\n' > "$changed"
     : > "$command_log"
     run_cycle "$changed" "$expected" >/dev/null 2>&1 ||
@@ -1017,6 +1282,15 @@ self_test()
         selftest_fail "multi-provider reload reason missing" || { rm -rf "$sandbox"; return 1; }
 
     # Mixed/header changes fail closed to a transactional process reload.
+    (
+        cd "$ROOT" || exit 1
+        git add -A
+        git commit -qm multi-provider-baseline
+    ) || { rm -rf "$sandbox"; return 1; }
+    printf 'int a = 3;\n' > "$ROOT/app/a.c"
+    printf '#define C 3\n' > "$ROOT/app/c.h"
+    write_manifest "$new" || { rm -rf "$sandbox"; return 1; }
+    expected="$new"
     HOTSWAP_COMMAND="printf 'hotswap\n' >> '$command_log'"
     printf 'app/a.c\napp/c.h\n' > "$changed"
     : > "$command_log"
@@ -1049,8 +1323,93 @@ FAKE_DEV_BIN
         selftest_fail "codeindex warm hook did not fire on a green cycle" || { rm -rf "$sandbox"; return 1; }
     unset ZCL_WARM_LOG
 
+    # Adversarial: a docs-only event is a wake hint, not classification
+    # authority.  Verify mode must classify and check the complete Git-visible
+    # set, including a simultaneous dirty sealed Core file.
+    (
+        cd "$ROOT" || exit 1
+        git add -A
+        git commit -qm core-omission-baseline
+    ) || { rm -rf "$sandbox"; return 1; }
+    printf '# handoff edit\n' > "$ROOT/docs/HANDOFF.md"
+    printf 'int consensus_value = 4;\n' > "$ROOT/core/consensus/value.c"
+    write_manifest "$new" || { rm -rf "$sandbox"; return 1; }
+    expected="$new"
+    printf 'docs/HANDOFF.md\n' > "$changed"
+    MODE="verify"
+    PREACTIVATE_COMMAND=""
+    : > "$command_log"
+    run_cycle "$changed" "$expected" >/dev/null 2>&1 ||
+        selftest_fail "docs wake hint hid a dirty Core path in verify mode" || { rm -rf "$sandbox"; return 1; }
+    [ "$(tr '\n' ' ' < "$command_log")" = "check " ] ||
+        selftest_fail "complete-set verify did not run exactly the check command" || { rm -rf "$sandbox"; return 1; }
+    grep -q '"classified_path":"reload"' "$STATE_DIR/latest-cycle.json" ||
+        selftest_fail "verify record lost the underlying Core reload classification" || { rm -rf "$sandbox"; return 1; }
+    grep -q '"observed_files":\["docs/HANDOFF.md"\]' "$STATE_DIR/latest-cycle.json" ||
+        selftest_fail "verify record did not preserve the docs wake hint" || { rm -rf "$sandbox"; return 1; }
+    grep -q 'core/consensus/value.c' "$STATE_DIR/latest-cycle.json" ||
+        selftest_fail "verify record omitted dirty Core from changed_files" || { rm -rf "$sandbox"; return 1; }
+
+    # The retained in-process publication seam still fails closed on the Core
+    # path derived above, even though the observed hint named only docs.
+    MODE="auto"
+    : > "$command_log"
+    run_cycle "$changed" "$expected" >/dev/null 2>&1
+    rc=$?
+    [ "$rc" -eq 1 ] || selftest_fail "sealed Core edit published without owner unseal" || { rm -rf "$sandbox"; return 1; }
+    grep -q 'sealed_core_requires_owner_unseal' "$STATE_DIR/latest-cycle.json" ||
+        selftest_fail "sealed Core refusal omitted owner-unseal reason" || { rm -rf "$sandbox"; return 1; }
+
+    # Adversarial: a same-path content mutation in the final pre-activation
+    # window changes the cryptographic epoch while the path set stays equal.
+    # The compare-and-swap must supersede and never run deploy.
+    (
+        cd "$ROOT" || exit 1
+        git add -A
+        git commit -qm concurrent-mutation-baseline
+    ) || { rm -rf "$sandbox"; return 1; }
+    printf 'int a = 5;\n' > "$ROOT/app/a.c"
+    write_manifest "$new" || { rm -rf "$sandbox"; return 1; }
+    expected="$new"
+    printf 'app/a.c\n' > "$changed"
+    MODE="reload"
+    PREACTIVATE_COMMAND="printf 'int a = 6;\\n' > app/a.c"
+    : > "$command_log"
+    run_cycle "$changed" "$expected" >/dev/null 2>&1
+    rc=$?
+    [ "$rc" -eq 3 ] || selftest_fail "concurrent source mutation was not superseded" || { rm -rf "$sandbox"; return 1; }
+    [ "$(tr '\n' ' ' < "$command_log")" = "check rebuild " ] ||
+        selftest_fail "concurrent mutation reached deploy" || { rm -rf "$sandbox"; return 1; }
+    grep -q 'source_epoch_cas' "$STATE_DIR/latest-cycle.json" ||
+        selftest_fail "concurrent mutation verdict omitted the CAS phase" || { rm -rf "$sandbox"; return 1; }
+    PREACTIVATE_COMMAND=""
+
+    # Hidden index state is never treated as clean.  Git's own diff suppresses
+    # this edit, so only the explicit assume-unchanged/skip-worktree audit can
+    # keep it out of a publication.
+    (
+        cd "$ROOT" || exit 1
+        git add -A
+        git commit -qm hidden-index-baseline
+        git update-index --assume-unchanged app/a.c
+    ) || { rm -rf "$sandbox"; return 1; }
+    printf 'int a = 7;\n' > "$ROOT/app/a.c"
+    write_manifest "$new" || { rm -rf "$sandbox"; return 1; }
+    expected="$new"
+    printf 'app/a.c\n' > "$changed"
+    MODE="auto"
+    : > "$command_log"
+    run_cycle "$changed" "$expected" >/dev/null 2>&1
+    rc=$?
+    [ "$rc" -eq 1 ] || selftest_fail "assume-unchanged edit did not refuse publication" || { rm -rf "$sandbox"; return 1; }
+    [ ! -s "$command_log" ] ||
+        selftest_fail "hidden index edit reached a proof or activation command" || { rm -rf "$sandbox"; return 1; }
+    grep -q 'hidden Git index bit' "$STATE_DIR/latest-cycle.json" ||
+        selftest_fail "hidden-index refusal reason missing" || { rm -rf "$sandbox"; return 1; }
+    (cd "$ROOT" && git update-index --no-assume-unchanged app/a.c) || true
+
     rm -rf "$sandbox"
-    printf '[dev-watch-selftest] PASS: manifest diff, failure short-circuit, five modes, auto classification, durable cycle JSON, codeindex warm hook\n'
+    printf '[dev-watch-selftest] PASS: complete dirty set, docs-hint/Core classification, shared worktree lock, source CAS, hidden index bits, verify-only public mode, contained activation entrypoints, durable cycle JSON\n'
 }
 
 run_once()

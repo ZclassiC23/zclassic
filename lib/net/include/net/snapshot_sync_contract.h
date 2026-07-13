@@ -6,7 +6,7 @@
  *   handle_offer     — validate + accept incoming snapshot offer
  *   handle_fc_proofs — verify FlyClient MMB proofs (PoW chain)
  *   handle_data      — apply UTXO chunk (batch commit every 100K)
- *   handle_end       — finalize + SHA3 verify + set chain tip
+ *   handle_end       — finalize + SHA3 verify; runtime activation contained
  *   validate_serve_request — check PoW + rate limit for serving
  *
  * Security: Two-phase verification
@@ -41,6 +41,14 @@ struct mmb_leaf_store;
 struct main_state;
 struct p2p_node;
 struct block_index;
+
+/* Runtime peer-snapshot activation is fail-closed until a single canonical
+ * installer can atomically publish every transparent/shielded/reducer state
+ * component plus provenance and rollback. Download + verification may run;
+ * activation returns this error and raises this one dependency blocker. */
+#define SNAPSYNC_ACTIVATION_CONTAINED_ERROR_CODE (-12)
+#define SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID \
+    "snapshot_sync.activation_unified_installer_required"
 
 enum snapsync_followup_action {
     SNAPSYNC_FOLLOWUP_NONE = 0,
@@ -301,8 +309,9 @@ int snapsync_apply_chunk(struct snapshot_sync_service *svc,
                          const uint8_t *chunk_data, size_t chunk_len);
 
 /* Action: handle snapshot end — finalize + SHA3 verify.
- * Only accepts from the serving peer.
- * Returns ok if snapshot verified successfully. */
+ * Only accepts from the serving peer. While runtime activation containment is
+ * active, a valid payload remains staged and this returns the explicit
+ * SNAPSYNC_ACTIVATION_CONTAINED_ERROR_CODE rather than publishing COMPLETE. */
 struct zcl_result snapsync_handle_end(struct snapshot_sync_service *svc,
                          uint32_t peer_id);
 

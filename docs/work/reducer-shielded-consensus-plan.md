@@ -120,18 +120,10 @@ the single trusted UTXO commitment).
 
 ## 7. Sequencing
 
-1. **Live-wedge precondition — MET by `ab512d577`.** Shadow mode needs a chain
-   that finalizes forward so a log-only gate can ride a healthy tip and be diffed
-   vs zclassicd. That precondition is now satisfied: the forward-sync wedge is
-   fixed by commit `ab512d577` ("fix(boot): bind a snapshot above coins-best by
-   extending the active-chain window") — the live node `~/.zclassic-c23` reaches
-   the network tip (h≈3,156,944, climbing, verificationprogress=1) and finalizes
-   forward, so shadow mode can ride a healthy tip. (The rationale this gate
-   guarded still holds: adding a reject path while tip_finalize can't advance is
-   untestable and risks compounding the oscillation.) NOTE: the at-tip state still
-   relies on a borrowed — zclassicd-minted, consensus-bound — snapshot at
-   h=3,156,809; the sovereign from-genesis `-refold-from-anchor` cutover remains
-   the end goal, not done.
+1. **Live-wedge precondition — NOT MET.** Canonical is held at H*=3,176,325 on
+   incomplete shielded state. `ab512d577` repaired only the earlier transparent
+   loader. No shadow/soak promotion may treat the borrowed snapshot as a
+   consensus binding or the current chain as healthy.
 2. **After fork single-sourcing** — this rides `reorg_is_allowed` /
    `branch_hash` / `active_chain_at`; land after any chain[]-window/fork-decision
    unification so the reorg rail is stable.

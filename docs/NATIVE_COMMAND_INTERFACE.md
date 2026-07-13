@@ -10,17 +10,20 @@ The primary interface to ZClassic23 is one shallow, searchable command tree
 owned by the C binary. An LLM loads only the branch needed for its current
 task. It never has to ingest a flat catalog of 100+ tools.
 
-For development, the steady-state interaction is simpler still:
+For development, the target steady-state interaction is simpler still:
 
 1. The agent edits code.
 2. The persistent native dev loop notices and coalesces the save.
 3. ZClassic23 classifies the change as Core or App.
 4. It runs the smallest mandatory deterministic proof.
-5. It atomically publishes an App generation or transactionally reloads Core.
+5. Once the transactional publication protocol is complete, it atomically
+   publishes an App generation or transactionally reloads Core.
 6. The agent reads one compact verdict only when the cycle is not green.
 
-No watcher script, deploy script, broad test command, MCP catalog, or service
-command belongs in the ordinary agent loop.
+Today (Phase-0 containment), steps 1--4 and proof-only inspection are available,
+but every runtime-generation publication path fails closed. No watcher script,
+deploy script, broad test command, MCP catalog, or service command belongs in
+the ordinary agent loop.
 
 ## 2. Architectural law
 
@@ -275,21 +278,24 @@ dev
     └── show <failure-id>
 ```
 
-`dev.hotswap.apply` / `dev.hotswap.probe` are the native successor of the
-Tier-1 in-process hot-swap MCP tool (`zcl_agent_hotswap`): `apply` dlopens a
-`native.leaves` generation `.so` into the running dev node and atomically
-re-points its command leaves via `zcl_command_registry_replace_batch`, no
-restart; `probe` stages and self-tests the same generation without
-publishing. Both are short-lived CLI processes that forward over resident
-JSON-RPC to the already-running dev node — the same "which process gets
-swapped" contract the MCP pilot used, now MCP-free. Full mechanism, ABI, and
-eligibility rules: `docs/work/HOTSWAP.md`.
+`dev.hotswap.probe` and `dev.hotswap.apply` remain registered for compatibility
+but are deliberately contained: both return structured refusals before
+`dlopen`. A resident discard-only probe is not safe because ELF constructors
+run before manifest admission. The legacy `zcl_agent_hotswap` route and
+resident mutation RPC are contained too. Full mechanism, ABI, and prerequisites
+for disposable probing/publication: `docs/work/HOTSWAP.md`.
 
-The ordinary agent runs `loop ensure` once, edits files, then optionally calls
-`loop wait` for the new source epoch. The persistent loop owns classification,
-dependency selection, compilation, proofs, publication, rollback, and durable
-provenance. `change apply` exists for CI, debugging, and reproducible one-shot
-proofs, not as the normal editing ritual.
+The ordinary agent runs `loop ensure` in verify mode once, edits files, then
+optionally calls `loop wait` for the new source epoch. The persistent loop owns
+classification, dependency selection, compilation, proofs, and durable
+verification verdicts. `auto`/`apply` watcher modes and `dev.change.apply`
+currently refuse before publication; use `dev.change.plan`, the verify watcher,
+build targets and simulations instead; resident candidate probing is contained.
+
+`dev.vcs.revert` remains a source-only operation when
+`relink_generation=false`. A request with `relink_generation=true` refuses
+before the source revert, so it cannot use rollback history as a second runtime
+activation authority.
 
 ### Rails-like App layout
 
@@ -583,14 +589,16 @@ of interface migration.
 
 ## 17. Development cycle contract
 
-The native dev state machine is:
+The target native dev state machine is:
 
 ```text
 debounce -> classify -> prove -> build -> publish/activate -> verify -> record
 ```
 
-Each phase checks a monotonically increasing source epoch. A newer save
-supersedes an older candidate before publication.
+Phase-0 stops after the build/proof verdict. Publication/activation is
+hard-contained until an immutable source snapshot, complete proof receipts, a
+resident compare-and-swap on the expected epoch, durable acceptance, and exact
+rollback are one transaction. A newer save supersedes an older candidate.
 
 ### Golden LLM edit loop
 
@@ -688,14 +696,13 @@ without renaming the grammar.
   `zcl_command_registry_menu_json`/`_search_json`;
   `tools/lint/check_release_no_dev_symbols.sh` proves via `nm` that the
   release binary links no dev-mutation executors.
-- **Done (2026-07-11, Wave W1-B/C, ZERO-MCP re-target):** Tier-1 in-process
-  hot-swap — previously an MCP-only tool (`zcl_agent_hotswap`) — now has a
-  native command path too: `dev.hotswap.apply` / `dev.hotswap.probe`
-  publish through a new `native.leaves` hot-swap provider class that
-  re-points leaf handlers in the kernel command registry
-  (`zcl_command_registry_replace_batch`) instead of the MCP router. Dual-run
-  with the original `mcp.routes` provider through Wave 3 (the MCP router
-  still exists and both stay swappable independently). See
+- **Implemented, publication contained (2026-07-12):** Tier-1 in-process
+  hot-swap — previously an MCP-only tool (`zcl_agent_hotswap`) — has a native
+  `native.leaves` provider; both native apply and resident probe paths are
+  currently contained before `dlopen`. The
+  `dev.hotswap.apply`, legacy MCP apply, and resident mutation paths all now
+  refuse before loading or re-pointing handlers. They remain contained until
+  the full immutable epoch/proof/CAS/rollback transaction exists. See
   `docs/work/HOTSWAP.md` §"`native.leaves` provider (Zero-MCP re-target,
   Wave W1-B/C)".
 
@@ -814,8 +821,10 @@ Known gaps before calling the interface production-ready:
   targets deleting the MCP server entirely; Tier-1 hot-swap's `native.leaves`
   provider (§7, `docs/work/HOTSWAP.md`) is one dev-mutation surface already
   re-targeted off MCP as part of that effort, dual-run with `mcp.routes`);
-- the running dev service still needs one safe immutable-generation bootstrap
-  before the persistent native watcher can take ownership.
+- runtime generation publication is Phase-0 contained: `dev.change.apply`,
+  `dev.hotswap.apply`, publication watcher modes, generation-relinking revert,
+  and direct Make/script activation entry points refuse. Proof-only watcher,
+  build, simulation, `.so` construction, and hot-swap probe paths remain.
 
 ## 22. Migration inventory baseline
 

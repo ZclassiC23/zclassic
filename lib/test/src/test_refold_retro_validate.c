@@ -34,6 +34,7 @@
 #include "jobs/refold_progress.h"
 #include "models/database.h"
 #include "storage/coins_kv.h"
+#include "storage/nullifier_kv.h"
 #include "storage/progress_store.h"
 
 #include <sqlite3.h>
@@ -69,6 +70,16 @@ static void rv_synth_hash(uint8_t out[32], int32_t h)
     out[0] = (uint8_t)(h & 0xff);
     out[1] = (uint8_t)((h >> 8) & 0xff);
     out[2] = (uint8_t)((h >> 16) & 0xff);
+}
+
+static bool rv_meta_is(sqlite3 *db, const char *key, const char *want)
+{
+    char buf[24] = {0};
+    size_t len = 0;
+    bool found = false;
+    size_t want_len = strlen(want);
+    return progress_meta_get(db, key, buf, sizeof(buf), &len, &found) &&
+           found && len == want_len && memcmp(buf, want, want_len) == 0;
 }
 
 static bool rv_put_row(sqlite3 *db, const char *table, const char *hash_col,
@@ -298,6 +309,12 @@ int test_refold_retro_validate(void)
     }
 
     RV_CHECK("seed anchor coin set", rv_seed_anchor_set(pdb));
+    uint8_t stale_nf[32] = {0x7a};
+    RV_CHECK("seed stale explicit-complete nullifier state",
+             nullifier_kv_ensure_schema(pdb) &&
+             progress_meta_set(pdb, "nullifier_kv.activation_cursor",
+                               "0", 1) &&
+             nullifier_kv_add(pdb, stale_nf, NULLIFIER_POOL_SAPLING, 1));
 
     uint8_t anchor_root[32] = {0};
     RV_CHECK("anchor commitment computed", coins_kv_commitment(pdb, anchor_root) == 0);
@@ -361,6 +378,12 @@ int test_refold_retro_validate(void)
     RV_CHECK("refold: coins_kv is proven authority",
              coins_kv_is_proven_authority(pdb, &applied));
     RV_CHECK("refold: applied frontier == anchor+1", applied == RV_ANCHOR_M + 1);
+    bool stale_found = true;
+    RV_CHECK("refold: nullifiers cleared with incomplete boundary",
+             nullifier_kv_get(pdb, stale_nf, NULLIFIER_POOL_SAPLING,
+                              &stale_found, NULL) &&
+             !stale_found &&
+             rv_meta_is(pdb, "nullifier_kv.activation_cursor", "200"));
 
     /* re-seeded set reproduces the anchor exactly (commitment + count). */
     {

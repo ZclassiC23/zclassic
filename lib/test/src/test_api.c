@@ -4,6 +4,7 @@
 
 #include "test/test_helpers.h"
 #include "controllers/agent_controller.h"
+#include "controllers/agent_security_posture.h"
 #include "controllers/api_controller.h"
 #include "controllers/download_stats_json.h"
 #include "controllers/explorer_internal.h"
@@ -28,6 +29,7 @@
 #include "storage/progress_store.h"
 #include "sync/sync_state.h"
 #include "util/alerts.h"
+#include "util/blocker.h"
 #include "util/clientversion.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -445,15 +447,23 @@ static bool api_test_expect_security_posture_shape(
            json_get_int(json_get(posture, "schema_version")) == 1 &&
            json_get(posture, "status") != NULL &&
            json_get(posture, "review_required") != NULL &&
+           json_get(posture, "public_serving_allowed") != NULL &&
            json_get(posture, "bootstrap_model") != NULL &&
            json_get(posture, "snapshot_full_validation_complete") != NULL &&
+           json_get(posture, "full_history_validation_complete") != NULL &&
+           json_get(posture, "full_history_validation_origin") != NULL &&
            json_get(posture, "full_history_validation_state") != NULL &&
+           json_get(posture, "anchor_cursor_known") != NULL &&
+           json_get(posture, "anchor_history_complete") != NULL &&
+           json_get(posture, "sprout_anchor_activation_cursor") != NULL &&
+           json_get(posture, "sapling_anchor_activation_cursor") != NULL &&
+           json_get(posture, "anchor_history_state") != NULL &&
            json_get(posture, "nullifier_history_complete") != NULL &&
            json_get(posture, "nullifier_activation_cursor") != NULL &&
            json_get(posture, "nullifier_history_state") != NULL &&
            json_get(posture, "next_action") != NULL &&
            strstr(json_get_str(json_get(posture, "semantics")),
-                  "serving/healthy are liveness signals") != NULL;
+                  "public serving and healthy fail closed") != NULL;
 }
 
 static bool api_test_expect_lane_safety_fields(
@@ -852,11 +862,12 @@ int test_api(void)
             ok = ok && !json_get_bool(json_get(status, "serving"));
             ok = ok && strcmp(json_get_str(json_get(status,
                                                     "blocking_reason")),
-                              "no_peers") == 0;
+                              "review_required_unknown") == 0;
             ok = ok && json_get_bool(json_get(status, "warning"));
             ok = ok && strstr(json_get_str(json_get(status,
                                                     "warning_reasons")),
                               "recent_error") != NULL;
+            ok = ok && api_test_expect_security_posture_shape(&root);
         }
         json_free(&root);
         error_ring_init(er);
@@ -4907,6 +4918,8 @@ int test_api(void)
     printf("api: public status names health blocking reason... ");
     {
         test_reset_shared_globals();
+        blocker_reset_for_testing();
+        agent_security_posture_test_override_review_required(0);
         alerts_shutdown();
         unsetenv("ZCL_ALERTS_DISABLE");
         unsetenv("ZCL_ALERT_WEBHOOK_URL");
@@ -4956,6 +4969,7 @@ int test_api(void)
         api_set_state(NULL, NULL, NULL, NULL, NULL);
         reducer_frontier_provable_tip_reset();
         main_state_free(&ms);
+        agent_security_posture_test_override_review_required(-1);
         test_reset_shared_globals();
 
         if (ok) printf("OK\n");
@@ -4965,6 +4979,8 @@ int test_api(void)
     printf("api: public status treats small served gap as healthy... ");
     {
         test_reset_shared_globals();
+        blocker_reset_for_testing();
+        agent_security_posture_test_override_review_required(0);
         struct main_state ms;
         struct connman cm = {0};
         struct net_address addr = {0};
@@ -5026,6 +5042,97 @@ int test_api(void)
                               "served_tip") == 0;
             ok = ok && json_get(&root, "freshness") != NULL;
             json_free(&root);
+
+            agent_security_posture_test_override_review_required(1);
+            n = api_handle_request("GET", "/api/status", NULL, 0,
+                                   resp, sizeof(resp));
+            body = api_test_body(resp, n, sizeof(resp));
+            json_init(&root);
+            ok = ok && n > 0 && body &&
+                 json_read(&root, body, strlen(body));
+            ok = ok && strcmp(json_get_str(json_get(&root, "status")),
+                              "blocked") == 0;
+            ok = ok && !json_get_bool(json_get(&root, "healthy"));
+            ok = ok && !json_get_bool(json_get(&root, "serving"));
+            ok = ok && strcmp(json_get_str(json_get(&root,
+                                                    "primary_blocker")),
+                              "review_required_test") == 0;
+            json_free(&root);
+
+            n = api_handle_request("GET", "/api/health", NULL, 0,
+                                   resp, sizeof(resp));
+            body = api_test_body(resp, n, sizeof(resp));
+            json_init(&root);
+            ok = ok && strstr((char *)resp,
+                              "503 Service Unavailable") != NULL;
+            ok = ok && body && json_read(&root, body, strlen(body));
+            ok = ok && !json_get_bool(json_get(&root, "healthy"));
+            ok = ok && !json_get_bool(json_get(&root, "serving"));
+            ok = ok && api_test_expect_security_posture_shape(&root);
+            json_free(&root);
+            agent_security_posture_test_override_review_required(0);
+
+            /* A transient worker/dependency blocker is operational warning
+             * evidence, not authority to withdraw an already validated
+             * public frontier.  Permanent chain-authority blockers still
+             * hard-gate serving and /health. */
+            struct blocker_record transient;
+            ok = ok && blocker_init(
+                &transient, "peer_floor.test_transient", "peer_floor",
+                BLOCKER_TRANSIENT, "temporary peer assignment gap");
+            ok = ok && blocker_set(&transient) == 0;
+            n = api_handle_request("GET", "/api/health", NULL, 0,
+                                   resp, sizeof(resp));
+            body = api_test_body(resp, n, sizeof(resp));
+            json_init(&root);
+            ok = ok && strstr((char *)resp, "200 OK") != NULL;
+            ok = ok && body && json_read(&root, body, strlen(body));
+            ok = ok && json_get_bool(json_get(&root, "healthy"));
+            ok = ok && json_get_bool(json_get(&root, "serving"));
+            const struct json_value *health_status =
+                json_get(&root, "status");
+            ok = ok && health_status && json_get_bool(json_get(
+                health_status, "warning"));
+            ok = ok && strcmp(json_get_str(json_get(
+                health_status, "typed_blocker_warning")),
+                "peer_floor.test_transient") == 0;
+            json_free(&root);
+
+            n = api_handle_request("GET", "/api/status", NULL, 0,
+                                   resp, sizeof(resp));
+            body = api_test_body(resp, n, sizeof(resp));
+            json_init(&root);
+            ok = ok && body && json_read(&root, body, strlen(body));
+            ok = ok && strcmp(json_get_str(json_get(&root, "status")),
+                              "healthy") == 0;
+            ok = ok && json_get_bool(json_get(&root, "serving"));
+            ok = ok && json_get_bool(json_get(&root, "warning"));
+            ok = ok && strcmp(json_get_str(json_get(
+                &root, "typed_blocker_warning")),
+                "peer_floor.test_transient") == 0;
+            json_free(&root);
+            blocker_clear("peer_floor.test_transient");
+
+            struct blocker_record permanent;
+            ok = ok && blocker_init(
+                &permanent, "chain.test_authority_failure", "chain",
+                BLOCKER_PERMANENT, "test chain authority failure");
+            ok = ok && blocker_set(&permanent) == 0;
+            n = api_handle_request("GET", "/api/health", NULL, 0,
+                                   resp, sizeof(resp));
+            body = api_test_body(resp, n, sizeof(resp));
+            json_init(&root);
+            ok = ok && strstr((char *)resp,
+                              "503 Service Unavailable") != NULL;
+            ok = ok && body && json_read(&root, body, strlen(body));
+            ok = ok && !json_get_bool(json_get(&root, "healthy"));
+            ok = ok && !json_get_bool(json_get(&root, "serving"));
+            health_status = json_get(&root, "status");
+            ok = ok && health_status && strcmp(json_get_str(json_get(
+                health_status, "blocking_reason")),
+                "chain.test_authority_failure") == 0;
+            json_free(&root);
+            blocker_clear("chain.test_authority_failure");
         }
 
         node_health_test_set_chain_advance_decision_override(NULL);
@@ -5035,6 +5142,7 @@ int test_api(void)
         main_state_free(&ms);
         rpc_net_set_connman(NULL);
         net_manager_free(&cm.manager);
+        agent_security_posture_test_override_review_required(-1);
         test_reset_shared_globals();
 
         if (ok) printf("OK\n");
@@ -5044,6 +5152,8 @@ int test_api(void)
     printf("api: agent clears recovered chain-advance operator latch... ");
     {
         test_reset_shared_globals();
+        blocker_reset_for_testing();
+        agent_security_posture_test_override_review_required(0);
         alerts_shutdown();
         unsetenv("ZCL_ALERTS_DISABLE");
         unsetenv("ZCL_ALERT_WEBHOOK_URL");
@@ -5100,6 +5210,7 @@ int test_api(void)
         main_state_free(&ms);
         rpc_net_set_connman(NULL);
         net_manager_free(&cm.manager);
+        agent_security_posture_test_override_review_required(-1);
         test_reset_shared_globals();
 
         if (ok) printf("OK\n");
@@ -5109,6 +5220,8 @@ int test_api(void)
     printf("api: public status still degrades material served gap... ");
     {
         test_reset_shared_globals();
+        blocker_reset_for_testing();
+        agent_security_posture_test_override_review_required(0);
         struct main_state ms;
         struct connman cm;
         struct net_address addr;
@@ -5177,6 +5290,7 @@ int test_api(void)
         main_state_free(&ms);
         rpc_net_set_connman(NULL);
         net_manager_free(&cm.manager);
+        agent_security_posture_test_override_review_required(-1);
         test_reset_shared_globals();
 
         if (ok) printf("OK\n");
@@ -5186,6 +5300,8 @@ int test_api(void)
     printf("api: public status uses durable tip before H* publication... ");
     {
         test_reset_shared_globals();
+        blocker_reset_for_testing();
+        agent_security_posture_test_override_review_required(0);
         struct main_state ms;
         struct connman cm;
         struct net_address addr;
@@ -5261,6 +5377,7 @@ int test_api(void)
         char cmd[384];
         snprintf(cmd, sizeof(cmd), "rm -rf %s", dbdir);
         system(cmd);
+        agent_security_posture_test_override_review_required(-1);
 
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

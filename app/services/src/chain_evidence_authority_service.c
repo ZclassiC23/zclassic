@@ -91,6 +91,17 @@ const char *chain_evidence_publish_state_name(enum chain_evidence_publish_state 
     return "unknown";
 }
 
+const char *chain_evidence_full_validation_origin_name(
+    enum chain_evidence_full_validation_origin origin)
+{
+    switch (origin) {
+    case CEC_FULL_VALIDATION_UNKNOWN:           return "unknown";
+    case CEC_FULL_VALIDATION_GENESIS_HISTORY:   return "genesis_full_history";
+    case CEC_FULL_VALIDATION_ASSISTED_SNAPSHOT: return "assisted_snapshot";
+    }
+    return "unknown";
+}
+
 #ifdef ZCL_TESTING
 static bool g_cec_test_fail_commit_after_csr;
 
@@ -310,6 +321,8 @@ enum chain_evidence_controller_result chain_evidence_controller_import_snapshot_
                       snapshot->anchor_hash.data, 32) ||
         !persist_blob(authority, "cec.snapshot_utxo_sha3",
                       snapshot->utxo_sha3.data, 32) ||
+        !persist_i64(authority, "cec.full_validation_origin",
+                     CEC_FULL_VALIDATION_ASSISTED_SNAPSHOT) ||
         !persist_i64(authority, "cec.snapshot_validated", 0) ||
         !persist_i64(authority, "cec.publish_state",
                      CEC_PUBLISH_NOT_PUBLISHABLE) ||
@@ -635,29 +648,106 @@ enum chain_evidence_controller_result chain_evidence_controller_mark_fully_valid
     const struct uint256 *utxo_sha3)
 {
     struct uint256 expected;
+    struct chain_evidence_record snapshot_evidence;
+    struct chain_evidence_record active_tip_evidence;
+    struct zcl_result snapshot_loaded;
+    struct zcl_result active_tip_loaded;
     size_t len = 0;
+    int64_t snapshot_anchor_height = -1;
+    int64_t persisted_origin = CEC_FULL_VALIDATION_UNKNOWN;
+    bool snapshot_metadata_present = false;
 
     if (!authority || !utxo_sha3)
         return CEC_REJECTED_NULL_ARG;
     if (authority->state == CEC_CONTRADICTION_FROZEN)
         return CEC_REJECTED_FROZEN;
-    memset(&expected, 0, sizeof(expected));
-    if (!authority->ndb ||
-        !node_db_state_get(authority->ndb, "cec.snapshot_utxo_sha3",
-                           expected.data, 32, &len) ||
-        len != 32 ||
-        memcmp(expected.data, utxo_sha3->data, 32) != 0) {
-        chain_evidence_controller_freeze(authority,
-                              "background validation UTXO commitment mismatch");
+    if (!u256_nonzero(utxo_sha3)) {
+        chain_evidence_controller_freeze(
+            authority, "full validation UTXO commitment is zero");
         return CEC_REJECTED_BAD_PROOF;
     }
-    struct chain_evidence_record snapshot_evidence;
-    (void)chain_evidence_store_load(authority->ndb, "cec.snapshot_evidence",
-                        &snapshot_evidence).ok;
-    snapshot_evidence.full_validation_complete = true;
-    if (!persist_i64(authority, "cec.snapshot_validated", 1) ||
-        !chain_evidence_store_persist(authority, "cec.snapshot_evidence",
-                          &snapshot_evidence).ok ||
+
+    memset(&snapshot_evidence, 0, sizeof(snapshot_evidence));
+    snapshot_loaded = chain_evidence_store_load(
+        authority->ndb, "cec.snapshot_evidence", &snapshot_evidence);
+    snapshot_metadata_present = authority->ndb &&
+        node_db_state_get_int(authority->ndb, "cec.snapshot_anchor_height",
+                              &snapshot_anchor_height);
+    if (authority->ndb &&
+        node_db_state_get_int(authority->ndb, "cec.full_validation_origin",
+                              &persisted_origin) &&
+        persisted_origin == CEC_FULL_VALIDATION_ASSISTED_SNAPSHOT)
+        snapshot_metadata_present = true;
+
+    if (snapshot_loaded.ok) {
+        /* Assisted promotion remains bound to the exact imported state and
+         * its durable proof record.  A state enum or caller assertion alone
+         * can never launder peer/release-assisted state into sovereignty. */
+        memset(&expected, 0, sizeof(expected));
+        if (!authority->ndb ||
+            !node_db_state_get(authority->ndb, "cec.snapshot_utxo_sha3",
+                               expected.data, 32, &len) ||
+            len != 32 ||
+            memcmp(expected.data, utxo_sha3->data, 32) != 0 ||
+            !chain_evidence_record_has_snapshot_required(
+                &snapshot_evidence)) {
+            chain_evidence_controller_freeze(
+                authority,
+                "background validation snapshot evidence mismatch");
+            return CEC_REJECTED_BAD_PROOF;
+        }
+        snapshot_evidence.full_validation_complete = true;
+        if (!persist_i64(authority, "cec.snapshot_validated", 1) ||
+            !chain_evidence_store_persist(
+                authority, "cec.snapshot_evidence", &snapshot_evidence).ok ||
+            !persist_i64(authority, "cec.full_validation_origin",
+                         CEC_FULL_VALIDATION_ASSISTED_SNAPSHOT) ||
+            !persist_state(authority, CEC_FULLY_VALIDATED))
+            return CEC_REJECTED_PERSIST;
+        return CEC_OK;
+    }
+
+    /* Snapshot metadata without its evidence record is an interrupted or
+     * corrupted assisted mode, not a genesis fold.  Fail closed instead of
+     * falling through to the sovereign path. */
+    if (snapshot_metadata_present) {
+        chain_evidence_controller_freeze(
+            authority, "full validation missing snapshot evidence record");
+        return CEC_REJECTED_PERSIST;
+    }
+
+    /* A genuine genesis/full-history campaign has no snapshot record.  It
+     * must, however, terminate at a locally publishable active tip whose
+     * ancestry, work selection and bytes have all been checked.  The caller
+     * of this authority boundary attests that the fold covered genesis..tip;
+     * the exact resulting UTXO commitment is persisted below. */
+    if (authority->state != CEC_TIP_FOLLOWING &&
+        authority->state != CEC_BACKGROUND_VALIDATING &&
+        authority->state != CEC_FULLY_VALIDATED) {
+        chain_evidence_controller_freeze(
+            authority, "genesis full validation requested from invalid state");
+        return CEC_REJECTED_BAD_STATE;
+    }
+    memset(&active_tip_evidence, 0, sizeof(active_tip_evidence));
+    active_tip_loaded = chain_evidence_store_load(
+        authority->ndb, "cec.active_tip_evidence", &active_tip_evidence);
+    if (!active_tip_loaded.ok ||
+        !chain_evidence_record_has_block_index_required(
+            &active_tip_evidence) ||
+        (active_tip_evidence.source_class != CEC_SOURCE_CLASS_NATIVE_P2P &&
+         active_tip_evidence.source_class != CEC_SOURCE_CLASS_LOCAL_IMPORT)) {
+        chain_evidence_controller_freeze(
+            authority,
+            "genesis full validation missing local active-tip evidence");
+        return CEC_REJECTED_BAD_PROOF;
+    }
+    active_tip_evidence.full_validation_complete = true;
+    if (!persist_blob(authority, "cec.full_history_utxo_sha3",
+                      utxo_sha3->data, 32) ||
+        !chain_evidence_store_persist(
+            authority, "cec.active_tip_evidence", &active_tip_evidence).ok ||
+        !persist_i64(authority, "cec.full_validation_origin",
+                     CEC_FULL_VALIDATION_GENESIS_HISTORY) ||
         !persist_state(authority, CEC_FULLY_VALIDATED))
         return CEC_REJECTED_PERSIST;
     return CEC_OK;

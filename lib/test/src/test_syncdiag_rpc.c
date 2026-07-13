@@ -22,11 +22,13 @@
 #include "controllers/agent_controller.h"
 #include "controllers/agent_resources.h"
 #include "controllers/agent_restart_watchdog.h"
+#include "controllers/agent_security_posture.h"
 #include "controllers/diagnostics_controller.h"
 #include "controllers/event_controller.h"
 #include "controllers/health_controller.h"
 #include "controllers/network_controller.h"
 #include "core/arith_uint256.h"
+#include "crypto/sha3.h"
 #include "framework/condition.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/tip_finalize_stage.h"
@@ -149,6 +151,61 @@ static bool syncdiag_set_progress_mtime_seconds_ago(const char *dir,
     tb.actime = (time_t)(now - seconds_ago);
     tb.modtime = (time_t)(now - seconds_ago);
     return utime(path, &tb) == 0;
+}
+
+static bool syncdiag_exec_sql(sqlite3 *db, const char *sql);
+
+static bool syncdiag_open_fresh_progress_wal(const char *dir,
+                                             sqlite3 **db_out)
+{
+    char path[512];
+    sqlite3 *db = NULL;
+    if (db_out)
+        *db_out = NULL;
+    if (!dir || !db_out ||
+        snprintf(path, sizeof(path), "%s/progress.kv", dir) >=
+            (int)sizeof(path) || sqlite3_open(path, &db) != SQLITE_OK) {
+        sqlite3_close(db);
+        return false;
+    }
+    bool ok = syncdiag_exec_sql(db, "PRAGMA journal_mode=WAL") &&
+        syncdiag_exec_sql(db,
+            "UPDATE stage_cursor SET updated_at=COALESCE(updated_at,0)+1 "
+            "WHERE name='tip_finalize'");
+    if (!ok) {
+        sqlite3_close(db);
+        return false;
+    }
+    *db_out = db;
+    return true;
+}
+
+static bool syncdiag_set_utxo_sample_ages(const char *dir,
+                                          int64_t older_age,
+                                          int64_t newer_age)
+{
+    char path[512];
+    sqlite3 *db = NULL;
+    sqlite3_stmt *st = NULL;
+    int64_t now = platform_time_wall_unix();
+    if (!dir || older_age <= newer_age || newer_age < 0 || now <= older_age ||
+        snprintf(path, sizeof(path), "%s/progress.kv", dir) >=
+            (int)sizeof(path) || sqlite3_open(path, &db) != SQLITE_OK) {
+        sqlite3_close(db);
+        return false;
+    }
+    const char *sql =
+        "UPDATE utxo_apply_log SET applied_at=CASE height "
+        "WHEN 0 THEN ?1 WHEN 163999 THEN ?2 ELSE applied_at END";
+    bool ok = sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK;
+    if (ok) {
+        sqlite3_bind_int64(st, 1, now - older_age);
+        sqlite3_bind_int64(st, 2, now - newer_age);
+        ok = sqlite3_step(st) == SQLITE_DONE;
+    }
+    sqlite3_finalize(st);
+    sqlite3_close(db);
+    return ok;
 }
 
 static bool syncdiag_set_coins_applied(sqlite3 *db, int32_t height)
@@ -341,6 +398,27 @@ static void syncdiag_write_le64(uint8_t *p, uint64_t v)
         p[i] = (uint8_t)((v >> (8 * i)) & 0xffu);
 }
 
+static bool syncdiag_write_empty_anchor_snapshot(const char *dir)
+{
+    char path[512];
+    if (!dir || snprintf(path, sizeof(path), "%s/utxo-anchor.snapshot", dir) >=
+                    (int)sizeof(path))
+        return false;
+    uint8_t header[104] = {0};
+    memcpy(header, "ZCLUTXO\0", 8);
+    syncdiag_write_le32(header + 8, 1);
+    struct sha3_256_ctx ctx;
+    uint8_t digest[32];
+    sha3_256_init(&ctx);
+    sha3_256_finalize(&ctx, digest);
+    memcpy(header + 72, digest, sizeof(digest));
+    FILE *f = fopen(path, "wb");
+    if (!f)
+        return false;
+    bool ok = fwrite(header, 1, sizeof(header), f) == sizeof(header);
+    return fclose(f) == 0 && ok;
+}
+
 static bool syncdiag_seed_meta_blob(sqlite3 *db, const char *key,
                                     const void *blob, int len)
 {
@@ -436,6 +514,8 @@ static bool syncdiag_seed_anchorstatus_progress(const char *dir)
     };
     for (size_t i = 0; ok && i < sizeof(logs) / sizeof(logs[0]); i++)
         ok = syncdiag_create_height_log(db, logs[i]);
+    ok = ok && syncdiag_exec_sql(
+        db, "ALTER TABLE utxo_apply_log ADD COLUMN applied_at INTEGER");
 
     ok = ok && syncdiag_seed_cursor(db, "header_admit", 2791000);
     ok = ok && syncdiag_seed_cursor(db, "validate_headers", 2791000);
@@ -459,6 +539,9 @@ static bool syncdiag_seed_anchorstatus_progress(const char *dir)
                                          "verified", 1);
     ok = ok && syncdiag_seed_log_verdict(db, "utxo_apply_log", 163999,
                                          "verified", 1);
+    ok = ok && syncdiag_exec_sql(
+        db, "UPDATE utxo_apply_log SET applied_at="
+            "CASE height WHEN 0 THEN 1000 WHEN 163999 THEN 1060 END");
 
     const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
     uint8_t marker[48] = {0};
@@ -479,6 +562,21 @@ static bool syncdiag_seed_anchorstatus_progress(const char *dir)
     const uint8_t one = 1;
     ok = ok && syncdiag_seed_meta_blob(db, "refold_in_progress", &one, 1);
 
+    sqlite3_close(db);
+    return ok;
+}
+
+static bool syncdiag_seed_body_position_hazard(const char *dir)
+{
+    char path[512];
+    sqlite3 *db = NULL;
+    if (!dir || snprintf(path, sizeof(path), "%s/progress.kv", dir) >=
+                    (int)sizeof(path) || sqlite3_open(path, &db) != SQLITE_OK) {
+        sqlite3_close(db);
+        return false;
+    }
+    bool ok = syncdiag_seed_cursor(db, "body_persist", 1) &&
+        syncdiag_seed_cursor(db, "body_fetch", 2791000);
     sqlite3_close(db);
     return ok;
 }
@@ -638,6 +736,7 @@ static void syncdiag_reset_rpc_globals_for_test(void)
 int test_syncdiag_rpc(void)
 {
     int failures = 0;
+    agent_security_posture_test_override_review_required(0);
 
     syncdiag_reset_rpc_globals_for_test();
 
@@ -748,6 +847,14 @@ int test_syncdiag_rpc(void)
             json_get_int(json_get(&result, "progress_age_seconds")) > 300;
         ok = ok && json_get(&result, "progress_recent") != NULL &&
             !json_get_bool(json_get(&result, "progress_recent"));
+        ok = ok && json_get(&result, "progress_wal_present") != NULL &&
+            !json_get_bool(json_get(&result, "progress_wal_present"));
+        ok = ok && strcmp(json_get_str(json_get(
+            &result, "progress_activity_source")), "progress.kv") == 0;
+        ok = ok && json_get_int(json_get(
+            &result, "progress_sample_interval_seconds")) == 60;
+        ok = ok && json_get_int(json_get(
+            &result, "progress_stale_after_seconds")) == 300;
         ok = ok && json_get(&result, "fold_recently_active") != NULL &&
             !json_get_bool(json_get(&result, "fold_recently_active"));
         ok = ok && json_get(&result, "summary") != NULL &&
@@ -779,7 +886,7 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get(&result, "utxo_apply_probe_next_action") != NULL &&
             strcmp(json_get_str(json_get(&result,
                                          "utxo_apply_probe_next_action")),
-                   "restart_anchor_mint_with_stdout_capture_and_check_window_miss") == 0;
+                   "inspect_anchor_mint_liveness_and_durable_activity") == 0;
 
         const struct json_value *probe =
             json_get(&result, "utxo_apply_probe");
@@ -798,7 +905,7 @@ int test_syncdiag_rpc(void)
                    "utxo_apply_history_consistent") == 0;
         ok = ok && json_get(probe, "next_action") != NULL &&
             strcmp(json_get_str(json_get(probe, "next_action")),
-                   "restart_anchor_mint_with_stdout_capture_and_check_window_miss") == 0;
+                   "inspect_anchor_mint_liveness_and_durable_activity") == 0;
 
         const struct json_value *proof_next =
             json_get(probe, "proof_validate_at_next");
@@ -822,6 +929,58 @@ int test_syncdiag_rpc(void)
             json_get_int(json_get(utxo, "cursor")) == 164000;
         ok = ok && json_get(utxo, "log_max_height") != NULL &&
             json_get_int(json_get(utxo, "log_max_height")) == 163999;
+
+        const struct json_value *eta = json_get(&result, "eta");
+        ok = ok && eta != NULL && eta->type == JSON_OBJ;
+        ok = ok && json_get(eta, "available") != NULL &&
+            json_get_bool(json_get(eta, "available"));
+        ok = ok && json_get(eta, "older_height") != NULL &&
+            json_get_int(json_get(eta, "older_height")) == 0;
+        ok = ok && json_get(eta, "newer_height") != NULL &&
+            json_get_int(json_get(eta, "newer_height")) == 163999;
+        ok = ok && json_get(eta, "eta_seconds") != NULL &&
+            json_get_int(json_get(eta, "eta_seconds")) > 0;
+
+        /* Add a valid empty-body USS fixture so the existing typed offline
+         * anchorstatus command proves it reports a digest only after the
+         * read-only loader verifies the payload. */
+        ok = ok && syncdiag_write_empty_anchor_snapshot(dir);
+        ok = ok && syncdiag_seed_body_position_hazard(dir);
+        struct json_value snapshot_result;
+        json_init(&snapshot_result);
+        ok = ok && rpc_agent_anchor_status(&params, false, &snapshot_result);
+        ok = ok && json_get(&snapshot_result, "read_only") != NULL &&
+            json_get_bool(json_get(&snapshot_result, "read_only"));
+        ok = ok && json_get(&snapshot_result,
+                            "process_identity_available") != NULL &&
+            !json_get_bool(json_get(&snapshot_result,
+                                    "process_identity_available"));
+        ok = ok && json_get(&snapshot_result,
+                            "snapshot_payload_sha3_verified") != NULL &&
+            json_get_bool(json_get(&snapshot_result,
+                                   "snapshot_payload_sha3_verified"));
+        const char *payload_sha3 = json_get_str(json_get(
+            &snapshot_result, "snapshot_payload_sha3"));
+        ok = ok && payload_sha3 && strlen(payload_sha3) == 64;
+        const struct json_value *snapshot_eta =
+            json_get(&snapshot_result, "eta");
+        ok = ok && snapshot_eta &&
+            json_get_bool(json_get(snapshot_eta, "available"));
+        const struct json_value *prep =
+            json_get(&snapshot_result, "producer_import_preflight");
+        ok = ok && prep &&
+            json_get_bool(json_get(prep,
+                                   "importblockindex_must_be_argv1"));
+        ok = ok && strstr(json_get_str(json_get(prep, "exact_template")),
+                          "BIN --importblockindex") != NULL;
+        const struct json_value *body_position =
+            json_get(&snapshot_result, "body_position_preflight");
+        ok = ok && body_position &&
+            json_get_bool(json_get(body_position, "suspected"));
+        ok = ok && strcmp(json_get_str(json_get(body_position,
+                                                "classification")),
+                          "header_only_import_body_position_unproven") == 0;
+        json_free(&snapshot_result);
 
         json_free(&params);
         json_free(&result);
@@ -882,6 +1041,113 @@ int test_syncdiag_rpc(void)
         ok = ok && json_get(probe, "next_action") != NULL &&
             strcmp(json_get_str(json_get(probe, "next_action")),
                    "observe_anchor_mint_progress") == 0;
+
+        json_free(&params);
+        json_free(&result);
+        test_cleanup_tmpdir(dir);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("anchorstatus: treats a fresh WAL as producer activity "
+           "(RED)... ");
+    {
+        checkpoints_reset_sha3_override_for_test();
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "syncdiag_anchorstatus",
+                         "wal_active");
+        bool ok = syncdiag_seed_anchorstatus_progress(dir);
+        sqlite3 *wal_db = NULL;
+        ok = ok && syncdiag_open_fresh_progress_wal(dir, &wal_db);
+        ok = ok && syncdiag_set_progress_mtime_seconds_ago(dir, 3600);
+
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+        struct json_value arg;
+        json_init(&arg);
+        json_set_str(&arg, dir);
+        json_push_back(&params, &arg);
+        json_free(&arg);
+
+        struct json_value result;
+        json_init(&result);
+        ok = ok && rpc_agent_anchor_status(&params, false, &result);
+        ok = ok && json_get_int(json_get(
+            &result, "progress_age_seconds")) > 300;
+        ok = ok && json_get_bool(json_get(
+            &result, "progress_wal_present"));
+        ok = ok && json_get_int(json_get(
+            &result, "progress_wal_size_bytes")) > 0;
+        int64_t wal_age = json_get_int(json_get(
+            &result, "progress_wal_age_seconds"));
+        ok = ok && wal_age >= 0 && wal_age <= 30;
+        ok = ok && strcmp(json_get_str(json_get(
+            &result, "progress_activity_source")), "progress.kv-wal") == 0;
+        ok = ok && json_get_bool(json_get(&result, "progress_recent"));
+        ok = ok && json_get_bool(json_get(
+            &result, "fold_recently_active"));
+        ok = ok && strcmp(json_get_str(json_get(&result, "summary")),
+                          "mint_in_progress_recent") == 0;
+        ok = ok && strcmp(json_get_str(json_get(
+            &result, "utxo_apply_probe_next_action")),
+            "observe_anchor_mint_progress") == 0;
+
+        json_free(&params);
+        json_free(&result);
+        sqlite3_close(wal_db);
+        test_cleanup_tmpdir(dir);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("anchorstatus: honors durable sample cadence beyond 300 seconds "
+           "(RED)... ");
+    {
+        checkpoints_reset_sha3_override_for_test();
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "syncdiag_anchorstatus",
+                         "cadence_active");
+        bool ok = syncdiag_seed_anchorstatus_progress(dir);
+        ok = ok && syncdiag_set_utxo_sample_ages(dir, 800, 200);
+        ok = ok && syncdiag_set_progress_mtime_seconds_ago(dir, 3600);
+
+        struct json_value params;
+        json_init(&params);
+        json_set_array(&params);
+        struct json_value arg;
+        json_init(&arg);
+        json_set_str(&arg, dir);
+        json_push_back(&params, &arg);
+        json_free(&arg);
+
+        struct json_value result;
+        json_init(&result);
+        ok = ok && rpc_agent_anchor_status(&params, false, &result);
+        ok = ok && json_get_int(json_get(
+            &result, "progress_age_seconds")) > 300;
+        ok = ok && !json_get_bool(json_get(
+            &result, "progress_wal_present"));
+        ok = ok && strcmp(json_get_str(json_get(
+            &result, "progress_activity_source")),
+            "durable_utxo_apply_sample") == 0;
+        int64_t activity_age = json_get_int(json_get(
+            &result, "progress_activity_age_seconds"));
+        ok = ok && activity_age >= 190 && activity_age <= 240;
+        ok = ok && json_get_int(json_get(
+            &result, "progress_sample_interval_seconds")) == 600;
+        ok = ok && json_get_int(json_get(
+            &result, "progress_stale_after_seconds")) == 1200;
+        ok = ok && json_get_bool(json_get(&result, "progress_recent"));
+        ok = ok && json_get_bool(json_get(
+            &result, "fold_recently_active"));
+        ok = ok && strcmp(json_get_str(json_get(&result, "summary")),
+                          "mint_in_progress_recent") == 0;
+        ok = ok && strcmp(json_get_str(json_get(
+            &result, "utxo_apply_probe_next_action")),
+            "observe_anchor_mint_progress") == 0;
 
         json_free(&params);
         json_free(&result);
@@ -1622,6 +1888,38 @@ int test_syncdiag_rpc(void)
 
         ok = ok && json_array_has_str(json_get(&result, "blockers"),
                                       "beta6_NODE_BOOTSTRAP_not_advertised");
+
+        /* A transport-ready, tip-published node must still refuse every
+         * serving/readiness claim while security posture requires review. */
+        agent_security_posture_test_override_review_required(1);
+        json_free(&result);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "bootstrapstatus",
+                                     &params, &result);
+        zcl23 = json_get(&result, "zclassic23_bootstrap");
+        legacy = json_get(&result, "legacy_p2p_bootstrap");
+        ok = ok && !json_get_bool(json_get(&result, "ok"));
+        ok = ok && json_get_bool(json_get(&result, "transport_ready"));
+        ok = ok && json_get_bool(json_get(
+            &result, "security_review_required"));
+        ok = ok && !json_get_bool(json_get(
+            &result, "security_posture_ok"));
+        ok = ok && strcmp(json_get_str(json_get(
+            &result, "security_posture_status")),
+            "review_required_test") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "readiness")),
+                          "blocked") == 0;
+        ok = ok && !json_get_bool(json_get(
+            &result, "serving_p2p_bootstrap"));
+        ok = ok && !json_get_bool(json_get(
+            &result, "serving_addr_bootstrap"));
+        ok = ok && !json_get_bool(json_get(
+            &result, "zclassic23_fast_sync_compatible"));
+        ok = ok && zcl23 && !json_get_bool(json_get(zcl23, "serving"));
+        ok = ok && legacy && !json_get_bool(json_get(legacy, "serving"));
+        ok = ok && json_array_has_str(json_get(&result, "blockers"),
+                                      "review_required_test");
+        agent_security_posture_test_override_review_required(0);
 
         ok = ok && unlink(index_path) == 0;
         rpc_net_set_boot_context(tmp_dir, NULL);
@@ -3021,6 +3319,8 @@ syncdiag_net_split_done:
         if (rpc_is_in_warmup(NULL, 0))
             set_rpc_warmup_finished();
 
+        blocker_module_shutdown();
+        bool blocker_ready = blocker_module_init();
         alerts_shutdown();
         unsetenv("ZCL_ALERTS_DISABLE");
         unsetenv("ZCL_ALERT_WEBHOOK_URL");
@@ -3045,7 +3345,7 @@ syncdiag_net_split_done:
         json_init(&result);
 
         bool executed = rpc_table_execute(&tbl, "agent", &params, &result);
-        bool ok = executed && result.type == JSON_OBJ;
+        bool ok = blocker_ready && executed && result.type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(&result, "schema")),
                           "zcl.public_status.v1") == 0;
         const struct json_value *first_call =
@@ -3090,6 +3390,7 @@ syncdiag_net_split_done:
         ok = ok && json_get(runtime_build, "semantics") != NULL;
         ok = ok && strcmp(json_get_str(json_get(&result, "status")),
                           "blocked") == 0;
+        ok = ok && !json_get_bool(json_get(&result, "serving"));
         ok = ok && !json_get_bool(json_get(&result, "healthy"));
         ok = ok && !json_get_bool(json_get(&result, "serving"));
         ok = ok && json_get_bool(json_get(&result, "operator_needed"));
@@ -3251,6 +3552,8 @@ syncdiag_net_split_done:
         ok = ok && json_get(security, "bootstrap_model") != NULL;
         ok = ok && json_get(security,
                             "full_history_validation_state") != NULL;
+        ok = ok && json_get(security,
+                            "anchor_history_state") != NULL;
         ok = ok && json_get(security,
                             "nullifier_history_state") != NULL;
         ok = ok && readiness && readiness->type == JSON_OBJ;
@@ -3431,11 +3734,15 @@ syncdiag_net_split_done:
         ok = ok && json_get(security,
                             "snapshot_full_validation_complete") != NULL;
         ok = ok && json_get(security,
+                            "anchor_history_complete") != NULL;
+        ok = ok && json_get(security,
+                            "anchor_history_state") != NULL;
+        ok = ok && json_get(security,
                             "nullifier_history_complete") != NULL;
         ok = ok && json_get(security,
                             "nullifier_activation_cursor") != NULL;
         ok = ok && strstr(json_get_str(json_get(security, "semantics")),
-                          "serving/healthy are liveness signals") != NULL;
+                          "public serving and healthy fail closed") != NULL;
 
         json_free(&params);
         json_free(&result);
@@ -3608,8 +3915,72 @@ syncdiag_net_split_done:
         ok = ok && cache_ok;
         json_free(&result);
 
+        /* Explicit negative: all chain/peer/download inputs remain healthy,
+         * but a review-required security posture must suppress both healthy
+         * and serving and name the causal posture. */
+        agent_security_posture_test_override_review_required(1);
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "operatorsnapshot",
+                                     &params, &result);
+        const struct json_value *security =
+            json_get(&result, "security_posture");
+        summary = json_get(&result, "summary");
+        ok = ok && !json_get_bool(json_get(&result, "healthy"));
+        ok = ok && !json_get_bool(json_get(&result, "serving"));
+        ok = ok && !json_get_bool(json_get(&result, "verdict_complete"));
+        ok = ok && json_get_bool(json_get(
+            &result, "security_review_required"));
+        ok = ok && !json_get_bool(json_get(
+            &result, "security_posture_ok"));
+        ok = ok && strcmp(json_get_str(json_get(&result, "status")),
+                          "operator_needed") == 0;
+        ok = ok && strcmp(json_get_str(json_get(
+            &result, "primary_blocker")), "review_required_test") == 0;
+        ok = ok && security && json_get_bool(json_get(
+            security, "review_required"));
+        ok = ok && summary && !json_get_bool(json_get(summary, "serving"));
+        json_free(&result);
+        agent_security_posture_test_override_review_required(0);
+
         event_emitf(EV_OPERATOR_NEEDED, 0,
                     "condition=operator_snapshot_purity attempts=9");
+
+        struct blocker_record downstream;
+        struct blocker_record nullifier_gap;
+        struct blocker_record anchor_gap;
+        ok = ok && blocker_init(
+            &downstream, "script_validate.prevout_unresolved",
+            "script_validate", BLOCKER_PERMANENT,
+            "downstream symptom");
+        ok = ok && blocker_set(&downstream) == 0;
+        ok = ok && blocker_init(
+            &nullifier_gap, "utxo_apply.nullifier_backfill_gap",
+            "utxo_apply", BLOCKER_PERMANENT,
+            "historical nullifier state is incomplete");
+        ok = ok && blocker_set(&nullifier_gap) == 0;
+        ok = ok && blocker_init(
+            &anchor_gap, "utxo_apply.anchor_backfill_gap",
+            "utxo_apply", BLOCKER_PERMANENT,
+            "historical anchor state is incomplete");
+        ok = ok && blocker_set(&anchor_gap) == 0;
+
+        json_init(&result);
+        ok = ok && rpc_table_execute(&tbl, "agent", &params, &result);
+        const struct json_value *health = json_get(&result, "health");
+        ok = ok && strcmp(json_get_str(json_get(&result, "status")),
+                          "blocked") == 0;
+        ok = ok && strcmp(json_get_str(json_get(
+                          &result, "primary_blocker")),
+                          "utxo_apply.anchor_backfill_gap") == 0;
+        ok = ok && strcmp(json_get_str(json_get(&result, "next")),
+                          "zclassic23 dumpstate blocker") == 0;
+        ok = ok && health &&
+             json_get_bool(json_get(health, "hard_typed_blocker"));
+        ok = ok && health && strcmp(json_get_str(json_get(
+                          health, "dominant_typed_blocker")),
+                          "utxo_apply.anchor_backfill_gap") == 0;
+        json_free(&result);
+
         json_init(&result);
         ok = ok && rpc_table_execute(&tbl, "operatorsnapshot",
                                      &params, &result);
@@ -3619,8 +3990,18 @@ syncdiag_net_split_done:
         ok = ok && strstr(latch_detail, "operator_snapshot_purity") != NULL;
         ok = ok && strcmp(json_get_str(json_get(&result, "status")),
                           "operator_needed") == 0;
+        ok = ok && strcmp(json_get_str(json_get(
+                          &result, "primary_blocker")),
+                          "utxo_apply.anchor_backfill_gap") == 0;
+        blockers = json_get(&result, "blockers");
+        ok = ok && blockers && strcmp(json_get_str(json_get(
+                          json_get(blockers, "dominant"), "id")),
+                          "utxo_apply.anchor_backfill_gap") == 0;
         json_free(&result);
 
+        blocker_clear("script_validate.prevout_unresolved");
+        blocker_clear("utxo_apply.nullifier_backfill_gap");
+        blocker_clear("utxo_apply.anchor_backfill_gap");
         alerts_operator_needed_clear();
         struct blocker_record resource;
         ok = ok && blocker_init(&resource, "test.operator.disk_full",
@@ -3701,6 +4082,30 @@ syncdiag_net_split_done:
         bool ok = verdict.healthy && verdict.complete &&
                   strcmp(verdict.status, "healthy") == 0;
 
+        capture.mirror.enabled = true;
+        capture.mirror.reachable = true;
+        capture.mirror.lag_known = true;
+        capture.mirror.local_height = 100;
+        capture.mirror.legacy_height = 100;
+        capture.mirror.tip_hashes_agree = false;
+        verdict = operator_snapshot_classify(&capture);
+        ok = ok && !verdict.healthy && !verdict.complete &&
+             strcmp(verdict.status, "degraded") == 0 &&
+             strcmp(verdict.primary,
+                    "mirror_same_height_hash_unavailable_or_mismatch") == 0;
+        snprintf(capture.mirror.zclassic23_hash,
+                 sizeof(capture.mirror.zclassic23_hash), "%064x", 1);
+        snprintf(capture.mirror.zclassicd_hash,
+                 sizeof(capture.mirror.zclassicd_hash), "%064x", 2);
+        verdict = operator_snapshot_classify(&capture);
+        ok = ok && !verdict.healthy &&
+             strcmp(verdict.primary,
+                    "mirror_same_height_hash_unavailable_or_mismatch") == 0;
+        capture.mirror.tip_hashes_agree = true;
+        verdict = operator_snapshot_classify(&capture);
+        ok = ok && verdict.healthy && verdict.complete;
+        capture.mirror.enabled = false;
+
         capture.peers.peer_count = 0;
         capture.peers.outbound_count = 0;
         capture.peers.ready_count = 0;
@@ -3729,6 +4134,20 @@ syncdiag_net_split_done:
         verdict = operator_snapshot_classify(&capture);
         ok = ok && !verdict.healthy && !verdict.complete &&
              strcmp(verdict.primary, "peer_state_unavailable") == 0;
+
+        capture.peers.stale = false;
+        capture.security_review_required = true;
+        snprintf(capture.security_posture_status,
+                 sizeof(capture.security_posture_status),
+                 "review_required_test");
+        snprintf(capture.security_posture_next_action,
+                 sizeof(capture.security_posture_next_action),
+                 "test_review");
+        verdict = operator_snapshot_classify(&capture);
+        ok = ok && !verdict.healthy && !verdict.serving &&
+             !verdict.complete && verdict.operator_needed &&
+             strcmp(verdict.status, "operator_needed") == 0 &&
+             strcmp(verdict.primary, "review_required_test") == 0;
 
         if (ok) printf("OK\n");
         else    { printf("FAIL\n"); failures++; }
@@ -4386,6 +4805,10 @@ syncdiag_net_split_done:
         mirror_stats.local_height = target_height;
         mirror_stats.best_header_height = target_height;
         mirror_stats.target_height = target_height;
+        uint256_get_hex(&h_tip, mirror_stats.zclassic23_hash);
+        snprintf(mirror_stats.zclassicd_hash,
+                 sizeof(mirror_stats.zclassicd_hash), "%s",
+                 mirror_stats.zclassic23_hash);
         legacy_mirror_sync_test_set_stats(&mirror_stats, &ms);
 
         json_init(&params);
@@ -4916,7 +5339,7 @@ syncdiag_net_split_done:
                           "attention_needed") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "safe_next_action")),
-                          "inspect_mirror_status") == 0;
+                          "inspect_condition_engine_and_operator_latch") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "mirror_status")),
                           "blocked") == 0;
@@ -4927,6 +5350,10 @@ syncdiag_net_split_done:
                                           "mirror_operator_action_required"));
         ok = ok && mirror_finding && strcmp(json_get_str(json_get(
             mirror_finding, "severity")), "attention") == 0;
+        chain_finding = find_object_with_str(findings, "name",
+                                             "chain_serving");
+        ok = ok && chain_finding && strcmp(json_get_str(json_get(
+            chain_finding, "severity")), "attention") == 0;
 
         json_free(&params);
         json_free(&result);
@@ -8384,5 +8811,6 @@ syncdiag_net_split_done:
     }
 
     syncdiag_reset_rpc_globals_for_test();
+    agent_security_posture_test_override_review_required(-1);
     return failures;
 }

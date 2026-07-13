@@ -107,7 +107,11 @@ static enum condition_remedy_result remedy_snapshot_complete_resume(void)
                             "condition snapshot_complete_resume"))
             return COND_REMEDY_FAILED;
     }
-    return COND_REMEDY_OK;
+    /* COMPLETE is a legacy/stale state until peer snapshots use the unified
+     * transactional installer.  Resuming ordinary header/body sync is safe,
+     * but containment is not a successful snapshot activation and must not
+     * satisfy the condition witness. */
+    return activated_height >= 0 ? COND_REMEDY_OK : COND_REMEDY_FAILED;
 }
 
 static bool witness_snapshot_complete_resume(int64_t target_at_detect)

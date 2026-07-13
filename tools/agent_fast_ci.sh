@@ -410,6 +410,8 @@ cache_manifest() {
         tools/dev/deploy-dev-lane.sh tools/dev/agent-dev-status.sh \
         tools/dev/agent-doctor.sh \
         tools/scripts/remote_node_update.sh \
+        tools/scripts/lane_recover.sh \
+        tools/scripts/check_stable_publish_containment.sh \
         tools/scripts/build_vendor.sh \
         tools/scripts/background_quality_lane.sh \
         tools/scripts/check_agentdeployguard_cli_exit.sh \
@@ -633,7 +635,7 @@ emit_plan_json() {
     printf '    "fresh_source_tree": "zclassic23 <leaf> [--input=json]",\n'
     printf '    "dev_linger_lane": "zclassic23-dev <leaf> [--input=json]",\n'
     printf '    "discover": "zclassic23 discover help | zclassic23 discover search <q>",\n'
-    printf '    "dev_hotswap": "zclassic23-dev dev change apply --input=json"\n'
+    printf '    "dev_hotswap_probe": "contained_before_dlopen_use_build_test_sim"\n'
     printf '  },\n'
     printf '  "mcp_shortcuts": {\n'
     printf '    "status": "legacy, removed in W3 -- prefer native_shortcuts above",\n'
@@ -648,6 +650,8 @@ emit_plan_json() {
     printf ']"\n'
     printf '  },\n'
     printf '  "dev_lane": {\n'
+    printf '    "runtime_publication": false,\n'
+    printf '    "publication_blocker": "immutable epoch/proof/resident-CAS/rollback transaction incomplete",\n'
     printf '    "status": "make agent-dev-status",\n'
     printf '    "stage_without_restart": "make agent-stage-dev",\n'
     printf '    "hot_swap_restart": "make agent-deploy-fast",\n'
@@ -668,6 +672,8 @@ run_shell_checks() {
         tools/dev/deploy-dev-lane.sh tools/dev/agent-dev-status.sh \
         tools/dev/agent-doctor.sh \
         tools/scripts/remote_node_update.sh \
+        tools/scripts/lane_recover.sh \
+        tools/scripts/check_stable_publish_containment.sh \
         tools/scripts/build_vendor.sh \
         tools/scripts/background_quality_lane.sh \
         tools/scripts/check_agentdeployguard_cli_exit.sh; do

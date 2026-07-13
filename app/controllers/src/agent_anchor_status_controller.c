@@ -3,6 +3,7 @@
 #include "controllers/agent_controller.h"
 
 #include "chain/checkpoints.h"
+#include "controllers/agent_cure_status_helpers.h"
 #include "controllers/strong_params.h"
 #include "json/json.h"
 #include "platform/time_compat.h"
@@ -13,11 +14,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/stat.h>
-
 #define ANCHOR_MARKER_LEN 48
-#define ANCHOR_PROGRESS_RECENT_SECS 300
-
 struct anchor_stage_view {
     const char *name;
     const char *log_table;
@@ -68,33 +65,6 @@ static uint64_t ale64_read(const uint8_t *p)
     for (int i = 0; i < 8; i++)
         v |= ((uint64_t)p[i]) << (8 * i);
     return v;
-}
-
-static bool anchor_stat_file(const char *path, int64_t *size_out,
-                             int64_t *mtime_out)
-{
-    if (size_out)
-        *size_out = 0;
-    if (mtime_out)
-        *mtime_out = 0;
-    if (!path || !path[0])
-        return false;
-    struct stat st;
-    if (stat(path, &st) != 0 || !S_ISREG(st.st_mode))
-        return false;
-    if (size_out)
-        *size_out = (int64_t)st.st_size;
-    if (mtime_out)
-        *mtime_out = (int64_t)st.st_mtime;
-    return true;
-}
-
-static void anchor_path_join(char *out, size_t cap,
-                             const char *datadir, const char *name)
-{
-    if (!out || cap == 0)
-        return;
-    snprintf(out, cap, "%s/%s", datadir && datadir[0] ? datadir : ".", name);
 }
 
 static bool anchor_sql_i64(sqlite3 *db, const char *sql, int64_t bind0,
@@ -288,7 +258,7 @@ static const char *anchor_probe_next_action(
         return "observe_anchor_mint_progress";
     if (strcmp(p->next_diagnosis,
                "utxo_apply_idle_after_validated_row") == 0)
-        return "restart_anchor_mint_with_stdout_capture_and_check_window_miss";
+        return "inspect_anchor_mint_liveness_and_durable_activity";
     return "observe_progress_or_drill_into_stage_cursors";
 }
 
@@ -540,23 +510,6 @@ static void anchor_push_utxo_probe_json(struct json_value *result,
     json_free(&obj);
 }
 
-static int64_t anchor_progress_age_seconds(bool progress_present,
-                                           int64_t captured_at_unix,
-                                           int64_t progress_mtime)
-{
-    if (!progress_present || captured_at_unix <= 0 || progress_mtime <= 0)
-        return -1; // raw-return-ok:anchorstatus-progress-age-missing-sentinel
-    if (progress_mtime > captured_at_unix)
-        return 0;
-    return captured_at_unix - progress_mtime;
-}
-
-static bool anchor_progress_recent(int64_t age_seconds)
-{
-    return age_seconds >= 0 &&
-        age_seconds <= ANCHOR_PROGRESS_RECENT_SECS;
-}
-
 static bool anchor_fold_recently_active(
         bool progress_present,
         bool progress_recent,
@@ -627,58 +580,54 @@ static const char *anchor_next_action(const char *summary)
     return "observe_progress_or_drill_into_stage_cursors";
 }
 
-bool rpc_agent_anchor_status(const struct json_value *params, bool help,
-                             struct json_value *result)
+static bool anchor_status_read(const char *datadir, struct json_value *result)
 {
-    RPC_HELP(help, result,
-        "anchorstatus [datadir]\n"
-        "\nRead a mint-anchor datadir's progress.kv directly and return the\n"
-        "sovereign-anchor producer state. This is a no-cookie static command\n"
-        "for offline/transient anchor mint services.\n");
-
-    struct rpc_params p;
-    rpc_params_init(&p, params);
-    const char *ctx_datadir = agent_runtime_context_datadir();
-    const char *datadir = rpc_permit_str(&p, 0, "datadir",
-                                         ctx_datadir && ctx_datadir[0]
-                                             ? ctx_datadir
-                                             : ".");
-    if (rpc_params_invalid(&p)) {
-        rpc_params_error(&p, result);
+    if (!result)
         return false;
-    }
+
+    const char *effective_datadir = datadir && datadir[0] ? datadir : ".";
 
     char progress_path[1100];
     char snapshot_path[1100];
-    anchor_path_join(progress_path, sizeof(progress_path), datadir,
-                     "progress.kv");
-    anchor_path_join(snapshot_path, sizeof(snapshot_path), datadir,
-                     "utxo-anchor.snapshot");
-
-    int64_t progress_size = 0, progress_mtime = 0;
-    int64_t snapshot_size = 0, snapshot_mtime = 0;
-    bool progress_present = anchor_stat_file(progress_path, &progress_size,
-                                             &progress_mtime);
-    bool snapshot_present = anchor_stat_file(snapshot_path, &snapshot_size,
-                                             &snapshot_mtime);
-    int64_t captured_at_unix = platform_time_wall_unix();
-    int64_t progress_age_seconds = anchor_progress_age_seconds(
-        progress_present, captured_at_unix, progress_mtime);
-    bool progress_recent = anchor_progress_recent(progress_age_seconds);
+    bool progress_path_ok = agent_cure_path_join(
+        progress_path, sizeof(progress_path), effective_datadir, "progress.kv");
+    bool snapshot_path_ok = agent_cure_path_join(
+        snapshot_path, sizeof(snapshot_path), effective_datadir,
+        "utxo-anchor.snapshot");
 
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.anchor_mint_status.v1");
     json_push_kv_str(result, "api_version", "v1");
     json_push_kv_str(result, "build_commit", zcl_build_commit());
+    json_push_kv_bool(result, "read_only", true);
+    json_push_kv_bool(result, "process_identity_available", false);
+    json_push_kv_str(result, "process_identity_reason",
+                     "not_exposed_by_platform_facade");
+    json_push_kv_str(result, "datadir", effective_datadir);
+    if (!progress_path_ok || !snapshot_path_ok) {
+        json_push_kv_str(result, "status", "error");
+        json_push_kv_str(result, "summary", "path_too_long");
+        json_push_kv_str(result, "agent_next_action",
+                         "use_bounded_datadir_and_snapshot_paths");
+        return true;
+    }
+
+    int64_t progress_size = 0, progress_mtime = 0;
+    int64_t snapshot_size = 0, snapshot_mtime = 0;
+    bool progress_present = agent_cure_stat_file(
+        progress_path, &progress_size, &progress_mtime);
+    bool snapshot_present = agent_cure_stat_file(
+        snapshot_path, &snapshot_size, &snapshot_mtime);
+    int64_t captured_at_unix = platform_time_wall_unix();
+    int64_t progress_age_seconds = agent_cure_progress_age_seconds(
+        progress_present, captured_at_unix, progress_mtime);
     json_push_kv_int(result, "captured_at_unix", captured_at_unix);
-    json_push_kv_str(result, "datadir", datadir);
     json_push_kv_str(result, "progress_path", progress_path);
     json_push_kv_bool(result, "progress_present", progress_present);
     json_push_kv_int(result, "progress_size_bytes", progress_size);
     json_push_kv_int(result, "progress_mtime_unix", progress_mtime);
     json_push_kv_int(result, "progress_age_seconds",
                      progress_age_seconds);
-    json_push_kv_bool(result, "progress_recent", progress_recent);
     json_push_kv_str(result, "snapshot_path", snapshot_path);
     json_push_kv_bool(result, "snapshot_present", snapshot_present);
     json_push_kv_int(result, "snapshot_size_bytes", snapshot_size);
@@ -690,7 +639,20 @@ bool rpc_agent_anchor_status(const struct json_value *params, bool help,
     json_push_kv_int(result, "anchor_utxo_count",
                      cp ? (int64_t)cp->utxo_count : 0);
 
+    struct agent_cure_snapshot_view snapshot;
+    memset(&snapshot, 0, sizeof(snapshot));
+    if (snapshot_present)
+        agent_cure_snapshot_inspect(snapshot_path, cp, &snapshot);
+    agent_cure_push_snapshot_json(result, &snapshot);
+
     if (!progress_present) {
+        struct agent_cure_eta_view eta;
+        agent_cure_eta_build(NULL, anchor_height, &eta);
+        (void)agent_cure_push_activity_json(
+            result, progress_path, false, progress_mtime, captured_at_unix, &eta);
+        agent_cure_push_eta_json(result, &eta);
+        agent_cure_push_import_preflight_json(
+            result, NULL, effective_datadir, -1, -1, -1);
         json_push_kv_str(result, "status", "missing");
         json_push_kv_bool(result, "fold_recently_active", false);
         const char *summary = anchor_summary(false, snapshot_present, false,
@@ -705,6 +667,13 @@ bool rpc_agent_anchor_status(const struct json_value *params, bool help,
     sqlite3 *db = NULL;
     if (sqlite3_open_v2(progress_path, &db, SQLITE_OPEN_READONLY, NULL) !=
         SQLITE_OK) {
+        struct agent_cure_eta_view eta;
+        agent_cure_eta_build(NULL, anchor_height, &eta);
+        (void)agent_cure_push_activity_json(
+            result, progress_path, true, progress_mtime, captured_at_unix, &eta);
+        agent_cure_push_eta_json(result, &eta);
+        agent_cure_push_import_preflight_json(
+            result, NULL, effective_datadir, -1, -1, -1);
         json_push_kv_str(result, "status", "error");
         json_push_kv_bool(result, "fold_recently_active", false);
         json_push_kv_str(result, "summary", "progress_store_open_failed");
@@ -799,6 +768,10 @@ bool rpc_agent_anchor_status(const struct json_value *params, bool help,
         ? anchor_height - durable_frontier : -1;
     if (anchor_gap < 0 && durable_frontier >= anchor_height)
         anchor_gap = 0;
+    struct agent_cure_eta_view eta;
+    agent_cure_eta_build(db, anchor_height, &eta);
+    bool progress_recent = agent_cure_push_activity_json(
+        result, progress_path, true, progress_mtime, captured_at_unix, &eta);
     bool fold_recently_active = anchor_fold_recently_active(
         progress_present, progress_recent, marker_matches, anchor_height,
         durable_frontier, &stages[6], &stages[7]);
@@ -807,6 +780,9 @@ bool rpc_agent_anchor_status(const struct json_value *params, bool help,
     (void)anchor_utxo_probe_build(db, &stages[5], &stages[6],
                                   durable_frontier, fold_recently_active,
                                   &utxo_probe);
+    agent_cure_push_import_preflight_json(
+        result, db, effective_datadir, stages[0].cursor, stages[2].cursor,
+        stages[3].cursor);
 
     sqlite3_close(db);
 
@@ -843,6 +819,7 @@ bool rpc_agent_anchor_status(const struct json_value *params, bool help,
     json_push_kv_bool(result, "stale_rows_above_anchor",
                       stale_above_anchor > 0);
     anchor_push_utxo_probe_json(result, &utxo_probe);
+    agent_cure_push_eta_json(result, &eta);
     json_push_kv_str(result, "utxo_apply_probe_next_action",
                      utxo_probe.next_action);
     json_push_kv_str(result, "semantics",
@@ -858,4 +835,27 @@ bool rpc_agent_anchor_status(const struct json_value *params, bool help,
     json_push_kv_str(result, "agent_next_action",
                      anchor_next_action(summary));
     return true;
+}
+
+bool rpc_agent_anchor_status(const struct json_value *params, bool help,
+                             struct json_value *result)
+{
+    RPC_HELP(help, result,
+        "anchorstatus [datadir]\n"
+        "\nRead a mint-anchor datadir's progress.kv directly and return the\n"
+        "sovereign-anchor producer state. This is a no-cookie static command\n"
+        "for offline/transient anchor mint services.\n");
+
+    struct rpc_params p;
+    rpc_params_init(&p, params);
+    const char *ctx_datadir = agent_runtime_context_datadir();
+    const char *datadir = rpc_permit_str(&p, 0, "datadir",
+                                         ctx_datadir && ctx_datadir[0]
+                                             ? ctx_datadir
+                                             : ".");
+    if (rpc_params_invalid(&p)) {
+        rpc_params_error(&p, result);
+        return false;
+    }
+    return anchor_status_read(datadir, result);
 }

@@ -6,7 +6,8 @@
  *
  * FIX 1 — loader_owns_seed (config/src/boot_services.c app_init_services).
  *   When -load-snapshot-at-own-height is set, the loader at boot.c has already
- *   re-seeded coins_kv from the self-verified snapshot at its OWN height and
+ *   re-seeded coins_kv from the body-digest-verified assisted snapshot at its
+ *   OWN height and
  *   raised the tip_finalize trusted base there; it is the authoritative seed
  *   for this boot. Both fallback seeders
  *   (boot_refold_from_anchor_arm_if_torn AND
@@ -31,7 +32,7 @@
  *   contaminated coins. The match decision is the PURE predicate
  *   boot_snapshot_anchor_hash_matches(index_hash, snapshot_hash): true iff the
  *   two 32-byte hashes are byte-identical. This test pins:
- *     (1) identical 32 bytes        -> true  (consensus-bound; seed proceeds)
+ *     (1) identical 32 bytes        -> true  (chain location matches)
  *     (2) one differing byte        -> false (forged/wrong chain; FATAL fires)
  *     (3) all-zero vs real          -> false (the empty-anchor forgery)
  *     (4) NULL on either side       -> false (refuse, no deref)
@@ -90,8 +91,8 @@ int test_loader_owns_seed_gate(void)
         for (int i = 0; i < 32; i++) { a[i] = (unsigned char)(0x10 + i); }
         memcpy(b, a, 32);
 
-        /* (1) identical -> consensus-bound, seed proceeds. */
-        LOSG_CHECK("fix3: identical hashes -> true (consensus-bound)",
+        /* (1) identical -> chain location matches; payload remains assisted. */
+        LOSG_CHECK("fix3: identical hashes -> true (chain location matches)",
                    boot_snapshot_anchor_hash_matches(a, b) == true);
 
         /* (2) one byte differs -> forged/wrong chain, FATAL must fire. The

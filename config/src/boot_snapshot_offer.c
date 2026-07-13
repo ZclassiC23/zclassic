@@ -29,9 +29,15 @@
 #include "chain/mmb.h"
 #include "controllers/blockchain_controller.h"
 #include "controllers/file_controller.h"
+#include "jobs/reducer_frontier.h"
 #include "net/file_service.h"
 #include "net/fast_sync.h"
+#include "storage/anchor_kv.h"
+#include "storage/coins_kv.h"
+#include "storage/nullifier_kv.h"
+#include "storage/progress_store.h"
 #include "supervisors/domains.h"
+#include "util/ar_step_readonly.h"
 #include "util/supervisor.h"
 #include <stdatomic.h>
 #include <stdint.h>
@@ -106,6 +112,197 @@ static bool env_flag_enabled(const char *name)
            strcmp(value, "on") == 0;
 }
 
+bool boot_snapshot_offer_trust_policy(
+    bool hstar_known, bool transparent_self_derived,
+    bool sprout_cursor_found, int64_t sprout_cursor,
+    bool sapling_cursor_found, int64_t sapling_cursor,
+    bool nullifier_cursor_found, int64_t nullifier_cursor)
+{
+    return hstar_known && transparent_self_derived && sprout_cursor_found &&
+           sprout_cursor == 0 && sapling_cursor_found &&
+           sapling_cursor == 0 && nullifier_cursor_found &&
+           nullifier_cursor == 0;
+}
+
+#ifdef ZCL_TESTING
+static _Atomic int g_snapshot_offer_trust_override = -1;
+static _Atomic int g_snapshot_offer_publication_override = -1;
+
+void boot_snapshot_offer_test_set_trust_override(int value)
+{
+    int normalized = value < 0 ? -1 : value != 0 ? 1 : 0;
+    atomic_store(&g_snapshot_offer_trust_override, normalized);
+    atomic_store(&g_snapshot_offer_publication_override, normalized);
+}
+
+void boot_snapshot_offer_test_set_publication_override(int value)
+{
+    atomic_store(&g_snapshot_offer_publication_override,
+                 value < 0 ? -1 : value != 0 ? 1 : 0);
+}
+#endif
+
+/* Phase-0 containment. The serving codecs still read node.db.utxos, while the
+ * live sovereignty proof is over coins_kv. Until export streams from coins_kv
+ * and binds its root/count/supply plus the exact active H* hash, no payload is
+ * eligible even when the node's consensus state itself is sovereign. */
+static bool snapshot_offer_payload_authority_is_bound(char *reason,
+                                                       size_t reason_size)
+{
+#ifdef ZCL_TESTING
+    int override = atomic_load(&g_snapshot_offer_publication_override);
+    if (override >= 0) {
+        if (!override && reason && reason_size)
+            (void)snprintf(reason, reason_size,
+                           "test_override_payload_unbound");
+        return override != 0;
+    }
+#endif
+    if (reason && reason_size)
+        (void)snprintf(reason, reason_size,
+                       "snapshot_payload_authority_binding_incomplete");
+    return false;
+}
+
+static bool snapshot_offer_state_is_sovereign_at(int32_t *out_hstar,
+                                                  char *reason,
+                                                  size_t reason_size)
+{
+#ifdef ZCL_TESTING
+    int override = atomic_load(&g_snapshot_offer_trust_override);
+    if (override >= 0) {
+        if (!override) {
+            if (out_hstar)
+                *out_hstar = -1;
+            if (reason && reason_size)
+                (void)snprintf(reason, reason_size,
+                               "test_override_not_sovereign");
+            return false;
+        }
+        if (!snapshot_offer_payload_authority_is_bound(reason, reason_size)) {
+            if (out_hstar)
+                *out_hstar = -1;
+            return false;
+        }
+        if (out_hstar)
+            *out_hstar = INT32_MAX;
+        return true;
+    }
+#endif
+    sqlite3 *db = progress_store_db();
+    if (!db) {
+        if (reason && reason_size)
+            (void)snprintf(reason, reason_size, "progress_store_unavailable");
+        return false;
+    }
+
+    int32_t hstar = -1;
+    int32_t served_floor = -1;
+    int64_t sprout_cursor = -1;
+    int64_t sapling_cursor = -1;
+    int64_t nullifier_cursor = -1;
+    bool sprout_found = false;
+    bool sapling_found = false;
+    bool nullifier_found = false;
+    char transparent_reason[96] = {0};
+
+    progress_store_tx_lock();
+    bool hstar_known = reducer_frontier_compute_hstar(
+        db, &hstar, &served_floor);
+    bool transparent_self_derived = hstar_known &&
+        coins_kv_tip_is_self_derived(db, hstar, transparent_reason,
+                                     sizeof(transparent_reason));
+    bool cursors_read =
+        anchor_kv_activation_cursor(db, ANCHOR_POOL_SPROUT,
+                                    &sprout_cursor, &sprout_found) &&
+        anchor_kv_activation_cursor(db, ANCHOR_POOL_SAPLING,
+                                    &sapling_cursor, &sapling_found) &&
+        nullifier_kv_activation_cursor(db, &nullifier_cursor,
+                                       &nullifier_found);
+    progress_store_tx_unlock();
+
+    bool allowed = cursors_read && boot_snapshot_offer_trust_policy(
+        hstar_known, transparent_self_derived,
+        sprout_found, sprout_cursor, sapling_found, sapling_cursor,
+        nullifier_found, nullifier_cursor);
+    if (allowed && !snapshot_offer_payload_authority_is_bound(reason,
+                                                               reason_size))
+        allowed = false;
+    else if (!allowed && reason && reason_size) {
+        if (!hstar_known)
+            (void)snprintf(reason, reason_size, "hstar_unavailable");
+        else if (!transparent_self_derived)
+            (void)snprintf(reason, reason_size, "transparent_%s",
+                           transparent_reason[0] ? transparent_reason
+                                                 : "not_self_derived");
+        else if (!cursors_read || !sprout_found || !sapling_found ||
+                 !nullifier_found)
+            (void)snprintf(reason, reason_size,
+                           "shielded_history_provenance_unknown");
+        else
+            (void)snprintf(reason, reason_size,
+                           "shielded_history_incomplete");
+    }
+    (void)served_floor;
+    if (out_hstar)
+        *out_hstar = allowed ? hstar : -1;
+    return allowed;
+}
+
+bool boot_snapshot_offer_state_is_sovereign(char *reason,
+                                             size_t reason_size)
+{
+    return snapshot_offer_state_is_sovereign_at(NULL, reason, reason_size);
+}
+
+bool boot_snapshot_offer_artifact_is_eligible(const char *datadir,
+                                               char *reason,
+                                               size_t reason_size)
+{
+    int32_t hstar = -1;
+    if (!snapshot_offer_state_is_sovereign_at(&hstar, reason, reason_size))
+        return false;
+    struct zcl_result result = consensus_snapshot_export_artifact_check(
+        datadir, hstar);
+    if (!result.ok && reason && reason_size)
+        (void)snprintf(reason, reason_size, "%s", result.message);
+    return result.ok;
+}
+
+static bool snapshot_offer_read_block_hash(const char *datadir,
+                                           int32_t height,
+                                           uint8_t out_hash[32])
+{
+    char path[576];
+    sqlite3 *db = NULL;
+    sqlite3_stmt *stmt = NULL;
+    bool ok = false;
+    if (!datadir || height < 0 || !out_hash)
+        return false;
+    int n = snprintf(path, sizeof(path), "%s/node.db", datadir);
+    if (n < 0 || (size_t)n >= sizeof(path))
+        return false;
+    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK ||
+        !db)
+        goto done;
+    if (sqlite3_prepare_v2(db,
+            "SELECT hash FROM blocks WHERE height=? AND status>=3 AND "
+            "length(hash)=32 LIMIT 1", -1, &stmt, NULL) != SQLITE_OK || !stmt)
+        goto done;
+    if (sqlite3_bind_int(stmt, 1, height) != SQLITE_OK ||
+        AR_STEP_ROW_READONLY(stmt) != SQLITE_ROW ||
+        sqlite3_column_bytes(stmt, 0) != 32)
+        goto done;
+    memcpy(out_hash, sqlite3_column_blob(stmt, 0), 32);
+    ok = true;
+done:
+    if (stmt)
+        sqlite3_finalize(stmt);
+    if (db)
+        sqlite3_close(db);
+    return ok;
+}
+
 static void *build_snapshot_offer_thread(void *arg)
 {
     struct boot_svc_ctx *svc = arg;
@@ -133,11 +330,20 @@ static void *build_snapshot_offer_thread(void *arg)
         goto done;
     }
 
-    /* Sticky/global-sync (Lane F #9c): when enabled, ANY at-tip zclassic23
-     * node builds and offers a snapshot, not only file_service-profile nodes.
-     * The more nodes that contribute a shareable consensus_snapshot.db, the
-     * more reliably a recovering/behind node finds a supplier from the P2P
-     * network alone -- no central download host, no co-located oracle. The
+    char trust_reason[128] = {0};
+    int32_t sovereign_height = -1;
+    if (!snapshot_offer_state_is_sovereign_at(&sovereign_height, trust_reason,
+                                               sizeof(trust_reason))) {
+        printf("Fast sync snapshot publish withheld: node trust state is "
+               "not sovereign (%s)\n",
+               trust_reason[0] ? trust_reason : "unknown");
+        goto done;
+    }
+
+    /* Sticky/global-sync (Lane F #9c): when enabled, any SOVEREIGN at-tip
+     * zclassic23 node may build and offer a snapshot, not only file-service
+     * profile nodes. Assisted nodes were rejected above before export or
+     * manifest construction. The
      * offer is still only PUBLISHED once a disk-backed serving buffer is ready
      * (see snapshot_serving_ready below), so this only widens who BUILDS,
      * never who falsely advertises.
@@ -153,8 +359,15 @@ static void *build_snapshot_offer_thread(void *arg)
     /* Build on any profile unless explicitly opted out. */
     if (!export_opt_out) {
         printf("Exporting consensus snapshot (no wallet data)...\n");
-        struct zcl_result export_result =
-            consensus_snapshot_export_service_run(datadir);
+        uint8_t sovereign_hash[32] = {0};
+        struct zcl_result export_result = ZCL_ERR(
+            -1, "sovereign block hash unavailable at h=%d",
+            sovereign_height);
+        if (snapshot_offer_read_block_hash(datadir, sovereign_height,
+                                           sovereign_hash)) {
+            export_result = consensus_snapshot_export_service_run_bound(
+                datadir, sovereign_height, sovereign_hash);
+        }
         if (export_result.ok) {
             file_controller_refresh_manifest();
             fs_server_refresh_manifest();
@@ -180,7 +393,9 @@ static void *build_snapshot_offer_thread(void *arg)
      * height==0 fails the `tip_h > BLOCKS_PER_PIECE` guard and we skip it. */
     struct snapshot_offer offer = {0};
     if (fast_sync_build_offer(datadir, &offer)) {
-        /* Embed MMR root — cryptographically binds UTXO snapshot to PoW chain */
+        /* Embed the peer-advertised header MMR root.  It proves membership in
+         * that advertised header history, but ZClassic headers do not commit
+         * the UTXO payload; never call this a consensus state binding. */
         uint64_t mmr_leaves = 0;
         if (!rpc_blockchain_mmr_snapshot(offer.mmr_root, &mmr_leaves, NULL) ||
             mmr_leaves == 0) {

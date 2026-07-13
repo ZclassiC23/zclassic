@@ -50,6 +50,7 @@
 #include "net/fast_sync.h"
 #include "sync/sync_state.h"
 #include "net/net.h"
+#include "util/blocker.h"
 #include "util/log_macros.h"
 #include "platform/time_compat.h"
 
@@ -227,37 +228,43 @@ void snapsync_init(struct snapshot_sync_service *svc, struct node_db *ndb)
 void snapsync_reset(struct snapshot_sync_service *svc)
 {
     bool rollback_ok = true;
+    bool normal_mode_ok = true;
+    bool discard_ok = true;
     bool has_db = false;
+    bool has_db_owner = false;
 
     if (!svc) {
         return;
     }
     snapsync_service_lock_internal();
     bool turbo_active = svc->turbo_active;
+    has_db_owner = svc->ndb != NULL;
     has_db = svc->ndb && svc->ndb->open;
     snapsync_service_unlock_internal();
+    if (has_db_owner && !has_db)
+        rollback_ok = false;
     if (has_db)
         rollback_ok = snapsync_run_write_internal(svc, snapsync_rollback_receive_write_internal, NULL);
-    if (has_db && !rollback_ok) {
-        struct node_db_status status = {0};
-        if (svc->ndb)
-            node_db_get_status(svc->ndb, &status);
-        if (status.tx_open) {
-            snapsync_service_lock_internal();
-            snapsync_set_state(SNAPSYNC_FAILED, "receive rollback failed");
-            snapsync_service_unlock_internal();
-        }
-    }
     if (turbo_active) {
-        bool ok = snapsync_exit_turbo_mode_internal(svc).ok;
-        if (!ok) {
-            snapsync_service_lock_internal();
-            snapsync_set_state(SNAPSYNC_FAILED, "normal mode reset failed");
-            snapsync_service_unlock_internal();
-        }
+        normal_mode_ok = snapsync_exit_turbo_mode_internal(svc).ok;
     }
     if (has_db)
-        snapsync_run_write_internal(svc, snapsync_discard_staging_write_internal, "reset");
+        discard_ok = snapsync_run_write_internal(
+            svc, snapsync_discard_staging_write_internal, "reset");
+
+    if (!rollback_ok || !normal_mode_ok || !discard_ok) {
+        snapsync_service_lock_internal();
+        svc->state = SNAPSYNC_FAILED;
+        (void)snapsync_set_state(SNAPSYNC_FAILED,
+                                 "reset incomplete; containment retained");
+        snapsync_service_unlock_internal();
+        LOG_WARN("snapshot_sync",
+                 "reset incomplete rollback_ok=%d normal_mode_ok=%d "
+                 "discard_ok=%d; state=FAILED blocker_retained=%s",
+                 rollback_ok, normal_mode_ok, discard_ok,
+                 SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID);
+        return;
+    }
 
     snapsync_service_lock_internal();
     svc->turbo_active = false;
@@ -285,6 +292,11 @@ void snapsync_reset(struct snapshot_sync_service *svc)
     svc->state = SNAPSYNC_IDLE;
     snapsync_set_state(SNAPSYNC_IDLE, "reset");
     snapsync_service_unlock_internal();
+
+    /* The contained-activation blocker is owned by the failed peer-snapshot
+     * attempt. Clear it only after rollback, normal-mode restoration, and
+     * staging discard have all succeeded and the service is back in IDLE. */
+    blocker_clear(SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID);
 }
 
 bool snapsync_is_active(void)
@@ -544,6 +556,16 @@ bool snapsync_check_failed_reset(void)
                 (long long)st.staged_row_count);
     snapsync_blacklist_peer(svc, st.serving_peer_id);
     snapsync_reset(svc);
+    snapsync_service_lock_internal();
+    bool reset_idle = svc->state == SNAPSYNC_IDLE;
+    snapsync_service_unlock_internal();
+    if (!reset_idle) {
+        event_emitf(EV_SNAPSYNC_VERIFIED, st.serving_peer_id,
+                    "snapshot=FAILED reason=reset_incomplete "
+                    "fallback_to_headers=false blocker=%s",
+                    SNAPSYNC_ACTIVATION_CONTAINED_BLOCKER_ID);
+        return true;
+    }
     if (sync_get_state() == SYNC_SNAPSHOT_RECEIVE)
         sync_set_state(SYNC_HEADERS_DOWNLOAD, "snapshot failed reset");
     return true;

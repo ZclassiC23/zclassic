@@ -10,6 +10,7 @@
 
 #include "controllers/api_controller.h"
 #include "models/database.h"
+#include "util/blocker.h"
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
 
@@ -17,6 +18,19 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+
+/* Public serving is a chain-authority claim, not a statement that every
+ * optional worker or peer is currently perfect.  Permanent consensus/store
+ * authority failures and resource failures hard-gate it; transient and
+ * dependency blockers remain visible yellow warnings while the last locally
+ * validated frontier stays servable. */
+static inline bool api_blocker_hard_gates_public_serving(
+    const struct blocker_snapshot *blocker)
+{
+    return blocker &&
+        (blocker->class == BLOCKER_PERMANENT ||
+         blocker->class == BLOCKER_RESOURCE);
+}
 
 /* ── Shared context (defined in api_controller.c) ── */
 

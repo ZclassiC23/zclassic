@@ -185,12 +185,112 @@ static int test_core_classification(void)
         ASSERT(plan.consensus_risk);
 
         /* A non-core consensus-risk file (lib/validation/...) is NOT sealed:
-         * today's behavior is unchanged — heavy proof, still auto-publishes. */
+         * it still selects the heavy proof, but watcher classification never
+         * grants publication authority. */
         const char *val[] = { "lib/validation/src/sighash.c" };
         ASSERT(zcl_devloop_plan_files(val, 1, &plan));
         ASSERT(!plan.sealed_core);
         ASSERT(plan.consensus_risk);
         ASSERT(plan.action == ZCL_DEVLOOP_RELOAD);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_watcher_publication_containment(void)
+{
+    int failures = 0;
+    TEST("dev platform: watchers verify by default and apply is contained") {
+        ASSERT(zcl_devloop_default_watch_publish_mode() ==
+               ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY);
+        ASSERT(!zcl_devloop_publish_mode_applies(
+            ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY));
+        ASSERT(zcl_devloop_publish_mode_applies(ZCL_DEVLOOP_PUBLISH_APPLY));
+        ASSERT(strcmp(zcl_devloop_publish_mode_name(
+                          ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
+                      "verify") == 0);
+        ASSERT(strcmp(zcl_devloop_publish_mode_name(ZCL_DEVLOOP_PUBLISH_APPLY),
+                      "auto") == 0);
+        ASSERT(zcl_devloop_publish_mode_name(
+                   (enum zcl_devloop_publish_mode)99) == NULL);
+
+        char lock_path[ZCL_DEVLOOP_PATH_MAX];
+        ASSERT(zcl_devloop_watch_lock_path("/tmp/zcl-wt-main", lock_path,
+                                           sizeof(lock_path)));
+        ASSERT(strcmp(lock_path,
+                      "/tmp/zcl-wt-main/.cache/zcl-dev-watch.lock") == 0);
+        char other_lock[ZCL_DEVLOOP_PATH_MAX];
+        ASSERT(zcl_devloop_watch_lock_path("/tmp/zcl-wt-2", other_lock,
+                                           sizeof(other_lock)));
+        ASSERT(strcmp(lock_path, other_lock) != 0);
+        ASSERT(!zcl_devloop_watch_lock_path(NULL, lock_path,
+                                            sizeof(lock_path)));
+
+        /* The containment decision is independent of classification. These
+         * cover hot-swap, ordinary reload, consensus reload, and sealed-core
+         * reload without granting any of them watcher publication authority. */
+        const char *hot[] = { "tools/mcp/controllers/app_controller.c" };
+        const char *reload[] = { "app/services/src/node_health_service.c" };
+        const char *consensus[] = { "lib/validation/src/sighash.c" };
+        const char *sealed[] = { "core/consensus/src/check_block.c" };
+        struct zcl_devloop_plan plan;
+        ASSERT(zcl_devloop_plan_files(hot, 1, &plan));
+        ASSERT(plan.action == ZCL_DEVLOOP_HOTSWAP);
+        ASSERT(!zcl_devloop_publish_mode_applies(
+            zcl_devloop_default_watch_publish_mode()));
+        ASSERT(zcl_devloop_plan_files(reload, 1, &plan));
+        ASSERT(plan.action == ZCL_DEVLOOP_RELOAD && !plan.consensus_risk);
+        ASSERT(!zcl_devloop_publish_mode_applies(
+            zcl_devloop_default_watch_publish_mode()));
+        ASSERT(zcl_devloop_plan_files(consensus, 1, &plan));
+        ASSERT(plan.action == ZCL_DEVLOOP_RELOAD && plan.consensus_risk &&
+               !plan.sealed_core);
+        ASSERT(!zcl_devloop_publish_mode_applies(
+            zcl_devloop_default_watch_publish_mode()));
+        ASSERT(zcl_devloop_plan_files(sealed, 1, &plan));
+        ASSERT(plan.action == ZCL_DEVLOOP_RELOAD && plan.consensus_risk &&
+               plan.sealed_core);
+        ASSERT(!zcl_devloop_publish_mode_applies(
+            zcl_devloop_default_watch_publish_mode()));
+
+        const char *dirty[] = {
+            "app/services/src/node_health_service.c",
+            "core/consensus/src/check_block.c",
+        };
+        char why[256];
+        const char *omit_sealed[] = {
+            "app/services/src/node_health_service.c",
+        };
+        ASSERT(!zcl_devloop_changed_set_exact(omit_sealed, 1, dirty, 2,
+                                              why, sizeof(why)));
+        ASSERT(strstr(why, "omitted_dirty_file=core/consensus/") != NULL);
+        const char *omit_nonsealed[] = {
+            "core/consensus/src/check_block.c",
+        };
+        ASSERT(!zcl_devloop_changed_set_exact(omit_nonsealed, 1, dirty, 2,
+                                              why, sizeof(why)));
+        ASSERT(strstr(why, "omitted_dirty_file=app/services/") != NULL);
+        ASSERT(zcl_devloop_changed_set_exact(dirty, 2, dirty, 2,
+                                             why, sizeof(why)));
+        const char *duplicate[] = {
+            "app/services/src/node_health_service.c",
+            "app/services/src/node_health_service.c",
+        };
+        ASSERT(!zcl_devloop_changed_set_exact(duplicate, 2, dirty, 2,
+                                              why, sizeof(why)));
+        ASSERT(strstr(why, "requested_path_duplicate=") != NULL);
+
+        /* Event paths only wake the loop.  Classification is derived from
+         * the complete Git-visible source set, so a docs event cannot hide a
+         * simultaneous sealed consensus edit in verify-only mode. */
+        const char *docs_event[] = { "docs/HANDOFF.md" };
+        const char *complete_dirty[] = {
+            "docs/HANDOFF.md", "core/consensus/src/check_block.c",
+        };
+        ASSERT(zcl_devloop_plan_discovered_changes(
+            docs_event, 1, complete_dirty, 2, &plan));
+        ASSERT(plan.action == ZCL_DEVLOOP_RELOAD);
+        ASSERT(plan.consensus_risk && plan.sealed_core && !plan.docs_only);
         PASS();
     } _test_next:;
     return failures;
@@ -239,7 +339,7 @@ static int test_core_refusal_envelope(void)
 static int test_core_refusal_cycle(void)
 {
     int failures = 0;
-    TEST("dev platform: a core cycle refuses (exit 3), no token = no publish") {
+    TEST("dev platform: every apply cycle is contained before Core authority") {
         char dir[512];
         test_make_tmpdir(dir, sizeof(dir), "core_refusal", "notoken");
         char *saved_home = getenv("HOME");
@@ -247,7 +347,7 @@ static int test_core_refusal_cycle(void)
         setenv("HOME", dir, 1);
 
         const char *core[] = { "core/consensus/src/check_block.c" };
-        /* repo_root = dir, which has no .core-unseal-token -> refusal. */
+        /* Publication containment precedes the Core-unseal boundary. */
         ASSERT(!zcl_devloop_unseal_token_present(dir));
         int rc = zcl_devloop_run_cycle(dir, core, 1);
         ASSERT(rc == 3);  /* blocked-by-precondition, before any publish */
@@ -258,7 +358,9 @@ static int test_core_refusal_cycle(void)
         ASSERT(vn > 0);
         struct json_value v = {0};
         ASSERT(json_read(&v, verdict, vn));
-        ASSERT(strcmp(json_get_str(json_get(&v, "status")), "refused") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&v, "status")), "blocked") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&v, "phase")),
+                      "publication_contained") == 0);
         json_free(&v);
 
         if (saved_home) {
@@ -276,7 +378,7 @@ static int test_core_refusal_cycle(void)
 static int test_core_refusal_token(void)
 {
     int failures = 0;
-    TEST("dev platform: a valid unseal token lets a core cycle proceed") {
+    TEST("dev platform: an unseal token is not publication authority") {
         char dir[512];
         test_make_tmpdir(dir, sizeof(dir), "core_refusal", "token");
         char *saved_home = getenv("HOME");
@@ -293,11 +395,17 @@ static int test_core_refusal_token(void)
 
         const char *core[] = { "core/consensus/src/check_block.c" };
         int rc = zcl_devloop_run_cycle(dir, core, 1);
-        /* Token present -> NOT refused. It proceeds to the heavy-proof reload
-         * path; in this (non-dev) test binary that path is compiled out and
-         * returns the dev_build_required rejection (exit 1). The load-bearing
-         * assertion is simply "did NOT refuse" (rc != 3). */
-        ASSERT(rc != 3);
+        ASSERT(rc == 3);
+
+        char verdict[4096];
+        size_t vn = read_native_cycle(dir, verdict, sizeof(verdict));
+        ASSERT(vn > 0);
+        struct json_value v = {0};
+        ASSERT(json_read(&v, verdict, vn));
+        ASSERT(strcmp(json_get_str(json_get(&v, "status")), "blocked") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&v, "phase")),
+                      "publication_contained") == 0);
+        json_free(&v);
 
         if (saved_home) {
             setenv("HOME", saved_home, 1);
@@ -367,13 +475,12 @@ static int test_social_sim(void)
  * pure glue both call sites share (declared in devloop.h, defined in
  * devloop_cycle.c, compiled under `ZCL_DEV_BUILD || ZCL_TESTING`): the
  * ZCL_DEV_NATIVE_ACTIVATION switch itself, the dev-lane request builder, and
- * the result mapper. Proving the switch defaults to false IS the
- * "disabled-by-default path still uses the shell argv" case for a binary
- * that never links the engine's process-exec half. */
+ * the result mapper. The switch selects retained machinery only; public
+ * publication entrypoints remain contained for every value. */
 static int test_native_activation_switch(void)
 {
     int failures = 0;
-    TEST("dev platform: native activation defaults OFF (shell path stays live)") {
+    TEST("dev platform: retained native engine selector defaults OFF") {
         char *saved = getenv("ZCL_DEV_NATIVE_ACTIVATION");
         saved = saved ? strdup(saved) : NULL;
 
@@ -537,6 +644,7 @@ static int test_watch_relevance(void)
          * lib/test/fixtures/ (no leading underscore) — must still fire. */
         static const char *const real[] = {
             "app/jobs/src/stage_repair_reducer_frontier_coin.c",
+            "core/consensus/src/check_block.c",
             "tools/dev/devloop_watch.c",
             "lib/test/fixtures/raw_sqlite_step_fixture.c",
             "docs/HANDOFF.md",
@@ -630,6 +738,7 @@ int test_dev_platform(void)
     failures += test_distill_first_error();
     failures += test_menu_and_search();
     failures += test_change_classification();
+    failures += test_watcher_publication_containment();
     failures += test_watch_relevance();
     failures += test_core_classification();
     failures += test_core_refusal_envelope();

@@ -48,20 +48,27 @@ What happens:
    anchor height/hash, serving peer tip, chainwork, UTXO SHA3, byte length,
    UTXO count, chunk size/count, and per-chunk hashes).
 3. Download chunks in parallel, verify each chunk hash before import.
-4. Verify FlyClient MMR/MMB proof binding the UTXOs to the PoW chain and
-   reject missing or non-competitive chainwork.
-5. Verify the imported UTXO set SHA3 exactly matches the manifest.
-6. Activate only an anchor at least 10 blocks behind the serving peer's tip,
-   then delta-sync the finality window to tip by normal block validation.
+4. Verify the FlyClient MMR/MMB proof for the advertised header history and
+   reject missing or non-competitive chainwork. This does **not** bind the
+   peer's UTXO payload to ZClassic consensus; headers commit no UTXO root.
+5. Verify the imported UTXO bytes exactly match the peer manifest's SHA3. This
+   is integrity under assisted trust, not a consensus proof.
+6. Keep the verified payload in staging. Runtime activation is Phase-0
+   contained until one unified installer can atomically bind transparent,
+   Sapling, Sprout, nullifier, cursor, log, and provenance state; only then may
+   a future assisted mode delta-sync the finality window.
 
-**Use this for any fresh deployment where at least one other zclassic23 peer
-exists.** Once the network is established it is the default, only user-facing path.
+The current peer path is a verification/staging path, not a fresh-deployment
+bootstrap authority. A contained activation ends in the typed
+`snapshot_sync.activation_unified_installer_required` blocker and cannot enter
+`SNAPSYNC_COMPLETE`.
 
 ### zclassic-only serving profile
 
-`-profile=zclassic-only` is for power nodes whose job is to sync other nodes
-quickly. It keeps consensus state, P2P, RPC, snapshot offer construction,
-FlyClient/MMB proof serving, and normal block relay; it does not start explorer
+`-profile=zclassic-only` is intended for power nodes whose job is to sync other
+nodes quickly. Today it keeps consensus state, P2P, RPC, FlyClient/MMB proof
+serving, and normal block relay; snapshot offer construction and payload serving
+remain contained until the `coins_kv` payload-binding gate exists. It does not start explorer
 cache prewarming, store/market services, onion hosting (unless `-tor` is set), or
 file-service snapshot export and chunk/block-piece manifests.
 
@@ -84,7 +91,9 @@ height (h=3,100,000, the latest mainnet checkpoint) are accepted; full validatio
 runs above that. Background
 services then re-verify every hash, signature, and proof end to end.
 
-Use when no snapshot source is available, or to validate from scratch.
+Use when no snapshot source is available, or as the path toward local
+sovereignty. The current end-to-end genesis-to-tip timing/validation claim still
+requires exact-candidate proof; see `docs/HANDOFF.md`.
 
 ---
 
@@ -108,7 +117,8 @@ This is the canonical home for the recipe — **two steps, in this order**:
 build/bin/zclassic23 --importblockindex $HOME/.zclassic
 
 # 2. Then a NORMAL boot — legacy import is on by default; it auto-reads/links
-#    ~/.zclassic and reaches tip. Opt out with -nolegacyimport.
+#    ~/.zclassic and follows the legacy import path. Opt out with
+#    -nolegacyimport. Current shielded-history completeness still gates serving.
 build/bin/zclassic23
 ```
 
@@ -121,23 +131,24 @@ flags, so passing them silently no-ops.
 over P2P, and the first boot can latch a transient freeze that needs a restart).
 The robust path for a known-good datadir is to copy one onto the target lane.
 
-### Consolidated daily-driver loader (the current bootstrap)
+### Consolidated daily-driver loader (assisted legacy bootstrap)
 
-The deployed path is `-load-snapshot-at-own-height`: it loads a COMPLETE,
-SHA3-verified UTXO snapshot taken at a height ABOVE the current coins-best tip
-and folds FORWARD from there to the network tip (the live snapshot is at
-h=3,156,809, count 1,344,918). The snapshot's `anchor_block_hash` must
+The historical deployed path is `-load-snapshot-at-own-height`: it loads a
+digest-verified borrowed UTXO snapshot above coins-best and folds forward. It
+previously reached tip from the h=3,156,809 artifact (count 1,344,918), but
+canonical is now wedged at H*=3,176,325 on incomplete shielded history. The
+snapshot's `anchor_block_hash` must
 byte-equal this node's in-binary PoW header at the seed height or boot FATALs —
-a forged or missing anchor still fails closed (`config/src/boot_refold_staged.c`,
+a wrong-chain or missing anchor still fails closed (`config/src/boot_refold_staged.c`,
 the load-snapshot-at-own-height path; the anchor-hash cross-check is at ~line
 585). When the seed height is above the coins-best active-chain window, the
 loader extends that window forward to the PoW-proven header tip
 (`active_chain_extend_window`, line 568) instead of FATAL-ing "Run
---importblockindex" — the fix in commit `ab512d577` that let the node reach tip
-by seeding ABOVE the older torn-seed wedge. This is a **borrowed-but-consensus-
-bound stopgap** — the snapshot is minted from the zclassicd oracle, so it trusts
-the seed set instead of folding it from our own checkpoint (the UTXO-set content
-is not yet re-derived from genesis). The **sovereign cure**
+--importblockindex" — the fix in commit `ab512d577` that repaired the older
+transparent-loader wedge. The artifact is **release-assisted borrowed state**:
+its payload digest authenticates bytes and the header match verifies chain
+location, but neither proves the UTXO/Sapling/Sprout/nullifier contents because
+ZClassic headers commit no such roots. The **sovereign cure**
 (`-refold-from-anchor`: fold forward from the verified checkpoint, then make it
 the default and delete the borrowed-seed machinery) is in flight — design
 `work/never-stuck-plan.md`, posture `HANDOFF.md`.
@@ -164,16 +175,18 @@ catchup, fast-sync offer construction, FlyClient proof fallback, and the
 zclassicd drift oracle share that transport instead of parsing JSON-RPC in
 their own service code.
 
-This boundary keeps legacy compatibility behind a small adapter. Snapshot
-acceptance still requires the native v2 manifest contract, FlyClient MMB/MMR
-proofs, PoW/chainwork checks, finality policy, and UTXO SHA3 verification.
+This boundary keeps legacy compatibility behind a small adapter. Assisted
+snapshot acceptance still checks the manifest, advertised header proof,
+PoW/chainwork, finality policy, and payload SHA3. Those checks do not promote
+peer state to sovereignty; background full-history verification must do that.
 
 ---
 
 ## Verification Layers
 
-Every sync method reaches the same verified state. Background services run
-after sync completes:
+Sync methods can reach different trust states. Background services must promote
+assisted state only after full-history verification reaches the serving tip and
+complete state commitments match. Current checks include:
 
 | Service | What it verifies | Speed |
 |---------|------------------|-------|

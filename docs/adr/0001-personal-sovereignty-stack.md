@@ -1,6 +1,6 @@
 # ADR-0001: Adopt the AI-Integrated Personal Sovereignty Stack vision
 
-> **Update 2026-06-23:** The forward-sync wedge class this ADR cites as live (h=3,115,059) is RESOLVED — commit `ab512d577` binds a complete SHA3-verified snapshot above coins-best by extending the active-chain window; the live node now reaches and follows the network tip (h=3,156,944, `verificationprogress=1`). The seed snapshot is still BORROWED from the `zclassicd` oracle (UTXO content not yet re-derived from genesis), so this is a consensus-bound stopgap; the sovereign cure (self-mint from-genesis SHA3 anchor at checkpoint 3,056,758 -> `-refold-from-anchor` cutover -> delete the borrowed loader) remains the end goal. Retained below as a record of the prior analysis.
+> **Update 2026-07-12:** commit `ab512d577` repaired the earlier transparent-loader failure, but did not close the full-state wedge class. Canonical is now held at H*=3,176,325 by incomplete shielded anchors/nullifiers. The borrowed snapshot's digest authenticates its bytes and its anchor identifies a validated header; ZClassic headers do not commit UTXO or shielded roots, so the payload is not consensus/PoW-bound. The sovereign cure must install complete independently validated state atomically and pass copy proof. Retained below as a record of the original decision.
 
 - **Status:** Accepted 2026-05-22.
 - **Deciders:** Project maintainer.

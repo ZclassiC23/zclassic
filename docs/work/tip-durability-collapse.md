@@ -93,12 +93,12 @@ ever deleted (anti-rewind preserved); the public tip can never drop below the
 contiguous ok=1 frontier. (Boot keeps a back-compat replay of pre-migration
 event_log into the new progress.kv `coins` table.)
 
-## Live-node recovery (self-healed at tip via snapshot-above-the-wedge)
+## Historical live-node recovery (superseded by 2026-07-12 shielded wedge)
 
-Live ground truth 2026-06-23: `~/.zclassic-c23` is **UNWEDGED at the network tip**
+Historical ground truth 2026-06-23: `~/.zclassic-c23` was at the network tip
 (`getblockcount`=3,156,944, `verificationprogress`=1) and self-heals on restart —
 it was **NOT** wiped or rebuilt. Recovery from the former wedge was achieved by
-loading a **complete, SHA3-verified snapshot ABOVE the wedge height**
+loading a **borrowed transparent snapshot with a verified body SHA3 above the wedge height**
 (`utxo-seed-3156809.snapshot` at h=3,156,809, count 1,344,918) via
 `-load-snapshot-at-own-height` and folding forward. Seeding the full UTXO set at
 3,156,809 never re-touches the block (3,156,171) that wedged the older **torn**
@@ -109,8 +109,9 @@ coins-best, instead of FATAL-ing "Run --importblockindex". The downstream
 anchor-hash cross-check is unchanged — a forged/missing anchor still fails closed.
 
 **Still borrowed (not yet sovereign):** the 3,156,809 snapshot is **minted from the
-zclassicd oracle**. Its block hash is consensus-bound to the in-binary PoW header,
-but its UTXO-set CONTENT is not yet independently re-derived from genesis. The
+zclassicd oracle**. Its anchor block hash matches the validated local header at
+that height, but that header does not commit the UTXO-set CONTENT, which is not
+yet independently re-derived from genesis. The
 sovereign cure — self-mint a from-genesis SHA3 anchor at compiled checkpoint
 3,056,758 → `-refold-from-anchor` cutover → DELETE the borrowed loader — remains the
 **END GOAL, not done**.

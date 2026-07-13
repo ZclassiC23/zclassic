@@ -74,6 +74,10 @@ json_num() {  # <json> <key>   -> bare number or empty
 json_str() {  # <json> <key>   -> string value (unquoted) or empty
     printf '%s' "$1" | grep -oE "\"$2\":[ ]*\"[^\"]*\"" | head -1 | sed -E "s/.*:[ ]*\"//; s/\"$//"
 }
+json_bool() { # <json> <key>   -> true|false or empty
+    printf '%s' "$1" | grep -oE "\"$2\":[ ]*(true|false)" | head -1 |
+        sed -E 's/.*:[ ]*//'
+}
 
 systemd_exec_arg() {
     local key="$1"
@@ -129,6 +133,10 @@ set_v() { VERDICT[$1]="$2"; DETAIL[$1]="$3"; FULL[$1]="${4:-0}"; }
 
 # ── 0. is the live node even reachable? ────────────────────────────
 GBCI="$(rpc getblockchaininfo)"
+SECURITY_SNAPSHOT="$(rpc operatorsnapshot)"
+SECURITY_REVIEW_REQUIRED="$(json_bool "${SECURITY_SNAPSHOT:-}" security_review_required)"
+SECURITY_POSTURE_OK=0
+[[ "$SECURITY_REVIEW_REQUIRED" == "false" ]] && SECURITY_POSTURE_OK=1
 NODE_UP=0
 HEIGHT=""; HEADERS=""; CHAIN=""
 if [[ -n "$GBCI" ]] && printf '%s' "$GBCI" | grep -q '"blocks"'; then
@@ -307,6 +315,9 @@ if [[ -n "$UPTIME_S" ]]; then
     if [[ "${NRESTARTS:-0}" != "0" ]]; then
         SOAK_VERDICT="NOT_MET"
         SOAK_REASON="unit restarted NRestarts=${NRESTARTS} (operator/crash event) — clean window broken"
+    elif [[ "$SECURITY_POSTURE_OK" != 1 ]]; then
+        SOAK_VERDICT="NOT_MET"
+        SOAK_REASON="security posture is ${SECURITY_REVIEW_REQUIRED:-unknown} — soak time does not accrue while review is required or unknown"
     elif [[ "$AT_TIP" != 1 ]]; then
         SOAK_VERDICT="NOT_MET"
         SOAK_REASON="node not at tip (gap=$GAP) — soak time does not accrue while behind tip"
@@ -318,7 +329,7 @@ if [[ -n "$UPTIME_S" ]]; then
         SOAK_REASON="continuous uptime ${UPTIME_S}s (~${SOAK_PCT}% of 168h) at tip, 0 restarts — accruing toward C6"
     fi
 fi
-SOAK_LINE="soak-accrual: VERDICT=$SOAK_VERDICT uptime_s=${UPTIME_S:-null} pct=${SOAK_PCT:-null} restarts=${NRESTARTS:-null} at_tip=$AT_TIP reason=\"$SOAK_REASON\""
+SOAK_LINE="soak-accrual: VERDICT=$SOAK_VERDICT uptime_s=${UPTIME_S:-null} pct=${SOAK_PCT:-null} restarts=${NRESTARTS:-null} at_tip=$AT_TIP security_review_required=${SECURITY_REVIEW_REQUIRED:-unknown} security_posture_ok=$SECURITY_POSTURE_OK reason=\"$SOAK_REASON\""
 
 # Wire the C6 verdict now that we have uptime numbers.
 set_v 6 "BLOCKED" "$SOAK_LINE; MET only via accumulated clean 168h window judged by make soak-evidence-report" 0
@@ -341,6 +352,8 @@ if [[ "$JSON_OUT" == 1 ]]; then
     printf '"node_up":%s,' "$NODE_UP"
     printf '"datadir":"%s",' "${LIVE_DATADIR//\"/\\\"}"
     printf '"rpcport":%s,' "$LIVE_RPCPORT"
+    printf '"security_review_required":%s,' "${SECURITY_REVIEW_REQUIRED:-null}"
+    printf '"security_posture_ok":%s,' "$([[ "$SECURITY_POSTURE_OK" == 1 ]] && echo true || echo false)"
     printf '"height":%s,' "${HEIGHT:-null}"
     printf '"reftip":%s,' "${REFTIP:-null}"
     printf '"gap":%s,' "${GAP:-null}"

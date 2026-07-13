@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * gen_utxo_root_ladder: one-shot tool that reads the per-boundary UTXO
- * roots this node's OWN consensus-bound fold already recorded (coins_kv
+ * roots this node's own locally validated fold already recorded (coins_kv
  * boundary_root store, keyed "mmb_utxo_root:<height>" in progress_meta —
  * see lib/storage/src/coins_kv.c:548-589) at stride heights and emits
  *
@@ -13,7 +13,7 @@
  * tip — there is no RPC to ask "what was the UTXO root at historical
  * height H". Historical boundary roots exist ONLY in a node's own
  * coins_kv boundary-root store, written once by the live connect path
- * as its consensus-bound fold passed each MMR_COMMITMENT_INTERVAL-aligned
+ * as its local fold passed each MMR_COMMITMENT_INTERVAL-aligned
  * height (app/models/src/mmb_leaf_store.c:180-191). So the ladder's
  * source of truth is a copy of a zclassic23 datadir, not a JSON-RPC peer.
  *

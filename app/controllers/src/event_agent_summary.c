@@ -4,6 +4,7 @@
  * while the full healthcheck path is doing repair-era evidence work. */
 #include "event_agent_summary.h"
 #include "event_agent_summary_internal.h"
+#include "api_controller_internal.h"
 #include "controllers/agent_height_contract.h"
 #include "controllers/agent_controller.h"
 #include "controllers/agent_first_call.h"
@@ -134,6 +135,16 @@ static void agent_fast_add_warning(struct agent_fast_snapshot *s,
     } else {
         s->warning_count++;
     }
+}
+
+static bool agent_mirror_same_height_hash_gap(
+    const struct legacy_mirror_sync_stats *mirror)
+{
+    return mirror && mirror->enabled && mirror->reachable &&
+           mirror->lag_known && mirror->local_height >= 0 &&
+           mirror->legacy_height >= 0 &&
+           mirror->local_height == mirror->legacy_height &&
+           !mirror->tip_hashes_agree;
 }
 
 static int agent_fast_tip_finalize_log_head(void)
@@ -273,6 +284,20 @@ static void agent_fast_collect(struct agent_fast_snapshot *s,
     s->validation_pack_ok = true;
     s->operator_needed_since_unix = 0;
     legacy_mirror_sync_stats_cached_snapshot(&s->mirror);
+    {
+        struct blocker_snapshot blockers[BLOCKER_CAP];
+        int blocker_count = blocker_snapshot_all(blockers, BLOCKER_CAP);
+        const struct blocker_snapshot *dominant =
+            blocker_select_dominant(blockers, blocker_count);
+        if (dominant) {
+            snprintf(s->dominant_blocker_id,
+                     sizeof(s->dominant_blocker_id), "%s", dominant->id);
+            s->hard_typed_blocker =
+                api_blocker_hard_gates_public_serving(dominant);
+            if (!s->hard_typed_blocker)
+                agent_fast_add_warning(s, dominant->id);
+        }
+    }
     struct condition_engine_summary condition_summary;
     condition_engine_get_summary(&condition_summary);
     s->active_condition_count = condition_summary.active_count;
@@ -468,6 +493,7 @@ static void agent_fast_collect(struct agent_fast_snapshot *s,
     if (s->operator_latch_suppressed_by_mirror)
         agent_fast_add_warning(s, "operator_latch_suppressed_by_mirror");
     s->operator_action_required =
+        s->hard_typed_blocker ||
         (s->operator_needed && !s->operator_latch_suppressed_by_mirror) ||
         s->unresolved_critical_condition_count > 0;
 
@@ -492,18 +518,32 @@ static void agent_fast_collect(struct agent_fast_snapshot *s,
     if (s->overdue_in_flight > 0)
         agent_fast_add_warning(s, "download_timeouts_overdue");
 
+    bool mirror_same_height_hash_gap =
+        agent_mirror_same_height_hash_gap(&s->mirror);
+    if (mirror_same_height_hash_gap)
+        agent_fast_add_warning(
+            s, "mirror_same_height_hash_unavailable_or_mismatch");
+
     s->healthy = s->serving && s->has_peers &&
                  s->chain_evidence_consistent &&
+                 !mirror_same_height_hash_gap &&
                  !s->operator_action_required &&
                  s->gap <= ZCL_NODE_HEALTH_LAG_WARN_BLOCKS &&
                  s->index_gap <= ZCL_NODE_HEALTH_LAG_WARN_BLOCKS &&
                  (s->log_head_gap < 0 || s->log_head_gap <= 1);
 
-    if (s->operator_action_required) {
+    if (s->hard_typed_blocker) {
+        snprintf(s->blocking_reason, sizeof(s->blocking_reason), "%s",
+                 s->dominant_blocker_id[0]
+                     ? s->dominant_blocker_id : "typed_blocker_operator_needed");
+    } else if (s->operator_action_required) {
         snprintf(s->blocking_reason, sizeof(s->blocking_reason),
                  "operator_needed:%s",
                  s->operator_needed_detail[0]
                      ? s->operator_needed_detail : "unspecified");
+    } else if (mirror_same_height_hash_gap) {
+        snprintf(s->blocking_reason, sizeof(s->blocking_reason),
+                 "mirror_same_height_hash_unavailable_or_mismatch");
     } else if (!s->has_peers) {
         snprintf(s->blocking_reason, sizeof(s->blocking_reason),
                  "no_peers");
@@ -547,6 +587,8 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     };
     struct agent_fast_snapshot health;
     agent_fast_collect(&health, &first_call_budget);
+    struct agent_security_posture posture;
+    agent_security_posture_collect(&posture, NULL);
     bool material_gap = health.gap > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS;
     bool material_index_gap = health.index_gap > ZCL_NODE_HEALTH_LAG_WARN_BLOCKS;
 
@@ -554,7 +596,20 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     const char *summary = "node healthy at served frontier";
     bool operator_needed = false;
 
-    if (health.operator_action_required) {
+    if (health.hard_typed_blocker) {
+        status = "blocked";
+        primary = health.dominant_blocker_id[0]
+            ? health.dominant_blocker_id : "typed_blocker_operator_needed";
+        next = "zclassic23 dumpstate blocker";
+        summary = "node is held by an authoritative typed blocker";
+        operator_needed = true;
+    } else if (posture.review_required) {
+        status = "blocked";
+        primary = posture.status;
+        next = posture.next_action;
+        summary = "consensus-state trust posture requires review";
+        operator_needed = true;
+    } else if (health.operator_action_required) {
         status = "blocked";
         primary = health.blocking_reason[0] ? health.blocking_reason
                                             : "operator_needed";
@@ -609,6 +664,8 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
         summary = "node health checks are degraded";
         operator_needed = health.warning_count > 0;
     }
+    bool public_serving = health.serving && !operator_needed &&
+        agent_security_posture_allows_public_serving(&posture);
 
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.public_status.v1");
@@ -631,7 +688,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     agent_push_runtime_build_json(result, "runtime_build");
     json_push_kv_str(result, "status", status);
     json_push_kv_bool(result, "healthy", strcmp(status, "healthy") == 0);
-    json_push_kv_bool(result, "serving", health.serving);
+    json_push_kv_bool(result, "serving", public_serving);
     json_push_kv_bool(result, "operator_needed", operator_needed);
     json_push_kv_str(result, "summary", summary);
     json_push_kv_str(result, "primary_blocker", primary);
@@ -657,7 +714,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     agent_push_condition_summary_contract_json(result, &condition_view);
     legacy_mirror_sync_push_status_contract_json(result, &health.mirror);
     agent_push_readiness_contract_json(
-        result, "readiness", health.serving, health.has_peers, operator_needed,
+        result, "readiness", public_serving, health.has_peers, operator_needed,
         health.validation_pack_ok, health.gap, health.index_gap,
         health.log_head_gap);
     json_push_kv_int(result, "height", health.served_height);
