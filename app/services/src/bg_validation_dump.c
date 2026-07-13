@@ -46,5 +46,11 @@ bool bg_validation_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int (out, "blocks_per_sec", p.blocks_per_sec);
     json_push_kv_int (out, "script_verif_skipped_no_undo",
                       p.script_verif_skipped_no_undo);
+    /* Always-on sampled re-verify (post-COMPLETE): a silent regression of
+     * already-verified work surfaces here as reverify_fails > 0. */
+    json_push_kv_bool(out, "reverify_active", p.reverify_active);
+    json_push_kv_int (out, "reverify_passes", p.reverify_passes);
+    json_push_kv_int (out, "reverify_fails", p.reverify_fails);
+    json_push_kv_int (out, "reverify_height", p.reverify_height);
     return true;
 }

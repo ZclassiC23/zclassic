@@ -57,6 +57,16 @@ struct bg_validation_progress {
      * Expected for post-snapshot blocks (no rev file), not a failure. */
     _Atomic int64_t script_verif_skipped_no_undo;
     _Atomic int state;                 /* enum bg_validation_state */
+    /* ── Always-on sampled re-verify (after BG_VALIDATION_COMPLETE) ──
+     * Once the genesis→tip walk completes, the thread does NOT exit; it enters
+     * a low-rate loop that re-runs the proof/script verification over RANDOM
+     * already-verified heights. A silent bit-rot / miscompile / memory
+     * corruption of previously-passed work then becomes a NAMED event instead
+     * of a quiet regression. */
+    _Atomic bool    reverify_active;   /* in the sampled re-verify loop */
+    _Atomic int64_t reverify_passes;   /* sampled heights that re-verified OK */
+    _Atomic int64_t reverify_fails;    /* sampled heights that FAILED re-verify */
+    _Atomic int     reverify_height;   /* last height sampled */
 };
 
 struct bg_validation_service {
@@ -105,6 +115,14 @@ struct bg_validation_progress bg_validation_get_progress(
 
 /* Get human-readable state name. */
 const char *bg_validation_state_name(enum bg_validation_state state);
+
+/* Record the outcome of ONE sampled re-verify of an already-verified height.
+ * On success bumps reverify_passes and returns true (keep sampling). On failure
+ * bumps reverify_fails, flips state to BG_VALIDATION_FAILED, raises the PERMANENT
+ * blocker `bg_validation.reverify_failed`, and returns false (stop the loop) —
+ * previously-proven consensus history must never regress. Exposed for tests. */
+bool bg_validation_record_reverify(struct bg_validation_service *svc,
+                                   int height, bool verify_ok);
 
 /* Reset validation progress and restart from block 0. */
 void bg_validation_reset(struct bg_validation_service *svc);

@@ -15,6 +15,24 @@
 #include <stdint.h>
 
 struct transaction;
+struct block;
+struct block_index;
+struct chain_params;
+
+/* ── Single-block read-only full validation (bg_validation_verify_block.c) ──
+ * Verifies Equihash + PoW, structure, contextual header, all shielded proofs,
+ * and every transparent script sig (spent outputs recovered from undo data).
+ * Never mutates the UTXO set. Returns false + LOG_WARN(height, reject_reason)
+ * on any failure. Called by the genesis→tip walk AND the sampled re-verify. */
+bool bg_validation_validate_block_proofs(const struct block *block,
+                                         struct block_index *pindex,
+                                         const char *datadir,
+                                         const struct chain_params *params,
+                                         int num_workers,
+                                         size_t max_script_batch,
+                                         int64_t *sigs_out,
+                                         int64_t *proofs_out,
+                                         int64_t *skips_out);
 
 /* ── Parallel script verification (bg_validation_scripts.c) ───────── */
 

@@ -426,7 +426,7 @@ static void boot_register_core_liveness_and_reducer(
     sticky_escalator_set_datadir(svc->datadir);
     sticky_escalator_register(svc->state);
     condition_registry_register_all();
-    invariant_sentinel_register(); /* fail-loud validation pack sweeps */
+    invariant_sentinel_register(); /* fail-loud validation pack sweeps (also arms the authority/projection audit) */
     /* Close the alert loop: install the event->sink routing (incl. the
      * EV_OPERATOR_NEEDED rule) BEFORE the condition engine can fire, so a
      * halt that exhausts remedies reaches a human/MCP and the health
