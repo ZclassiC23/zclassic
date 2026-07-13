@@ -1,17 +1,18 @@
 #!/usr/bin/env bash
 # Lint gate E6 — one-write-path (RATCHET).
 #
-# The cutover destination has one consensus writer: the reducer advances
-# durable cursors and authors UTXO deltas. Legacy chain-state write surfaces
-# still exist while B8 extracts/deletes them, so this gate starts as a ratchet:
-# any NEW production file/line that writes chain state outside the recorded
-# baseline fails the build.
+# There is one consensus writer: the reducer advances durable cursors and
+# authors UTXO deltas. The legacy chain-state write surfaces this gate used
+# to ratchet down have already been deleted (the baseline is intentionally
+# empty — see tools/scripts/one_write_path_baseline.txt), so this gate now
+# guards against regression: any NEW production file/line that writes chain
+# state outside the recorded baseline fails the build.
 #
 # Baseline format:
 #   <file>:<line>: <matched source>
 #
-# Delete baseline lines as B8 removes legacy write surfaces. Do not add lines
-# without an ADR; growing this baseline means a new chain writer appeared.
+# Do not add lines to the baseline without an ADR; growing it means a new
+# chain writer appeared outside the reducer's single write path.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."

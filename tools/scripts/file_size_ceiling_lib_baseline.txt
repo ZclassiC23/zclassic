@@ -1,0 +1,57 @@
+# Lint gate E1 (WARN tier) baseline — grandfathered oversized .c files
+# under lib/ (excl. lib/test/, which is fixtures/registrations and
+# legitimately huge) and domain/.
+#
+# check-file-size-ceiling (tools/scripts/check_file_size_ceiling.sh) treats
+# this tier as WARN-only: it never fails the build. lib/ and domain/ are
+# primitives and pure-domain code, not the eight app-shape surfaces E1's
+# ENFORCED tier was written to police, so this baseline exists to make
+# growth visible, not to gate it. Each entry is '<relative path> <LOC>'.
+# The gate prints when:
+#   - a NEW file (not listed here) exceeds the ceiling (800), OR
+#   - a listed file grows ABOVE its recorded baseline LOC.
+# Shrinking a file below the ceiling lets you delete its baseline line.
+#
+# Straight-line generated/tabular crypto & math code does not belong here
+# at all — it is skipped entirely via LIB_ALLOWLIST in the gate script
+# (lib/chain/src/sha3_windows.c, lib/sapling/src/bn254.c,
+# lib/sapling/src/bls12_381.c, domain/wallet/src/mnemonic.c).
+#
+# Format: <relative-path> <max-loc>   (lines starting with # are comments)
+# Sorted by path.
+
+lib/codeindex/src/codeindex_scan.c 953
+lib/event/src/event.c 1037
+lib/hotswap/src/hotswap_loader.c 972
+lib/kernel/src/command_registry.c 1432
+lib/metrics/src/prometheus_metrics.c 1413
+lib/net/src/addrman.c 1268
+lib/net/src/connman.c 2435
+lib/net/src/download.c 1322
+lib/net/src/fast_sync.c 1783
+lib/net/src/file_service.c 1479
+lib/net/src/https_server.c 833
+lib/net/src/msg_blocks.c 878
+lib/net/src/msg_headers.c 1141
+lib/net/src/msgprocessor.c 2278
+lib/net/src/msgprocessor_snapshot.c 2452
+lib/net/src/net.c 1626
+lib/net/src/onion_service.c 941
+lib/net/src/peer_lifecycle.c 1762
+lib/rpc/src/httpserver.c 1275
+lib/sapling/src/circuit_gadgets.c 1574
+lib/sapling/src/groth16_prover.c 1036
+lib/sapling/src/incremental_merkle_tree.c 984
+lib/sapling/src/sapling.c 1200
+lib/sim/src/postmortem.c 1444
+lib/sim/src/simnet_cluster.c 881
+lib/sim/src/simnet_wire.c 1496
+lib/storage/src/coins_kv.c 918
+lib/storage/src/coins_ram.c 1298
+lib/storage/src/coins_view_sqlite.c 1247
+lib/storage/src/utxo_projection.c 1055
+lib/storage/src/znam_projection.c 887
+lib/validation/src/chainstate.c 936
+lib/validation/src/connect_block.c 896
+lib/wallet/src/wallet.c 1713
+lib/wallet/src/wallet_sqlite.c 1371

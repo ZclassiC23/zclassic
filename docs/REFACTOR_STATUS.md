@@ -130,13 +130,21 @@ node soak.
   (`docs/work/single-engine-newcode-plan.md` / `-design.json`) were deleted
   once the log→projection→Job reducer became the only engine; there is no
   runtime "flip" flag. The step/wave labels those docs used — `B3`, `B7`,
-  `B8`, `DRIVER-FOLLOWER` — are therefore obsolete. They no longer name any
-  live behavior; where they survive it is as stale comment text. Residual
-  in-code label hits (production source + the `one_write_path_baseline.txt`
-  header) are pending a single central scrub; the canonical author-default is
-  `UTXO_AUTHOR_STAGE` (`UTXO_AUTHOR_LEGACY` is the test-only emitter path),
-  and the comments in `app/jobs/src/utxo_apply_delta.c` and
-  `lib/storage/include/storage/utxo_projection.h` now say so.
+  `B8`, `DRIVER-FOLLOWER` — are therefore obsolete for that plan and no
+  longer name any live behavior. The central scrub landed 2026-07-13: the
+  `B3` hits in `lib/storage/src/coins_view_kv.c`,
+  `lib/storage/src/coins_view_projection.c`, and
+  `lib/storage/src/utxo_projection.c`, plus the `B8` hit in
+  `tools/scripts/one_write_path_baseline.txt` (and its gate script
+  `tools/scripts/check_one_write_path.sh` / the Makefile's E6 comment), are
+  gone. The canonical author-default is `UTXO_AUTHOR_STAGE`
+  (`UTXO_AUTHOR_LEGACY` is the test-only emitter path), and the comments in
+  `app/jobs/src/utxo_apply_delta.c` and
+  `lib/storage/include/storage/utxo_projection.h` say so. **Not** the same
+  label: `app/services/src/oracle_policy.c` and
+  `tools/scripts/check_lag_slo_observable.sh` also say `B8`, but that `B8` is
+  a distinct, still-live item number from `docs/work/never-stuck-plan.md`
+  ("demote the oracle_policy halt path to evidence-only") — leave those.
 
 ## Active Debt
 
