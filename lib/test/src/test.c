@@ -1251,6 +1251,7 @@ int main(int argc, char **argv)
     { extern int test_watch_only(void); failures += test_watch_only(); }
     { extern int test_coin_selection(void); failures += test_coin_selection(); }
     failures += test_disk_monitor();
+    { extern int test_network_monitor(void); failures += test_network_monitor(); }
     failures += test_db_maintenance();
     failures += test_mempool_limits();
     failures += test_addrman_integrity();

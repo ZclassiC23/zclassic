@@ -522,6 +522,9 @@ int test_condition_engine(void)
             "stage_step_budget_exceeded",
             "sync_rate_below_floor",
             "batch_fsync_slow",
+            "net_tip_regression",
+            "net_fork_detected",
+            "net_partition_suspected",
         };
         const int expected_count =
             (int)(sizeof(expected) / sizeof(expected[0]));
