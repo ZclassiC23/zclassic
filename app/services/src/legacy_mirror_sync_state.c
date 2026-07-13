@@ -7,9 +7,7 @@
 // answer, not a failure: "should this already-recorded blocker be surfaced
 // to the operator right now?"), consumed as a raw bool by
 // agent_operator_contracts.c, health_controller.c, and
-// event_healthcheck_controller.c; legacy_mirror_sync_dump_state_json is the
-// mandated *_dump_state_json bool contract (CLAUDE.md "Adding state
-// introspection"). Neither has a genuinely fallible surface to convert.
+// event_healthcheck_controller.c. It has no fallible surface to convert.
 
 #include "services/legacy_mirror_sync_service.h"
 #include "legacy_mirror_sync_internal.h"
@@ -76,8 +74,14 @@ static bool lms_hash_disagreement_recovered(
     const char *code,
     const struct legacy_mirror_sync_stats *s)
 {
-    return code && strcmp(code, "hash-disagreement") == 0 &&
-           s && s->tip_hashes_agree;
+    if (!code || strcmp(code, "hash-disagreement") != 0 || !s ||
+        s->hash_disagreement_height < 0)
+        return false;
+    if (s->comparison_known && s->comparison_hashes_agree &&
+        s->comparison_height >= s->hash_disagreement_height)
+        return true;
+    return s->tip_hashes_agree &&
+           s->local_height >= s->hash_disagreement_height;
 }
 
 static int lms_rpc_error_code(const char *err)
@@ -146,6 +150,19 @@ const char *legacy_mirror_sync_blocker_code(
                                            : s->last_blocker_id;
 }
 
+bool legacy_mirror_sync_blocker_is_active(
+    const struct legacy_mirror_sync_stats *s)
+{
+    const char *blocker = legacy_mirror_sync_blocker_code(s);
+    if (!blocker || !blocker[0])
+        return false;
+    bool exact_hash_recovery =
+        strcmp(blocker, "hash-disagreement") == 0 &&
+        (s->blocker_recovered_by_tip_agreement ||
+         s->blocker_recovered_by_common_height_agreement);
+    return !exact_hash_recovery;
+}
+
 bool legacy_mirror_sync_blocker_should_surface(
     const struct legacy_mirror_sync_stats *s,
     bool non_legacy_source_selected)
@@ -173,8 +190,7 @@ void legacy_mirror_sync_push_status_contract_json(
     if (!out || !s)
         return;
     const char *blocker = legacy_mirror_sync_blocker_code(s);
-    bool blocker_active =
-        blocker && blocker[0] && !s->blocker_recovered_by_tip_agreement;
+    bool blocker_active = legacy_mirror_sync_blocker_is_active(s);
     bool operator_action_required =
         blocker_active && legacy_mirror_sync_blocker_should_surface(s, false);
     struct json_value obj = {0};
@@ -193,16 +209,28 @@ void legacy_mirror_sync_push_status_contract_json(
     json_push_kv_bool(&obj, "same_height",
                       s->lag_known && s->lag == 0);
     json_push_kv_bool(&obj, "tip_hashes_agree", s->tip_hashes_agree);
+    json_push_kv_int(&obj, "comparison_height", s->comparison_height);
+    json_push_kv_bool(&obj, "comparison_known", s->comparison_known);
+    json_push_kv_bool(&obj, "comparison_hashes_agree",
+                      s->comparison_hashes_agree);
+    json_push_kv_bool(&obj, "same_chain_at_comparison_height",
+                      s->comparison_known && s->comparison_hashes_agree);
+    json_push_kv_int(&obj, "hash_disagreement_height",
+                     s->hash_disagreement_height);
     json_push_kv_bool(&obj, "blocker_active", blocker_active);
     json_push_kv_str(&obj, "blocker_code", blocker_active ? blocker : "");
     json_push_kv_bool(&obj, "blocker_recovered_by_tip_agreement",
                       s->blocker_recovered_by_tip_agreement);
+    json_push_kv_bool(
+        &obj, "blocker_recovered_by_common_height_agreement",
+        s->blocker_recovered_by_common_height_agreement);
     json_push_kv_bool(&obj, "operator_action_required",
                       operator_action_required);
     json_push_kv_str(
         &obj, "semantics",
-        "legacy mirror is advisory; local consensus remains authoritative, "
-        "and transient blockers are inactive once same-height hashes agree");
+        "legacy mirror is advisory; local consensus remains authoritative; "
+        "tip hashes are comparable only at equal heights, while explicit "
+        "comparison fields prove same-chain agreement at one common height");
     json_push_kv(out, "mirror_contract", &obj);
     json_free(&obj);
 }
@@ -372,6 +400,17 @@ static void legacy_mirror_sync_stats_snapshot_impl(
 #endif
     snprintf(out->zclassicd_hash, sizeof(out->zclassicd_hash), "%s",
              g_lms.zclassicd_hash);
+    out->comparison_height = g_lms.comparison_height;
+    out->hash_disagreement_height = g_lms.hash_disagreement_height;
+    out->comparison_known = g_lms.comparison_known;
+    out->comparison_hashes_agree =
+        g_lms.comparison_known && g_lms.comparison_hashes_agree;
+    snprintf(out->comparison_zclassic23_hash,
+             sizeof(out->comparison_zclassic23_hash), "%s",
+             g_lms.comparison_zclassic23_hash);
+    snprintf(out->comparison_zclassicd_hash,
+             sizeof(out->comparison_zclassicd_hash), "%s",
+             g_lms.comparison_zclassicd_hash);
     snprintf(out->last_error, sizeof(out->last_error), "%s",
              g_lms.last_error);
     snprintf(out->last_blocker_id, sizeof(out->last_blocker_id), "%s",
@@ -410,7 +449,8 @@ static void legacy_mirror_sync_stats_snapshot_impl(
     out->zclassicd_rpc_transport_reachable =
         out->reachable || lms_error_implies_transport_reachable(out->last_error);
     out->legacy_oracle_usable =
-        out->enabled && out->reachable && out->legacy_advisory_height_known;
+        out->enabled && out->reachable && out->legacy_advisory_height_known &&
+        out->comparison_known;
     out->zclassicd_rpc_error_code = lms_rpc_error_code(out->last_error);
     lms_rpc_error_message(out->last_error, out->zclassicd_rpc_error_message,
                           sizeof(out->zclassicd_rpc_error_message));
@@ -473,7 +513,12 @@ static void legacy_mirror_sync_stats_snapshot_impl(
         out->activation_blocker_reason[0] = '\0';
     } else if (lms_hash_disagreement_recovered(
                    out->activation_blocker_reason, out)) {
-        out->blocker_recovered_by_tip_agreement = true;
+        out->blocker_recovered_by_tip_agreement =
+            out->tip_hashes_agree &&
+            out->local_height >= out->hash_disagreement_height;
+        out->blocker_recovered_by_common_height_agreement =
+            out->comparison_known && out->comparison_hashes_agree &&
+            out->comparison_height >= out->hash_disagreement_height;
         out->activation_blocker_reason[0] = '\0';
     }
     if (lms_blocker_cleared_by_catchup(out->last_blocker_id,
@@ -481,7 +526,12 @@ static void legacy_mirror_sync_stats_snapshot_impl(
                                        out->lag)) {
         out->last_blocker_id[0] = '\0';
     } else if (lms_hash_disagreement_recovered(out->last_blocker_id, out)) {
-        out->blocker_recovered_by_tip_agreement = true;
+        out->blocker_recovered_by_tip_agreement =
+            out->tip_hashes_agree &&
+            out->local_height >= out->hash_disagreement_height;
+        out->blocker_recovered_by_common_height_agreement =
+            out->comparison_known && out->comparison_hashes_agree &&
+            out->comparison_height >= out->hash_disagreement_height;
         out->last_blocker_id[0] = '\0';
     }
     if (!out->activation_blocker_reason[0])
@@ -535,147 +585,6 @@ void legacy_mirror_sync_stats_cached_snapshot(
     legacy_mirror_sync_stats_snapshot_impl(out, false, false);
 }
 
-bool legacy_mirror_sync_dump_state_json(struct json_value *out,
-                                        const char *key)
-{
-    (void)key;
-    if (!out) return false;
-    struct legacy_mirror_sync_stats s;
-    legacy_mirror_sync_stats_snapshot(&s);
-    json_push_kv_str(out, "build_commit", zcl_build_commit());
-    json_push_kv_bool(out, "mirror_enabled", s.enabled);
-    json_push_kv_str(out, "state", s.state);
-    legacy_mirror_sync_push_status_contract_json(out, &s);
-    json_push_kv_bool(out, "mirror_monitor_running", s.running);
-    json_push_kv_bool(out, "mirror_running", s.running);
-    json_push_kv_bool(out, "running", s.running);
-    json_push_kv_bool(out, "reachable", s.reachable);
-    json_push_kv_bool(out, "mirror_reachable", s.reachable);
-    json_push_kv_bool(out, "zclassicd_rpc_transport_reachable",
-                      s.zclassicd_rpc_transport_reachable);
-    json_push_kv_bool(out, "legacy_oracle_usable",
-                      s.legacy_oracle_usable);
-    json_push_kv_int(out, "zclassicd_rpc_error_code",
-                     s.zclassicd_rpc_error_code);
-    json_push_kv_str(out, "zclassicd_rpc_error_message",
-                     s.zclassicd_rpc_error_message);
-    json_push_kv_bool(out, "in_flight", s.in_flight);
-    json_push_kv_int(out, "zclassic23_height", s.local_height);
-    json_push_kv_str(out, "zclassic23_hash", s.zclassic23_hash);
-    json_push_kv_int(out, "zclassicd_height", s.legacy_height);
-    json_push_kv_str(out, "zclassicd_hash", s.zclassicd_hash);
-    json_push_kv_int(out, "legacy_height", s.legacy_height);
-    json_push_kv_int(out, "legacy_headers", s.legacy_headers);
-    json_push_kv_int(out, "local_height", s.local_height);
-    json_push_kv_int(out, "best_header_height", s.best_header_height);
-    json_push_kv_bool(out, "legacy_advisory_height_known",
-                      s.legacy_advisory_height_known);
-    json_push_kv_bool(out, "target_height_known", s.target_height_known);
-    json_push_kv_bool(out, "lag_known", s.lag_known);
-    json_push_kv_bool(out, "lag_valid", s.lag_valid);
-    json_push_kv_bool(out, "tip_hashes_agree", s.tip_hashes_agree);
-    json_push_kv_int(out, "lag", legacy_mirror_sync_reported_lag(&s));
-    legacy_mirror_sync_push_observed_lag_json(out, "lag_observed", &s);
-    json_push_kv_str(out, "candidate_source", "legacy_advisory");
-    json_push_kv_str(out, "candidate_trust", s.candidate_trust);
-    json_push_kv_bool(out, "candidate_lag_known", s.lag_known);
-    json_push_kv_bool(out, "candidate_lag_valid", s.lag_valid);
-    json_push_kv_int(out, "candidate_lag",
-                     legacy_mirror_sync_reported_lag(&s));
-    legacy_mirror_sync_push_observed_lag_json(out,
-                                              "candidate_lag_observed", &s);
-    json_push_kv_str(out, "candidate_blocker",
-                     legacy_mirror_sync_blocker_code(&s));
-    json_push_kv_bool(out, "blocker_recovered_by_tip_agreement",
-                      s.blocker_recovered_by_tip_agreement);
-    json_push_kv_int(out, "target_height", s.target_height);
-    json_push_kv_int(out, "authority_rewind_target",
-                     s.authority_rewind_target);
-    json_push_kv_int(out, "last_advanced_height", s.last_advanced_height);
-    json_push_kv_int(out, "last_progress_blocks", s.last_progress_blocks);
-    json_push_kv_bool(out, "local_recovery_active",
-                      s.local_recovery_active);
-    json_push_kv_bool(out, "legacy_advisory_gated_by_native_retries",
-                      s.mirror_repair_gated_by_local_retries);
-    json_push_kv_bool(out, "mirror_repair_gated_by_local_retries",
-                      s.mirror_repair_gated_by_local_retries);
-    json_push_kv_bool(out, "local_retries_exhausted",
-                      s.local_retries_exhausted);
-    json_push_kv_int(out, "local_missing_height", s.local_missing_height);
-    json_push_kv_int(out, "local_retry_count", s.local_retry_count);
-    json_push_kv_int(out, "local_distinct_peer_count",
-                     s.local_distinct_peer_count);
-    json_push_kv_int(out, "local_peer_rotation_count",
-                     s.local_peer_rotation_count);
-    json_push_kv_int(out, "stuck_height", s.stuck_height);
-    json_push_kv_int(out, "stuck_status_flags", s.stuck_status_flags);
-    json_push_kv_str(out, "stuck_reason", s.stuck_reason);
-    json_push_kv_int(out, "stalls_total", s.stalls_total);
-    json_push_kv_int(out, "last_catchup", s.last_catchup);
-    json_push_kv_int(out, "last_attempt", s.last_attempt);
-    json_push_kv_int(out, "catchups_total", s.catchups_total);
-    json_push_kv_int(out, "rpc_errors", s.rpc_errors);
-    json_push_kv_int(out, "blocks_applied", s.blocks_applied);
-    json_push_kv_int(out, "headers_added", s.headers_added);
-    json_push_kv_str(out, "consensus_authority", s.consensus_authority);
-    json_push_kv_bool(out, "override_active", s.override_active);
-    json_push_kv_int(out, "overrides_total", s.overrides_total);
-    json_push_kv_int(out, "unsafe_overrides_total",
-                     s.unsafe_overrides_total);
-    json_push_kv_int(out, "blockers_total", s.blockers_total);
-    json_push_kv_int(out, "last_override_height", s.last_override_height);
-    json_push_kv_bool(out, "last_override_safe", s.last_override_safe);
-    json_push_kv_str(out, "last_override_reason", s.last_override_reason);
-    json_push_kv_str(out, "last_override_scope", s.last_override_scope);
-    json_push_kv_str(out, "activation_blocker_class",
-                     blocker_class_name(s.activation_blocker_class));
-    json_push_kv_str(out, "last_blocker_class",
-                     blocker_class_name(s.last_blocker_class));
-    json_push_kv_str(out, "activation_blocker", s.activation_blocker_reason);
-    json_push_kv_str(out, "last_blocker_code", s.last_blocker_id);
-    json_push_kv_str(out, "active_error_code",
-                     s.activation_blocker_reason[0] ? s.activation_blocker_reason
-                                             : s.last_blocker_id);
-    json_push_kv_str(out, "active_error_detail",
-                     (s.activation_blocker_reason[0] || s.last_blocker_id[0])
-                         ? s.last_error : "");
-    json_push_kv_int(out, "csr_sqlite_rc", s.csr_sqlite_rc);
-    json_push_kv_str(out, "csr_failure_reason", s.csr_failure_reason);
-    json_push_kv_str(out, "last_error", s.last_error);
-    json_push_kv_int(out, "lag_sla_breach_blocks", s.lag_sla_breach_blocks);
-    json_push_kv_int(out, "lag_sla_breach_secs", s.lag_sla_breach_secs);
-    json_push_kv_int(out, "lag_sla_critical_blocks",
-                     s.lag_sla_critical_blocks);
-    json_push_kv_int(out, "lag_sla_critical_secs", s.lag_sla_critical_secs);
-    json_push_kv_int(out, "lag_breach_since", s.lag_breach_since);
-    json_push_kv_int(out, "lag_breach_seconds", s.lag_breach_seconds);
-    json_push_kv_int(out, "lag_critical_since", s.lag_critical_since);
-    json_push_kv_int(out, "lag_critical_seconds", s.lag_critical_seconds);
-    json_push_kv_str(out, "lag_breach_severity", s.lag_breach_severity);
-
-    /* Reserved `_health` key (see docs/work "Adding state introspection" +
-     * app/controllers/src/diagnostics_health_rollup.c): { ok, reason }.
-     * Mirrors the already-computed mirror_contract.operator_action_required
-     * signal above (advisory-only: local consensus stays authoritative even
-     * when this reports unhealthy). */
-    {
-        const char *blocker_code = legacy_mirror_sync_blocker_code(&s);
-        bool blocker_active = blocker_code && blocker_code[0] &&
-                              !s.blocker_recovered_by_tip_agreement;
-        bool operator_action_required =
-            blocker_active &&
-            legacy_mirror_sync_blocker_should_surface(&s, false);
-        struct json_value health = {0};
-        json_set_object(&health);
-        json_push_kv_bool(&health, "ok", !operator_action_required);
-        json_push_kv_str(&health, "reason",
-                         operator_action_required ? blocker_code : "");
-        json_push_kv(out, "_health", &health);
-        json_free(&health);
-    }
-    return true;
-}
-
 void legacy_mirror_sync_reset_for_test(void)
 {
 #ifdef ZCL_TESTING
@@ -693,6 +602,12 @@ void legacy_mirror_sync_reset_for_test(void)
     g_lms.datadir[0] = '\0';
     g_lms.zclassic23_hash[0] = '\0';
     g_lms.zclassicd_hash[0] = '\0';
+    g_lms.comparison_known = false;
+    g_lms.comparison_hashes_agree = false;
+    g_lms.comparison_height = -1;
+    g_lms.hash_disagreement_height = -1;
+    g_lms.comparison_zclassic23_hash[0] = '\0';
+    g_lms.comparison_zclassicd_hash[0] = '\0';
     g_lms.stuck_reason[0] = '\0';
     g_lms.last_blocker_class = BLOCKER_TRANSIENT;
     g_lms.last_blocker_id[0] = '\0';
@@ -755,6 +670,16 @@ void legacy_mirror_sync_test_set_stats(
              stats->zclassic23_hash);
     snprintf(g_lms.zclassicd_hash, sizeof(g_lms.zclassicd_hash), "%s",
              stats->zclassicd_hash);
+    g_lms.comparison_known = stats->comparison_known;
+    g_lms.comparison_hashes_agree = stats->comparison_hashes_agree;
+    g_lms.comparison_height = stats->comparison_height;
+    g_lms.hash_disagreement_height = stats->hash_disagreement_height;
+    snprintf(g_lms.comparison_zclassic23_hash,
+             sizeof(g_lms.comparison_zclassic23_hash), "%s",
+             stats->comparison_zclassic23_hash);
+    snprintf(g_lms.comparison_zclassicd_hash,
+             sizeof(g_lms.comparison_zclassicd_hash), "%s",
+             stats->comparison_zclassicd_hash);
     snprintf(g_lms.stuck_reason, sizeof(g_lms.stuck_reason), "%s",
              stats->stuck_reason);
     snprintf(g_lms.last_blocker_id, sizeof(g_lms.last_blocker_id),

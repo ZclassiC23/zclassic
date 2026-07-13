@@ -291,11 +291,14 @@ or a freshly deployed dev lane.
 `getmirrorstatus` also includes `mirror_contract` (`zcl.mirror_status.v1`).
 Agents should prefer it over string-scraping top-level legacy fields. It names
 that the mirror is advisory-only, the local consensus authority, whether the
-mirror is running/reachable, whether lag is known, whether zclassic23 and
-zclassicd are at the same height with the same hash, whether a blocker is truly
-active, and whether operator action is required. A
-same-height same-hash mirror with no active blocker is healthy even if an older
-runtime or cached field once mentioned a transient `hash-disagreement`.
+mirror is running/reachable, and whether lag is known. Tip hashes are comparable
+only when both tips are at the same height. When one node is behind, the
+`comparison_*` fields instead bind both hashes to one explicit common height;
+`comparison_known=true` plus `comparison_hashes_agree=true` is evidence of the
+same chain at that height. `hash_disagreement_height` is a recovery floor, so
+agreement below a previously observed mismatch cannot clear it. Unknown or
+failed comparison RPCs never count as agreement. The contract also names
+whether a blocker is active and whether operator action is required.
 
 `agentliveness` (`zcl.agent_liveness.v1`) is the one-call runtime liveness
 rollup. Its default mode is compact: it composes `current_runtime_lane`,

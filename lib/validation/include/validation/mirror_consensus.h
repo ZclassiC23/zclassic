@@ -28,6 +28,13 @@ enum blocker_class mirror_consensus_classify_blocker_reason(
     const char *reason);
 void mirror_consensus_record_override(int height, const char *reason);
 void mirror_consensus_record_blocker(const char *reason);
+/* Clear hash-disagreement from both the mirror latch and typed registry after
+ * an exact common-height comparison proves agreement.  No other blocker can
+ * be cleared through this automatic recovery surface. */
+bool mirror_consensus_resolve_hash_disagreement(void);
+/* Resolve only the two allowlisted transient hash-observation failures after
+ * a later exact common-height comparison succeeds. */
+bool mirror_consensus_resolve_observation_blocker(const char *reason);
 void mirror_consensus_stats_snapshot(struct mirror_consensus_stats *out);
 void mirror_consensus_reset_for_test(void);
 

@@ -16,6 +16,8 @@
 #include "storage/progress_store.h"
 
 #include <sqlite3.h>
+#include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -583,6 +585,155 @@ static bool install(sqlite3 *db, struct csi_fixture *f,
     return !ok && result.status==want;
 }
 
+static bool digest_nonzero(const uint8_t digest[32])
+{
+    uint8_t any=0;
+    for(size_t i=0;i<32;i++) any|=digest[i];
+    return any!=0;
+}
+
+static bool candidate_file_digest(const char *path,uint8_t out[32])
+{
+    int fd=open(path,O_RDONLY|O_CLOEXEC|O_NOFOLLOW);
+    if(fd<0) return false;
+    struct sha3_256_ctx context; sha3_256_init(&context);
+    uint8_t buffer[4096]; bool ok=true;
+    for(;;) {
+        ssize_t n=read(fd,buffer,sizeof(buffer));
+        if(n>0) { sha3_256_write(&context,buffer,(size_t)n); continue; }
+        if(n==0) break;
+        if(errno==EINTR) continue;
+        ok=false; break;
+    }
+    if(close(fd)!=0) ok=false;
+    if(ok) sha3_256_finalize(&context,out);
+    return ok;
+}
+
+static int candidate_staging_count(const char *dir)
+{
+    DIR *stream=opendir(dir);
+    if(!stream) return -1;
+    int count=0;
+    struct dirent *entry;
+    while((entry=readdir(stream))!=NULL)
+        if(strncmp(entry->d_name,".zcl-consensus-candidate-",25)==0)
+            count++;
+    closedir(stream);
+    return count;
+}
+
+static bool candidate_output_absent(int dirfd,const char *name)
+{
+    struct stat st; errno=0;
+    return fstatat(dirfd,name,&st,AT_SYMLINK_NOFOLLOW)!=0&&errno==ENOENT;
+}
+
+struct candidate_sidecar_hook {
+    int dirfd;
+    const char *name;
+    bool created;
+};
+
+static void candidate_create_sidecar(void *opaque)
+{
+    struct candidate_sidecar_hook *hook=opaque;
+    if(!hook) return;
+    int fd=openat(hook->dirfd,hook->name,
+                  O_WRONLY|O_CREAT|O_EXCL|O_CLOEXEC,0600);
+    hook->created=fd>=0;
+    if(fd>=0) close(fd);
+}
+
+static bool candidate_build(
+    const struct consensus_state_artifact_evidence *artifact,int dirfd,
+    const char *name,enum consensus_state_candidate_failpoint failpoint,
+    struct consensus_state_candidate_result *result)
+{
+    struct consensus_state_candidate_request request;
+    memset(&request,0,sizeof(request));
+    request.output_dir_fd=dirfd;
+    request.output_name=name;
+    request.failpoint=failpoint;
+    return consensus_state_snapshot_candidate_build(artifact,&request,result);
+}
+
+static bool candidate_query_i64(sqlite3 *db,const char *sql,int64_t *out)
+{
+    sqlite3_stmt *stmt=NULL;
+    if(sqlite3_prepare_v2(db,sql,-1,&stmt,NULL)!=SQLITE_OK) return false;
+    bool ok=sqlite3_step(stmt)==SQLITE_ROW; // raw-sql-ok:test-read-only-assertion
+    if(ok) *out=sqlite3_column_int64(stmt,0);
+    if(ok) ok=sqlite3_step(stmt)==SQLITE_DONE; // raw-sql-ok:test-read-only-assertion
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
+static bool candidate_progress_parity(
+    sqlite3 *db,const struct csi_fixture *f,const uint8_t admission[32])
+{
+    int32_t applied=-1; bool found=false;
+    if(!coins_kv_get_applied_height(db,&applied,&found)||!found||
+       applied!=f->height+1||!coins_kv_contains_refold_marker(db))
+        return false;
+    for(int pool=0;pool<=1;pool++) {
+        int64_t cursor=-1; bool cursor_found=false;
+        if(!anchor_kv_activation_cursor(db,pool,&cursor,&cursor_found)||
+           !cursor_found||cursor!=0) return false;
+    }
+    int64_t cursor=-1; bool cursor_found=false;
+    if(!nullifier_kv_activation_cursor(db,&cursor,&cursor_found)||
+       !cursor_found||cursor!=0) return false;
+    int64_t count=-1;
+    char sql[256];
+    snprintf(sql,sizeof(sql),
+        "SELECT count(*) FROM stage_cursor WHERE "
+        "(name='tip_finalize' AND cursor=%d) OR "
+        "(name!='tip_finalize' AND cursor=%d)",f->height,f->height+1);
+    if(!candidate_query_i64(db,"SELECT count(*) FROM stage_cursor",&count)||
+       count!=8||
+       !candidate_query_i64(db,sql,&count)||count!=8)
+        return false;
+    snprintf(sql,sizeof(sql),
+        "SELECT count(*) FROM utxo_apply_log WHERE height=%d AND "
+        "status='anchor' AND ok=1",f->height);
+    if(!candidate_query_i64(db,sql,&count)||count!=1) return false;
+    snprintf(sql,sizeof(sql),
+        "SELECT count(*) FROM tip_finalize_log WHERE height=%d AND "
+        "status='anchor' AND ok=1 AND tip_hash IS NOT NULL",f->height);
+    if(!candidate_query_i64(db,sql,&count)||count!=1) return false;
+    sqlite3_stmt *stmt=NULL;
+    bool ok=sqlite3_prepare_v2(db,
+        "SELECT schema,receipt_digest FROM consensus_state_source_receipt "
+        "WHERE singleton=1",-1,&stmt,NULL)==SQLITE_OK&&
+        sqlite3_step(stmt)==SQLITE_ROW; // raw-sql-ok:test-read-only-assertion
+    if(ok) {
+        const char *schema=(const char *)sqlite3_column_text(stmt,0);
+        const void *digest=sqlite3_column_blob(stmt,1);
+        ok=schema&&strcmp(schema,CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA)==0&&
+           digest&&sqlite3_column_bytes(stmt,1)==32&&
+           memcmp(digest,f->receipt.receipt_digest,32)==0;
+    }
+    if(stmt) sqlite3_finalize(stmt);
+    stmt=NULL;
+    if(ok) ok=sqlite3_prepare_v2(db,
+        "SELECT schema,artifact_digest,admission_receipt_digest "
+        "FROM consensus_state_candidate_meta WHERE singleton=1",
+        -1,&stmt,NULL)==SQLITE_OK&&
+        sqlite3_step(stmt)==SQLITE_ROW; // raw-sql-ok:test-read-only-assertion
+    if(ok) {
+        const char *schema=(const char *)sqlite3_column_text(stmt,0);
+        const void *artifact=sqlite3_column_blob(stmt,1);
+        const void *receipt=sqlite3_column_blob(stmt,2);
+        ok=schema&&strcmp(schema,CONSENSUS_STATE_CANDIDATE_SCHEMA)==0&&
+           artifact&&receipt&&sqlite3_column_bytes(stmt,1)==32&&
+           sqlite3_column_bytes(stmt,2)==32&&
+           memcmp(artifact,f->artifact,32)==0&&memcmp(receipt,admission,32)==0;
+    }
+    if(stmt) sqlite3_finalize(stmt);
+    return ok;
+}
+
 int test_consensus_state_snapshot_install(void)
 {
     printf("\n=== consensus_state_snapshot_install ===\n");
@@ -740,6 +891,137 @@ int test_consensus_state_snapshot_install(void)
               install(db,&b,CONSENSUS_INSTALL_FAIL_NONE,
                       CONSENSUS_INSTALL_VERIFIED_CONTAINED));
     CSI_CHECK("contained complete claim preserves generation A",active_is(db,&a));
+
+    int candidate_dirfd=open(dir,O_RDONLY|O_DIRECTORY|O_CLOEXEC);
+    CSI_CHECK("candidate output directory capability opens",candidate_dirfd>=0);
+    artifact_opened=consensus_state_artifact_evidence_open(b.path,&artifact);
+    CSI_CHECK("candidate source admits immutable complete artifact",
+              artifact_opened.ok&&artifact!=NULL);
+    uint8_t candidate_admission[32];
+    CSI_CHECK("candidate source admission receipt is available",
+              consensus_state_artifact_evidence_receipt_digest(
+                  artifact,candidate_admission));
+    struct consensus_state_candidate_result reserved;
+    CSI_CHECK("candidate API cannot name the active progress store",
+              !candidate_build(artifact,candidate_dirfd,"progress.kv",
+                               CONSENSUS_CANDIDATE_FAIL_NONE,&reserved)&&
+              reserved.status==CONSENSUS_CANDIDATE_REFUSED&&
+              candidate_output_absent(candidate_dirfd,"progress.kv"));
+    CSI_CHECK("candidate active-store family refusal is case-independent",
+              !candidate_build(artifact,candidate_dirfd,"Progress.KV.next",
+                               CONSENSUS_CANDIDATE_FAIL_NONE,&reserved)&&
+              reserved.status==CONSENSUS_CANDIDATE_REFUSED&&
+              candidate_output_absent(candidate_dirfd,"Progress.KV.next"));
+    struct consensus_state_candidate_result short_name;
+    CSI_CHECK("candidate short normalized name is handled safely",
+              candidate_build(artifact,candidate_dirfd,"x",
+                              CONSENSUS_CANDIDATE_FAIL_NONE,&short_name)&&
+              short_name.status==CONSENSUS_CANDIDATE_VERIFIED_CONTAINED);
+    CSI_CHECK("candidate short-name fixture removes",
+              unlinkat(candidate_dirfd,"x",0)==0);
+    for(int fp=CONSENSUS_CANDIDATE_FAIL_AFTER_STAGING_OPEN;
+        fp<=CONSENSUS_CANDIDATE_FAIL_AFTER_REOPEN;fp++) {
+        char name[64],label[128];
+        snprintf(name,sizeof(name),"failed-%d.progress.kv",fp);
+        struct consensus_state_candidate_result failed;
+        bool built=candidate_build(
+            artifact,candidate_dirfd,name,
+            (enum consensus_state_candidate_failpoint)fp,&failed);
+        snprintf(label,sizeof(label),"candidate failpoint %d is injected",fp);
+        CSI_CHECK(label,!built&&
+            failed.status==CONSENSUS_CANDIDATE_INJECTED_FAILURE);
+        snprintf(label,sizeof(label),"candidate failpoint %d has no final",fp);
+        CSI_CHECK(label,candidate_output_absent(candidate_dirfd,name));
+        snprintf(label,sizeof(label),"candidate failpoint %d cleans staging",fp);
+        CSI_CHECK(label,candidate_staging_count(dir)==0);
+        snprintf(label,sizeof(label),"candidate failpoint %d preserves active",fp);
+        CSI_CHECK(label,active_is(db,&a));
+    }
+    struct candidate_sidecar_hook sidecar_hook={
+        .dirfd=candidate_dirfd,
+        .name="raced.progress.kv-wal",
+    };
+    consensus_state_snapshot_candidate_test_set_before_link_hook(
+        candidate_create_sidecar,&sidecar_hook);
+    struct consensus_state_candidate_result sidecar_race;
+    CSI_CHECK("candidate late sidecar race refuses publication",
+              !candidate_build(artifact,candidate_dirfd,"raced.progress.kv",
+                               CONSENSUS_CANDIDATE_FAIL_NONE,&sidecar_race)&&
+              sidecar_race.status==CONSENSUS_CANDIDATE_OUTPUT_ERROR&&
+              sidecar_hook.created&&
+              candidate_output_absent(candidate_dirfd,"raced.progress.kv"));
+    CSI_CHECK("candidate sidecar race preserves active generation",
+              active_is(db,&a));
+    CSI_CHECK("candidate sidecar race fixture removes",
+              unlinkat(candidate_dirfd,sidecar_hook.name,0)==0);
+    struct consensus_state_candidate_result candidate_result;
+    CSI_CHECK("complete evidence builds contained candidate generation",
+              candidate_build(artifact,candidate_dirfd,"candidate.progress.kv",
+                              CONSENSUS_CANDIDATE_FAIL_NONE,
+                              &candidate_result)&&
+              candidate_result.status==
+                  CONSENSUS_CANDIDATE_VERIFIED_CONTAINED&&
+              candidate_result.height==b.height&&
+              candidate_result.utxo_count==2&&
+              candidate_result.anchor_count==2&&
+              candidate_result.nullifier_count==2&&
+              memcmp(candidate_result.artifact_digest,b.artifact,32)==0&&
+              digest_nonzero(candidate_result.candidate_file_digest));
+    CSI_CHECK("successful candidate leaves no private staging",
+              candidate_staging_count(dir)==0);
+    char candidate_path[512];
+    snprintf(candidate_path,sizeof(candidate_path),"%s/%s",dir,
+             "candidate.progress.kv");
+    struct stat candidate_stat;
+    CSI_CHECK("candidate output is immutable regular file",
+              lstat(candidate_path,&candidate_stat)==0&&
+              S_ISREG(candidate_stat.st_mode)&&
+              (candidate_stat.st_mode&(S_IWUSR|S_IWGRP|S_IWOTH))==0);
+    uint8_t candidate_disk_digest[32];
+    CSI_CHECK("candidate result binds exact final file bytes",
+              candidate_file_digest(candidate_path,candidate_disk_digest)&&
+              memcmp(candidate_disk_digest,
+                     candidate_result.candidate_file_digest,32)==0);
+    sqlite3 *candidate_db=NULL;
+    CSI_CHECK("candidate independently opens read-only",
+              sqlite3_open_v2(candidate_path,&candidate_db,
+                              SQLITE_OPEN_READONLY|SQLITE_OPEN_NOMUTEX,
+                              NULL)==SQLITE_OK);
+    CSI_CHECK("candidate complete components equal admitted bundle",
+              candidate_db&&active_is(candidate_db,&b));
+    CSI_CHECK("candidate cursors, logs, base, and provenance are exact",
+              candidate_db&&candidate_progress_parity(
+                  candidate_db,&b,candidate_admission));
+    if(candidate_db) sqlite3_close(candidate_db);
+    struct consensus_state_candidate_result collision;
+    CSI_CHECK("candidate final name collision refuses no-replace",
+              !candidate_build(artifact,candidate_dirfd,"candidate.progress.kv",
+                               CONSENSUS_CANDIDATE_FAIL_NONE,&collision)&&
+              collision.status==CONSENSUS_CANDIDATE_REFUSED);
+    struct stat candidate_after_collision;
+    CSI_CHECK("candidate collision preserves exact published inode",
+              lstat(candidate_path,&candidate_after_collision)==0&&
+              candidate_after_collision.st_dev==candidate_stat.st_dev&&
+              candidate_after_collision.st_ino==candidate_stat.st_ino&&
+              candidate_after_collision.st_size==candidate_stat.st_size);
+    char active_candidate_path[512];
+    snprintf(active_candidate_path,sizeof(active_candidate_path),"%s/%s",dir,
+             "progress.kv");
+    CSI_CHECK("contained candidate can be moved only for boot refusal test",
+              rename(candidate_path,active_candidate_path)==0&&
+              chmod(active_candidate_path,0600)==0);
+    CSI_CHECK("progress store refuses admission-only candidate authority",
+              !progress_store_open(dir)&&progress_store_db()==NULL);
+    CSI_CHECK("contained candidate restores after boot refusal test",
+              chmod(active_candidate_path,0400)==0&&
+              rename(active_candidate_path,candidate_path)==0);
+    CSI_CHECK("candidate construction never mutates active generation",
+              active_is(db,&a));
+    consensus_state_artifact_evidence_free(artifact);
+    artifact=NULL;
+    unlink(candidate_path);
+    if(candidate_dirfd>=0) close(candidate_dirfd);
+
     b.anchors[0].height = b.height - 1;
     b.anchors[1].height = b.height - 1;
     CSI_CHECK("unchanged-frontier bundle writes with latest roots below H",
@@ -754,6 +1036,25 @@ int test_consensus_state_snapshot_install(void)
               install(db,&inc,CONSENSUS_INSTALL_FAIL_NONE,
                       CONSENSUS_INSTALL_VERIFIED_CONTAINED));
     CSI_CHECK("contained incomplete bundle preserves generation A",active_is(db,&a));
+    int incomplete_dirfd=open(dir,O_RDONLY|O_DIRECTORY|O_CLOEXEC);
+    artifact_opened=consensus_state_artifact_evidence_open(inc.path,&artifact);
+    CSI_CHECK("incomplete artifact can be admitted for contained inspection",
+              artifact_opened.ok&&artifact!=NULL&&incomplete_dirfd>=0);
+    struct consensus_state_candidate_result incomplete_candidate;
+    CSI_CHECK("incomplete shielded history cannot become a candidate",
+              !candidate_build(artifact,incomplete_dirfd,
+                               "incomplete.progress.kv",
+                               CONSENSUS_CANDIDATE_FAIL_NONE,
+                               &incomplete_candidate)&&
+              incomplete_candidate.status==CONSENSUS_CANDIDATE_REFUSED&&
+              candidate_output_absent(incomplete_dirfd,
+                                      "incomplete.progress.kv")&&
+              candidate_staging_count(dir)==0);
+    CSI_CHECK("incomplete candidate refusal preserves generation A",
+              active_is(db,&a));
+    consensus_state_artifact_evidence_free(artifact);
+    artifact=NULL;
+    if(incomplete_dirfd>=0) close(incomplete_dirfd);
 
     fixture_free(&a); fixture_free(&b); fixture_free(&inc);
     if (db)

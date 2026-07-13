@@ -67,8 +67,16 @@ struct legacy_mirror_sync_runtime {
     _Atomic int64_t rpc_errors;
     _Atomic int64_t blocks_applied;
     _Atomic int64_t headers_added;
+    /* Protected by lock.  Tip hashes are sampled independently; comparison
+     * fields are one coherent same-height observation. */
     char zclassic23_hash[65];
     char zclassicd_hash[65];
+    bool comparison_known;
+    bool comparison_hashes_agree;
+    int comparison_height;
+    int hash_disagreement_height;
+    char comparison_zclassic23_hash[65];
+    char comparison_zclassicd_hash[65];
     char stuck_reason[64];
     enum blocker_class last_blocker_class;
     char last_blocker_id[64];

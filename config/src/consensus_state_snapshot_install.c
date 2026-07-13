@@ -4,6 +4,7 @@
 #include "config/consensus_state_snapshot_install.h"
 
 #include "config/consensus_state_bundle_validate.h"
+#include "consensus_state_snapshot_install_internal.h"
 #include "crypto/sha3.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -362,6 +363,18 @@ bool consensus_state_artifact_evidence_receipt_digest(
         return false;
     memcpy(out, evidence->receipt_digest, 32);
     return true;
+}
+
+sqlite3 *consensus_state_artifact_evidence_db_borrowed(
+    const struct consensus_state_artifact_evidence *evidence)
+{
+    if (!evidence || !evidence->bundle_db ||
+        !consensus_state_artifact_evidence_revalidate(evidence)) {
+        LOG_WARN(INSTALL_SUBSYS,
+                 "artifact evidence database borrow refused: stale evidence");
+        return NULL;
+    }
+    return evidence->bundle_db;
 }
 
 bool consensus_state_snapshot_install(

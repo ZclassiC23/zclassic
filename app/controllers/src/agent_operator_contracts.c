@@ -16,10 +16,7 @@ static bool agent_mirror_operator_action_required(
 {
     if (!mirror)
         return false;
-    const char *blocker = legacy_mirror_sync_blocker_code(mirror);
-    bool blocker_active =
-        blocker && blocker[0] && !mirror->blocker_recovered_by_tip_agreement;
-    return blocker_active &&
+    return legacy_mirror_sync_blocker_is_active(mirror) &&
            legacy_mirror_sync_blocker_should_surface(mirror, false);
 }
 

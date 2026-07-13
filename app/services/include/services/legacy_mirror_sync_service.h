@@ -70,7 +70,15 @@ struct legacy_mirror_sync_stats {
     bool    target_height_known;
     bool    lag_known;
     bool    lag_valid;
+    /* Tip hashes belong to local_height and legacy_height respectively.
+     * They are directly comparable only when those heights are equal.
+     * comparison_* is the explicit same-height chain comparison and remains
+     * unknown until both hashes at comparison_height have been obtained. */
     bool    tip_hashes_agree;
+    bool    comparison_known;
+    bool    comparison_hashes_agree;
+    int     comparison_height;
+    int     hash_disagreement_height;
     int     lag;
     int     target_height;
     int     authority_rewind_target;
@@ -101,6 +109,8 @@ struct legacy_mirror_sync_stats {
     int     last_override_height;
     char    zclassic23_hash[65];
     char    zclassicd_hash[65];
+    char    comparison_zclassic23_hash[65];
+    char    comparison_zclassicd_hash[65];
     char    consensus_authority[32];
     char    candidate_trust[32];
     bool    override_active;
@@ -112,6 +122,7 @@ struct legacy_mirror_sync_stats {
     char    activation_blocker_reason[128];
     char    last_blocker_id[64];
     bool    blocker_recovered_by_tip_agreement;
+    bool    blocker_recovered_by_common_height_agreement;
     char    csr_failure_reason[160];
     char    last_error[160];
     int     zclassicd_rpc_error_code;
@@ -151,6 +162,10 @@ void legacy_mirror_sync_push_status_contract_json(
     struct json_value *out,
     const struct legacy_mirror_sync_stats *stats);
 const char *legacy_mirror_sync_blocker_code(
+    const struct legacy_mirror_sync_stats *stats);
+/* Recovery evidence can suppress only the exact hash-disagreement it proves;
+ * a different remaining blocker is always active. */
+bool legacy_mirror_sync_blocker_is_active(
     const struct legacy_mirror_sync_stats *stats);
 bool legacy_mirror_sync_blocker_should_surface(
     const struct legacy_mirror_sync_stats *stats,

@@ -55,6 +55,34 @@ static int64_t wall_now_s(void)
     return (int64_t)ts.tv_sec;
 }
 
+/* A contained consensus-state candidate deliberately carries convincing
+ * reducer rows but has not passed selected-chain, rollback, or activation CAS
+ * authority. Refuse it before schema creation or any other write so a manual
+ * rename to progress.kv cannot turn admission-only evidence into runtime
+ * consensus state. A future promoter must consume the candidate into a new
+ * generation and remove this table only inside its bound activation protocol. */
+static bool progress_store_candidate_state(sqlite3 *db, bool *contained)
+{
+    if (!db || !contained)
+        return false;
+    *contained = false;
+    sqlite3_stmt *stmt = NULL;
+    if (sqlite3_prepare_v2(
+            db,
+            "SELECT 1 FROM sqlite_schema WHERE type='table' AND "
+            "name='consensus_state_candidate_meta'",
+            -1, &stmt, NULL) != SQLITE_OK)
+        return false;
+    int rc = sqlite3_step(stmt); // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW) {
+        *contained = true;
+        rc = sqlite3_step(stmt); // raw-sql-ok:progress-kv-kernel-store
+    }
+    bool ok = rc == SQLITE_DONE;
+    sqlite3_finalize(stmt);
+    return ok;
+}
+
 /* Apply WAL + reasonable durability/recovery pragmas. Errors here are
  * fatal for the open (caller will close & fail). */
 static bool apply_pragmas(sqlite3 *db)
@@ -269,6 +297,27 @@ bool progress_store_open(const char *datadir)
         fprintf(stderr,  // obs-ok:progress-store-lifecycle
                 "[progress_store] fresh %s opened after quarantine "
                 "(coins_kv will re-seed from snapshot/anchor at boot)\n", path);
+    }
+
+    bool contained_candidate = false;
+    if (!progress_store_candidate_state(db, &contained_candidate) ||
+        contained_candidate) {
+        if (contained_candidate) {
+            fprintf(stderr,  // obs-ok:progress-store-open-failure
+                    "[progress_store] refusing contained consensus-state "
+                    "candidate at %s; selected-chain activation evidence "
+                    "is absent\n", path);
+            event_emitf(EV_RECOVERY_ACTION, 0,
+                        "action=progress_store_candidate_refused "
+                        "reason=activation_authority_absent path=%s", path);
+        } else {
+            fprintf(stderr,  // obs-ok:progress-store-open-failure
+                    "[progress_store] candidate containment inspection "
+                    "failed for %s\n", path);
+        }
+        sqlite3_close(db);
+        pthread_mutex_unlock(&g_lock);
+        return false;
     }
 
     if (!apply_pragmas(db) || !stage_table_ensure(db) ||

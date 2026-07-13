@@ -2092,7 +2092,7 @@ syncdiag_net_split_done:
         ok = ok && json_get(svc, "zclassicd_rpc_transport_reachable") != NULL &&
             json_get_bool(json_get(svc, "zclassicd_rpc_transport_reachable"));
         ok = ok && json_get(svc, "legacy_oracle_usable") != NULL &&
-            json_get_bool(json_get(svc, "legacy_oracle_usable"));
+            !json_get_bool(json_get(svc, "legacy_oracle_usable"));
         ok = ok && json_get(svc, "zclassicd_rpc_error_code") != NULL &&
             json_get_int(json_get(svc, "zclassicd_rpc_error_code")) == 0;
         ok = ok && json_get(svc, "zclassicd_rpc_error_message") != NULL &&

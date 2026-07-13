@@ -4,7 +4,8 @@
  * authoritative block writer, so this service no longer applies blocks.
  * It only observes lag against a sibling
  * zclassicd: fetch chain-info, compute lag, evaluate the lag-SLO,
- * verify anchor/tip hashes agree, cache hashes, and surface a blocker
+ * verify both chains at one explicit common height, cache independent tip
+ * hashes, and surface a blocker
  * when the local tip is behind. The supervisor tick, lag-SLO monitor,
  * and stats/introspection feed health, metrics, conditions, and the
  * liveness tree.
@@ -47,6 +48,8 @@
 struct legacy_mirror_sync_runtime g_lms = {
     .lock = PTHREAD_MUTEX_INITIALIZER,
     .flight = PTHREAD_MUTEX_INITIALIZER,
+    .comparison_height = -1,
+    .hash_disagreement_height = -1,
 };
 
 #ifdef ZCL_TESTING
@@ -107,11 +110,93 @@ static void lms_clear_blocker(void)
     g_lms.last_blocker_id[0] = '\0';
     g_lms.last_error[0] = '\0';
     pthread_mutex_unlock(&g_lms.lock);
-    /* mirror_consensus_clear_blocker was deleted in F-1e — the
-     * mirror.* blocker IDs that wired to the typed blocker registry
-     * via mirror_consensus_record_blocker auto-expire via
-     * BLOCKER_TRANSIENT classification. The cryptographic-mismatch
-     * (PERMANENT) blockers were never intended to auto-clear. */
+    /* This is the monitor-local latch.  Typed blocker resolution is explicit;
+     * blocker class alone has no expiry semantics. */
+}
+
+static void lms_note_hash_disagreement(int height)
+{
+    pthread_mutex_lock(&g_lms.lock);
+    if (height > g_lms.hash_disagreement_height)
+        g_lms.hash_disagreement_height = height;
+    pthread_mutex_unlock(&g_lms.lock);
+}
+
+static bool lms_resolve_hash_disagreement(int comparison_height)
+{
+    bool local_cleared = false;
+    pthread_mutex_lock(&g_lms.lock);
+    int mismatch_height = g_lms.hash_disagreement_height;
+    if (mismatch_height < 0 || comparison_height < mismatch_height) {
+        pthread_mutex_unlock(&g_lms.lock);
+        return false;
+    }
+    if (strcmp(g_lms.last_blocker_id, "hash-disagreement") == 0) {
+        g_lms.last_blocker_class = BLOCKER_TRANSIENT;
+        g_lms.last_blocker_id[0] = '\0';
+        g_lms.last_error[0] = '\0';
+        local_cleared = true;
+    }
+    pthread_mutex_unlock(&g_lms.lock);
+    bool consensus_cleared = mirror_consensus_resolve_hash_disagreement();
+    if (local_cleared || consensus_cleared) {
+        pthread_mutex_lock(&g_lms.lock);
+        g_lms.hash_disagreement_height = -1;
+        pthread_mutex_unlock(&g_lms.lock);
+    }
+    return local_cleared || consensus_cleared;
+}
+
+static bool lms_hash_disagreement_active(void)
+{
+    bool active;
+    pthread_mutex_lock(&g_lms.lock);
+    active = strcmp(g_lms.last_blocker_id, "hash-disagreement") == 0;
+    pthread_mutex_unlock(&g_lms.lock);
+    if (!active) {
+        struct mirror_consensus_stats stats;
+        mirror_consensus_stats_snapshot(&stats);
+        active = strcmp(stats.activation_blocker_reason,
+                        "hash-disagreement") == 0;
+    }
+    return active;
+}
+
+static bool lms_resolve_observation_blocker(const char *reason)
+{
+    bool local_cleared = false;
+    pthread_mutex_lock(&g_lms.lock);
+    if (reason && strcmp(g_lms.last_blocker_id, reason) == 0) {
+        g_lms.last_blocker_class = BLOCKER_TRANSIENT;
+        g_lms.last_blocker_id[0] = '\0';
+        g_lms.last_error[0] = '\0';
+        local_cleared = true;
+    }
+    pthread_mutex_unlock(&g_lms.lock);
+    bool consensus_cleared =
+        mirror_consensus_resolve_observation_blocker(reason);
+    return local_cleared || consensus_cleared;
+}
+
+static void lms_record_unknown_comparison(const char *code, const char *msg)
+{
+    if (!lms_hash_disagreement_active()) {
+        lms_record_blocker(code, msg);
+        return;
+    }
+
+    char detail[160];
+    snprintf(detail, sizeof(detail), "%s; prior hash-disagreement unresolved",
+             msg && msg[0] ? msg : "same-height comparison unavailable");
+    lms_set_error(detail);
+
+    struct blocker_record secondary;
+    char blocker_id[BLOCKER_ID_MAX];
+    snprintf(blocker_id, sizeof(blocker_id), "mirror.%s",
+             code && code[0] ? code : "comparison-unavailable");
+    if (blocker_init(&secondary, blocker_id, "legacy_mirror",
+                     mirror_consensus_classify_blocker_reason(code), detail))
+        (void)blocker_set(&secondary);
 }
 
 int lms_env_int(const char *name, int fallback, int min, int max)
@@ -300,18 +385,71 @@ struct zcl_result lms_local_hash_at(int height, char out_hex[65])
     return ZCL_OK;
 }
 
-static bool lms_verify_anchor(int height)
+enum lms_hash_comparison_result {
+    LMS_HASH_COMPARISON_UNKNOWN = 0,
+    LMS_HASH_COMPARISON_AGREE,
+    LMS_HASH_COMPARISON_MISMATCH,
+};
+
+static void lms_cache_tip_hashes(const char *local, const char *remote);
+
+static void lms_cache_comparison(int height,
+                                 const char *local,
+                                 const char *remote,
+                                 bool known,
+                                 bool agree)
 {
-    if (height < 0) return true;
+    pthread_mutex_lock(&g_lms.lock);
+    g_lms.comparison_height = height;
+    g_lms.comparison_known = known;
+    g_lms.comparison_hashes_agree = known && agree;
+    snprintf(g_lms.comparison_zclassic23_hash,
+             sizeof(g_lms.comparison_zclassic23_hash), "%s",
+             local ? local : "");
+    snprintf(g_lms.comparison_zclassicd_hash,
+             sizeof(g_lms.comparison_zclassicd_hash), "%s",
+             remote ? remote : "");
+    pthread_mutex_unlock(&g_lms.lock);
+}
+
+static enum lms_hash_comparison_result
+lms_verify_common_height(int height,
+                         const char *known_local,
+                         const char *known_remote)
+{
+    if (height < 0) {
+        lms_cache_comparison(height, NULL, NULL, false, false);
+        lms_record_unknown_comparison("hash-comparison-unavailable",
+                                      "no common chain height available");
+        return LMS_HASH_COMPARISON_UNKNOWN;
+    }
     char local[65], remote[65], err[160] = {0};
-    if (!lms_local_hash_at(height, local).ok)
-        return true;
-    if (!lms_fetch_hash(height, remote, err, sizeof(err))) {
+    local[0] = '\0';
+    remote[0] = '\0';
+    if (known_local && known_local[0])
+        snprintf(local, sizeof(local), "%s", known_local);
+    if (known_remote && known_remote[0])
+        snprintf(remote, sizeof(remote), "%s", known_remote);
+
+    if (!local[0] && !lms_local_hash_at(height, local).ok) {
+        lms_cache_comparison(height, NULL, remote, false, false);
+        lms_record_unknown_comparison("hash-comparison-unavailable",
+                                      "local same-height hash unavailable");
+        return LMS_HASH_COMPARISON_UNKNOWN;
+    }
+    if (!remote[0] && !lms_fetch_hash(height, remote, err, sizeof(err))) {
         atomic_fetch_add(&g_lms.rpc_errors, 1);
-        lms_record_blocker("rpc-unreachable", err);
-        return false;
+        lms_cache_comparison(height, local, NULL, false, false);
+        lms_record_unknown_comparison("rpc-unreachable", err);
+        return LMS_HASH_COMPARISON_UNKNOWN;
+    }
+    if (height == atomic_load(&g_lms.local_height) &&
+        height == atomic_load(&g_lms.legacy_height)) {
+        lms_cache_tip_hashes(local, remote);
     }
     if (strcasecmp(local, remote) != 0) {
+        lms_cache_comparison(height, local, remote, true, false);
+        lms_note_hash_disagreement(height);
         oracle_policy_record_disagreement(height, local, remote);
         lms_record_blocker("hash-disagreement", "legacy hash disagreement");
         /* Validation pack check 6: locate the FIRST diverging height and
@@ -320,46 +458,26 @@ static bool lms_verify_anchor(int height)
          * divergence (healthy transient fork) is NOT escalated until it
          * confirms at depth or persists. */
         (void)mirror_divergence_locate(height);
-        return false;
+        return LMS_HASH_COMPARISON_MISMATCH;
     }
-    /* Agreement self-clears any pending/located divergence at or below
-     * this height (the fork resolved / the mirror reorged to us). */
+    lms_cache_comparison(height, local, remote, true, true);
+    /* Exact agreement clears only the hash mismatch and the two allowlisted
+     * transient observation failures; unrelated blockers remain latched. */
     mirror_divergence_note_agreement(height);
-    return true;
+    (void)lms_resolve_observation_blocker(
+        "hash-comparison-unavailable");
+    (void)lms_resolve_observation_blocker("rpc-unreachable");
+    (void)lms_resolve_hash_disagreement(height);
+    return LMS_HASH_COMPARISON_AGREE;
 }
 
-static bool lms_verify_after_tip(int height)
-{
-    char local[65], remote[65], err[160] = {0};
-    if (!lms_local_hash_at(height, local).ok) {
-        lms_set_error("local tip hash unavailable after catchup");
-        return false;
-    }
-    if (!lms_fetch_hash(height, remote, err, sizeof(err))) {
-        atomic_fetch_add(&g_lms.rpc_errors, 1);
-        lms_record_blocker("rpc-unreachable", err);
-        return false;
-    }
-    if (strcasecmp(local, remote) != 0) {
-        oracle_policy_record_disagreement(height, local, remote);
-        lms_record_blocker("hash-disagreement", "post-catchup tip disagreement");
-        /* Validation pack check 6 — see lms_verify_anchor. */
-        (void)mirror_divergence_locate(height);
-        return false;
-    }
-    mirror_divergence_note_agreement(height);
-    return true;
-}
-
-static void lms_cache_hashes(const char *local, const char *remote)
+static void lms_cache_tip_hashes(const char *local, const char *remote)
 {
     pthread_mutex_lock(&g_lms.lock);
-    if (local)
-        snprintf(g_lms.zclassic23_hash, sizeof(g_lms.zclassic23_hash),
-                 "%s", local);
-    if (remote)
-        snprintf(g_lms.zclassicd_hash, sizeof(g_lms.zclassicd_hash),
-                 "%s", remote);
+    snprintf(g_lms.zclassic23_hash, sizeof(g_lms.zclassic23_hash),
+             "%s", local ? local : "");
+    snprintf(g_lms.zclassicd_hash, sizeof(g_lms.zclassicd_hash),
+             "%s", remote ? remote : "");
     pthread_mutex_unlock(&g_lms.lock);
 }
 
@@ -557,7 +675,8 @@ struct zcl_result legacy_mirror_sync_request_catchup(const char *reason)
                               err, sizeof(err))) {
         atomic_store(&g_lms.reachable, 0);
         atomic_fetch_add(&g_lms.rpc_errors, 1);
-        lms_record_blocker("rpc-unreachable", err);
+        lms_cache_comparison(-1, NULL, NULL, false, false);
+        lms_record_unknown_comparison("rpc-unreachable", err);
         ok = false;
         goto out;
     }
@@ -574,16 +693,27 @@ struct zcl_result legacy_mirror_sync_request_catchup(const char *reason)
      * episode (latched), cleared when lag drops back below threshold. */
     lms_evaluate_lag_slo(lag, legacy_blocks, local, (int64_t)platform_time_wall_time_t());
 
+    char local_hash[65] = {0}, remote_hash[65] = {0};
     {
-        char local_hash[65] = {0}, remote_hash[65] = {0};
         char hash_err[160] = {0};
-        if (lms_local_hash_at(local, local_hash).ok)
-            lms_cache_hashes(local_hash, NULL);
-        if (legacy_blocks >= 0 &&
-            lms_fetch_hash(legacy_blocks, remote_hash,
-                           hash_err, sizeof(hash_err))) {
-            lms_cache_hashes(NULL, remote_hash);
-        }
+        (void)lms_local_hash_at(local, local_hash);
+        if (legacy_blocks >= 0)
+            (void)lms_fetch_hash(legacy_blocks, remote_hash,
+                                 hash_err, sizeof(hash_err));
+        /* Tip hashes remain separate observations because their heights
+         * differ while the local node is catching up. */
+        lms_cache_tip_hashes(local_hash, remote_hash);
+    }
+
+    int comparison_height = local < legacy_blocks ? local : legacy_blocks;
+    enum lms_hash_comparison_result comparison =
+        lms_verify_common_height(
+            comparison_height,
+            comparison_height == local ? local_hash : NULL,
+            comparison_height == legacy_blocks ? remote_hash : NULL);
+    if (comparison != LMS_HASH_COMPARISON_AGREE) {
+        ok = false;
+        goto out;
     }
 
     if (legacy_blocks < local) {
@@ -594,16 +724,8 @@ struct zcl_result legacy_mirror_sync_request_catchup(const char *reason)
         goto out;
     }
 
-    if (!lms_verify_anchor(local)) {
-        ok = false;
-        goto out;
-    }
     if (lag <= g_lms.lag_sla) {
         atomic_store(&g_lms.target_height, legacy_blocks);
-        if (local == legacy_blocks && !lms_verify_after_tip(local)) {
-            ok = false;
-            goto out;
-        }
         int prev_advanced = atomic_load(&g_lms.last_advanced_height);
         if (local >= prev_advanced)
             atomic_fetch_add(&g_lms.catchups_total, 1);
@@ -611,14 +733,6 @@ struct zcl_result legacy_mirror_sync_request_catchup(const char *reason)
         ok = true;
         goto out;
     }
-    if (lag > 4) {
-        int sample = local + lag / 2;
-        if (sample < legacy_blocks && !lms_verify_anchor(sample)) {
-            ok = false;
-            goto out;
-        }
-    }
-
     /* Monitor-only: the stage pipeline is the authoritative
      * block writer. The mirror no longer applies blocks; it observes
      * the lag, records the stuck status when behind, and lets the

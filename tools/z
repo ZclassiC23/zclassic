@@ -164,11 +164,47 @@ json_escape() {
         | tr '\n' ' '
 }
 
+rpc_result() {
+    local out
+    out="$(rpc "$@" 2>/dev/null || true)"
+    if printf '%s' "$out" | grep -q '"result"'; then
+        json_field "$out" result
+    else
+        printf '%s' "$out"
+    fi
+}
+
+hash256_hex() {
+    [[ "$1" =~ ^[[:xdigit:]]{64}$ ]]
+}
+
+chain_height() {
+    [[ "$1" =~ ^[0-9]{1,10}$ ]] && [ "$1" -le 2147483647 ]
+}
+
+hex_equal() {
+    local left right
+    hash256_hex "$1" && hash256_hex "$2" || return 1
+    left="$(printf '%s' "$1" | tr 'A-F' 'a-f')"
+    right="$(printf '%s' "$2" | tr 'A-F' 'a-f')"
+    [ "$left" = "$right" ]
+}
+
 normalize_mirror_status_json() {
     local json="$1" lag blocker reachable lag_known lag_valid
     local candidate_lag_known candidate_lag_valid
     local legacy_height_known target_height_known
     local c23_h zd_h c23_hash zd_hash tip_hashes_agree recovered
+    local comparison_known comparison_hashes_agree common_recovered
+    local comparison_height comparison_c23_hash comparison_zd_hash
+    local same_chain_at_comparison_height
+    local candidate_blocker activation_blocker last_blocker
+    local hash_disagreement_height comparison_covers tip_covers
+    local hash_recoverable runtime_comparison_present
+    local compat_probe_performed
+    local hash_blocker_present
+    local mirror_running mirror_enabled csr_sqlite_rc breach_blocks repair_gated
+    local in_flight last_progress normalized_state
     reachable="$(json_field "$json" reachable)"
     lag="$(json_field "$json" candidate_lag)"
     [ -n "$lag" ] || lag="$(json_field "$json" lag)"
@@ -197,27 +233,146 @@ normalize_mirror_status_json() {
     [ -n "$candidate_lag_valid" ] || candidate_lag_valid="$lag_valid"
     [ -n "$legacy_height_known" ] || legacy_height_known="$lag_known"
     [ -n "$target_height_known" ] || target_height_known="$lag_known"
-    blocker="$(json_field "$json" candidate_blocker)"
-    [ -n "$blocker" ] || blocker="$(json_field "$json" last_blocker_code)"
-    [ -n "$blocker" ] || blocker="$(json_field "$json" activation_blocker)"
+    candidate_blocker="$(json_field "$json" candidate_blocker)"
+    activation_blocker="$(json_field "$json" activation_blocker)"
+    last_blocker="$(json_field "$json" last_blocker_code)"
     tip_hashes_agree="$(json_field "$json" tip_hashes_agree)"
     recovered="$(json_field "$json" blocker_recovered_by_tip_agreement)"
+    comparison_known="$(json_field "$json" comparison_known)"
+    comparison_hashes_agree="$(json_field "$json" comparison_hashes_agree)"
+    comparison_height="$(json_field "$json" comparison_height)"
+    comparison_c23_hash="$(json_field "$json" comparison_zclassic23_hash)"
+    comparison_zd_hash="$(json_field "$json" comparison_zclassicd_hash)"
+    hash_disagreement_height="$(json_field "$json" hash_disagreement_height)"
+    common_recovered="$(json_field "$json" blocker_recovered_by_common_height_agreement)"
+    runtime_comparison_present=false
+    [ -n "$comparison_known" ] && runtime_comparison_present=true
+    compat_probe_performed=false
     c23_h="$(json_field "$json" zclassic23_height)"
     zd_h="$(json_field "$json" zclassicd_height)"
     c23_hash="$(json_field "$json" zclassic23_hash)"
     zd_hash="$(json_field "$json" zclassicd_hash)"
-    if [ "$blocker" = "hash-disagreement" ]; then
-        if [ "$tip_hashes_agree" = "true" ] || [ "$recovered" = "true" ]; then
-            blocker=""
-            tip_hashes_agree=true
-            recovered=true
-        elif [ -n "$c23_h" ] && [ "$c23_h" = "$zd_h" ] &&
-             [ -n "$c23_hash" ] && [ "$c23_hash" = "$zd_hash" ]; then
-            blocker=""
-            tip_hashes_agree=true
-            recovered=true
+    if [ "$tip_hashes_agree" = "true" ] &&
+       { ! chain_height "$c23_h" || ! chain_height "$zd_h" ||
+         [ "$c23_h" != "$zd_h" ] ||
+         ! hex_equal "$c23_hash" "$zd_hash"; }; then
+        tip_hashes_agree=false
+    elif [ -z "$tip_hashes_agree" ] &&
+         chain_height "$c23_h" && chain_height "$zd_h" &&
+         [ "$c23_h" = "$zd_h" ] &&
+         hex_equal "$c23_hash" "$zd_hash"; then
+        tip_hashes_agree=true
+    fi
+    if [ "$comparison_known" = "true" ]; then
+        if ! chain_height "$comparison_height" ||
+           ! hash256_hex "$comparison_c23_hash" ||
+           ! hash256_hex "$comparison_zd_hash"; then
+            comparison_known=false
+            comparison_hashes_agree=false
+        elif [ "$comparison_hashes_agree" = "true" ] &&
+             ! hex_equal "$comparison_c23_hash" "$comparison_zd_hash"; then
+            comparison_hashes_agree=false
+        fi
+        json="$(json_put_bool "$json" comparison_known "$comparison_known")"
+        json="$(json_put_bool "$json" comparison_hashes_agree "$comparison_hashes_agree")"
+    fi
+    if [ -z "$comparison_known" ] &&
+       chain_height "$c23_h" && chain_height "$zd_h" &&
+       command -v legacy_rpc >/dev/null 2>&1; then
+        if [ "$c23_h" -le "$zd_h" ] 2>/dev/null; then
+            comparison_height="$c23_h"
+            comparison_c23_hash="$c23_hash"
+        else
+            comparison_height="$zd_h"
+            comparison_c23_hash="$(rpc_result getblockhash "$comparison_height")"
+        fi
+        comparison_zd_hash="$(json_field "$(legacy_rpc getblockhash "[$comparison_height]" || true)" result)"
+        if hash256_hex "$comparison_c23_hash" &&
+           hash256_hex "$comparison_zd_hash"; then
+            compat_probe_performed=true
+            comparison_known=true
+            comparison_hashes_agree=false
+            hex_equal "$comparison_c23_hash" "$comparison_zd_hash" &&
+                comparison_hashes_agree=true
+            json="$(json_put_number "$json" comparison_height "$comparison_height")"
+            json="$(json_put_bool "$json" comparison_known "$comparison_known")"
+            json="$(json_put_bool "$json" comparison_hashes_agree "$comparison_hashes_agree")"
+            json="$(json_put_bool "$json" same_chain_at_comparison_height "$comparison_hashes_agree")"
+            json="$(json_put_string "$json" comparison_zclassic23_hash "$comparison_c23_hash")"
+            json="$(json_put_string "$json" comparison_zclassicd_hash "$comparison_zd_hash")"
+            json="$(json_put_string "$json" comparison_evidence_source tools_z_compat_probe)"
         fi
     fi
+    if [ "$runtime_comparison_present" = "true" ]; then
+        json="$(json_put_string "$json" comparison_evidence_source node_runtime)"
+        json="$(json_put_bool "$json" mirror_contract_compatibility_stale false)"
+    elif [ "$compat_probe_performed" = "true" ] &&
+         printf '%s' "$json" | grep -q '"mirror_contract"'; then
+        json="$(json_put_bool "$json" mirror_contract_compatibility_stale true)"
+    fi
+    if [ -n "$comparison_known" ] && [ -n "$comparison_hashes_agree" ]; then
+        same_chain_at_comparison_height=false
+        if [ "$comparison_known" = "true" ] &&
+           [ "$comparison_hashes_agree" = "true" ] &&
+           hex_equal "$comparison_c23_hash" "$comparison_zd_hash"; then
+            same_chain_at_comparison_height=true
+        fi
+        json="$(json_put_bool "$json" same_chain_at_comparison_height "$same_chain_at_comparison_height")"
+    fi
+
+    hash_blocker_present=false
+    if [ "$candidate_blocker" = "hash-disagreement" ] ||
+       [ "$activation_blocker" = "hash-disagreement" ] ||
+       [ "$last_blocker" = "hash-disagreement" ]; then
+        hash_blocker_present=true
+    fi
+    comparison_covers=false
+    tip_covers=false
+    if chain_height "$hash_disagreement_height" &&
+       chain_height "$comparison_height" &&
+       [ "$comparison_known" = "true" ] &&
+       [ "$comparison_hashes_agree" = "true" ] &&
+       hex_equal "$comparison_c23_hash" "$comparison_zd_hash" &&
+       [ "$comparison_height" -ge "$hash_disagreement_height" ]; then
+        comparison_covers=true
+    fi
+    if chain_height "$hash_disagreement_height" &&
+       chain_height "$c23_h" &&
+       [ "$tip_hashes_agree" = "true" ] &&
+       hex_equal "$c23_hash" "$zd_hash" &&
+       [ "$c23_h" -ge "$hash_disagreement_height" ]; then
+        tip_covers=true
+    fi
+    hash_recoverable=false
+    if [ "$comparison_covers" = "true" ]; then
+        hash_recoverable=true
+        common_recovered=true
+    elif [ "$hash_blocker_present" = "true" ]; then
+        common_recovered=false
+    fi
+    if [ "$tip_covers" = "true" ]; then
+        hash_recoverable=true
+        recovered=true
+    elif [ "$hash_blocker_present" = "true" ]; then
+        recovered=false
+    fi
+    if [ "$hash_recoverable" = "true" ]; then
+        if [ "$candidate_blocker" = "hash-disagreement" ]; then
+            candidate_blocker=""
+        fi
+        if [ "$activation_blocker" = "hash-disagreement" ]; then
+            activation_blocker=""
+            json="$(json_put_string "$json" activation_blocker "")"
+        fi
+        if [ "$last_blocker" = "hash-disagreement" ]; then
+            last_blocker=""
+            json="$(json_put_string "$json" last_blocker_code "")"
+        fi
+    fi
+
+    blocker="$activation_blocker"
+    [ -n "$blocker" ] || blocker="$last_blocker"
+    [ -n "$blocker" ] || blocker="$candidate_blocker"
     active_detail=""
     if [ -n "$blocker" ]; then
         active_detail="$(json_field "$json" last_error)"
@@ -242,23 +397,56 @@ normalize_mirror_status_json() {
         json="$(json_put_null "$json" candidate_lag_observed)"
     fi
     json="$(json_put_string "$json" candidate_blocker "$blocker")"
-    if [ "$recovered" = "true" ] && [ -z "$blocker" ]; then
-        json="$(json_put_string "$json" activation_blocker "")"
-        json="$(json_put_string "$json" last_blocker_code "")"
-        if [ "$reachable" = "true" ] && [ "$lag_known" = "true" ]; then
-            case "$lag" in
-                -[0-9]*|[0-9]*)
-                    if [ "$lag" -ge 0 ] && [ "$lag" -le 1 ]; then
-                        json="$(json_put_string "$json" state "healthy")"
-                    fi
-                    ;;
-            esac
+    if [ "$hash_recoverable" = "true" ] &&
+       [ -z "$blocker" ]; then
+        mirror_enabled="$(json_field "$json" mirror_enabled)"
+        mirror_running="$(json_field "$json" mirror_running)"
+        [ -n "$mirror_running" ] || mirror_running="$(json_field "$json" running)"
+        csr_sqlite_rc="$(json_field "$json" csr_sqlite_rc)"
+        breach_blocks="$(json_field "$json" lag_sla_breach_blocks)"
+        repair_gated="$(json_field "$json" mirror_repair_gated_by_local_retries)"
+        in_flight="$(json_field "$json" in_flight)"
+        last_progress="$(json_field "$json" last_progress_blocks)"
+        csr_sqlite_rc="${csr_sqlite_rc:-0}"
+        breach_blocks="${breach_blocks:-0}"
+        last_progress="${last_progress:-0}"
+        normalized_state="observing"
+        if [ "$mirror_enabled" = "false" ] ||
+           [ "$mirror_running" = "false" ] ||
+           [ "$reachable" != "true" ] ||
+           [ "$csr_sqlite_rc" -ne 0 ] 2>/dev/null; then
+            normalized_state="blocked"
+        elif [ "$lag_known" = "true" ] &&
+             [ "$breach_blocks" -gt 0 ] 2>/dev/null &&
+             [ "$lag" -ge "$breach_blocks" ] 2>/dev/null; then
+            normalized_state="concurrent_catchup"
+        elif [ "$repair_gated" = "true" ]; then
+            normalized_state="gated_by_local_retries"
+        elif [ "$lag_known" = "true" ] && [ "$lag" -lt 0 ] 2>/dev/null; then
+            normalized_state="observing"
+        elif [ "$lag_known" = "true" ] && [ "$lag" -le 1 ] 2>/dev/null; then
+            normalized_state="healthy"
+        elif [ "$in_flight" = "true" ] ||
+             [ "$last_progress" -gt 0 ] 2>/dev/null ||
+             { [ "$lag_known" = "true" ] && [ "$lag" -gt 1 ] 2>/dev/null; };
+        then
+            normalized_state="catching_up"
+        fi
+        json="$(json_put_string "$json" state "$normalized_state")"
+        if [ "$runtime_comparison_present" = "true" ] &&
+           printf '%s' "$json" | grep -q '"mirror_contract"'; then
+            json="$(json_put_string "$json" status "$normalized_state")"
+            json="$(json_put_bool "$json" blocker_active false)"
+            json="$(json_put_string "$json" blocker_code "")"
+            json="$(json_put_bool "$json" operator_action_required false)"
         fi
     fi
     [ -n "$tip_hashes_agree" ] &&
         json="$(json_put_bool "$json" tip_hashes_agree "$tip_hashes_agree")"
     [ -n "$recovered" ] &&
         json="$(json_put_bool "$json" blocker_recovered_by_tip_agreement "$recovered")"
+    [ -n "$common_recovered" ] &&
+        json="$(json_put_bool "$json" blocker_recovered_by_common_height_agreement "$common_recovered")"
     json="$(json_put_string "$json" active_error_code "$blocker")"
     json="$(json_put_string "$json" active_error_detail "$active_detail")"
     printf '%s\n' "$json"
@@ -266,7 +454,7 @@ normalize_mirror_status_json() {
 
 tools_z_selftest() {
     local sample normalized
-    sample='{"zclassic23_height":7,"zclassic23_hash":"0000abc","zclassicd_height":7,"zclassicd_hash":"0000abc","reachable":true,"lag":0,"candidate_blocker":"hash-disagreement","activation_blocker":"hash-disagreement","last_error":"stale mismatch"}'
+    sample='{"zclassic23_height":7,"zclassic23_hash":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","zclassicd_height":7,"zclassicd_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","reachable":true,"lag":0,"hash_disagreement_height":7,"candidate_blocker":"hash-disagreement","activation_blocker":"hash-disagreement","last_error":"stale mismatch"}'
     normalized="$(normalize_mirror_status_json "$sample")"
     [ "$(json_field "$normalized" candidate_blocker)" = "" ] || {
         echo "tools/z selftest: stale same-hash candidate blocker not cleared" >&2
@@ -297,7 +485,55 @@ tools_z_selftest() {
         return 1
     }
 
-    sample='{"zclassic23_height":7,"zclassic23_hash":"0000abc","zclassicd_height":7,"zclassicd_hash":"0000def","reachable":true,"lag":0,"candidate_blocker":"hash-disagreement","last_error":"real mismatch"}'
+    sample='{"zclassic23_height":7,"zclassic23_hash":"not-a-block-hash","zclassicd_height":7,"zclassicd_hash":"not-a-block-hash","reachable":true,"lag":0,"hash_disagreement_height":7,"candidate_blocker":"hash-disagreement","activation_blocker":"hash-disagreement"}'
+    normalized="$(normalize_mirror_status_json "$sample")"
+    [ "$(json_field "$normalized" candidate_blocker)" = "hash-disagreement" ] &&
+    [ "$(json_field "$normalized" tip_hashes_agree)" != "true" ] || {
+        echo "tools/z selftest: malformed equal hashes cleared a blocker" >&2
+        return 1
+    }
+
+    sample='{"zclassic23_height":7,"zclassic23_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","zclassicd_height":9,"zclassicd_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","reachable":true,"lag":2,"candidate_blocker":"hash-disagreement","activation_blocker":"hash-disagreement","comparison_height":7,"comparison_known":true,"comparison_hashes_agree":true,"comparison_zclassic23_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","comparison_zclassicd_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
+    normalized="$(normalize_mirror_status_json "$sample")"
+    [ "$(json_field "$normalized" candidate_blocker)" = "hash-disagreement" ] &&
+    [ "$(json_field "$normalized" blocker_recovered_by_common_height_agreement)" = "false" ] || {
+        echo "tools/z selftest: agreement without mismatch floor cleared a blocker" >&2
+        return 1
+    }
+
+    sample='{"zclassic23_height":7,"zclassic23_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","zclassicd_height":9,"zclassicd_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","reachable":true,"lag":2,"hash_disagreement_height":7,"candidate_blocker":"hash-disagreement","comparison_height":7,"comparison_known":true,"comparison_hashes_agree":true,"comparison_zclassic23_hash":"same","comparison_zclassicd_hash":"same"}'
+    normalized="$(normalize_mirror_status_json "$sample")"
+    [ "$(json_field "$normalized" candidate_blocker)" = "hash-disagreement" ] &&
+    [ "$(json_field "$normalized" comparison_known)" = "false" ] &&
+    [ "$(json_field "$normalized" same_chain_at_comparison_height)" = "false" ] || {
+        echo "tools/z selftest: malformed comparison evidence cleared a blocker" >&2
+        return 1
+    }
+
+    sample='{"zclassic23_height":7,"zclassic23_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","zclassicd_height":9,"zclassicd_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","reachable":true,"lag":2,"lag_sla_breach_blocks":10,"state":"blocked","hash_disagreement_height":7,"candidate_blocker":"hash-disagreement","activation_blocker":"hash-disagreement","last_blocker_code":"hash-disagreement","last_error":"stale mismatch","comparison_height":7,"comparison_known":true,"comparison_hashes_agree":true,"comparison_zclassic23_hash":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","comparison_zclassicd_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
+    normalized="$(normalize_mirror_status_json "$sample")"
+    [ "$(json_field "$normalized" candidate_blocker)" = "" ] || {
+        echo "tools/z selftest: common-height agreement did not clear stale blocker" >&2
+        return 1
+    }
+    [ "$(json_field "$normalized" tip_hashes_agree)" != "true" ] || {
+        echo "tools/z selftest: lagged tips were falsely marked equal" >&2
+        return 1
+    }
+    [ "$(json_field "$normalized" blocker_recovered_by_common_height_agreement)" = "true" ] || {
+        echo "tools/z selftest: common-height recovery not recorded" >&2
+        return 1
+    }
+    [ "$(json_field "$normalized" same_chain_at_comparison_height)" = "true" ] || {
+        echo "tools/z selftest: common-height agreement not exposed" >&2
+        return 1
+    }
+    [ "$(json_field "$normalized" state)" = "catching_up" ] || {
+        echo "tools/z selftest: lagged same-chain state not normalized" >&2
+        return 1
+    }
+
+    sample='{"zclassic23_height":7,"zclassic23_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","zclassicd_height":7,"zclassicd_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","reachable":true,"lag":0,"hash_disagreement_height":7,"candidate_blocker":"hash-disagreement","last_error":"real mismatch","comparison_height":7,"comparison_known":true,"comparison_hashes_agree":false,"comparison_zclassic23_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","comparison_zclassicd_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}'
     normalized="$(normalize_mirror_status_json "$sample")"
     [ "$(json_field "$normalized" candidate_blocker)" = "hash-disagreement" ] || {
         echo "tools/z selftest: real mismatch candidate blocker was cleared" >&2
@@ -305,6 +541,44 @@ tools_z_selftest() {
     }
     [ "$(json_field "$normalized" active_error_code)" = "hash-disagreement" ] || {
         echo "tools/z selftest: real mismatch active error was cleared" >&2
+        return 1
+    }
+
+    sample='{"zclassic23_height":7,"zclassic23_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","zclassicd_height":9,"zclassicd_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","reachable":true,"lag":2,"hash_disagreement_height":7,"candidate_blocker":"hash-disagreement","last_error":"comparison unavailable","comparison_height":7,"comparison_known":false,"comparison_hashes_agree":false}'
+    normalized="$(normalize_mirror_status_json "$sample")"
+    [ "$(json_field "$normalized" candidate_blocker)" = "hash-disagreement" ] || {
+        echo "tools/z selftest: unknown comparison cleared prior mismatch" >&2
+        return 1
+    }
+    [ "$(json_field "$normalized" same_chain_at_comparison_height)" = "false" ] || {
+        echo "tools/z selftest: unknown comparison claimed same-chain proof" >&2
+        return 1
+    }
+
+    sample='{"zclassic23_height":7,"zclassic23_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","zclassicd_height":9,"zclassicd_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","reachable":true,"lag":2,"state":"blocked","hash_disagreement_height":9,"candidate_blocker":"hash-disagreement","activation_blocker":"hash-disagreement","comparison_height":7,"comparison_known":true,"comparison_hashes_agree":true,"comparison_zclassic23_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","comparison_zclassicd_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","blocker_recovered_by_common_height_agreement":true}'
+    normalized="$(normalize_mirror_status_json "$sample")"
+    [ "$(json_field "$normalized" candidate_blocker)" = "hash-disagreement" ] || {
+        echo "tools/z selftest: lower agreement cleared higher mismatch" >&2
+        return 1
+    }
+    [ "$(json_field "$normalized" blocker_recovered_by_common_height_agreement)" = "false" ] || {
+        echo "tools/z selftest: unbound incoming recovery flag was trusted" >&2
+        return 1
+    }
+
+    sample='{"zclassic23_height":7,"zclassic23_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","zclassicd_height":9,"zclassicd_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","reachable":true,"lag":2,"state":"blocked","hash_disagreement_height":7,"candidate_blocker":"hash-disagreement","activation_blocker":"rpc-unreachable","comparison_height":7,"comparison_known":true,"comparison_hashes_agree":true,"comparison_zclassic23_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","comparison_zclassicd_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
+    normalized="$(normalize_mirror_status_json "$sample")"
+    [ "$(json_field "$normalized" candidate_blocker)" = "rpc-unreachable" ] &&
+    [ "$(json_field "$normalized" active_error_code)" = "rpc-unreachable" ] &&
+    [ "$(json_field "$normalized" state)" = "blocked" ] || {
+        echo "tools/z selftest: exact hash recovery hid a different blocker" >&2
+        return 1
+    }
+
+    sample='{"zclassic23_height":7,"zclassic23_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","zclassicd_height":19,"zclassicd_hash":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","reachable":true,"lag":12,"lag_sla_breach_blocks":10,"state":"blocked","hash_disagreement_height":7,"candidate_blocker":"hash-disagreement","activation_blocker":"hash-disagreement","comparison_height":7,"comparison_known":true,"comparison_hashes_agree":true,"comparison_zclassic23_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","comparison_zclassicd_hash":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}'
+    normalized="$(normalize_mirror_status_json "$sample")"
+    [ "$(json_field "$normalized" state)" = "concurrent_catchup" ] || {
+        echo "tools/z selftest: SLO breach state was flattened" >&2
         return 1
     }
     return 0
@@ -336,16 +610,6 @@ legacy_rpc() {
     curl -s --max-time 8 --user "$user:$pass" \
         -H 'content-type: application/json' \
         --data "$body" "http://127.0.0.1:$port/" 2>/dev/null
-}
-
-rpc_result() {
-    local out
-    out="$(rpc "$@" 2>/dev/null || true)"
-    if printf '%s' "$out" | grep -q '"result"'; then
-        json_field "$out" result
-    else
-        printf '%s' "$out"
-    fi
 }
 
 mirror_fallback_json() {
@@ -392,7 +656,7 @@ mirror_status_json() {
     if [ -n "$out" ] && printf '%s' "$out" | grep -q 'zclassic23_height'; then
         normalize_mirror_status_json "$out"
     else
-        mirror_fallback_json
+        normalize_mirror_status_json "$(mirror_fallback_json)"
     fi
 }
 

@@ -96,16 +96,18 @@ void mirror_consensus_record_blocker(const char *reason)
     enum blocker_class cls = mirror_consensus_classify_blocker_reason(r);
     blocker_init(&rec, bid, "mirror_consensus",
                  cls, r);
-    int rc = blocker_set(&rec);
-    /* Always increment the unsuppressed total (legacy semantics). */
-    int64_t blockers =
-        atomic_fetch_add(&g_mirror_consensus.blockers_total, 1) + 1;
     pthread_mutex_lock(&g_mirror_consensus.lock);
+    /* Serialize the typed record with the legacy latch so an exact resolver
+     * cannot leave one active while clearing the other. */
+    int rc = blocker_set(&rec);
     g_mirror_consensus.activation_blocker_class = cls;
     snprintf(g_mirror_consensus.activation_blocker_reason,
              sizeof(g_mirror_consensus.activation_blocker_reason), "%s",
              r);
     pthread_mutex_unlock(&g_mirror_consensus.lock);
+    /* Always increment the unsuppressed total (legacy semantics). */
+    int64_t blockers =
+        atomic_fetch_add(&g_mirror_consensus.blockers_total, 1) + 1;
     /* Only emit the event on a fresh write (rc == 0) — rate-limited
      * dups (rc == 1) are suppressed at the source. */
     if (rc == 0) {
@@ -115,6 +117,40 @@ void mirror_consensus_record_blocker(const char *reason)
                     "reason=%s blockers=%lld blk=%s",
                     r, (long long)blockers, r[0] ? r : "-");
     }
+}
+
+static bool mirror_consensus_resolve_exact(const char *reason)
+{
+    bool matched = false;
+    char blocker_id[BLOCKER_ID_MAX];
+    snprintf(blocker_id, sizeof(blocker_id), "mirror.%s", reason);
+
+    /* Record and resolve share this lock order, so the legacy latch and typed
+     * registry change as one ordered mirror-control-plane transition. */
+    pthread_mutex_lock(&g_mirror_consensus.lock);
+    matched = blocker_exists(blocker_id);
+    if (strcmp(g_mirror_consensus.activation_blocker_reason, reason) == 0) {
+        g_mirror_consensus.activation_blocker_class = BLOCKER_TRANSIENT;
+        g_mirror_consensus.activation_blocker_reason[0] = '\0';
+        matched = true;
+    }
+    blocker_clear(blocker_id);
+    pthread_mutex_unlock(&g_mirror_consensus.lock);
+    return matched;
+}
+
+bool mirror_consensus_resolve_hash_disagreement(void)
+{
+    return mirror_consensus_resolve_exact("hash-disagreement");
+}
+
+bool mirror_consensus_resolve_observation_blocker(const char *reason)
+{
+    if (!reason ||
+        (strcmp(reason, "hash-comparison-unavailable") != 0 &&
+         strcmp(reason, "rpc-unreachable") != 0))
+        return false;
+    return mirror_consensus_resolve_exact(reason);
 }
 
 void mirror_consensus_stats_snapshot(struct mirror_consensus_stats *out)

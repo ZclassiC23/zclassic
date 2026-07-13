@@ -3164,11 +3164,11 @@ static int t_dev_lane_deploy_contract(void)
                       "boot_promote_tip_preserving_header_via_csr") != NULL);
         ASSERT(strstr(boot_index, "\"utxo_chain_mismatch\"") != NULL);
         ASSERT(strstr(handoff, "Public daily-driver node") != NULL);
-        ASSERT(strstr(handoff, "Fresh-build lane for frequent development restarts")
+        ASSERT(strstr(handoff, "Isolated build/test lane")
                != NULL);
         ASSERT(strstr(handoff, "Long-uptime / weekly evidence lane") != NULL);
         ASSERT(strstr(handoff, "zcl.operator_lane.v1") != NULL);
-        ASSERT(strstr(handoff, "ZCL_DEV_ALLOW_REINDEX_DROPIN=1") != NULL);
+        ASSERT(strstr(handoff, "Phase-0 contained") != NULL);
         ASSERT(strstr(lane_health, "report_lane live zclassic23") != NULL);
         ASSERT(strstr(lane_health, "report_lane soak zclassic23-soak") != NULL);
         ASSERT(strstr(lane_health, "report_lane dev zcl23-dev") != NULL);

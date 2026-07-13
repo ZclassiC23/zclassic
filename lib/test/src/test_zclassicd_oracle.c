@@ -24,6 +24,7 @@
 #include "chain/chain.h"
 #include "core/uint256.h"
 #include "event/event.h"
+#include "util/blocker.h"
 #include "util/clientversion.h"
 #include "util/supervisor.h"
 
@@ -62,11 +63,13 @@ struct mock_server {
     int listen_fd;
     int port;
     const char *canned_hex;       /* NULL → respond with JSON error */
+    const char *chain_tip_hex;    /* optional distinct hash at chain_blocks */
     int chain_blocks;             /* >=0 → getblockchaininfo response */
     bool chain_omit_headers;      /* true → omit optional result.headers */
     bool chain_empty_result;      /* true → malformed empty chain-info result */
     bool chain_warmup;            /* true → getblockchaininfo RPC warmup */
     bool blockhash_warmup;        /* true → getblockhash RPC warmup */
+    int blockhash_failures_remaining;
     _Atomic int requests_served;
     _Atomic bool stop;
     pthread_t thread;
@@ -122,10 +125,25 @@ static void *mock_server_loop(void *arg)  /* raw-pthread-ok: test-local */
                     "\"error\":null,\"id\":\"zcl-oracle\"}\n",
                     m->chain_blocks, m->chain_blocks);
             }
+        } else if (m->blockhash_failures_remaining > 0 &&
+                   strstr(buf, "getblockhash")) {
+            m->blockhash_failures_remaining--;
+            bl = snprintf(body, sizeof(body),
+                "{\"result\":null,\"error\":{\"code\":-1,"
+                "\"message\":\"transient hash failure\"},"
+                "\"id\":\"zcl-oracle\"}\n");
         } else if (m->canned_hex) {
+            const char *response_hex = m->canned_hex;
+            char tip_param[32];
+            snprintf(tip_param, sizeof(tip_param),
+                     "\"params\":[%d]", m->chain_blocks);
+            if (m->chain_tip_hex && strstr(buf, "getblockhash") &&
+                strstr(buf, tip_param)) {
+                response_hex = m->chain_tip_hex;
+            }
             bl = snprintf(body, sizeof(body),
                 "{\"result\":\"%s\",\"error\":null,\"id\":\"zcl-oracle\"}\n",
-                m->canned_hex);
+                response_hex);
         } else {
             bl = snprintf(body, sizeof(body),
                 "{\"result\":null,\"error\":{\"code\":-1,"
@@ -143,6 +161,7 @@ static void *mock_server_loop(void *arg)  /* raw-pthread-ok: test-local */
         close(cfd);
         atomic_fetch_add(&m->requests_served, 1);
     }
+
     return NULL;
 }
 
@@ -190,6 +209,27 @@ static bool mock_server_start_chain(struct mock_server *m,
     bool ok = mock_server_start(m, canned_hex);
     if (ok)
         m->chain_blocks = blocks;
+    return ok;
+}
+
+static bool mock_server_start_chain_with_tip(struct mock_server *m,
+                                             const char *common_hex,
+                                             const char *tip_hex,
+                                             int blocks)
+{
+    bool ok = mock_server_start_chain(m, common_hex, blocks);
+    if (ok)
+        m->chain_tip_hex = tip_hex;
+    return ok;
+}
+
+static bool mock_server_start_chain_with_hash_retry(struct mock_server *m,
+                                                    const char *canned_hex,
+                                                    int blocks)
+{
+    bool ok = mock_server_start_chain(m, canned_hex, blocks);
+    if (ok)
+        m->blockhash_failures_remaining = 1;
     return ok;
 }
 
@@ -387,13 +427,197 @@ int test_zclassicd_oracle(void)
         legacy_mirror_sync_stats_snapshot(&lms);
         ZO_CHECK("legacy contradiction surfaces blocker",
                  strcmp(lms.last_blocker_id, "hash-disagreement") == 0);
+        ZO_CHECK("legacy contradiction binds mismatch height",
+                 lms.hash_disagreement_height == 7);
         ZO_CHECK("legacy contradiction does not claim rewind",
                  lms.authority_rewind_target == 0);
 
+        mock_server_stop(&srv);
+        catchup = legacy_mirror_sync_request_catchup_result(
+            "unit-contradiction-then-rpc-down");
+        ZO_CHECK("legacy contradiction followed by RPC loss still fails",
+                 !catchup.ok);
+        legacy_mirror_sync_stats_snapshot(&lms);
+        ZO_CHECK("unknown comparison preserves prior mismatch as causal",
+                 strcmp(lms.last_blocker_id, "hash-disagreement") == 0 &&
+                 strcmp(lms.activation_blocker_reason,
+                        "hash-disagreement") == 0 &&
+                 lms.hash_disagreement_height == 7 &&
+                 !lms.comparison_known);
+        ZO_CHECK("RPC loss remains visible as secondary typed blocker",
+                 blocker_exists("mirror.rpc-unreachable"));
+
         process_block_set_node_db(NULL);
         node_db_close(&ndb);
+        legacy_mirror_sync_reset_for_test();
+        blocker_clear("mirror.rpc-unreachable");
+        zo_teardown();
+    }
+
+    /* A lagged node can be on the exact same chain.  The mirror must compare
+     * both hashes at the local/common height, clear only the stale hash
+     * blocker, and keep the independently sampled tip hashes unequal. */
+    {
+        zo_build_fixture(AGREE_HEX);
+        struct mock_server srv;
+        ZO_CHECK("mock server starts (lagged common-height agreement)",
+                 mock_server_start_chain_with_tip(
+                     &srv, AGREE_HEX, DISAGREE_HEX, 9));
+
+        struct legacy_mirror_sync_stats seeded;
+        memset(&seeded, 0, sizeof(seeded));
+        seeded.enabled = true;
+        seeded.running = true;
+        seeded.hash_disagreement_height = 7;
+        snprintf(seeded.last_blocker_id, sizeof(seeded.last_blocker_id),
+                 "%s", "hash-disagreement");
+        legacy_mirror_sync_test_set_stats(&seeded, &g_zo_ms);
+        mirror_consensus_record_blocker("hash-disagreement");
+
+        struct legacy_mirror_sync_config cfg = {
+            .rpc_host = "127.0.0.1",
+            .rpc_port = srv.port,
+            .rpc_user = "u",
+            .rpc_password = "p",
+            .cadence_secs = 60,
+            .max_blocks_tick = 8,
+            .lag_sla = 1,
+            .enabled = true,
+        };
+        ZO_CHECK("legacy mirror init for lagged agreement",
+                 legacy_mirror_sync_init(&cfg, &g_zo_ms, NULL, NULL, NULL).ok);
+        struct zcl_result catchup =
+            legacy_mirror_sync_request_catchup_result("unit-lagged-agreement");
+        ZO_CHECK("legacy mirror accepts lagged same-chain state", catchup.ok);
+
+        struct legacy_mirror_sync_stats lms;
+        legacy_mirror_sync_stats_snapshot(&lms);
+        ZO_CHECK("legacy mirror records explicit common comparison",
+                 lms.comparison_known && lms.comparison_hashes_agree &&
+                 lms.comparison_height == 7 &&
+                 strcasecmp(lms.comparison_zclassic23_hash, AGREE_HEX) == 0 &&
+                 strcasecmp(lms.comparison_zclassicd_hash, AGREE_HEX) == 0);
+        ZO_CHECK("legacy mirror does not compare different-height tips",
+                 lms.local_height == 7 && lms.legacy_height == 9 &&
+                 !lms.tip_hashes_agree &&
+                 strcasecmp(lms.zclassic23_hash, AGREE_HEX) == 0 &&
+                 strcasecmp(lms.zclassicd_hash, DISAGREE_HEX) == 0);
+        ZO_CHECK("legacy mirror resolves exact stale hash blocker",
+                 lms.last_blocker_id[0] == '\0' &&
+                 lms.activation_blocker_reason[0] == '\0' &&
+                 !blocker_exists("mirror.hash-disagreement"));
+        ZO_CHECK("legacy mirror remains catching up",
+                 lms.lag_known && lms.lag == 2 &&
+                 strcmp(lms.state, "catching_up") == 0);
+
+        struct json_value root;
+        json_init(&root);
+        json_set_object(&root);
+        ZO_CHECK("lagged common comparison dump succeeds",
+                 legacy_mirror_sync_dump_state_json(&root, NULL));
+        ZO_CHECK("lagged dump exposes same-chain comparison",
+                 json_get_bool(json_get(&root, "comparison_known")) &&
+                 json_get_bool(json_get(&root, "comparison_hashes_agree")) &&
+                 json_get_int(json_get(&root, "comparison_height")) == 7 &&
+                 json_get_bool(json_get(
+                     &root, "same_chain_at_comparison_height")));
+        ZO_CHECK("lagged dump keeps tip agreement false",
+                 !json_get_bool(json_get(&root, "tip_hashes_agree")));
+        json_free(&root);
+
         mock_server_stop(&srv);
         legacy_mirror_sync_reset_for_test();
+        blocker_clear("mirror.hash-comparison-unavailable");
+        blocker_clear("mirror.rpc-unreachable");
+        zo_teardown();
+    }
+
+    /* The independently sampled remote tip may fail once.  If the mandatory
+     * same-height comparison retry succeeds, it is also the exact tip proof
+     * and must refresh both tip caches for downstream health consumers. */
+    {
+        zo_build_fixture(AGREE_HEX);
+        struct mock_server srv;
+        ZO_CHECK("mock server starts (tip hash retry)",
+                 mock_server_start_chain_with_hash_retry(&srv, AGREE_HEX, 7));
+        struct legacy_mirror_sync_config cfg = {
+            .rpc_host = "127.0.0.1",
+            .rpc_port = srv.port,
+            .rpc_user = "u",
+            .rpc_password = "p",
+            .cadence_secs = 60,
+            .max_blocks_tick = 8,
+            .lag_sla = 1,
+            .enabled = true,
+        };
+        ZO_CHECK("legacy mirror init for tip hash retry",
+                 legacy_mirror_sync_init(&cfg, &g_zo_ms, NULL, NULL, NULL).ok);
+        struct zcl_result catchup =
+            legacy_mirror_sync_request_catchup_result("unit-tip-hash-retry");
+        ZO_CHECK("legacy mirror accepts successful comparison retry",
+                 catchup.ok);
+        struct legacy_mirror_sync_stats lms;
+        legacy_mirror_sync_stats_snapshot(&lms);
+        ZO_CHECK("comparison retry refreshes exact tip hashes",
+                 lms.tip_hashes_agree && lms.comparison_known &&
+                 lms.comparison_hashes_agree &&
+                 lms.comparison_height == 7 &&
+                 strcasecmp(lms.zclassic23_hash, AGREE_HEX) == 0 &&
+                 strcasecmp(lms.zclassicd_hash, AGREE_HEX) == 0);
+        mock_server_stop(&srv);
+        legacy_mirror_sync_reset_for_test();
+        zo_teardown();
+    }
+
+    /* Chain info alone is not a usable height/hash oracle. Two failed hash
+     * samples latch an observation blocker; a later exact comparison must
+     * clear only that blocker even while the local node remains lagged. */
+    {
+        zo_build_fixture(AGREE_HEX);
+        struct mock_server srv;
+        ZO_CHECK("mock server starts (hash observation recovery)",
+                 mock_server_start_chain(&srv, AGREE_HEX, 9));
+        srv.blockhash_failures_remaining = 2;
+        struct legacy_mirror_sync_config cfg = {
+            .rpc_host = "127.0.0.1",
+            .rpc_port = srv.port,
+            .rpc_user = "u",
+            .rpc_password = "p",
+            .cadence_secs = 60,
+            .max_blocks_tick = 8,
+            .lag_sla = 1,
+            .enabled = true,
+        };
+        ZO_CHECK("legacy mirror init for hash observation recovery",
+                 legacy_mirror_sync_init(&cfg, &g_zo_ms, NULL, NULL, NULL).ok);
+        struct zcl_result first =
+            legacy_mirror_sync_request_catchup_result("unit-hash-failure");
+        ZO_CHECK("hash observation failure is named", !first.ok);
+        struct legacy_mirror_sync_stats lms;
+        legacy_mirror_sync_stats_snapshot(&lms);
+        ZO_CHECK("chain info without hash leaves oracle unusable",
+                 lms.reachable && lms.lag_known &&
+                 !lms.comparison_known && !lms.legacy_oracle_usable &&
+                 strcmp(lms.last_blocker_id, "rpc-unreachable") == 0 &&
+                 strcmp(lms.activation_blocker_reason,
+                        "rpc-unreachable") == 0 &&
+                 blocker_exists("mirror.rpc-unreachable"));
+
+        struct zcl_result second =
+            legacy_mirror_sync_request_catchup_result("unit-hash-recovery");
+        ZO_CHECK("later exact lagged comparison succeeds", second.ok);
+        legacy_mirror_sync_stats_snapshot(&lms);
+        ZO_CHECK("exact comparison restores usable hash oracle",
+                 lms.comparison_known && lms.comparison_hashes_agree &&
+                 lms.legacy_oracle_usable);
+        ZO_CHECK("exact comparison clears observation blocker everywhere",
+                 lms.last_blocker_id[0] == '\0' &&
+                 lms.activation_blocker_reason[0] == '\0' &&
+                 !blocker_exists("mirror.rpc-unreachable"));
+
+        mock_server_stop(&srv);
+        legacy_mirror_sync_reset_for_test();
+        blocker_clear("mirror.rpc-unreachable");
         zo_teardown();
     }
 
@@ -800,6 +1024,25 @@ int test_zclassicd_oracle(void)
         ZO_CHECK("rpc unreachable is transient",
                  mirror_consensus_classify_blocker_reason(
                      "rpc-unreachable") == BLOCKER_TRANSIENT);
+        blocker_clear("mirror.hash-disagreement");
+        ZO_CHECK("non-hash blocker cannot use automatic resolver",
+                 !mirror_consensus_resolve_hash_disagreement());
+        mirror_consensus_stats_snapshot(&ms);
+        ZO_CHECK("non-hash blocker remains latched",
+                 strcmp(ms.activation_blocker_reason,
+                        "activation-no-progress") == 0);
+        mirror_consensus_record_blocker("hash-disagreement");
+        ZO_CHECK("hash blocker enters typed registry",
+                 blocker_exists("mirror.hash-disagreement"));
+        ZO_CHECK("hash blocker exact resolver succeeds",
+                 mirror_consensus_resolve_hash_disagreement());
+        mirror_consensus_stats_snapshot(&ms);
+        ZO_CHECK("hash resolver clears latch and typed record",
+                 ms.activation_blocker_reason[0] == '\0' &&
+                 !blocker_exists("mirror.hash-disagreement"));
+        ZO_CHECK("resolved hash blocker cannot resolve twice",
+                 !mirror_consensus_resolve_hash_disagreement());
+        blocker_clear("mirror.activation-no-progress");
         mirror_consensus_reset_for_test();
     }
 
@@ -1001,6 +1244,90 @@ int test_zclassicd_oracle(void)
         stats.local_height = 7;
         stats.legacy_height = 7;
         stats.legacy_headers = 7;
+        stats.hash_disagreement_height = 7;
+        snprintf(stats.zclassicd_hash, sizeof(stats.zclassicd_hash),
+                 "%s", AGREE_HEX);
+        snprintf(stats.last_blocker_id, sizeof(stats.last_blocker_id),
+                 "%s", "db-writer-busy");
+        legacy_mirror_sync_test_set_stats(&stats, &g_zo_ms);
+        mirror_consensus_record_blocker("hash-disagreement");
+
+        legacy_mirror_sync_stats_snapshot(&snap);
+        ZO_CHECK("hash recovery preserves different local blocker",
+                 snap.blocker_recovered_by_tip_agreement &&
+                 strcmp(snap.last_blocker_id, "db-writer-busy") == 0 &&
+                 snap.activation_blocker_reason[0] == '\0' &&
+                 legacy_mirror_sync_blocker_is_active(&snap) &&
+                 strcmp(snap.state, "blocked") == 0);
+        json_init(&root);
+        json_set_object(&root);
+        ZO_CHECK("mixed blocker recovery dump succeeds",
+                 legacy_mirror_sync_dump_state_json(&root, NULL));
+        contract = json_get(&root, "mirror_contract");
+        const struct json_value *health = json_get(&root, "_health");
+        ZO_CHECK("mixed blocker remains active in mirror contract",
+                 contract &&
+                 json_get_bool(json_get(contract, "blocker_active")) &&
+                 strcmp(json_get_str(json_get(contract, "blocker_code")),
+                        "db-writer-busy") == 0 &&
+                 json_get_bool(json_get(contract,
+                                        "operator_action_required")));
+        ZO_CHECK("mixed blocker remains unhealthy in diagnostics",
+                 health && !json_get_bool(json_get(health, "ok")) &&
+                 strcmp(json_get_str(json_get(health, "reason")),
+                        "db-writer-busy") == 0);
+        json_free(&root);
+        legacy_mirror_sync_reset_for_test();
+        mirror_consensus_reset_for_test();
+        blocker_clear("mirror.db-writer-busy");
+        blocker_clear("mirror.hash-disagreement");
+        zo_teardown();
+
+        zo_build_fixture(AGREE_HEX);
+        legacy_mirror_sync_reset_for_test();
+        mirror_consensus_reset_for_test();
+        memset(&stats, 0, sizeof(stats));
+        stats.enabled = true;
+        stats.running = true;
+        stats.reachable = true;
+        stats.local_height = 7;
+        stats.legacy_height = 9;
+        stats.legacy_headers = 9;
+        stats.hash_disagreement_height = 7;
+        stats.comparison_height = 6;
+        stats.comparison_known = true;
+        stats.comparison_hashes_agree = true;
+        snprintf(stats.comparison_zclassic23_hash,
+                 sizeof(stats.comparison_zclassic23_hash), "%s", AGREE_HEX);
+        snprintf(stats.comparison_zclassicd_hash,
+                 sizeof(stats.comparison_zclassicd_hash), "%s", AGREE_HEX);
+        snprintf(stats.last_blocker_id, sizeof(stats.last_blocker_id),
+                 "%s", "hash-disagreement");
+        legacy_mirror_sync_test_set_stats(&stats, &g_zo_ms);
+        mirror_consensus_record_blocker("hash-disagreement");
+
+        legacy_mirror_sync_stats_snapshot(&snap);
+        ZO_CHECK("lower comparison cannot resolve higher mismatch",
+                 strcmp(snap.last_blocker_id, "hash-disagreement") == 0 &&
+                 strcmp(snap.activation_blocker_reason,
+                        "hash-disagreement") == 0 &&
+                 !snap.blocker_recovered_by_common_height_agreement &&
+                 strcmp(snap.state, "blocked") == 0);
+        legacy_mirror_sync_reset_for_test();
+        blocker_clear("mirror.hash-disagreement");
+        zo_teardown();
+
+        zo_build_fixture(AGREE_HEX);
+        legacy_mirror_sync_reset_for_test();
+        mirror_consensus_reset_for_test();
+        memset(&stats, 0, sizeof(stats));
+        stats.enabled = true;
+        stats.running = true;
+        stats.reachable = true;
+        stats.local_height = 7;
+        stats.legacy_height = 7;
+        stats.legacy_headers = 7;
+        stats.hash_disagreement_height = 7;
         snprintf(stats.zclassicd_hash, sizeof(stats.zclassicd_hash),
                  "%s", AGREE_HEX);
         stats.last_progress_blocks = 1;
