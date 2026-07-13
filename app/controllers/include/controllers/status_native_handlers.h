@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Transport-neutral operator read compositions (ZERO-MCP W0-A).
+ * Transport-neutral operator read compositions.
  *
  * Body functions for the operator read tools: each takes the tool's
  * argument object and returns one heap-allocated JSON body (caller frees),

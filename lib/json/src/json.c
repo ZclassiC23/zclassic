@@ -572,3 +572,13 @@ bool json_read(struct json_value *v, const char *raw, size_t len)
     }
     return true;
 }
+
+void diag_push_health(struct json_value *out, bool ok, const char *reason)
+{
+    struct json_value health = {0};
+    json_set_object(&health);
+    json_push_kv_bool(&health, "ok", ok);
+    json_push_kv_str(&health, "reason", reason);
+    json_push_kv(out, "_health", &health);
+    json_free(&health);
+}

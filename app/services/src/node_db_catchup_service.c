@@ -376,7 +376,7 @@ int node_db_catchup_service_run(struct node_db *ndb,
     if (!ndb || !ndb->open || !chain)
         LOG_ERR("sync", "catchup: invalid args (ndb=%p, chain=%p)", (void *)ndb, (void *)chain);
 
-    /* Phase 0.2b — skip the node.db catchup while a from-genesis refold runs.
+    /* Skip the node.db catchup while a from-genesis refold runs.
      * The refold re-walks the frozen prefix and indexes ZERO readable blocks
      * during the window, so every ~5 s re-trigger (boot_background_workers.c)
      * would take the node.db writer lock, find no tip hash, log

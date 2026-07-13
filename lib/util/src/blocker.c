@@ -403,10 +403,6 @@ bool blocker_dump_state_json(struct json_value *out, const char *key)
      * Maps the active-blocker registry above — any active blocker (of any
      * class) marks this subsystem unhealthy; no new health logic. */
     {
-        struct json_value health;
-        json_init(&health);
-        json_set_object(&health);
-        json_push_kv_bool(&health, "ok", n == 0);
         char reason_buf[192] = "";
         if (n > 0) {
             snprintf(reason_buf, sizeof(reason_buf),
@@ -415,9 +411,7 @@ bool blocker_dump_state_json(struct json_value *out, const char *key)
                      blocker_class_name((enum blocker_class)snaps[0].class),
                      snaps[0].reason);
         }
-        json_push_kv_str(&health, "reason", reason_buf);
-        json_push_kv(out, "_health", &health);
-        json_free(&health);
+        diag_push_health(out, n == 0, reason_buf);
     }
     return true;
 }

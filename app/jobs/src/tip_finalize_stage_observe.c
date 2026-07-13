@@ -432,12 +432,7 @@ bool tip_finalize_observe_dump_state_json(struct json_value *out,
                      "last_blocked_reason=%s",
                      (unsigned long long)errors, k_blocked_name[cls]);
         }
-        struct json_value health = {0};
-        json_set_object(&health);
-        json_push_kv_bool(&health, "ok", ok);
-        json_push_kv_str(&health, "reason", reason_buf);
-        json_push_kv(out, "_health", &health);
-        json_free(&health);
+        diag_push_health(out, ok, reason_buf);
     }
     if (durable_snapshot)
         progress_store_tx_unlock();

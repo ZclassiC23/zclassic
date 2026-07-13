@@ -65,7 +65,7 @@ struct disk_monitor_state {
     /* Hot-path lock-free flag mirroring last_level. */
     _Atomic int atomic_level;
 
-    /* Supervisor liveness (Round 5). loop_ticks advances once per
+    /* Supervisor liveness. loop_ticks advances once per
      * outer-loop wake so the supervisor sees forward progress even
      * between the 60 s poll boundaries. */
     _Atomic supervisor_child_id supervisor_id;
@@ -419,9 +419,6 @@ bool disk_monitor_dump_state_json(struct json_value *out, const char *key)
      * CRITICAL) — no new health logic. */
     {
         bool ok = st.level == DISK_MONITOR_OK;
-        struct json_value health = {0};
-        json_set_object(&health);
-        json_push_kv_bool(&health, "ok", ok);
         char reason_buf[192] = "";
         if (!ok)
             snprintf(reason_buf, sizeof(reason_buf),
@@ -430,9 +427,7 @@ bool disk_monitor_dump_state_json(struct json_value *out, const char *key)
                      dm_level_name(st.level), (long long)st.last_free_bytes,
                      (long long)st.warn_free_bytes,
                      (long long)st.refuse_free_bytes);
-        json_push_kv_str(&health, "reason", reason_buf);
-        json_push_kv(out, "_health", &health);
-        json_free(&health);
+        diag_push_health(out, ok, reason_buf);
     }
     return true;
 }

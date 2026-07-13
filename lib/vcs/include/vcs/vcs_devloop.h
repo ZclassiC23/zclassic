@@ -13,7 +13,7 @@
  * (VCS_DEVLOOP_ANCHOR_REFUSED): the dev-loop publish has ALREADY happened by
  * this point in the pipeline (this hook runs after finish_cycle's own
  * publish/hotswap step), so a refusal here is advisory only, not a block —
- * Wave 2.4 moves the seal check earlier, before publish. */
+ * the seal check is moved earlier, before publish. */
 
 #ifndef ZCL_VCS_DEVLOOP_H
 #define ZCL_VCS_DEVLOOP_H

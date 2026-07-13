@@ -382,7 +382,7 @@ int chain_evidence_clamp_coins_height_to_frontier(
     if (!authority || !authority->csr)
         return requested_height;
 
-    /* Wave 2: clamp directly to the DERIVED coins-best height when
+    /* Clamp directly to the DERIVED coins-best height when
      * coins_applied_height is present — drops the in-memory-cache ->
      * block_map roundtrip. Legacy body unchanged on !found. */
     {

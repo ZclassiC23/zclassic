@@ -85,7 +85,7 @@ typedef bool (*vcs_log_cb)(const struct vcs_commit *c,
                            const uint8_t commit_id[32], void *user);
 int vcs_log(struct vcs_repo *r, size_t limit, vcs_log_cb cb, void *user);
 
-/* Relink callback for vcs_revert's binary-generation half (Wave 3.3). vcs.c
+/* Relink callback for vcs_revert's binary-generation half. vcs.c
  * stays policy-free: it only decides WHEN to call activate_generation (the
  * target commit bound a non-zero generation_sha256) and how to interpret the
  * result, never HOW to activate a generation — that policy lives entirely in

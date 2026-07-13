@@ -241,7 +241,7 @@ bool block_index_loader_torn_import_gate_fires(struct main_state *ms,
                                                struct sqlite3 *progress_db,
                                                int32_t H, int32_t checkpoint);
 
-/* PURE detect predicate (B2 1c) — the SAME three-condition durability guard as
+/* PURE detect predicate — the SAME three-condition durability guard as
  * block_index_loader_torn_import_gate_fires, but with NO event/blocker
  * side-effects. Returns true iff a genuinely-unrecoverable tear is present;
  * *out_hole_h / *out_ceiling (nullable) receive the load-bearing coordinates.

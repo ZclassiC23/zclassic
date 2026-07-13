@@ -116,7 +116,7 @@ bool coin_backfill_refusal_marker_read(struct sqlite3 *db, const char *key,
                                        bool *out_legacy_spent,
                                        bool *out_legacy_txindex_miss);
 
-/* PURE detect predicate (B2 1c): runs the EXACT three-condition durability
+/* PURE detect predicate: runs the EXACT three-condition durability
  * guard of the verdict below but with NO event/blocker side-effects, so the
  * boot from-anchor auto-arm can consult the SAME tear decision without paging
  * an operator. Contract in services/block_index_loader.h. Read-only on

@@ -53,7 +53,7 @@ void utxo_recovery_write_cold_import_seed(struct node_db *ndb,
                             hash->data, 32);
     (void)node_db_state_set_int(ndb, "cold_import_seed_anchor_utxo_count",
                                 utxo_count);
-    /* Wave 2: ALSO attest the CANONICAL store. Written only when coins_kv
+    /* ALSO attest the CANONICAL store. Written only when coins_kv
      * is already seeded (post coins_kv_seed_from_node_db) — the consumer
      * checks this token FIRST and falls back to the mirror-count token when
      * absent. Additive + idempotent (INSERT OR REPLACE semantics of

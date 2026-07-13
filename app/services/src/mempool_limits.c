@@ -76,7 +76,7 @@ struct mempool_limits_state {
     /* Injected clock for expiry tests. */
     mempool_limits_clock_fn clock_fn;
 
-    /* Supervisor liveness (Round 5). loop_ticks advances once per
+    /* Supervisor liveness. loop_ticks advances once per
      * outer-loop wake so the supervisor sees forward progress between
      * the (sparse) enforce/expire runs. */
     _Atomic supervisor_child_id supervisor_id;

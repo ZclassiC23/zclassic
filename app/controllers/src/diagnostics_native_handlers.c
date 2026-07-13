@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Transport-neutral re-homed bodies for zcl_sql / zcl_node_log
- * (ZERO-MCP W0-A). Each function is the argument-parsing plus
+ * Transport-neutral re-homed bodies for zcl_sql / zcl_node_log.
+ * Each function is the argument-parsing plus
  * RPC-composition core of the legacy MCP handler in
  * tools/mcp/controllers/diagnostics_controller.c, with the MCP-specific
  * error envelope stripped out — see controllers/native_handler_body.h for
@@ -74,7 +74,7 @@ char *zcl_native_node_log_body(const struct json_value *args,
     return out;
 }
 
-/* ── Tier-1 hot-swap: NOT YET ELIGIBLE (W1-B/C) ─────────────────────────
+/* ── Tier-1 hot-swap: NOT YET ELIGIBLE ─────────────────────────
  * No ZCL_HOTSWAP_EXPORT_LEAVES here on purpose. A native.leaves generation
  * self-test dispatches the manifest's declared probe leaf with NO input
  * (see zcl_hotswap_default_self_test / hotswap_commit_probe_candidate),

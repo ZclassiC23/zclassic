@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Transport-neutral handler-body contract (ZERO-MCP W0-A).
+ * Transport-neutral handler-body contract.
  *
  * A *body function* is the re-homed composition of one operator read tool:
  * it takes the tool's argument object and returns one heap-allocated JSON

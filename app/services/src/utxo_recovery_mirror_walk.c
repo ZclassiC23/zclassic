@@ -30,7 +30,7 @@ int utxo_recovery_max_utxo_height(struct utxo_recovery_ctx *ctx)
     if (!ctx || !ctx->ndb || !ctx->ndb->open || !ctx->ndb->db)
         return 0;
 
-    /* Wave 2: the DERIVED coins-best height (coins_applied_height - 1,
+    /* The DERIVED coins-best height (coins_applied_height - 1,
      * coins_kv's own co-committed state) outranks the mirror's MAX(height)
      * — interior holes / flush lag in the rebuildable projection must not
      * steer the restore. Legacy mirror read on !found (pre-seed datadirs:

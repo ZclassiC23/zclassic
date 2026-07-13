@@ -29,7 +29,7 @@ enum block_status {
     BLOCK_HAVE_DATA          = 8,
     BLOCK_HAVE_UNDO          = 16,
     BLOCK_HAVE_MASK          = 24,
-    /* Three-class typed failure model (Round 6 C4).
+    /* Three-class typed failure model.
      *
      *   VALID  = PERMANENT consensus reject. Bad PoW, bad signature,
      *            failed proof, malformed block. Only the consensus-scope
@@ -44,7 +44,7 @@ enum block_status {
      *            row a self-heal can repair, DB writer busy, I/O retry
      *            budget. Distinct from VALID so the eventual retry path
      *            never re-runs full consensus on a known-good block.
-     *            Reserved here; no SET site yet — see Round 7 plan.
+     *            Reserved here; no SET site yet.
      *
      * BLOCK_FAILED_MASK (= VALID | CHILD = 96) is preserved for
      * backward compatibility with persisted nStatus on disk; new code
@@ -259,7 +259,7 @@ static inline bool block_index_undo_pos_snapshot(const struct block_index *bi,
     return out->nFile >= 0;
 }
 
-/* Typed failure classification (Round 6 C4). Prefer these over raw
+/* Typed failure classification. Prefer these over raw
  * nStatus bit tests so the future TRANSIENT retry policy lands at one
  * site. */
 static inline bool block_is_permanently_failed(const struct block_index *bi)

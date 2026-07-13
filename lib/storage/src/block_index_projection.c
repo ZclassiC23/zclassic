@@ -746,15 +746,7 @@ bool block_index_projection_dump_state_json(struct json_value *out,
         json_push_kv_int (out, "last_catch_up_ms", 0);
         /* Reserved `_health` key — see the non-NULL branch below for the
          * rationale; maps the same "open" signal. */
-        {
-            struct json_value health = {0};
-            json_set_object(&health);
-            json_push_kv_bool(&health, "ok", false);
-            json_push_kv_str(&health, "reason",
-                             "block_index_projection not open");
-            json_push_kv(out, "_health", &health);
-            json_free(&health);
-        }
+        diag_push_health(out, false, "block_index_projection not open");
         return true;
     }
 
@@ -785,14 +777,7 @@ bool block_index_projection_dump_state_json(struct json_value *out,
      * app/controllers/src/diagnostics_health_rollup.c): { ok, reason }.
      * Maps the already-computed is_open signal above — no new health
      * logic. */
-    {
-        struct json_value health = {0};
-        json_set_object(&health);
-        json_push_kv_bool(&health, "ok", is_open);
-        json_push_kv_str(&health, "reason",
-                         is_open ? "" : "block_index_projection not open");
-        json_push_kv(out, "_health", &health);
-        json_free(&health);
-    }
+    diag_push_health(out, is_open,
+                     is_open ? "" : "block_index_projection not open");
     return true;
 }

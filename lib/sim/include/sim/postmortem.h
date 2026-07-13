@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * postmortem — crash capsule writer/reader for Phase 6b.
+ * postmortem — crash capsule writer/reader.
  *
  * Signal-path capture writes an unpacked `.cap` directory. Boot maintenance
  * can later package prior capsules as `.cap.gz` outside the crash path. */

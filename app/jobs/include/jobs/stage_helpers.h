@@ -428,12 +428,7 @@ static inline void stage_dump_health(struct json_value *out, const char *name,
                  "%s recorded %llu step error(s)", name,
                  (unsigned long long)errors);
     }
-    struct json_value health = {0};
-    json_set_object(&health);
-    json_push_kv_bool(&health, "ok", ok);
-    json_push_kv_str(&health, "reason", reason_buf);
-    json_push_kv(out, "_health", &health);
-    json_free(&health);
+    diag_push_health(out, ok, reason_buf);
 }
 
 /* Define the shared step_once entry point for a stage whose step body is the

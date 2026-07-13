@@ -759,7 +759,7 @@ static void *fs_server_thread(void *arg)
          * indefinitely without a per-socket deadline. 30 s is generous
          * for a file-service handshake or frame — anything longer is a
          * misbehaving peer and we'd rather drop the connection than
-         * hold a worker hostage. Wave 8 watchdog catches the hang
+         * hold a worker hostage. The watchdog catches the hang
          * post-hoc; this prevents it. */
         struct timeval ctv = { .tv_sec = 30, .tv_usec = 0 };
         setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &ctv, sizeof(ctv));

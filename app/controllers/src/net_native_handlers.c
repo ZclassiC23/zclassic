@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Transport-neutral re-homed bodies for the zcl_peer_incidents and
- * zcl_onion_health MCP tools (ZERO-MCP W0-A). Moved out of
+ * zcl_onion_health MCP tools. Moved out of
  * tools/mcp/controllers/net_controller.c so both the MCP wrapper and
  * the future native command bridge can call the same composition;
  * see controllers/native_handler_body.h for the contract these
@@ -205,7 +205,7 @@ char *zcl_native_onion_health_body(const struct json_value *args,
     return body;
 }
 
-/* ── Tier-1 hot-swap: native.leaves generation entrypoint (W1-B/C) ──────
+/* ── Tier-1 hot-swap: native.leaves generation entrypoint ──────
  * Dev-only (compiled only under -DZCL_HOTSWAP_GEN, a generation .so build;
  * expands to nothing in the node/release TU — see ZCL_HOTSWAP_EXPORT_LEAVES
  * in lib/hotswap/include/hotswap/hotswap.h). Stages every native command

@@ -105,7 +105,7 @@ struct db_maintenance_state {
 
     db_maintenance_vacuum_gate_fn vacuum_gate;
 
-    /* Supervisor liveness (Round 5). loop_ticks advances once per
+    /* Supervisor liveness. loop_ticks advances once per
      * outer-loop wake so the supervisor sees forward progress between
      * the (sparse) maintenance runs. */
     _Atomic supervisor_child_id supervisor_id;
@@ -271,17 +271,12 @@ bool db_maintenance_dump_state_json(struct json_value *out, const char *key)
      * tolerates a dumper skipping `_health` on a given cycle. */
     {
         bool ok = total_failures == 0;
-        struct json_value health = {0};
-        json_set_object(&health);
-        json_push_kv_bool(&health, "ok", ok);
         char reason_buf[300] = "";
         if (!ok)
             snprintf(reason_buf, sizeof(reason_buf),
                      "total_failures=%lld last_error=%s",
                      (long long)total_failures, last_error);
-        json_push_kv_str(&health, "reason", reason_buf);
-        json_push_kv(out, "_health", &health);
-        json_free(&health);
+        diag_push_health(out, ok, reason_buf);
     }
     return true;
 }

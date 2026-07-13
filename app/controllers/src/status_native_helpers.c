@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Transport-neutral status/blocker composition helpers (ZERO-MCP W0-A).
+ * Transport-neutral status/blocker composition helpers.
  *
  * Re-homed verbatim from tools/mcp/controllers/ops_controller.c: the
  * defaulted JSON accessors, RPC/dumpstate envelope folding, the peer

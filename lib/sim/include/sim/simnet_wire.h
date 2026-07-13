@@ -166,7 +166,7 @@ bool simnet_wire_peer_stop_adversary(struct simnet_wire *wire,
 bool simnet_wire_partition_peer(struct simnet_wire *wire, size_t peer_id,
                                 bool closed);
 
-/* Step E bandwidth shaping. Sets a per-tick byte budget on peer_id's link:
+/* Bandwidth shaping. Sets a per-tick byte budget on peer_id's link:
  * at most down_cap bytes are delivered INTO the NUT and at most up_cap
  * bytes drained OUT of the NUT per tick. SIZE_MAX means unbounded (the
  * default). The budget refills to the cap at the start of every tick, so a

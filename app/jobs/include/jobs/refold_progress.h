@@ -40,7 +40,7 @@
 /* The durable progress.kv key. 1-byte blob {0x01} when set; absent otherwise. */
 #define REFOLD_IN_PROGRESS_KEY "refold_in_progress"
 
-/* B2 — the FROM-ANCHOR refold sub-mode. A from-ANCHOR refold (-refold-from-anchor)
+/* The FROM-ANCHOR refold sub-mode. A from-ANCHOR refold (-refold-from-anchor)
  * re-seeds the SHA3-verified anchor coin set, forces the 8 stage cursors to the
  * anchor (NOT genesis), and folds forward from the anchor reading block BODIES.
  * It ALSO sets REFOLD_IN_PROGRESS_KEY (so refold_in_progress() and the mirror-sync

@@ -207,13 +207,8 @@ bool diag_block_index_dump_state_json(struct json_value *out, const char *key)
      * Maps the already-computed integrity.degraded field above (the
      * block-index-integrity recovery verdict) — no new health logic. */
     {
-        struct json_value health = {0};
-        json_set_object(&health);
-        json_push_kv_bool(&health, "ok", !integrity_degraded);
-        json_push_kv_str(&health, "reason",
+        diag_push_health(out, !integrity_degraded,
                          integrity_degraded ? integrity_reason : "");
-        json_push_kv(out, "_health", &health);
-        json_free(&health);
     }
     if (!bi) {
         json_push_kv_bool(out, "found", false);

@@ -60,7 +60,7 @@ static bool refuse(struct coin_backfill_result *r,
 
 /* The single write transaction (§2 steps 1-8) under the caller's
  * progress_store_tx_lock. Step 1 re-binds the CLEAN scan proof to the
- * insert-time active chain (B1). Returns 1 committed, 0 recheck-failed
+ * insert-time active chain. Returns 1 committed, 0 recheck-failed
  * (rolled back — retry next tick, G10), -1 infra error. Touches NOTHING
  * but coins_kv + progress_meta markers: no cursor, no *_log row, never
  * tip_finalize_log. */
