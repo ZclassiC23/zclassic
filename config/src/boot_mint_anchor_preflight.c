@@ -394,21 +394,14 @@ static bool preflight_check_legacy_block_index(const char *datadir, char *why,
  * (config/src/boot_block_file_scan.c) runs later during app_init, after this
  * preflight. A totally empty/fresh datadir has zero blk*.dat files; that is
  * the exact "missing bodies -> stall" case this check catches upfront. */
-static bool preflight_check_bodies_sampled(const char *datadir, char *why,
-                                           size_t why_cap)
+static void preflight_scan_blk_dir(const char *blocks_dir, size_t *file_count,
+                                   uint64_t *total_bytes)
 {
-    char blocks_dir[1100];
-    snprintf(blocks_dir, sizeof(blocks_dir), "%s/blocks",
-             datadir ? datadir : ".");
+    *file_count = 0;
+    *total_bytes = 0;
     DIR *d = opendir(blocks_dir);
-    if (!d) {
-        snprintf(why, why_cap,
-                 "no %s directory (%s); no block body files present",
-                 blocks_dir, strerror(errno));
-        return false;
-    }
-    size_t file_count = 0;
-    uint64_t total_bytes = 0;
+    if (!d)
+        return;
     struct dirent *ent;
     while ((ent = readdir(d)) != NULL) {
         size_t len = strlen(ent->d_name);
@@ -419,23 +412,62 @@ static bool preflight_check_bodies_sampled(const char *datadir, char *why,
         snprintf(path, sizeof(path), "%s/%s", blocks_dir, ent->d_name);
         struct stat st;
         if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
-            file_count++;
-            total_bytes += (uint64_t)st.st_size;
+            (*file_count)++;
+            *total_bytes += (uint64_t)st.st_size;
         }
     }
     closedir(d);
-    if (file_count == 0 || total_bytes < 1024) {
+}
+
+static bool preflight_check_bodies_sampled(const char *datadir, char *why,
+                                           size_t why_cap)
+{
+    char blocks_dir[1100];
+    snprintf(blocks_dir, sizeof(blocks_dir), "%s/blocks",
+             datadir ? datadir : ".");
+    size_t file_count = 0;
+    uint64_t total_bytes = 0;
+    preflight_scan_blk_dir(blocks_dir, &file_count, &total_bytes);
+    if (file_count > 0 && total_bytes >= 1024) {
         snprintf(why, why_cap,
-                 "%s has %zu blk*.dat file(s) totaling %llu bytes; no block "
-                 "body data present (sampled check)", blocks_dir, file_count,
-                 (unsigned long long)total_bytes);
-        return false;
+                 "%s has %zu blk*.dat file(s) totaling %llu bytes (sampled; "
+                 "not proof of contiguous coverage to the anchor)", blocks_dir,
+                 file_count, (unsigned long long)total_bytes);
+        return true;
     }
+
+    /* The datadir has no bodies yet — but boot links them from the legacy
+     * zclassicd source every boot when legacy auto-import is on
+     * (boot_legacy_link_missing_block_files, config/src/boot.c). Probe the
+     * same source path boot uses so the preflight matches what body_fetch
+     * will actually see after boot. */
+    char legacy_dir[1100];
+    const char *env_legacy = getenv("ZCL_MINT_PREFLIGHT_LEGACY_BLOCKS_DIR");
+    const char *home = getenv("HOME");
+    if (env_legacy && env_legacy[0])
+        snprintf(legacy_dir, sizeof(legacy_dir), "%s", env_legacy);
+    else if (home)
+        snprintf(legacy_dir, sizeof(legacy_dir), "%s/.zclassic/blocks", home);
+    else
+        snprintf(legacy_dir, sizeof(legacy_dir), ".zclassic/blocks");
+    size_t legacy_count = 0;
+    uint64_t legacy_bytes = 0;
+    preflight_scan_blk_dir(legacy_dir, &legacy_count, &legacy_bytes);
+    if (legacy_count > 0 && legacy_bytes >= 1024) {
+        snprintf(why, why_cap,
+                 "%s is empty but legacy source %s has %zu blk*.dat file(s) "
+                 "totaling %llu bytes; boot links them at start (sampled)",
+                 blocks_dir, legacy_dir, legacy_count,
+                 (unsigned long long)legacy_bytes);
+        return true;
+    }
+
     snprintf(why, why_cap,
-             "%s has %zu blk*.dat file(s) totaling %llu bytes (sampled; not "
-             "proof of contiguous coverage to the anchor)", blocks_dir,
-             file_count, (unsigned long long)total_bytes);
-    return true;
+             "%s has %zu blk*.dat file(s) (%llu bytes) and legacy source %s "
+             "has %zu; no block body data present (sampled check)",
+             blocks_dir, file_count, (unsigned long long)total_bytes,
+             legacy_dir, legacy_count);
+    return false;
 }
 
 #define MINT_PREFLIGHT_DISK_FLOOR_BYTES   (50ULL * 1024 * 1024 * 1024)

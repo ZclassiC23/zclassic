@@ -95,9 +95,18 @@ static int test_preflight_fresh_datadir_names_all_holes(void)
     mkdir_p("./test-tmp");
     mkdir_p(dir);
 
+    /* Hermetic: the bodies check falls back to the legacy zclassicd source
+     * ($HOME/.zclassic/blocks) which EXISTS on a dev box — point it at an
+     * empty dir so "fresh datadir" means fresh everywhere. */
+    char empty_legacy[300];
+    snprintf(empty_legacy, sizeof(empty_legacy), "%s/empty-legacy", dir);
+    mkdir_p(empty_legacy);
+    setenv("ZCL_MINT_PREFLIGHT_LEGACY_BLOCKS_DIR", empty_legacy, 1);
+
     struct json_value report;
     json_init(&report);
     bool all_ok = boot_mint_anchor_preflight_run_all(dir, &report);
+    unsetenv("ZCL_MINT_PREFLIGHT_LEGACY_BLOCKS_DIR");
     MAP_CHECK("fresh datadir: run_all returns false", !all_ok);
     MAP_CHECK("fresh datadir: report has all_ok=false",
               json_get(&report, "all_ok") &&
