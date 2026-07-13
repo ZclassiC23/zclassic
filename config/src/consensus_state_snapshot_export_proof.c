@@ -34,7 +34,7 @@ static const struct export_stage_proof k_stages[] = {
     {"body_fetch", "body_fetch_log", false, "hash"},
     {"body_persist", "body_persist_log", false, NULL},
     {"script_validate", "script_validate_log", false, "block_hash"},
-    {"proof_validate", "proof_validate_log", false, NULL},
+    {"proof_validate", "proof_validate_log", false, "block_hash"},
     {"utxo_apply", "utxo_apply_log", false, NULL},
     {"tip_finalize", "tip_finalize_log", true, NULL},
 };

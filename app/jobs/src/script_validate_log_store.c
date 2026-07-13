@@ -108,9 +108,11 @@ int script_validate_log_verdict_at(sqlite3 *db, int height,
     }
     int found = 0;
     if (sqlite3_step(st) == SQLITE_ROW) {  // raw-sql-ok:progress-kv-kernel-store
-        out->ok = sqlite3_column_int(st, 0);
+        out->ok = sqlite3_column_type(st, 0) == SQLITE_INTEGER
+                    ? sqlite3_column_int(st, 0) : -1;
         const void *blob = sqlite3_column_blob(st, 1);
-        if (blob && sqlite3_column_bytes(st, 1) == 32) {
+        if (sqlite3_column_type(st, 1) == SQLITE_BLOB && blob &&
+            sqlite3_column_bytes(st, 1) == 32) {
             memcpy(out->block_hash.data, blob, 32);
             out->has_block_hash = true;
         }

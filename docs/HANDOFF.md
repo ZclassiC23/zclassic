@@ -138,8 +138,14 @@ match exactly. Source-tree/toolchain receipt fields are honestly producer
 claims, not independent rebuild proof. Admission now retains an `O_NOFOLLOW`
 descriptor, opens SQLite through that identity, whole-file-hashes before/after
 semantic validation, and rejects any non-canonical schema object or column.
-There is no producer-end caller or node state publisher, and exporter
-parent-directory descriptor/TOCTOU hardening remains open.
+Exporter publication is now pinned to a duplicated directory descriptor plus
+one normalized filename component. It builds in an anonymous `O_TMPFILE`
+through an exporter-private fd-only SQLite VFS, validates that exact inode,
+then atomically hard-links the inode into the pinned directory and fsyncs the
+directory. There is no mutable staging pathname to swap or clean up; parent
+rename/symlink replacement and late final-name creation cannot redirect or
+replace the artifact. There is still no producer-end caller or node state
+publisher.
 Both already-running producers predate this receipt/export contract, so neither
 can honestly pass it as-is. Never inject a receipt into their live databases.
 Either prove a protected offline ratification against the preserved mapped
@@ -165,6 +171,14 @@ replay, then publishes all three zeros in one final transaction. General
 assisted reset cannot publish zero, and legacy `-refold-staged` is contained at
 preflight before any progress/reset write. The datadir PID guard is also now a
 process-lifetime `O_NOFOLLOW`/`flock` exclusion rather than PID-text inference.
+The reducer's shielded-history retry memo is bound to the exact selected block
+hash plus Sprout, Sapling, and nullifier completeness markers. An unchanged
+causal gap parks without rereading the body or inflating blocker receipts,
+while a history-marker advance invalidates the park. A same-height branch
+replacement stays held until both script and proof receipts bind the new hash;
+missing or foreign receipt hashes are named dependencies and cannot authorize
+body reads or coin writes. The canonical exporter likewise requires every
+proof receipt to join the exact admitted header hash.
 
 The C23 verify loop also became content-fingerprint-bound and fail-fast: a
 controlled compiler failure fell from 185.94 seconds/18 repeated failures to
@@ -187,9 +201,9 @@ PID 2868204 (`zclassic23-mint-fast-v2.service`).
 the durable source receipt and exporter, plus a separately reviewed offline
 ratification path for the already-running immutable fast producer (or prove it
 cannot be ratified and start a receipt-owning producer without deleting either
-existing input). Close descriptor-bound parent identity and combine contained
-artifact validation with selected-chain/trust/authority evidence under one
-publication CAS. Then finish a boot-only, `FULL`-durability candidate-store
+existing input). Combine contained artifact validation with selected-chain/
+trust/authority evidence under one publication CAS. Then finish a boot-only,
+`FULL`-durability candidate-store
 publisher with strict no-quarantine reopen and atomic old/new file exchange,
 projection reconciliation, a physically restorable prior generation, and an
 ENOSPC/I/O/kill/reopen campaign.

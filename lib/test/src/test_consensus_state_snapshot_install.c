@@ -59,7 +59,7 @@ static void fixture_proof_summaries(struct csi_fixture *f, uint8_t seed)
         "script_validate", "proof_validate", "utxo_apply", "tip_finalize",
     };
     static const bool hash_bound[CONSENSUS_STATE_BUNDLE_PROOF_COUNT] = {
-        true, true, true, false, true, false, false, false,
+        true, true, true, false, true, true, false, false,
     };
     for (size_t i = 0; i < CONSENSUS_STATE_BUNDLE_PROOF_COUNT; i++) {
         struct consensus_state_bundle_proof_summary *proof = &f->proofs[i];

@@ -199,13 +199,18 @@ void utxo_apply_upstream_hole_healed(int height)
 
 job_result_t utxo_apply_label_splice_refuse(struct stage_step_ctx *c,
                                             int height,
+                                            const char *verdict_source,
                                             const struct uint256 *applying,
                                             const struct uint256 *verdict)
 {
+    const char *source = verdict_source ? verdict_source : "upstream_log";
     char want_hex[65] = {0};
     char got_hex[65] = {0};
     uint256_get_hex(applying, want_hex);
-    uint256_get_hex(verdict, got_hex);
+    if (verdict)
+        uint256_get_hex(verdict, got_hex);
+    else
+        snprintf(got_hex, sizeof(got_hex), "MISSING");
 
     int64_t now = platform_time_wall_unix();
     bool changed = g_label_splice_warn.h != (int64_t)height;
@@ -217,19 +222,20 @@ job_result_t utxo_apply_label_splice_refuse(struct stage_step_ctx *c,
     if (warn_throttled(changed, now, &g_label_splice_warn.reps,
                        &g_label_splice_warn.last_log, &shown)) {
         LOG_WARN(STAGE_NAME,
-                 "[utxo_apply] label_splice height=%d: script_validate_log "
+                 "[utxo_apply] label_splice height=%d: %s "
                  "row is hash-bound to %s but the block being applied is "
                  "%s; refusing apply until the verdict is re-bound "
                  "(suppressed=%llu)",
-                 height, got_hex, want_hex, (unsigned long long)shown);
+                 height, source, got_hex, want_hex,
+                 (unsigned long long)shown);
     }
 
     char reason[BLOCKER_REASON_MAX];
     snprintf(reason, sizeof(reason),
-             "height=%d script_validate_log block_hash %.16s.. != "
+             "height=%d %s block_hash %.16s.. != "
              "applying block %.16s..; height-keyed verdict belongs to a "
              "different block (label splice) — apply refused",
-             height, got_hex, want_hex);
+             height, source, got_hex, want_hex);
     blocker_init(&c->blocker, "utxo_apply.label_splice", STAGE_NAME,
                  BLOCKER_TRANSIENT, reason);
     c->blocker.escape_deadline_secs = 60;
@@ -244,6 +250,7 @@ void utxo_apply_label_splice_healed(int height)
         g_label_splice_warn.h = -1;
         g_label_splice_warn.reps = 0;
         g_label_splice_warn.last_log = 0;
+        blocker_clear("utxo_apply.label_splice");
     }
 }
 
@@ -278,6 +285,8 @@ void utxo_apply_observe_reset(void)
     g_upstream_hole_warn.h = -1;
     g_upstream_hole_warn.reps = 0;
     g_upstream_hole_warn.last_log = 0;
+    if (g_label_splice_warn.h >= 0)
+        blocker_clear("utxo_apply.label_splice");
     g_label_splice_warn.h = -1;
     g_label_splice_warn.reps = 0;
     g_label_splice_warn.last_log = 0;

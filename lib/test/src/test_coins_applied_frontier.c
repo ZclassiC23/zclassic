@@ -263,34 +263,70 @@ static bool caf_exec(sqlite3 *db, const char *sql)
 /* Seed proof_validate_log + its cursor. `ok_through` heights are ok=1; if
  * `fail_at >= 0` that single height is recorded ok=0 (drives the
  * upstream_failed blocked path). */
-static bool seed_proof_validate(sqlite3 *db, int through_height, int fail_at)
+static bool seed_proof_validate(sqlite3 *db, const struct caf_branch *br,
+                                int through_height, int fail_at)
 {
+    if (!db || !br || through_height < 0 || through_height >= br->n)
+        return false;
     if (!caf_exec(db,
         "CREATE TABLE IF NOT EXISTS proof_validate_log ("
         "  height INTEGER PRIMARY KEY, status TEXT NOT NULL, ok INTEGER NOT NULL,"
         "  sapling_spends_total INTEGER NOT NULL,"
         "  sapling_outputs_total INTEGER NOT NULL,"
         "  sprout_joinsplits_total INTEGER NOT NULL,"
+        "  block_hash BLOB,"
         "  first_failure_txid BLOB, first_failure_proof_type TEXT,"
-        "  validated_at INTEGER NOT NULL)"))
+        "  validated_at INTEGER NOT NULL)") ||
+        !caf_exec(db,
+        "CREATE TABLE IF NOT EXISTS script_validate_log ("
+        "  height INTEGER PRIMARY KEY, status TEXT NOT NULL, ok INTEGER NOT NULL,"
+        "  tx_count INTEGER NOT NULL, input_count INTEGER NOT NULL,"
+        "  first_failure_txid BLOB, first_failure_vin INTEGER,"
+        "  first_failure_serror INTEGER, validated_at INTEGER NOT NULL,"
+        "  block_hash BLOB)"))
         return false;
-    sqlite3_stmt *st = NULL;
+    sqlite3_stmt *st = NULL, *script_st = NULL;
     if (sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO proof_validate_log "
         "(height, status, ok, sapling_spends_total, sapling_outputs_total,"
-        " sprout_joinsplits_total, validated_at) VALUES (?, ?, ?, 0,0,0,1)",
+        " sprout_joinsplits_total, block_hash, validated_at) "
+        "VALUES (?, ?, ?, 0,0,0,?,1)",
         -1, &st, NULL) != SQLITE_OK)
         return false;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO script_validate_log "
+        "(height, status, ok, tx_count, input_count, validated_at, block_hash) "
+        "VALUES (?, 'verified', 1, 0,0,1,?)",
+        -1, &script_st, NULL) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return false;
+    }
     for (int h = 0; h <= through_height; h++) {
         int ok = (h == fail_at) ? 0 : 1;
         sqlite3_bind_int(st, 1, h);
         sqlite3_bind_text(st, 2, ok ? "verified" : "proof_failed", -1, SQLITE_STATIC);
         sqlite3_bind_int(st, 3, ok);
-        if (sqlite3_step(st) != SQLITE_DONE) { sqlite3_finalize(st); return false; }
+        sqlite3_bind_blob(st, 4, br->hashes[h].data, 32, SQLITE_STATIC);
+        if (sqlite3_step(st) != SQLITE_DONE) {
+            sqlite3_finalize(st);
+            sqlite3_finalize(script_st);
+            return false;
+        }
         sqlite3_reset(st);
         sqlite3_clear_bindings(st);
+        sqlite3_bind_int(script_st, 1, h);
+        sqlite3_bind_blob(script_st, 2, br->hashes[h].data, 32,
+                          SQLITE_STATIC);
+        if (sqlite3_step(script_st) != SQLITE_DONE) {
+            sqlite3_finalize(st);
+            sqlite3_finalize(script_st);
+            return false;
+        }
+        sqlite3_reset(script_st);
+        sqlite3_clear_bindings(script_st);
     }
     sqlite3_finalize(st);
+    sqlite3_finalize(script_st);
     if (sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO stage_cursor(name, cursor, updated_at) "
         "VALUES('proof_validate', ?, 1)", -1, &st, NULL) != SQLITE_OK)
@@ -401,7 +437,7 @@ int test_coins_applied_frontier(void)
             /* (1) FORWARD APPLY: drive L's genesis + 3 blocks. The losing
              * branch L spends EXT_L at h2. frontier must == cursor == L.n. */
             CAF_CHECK("L seed proof_validate (all ok)",
-                      seed_proof_validate(pdb, L.n - 1, -1));
+                      seed_proof_validate(pdb, &L, L.n - 1, -1));
             int adv_l = utxo_apply_stage_drain(100);
             CAF_CHECK("L drains all", adv_l == L.n);
             CAF_CHECK("forward apply: frontier == cursor", frontier_eq_cursor(pdb));
@@ -447,7 +483,7 @@ int test_coins_applied_frontier(void)
             ctx.active = &W;
             active_chain_move_window_tip(&ms.chain_active, &W.blocks[W.n - 1]);
             CAF_CHECK("W seed proof_validate (all ok)",
-                      seed_proof_validate(pdb, W.n - 1, -1));
+                      seed_proof_validate(pdb, &W, W.n - 1, -1));
 
             /* Fire the reorg unwind directly, BYPASSING the forward re-advance
              * (utxo_apply_stage_step_once would unwind AND re-apply one height in
@@ -539,7 +575,7 @@ int test_coins_applied_frontier(void)
              * the failed h2 row is rolled back so no later height can apply over
              * the hole. */
             CAF_CHECK("upfail: seed proof_validate with ok=0 at h2",
-                      seed_proof_validate(pdb, F.n - 1, 2));
+                      seed_proof_validate(pdb, &F, F.n - 1, 2));
             int adv = utxo_apply_stage_drain(100);
             CAF_CHECK("upfail: drains until h2", adv == 2);
             CAF_CHECK("upfail: recorded an upstream_failed block",
@@ -781,7 +817,7 @@ int test_coins_applied_frontier(void)
                 blocker_clear("utxo_apply.apply_failed");
 
                 CAF_CHECK("reject: seed proof_validate (all ok)",
-                          seed_proof_validate(pdb, R.n - 1, -1));
+                          seed_proof_validate(pdb, &R, R.n - 1, -1));
                 int adv = utxo_apply_stage_drain(100);
                 CAF_CHECK("reject: drains until h2", adv == 2);
                 CAF_CHECK("reject: recorded a spend_unknown_utxo (coins not mutated)",

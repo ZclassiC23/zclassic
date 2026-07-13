@@ -41,7 +41,7 @@ int utxo_apply_proof_validate_log_at(sqlite3 *db, int height,
     out->ok = -1;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
-        "SELECT ok FROM proof_validate_log WHERE height = ?",
+        "SELECT ok, block_hash FROM proof_validate_log WHERE height = ?",
         -1, &st, NULL) != SQLITE_OK) {
         LOG_WARN("utxo_apply", "[utxo_apply] proof_validate_log prepare failed: %s", sqlite3_errmsg(db));
         return -1;  // raw-return-ok:logged-above
@@ -50,7 +50,15 @@ int utxo_apply_proof_validate_log_at(sqlite3 *db, int height,
     int found = 0;
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
-        out->ok = sqlite3_column_int(st, 0);
+        out->ok = sqlite3_column_type(st, 0) == SQLITE_INTEGER
+                    ? sqlite3_column_int(st, 0) : -1;
+        const void *hash = sqlite3_column_blob(st, 1);
+        int hash_size = sqlite3_column_bytes(st, 1);
+        if (sqlite3_column_type(st, 1) == SQLITE_BLOB && hash &&
+            hash_size == 32) {
+            memcpy(out->block_hash.data, hash, 32);
+            out->has_block_hash = true;
+        }
         found = 1;
     }
     sqlite3_finalize(st);

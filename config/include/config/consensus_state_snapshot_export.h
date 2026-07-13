@@ -18,11 +18,14 @@ enum consensus_state_export_status {
 };
 
 struct consensus_state_snapshot_export_request {
-    /* New immutable file to create. Existing final paths are refused. The
-     * unique staging file is created in this same directory. Until this API is
-     * converted to an openat/fd-walk, callers MUST supply a trusted, stable
-     * parent directory: a concurrent parent-symlink rename is not closed here. */
-    const char *output_path;
+    /* Borrowed directory descriptor plus one-component final name. The
+     * exporter duplicates the descriptor, builds through an anonymous
+     * O_TMPFILE and an fd-only SQLite VFS, then atomically links that exact
+     * validated inode into the pinned directory. The caller retains ownership
+     * of output_dir_fd. Existing names, symlinks, slash-containing names, dot,
+     * and dot-dot are refused. */
+    int output_dir_fd;
+    const char *output_name;
     /* Assertions against the frozen reducer view. They prevent a caller from
      * exporting the wrong quiesced generation, but are not chain authority. */
     int32_t expected_height;
@@ -49,11 +52,21 @@ struct consensus_state_export_result {
  * and complete successful reducer proof rows are all required. Missing proof
  * returns MISSING_PROOF and leaves
  * no final artifact. On success the file has been independently reopened and
- * validated, fsynced, chmod 0400, atomically renamed, and its directory
+ * validated, fsynced, chmod 0400, atomically linked without replacement, and
+ * its directory
  * fsynced. It does not mutate or publish node state. */
 bool consensus_state_snapshot_export(
     struct sqlite3 *progress_db,
     const struct consensus_state_snapshot_export_request *request,
     struct consensus_state_export_result *result);
+
+#ifdef ZCL_TESTING
+/* Deterministic adversarial hooks around directory binding and anonymous
+ * staging-inode creation. */
+void consensus_state_snapshot_export_test_set_after_output_bind_hook(
+    void (*hook)(void *), void *ctx);
+void consensus_state_snapshot_export_test_set_after_staging_create_hook(
+    void (*hook)(void *), void *ctx);
+#endif
 
 #endif /* ZCL_CONSENSUS_STATE_SNAPSHOT_EXPORT_H */

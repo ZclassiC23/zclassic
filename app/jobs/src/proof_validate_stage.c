@@ -11,6 +11,7 @@
 #include "jobs/stage_helpers.h"
 #include "proof_validate_log_store.h"
 #include "proof_validate_stage_internal.h"
+#include "script_validate_log_store.h"
 
 #include "chain/chain.h"
 #include "chain/chainparams.h"
@@ -454,19 +455,15 @@ static bool block_has_shielded_proofs(const struct block *blk)
     }
     return false;
 }
-
 static job_result_t step_validate(struct stage_step_ctx *c)
 {
     atomic_store(&g_last_step_unix, platform_time_wall_unix());
-
     struct main_state *ms = g_ms;
     if (!ms) return JOB_IDLE;
     sqlite3 *db = progress_store_db();
     if (!db) return JOB_IDLE;
-
     int next_h = (int)c->cursor_in;
     if (next_h < 0) return JOB_FATAL;
-
     uint64_t sv_cursor = 0;
     if (!stage_cursor_read_or_zero(db, "script_validate", STAGE_NAME,
                                    &sv_cursor))
@@ -475,7 +472,6 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
     }
-
     struct script_validate_row upstream;
     int found = proof_validate_script_validate_log_at(db, next_h, &upstream);
     if (found < 0) return JOB_FATAL;
@@ -483,10 +479,25 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
     }
-
+    struct block_index *bi = active_chain_at(&ms->chain_active, next_h);
+    if (!bi || !(bi->nStatus & BLOCK_HAVE_DATA)) {
+        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+        return JOB_IDLE;
+    }
+    bool verdict_canonical = upstream.ok == 0 || upstream.ok == 1;
+    if (verdict_canonical)
+        proof_validate_upstream_verdict_clear();
+    if (!proof_validate_upstream_hash_ready(
+            next_h, bi->phashBlock, upstream.has_block_hash,
+            &upstream.block_hash)) {
+        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+        return JOB_IDLE;
+    }
+    if (!verdict_canonical)
+        return proof_validate_upstream_verdict_refuse(c, next_h, upstream.ok);
     if (upstream.ok == 0) {
         if (!proof_validate_log_insert(db, next_h, "upstream_failed", false,
-                        0, 0, 0, NULL, NULL))
+                        0, 0, 0, bi->phashBlock, NULL, NULL))
             return JOB_FATAL;
         atomic_fetch_add(&g_upstream_failed_total, 1);
         pv_unresolved_clear();
@@ -494,13 +505,6 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         c->cursor_out = c->cursor_in + 1;
         return JOB_ADVANCED;
     }
-
-    struct block_index *bi = active_chain_at(&ms->chain_active, next_h);
-    if (!bi || !(bi->nStatus & BLOCK_HAVE_DATA)) {
-        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
-        return JOB_IDLE;
-    }
-
     struct block blk;
     block_init(&blk);
     if (!stage_read_block(&blk, bi, next_h, g_datadir, g_reader, g_reader_user)) {
@@ -508,9 +512,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
     }
-
     bool skip_crypto = mint_skip_crypto_get();
-
     /* The sapling-params wait gate is a VERIFICATION precondition; in the
      * OFFLINE FAST-MINT pass-through we never call the proof verifier, so the
      * params need not be loaded. Keep the gate ONLY when actually verifying. */
@@ -594,7 +596,8 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     if (!proof_validate_log_insert(db, next_h, status, ok,
                     summary.sapling_spends_total,
                     summary.sapling_outputs_total,
-                    summary.sprout_joinsplits_total, fail_txid, fail_type))
+                    summary.sprout_joinsplits_total, bi->phashBlock,
+                    fail_txid, fail_type))
         return JOB_FATAL;
 
     /* A height advanced cleanly: release any HOLD budget/named blocker so a
@@ -604,14 +607,11 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     c->cursor_out = c->cursor_in + 1;
     return JOB_ADVANCED;
 }
-
 bool proof_validate_stage_init(struct main_state *ms)
 {
     if (!ms) LOG_FAIL("proof_validate", "init: NULL main_state");
-
     sqlite3 *db = progress_store_db();
     if (!db) LOG_FAIL("proof_validate", "init: progress_store not open");
-
     pthread_mutex_lock(&g_lock);
     if (g_stage != NULL) {
         bool same = (g_ms == ms);
@@ -621,8 +621,8 @@ bool proof_validate_stage_init(struct main_state *ms)
                 "init: already bound to a different main_state");
         return true;
     }
-
-    if (!proof_validate_log_ensure_schema(db)) {
+    if (!proof_validate_log_ensure_schema(db) ||
+        !script_validate_log_ensure_schema(db)) {
         pthread_mutex_unlock(&g_lock);
         return false;
     }
@@ -649,6 +649,8 @@ STAGE_DRAIN_IMPL(proof_validate)
 
 void proof_validate_stage_shutdown(void)
 {
+    proof_validate_upstream_hash_clear();
+    proof_validate_upstream_verdict_clear();
     pthread_mutex_lock(&g_lock);
     if (g_stage) {
         stage_destroy(g_stage);

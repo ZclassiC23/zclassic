@@ -202,8 +202,11 @@ static bool uh_exec_sql(sqlite3 *db, const char *sql)
     return rc == SQLITE_OK;
 }
 
-static bool uh_seed_proof_validate(sqlite3 *db, int n)
+static bool uh_seed_proof_validate(sqlite3 *db, const struct uh_chain *sc,
+                                   int n)
 {
+    if (!db || !sc || n <= 0 || n > sc->n)
+        return false;
     if (!uh_exec_sql(db,
         "CREATE TABLE IF NOT EXISTS proof_validate_log ("
         "  height                  INTEGER PRIMARY KEY,"
@@ -212,29 +215,58 @@ static bool uh_seed_proof_validate(sqlite3 *db, int n)
         "  sapling_spends_total    INTEGER NOT NULL,"
         "  sapling_outputs_total   INTEGER NOT NULL,"
         "  sprout_joinsplits_total INTEGER NOT NULL,"
+        "  block_hash              BLOB,"
         "  first_failure_txid      BLOB,"
         "  first_failure_proof_type TEXT,"
         "  validated_at            INTEGER NOT NULL"
-        ")"))
+        ")") ||
+        !uh_exec_sql(db,
+        "CREATE TABLE IF NOT EXISTS script_validate_log ("
+        "  height INTEGER PRIMARY KEY, status TEXT NOT NULL, ok INTEGER NOT NULL,"
+        "  tx_count INTEGER NOT NULL, input_count INTEGER NOT NULL,"
+        "  first_failure_txid BLOB, first_failure_vin INTEGER,"
+        "  first_failure_serror INTEGER, validated_at INTEGER NOT NULL,"
+        "  block_hash BLOB)"))
         return false;
-    sqlite3_stmt *st = NULL;
+    sqlite3_stmt *st = NULL, *script_st = NULL;
     if (sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO proof_validate_log "
         "(height, status, ok, sapling_spends_total, sapling_outputs_total, "
-        " sprout_joinsplits_total, validated_at) "
-        "VALUES (?, 'verified', 1, 0, 0, 0, 1)",
+        " sprout_joinsplits_total, block_hash, validated_at) "
+        "VALUES (?, 'verified', 1, 0, 0, 0, ?, 1)",
         -1, &st, NULL) != SQLITE_OK)
         return false;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO script_validate_log "
+        "(height, status, ok, tx_count, input_count, validated_at, block_hash) "
+        "VALUES (?, 'verified', 1, 0,0,1,?)",
+        -1, &script_st, NULL) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return false;
+    }
     for (int h = 0; h < n; h++) {
         sqlite3_bind_int(st, 1, h);
+        sqlite3_bind_blob(st, 2, sc->hashes[h].data, 32, SQLITE_STATIC);
         if (sqlite3_step(st) != SQLITE_DONE) {
             sqlite3_finalize(st);
+            sqlite3_finalize(script_st);
             return false;
         }
         sqlite3_reset(st);
         sqlite3_clear_bindings(st);
+        sqlite3_bind_int(script_st, 1, h);
+        sqlite3_bind_blob(script_st, 2, sc->hashes[h].data, 32,
+                          SQLITE_STATIC);
+        if (sqlite3_step(script_st) != SQLITE_DONE) {
+            sqlite3_finalize(st);
+            sqlite3_finalize(script_st);
+            return false;
+        }
+        sqlite3_reset(script_st);
+        sqlite3_clear_bindings(script_st);
     }
     sqlite3_finalize(st);
+    sqlite3_finalize(script_st);
 
     if (sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO stage_cursor(name, cursor, updated_at) "
@@ -260,17 +292,21 @@ static bool uh_delete_pv_row(sqlite3 *db, int height)
     return ok;
 }
 
-static bool uh_restore_pv_row(sqlite3 *db, int height)
+static bool uh_restore_pv_row(sqlite3 *db, const struct uh_chain *sc,
+                              int height)
 {
+    if (!db || !sc || height < 0 || height >= sc->n)
+        return false;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO proof_validate_log "
         "(height, status, ok, sapling_spends_total, sapling_outputs_total, "
-        " sprout_joinsplits_total, validated_at) "
-        "VALUES (?, 'verified', 1, 0, 0, 0, 1)",
+        " sprout_joinsplits_total, block_hash, validated_at) "
+        "VALUES (?, 'verified', 1, 0, 0, 0, ?, 1)",
         -1, &st, NULL) != SQLITE_OK)
         return false;
     sqlite3_bind_int(st, 1, height);
+    sqlite3_bind_blob(st, 2, sc->hashes[height].data, 32, SQLITE_STATIC);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
@@ -317,7 +353,7 @@ int test_utxo_apply_upstream_hole(void)
     active_chain_move_window_tip(&ms.chain_active, &sc.blocks[2]);
 
     UH_CHECK("setup: proof_validate rows 0..2 + cursor 3 seeded",
-             uh_seed_proof_validate(db, 3));
+             uh_seed_proof_validate(db, &sc, 3));
     /* The hole: row 0 absent while the proof_validate cursor (3) is already
      * past it — the durable stale-replay artifact class. */
     UH_CHECK("setup: pv row at h=0 deleted (durable hole)",
@@ -386,7 +422,7 @@ int test_utxo_apply_upstream_hole(void)
     /* Heal: restore the row; the stage resumes forward and consec zeroes
      * (the dump's "currently observing" signal); the hole evidence
      * (total/height/first_unix) stays. */
-    UH_CHECK("heal: pv row restored", uh_restore_pv_row(db, 0));
+    UH_CHECK("heal: pv row restored", uh_restore_pv_row(db, &sc, 0));
     UH_CHECK("heal: next tick advances",
              utxo_apply_stage_step_once() == JOB_ADVANCED);
     UH_CHECK("heal: consec reset to 0",

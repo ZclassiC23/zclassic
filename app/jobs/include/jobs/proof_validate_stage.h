@@ -17,6 +17,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#define PROOF_VALIDATE_STALE_UPSTREAM_HASH_BLOCKER_ID \
+    "proof_validate.stale_upstream_hash"
+#define PROOF_VALIDATE_INVALID_UPSTREAM_BLOCKER_ID \
+    "proof_validate.invalid_upstream_verdict"
+
 struct block;
 struct block_index;
 struct json_value;

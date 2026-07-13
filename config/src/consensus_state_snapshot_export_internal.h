@@ -7,8 +7,28 @@
 #include "storage/consensus_state_bundle_codec.h"
 
 #include <sqlite3.h>
+#include <sys/types.h>
 
-#define CONSENSUS_EXPORT_TEMP_PATH_MAX 1152
+#define CONSENSUS_EXPORT_NAME_MAX 256
+
+struct consensus_export_output_binding {
+    int dirfd;
+    int temp_fd;
+    char final_name[CONSENSUS_EXPORT_NAME_MAX];
+    dev_t temp_dev;
+    ino_t temp_ino;
+    sqlite3_vfs vfs;
+    sqlite3_vfs *base_vfs;
+    char vfs_name[64];
+    bool vfs_registered;
+    bool abandon_on_close;
+};
+
+/* Private SQLite file object that performs all database I/O through the
+ * retained anonymous staging inode. */
+int consensus_export_fd_file_size(void);
+int consensus_export_fd_file_open(sqlite3_file *file, int retained_fd,
+                                  int flags, int *out_flags);
 
 bool consensus_export_fail(struct consensus_state_export_result *result,
                            enum consensus_state_export_status status,
@@ -31,13 +51,12 @@ bool consensus_export_write_bundle(
         proofs[CONSENSUS_STATE_BUNDLE_PROOF_COUNT],
     struct consensus_state_export_result *result);
 
-bool consensus_export_open_temp(const char *final_path,
-                                char temp_path[CONSENSUS_EXPORT_TEMP_PATH_MAX],
+bool consensus_export_open_temp(struct consensus_export_output_binding *output,
                                 sqlite3 **destination,
                                 struct consensus_state_export_result *result);
 
 bool consensus_export_finalize_temp(
-    const char *temp_path, const char *final_path,
+    struct consensus_export_output_binding *output,
     const struct consensus_state_bundle_manifest *manifest,
     struct consensus_state_export_result *result);
 

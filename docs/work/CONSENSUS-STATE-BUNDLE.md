@@ -67,17 +67,27 @@ header/stage rows, and an exact receipt for the running executable. It streams
 all coins, historical anchors, and pool-qualified nullifiers; recomputes every
 component commitment; emits the canonical eight-row `bundle_proof`; preserves
 the source receipt; and verifies the result through the independent contained
-reader before no-replace rename. When H is the compiled checkpoint it also
-requires exact compiled hash/root/count/supply. The receipt's source-tree and
-toolchain digests are producer claims bound to the known executable—not an
+reader before an exact-inode, no-replace link. When H is the compiled checkpoint
+it also requires exact compiled hash/root/count/supply. The receipt's source-tree
+and toolchain digests are producer claims bound to the known executable—not an
 independent rebuild proof.
 
+Both reducer consumers and export proof are hash-bound. Script and proof stage
+receipts carry the exact selected header hash; a missing, malformed, or foreign
+hash is a named revalidation dependency and is never accepted as legacy
+authority for a body read or coin write. The exporter counts proof rows only
+when they join the admitted header hash at the same height.
+
 The exporter has no boot/manual/refold command caller and cannot publish node
-state. Its current pathname API requires a trusted stable parent directory;
-`openat`/descriptor-walk hardening is still required to close concurrent parent
-symlink/rename TOCTOU. There is no publisher transaction or crash-atomic state
-installation claim. A `history_complete` bit, producer receipt, nonzero digest,
-or caller-supplied height/hash is not proof of sovereignty.
+state. Its output contract is a duplicated directory descriptor plus one
+normalized filename component. It writes an anonymous `O_TMPFILE` through an
+exporter-private fd-only SQLite VFS, validates the exact retained inode, then
+uses an exact-inode, no-replace hard link and directory fsync. No staging
+pathname exists to swap or clean up, parent-path replacement cannot redirect
+the artifact, and a late final-name collision is refused without deletion.
+There is no publisher transaction or crash-atomic state installation claim. A
+`history_complete` bit, producer receipt, nonzero digest, or caller-supplied
+height/hash is not proof of sovereignty.
 
 The general node datadir guard is now a real process-lifetime, nonblocking
 exclusive `flock` over an `openat(O_NOFOLLOW|O_CLOEXEC)` PID inode, with PID and
@@ -116,8 +126,9 @@ implemented and proven together:
    selected-chain evidence with sovereign trust posture, signed/expiring owner
    authority, exact target-store identity, lane, nonce, and rollback digest. It
    must recapture/CAS inside publication; diagnostic evidence is insufficient.
-3. The exporter must adopt a descriptor-walked stable parent. Admission itself
-   is descriptor-bound, whole-file-hashed, and closed-schema validated.
+3. Export and admission must remain descriptor-bound, whole-file-hashed,
+   closed-schema validated, no-replace operations. A future caller may pass a
+   capability directory descriptor, never pathname authority.
 4. A boot-only publisher must build and fully validate a separate
    `synchronous=FULL` candidate `progress.kv`, strictly close the active store,
    atomically exchange old/new files, fsync the directory, and strictly reopen
@@ -167,13 +178,16 @@ copied. The Sapling frontier is later required to match the locally validated
 selected-chain header root. Sprout, nullifiers, and transparent state are never
 described as header- or PoW-bound.
 
-The destination is a unique `O_EXCL|O_NOFOLLOW` temporary file in the target
-directory, uses DELETE journaling and `synchronous=FULL`, writes the manifest
-last, runs full integrity and contained-admission verification after reopen,
-has no SQLite sidecars, and is file- plus directory-synced around a no-replace
-atomic rename. Failure unlinks only temporary output. Accepted files are
-read-only and never overwrite the prior artifact. Descriptor-bound parent
-identity remains an explicit pre-publication gate.
+The destination is an anonymous `O_TMPFILE` in the descriptor-bound target
+directory. An exporter-private SQLite VFS performs main-database I/O only on
+that retained inode, with MEMORY journaling, `synchronous=FULL`, and no SQLite
+sidecars. The exporter writes the manifest last, strictly closes and reopens a
+true read-only descriptor, runs full integrity and contained-admission
+verification, then creates the final name by an exact-inode no-replace hard
+link and fsyncs the directory. Pre-link failure closes the anonymous inode; it
+never unlinks a pathname. If the post-link identity/directory durability check
+is ambiguous, the validated link is left for explicit inspection and the call
+returns failure rather than racing to delete an unrelated replacement.
 
 ## Protected local-chain binding contract
 

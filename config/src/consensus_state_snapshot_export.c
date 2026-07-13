@@ -9,10 +9,10 @@
 #include "consensus_state_snapshot_export_internal.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
 
 #include <errno.h>
 #include <fcntl.h>
-#include <limits.h>
 #include <sqlite3.h>
 #include <stdarg.h>
 #include <stdatomic.h>
@@ -20,10 +20,6 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
-
-#ifndef RENAME_NOREPLACE
-#define RENAME_NOREPLACE (1u << 0)
-#endif
 
 #define EXPORT_SUBSYS "consensus_bundle_export"
 
@@ -44,95 +40,399 @@ bool consensus_export_fail(struct consensus_state_export_result *result,
     return false;
 }
 
-static bool path_is_new_regular_target(const char *path)
+static bool output_name_valid(const char *name)
 {
-    if (!path || !path[0] || strlen(path) >= PATH_MAX || strchr(path, '?') ||
-        strchr(path, '#') || strchr(path, '%'))
+    if (!name || !name[0] || strchr(name, '/') || strchr(name, '?') ||
+        strchr(name, '#') || strchr(name, '%') || strcmp(name, ".") == 0 ||
+        strcmp(name, "..") == 0)
         return false;
-    const char *base = strrchr(path, '/');
-    base = base ? base + 1 : path;
-    if (!base[0] || strcmp(base, ".") == 0 || strcmp(base, "..") == 0)
-        return false;
+    return strlen(name) < CONSENSUS_EXPORT_NAME_MAX - 48;
+}
+
+static void output_binding_init(struct consensus_export_output_binding *output)
+{
+    memset(output, 0, sizeof(*output));
+    output->dirfd = -1;
+    output->temp_fd = -1;
+}
+
+static bool output_name_absent(const struct consensus_export_output_binding *output,
+                               const char *name)
+{
     struct stat st;
     errno = 0;
-    return lstat(path, &st) != 0 && errno == ENOENT;
+    return fstatat(output->dirfd, name, &st, AT_SYMLINK_NOFOLLOW) != 0 &&
+           errno == ENOENT;
 }
 
-static void remove_bundle_paths(const char *path)
+static bool output_final_identity_matches(
+    const struct consensus_export_output_binding *output, struct stat *st_out)
 {
-    if (!path || !path[0])
-        return;
-    (void)unlink(path);
-    static const char *const suffixes[] = {"-journal", "-wal", "-shm"};
-    char sidecar[CONSENSUS_EXPORT_TEMP_PATH_MAX + 16];
-    for (size_t i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); i++) {
-        int n = snprintf(sidecar, sizeof(sidecar), "%s%s", path, suffixes[i]);
-        if (n > 0 && (size_t)n < sizeof(sidecar))
-            (void)unlink(sidecar);
-    }
+    struct stat st;
+    if (!output || output->dirfd < 0 || !output->final_name[0] ||
+        fstatat(output->dirfd, output->final_name, &st,
+                AT_SYMLINK_NOFOLLOW) != 0 ||
+        !S_ISREG(st.st_mode) || st.st_nlink != 1 ||
+        st.st_dev != output->temp_dev ||
+        st.st_ino != output->temp_ino ||
+        (st.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) != 0)
+        return false;
+    if (st_out)
+        *st_out = st;
+    return true;
 }
 
-static bool bundle_sidecars_absent(const char *path)
+static bool output_sidecars_absent(
+    const struct consensus_export_output_binding *output)
 {
     static const char *const suffixes[] = {"-journal", "-wal", "-shm"};
-    char sidecar[CONSENSUS_EXPORT_TEMP_PATH_MAX + 16];
+    char sidecar[CONSENSUS_EXPORT_NAME_MAX + 16];
     for (size_t i = 0; i < sizeof(suffixes) / sizeof(suffixes[0]); i++) {
-        int n = snprintf(sidecar, sizeof(sidecar), "%s%s", path, suffixes[i]);
+        int n = snprintf(sidecar, sizeof(sidecar), "%s%s", output->final_name,
+                         suffixes[i]);
         if (n <= 0 || (size_t)n >= sizeof(sidecar))
             return false;
         struct stat st;
         errno = 0;
-        if (lstat(sidecar, &st) == 0 || errno != ENOENT)
+        if (fstatat(output->dirfd, sidecar, &st, AT_SYMLINK_NOFOLLOW) == 0 ||
+            errno != ENOENT)
             return false;
     }
     return true;
 }
 
-bool consensus_export_open_temp(const char *final_path,
-                                char temp_path[CONSENSUS_EXPORT_TEMP_PATH_MAX],
+static bool output_link_fd(int source_fd, int destination_dirfd,
+                           const char *destination_name)
+{
+    char source[64];
+    int n = snprintf(source, sizeof(source), "/proc/self/fd/%d", source_fd);
+    return n > 0 && (size_t)n < sizeof(source) &&
+        linkat(AT_FDCWD, source, destination_dirfd, destination_name,
+               AT_SYMLINK_FOLLOW) == 0;
+}
+
+static sqlite3_vfs *output_vfs_base(sqlite3_vfs *vfs)
+{
+    struct consensus_export_output_binding *output = vfs->pAppData;
+    return output ? output->base_vfs : NULL;
+}
+
+static int output_vfs_open(sqlite3_vfs *vfs, const char *name,
+                           sqlite3_file *file, int flags, int *out_flags)
+{
+    (void)name;
+    struct consensus_export_output_binding *output = vfs->pAppData;
+    return consensus_export_fd_file_open(
+        file, output ? output->temp_fd : -1, flags, out_flags);
+}
+
+static int output_vfs_delete(sqlite3_vfs *vfs, const char *name,
+                             int sync_dir)
+{
+    (void)vfs;
+    (void)name;
+    (void)sync_dir;
+    return SQLITE_IOERR_DELETE;
+}
+
+static int output_vfs_access(sqlite3_vfs *vfs, const char *name, int flags,
+                             int *result)
+{
+    (void)vfs;
+    (void)flags;
+    *result = name && strcmp(name, "zcl-export-main") == 0;
+    return SQLITE_OK;
+}
+
+static int output_vfs_full_pathname(sqlite3_vfs *vfs, const char *name,
+                                    int size, char *out)
+{
+    (void)vfs;
+    if (!name || !out || size <= 0 || strlen(name) >= (size_t)size)
+        return SQLITE_CANTOPEN;
+    memcpy(out, name, strlen(name) + 1);
+    return SQLITE_OK;
+}
+
+static void *output_vfs_dl_open(sqlite3_vfs *vfs, const char *name)
+{
+    sqlite3_vfs *base = output_vfs_base(vfs);
+    return base && base->xDlOpen ? base->xDlOpen(base, name) : NULL;
+}
+
+static void output_vfs_dl_error(sqlite3_vfs *vfs, int size, char *message)
+{
+    sqlite3_vfs *base = output_vfs_base(vfs);
+    if (base && base->xDlError)
+        base->xDlError(base, size, message);
+    else if (size > 0)
+        message[0] = '\0';
+}
+
+static void (*output_vfs_dl_sym(sqlite3_vfs *vfs, void *handle,
+                                const char *symbol))(void)
+{
+    sqlite3_vfs *base = output_vfs_base(vfs);
+    return base && base->xDlSym ? base->xDlSym(base, handle, symbol) : NULL;
+}
+
+static void output_vfs_dl_close(sqlite3_vfs *vfs, void *handle)
+{
+    sqlite3_vfs *base = output_vfs_base(vfs);
+    if (base && base->xDlClose)
+        base->xDlClose(base, handle);
+}
+
+static int output_vfs_randomness(sqlite3_vfs *vfs, int size, char *out)
+{
+    sqlite3_vfs *base = output_vfs_base(vfs);
+    return base->xRandomness(base, size, out);
+}
+
+static int output_vfs_sleep(sqlite3_vfs *vfs, int microseconds)
+{
+    sqlite3_vfs *base = output_vfs_base(vfs);
+    return base->xSleep(base, microseconds);
+}
+
+static int output_vfs_current_time(sqlite3_vfs *vfs, double *time_out)
+{
+    sqlite3_vfs *base = output_vfs_base(vfs);
+    return base->xCurrentTime(base, time_out);
+}
+
+static int output_vfs_last_error(sqlite3_vfs *vfs, int size, char *message)
+{
+    sqlite3_vfs *base = output_vfs_base(vfs);
+    return base && base->xGetLastError
+        ? base->xGetLastError(base, size, message) : 0;
+}
+
+static int output_vfs_current_time_i64(sqlite3_vfs *vfs,
+                                       sqlite3_int64 *time_out)
+{
+    sqlite3_vfs *base = output_vfs_base(vfs);
+    return base && base->iVersion >= 2 && base->xCurrentTimeInt64
+        ? base->xCurrentTimeInt64(base, time_out) : SQLITE_ERROR;
+}
+
+static int output_vfs_set_system_call(sqlite3_vfs *vfs, const char *name,
+                                      sqlite3_syscall_ptr call)
+{
+    sqlite3_vfs *base = output_vfs_base(vfs);
+    return base && base->iVersion >= 3 && base->xSetSystemCall
+        ? base->xSetSystemCall(base, name, call) : SQLITE_NOTFOUND;
+}
+
+static sqlite3_syscall_ptr output_vfs_get_system_call(sqlite3_vfs *vfs,
+                                                       const char *name)
+{
+    sqlite3_vfs *base = output_vfs_base(vfs);
+    return base && base->iVersion >= 3 && base->xGetSystemCall
+        ? base->xGetSystemCall(base, name) : NULL;
+}
+
+static const char *output_vfs_next_system_call(sqlite3_vfs *vfs,
+                                                const char *name)
+{
+    sqlite3_vfs *base = output_vfs_base(vfs);
+    return base && base->iVersion >= 3 && base->xNextSystemCall
+        ? base->xNextSystemCall(base, name) : NULL;
+}
+
+static bool output_vfs_register(struct consensus_export_output_binding *output)
+{
+    static atomic_uint_fast64_t sequence = 0;
+    output->base_vfs = sqlite3_vfs_find(NULL);
+    if (!output->base_vfs)
+        return false;
+    uint64_t nonce = atomic_fetch_add(&sequence, 1) + 1;
+    int n = snprintf(output->vfs_name, sizeof(output->vfs_name),
+                     "zcl_export_fd_%ld_%llu", (long)getpid(),
+                     (unsigned long long)nonce);
+    if (n <= 0 || (size_t)n >= sizeof(output->vfs_name))
+        return false;
+    output->vfs = (sqlite3_vfs) {
+        .iVersion = output->base_vfs->iVersion > 3
+            ? 3 : output->base_vfs->iVersion,
+        .szOsFile = consensus_export_fd_file_size(),
+        .mxPathname = output->base_vfs->mxPathname,
+        .zName = output->vfs_name,
+        .pAppData = output,
+        .xOpen = output_vfs_open,
+        .xDelete = output_vfs_delete,
+        .xAccess = output_vfs_access,
+        .xFullPathname = output_vfs_full_pathname,
+        .xDlOpen = output_vfs_dl_open,
+        .xDlError = output_vfs_dl_error,
+        .xDlSym = output_vfs_dl_sym,
+        .xDlClose = output_vfs_dl_close,
+        .xRandomness = output_vfs_randomness,
+        .xSleep = output_vfs_sleep,
+        .xCurrentTime = output_vfs_current_time,
+        .xGetLastError = output_vfs_last_error,
+        .xCurrentTimeInt64 = output_vfs_current_time_i64,
+        .xSetSystemCall = output_vfs_set_system_call,
+        .xGetSystemCall = output_vfs_get_system_call,
+        .xNextSystemCall = output_vfs_next_system_call,
+    };
+    if (sqlite3_vfs_register(&output->vfs, 0) != SQLITE_OK)
+        return false;
+    output->vfs_registered = true;
+    return true;
+}
+
+static void output_binding_close(struct consensus_export_output_binding *output)
+{
+    if (!output || output->abandon_on_close)
+        return;
+    if (output->vfs_registered) {
+        (void)sqlite3_vfs_unregister(&output->vfs);
+        output->vfs_registered = false;
+    }
+    if (output->temp_fd >= 0) {
+        (void)close(output->temp_fd);
+        output->temp_fd = -1;
+    }
+    if (output->dirfd >= 0) {
+        (void)close(output->dirfd);
+        output->dirfd = -1;
+    }
+}
+
+static bool output_sqlite_close_strict(
+    struct consensus_export_output_binding *output, sqlite3 **db)
+{
+    if (!db || !*db)
+        return true;
+    bool clean = true;
+    sqlite3_stmt *stmt;
+    while ((stmt = sqlite3_next_stmt(*db, NULL)) != NULL) {
+        if (sqlite3_finalize(stmt) != SQLITE_OK)
+            clean = false;
+    }
+    int rc = sqlite3_close(*db);
+    if (rc != SQLITE_OK) {
+        /* The VFS and pAppData are stack-external only while the binding is
+         * retained. The caller intentionally leaks a heap binding on this
+         * impossible-to-prove-close path rather than unregistering live
+         * callbacks or manufacturing success. */
+        output->abandon_on_close = true;
+        return false;
+    }
+    *db = NULL;
+    return clean;
+}
+
+static bool output_binding_open(
+    const struct consensus_state_snapshot_export_request *request,
+    struct consensus_export_output_binding *output,
+    struct consensus_state_export_result *result)
+{
+    if (request->output_dir_fd < 0 || !output_name_valid(request->output_name))
+        return consensus_export_fail(result, CONSENSUS_EXPORT_REFUSED,
+                                     "output directory/name is invalid");
+    int fd = fcntl(request->output_dir_fd, F_DUPFD_CLOEXEC, 3);
+    if (fd < 0)
+        return consensus_export_fail(result, CONSENSUS_EXPORT_REFUSED,
+                                     "output directory descriptor duplicate failed");
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        (void)close(fd);
+        return consensus_export_fail(result, CONSENSUS_EXPORT_REFUSED,
+                                     "output descriptor is not a directory");
+    }
+    output->dirfd = fd;
+    snprintf(output->final_name, sizeof(output->final_name), "%s",
+             request->output_name);
+    if (!output_name_absent(output, output->final_name)) {
+        output_binding_close(output);
+        return consensus_export_fail(result, CONSENSUS_EXPORT_REFUSED,
+                                     "output name already exists or is uninspectable");
+    }
+    return true;
+}
+
+#ifdef ZCL_TESTING
+static void (*g_after_output_bind_hook)(void *) = NULL;
+static void *g_after_output_bind_ctx = NULL;
+static void (*g_after_staging_create_hook)(void *) = NULL;
+static void *g_after_staging_create_ctx = NULL;
+
+void consensus_state_snapshot_export_test_set_after_output_bind_hook(
+    void (*hook)(void *), void *ctx)
+{
+    g_after_output_bind_hook = hook;
+    g_after_output_bind_ctx = ctx;
+}
+
+void consensus_state_snapshot_export_test_set_after_staging_create_hook(
+    void (*hook)(void *), void *ctx)
+{
+    g_after_staging_create_hook = hook;
+    g_after_staging_create_ctx = ctx;
+}
+
+static void output_run_after_bind_hook(void)
+{
+    void (*hook)(void *) = g_after_output_bind_hook;
+    void *ctx = g_after_output_bind_ctx;
+    g_after_output_bind_hook = NULL;
+    g_after_output_bind_ctx = NULL;
+    if (hook)
+        hook(ctx);
+}
+
+static void output_run_after_staging_create_hook(void)
+{
+    void (*hook)(void *) = g_after_staging_create_hook;
+    void *ctx = g_after_staging_create_ctx;
+    g_after_staging_create_hook = NULL;
+    g_after_staging_create_ctx = NULL;
+    if (hook)
+        hook(ctx);
+}
+#else
+static void output_run_after_bind_hook(void) { }
+static void output_run_after_staging_create_hook(void) { }
+#endif
+
+bool consensus_export_open_temp(struct consensus_export_output_binding *output,
                                 sqlite3 **destination,
                                 struct consensus_state_export_result *result)
 {
-    static atomic_uint_fast64_t sequence = 0;
     *destination = NULL;
-    if (!path_is_new_regular_target(final_path))
-        return consensus_export_fail(
-            result, CONSENSUS_EXPORT_REFUSED,
-            "output path is invalid, aliased, or already exists");
+    if (!output_name_absent(output, output->final_name))
+        return consensus_export_fail(result, CONSENSUS_EXPORT_REFUSED,
+                                     "output name appeared after descriptor bind");
 
-    int fd = -1;
-    for (unsigned attempt = 0; attempt < 64 && fd < 0; attempt++) {
-        uint64_t nonce = atomic_fetch_add(&sequence, 1) + 1;
-        int n = snprintf(temp_path, CONSENSUS_EXPORT_TEMP_PATH_MAX,
-                         "%s.tmp.%ld.%llu", final_path, (long)getpid(),
-                         (unsigned long long)nonce);
-        if (n <= 0 || n >= CONSENSUS_EXPORT_TEMP_PATH_MAX)
-            return consensus_export_fail(result, CONSENSUS_EXPORT_REFUSED,
-                                         "output staging path is too long");
-        fd = open(temp_path, O_CREAT | O_EXCL | O_RDWR | O_CLOEXEC | O_NOFOLLOW,
-                  S_IRUSR | S_IWUSR);
-        if (fd < 0 && errno != EEXIST)
-            break;
-    }
-    if (fd < 0)
+    output->temp_fd = openat(output->dirfd, ".",
+        O_TMPFILE | O_RDWR | O_CLOEXEC, S_IRUSR | S_IWUSR);
+    if (output->temp_fd < 0)
         return consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,
-                                     "unique output staging file create failed");
-    if (close(fd) != 0) {
-        remove_bundle_paths(temp_path);
+                                     "anonymous output staging create failed");
+    struct stat created;
+    if (fstat(output->temp_fd, &created) != 0 || !S_ISREG(created.st_mode) ||
+        created.st_nlink != 0) {
         return consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,
-                                     "output staging file close failed");
+                                     "output staging descriptor identity invalid");
     }
+    output->temp_dev = created.st_dev;
+    output->temp_ino = created.st_ino;
+    output_run_after_staging_create_hook();
 
-    int rc = sqlite3_open_v2(temp_path, destination,
-                             SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOMUTEX,
-                             NULL);
-    if (rc != SQLITE_OK) {
-        if (*destination)
-            sqlite3_close(*destination);
-        *destination = NULL;
-        remove_bundle_paths(temp_path);
+    if (!output_vfs_register(output))
         return consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,
-                                     "output SQLite open failed");
+                                     "descriptor SQLite VFS register failed");
+    int rc = sqlite3_open_v2("zcl-export-main", destination,
+        SQLITE_OPEN_READWRITE | SQLITE_OPEN_NOMUTEX, output->vfs_name);
+    struct stat opened;
+    if (rc != SQLITE_OK || fstat(output->temp_fd, &opened) != 0 ||
+        opened.st_dev != output->temp_dev || opened.st_ino != output->temp_ino ||
+        opened.st_nlink != 0) {
+        (void)output_sqlite_close_strict(output, destination);
+        return consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,
+                                     "output SQLite descriptor open failed");
     }
     int defensive = 0;
     char *error = NULL;
@@ -140,7 +440,7 @@ bool consensus_export_open_temp(const char *final_path,
                                 &defensive) == SQLITE_OK &&
               defensive == 1 &&
               sqlite3_exec(*destination,
-                  "PRAGMA journal_mode=DELETE;"
+                  "PRAGMA journal_mode=MEMORY;"
                   "PRAGMA synchronous=FULL;"
                   "PRAGMA temp_store=MEMORY;"
                   "PRAGMA foreign_keys=ON;"
@@ -152,46 +452,11 @@ bool consensus_export_open_temp(const char *final_path,
         sqlite3_free(error);
     }
     if (!ok) {
-        sqlite3_close(*destination);
-        *destination = NULL;
-        remove_bundle_paths(temp_path);
+        (void)output_sqlite_close_strict(output, destination);
         return consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,
                                      "FULL-durable output setup failed");
     }
     return true;
-}
-
-static bool fsync_path(const char *path)
-{
-    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
-    if (fd < 0)
-        return false;
-    bool ok = fsync(fd) == 0;
-    if (close(fd) != 0)
-        ok = false;
-    return ok;
-}
-
-static bool fsync_parent_directory(const char *path)
-{
-    char parent[PATH_MAX];
-    if (strlen(path) >= sizeof(parent))
-        return false;
-    snprintf(parent, sizeof(parent), "%s", path);
-    char *slash = strrchr(parent, '/');
-    if (!slash)
-        snprintf(parent, sizeof(parent), ".");
-    else if (slash == parent)
-        slash[1] = '\0';
-    else
-        *slash = '\0';
-    int fd = open(parent, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
-    if (fd < 0)
-        return false;
-    bool ok = fsync(fd) == 0;
-    if (close(fd) != 0)
-        ok = false;
-    return ok;
 }
 
 static bool manifests_equal(
@@ -223,35 +488,31 @@ static bool manifests_equal(
 }
 
 bool consensus_export_finalize_temp(
-    const char *temp_path, const char *final_path,
+    struct consensus_export_output_binding *output,
     const struct consensus_state_bundle_manifest *manifest,
     struct consensus_state_export_result *result)
 {
-    if (!bundle_sidecars_absent(temp_path))
+    if (!output || output->temp_fd < 0 || !output_sidecars_absent(output))
         return consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,
-                                     "bundle SQLite sidecar remains after close");
-    if (!fsync_path(temp_path) || chmod(temp_path, S_IRUSR) != 0 ||
-        !fsync_path(temp_path))
+                                     "bundle staging identity/sidecar invalid");
+    if (fsync(output->temp_fd) != 0 ||
+        fchmod(output->temp_fd, S_IRUSR) != 0 ||
+        fsync(output->temp_fd) != 0)
         return consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,
                                      "bundle fsync/immutable mode failed");
 
     struct stat before;
-    if (lstat(temp_path, &before) != 0 || !S_ISREG(before.st_mode) ||
+    if (fstat(output->temp_fd, &before) != 0 || !S_ISREG(before.st_mode) ||
+        before.st_dev != output->temp_dev || before.st_ino != output->temp_ino ||
+        before.st_nlink != 0 ||
         (before.st_mode & (S_IWUSR | S_IWGRP | S_IWOTH)) != 0)
         return consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,
                                      "staged bundle identity/mode invalid");
-    char uri[CONSENSUS_EXPORT_TEMP_PATH_MAX + 32];
-    int n = snprintf(uri, sizeof(uri), "file:%s?mode=ro&immutable=1",
-                     temp_path);
-    if (n <= 0 || (size_t)n >= sizeof(uri))
-        return consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,
-                                     "staged bundle URI too long");
     sqlite3 *check = NULL;
-    if (sqlite3_open_v2(uri, &check,
-            SQLITE_OPEN_READONLY | SQLITE_OPEN_URI | SQLITE_OPEN_NOMUTEX,
-            NULL) != SQLITE_OK) {
-        if (check)
-            sqlite3_close(check);
+    if (sqlite3_open_v2("zcl-export-main", &check,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX,
+            output->vfs_name) != SQLITE_OK) {
+        (void)output_sqlite_close_strict(output, &check);
         return consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,
                                      "immutable bundle reopen failed");
     }
@@ -272,31 +533,43 @@ bool consensus_export_finalize_temp(
         ok = consensus_state_bundle_validate(check, &reopened, &validation);
     if (ok)
         ok = manifests_equal(manifest, &reopened);
-    if (sqlite3_close(check) != SQLITE_OK)
+    if (!output_sqlite_close_strict(output, &check))
         ok = false;
     struct stat after;
-    if (!ok || lstat(temp_path, &after) != 0 ||
+    if (!ok || fstat(output->temp_fd, &after) != 0 ||
         before.st_dev != after.st_dev || before.st_ino != after.st_ino ||
+        before.st_nlink != 0 || after.st_nlink != 0 ||
+        before.st_mode != after.st_mode ||
         before.st_size != after.st_size ||
         before.st_mtim.tv_sec != after.st_mtim.tv_sec ||
-        before.st_mtim.tv_nsec != after.st_mtim.tv_nsec)
+        before.st_mtim.tv_nsec != after.st_mtim.tv_nsec ||
+        before.st_ctim.tv_sec != after.st_ctim.tv_sec ||
+        before.st_ctim.tv_nsec != after.st_ctim.tv_nsec)
         return consensus_export_fail(
             result, CONSENSUS_EXPORT_OUTPUT_ERROR,
             "independent immutable bundle validation failed");
 
-    if (!path_is_new_regular_target(final_path) ||
-        renameat2(AT_FDCWD, temp_path, AT_FDCWD, final_path,
-                  RENAME_NOREPLACE) != 0)
+    if (!output_name_absent(output, output->final_name) ||
+        !output_sidecars_absent(output) ||
+        !output_link_fd(output->temp_fd, output->dirfd,
+                        output->final_name))
         return consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,
                                      "atomic no-replace bundle publish failed");
-    if (!fsync_parent_directory(final_path)) {
-        /* The rename happened, but without a directory durability witness the
-         * artifact cannot be reported as accepted. Remove it and fsync that
-         * removal when possible; never return a false successful receipt. */
-        (void)unlink(final_path);
-        (void)fsync_parent_directory(final_path);
+    struct stat published;
+    if (!output_final_identity_matches(output, &published) ||
+        published.st_size != after.st_size ||
+        published.st_mtim.tv_sec != after.st_mtim.tv_sec ||
+        published.st_mtim.tv_nsec != after.st_mtim.tv_nsec ||
+        published.st_ctim.tv_sec < after.st_ctim.tv_sec ||
+        (published.st_ctim.tv_sec == after.st_ctim.tv_sec &&
+         published.st_ctim.tv_nsec < after.st_ctim.tv_nsec) ||
+        fsync(output->dirfd) != 0) {
+        /* Never unlink after a separate identity check: a concurrent name
+         * replacement could turn cleanup into deletion of an unrelated file.
+         * The result remains refused and no activation caller exists; an
+         * ambiguous fully-validated link is left for explicit inspection. */
         return consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,
-                                     "bundle directory fsync failed");
+                                     "bundle published identity/durability ambiguous");
     }
     return true;
 }
@@ -316,9 +589,9 @@ bool consensus_state_snapshot_export(
 {
     if (result)
         memset(result, 0, sizeof(*result));
-    if (!progress_db || !request || !request->output_path)
+    if (!progress_db || !request)
         return consensus_export_fail(result, CONSENSUS_EXPORT_REFUSED,
-                                     "NULL progress_db/request/output_path");
+                                     "NULL progress_db/request");
     if (progress_store_db() != progress_db)
         return consensus_export_fail(result, CONSENSUS_EXPORT_REFUSED,
                                      "source is not the owned progress.kv handle");
@@ -326,11 +599,19 @@ bool consensus_state_snapshot_export(
         !digest_nonzero(request->expected_block_hash))
         return consensus_export_fail(result, CONSENSUS_EXPORT_REFUSED,
                                      "invalid expected source height/hash");
-    if (!path_is_new_regular_target(request->output_path))
-        return consensus_export_fail(result, CONSENSUS_EXPORT_REFUSED,
-                                     "output path is invalid or already exists");
 
-    char temp_path[CONSENSUS_EXPORT_TEMP_PATH_MAX] = {0};
+    struct consensus_export_output_binding *output = zcl_calloc(
+        1, sizeof(*output), "consensus_export_output_binding");
+    if (!output)
+        return consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,
+                                     "output binding allocation failed");
+    output_binding_init(output);
+    if (!output_binding_open(request, output, result)) {
+        free(output);
+        return false;
+    }
+    output_run_after_bind_hook();
+
     sqlite3 *destination = NULL;
     struct consensus_state_bundle_manifest manifest;
     memset(&manifest, 0, sizeof(manifest));
@@ -360,15 +641,15 @@ bool consensus_state_snapshot_export(
         ok = consensus_export_prove_source(progress_db, request, &manifest,
                                            &receipt, proofs, result);
     if (ok)
-        ok = consensus_export_open_temp(request->output_path, temp_path,
-                                        &destination, result);
+        ok = consensus_export_open_temp(output, &destination, result);
     if (ok)
         ok = consensus_export_write_bundle(progress_db, destination, &manifest,
                                            &receipt, proofs, result);
     if (destination) {
-        if (sqlite3_close(destination) != SQLITE_OK && ok) {
-            (void)consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,
-                                        "bundle close failed");
+        if (!output_sqlite_close_strict(output, &destination) && ok) {
+            (void)consensus_export_fail(
+                result, CONSENSUS_EXPORT_OUTPUT_ERROR,
+                "bundle close failed");
             ok = false;
         }
         destination = NULL;
@@ -387,10 +668,11 @@ bool consensus_state_snapshot_export(
     progress_store_tx_unlock();
 
     if (ok)
-        ok = consensus_export_finalize_temp(temp_path, request->output_path,
-                                            &manifest, result);
+        ok = consensus_export_finalize_temp(output, &manifest, result);
     if (!ok) {
-        remove_bundle_paths(temp_path);
+        output_binding_close(output);
+        if (!output->abandon_on_close)
+            free(output);
         return false;
     }
     if (result) {
@@ -405,5 +687,8 @@ bool consensus_state_snapshot_export(
                  "exported immutable %s height=%d",
                  CONSENSUS_STATE_BUNDLE_SCHEMA, manifest.height);
     }
+    output_binding_close(output);
+    if (!output->abandon_on_close)
+        free(output);
     return true;
 }

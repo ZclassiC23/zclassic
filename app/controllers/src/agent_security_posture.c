@@ -3,9 +3,11 @@
 #include "controllers/agent_security_posture.h"
 
 #include "config/runtime.h"
+#include "jobs/utxo_apply_anchors.h"
 #include "jobs/utxo_apply_nullifiers.h"
 #include "json/json.h"
 #include "services/chain_evidence_authority_service.h"
+#include "storage/anchor_kv.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 
@@ -109,6 +111,53 @@ static void posture_collect_nullifiers(struct agent_security_posture *out)
                     : "complete_from_genesis_or_backfilled");
 }
 
+static void posture_collect_anchors(struct agent_security_posture *out)
+{
+    bool sprout_found = false;
+    bool sapling_found = false;
+    struct sqlite3 *db;
+
+    if (!out)
+        return;
+    db = progress_store_db();
+    if (!db) {
+        posture_str(out->anchor_history_state,
+                    sizeof(out->anchor_history_state),
+                    "unknown_no_progress_store");
+        return;
+    }
+    progress_store_tx_lock();
+    bool read_ok = anchor_kv_activation_cursor(
+        db, ANCHOR_POOL_SPROUT,
+        &out->sprout_anchor_activation_cursor, &sprout_found) &&
+        anchor_kv_activation_cursor(
+            db, ANCHOR_POOL_SAPLING,
+            &out->sapling_anchor_activation_cursor, &sapling_found);
+    progress_store_tx_unlock();
+    if (!read_ok) {
+        posture_str(out->anchor_history_state,
+                    sizeof(out->anchor_history_state),
+                    "unknown_activation_read_failed");
+        return;
+    }
+
+    out->anchor_cursor_known = sprout_found && sapling_found;
+    out->anchor_backfill_gap =
+        !out->anchor_cursor_known ||
+        out->sprout_anchor_activation_cursor > 0 ||
+        out->sapling_anchor_activation_cursor > 0 ||
+        blocker_exists(UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID);
+    out->anchor_history_complete =
+        out->anchor_cursor_known && !out->anchor_backfill_gap;
+    posture_str(out->anchor_history_state,
+                sizeof(out->anchor_history_state),
+                !out->anchor_cursor_known
+                    ? "unknown_missing_activation_provenance"
+                    : out->anchor_backfill_gap
+                        ? "gap_below_activation_cursor"
+                        : "complete_from_genesis_or_backfilled");
+}
+
 static void posture_finalize(struct agent_security_posture *out)
 {
     if (!out)
@@ -118,17 +167,25 @@ static void posture_finalize(struct agent_security_posture *out)
         !out->progress_store_available ||
         out->trusted_state_present ||
         !out->snapshot_full_validation_complete ||
+        !out->anchor_cursor_known ||
+        out->anchor_backfill_gap ||
+        !out->anchor_history_complete ||
         !out->nullifier_cursor_known ||
         out->nullifier_backfill_gap ||
         !out->nullifier_history_complete;
 
-    if (out->nullifier_backfill_gap) {
+    if (out->anchor_backfill_gap) {
+        posture_str(out->status, sizeof(out->status),
+                    "review_required_anchor_backfill_gap");
+        posture_str(out->next_action, sizeof(out->next_action),
+                    "run_shielded_history_backfill_or_from_genesis_refold");
+    } else if (out->nullifier_backfill_gap) {
         posture_str(out->status, sizeof(out->status),
                     "review_required_nullifier_backfill_gap");
         posture_str(out->next_action, sizeof(out->next_action),
                     "run_shielded_history_backfill_or_from_genesis_refold");
     } else if (!out->node_db_available || !out->progress_store_available ||
-               !out->nullifier_cursor_known) {
+               !out->anchor_cursor_known || !out->nullifier_cursor_known) {
         posture_str(out->status, sizeof(out->status),
                     "review_required_unknown");
         posture_str(out->next_action, sizeof(out->next_action),
@@ -154,8 +211,11 @@ void agent_security_posture_collect(struct agent_security_posture *out,
         return;
     *out = empty;
     out->snapshot_anchor_height = -1;
+    out->sprout_anchor_activation_cursor = -1;
+    out->sapling_anchor_activation_cursor = -1;
     out->nullifier_activation_cursor = -1;
     posture_collect_bootstrap(out, ndb);
+    posture_collect_anchors(out);
     posture_collect_nullifiers(out);
     posture_finalize(out);
 }
@@ -194,6 +254,18 @@ void agent_push_security_posture_json(struct json_value *out, const char *key,
                       p.snapshot_chunk_hash_coverage_verified);
     json_push_kv_str(&obj, "full_history_validation_state",
                      p.full_history_validation_state);
+    json_push_kv_bool(&obj, "anchor_cursor_known",
+                      p.anchor_cursor_known);
+    json_push_kv_int(&obj, "sprout_anchor_activation_cursor",
+                     p.sprout_anchor_activation_cursor);
+    json_push_kv_int(&obj, "sapling_anchor_activation_cursor",
+                     p.sapling_anchor_activation_cursor);
+    json_push_kv_bool(&obj, "anchor_history_complete",
+                      p.anchor_history_complete);
+    json_push_kv_bool(&obj, "anchor_backfill_gap",
+                      p.anchor_backfill_gap);
+    json_push_kv_str(&obj, "anchor_history_state",
+                     p.anchor_history_state);
     json_push_kv_bool(&obj, "nullifier_cursor_known",
                       p.nullifier_cursor_known);
     json_push_kv_int(&obj, "nullifier_activation_cursor",

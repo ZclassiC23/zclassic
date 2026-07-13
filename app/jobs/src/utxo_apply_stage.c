@@ -7,6 +7,7 @@
 
 #include "platform/time_compat.h"
 #include "jobs/created_outputs_index.h"
+#include "jobs/utxo_apply_history_hold.h"
 #include "jobs/utxo_apply_stage.h"
 #include "jobs/utxo_apply_delta.h"
 #include "jobs/replay_count_only.h"
@@ -16,6 +17,7 @@
 #include "utxo_apply_log_store.h"
 #include "utxo_apply_stage_internal.h"
 #include "utxo_apply_stage_observe.h"
+#include "proof_validate_log_store.h"
 #include "script_validate_log_store.h"
 #include "chain/chain.h"
 #include "core/uint256.h"
@@ -45,9 +47,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
 #define STAGE_NAME "utxo_apply"
-
 /* The forward creation index is needed only for the replayable/reorgable
  * window above the durable coin frontier. Keep a large margin over the IBD
  * reorg allowance plus the block-download lookahead, then prune a bounded
@@ -70,8 +70,6 @@ static utxo_apply_reader_fn g_reader = NULL;
 static void *g_reader_user = NULL;
 static utxo_apply_lookup_fn g_lookup = NULL;
 static void *g_lookup_user = NULL;
-static _Atomic int64_t g_history_hold_height = -1; /* kind: 1=nf, 2=anchor */
-static _Atomic int g_history_hold_kind = 0;
 
 /* Module state shared with utxo_apply_stage_dump.c (the zcl_state dump TU)
  * via utxo_apply_stage_internal.h — written here, atomic_load-only there. */
@@ -280,16 +278,6 @@ static job_result_t step_apply(struct stage_step_ctx *c)
                                    "stage cursor persisted negative");
         return JOB_FATAL;
     }
-    int hold_kind = atomic_load(&g_history_hold_kind);
-    if (atomic_load(&g_history_hold_height) == next_h && hold_kind != 0) {
-        const char *id = hold_kind == 1 ? UTXO_APPLY_NF_GAP_BLOCKER_ID
-                                        : UTXO_APPLY_ANCHOR_GAP_BLOCKER_ID;
-        if (blocker_exists(id))
-            return JOB_IDLE; /* causal dependency has not cleared */
-        atomic_store(&g_history_hold_kind, 0); atomic_store(
-            &g_history_hold_height, (int64_t)-1);
-    }
-
     uint64_t pv_cursor = 0;
     if (!stage_cursor_read_or_zero(db, "proof_validate", STAGE_NAME,
                                    &pv_cursor)) {
@@ -324,23 +312,8 @@ static job_result_t step_apply(struct stage_step_ctx *c)
     }
     utxo_apply_upstream_hole_healed(next_h);
 
-    if (upstream.ok == 0) {
-        atomic_fetch_add(&g_ua_upstream_failed_total, 1);
-        return block_apply_failure(c, next_h, "upstream_failed",
-                                   "proof_validate", NULL);
-    }
-
-    /* Hash-bound verdict gate — the structural stop for the header
-     * height-splice class. Stage logs are keyed BY HEIGHT, so after an
-     * in-memory header relabel the script_validate_log row at next_h can be
-     * the verdict for a DIFFERENT block than the one chain[] now exposes;
-     * applying with that stale verdict tears the coin set at the splice
-     * height (the TRUE block never applies; surfaces ~28 labels later as
-     * bad-cb-height). Same hash-identity guard as tip_finalize's
-     * finalize_script_log_ok: a row provably bound to another hash refuses
-     * the apply with a typed transient blocker until script_validate re-binds
-     * the height. A NULL hash or an absent row cannot prove a mismatch and
-     * passes through — the proof_validate cursor guard above covers ordering. */
+    /* Both height-keyed upstream verdicts must agree with the selected block.
+     * Missing or foreign hashes refuse apply before verdict interpretation. */
     struct script_validate_verdict_row sv_row;
     int sv_found = script_validate_log_verdict_at(db, next_h, &sv_row);
     if (sv_found < 0) {
@@ -355,14 +328,31 @@ static job_result_t step_apply(struct stage_step_ctx *c)
         atomic_store(&g_ua_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
     }
-    if (sv_found == 1 && sv_row.has_block_hash &&
-        !uint256_eq(&sv_row.block_hash, bi->phashBlock)) {
-        return utxo_apply_label_splice_refuse(
-            c, next_h, bi->phashBlock, &sv_row.block_hash);
+    if (utxo_apply_history_hold_should_park(
+            db, next_h, bi->phashBlock, upstream.has_block_hash,
+            &upstream.block_hash,
+            sv_found == 1 && sv_row.has_block_hash, &sv_row.block_hash)) {
+        atomic_store(&g_ua_last_blocked_unix, platform_time_wall_unix());
+        return JOB_IDLE;
     }
+    if (!upstream.has_block_hash ||
+        !uint256_eq(&upstream.block_hash, bi->phashBlock))
+        return utxo_apply_label_splice_refuse(c, next_h,
+            "proof_validate_log", bi->phashBlock,
+            upstream.has_block_hash ? &upstream.block_hash : NULL);
+    if (sv_found != 1 || !sv_row.has_block_hash ||
+        !uint256_eq(&sv_row.block_hash, bi->phashBlock))
+        return utxo_apply_label_splice_refuse(c, next_h,
+            "script_validate_log", bi->phashBlock,
+            sv_found == 1 && sv_row.has_block_hash ? &sv_row.block_hash : NULL);
     /* The previously-refused verdict is re-bound (or no longer provably
      * foreign): close the memo so a re-opened splice counts as new. */
     utxo_apply_label_splice_healed(next_h);
+    if (upstream.ok != 1 || sv_row.ok != 1) {
+        atomic_fetch_add(&g_ua_upstream_failed_total, 1);
+        return block_apply_failure(c, next_h, "upstream_failed",
+            upstream.ok != 1 ? "proof_validate" : "script_validate", NULL);
+    }
 
     struct block blk;
     block_init(&blk);
@@ -422,10 +412,11 @@ static job_result_t step_apply(struct stage_step_ctx *c)
             return JOB_FATAL;
         }
         if (sg == UTXO_SHIELDED_GATE_HOLD) {
-            atomic_store(&g_history_hold_height, (int64_t)next_h);
-            atomic_store(&g_history_hold_kind,
-                         strcmp(summary.failure_kind, "nullifier-history-gap")
-                             == 0 ? 1 : 2);
+            (void)utxo_apply_history_hold_record(
+                db, next_h,
+                strcmp(summary.failure_kind, "nullifier-history-gap") == 0
+                    ? 1 : 2,
+                bi->phashBlock);
             free_delta(&summary);
             block_free(&blk);
             return JOB_IDLE;
@@ -572,8 +563,8 @@ static job_result_t step_apply(struct stage_step_ctx *c)
 
     atomic_store(&g_ua_last_advance_height, (int64_t)next_h);
     utxo_apply_reject_memo_clear();
+    blocker_clear("utxo_apply.apply_failed");
     c->cursor_out = next_cursor;
-
     utxo_apply_progress_note(next_h, next_cursor);
 
     /* REPLAY GATE coverage accounting (no-op unless ZCL_REPLAY_COUNT_ONLY):
@@ -657,6 +648,10 @@ bool utxo_apply_stage_init(struct main_state *ms)
     }
 
     if (!utxo_apply_log_ensure_schema(db)) {
+        pthread_mutex_unlock(&g_lock);
+        return false;
+    }
+    if (!proof_validate_log_ensure_schema(db)) {
         pthread_mutex_unlock(&g_lock);
         return false;
     }
@@ -861,8 +856,7 @@ void utxo_apply_stage_shutdown(void)
     g_reader_user = NULL;
     g_lookup = NULL;
     g_lookup_user = NULL;
-    atomic_store(&g_history_hold_height, (int64_t)-1); atomic_store(
-        &g_history_hold_kind, 0);
+    utxo_apply_history_hold_clear();
     atomic_store(&g_ua_verified_total, (uint64_t)0);
     atomic_store(&g_ua_spend_unknown_total, (uint64_t)0);
     atomic_store(&g_ua_utxo_collision_total, (uint64_t)0);

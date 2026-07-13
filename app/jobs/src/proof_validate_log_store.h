@@ -18,6 +18,8 @@ struct sqlite3;
 /* One upstream script_validate_log ok-flag at a given height. */
 struct script_validate_row {
     int ok;
+    bool has_block_hash;
+    struct uint256 block_hash;
 };
 
 bool proof_validate_log_ensure_schema(struct sqlite3 *db);
@@ -32,6 +34,7 @@ bool proof_validate_log_insert(struct sqlite3 *db, int height,
                                size_t sapling_spends_total,
                                size_t sapling_outputs_total,
                                size_t sprout_joinsplits_total,
+                               const struct uint256 *block_hash,
                                const struct uint256 *first_failure_txid,
                                const char *first_failure_proof_type);
 

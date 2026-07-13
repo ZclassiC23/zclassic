@@ -11,6 +11,7 @@
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "sapling/incremental_merkle_tree.h"
+#include "jobs/utxo_apply_history_hold.h"
 #include "jobs/utxo_apply_nullifiers.h"
 #include "jobs/utxo_apply_anchors.h"
 #include "jobs/utxo_apply_stage.h"
@@ -271,7 +272,8 @@ static bool exec_sql(sqlite3 *db, const char *sql)
     return rc == SQLITE_OK;
 }
 
-static bool seed_proof_validate(sqlite3 *db, int n, int upstream_fail_height)
+static bool seed_proof_validate(sqlite3 *db, const struct synth_chain_uv *sc,
+                                int n, int upstream_fail_height)
 {
     if (!exec_sql(db,
         "CREATE TABLE IF NOT EXISTS proof_validate_log ("
@@ -281,6 +283,7 @@ static bool seed_proof_validate(sqlite3 *db, int n, int upstream_fail_height)
         "  sapling_spends_total    INTEGER NOT NULL,"
         "  sapling_outputs_total   INTEGER NOT NULL,"
         "  sprout_joinsplits_total INTEGER NOT NULL,"
+        "  block_hash              BLOB,"
         "  first_failure_txid      BLOB,"
         "  first_failure_proof_type TEXT,"
         "  validated_at            INTEGER NOT NULL"
@@ -290,8 +293,8 @@ static bool seed_proof_validate(sqlite3 *db, int n, int upstream_fail_height)
     if (sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO proof_validate_log "
         "(height, status, ok, sapling_spends_total, sapling_outputs_total, "
-        " sprout_joinsplits_total, validated_at) "
-        "VALUES (?, ?, ?, 0, 0, 0, 1)",
+        " sprout_joinsplits_total, block_hash, validated_at) "
+        "VALUES (?, ?, ?, 0, 0, 0, ?, 1)",
         -1, &st, NULL) != SQLITE_OK)
         return false;
     for (int h = 0; h < n; h++) {
@@ -300,6 +303,7 @@ static bool seed_proof_validate(sqlite3 *db, int n, int upstream_fail_height)
         sqlite3_bind_text(st, 2, ok ? "verified" : "proof_invalid",
                           -1, SQLITE_STATIC);
         sqlite3_bind_int(st, 3, ok);
+        sqlite3_bind_blob(st, 4, sc->hashes[h].data, 32, SQLITE_STATIC);
         if (sqlite3_step(st) != SQLITE_DONE) {
             sqlite3_finalize(st);
             return false;
@@ -316,6 +320,24 @@ static bool seed_proof_validate(sqlite3 *db, int n, int upstream_fail_height)
         return false;
     sqlite3_bind_int(st, 1, n);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool set_proof_validate_hash(sqlite3 *db, int height,
+                                    const struct uint256 *hash)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "UPDATE proof_validate_log SET block_hash=? WHERE height=?",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    int bind_rc = hash ? sqlite3_bind_blob(st, 1, hash->data, 32,
+                                           SQLITE_STATIC)
+                       : sqlite3_bind_null(st, 1);
+    bool ok = bind_rc == SQLITE_OK &&
+              sqlite3_bind_int(st, 2, height) == SQLITE_OK &&
+              sqlite3_step(st) == SQLITE_DONE; // raw-sql-ok:test-fixture-seeding
     sqlite3_finalize(st);
     return ok;
 }
@@ -442,9 +464,15 @@ static int uv_setup(const char *tag, int n, enum uv_fail_kind fail_kind,
     if (!synth_chain_uv_build(sc, n)) return 2;
     active_chain_move_window_tip(&ms->chain_active, &sc->blocks[n - 1]);
 
-    if (!seed_proof_validate(progress_store_db(), n, upstream_fail_height))
+    if (!seed_proof_validate(progress_store_db(), sc, n,
+                             upstream_fail_height))
         return 3;
     if (!utxo_apply_stage_init(ms)) return 4;
+    for (int h = 0; h < n; h++) {
+        if (!seed_script_validate_row(progress_store_db(), h, 1,
+                                      &sc->hashes[h]))
+            return 5;
+    }
     utxo_apply_stage_set_reader(fake_reader, sc);
     utxo_apply_stage_set_lookup(fake_lookup, sc);
     return 0;
@@ -716,6 +744,10 @@ int test_utxo_apply_stage(void)
         struct uint256 wrong;
         uint256_set_null(&wrong);
         wrong.data[0] = 0x5a;
+        UV_CHECK("label_splice: foreign failed proof fixture",
+                 set_proof_validate_hash(progress_store_db(), 1, &wrong) &&
+                     exec_sql(progress_store_db(),
+                         "UPDATE proof_validate_log SET ok=0 WHERE height=1"));
         UV_CHECK("label_splice: seed mismatched-hash verdict at h=1",
                  seed_script_validate_row(progress_store_db(), 1, 1, &wrong));
         UV_CHECK("label_splice: drains only h0, refuses h1",
@@ -723,7 +755,8 @@ int test_utxo_apply_stage(void)
         UV_CHECK("label_splice: cursor held at 1",
                  utxo_apply_stage_cursor() == 1);
         UV_CHECK("label_splice: typed blocker recorded",
-                 blocker_exists("utxo_apply.label_splice"));
+                 blocker_exists("utxo_apply.label_splice") &&
+                     !blocker_exists("utxo_apply.apply_failed"));
         UV_CHECK("label_splice: counter counts the height",
                  uv_dump_has("\"label_splice_total\":1"));
         int ok = -1; char status[32]; char kindbuf[32];
@@ -738,11 +771,47 @@ int test_utxo_apply_stage(void)
         UV_CHECK("label_splice: re-bind verdict to the true block",
                  seed_script_validate_row(progress_store_db(), 1, 1,
                                           sc.blocks[1].phashBlock));
+        UV_CHECK("label_splice: text-typed proof hash refuses",
+                 exec_sql(progress_store_db(),
+                     "UPDATE proof_validate_log SET block_hash="
+                     "'12345678901234567890123456789012' WHERE height=1") &&
+                     utxo_apply_stage_step_once() == JOB_BLOCKED &&
+                     utxo_apply_stage_cursor() == 1);
+        UV_CHECK("label_splice: hashless proof refuses",
+                 set_proof_validate_hash(progress_store_db(), 1, NULL) &&
+                     utxo_apply_stage_step_once() == JOB_BLOCKED &&
+                     utxo_apply_stage_cursor() == 1);
+        UV_CHECK("label_splice: stale proof also refuses",
+                 set_proof_validate_hash(progress_store_db(), 1, &wrong) &&
+                     utxo_apply_stage_step_once() == JOB_BLOCKED &&
+                     utxo_apply_stage_cursor() == 1);
+        UV_CHECK("label_splice: proof receipt re-bound",
+                 exec_sql(progress_store_db(),
+                     "UPDATE proof_validate_log SET ok=1 WHERE height=1") &&
+                     set_proof_validate_hash(progress_store_db(), 1,
+                                             sc.blocks[1].phashBlock));
+        UV_CHECK("label_splice: malformed script verdict refuses apply",
+                 seed_script_validate_row(progress_store_db(), 1, 2,
+                                          sc.blocks[1].phashBlock) &&
+                     utxo_apply_stage_step_once() == JOB_BLOCKED &&
+                     utxo_apply_stage_cursor() == 1 &&
+                     blocker_exists("utxo_apply.apply_failed"));
+        UV_CHECK("label_splice: current script failure refuses apply",
+                 seed_script_validate_row(progress_store_db(), 1, 0,
+                                          sc.blocks[1].phashBlock) &&
+                     utxo_apply_stage_step_once() == JOB_BLOCKED &&
+                     utxo_apply_stage_cursor() == 1 &&
+                     blocker_exists("utxo_apply.apply_failed"));
+        UV_CHECK("label_splice: current script receipt recovers",
+                 seed_script_validate_row(progress_store_db(), 1, 1,
+                                          sc.blocks[1].phashBlock));
         UV_CHECK("label_splice: healed drain applies the rest",
                  utxo_apply_stage_drain(100) == 2);
         UV_CHECK("label_splice: cursor at 3 after heal",
                  utxo_apply_stage_cursor() == 3);
-        blocker_clear("utxo_apply.label_splice");
+        UV_CHECK("label_splice: typed blocker clears after heal",
+                 !blocker_exists("utxo_apply.label_splice") &&
+                     !blocker_exists("utxo_apply.apply_failed"));
         uv_teardown(dir, &ms, &sc);
     }
 
@@ -1386,6 +1455,61 @@ int test_utxo_apply_stage(void)
                                  sizeof(status), kind, sizeof(kind)) &&
                          row_ok == -1);
         }
+        int reads_before_marker_change = sc.read_calls;
+        UV_CHECK("nf old truncated: dependency marker generation changes",
+                 progress_meta_set(progress_store_db(),
+                                   "nullifier_kv.activation_cursor", "2", 1));
+        UV_CHECK("nf old truncated: changed marker invalidates park",
+                 utxo_apply_stage_step_once() == JOB_IDLE &&
+                     sc.read_calls == reads_before_marker_change + 1 &&
+                     utxo_apply_stage_cursor() == 1);
+        /* Same-height replacement waits for proof+script receipts bound to the
+         * replacement hash. While the causal history blocker exists it parks
+         * quietly; without that cause, a stale upstream hash is named. */
+        sc.bodies[1].header.nTime++;
+        sc.blocks[1].nTime = sc.bodies[1].header.nTime;
+        block_header_get_hash(&sc.bodies[1].header, &sc.hashes[1]);
+        int reads_before_stale_verdicts = sc.read_calls;
+        UV_CHECK("nf old truncated: changed hash waits for bound verdicts",
+                 utxo_apply_stage_step_once() == JOB_IDLE &&
+                     sc.read_calls == reads_before_stale_verdicts &&
+                     utxo_apply_stage_cursor() == 1);
+        UV_CHECK("nf old truncated: causal blocker suppresses symptoms",
+                 !blocker_exists("utxo_apply.label_splice") &&
+                     !blocker_exists(
+                         UTXO_APPLY_STALE_UPSTREAM_HASH_BLOCKER_ID));
+        blocker_clear(UTXO_APPLY_NF_GAP_BLOCKER_ID);
+        UV_CHECK("nf old truncated: stale proof is named without cause",
+                 utxo_apply_stage_step_once() == JOB_BLOCKED &&
+                     sc.read_calls == reads_before_stale_verdicts &&
+                     blocker_exists("utxo_apply.label_splice"));
+        UV_CHECK("nf old truncated: replacement script is hash-bound",
+                 seed_script_validate_row(progress_store_db(), 1, 1,
+                                          &sc.hashes[1]));
+        UV_CHECK("nf old truncated: fresh script cannot authorize stale proof",
+                 utxo_apply_stage_step_once() == JOB_BLOCKED &&
+                     sc.read_calls == reads_before_stale_verdicts &&
+                     blocker_exists("utxo_apply.label_splice"));
+        UV_CHECK("nf old truncated: hashless proof is an explicit dependency",
+                 set_proof_validate_hash(progress_store_db(), 1, NULL) &&
+                     utxo_apply_stage_step_once() == JOB_IDLE &&
+                     sc.read_calls == reads_before_stale_verdicts &&
+                     blocker_exists(
+                         UTXO_APPLY_STALE_UPSTREAM_HASH_BLOCKER_ID));
+        UV_CHECK("nf old truncated: replacement proof is hash-bound",
+                 seed_proof_validate(progress_store_db(), &sc, 2, -1));
+        int reads_before_reorg = sc.read_calls;
+        UV_CHECK("nf old truncated: same-height new hash rereads and re-gates",
+                 utxo_apply_stage_step_once() == JOB_IDLE &&
+                     sc.read_calls == reads_before_reorg + 1 &&
+                     utxo_apply_stage_cursor() == 1);
+        UV_CHECK("nf old truncated: replacement remains fail-closed",
+                 uv_coin_rows_at(progress_store_db(), 1) == 0 &&
+                     uv_nf_rows_at(progress_store_db(), 1) == 0);
+        UV_CHECK("nf old truncated: stale receipt blocker heals",
+                 !blocker_exists("utxo_apply.label_splice") &&
+                     !blocker_exists(
+                         UTXO_APPLY_STALE_UPSTREAM_HASH_BLOCKER_ID));
         blocker_clear("utxo_apply.apply_failed");
         uv_teardown(dir, &ms, &sc);
     }

@@ -1,6 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Full-history consensus-state exporter containment tests. */
 
+#define _GNU_SOURCE
+
 #include "test/test_helpers.h"
 
 #include "config/consensus_state_snapshot_export.h"
@@ -28,6 +30,72 @@ void reducer_frontier_test_set_compiled_anchor(int32_t height);
     if (expr) printf("OK\n");                                         \
     else { printf("FAIL\n"); failures++; }                            \
 } while (0)
+
+struct cse_parent_swap_fixture {
+    char original[512];
+    char moved[512];
+    char attacker[512];
+    bool ran;
+    bool ok;
+};
+
+static void cse_parent_swap_after_bind(void *opaque)
+{
+    struct cse_parent_swap_fixture *f = opaque;
+    f->ran = true;
+    f->ok = rename(f->original, f->moved) == 0 &&
+            mkdir(f->attacker, 0700) == 0 &&
+            symlink(f->attacker, f->original) == 0;
+}
+
+struct cse_final_race_fixture {
+    char final[768];
+    bool ran;
+    bool ok;
+};
+
+struct cse_staging_link_fixture {
+    int dirfd;
+    char alias[128];
+    bool ran;
+    bool ok;
+};
+
+static void cse_final_race_after_create(void *opaque)
+{
+    struct cse_final_race_fixture *f = opaque;
+    f->ran = true;
+    int fd = open(f->final,
+                  O_CREAT | O_EXCL | O_WRONLY | O_CLOEXEC | O_NOFOLLOW,
+                  0600);
+    if (fd < 0)
+        return;
+    static const char marker[] = "attacker final";
+    bool wrote = write(fd, marker, sizeof(marker)) == (ssize_t)sizeof(marker);
+    bool closed = close(fd) == 0;
+    f->ok = wrote && closed;
+}
+
+static void cse_staging_link_after_create(void *opaque)
+{
+    struct cse_staging_link_fixture *f = opaque;
+    f->ran = true;
+    struct stat dir_st;
+    if (fstat(f->dirfd, &dir_st) != 0)
+        return;
+    for (int fd = 3; fd < 1024; fd++) {
+        struct stat st;
+        if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+            st.st_nlink != 0 || st.st_dev != dir_st.st_dev)
+            continue;
+        char source[64];
+        int n = snprintf(source, sizeof(source), "/proc/self/fd/%d", fd);
+        f->ok = n > 0 && (size_t)n < sizeof(source) &&
+            linkat(AT_FDCWD, source, f->dirfd, f->alias,
+                   AT_SYMLINK_FOLLOW) == 0;
+        break;
+    }
+}
 
 static bool cse_exec(sqlite3 *db, const char *sql)
 {
@@ -210,7 +278,7 @@ static bool cse_seed_source(sqlite3 *db, uint8_t hash[2][32], uint8_t nf[32])
         "CREATE TABLE script_validate_log("
         "height INTEGER PRIMARY KEY,ok INTEGER NOT NULL,block_hash BLOB);"
         "CREATE TABLE proof_validate_log("
-        "height INTEGER PRIMARY KEY,ok INTEGER NOT NULL);"
+        "height INTEGER PRIMARY KEY,ok INTEGER NOT NULL,block_hash BLOB);"
         "CREATE TABLE utxo_apply_log("
         "height INTEGER PRIMARY KEY,ok INTEGER NOT NULL);"
         "CREATE TABLE tip_finalize_log("
@@ -222,7 +290,6 @@ static bool cse_seed_source(sqlite3 *db, uint8_t hash[2][32], uint8_t nf[32])
         "('script_validate',2,1),('proof_validate',2,1),"
         "('utxo_apply',2,1),('tip_finalize',1,1);"
         "INSERT INTO body_persist_log VALUES(0,1),(1,1);"
-        "INSERT INTO proof_validate_log VALUES(0,1),(1,1);"
         "INSERT INTO utxo_apply_log VALUES(0,1),(1,1);";
     if (!cse_exec(db, schema) || !coins_kv_ensure_schema(db) ||
         !anchor_kv_initialize_history(db, 0) ||
@@ -243,6 +310,7 @@ static bool cse_seed_source(sqlite3 *db, uint8_t hash[2][32], uint8_t nf[32])
         "INSERT INTO validate_headers_log VALUES(?,?,1)",
         "INSERT INTO body_fetch_log VALUES(?,?,1)",
         "INSERT INTO script_validate_log(height,block_hash,ok) VALUES(?,?,1)",
+        "INSERT INTO proof_validate_log(height,block_hash,ok) VALUES(?,?,1)",
     };
     for (size_t table = 0; table < sizeof(hash_sql) / sizeof(hash_sql[0]);
          table++) {
@@ -300,14 +368,25 @@ int test_consensus_state_snapshot_export(void)
     uint8_t nf[32] = {0};
     CSE_CHECK("complete source generation", db && cse_seed_source(db, hash, nf));
 
+    char export_dir[512];
+    snprintf(export_dir, sizeof(export_dir), "%s/export", dir);
+    CSE_CHECK("descriptor-bound output directory",
+              mkdir(export_dir, 0700) == 0);
+    int output_dir_fd = open(export_dir,
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    CSE_CHECK("output directory descriptor", output_dir_fd >= 0);
+
     char output[512];
+    char stale_proof_output[512];
     char missing_output[512];
     char malformed_output[512];
-    snprintf(output, sizeof(output), "%s/complete.bundle.db", dir);
+    snprintf(output, sizeof(output), "%s/complete.bundle.db", export_dir);
+    snprintf(stale_proof_output, sizeof(stale_proof_output),
+             "%s/stale-proof.bundle.db", export_dir);
     snprintf(missing_output, sizeof(missing_output), "%s/missing.bundle.db",
-             dir);
+             export_dir);
     snprintf(malformed_output, sizeof(malformed_output),
-             "%s/malformed.bundle.db", dir);
+             "%s/malformed.bundle.db", export_dir);
     struct sha3_utxo_checkpoint checkpoint;
     memset(&checkpoint, 0, sizeof(checkpoint));
     checkpoint.height = 1;
@@ -319,7 +398,8 @@ int test_consensus_state_snapshot_export(void)
     checkpoints_set_sha3_override_for_test(&checkpoint);
     reducer_frontier_test_set_compiled_anchor(0);
     struct consensus_state_snapshot_export_request request = {
-        .output_path = output,
+        .output_dir_fd = output_dir_fd,
+        .output_name = "complete.bundle.db",
         .expected_height = 1,
     };
     memcpy(request.expected_block_hash, hash[1], 32);
@@ -353,9 +433,166 @@ int test_consensus_state_snapshot_export(void)
               !consensus_state_snapshot_export(db, &request, &repeat_result) &&
               repeat_result.status == CONSENSUS_EXPORT_REFUSED);
 
+    struct consensus_state_export_result bad_target_result;
+    request.output_dir_fd = -1;
+    request.output_name = "bad-fd.bundle.db";
+    CSE_CHECK("negative output directory descriptor refuses",
+              !consensus_state_snapshot_export(db, &request,
+                                               &bad_target_result) &&
+              bad_target_result.status == CONSENSUS_EXPORT_REFUSED);
+    int nondir_fd = open(output, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    request.output_dir_fd = nondir_fd;
+    CSE_CHECK("non-directory output descriptor refuses",
+              nondir_fd >= 0 &&
+              !consensus_state_snapshot_export(db, &request,
+                                               &bad_target_result) &&
+              bad_target_result.status == CONSENSUS_EXPORT_REFUSED);
+    if (nondir_fd >= 0)
+        close(nondir_fd);
+    int closed_fd = dup(output_dir_fd);
+    if (closed_fd >= 0)
+        close(closed_fd);
+    request.output_dir_fd = closed_fd;
+    CSE_CHECK("closed output descriptor refuses",
+              closed_fd >= 0 &&
+              !consensus_state_snapshot_export(db, &request,
+                                               &bad_target_result) &&
+              bad_target_result.status == CONSENSUS_EXPORT_REFUSED);
+
+    request.output_dir_fd = output_dir_fd;
+    static const char *const bad_names[] = {".", "..", "sub/file", "bad?uri"};
+    bool bad_names_refused = true;
+    for (size_t i = 0; i < sizeof(bad_names) / sizeof(bad_names[0]); i++) {
+        request.output_name = bad_names[i];
+        if (consensus_state_snapshot_export(db, &request,
+                                            &bad_target_result) ||
+            bad_target_result.status != CONSENSUS_EXPORT_REFUSED)
+            bad_names_refused = false;
+    }
+    char oversized_name[320];
+    memset(oversized_name, 'x', sizeof(oversized_name) - 1);
+    oversized_name[sizeof(oversized_name) - 1] = '\0';
+    request.output_name = oversized_name;
+    if (consensus_state_snapshot_export(db, &request, &bad_target_result) ||
+        bad_target_result.status != CONSENSUS_EXPORT_REFUSED)
+        bad_names_refused = false;
+    CSE_CHECK("multi-component/dot/URI/oversized names refuse",
+              bad_names_refused);
+
+    char symlink_output[512];
+    snprintf(symlink_output, sizeof(symlink_output), "%s/link.bundle.db",
+             export_dir);
+    CSE_CHECK("existing output symlink fixture",
+              symlink("complete.bundle.db", symlink_output) == 0);
+    request.output_name = "link.bundle.db";
+    struct stat link_st;
+    CSE_CHECK("existing output symlink refuses without replacement",
+              !consensus_state_snapshot_export(db, &request,
+                                               &bad_target_result) &&
+              bad_target_result.status == CONSENSUS_EXPORT_REFUSED &&
+              lstat(symlink_output, &link_st) == 0 && S_ISLNK(link_st.st_mode));
+    (void)unlink(symlink_output);
+
+    struct cse_final_race_fixture final_race;
+    memset(&final_race, 0, sizeof(final_race));
+    snprintf(final_race.final, sizeof(final_race.final),
+             "%s/final-race.bundle.db", export_dir);
+    request.output_name = "final-race.bundle.db";
+    consensus_state_snapshot_export_test_set_after_staging_create_hook(
+        cse_final_race_after_create, &final_race);
+    struct consensus_state_export_result final_race_result;
+    CSE_CHECK("late final-name creation is refused without deleting attacker",
+              !consensus_state_snapshot_export(db, &request,
+                                               &final_race_result) &&
+              final_race_result.status == CONSENSUS_EXPORT_OUTPUT_ERROR &&
+              final_race.ran && final_race.ok &&
+              access(final_race.final, F_OK) == 0);
+    (void)unlink(final_race.final);
+
+    struct cse_staging_link_fixture staging_link;
+    memset(&staging_link, 0, sizeof(staging_link));
+    staging_link.dirfd = output_dir_fd;
+    snprintf(staging_link.alias, sizeof(staging_link.alias),
+             "captured.alias");
+    request.output_name = "staging-link.bundle.db";
+    consensus_state_snapshot_export_test_set_after_staging_create_hook(
+        cse_staging_link_after_create, &staging_link);
+    struct consensus_state_export_result staging_link_result;
+    CSE_CHECK("staging hardlink is refused without deleting either name",
+              !consensus_state_snapshot_export(db, &request,
+                                               &staging_link_result) &&
+              staging_link_result.status == CONSENSUS_EXPORT_OUTPUT_ERROR &&
+              staging_link.ran && staging_link.ok &&
+              fstatat(output_dir_fd, staging_link.alias, &link_st,
+                      AT_SYMLINK_NOFOLLOW) == 0 && link_st.st_nlink == 1);
+    (void)unlinkat(output_dir_fd, staging_link.alias, 0);
+
+    struct cse_parent_swap_fixture parent_swap;
+    memset(&parent_swap, 0, sizeof(parent_swap));
+    snprintf(parent_swap.original, sizeof(parent_swap.original), "%s/bound-parent",
+             dir);
+    snprintf(parent_swap.moved, sizeof(parent_swap.moved), "%s/bound-parent-moved",
+             dir);
+    snprintf(parent_swap.attacker, sizeof(parent_swap.attacker), "%s/attacker",
+             dir);
+    CSE_CHECK("parent rename fixture directory",
+              mkdir(parent_swap.original, 0700) == 0);
+    int bound_fd = open(parent_swap.original,
+        O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    request.output_dir_fd = bound_fd;
+    request.output_name = "bound.bundle.db";
+    consensus_state_snapshot_export_test_set_after_output_bind_hook(
+        cse_parent_swap_after_bind, &parent_swap);
+    struct consensus_state_export_result bound_result;
+    bool bound_exported = bound_fd >= 0 &&
+        consensus_state_snapshot_export(db, &request, &bound_result);
+    char moved_output[768];
+    char attacker_output[768];
+    snprintf(moved_output, sizeof(moved_output), "%s/bound.bundle.db",
+             parent_swap.moved);
+    snprintf(attacker_output, sizeof(attacker_output), "%s/bound.bundle.db",
+             parent_swap.attacker);
+    struct stat by_fd;
+    struct stat by_path;
+    CSE_CHECK("renamed parent stays descriptor-bound",
+              bound_exported && parent_swap.ran && parent_swap.ok &&
+              fstatat(bound_fd, "bound.bundle.db", &by_fd,
+                      AT_SYMLINK_NOFOLLOW) == 0 &&
+              lstat(moved_output, &by_path) == 0 &&
+              by_fd.st_dev == by_path.st_dev && by_fd.st_ino == by_path.st_ino &&
+              access(attacker_output, F_OK) != 0);
+    if (bound_fd >= 0)
+        close(bound_fd);
+    (void)unlink(moved_output);
+    (void)unlink(parent_swap.original);
+    (void)rmdir(parent_swap.attacker);
+    (void)rmdir(parent_swap.moved);
+
+    request.output_dir_fd = output_dir_fd;
+    request.output_name = "complete.bundle.db";
+
+    uint8_t stale_proof_hash[32];
+    memcpy(stale_proof_hash, hash[1], sizeof(stale_proof_hash));
+    stale_proof_hash[0] ^= 0xff;
+    CSE_CHECK("corrupt proof receipt block hash",
+              cse_insert_hash_row(db,
+                  "UPDATE proof_validate_log SET block_hash=?2 WHERE height=?1",
+                  1, stale_proof_hash));
+    request.output_name = "stale-proof.bundle.db";
+    struct consensus_state_export_result stale_proof_result;
+    CSE_CHECK("stale proof hash fails named and publishes nothing",
+              !consensus_state_snapshot_export(db, &request,
+                                               &stale_proof_result) &&
+              stale_proof_result.status == CONSENSUS_EXPORT_MISSING_PROOF &&
+              access(stale_proof_output, F_OK) != 0);
+    CSE_CHECK("restore proof receipt block hash",
+              cse_insert_hash_row(db,
+                  "UPDATE proof_validate_log SET block_hash=?2 WHERE height=?1",
+                  1, hash[1]));
+
     CSE_CHECK("remove required source receipt",
               cse_exec(db, "DELETE FROM consensus_state_source_receipt"));
-    request.output_path = missing_output;
+    request.output_name = "missing.bundle.db";
     struct consensus_state_export_result missing_result;
     CSE_CHECK("missing proof fails named and publishes nothing",
               !consensus_state_snapshot_export(db, &request, &missing_result) &&
@@ -364,7 +601,7 @@ int test_consensus_state_snapshot_export(void)
 
     CSE_CHECK("seed malformed source receipt",
               cse_seed_receipt(db, hash, true));
-    request.output_path = malformed_output;
+    request.output_name = "malformed.bundle.db";
     struct consensus_state_export_result malformed_result;
     CSE_CHECK("malformed receipt fails named and publishes nothing",
               !consensus_state_snapshot_export(db, &request,
@@ -375,9 +612,13 @@ int test_consensus_state_snapshot_export(void)
     reducer_frontier_test_set_compiled_anchor(-1);
     checkpoints_reset_sha3_override_for_test();
     progress_store_close();
+    if (output_dir_fd >= 0)
+        close(output_dir_fd);
     (void)unlink(output);
+    (void)unlink(stale_proof_output);
     (void)unlink(missing_output);
     (void)unlink(malformed_output);
+    (void)rmdir(export_dir);
     (void)rmdir(dir);
     return failures;
 }

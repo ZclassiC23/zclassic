@@ -319,31 +319,67 @@ static bool rie_exec(sqlite3 *db, const char *sql)
     return rc == SQLITE_OK;
 }
 
-static bool seed_proof_validate(sqlite3 *db, int through_height)
+static bool seed_proof_validate(sqlite3 *db, const struct rie_branch *br,
+                                int through_height)
 {
+    if (!db || !br || through_height < 0 || through_height >= br->n)
+        return false;
     if (!rie_exec(db,
         "CREATE TABLE IF NOT EXISTS proof_validate_log ("
         "  height INTEGER PRIMARY KEY, status TEXT NOT NULL, ok INTEGER NOT NULL,"
         "  sapling_spends_total INTEGER NOT NULL,"
         "  sapling_outputs_total INTEGER NOT NULL,"
         "  sprout_joinsplits_total INTEGER NOT NULL,"
+        "  block_hash BLOB,"
         "  first_failure_txid BLOB, first_failure_proof_type TEXT,"
-        "  validated_at INTEGER NOT NULL)"))
+        "  validated_at INTEGER NOT NULL)") ||
+        !rie_exec(db,
+        "CREATE TABLE IF NOT EXISTS script_validate_log ("
+        "  height INTEGER PRIMARY KEY, status TEXT NOT NULL, ok INTEGER NOT NULL,"
+        "  tx_count INTEGER NOT NULL, input_count INTEGER NOT NULL,"
+        "  first_failure_txid BLOB, first_failure_vin INTEGER,"
+        "  first_failure_serror INTEGER, validated_at INTEGER NOT NULL,"
+        "  block_hash BLOB)"))
         return false;
-    sqlite3_stmt *st = NULL;
+    sqlite3_stmt *st = NULL, *script_st = NULL;
     if (sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO proof_validate_log "
         "(height, status, ok, sapling_spends_total, sapling_outputs_total,"
-        " sprout_joinsplits_total, validated_at) VALUES (?, 'verified', 1, 0,0,0,1)",
+        " sprout_joinsplits_total, block_hash, validated_at) "
+        "VALUES (?, 'verified', 1, 0,0,0,?,1)",
         -1, &st, NULL) != SQLITE_OK)
         return false;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO script_validate_log "
+        "(height, status, ok, tx_count, input_count, validated_at, block_hash) "
+        "VALUES (?, 'verified', 1, 0,0,1,?)",
+        -1, &script_st, NULL) != SQLITE_OK) {
+        sqlite3_finalize(st);
+        return false;
+    }
     for (int h = 0; h <= through_height; h++) {
         sqlite3_bind_int(st, 1, h);
-        if (sqlite3_step(st) != SQLITE_DONE) { sqlite3_finalize(st); return false; }
+        sqlite3_bind_blob(st, 2, br->hashes[h].data, 32, SQLITE_STATIC);
+        if (sqlite3_step(st) != SQLITE_DONE) {
+            sqlite3_finalize(st);
+            sqlite3_finalize(script_st);
+            return false;
+        }
         sqlite3_reset(st);
         sqlite3_clear_bindings(st);
+        sqlite3_bind_int(script_st, 1, h);
+        sqlite3_bind_blob(script_st, 2, br->hashes[h].data, 32,
+                          SQLITE_STATIC);
+        if (sqlite3_step(script_st) != SQLITE_DONE) {
+            sqlite3_finalize(st);
+            sqlite3_finalize(script_st);
+            return false;
+        }
+        sqlite3_reset(script_st);
+        sqlite3_clear_bindings(script_st);
     }
     sqlite3_finalize(st);
+    sqlite3_finalize(script_st);
     if (sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO stage_cursor(name, cursor, updated_at) "
         "VALUES('proof_validate', ?, 1)", -1, &st, NULL) != SQLITE_OK)
@@ -624,7 +660,7 @@ int test_reducer_ingest_e2e(void)
             struct block_index *want_tip = install_branch(&e, &C);
 
             RIE_CHECK("accept: seed proof_validate through tip",
-                      seed_proof_validate(progress_store_db(), C.n - 1));
+                      seed_proof_validate(progress_store_db(), &C, C.n - 1));
 
             int adv = rie_drain_to_convergence();
             RIE_CHECK("accept: reducer drain advanced", adv >= C.n - 1);
@@ -701,7 +737,7 @@ int test_reducer_ingest_e2e(void)
             (void)install_branch(&e, &D);
 
             RIE_CHECK("invalid: seed proof_validate through tip",
-                      seed_proof_validate(progress_store_db(), D.n - 1));
+                      seed_proof_validate(progress_store_db(), &D, D.n - 1));
 
             (void)rie_drain_to_convergence();
 
@@ -777,7 +813,8 @@ int test_reducer_ingest_e2e(void)
             if (opened) {
                 (void)install_branch(&e, &L);
                 RIE_CHECK("reorg A: seed L proof_validate",
-                          seed_proof_validate(progress_store_db(), L.n - 1));
+                          seed_proof_validate(progress_store_db(), &L,
+                                              L.n - 1));
                 int advL = rie_drain_to_convergence();
                 RIE_CHECK("reorg A: L drained to tip", advL >= L.n);
                 struct block_index *tipL = active_chain_tip(&e.ms.chain_active);
@@ -797,7 +834,8 @@ int test_reducer_ingest_e2e(void)
                                           (uint64_t)(h + 1) * 10u);
                 active_chain_move_window_tip(&e.ms.chain_active, &W.blocks[W.n - 1]);
                 RIE_CHECK("reorg A: seed W proof_validate",
-                          seed_proof_validate(progress_store_db(), W.n - 1));
+                          seed_proof_validate(progress_store_db(), &W,
+                                              W.n - 1));
 
                 (void)rie_drain_to_convergence();
                 RIE_CHECK("reorg A: utxo_apply reorg-unwound",
@@ -840,7 +878,8 @@ int test_reducer_ingest_e2e(void)
                                           (uint64_t)(h + 1) * 10u);
                 (void)install_branch(&e, &W2);
                 RIE_CHECK("reorg B: seed W proof_validate",
-                          seed_proof_validate(progress_store_db(), W2.n - 1));
+                          seed_proof_validate(progress_store_db(), &W2,
+                                              W2.n - 1));
                 int adv = rie_drain_to_convergence();
                 RIE_CHECK("reorg B: W drained to tip", adv >= W2.n);
                 RIE_CHECK("reorg B: no reorg unwind",

@@ -436,7 +436,7 @@ static bool validate_bundle_proof(
         "script_validate", "proof_validate", "utxo_apply", "tip_finalize",
     };
     static const bool hash_bound[CONSENSUS_STATE_BUNDLE_PROOF_COUNT] = {
-        true, true, true, false, true, false, false, false,
+        true, true, true, false, true, true, false, false,
     };
     static const char sql[] =
         "SELECT ordinal,component,cursor,first_height,last_height,row_count,"

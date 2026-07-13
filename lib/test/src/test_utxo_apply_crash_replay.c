@@ -177,6 +177,19 @@ static bool ucr_chain_build(struct ucr_chain *cc, int n)
     return true;
 }
 
+static void ucr_chain_free(struct ucr_chain *cc)
+{
+    if (cc->bodies) {
+        for (int i = 0; i < cc->n; i++)
+            block_free(&cc->bodies[i]);
+    }
+    free(cc->blocks);
+    free(cc->hashes);
+    free(cc->bodies);
+    free(cc->ext);
+    memset(cc, 0, sizeof(*cc));
+}
+
 /* Runs INSIDE stage_run_once's BEGIN IMMEDIATE: the sleep stretches the
  * open-txn window so the parent's randomized SIGKILL lands mid-co-commit
  * (not just between transactions). */
@@ -253,6 +266,15 @@ static bool ucr_exec(sqlite3 *db, const char *sql)
 
 static bool ucr_seed_proof_validate(sqlite3 *db, int n)
 {
+    if (!db || n <= 0)
+        return false;
+    struct ucr_chain cc;
+    if (!ucr_chain_build(&cc, n)) {
+        ucr_chain_free(&cc);
+        return false;
+    }
+    bool result = false;
+    sqlite3_stmt *st = NULL, *script_st = NULL;
     if (!ucr_exec(db,
         "CREATE TABLE IF NOT EXISTS proof_validate_log ("
         "  height                  INTEGER PRIMARY KEY,"
@@ -261,36 +283,64 @@ static bool ucr_seed_proof_validate(sqlite3 *db, int n)
         "  sapling_spends_total    INTEGER NOT NULL,"
         "  sapling_outputs_total   INTEGER NOT NULL,"
         "  sprout_joinsplits_total INTEGER NOT NULL,"
+        "  block_hash              BLOB,"
         "  first_failure_txid      BLOB,"
         "  first_failure_proof_type TEXT,"
         "  validated_at            INTEGER NOT NULL"
-        ")"))
-        return false;
-    sqlite3_stmt *st = NULL;
+        ")") ||
+        !ucr_exec(db,
+        "CREATE TABLE IF NOT EXISTS script_validate_log ("
+        "  height INTEGER PRIMARY KEY, status TEXT NOT NULL, ok INTEGER NOT NULL,"
+        "  tx_count INTEGER NOT NULL, input_count INTEGER NOT NULL,"
+        "  first_failure_txid BLOB, first_failure_vin INTEGER,"
+        "  first_failure_serror INTEGER, validated_at INTEGER NOT NULL,"
+        "  block_hash BLOB)"))
+        goto done;
     if (sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO proof_validate_log "
         "(height, status, ok, sapling_spends_total, sapling_outputs_total, "
-        " sprout_joinsplits_total, validated_at) "
-        "VALUES (?, 'verified', 1, 0, 0, 0, 1)", -1, &st, NULL) != SQLITE_OK)
-        return false;
+        " sprout_joinsplits_total, block_hash, validated_at) "
+        "VALUES (?, 'verified', 1, 0, 0, 0, ?, 1)",
+        -1, &st, NULL) != SQLITE_OK)
+        goto done;
+    if (sqlite3_prepare_v2(db,
+        "INSERT OR REPLACE INTO script_validate_log "
+        "(height, status, ok, tx_count, input_count, validated_at, block_hash) "
+        "VALUES (?, 'verified', 1, 0,0,1,?)",
+        -1, &script_st, NULL) != SQLITE_OK)
+        goto done;
     for (int h = 0; h < n; h++) {
         sqlite3_bind_int(st, 1, h);
+        sqlite3_bind_blob(st, 2, cc.hashes[h].data, 32, SQLITE_STATIC);
         if (sqlite3_step(st) != SQLITE_DONE) {
-            sqlite3_finalize(st);
-            return false;
+            goto done;
         }
         sqlite3_reset(st);
+        sqlite3_clear_bindings(st);
+        sqlite3_bind_int(script_st, 1, h);
+        sqlite3_bind_blob(script_st, 2, cc.hashes[h].data, 32,
+                          SQLITE_STATIC);
+        if (sqlite3_step(script_st) != SQLITE_DONE)
+            goto done;
+        sqlite3_reset(script_st);
+        sqlite3_clear_bindings(script_st);
     }
     sqlite3_finalize(st);
+    st = NULL;
+    sqlite3_finalize(script_st);
+    script_st = NULL;
 
     if (sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO stage_cursor(name, cursor, updated_at) "
         "VALUES('proof_validate', ?, 1)", -1, &st, NULL) != SQLITE_OK)
-        return false;
+        goto done;
     sqlite3_bind_int(st, 1, n);
-    bool ok = sqlite3_step(st) == SQLITE_DONE;
+    result = sqlite3_step(st) == SQLITE_DONE;
+done:
     sqlite3_finalize(st);
-    return ok;
+    sqlite3_finalize(script_st);
+    ucr_chain_free(&cc);
+    return result;
 }
 
 static bool ucr_table_exists(sqlite3 *db, const char *name)

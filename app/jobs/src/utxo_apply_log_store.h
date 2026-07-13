@@ -8,6 +8,8 @@
 #ifndef ZCL_JOBS_UTXO_APPLY_LOG_STORE_H
 #define ZCL_JOBS_UTXO_APPLY_LOG_STORE_H
 
+#include "core/uint256.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -17,6 +19,8 @@ struct sqlite3;
 /* One upstream proof_validate_log ok-flag at a given height. */
 struct proof_validate_row {
     int ok;
+    bool has_block_hash;
+    struct uint256 block_hash;
 };
 
 bool utxo_apply_log_ensure_schema(struct sqlite3 *db);

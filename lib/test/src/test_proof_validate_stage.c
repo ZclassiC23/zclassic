@@ -202,7 +202,9 @@ static bool ensure_params_loaded_pv(void)
     return sapling_init_params(params_dir);
 }
 
-static bool seed_script_validate(sqlite3 *db, int n, int upstream_fail_height)
+static bool seed_script_validate(sqlite3 *db,
+                                 const struct synth_chain_pv *sc,
+                                 int upstream_fail_height)
 {
     if (!exec_sql(db,
         "CREATE TABLE IF NOT EXISTS script_validate_log ("
@@ -213,22 +215,24 @@ static bool seed_script_validate(sqlite3 *db, int n, int upstream_fail_height)
         "  input_count        INTEGER NOT NULL,"
         "  first_failure_txid BLOB,"
         "  first_failure_vin  INTEGER,"
+        "  block_hash         BLOB,"
         "  validated_at       INTEGER NOT NULL"
         ")"))
         return false;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO script_validate_log "
-        "(height, status, ok, tx_count, input_count, validated_at) "
-        "VALUES (?, ?, ?, 1, 1, 1)",
+        "(height, status, ok, tx_count, input_count, block_hash, validated_at) "
+        "VALUES (?, ?, ?, 1, 1, ?, 1)",
         -1, &st, NULL) != SQLITE_OK)
         return false;
-    for (int h = 0; h < n; h++) {
+    for (int h = 0; h < sc->n; h++) {
         int ok = (h == upstream_fail_height) ? 0 : 1;
         sqlite3_bind_int(st, 1, h);
         sqlite3_bind_text(st, 2, ok ? "verified" : "script_invalid",
                           -1, SQLITE_STATIC);
         sqlite3_bind_int(st, 3, ok);
+        sqlite3_bind_blob(st, 4, sc->hashes[h].data, 32, SQLITE_STATIC);
         if (sqlite3_step(st) != SQLITE_DONE) {
             sqlite3_finalize(st);
             return false;
@@ -243,8 +247,26 @@ static bool seed_script_validate(sqlite3 *db, int n, int upstream_fail_height)
         "VALUES('script_validate', ?, 1)",
         -1, &st, NULL) != SQLITE_OK)
         return false;
-    sqlite3_bind_int(st, 1, n);
+    sqlite3_bind_int(st, 1, sc->n);
     bool ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    return ok;
+}
+
+static bool set_script_validate_hash(sqlite3 *db, int height,
+                                     const struct uint256 *hash)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "UPDATE script_validate_log SET block_hash=? WHERE height=?",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    int bind_rc = hash ? sqlite3_bind_blob(st, 1, hash->data, 32,
+                                           SQLITE_STATIC)
+                       : sqlite3_bind_null(st, 1);
+    bool ok = bind_rc == SQLITE_OK &&
+              sqlite3_bind_int(st, 2, height) == SQLITE_OK &&
+              sqlite3_step(st) == SQLITE_DONE; // raw-sql-ok:test-fixture-seeding
     sqlite3_finalize(st);
     return ok;
 }
@@ -291,7 +313,7 @@ static int pv_setup(const char *tag, int n, int upstream_fail_height,
     if (!synth_chain_pv_build(sc, n)) return 2;
     active_chain_move_window_tip(&ms->chain_active, &sc->blocks[n - 1]);
 
-    if (!seed_script_validate(progress_store_db(), n, upstream_fail_height))
+    if (!seed_script_validate(progress_store_db(), sc, upstream_fail_height))
         return 3;
     if (!proof_validate_stage_init(ms)) return 4;
     proof_validate_stage_set_reader(fake_reader, sc);
@@ -377,6 +399,61 @@ int test_proof_validate_stage(void)
                  !log_row_at(progress_store_db(), 0, &ok, status,
                              sizeof(status), type, sizeof(type)));
         blocker_clear("params_missing");
+        pv_teardown(dir, &ms, &sc);
+    }
+
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_pv sc;
+        blocker_clear(PROOF_VALIDATE_STALE_UPSTREAM_HASH_BLOCKER_ID);
+        PV_CHECK("stale_hash: setup",
+                 pv_setup("stale_hash", 2, -1, dir, sizeof(dir),
+                          &ms, &sc) == 0);
+        PV_CHECK("stale_hash: malformed verdict fails closed and named",
+                 exec_sql(progress_store_db(),
+                     "UPDATE script_validate_log SET ok=2 WHERE height=0") &&
+                     proof_validate_stage_step_once() == JOB_BLOCKED &&
+                     proof_validate_stage_cursor() == 0 &&
+                     blocker_exists(
+                         PROOF_VALIDATE_INVALID_UPSTREAM_BLOCKER_ID));
+        PV_CHECK("stale_hash: restore canonical verdict",
+                 exec_sql(progress_store_db(),
+                     "UPDATE script_validate_log SET ok=1 WHERE height=0"));
+        PV_CHECK("stale_hash: text-typed hash fails closed",
+                 exec_sql(progress_store_db(),
+                     "UPDATE script_validate_log SET block_hash="
+                     "'12345678901234567890123456789012' WHERE height=0") &&
+                     proof_validate_stage_step_once() == JOB_IDLE &&
+                     proof_validate_stage_cursor() == 0 &&
+                     blocker_exists(
+                         PROOF_VALIDATE_STALE_UPSTREAM_HASH_BLOCKER_ID));
+        PV_CHECK("stale_hash: hashless receipt fails closed",
+                 set_script_validate_hash(progress_store_db(), 0, NULL) &&
+                     proof_validate_stage_step_once() == JOB_IDLE &&
+                     proof_validate_stage_cursor() == 0 &&
+                     blocker_exists(
+                         PROOF_VALIDATE_STALE_UPSTREAM_HASH_BLOCKER_ID));
+        struct uint256 foreign = sc.hashes[0];
+        foreign.data[0] ^= 0xff;
+        PV_CHECK("stale_hash: seed foreign script receipt",
+                 set_script_validate_hash(progress_store_db(), 0, &foreign));
+        PV_CHECK("stale_hash: proof stage parks without reading branch",
+                 proof_validate_stage_step_once() == JOB_IDLE &&
+                     proof_validate_stage_cursor() == 0);
+        PV_CHECK("stale_hash: dependency is named",
+                 blocker_exists(
+                     PROOF_VALIDATE_STALE_UPSTREAM_HASH_BLOCKER_ID) &&
+                 blocker_class_for(
+                     PROOF_VALIDATE_STALE_UPSTREAM_HASH_BLOCKER_ID) ==
+                     BLOCKER_DEPENDENCY);
+        PV_CHECK("stale_hash: bind script receipt to selected branch",
+                 set_script_validate_hash(progress_store_db(), 0,
+                                          &sc.hashes[0]));
+        PV_CHECK("stale_hash: rebound receipt advances",
+                 proof_validate_stage_step_once() == JOB_ADVANCED &&
+                     proof_validate_stage_cursor() == 1);
+        PV_CHECK("stale_hash: dependency clears on rebind",
+                 !blocker_exists(
+                     PROOF_VALIDATE_STALE_UPSTREAM_HASH_BLOCKER_ID));
         pv_teardown(dir, &ms, &sc);
     }
 

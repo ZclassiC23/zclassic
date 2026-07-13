@@ -11,6 +11,23 @@
 #include <stdint.h>
 #include <string.h>
 
+static bool add_block_hash_if_missing(sqlite3 *db)
+{
+    char *error = NULL;
+    if (sqlite3_exec(db,
+            "ALTER TABLE proof_validate_log ADD COLUMN block_hash BLOB",
+            NULL, NULL, &error) == SQLITE_OK)
+        return true;
+    bool duplicate = error &&
+        strstr(error, "duplicate column name") != NULL;
+    if (!duplicate)
+        LOG_WARN("proof_validate",
+                 "[proof_validate] block_hash migration failed: %s",
+                 error ? error : "(no message)");
+    if (error) sqlite3_free(error);
+    return duplicate;
+}
+
 bool proof_validate_log_ensure_schema(sqlite3 *db)
 {
     static const char *const sql =
@@ -21,6 +38,7 @@ bool proof_validate_log_ensure_schema(sqlite3 *db)
         "  sapling_spends_total    INTEGER NOT NULL,"
         "  sapling_outputs_total   INTEGER NOT NULL,"
         "  sprout_joinsplits_total INTEGER NOT NULL,"
+        "  block_hash              BLOB,"
         "  first_failure_txid      BLOB,"
         "  first_failure_proof_type TEXT,"
         "  validated_at            INTEGER NOT NULL"
@@ -31,7 +49,7 @@ bool proof_validate_log_ensure_schema(sqlite3 *db)
         if (err) sqlite3_free(err);
         return false;
     }
-    return true;
+    return add_block_hash_if_missing(db);
 }
 
 int proof_validate_script_validate_log_at(sqlite3 *db, int height,
@@ -41,7 +59,7 @@ int proof_validate_script_validate_log_at(sqlite3 *db, int height,
     out->ok = -1;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
-        "SELECT ok FROM script_validate_log WHERE height = ?",
+        "SELECT ok, block_hash FROM script_validate_log WHERE height = ?",
         -1, &st, NULL) != SQLITE_OK) {
         LOG_WARN("proof_validate", "[proof_validate] script_validate_log prepare failed: %s", sqlite3_errmsg(db));
         return -1;  // raw-return-ok:logged-above
@@ -50,7 +68,15 @@ int proof_validate_script_validate_log_at(sqlite3 *db, int height,
     int found = 0;
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
-        out->ok = sqlite3_column_int(st, 0);
+        out->ok = sqlite3_column_type(st, 0) == SQLITE_INTEGER
+                    ? sqlite3_column_int(st, 0) : -1;
+        const void *hash = sqlite3_column_blob(st, 1);
+        int hash_size = sqlite3_column_bytes(st, 1);
+        if (sqlite3_column_type(st, 1) == SQLITE_BLOB && hash &&
+            hash_size == 32) {
+            memcpy(out->block_hash.data, hash, 32);
+            out->has_block_hash = true;
+        }
         found = 1;
     }
     sqlite3_finalize(st);
@@ -62,6 +88,7 @@ bool proof_validate_log_insert(sqlite3 *db, int height,
                                size_t sapling_spends_total,
                                size_t sapling_outputs_total,
                                size_t sprout_joinsplits_total,
+                               const struct uint256 *block_hash,
                                const struct uint256 *first_failure_txid,
                                const char *first_failure_proof_type)
 {
@@ -70,8 +97,8 @@ bool proof_validate_log_insert(sqlite3 *db, int height,
         "INSERT OR REPLACE INTO proof_validate_log "
         "(height, status, ok, sapling_spends_total, "
         " sapling_outputs_total, sprout_joinsplits_total, "
-        " first_failure_txid, first_failure_proof_type, validated_at) "
-        "VALUES (?,?,?,?,?,?,?,?,?)",
+        " block_hash, first_failure_txid, first_failure_proof_type, "
+        " validated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
         -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
         LOG_WARN("proof_validate", "[proof_validate] prepare insert failed: %s", sqlite3_errmsg(db));
@@ -83,17 +110,21 @@ bool proof_validate_log_insert(sqlite3 *db, int height,
     sqlite3_bind_int64(stmt, 4, (sqlite3_int64)sapling_spends_total);
     sqlite3_bind_int64(stmt, 5, (sqlite3_int64)sapling_outputs_total);
     sqlite3_bind_int64(stmt, 6, (sqlite3_int64)sprout_joinsplits_total);
-    if (first_failure_txid)
-        sqlite3_bind_blob(stmt, 7, first_failure_txid->data, 32,
-                          SQLITE_STATIC);
+    if (block_hash)
+        sqlite3_bind_blob(stmt, 7, block_hash->data, 32, SQLITE_STATIC);
     else
         sqlite3_bind_null(stmt, 7);
-    if (first_failure_proof_type)
-        sqlite3_bind_text(stmt, 8, first_failure_proof_type, -1,
+    if (first_failure_txid)
+        sqlite3_bind_blob(stmt, 8, first_failure_txid->data, 32,
                           SQLITE_STATIC);
     else
         sqlite3_bind_null(stmt, 8);
-    sqlite3_bind_int64(stmt, 9, (sqlite3_int64)platform_time_wall_unix());
+    if (first_failure_proof_type)
+        sqlite3_bind_text(stmt, 9, first_failure_proof_type, -1,
+                          SQLITE_STATIC);
+    else
+        sqlite3_bind_null(stmt, 9);
+    sqlite3_bind_int64(stmt, 10, (sqlite3_int64)platform_time_wall_unix());
     rc = sqlite3_step(stmt);  // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(stmt);
     if (rc != SQLITE_DONE) {

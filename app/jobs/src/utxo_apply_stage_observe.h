@@ -24,6 +24,7 @@ void utxo_apply_upstream_hole_healed(int height);
 
 job_result_t utxo_apply_label_splice_refuse(struct stage_step_ctx *c,
                                             int height,
+                                            const char *verdict_source,
                                             const struct uint256 *applying,
                                             const struct uint256 *verdict);
 void utxo_apply_label_splice_healed(int height);
