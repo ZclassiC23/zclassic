@@ -44,6 +44,7 @@
 
 #include "config/boot.h"
 #include "config/mint_anchor_progress.h"
+#include "config/consensus_state_producer_receipt.h"
 
 #include <errno.h>
 #include <stdbool.h>
@@ -63,7 +64,9 @@
 #include "storage/coins_ram.h"                  /* coins_ram_active,
                                                  * coins_ram_commitment */
 #include "storage/snapshot_shielded.h"          /* snapshot_shielded_collect_from_db */
+#include "storage/consensus_state_bundle_codec.h" /* CONSENSUS_STATE_VALIDATION_* */
 #include "storage/progress_store.h"             /* progress_store_db */
+#include "jobs/mint_skip_crypto.h"              /* mint_skip_crypto_get */
 #include "services/chain_activation_service.h"  /* reducer_kick,
                                                  * boot_activation_controller */
 #include "event/event.h"                        /* event_emitf */
@@ -195,6 +198,31 @@ bool boot_mint_anchor_run(const char *datadir)
     if (!ctl) {
         fprintf(stderr, "FATAL: -mint-anchor: no activation controller\n");
         _exit(EXIT_FAILURE);
+    }
+
+    /* Producer-START ownership of the durable source receipt (see
+     * config/consensus_state_producer_receipt.h): record the running executable
+     * + source-identity claim and publish the source-epoch digest BEFORE the
+     * fold, so every stamped stage row carries it — the binding the contained
+     * full-history exporter's stage-row proof requires. Best-effort: a build
+     * with no exact 40-hex commit cannot earn a receipt, but the mint's primary
+     * artifact (the verified anchor snapshot) is still produced. */
+    {
+        uint8_t profile = mint_skip_crypto_get()
+                              ? CONSENSUS_STATE_VALIDATION_CHECKPOINT_FOLD
+                              : CONSENSUS_STATE_VALIDATION_FULL;
+        char rc_err[256] = {0};
+        if (!consensus_state_producer_receipt_begin(pdb, profile, rc_err,
+                                                    sizeof(rc_err)))
+            LOG_WARN("mint_anchor",
+                     "[mint-anchor] source receipt begin skipped (mint still "
+                     "runs; artifact not exporter-admissible): %s", rc_err);
+        else
+            fprintf(stderr,
+                    "[mint-anchor] durable source receipt session opened "
+                    "(profile=%s)\n",
+                    profile == CONSENSUS_STATE_VALIDATION_FULL
+                        ? "full" : "checkpoint_fold");
     }
 
     /* (1) Drive the fold to the anchor. reducer_kick_unbudgeted drains the same
@@ -373,5 +401,27 @@ bool boot_mint_anchor_run(const char *datadir)
                  "[mint-anchor] verified snapshot was written, but clearing "
                  "the resume marker failed; future -mint-anchor runs may "
                  "resume/rewrite the same verified artifact");
+
+    /* Producer-END ownership: finalize the durable source receipt, binding it
+     * to the completed (anchor, cp->block_hash) generation and the H*+1 fold
+     * cursor, and verifying the SAME running executable that opened the start
+     * session. This is what lets the contained full-history exporter admit a
+     * producer THIS binary ran itself. Best-effort: a missing start session
+     * (unstamped build) or an incomplete header corpus leaves no receipt, and
+     * the exporter then correctly refuses (fail closed). */
+    {
+        char rc_err[256] = {0};
+        if (!consensus_state_producer_receipt_finalize(pdb, anchor,
+                                                       cp->block_hash, rc_err,
+                                                       sizeof(rc_err)))
+            LOG_WARN("mint_anchor",
+                     "[mint-anchor] source receipt finalize skipped (artifact "
+                     "verified; not exporter-admissible): %s", rc_err);
+        else
+            fprintf(stderr,
+                    "[mint-anchor] durable source receipt finalized at h=%d "
+                    "(fold_cursor=%d) — exporter can now admit this producer\n",
+                    anchor, anchor + 1);
+    }
     return true;
 }

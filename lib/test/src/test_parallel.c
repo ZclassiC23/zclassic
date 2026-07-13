@@ -268,6 +268,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(utxo_snapshot_inmem) X(snapshot_apply_coins_kv) \
     X(consensus_state_snapshot_install) \
     X(consensus_state_snapshot_export) \
+    X(consensus_state_producer_receipt) \
     X(consensus_state_chain_binding) \
     X(hodl_history_port) X(node_health_store_port) \
     X(db_maintenance_port) X(wallet_backup_port) \

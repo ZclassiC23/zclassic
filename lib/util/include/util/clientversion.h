@@ -15,6 +15,7 @@
 
 #if !defined(WINDRES_PREPROC)
 
+#include <stdbool.h>
 #include <stddef.h>
 
 #define CLIENT_VERSION \
@@ -28,6 +29,16 @@ extern const char CLIENT_NAME[];
  * version reporters inside one binary then disagree about which commit is
  * running. The Makefile keeps clientversion.o fresh via a commit stamp. */
 const char *zcl_build_commit(void);
+
+/* Exact 40-hex lowercase Git commit of the build tree, or "unknown" when the
+ * build was not stamped (e.g. no git). Distinct from zcl_build_commit() (the
+ * short, possibly `-dirty` display form). Baked into clientversion.o only —
+ * same freshness stamp as zcl_build_commit(). The producer source receipt
+ * (config/consensus_state_producer_receipt.c) uses this as producer_commit. */
+const char *zcl_build_commit_full(void);
+
+/* True iff the build tree had no uncommitted modifications at compile time. */
+bool zcl_build_source_clean(void);
 
 void FormatVersion(int nVersion, char *out, size_t out_size);
 
