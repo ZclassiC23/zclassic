@@ -15,9 +15,11 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
 
 HITS=$(grep -rn 'rpc_table_append\b' lib/ app/ tools/ config/ \
-    --include='*.c' --include='*.h' 2>/dev/null \
+    --include='*.c' --include='*.h' "${LINT_GREP_EXCLUDE_ARGS[@]}" 2>/dev/null \
     | grep -v '^lib/rpc/src/server.c:' \
     | grep -v '^lib/rpc/include/rpc/server.h:' \
     | grep -v '^lib/test/' \

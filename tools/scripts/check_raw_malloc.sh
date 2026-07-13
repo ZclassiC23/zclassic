@@ -23,6 +23,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT"
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
 
 ALLOWLIST="$SCRIPT_DIR/raw_malloc_allowlist.txt"
 
@@ -38,7 +40,7 @@ if [[ -f "$ALLOWLIST" ]]; then
 fi
 
 raw_hits=$(grep -rnE '\b(malloc|calloc|realloc)[[:space:]]*\(' \
-    app/ lib/ tools/ config/ --include='*.c' --include='*.h' 2>/dev/null \
+    app/ lib/ tools/ config/ --include='*.c' --include='*.h' "${LINT_GREP_EXCLUDE_ARGS[@]}" 2>/dev/null \
     | grep -v 'vendor/\|/test/\|test_.*\.c:\|safe_alloc' \
     | grep -v 'zcl_malloc\|zcl_calloc\|zcl_realloc' \
     | grep -vE '(//|/\*) raw-alloc-ok:[A-Za-z][A-Za-z0-9_-]+' \

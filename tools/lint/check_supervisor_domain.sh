@@ -6,6 +6,8 @@ set -e
 cd "$(dirname "$0")/../.."
 # shellcheck source=tools/lint/gate_lib.sh
 . tools/lint/gate_lib.sh
+# shellcheck source=tools/lint/scan_exclusions.sh
+. tools/lint/scan_exclusions.sh
 
 # Scan roots are overridable via ZCL_SUPDOM_SCAN_ROOTS so the lint-gate
 # self-test can point the gate at an EMPTY dir and prove the non-empty-floor
@@ -25,7 +27,7 @@ gate_require_scanned "${#supdom_files[@]}" 1 check_supervisor_domain \
 # → PASS off a broken scan. Check the exit explicitly.
 set +e
 RAW=$(grep -rnE '(^|[^A-Za-z0-9_])supervisor_register\s*\(' "${SUPDOM_ROOTS[@]}" \
-      --include='*.c' --exclude='_*fixture*tmp*.c')
+      --include='*.c' "${LINT_GREP_EXCLUDE_ARGS[@]}")
 grc=$?
 set -e
 if [ "$grc" -ge 2 ]; then

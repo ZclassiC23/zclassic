@@ -14,6 +14,8 @@ ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 ALLOWLIST="$SCRIPT_DIR/framework_shape_allowlist.txt"
 
 cd "$ROOT"
+# shellcheck source=tools/lint/scan_exclusions.sh
+source "$SCRIPT_DIR/scan_exclusions.sh"
 
 declare -A ALLOWED=()
 if [[ -f "$ALLOWLIST" ]]; then
@@ -61,7 +63,7 @@ while IFS= read -r file; do
     fi
     violations=$((violations + 1))
     echo "$file: not in a known shape folder (expected one of: controllers, services, models, jobs, supervisors, conditions, events, views)" >&2
-done < <(find app -type f -name '*.c' ! -name '_*fixture*tmp*.c' | sort)
+done < <(find app -type f -name '*.c' "${LINT_FIND_PRUNE_ARGS[@]}" | sort)
 
 echo "[framework_shape_check] scanned $scanned .c files in app/"
 echo "[framework_shape_check] $violations violation(s) found (mode: $MODE)"

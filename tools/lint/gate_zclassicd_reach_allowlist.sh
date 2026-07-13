@@ -26,6 +26,8 @@ if [ ! -d "$ROOT/app" ] || [ ! -d "$ROOT/lib" ]; then
   exit 2
 fi
 cd "$ROOT" || exit 2
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
 
 # --- The zclassicd-reach signature -----------------------------------------
 # Symbols / literals that mean "this file talks to an external zclassicd"
@@ -66,7 +68,7 @@ src/main.c
 EOF
 
 # --- Compute the CURRENT reaching set --------------------------------------
-CURRENT="$(grep -rEl "$PAT" $SEARCH_DIRS 2>/dev/null \
+CURRENT="$(grep -rEl "$PAT" $SEARCH_DIRS "${LINT_GREP_EXCLUDE_ARGS[@]}" 2>/dev/null \
             | grep -vE "$EXCLUDE_RE" \
             | sort -u)"
 

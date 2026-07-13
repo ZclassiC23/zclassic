@@ -39,6 +39,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 # shellcheck source=tools/lint/gate_lib.sh
 . tools/lint/gate_lib.sh
+# shellcheck source=tools/lint/scan_exclusions.sh
+. tools/lint/scan_exclusions.sh
 
 # Scan roots + baseline are overridable so the lint-gate self-test can point
 # the gate at a planted fixture dir / empty baseline (and prove the
@@ -53,16 +55,17 @@ SPAWN_RE='thread_registry_spawn[[:space:]]*\('
 
 # Production .c surface. Exclude the test/fuzz/vendor trees, the two seam
 # files (the registry itself and the supervisor itself — the supervisor thread
-# is the root and cannot supervise itself), and the repo-scan-excluded
-# `_*fixture*tmp*.c` transient fixtures (the self-test plants `_*probe_tmp.c`
-# instead, which IS scanned).
+# is the root and cannot supervise itself), and — when running as a
+# production scan (ZCL_LINT_PRODUCTION_SCAN=1, see scan_exclusions.sh) — the
+# shared `_*fixture*.c` transient-fixture glob (the self-test plants
+# `_*probe_tmp.c` instead, which stays visible in every mode).
 mapfile -t files < <(find "${ROOTS[@]}" -type f -name '*.c' 2>/dev/null \
     | grep -v '/test/' \
     | grep -v -i 'fuzz' \
     | grep -v '/vendor/' \
     | grep -v 'lib/util/src/thread_registry.c' \
     | grep -v 'lib/util/src/supervisor.c' \
-    | grep -Ev '_[^/]*fixture[^/]*tmp[^/]*\.c$' \
+    | lint_filter_excluded \
     | sort)
 gate_require_scanned "${#files[@]}" 1 check_thread_supervision \
     "no *.c under: ${ROOTS[*]} — was a production dir renamed/moved?"

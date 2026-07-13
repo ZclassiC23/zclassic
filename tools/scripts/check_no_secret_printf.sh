@@ -26,6 +26,8 @@ ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT"
 # shellcheck source=tools/lint/gate_lib.sh
 . tools/lint/gate_lib.sh
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
 
 # Directories to scan — app + config + lib + tools, excluding vendor,
 # tests, and the audit corpus itself (which contains "priv" by design).
@@ -81,7 +83,7 @@ ALLOWLIST_RE=(
 # A renamed/moved scan dir would empty the surface; combined with the old
 # `2>/dev/null || true` masking grep's exit, the gate would print "clean"
 # exit 0 over zero files — a hollow pass. Assert a floor first.
-mapfile -t scan_files < <(find "${SCAN_DIRS[@]}" -type f \( -name '*.c' -o -name '*.h' \) 2>/dev/null)
+mapfile -t scan_files < <(find "${SCAN_DIRS[@]}" -type f \( -name '*.c' -o -name '*.h' \) "${LINT_FIND_PRUNE_ARGS[@]}" 2>/dev/null)
 gate_require_scanned "${#scan_files[@]}" 1 check_no_secret_printf \
     "no *.c/*.h under: ${SCAN_DIRS[*]}"
 
@@ -92,7 +94,7 @@ gate_require_scanned "${#scan_files[@]}" 1 check_no_secret_printf \
 # a `$(...)` subshell, so we inline the explicit check here.)
 matches=$(grep -rEn $EXCLUDE_EXPR \
     --include='*.c' --include='*.h' \
-    "$PATTERN" "${SCAN_DIRS[@]}")
+    "$PATTERN" "${SCAN_DIRS[@]}" "${LINT_GREP_EXCLUDE_ARGS[@]}")
 grc=$?
 if [ "$grc" -ge 2 ]; then
     echo "check_no_secret_printf: FATAL — scan grep failed (exit $grc); a grep" >&2

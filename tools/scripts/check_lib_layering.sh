@@ -28,6 +28,9 @@
 # entry. CI will then enforce that the file stays clean.
 set -euo pipefail
 
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
+
 BASELINE=tools/scripts/lib_layering_baseline.txt
 [ -f "$BASELINE" ] || touch "$BASELINE"
 
@@ -75,7 +78,7 @@ while IFS= read -r f; do
         new_violations+=("$key")
         fail=1
     done < <(grep -nE '^[[:space:]]*#include[[:space:]]+"(controllers|models|services|views)/' "$f" || true)
-done < <(find lib -type f \( -name '*.c' -o -name '*.h' \) ! -path '*/test/*')
+done < <(find lib -type f \( -name '*.c' -o -name '*.h' \) ! -path '*/test/*' "${LINT_FIND_PRUNE_ARGS[@]}")
 
 if [ "$fail" = "0" ]; then
     echo "check_lib_layering: clean — empty baseline (HARD), no lib/ → app/ includes"

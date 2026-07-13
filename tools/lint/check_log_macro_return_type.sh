@@ -25,6 +25,13 @@ find(
         return if $path =~ m{(?:^|/)(?:build|vendor|\.git)(?:/|\z)};
         return if $path =~ m{^(?:\./)?lib/test/};
         return if $path eq './lib/util/include/util/log_macros.h';
+        # wf/dx-scanner-immunity: under a production scan (ZCL_LINT_PRODUCTION_SCAN=1,
+        # set by the Makefile's check-% pattern — see tools/lint/scan_exclusions.sh)
+        # skip the shared transient-fixture-name glob so a sibling gate's selftest
+        # fixture can never trip this gate mid-race. Direct selftest invocation
+        # (no ZCL_LINT_PRODUCTION_SCAN) keeps full detection power.
+        return if ($ENV{ZCL_LINT_PRODUCTION_SCAN} // '') eq '1'
+            && $path =~ m{(?:^|/)_[^/]*fixture[^/]*\.[ch]\z};
         push @files, $path;
     },
     @roots

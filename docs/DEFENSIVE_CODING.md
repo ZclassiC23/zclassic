@@ -498,6 +498,7 @@ add/remove a gate.
 - `check-no-new-repair-rung`
 - `check-no-orphan-placement`
 - `check-no-silent-ready`
+- `check-no-stray-untracked-source`
 - `check-observability-pairing`
 - `check-one-result-type`
 - `check-one-write-path`
@@ -507,6 +508,7 @@ add/remove a gate.
 - `check-raw-malloc`
 - `check-raw-sqlite`
 - `check-rpc-registrar`
+- `check-scanner-immunity`
 - `check-service-result-convergence`
 - `check-silent-errors`
 - `check-silent-errors-bool`

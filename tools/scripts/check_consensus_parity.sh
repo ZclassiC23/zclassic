@@ -25,6 +25,8 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
 
 # Consensus-critical source surface. docs/ and lib/test/ are intentionally
 # NOT scanned — the doctrine and the parity test may name these tokens
@@ -60,7 +62,7 @@ FORBIDDEN='versionbits|VersionBitsState|ComputeBlockVersion|ehUpgrade|eh_upgrade
 # masked a >=2 error as an empty result and reported "clean" — a fail-silent
 # hole. Only 0/1 are valid; >=2 fails the gate LOUD.
 set +e
-raw=$(grep -rnE "$FORBIDDEN" "${PATHS[@]}" --include='*.c' --include='*.h')
+raw=$(grep -rnE "$FORBIDDEN" "${PATHS[@]}" --include='*.c' --include='*.h' "${LINT_GREP_EXCLUDE_ARGS[@]}")
 grc=$?
 set -e
 if [ "$grc" -ge 2 ]; then
