@@ -64,6 +64,39 @@ int test_gap_fill_frontier_window(void)
              has && w.effective_tip_h == 6763 && w.lo == 6764 &&
                  w.hi == 7600 && w.count == 837);
 
+    /* S2.4: gap_fill_compute_window's floor cursor is generic. Feeding it
+     * the (structurally faster, body-independent) validate_headers cursor
+     * instead of a stalled body_fetch cursor must let the window advance up
+     * to active_tip_h again — not stay pinned at the stalled low value —
+     * while GAPFILL_WINDOW still bounds it. */
+    {
+        struct gap_fill_window w_stalled, w_decoupled;
+        int active_tip_h = 3176325;      /* reducer-connected tip */
+        int best_header_h = 3176325 + GAPFILL_WINDOW + 500; /* headers ahead */
+        uint64_t stalled_body_fetch_cursor = 3176200; /* stuck behind tip */
+        uint64_t advancing_validate_headers_cursor =
+            (uint64_t)best_header_h; /* headers keep pace with announces */
+
+        bool has_stalled = gap_fill_compute_window(
+            active_tip_h, best_header_h, stalled_body_fetch_cursor,
+            &w_stalled);
+        GF_CHECK("stalled body_fetch cursor still floors the window",
+                 has_stalled &&
+                     w_stalled.effective_tip_h ==
+                         (int)stalled_body_fetch_cursor - 1);
+
+        bool has_decoupled = gap_fill_compute_window(
+            active_tip_h, best_header_h, advancing_validate_headers_cursor,
+            &w_decoupled);
+        GF_CHECK("validate_headers cursor lets the window advance to active tip",
+                 has_decoupled &&
+                     w_decoupled.effective_tip_h == active_tip_h &&
+                     w_decoupled.lo == active_tip_h + 1);
+        GF_CHECK("decoupled window still bounded by GAPFILL_WINDOW",
+                 w_decoupled.count == GAPFILL_WINDOW &&
+                     w_decoupled.hi == active_tip_h + GAPFILL_WINDOW);
+    }
+
     struct block_index body_missing;
     struct block_index body_present;
     struct uint256 hash;

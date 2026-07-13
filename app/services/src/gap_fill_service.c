@@ -22,6 +22,7 @@
 #include "chain/chain.h"
 #include "net/download.h"
 #include "jobs/body_fetch_stage.h"
+#include "jobs/validate_headers_stage.h"
 #include "json/json.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -175,7 +176,7 @@ static int collect_pprev_window(struct block_index *start,
 }
 
 bool gap_fill_compute_window(int active_tip_h, int best_header_h,
-                             uint64_t body_fetch_cursor,
+                             uint64_t floor_cursor,
                              struct gap_fill_window *out)
 {
     if (!out)
@@ -187,9 +188,9 @@ bool gap_fill_compute_window(int active_tip_h, int best_header_h,
     out->lo = active_tip_h + 1;
     out->hi = active_tip_h;
 
-    if (body_fetch_cursor > 0 &&
-        (int64_t)body_fetch_cursor - 1 < (int64_t)out->effective_tip_h) {
-        out->effective_tip_h = (int)body_fetch_cursor - 1;
+    if (floor_cursor > 0 &&
+        (int64_t)floor_cursor - 1 < (int64_t)out->effective_tip_h) {
+        out->effective_tip_h = (int)floor_cursor - 1;
     }
 
     out->lo = out->effective_tip_h + 1;
@@ -351,8 +352,18 @@ static int gap_fill_pass(void)
     struct block_index *best = ms->pindex_best_header;
     int best_h = best ? best->nHeight : 0;
     struct gap_fill_window gf_window;
+    /* S2.4: floor the download window on the validate_headers cursor, not
+     * body_fetch. body_fetch only advances once a body is already on disk
+     * (BLOCK_HAVE_DATA); a stall there must NOT also freeze on-disk body
+     * prefetch. validate_headers is header-only (Equihash + PoW, no body),
+     * structurally decoupled from body availability, and normally runs far
+     * ahead — so the transport keeps caching bodies forward while the
+     * reducer is briefly stalled, and the reducer consumes them when it
+     * advances. The floor still exists as a defensive backstop against the
+     * window running past validated headers; GAPFILL_WINDOW still bounds
+     * it, and gap_fill_block_needs_queue skips any block already on disk. */
     bool has_window =
-        gap_fill_compute_window(tip_h, best_h, body_fetch_stage_cursor(),
+        gap_fill_compute_window(tip_h, best_h, validate_headers_stage_cursor(),
                                 &gf_window) && best;
     tip_h = gf_window.effective_tip_h;
 
