@@ -44,7 +44,7 @@ static uint64_t thread_cpu_ns_now(void)
     return (uint64_t)clock_thread_cpu_ns();
 }
 
-/* Interleaved per-thread CPU-time work-ratio measurement.
+/* Symmetric per-thread CPU-time work-ratio measurement.
  *
  * The constant-time gates compare the work done on a low-Hamming-weight input
  * (`lo`) against a high-Hamming-weight input (`hi`); a non-constant-time path
@@ -53,51 +53,97 @@ static uint64_t thread_cpu_ns_now(void)
  * fork-parallel run: a spike that lands on only one side skews the ratio even
  * though the per-thread clock already excludes time we were preempted off-core.
  *
- * The robust structure is to measure `lo[i]` and `hi[i]` WITHIN THE SAME loop
- * iteration. A contention spike on iteration i then inflates BOTH sides and
- * cancels in the ratio. We keep the per-thread CPU clock (the correct clock:
- * it counts the work the algorithm does, not the wall time the OS gave us) and
- * take the MINIMUM paired sample per side — preemption and cache eviction can
- * only ever inflate a sample, so the cheapest run is the cleanest estimate of
- * true work. `run` executes a timed inner loop once per call.
+ * A sample runs BOTH orders (lo→hi and hi→lo), sums the two measurements for
+ * each side, and keeps that pair together. Alternating which order starts each
+ * sample cancels CPU-frequency ramp, SMT, and cache-order bias. The verdict is
+ * the median of nine paired ratios; it never combines a clean `lo` minimum
+ * from one sample with a clean `hi` minimum from another. `run` executes a
+ * timed inner loop once per call and returns a digest of its output. Every
+ * invocation writes that digest to a volatile sink before its timer stops, so
+ * a future whole-program optimizer cannot erase or algebraically cancel the
+ * measured calls.
  *
- * Returns the lo/hi minima via out-params so the caller forms the ratio. */
+ * Returns the lo/hi totals from the median-ratio sample. */
 #define CT_TIMING_BATCHES 9
-static void ct_min_cpu_ns_paired(void (*run)(void *), void *lo_ctx, void *hi_ctx,
-                                 uint64_t *lo_min, uint64_t *hi_min)
+typedef uint64_t (*ct_run_fn)(void *);
+
+struct ct_timing_sample {
+    uint64_t lo_ns;
+    uint64_t hi_ns;
+    double ratio;
+};
+
+static volatile uint64_t g_ct_timing_sink;
+
+static uint64_t ct_timed_run(ct_run_fn run, void *ctx)
 {
-    uint64_t lo_best = UINT64_MAX, hi_best = UINT64_MAX;
+    uint64_t start = thread_cpu_ns_now();
+    g_ct_timing_sink = run(ctx);
+    return thread_cpu_ns_now() - start;
+}
+
+static bool ct_median_cpu_ns_paired(ct_run_fn run, void *lo_ctx, void *hi_ctx,
+                                    uint64_t *lo_out, uint64_t *hi_out)
+{
+    struct ct_timing_sample samples[CT_TIMING_BATCHES];
+    bool valid = true;
     for (int batch = 0; batch < CT_TIMING_BATCHES; batch++) {
-        uint64_t t0 = thread_cpu_ns_now();
-        run(lo_ctx);
-        uint64_t lo_dt = thread_cpu_ns_now() - t0;
-
-        uint64_t t1 = thread_cpu_ns_now();
-        run(hi_ctx);
-        uint64_t hi_dt = thread_cpu_ns_now() - t1;
-
-        if (lo_dt < lo_best) lo_best = lo_dt;
-        if (hi_dt < hi_best) hi_best = hi_dt;
+        uint64_t lo_first, lo_second, hi_first, hi_second;
+        if ((batch & 1) == 0) {
+            lo_first = ct_timed_run(run, lo_ctx);
+            hi_first = ct_timed_run(run, hi_ctx);
+            hi_second = ct_timed_run(run, hi_ctx);
+            lo_second = ct_timed_run(run, lo_ctx);
+        } else {
+            hi_first = ct_timed_run(run, hi_ctx);
+            lo_first = ct_timed_run(run, lo_ctx);
+            lo_second = ct_timed_run(run, lo_ctx);
+            hi_second = ct_timed_run(run, hi_ctx);
+        }
+        samples[batch].lo_ns = lo_first + lo_second;
+        samples[batch].hi_ns = hi_first + hi_second;
+        if (lo_first == 0 || lo_second == 0 ||
+            hi_first == 0 || hi_second == 0)
+            valid = false;
+        samples[batch].ratio = samples[batch].lo_ns != 0
+            ? (double)samples[batch].hi_ns / (double)samples[batch].lo_ns
+            : 0.0;
     }
-    *lo_min = lo_best;
-    *hi_min = hi_best;
+    for (int i = 1; i < CT_TIMING_BATCHES; i++) {
+        struct ct_timing_sample sample = samples[i];
+        int j = i;
+        while (j > 0 && samples[j - 1].ratio > sample.ratio) {
+            samples[j] = samples[j - 1];
+            j--;
+        }
+        samples[j] = sample;
+    }
+    const struct ct_timing_sample *median = &samples[CT_TIMING_BATCHES / 2];
+    *lo_out = median->lo_ns;
+    *hi_out = median->hi_ns;
+    return valid;
 }
 
 /* ── timed loop bodies for the constant-time work-ratio gates ──────────── */
 struct jub_mul_ctx { struct jub_point *R, *P; const uint8_t *scalar; int iters; };
-static void run_jub_scalar_mul(void *p) {
+static uint64_t run_jub_scalar_mul(void *p) {
     struct jub_mul_ctx *c = p;
     for (int i = 0; i < c->iters; i++) jub_scalar_mul(c->R, c->P, c->scalar);
+    return c->R->x.d[0] ^ c->R->y.d[0] ^ c->R->z.d[0] ^ c->R->t.d[0];
 }
 struct g1_mul_ctx { struct g1_point *R, *P; const uint64_t *scalar; int iters; };
-static void run_g1_scalar_mul(void *p) {
+static uint64_t run_g1_scalar_mul(void *p) {
     struct g1_mul_ctx *c = p;
     for (int i = 0; i < c->iters; i++) g1_scalar_mul(c->R, c->P, c->scalar);
+    return c->R->x.d[0] ^ c->R->y.d[0] ^ c->R->z.d[0];
 }
 struct j2s_ctx { const uint8_t *in; uint8_t *out; int iters; };
-static void run_jubjub_to_scalar(void *p) {
+static uint64_t run_jubjub_to_scalar(void *p) {
     struct j2s_ctx *c = p;
     for (int i = 0; i < c->iters; i++) jubjub_to_scalar(c->in, c->out);
+    uint64_t digest = 0;
+    memcpy(&digest, c->out, sizeof(digest));
+    return digest;
 }
 
 int test_sapling_crypto(void)
@@ -429,18 +475,17 @@ int test_sapling_crypto(void)
         const int ITERS = 200;
         for (int i = 0; i < WARMUP; i++) jub_scalar_mul(&R, &P, lo_scalar);
 
-        /* Interleaved per-thread CPU time: lo and hi are timed within the same
-         * loop iteration so a contention spike hits both sides and cancels in
-         * the ratio; the minimum paired sample sheds residual jitter. */
+        /* Symmetric paired CPU-time samples; see the helper contract above. */
         struct jub_mul_ctx lo_ctx = { &R, &P, lo_scalar, ITERS };
         struct jub_mul_ctx hi_ctx = { &R, &P, hi_scalar, ITERS };
         uint64_t lo, hi;
-        ct_min_cpu_ns_paired(run_jub_scalar_mul, &lo_ctx, &hi_ctx, &lo, &hi);
-        double ratio = (double)hi / (double)lo;
+        bool measured = ct_median_cpu_ns_paired(
+            run_jub_scalar_mul, &lo_ctx, &hi_ctx, &lo, &hi);
+        double ratio = measured ? (double)hi / (double)lo : 0.0;
         /* Fix asserts: high-weight path must not take materially longer than
          * low-weight. Pre-fix delta was ~25%+, so 1.20 is still a decisive
          * gate without tripping on scheduler jitter. */
-        bool ok = (ratio <= 1.20) && (ratio >= 0.83);
+        bool ok = measured && (ratio <= 1.20) && (ratio >= 0.83);
         printf("(lo=%.2fms hi=%.2fms ratio=%.3f) ",
                (double)lo / 1e6, (double)hi / 1e6, ratio);
         if (ok) printf("OK\n");
@@ -925,15 +970,14 @@ int test_sapling_crypto(void)
         const int ITERS = 60;
         for (int i = 0; i < WARMUP; i++) g1_scalar_mul(&R, &P, lo_scalar);
 
-        /* Interleaved per-thread CPU time per side (see Jubjub gate above):
-         * a contention spike hits lo and hi in the same iteration and cancels
-         * in the ratio. */
+        /* Symmetric paired CPU-time samples; see the helper contract above. */
         struct g1_mul_ctx lo_ctx = { &R, &P, lo_scalar, ITERS };
         struct g1_mul_ctx hi_ctx = { &R, &P, hi_scalar, ITERS };
         uint64_t lo, hi;
-        ct_min_cpu_ns_paired(run_g1_scalar_mul, &lo_ctx, &hi_ctx, &lo, &hi);
-        double ratio = (double)hi / (double)lo;
-        bool ok = (ratio <= 1.20) && (ratio >= 0.83);
+        bool measured = ct_median_cpu_ns_paired(
+            run_g1_scalar_mul, &lo_ctx, &hi_ctx, &lo, &hi);
+        double ratio = measured ? (double)hi / (double)lo : 0.0;
+        bool ok = measured && (ratio <= 1.20) && (ratio >= 0.83);
         printf("(lo=%.2fms hi=%.2fms ratio=%.3f) ",
                (double)lo / 1e6, (double)hi / 1e6, ratio);
         if (ok) printf("OK\n");
@@ -1186,15 +1230,14 @@ int test_sapling_crypto(void)
         const int ITERS = 2000;
         for (int i = 0; i < WARMUP; i++) jubjub_to_scalar(lo_in, out);
 
-        /* Interleaved per-thread CPU time per side (see Jubjub gate above):
-         * a contention spike hits lo and hi in the same iteration and cancels
-         * in the ratio. */
+        /* Symmetric paired CPU-time samples; see the helper contract above. */
         struct j2s_ctx lo_ctx = { lo_in, out, ITERS };
         struct j2s_ctx hi_ctx = { hi_in, out, ITERS };
         uint64_t lo, hi;
-        ct_min_cpu_ns_paired(run_jubjub_to_scalar, &lo_ctx, &hi_ctx, &lo, &hi);
-        double ratio = (double)hi / (double)lo;
-        bool ok = (ratio <= 1.15) && (ratio >= 0.85);
+        bool measured = ct_median_cpu_ns_paired(
+            run_jubjub_to_scalar, &lo_ctx, &hi_ctx, &lo, &hi);
+        double ratio = measured ? (double)hi / (double)lo : 0.0;
+        bool ok = measured && (ratio <= 1.15) && (ratio >= 0.85);
         printf("(lo=%.2fms hi=%.2fms ratio=%.3f) ",
                (double)lo / 1e6, (double)hi / 1e6, ratio);
         if (ok) printf("OK\n");
