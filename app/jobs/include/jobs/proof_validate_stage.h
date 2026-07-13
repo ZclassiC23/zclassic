@@ -58,6 +58,8 @@ job_result_t proof_validate_stage_step_once(void);
 int proof_validate_stage_drain(int max_steps);
 
 uint64_t proof_validate_stage_cursor(void);
+/* Step-timing EWMA (us); see util/stage.h. 0 if never stepped. */
+int64_t  proof_validate_stage_step_us_ewma(void);
 uint64_t proof_validate_stage_verified_total(void);
 uint64_t proof_validate_stage_proof_invalid_total(void);
 uint64_t proof_validate_stage_internal_error_total(void);

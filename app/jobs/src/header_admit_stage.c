@@ -692,6 +692,11 @@ uint64_t header_admit_stage_cursor(void)
     return stage_cursor(g_stage);
 }
 
+int64_t header_admit_stage_step_us_ewma(void)
+{
+    return g_stage ? stage_step_us_ewma(g_stage) : 0;
+}
+
 uint64_t header_admit_stage_admitted_total(void)
 {
     return atomic_load(&g_admitted_total);

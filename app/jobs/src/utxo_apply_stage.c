@@ -920,10 +920,9 @@ void utxo_apply_stage_set_lookup(utxo_apply_lookup_fn fn, void *user)
     pthread_mutex_unlock(&g_lock);
 }
 
-uint64_t utxo_apply_stage_cursor(void)
-{
-    return g_stage ? stage_cursor(g_stage) : 0;
-}
+uint64_t utxo_apply_stage_cursor(void) { return g_stage ? stage_cursor(g_stage) : 0; }
+int64_t  utxo_apply_stage_step_us_ewma(void)
+{ return g_stage ? stage_step_us_ewma(g_stage) : 0; }
 
 /* Internal (utxo_apply_stage_internal.h): the dump TU reads the live stage
  * handle lock-free, exactly as the pre-extraction in-TU dump did. */

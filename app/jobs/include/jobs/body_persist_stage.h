@@ -35,6 +35,8 @@ job_result_t body_persist_stage_step_once(void);
 int body_persist_stage_drain(int max_steps);
 
 uint64_t body_persist_stage_cursor(void);
+/* Step-timing EWMA (us); see util/stage.h. 0 if never stepped. */
+int64_t  body_persist_stage_step_us_ewma(void);
 uint64_t body_persist_stage_verified_total(void);
 uint64_t body_persist_stage_upstream_failed_total(void);
 /* The three READ-class counters count re-fetch requeues (one per cleared

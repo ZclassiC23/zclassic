@@ -71,6 +71,8 @@ job_result_t utxo_apply_stage_step_once(void);
 int utxo_apply_stage_drain(int max_steps);
 
 uint64_t utxo_apply_stage_cursor(void);
+/* Step-timing EWMA (us); see util/stage.h. 0 if never stepped. */
+int64_t  utxo_apply_stage_step_us_ewma(void);
 
 /* True iff utxo_apply durably recorded a successful (ok=1) application at
  * `height`. utxo_apply is downstream of script_validate + proof_validate, so
