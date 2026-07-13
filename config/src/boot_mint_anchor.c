@@ -64,6 +64,7 @@
 #include "storage/coins_ram.h"                  /* coins_ram_active,
                                                  * coins_ram_commitment */
 #include "storage/snapshot_shielded.h"          /* snapshot_shielded_collect_from_db */
+#include "storage/event_log_singleton.h"        /* event_log_set_singleton (S1.2) */
 #include "storage/consensus_state_bundle_codec.h" /* CONSENSUS_STATE_VALIDATION_* */
 #include "storage/progress_store.h"             /* progress_store_db */
 #include "jobs/mint_skip_crypto.h"              /* mint_skip_crypto_get */
@@ -396,6 +397,29 @@ bool boot_mint_anchor_run(const char *datadir)
      * stall detector blind for a whole flush window AND leaves the anchor
      * break unreachable when the fold's tail is overlay-resident. On resume
      * the stage cursor already reflects the durable resume point. */
+    /* S1.2 — skip event_log emission during the offline mint. The mint's only
+     * output (utxo-anchor.snapshot) is built from coins_kv (progress.kv,
+     * written directly by utxo_apply) + node.db shielded state; it never reads
+     * the event_log or its projections. So the fold-thread EV_BLOCK_BODY /
+     * EV_BLOCK_HEADER emissions — serialize + pwrite + fsync per block — are
+     * pure overhead here. Every fold-path emitter routes through
+     * event_log_singleton() and is NULL-tolerant (skips on NULL), so unwiring
+     * the singleton suppresses all of them for the mint's duration.
+     *
+     * Two env escapes keep the emission on for A/B measurement:
+     *   ZCL_EVENTLOG_SYNC_PER_APPEND=1  (the S1.1 kill switch — restore the OLD
+     *                                    per-append-fsync baseline: emission ON)
+     *   ZCL_MINT_KEEP_EVENTLOG=1        (keep emission ON but let S1.1 batch it
+     *                                    — isolates the S1.2 delta). */
+    bool keep_eventlog = (getenv("ZCL_EVENTLOG_SYNC_PER_APPEND") != NULL) ||
+                         (getenv("ZCL_MINT_KEEP_EVENTLOG") != NULL);
+    if (!keep_eventlog) {
+        event_log_set_singleton(NULL);
+        fprintf(stderr,
+                "[mint-anchor] S1.2: event_log emission suppressed for the fold "
+                "(artifact reads coins_kv + shielded only)\n");
+    }
+
     int32_t last_through = mint_frontier_through();
     if (last_through < 0)
         last_through = mint_applied_through(pdb);  /* pre-init fallback */

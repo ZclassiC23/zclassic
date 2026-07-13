@@ -34,6 +34,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -209,7 +210,36 @@ struct event_log {
     /* Byte offset for the next append (== file size); cached so append
      * doesn't have to fstat() each time. */
     uint64_t end_offset;
+    /* Deferred durability: when set, event_log_append() skips its two
+     * per-append fsync()s and only marks `dirty`; event_log_flush()
+     * fdatasync()s once. Both under `lock`. See event_log.h. */
+    bool deferred_sync;
+    bool dirty;
 };
+
+/* Test override for the kill switch: -1 = consult env, 0 = off, 1 = forced.
+ * Lets the unit test drive both branches deterministically (the env read is
+ * cached below). Not touched by production code. */
+static _Atomic int g_force_per_append_override = -1;
+
+/* Kill switch: ZCL_EVENTLOG_SYNC_PER_APPEND=1 forces the per-append fsync even
+ * while deferred mode is on (restores the pre-batch behavior for A/B). Read
+ * once and cached — the env cannot change under a running process. */
+static bool event_log_force_per_append_sync(void)
+{
+    int ov = atomic_load_explicit(&g_force_per_append_override,
+                                  memory_order_relaxed);
+    if (ov >= 0)
+        return ov == 1;
+    static _Atomic int cached = -1;
+    int v = atomic_load_explicit(&cached, memory_order_relaxed);
+    if (v < 0) {
+        const char *e = getenv("ZCL_EVENTLOG_SYNC_PER_APPEND");
+        v = (e && e[0] && e[0] != '0') ? 1 : 0;
+        atomic_store_explicit(&cached, v, memory_order_relaxed);
+    }
+    return v == 1;
+}
 
 /* ── pread/pwrite wrappers that retry short ops ─────────────────────── */
 
@@ -363,6 +393,8 @@ event_log_t *event_log_open(const char *path)
     pthread_mutex_init(&log->lock, NULL);
     snprintf(log->path, sizeof(log->path), "%s", path);
     log->end_offset = (uint64_t)end;
+    log->deferred_sync = false;
+    log->dirty = false;
 
     fprintf(stderr,  // obs-ok:event-log-lifecycle
             "[event_log] opened %s (size=%llu)\n",
@@ -399,6 +431,9 @@ uint64_t event_log_append(event_log_t *log,
 
     pthread_mutex_lock(&log->lock);
     uint64_t start = log->end_offset;
+    /* Deferred mode skips BOTH per-append fsync()s (batched to a later
+     * event_log_flush()), unless the kill switch forces per-append sync. */
+    bool defer = log->deferred_sync && !event_log_force_per_append_sync();
 
     /* Build header. */
     uint8_t hdr[EVT_HDR_LEN];
@@ -427,7 +462,7 @@ uint64_t event_log_append(event_log_t *log,
             return UINT64_MAX;
         }
     }
-    if (fsync(log->fd) < 0) {
+    if (!defer && fsync(log->fd) < 0) {
         pthread_mutex_unlock(&log->lock);
         fprintf(stderr,  // obs-ok:event-log-append-failure
                 "[event_log] fsync(hdr+payload) failed: %s\n",
@@ -447,17 +482,61 @@ uint64_t event_log_append(event_log_t *log,
                 strerror(errno));
         return UINT64_MAX;
     }
-    if (fsync(log->fd) < 0) {
-        pthread_mutex_unlock(&log->lock);
-        fprintf(stderr,  // obs-ok:event-log-append-failure
-                "[event_log] fsync(sentinel) failed: %s\n",
-                strerror(errno));
-        return UINT64_MAX;
+    if (!defer) {
+        if (fsync(log->fd) < 0) {
+            pthread_mutex_unlock(&log->lock);
+            fprintf(stderr,  // obs-ok:event-log-append-failure
+                    "[event_log] fsync(sentinel) failed: %s\n",
+                    strerror(errno));
+            return UINT64_MAX;
+        }
+    } else {
+        /* Bytes are in the page cache and ordered; a later event_log_flush()
+         * fdatasync()s the file once before any durable marker referencing
+         * these bytes commits. */
+        log->dirty = true;
     }
 
     log->end_offset = start + EVT_HDR_LEN + payload_len + EVT_SENTINEL_LEN;
     pthread_mutex_unlock(&log->lock);
     return start;
+}
+
+void event_log_set_deferred_sync(event_log_t *log, bool enabled)
+{
+    if (!log) return;
+    pthread_mutex_lock(&log->lock);
+    log->deferred_sync = enabled;
+    pthread_mutex_unlock(&log->lock);
+}
+
+bool event_log_deferred_sync_enabled(event_log_t *log)
+{
+    if (!log) return false;
+    pthread_mutex_lock(&log->lock);
+    bool v = log->deferred_sync;
+    pthread_mutex_unlock(&log->lock);
+    return v;
+}
+
+bool event_log_flush(event_log_t *log)
+{
+    if (!log) return true;
+    pthread_mutex_lock(&log->lock);
+    if (!log->dirty) {
+        pthread_mutex_unlock(&log->lock);
+        return true;
+    }
+    if (fdatasync(log->fd) < 0) {
+        /* Keep `dirty` set so a retry re-attempts the fdatasync; the caller
+         * (the stage pre-commit hook) must veto the commit on this false. */
+        pthread_mutex_unlock(&log->lock);
+        LOG_FAIL("event_log", "flush: fdatasync(%s) failed: %s",
+                 log->path, strerror(errno));
+    }
+    log->dirty = false;
+    pthread_mutex_unlock(&log->lock);
+    return true;
 }
 
 int event_log_read(event_log_t *log, uint64_t offset,
@@ -657,3 +736,32 @@ uint64_t event_log_size(event_log_t *log)
     pthread_mutex_unlock(&log->lock);
     return s;
 }
+
+#ifdef ZCL_TESTING
+/* Deferred-mode test hooks. Defined here (after `struct event_log` and
+ * g_force_per_append_override are complete) so they can touch the fields. */
+bool event_log_test_dirty(event_log_t *log)
+{
+    if (!log) return false;
+    pthread_mutex_lock(&log->lock);
+    bool v = log->dirty;
+    pthread_mutex_unlock(&log->lock);
+    return v;
+}
+
+void event_log_test_set_force_per_append(int v)
+{
+    atomic_store_explicit(&g_force_per_append_override, v,
+                          memory_order_relaxed);
+}
+
+int event_log_test_fd(event_log_t *log)
+{
+    return log ? log->fd : -1;
+}
+
+void event_log_test_set_fd(event_log_t *log, int fd)
+{
+    if (log) log->fd = fd;
+}
+#endif

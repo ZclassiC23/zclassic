@@ -310,6 +310,38 @@ static void child_appender(const char *path)
     }
 }
 
+/* Deferred-mode variant: appends with per-append fsync SKIPPED (the reducer
+ * fold cadence), flushing (one fdatasync) every FLUSH_EVERY events — the
+ * stage drain-batch boundary. A SIGKILL mid-batch loses un-fdatasync'd whole
+ * events; on reopen the tail scan must still recover a consistent prefix (no
+ * torn event ever exposed). Same payload scheme as child_appender so
+ * fuzz_count_cb validates it. */
+#define DEFERRED_FLUSH_EVERY 8
+static void child_appender_deferred(const char *path)
+{
+    freopen("/dev/null", "w", stderr);
+    event_log_t *log = event_log_open(path);
+    if (!log) _exit(2);
+    event_log_set_deferred_sync(log, true);
+    uint32_t i = 0;
+    while (1) {
+        uint8_t buf[FUZZ_PAYLOAD_LEN];
+        buf[0] = (uint8_t)(i & 0xFF);
+        buf[1] = (uint8_t)((i >> 8) & 0xFF);
+        buf[2] = (uint8_t)((i >> 16) & 0xFF);
+        buf[3] = (uint8_t)((i >> 24) & 0xFF);
+        for (int k = 4; k < FUZZ_PAYLOAD_LEN; k++)
+            buf[k] = (uint8_t)(0xA5 ^ k);
+        if (event_log_append(log, EV_BLOCK_HEADER,
+                             buf, sizeof(buf)) == UINT64_MAX) {
+            _exit(3);
+        }
+        if ((++i % DEFERRED_FLUSH_EVERY) == 0) {
+            if (!event_log_flush(log)) _exit(4);
+        }
+    }
+}
+
 struct fuzz_count_ctx {
     int count;
     bool ok;
@@ -348,7 +380,8 @@ static bool fuzz_count_cb(uint64_t offset, enum event_log_type type,
 /* One trial of the kill-9 harness. Returns true on success.
  * The parent waits `delay_us` microseconds (so K = ~rate * delay_us
  * complete events land before SIGKILL). */
-static bool run_one_kill9_trial(const char *path, uint64_t delay_us)
+static bool run_one_kill9_trial(const char *path, uint64_t delay_us,
+                                bool deferred)
 {
     /* Wipe any prior log for clean state. */
     unlink(path);
@@ -356,7 +389,8 @@ static bool run_one_kill9_trial(const char *path, uint64_t delay_us)
     pid_t pid = fork();
     if (pid < 0) return false;
     if (pid == 0) {
-        child_appender(path);
+        if (deferred) child_appender_deferred(path);
+        else          child_appender(path);
         _exit(0);
     }
     sleep_us(delay_us);
@@ -428,14 +462,22 @@ static int run_kill9_fuzz(int *failures)
     const int trials_per_delay = 3;
     bool all_ok = true;
     int total = 0, good = 0;
-    for (size_t i = 0; i < sizeof(delays) / sizeof(delays[0]); i++) {
-        for (int t = 0; t < trials_per_delay; t++) {
-            total++;
-            if (run_one_kill9_trial(path, delays[i])) good++;
-            else all_ok = false;
+    /* Both durability modes: per-append fsync (mode 0) and the deferred
+     * batch-flush cadence the reducer fold uses (mode 1). Deferred mode must
+     * recover to a consistent prefix identically — the tail scan is a pure
+     * file walk that does not depend on the fsync cadence. */
+    for (int mode = 0; mode < 2; mode++) {
+        bool deferred = (mode == 1);
+        for (size_t i = 0; i < sizeof(delays) / sizeof(delays[0]); i++) {
+            for (int t = 0; t < trials_per_delay; t++) {
+                total++;
+                if (run_one_kill9_trial(path, delays[i], deferred)) good++;
+                else all_ok = false;
+            }
         }
     }
-    printf("event_log: kill9 trials passed: %d/%d\n", good, total);
+    printf("event_log: kill9 trials passed: %d/%d (per-append + deferred)\n",
+           good, total);
     EL_CHECK("all kill9 trials recover to a valid log", all_ok);
 
     test_cleanup_tmpdir(dir);
@@ -578,8 +620,46 @@ static int run_benchmark(int *failures)
      * append). Threshold is intentionally permissive so concurrent
      * fsync load can't fail the suite. */
     EL_CHECK("bench: rate > 10 events/sec (sanity)", rate > 10.0);
-
     event_log_close(log);
+
+    /* S1.1 A/B: measure the per-append-fsync cadence (mode A, the old fold
+     * behavior) vs the deferred batch-flush cadence (mode B, this change) on
+     * fresh logs. flush_every mirrors the reducer drain-batch size. Isolates
+     * exactly the fsync barrier the fold pays per event. */
+    {
+        /* Small N: the per-append-fsync leg pays a real disk barrier per
+         * event, so on a busy disk even a few thousand take a while. This is
+         * the in-tree smoke of the speedup; the standalone bench uses larger N
+         * for a precise ratio. */
+        const int Nab = 4000;
+        const int flush_every = 64;
+        for (int mode = 0; mode < 2; mode++) {
+            char abpath[544];
+            snprintf(abpath, sizeof(abpath), "%s/ab_%d.log", dir, mode);
+            unlink(abpath);
+            event_log_t *l = event_log_open(abpath);
+            if (!l) { EL_CHECK("bench: A/B open", false); continue; }
+            bool deferred = (mode == 1);
+            event_log_set_deferred_sync(l, deferred);
+            double a0 = mono_sec();
+            for (int i = 0; i < Nab; i++) {
+                event_log_append(l, EV_BLOCK_HEADER, pay, sizeof(pay));
+                if (deferred && ((i + 1) % flush_every) == 0)
+                    event_log_flush(l);
+            }
+            if (deferred) event_log_flush(l);
+            double a1 = mono_sec();
+            double s = a1 - a0;
+            double r = s > 0 ? (double)Nab / s : 0;
+            printf("event_log: A/B %s — %d events in %.3f s = %.0f ev/s "
+                   "(%.1f us/event)\n",
+                   deferred ? "DEFERRED(flush/64)" : "PER-APPEND-fsync",
+                   Nab, s, r, s * 1e6 / (double)Nab);
+            event_log_close(l);
+            unlink(abpath);
+        }
+    }
+
     test_cleanup_tmpdir(dir);
 done:
     return *failures - start_failures;
@@ -757,6 +837,114 @@ static int run_crc32c_dispatch(int *failures)
     return *failures - start_failures;
 }
 
+/* ── Deferred durability mode (S1.1): batched fdatasync ────────────────
+ * Covers: no per-append fsync in deferred mode (dirty flag set instead);
+ * flush syncs once + clears dirty; all events durable after flush + reopen;
+ * at-tip (deferred off) unchanged; the ZCL_EVENTLOG_SYNC_PER_APPEND kill
+ * switch forces per-append sync even in deferred mode; and flush-failure
+ * propagation (a false return that the reducer pre-commit hook turns into a
+ * commit veto). */
+static int run_deferred_sync(int *failures_out)
+{
+    /* Local counter — EL_CHECK increments `failures`; propagate at the end so
+     * a real regression here fails the suite (the *failures pointer idiom the
+     * sibling helpers use does not count EL_CHECK misses). */
+    int failures = 0;
+    char dir[256];
+    test_fmt_tmpdir(dir, sizeof(dir), "event_log", "defer");
+    el_mkdir_p(dir);
+    char path[512];
+    snprintf(path, sizeof(path), "%s/events.log", dir);
+
+    /* Force the kill switch OFF so deferred mode is genuinely deferred. */
+    event_log_test_set_force_per_append(0);
+
+    event_log_t *log = event_log_open(path);
+    EL_CHECK("defer: open", log != NULL);
+    if (!log) goto done;
+
+    /* Baseline: deferred off — an append must NOT leave the log dirty. */
+    EL_CHECK("defer: default mode is not deferred",
+             !event_log_deferred_sync_enabled(log));
+    uint8_t buf[32];
+    memset(buf, 0x11, sizeof(buf));
+    event_log_append(log, EV_BLOCK_HEADER, buf, sizeof(buf));
+    EL_CHECK("defer: per-append mode leaves nothing dirty",
+             !event_log_test_dirty(log));
+
+    /* Turn deferred mode on: N appends should NOT fsync (dirty accumulates),
+     * and no flush happens implicitly. */
+    event_log_set_deferred_sync(log, true);
+    EL_CHECK("defer: enabled after set", event_log_deferred_sync_enabled(log));
+    const int N = 20;
+    for (int i = 0; i < N; i++) {
+        memset(buf, (int)(0x20 + i), sizeof(buf));
+        event_log_append(log, EV_BLOCK_HEADER, buf, sizeof(buf));
+    }
+    EL_CHECK("defer: appends left the log dirty (no per-append fsync)",
+             event_log_test_dirty(log));
+
+    /* Flush: one fdatasync, dirty cleared. A second flush is a no-op true. */
+    EL_CHECK("defer: flush succeeds", event_log_flush(log));
+    EL_CHECK("defer: flush clears dirty", !event_log_test_dirty(log));
+    EL_CHECK("defer: flush is idempotent when clean", event_log_flush(log));
+
+    /* All 1 (baseline) + N events must survive a close + reopen. */
+    uint64_t size_before = event_log_size(log);
+    event_log_close(log);
+    log = event_log_open(path);
+    EL_CHECK("defer: reopen after flush", log != NULL);
+    if (!log) goto done;
+    EL_CHECK("defer: no tail truncation after flush",
+             event_log_size(log) == size_before);
+    /* A reopened handle starts in per-append mode (deferred flag is not
+     * persisted) — verify that, then re-enable deferred mode for the switch /
+     * fault-injection checks below. */
+    EL_CHECK("defer: reopened handle defaults to per-append",
+             !event_log_deferred_sync_enabled(log));
+    struct stream_ctx sc = {0};
+    sc.ordered = true;
+    event_log_stream(log, 0, stream_cb, &sc);
+    EL_CHECK("defer: all events durable after flush + reopen",
+             sc.count == N + 1);
+
+    /* Kill switch: force per-append sync ON — a deferred-flagged append must
+     * still fsync inline and leave nothing dirty. */
+    event_log_set_deferred_sync(log, true);
+    event_log_test_set_force_per_append(1);
+    EL_CHECK("defer: still flagged deferred (flag is orthogonal to switch)",
+             event_log_deferred_sync_enabled(log));
+    memset(buf, 0x7E, sizeof(buf));
+    event_log_append(log, EV_BLOCK_HEADER, buf, sizeof(buf));
+    EL_CHECK("defer: kill switch forces per-append sync (not dirty)",
+             !event_log_test_dirty(log));
+    event_log_test_set_force_per_append(0);
+
+    /* Flush-failure propagation: fault-inject a bad fd so fdatasync fails;
+     * flush must return false and KEEP dirty (the pre-commit veto contract).
+     * Deferred mode is on and the switch is off, so this append defers. */
+    memset(buf, 0x33, sizeof(buf));
+    event_log_append(log, EV_BLOCK_HEADER, buf, sizeof(buf));
+    EL_CHECK("defer: append pending before fault", event_log_test_dirty(log));
+    int real_fd = event_log_test_fd(log);
+    event_log_test_set_fd(log, -1);
+    EL_CHECK("defer: flush failure returns false (vetoes commit)",
+             !event_log_flush(log));
+    EL_CHECK("defer: dirty KEPT after failed flush (retryable)",
+             event_log_test_dirty(log));
+    event_log_test_set_fd(log, real_fd);
+    EL_CHECK("defer: flush succeeds once fd restored", event_log_flush(log));
+    EL_CHECK("defer: dirty cleared after successful retry",
+             !event_log_test_dirty(log));
+
+    event_log_close(log);
+    test_cleanup_tmpdir(dir);
+done:
+    event_log_test_set_force_per_append(-1);   /* restore env-driven default */
+    *failures_out += failures;
+    return failures;
+}
+
 int test_event_log(void)
 {
     printf("\n=== event_log tests ===\n");
@@ -768,6 +956,7 @@ int test_event_log(void)
     run_fingerprint(&failures);
     run_edge_cases(&failures);
     run_persistence(&failures);
+    run_deferred_sync(&failures);
     run_targeted_recovery(&failures);
     run_kill9_fuzz(&failures);
     run_crc32c_dispatch(&failures);

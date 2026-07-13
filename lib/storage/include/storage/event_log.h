@@ -161,11 +161,60 @@ int event_log_fingerprint(event_log_t *log, uint8_t out[32]);
  * and observability. */
 uint64_t event_log_size(event_log_t *log);
 
+/* ── Deferred durability (batched to a drain boundary) ─────────────────
+ * event_log_append() normally fsync()s TWICE per event (once after the
+ * header+payload, once after the sentinel) — two ext4 journal-commit
+ * barriers per append. On the reducer fold / catch-up drain each block
+ * emits ~2 events (EV_BLOCK_BODY + EV_BLOCK_HEADER) ON the fold thread, so
+ * that is ~4 fsync() barriers per block: the drive thread parks in
+ * jbd2_log_wait_commit while the CPU is otherwise idle — the measured fold
+ * bottleneck.
+ *
+ * In deferred mode event_log_append() still writes the header+payload+sentinel
+ * via pwrite, in the same order, into the page cache (so a concurrent reader
+ * sees the bytes), but SKIPS both per-append fsync()s and marks the log dirty.
+ * event_log_flush() then fdatasync()s the file ONCE, making every append since
+ * the last flush durable together — the fsync cadence drops from twice-per-event
+ * to once-per-drain-batch.
+ *
+ * Crash consistency is UNCHANGED. The tail-scan recovery at event_log_open()
+ * walks forward from the start and stops at the first event whose CRC or
+ * sentinel does not validate, truncating everything from there on. So a crash
+ * before a flush recovers to a consistent PREFIX (some whole trailing events
+ * are lost, never a torn event exposed), regardless of page-cache writeback
+ * order. The reducer wires event_log_flush() into the stage_batch_end
+ * pre-commit hook (util/stage.h) so the progress.kv cursor never becomes
+ * durable ahead of the event_log bytes it implies — a failed flush VETOES the
+ * commit, identical to the block-body fdatasync contract (storage/disk_block_io.h).
+ *
+ * Deferred mode is a per-handle flag; the reducer drive turns it on for the
+ * fold and off at tip (event_log_set_deferred_sync(log, false)), so at tip and
+ * for every non-reducer caller (import, tests, vcs) the per-append durability
+ * is exactly as before. Kill switch: ZCL_EVENTLOG_SYNC_PER_APPEND=1 forces the
+ * per-append fsync even while deferred mode is on (restores the pre-batch
+ * behavior for A/B measurement). */
+void event_log_set_deferred_sync(event_log_t *log, bool enabled);
+bool event_log_deferred_sync_enabled(event_log_t *log);
+
+/* fdatasync the log once iff a deferred append is pending, then clear the
+ * dirty flag. Returns true on success (or when nothing is pending — cheap to
+ * call on every commit), false if the fdatasync failed (the dirty flag is
+ * KEPT so a retry re-attempts it; the caller MUST NOT let a durable marker
+ * commit on a false return). NULL-safe (returns true). */
+bool event_log_flush(event_log_t *log);
+
 #ifdef ZCL_TESTING
 const char *event_log_crc32c_impl(void);
 uint32_t event_log_crc32c_test_sw(const void *data, size_t len);
 uint32_t event_log_crc32c_test_active(const void *data, size_t len);
 bool event_log_crc32c_hw_available(void);
+
+/* Deferred-mode test hooks (deterministic coverage of the kill-switch and the
+ * flush-failure veto path, which are otherwise env-cached / hard to fault). */
+bool event_log_test_dirty(event_log_t *log);        /* current dirty flag */
+void event_log_test_set_force_per_append(int v);    /* -1=env, 0=off, 1=forced */
+int  event_log_test_fd(event_log_t *log);           /* raw fd (for fault inject) */
+void event_log_test_set_fd(event_log_t *log, int fd);
 #endif
 
 #endif /* ZCL_STORAGE_EVENT_LOG_H */
