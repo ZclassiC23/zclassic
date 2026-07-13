@@ -43,7 +43,12 @@
 #define FIXTURE_SRC_REL "lib/test/fixtures/raw_sqlite_step_fixture.c"
 #define FIXTURE_DST_REL "app/_lint_gate_fixture_tmp.c"
 #define NODE_DB_EXEC_FIXTURE_SRC_REL "lib/test/fixtures/raw_sqlite_exec_node_db_fixture.c"
-#define NODE_DB_EXEC_FIXTURE_DST_REL "app/_node_db_exec_lint_fixture_tmp.c"
+/* NOT named `_*fixture*tmp*.c` on purpose: check_raw_sqlite.sh's exec_scan
+ * (tools/scripts/check_raw_sqlite.sh) excludes that glob (b142e7887, to stop
+ * OTHER gates' transient fixtures from tripping it mid-race); this fixture
+ * is the one file that scan MUST still see, so it needs a name outside its
+ * own exclusion. */
+#define NODE_DB_EXEC_FIXTURE_DST_REL "app/_node_db_exec_lint_probe_tmp.c"
 #define COINS_FIXTURE_SRC_REL "lib/test/fixtures/coins_lookup_guard_fixture.c"
 #define COINS_FIXTURE_DST_REL "app/controllers/src/_coins_lookup_guard_fixture_tmp.c"
 #define OBS_FIXTURE_SRC_REL "lib/test/fixtures/observability_unpaired_stderr_fixture.c"
@@ -1150,7 +1155,11 @@ static int t_git_hooks_gate_rejects_noop_pre_push(void)
 #define E9_SCRIPT_REL    "tools/scripts/check_operator_needed_sink.sh"
 #define SYSMEM_SCRIPT_REL "tools/scripts/check_systemd_memory_budget.sh"
 #define E10_SHAPE_SCRIPT_REL "tools/lint/framework_shape_check.sh"
-#define E10_SHAPE_FIXTURE_DST "app/_e10_shape_fixture_tmp.c"
+/* NOT named `_*fixture*tmp*.c` on purpose: framework_shape_check.sh itself
+ * excludes that glob (b142e7887, to stop OTHER gates' transient fixtures
+ * from tripping it mid-race); this fixture is the one file that gate MUST
+ * still see, so it needs a name outside its own exclusion. */
+#define E10_SHAPE_FIXTURE_DST "app/_e10_offshape_probe_tmp.c"
 #define E10_SQL_SCRIPT_REL "tools/lint/check_no_raw_sqlite_in_controllers.sh"
 #define E10_SQL_FIXTURE_DST "app/controllers/src/_e10_rawsql_fixture_tmp.c"
 #define E11_SCRIPT_REL   "tools/scripts/check_doc_accuracy.sh"
@@ -1185,6 +1194,23 @@ static int t_git_hooks_gate_rejects_noop_pre_push(void)
 #define FSUF_SCRIPT_REL  "tools/lint/check_framework_filename_suffix.sh"
 /* A foreign-shape suffix (*_controller) planted under app/services/src. */
 #define FSUF_FIXTURE_DST "app/services/src/_fsuf_fixture_tmp_controller.c"
+/* Gate E13 — check-consensus-parity (HARD, no baseline). Scans
+ * core/params, core/chainparams, lib/validation, lib/chain, lib/mining,
+ * app/jobs, core/consensus for a forbidden miner-signaled/versionbits
+ * mechanism token; the fixture plants a verbatim forbidden identifier
+ * (VersionBitsState) so the trip is a faithful stand-in for the doctrine
+ * violation, not an arbitrary string. */
+#define CONSENSUS_PARITY_SCRIPT_REL "tools/scripts/check_consensus_parity.sh"
+#define CONSENSUS_PARITY_FIXTURE_DST \
+    "lib/validation/src/_consensus_parity_fixture_tmp.c"
+/* Gate check-silent-errors-bool — RATCHET (shrink-only
+ * silent_bool_errors_baseline.txt). Scans app/{controllers,services,jobs,
+ * conditions,models,views,supervisors,events}/src for a swallowed
+ * call-guard failure: `if (!some_call(...)) return false;` with no LOG_*
+ * and no `// raw-return-ok:` marker. */
+#define SILENT_BOOL_SCRIPT_REL "tools/lint/check_silent_bool_errors.sh"
+#define SILENT_BOOL_FIXTURE_DST \
+    "app/services/src/_silent_bool_fixture_tmp.c"
 /* Gate P2 (docs/work/palace-design.md §3) — check-group-purpose. Runs against
  * a test-tmp/ COPY of the real codeindex_group.c (via ZCL_GROUP_PURPOSE_SRC)
  * so the self-test never mutates the real source file. */
@@ -1739,6 +1765,81 @@ static int t_gate_p3_orphan_placement(void)
         ASSERT(bad_rc != 0);
         ASSERT(ok_rc == 0);
         ASSERT(ratchet_bad_rc != 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Gate E13 — check-consensus-parity HARD: the single most safety-critical
+ * gate (docs/CONSENSUS_PARITY_DOCTRINE.md) has NO selftest today proving it
+ * still fires. Plant a verbatim forbidden mechanism token
+ * (VersionBitsState) under lib/validation/src (a scanned PATHS entry) —
+ * must trip; remove — must recover. */
+static int t_e13_consensus_parity_fixture(void)
+{
+    int failures = 0;
+    char path[PATH_MAX];
+    unlink_rel(CONSENSUS_PARITY_FIXTURE_DST);
+    int baseline_rc = run_gate_script(CONSENSUS_PARITY_SCRIPT_REL, NULL);
+    int planted = (repo_path(path, sizeof(path),
+                             CONSENSUS_PARITY_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                       "/* Transient lint-gate selftest fixture for "
+                       "check-consensus-parity (E13);\n"
+                       " * planted+removed by test_make_lint_gates.c. Not "
+                       "part of the build. */\n"
+                       "static int VersionBitsState_fixture_probe(void) "
+                       "{ return 0; }\n") == 0) ? 0 : -1;
+    int trip_rc = planted == 0
+        ? run_gate_script(CONSENSUS_PARITY_SCRIPT_REL, NULL) : -1;
+    unlink_rel(CONSENSUS_PARITY_FIXTURE_DST);
+    int recover_rc = run_gate_script(CONSENSUS_PARITY_SCRIPT_REL, NULL);
+    TEST("[lint-gate] E13 consensus-parity HARD: clean, trips on forbidden mechanism token, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Gate check-silent-errors-bool RATCHET: no selftest today proving a fresh
+ * swallowed call-guard (`if (!call()) return false;`, no LOG_*, no
+ * raw-return-ok marker) actually trips it. Plant under app/services/src (a
+ * scanned dir) with a never-baselined key — must trip; remove — must
+ * recover. */
+static int t_silent_errors_bool_fixture(void)
+{
+    int failures = 0;
+    char path[PATH_MAX];
+    unlink_rel(SILENT_BOOL_FIXTURE_DST);
+    int baseline_rc = run_gate_script(SILENT_BOOL_SCRIPT_REL, NULL);
+    int planted = (repo_path(path, sizeof(path),
+                             SILENT_BOOL_FIXTURE_DST) == 0 &&
+                   write_file(path,
+                       "/* Transient lint-gate selftest fixture for "
+                       "check-silent-errors-bool;\n"
+                       " * planted+removed by test_make_lint_gates.c. Not "
+                       "part of the build. */\n"
+                       "#include <stdbool.h>\n\n"
+                       "static bool fixture_fallible_call(void) "
+                       "{ return true; }\n\n"
+                       "bool _silent_bool_fixture_case(void)\n"
+                       "{\n"
+                       "    if (!fixture_fallible_call())\n"
+                       "        return false;\n"
+                       "    return true;\n"
+                       "}\n") == 0) ? 0 : -1;
+    int trip_rc = planted == 0
+        ? run_gate_script(SILENT_BOOL_SCRIPT_REL, NULL) : -1;
+    unlink_rel(SILENT_BOOL_FIXTURE_DST);
+    int recover_rc = run_gate_script(SILENT_BOOL_SCRIPT_REL, NULL);
+    TEST("[lint-gate] check-silent-errors-bool RATCHET: clean, trips on new swallowed call-guard, recovers") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(planted == 0);
+        ASSERT(trip_rc != 0);
+        ASSERT(recover_rc == 0);
         PASS();
     } _test_next:;
     return failures;
@@ -2635,6 +2736,8 @@ static void unlink_lint_fixtures(void)
         E12_FIXTURE_DST,
         SUPDOM_BAD_WORKER_REL,
         SUPDOM_OK_WORKER_REL,
+        CONSENSUS_PARITY_FIXTURE_DST,
+        SILENT_BOOL_FIXTURE_DST,
     };
 
     for (size_t i = 0; i < sizeof(fixtures) / sizeof(fixtures[0]); i++) {
@@ -7260,6 +7363,8 @@ int test_make_lint_gates(void)
     failures += t_gate_p2_group_purpose();
     failures += t_gate_p1_file_purpose();
     failures += t_gate_p3_orphan_placement();
+    failures += t_e13_consensus_parity_fixture();
+    failures += t_silent_errors_bool_fixture();
     failures += t_log_macro_return_type_gate();
     failures += t_e11_doc_accuracy();
     failures += t_model_ar_lifecycle_gate();

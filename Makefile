@@ -3262,12 +3262,12 @@ check-group-purpose:
 # Gate P3 (docs/work/palace-design.md §3) — every tracked .c/.h resolves to a
 # known navigator group (lib/<mod>, app/<shape>, core, config, tools, domain,
 # adapters, ports); a file falling through to the catch-all "root" group is a
-# violation. WARN for now (measurement); the RATCHET flip against the
-# shrink-only tools/lint/orphan_placement_baseline.txt is a later cycle
-# (palace P4.4).
+# violation. RATCHET against the shrink-only
+# tools/lint/orphan_placement_baseline.txt (palace P4.4); graduates to FAIL
+# when it empties.
 check-no-orphan-placement:
 	@echo "→ Gate P3: check_no_orphan_placement"
-	@ZCL_LINT_MODE=WARN ./tools/lint/check_no_orphan_placement.sh
+	@ZCL_LINT_MODE=RATCHET ./tools/lint/check_no_orphan_placement.sh
 
 # Gate E13 — consensus-parity guard (HARD). Bans any non-zclassicd consensus
 # mechanism (miner-signaled versionbits / dynamic Equihash override — the

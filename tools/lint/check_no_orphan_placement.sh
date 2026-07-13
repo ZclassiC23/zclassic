@@ -12,9 +12,10 @@
 # violation.
 #
 # Mode: WARN | RATCHET | FAIL (controlled by ZCL_LINT_MODE; default WARN),
-# modeled on tools/lint/check_group_purpose.sh + framework_shape_check.sh. This
-# gate ships WARN with a shrink-only orphan_placement_baseline.txt seeded from
-# today's tree; the RATCHET flip is a later cycle (palace-design §5, P4.4).
+# modeled on tools/lint/check_group_purpose.sh + framework_shape_check.sh.
+# Ships RATCHET (palace-design §5, P4.4) against the shrink-only
+# orphan_placement_baseline.txt seeded from the pre-ratchet tree; graduates to
+# FAIL once the baseline empties.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
