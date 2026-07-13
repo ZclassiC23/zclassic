@@ -492,17 +492,23 @@ static struct zcl_result persist_record(
         ok = false;
         LOG_WARN(CAS_SUBSYS, "close temp failed: %s", strerror(errno));
     }
+    bool renamed = false;
     if (ok && renameat(dir_fd, tmp, dir_fd, name) != 0) {
         ok = false;
         LOG_WARN(CAS_SUBSYS, "renameat into place failed: %s",
                  strerror(errno));
+    } else if (ok) {
+        renamed = true;
     }
     if (ok && fsync(dir_fd) != 0) {
         ok = false;
         LOG_WARN(CAS_SUBSYS, "directory fsync failed: %s", strerror(errno));
     }
     if (!ok) {
-        (void)unlinkat(dir_fd, tmp, 0);
+        /* On a failure AFTER the rename committed (e.g. the directory fsync),
+         * the temp name no longer exists — unlink the TARGET so a failed run
+         * leaves NO record rather than a committed-but-unreported one. */
+        (void)unlinkat(dir_fd, renamed ? name : tmp, 0);
         return ZCL_ERR(-44, "cas persist: durable write failed");
     }
     return ZCL_OK;

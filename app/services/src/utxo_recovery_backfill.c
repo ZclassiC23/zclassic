@@ -86,17 +86,41 @@ static bool backfill_shielded_write(struct node_db *ndb, void *ctx_ptr)
         return true;
     }
 
-    sqlite3_stmt *stmt = NULL;
-    const char *sql =
-        "INSERT OR REPLACE INTO blocks"
-        "(hash,height,prev_hash,version,merkle_root,"
-        "time,bits,nonce,solution,chain_work,status,"
-        "file_num,data_pos,undo_pos,num_tx,"
-        "sapling_root,sprout_root,sapling_value,sprout_value)"
-        " VALUES(?,?,?,?,?,?,?,?,X'',X'',?,?,?,0,?,NULL,NULL,?,?)";
-    if (sqlite3_prepare_v2(ndb->db, sql, -1, &stmt, NULL) != SQLITE_OK)
-        LOG_FAIL("utxo_recovery", "backfill: prepare failed: %s",
+    /* This backfill only DERIVES the two shielded-value columns; it must never
+     * disturb the consensus columns (solution, chain_work, undo_pos,
+     * sapling_root, sprout_root) that normal sync wrote. So the primary path is
+     * a keyed UPDATE of exactly those two columns. The old INSERT OR REPLACE
+     * clobbered every other column with empty/NULL, wiping the real solution and
+     * chain_work of any suffix block already populated by normal sync. Rows are
+     * keyed by hash (the blocks PK); height is NOT unique across forks. */
+    sqlite3_stmt *upd = NULL;
+    if (sqlite3_prepare_v2(
+            ndb->db,
+            "UPDATE blocks SET sapling_value=?, sprout_value=? WHERE hash=?",
+            -1, &upd, NULL) != SQLITE_OK)
+        LOG_FAIL("utxo_recovery", "backfill: prepare UPDATE failed: %s",
                  sqlite3_errmsg(ndb->db));
+
+    /* Fallback only for a hash with no existing row (a shielded block above the
+     * blocks-table population). An UPDATE that matched 0 rows must NOT silently
+     * drop the computed value, so we INSERT a full row using the REAL fields
+     * from the in-memory block_index (solution/chain_work/undo_pos/sapling_root),
+     * never empty placeholders. On the active chain the row essentially always
+     * exists, so this path is a rarely-taken safety net. */
+    sqlite3_stmt *ins = NULL;
+    if (sqlite3_prepare_v2(
+            ndb->db,
+            "INSERT INTO blocks"
+            "(hash,height,prev_hash,version,merkle_root,"
+            "time,bits,nonce,solution,chain_work,status,"
+            "file_num,data_pos,undo_pos,num_tx,"
+            "sapling_root,sprout_root,sapling_value,sprout_value)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,?,?)",
+            -1, &ins, NULL) != SQLITE_OK) {
+        sqlite3_finalize(upd);
+        LOG_FAIL("utxo_recovery", "backfill: prepare INSERT failed: %s",
+                 sqlite3_errmsg(ndb->db));
+    }
 
     int updated = 0, scanned = 0;
     int cursor_committed = start - 1;   /* durable floor already proven */
@@ -137,33 +161,63 @@ static bool backfill_shielded_write(struct node_db *ndb, void *ctx_ptr)
         }
 
         if (sprout_val != 0 || sapling_val != 0) {
-            sqlite3_reset(stmt);
-            sqlite3_bind_blob(stmt, 1, bi->phashBlock->data, 32, SQLITE_STATIC);
-            sqlite3_bind_int(stmt, 2, bi->nHeight);
-            sqlite3_bind_blob(stmt, 3,
-                bi->pprev ? bi->pprev->phashBlock->data : (const uint8_t[32]){0},
-                32, SQLITE_STATIC);
-            sqlite3_bind_int(stmt, 4, bi->nVersion);
-            sqlite3_bind_blob(stmt, 5, bi->hashMerkleRoot.data, 32,
-                              SQLITE_STATIC);
-            sqlite3_bind_int64(stmt, 6, bi->nTime);
-            sqlite3_bind_int(stmt, 7, (int)bi->nBits);
-            sqlite3_bind_blob(stmt, 8, bi->nNonce.data, 32, SQLITE_STATIC);
-            sqlite3_bind_int(stmt, 9, bi->nStatus);
-            sqlite3_bind_int(stmt, 10, bi->nFile);
-            sqlite3_bind_int(stmt, 11, (int)bi->nDataPos);
-            sqlite3_bind_int(stmt, 12, bi->nTx);
-            sqlite3_bind_int64(stmt, 13, sapling_val);
-            sqlite3_bind_int64(stmt, 14, sprout_val);
+            /* Primary path: derive-only UPDATE keyed by hash. Touches ONLY the
+             * two shielded-value columns — the consensus columns of an
+             * already-populated row are left exactly as normal sync wrote them. */
+            sqlite3_reset(upd);
+            sqlite3_bind_int64(upd, 1, sapling_val);
+            sqlite3_bind_int64(upd, 2, sprout_val);
+            sqlite3_bind_blob(upd, 3, bi->phashBlock->data, 32, SQLITE_STATIC);
 
-            if (AR_STEP_WRITE(stmt) != SQLITE_DONE) {
-                static int errs = 0;
-                if (++errs <= 3)
-                    LOG_INFO("chain", "backfill h=%d: %s", bi->nHeight,
+            bool wrote = false;
+            if (AR_STEP_WRITE(upd) != SQLITE_DONE) {
+                static int uerrs = 0;
+                if (++uerrs <= 3)
+                    LOG_INFO("chain", "backfill UPDATE h=%d: %s", bi->nHeight,
                              sqlite3_errmsg(ndb->db));
+            } else if (sqlite3_changes(ndb->db) > 0) {
+                wrote = true;
             } else {
-                updated++;
+                /* No row for this hash yet: insert a FULL row from the in-memory
+                 * block_index (real solution/chain_work/undo_pos/sapling_root),
+                 * so the computed value is preserved instead of silently lost. */
+                sqlite3_reset(ins);
+                sqlite3_bind_blob(ins, 1, bi->phashBlock->data, 32, SQLITE_STATIC);
+                sqlite3_bind_int(ins, 2, bi->nHeight);
+                sqlite3_bind_blob(ins, 3,
+                    bi->pprev ? bi->pprev->phashBlock->data
+                              : (const uint8_t[32]){0},
+                    32, SQLITE_STATIC);
+                sqlite3_bind_int(ins, 4, bi->nVersion);
+                sqlite3_bind_blob(ins, 5, bi->hashMerkleRoot.data, 32,
+                                  SQLITE_STATIC);
+                sqlite3_bind_int64(ins, 6, bi->nTime);
+                sqlite3_bind_int(ins, 7, (int)bi->nBits);
+                sqlite3_bind_blob(ins, 8, bi->nNonce.data, 32, SQLITE_STATIC);
+                sqlite3_bind_blob(ins, 9,
+                    bi->nSolution ? (const void *)bi->nSolution : (const void *)"",
+                    bi->nSolution ? (int)bi->nSolutionSize : 0, SQLITE_STATIC);
+                sqlite3_bind_blob(ins, 10, bi->nChainWork.pn, 32, SQLITE_STATIC);
+                sqlite3_bind_int(ins, 11, bi->nStatus);
+                sqlite3_bind_int(ins, 12, bi->nFile);
+                sqlite3_bind_int(ins, 13, (int)bi->nDataPos);
+                sqlite3_bind_int(ins, 14, (int)bi->nUndoPos);
+                sqlite3_bind_int(ins, 15, bi->nTx);
+                sqlite3_bind_blob(ins, 16, bi->hashFinalSaplingRoot.data, 32,
+                                  SQLITE_STATIC);
+                sqlite3_bind_int64(ins, 17, sapling_val);
+                sqlite3_bind_int64(ins, 18, sprout_val);
+                if (AR_STEP_WRITE(ins) != SQLITE_DONE) {
+                    static int ierrs = 0;
+                    if (++ierrs <= 3)
+                        LOG_INFO("chain", "backfill INSERT h=%d: %s", bi->nHeight,
+                                 sqlite3_errmsg(ndb->db));
+                } else {
+                    wrote = true;
+                }
             }
+            if (wrote)
+                updated++;
         }
 
         if (++scanned >= SHIELDED_BACKFILL_SCAN_BATCH) {
@@ -188,7 +242,8 @@ static bool backfill_shielded_write(struct node_db *ndb, void *ctx_ptr)
         reached = cursor_committed;
     node_db_state_set_int(ndb, "shielded_backfill_height", reached);
     node_db_commit(ndb);
-    sqlite3_finalize(stmt);
+    sqlite3_finalize(upd);
+    sqlite3_finalize(ins);
 
     bctx->updated = updated;
     printf("Shielded backfill: covered (%d,%d] — %d blocks carried "
