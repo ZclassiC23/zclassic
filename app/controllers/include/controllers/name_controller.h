@@ -34,6 +34,33 @@ void rpc_name_set_wallet(struct wallet *w, struct tx_mempool *mp,
 void register_name_rpc_commands(struct rpc_table *t);
 const char *znam_type_name(uint8_t t);
 
+/* Boot-wired names runtime context (node.db + wallet path), snapshotted so the
+ * read-only HTML site controller + the shared REGISTER compose reach the same
+ * handles the RPC/REST surface uses. Fields are NULL before boot wiring. */
+struct name_controller_ctx {
+    struct node_db          *ndb;
+    struct wallet           *wallet;
+    struct tx_mempool       *mempool;
+    struct main_state       *main_state;
+    struct coins_view_cache *coins_tip;
+};
+void name_controller_get_ctx(struct name_controller_ctx *out);
+
+/* THE single REGISTER tx-compose path — shared by the JSON-RPC name_register
+ * handler and the HTML register POST. Defined in name_site_controller.c (kept
+ * out of name_controller.c for the file-size ceiling). See there for the
+ * contract. */
+bool name_controller_compose_register(const char *name, uint8_t target_type,
+                                      const char *value, char *txid_hex,
+                                      size_t txid_cap, int64_t *fee_out,
+                                      char *err, size_t err_cap);
+
+/* name_records RPC actor (list a name's resolver records — the has_many
+ * relationship). Defined in name_site_controller.c; registered by
+ * register_name_rpc_commands. */
+bool rpc_name_records(const struct json_value *params, bool help,
+                      struct json_value *result);
+
 /* REST API */
 #include "json/json.h"
 bool api_name_list(struct json_value *result);
