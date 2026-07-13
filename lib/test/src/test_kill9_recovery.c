@@ -53,12 +53,48 @@
  * atomically recoverable after `SIGKILL`", which is the hard part of
  * MVP criterion #7.
  *
+ * Two further crash windows (plan lane 2.4, robustness matrix
+ * extension), each its own fork+SIGKILL cycle set reusing the SAME
+ * pattern above:
+ *
+ *   - MID-MINT-FOLD (p11_7mf_*): drives the REAL durable-marker API the
+ *     offline `-mint-anchor` producer uses (`mint_anchor_producer_lane_bind`
+ *     / `mint_anchor_progress_mark` / `_can_resume`, config/src/
+ *     mint_anchor_progress.c) plus the REAL coins_kv per-block apply shape
+ *     (`coins_kv_add_many` + `coins_kv_set_applied_height_in_tx` inside one
+ *     BEGIN IMMEDIATE, storage/coins_kv.h) — the same atomic unit
+ *     `utxo_apply_stage.c`'s forward-apply step commits. On every reopen it
+ *     asserts the qed-harvested invariant by name: the durable
+ *     coins_applied_height cursor's implied row count
+ *     (`(applied_through+1) * rows_per_step`) must equal `coins_kv_count()`
+ *     EXACTLY — the cursor can never be ahead of (or behind) the content it
+ *     claims, which is exactly what the drain pre-commit veto guarantees in
+ *     production. `mint_anchor_progress_can_resume()` must authorize a clean
+ *     resume at every reopen (the named non-corruption terminal); a final
+ *     uninterrupted drain to the last step plus `mint_anchor_progress_clear`
+ *     proves the OTHER named terminal (verified completion) is always
+ *     reachable regardless of interruption history.
+ *
+ *   - MID-IMPORTBLOCKINDEX (p11_7ib_*): forks real calls to
+ *     `snapshot_import_block_index()` (app/controllers/src/
+ *     snapshot_controller_import.c) — the function `--importblockindex`
+ *     dispatches to, the MANDATORY FIRST STEP of the two-step cold-sync
+ *     recipe (CLAUDE.md "Tenacity & recovery"). Self-calibrates the SIGKILL
+ *     delay window from one timed uninterrupted run (portable across dev
+ *     boxes without a hardcoded duration guess) then asserts the `blocks`
+ *     table is EMPTY or FULLY populated on every reopen — never partial —
+ *     and that the fast-boot cursors (pprev_repaired_height /
+ *     shielded_backfill_height) are never stamped unless the row count is
+ *     also full (the same cursor-ahead-of-content shape, on a different
+ *     write path). A final uninterrupted re-run proves the fully-imported
+ *     terminal is always reachable.
+ *
  * Gating
  * ------
- * Skipped unless `ZCL_STRESS_TESTS=1`.  The test spawns 10 child
- * processes and does real SQLite I/O against a tempdir — measured at
- * ~4-8s on the dev box.  Keeping it out of `make test` default
- * protects the default suite's sub-minute budget.
+ * Skipped unless `ZCL_STRESS_TESTS=1`.  The test spawns child processes and
+ * does real SQLite/LevelDB I/O against a tempdir — measured at low tens of
+ * seconds on the dev box across all three phases.  Keeping it out of
+ * `make test` default protects the default suite's sub-minute budget.
  *
  * Invocation
  * ----------
@@ -84,6 +120,22 @@
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+
+/* ── MID-MINT-FOLD phase deps ── */
+#include "chain/checkpoints.h"
+#include "config/mint_anchor_progress.h"
+#include "storage/coins_kv.h"
+#include "storage/progress_store.h"
+
+/* ── MID-IMPORTBLOCKINDEX phase deps ── */
+#include "chain/chain.h"           /* BLOCK_VALID_TRANSACTIONS/HAVE_DATA/HAVE_UNDO */
+#include "controllers/snapshot_controller.h"
+#include "core/serialize.h"
+#include "models/block.h"
+#include "models/database.h"
+#include "storage/block_index_db.h"
+#include "storage/dbwrapper.h"
+#include "util/safe_alloc.h"
 
 int test_kill9_recovery(void);
 
@@ -355,16 +407,606 @@ static int p11_7_one_cycle(const char *dbpath, int cycle_idx,
     return 0;
 }
 
+/* ════════════════════════════════════════════════════════════════════════
+ * MID-MINT-FOLD kill9 phase
+ *
+ * Drives the REAL durable-marker API the offline `-mint-anchor` producer
+ * uses (config/src/mint_anchor_progress.c) and the REAL per-block coins_kv
+ * apply shape (storage/coins_kv.h: coins_kv_add_many +
+ * coins_kv_set_applied_height_in_tx inside ONE BEGIN IMMEDIATE — the same
+ * atomic unit utxo_apply_stage.c's forward-apply step commits) against a
+ * fresh progress.kv, killing the child mid-fold and reopening through the
+ * SAME `mint_anchor_progress_can_resume()` gate a real restart of the
+ * producer calls before resuming.
+ * ════════════════════════════════════════════════════════════════════════ */
+
+#define MF_ROWS_PER_STEP 3
+#define MF_N_STEPS       48
+#define MF_BATCH         8
+
+/* Deterministic per-step coin rows: step h contributes MF_ROWS_PER_STEP
+ * outputs, each with a txid derived from h so a later coins_kv_exists probe
+ * can name exactly which step's content is being checked. `txids` must
+ * outlive the coins_kv_add_many call (it binds SQLITE_TRANSIENT copies, but
+ * the caller still owns the array through the call). */
+static void mf_step_rows(int32_t step, struct coins_kv_add_row rows[MF_ROWS_PER_STEP],
+                         uint8_t txids[MF_ROWS_PER_STEP][32])
+{
+    for (int k = 0; k < MF_ROWS_PER_STEP; k++) {
+        memset(txids[k], 0, 32);
+        txids[k][0] = (uint8_t)(step & 0xFF);
+        txids[k][1] = (uint8_t)((step >> 8) & 0xFF);
+        txids[k][2] = (uint8_t)k;
+        txids[k][31] = 0xC9;
+        rows[k].txid = txids[k];
+        rows[k].vout = 0;
+        rows[k].value = 1000 + step;
+        rows[k].height = step;
+        rows[k].is_coinbase = (k == 0);
+        rows[k].script = NULL;
+        rows[k].script_len = 0;
+    }
+}
+
+/* Child worker: fold steps [start_step, end_step) — each step is ONE
+ * BEGIN IMMEDIATE / coins_kv_add_many + coins_kv_set_applied_height_in_tx /
+ * COMMIT, mirroring the real forward-apply step's atomic unit. A small
+ * nanosleep between steps widens the SIGKILL window, same convention as
+ * p11_7_child_worker above. */
+static void mf_child_worker(const char *dir, int32_t start_step, int32_t end_step)
+{
+    if (!progress_store_open(dir))
+        _exit(1);
+    sqlite3 *db = progress_store_db();
+    if (!db)
+        _exit(2);
+
+    for (int32_t step = start_step; step < end_step; step++) {
+        progress_store_tx_lock();
+        bool ok = sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK;
+
+        uint8_t txids[MF_ROWS_PER_STEP][32];
+        struct coins_kv_add_row rows[MF_ROWS_PER_STEP];
+        mf_step_rows(step, rows, txids);
+
+        ok = ok && coins_kv_add_many(db, rows, MF_ROWS_PER_STEP);
+        ok = ok && coins_kv_set_applied_height_in_tx(db, step + 1);
+        ok = ok && sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK;
+        progress_store_tx_unlock();
+
+        if (!ok)
+            _exit(3);
+
+        struct timespec ts = { .tv_sec = 0, .tv_nsec = 1000000L };
+        nanosleep(&ts, NULL);
+    }
+
+    progress_store_close();
+    _exit(0);
+}
+
+/* Read the durable applied frontier (coins_kv's "next height to apply").
+ * *out_start_step receives that frontier, or 0 when absent (nothing folded
+ * yet). Returns false only on a hard read error. */
+static bool mf_read_start_step(const char *dir, int32_t *out_start_step)
+{
+    *out_start_step = 0;
+    if (!progress_store_open(dir))
+        return false;
+    sqlite3 *db = progress_store_db();
+    int32_t frontier = 0;
+    bool found = false;
+    bool ok = db && coins_kv_get_applied_height(db, &frontier, &found);
+    progress_store_close();
+    if (!ok)
+        return false;
+    *out_start_step = found ? frontier : 0;
+    return true;
+}
+
+static int p11_7mf_run_phase(void)
+{
+    int failures = 0;
+    printf("\n=== kill -9 mid-mint-fold recovery ===\n");
+
+    char dir[300];
+    snprintf(dir, sizeof(dir), "./test-tmp/kill9mf_%d", (int)getpid());
+    p11_7_mkdir_p("./test-tmp");
+    test_cleanup_tmpdir(dir);
+    p11_7_mkdir_p(dir);
+
+    /* Fixture checkpoint: only its OWN internal consistency matters here
+     * (mark/can_resume compare against the SAME struct every call) — it does
+     * not need to match a compiled checkpoint. */
+    struct sha3_utxo_checkpoint cp;
+    memset(&cp, 0, sizeof(cp));
+    cp.height = MF_N_STEPS - 1;
+    cp.utxo_count = (uint64_t)MF_N_STEPS * MF_ROWS_PER_STEP;
+    cp.total_supply = 0;
+    memset(cp.block_hash, 0xEE, sizeof(cp.block_hash));
+    memset(cp.sha3_hash, 0xAB, sizeof(cp.sha3_hash));
+
+    /* Setup: bind the producer lane + write the durable in-progress marker —
+     * exactly the durable state the real -mint-anchor producer leaves before
+     * folding a single block. This is the marker mint_anchor_progress_can_
+     * resume() below authenticates on every reopen. */
+    {
+        if (!progress_store_open(dir)) {
+            printf("FAIL (mint-fold: progress_store_open setup failed)\n");
+            return 1;
+        }
+        sqlite3 *db = progress_store_db();
+        bool setup_ok = db && coins_kv_ensure_schema(db) &&
+                        mint_anchor_producer_lane_bind(db, /*checkpoint_fold=*/true) &&
+                        mint_anchor_progress_mark(db, &cp);
+        progress_store_close();
+        if (!setup_ok) {
+            printf("FAIL (mint-fold: producer lane / marker setup failed)\n");
+            test_cleanup_tmpdir(dir);
+            return 1;
+        }
+    }
+
+    const int n_cycles = 10;
+    const int budget_sec = 60;
+    unsigned int rng = (unsigned int)(platform_time_wall_time_t() ^ getpid() ^ 0x4d46u);
+    time_t t0 = platform_time_wall_time_t();
+
+    for (int i = 0; i < n_cycles && !failures; i++) {
+        int32_t start_step = 0;
+        if (!mf_read_start_step(dir, &start_step)) {
+            printf("FAIL (mint-fold cycle %d: pre-fork frontier read failed)\n", i);
+            failures++;
+            break;
+        }
+        if (start_step >= MF_N_STEPS)
+            break; /* already complete from an earlier cycle's clean finish */
+
+        int32_t end_step = start_step + MF_BATCH;
+        if (end_step > MF_N_STEPS) end_step = MF_N_STEPS;
+
+        pid_t pid = fork();
+        if (pid < 0) { perror("fork"); failures++; break; }
+        if (pid == 0) {
+            mf_child_worker(dir, start_step, end_step);
+            _exit(99); /* unreachable */
+        }
+
+        long delay_us = 300 + (long)(rand_r(&rng) % 9000);
+        struct timespec delay_ts = { .tv_sec = 0, .tv_nsec = delay_us * 1000 };
+        nanosleep(&delay_ts, NULL);
+
+        if (kill(pid, SIGKILL) != 0 && errno != ESRCH) {
+            perror("kill");
+            waitpid(pid, NULL, 0);
+            failures++;
+            break;
+        }
+        int status = 0;
+        if (waitpid(pid, &status, 0) != pid) {
+            perror("waitpid");
+            failures++;
+            break;
+        }
+        bool killed = WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL;
+        bool exited_ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+        if (!killed && !exited_ok) {
+            printf("FAIL (mint-fold cycle %d: child ended abnormally; "
+                   "WIFSIGNALED=%d WIFEXITED=%d status=%d)\n",
+                   i, WIFSIGNALED(status), WIFEXITED(status), status);
+            failures++;
+            break;
+        }
+
+        /* Reopen — the same durable-marker inspection a real restart of the
+         * offline -mint-anchor producer performs before resuming a fold. */
+        if (!progress_store_open(dir)) {
+            printf("FAIL (mint-fold cycle %d: reopen failed after %s)\n",
+                   i, killed ? "SIGKILL" : "clean exit");
+            failures++;
+            break;
+        }
+        sqlite3 *db = progress_store_db();
+
+        int32_t applied_through = -2;
+        bool legacy_adopted = true; /* poison — must come back false */
+        bool can_resume = mint_anchor_progress_can_resume(db, &cp, &applied_through,
+                                                           &legacy_adopted);
+        if (!can_resume || legacy_adopted) {
+            printf("FAIL (mint-fold cycle %d: can_resume=%d legacy_adopted=%d "
+                   "— the durable marker was written and matched before any "
+                   "fold step ran, so a SIGKILL anywhere afterward must still "
+                   "authorize a clean, non-legacy resume — never a silent "
+                   "wedge)\n", i, can_resume, legacy_adopted);
+            failures++;
+            progress_store_close();
+            break;
+        }
+
+        /* THE qed-harvested assertion: the durable applied-through cursor
+         * must never be AHEAD of the coin content it implies. Exactly
+         * (applied_through+1) * MF_ROWS_PER_STEP rows must exist — no more,
+         * no less — regardless of where inside the per-step BEGIN/COMMIT the
+         * SIGKILL landed. This is the drain pre-commit veto's invariant,
+         * proven here under a real SIGKILL instead of by construction. */
+        int64_t expect_count = applied_through < 0
+                                    ? 0
+                                    : (int64_t)(applied_through + 1) * MF_ROWS_PER_STEP;
+        int64_t actual_count = coins_kv_count(db);
+        if (actual_count != expect_count) {
+            printf("FAIL (mint-fold cycle %d: cursor/content mismatch — "
+                   "applied_through=%d implies %lld coin row(s) but coins_kv "
+                   "holds %lld — the applied cursor raced ahead of (or fell "
+                   "behind) its own content)\n",
+                   i, applied_through, (long long)expect_count,
+                   (long long)actual_count);
+            failures++;
+            progress_store_close();
+            break;
+        }
+
+        /* Point check at the exact boundary: the last-applied step's own
+         * coin is present; the next (not-yet-applied) step's coin is absent. */
+        bool boundary_ok = true;
+        if (applied_through >= 0) {
+            uint8_t txids[MF_ROWS_PER_STEP][32];
+            struct coins_kv_add_row rows[MF_ROWS_PER_STEP];
+            mf_step_rows(applied_through, rows, txids);
+            boundary_ok = coins_kv_exists(db, txids[0], 0);
+        }
+        if (boundary_ok && applied_through + 1 < MF_N_STEPS) {
+            uint8_t txids[MF_ROWS_PER_STEP][32];
+            struct coins_kv_add_row rows[MF_ROWS_PER_STEP];
+            mf_step_rows(applied_through + 1, rows, txids);
+            boundary_ok = !coins_kv_exists(db, txids[0], 0);
+        }
+        if (!boundary_ok) {
+            printf("FAIL (mint-fold cycle %d: boundary coin check failed at "
+                   "applied_through=%d)\n", i, applied_through);
+            failures++;
+            progress_store_close();
+            break;
+        }
+
+        progress_store_close();
+    }
+
+    /* Terminal: drain any remaining steps UNINTERRUPTED, then clear the
+     * durable marker — models the real producer's "snapshot written +
+     * hard-verified" completion step. Proves the OTHER named terminal
+     * (verified completion) is always reachable regardless of how many
+     * SIGKILLs preceded it. */
+    if (!failures) {
+        int32_t start_step = 0;
+        if (!mf_read_start_step(dir, &start_step)) {
+            printf("FAIL (mint-fold: final frontier read failed)\n");
+            failures++;
+        } else if (!progress_store_open(dir)) {
+            printf("FAIL (mint-fold: final reopen failed)\n");
+            failures++;
+        } else {
+            sqlite3 *db = progress_store_db();
+            bool ok = true;
+            for (int32_t step = start_step; step < MF_N_STEPS && ok; step++) {
+                progress_store_tx_lock();
+                ok = sqlite3_exec(db, "BEGIN IMMEDIATE", NULL, NULL, NULL) == SQLITE_OK;
+                uint8_t txids[MF_ROWS_PER_STEP][32];
+                struct coins_kv_add_row rows[MF_ROWS_PER_STEP];
+                mf_step_rows(step, rows, txids);
+                ok = ok && coins_kv_add_many(db, rows, MF_ROWS_PER_STEP);
+                ok = ok && coins_kv_set_applied_height_in_tx(db, step + 1);
+                ok = ok && sqlite3_exec(db, "COMMIT", NULL, NULL, NULL) == SQLITE_OK;
+                progress_store_tx_unlock();
+            }
+
+            int64_t final_count = coins_kv_count(db);
+            int32_t final_frontier = 0;
+            bool final_found = false;
+            bool frontier_ok = coins_kv_get_applied_height(db, &final_frontier,
+                                                            &final_found);
+            bool complete = ok && final_count == (int64_t)MF_N_STEPS * MF_ROWS_PER_STEP &&
+                            frontier_ok && final_found && final_frontier == MF_N_STEPS;
+            if (!complete) {
+                printf("FAIL (mint-fold: uninterrupted drain to completion "
+                       "failed — ok=%d count=%lld frontier=%d found=%d)\n",
+                       ok, (long long)final_count, final_frontier, final_found);
+                failures++;
+            } else {
+                bool cleared = mint_anchor_progress_clear(db);
+                /* MINT_ANCHOR_MARKER_LEN (48) is private to
+                 * mint_anchor_progress.c — size generously rather than
+                 * duplicate the private constant. */
+                uint8_t marker_after[64] = {0};
+                size_t marker_after_n = 0;
+                bool marker_after_found = true; /* poison — must come back false */
+                bool read_ok = cleared &&
+                    progress_meta_get_blob_exact(db, MINT_ANCHOR_IN_PROGRESS_KEY,
+                                                 marker_after, sizeof(marker_after),
+                                                 &marker_after_n, &marker_after_found);
+                if (!cleared || !read_ok || marker_after_found) {
+                    printf("FAIL (mint-fold: marker clear terminal failed — "
+                           "cleared=%d read_ok=%d still_present=%d)\n",
+                           cleared, read_ok, marker_after_found);
+                    failures++;
+                } else {
+                    printf(" mint_fold kill9 OK (%d cycles; cursor never raced "
+                           "ahead of content at any reopen; drained to h=%d, "
+                           "%lld coins; marker cleared — verified-completion "
+                           "terminal reached)\n",
+                           n_cycles, MF_N_STEPS - 1, (long long)final_count);
+                }
+            }
+            progress_store_close();
+        }
+    }
+
+    int elapsed = (int)(platform_time_wall_time_t() - t0);
+    if (!failures && elapsed > budget_sec) {
+        printf("FAIL (mint-fold: %d cycles took %ds, exceeds %ds budget)\n",
+               n_cycles, elapsed, budget_sec);
+        failures++;
+    }
+
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
+/* ════════════════════════════════════════════════════════════════════════
+ * MID-IMPORTBLOCKINDEX kill9 phase
+ *
+ * Forks real calls to snapshot_import_block_index() (app/controllers/src/
+ * snapshot_controller_import.c) — the function `--importblockindex`
+ * dispatches to, the mandatory first step of the two-step cold-sync recipe.
+ * Its internal shape is an autocommit `DELETE FROM blocks` (+ tip reset)
+ * followed by ONE BEGIN..COMMIT bulk-insert transaction (our fixture stays
+ * well under its 100000-row batch-commit boundary, so it is a single
+ * all-or-nothing unit): a SIGKILL anywhere in that sequence must leave
+ * `blocks` EMPTY (pre-insert / rolled back) or FULLY populated (post-commit)
+ * on reopen — never partial.
+ * ════════════════════════════════════════════════════════════════════════ */
+
+#define IB9_N_BLOCKS 2000
+
+static bool ib9_build_fixture(const char *src_dir, int n)
+{
+    char idx_dir[512];
+    snprintf(idx_dir, sizeof(idx_dir), "%s/blocks/index", src_dir);
+
+    struct db_wrapper dbw;
+    if (!db_wrapper_open(&dbw, idx_dir, 64 << 20, false, true))
+        return false;
+
+    uint8_t prev[32];
+    memset(prev, 0, sizeof(prev));
+    bool ok = true;
+
+    for (int h = 0; h < n && ok; h++) {
+        uint8_t hash[32];
+        memset(hash, 0, sizeof(hash));
+        hash[0] = 0xAA;
+        hash[1] = (uint8_t)(h & 0xff);
+        hash[2] = (uint8_t)((h >> 8) & 0xff);
+        hash[31] = 0x01;
+
+        struct disk_block_index dbi;
+        disk_block_index_init(&dbi);
+        dbi.nHeight = h;
+        memcpy(dbi.hashPrev.data, prev, 32);
+        dbi.nStatus = (unsigned int)(BLOCK_VALID_TRANSACTIONS |
+                                     BLOCK_HAVE_DATA | BLOCK_HAVE_UNDO);
+        dbi.nTx = 1;
+        dbi.nFile = 0;
+        dbi.nDataPos = 2000u + (uint32_t)h * 100u;
+        dbi.nUndoPos = dbi.nDataPos + 500u;
+        dbi.nVersion = 4;
+        dbi.hashMerkleRoot.data[0] = 0xBB;
+        dbi.nTime = 1231006505u + (uint32_t)h;
+        dbi.nBits = 0x1d00ffffu;
+        dbi.nSolutionSize = 0;
+        dbi.has_sprout_value = false;
+        dbi.nSaplingValue = 0;
+
+        struct byte_stream s;
+        stream_init(&s, 256);
+        if (!disk_block_index_serialize(&dbi, &s) || s.error) {
+            ok = false;
+        } else {
+            char key[33];
+            key[0] = 'b';
+            memcpy(key + 1, hash, 32);
+            if (!db_write(&dbw, key, sizeof(key), (const char *)s.data,
+                          s.size, false))
+                ok = false;
+        }
+        stream_free(&s);
+        memcpy(prev, hash, 32);
+    }
+
+    db_wrapper_close(&dbw);
+    return ok;
+}
+
+static int p11_7ib_run_phase(void)
+{
+    int failures = 0;
+    printf("\n=== kill -9 mid-importblockindex recovery ===\n");
+
+    char base[300];
+    snprintf(base, sizeof(base), "./test-tmp/kill9ib_%d", (int)getpid());
+    p11_7_mkdir_p("./test-tmp");
+    test_rm_rf_recursive(base);
+    p11_7_mkdir_p(base);
+
+    char src_dir[340];
+    snprintf(src_dir, sizeof(src_dir), "%s/legacy-src", base);
+    p11_7_mkdir_p(src_dir);
+
+    if (!ib9_build_fixture(src_dir, IB9_N_BLOCKS)) {
+        printf("FAIL (importblockindex: fixture build failed)\n");
+        test_rm_rf_recursive(base);
+        return 1;
+    }
+
+    char db_path[380];
+    snprintf(db_path, sizeof(db_path), "%s/node.db", base);
+
+    /* Calibration run: time ONE full uninterrupted import to size the kill
+     * delay window to THIS box's actual disk/CPU speed instead of a guessed
+     * constant — portable across dev boxes. */
+    int64_t t_cal0 = platform_time_monotonic_us();
+    int cal_count = -1;
+    bool cal_ok = snapshot_import_block_index(src_dir, db_path, /*header_only=*/true,
+                                              &cal_count);
+    int64_t t_cal_us = platform_time_monotonic_us() - t_cal0;
+    if (!cal_ok || cal_count != IB9_N_BLOCKS) {
+        printf("FAIL (importblockindex: calibration run failed ok=%d count=%d)\n",
+               cal_ok, cal_count);
+        test_rm_rf_recursive(base);
+        return 1;
+    }
+    long delay_ceiling_us = t_cal_us + t_cal_us / 2; /* 1.5x calibrated duration */
+    if (delay_ceiling_us < 5000) delay_ceiling_us = 5000;
+    if (delay_ceiling_us > 5000000) delay_ceiling_us = 5000000; /* 5s safety cap */
+
+    const int n_cycles = 6;
+    const int budget_sec = 90;
+    unsigned int rng = (unsigned int)(platform_time_wall_time_t() ^ getpid() ^ 0x1B2Cu);
+    time_t t0 = platform_time_wall_time_t();
+
+    for (int i = 0; i < n_cycles; i++) {
+        pid_t pid = fork();
+        if (pid < 0) { perror("fork"); failures++; break; }
+        if (pid == 0) {
+            int child_count = -1;
+            bool ok = snapshot_import_block_index(src_dir, db_path,
+                                                  /*header_only=*/true, &child_count);
+            _exit(ok ? 0 : 1);
+        }
+
+        long delay_us = 300 + (long)(rand_r(&rng) % (unsigned long)delay_ceiling_us);
+        struct timespec delay_ts = {
+            .tv_sec = delay_us / 1000000,
+            .tv_nsec = (delay_us % 1000000) * 1000,
+        };
+        nanosleep(&delay_ts, NULL);
+
+        if (kill(pid, SIGKILL) != 0 && errno != ESRCH) {
+            perror("kill");
+            waitpid(pid, NULL, 0);
+            failures++;
+            break;
+        }
+        int status = 0;
+        if (waitpid(pid, &status, 0) != pid) {
+            perror("waitpid");
+            failures++;
+            break;
+        }
+        bool killed = WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL;
+        bool exited_ok = WIFEXITED(status) && WEXITSTATUS(status) == 0;
+        if (!killed && !exited_ok) {
+            printf("FAIL (importblockindex cycle %d: child ended abnormally; "
+                   "WIFSIGNALED=%d WIFEXITED=%d status=%d)\n",
+                   i, WIFSIGNALED(status), WIFEXITED(status), status);
+            failures++;
+            break;
+        }
+
+        struct node_db ndb;
+        if (!node_db_open(&ndb, db_path)) {
+            printf("FAIL (importblockindex cycle %d: reopen failed after %s)\n",
+                   i, killed ? "SIGKILL" : "clean exit");
+            failures++;
+            break;
+        }
+        int count = db_block_count(&ndb);
+        bool empty_or_full = (count == 0) || (count == IB9_N_BLOCKS);
+        if (!empty_or_full) {
+            printf("FAIL (importblockindex cycle %d: blocks row count=%d — "
+                   "neither the rolled-back (0) nor committed (%d) shape; a "
+                   "partial DELETE+bulk-insert survived the SIGKILL)\n",
+                   i, count, IB9_N_BLOCKS);
+            node_db_close(&ndb);
+            failures++;
+            break;
+        }
+
+        /* Cursor-ahead-of-content check on THIS write path: the fast-boot
+         * cursors are stamped ONLY after the full commit + index rebuild, so
+         * they must be absent whenever count==0 and, when present, must
+         * equal exactly count-1 — never a stale/garbled value. */
+        int64_t pprev_h = -2, shielded_h = -2;
+        bool pprev_found = node_db_state_get_int(&ndb, "pprev_repaired_height", &pprev_h);
+        bool shielded_found = node_db_state_get_int(&ndb, "shielded_backfill_height",
+                                                     &shielded_h);
+        bool cursors_consistent = (count == 0)
+            ? (!pprev_found && !shielded_found)
+            : (pprev_found && shielded_found &&
+               pprev_h == IB9_N_BLOCKS - 1 && shielded_h == IB9_N_BLOCKS - 1);
+        if (!cursors_consistent) {
+            printf("FAIL (importblockindex cycle %d: fast-boot cursors "
+                   "inconsistent with row count=%d — pprev_found=%d(%lld) "
+                   "shielded_found=%d(%lld))\n",
+                   i, count, pprev_found, (long long)pprev_h,
+                   shielded_found, (long long)shielded_h);
+            node_db_close(&ndb);
+            failures++;
+            break;
+        }
+
+        node_db_close(&ndb);
+    }
+
+    /* Terminal: one uninterrupted re-run proves the fully-imported state is
+     * ALWAYS reachable regardless of how the prior cycles left the table —
+     * the function's own DELETE+rebuild is itself a valid, named resume
+     * strategy (proven idempotent by test_importblockindex_roundtrip). */
+    if (!failures) {
+        int final_count = -1;
+        bool final_ok = snapshot_import_block_index(src_dir, db_path,
+                                                     /*header_only=*/true,
+                                                     &final_count);
+        struct node_db ndb;
+        bool reopened = final_ok && node_db_open(&ndb, db_path);
+        int row_count = reopened ? db_block_count(&ndb) : -1;
+        if (reopened) node_db_close(&ndb);
+        if (!final_ok || final_count != IB9_N_BLOCKS || row_count != IB9_N_BLOCKS) {
+            printf("FAIL (importblockindex: final uninterrupted re-run did not "
+                   "reach the fully-imported terminal — ok=%d count=%d rows=%d)\n",
+                   final_ok, final_count, row_count);
+            failures++;
+        } else {
+            printf(" importblockindex kill9 OK (%d cycles, calibrated kill "
+                   "window ceiling %ldus from a %lldus reference run; every "
+                   "reopen was empty-or-full, never partial; final re-run "
+                   "reached the full %d-row terminal)\n",
+                   n_cycles, delay_ceiling_us, (long long)t_cal_us, IB9_N_BLOCKS);
+        }
+    }
+
+    int elapsed = (int)(platform_time_wall_time_t() - t0);
+    if (!failures && elapsed > budget_sec) {
+        printf("FAIL (importblockindex: %d cycles took %ds, exceeds %ds budget)\n",
+               n_cycles, elapsed, budget_sec);
+        failures++;
+    }
+
+    test_rm_rf_recursive(base);
+    return failures;
+}
+
 /* ── Test entrypoint ───────────────────────────────────────── */
 
 int test_kill9_recovery(void)
 {
     int failures = 0;
-    printf("\n=== kill -9 recovery (MVP #7, <2 min) ===\n");
+    printf("\n=== kill -9 recovery (MVP #7, <2 min) — three crash-window "
+           "phases: UTXO-apply, mint-fold, importblockindex ===\n");
     printf("kill9_recovery SIGKILL-mid-apply × 10 cycles... ");
 
     if (!getenv("ZCL_STRESS_TESTS")) {
-        printf("SKIP (set ZCL_STRESS_TESTS=1 to run — spawns 10 child procs)\n");
+        printf("SKIP (set ZCL_STRESS_TESTS=1 to run — spawns child procs "
+               "across three phases)\n");
         return 0;
     }
     printf("\n");
@@ -473,6 +1115,13 @@ int test_kill9_recovery(void)
 
     /* Cleanup */
     test_cleanup_tmpdir(dir);
+
+    /* Extended crash-window matrix (plan lane 2.4): mid-mint-fold and
+     * mid-importblockindex, each an independent fork+SIGKILL cycle set with
+     * its own cleanup. Both run regardless of the UTXO-apply phase's result
+     * so a single-phase regression doesn't hide failures in the others. */
+    failures += p11_7mf_run_phase();
+    failures += p11_7ib_run_phase();
 
     return failures;
 }
