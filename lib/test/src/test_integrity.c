@@ -9,10 +9,12 @@
 #include "test/test_helpers.h"
 #include "coins/utxo_commitment.h"
 #include "chain/checkpoints.h"
+#include "services/authority_projection_audit.h"
 #include "services/bg_validation_service.h"
 #include "services/bg_hash_verification_service.h"
 #include "sync/sync_planner.h"
 #include "services/utxo_recovery_service.h"
+#include "util/blocker.h"
 #include "util/supervisor.h"
 #include "validation/main_state.h"
 #include <string.h>
@@ -582,6 +584,139 @@ static int test_integrity_progress_snapshot(void)
 
 /* ── Registration ─────────────────────────────────────────────────── */
 
+/* ── Authority(coins)-vs-projection(utxos) redundant cross-check ─────── */
+
+/* Find the named blocker in the process registry; copy its reason. */
+static bool find_blocker_reason(const char *id, char *reason_out, size_t cap)
+{
+    struct blocker_snapshot snaps[BLOCKER_CAP];
+    int n = blocker_snapshot_all(snaps, BLOCKER_CAP);
+    for (int i = 0; i < n; i++) {
+        if (strcmp(snaps[i].id, id) == 0) {
+            if (reason_out && cap)
+                snprintf(reason_out, cap, "%s", snaps[i].reason);
+            return true;
+        }
+    }
+    return false;
+}
+
+static int test_integrity_ap_audit_match_no_fire(void)
+{
+    int failures = 0;
+
+    TEST("integrity: ap-audit matching authority/projection does NOT fire") {
+        ap_audit_reset_for_test();
+
+        uint8_t root[32];
+        for (int i = 0; i < 32; i++) root[i] = (uint8_t)(i * 7 + 1);
+
+        struct ap_audit_inputs in;
+        memset(&in, 0, sizeof(in));
+        in.comparable = true;
+        in.height = 3176325;
+        memcpy(in.auth_root, root, 32);
+        memcpy(in.proj_root, root, 32);
+        in.auth_count = 1300000;
+        in.proj_count = 1300000;
+
+        struct ap_audit_verdict v;
+        ap_audit_evaluate(&in, &v);
+        ASSERT(!v.violated);
+
+        /* Even repeated clean verdicts must never raise the blocker. */
+        ASSERT(!ap_audit_apply_verdict(&v, in.height, in.auth_count,
+                                       in.proj_count, in.auth_root,
+                                       in.proj_root));
+        ASSERT(!ap_audit_apply_verdict(&v, in.height, in.auth_count,
+                                       in.proj_count, in.auth_root,
+                                       in.proj_root));
+        ASSERT(!find_blocker_reason("authority_projection_divergence",
+                                    NULL, 0));
+
+        /* A non-comparable input (heights disagreed / moved mid-scan) is a
+         * clean no-violation, never a false fire. */
+        struct ap_audit_inputs nc = in;
+        nc.comparable = false;
+        nc.auth_count = 42; /* would differ, but not comparable */
+        struct ap_audit_verdict vnc;
+        ap_audit_evaluate(&nc, &vnc);
+        ASSERT(!vnc.violated);
+
+        ap_audit_reset_for_test();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_integrity_ap_audit_divergence_fires(void)
+{
+    int failures = 0;
+
+    TEST("integrity: ap-audit planted divergence raises blocker w/ both roots") {
+        ap_audit_reset_for_test();
+
+        uint8_t auth_root[32], proj_root[32];
+        for (int i = 0; i < 32; i++) {
+            auth_root[i] = (uint8_t)(i + 1);   /* authority */
+            proj_root[i] = (uint8_t)(0xF0 + i); /* projection — different */
+        }
+        char auth_hex[65] = {0}, proj_hex[65] = {0};
+        for (int i = 0; i < 32; i++) {
+            snprintf(auth_hex + i * 2, 3, "%02x", auth_root[i]);
+            snprintf(proj_hex + i * 2, 3, "%02x", proj_root[i]);
+        }
+
+        struct ap_audit_inputs in;
+        memset(&in, 0, sizeof(in));
+        in.comparable = true;
+        in.height = 3176326;
+        memcpy(in.auth_root, auth_root, 32);
+        memcpy(in.proj_root, proj_root, 32);
+        in.auth_count = 1300001;
+        in.proj_count = 1300000; /* also a count mismatch */
+
+        struct ap_audit_verdict v;
+        ap_audit_evaluate(&in, &v);
+        ASSERT(v.violated);
+        ASSERT(v.root_mismatch);
+        ASSERT(v.count_mismatch);
+
+        /* First confirmation sample: streak=1 — must NOT raise yet. */
+        bool raised1 = ap_audit_apply_verdict(&v, in.height, in.auth_count,
+                                              in.proj_count, in.auth_root,
+                                              in.proj_root);
+        ASSERT(!raised1);
+        ASSERT(!find_blocker_reason("authority_projection_divergence", NULL, 0));
+
+        /* Second consecutive sample: streak=2 — raises the PERMANENT blocker. */
+        bool raised2 = ap_audit_apply_verdict(&v, in.height, in.auth_count,
+                                              in.proj_count, in.auth_root,
+                                              in.proj_root);
+        ASSERT(raised2);
+
+        char reason[BLOCKER_REASON_MAX];
+        ASSERT(find_blocker_reason("authority_projection_divergence",
+                                   reason, sizeof(reason)));
+        /* The alarm names BOTH roots + the height. */
+        ASSERT(strstr(reason, auth_hex) != NULL);
+        ASSERT(strstr(reason, proj_hex) != NULL);
+        ASSERT(strstr(reason, "3176326") != NULL);
+
+        /* A subsequent clean pass self-clears the latch. */
+        struct ap_audit_verdict clean;
+        memset(&clean, 0, sizeof(clean));
+        ASSERT(!ap_audit_apply_verdict(&clean, in.height, in.auth_count,
+                                       in.auth_count, in.auth_root,
+                                       in.auth_root));
+        ASSERT(!find_blocker_reason("authority_projection_divergence", NULL, 0));
+
+        ap_audit_reset_for_test();
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_integrity(void)
 {
     int failures = 0;
@@ -609,6 +744,10 @@ int test_integrity(void)
     failures += test_integrity_bg_hash_verify_no_start_without_ms();
     failures += test_integrity_bg_hash_verify_supervisor_contract();
     failures += test_integrity_bg_validation_supervisor_contract();
+
+    /* Redundant authority(coins)-vs-projection(utxos) cross-check */
+    failures += test_integrity_ap_audit_match_no_fire();
+    failures += test_integrity_ap_audit_divergence_fires();
 
     /* Stall recovery and sync integrity */
     failures += test_integrity_stall_recovery_plan();

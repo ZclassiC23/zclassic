@@ -64,6 +64,8 @@
 #include "adapters/outbound/persistence/bg_validation_store_sqlite.h"
 #include "ports/bg_validation_store_port.h"
 #include "event/event.h"
+#include "platform/rng.h"
+#include "util/blocker.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -90,6 +92,11 @@ struct bg_validation_service *g_bg_validation = NULL;
 #define SAVE_INTERVAL  1000
 #define LOG_INTERVAL   10000
 #define BG_VALIDATION_SUPERVISOR_DEADLINE_SEC 600
+/* Idle gap between sampled re-verifies (post-COMPLETE). Deliberately long so
+ * the always-on re-verify stays a low-rate background witness and NEVER
+ * competes with the fold hot path — ~2 samples/min plus each sample's own
+ * verify time. Respects the same stop_requested wake as the main walk. */
+#define BG_REVERIFY_IDLE_SECS  30
 
 static _Atomic supervisor_child_id g_bg_validation_supervisor_id =
     SUPERVISOR_INVALID_ID;
@@ -187,218 +194,11 @@ static bool bg_validation_register_supervisor(
  * bg_validation_verify_scripts_parallel) lives in
  * bg_validation_scripts.c — see bg_validation_internal.h. */
 
-/* ── Read undo data for a block ──────────────────────────────── */
-
-/* Maximum bytes to read for a single block's undo data.
- * Typical blocks need <1MB; even dust-attack blocks fit in 4MB.
- * This caps memory per-block without rejecting large rev files. */
-#define MAX_UNDO_READ  (4 * 1024 * 1024)
-
-static bool read_block_undo(struct block_undo *undo, const struct block_index *pindex,
-                            const char *datadir)
-{
-    block_undo_init(undo);
-
-    struct disk_block_pos undo_pos = { .nFile = -1, .nPos = 0 };
-    if (!block_index_undo_pos_snapshot(pindex, &undo_pos, NULL)) return false; // raw-return-ok:missing-undo-is-counted-as-script-skip
-
-    if (undo_pos.nPos == 0) LOG_FAIL("bg_validation", "read_block_undo: undo pos is 0 for file %d", undo_pos.nFile);
-
-    char path[512];
-    get_block_pos_filename(path, sizeof(path), datadir, &undo_pos, "rev");
-
-    int fd = open(path, O_RDONLY);
-    if (fd < 0)
-        LOG_FAIL("bg_validation", "read_block_undo: cannot open %s", path);
-
-    struct stat st;
-    if (fstat(fd, &st) != 0 || st.st_size <= 0) {
-        close(fd);
-        LOG_FAIL("bg_validation", "read_block_undo: fstat failed or empty file %s", path);
-    }
-
-    /* Read from undo_pos.nPos, capped at MAX_UNDO_READ.
-     * The deserializer is stream-based and stops when done — we don't
-     * need to read to EOF. This keeps memory bounded per block. */
-    size_t avail = (size_t)(st.st_size - (off_t)undo_pos.nPos);
-    if (avail == 0) {
-        close(fd);
-        LOG_FAIL("bg_validation", "read_block_undo: no data available at pos %u in %s",
-                 undo_pos.nPos, path);
-    }
-    size_t read_len = avail < MAX_UNDO_READ ? avail : MAX_UNDO_READ;
-
-    uint8_t *buf = zcl_malloc(read_len, "bg_valid undo buf");
-    if (!buf) {
-        close(fd);
-        LOG_FAIL("bg_validation", "read_block_undo: malloc failed for %zu bytes", read_len);
-    }
-
-    ssize_t nread = pread(fd, buf, read_len, (off_t)undo_pos.nPos);
-    close(fd);
-
-    if (nread <= 0) {
-        free(buf);
-        LOG_FAIL("bg_validation", "read_block_undo: pread returned %zd for %s", nread, path);
-    }
-
-    struct byte_stream s;
-    stream_init_from_data(&s, buf, (size_t)nread);
-    bool ok = block_undo_deserialize(undo, &s);
-    free(buf);
-    return ok;
-}
-
-/* Shielded proof verification (bg_validation_verify_shielded_proofs)
- * lives in bg_validation_proofs.c — see bg_validation_internal.h. */
-
-/* ── Single block full validation (read-only) ────────────────── */
-
-/* Validates all cryptographic proofs in a block WITHOUT modifying UTXO set.
- * Verifies: Equihash, Merkle root, all script sigs, all shielded proofs.
- * Uses undo data (revXXXXX.dat) to recover spent outputs for sig verification.
- * max_script_batch: cap on script_check_item allocation (0 = unlimited). */
-static bool validate_block_proofs(const struct block *block,
-                                  struct block_index *pindex,
-                                  const char *datadir,
-                                  const struct chain_params *params,
-                                  int num_workers,
-                                  size_t max_script_batch,
-                                  int64_t *sigs_out,
-                                  int64_t *proofs_out,
-                                  int64_t *skips_out)
-{
-    bool ok = false;
-    struct validation_state state;
-    validation_state_init(&state);
-    int64_t sigs = 0, proofs = 0, skips = 0;
-    struct block_undo blockundo;
-    bool have_undo = false;
-    struct script_check_item *check_items = NULL;
-    size_t check_count = 0;
-
-    /* 1. Block header: Equihash + PoW + timestamp */
-    if (!check_block_header(&block->header, &state, params, true)) {
-        LOG_WARN("bg-valid", "[bg-valid] check_block_header FAILED h=%d: %s",
-                pindex->nHeight, state.reject_reason);
-        goto out;
-    }
-
-    /* 2. Block structure: Merkle root + size limits + tx structure */
-    if (!check_block(block, &state, params, true, true, false)) {
-        LOG_WARN("bg-valid", "[bg-valid] check_block FAILED h=%d: %s",
-                pindex->nHeight, state.reject_reason);
-        goto out;
-    }
-
-    /* 3. Contextual header: difficulty, median time, checkpoints */
-    if (pindex->pprev) {
-        if (!contextual_check_block_header(&block->header, &state, params,
-                                            pindex->pprev, true)) {
-            LOG_WARN("bg-valid", "[bg-valid] contextual_check_header FAILED h=%d: %s",
-                    pindex->nHeight, state.reject_reason);
-            goto out;
-        }
-    }
-
-    /* 4. Transaction-level verification */
-    uint32_t branch_id = consensus_current_epoch_branch_id(
-        pindex->nHeight, &params->consensus);
-    uint32_t flags = SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
-
-    if (block->num_vtx > 1)
-        have_undo = read_block_undo(&blockundo, pindex, datadir);
-
-    /* Count transparent inputs and cap allocation */
-    size_t total_inputs = 0;
-    for (size_t i = 1; i < block->num_vtx; i++)
-        total_inputs += block->vtx[i].num_vin;
-
-    size_t alloc_size = total_inputs;
-    if (max_script_batch > 0 && alloc_size > max_script_batch)
-        alloc_size = max_script_batch;
-
-    if (alloc_size > 0) {
-        check_items = zcl_calloc(alloc_size, sizeof(struct script_check_item), "bg_valid script checks");
-        if (!check_items)
-            goto out;
-    }
-
-    for (size_t i = 0; i < block->num_vtx; i++) {
-        const struct transaction *tx = &block->vtx[i];
-
-        /* 4a. Shielded proof verification */
-        if (tx->num_joinsplit > 0 || tx->num_shielded_spend > 0 ||
-            tx->num_shielded_output > 0) {
-            if (!bg_validation_verify_shielded_proofs(tx, pindex->nHeight, i,
-                                        branch_id, &proofs))
-                goto out;
-        }
-
-        /* 4b. Collect script verification items */
-        if (transaction_is_coinbase(tx))
-            continue;
-
-        size_t undo_idx = i - 1;
-        bool have_tx_undo = have_undo && undo_idx < blockundo.num_txundo &&
-                            blockundo.vtxundo[undo_idx].num_prevout == tx->num_vin;
-        if (!have_tx_undo) {
-            /* No undo (rev file): cannot recover spent outputs, so this tx
-             * CANNOT be script-verified. Expected post-snapshot. Don't stall;
-             * record the gap so "verified" stays honest, not a silent skip. */
-            skips++;
-            continue;
-        }
-
-        struct precomputed_tx_data txdata;
-        precompute_tx_data(tx, &txdata);
-
-        for (size_t j = 0; j < tx->num_vin; j++) {
-            /* Flush batch if at capacity */
-            if (max_script_batch > 0 && check_count >= max_script_batch) {
-                if (!bg_validation_verify_scripts_parallel(check_items, check_count,
-                                              num_workers))
-                    goto out;
-                check_count = 0;
-            }
-
-            const struct tx_out *prev_out =
-                &blockundo.vtxundo[undo_idx].vprevout[j].txout;
-            struct script_check_item *item = &check_items[check_count++];
-            item->tx = tx;
-            item->input_index = (unsigned int)j;
-            item->amount = prev_out->value;
-            item->branch_id = branch_id;
-            item->txdata = txdata;
-            item->script_pub_key = prev_out->script_pub_key;
-            item->flags = flags;
-            sigs++;
-        }
-    }
-
-    /* 5. Final script verification flush */
-    if (!bg_validation_verify_scripts_parallel(check_items, check_count, num_workers)) {
-        LOG_WARN("bg-valid", "[bg-valid] script verification FAILED h=%d",
-                pindex->nHeight);
-        goto out;
-    }
-
-    if (skips > 0)
-        LOG_WARN("bg-valid", "[bg-valid] h=%d: %lld non-coinbase tx(s) NOT "
-                "script-verified (undo missing) — block advances, not fully "
-                "verified", pindex->nHeight, (long long)skips);
-
-    *sigs_out += sigs;
-    *proofs_out += proofs;
-    *skips_out += skips;
-    ok = true;
-
-out:
-    free(check_items);
-    if (have_undo)
-        block_undo_free(&blockundo);
-    return ok;
-}
+/* Single-block read-only full validation (read_block_undo +
+ * bg_validation_validate_block_proofs) lives in bg_validation_verify_block.c —
+ * see bg_validation_internal.h. Split out to keep both TUs under the E1
+ * file-size ceiling. Shielded proof verification
+ * (bg_validation_verify_shielded_proofs) lives in bg_validation_proofs.c. */
 
 /* ── Load/save progress from SQLite ──────────────────────────── */
 
@@ -434,6 +234,70 @@ static void save_skips(const struct bg_validation_store_port *store,
 {
     if (store && store->save_skips)
         store->save_skips(store->self, skips);
+}
+
+/* ── Sampled re-verify loop (after the genesis→tip walk completes) ──── */
+
+/* Low-rate, always-on re-verification of RANDOM already-verified heights.
+ * Re-runs the SAME read-only proof/script verification under the SAME
+ * sched_yield/idle throttle the forward walk uses — it changes NO validity
+ * predicate, it just catches a previously-passed height that no longer passes
+ * (bit-rot / miscompile / memory corruption). A single re-verify FAIL raises a
+ * PERMANENT blocker and stops the loop; otherwise it advances reverify_passes
+ * forever. Wakes promptly on stop_requested. */
+static void bg_validation_sampled_reverify_loop(
+    struct bg_validation_service *svc, int chain_height,
+    const char *datadir, const struct chain_params *params, int num_workers)
+{
+    struct main_state *ms = svc->ms;
+    if (chain_height < 1)
+        return;
+
+    atomic_store(&svc->progress.reverify_active, true);
+    printf("[bg-valid] entering always-on sampled re-verify loop (1..%d)\n",
+           chain_height);
+    event_emitf(EV_SYNC_STATE_CHANGE, 0,
+                "bg_validation reverify start ceiling=%d", chain_height);
+
+    while (!atomic_load(&svc->stop_requested)) {
+        bg_validation_supervisor_heartbeat(svc);
+
+        int ceiling = active_chain_height(&ms->chain_active);
+        if (ceiling < 1)
+            ceiling = chain_height;
+        int h = 1 + (int)(rng_u64() % (uint64_t)ceiling);
+
+        struct block_index *pindex = active_chain_at(&ms->chain_active, h);
+        if (pindex) {
+            struct disk_block_pos pos;
+            disk_block_pos_init(&pos);
+            if (block_index_disk_pos_snapshot(pindex, &pos, NULL)) {
+                struct block blk;
+                block_init(&blk);
+                if (read_block_from_disk_index_pread(&blk, pindex, datadir)) {
+                    int64_t s = 0, p = 0, k = 0;
+                    bool ok = bg_validation_validate_block_proofs(&blk, pindex, datadir,
+                                                    params, num_workers,
+                                                    svc->max_script_batch,
+                                                    &s, &p, &k);
+                    block_free(&blk);
+                    if (!bg_validation_record_reverify(svc, h, ok)) {
+                        /* Re-verify FAILED — blocker raised, state FAILED. */
+                        atomic_store(&svc->progress.reverify_active, false);
+                        return;
+                    }
+                }
+                /* Block not on disk (post-snapshot gap): skip this sample. */
+            }
+        }
+
+        /* Idle between samples; wake promptly on stop. */
+        for (int i = 0; i < BG_REVERIFY_IDLE_SECS &&
+                        !atomic_load(&svc->stop_requested); i++)
+            platform_sleep_ms(1000);
+        sched_yield();
+    }
+    atomic_store(&svc->progress.reverify_active, false);
 }
 
 /* ── Main validation thread ──────────────────────────────────── */
@@ -511,7 +375,7 @@ static void *bg_validation_thread(void *arg)
 
         /* Full validation */
         int64_t block_sigs = 0, block_proofs = 0, block_skips = 0;
-        if (!validate_block_proofs(&blk, pindex, datadir, params,
+        if (!bg_validation_validate_block_proofs(&blk, pindex, datadir, params,
                                     num_workers, svc->max_script_batch,
                                     &block_sigs, &block_proofs, &block_skips)) {
             fprintf(stderr, "[bg-valid] VALIDATION FAILURE at height %d\n", h);
@@ -607,6 +471,14 @@ static void *bg_validation_thread(void *arg)
                     "time=%llds",
                     chain_height, (long long)total_sigs,
                     (long long)total_proofs, (long long)total_time);
+
+        /* The genesis→tip walk is done — disarm the mission deadline, then keep
+         * the thread alive as an always-on SAMPLED re-verify witness instead of
+         * exiting. State stays COMPLETE (the chain IS fully verified); a sampled
+         * re-verify FAIL flips it to FAILED and raises a blocker. */
+        bg_validation_supervisor_done();
+        bg_validation_sampled_reverify_loop(svc, chain_height, datadir,
+                                            params, num_workers);
     } else {
         /* Stopped early — save where we got to */
         int verified = atomic_load(&svc->progress.verified_height);
@@ -669,6 +541,10 @@ void bg_validation_init(struct bg_validation_service *svc,
     atomic_store(&svc->progress.sigs_verified, 0);
     atomic_store(&svc->progress.proofs_verified, 0);
     atomic_store(&svc->progress.blocks_per_sec, 0);
+    atomic_store(&svc->progress.reverify_active, false);
+    atomic_store(&svc->progress.reverify_passes, 0);
+    atomic_store(&svc->progress.reverify_fails, 0);
+    atomic_store(&svc->progress.reverify_height, 0);
 }
 
 bool bg_validation_start(struct bg_validation_service *svc)
@@ -767,7 +643,50 @@ struct bg_validation_progress bg_validation_get_progress(
     p.script_verif_skipped_no_undo =
         atomic_load(&svc->progress.script_verif_skipped_no_undo);
     p.state = atomic_load(&svc->progress.state);
+    p.reverify_active = atomic_load(&svc->progress.reverify_active);
+    p.reverify_passes = atomic_load(&svc->progress.reverify_passes);
+    p.reverify_fails = atomic_load(&svc->progress.reverify_fails);
+    p.reverify_height = atomic_load(&svc->progress.reverify_height);
     return p;
+}
+
+bool bg_validation_record_reverify(struct bg_validation_service *svc,
+                                   int height, bool verify_ok)
+{
+    if (!svc)
+        LOG_FAIL("bg_validation",
+                 "bg_validation_record_reverify: null svc (h=%d)", height);
+
+    atomic_store(&svc->progress.reverify_height, height);
+    if (verify_ok) {
+        atomic_fetch_add(&svc->progress.reverify_passes, 1);
+        return true;
+    }
+
+    /* A previously-passed height no longer verifies: bit-rot / miscompile /
+     * memory corruption of proven work. Name it — PERMANENT; consensus history
+     * that already verified must never silently regress. */
+    atomic_fetch_add(&svc->progress.reverify_fails, 1);
+    atomic_store(&svc->progress.state, BG_VALIDATION_FAILED);
+
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+             "bg re-verify FAILED at already-verified height %d "
+             "(passes=%lld fails=%lld) — proof/script re-check regressed; "
+             "possible bit-rot / miscompile / memory corruption",
+             height,
+             (long long)atomic_load(&svc->progress.reverify_passes),
+             (long long)atomic_load(&svc->progress.reverify_fails));
+
+    struct blocker_record rec;
+    if (blocker_init(&rec, "bg_validation.reverify_failed", "bg_validation",
+                     BLOCKER_PERMANENT, reason)) {
+        if (blocker_set(&rec) == 0)
+            event_emitf(EV_OPERATOR_NEEDED, 0,
+                        "check=bg_validation.reverify_failed %s", reason);
+    }
+    LOG_WARN("bg_validation", "[bg-valid] %s", reason);
+    return false;
 }
 
 void bg_validation_reset(struct bg_validation_service *svc)
@@ -781,6 +700,10 @@ void bg_validation_reset(struct bg_validation_service *svc)
     atomic_store(&svc->progress.proofs_verified, 0);
     atomic_store(&svc->progress.script_verif_skipped_no_undo, 0);
     atomic_store(&svc->progress.blocks_per_sec, 0);
+    atomic_store(&svc->progress.reverify_active, false);
+    atomic_store(&svc->progress.reverify_passes, 0);
+    atomic_store(&svc->progress.reverify_fails, 0);
+    atomic_store(&svc->progress.reverify_height, 0);
     atomic_store(&svc->progress.state, BG_VALIDATION_IDLE);
     printf("[bg-valid] Progress reset — will re-verify from block 0\n");
     bg_validation_start(svc);

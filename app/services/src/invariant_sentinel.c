@@ -16,6 +16,7 @@
 #include "services/invariant_sentinel.h"
 
 #include "invariant_sentinel_internal.h"
+#include "services/authority_projection_audit.h"
 #include "config/runtime.h"
 #include "event/event.h"
 #include "jobs/reducer_frontier.h"
@@ -670,6 +671,11 @@ static void audit_tick(struct liveness_contract *c)
 void invariant_sentinel_register(void)
 {
     supervisor_domains_init();
+    /* Sibling fail-loud check in the same validation-pack family: the redundant
+     * authority(coins)-vs-projection(utxos) SHA3 cross-check (its own hourly
+     * chain-domain child; raises the validation_pack-owned blocker
+     * authority_projection_divergence). */
+    ap_audit_register();
     if (atomic_load(&g_sweep_id) == SUPERVISOR_INVALID_ID) {
         liveness_contract_init(&g_sweep_contract, "chain.invariant_sweep");
         atomic_store(&g_sweep_contract.period_secs, SWEEP_PERIOD_SECS);

@@ -705,6 +705,7 @@ int test_block_index_sidecar_port(void);
 int test_wallet_view_port(void);
 int test_bg_hash_verify_store_port(void);
 int test_bg_validation_store_port(void);
+int test_bg_validation_reverify(void);
 int test_zslp_store_port(void);
 int test_atomic_commit_ordering(void);
 int test_shielded_spend_slice(void);

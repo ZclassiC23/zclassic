@@ -64,6 +64,7 @@
 #include "jobs/refold_progress.h"
 #include "services/chain_tip_watchdog.h"
 #include "services/sticky_escalator.h"
+#include "services/authority_projection_audit.h"
 #include "services/invariant_sentinel.h"
 #include "framework/condition.h"
 #include "conditions/reducer_drive_watchdog.h"
@@ -498,6 +499,10 @@ static const struct diagnostics_dump_entry g_dumpers[] = {
                      "linkage + coinbase-label checks, authority-pair "
                      "self-check, window sweep, commitment audit, seed "
                      "gate, mirror divergence locator" },
+    { "authority_projection", ap_audit_dump_state_json,
+                     "redundant authority(coins)-vs-projection(utxos) SHA3 "
+                     "cross-check: runs/checks/passes/divergences, skip "
+                     "reasons, streak, last roots+counts+height, blocker latch" },
     { "soak",           soak_dump_state_json,
                      "soak attestation log: lines_written, last_ts, "
                      "last_healthy, rotations, write_failures, file_bytes" },
