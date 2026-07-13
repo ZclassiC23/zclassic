@@ -420,6 +420,25 @@ void boot_mint_anchor_reset(struct node_db *ndb, bool fast);
  * reach the anchor — bodies missing). Owner-gated; reads on-disk bodies +
  * coins_kv only. `datadir` is the active data directory. */
 bool boot_mint_anchor_run(const char *datadir);
+
+/* Lane A1 — after a -mint-anchor fold reaches the anchor and the producer
+ * source receipt is finalized, emit the contained full-history
+ * zcl.consensus_state_bundle.v1 into
+ * <datadir>/consensus-state-bundle-<anchor>.sqlite
+ * (config/consensus_state_snapshot_export.h — the exporter's only viable
+ * caller, since its proof binds the running binary to the fold). Quiesces the
+ * in-RAM fold overlay first (flush the tail to durable coins_kv + release the
+ * map; the exporter refuses while coins_ram_active()). Idempotent: an
+ * already-present bundle from a prior run of the SAME binary is treated as
+ * done. On a real failure it pages EV_OPERATOR_NEEDED, registers the PERMANENT
+ * blocker mint_bundle.export_failed, and returns false (so the one-shot exits
+ * non-zero) WITHOUT touching the verified anchor snapshot or the receipt.
+ * Public so the consensus_state_snapshot_export test can prove the wiring
+ * fires. */
+bool boot_mint_anchor_export_bundle(struct sqlite3 *pdb, const char *datadir,
+                                    int32_t anchor,
+                                    const uint8_t block_hash[32]);
+
 /* Read-only producer-marker/lane refusal before node.db, wallet, or progress.kv
  * is opened for writing. */
 bool boot_mint_anchor_normal_boot_preflight(const char *datadir);
