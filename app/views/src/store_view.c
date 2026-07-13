@@ -49,12 +49,11 @@ void store_pow_challenge(int64_t product_id, char peer_id_hex[65]);
  * wire contract is just the two POST fields `pow_ts` (echo the value
  * this page embeds) and `pow_nonce` (any value making the hash check in
  * store_pow_verify_and_claim() pass). */
-/* Split into two literals: a single 4750-char literal trips
- * -Woverlength-strings (-Werror; ISO C99's 4095-char minimum translation
- * limit) even though this compiler would accept more. Concatenated at
- * point of use via two adjacent %s substitutions — semantically one
- * script, just split below a function boundary (end of sha3_256()) to
- * keep each half readable. */
+/* Two literals because one 4750-char literal trips -Woverlength-strings
+ * (-Werror; ISO C99's 4095-char minimum translation limit) even though
+ * this compiler would accept more. Concatenated at point of use via two
+ * adjacent %s substitutions — semantically one script; the boundary sits
+ * at the end of sha3_256() to keep each half readable. */
 static const char STORE_ORDER_POW_JS_1[] =
     "(function(){\n"
     "'use strict';\n"
