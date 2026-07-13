@@ -37,6 +37,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 #define FIXTURE_SRC_REL "lib/test/fixtures/raw_sqlite_step_fixture.c"
@@ -725,6 +726,49 @@ static int write_file(const char *path, const char *contents)
     return ok ? 0 : -1;
 }
 
+/* fork() can transiently fail with EAGAIN (or ENOMEM, on some kernels
+ * under similar pressure) when many concurrent gate-script forks race
+ * other heavy work in the same run (e.g. several whole-program LTO links
+ * from a parallel `make -j` or a dev-loop watcher cycle). Every gate-script
+ * runner below (run_check_raw_malloc_script and the run_gate_script*
+ * family) forks once per invocation and treats fork() < 0 as a hard
+ * harness failure (-1), which several self-tests assert is 0 for a clean
+ * baseline run (ASSERT(baseline_rc == 0)); a transient EAGAIN/ENOMEM
+ * therefore rotates through those assertions as a spurious failure that
+ * has nothing to do with the gate itself. Retry a small, bounded number of
+ * times with a short sleep before giving up — a non-transient fork
+ * failure (or exhausted retries) still returns -1 exactly as callers
+ * already expect. */
+#define ZCL_FORK_RETRY_ATTEMPTS 3
+#define ZCL_FORK_RETRY_BACKOFF_NS (20L * 1000L * 1000L) /* 20 ms */
+
+static pid_t fork_with_retry(void)
+{
+    for (int attempt = 1; attempt <= ZCL_FORK_RETRY_ATTEMPTS; attempt++) {
+        pid_t pid = fork();
+        if (pid >= 0)
+            return pid;
+        if (errno != EAGAIN && errno != ENOMEM)
+            return pid;
+        if (attempt < ZCL_FORK_RETRY_ATTEMPTS) {
+            struct timespec backoff = {
+                .tv_sec = 0,
+                .tv_nsec = ZCL_FORK_RETRY_BACKOFF_NS,
+            };
+            (void)nanosleep(&backoff, NULL);
+        }
+    }
+    /* Retries exhausted: make this distinguishable from an ordinary gate
+     * failure (rc != 0) in test output — a bare -1 from run_gate_script()
+     * otherwise looks identical to any other harness-level failure. */
+    fprintf(stderr,
+            "[lint-gate] fork() failed %d/%d times (errno=%d %s) — "
+            "harness failure under memory pressure, not a gate failure\n",
+            ZCL_FORK_RETRY_ATTEMPTS, ZCL_FORK_RETRY_ATTEMPTS, errno,
+            strerror(errno));
+    return -1;
+}
+
 /* Invokes tools/scripts/check_raw_malloc.sh and returns the script's
  * exit status (0 = clean, non-zero = violations). */
 static int run_check_raw_malloc_script(void)
@@ -750,7 +794,7 @@ static int run_check_raw_malloc_script(void)
         restore_chld = 1;
     }
 
-    pid_t pid = fork();
+    pid_t pid = fork_with_retry();
     if (pid < 0) {
         if (restore_chld)
             (void)sigaction(SIGCHLD, &old_chld, NULL);
@@ -809,7 +853,7 @@ static int run_gate_script(const char *script_rel, const char *mode)
         restore_chld = 1;
     }
 
-    pid_t pid = fork();
+    pid_t pid = fork_with_retry();
     if (pid < 0) {
         if (restore_chld)
             (void)sigaction(SIGCHLD, &old_chld, NULL);
@@ -878,7 +922,7 @@ static int run_gate_script_with_worker_files(const char *script_rel,
         restore_chld = 1;
     }
 
-    pid_t pid = fork();
+    pid_t pid = fork_with_retry();
     if (pid < 0) {
         if (restore_chld)
             (void)sigaction(SIGCHLD, &old_chld, NULL);
@@ -943,7 +987,7 @@ static int run_gate_script_with_env(const char *script_rel,
         restore_chld = 1;
     }
 
-    pid_t pid = fork();
+    pid_t pid = fork_with_retry();
     if (pid < 0) {
         if (restore_chld)
             (void)sigaction(SIGCHLD, &old_chld, NULL);
@@ -1008,7 +1052,7 @@ static int run_gate_script_with_env2(const char *script_rel,
         restore_chld = 1;
     }
 
-    pid_t pid = fork();
+    pid_t pid = fork_with_retry();
     if (pid < 0) {
         if (restore_chld)
             (void)sigaction(SIGCHLD, &old_chld, NULL);
