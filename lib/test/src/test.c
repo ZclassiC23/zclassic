@@ -1010,6 +1010,7 @@ int main(int argc, char **argv)
     failures += test_consensus_state_snapshot_export();
     failures += test_consensus_state_producer_receipt();
     failures += test_consensus_state_chain_binding();
+    failures += test_consensus_state_publication_cas();
     { extern int test_snapshot_shielded(void);
       failures += test_snapshot_shielded(); }
     { extern int test_load_verify_boot(void);
