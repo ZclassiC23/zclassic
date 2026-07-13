@@ -49,6 +49,7 @@
 #include "services/utxo_mirror_sync_service.h"
 #include "services/mirror_divergence_locator.h"
 #include "services/nullifier_backfill_service.h"
+#include "services/consensus_state_publication_cas.h"
 #include "jobs/header_admit_stage.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/validate_headers_stage.h"
@@ -499,6 +500,9 @@ static const struct diagnostics_dump_entry g_dumpers[] = {
                      "mirror hash-disagreement bisect locator: last_locate_unix, last_first_div, probes_last_run, divergence_latched, pending record" },
     { "nullifier_backfill", nullifier_backfill_dump_state_json,
                      "owner-gated C-3 nullifier gap backfill: durable activation/resume cursors, derived status, gap_blocker_active" },
+    { "publication_cas", consensus_state_publication_cas_dump_state_json,
+                     "contained consensus-state publication CAS: latest decision (ADMIT/typed refusal), "
+                     "bound artifact/chain/source/epoch digests, bundle H/hash, expected frontier H/hash, decision digest" },
     { "principals", principal_dump_state_json,
                      "multi-user-server identity registry: count + public projection of each principal {address, role, status, key_kind, last_login, has_znam}" },
     { "auth",       auth_challenge_dump_state_json,

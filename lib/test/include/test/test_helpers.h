@@ -685,6 +685,7 @@ int test_consensus_state_snapshot_install(void);
 int test_consensus_state_snapshot_export(void);
 int test_consensus_state_producer_receipt(void);
 int test_consensus_state_chain_binding(void);
+int test_consensus_state_publication_cas(void);
 int test_file_tree_ops(void);
 int test_hodl_history_port(void);
 int test_node_health_store_port(void);
