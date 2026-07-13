@@ -5,6 +5,7 @@
 
 #include "test/test_helpers.h"
 
+#include "config/boot.h"  /* boot_mint_anchor_export_bundle (lane A1 wiring) */
 #include "config/consensus_state_snapshot_export.h"
 #include "config/consensus_state_snapshot_install.h"
 #include "chain/checkpoints.h"
@@ -527,6 +528,38 @@ int test_consensus_state_snapshot_export(void)
               install_result.history_complete && install_result.source_clean &&
               install_result.validation_profile ==
                   CONSENSUS_STATE_VALIDATION_FULL);
+
+    /* ── lane A1: the -mint-anchor finalize wiring. boot_mint_anchor_export_bundle
+     * is exactly what boot_mint_anchor_run calls after the producer receipt is
+     * finalized — prove it emits the datadir bundle, that the bundle passes the
+     * production validator, and that a re-run of the SAME binary is idempotent
+     * (an already-present bundle is treated as done, not re-exported/failed).
+     * The complete source generation + checkpoint/compiled-anchor overrides are
+     * already installed above, so this exercises the real export path. */
+    char wired_bundle[600];
+    snprintf(wired_bundle, sizeof(wired_bundle),
+             "%s/consensus-state-bundle-1.sqlite", dir);
+    (void)unlink(wired_bundle);
+    CSE_CHECK("mint finalize wiring exports the datadir bundle",
+              boot_mint_anchor_export_bundle(db, dir, 1, hash[1]) &&
+              access(wired_bundle, F_OK) == 0);
+    struct consensus_state_snapshot_install_request wired_install = {
+        .bundle_path = wired_bundle,
+        .expected_height = 1,
+        .failpoint = CONSENSUS_INSTALL_FAIL_NONE,
+    };
+    memcpy(wired_install.expected_block_hash, hash[1], 32);
+    struct consensus_state_install_result wired_result;
+    CSE_CHECK("wired bundle passes production validation "
+              "(consensus_state_bundle_validate via install)",
+              !consensus_state_snapshot_install(db, &wired_install,
+                                                &wired_result) &&
+              wired_result.status == CONSENSUS_INSTALL_VERIFIED_CONTAINED &&
+              wired_result.history_complete);
+    CSE_CHECK("mint finalize wiring is idempotent on re-run (present bundle)",
+              boot_mint_anchor_export_bundle(db, dir, 1, hash[1]) &&
+              access(wired_bundle, F_OK) == 0);
+    (void)unlink(wired_bundle);
 
     struct consensus_state_export_result typed_result;
     CSE_CHECK("numeric-prefix TEXT coin fixture writes",

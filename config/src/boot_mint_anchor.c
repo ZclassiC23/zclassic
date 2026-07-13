@@ -45,8 +45,10 @@
 #include "config/boot.h"
 #include "config/mint_anchor_progress.h"
 #include "config/consensus_state_producer_receipt.h"
+#include "config/consensus_state_snapshot_export.h"  /* consensus_state_snapshot_export */
 
 #include <errno.h>
+#include <fcntl.h>           /* open, O_DIRECTORY */
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -331,6 +333,141 @@ void boot_mint_anchor_progress_log_tick_for_test(const char *path,
     mint_progress_log_tick(path, through, anchor, start_us, force);
 }
 
+/* Lane A1 — emit the contained full-history zcl.consensus_state_bundle.v1 into
+ * the mint datadir once the producer source receipt has been finalized. This is
+ * the exporter's (config/consensus_state_snapshot_export.h) ONLY viable caller:
+ * its receipt-binding proof requires the exporting process to be the EXACT
+ * binary that folded (running_binary_digest == SHA3(/proc/self/exe)), so an
+ * offline verb from a different binary is provably impossible — the export must
+ * happen here, in-process, right after finalize.
+ *
+ * The exporter demands a durable, overlay-free, fully-proven source generation,
+ * so this first QUIESCES the in-RAM fold overlay: coins_ram_flush_final drains
+ * the un-flushed tail into durable coins_kv (co-advancing coins_applied_height
+ * to anchor+1) and coins_ram_shutdown frees the map so coins_ram_active() is
+ * false (the exporter refuses while the overlay is live). It then exports to
+ * <datadir>/consensus-state-bundle-<anchor>.sqlite.
+ *
+ * Idempotent across re-runs of the SAME binary: an already-present bundle at
+ * that name is a completed export (the exporter only ever links a fully
+ * validated immutable inode and publishes NOTHING on any failure), so it is
+ * treated as done. A failed export never touches the verified anchor snapshot
+ * or the receipt; it pages EV_OPERATOR_NEEDED, registers the typed PERMANENT
+ * blocker mint_bundle.export_failed, and returns false so the one-shot exits
+ * non-zero (the systemd unit shows the miss). Returns true on a fresh export or
+ * an already-present bundle. Public (config/boot.h) so the
+ * consensus_state_snapshot_export test group can prove the wiring fires. */
+bool boot_mint_anchor_export_bundle(sqlite3 *pdb, const char *datadir,
+                                    int32_t anchor,
+                                    const uint8_t block_hash[32])
+{
+    const char *dir = (datadir && datadir[0]) ? datadir : ".";
+    char name[128];
+    int nn = snprintf(name, sizeof(name),
+                      "consensus-state-bundle-%d.sqlite", anchor);
+    if (nn <= 0 || (size_t)nn >= sizeof(name)) {
+        event_emitf(EV_OPERATOR_NEEDED, 0,
+                    "condition=mint_bundle_export_failed reason=name_overflow "
+                    "anchor=%d", anchor);
+        LOG_FAIL("mint_anchor",
+                 "[mint-anchor] consensus-state bundle name overflow anchor=%d",
+                 anchor);
+    }
+
+    int dir_fd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dir_fd < 0) {
+        event_emitf(EV_OPERATOR_NEEDED, 0,
+                    "condition=mint_bundle_export_failed reason=datadir_open "
+                    "anchor=%d errno=%d", anchor, errno);
+        LOG_FAIL("mint_anchor",
+                 "[mint-anchor] consensus-state bundle: cannot open datadir %s "
+                 "for export (errno=%d)", dir, errno);
+    }
+
+    /* Already exported by a prior run? A present name is always a completed,
+     * fully validated immutable bundle — nothing to redo (a failed export
+     * leaves no file). Retry-on-rerun therefore comes for free: missing ->
+     * export; present -> success no-op; prior failure -> absent, so retried. */
+    struct stat existing;
+    if (fstatat(dir_fd, name, &existing, AT_SYMLINK_NOFOLLOW) == 0) {
+        (void)close(dir_fd);
+        fprintf(stderr,
+                "[mint-anchor] consensus-state bundle already present (prior "
+                "run): %s/%s — nothing to export\n", dir, name);
+        return true;
+    }
+
+    /* Quiesce the in-RAM fold overlay so the durable coins set IS the effective
+     * set the exporter proves (it refuses while coins_ram_active()). */
+    if (coins_ram_active()) {
+        if (!coins_ram_flush_final()) {
+            (void)close(dir_fd);
+            event_emitf(EV_OPERATOR_NEEDED, 0,
+                        "condition=mint_bundle_export_failed "
+                        "reason=coins_ram_flush anchor=%d", anchor);
+            struct blocker_record frec;
+            if (blocker_init(&frec, "mint_bundle.export_failed", "mint_anchor",
+                             BLOCKER_PERMANENT,
+                             "consensus-state bundle export aborted: coins RAM "
+                             "overlay flush failed before export"))
+                (void)blocker_set(&frec);
+            LOG_FAIL("mint_anchor",
+                     "[mint-anchor] consensus-state bundle export aborted: "
+                     "coins RAM overlay flush to durable coins_kv failed");
+        }
+        coins_ram_shutdown();
+        fprintf(stderr,
+                "[mint-anchor] coins RAM overlay flushed to durable coins_kv "
+                "and released for the consensus-state bundle export\n");
+    }
+
+    struct consensus_state_snapshot_export_request request = {
+        .output_dir_fd = dir_fd,
+        .output_name = name,
+        .expected_height = anchor,
+    };
+    memcpy(request.expected_block_hash, block_hash, 32);
+    struct consensus_state_export_result res;
+    bool exported = consensus_state_snapshot_export(pdb, &request, &res);
+    (void)close(dir_fd);
+
+    if (!exported || res.status != CONSENSUS_EXPORT_EXPORTED) {
+        event_emitf(EV_OPERATOR_NEEDED, 0,
+                    "condition=mint_bundle_export_failed anchor=%d status=%d "
+                    "reason=%s", anchor, (int)res.status,
+                    res.reason[0] ? res.reason : "unknown");
+        char breason[BLOCKER_REASON_MAX];
+        snprintf(breason, sizeof(breason),
+                 "consensus-state bundle export refused anchor=%d status=%d: %s "
+                 "(verified anchor snapshot + receipt intact)",
+                 anchor, (int)res.status,
+                 res.reason[0] ? res.reason : "unknown");
+        struct blocker_record frec;
+        if (blocker_init(&frec, "mint_bundle.export_failed", "mint_anchor",
+                         BLOCKER_PERMANENT, breason))
+            (void)blocker_set(&frec);
+        LOG_FAIL("mint_anchor",
+                 "[mint-anchor] consensus-state bundle export FAILED (anchor=%d "
+                 "status=%d): %s — the verified anchor snapshot and producer "
+                 "receipt are unaffected", anchor, (int)res.status,
+                 res.reason[0] ? res.reason : "unknown");
+    }
+
+    char digest_hex[65];
+    for (int i = 0; i < 32; i++)
+        snprintf(digest_hex + 2 * i, 3, "%02x", res.artifact_digest[i]);
+    fprintf(stderr,
+            "[mint-anchor] SUCCESS: exported %s at h=%d -> %s/%s (digest=%s "
+            "coins=%llu anchors=%llu nullifiers=%llu profile=%s)\n",
+            CONSENSUS_STATE_BUNDLE_SCHEMA, res.height, dir, name, digest_hex,
+            (unsigned long long)res.utxo_count,
+            (unsigned long long)res.anchor_count,
+            (unsigned long long)res.nullifier_count,
+            res.validation_profile == CONSENSUS_STATE_VALIDATION_FULL
+                ? "full" : "checkpoint_fold");
+    return true;
+}
+
 bool boot_mint_anchor_run(const char *datadir)
 {
     const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
@@ -600,6 +737,7 @@ bool boot_mint_anchor_run(const char *datadir)
      * producer THIS binary ran itself. Best-effort: a missing start session
      * (unstamped build) or an incomplete header corpus leaves no receipt, and
      * the exporter then correctly refuses (fail closed). */
+    bool receipt_finalized = false;
     {
         char rc_err[256] = {0};
         if (!consensus_state_producer_receipt_finalize(pdb, anchor,
@@ -608,11 +746,36 @@ bool boot_mint_anchor_run(const char *datadir)
             LOG_WARN("mint_anchor",
                      "[mint-anchor] source receipt finalize skipped (artifact "
                      "verified; not exporter-admissible): %s", rc_err);
-        else
+        else {
+            receipt_finalized = true;
             fprintf(stderr,
                     "[mint-anchor] durable source receipt finalized at h=%d "
                     "(fold_cursor=%d) — exporter can now admit this producer\n",
                     anchor, anchor + 1);
+        }
     }
-    return true;
+
+    /* Producer-END part 2 (lane A1): emit the contained full-history
+     * zcl.consensus_state_bundle.v1 into the datadir. The exporter's ONLY
+     * viable caller is this in-process point (its proof binds the running
+     * binary to the fold), so it runs here right after the receipt is
+     * finalized. Only a FULL-validation mint yields a serving bundle; a
+     * -mint-anchor-fast (checkpoint_fold) generation is non-serving by
+     * construction and the exporter would correctly refuse it, so skip the
+     * attempt for that profile rather than fail the one-shot. A skipped
+     * finalize (unstamped build) has no receipt to export against. A real
+     * export failure returns false so main.c's `minted ? 0 : 1` surfaces it to
+     * systemd — the verified anchor snapshot + receipt stay intact regardless. */
+    bool bundle_ok = true;
+    if (receipt_finalized) {
+        if (!mint_skip_crypto_get())
+            bundle_ok = boot_mint_anchor_export_bundle(pdb, datadir, anchor,
+                                                       cp->block_hash);
+        else
+            fprintf(stderr,
+                    "[mint-anchor] consensus-state bundle export skipped: "
+                    "checkpoint-fold state is non-serving and not canonically "
+                    "publishable (verified anchor snapshot produced)\n");
+    }
+    return bundle_ok;
 }
