@@ -1282,6 +1282,7 @@ int main(int argc, char **argv)
     failures += test_reducer_ingest_e2e();
     failures += test_reducer_step_drain_harness();
     failures += test_reducer_ondemand_genesis_seed();
+    failures += test_mint_fold_livelock();
     failures += test_connect_block_self_write();
     failures += test_simnet_doublespend();
     failures += test_simnet_chained_tx();
@@ -1450,6 +1451,7 @@ int main(int argc, char **argv)
     failures += test_reducer_ingest_e2e();
     failures += test_reducer_step_drain_harness();
     failures += test_reducer_ondemand_genesis_seed();
+    failures += test_mint_fold_livelock();
     failures += test_stage_reducer_unwedge();
     failures += test_stage_repair_coin_backfill();
     { extern int test_stage_anchor_frontier_cap(void);

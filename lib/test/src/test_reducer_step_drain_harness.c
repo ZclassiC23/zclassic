@@ -589,3 +589,321 @@ int test_reducer_ondemand_genesis_seed(void)
     printf("=== reducer on-demand genesis-seed: %d failures ===\n", failures);
     return failures;
 }
+
+/* ── Regression guard: MINT-FOLD LIVELOCK (2026-07-13) ────────────────────────
+ * A single reducer_kick_unbudgeted call used to drain up to hard_cap(64) *
+ * ZCL_REFOLD_DRAIN_BATCH(2000) = 128k blocks back-to-back with NO wall-clock
+ * budget and NO frontier-progress check. When the utxo_apply frontier was
+ * WALLED at a low height (a bodiless/failed block) while header_admit /
+ * validate_headers kept advancing toward the mint ceiling, every round still
+ * reported adv>0, so the kick ran for HOURS inside one call. The
+ * boot_mint_anchor drive loop only logs progress and runs its 64-kick stall
+ * detector BETWEEN kicks — so the process spun silently: no mint-progress.log
+ * line, stall guard never ran, the tenacity doctrine's forbidden quiet stop
+ * (live-reproduced 2026-07-13: main pinned in jbd2_log_wait_commit, progress
+ * log frozen at height=-1 while stage cursors climbed).
+ *
+ * Scenario A (walled frontier): a synthetic header-only chain (no bodies) with
+ * the mint ceiling armed and a small drain batch. One kick must RETURN having
+ * NOT ground the whole upstream backlog (the frontier-stall convergence), so
+ * the drive loop regains control. Then the drive loop's fail-closed reporter
+ * must register the typed PERMANENT blocker `mint_fold.frontier_walled`
+ * naming the walled stage (body_fetch here) with all eight cursors.
+ *
+ * Scenario B (healthy fold, no false-fire): one real mined regtest block
+ * driven through the SAME reducer_kick_unbudgeted must still fold to the
+ * ceiling (frontier advances; the new break must not truncate a healthy
+ * fold), and a follow-up kick converges to 0. */
+
+#include "config/boot.h"                /* boot_mint_anchor_report_frontier_walled */
+#include "jobs/mint_fold_ceiling.h"     /* mint_fold_ceiling_set / _get */
+#include "core/utiltime.h"              /* GetTimeMicros */
+#include <stdlib.h>                     /* setenv / unsetenv */
+
+static bool ml_stub_pass_validator(const struct block_index *bi,
+                                   const char *datadir,
+                                   char *out_reason, size_t out_reason_size,
+                                   void *user)
+{
+    (void)bi; (void)datadir; (void)user;
+    if (out_reason && out_reason_size) out_reason[0] = 0;
+    return true;
+}
+
+#define ML_CHECK(name, expr) do {                              \
+    printf("mint_fold_livelock: %s... ", (name));              \
+    if ((expr)) printf("OK\n");                                \
+    else { printf("FAIL\n"); failures++; }                     \
+} while (0)
+
+int test_mint_fold_livelock(void);
+int test_mint_fold_livelock(void)
+{
+    int failures = 0;
+
+    blocker_module_init();
+    blocker_clear("mint_fold.frontier_walled");
+    chain_params_select(CHAIN_REGTEST);
+    const struct chain_params *cp = chain_params_get();
+
+    /* ── Scenario A: walled frontier — the kick must return, not grind ──── */
+    {
+        enum { N = 64, BATCH = 4 };
+        char dir[256];
+        sd_mkdir_p("./test-tmp");
+        test_fmt_tmpdir(dir, sizeof(dir), "mint_fold_livelock", "walled");
+        sd_mkdir_p(dir);
+        SetDataDir(dir);
+        char netdir[512];
+        GetDataDir(true, netdir, sizeof(netdir));
+        sd_mkdir_p(netdir);
+
+        progress_store_close();
+        ML_CHECK("walled: progress store opens", progress_store_open(dir));
+
+        struct main_state ms;
+        main_state_init(&ms);
+
+        /* Synthetic HEADER-ONLY chain: heights 0..N-1, hash-chained via pprev,
+         * NO BLOCK_HAVE_DATA anywhere — body_fetch is walled at h=0 while
+         * header_admit / validate_headers (stubbed validator: this guards the
+         * DRAIN loop, not PoW) can march the whole backlog. */
+        static struct block_index ml_blocks[N];
+        static struct uint256     ml_hashes[N];
+        for (int i = 0; i < N; i++) {
+            block_index_init(&ml_blocks[i]);
+            memset(&ml_hashes[i], 0, sizeof(ml_hashes[i]));
+            ml_hashes[i].data[0] = (uint8_t)(i & 0xFF);
+            ml_hashes[i].data[1] = (uint8_t)((i >> 8) & 0xFF);
+            ml_hashes[i].data[2] = 0xA7;  /* tag distinct from other fixtures */
+            ml_blocks[i].phashBlock = &ml_hashes[i];
+            ml_blocks[i].hashBlock  = ml_hashes[i];
+            ml_blocks[i].nHeight = i;
+            ml_blocks[i].nVersion = 4;
+            ml_blocks[i].nBits = 0x1f07ffff;
+            if (i > 0) ml_blocks[i].pprev = &ml_blocks[i - 1];
+        }
+        active_chain_move_window_tip(&ms.chain_active, &ml_blocks[N - 1]);
+
+        bool stages_ok =
+            header_admit_stage_init(&ms) &&
+            validate_headers_stage_init(&ms) &&
+            body_fetch_stage_init(&ms) &&
+            body_persist_stage_init(&ms) &&
+            script_validate_stage_init(&ms) &&
+            proof_validate_stage_init(&ms) &&
+            utxo_apply_stage_init(&ms) &&
+            tip_finalize_stage_init(&ms);
+        ML_CHECK("walled: all eight stages init", stages_ok);
+        validate_headers_stage_set_validator(ml_stub_pass_validator, NULL);
+
+        /* Arm the mint context: ceiling at the synthetic tip (activates the
+         * refold cadence) + a SMALL drain batch so one round cannot cover the
+         * whole backlog (the regression signal below needs rounds << N). */
+        setenv("ZCL_REFOLD_DRAIN_BATCH", "4", 1);
+        mint_fold_ceiling_set(N - 1);
+
+        struct chain_activation_controller ctl;
+        activation_controller_init(&ctl, &ms, NULL, cp, netdir);
+
+        uint64_t ua_before = utxo_apply_stage_cursor();
+        int64_t t0 = GetTimeMicros();
+        int advanced = reducer_kick_unbudgeted(&ctl);
+        int64_t elapsed_us = GetTimeMicros() - t0;
+        uint64_t ua_after = utxo_apply_stage_cursor();
+        uint64_t ha_after = header_admit_stage_cursor();
+
+        ML_CHECK("walled: kick advanced upstream work (adv>0)", advanced > 0);
+        ML_CHECK("walled: frontier did NOT move (utxo_apply walled)",
+                 ua_after == ua_before);
+        /* THE regression signal: with the frontier walled, the kick must
+         * return at the first frontier-stalled round — one round admits at
+         * most BATCH headers (+1 slack), nowhere near the N-header backlog.
+         * Before the fix the kick ground the ENTIRE backlog (ha_after == N,
+         * or hard_cap*batch rounds — hours at live scale) inside ONE call. */
+        ML_CHECK("walled: kick returned after ONE round, backlog NOT ground",
+                 ha_after <= (uint64_t)(2 * BATCH) && ha_after < (uint64_t)N);
+        ML_CHECK("walled: kick returned promptly (<60s wall clock)",
+                 elapsed_us < 60ll * 1000 * 1000);
+        if (ha_after > (uint64_t)(2 * BATCH))
+            printf("  >> walled: ha_after=%llu adv=%d elapsed=%lldus\n",
+                   (unsigned long long)ha_after, advanced,
+                   (long long)elapsed_us);
+
+        /* Fail-closed diagnosis: the drive loop's reporter must register the
+         * typed PERMANENT blocker naming the walled stage with all cursors. */
+        boot_mint_anchor_report_frontier_walled(progress_store_db(),
+                                                (int32_t)ua_after - 1,
+                                                N - 1, 64);
+        ML_CHECK("walled: blocker mint_fold.frontier_walled registered",
+                 blocker_exists("mint_fold.frontier_walled"));
+        ML_CHECK("walled: blocker class is PERMANENT",
+                 blocker_class_for("mint_fold.frontier_walled") ==
+                     (int)BLOCKER_PERMANENT);
+        {
+            struct blocker_snapshot snaps[BLOCKER_CAP];
+            int n = blocker_snapshot_all(snaps, BLOCKER_CAP);
+            bool found = false, wall_named = false, cursors_carried = false;
+            for (int i = 0; i < n; i++) {
+                if (strcmp(snaps[i].id, "mint_fold.frontier_walled") != 0)
+                    continue;
+                found = true;
+                wall_named = strstr(snaps[i].reason, "wall=body_fetch") != NULL;
+                cursors_carried =
+                    strstr(snaps[i].reason, "ha=") != NULL &&
+                    strstr(snaps[i].reason, "ua=") != NULL &&
+                    strstr(snaps[i].reason, "tf=") != NULL;
+                if (!wall_named || !cursors_carried)
+                    printf("  >> walled: blocker reason: %s\n",
+                           snaps[i].reason);
+            }
+            ML_CHECK("walled: blocker names the walled stage (body_fetch)",
+                     found && wall_named);
+            ML_CHECK("walled: blocker reason carries the stage cursors",
+                     found && cursors_carried);
+        }
+
+        /* teardown scenario A */
+        mint_fold_ceiling_set(MINT_FOLD_NO_CEILING);
+        unsetenv("ZCL_REFOLD_DRAIN_BATCH");
+        blocker_clear("mint_fold.frontier_walled");
+        validate_headers_stage_set_validator(NULL, NULL);
+        activation_controller_destroy(&ctl);
+        tip_finalize_stage_shutdown();
+        utxo_apply_stage_shutdown();
+        proof_validate_stage_shutdown();
+        script_validate_stage_shutdown();
+        body_persist_stage_shutdown();
+        body_fetch_stage_shutdown();
+        validate_headers_stage_shutdown();
+        header_admit_stage_shutdown();
+        progress_store_close();
+        test_cleanup_tmpdir(netdir);
+        test_cleanup_tmpdir(dir);
+        SetDataDir(""); ClearDataDirCache();
+    }
+
+    /* ── Scenario B: healthy one-block fold — no false-fire ─────────────── */
+    {
+        char dir[256];
+        test_fmt_tmpdir(dir, sizeof(dir), "mint_fold_livelock", "healthy");
+        sd_mkdir_p(dir);
+        SetDataDir(dir);
+        char netdir[512];
+        GetDataDir(true, netdir, sizeof(netdir));
+        sd_mkdir_p(netdir);
+        char blocksdir[640];
+        snprintf(blocksdir, sizeof(blocksdir), "%s/blocks", netdir);
+        sd_mkdir_p(blocksdir);
+
+        progress_store_close();
+        ML_CHECK("healthy: progress store opens", progress_store_open(dir));
+
+        struct main_state ms;
+        main_state_init(&ms);
+
+        struct uint256 genesis_hash = cp->consensus.hashGenesisBlock;
+        struct block_index *genesis = chainstate_insert_block_index(
+            (struct chainstate *)&ms, &genesis_hash);
+        ML_CHECK("healthy: genesis inserted", genesis != NULL);
+        if (genesis) {
+            genesis->nHeight = 0;
+            genesis->nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_SCRIPTS;
+            genesis->nTx = 1;
+            genesis->nChainTx = 1;
+            genesis->nChainWork = GetBlockProof(genesis);
+            active_chain_move_window_tip(&ms.chain_active, genesis);
+            ms.pindex_best_header = genesis;
+        }
+
+        bool stages_ok =
+            header_admit_stage_init(&ms) &&
+            validate_headers_stage_init(&ms) &&
+            body_fetch_stage_init(&ms) &&
+            body_persist_stage_init(&ms) &&
+            script_validate_stage_init(&ms) &&
+            proof_validate_stage_init(&ms) &&
+            utxo_apply_stage_init(&ms) &&
+            tip_finalize_stage_init(&ms);
+        ML_CHECK("healthy: all eight stages init", stages_ok);
+        ML_CHECK("healthy: genesis utxo row seeded",
+                 sd_seed_genesis_utxo_apply_row(progress_store_db()));
+        ML_CHECK("healthy: genesis anchor seeded",
+                 tip_finalize_stage_seed_anchor(0, genesis_hash.data, false));
+
+        struct block blk1;
+        int64_t cb_val = 0;
+        bool built = stages_ok &&
+                     sd_build_regtest_block(&blk1, 1, &genesis_hash, cp,
+                                            &cb_val) &&
+                     mine_block_pow(&blk1, 1, cp, 0);
+        ML_CHECK("healthy: block 1 built + mined", built);
+
+        if (built) {
+            struct uint256 h1;
+            block_get_hash(&blk1, &h1);
+            struct header_admit_msg m;
+            memset(&m, 0, sizeof(m));
+            m.hash = h1;
+            m.has_header = true;
+            m.header = blk1.header;
+            m.height = -1;
+            ML_CHECK("healthy: header pushed", mailbox_header_admit_push(&m));
+
+            /* Header-first prefix (identical to the mint boot's admit), then
+             * persist the body exactly like the harness above. */
+            (void)header_admit_stage_drain(100);
+            struct block_index *bi1 = block_map_find(&ms.map_block_index, &h1);
+            ML_CHECK("healthy: block 1 admitted", bi1 != NULL);
+            bool persisted = false;
+            if (bi1) {
+                struct disk_block_pos pos;
+                disk_block_pos_init(&pos);
+                persisted = write_block_to_disk(&blk1, &pos, netdir,
+                                                cp->pchMessageStart) &&
+                            block_index_set_have_data_verified(bi1, &pos,
+                                                               netdir);
+            }
+            ML_CHECK("healthy: body persisted", persisted);
+
+            /* The mint context (ceiling at h=1) + the REAL unbudgeted kick.
+             * The frontier-stall break must NOT truncate this healthy fold:
+             * the kick folds block 1 through utxo_apply within the call. */
+            mint_fold_ceiling_set(1);
+            struct chain_activation_controller ctl;
+            activation_controller_init(&ctl, &ms, NULL, cp, netdir);
+
+            int advanced = reducer_kick_unbudgeted(&ctl);
+            ML_CHECK("healthy: kick advanced (adv>0)", advanced > 0);
+            ML_CHECK("healthy: utxo_apply folded block 1 (frontier moved)",
+                     utxo_apply_stage_succeeded_at(1) &&
+                     utxo_apply_stage_cursor() == 2);
+
+            int again = reducer_kick_unbudgeted(&ctl);
+            ML_CHECK("healthy: converged at the ceiling (second kick = 0)",
+                     again == 0);
+
+            mint_fold_ceiling_set(MINT_FOLD_NO_CEILING);
+            activation_controller_destroy(&ctl);
+            block_free(&blk1);
+        }
+
+        tip_finalize_stage_shutdown();
+        utxo_apply_stage_shutdown();
+        proof_validate_stage_shutdown();
+        script_validate_stage_shutdown();
+        body_persist_stage_shutdown();
+        body_fetch_stage_shutdown();
+        validate_headers_stage_shutdown();
+        header_admit_stage_shutdown();
+        progress_store_close();
+        test_cleanup_tmpdir(blocksdir);
+        test_cleanup_tmpdir(netdir);
+        test_cleanup_tmpdir(dir);
+        SetDataDir(""); ClearDataDirCache();
+    }
+
+    chain_params_select(CHAIN_MAIN);
+    printf("=== mint-fold livelock guard: %d failures ===\n", failures);
+    return failures;
+}

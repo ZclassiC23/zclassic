@@ -67,9 +67,12 @@
 #include "storage/consensus_state_bundle_codec.h" /* CONSENSUS_STATE_VALIDATION_* */
 #include "storage/progress_store.h"             /* progress_store_db */
 #include "jobs/mint_skip_crypto.h"              /* mint_skip_crypto_get */
+#include "jobs/utxo_apply_stage.h"              /* utxo_apply_stage_cursor */
+#include "jobs/stage_helpers.h"                 /* stage_cursor_persisted */
 #include "services/chain_activation_service.h"  /* reducer_kick,
                                                  * boot_activation_controller */
 #include "event/event.h"                        /* event_emitf */
+#include "util/blocker.h"                       /* blocker_init, blocker_set */
 #include "util/log_macros.h"
 #include "core/utiltime.h"                       /* GetTimeMicros */
 
@@ -108,6 +111,85 @@ static int32_t mint_applied_through(sqlite3 *pdb)
     if (!coins_kv_get_applied_height(pdb, &frontier, &found) || !found)
         return -1;
     return frontier - 1;
+}
+
+/* The IMMEDIATE fold frontier: the utxo_apply STAGE cursor (next height to
+ * apply; batch-committed by the drain). This is the drive loop's progress
+ * metric. mint_applied_through above reads the durable coins_applied_height
+ * key, which under -fold-inram is written only at coins_ram FLUSH boundaries
+ * (every ZCL_FOLD_INRAM_FLUSH_EVERY blocks, coins_ram.c) — it reads -1 for the
+ * whole first flush window and then lags by up to a window, so a drive loop
+ * gated on it can neither see progress (a false "stall") nor see the anchor
+ * being reached (a false "incomplete" after a COMPLETE fold whose tail is
+ * still overlay-resident). Returns -1 when nothing has been applied. */
+static int32_t mint_frontier_through(void)
+{
+    uint64_t cursor = utxo_apply_stage_cursor();
+    if (cursor == 0)
+        return -1;
+    if (cursor > (uint64_t)INT32_MAX)
+        return INT32_MAX;
+    return (int32_t)cursor - 1;
+}
+
+/* Fail-closed stall diagnosis: the fold frontier stopped below the anchor.
+ * Read the eight durable stage cursors, name the WALLED stage (the earliest
+ * pipeline stage sitting at the minimum cursor — upstream of the wall runs
+ * ahead, downstream can never pass it), register a typed PERMANENT blocker
+ * carrying all eight cursors, and page the operator via EV_OPERATOR_NEEDED.
+ * The bodies-gap wording is used ONLY when the wall is body_fetch (headers
+ * validated but no on-disk body to fetch at the frontier) — every other wall
+ * names its stage instead of blaming the body import. Public (config/boot.h)
+ * so the mint-fold livelock regression test can assert the blocker payload. */
+void boot_mint_anchor_report_frontier_walled(sqlite3 *pdb, int32_t frontier,
+                                             int32_t anchor, int stall_kicks)
+{
+    /* Pipeline order; tip_finalize is read for the report but excluded from
+     * wall selection (it intentionally trails the fold during a mint). */
+    static const char *const stages[8] = {
+        "header_admit", "validate_headers", "body_fetch", "body_persist",
+        "script_validate", "proof_validate", "utxo_apply", "tip_finalize" };
+    uint64_t cur[8] = {0};
+    for (int i = 0; i < 8; i++)
+        cur[i] = stage_cursor_persisted(pdb, stages[i], "mint_anchor");
+
+    int wall = 0;
+    for (int i = 1; i < 7; i++)          /* exclude tip_finalize (index 7) */
+        if (cur[i] < cur[wall])
+            wall = i;
+    bool bodies_gap = (wall == 2);       /* body_fetch */
+
+    char reason[BLOCKER_REASON_MAX];
+    snprintf(reason, sizeof(reason),
+             "mint fold frontier walled at h=%d (anchor=%d) after %d "
+             "no-progress kicks; wall=%s cursors ha=%llu vh=%llu bf=%llu "
+             "bp=%llu sv=%llu pv=%llu ua=%llu tf=%llu",
+             frontier, anchor, stall_kicks, stages[wall],
+             (unsigned long long)cur[0], (unsigned long long)cur[1],
+             (unsigned long long)cur[2], (unsigned long long)cur[3],
+             (unsigned long long)cur[4], (unsigned long long)cur[5],
+             (unsigned long long)cur[6], (unsigned long long)cur[7]);
+
+    struct blocker_record rec;
+    if (blocker_init(&rec, "mint_fold.frontier_walled", "mint_anchor",
+                     BLOCKER_PERMANENT, reason))
+        (void)blocker_set(&rec);
+    event_emitf(EV_OPERATOR_NEEDED, 0,
+                "condition=mint_fold_frontier_walled %s", reason);
+
+    if (bodies_gap)
+        fprintf(stderr,
+                "[mint-anchor] fold stalled at applied-through=%d (target "
+                "anchor=%d): body_fetch is the walled stage — the on-disk "
+                "bodies below the anchor are incomplete; cannot mint. Import "
+                "the full header+body history first. (%s)\n",
+                frontier, anchor, reason);
+    else
+        fprintf(stderr,
+                "[mint-anchor] fold stalled at applied-through=%d (target "
+                "anchor=%d): stage %s is walled — NOT a bodies gap; inspect "
+                "its stage log at the frontier height. (%s)\n",
+                frontier, anchor, stages[wall], reason);
 }
 
 bool boot_mint_anchor_should_log_progress(int32_t applied_through,
@@ -237,9 +319,18 @@ bool boot_mint_anchor_run(const char *datadir)
      * until the utxo_apply frontier reaches the anchor; we also break on a
      * no-progress plateau so a bodies-missing datadir cannot spin forever (the
      * caller then reports the mint as incomplete, not a false anchor). */
-    int32_t last_through = mint_applied_through(pdb);
+    /* Progress metric: the IMMEDIATE utxo_apply stage frontier
+     * (mint_frontier_through), NOT the durable coins_applied_height. Under
+     * -fold-inram the durable key only moves at coins_ram flush boundaries
+     * (every ZCL_FOLD_INRAM_FLUSH_EVERY blocks), so gating on it makes the
+     * stall detector blind for a whole flush window AND leaves the anchor
+     * break unreachable when the fold's tail is overlay-resident. On resume
+     * the stage cursor already reflects the durable resume point. */
+    int32_t last_through = mint_frontier_through();
+    if (last_through < 0)
+        last_through = mint_applied_through(pdb);  /* pre-init fallback */
     int stall_kicks = 0;
-    const int kStallLimit = 64;   /* consecutive no-progress kicks → bodies gap */
+    const int kStallLimit = 64;   /* consecutive no-progress kicks → walled */
     char progress_log[1200];
     mint_progress_log_path(datadir, progress_log, sizeof(progress_log));
     const int64_t drive_start_us = GetTimeMicros();
@@ -251,13 +342,18 @@ bool boot_mint_anchor_run(const char *datadir)
                            drive_start_us, /*force=*/true);
 
     for (;;) {
-        int32_t through = mint_applied_through(pdb);
+        int32_t through = mint_frontier_through();
         if (through >= anchor)
             break;
 
-        (void)reducer_kick_unbudgeted(ctl);   /* tight back-to-back drain to convergence */
+        /* Bounded drain chunk: returns within ZCL_MINT_KICK_BUDGET_MS (or at
+         * the first frontier-stalled round) so THIS loop reliably regains
+         * control to log progress and run the stall detector below — the
+         * budgetless kick was a silent multi-hour spin (the 2026-07-13 mint
+         * livelock: no progress line, stall guard never ran). */
+        (void)reducer_kick_unbudgeted(ctl);
 
-        int32_t now = mint_applied_through(pdb);
+        int32_t now = mint_frontier_through();
         /* Throttled on-disk progress (every ~5s) — readable while the fold
          * runs, regardless of the sparse stderr cadence below. */
         mint_progress_log_tick(progress_log, now, anchor, drive_start_us,
@@ -269,17 +365,18 @@ bool boot_mint_anchor_run(const char *datadir)
                 fprintf(stderr, "[mint-anchor] applied-through=%d / %d\n",
                         now, anchor);
         } else if (++stall_kicks >= kStallLimit) {
-            fprintf(stderr,
-                    "[mint-anchor] fold stalled at applied-through=%d (target "
-                    "anchor=%d) after %d no-progress kicks — the on-disk bodies "
-                    "below the anchor are incomplete; cannot mint. Import the "
-                    "full header+body history first.\n",
-                    now, anchor, kStallLimit);
+            /* Fail CLOSED with a named blocker: register
+             * mint_fold.frontier_walled (all eight stage cursors in the
+             * reason), page EV_OPERATOR_NEEDED, and print a diagnosis that
+             * names the walled stage — "bodies incomplete" only when
+             * body_fetch really is the wall. */
+            boot_mint_anchor_report_frontier_walled(pdb, now, anchor,
+                                                    kStallLimit);
             return false;
         }
     }
 
-    int32_t through = mint_applied_through(pdb);
+    int32_t through = mint_frontier_through();
     int64_t count = coins_kv_count(pdb);
     mint_progress_log_tick(progress_log, through, anchor, drive_start_us,
                            /*force=*/true);
