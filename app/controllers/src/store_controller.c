@@ -327,6 +327,11 @@ void store_csrf_context(char *out, size_t outmax, int64_t product_id)
     snprintf(out, outmax, "store:order:%lld", (long long)product_id);
 }
 
+/* Proof-of-work order gate — store_pow_challenge() / store_pow_verify_and_claim()
+ * are defined in store_controller_pow.c (split out to stay under the
+ * file-size ceiling) and declared in store_controller_internal.h. See
+ * that file for the full design rationale. */
+
 /* Decode `%XX` and `+` escapes in an x-www-form-urlencoded value.
  * Ported from app/controllers/src/wallet_view_helpers.c. Without
  * this, "a%20b" in a form field is stored literally as the four bytes
@@ -440,11 +445,17 @@ size_t store_handle_request(const char *method, const char *path,
         int64_t id = -1;
         char addr[128] = "";
         char csrf[64] = "";
+        char pow_ts[32] = "";
+        char pow_nonce[32] = "";
         if (body && body_len > 0) {
             parse_form_field((const char *)body, body_len,
                              "customer_addr", addr, sizeof(addr));
             parse_form_field((const char *)body, body_len,
                              "csrf_token", csrf, sizeof(csrf));
+            parse_form_field((const char *)body, body_len,
+                             "pow_ts", pow_ts, sizeof(pow_ts));
+            parse_form_field((const char *)body, body_len,
+                             "pow_nonce", pow_nonce, sizeof(pow_nonce));
         }
         if (path_has_prefix(path, "/store/buy/")) {
             if (!parse_positive_path_id(path, &id))
@@ -478,9 +489,57 @@ size_t store_handle_request(const char *method, const char *path,
                 "<p><a href='/store/products'>&larr; Back to store</a></p>";
             result = store_error_response("400 Bad Request",
                 err_body, strlen(err_body), response, response_max);
+        } else if (!store_pow_verify_and_claim(id, pow_ts, pow_nonce)) {
+            /* Refused BEFORE the expensive z-address mint + DB write —
+             * CSRF alone no longer suffices for this path. */
+            const char *err_body = "<h1>Proof of work required</h1>"
+                "<p>This order requires a small proof-of-work puzzle to "
+                "be solved before submission (this prevents automated "
+                "flooding of the order queue). Reload the product page "
+                "and submit again — the page solves the puzzle "
+                "automatically. Programmatic callers: see the pow_ts / "
+                "pow_nonce protocol documented next to "
+                "store_pow_verify_and_claim() in store_controller.c.</p>"
+                "<p><a href='/store/products'>&larr; Back to store</a></p>";
+            result = store_error_response("402 Payment Required",
+                err_body, strlen(err_body), response, response_max);
         } else {
-            result = serve_create_order(db, id, addr, datadir,
-                                          response, response_max);
+            /* Bound the pending pool BEFORE the expensive mint. An
+             * opportunistic prune runs first so a pool that's merely
+             * full of already-expired unpaid orders (waiting on the
+             * ~30s background sweep in store_process_payments) doesn't
+             * wedge a legitimate buyer behind rows that are already
+             * dead — belt-and-suspenders with that background sweep,
+             * not a replacement for it. */
+            int pending_global = db_store_order_count_pending(&ndb);
+            int pending_product =
+                db_store_order_count_pending_for_product(&ndb, id);
+            if (pending_global >= STORE_ORDER_MAX_PENDING_GLOBAL ||
+                pending_product >= STORE_ORDER_MAX_PENDING_PER_PRODUCT) {
+                db_store_order_prune_expired(&ndb,
+                    STORE_ORDER_PENDING_EXPIRE_SECS);
+                pending_global = db_store_order_count_pending(&ndb);
+                pending_product =
+                    db_store_order_count_pending_for_product(&ndb, id);
+            }
+            if (pending_global >= STORE_ORDER_MAX_PENDING_GLOBAL) {
+                const char *err_body = "<h1>Store busy</h1>"
+                    "<p>The order queue is at capacity. Please try "
+                    "again shortly.</p>"
+                    "<p><a href='/store/products'>&larr; Back to store</a></p>";
+                result = store_error_response("503 Service Unavailable",
+                    err_body, strlen(err_body), response, response_max);
+            } else if (pending_product >= STORE_ORDER_MAX_PENDING_PER_PRODUCT) {
+                const char *err_body = "<h1>Product busy</h1>"
+                    "<p>Too many pending orders for this product. "
+                    "Please try again shortly.</p>"
+                    "<p><a href='/store/products'>&larr; Back to store</a></p>";
+                result = store_error_response("503 Service Unavailable",
+                    err_body, strlen(err_body), response, response_max);
+            } else {
+                result = serve_create_order(db, id, addr, datadir,
+                                              response, response_max);
+            }
         }
 
     } else if (route_is_order_show(path)) {
@@ -583,6 +642,21 @@ void store_process_payments(const char *datadir)
             fflush(stdout);
         }
     }
+
+    /* Bounded background sweep: reclaim unpaid orders old enough that
+     * store_process_payments itself has stopped scanning for their
+     * payment (see the (now - 3600) window above). Without this, the
+     * pending-order caps in store_handle_request only refuse NEW rows
+     * once the pool fills — the table itself would still grow forever. */
+    {
+        int pruned = db_store_order_prune_expired(&ndb,
+            STORE_ORDER_PENDING_EXPIRE_SECS);
+        if (pruned > 0) {
+            printf("Store: pruned %d expired unpaid order(s)\n", pruned);
+            fflush(stdout);
+        }
+    }
+
     node_db_close(&ndb);
 }
 

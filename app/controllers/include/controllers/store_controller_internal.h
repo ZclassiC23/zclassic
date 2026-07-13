@@ -22,8 +22,11 @@
 #include "script/standard.h"
 #include "wallet/sapling_keys.h"
 #include "crypto/hmac_sha256.h"
+#include "crypto/sha3.h"
+#include "net/fast_sync.h"
 #include "core/random.h"
 #include "util/template.h"
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -39,5 +42,11 @@ void store_ensure_schema(sqlite3 *db, const char *datadir);
 /* ── CSRF form-token helpers (defined in store_controller.c) ── */
 void store_csrf_token(const char *context, char out[33]);
 void store_csrf_context(char *out, size_t outmax, int64_t product_id);
+
+/* ── PoW order gate (defined in store_controller_pow.c) ── */
+void store_pow_challenge(int64_t product_id, char peer_id_hex[65]);
+bool store_pow_verify_and_claim(int64_t product_id,
+                                const char *pow_ts_str,
+                                const char *pow_nonce_str);
 
 #endif /* ZCL_CONTROLLERS_STORE_CONTROLLER_INTERNAL_H */

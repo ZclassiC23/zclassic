@@ -435,6 +435,51 @@ bool db_store_order_mark_paid(struct node_db *ndb, int64_t id, int status)
     return true;
 }
 
+int db_store_order_count_pending(struct node_db *ndb)
+{
+    sqlite3_stmt *s = NULL;
+
+    if (!ndb || !ndb->open)
+        return 0;
+    AR_QUERY_COUNT_BOUND(ndb, s,
+        "SELECT count(*) FROM orders WHERE status=?",
+        AR_BIND_INT(s, 1, STORE_ORDER_PENDING));
+}
+
+int db_store_order_count_pending_for_product(struct node_db *ndb,
+                                             int64_t product_id)
+{
+    sqlite3_stmt *s = NULL;
+
+    if (!ndb || !ndb->open || product_id <= 0)
+        return 0;
+    AR_QUERY_COUNT_BOUND(ndb, s,
+        "SELECT count(*) FROM orders WHERE status=? AND product_id=?",
+        (AR_BIND_INT(s, 1, STORE_ORDER_PENDING),
+         AR_BIND_INT(s, 2, product_id)));
+}
+
+int db_store_order_prune_expired(struct node_db *ndb, int64_t max_age_secs)
+{
+    sqlite3_stmt *s = NULL;
+
+    if (!ndb || !ndb->open || max_age_secs < 0)
+        return 0;
+    int64_t cutoff = (int64_t)platform_time_wall_time_t() - max_age_secs;
+    AR_PREPARE_RET(ndb, s,
+        "DELETE FROM orders WHERE status=? AND created_at < ?", 0);
+    AR_BIND_INT(s, 1, STORE_ORDER_PENDING);
+    AR_BIND_INT(s, 2, cutoff);
+    bool ok = false;
+    AR_FINALIZE_STEP_DONE(s, ok);
+    if (!ok) {
+        LOG_WARN("model", "store_order prune_expired failed: %s",
+                 sqlite3_errmsg(ndb->db));
+        return 0;
+    }
+    return sqlite3_changes(ndb->db);
+}
+
 int64_t db_store_chain_tip_height(struct node_db *ndb)
 {
     sqlite3_stmt *s = NULL;
