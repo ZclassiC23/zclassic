@@ -518,6 +518,7 @@ int test_condition_engine(void)
             "clock_skew_reconcile",
             "sapling_anchor_frontier_unavailable",
             "blocker_stall_meta_detector",
+            "reducer_drive_watchdog",
         };
         const int expected_count =
             (int)(sizeof(expected) / sizeof(expected[0]));

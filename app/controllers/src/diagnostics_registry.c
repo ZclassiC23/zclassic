@@ -66,6 +66,7 @@
 #include "services/sticky_escalator.h"
 #include "services/invariant_sentinel.h"
 #include "framework/condition.h"
+#include "conditions/reducer_drive_watchdog.h"
 #include "storage/block_index_projection.h"
 #include "storage/mempool_projection.h"
 #include "storage/peers_projection.h"
@@ -389,6 +390,11 @@ static const struct diagnostics_dump_entry g_dumpers[] = {
                      "proof_validate stage: cursor, proof counters, log rows" },
     { "utxo_apply", utxo_apply_dump_state_json,
                      "utxo_apply stage: cursor, UTXO delta counters, log rows" },
+    { "reducer_drive", reducer_drive_dump_state_json,
+                     "synchronous reducer/mint drive: active, label, age_us, "
+                     "watchdog_threshold_secs, last_watchdog_fire_unix, "
+                     "utxo_apply_cursor vs. the lagging coins_applied_height "
+                     "(the -fold-inram batching gap)" },
     { "tip_finalize", tip_finalize_dump_state_json,
                      "tip_finalize stage: cursor, finalize counters, log rows" },
     { "coin_backfill", coin_backfill_dump_state_json,

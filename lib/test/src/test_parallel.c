@@ -198,6 +198,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(tip_stall_oracle_rebuild_condition) \
     X(body_fetch_missing_have_data_condition) \
     X(stale_validate_headers_repair_condition) \
+    X(reducer_drive_watchdog) \
     X(active_chain_extend) \
     X(rebuild_recent) \
     X(torn_index_blocks_tip) \
