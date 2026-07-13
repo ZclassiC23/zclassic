@@ -9,6 +9,7 @@
 #include "crypto/sha256.h"
 #include "crypto/sha3.h"
 #include "crypto/common.h"
+#include "core/random.h"
 #include "rpc/legacy_chain_oracle.h"
 #include "validation/chainstate.h"
 #include "validation/main_constants.h"
@@ -636,6 +637,254 @@ bool fast_sync_solve_pow(const uint8_t peer_id[32], struct fast_sync_pow *pow)
         pow->nonce++;
     }
     LOG_FAIL("sync", "solve_pow: exhausted nonce space without finding solution");
+}
+
+/* ── Hardened challenge-bound / adaptive / single-use PoW ────────
+ *
+ * In-memory admission gate ONLY. Never persisted, never a consensus
+ * predicate. See fast_sync.h for the puzzle definition. */
+
+static bool fs_pow_hash_has_bits(const uint8_t hash[32], int bits)
+{
+    if (bits <= 0) return true;
+    if (bits > 256) bits = 256;
+    int whole = bits / 8;
+    for (int i = 0; i < whole; i++)
+        if (hash[i] != 0) return false;   /* normal during solve — not error */
+    int rem = bits % 8;
+    if (rem > 0) {
+        uint8_t mask = (uint8_t)(0xFF << (8 - rem));
+        if (hash[whole] & mask) return false; /* normal during solve — not error */
+    }
+    return true;
+}
+
+static void fs_pow_digest(const uint8_t challenge_seed[32],
+                          const uint8_t peer_token[32],
+                          int64_t ts, uint64_t nonce, uint8_t out[32])
+{
+    /* SHA3-256 for hash diversity from the SHA-256d consensus layer. */
+    struct sha3_256_ctx ctx;
+    sha3_256_init(&ctx);
+    sha3_256_write(&ctx, challenge_seed, 32);
+    sha3_256_write(&ctx, peer_token, 32);
+    sha3_256_write(&ctx, (const unsigned char *)&ts, 8);
+    sha3_256_write(&ctx, (const unsigned char *)&nonce, 8);
+    sha3_256_finalize(&ctx, out);
+}
+
+bool fast_sync_verify_pow_ex(const uint8_t challenge_seed[32],
+                             const uint8_t peer_token[32],
+                             int64_t ts, uint64_t nonce, int difficulty_bits)
+{
+    if (!challenge_seed || !peer_token)
+        return false;   /* caller bug, but no policy log here (hot verify path) */
+    uint8_t hash[32];
+    fs_pow_digest(challenge_seed, peer_token, ts, nonce, hash);
+    return fs_pow_hash_has_bits(hash, difficulty_bits);
+}
+
+bool fast_sync_solve_pow_ex(const uint8_t challenge_seed[32],
+                            const uint8_t peer_token[32],
+                            int64_t ts, int difficulty_bits,
+                            uint64_t *nonce_out)
+{
+    GUARD(challenge_seed && peer_token && nonce_out, "sync",
+          "solve_pow_ex: NULL arg (seed=%p token=%p out=%p)",
+          (const void *)challenge_seed, (const void *)peer_token,
+          (void *)nonce_out);
+    for (uint64_t n = 0; n < UINT64_MAX; n++) {
+        if (fast_sync_verify_pow_ex(challenge_seed, peer_token, ts, n,
+                                    difficulty_bits)) {
+            *nonce_out = n;
+            return true;
+        }
+    }
+    LOG_FAIL("sync", "solve_pow_ex: exhausted nonce space at D=%d",
+             difficulty_bits);
+}
+
+/* Refresh the request-rate window in place (caller holds g->lock). */
+static void fs_pow_gate_refresh_window_locked(struct fast_sync_pow_gate *g,
+                                              int64_t now)
+{
+    if (now - g->window_start > FAST_SYNC_POW_WINDOW_SECS) {
+        g->window_start = now;
+        g->accepted_in_window = 0;
+    }
+}
+
+/* Compute the adaptive difficulty from live load (caller holds g->lock).
+ * Rises with concurrent large serves and with the recent accepted-request
+ * rate; falls back to the idle floor when both are quiet. */
+static int fs_pow_gate_adaptive_bits_locked(const struct fast_sync_pow_gate *g)
+{
+    int bits = FAST_SYNC_POW_MIN_BITS;
+    bits += (int)(g->inflight * FAST_SYNC_POW_INFLIGHT_BITS);
+    if (g->accepted_in_window > FAST_SYNC_POW_SOFT_RATE) {
+        bits += (int)((g->accepted_in_window - FAST_SYNC_POW_SOFT_RATE) /
+                      FAST_SYNC_POW_RATE_STEP);
+    }
+    if (bits > FAST_SYNC_POW_MAX_BITS) bits = FAST_SYNC_POW_MAX_BITS;
+    if (bits < FAST_SYNC_POW_MIN_BITS) bits = FAST_SYNC_POW_MIN_BITS;
+    return bits;
+}
+
+void fast_sync_pow_gate_init(struct fast_sync_pow_gate *g)
+{
+    if (!g) return;
+    /* Preserve a real mutex across re-init; only the first init constructs it. */
+    if (!g->initialized)
+        pthread_mutex_init(&g->lock, NULL);
+    pthread_mutex_lock(&g->lock);
+    memset(g->cur_seed, 0, sizeof(g->cur_seed));
+    memset(g->prev_seed, 0, sizeof(g->prev_seed));
+    g->cur_bits = FAST_SYNC_POW_MIN_BITS;
+    g->prev_bits = FAST_SYNC_POW_MIN_BITS;
+    g->cur_epoch_start = 0;
+    g->have_prev = false;
+    g->seeded = false;
+    g->inflight = 0;
+    g->window_start = 0;
+    g->accepted_in_window = 0;
+    memset(g->recent, 0, sizeof(g->recent));
+    g->recent_head = 0;
+    g->recent_count = 0;
+    g->initialized = true;
+    pthread_mutex_unlock(&g->lock);
+}
+
+/* Ensure a live seed exists / rotate if the epoch elapsed (holds g->lock). */
+static void fs_pow_gate_rotate_locked(struct fast_sync_pow_gate *g, int64_t now)
+{
+    bool rotate = !g->seeded ||
+                  (now - g->cur_epoch_start) >= FAST_SYNC_POW_SEED_ROTATE_SECS;
+    if (!rotate)
+        return;
+    if (g->seeded) {
+        memcpy(g->prev_seed, g->cur_seed, 32);
+        g->prev_bits = g->cur_bits;
+        g->have_prev = true;
+    }
+    GetRandBytes(g->cur_seed, 32);
+    g->cur_epoch_start = now;
+    g->seeded = true;
+}
+
+void fast_sync_pow_gate_challenge(struct fast_sync_pow_gate *g,
+                                  uint8_t out_seed[32], int *out_bits,
+                                  int64_t *out_server_time)
+{
+    if (!g) return;
+    if (!g->initialized)
+        fast_sync_pow_gate_init(g);
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    pthread_mutex_lock(&g->lock);
+    fs_pow_gate_refresh_window_locked(g, now);
+    fs_pow_gate_rotate_locked(g, now);
+    /* Recompute the difficulty bound to the current seed from live load so a
+     * flood immediately raises the price of a freshly issued challenge, while
+     * an idle node hands out the cheap floor. */
+    g->cur_bits = fs_pow_gate_adaptive_bits_locked(g);
+    if (out_seed) memcpy(out_seed, g->cur_seed, 32);
+    if (out_bits) *out_bits = g->cur_bits;
+    if (out_server_time) *out_server_time = now;
+    pthread_mutex_unlock(&g->lock);
+}
+
+/* True if digest already in the single-use ring (caller holds g->lock). */
+static bool fs_pow_gate_seen_locked(const struct fast_sync_pow_gate *g,
+                                    const uint8_t digest[32])
+{
+    for (uint32_t i = 0; i < g->recent_count; i++)
+        if (memcmp(g->recent[i], digest, 32) == 0)
+            return true;
+    return false;
+}
+
+static void fs_pow_gate_remember_locked(struct fast_sync_pow_gate *g,
+                                        const uint8_t digest[32])
+{
+    memcpy(g->recent[g->recent_head], digest, 32);
+    g->recent_head = (g->recent_head + 1) % FAST_SYNC_POW_RECENT_CAP;
+    if (g->recent_count < FAST_SYNC_POW_RECENT_CAP)
+        g->recent_count++;
+}
+
+bool fast_sync_pow_gate_verify(struct fast_sync_pow_gate *g,
+                               const uint8_t peer_token[32],
+                               int64_t ts, uint64_t nonce)
+{
+    if (!g || !peer_token)
+        return false;
+    if (!g->initialized)
+        fast_sync_pow_gate_init(g);
+
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    if (ts < now - FAST_SYNC_POW_TS_SKEW_SECS ||
+        ts > now + FAST_SYNC_POW_TS_SKEW_SECS)
+        return false;   /* stale/forward-dated — client should re-challenge */
+
+    pthread_mutex_lock(&g->lock);
+    fs_pow_gate_refresh_window_locked(g, now);
+
+    if (!g->seeded) {
+        pthread_mutex_unlock(&g->lock);
+        return false;   /* no challenge issued yet */
+    }
+
+    /* Try the current seed, then the one-epoch grace seed. Only the seed the
+     * client actually solved against yields the required leading zeros; the
+     * other seed's digest is effectively random and won't match. */
+    bool ok = false;
+    uint8_t digest[32];
+    if (fast_sync_verify_pow_ex(g->cur_seed, peer_token, ts, nonce,
+                                g->cur_bits)) {
+        fs_pow_digest(g->cur_seed, peer_token, ts, nonce, digest);
+        ok = true;
+    } else if (g->have_prev &&
+               fast_sync_verify_pow_ex(g->prev_seed, peer_token, ts, nonce,
+                                       g->prev_bits)) {
+        fs_pow_digest(g->prev_seed, peer_token, ts, nonce, digest);
+        ok = true;
+    }
+
+    if (!ok) {
+        pthread_mutex_unlock(&g->lock);
+        return false;   /* wrong/insufficient solution — re-challenge */
+    }
+
+    /* Single-use: a previously accepted solution is refused. */
+    if (fs_pow_gate_seen_locked(g, digest)) {
+        pthread_mutex_unlock(&g->lock);
+        return false;
+    }
+    fs_pow_gate_remember_locked(g, digest);
+    if (g->accepted_in_window < UINT32_MAX)
+        g->accepted_in_window++;
+    pthread_mutex_unlock(&g->lock);
+    return true;
+}
+
+void fast_sync_pow_gate_serve_begin(struct fast_sync_pow_gate *g)
+{
+    if (!g) return;
+    if (!g->initialized)
+        fast_sync_pow_gate_init(g);
+    pthread_mutex_lock(&g->lock);
+    g->inflight++;
+    pthread_mutex_unlock(&g->lock);
+}
+
+void fast_sync_pow_gate_serve_end(struct fast_sync_pow_gate *g)
+{
+    if (!g) return;
+    if (!g->initialized)
+        fast_sync_pow_gate_init(g);
+    pthread_mutex_lock(&g->lock);
+    if (g->inflight > 0)
+        g->inflight--;
+    pthread_mutex_unlock(&g->lock);
 }
 
 /* ── Rate limiting ───────────────────────────────────────── */

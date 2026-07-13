@@ -3,6 +3,7 @@
  * block swarm, Merkle proofs, integrity verification,
  * and bandwidth-adaptive download manager. */
 
+#include "platform/time_compat.h"
 #include "test/test_helpers.h"
 #include "net/fast_sync.h"
 #include "net/download.h"
@@ -314,6 +315,121 @@ static int test_pow_timestamp_range(void)
         /* Set timestamp to 10 minutes ago */
         pow.timestamp -= 600;
         ASSERT(!fast_sync_verify_pow(&pow));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* ── Hardened challenge-bound / adaptive / single-use PoW ── */
+
+static int test_pow_ex_solve_verify(void)
+{
+    int failures = 0;
+    TEST("fast_sync PoW _ex binds to seed + token") {
+        uint8_t seed[32], token[32];
+        memset(seed, 0xA1, 32);
+        memset(token, 0x5C, 32);
+        int64_t ts = (int64_t)platform_time_wall_time_t();
+        uint64_t nonce = 0;
+        /* Solve/verify at 20 bits so the tamper checks below fail with the
+         * same 2^-20 assurance the legacy fast_sync PoW test relies on. */
+        ASSERT(fast_sync_solve_pow_ex(seed, token, ts, 20, &nonce));
+        ASSERT(fast_sync_verify_pow_ex(seed, token, ts, nonce, 20));
+
+        /* Tampering any bound field invalidates the solution. */
+        ASSERT(!fast_sync_verify_pow_ex(seed, token, ts, nonce + 1, 20));
+        uint8_t seed2[32];
+        memset(seed2, 0xB2, 32);   /* different server-issued seed */
+        ASSERT(!fast_sync_verify_pow_ex(seed2, token, ts, nonce, 20));
+        uint8_t token2[32];
+        memset(token2, 0x77, 32);  /* different connection token */
+        ASSERT(!fast_sync_verify_pow_ex(seed, token2, ts, nonce, 20));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_pow_gate_challenge_single_use(void)
+{
+    int failures = 0;
+    TEST("fast_sync PoW gate: challenge-bound + single-use") {
+        struct fast_sync_pow_gate g;
+        fast_sync_pow_gate_init(&g);
+
+        uint8_t seed[32];
+        int bits = 0;
+        int64_t st = 0;
+        fast_sync_pow_gate_challenge(&g, seed, &bits, &st);
+        ASSERT(bits == FAST_SYNC_POW_MIN_BITS); /* idle → floor */
+
+        uint8_t token[32];
+        memset(token, 0x33, 32);
+        int64_t ts = (int64_t)platform_time_wall_time_t();
+        uint64_t nonce = 0;
+        ASSERT(fast_sync_solve_pow_ex(seed, token, ts, bits, &nonce));
+
+        /* First presentation is admitted; an identical replay is refused
+         * (single-use, deterministic — the digest is remembered). */
+        ASSERT(fast_sync_pow_gate_verify(&g, token, ts, nonce));
+        ASSERT(!fast_sync_pow_gate_verify(&g, token, ts, nonce));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_pow_gate_ts_skew(void)
+{
+    int failures = 0;
+    TEST("fast_sync PoW gate rejects stale timestamps") {
+        struct fast_sync_pow_gate g;
+        fast_sync_pow_gate_init(&g);
+        uint8_t seed[32];
+        int bits = 0;
+        int64_t st = 0;
+        fast_sync_pow_gate_challenge(&g, seed, &bits, &st);
+
+        uint8_t token[32];
+        memset(token, 0x2A, 32);
+        int64_t stale = (int64_t)platform_time_wall_time_t()
+                        - (FAST_SYNC_POW_TS_SKEW_SECS + 60);
+        uint64_t nonce = 0;
+        ASSERT(fast_sync_solve_pow_ex(seed, token, stale, bits, &nonce));
+        /* Valid puzzle but the timestamp is outside the accepted skew. */
+        ASSERT(!fast_sync_pow_gate_verify(&g, token, stale, nonce));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_pow_gate_adaptive_difficulty(void)
+{
+    int failures = 0;
+    TEST("fast_sync PoW gate difficulty rises under load, falls idle") {
+        struct fast_sync_pow_gate g;
+        fast_sync_pow_gate_init(&g);
+
+        uint8_t seed[32];
+        int idle_bits = 0, load_bits = 0, back_bits = 0;
+        int64_t st = 0;
+
+        fast_sync_pow_gate_challenge(&g, seed, &idle_bits, &st);
+        ASSERT(idle_bits == FAST_SYNC_POW_MIN_BITS);
+
+        /* Three concurrent large serves in progress → difficulty ramps. */
+        fast_sync_pow_gate_serve_begin(&g);
+        fast_sync_pow_gate_serve_begin(&g);
+        fast_sync_pow_gate_serve_begin(&g);
+        fast_sync_pow_gate_challenge(&g, seed, &load_bits, &st);
+        ASSERT(load_bits > idle_bits);
+        ASSERT(load_bits == FAST_SYNC_POW_MIN_BITS +
+                            3 * FAST_SYNC_POW_INFLIGHT_BITS);
+
+        /* Drains → difficulty falls back to the idle floor. */
+        fast_sync_pow_gate_serve_end(&g);
+        fast_sync_pow_gate_serve_end(&g);
+        fast_sync_pow_gate_serve_end(&g);
+        fast_sync_pow_gate_challenge(&g, seed, &back_bits, &st);
+        ASSERT(back_bits == FAST_SYNC_POW_MIN_BITS);
         PASS();
     } _test_next:;
     return failures;
@@ -1457,6 +1573,12 @@ int test_fast_sync(void)
     /* PoW defense */
     failures += test_pow_solve_verify();
     failures += test_pow_timestamp_range();
+
+    /* Hardened challenge-bound / adaptive / single-use PoW */
+    failures += test_pow_ex_solve_verify();
+    failures += test_pow_gate_challenge_single_use();
+    failures += test_pow_gate_ts_skew();
+    failures += test_pow_gate_adaptive_difficulty();
 
     /* Rate limiting */
     failures += test_rate_limiter();
