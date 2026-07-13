@@ -22,6 +22,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stddef.h>
+#include <pthread.h>
 
 /* Service bit for zclassic23 extended protocol */
 #define NODE_ZCL23 (1 << 10)
@@ -73,6 +74,104 @@ bool fast_sync_verify_pow(const struct fast_sync_pow *pow);
 
 /* Solve a PoW challenge (blocking, ~0.5s). */
 bool fast_sync_solve_pow(const uint8_t peer_id[32], struct fast_sync_pow *pow);
+
+/* ── Hardened, challenge-bound, adaptive, single-use PoW ──────────────
+ *
+ * The legacy fast_sync_verify_pow() above binds only to a self-chosen
+ * peer_id, so a requester can pick its own puzzle and replay one solution
+ * indefinitely. The _ex primitive below binds each puzzle to a
+ * SERVER-ISSUED, ROTATING challenge_seed the attacker cannot predict, and
+ * the gate wrapper makes every accepted solution single-use and scales the
+ * required difficulty with load. This is an in-memory admission gate in
+ * front of resource spend — it is NEVER written to progress.kv and NEVER a
+ * consensus predicate. Puzzle:
+ *
+ *   SHA3-256(challenge_seed || peer_token || ts || nonce) has D leading
+ *   zero bits.
+ *
+ * verify = one keccak (negligible); an attacker pays O(2^D) per request. */
+
+/* Adaptive difficulty band (leading zero bits). Idle floor is cheap enough
+ * that an honest low-rate peer pays ~0; the ceiling makes a sustained flood
+ * pay ~2^26 hashes per admitted request. */
+#define FAST_SYNC_POW_MIN_BITS   12    /* idle: ~4k hashes, sub-millisecond  */
+#define FAST_SYNC_POW_MAX_BITS   26    /* saturated: ~67M hashes per request */
+
+/* Challenge-seed epoch: a fresh random seed is minted this often; the prior
+ * seed stays valid for one extra epoch so an honest solve in flight is never
+ * invalidated by a rotation. */
+#define FAST_SYNC_POW_SEED_ROTATE_SECS 45
+
+/* Accepted client-timestamp skew around the puzzle timestamp. */
+#define FAST_SYNC_POW_TS_SKEW_SECS 120
+
+/* Single-use ring: recently accepted solution digests kept in memory so a
+ * replayed solution is rejected. */
+#define FAST_SYNC_POW_RECENT_CAP 2048
+
+/* Load-response knobs for the adaptive difficulty formula. */
+#define FAST_SYNC_POW_WINDOW_SECS 10   /* request-rate measurement window   */
+#define FAST_SYNC_POW_SOFT_RATE   8    /* accepted reqs/window before ramp   */
+#define FAST_SYNC_POW_RATE_STEP   4    /* +1 bit per this many reqs over soft */
+#define FAST_SYNC_POW_INFLIGHT_BITS 2  /* +bits per concurrent large serve   */
+
+/* Pure puzzle primitives (no timestamp/rate policy — the gate owns that). */
+bool fast_sync_verify_pow_ex(const uint8_t challenge_seed[32],
+                             const uint8_t peer_token[32],
+                             int64_t ts, uint64_t nonce, int difficulty_bits);
+bool fast_sync_solve_pow_ex(const uint8_t challenge_seed[32],
+                            const uint8_t peer_token[32],
+                            int64_t ts, int difficulty_bits,
+                            uint64_t *nonce_out);
+
+/* In-memory PoW admission gate. Owns the rotating challenge seed, the
+ * single-use recent set, and the load counters that drive adaptive
+ * difficulty. All fields are transient; a fresh process starts clean. */
+struct fast_sync_pow_gate {
+    pthread_mutex_t lock;
+    bool     initialized;
+    /* Rotating challenge seeds: current + one grace epoch. Each seed carries
+     * the difficulty it was issued at so an in-flight honest solve is checked
+     * against exactly what it targeted. */
+    uint8_t  cur_seed[32];
+    int      cur_bits;
+    int64_t  cur_epoch_start;
+    uint8_t  prev_seed[32];
+    int      prev_bits;
+    bool     have_prev;
+    bool     seeded;
+    /* Load tracking for the adaptive difficulty formula. */
+    uint32_t inflight;             /* concurrent large serves in progress */
+    int64_t  window_start;
+    uint32_t accepted_in_window;   /* admitted serve requests this window */
+    /* Single-use recent accepted-solution digests (ring buffer). */
+    uint8_t  recent[FAST_SYNC_POW_RECENT_CAP][32];
+    uint32_t recent_head;
+    uint32_t recent_count;
+};
+
+/* Initialize a gate (idempotent; also resets all counters/seeds). */
+void fast_sync_pow_gate_init(struct fast_sync_pow_gate *g);
+
+/* Issue the live challenge to a requester. Rotates the seed if the epoch
+ * elapsed and recomputes the current adaptive difficulty from live load.
+ * out_seed/out_bits/out_server_time may each be NULL. */
+void fast_sync_pow_gate_challenge(struct fast_sync_pow_gate *g,
+                                  uint8_t out_seed[32], int *out_bits,
+                                  int64_t *out_server_time);
+
+/* Verify a solution against the live challenge (tries current then grace
+ * seed). Enforces timestamp skew, difficulty, and single-use. On success
+ * the solution digest is recorded (so an immediate replay fails) and the
+ * request is counted toward load. Returns true iff admitted. */
+bool fast_sync_pow_gate_verify(struct fast_sync_pow_gate *g,
+                               const uint8_t peer_token[32],
+                               int64_t ts, uint64_t nonce);
+
+/* Bracket a committed large serve so concurrency raises difficulty for the
+ * duration. begin/end must be balanced. */
+void fast_sync_pow_gate_serve_begin(struct fast_sync_pow_gate *g);
+void fast_sync_pow_gate_serve_end(struct fast_sync_pow_gate *g);
 
 /* Max total chunks across all IPs per hour (global cap) */
 #define FAST_SYNC_MAX_GLOBAL_CHUNKS_PER_HOUR 50000

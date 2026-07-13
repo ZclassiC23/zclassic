@@ -443,9 +443,13 @@ static pthread_mutex_t g_fs_state_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 #define FS_SERVER_WORKERS 8
 #define FS_CLIENT_QUEUE_CAP 64
+struct fs_client_slot {
+    int     fd;
+    uint8_t ip[16];   /* IPv6, or v4-mapped IPv6, for per-IP resource caps */
+};
 static pthread_t g_fs_worker_threads[FS_SERVER_WORKERS];
 static unsigned g_fs_worker_threads_started = 0;
-static int g_fs_client_queue[FS_CLIENT_QUEUE_CAP];
+static struct fs_client_slot g_fs_client_queue[FS_CLIENT_QUEUE_CAP];
 static unsigned g_fs_client_queue_head = 0;
 static unsigned g_fs_client_queue_tail = 0;
 static unsigned g_fs_client_queue_len = 0;
@@ -457,6 +461,240 @@ static struct file_manifest g_server_fm;
 static _Atomic bool g_have_manifest = false;
 static pthread_mutex_t g_manifest_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_manifest_build_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+/* ── PoW-gated admission + per-IP resource caps ─────────────────────
+ *
+ * In-memory only. The gate mints rotating adaptive challenges; the IP table
+ * bounds concurrency and hourly volume. Nothing here is persisted or a
+ * consensus predicate — it only decides whether to SPEND uplink on a public
+ * stream. */
+static struct fast_sync_pow_gate g_fs_pow_gate;
+
+struct fs_ip_stat {
+    uint8_t  ip[16];
+    bool     used;
+    uint32_t concurrent;        /* active large serves for this IP */
+    int64_t  hour_start;        /* rolling hour-budget window start */
+    uint64_t bytes_this_hour;   /* bytes charged in the current window */
+    int64_t  last_seen;         /* for LRU eviction when the table is full */
+};
+static struct fs_ip_stat g_fs_ip[FS_IP_TABLE_CAP];
+static pthread_mutex_t g_fs_ip_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+struct fast_sync_pow_gate *fs_pow_gate(void)
+{
+    return &g_fs_pow_gate;
+}
+
+void fs_pow_reset_state(void)
+{
+    fast_sync_pow_gate_init(&g_fs_pow_gate);
+    pthread_mutex_lock(&g_fs_ip_mutex);
+    memset(g_fs_ip, 0, sizeof(g_fs_ip));
+    pthread_mutex_unlock(&g_fs_ip_mutex);
+}
+
+/* Find-or-allocate the stat slot for ip (caller holds g_fs_ip_mutex).
+ * When the table is full, evict the least-recently-seen entry. */
+static struct fs_ip_stat *fs_ip_slot_locked(const uint8_t ip[16], int64_t now)
+{
+    struct fs_ip_stat *lru = NULL;
+    for (size_t i = 0; i < FS_IP_TABLE_CAP; i++) {
+        if (g_fs_ip[i].used && memcmp(g_fs_ip[i].ip, ip, 16) == 0)
+            return &g_fs_ip[i];
+        if (!g_fs_ip[i].used)
+            return &g_fs_ip[i];  /* first free slot (unused → all-zero) */
+        if (!lru || g_fs_ip[i].last_seen < lru->last_seen)
+            lru = &g_fs_ip[i];
+    }
+    /* Table full — reclaim the LRU slot, but never evict an entry that still
+     * holds active serves (that would double-count concurrency). Fall back to
+     * the numerically-first slot if every entry is busy (degrades to shared
+     * accounting under a >512-IP flood, still bounded). */
+    for (size_t i = 0; i < FS_IP_TABLE_CAP; i++) {
+        if (g_fs_ip[i].concurrent == 0 &&
+            (!lru || lru->concurrent > 0 ||
+             g_fs_ip[i].last_seen < lru->last_seen))
+            lru = &g_fs_ip[i];
+    }
+    if (!lru) lru = &g_fs_ip[0];
+    memset(lru, 0, sizeof(*lru));
+    (void)now;
+    return lru;
+}
+
+bool fs_ip_serve_acquire(const uint8_t ip[16])
+{
+    if (!ip) return false;
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    bool ok = false;
+    pthread_mutex_lock(&g_fs_ip_mutex);
+    struct fs_ip_stat *s = fs_ip_slot_locked(ip, now);
+    if (s) {
+        if (!s->used) {
+            s->used = true;
+            memcpy(s->ip, ip, 16);
+            s->hour_start = now;
+            s->bytes_this_hour = 0;
+            s->concurrent = 0;
+        }
+        s->last_seen = now;
+        if (s->concurrent < FS_MAX_CONCURRENT_PER_IP) {
+            s->concurrent++;
+            ok = true;
+        }
+    }
+    pthread_mutex_unlock(&g_fs_ip_mutex);
+    return ok;
+}
+
+void fs_ip_serve_release(const uint8_t ip[16])
+{
+    if (!ip) return;
+    pthread_mutex_lock(&g_fs_ip_mutex);
+    for (size_t i = 0; i < FS_IP_TABLE_CAP; i++) {
+        if (g_fs_ip[i].used && memcmp(g_fs_ip[i].ip, ip, 16) == 0) {
+            if (g_fs_ip[i].concurrent > 0)
+                g_fs_ip[i].concurrent--;
+            break;
+        }
+    }
+    pthread_mutex_unlock(&g_fs_ip_mutex);
+}
+
+bool fs_ip_bytes_charge(const uint8_t ip[16], uint64_t n)
+{
+    if (!ip) return false;
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    bool ok = false;
+    pthread_mutex_lock(&g_fs_ip_mutex);
+    struct fs_ip_stat *s = fs_ip_slot_locked(ip, now);
+    if (s) {
+        if (!s->used) {
+            s->used = true;
+            memcpy(s->ip, ip, 16);
+            s->hour_start = now;
+            s->bytes_this_hour = 0;
+            s->concurrent = 0;
+        }
+        if (now - s->hour_start > 3600) {
+            s->hour_start = now;
+            s->bytes_this_hour = 0;
+        }
+        s->last_seen = now;
+        /* Saturating add so a huge n can't wrap under the ceiling. */
+        if (s->bytes_this_hour > UINT64_MAX - n)
+            s->bytes_this_hour = UINT64_MAX;
+        else
+            s->bytes_this_hour += n;
+        ok = s->bytes_this_hour <= FS_IP_MAX_BYTES_PER_HOUR;
+    }
+    pthread_mutex_unlock(&g_fs_ip_mutex);
+    return ok;
+}
+
+bool fs_conn_budget_ok(uint64_t bytes_sent, int64_t start_time, int64_t now)
+{
+    if (bytes_sent > FS_CONN_MAX_BYTES)
+        return false;
+    if (start_time > 0 && (now - start_time) > FS_CONN_MAX_SECONDS)
+        return false;
+    return true;
+}
+
+bool fs_parse_serve_request(const uint8_t *payload, uint32_t plen,
+                            bool *is_all, bool *is_rng,
+                            const uint8_t **puzzle,
+                            uint16_t *rng_start, uint16_t *rng_end)
+{
+    if (is_all) *is_all = false;
+    if (is_rng) *is_rng = false;
+    if (puzzle) *puzzle = NULL;
+    if (rng_start) *rng_start = 0;
+    if (rng_end) *rng_end = 0;
+    if (!payload) return false;
+
+    const uint8_t *body = payload;
+    uint32_t blen = plen;
+    /* A gated request carries a 48-byte solution prefix. Detect it by total
+     * length: gated ALL is 51 bytes, gated RNG is 56 bytes. */
+    if (plen >= FS_POW_SOLUTION_SIZE + 3) {
+        body = payload + FS_POW_SOLUTION_SIZE;
+        blen = plen - FS_POW_SOLUTION_SIZE;
+        if (puzzle) *puzzle = payload;
+    }
+
+    if (blen == 3 && memcmp(body, "ALL", 3) == 0) {
+        if (is_all) *is_all = true;
+        return true;
+    }
+    if (blen >= 8 && memcmp(body, "RNG", 3) == 0) {
+        if (is_rng) *is_rng = true;
+        if (rng_start)
+            *rng_start = (uint16_t)body[3] | ((uint16_t)body[4] << 8);
+        if (rng_end)
+            *rng_end = (uint16_t)body[5] | ((uint16_t)body[6] << 8);
+        return true;
+    }
+    /* Not a large-serve request (e.g., no puzzle prefix present). Retry the
+     * ungated interpretation so a pre-puzzle probe still classifies. */
+    if (puzzle) *puzzle = NULL;
+    if (plen == 3 && memcmp(payload, "ALL", 3) == 0) {
+        if (is_all) *is_all = true;
+        return true;
+    }
+    if (plen >= 8 && memcmp(payload, "RNG", 3) == 0) {
+        if (is_rng) *is_rng = true;
+        if (rng_start)
+            *rng_start = (uint16_t)payload[3] | ((uint16_t)payload[4] << 8);
+        if (rng_end)
+            *rng_end = (uint16_t)payload[5] | ((uint16_t)payload[6] << 8);
+        return true;
+    }
+    return false;
+}
+
+enum fs_admit_result fs_admit_serve_pow(const uint8_t *puzzle,
+                                        const uint8_t peer_token[32],
+                                        uint8_t out_seed[32], int *out_bits,
+                                        int64_t *out_server_time)
+{
+    /* No puzzle → hand back a fresh challenge (graceful, not a drop). */
+    if (!puzzle || !peer_token) {
+        fast_sync_pow_gate_challenge(&g_fs_pow_gate, out_seed, out_bits,
+                                     out_server_time);
+        return FS_ADMIT_CHALLENGE;
+    }
+
+    /* Solution layout: [token(32)][ts(8, LE)][nonce(8, LE)]. The token must
+     * match the handshake nonce so a solution can't be replayed onto another
+     * connection. */
+    uint8_t tok[32];
+    int64_t ts = 0;
+    uint64_t nonce = 0;
+    memcpy(tok, puzzle, 32);
+    memcpy(&ts, puzzle + 32, 8);
+    memcpy(&nonce, puzzle + 40, 8);
+
+    bool bound = memcmp(tok, peer_token, 32) == 0;
+    if (bound && fast_sync_pow_gate_verify(&g_fs_pow_gate, tok, ts, nonce))
+        return FS_ADMIT_SERVE;
+
+    fast_sync_pow_gate_challenge(&g_fs_pow_gate, out_seed, out_bits,
+                                 out_server_time);
+    return FS_ADMIT_CHALLENGE;
+}
+
+/* Build the FS_CHALLENGE frame payload the server hands to a client. */
+static void fs_build_challenge_payload(const uint8_t seed[32], int bits,
+                                       int64_t server_time,
+                                       uint8_t out[FS_CHALLENGE_PAYLOAD_SIZE])
+{
+    memcpy(out, seed, 32);
+    out[32] = (uint8_t)(bits < 0 ? 0 : (bits > 255 ? 255 : bits));
+    for (int i = 0; i < 8; i++)
+        out[33 + i] = (uint8_t)((uint64_t)server_time >> (8 * i));
+}
 
 static bool fs_snapshot_serving_allowed(void)
 {
@@ -517,13 +755,14 @@ bool fs_server_refresh_manifest(void)
     return ok;
 }
 
-static bool fs_client_queue_push(int client_fd)
+static bool fs_client_queue_push(int client_fd, const uint8_t ip[16])
 {
     bool ok = false;
 
     pthread_mutex_lock(&g_fs_client_queue_mutex);
     if (g_fs_client_queue_len < FS_CLIENT_QUEUE_CAP) {
-        g_fs_client_queue[g_fs_client_queue_tail] = client_fd;
+        g_fs_client_queue[g_fs_client_queue_tail].fd = client_fd;
+        memcpy(g_fs_client_queue[g_fs_client_queue_tail].ip, ip, 16);
         g_fs_client_queue_tail =
             (g_fs_client_queue_tail + 1U) % FS_CLIENT_QUEUE_CAP;
         g_fs_client_queue_len++;
@@ -534,10 +773,10 @@ static bool fs_client_queue_push(int client_fd)
     return ok;
 }
 
-static bool fs_client_queue_pop(int *client_fd_out)
+static bool fs_client_queue_pop(struct fs_client_slot *slot_out)
 {
-    if (!client_fd_out)
-        LOG_FAIL("filesvc", "client_queue_pop: client_fd_out is NULL");
+    if (!slot_out)
+        LOG_FAIL("filesvc", "client_queue_pop: slot_out is NULL");
 
     pthread_mutex_lock(&g_fs_client_queue_mutex);
     /* Timed wait so a worker never blocks past shutdown if the cond
@@ -558,7 +797,7 @@ static bool fs_client_queue_pop(int *client_fd_out)
         LOG_FAIL("filesvc", "client_queue_pop: queue empty and server stopping");
     }
 
-    *client_fd_out = g_fs_client_queue[g_fs_client_queue_head];
+    *slot_out = g_fs_client_queue[g_fs_client_queue_head];
     g_fs_client_queue_head =
         (g_fs_client_queue_head + 1U) % FS_CLIENT_QUEUE_CAP;
     g_fs_client_queue_len--;
@@ -570,7 +809,7 @@ static void fs_client_queue_close_all(void)
 {
     pthread_mutex_lock(&g_fs_client_queue_mutex);
     while (g_fs_client_queue_len > 0) {
-        int client_fd = g_fs_client_queue[g_fs_client_queue_head];
+        int client_fd = g_fs_client_queue[g_fs_client_queue_head].fd;
         g_fs_client_queue_head =
             (g_fs_client_queue_head + 1U) % FS_CLIENT_QUEUE_CAP;
         g_fs_client_queue_len--;
@@ -581,8 +820,72 @@ static void fs_client_queue_close_all(void)
     pthread_mutex_unlock(&g_fs_client_queue_mutex);
 }
 
+/* Bounded logging for the admission gate: the invalid-puzzle / refusal paths
+ * are exactly what a flood hammers, so throttle to at most one line per 5 s so
+ * an attacker can't turn the defense into a log-flood amplifier. */
+static _Atomic int64_t g_fs_gate_log_ts = 0;
+static void fs_gate_log_throttled(const char *event, int detail)
+{
+    int64_t now = (int64_t)platform_time_wall_time_t();
+    int64_t prev = atomic_load(&g_fs_gate_log_ts);
+    if (now - prev < 5)
+        return;
+    if (!atomic_compare_exchange_strong(&g_fs_gate_log_ts, &prev, now))
+        return;
+    log_jsonf(LOG_JSON_INFO, "file_service_pow_gate",
+              "\"event\":\"%s\",\"detail\":%d", event, detail);
+}
+
+/* Send a fresh challenge frame to a requester (graceful retry, not a drop). */
+static bool fs_send_challenge(struct fs_session *session,
+                              const uint8_t seed[32], int bits,
+                              int64_t server_time)
+{
+    uint8_t payload[FS_CHALLENGE_PAYLOAD_SIZE];
+    fs_build_challenge_payload(seed, bits, server_time, payload);
+    return fs_send_frame(session, FS_CHALLENGE, payload, sizeof(payload));
+}
+
+/* Stream manifest chunks [start,end) with per-connection + per-IP budgets.
+ * The served bytes are byte-identical to the ungated path; the caps only bound
+ * how much a single connection/IP may draw. Stops the range early (keeping the
+ * connection) when a budget trips or a chunk read fails. */
+static void fs_stream_range(struct fs_session *session,
+                            const struct file_manifest *manifest,
+                            uint32_t start, uint32_t end,
+                            const uint8_t client_ip[16],
+                            bool snapshot_allowed)
+{
+    for (uint32_t ci = start; ci < end && atomic_load(&g_fs_running); ci++) {
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        if (!fs_conn_budget_ok(session->bytes_sent, session->start_time, now)) {
+            fs_gate_log_throttled("conn_budget_exceeded", (int)ci);
+            return;
+        }
+        if (manifest->chunks[ci].file_index == 254 && !snapshot_allowed)
+            continue;
+        uint8_t *data = NULL;
+        uint32_t dsz = 0;
+        if (!file_chunk_read(&manifest->chunks[ci], g_fs_datadir, &data, &dsz)) {
+            fprintf(stderr,  // obs-ok:file-transfer-client-visible
+                    "file_service: read failed chunk %u\n", ci);
+            return;
+        }
+        if (!fs_ip_bytes_charge(client_ip, dsz)) {
+            free(data);
+            fs_gate_log_throttled("ip_hour_budget_exceeded", (int)ci);
+            return;
+        }
+        if (!fs_send_chunk_fast(session, data, dsz, manifest->chunks[ci].sha3)) {
+            free(data);
+            return;
+        }
+        free(data);
+    }
+}
+
 /* Per-client handler run on a bounded worker pool. */
-static void fs_handle_client_fd(int client_fd)
+static void fs_handle_client_fd(int client_fd, const uint8_t client_ip[16])
 {
     struct fs_session session;
     fs_session_init(&session, client_fd);
@@ -593,6 +896,8 @@ static void fs_handle_client_fd(int client_fd)
         close(client_fd);
         return;
     }
+    /* After the handshake session.peer_nonce is the 32-byte token the client
+     * presented — a PoW solution must be bound to it. */
 
     struct file_manifest manifest = {0};
 
@@ -610,54 +915,66 @@ static void fs_handle_client_fd(int client_fd)
         }
         bool snapshot_allowed = fs_snapshot_serving_allowed();
 
-        if (type == FS_REQUEST && plen >= 8 &&
-            memcmp(payload, "RNG", 3) == 0 && have_manifest) {
-            /* Range: chunks[start..end) */
-            uint16_t start = (uint16_t)payload[3] |
-                              ((uint16_t)payload[4] << 8);
-            uint16_t end = (uint16_t)payload[5] |
-                            ((uint16_t)payload[6] << 8);
-            if (end > manifest.num_chunks) end = manifest.num_chunks;
-            for (uint32_t ci = start; ci < end && atomic_load(&g_fs_running); ci++) {
-                if (manifest.chunks[ci].file_index == 254 &&
-                    !snapshot_allowed)
-                    continue;
-                uint8_t *data = NULL;
-                uint32_t dsz = 0;
-                if (file_chunk_read(&manifest.chunks[ci], g_fs_datadir,
-                                     &data, &dsz)) {
-                    fs_send_chunk_fast(&session, data, dsz,
-                                        manifest.chunks[ci].sha3);
-                    free(data);
-                } else {
-                    /* Send empty chunk on read failure so client can
-                     * track progress; don't break entire range */
-                    fprintf(stderr,  // obs-ok:file-transfer-client-visible
-                            "file_service: read failed chunk %u\n", ci);
+        /* Client explicitly asks for a challenge before requesting bulk data. */
+        if (type == FS_CHALLENGE) {
+            uint8_t seed[32];
+            int bits = FAST_SYNC_POW_MIN_BITS;
+            int64_t st = 0;
+            fast_sync_pow_gate_challenge(fs_pow_gate(), seed, &bits, &st);
+            if (!fs_send_challenge(&session, seed, bits, st))
+                break;
+            continue;
+        }
+
+        bool is_all = false, is_rng = false;
+        const uint8_t *puzzle = NULL;
+        uint16_t rng_start = 0, rng_end = 0;
+        bool is_serve = (type == FS_REQUEST) &&
+            fs_parse_serve_request(payload, plen, &is_all, &is_rng,
+                                   &puzzle, &rng_start, &rng_end);
+
+        if (is_serve && (is_all || is_rng) && have_manifest) {
+            /* ── PoW admission gate (mirrors snapsync_validate_serve_request
+             * for the P2P path) — required BEFORE committing a worker to a
+             * large stream. Missing/invalid/stale puzzle → challenge + retry,
+             * never a silent drop. ─────────────────────────────────────── */
+            uint8_t seed[32];
+            int bits = FAST_SYNC_POW_MIN_BITS;
+            int64_t st = 0;
+            enum fs_admit_result adm =
+                fs_admit_serve_pow(puzzle, session.peer_nonce, seed, &bits, &st);
+            if (adm == FS_ADMIT_CHALLENGE) {
+                fs_gate_log_throttled("challenge_issued", bits);
+                if (!fs_send_challenge(&session, seed, bits, st))
                     break;
-                }
+                continue;
             }
-        } else if (type == FS_REQUEST && plen == 3 &&
-                   memcmp(payload, "ALL", 3) == 0 && have_manifest) {
-            printf("file_service: streaming %u chunks (%.1f GB)...\n",
-                   manifest.num_chunks,
-                   (double)manifest.total_bytes / (1024.0*1024.0*1024.0));
-            for (uint32_t ci = 0; ci < manifest.num_chunks &&
-                                 atomic_load(&g_fs_running); ci++) {
-                if (manifest.chunks[ci].file_index == 254 &&
-                    !snapshot_allowed)
-                    continue;
-                uint8_t *data = NULL;
-                uint32_t dsz = 0;
-                if (file_chunk_read(&manifest.chunks[ci], g_fs_datadir,
-                                     &data, &dsz)) {
-                    fs_send_chunk_fast(&session, data, dsz,
-                                        manifest.chunks[ci].sha3);
-                    free(data);
-                } else break;
+
+            /* Puzzle valid — enforce the per-IP concurrent-serve cap. */
+            if (!fs_ip_serve_acquire(client_ip)) {
+                fs_gate_log_throttled("ip_concurrency_refused", 0);
+                if (!fs_send_frame(&session, FS_DONE, NULL, 0))
+                    break;
+                continue;
             }
-            printf("file_service: streaming done (%.1f MB/s)\n",
-                   fs_session_mbps(&session));
+
+            fast_sync_pow_gate_serve_begin(fs_pow_gate());
+            if (is_rng) {
+                uint32_t end = rng_end;
+                if (end > manifest.num_chunks) end = manifest.num_chunks;
+                fs_stream_range(&session, &manifest, rng_start, end,
+                                client_ip, snapshot_allowed);
+            } else { /* is_all */
+                printf("file_service: streaming %u chunks (%.1f GB)...\n",
+                       manifest.num_chunks,
+                       (double)manifest.total_bytes / (1024.0*1024.0*1024.0));
+                fs_stream_range(&session, &manifest, 0, manifest.num_chunks,
+                                client_ip, snapshot_allowed);
+                printf("file_service: streaming done (%.1f MB/s)\n",
+                       fs_session_mbps(&session));
+            }
+            fast_sync_pow_gate_serve_end(fs_pow_gate());
+            fs_ip_serve_release(client_ip);
         } else if (type == FS_MANIFEST && have_manifest) {
             for (uint32_t i = 0; i < manifest.num_chunks; i++) {
                 if (manifest.chunks[i].file_index == 254 &&
@@ -692,12 +1009,12 @@ static void *fs_client_worker_thread(void *arg)
     (void)arg;
 
     while (true) {
-        int client_fd = -1;
+        struct fs_client_slot slot = { .fd = -1 };
 
-        if (!fs_client_queue_pop(&client_fd))
+        if (!fs_client_queue_pop(&slot))
             break;
-        if (client_fd >= 0)
-            fs_handle_client_fd(client_fd);
+        if (slot.fd >= 0)
+            fs_handle_client_fd(slot.fd, slot.ip);
     }
 
     return NULL;
@@ -765,7 +1082,12 @@ static void *fs_server_thread(void *arg)
         setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &ctv, sizeof(ctv));
         setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &ctv, sizeof(ctv));
 
-        if (!fs_client_queue_push(client_fd)) {
+        /* Capture the peer address (v6 or v4-mapped v6) for the per-IP
+         * resource caps applied downstream. */
+        uint8_t client_ip[16];
+        memcpy(client_ip, &client_addr.sin6_addr, 16);
+
+        if (!fs_client_queue_push(client_fd, client_ip)) {
             fprintf(stderr,  // obs-ok:file-service-overload-visible
                     "file_service: client queue full, rejecting\n");
             close(client_fd);
@@ -805,6 +1127,8 @@ void fs_server_start(const char *datadir, uint16_t port)
     g_fs_port = port;
     atomic_store(&g_fs_running, true);
     atomic_store(&g_have_manifest, false);
+    /* Fresh PoW gate + per-IP cap tables for this serving session. */
+    fs_pow_reset_state();
     g_fs_client_queue_head = 0;
     g_fs_client_queue_tail = 0;
     g_fs_client_queue_len = 0;
@@ -908,6 +1232,36 @@ struct range_worker {
     _Atomic uint32_t chunks_fail;  /* failed recv or write */
 };
 
+/* Client side: fetch a PoW challenge from the server, solve it, and fill a
+ * 48-byte solution bound to this session's handshake nonce. Honest peers must
+ * present this before the server will commit to a large range/ALL stream. */
+static bool fs_client_solve_challenge(struct fs_session *s,
+                                      uint8_t solution[FS_POW_SOLUTION_SIZE])
+{
+    if (!fs_send_frame(s, FS_CHALLENGE, NULL, 0))
+        return false;
+    uint8_t type;
+    const uint8_t *payload;
+    uint32_t plen;
+    if (!fs_recv_frame(s, &type, &payload, &plen))
+        return false;
+    if (type != FS_CHALLENGE || plen < FS_CHALLENGE_PAYLOAD_SIZE)
+        return false;
+
+    uint8_t seed[32];
+    memcpy(seed, payload, 32);
+    int bits = payload[32];
+    int64_t ts = (int64_t)platform_time_wall_time_t();
+    uint64_t nonce = 0;
+    if (!fast_sync_solve_pow_ex(seed, s->our_nonce, ts, bits, &nonce))
+        return false;
+
+    memcpy(solution, s->our_nonce, 32);
+    memcpy(solution + 32, &ts, 8);
+    memcpy(solution + 40, &nonce, 8);
+    return true;
+}
+
 static void *range_worker_fn(void *arg)
 {
     struct range_worker *w = (struct range_worker *)arg;
@@ -940,13 +1294,24 @@ static void *range_worker_fn(void *arg)
     fs_session_init(&ws, wfd);
     if (!fs_handshake(&ws, w->utxo_root, true)) { close(wfd); LOG_NULL("filesvc", "worker %d: handshake failed", w->id); }
 
-    /* Send range request */
-    uint8_t rng[8] = {'R','N','G', 0,0,0,0,0};
-    rng[3] = (uint8_t)(w->start);
-    rng[4] = (uint8_t)(w->start >> 8);
-    rng[5] = (uint8_t)(w->end);
-    rng[6] = (uint8_t)(w->end >> 8);
-    if (!fs_send_frame(&ws, FS_REQUEST, rng, 8)) {
+    /* Solve the server's PoW challenge before requesting the range. */
+    uint8_t solution[FS_POW_SOLUTION_SIZE];
+    if (!fs_client_solve_challenge(&ws, solution)) {
+        close(wfd); LOG_NULL("filesvc", "worker %d: PoW challenge/solve failed", w->id);
+    }
+
+    /* Send the gated range request: [48-byte solution]["RNG"][start][end]. */
+    uint8_t rng[FS_POW_SOLUTION_SIZE + 8];
+    memcpy(rng, solution, FS_POW_SOLUTION_SIZE);
+    rng[FS_POW_SOLUTION_SIZE + 0] = 'R';
+    rng[FS_POW_SOLUTION_SIZE + 1] = 'N';
+    rng[FS_POW_SOLUTION_SIZE + 2] = 'G';
+    rng[FS_POW_SOLUTION_SIZE + 3] = (uint8_t)(w->start);
+    rng[FS_POW_SOLUTION_SIZE + 4] = (uint8_t)(w->start >> 8);
+    rng[FS_POW_SOLUTION_SIZE + 5] = (uint8_t)(w->end);
+    rng[FS_POW_SOLUTION_SIZE + 6] = (uint8_t)(w->end >> 8);
+    rng[FS_POW_SOLUTION_SIZE + 7] = 0;
+    if (!fs_send_frame(&ws, FS_REQUEST, rng, sizeof(rng))) {
         close(wfd); LOG_NULL("filesvc", "worker %d: range request send failed", w->id);
     }
 
