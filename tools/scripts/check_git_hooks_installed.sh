@@ -18,10 +18,20 @@ if [[ -z "$actual" ]]; then
 fi
 
 if [[ "$actual" != "$want" ]]; then
-    echo "check_git_hooks_installed: FAIL — core.hooksPath='$actual' (want '$want')" >&2
-    echo "  Run: make install-hooks" >&2
-    echo "  This arms tools/githooks/pre-push so local make pre-push-ci runs before push." >&2
-    exit 1
+    # Worktree agents flap the shared config to an ABSOLUTE spelling of the
+    # same directory. The gate enforces substance (the tracked hooks are the
+    # armed hooks), not spelling — accept any path resolving to $ROOT/$want,
+    # and normalize the stored value back to the canonical relative form.
+    resolved="$(realpath -m -- "$actual" 2>/dev/null || true)"
+    if [[ -n "$actual" && "$resolved" == "$ROOT/$want" ]]; then
+        git config core.hooksPath "$want" 2>/dev/null || true
+        echo "check_git_hooks_installed: normalized absolute core.hooksPath back to '$want'"
+    else
+        echo "check_git_hooks_installed: FAIL — core.hooksPath='$actual' (want '$want')" >&2
+        echo "  Run: make install-hooks" >&2
+        echo "  This arms tools/githooks/pre-push so local make pre-push-ci runs before push." >&2
+        exit 1
+    fi
 fi
 
 hook="$want/pre-push"
