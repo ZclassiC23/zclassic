@@ -519,6 +519,7 @@ int test_condition_engine(void)
             "sapling_anchor_frontier_unavailable",
             "blocker_stall_meta_detector",
             "reducer_drive_watchdog",
+            "batch_fsync_slow",
         };
         const int expected_count =
             (int)(sizeof(expected) / sizeof(expected[0]));

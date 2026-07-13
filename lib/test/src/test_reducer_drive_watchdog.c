@@ -16,10 +16,13 @@
 
 #include "test/test_helpers.h"
 
+#include "conditions/batch_fsync_slow.h"
 #include "conditions/reducer_drive_watchdog.h"
 #include "framework/condition.h"
 #include "json/json.h"
 #include "platform/clock.h"
+#include "services/reducer_drain.h"
+#include "services/reducer_ingest_service.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
@@ -231,11 +234,156 @@ int test_reducer_drive_watchdog(void)
                   json_get_int(json_get(&v, "coins_applied_height")) == 4242;
             RDW_CHECK("dump emits all documented fields with live values",
                      okd);
+
+            /* Drive+fsync telemetry (Gap 1 + Gap 2): the four drain-exit
+             * counters and the two fsync-timing fields are always emitted
+             * (even before anything has ever been observed — 0 is a valid,
+             * present value), unlike stage_spin which is omitted entirely
+             * when empty. */
+            bool okt = true;
+            okt = okt && json_get(&v, "drain_exit_converged_total") != NULL;
+            okt = okt && json_get(&v, "drain_exit_budget_total") != NULL;
+            okt = okt && json_get(&v, "drain_last_round_advances") != NULL;
+            okt = okt && json_get(&v, "drain_last_elapsed_us") != NULL;
+            okt = okt && json_get(&v, "fsync_last_flush_us") != NULL;
+            okt = okt && json_get(&v, "fsync_flush_us_ewma") != NULL;
+            RDW_CHECK("dump carries the drain-exit + fsync-timing fields",
+                     okt);
             json_free(&v);
         }
 
         progress_store_close();
         test_cleanup_tmpdir(dir);
+    }
+
+    /* ---- (e) drain-exit telemetry: reducer_drain.c's exit-stats snapshot
+     * deconflates converged vs budget-ceiling (see reducer_drain.c's doc
+     * comment). Drive the counters directly via the ZCL_TESTING reset +
+     * snapshot pair — the exact break-site attribution is exercised end to
+     * end by test_mint_fold_livelock (Scenario A: frontier-stall increments
+     * NEITHER counter; Scenario B: a converged kick increments
+     * exit_converged_total) in test_reducer_step_drain_harness.c. Here we
+     * only guard the snapshot/reset plumbing itself. ---- */
+    {
+        reducer_drain_exit_stats_reset_for_testing();
+        struct reducer_drain_exit_stats des;
+        reducer_drain_exit_stats_snapshot(&des);
+        bool ok = des.exit_converged_total == 0 &&
+                  des.exit_budget_total == 0 &&
+                  des.last_round_advances == 0 &&
+                  des.last_elapsed_us == 0;
+        RDW_CHECK("drain-exit stats: reset zeroes all four fields", ok);
+    }
+
+    /* ---- (f) batch_fsync_slow condition: injected slow flush trips it,
+     * a raised budget clears it, and a healthy (fast, unmodified) flush
+     * never false-fires. GetTimeMicros() (which the precommit timing wrap
+     * uses) routes through the SAME overridable platform.clock the fake
+     * wall clock above installs (clock_now_wall_ms — see
+     * lib/platform/include/platform/time_compat.h), so it is frozen
+     * whenever that fake clock is still active — a real nanosleep would
+     * measure 0us elapsed, not the injected delay. Restore the REAL clock
+     * for this section so the injected-delay timing is genuine. To keep
+     * each detect() a "first tick" (last_poll_unix == 0, which
+     * condition_tick_one always polls regardless of poll_secs — see
+     * framework/condition.c), each phase gets its OWN fresh
+     * condition_engine_reset_for_testing() + re-register instead of
+     * waiting out real wall-clock poll_secs between ticks: the fsync
+     * timing atomics (app/services/src/reducer_body_fsync.c) are a
+     * SEPARATE module and are untouched by a condition-engine reset, so
+     * the EWMA carries across phases exactly as it would across real
+     * ticks. ---- */
+    {
+        clock_reset_default();
+        blocker_module_init();
+        blocker_reset_for_testing();
+        reducer_body_fsync_test_reset();
+        batch_fsync_slow_test_reset();
+
+        /* (f1) healthy path: an unmodified (fast) precommit flush (no
+         * pending bodies, no open event log — real work, sub-millisecond)
+         * must never trip the condition. Drive the predicate against a
+         * tight 10ms test budget (not just the generous 4s production
+         * default), so "healthy" is proven against the SAME budget the
+         * slow-flush case below uses. */
+        condition_engine_reset_for_testing();
+        register_batch_fsync_slow();
+        batch_fsync_slow_test_set_budget_us(10000); /* 10ms */
+        bool trig1 = reducer_body_fsync_test_trigger_precommit();
+        condition_engine_tick();
+        bool ok_healthy = trig1 && !blocker_exists("batch_fsync_slow") &&
+                          condition_engine_get_active_count() == 0;
+        RDW_CHECK("batch_fsync_slow: healthy fast flush does not false-fire",
+                 ok_healthy);
+
+        /* (f2) ONE injected 80ms-slow flush against the same 10ms budget
+         * trips the condition. The EWMA update either seeds directly to the
+         * sample (if f1's real flush measured exactly 0us, the "never
+         * sampled" sentinel) or damps by 1/16 (~80000/16 ≈ 5000us if f1
+         * measured a few us) — either outcome clears the 10ms budget by a
+         * wide, timing-jitter-proof margin even under heavy parallel-test
+         * scheduling noise, so this needs only ONE slow sample, not a
+         * multi-round EWMA convergence. A fresh engine reset + re-register
+         * gives this its own "first tick" (bypasses the poll_secs gate)
+         * without needing a real 20s wait. */
+        condition_engine_reset_for_testing();
+        register_batch_fsync_slow();
+        batch_fsync_slow_test_set_budget_us(10000); /* 10ms, same as f1 */
+        reducer_body_fsync_test_set_inject_delay_us(80 * 1000);
+        bool trig2 = reducer_body_fsync_test_trigger_precommit();
+        condition_engine_tick();
+        bool ok_slow = trig2 && blocker_exists("batch_fsync_slow") &&
+                       condition_engine_get_active_count() == 1 &&
+                       batch_fsync_slow_test_remedy_calls() == 1;
+        RDW_CHECK("batch_fsync_slow: injected slow flush trips the blocker",
+                 ok_slow);
+
+        {
+            struct blocker_snapshot snaps[BLOCKER_CAP];
+            int n = blocker_snapshot_all(snaps, BLOCKER_CAP);
+            bool found_reason = false;
+            for (int i = 0; i < n; i++) {
+                if (strcmp(snaps[i].id, "batch_fsync_slow") == 0 &&
+                    strstr(snaps[i].reason, "flush_us_ewma=") != NULL &&
+                    strstr(snaps[i].reason, "budget_us=") != NULL) {
+                    found_reason = true;
+                    break;
+                }
+            }
+            RDW_CHECK("batch_fsync_slow: blocker names the EWMA + budget",
+                     found_reason);
+        }
+
+        /* (f3) raise the budget WAY above the (now-elevated) EWMA on the
+         * SAME (still-active) episode — an active episode's witness is
+         * checked on EVERY tick regardless of poll_secs (see
+         * framework/condition.c's condition_tick_one), so no reset/clock
+         * trick is needed here; this is the deterministic way to prove the
+         * witness clears on a fresh read without waiting out 16 rounds of
+         * 1/16 EWMA decay. */
+        reducer_body_fsync_test_set_inject_delay_us(0);
+        batch_fsync_slow_test_set_budget_us(60LL * 1000 * 1000); /* 60s */
+        condition_engine_tick();
+        bool ok_clear = !blocker_exists("batch_fsync_slow") &&
+                        condition_engine_get_active_count() == 0;
+        RDW_CHECK("batch_fsync_slow: budget clearing the EWMA clears "
+                 "the blocker", ok_clear);
+
+        /* dumpstate carries live fsync timing after real activity. */
+        struct json_value v2;
+        json_init(&v2);
+        bool dumped2 = reducer_drive_dump_state_json(&v2, NULL);
+        bool okd2 = dumped2 &&
+            json_get(&v2, "fsync_flush_us_ewma") != NULL &&
+            json_get_int(json_get(&v2, "fsync_flush_us_ewma")) > 0;
+        RDW_CHECK("batch_fsync_slow: dumpstate reflects live EWMA activity",
+                 okd2);
+        json_free(&v2);
+
+        batch_fsync_slow_test_reset();
+        reducer_body_fsync_test_reset();
+        condition_engine_reset_for_testing();
+        blocker_reset_for_testing();
     }
 
     rdw_cleanup();

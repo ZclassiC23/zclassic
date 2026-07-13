@@ -65,4 +65,29 @@ int reducer_drain_to_convergence_unbudgeted(void);
 void reducer_enter_batched_body_sync(void);
 void reducer_exit_batched_body_sync(void);
 
+/* Timing snapshot for the batched pre-commit durability flush (drive+fsync
+ * telemetry gap 2): last_flush_us is the most recent single flush's
+ * wall-clock duration; flush_us_ewma is its exponential moving average
+ * (alpha = 1/16, integer arithmetic, same shape as
+ * lib/util/src/stage.c's step_us_ewma). Either output pointer may be NULL.
+ * Lock-free atomic reads, no allocation — safe from the reducer_drive
+ * dumpstate / batch_fsync_slow condition thread while a drive runs. Both
+ * read 0 before the first batch commit is ever observed. */
+void reducer_body_fsync_timing_snapshot(int64_t *last_flush_us,
+                                        int64_t *flush_us_ewma);
+
+#ifdef ZCL_TESTING
+/* Force an artificial delay (microseconds) at the top of the next and every
+ * subsequent precommit flush, so a test can prove the timing/EWMA/condition
+ * wiring fires on a genuine slow flush without a real contended disk. 0
+ * (the default) restores the real (fast) precommit path. */
+void reducer_body_fsync_test_set_inject_delay_us(int64_t us);
+/* Zero the timing atomics + the injected delay. */
+void reducer_body_fsync_test_reset(void);
+/* Invoke the precommit flush directly (bypasses needing a real open
+ * stage_batch/DB — see the .c file for why this is safe). Returns the same
+ * veto verdict the real stage_batch_end() hook would receive. */
+bool reducer_body_fsync_test_trigger_precommit(void);
+#endif
+
 #endif /* ZCL_REDUCER_INGEST_SERVICE_H */

@@ -14,6 +14,7 @@
 #include "json/json.h"
 #include "platform/time_compat.h"
 #include "services/reducer_drain.h"
+#include "services/reducer_ingest_service.h"
 #include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
@@ -272,6 +273,38 @@ bool reducer_drive_dump_state_json(struct json_value *out, const char *key)
         }
         ok = ok && json_push_kv(out, "stage_spin", &spin_obj);
         json_free(&spin_obj);
+    }
+
+    /* Drain-exit telemetry (drive+fsync telemetry gap 1): deconflates a
+     * round loop that genuinely CONVERGED (no more work) from one that hit
+     * its wall-clock/round BUDGET ceiling — see
+     * app/services/src/reducer_drain.c's counters' doc comment for exactly
+     * what does and does not count toward each total. Lock-free atomic
+     * reads, no allocation. */
+    {
+        struct reducer_drain_exit_stats des;
+        reducer_drain_exit_stats_snapshot(&des);
+        ok = ok && json_push_kv_int(out, "drain_exit_converged_total",
+                                    (int64_t)des.exit_converged_total);
+        ok = ok && json_push_kv_int(out, "drain_exit_budget_total",
+                                    (int64_t)des.exit_budget_total);
+        ok = ok && json_push_kv_int(out, "drain_last_round_advances",
+                                    des.last_round_advances);
+        ok = ok && json_push_kv_int(out, "drain_last_elapsed_us",
+                                    des.last_elapsed_us);
+    }
+
+    /* Batched pre-commit durability flush timing (drive+fsync telemetry gap
+     * 2): the fdatasync/event_log flush that brackets every stage-batch
+     * COMMIT (app/services/src/reducer_body_fsync.c) — see
+     * app/conditions/src/batch_fsync_slow.c for the condition that watches
+     * fsync_flush_us_ewma against a budget. Both read 0 before the first
+     * batch commit is ever observed. */
+    {
+        int64_t last_flush_us = 0, flush_us_ewma = 0;
+        reducer_body_fsync_timing_snapshot(&last_flush_us, &flush_us_ewma);
+        ok = ok && json_push_kv_int(out, "fsync_last_flush_us", last_flush_us);
+        ok = ok && json_push_kv_int(out, "fsync_flush_us_ewma", flush_us_ewma);
     }
 
     /* coins_applied_height is the LAGGING measure (the durable coins_kv

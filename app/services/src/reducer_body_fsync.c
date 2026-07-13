@@ -29,33 +29,121 @@
  *
  * Durability is unchanged — only the fsync cadence drops from ~5/block to
  * ~1/batch. At tip the batch is a single block, so the artifacts are synced at
- * that block's own drain COMMIT: identical durability, one extra deferred hop. */
+ * that block's own drain COMMIT: identical durability, one extra deferred hop.
+ *
+ * TIMING (drive+fsync telemetry gap 2): the flush above is bracketed with a
+ * GetTimeMicros() pair so an IO stall INSIDE it (ext4 jbd2 journal-commit
+ * wait, a slow/contended disk) becomes a visible number instead of an
+ * indistinguishable-from-slow-fold mystery. last_flush_us is the most recent
+ * sample; flush_us_ewma is an exponential moving average (alpha = 1/16,
+ * integer arithmetic — identical shape to lib/util/src/stage.c's
+ * step_us_ewma) so a single slow outlier doesn't itself trip anything, only a
+ * SUSTAINED regression does. Neither the veto-on-failed-flush contract nor
+ * anything else about what gets fsynced or when changes — this is a clock
+ * pair around an already-expensive fsync, negligible overhead. See
+ * app/conditions/src/batch_fsync_slow.c for the condition that watches the
+ * EWMA against a budget. */
 
 #include "services/reducer_ingest_service.h"
 
+#include "core/utiltime.h"       /* GetTimeMicros */
 #include "storage/disk_block_io.h"
 #include "storage/event_log.h"
 #include "storage/event_log_singleton.h"
 #include "util/stage.h"
 
 #include <stdatomic.h>
+#include <stdint.h>
 
 static _Atomic bool g_body_fsync_hook_registered = false;
 
+/* Single-writer: reducer_batched_durability_precommit fires only from
+ * stage_batch_end(), which stage.c documents as serialized by the recursive
+ * progress_store_tx_lock (at most one batch open/committing at a time) —
+ * identical threading contract to stage.c's own step_us_ewma, so a plain
+ * atomic_load/store read-modify-write here is race-free (matches
+ * stage_record_step_timing exactly). Read from the reducer_drive dumpstate
+ * thread and the batch_fsync_slow condition, hence atomics. */
+static _Atomic int64_t g_fsync_last_flush_us;
+static _Atomic int64_t g_fsync_flush_us_ewma;
+
+#ifdef ZCL_TESTING
+#include <time.h>
+/* Test-only artificial delay injected at the top of the precommit flush, so
+ * a unit test can prove the timing + EWMA + the batch_fsync_slow condition
+ * fire on a genuine slow-flush without needing a real contended disk. 0 (the
+ * default) is a no-op — compiled out entirely in production builds. */
+static _Atomic int64_t g_test_inject_delay_us;
+
+void reducer_body_fsync_test_set_inject_delay_us(int64_t us)
+{
+    atomic_store(&g_test_inject_delay_us, us);
+}
+
+void reducer_body_fsync_test_reset(void)
+{
+    atomic_store(&g_test_inject_delay_us, 0);
+    atomic_store(&g_fsync_last_flush_us, 0);
+    atomic_store(&g_fsync_flush_us_ewma, 0);
+}
+#endif
+
 static bool reducer_batched_durability_precommit(void)
 {
+    int64_t t0 = GetTimeMicros();
+#ifdef ZCL_TESTING
+    int64_t inj = atomic_load(&g_test_inject_delay_us);
+    if (inj > 0) {
+        struct timespec ts = { .tv_sec = inj / 1000000,
+                               .tv_nsec = (inj % 1000000) * 1000 };
+        nanosleep(&ts, NULL);
+    }
+#endif
     /* Fired by stage_batch_end() immediately before COMMIT. Flush BOTH
      * deferred on-disk artifacts the fold defers — the block bodies
      * (blk*.dat, disk_block_io) AND the append-only event_log — so no
      * committed stage marker (cursor, *_log row) references unsynced bytes.
      * A false return from EITHER flush VETOES the commit (stage_batch_end
      * rolls back). Both are attempted (no short-circuit) so a transient
-     * failure in one still fdatasyncs the other. */
+     * failure in one still fdatasyncs the other. Neither this ordering nor
+     * the veto decision below is touched by the timing wrap — only the two
+     * GetTimeMicros() reads and the atomic stores after are new. */
     bool bodies = disk_block_io_sync_pending();
     event_log_t *log = event_log_singleton();
     bool events = log ? event_log_flush(log) : true;
+
+    int64_t elapsed_us = GetTimeMicros() - t0;
+    if (elapsed_us < 0)
+        elapsed_us = 0;
+    atomic_store(&g_fsync_last_flush_us, elapsed_us);
+    int64_t prev = atomic_load(&g_fsync_flush_us_ewma);
+    int64_t next = (prev == 0) ? elapsed_us : prev + (elapsed_us - prev) / 16;
+    atomic_store(&g_fsync_flush_us_ewma, next);
+
     return bodies && events;
 }
+
+void reducer_body_fsync_timing_snapshot(int64_t *last_flush_us,
+                                        int64_t *flush_us_ewma)
+{
+    if (last_flush_us)
+        *last_flush_us = atomic_load(&g_fsync_last_flush_us);
+    if (flush_us_ewma)
+        *flush_us_ewma = atomic_load(&g_fsync_flush_us_ewma);
+}
+
+#ifdef ZCL_TESTING
+/* Direct test hook: invokes the exact static precommit function stage.c's
+ * hook would call, WITHOUT needing a real open stage_batch/DB — safe because
+ * disk_block_io_sync_pending() is a no-op fast-path with nothing pending and
+ * event_log_singleton() returns NULL (events=true) when no event log module
+ * is open in the test process. Returns the same veto verdict the real hook
+ * would return. */
+bool reducer_body_fsync_test_trigger_precommit(void)
+{
+    return reducer_batched_durability_precommit();
+}
+#endif
 
 void reducer_enter_batched_body_sync(void)
 {

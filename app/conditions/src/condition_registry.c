@@ -36,6 +36,7 @@ void register_clock_skew_reconcile(void);
 void register_sapling_anchor_frontier_unavailable(void);
 void register_blocker_stall_meta_detector(void);
 void register_reducer_drive_watchdog(void);
+void register_batch_fsync_slow(void);
 
 void condition_registry_register_all(void)
 {
@@ -72,4 +73,5 @@ void condition_registry_register_all(void)
     register_sapling_anchor_frontier_unavailable();
     register_blocker_stall_meta_detector();
     register_reducer_drive_watchdog();
+    register_batch_fsync_slow();
 }

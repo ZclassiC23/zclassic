@@ -816,15 +816,33 @@ int test_mint_fold_livelock(void)
         activation_controller_init(&ctl, &ms, NULL, cp, netdir);
 
         uint64_t ua_before = utxo_apply_stage_cursor();
+        struct reducer_drain_exit_stats des_before, des_after;
+        reducer_drain_exit_stats_snapshot(&des_before);
         int64_t t0 = GetTimeMicros();
         int advanced = reducer_kick_unbudgeted(&ctl);
         int64_t elapsed_us = GetTimeMicros() - t0;
+        reducer_drain_exit_stats_snapshot(&des_after);
         uint64_t ua_after = utxo_apply_stage_cursor();
         uint64_t ha_after = header_admit_stage_cursor();
 
         ML_CHECK("walled: kick advanced upstream work (adv>0)", advanced > 0);
         ML_CHECK("walled: frontier did NOT move (utxo_apply walled)",
                  ua_after == ua_before);
+        /* Drain-exit telemetry (drive+fsync telemetry gap 1): the
+         * frontier-stall break is deliberately bucketed into NEITHER
+         * counter (see reducer_drain.c's doc comment) — it is a distinct
+         * "walled fold" fact with its own dedicated signal
+         * (mint_fold.frontier_walled below), not a throughput/convergence
+         * one. This is the regression proof that a walled fold does NOT
+         * masquerade as healthy convergence nor get misdiagnosed as an
+         * IO/budget stall. */
+        ML_CHECK("walled: frontier-stall break counts as NEITHER converged "
+                 "nor budget",
+                 des_after.exit_converged_total ==
+                     des_before.exit_converged_total &&
+                 des_after.exit_budget_total == des_before.exit_budget_total);
+        ML_CHECK("walled: drain-exit stats record the round's own advances",
+                 des_after.last_round_advances > 0);
         /* THE regression signal: with the frontier walled, the kick must
          * return at the first frontier-stalled round — one round admits at
          * most BATCH headers (+1 slack), nowhere near the N-header backlog.
@@ -996,9 +1014,24 @@ int test_mint_fold_livelock(void)
                      utxo_apply_stage_succeeded_at(1) &&
                      utxo_apply_stage_cursor() == 2);
 
+            struct reducer_drain_exit_stats des_before, des_after;
+            reducer_drain_exit_stats_snapshot(&des_before);
             int again = reducer_kick_unbudgeted(&ctl);
+            reducer_drain_exit_stats_snapshot(&des_after);
             ML_CHECK("healthy: converged at the ceiling (second kick = 0)",
                      again == 0);
+            /* Drain-exit telemetry (drive+fsync telemetry gap 1): a kick
+             * that returns 0 (genuine convergence, no more work at the
+             * ceiling) must land in exit_converged_total, NOT
+             * exit_budget_total — the opposite of the walled-frontier
+             * scenario above. */
+            ML_CHECK("healthy: converged kick increments "
+                     "exit_converged_total, not exit_budget_total",
+                     des_after.exit_converged_total ==
+                         des_before.exit_converged_total + 1 &&
+                     des_after.exit_budget_total ==
+                         des_before.exit_budget_total &&
+                     des_after.last_round_advances == 0);
 
             /* False-fire proof (advance-or-blocker contract): a healthy fold
              * moves every advancing stage's own cursor, so the reconciliation
