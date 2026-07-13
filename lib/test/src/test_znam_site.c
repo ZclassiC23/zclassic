@@ -212,6 +212,20 @@ static int t_register_refusals(void)
     uint8_t resp[65536];
     size_t nb;
 
+    /* Default-off: without the operator opt-in, POST is refused before
+     * CSRF/PoW even run (public registration spends the node wallet). */
+    unsetenv("ZCL_NAMES_PUBLIC_REGISTER");
+    const char *any = "name=alice&type=onion&value=alice.onion";
+    nb = name_site_handle_request("POST", "/names/register",
+                                  (const uint8_t *)any, strlen(any),
+                                  resp, sizeof(resp));
+    resp[nb < sizeof(resp) ? nb : sizeof(resp) - 1] = '\0';
+    TS_CHECK("public-register default-off refused",
+             strstr((char *)resp, "disabled") != NULL);
+
+    /* Opt in for the remaining gate-order checks. */
+    setenv("ZCL_NAMES_PUBLIC_REGISTER", "1", 1);
+
     /* No CSRF token → refused before anything else. */
     const char *no_csrf = "name=alice&type=onion&value=alice.onion";
     nb = name_site_handle_request("POST", "/names/register",

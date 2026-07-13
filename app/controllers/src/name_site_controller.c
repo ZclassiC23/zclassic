@@ -466,6 +466,21 @@ static size_t name_resolve_site(struct node_db *ndb, const char *name,
 static size_t name_handle_register_post(const uint8_t *body, size_t body_len,
                                         uint8_t *resp, size_t max)
 {
+    /* The register POST composes AND broadcasts a REGISTER tx from the
+     * NODE's wallet — the operator pays the fee for an anonymous onion
+     * visitor. CSRF + name-bound PoW bound the flood rate but each
+     * accepted request still spends real ZCL, so public registration is
+     * an explicit operator opt-in. RPC/CLI registration (name_register)
+     * is unaffected — this gates only the anonymous HTML surface. */
+    const char *pub = getenv("ZCL_NAMES_PUBLIC_REGISTER");
+    if (!pub || strcmp(pub, "1") != 0)
+        return name_view_register_result("", "", "",
+            "Public registration is disabled on this node (the operator "
+            "wallet funds each registration). Node operator: set "
+            "ZCL_NAMES_PUBLIC_REGISTER=1 to enable, or use the "
+            "name_register RPC / CLI.",
+            resp, max);
+
     char name[128] = "", type_s[32] = "", value[256] = "";
     char csrf[64] = "", pow_ts[32] = "", pow_nonce[32] = "";
     if (body && body_len > 0) {
