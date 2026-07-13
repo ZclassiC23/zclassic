@@ -47,6 +47,8 @@ else
     ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
 fi
 cd "$ROOT" || { echo "check_mint_skip_crypto_offline_only: bad root '$ROOT'" >&2; exit 2; }
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
 
 SETTER='mint_skip_crypto_set'
 
@@ -69,7 +71,7 @@ is_allowed() {
 
 # Build the scan set: every .c in the code trees. FAIL LOUD if empty.
 mapfile -t SCAN < <(find app config src tools domain application adapters \
-                        -name '*.c' -type f 2>/dev/null | sort)
+                        -name '*.c' -type f "${LINT_FIND_PRUNE_ARGS[@]}" 2>/dev/null | sort)
 if [ "${#SCAN[@]}" -eq 0 ]; then
     echo "check_mint_skip_crypto_offline_only: FAIL — empty scan set (no .c found)" >&2
     echo "  This gate must scan a non-empty set; refusing to pass silently." >&2

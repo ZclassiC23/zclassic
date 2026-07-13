@@ -3497,7 +3497,38 @@ check-honest-witness:
 	@echo "══ LINT: honest witness (E12) ══"
 	@ZCL_LINT_MODE=FAIL ./tools/lint/check_honest_witness.sh
 
-lint: check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-release-no-dev-symbols check-stable-publish-contained check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-thread-supervision check-file-purpose check-group-purpose check-no-orphan-placement check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vendor-provenance
+# wf/dx-scanner-immunity — every gate invoked as a `check-*` Make target
+# (whether standalone `make check-foo` or as a `lint:` prerequisite) runs
+# with ZCL_LINT_PRODUCTION_SCAN=1, so tools/lint/scan_exclusions.sh's
+# arrays exclude the shared lint-fixture-name glob + build/vendor/worktree
+# noise for EVERY production scan. Gate selftests (lib/test/src/
+# test_make_lint_gates.c) exec the gate scripts directly — bypassing
+# `make` entirely — so this var stays unset there and detection power for
+# a freshly-planted selftest fixture is unchanged. See
+# tools/lint/scan_exclusions.sh for the full rationale. Pattern-specific
+# variables propagate to prerequisites, so this covers both direct
+# invocation and the `lint:` umbrella uniformly.
+check-%: export ZCL_LINT_PRODUCTION_SCAN := 1
+
+# wf/dx-scanner-immunity — runs FIRST: names any untracked stray .c/.h file
+# under a scanned source dir as "untracked stray file (not a code
+# violation)" before any OTHER gate has a chance to report its content as
+# if it were a real defect. See tools/lint/check_no_stray_untracked_source.sh.
+check-no-stray-untracked-source:
+	@echo "══ LINT: no stray untracked source (DX1) ══"
+	@./tools/lint/check_no_stray_untracked_source.sh
+
+# wf/dx-scanner-immunity regression proof — plants a transient lint-gate
+# fixture mid-scan and proves: (1) a production scan ignores it, (2) a
+# selftest-style direct invocation still detects it (detection unweakened),
+# (3) a REAL violation with a non-fixture name still fails every mode, and
+# (4) an untracked stray file is named distinctly, not as a code violation.
+# See tools/lint/selftest_scanner_immunity.sh.
+check-scanner-immunity:
+	@echo "══ LINT: scanner fixture-race immunity regression proof (DX1) ══"
+	@./tools/lint/selftest_scanner_immunity.sh
+
+lint: check-no-stray-untracked-source check-scanner-immunity check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-release-no-dev-symbols check-stable-publish-contained check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-raw-sqlite-in-controllers check-supervisor-domain check-thread-supervision check-file-purpose check-group-purpose check-no-orphan-placement check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vendor-provenance
 	@echo "══ LINT: all checks passed ══"
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the

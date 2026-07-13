@@ -1,0 +1,3 @@
+# Reserved for permanent, committed lint-gate selftest fixtures that must
+# live at a fixed real path (see tools/lint/scan_exclusions.sh). ALL
+# production scans exclude this directory unconditionally.

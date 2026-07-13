@@ -25,6 +25,8 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
 
 fail=0
 violations=()
@@ -46,7 +48,7 @@ while IFS= read -r f; do
     fi
     violations+=("$f: condition file includes neither \"framework/condition.h\" nor a \"conditions/\" header")
     fail=1
-done < <(find app/conditions/src -type f -name '*.c' 2>/dev/null | sort)
+done < <(find app/conditions/src -type f -name '*.c' "${LINT_FIND_PRUNE_ARGS[@]}" 2>/dev/null | sort)
 
 # Models: a models/ header (transitively pulls activerecord.h).
 while IFS= read -r f; do
@@ -56,7 +58,7 @@ while IFS= read -r f; do
     fi
     violations+=("$f: model file includes no \"models/\" header (activerecord lifecycle)")
     fail=1
-done < <(find app/models/src -type f -name '*.c' 2>/dev/null | sort)
+done < <(find app/models/src -type f -name '*.c' "${LINT_FIND_PRUNE_ARGS[@]}" 2>/dev/null | sort)
 
 # Supervisors: a supervisors/ header OR util/supervisor.h.
 while IFS= read -r f; do
@@ -66,7 +68,7 @@ while IFS= read -r f; do
     fi
     violations+=("$f: supervisor file includes neither a \"supervisors/\" header nor \"util/supervisor.h\"")
     fail=1
-done < <(find app/supervisors/src -type f -name '*.c' 2>/dev/null | sort)
+done < <(find app/supervisors/src -type f -name '*.c' "${LINT_FIND_PRUNE_ARGS[@]}" 2>/dev/null | sort)
 
 if [ "$fail" = "0" ]; then
     echo "check_shape_includes_header: clean — every condition/model/supervisor file includes its shape header"

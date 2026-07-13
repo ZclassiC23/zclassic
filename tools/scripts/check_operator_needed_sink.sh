@@ -20,6 +20,8 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
 
 EVENT=EV_OPERATOR_NEEDED
 ALERTS_FILE="lib/util/src/alerts.c"
@@ -27,7 +29,7 @@ ALERTS_FILE="lib/util/src/alerts.c"
 # 1. Production emit present? (exclude lib/test fixtures)
 emit_hits=$(grep -rln --include='*.c' \
     -E "event_emitf?\s*\(\s*${EVENT}\b" \
-    app lib config 2>/dev/null \
+    app lib config "${LINT_GREP_EXCLUDE_ARGS[@]}" 2>/dev/null \
     | grep -v '/test/' \
     || true)
 

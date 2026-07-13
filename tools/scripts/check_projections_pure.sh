@@ -28,6 +28,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 # shellcheck source=tools/lint/gate_lib.sh
 . tools/lint/gate_lib.sh
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
 
 # Scan dir is overridable via ZCL_PROJ_SCAN_DIR so the lint-gate self-test can
 # point the gate at an EMPTY dir and prove the non-empty-floor preflight fires
@@ -46,7 +48,7 @@ line_overridden() {
 # set, run the loops zero times, and pass hollow. The floor catches that LOUD.
 # find's nonzero exit (a missing dir) is not swallowed into a silent pass: it
 # empties scan_files, which the floor below trips.
-mapfile -t scan_files < <(find "$PROJ_SCAN_DIR" -type f -name '*_projection.c' 2>/dev/null | sort)
+mapfile -t scan_files < <(find "$PROJ_SCAN_DIR" -type f -name '*_projection.c' "${LINT_FIND_PRUNE_ARGS[@]}" 2>/dev/null | sort)
 gate_require_scanned "${#scan_files[@]}" 1 check_projections_pure \
     "no *_projection.c found under '$PROJ_SCAN_DIR' — a projection file was renamed/moved?"
 

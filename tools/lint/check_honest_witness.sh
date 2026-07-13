@@ -44,6 +44,8 @@ BASELINE="$SCRIPT_DIR/honest_witness_baseline.txt"
 COND_DIR="app/conditions/src"
 
 cd "$ROOT"
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
 
 # Observable-progress tokens. An honest witness must reference at least one:
 # real height/cursor advance, reducer-frontier H*, block_map iteration, a
@@ -129,7 +131,7 @@ if [[ -d "$COND_DIR" ]]; then
         echo "$file: $witness_name: $reason" >&2
     done < <(grep -oE '^static (inline )?bool +witness_[A-Za-z0-9_]+' "$file" \
              | grep -oE 'witness_[A-Za-z0-9_]+')
-  done < <(find "$COND_DIR" -type f -name '*.c' | sort)
+  done < <(find "$COND_DIR" -type f -name '*.c' "${LINT_FIND_PRUNE_ARGS[@]}" | sort)
 fi
 
 # Fail-loud if the producer found NOTHING while condition sources exist. A

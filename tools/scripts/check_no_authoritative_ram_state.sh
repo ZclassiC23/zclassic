@@ -8,6 +8,8 @@
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
 
 BASELINE=tools/scripts/no_authoritative_ram_state_baseline.txt
 [ -f "$BASELINE" ] || touch "$BASELINE"
@@ -29,6 +31,7 @@ mapfile -t scan_files < <(find app lib config tools -type f \( -name '*.c' -o -n
     ! -path '*/test/*' \
     ! -path 'tools/scripts/*' \
     ! -path 'tools/lint/*' \
+    "${LINT_FIND_PRUNE_ARGS[@]}" \
     | sort)
 
 # One batched grep over the whole scan set instead of a fork per file.

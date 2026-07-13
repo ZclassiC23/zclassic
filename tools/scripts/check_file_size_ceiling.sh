@@ -40,6 +40,8 @@ set -euo pipefail
 cd "$(dirname "$0")/../.."
 # shellcheck source=tools/lint/gate_lib.sh
 . tools/lint/gate_lib.sh
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
 
 CEILING=800
 
@@ -116,8 +118,8 @@ enforced_baseline_count="${#enforced_baseline[@]}"
 # Fail-loud preflight: the scan set MUST be non-empty. A `find` over a
 # renamed/moved/emptied app/ or config/src/ would otherwise silently
 # iterate zero files and this gate would report "clean" while blind.
-mapfile -t enforced_files < <( { find app -type f -name '*.c'; \
-    find config/src -type f -name '*.c' 2>/dev/null; } | sort )
+mapfile -t enforced_files < <( { find app -type f -name '*.c' "${LINT_FIND_PRUNE_ARGS[@]}"; \
+    find config/src -type f -name '*.c' "${LINT_FIND_PRUNE_ARGS[@]}" 2>/dev/null; } | sort )
 gate_require_scanned "${#enforced_files[@]}" 1 check_file_size_ceiling \
     "no *.c under app/ or config/src/ — was a shape dir renamed/moved?"
 
@@ -164,8 +166,8 @@ declare -A lib_baseline=()
 load_baseline lib_baseline "$LIB_BASELINE"
 lib_baseline_count="${#lib_baseline[@]}"
 
-mapfile -t lib_files_all < <( { find lib -type f -name '*.c' -not -path 'lib/test/*'; \
-    find domain -type f -name '*.c' -not -path '*/test/*' 2>/dev/null; } | sort )
+mapfile -t lib_files_all < <( { find lib -type f -name '*.c' -not -path 'lib/test/*' "${LINT_FIND_PRUNE_ARGS[@]}"; \
+    find domain -type f -name '*.c' -not -path '*/test/*' "${LINT_FIND_PRUNE_ARGS[@]}" 2>/dev/null; } | sort )
 gate_require_scanned "${#lib_files_all[@]}" 1 check_file_size_ceiling \
     "no *.c under lib/ (excl. lib/test/) or domain/ — was a dir renamed/moved?"
 

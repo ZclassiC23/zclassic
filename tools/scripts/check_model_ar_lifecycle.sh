@@ -7,10 +7,20 @@
 
 set -euo pipefail
 
-cd "$(dirname "$0")/../.."
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+cd "$ROOT"
+# shellcheck source=tools/lint/scan_exclusions.sh
+source "$ROOT/tools/lint/scan_exclusions.sh"
 
 shopt -s nullglob
 files=(app/models/src/*.c)
+if [[ "${ZCL_LINT_PRODUCTION_SCAN:-0}" == "1" ]]; then
+    kept=()
+    for f in "${files[@]}"; do
+        lint_path_is_excluded "$f" || kept+=("$f")
+    done
+    files=("${kept[@]}")
+fi
 if (( ${#files[@]} < 20 )); then
     echo "FAIL: check_model_ar_lifecycle scanned only ${#files[@]} model file(s)"
     echo "      expected app/models/src/*.c; gate would be hollow"

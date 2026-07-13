@@ -46,6 +46,8 @@ set -euo pipefail
 
 # Run from the repo root regardless of the caller's CWD.
 cd "$(dirname "$0")/../.."
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
 
 # The allow set: domain self-includes + the 12 lib subsystem prefixes. Any
 # quoted slash-include whose first path component is not in this set is a
@@ -83,7 +85,7 @@ while IFS= read -r f; do
         violations+=("$f:$lineno domain may not include $hdr")
         fail=1
     done < <(grep -nE '^[[:space:]]*#include[[:space:]]+"[^"]+/' "$f" || true)
-done < <(find domain -type f \( -name '*.c' -o -name '*.h' \) ! -path '*/test/*')
+done < <(find domain -type f \( -name '*.c' -o -name '*.h' \) ! -path '*/test/*' "${LINT_FIND_PRUNE_ARGS[@]}")
 
 if [ "$fail" = "0" ]; then
     echo "check_domain_purity: clean — domain/ has no app/lib includes"

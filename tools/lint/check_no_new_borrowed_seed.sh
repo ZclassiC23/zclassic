@@ -24,6 +24,8 @@ set -euo pipefail
 # take a "." root arg; default to the script's grandparent).
 ROOT="${1:-$(cd "$(dirname "$0")/../.." && pwd)}"
 cd "$ROOT"
+# shellcheck source=tools/lint/scan_exclusions.sh
+source tools/lint/scan_exclusions.sh
 
 BASELINE=tools/lint/borrowed_seed_caller_baseline.txt
 DEF_FILE=lib/storage/src/coins_kv_boot_rebuild.c
@@ -60,7 +62,7 @@ while IFS= read -r f; do
         new_callers+=("$f")
         fail=1
     fi
-done < <(grep -rl --include='*.c' "$SYMBOL" app config src lib tools 2>/dev/null | sort -u)
+done < <(grep -rl --include='*.c' "$SYMBOL" app config src lib tools "${LINT_GREP_EXCLUDE_ARGS[@]}" 2>/dev/null | sort -u)
 
 # Also flag a STALE baseline entry (a listed caller that no longer calls it):
 # keep the ratchet honest so deletions are reflected, not silently grandfathered.

@@ -46,6 +46,8 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT"
+# shellcheck source=tools/lint/scan_exclusions.sh
+source "$ROOT/tools/lint/scan_exclusions.sh"
 
 ALLOWLIST="$SCRIPT_DIR/raw_sqlite_allowlist.txt"
 
@@ -66,7 +68,7 @@ fi
 # `2>/dev/null ... || true`, so the producer silently emptied and the gate
 # passed "clean" exit 0 over zero scanned hits. Capture the first grep's
 # exit explicitly: 0=hits, 1=no-hits (fine), >=2=fatal.
-raw_scan=$(grep -rn 'sqlite3_step[[:space:]]*(' app/ tools/ lib/ config/ src/ --include='*.c')
+raw_scan=$(grep -rn 'sqlite3_step[[:space:]]*(' app/ tools/ lib/ config/ src/ --include='*.c' "${LINT_GREP_EXCLUDE_ARGS[@]}")
 grep_rc=$?
 if [[ $grep_rc -ge 2 ]]; then
     echo "check_raw_sqlite: FATAL — grep exited $grep_rc scanning app/ tools/ lib/ config/ src/." >&2
@@ -102,7 +104,7 @@ exec_scan=$(
     find app tools lib config src \
         \( -path '*/vendor/*' -o -path '*/build/*' -o -path '*/test/*' \) -prune \
         -o \( \( -name '*.c' -o -name '*.h' \) \
-              ! -name '_*fixture*tmp*.c' \) -type f -print |
+              "${LINT_FIND_PRUNE_ARGS[@]}" \) -type f -print |
     while IFS= read -r path; do
         [[ "$path" == "app/models/include/models/activerecord.h" ]] && continue
         awk -v path="$path" '
