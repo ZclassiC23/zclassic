@@ -1236,6 +1236,8 @@ int main(int argc, char **argv)
       failures += test_wallet_persistence_cycle(); }
     { extern int test_wallet_flush_rollback(void);
       failures += test_wallet_flush_rollback(); }
+    { extern int test_dbquery_secret_denylist(void);
+      failures += test_dbquery_secret_denylist(); }
     failures += test_log_json();
     failures += test_http_middleware();
     failures += test_rpc_timeout();

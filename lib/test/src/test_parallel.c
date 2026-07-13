@@ -137,7 +137,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(script_interp_oproll_semantics)    X(script_interp_optuck_insert) \
     X(script_interp_overflow_boundary) \
     X(wallet_backup) \
-    X(wallet_canary) X(wallet_persistence_cycle) \
+    X(wallet_canary) X(wallet_persistence_cycle) X(dbquery_secret_denylist) \
     X(wallet_flush_rollback) X(log_json) X(http_middleware) \
     X(rpc_timeout) X(wallet_keystore) X(wallet_sqlite_enc) \
     X(zcl_result) X(netaddr_classify) X(wallet_sqlite_open_errors) X(watch_only) \
