@@ -14,6 +14,20 @@
 
 # HANDOFF — current state (2026-07-13)
 
+## 0-NEW. Incoming-developer handoff (current state)
+
+**`origin/main` is green and fully pushed** (`make build-only` + `make lint` clean). Foundation (log→reducer→projection→self-verify) is sound — finishing moves, not a rewrite. Physics floors (measured, Ryzen 9 7950X3D): full-verify ~60 s, snapshot-sync ~3–5 s; today's actuals sit 12–300× above floor. The two binding gaps: the fold validates single-threaded (15 cores idle) and there is no self-derived UTXO-snapshot path.
+
+**Highest-value next work** (each a WIP branch, local only — origin holds only `main`; NONE merge-ready, each needs finishing + gating):
+- `wf/parallel-validation` — **the #1 lever**: parallel script+proof validation pool. Needs a deterministic-verdict test (identical verdict + first-failure under pool size 1 vs 16) + copy-prove A/B blk/s. Consensus-adjacent: parallelism within a block only, verdict order-independent.
+- `wf/groth16-beat-rust` — **CONSENSUS-CRITICAL**: partial BLS12-381 verify optimization. Do NOT merge without the differential parity oracle (committed at `lib/test/differential/` on this branch) proving bit-identical accept/reject verdicts on every input incl the non-canonical-infinity quirk.
+- `wf/dx-navigator-callgraph`, `wf/dx-scanner-immunity` — dev-loop speedups (`code callers/callees/trace`; scanner stops failing-closed on stray files). Need gating.
+- Then: finish the sovereign cure (self-derive the anchor, delete the borrow — unwedges canonical); activate FlyClient/UTXO-snapshot fast-sync.
+
+**Live node:** public canonical remains wedged at H\*=3,176,325 on `utxo_apply.anchor_backfill_gap` (the cure track). The **`zclassic23-mint-receipt`** producer folds as the cure source on an OLD binary — restart it on a current-`main` binary (it is mint-exempt from the new wallet gate) for a large fold-rate jump: build node → `--importblockindex $HOME/.zclassic <dir>/node.db` → start the unit. Never touch the two older producers (`~/.zclassic-c23-anchor-mint`, `-mint-fast`).
+
+**Traps:** the shared `core.hooksPath` flaps to absolute under worktree agents (the gate self-heals now; else per-process `GIT_CONFIG` override, never `make install-hooks`); the `CODEBASE_MAP.md` `test_groups:` count conflicts on parallel lanes (resolve to `bash tools/scripts/check_doc_counts.sh`); never run two concurrent `make lint`/builds in one checkout; worktree agents must never edit the main checkout by absolute path.
+
 ## 0. 2026-07-13 evening session — resilience program Phase 0 landed; receipt producer FOLDING
 
 **The "silently stuck" class is now unrepresentable on the mint/reducer drive.**
