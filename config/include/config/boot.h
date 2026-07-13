@@ -381,6 +381,18 @@ void boot_mint_anchor_require_producer_lane(struct sqlite3 *progress_db,
                                             bool checkpoint_fold);
 bool boot_mint_anchor_should_log_progress(int32_t applied_through,
                                           int32_t anchor);
+/* Fail-closed mint-fold stall diagnosis (impl in config/src/boot_mint_anchor.c):
+ * the drive loop calls this when the utxo_apply frontier stops below the anchor
+ * for kStallLimit consecutive kicks. Reads the eight durable stage cursors,
+ * names the WALLED stage (earliest pipeline stage at the minimum cursor),
+ * registers the typed PERMANENT blocker `mint_fold.frontier_walled` (owner
+ * `mint_anchor`, reason carries all eight cursors), pages EV_OPERATOR_NEEDED
+ * (condition=mint_fold_frontier_walled), and prints a stage-naming stderr
+ * diagnosis — the bodies-gap wording ONLY when body_fetch is the wall. Public
+ * so the mint-fold livelock regression test can assert the blocker payload. */
+void boot_mint_anchor_report_frontier_walled(struct sqlite3 *pdb,
+                                             int32_t frontier, int32_t anchor,
+                                             int stall_kicks);
 
 /* B2 1c — boot torn-import AUTO-ARM (impl in config/src/boot_refold_staged.c).
  * Consults the pure detect predicate block_index_loader_torn_import_detect (no

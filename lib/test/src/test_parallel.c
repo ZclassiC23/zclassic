@@ -252,6 +252,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(reducer_reconcile_witness) \
     X(reducer_step_drain_harness) \
     X(reducer_ondemand_genesis_seed) \
+    X(mint_fold_livelock) \
     X(domain_consensus_verify) X(domain_consensus_subsidy) \
     X(domain_consensus_pow) X(domain_consensus_sigops) \
     X(domain_consensus_script_standard) \
