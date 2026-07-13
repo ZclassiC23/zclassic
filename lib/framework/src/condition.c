@@ -203,6 +203,8 @@ bool condition_engine_get_registered_snapshot(
     out->attempts = atomic_load(&s->attempts);
     out->last_outcome = atomic_load(&s->last_outcome);
     out->cleared_count = atomic_load(&s->cleared_count);
+    out->cooldown_secs = c->cooldown_secs;
+    out->cooldown_max_rearms = c->cooldown_max_rearms;
     pthread_mutex_unlock(&g_condition_mu);
     return true;
 }

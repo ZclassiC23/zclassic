@@ -10,7 +10,9 @@
  *   record WATCHDOG_SYNC_VIOLATION, set SYNC_IDLE then kick_local_sync;
  *   rate-limited by SYNC_VIOLATION_COOLDOWN_SECS (3600).
  * WITNESSED: the gap closed — peer_max - local <= SYNC_VIOLATION_GAP.
- * COND_CRITICAL; poll_secs=5 (backoff 60s, max_attempts 1). */
+ * COND_CRITICAL; poll_secs=5 (backoff 60s, max_attempts 1). Continue-with-
+ * cooldown: re-arms every 600s, unbounded, past max_attempts instead of
+ * latching permanently (external-resource/peer-dependent condition). */
 void register_sync_violation_lag(void);
 
 #ifdef ZCL_TESTING

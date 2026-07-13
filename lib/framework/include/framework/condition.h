@@ -118,6 +118,12 @@ struct condition_runtime_snapshot {
     int attempts;
     int last_outcome;
     int cleared_count;
+    /* Continue-with-cooldown registration (see struct condition above): 0
+     * means the legacy permanent-latch behavior at max_attempts. Exposed so
+     * tests (and any future registry audit) can assert a condition's
+     * cooldown posture directly instead of only inferring it behaviorally. */
+    int cooldown_secs;
+    int cooldown_max_rearms;
 };
 
 struct main_state;

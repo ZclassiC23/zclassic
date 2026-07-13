@@ -124,6 +124,19 @@ static struct condition c_sync_violation_lag = {
     .poll_secs = 5,
     .backoff_secs = 60,
     .max_attempts = 1,
+    /* Continue-with-cooldown (sticky-node plan #7): lagging the network's
+     * peer-reported tip is an external-resource condition (peers can still
+     * be far ahead, or new peers can arrive) — never a local deterministic-
+     * unrecoverable fault. Before this fix cooldown_secs was 0 ("legacy"),
+     * so a persistent gap (e.g. the only peer ahead of us is inbound and
+     * survives connman_force_outbound_rotation) latched EV_OPERATOR_NEEDED
+     * permanently after the single attempt and never retried the remedy —
+     * observed live: paging every 3600s for 27h with no re-attempt. Re-arm
+     * every 10 minutes, UNBOUNDED (cooldown_max_rearms = 0), matching every
+     * sibling network-dependent condition (peer_floor_violated,
+     * header_stall_at_height, sync_state_stuck, net_tip_regression, ...). */
+    .cooldown_secs = 600,
+    .cooldown_max_rearms = 0,
     .detect = detect_sync_violation_lag,
     .remedy = remedy_sync_violation_lag,
     .witness = witness_sync_violation_lag,
