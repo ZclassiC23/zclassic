@@ -95,6 +95,19 @@ int thread_registry_join_all(int timeout_sec);
 /* Current count of active entries. Exposed for the stress test. */
 int thread_registry_live_count(void);
 
+/* One row of a registry snapshot: the spawned thread's pthread_t plus its
+ * human-readable name. `tid` is directly usable with pthread_kill(). */
+struct thread_registry_view {
+    pthread_t tid;
+    char      name[48];
+};
+
+/* Copy up to `cap` active registry entries into `out` and return the number
+ * written. Acquires the registry mutex briefly for a consistent snapshot;
+ * NOT signal-handler safe — call it from ordinary context (e.g. the
+ * self-backtrace orchestrator) and then pthread_kill each `tid`. */
+int thread_registry_snapshot(struct thread_registry_view *out, int cap);
+
 /* Reset all registry state. For test harness use only — production
  * code should never call this. */
 void thread_registry_reset_for_test(void);

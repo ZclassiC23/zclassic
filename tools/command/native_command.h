@@ -197,6 +197,14 @@ void zcl_native_handle_ops_selftest(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* ops.debug.backtrace — dump a live backtrace for every thread of the running
+ * node. Dispatches the `selfbacktrace` RPC method directly (no MCP router) and
+ * projects { path, thread_count }. Answers "what is every thread doing right
+ * now" where perf/gdb/ptrace are blocked. Bound by config/commands/ops.def. */
+void zcl_native_handle_ops_debug_backtrace(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
 /* core.node.bootstatus / core.node.bootwait — pre-RPC boot observability. Both
  * read <datadir>/boot_status.json directly off disk (util/boot_status.h): no
  * node contact, no RPC. bootstatus returns the current beacon (or BLOCKED when

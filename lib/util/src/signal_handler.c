@@ -4,6 +4,7 @@
 
 #define _GNU_SOURCE
 #include "util/signal_handler.h"
+#include "util/async_safe_write.h"
 
 #include <execinfo.h>
 #include <fcntl.h>
@@ -60,38 +61,13 @@ void signal_handler_run_crash_hook(int sig, siginfo_t *info, void *ucontext)
     g_crash_hook_running = 0;
 }
 
-/* Async-signal-safe unsigned-decimal writer. Returns bytes written. */
-static int write_uint(int fd, unsigned long v)
-{
-    char buf[32];
-    int n = 0;
-    if (v == 0) { buf[n++] = '0'; }
-    while (v > 0) { buf[n++] = (char)('0' + (v % 10)); v /= 10; }
-    /* reverse */
-    for (int i = 0; i < n / 2; i++) {
-        char t = buf[i]; buf[i] = buf[n - 1 - i]; buf[n - 1 - i] = t;
-    }
-    return (int)write(fd, buf, (size_t)n);
-}
-
-/* Async-signal-safe hex writer (lowercase, no 0x prefix). */
-static int write_hex(int fd, unsigned long v)
-{
-    static const char H[] = "0123456789abcdef";
-    char buf[18];
-    int n = 0;
-    if (v == 0) { buf[n++] = '0'; }
-    while (v > 0) { buf[n++] = H[v & 0xF]; v >>= 4; }
-    for (int i = 0; i < n / 2; i++) {
-        char t = buf[i]; buf[i] = buf[n - 1 - i]; buf[n - 1 - i] = t;
-    }
-    return (int)write(fd, buf, (size_t)n);
-}
-
-static int write_s(int fd, const char *s)
-{
-    return (int)write(fd, s, strlen(s));
-}
+/* Async-signal-safe fd writers now live in util/async_safe_write.c so the live
+ * self-backtrace handler (self_backtrace.c) reuses the exact same audited code
+ * rather than duplicating it. These thin aliases keep emit_report() unchanged
+ * and preserve crash-handler behavior byte-for-byte. */
+static int write_uint(int fd, unsigned long v) { return asw_write_uint(fd, v); }
+static int write_hex(int fd, unsigned long v)  { return asw_write_hex(fd, v); }
+static int write_s(int fd, const char *s)      { return asw_write_str(fd, s); }
 
 /* Emit the marker + backtrace to one fd. Async-signal-safe throughout. */
 static void emit_report(int fd, int sig, siginfo_t *info,

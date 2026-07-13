@@ -179,6 +179,21 @@ int thread_registry_live_count(void)
     return n;
 }
 
+int thread_registry_snapshot(struct thread_registry_view *out, int cap)
+{
+    if (!out || cap <= 0) return 0;
+    int n = 0;
+    pthread_mutex_lock(&g_mu);
+    for (int i = 0; i < ZCL_THREAD_REGISTRY_CAP && n < cap; i++) {
+        if (!g_entries[i].active) continue;
+        out[n].tid = g_entries[i].tid;
+        memcpy(out[n].name, g_entries[i].name, sizeof(out[n].name));
+        n++;
+    }
+    pthread_mutex_unlock(&g_mu);
+    return n;
+}
+
 void thread_registry_reset_for_test(void)
 {
     pthread_mutex_lock(&g_mu);

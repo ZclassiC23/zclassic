@@ -831,6 +831,64 @@ void zcl_native_handle_ops_selftest(const struct zcl_command_request *request,
                                    : ZCL_COMMAND_EXIT_FAILED;
 }
 
+/* ── ops.debug.backtrace native leaf ───────────────────────────────────────
+ * Dispatches the `selfbacktrace` RPC method directly (the MCP router/middleware
+ * is never entered, same as ops.state → dumpstate) so the running node dumps a
+ * backtrace for every thread and returns the log path + thread_count. This is
+ * the typed answer to "what is every thread doing right now" on hosts where
+ * perf_event_paranoid / yama ptrace_scope block perf and gdb attach. */
+void zcl_native_handle_ops_debug_backtrace(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+
+    bridge_ensure_rpc_client();
+    char *result = mcp_node_rpc("selfbacktrace", "[]");
+    if (!result) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                               ZCL_COMMAND_EXIT_TRANSIENT, "NODE_UNAVAILABLE",
+                               "dispatch", true, false,
+                               "the node did not return a backtrace body",
+                               "ops.debug.backtrace");
+        (void)zcl_command_reply_add_next(reply, "core.status", "{}",
+                                         "confirm the node is running");
+        return;
+    }
+    struct json_value body;
+    if (!json_read(&body, result, strlen(result)) || body.type != JSON_OBJ) {
+        json_free(&body);
+        free(result);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "BAD_BACKTRACE_BODY",
+                               "serialize", false, false,
+                               "selfbacktrace returned a non-object body",
+                               "ops.debug.backtrace");
+        return;
+    }
+    free(result);
+
+    const struct json_value *err = json_get(&body, "error");
+    if (err && err->type == JSON_STR) {
+        const char *msg = json_get_str(err);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_FAILED, "BACKTRACE_ERROR",
+                               "execute", false, false,
+                               msg && msg[0] ? msg
+                                             : "self-backtrace dump failed",
+                               "ops.debug.backtrace");
+        json_free(&body);
+        return;
+    }
+
+    const char *path = json_get_str(json_get(&body, "path"));
+    const struct json_value *tc = json_get(&body, "thread_count");
+    (void)json_push_kv_str(&reply->data, "path", path ? path : "");
+    (void)json_push_kv_int(&reply->data, "thread_count",
+                           tc ? json_get_int(tc) : 0);
+    json_free(&body);
+}
+
 /* ── core.node.bootstatus / core.node.bootwait native leaves ───────────────
  * Pre-RPC boot observability. Both read <datadir>/boot_status.json directly
  * off disk (util/boot_status.h) — NO node contact, NO RPC — so they answer

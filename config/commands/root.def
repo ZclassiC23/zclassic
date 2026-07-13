@@ -18,7 +18,7 @@ ZCL_COMMAND_BRANCH("app", "", "Capability-scoped sovereign applications",
                    ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("dev", "", "Native edit, proof, and publication loop",
                    ZCL_COMMAND_LAYER_DEV)
-ZCL_COMMAND_BRANCH("ops", "", "Bounded diagnosis and node operations",
+ZCL_COMMAND_BRANCH("ops", "", "Node diagnostics",
                    ZCL_COMMAND_LAYER_OPS)
 ZCL_COMMAND_BRANCH("discover", "", "Search and describe the command registry",
                    ZCL_COMMAND_LAYER_DISCOVER)

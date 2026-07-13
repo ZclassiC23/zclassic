@@ -91,6 +91,7 @@
 #include "util/service_state.h"
 #include "util/supervisor.h"
 #include "util/blocker.h"
+#include "util/self_backtrace.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -316,6 +317,37 @@ bool diag_rpc_getmirrorstatus(const struct json_value *params, bool help,
     return legacy_mirror_sync_dump_state_json(result, NULL);
 }
 
+/* ── RPC: selfbacktrace ────────────────────────────────────────────
+ *
+ * Backs the `ops.debug.backtrace` native command. Dumps a live backtrace for
+ * every registered thread of THIS running node into <datadir>/backtrace-<ts>.log
+ * and returns { path, thread_count }. Works where perf/gdb/ptrace are blocked
+ * (perf_event_paranoid, yama ptrace_scope).
+ */
+bool diag_rpc_selfbacktrace(const struct json_value *params, bool help,
+                            struct json_value *result)
+{
+    (void)params;
+    RPC_HELP(help, result,
+        "selfbacktrace\n"
+        "\nDump a backtrace for every thread of the running node into "
+        "<datadir>/backtrace-<unixts>.log.\n"
+        "\nResult: { path, thread_count }.");
+
+    json_set_object(result);
+    char path[4300] = {0};
+    int n = self_backtrace_dump_all(path, sizeof(path));
+    if (n < 0) {
+        json_push_kv_str(result, "error",
+                         "self-backtrace dump failed (handler not installed or "
+                         "log open failed)");
+        return false;
+    }
+    json_push_kv_str(result, "path", path);
+    json_push_kv_int(result, "thread_count", (int64_t)n);
+    return true;
+}
+
 /* ── RPC: dumpstate <subsystem> [key] ────────────────────────────── */
 
 static const struct diagnostics_dump_entry g_dumpers[] = {
@@ -507,6 +539,9 @@ static const struct diagnostics_dump_entry g_dumpers[] = {
                      "multi-user-server identity registry: count + public projection of each principal {address, role, status, key_kind, last_login, has_znam}" },
     { "auth",       auth_challenge_dump_state_json,
                      "auth login-challenge nonce store: db_open + pending (unconsumed) single-use challenge count" },
+    { "self_backtrace", self_backtrace_dump_state_json,
+                     "live self-backtrace surface: installed flag, dump_count, and last dump's "
+                     "{last_path, last_thread_count, last_unix_ts}. Triggered by ops.debug.backtrace" },
 };
 
 int diagnostics_subsystems_csv(char *out, size_t out_sz)

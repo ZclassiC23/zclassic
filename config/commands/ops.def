@@ -25,7 +25,7 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 
 ZCL_COMMAND_READY_READ(
-    "ops.lanes", "ops", "", "Lane status",
+    "ops.lanes", "ops", "", "Lanes",
     "lanes,worktree,deploy,dev", "zcl.command.empty_input.v1",
     "zcl.ops_lanes.v1", "", "", "zclassic23 ops lanes",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -58,7 +58,7 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 
 ZCL_COMMAND_READY_READ(
-    "ops.timeline", "ops", "", "Event timeline",
+    "ops.timeline", "ops", "", "Events",
     "timeline,events,history", "zcl.command.empty_input.v1",
     "zcl.ops_timeline.v1", "", "", "zclassic23 ops timeline",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -68,7 +68,7 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 
 ZCL_COMMAND_READY_READ(
-    "ops.metrics", "ops", "", "Runtime metrics",
+    "ops.metrics", "ops", "", "Metrics",
     "metrics,counters,gauges", "zcl.command.empty_input.v1",
     "zcl.ops_metrics.v1", "", "", "zclassic23 ops metrics",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -89,7 +89,7 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_ops_state)
 
 ZCL_COMMAND_READY_READ(
-    "ops.selftest", "ops", "", "Registry self-test",
+    "ops.selftest", "ops", "", "Self-test",
     "selftest,self-test,registry,contract,smoke", "zcl.command.empty_input.v1",
     "zcl.ops_selftest.v1", "", "", "zclassic23 ops selftest",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
@@ -97,6 +97,18 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_ops_selftest)
+
+ZCL_COMMAND_BRANCH("ops.debug", "ops", "Thread backtraces",
+                   ZCL_COMMAND_LAYER_OPS)
+ZCL_COMMAND_READY_READ(
+    "ops.debug.backtrace", "ops.debug", "", "Dump every thread's backtrace",
+    "backtrace,threads,stacks,hang,deadlock,debug", "zcl.command.empty_input.v1",
+    "zcl.ops_debug_backtrace.v1", "", "", "zclassic23 ops debug backtrace",
+    ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_ops_debug_backtrace)
 
 ZCL_COMMAND_BRANCH("ops.postmortem", "ops", "Postmortems",
                    ZCL_COMMAND_LAYER_OPS)

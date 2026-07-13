@@ -153,7 +153,7 @@ static int test_branch_menus_shallow(void)
     char out[ZCL_COMMAND_LIST_BUDGET + 1];
     TEST("branch menus stay in budget and list only immediate children") {
         const char *branches[] = { "core", "core.chain", "core.wallet",
-                                   "ops", "discover" };
+                                   "ops", "ops.debug", "discover" };
         for (size_t b = 0; b < sizeof(branches) / sizeof(branches[0]); b++) {
             size_t n = zcl_command_registry_menu_json(reg, branches[b], out,
                                                       sizeof(out));
