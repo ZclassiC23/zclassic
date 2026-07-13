@@ -4,9 +4,9 @@
 # docs/work/palace-design.md §3). Each line is a tracked .c/.h that today
 # resolves to the catch-all "root" group in ci_group_for_path() — a top-level
 # file (src/) or a dir (examples/, sdk/) outside the known navigator tops. The
-# gate runs WARN now; the RATCHET flip is a later cycle. As these files are
-# relocated under a known top, DELETE their line here — this file may only
-# shrink. Goal: empty.
+# gate runs RATCHET: any new violation NOT listed here fails the build. As
+# these files are relocated under a known top, DELETE their line here — this
+# file may only shrink. Goal: empty (gate graduates to FAIL).
 #
 # Format: one repo-relative path per line; lines starting with # are comments.
 examples/01_mint_and_spend.c
