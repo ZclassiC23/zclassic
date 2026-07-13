@@ -1428,6 +1428,7 @@ int main(int argc, char **argv)
     failures += test_script_validate_contextual_gate();
     failures += test_proof_validate_stage();
     failures += test_mint_skip_crypto();
+    failures += test_mint_anchor_preflight();
     failures += test_utxo_apply_stage();
     failures += test_utxo_apply_crash_replay();
     failures += test_tip_finalize_stage();

@@ -394,6 +394,39 @@ void boot_mint_anchor_report_frontier_walled(struct sqlite3 *pdb,
                                              int32_t frontier, int32_t anchor,
                                              int stall_kicks);
 
+struct json_value;
+
+/* ONE preflight that names ALL unmet -mint-anchor producer preconditions
+ * before any datadir mutation (impl in
+ * config/src/boot_mint_anchor_preflight.c). PROBLEM this replaces: a fresh
+ * -mint-anchor datadir used to surface its unmet preconditions ONE AT A TIME
+ * across separate runs (missing legacy block index -> FATAL; missing bodies
+ * -> silent stall; ...). Runs EVERY registered check to completion (no
+ * short-circuit): datadir lock acquirable, legacy block index (node.db
+ * `blocks` table) reaches the compiled anchor height, block body files
+ * (blk*.dat) are present under <datadir>/blocks (sampled, not an O(chain)
+ * walk), disk headroom, no leftover interrupted-run WAL/SHM artifacts, and
+ * (WARN-only) the in-RAM fold's RAM estimate vs system memory. Every check is
+ * READ-ONLY — no schema creation, no writes (the datadir-lock probe never
+ * creates the pidfile if one is not already present; node.db is opened
+ * SQLITE_OPEN_READONLY).
+ *
+ * Prints one stderr line per check (name + OK/FAIL + why[ + remedy]) and, on
+ * any failure, ONE summary FATAL-style line naming every failed check.
+ * `report` (nullable) receives {"checks":[{name,ok,why,remedy},...],
+ * "all_ok":bool}. The last run's result is cached for the `mint_preflight`
+ * dumpstate subsystem (boot_mint_anchor_preflight_dump_state_json). Returns
+ * true iff every check passed (a WARN-only check reports ok=true with a
+ * non-empty `why`). */
+bool boot_mint_anchor_preflight_run_all(const char *datadir,
+                                        struct json_value *report);
+
+/* See CLAUDE.md "Adding state introspection". Reentrant-safe: reads the
+ * static last-run snapshot boot_mint_anchor_preflight_run_all populated (no
+ * allocation; the caller's json_value owns the buffer). */
+bool boot_mint_anchor_preflight_dump_state_json(struct json_value *out,
+                                                const char *key);
+
 /* B2 1c — boot torn-import AUTO-ARM (impl in config/src/boot_refold_staged.c).
  * Consults the pure detect predicate block_index_loader_torn_import_detect (no
  * side-effects); on a detected tear it ARMS a from-anchor refold

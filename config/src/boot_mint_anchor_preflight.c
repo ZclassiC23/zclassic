@@ -7,9 +7,14 @@
 #include "config/boot.h"
 #include "config/mint_anchor_progress.h"
 
+#include "chain/checkpoints.h"
 #include "event/event.h"
+#include "json/json.h"
+#include "services/disk_monitor.h"
+#include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <sqlite3.h>
@@ -18,7 +23,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/sysinfo.h>
 #include <unistd.h>
 
 #define PREFLIGHT_SUBSYS "mint_anchor"
@@ -253,4 +260,429 @@ bool boot_mint_anchor_normal_boot_preflight(const char *datadir)
                     reason[0] ? reason : "stable_snapshot_inspection_failed");
     }
     return ok;
+}
+
+/* ── run_all: ONE preflight naming EVERY unmet -mint-anchor precondition ──
+ *
+ * See config/boot.h for the contract. Each check below is READ-ONLY: no
+ * schema creation, no writes to node.db/progress.kv. node.db is opened
+ * SQLITE_OPEN_READONLY so a missing/fresh file fails the check cleanly
+ * instead of auto-vivifying an empty database. The datadir-lock check is the
+ * one check that must touch the filesystem at all (flock semantics cannot be
+ * probed without an open fd); it never creates the pidfile boot_datadir_lock
+ * (config/src/boot_datadir_lock.c) uses if one is not already present, and
+ * releases the flock it takes immediately. */
+
+struct preflight_check {
+    const char *name;
+    bool (*check)(const char *datadir, char *why, size_t why_cap);
+    const char *remedy;   /* one imperative sentence */
+};
+
+struct preflight_result {
+    const char *name;
+    bool        ok;
+    char        why[256];
+    const char *remedy;
+};
+
+/* ── individual checks ──────────────────────────────────────────────── */
+
+static bool preflight_check_datadir_lock(const char *datadir, char *why,
+                                         size_t why_cap)
+{
+    if (!datadir || !datadir[0]) {
+        snprintf(why, why_cap, "datadir path is empty");
+        return false;
+    }
+    int dirfd = open(datadir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (dirfd < 0) {
+        snprintf(why, why_cap, "cannot open datadir %s: %s", datadir,
+                 strerror(errno));
+        return false;
+    }
+    /* Read-only probe of the SAME pidfile boot_datadir_lock_acquire() uses,
+     * WITHOUT O_CREAT: absent means nothing has ever locked this datadir. If
+     * present, take+immediately-release a non-blocking exclusive flock to
+     * prove the lock is currently free — the real boot writes the pidfile
+     * body later; this probe never does. */
+    int fd = openat(dirfd, "zclassic23.pid",
+                    O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) {
+        int saved_errno = errno;
+        close(dirfd);
+        if (saved_errno == ENOENT) {
+            snprintf(why, why_cap, "no existing lock file; acquirable");
+            return true;
+        }
+        snprintf(why, why_cap, "cannot open %s/zclassic23.pid: %s", datadir,
+                 strerror(saved_errno));
+        return false;
+    }
+    bool acquirable = flock(fd, LOCK_EX | LOCK_NB) == 0;
+    int saved_errno = errno;
+    if (acquirable)
+        (void)flock(fd, LOCK_UN);
+    close(fd);
+    close(dirfd);
+    if (!acquirable) {
+        snprintf(why, why_cap,
+                 "datadir is locked by another process (flock: %s)",
+                 strerror(saved_errno));
+        return false;
+    }
+    snprintf(why, why_cap, "lock file present but currently unheld; acquirable");
+    return true;
+}
+
+static bool preflight_check_legacy_block_index(const char *datadir, char *why,
+                                                size_t why_cap)
+{
+    const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
+    if (!cp) {
+        snprintf(why, why_cap, "no compiled SHA3 UTXO checkpoint in this build");
+        return false;
+    }
+    char path[1200];
+    snprintf(path, sizeof(path), "%s/node.db", datadir ? datadir : ".");
+    sqlite3 *db = NULL;
+    int rc = sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL);
+    if (rc != SQLITE_OK) {
+        snprintf(why, why_cap,
+                 "%s: %s (fresh datadir; no legacy block index imported yet)",
+                 path, db ? sqlite3_errmsg(db) : sqlite3_errstr(rc));
+        if (db)
+            sqlite3_close(db);
+        return false;
+    }
+    sqlite3_stmt *stmt = NULL;
+    int64_t max_height = -1;
+    bool have_row = false;
+    if (sqlite3_prepare_v2(db, "SELECT MAX(height) FROM blocks", -1, &stmt,
+                           NULL) == SQLITE_OK) {
+        if (AR_STEP_ROW_READONLY(stmt) == SQLITE_ROW &&
+            sqlite3_column_type(stmt, 0) != SQLITE_NULL) {
+            max_height = sqlite3_column_int64(stmt, 0);
+            have_row = true;
+        }
+        sqlite3_finalize(stmt);
+    }
+    sqlite3_close(db);
+    if (!have_row) {
+        snprintf(why, why_cap,
+                 "%s has no 'blocks' rows (fresh datadir; no legacy block "
+                 "index imported yet)", path);
+        return false;
+    }
+    if (max_height < cp->height) {
+        snprintf(why, why_cap,
+                 "legacy block index only reaches height %lld, need >= "
+                 "anchor height %d", (long long)max_height, cp->height);
+        return false;
+    }
+    snprintf(why, why_cap,
+             "legacy block index reaches height %lld (>= anchor %d)",
+             (long long)max_height, cp->height);
+    return true;
+}
+
+/* SAMPLED, coarse presence check (no O(chain) walk): counts blk*.dat files
+ * and total bytes under <datadir>/blocks. node.db's `blocks.status` cannot be
+ * used for this — --importblockindex ALWAYS clears BLOCK_HAVE_DATA there
+ * (header-only import, app/controllers/src/snapshot_controller_import.c), and
+ * the code that actually recomputes it from the .dat files
+ * (config/src/boot_block_file_scan.c) runs later during app_init, after this
+ * preflight. A totally empty/fresh datadir has zero blk*.dat files; that is
+ * the exact "missing bodies -> stall" case this check catches upfront. */
+static bool preflight_check_bodies_sampled(const char *datadir, char *why,
+                                           size_t why_cap)
+{
+    char blocks_dir[1100];
+    snprintf(blocks_dir, sizeof(blocks_dir), "%s/blocks",
+             datadir ? datadir : ".");
+    DIR *d = opendir(blocks_dir);
+    if (!d) {
+        snprintf(why, why_cap,
+                 "no %s directory (%s); no block body files present",
+                 blocks_dir, strerror(errno));
+        return false;
+    }
+    size_t file_count = 0;
+    uint64_t total_bytes = 0;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        size_t len = strlen(ent->d_name);
+        if (len < 8 || strncmp(ent->d_name, "blk", 3) != 0 ||
+            strcmp(ent->d_name + len - 4, ".dat") != 0)
+            continue;
+        char path[1200];
+        snprintf(path, sizeof(path), "%s/%s", blocks_dir, ent->d_name);
+        struct stat st;
+        if (stat(path, &st) == 0 && S_ISREG(st.st_mode)) {
+            file_count++;
+            total_bytes += (uint64_t)st.st_size;
+        }
+    }
+    closedir(d);
+    if (file_count == 0 || total_bytes < 1024) {
+        snprintf(why, why_cap,
+                 "%s has %zu blk*.dat file(s) totaling %llu bytes; no block "
+                 "body data present (sampled check)", blocks_dir, file_count,
+                 (unsigned long long)total_bytes);
+        return false;
+    }
+    snprintf(why, why_cap,
+             "%s has %zu blk*.dat file(s) totaling %llu bytes (sampled; not "
+             "proof of contiguous coverage to the anchor)", blocks_dir,
+             file_count, (unsigned long long)total_bytes);
+    return true;
+}
+
+#define MINT_PREFLIGHT_DISK_FLOOR_BYTES   (50ULL * 1024 * 1024 * 1024)
+#define MINT_PREFLIGHT_DISK_COMFORT_BYTES (100ULL * 1024 * 1024 * 1024)
+
+static bool preflight_check_disk_headroom(const char *datadir, char *why,
+                                          size_t why_cap)
+{
+    int64_t free_bytes = disk_monitor_free_bytes(datadir ? datadir : ".");
+    if (free_bytes < 0) {
+        snprintf(why, why_cap, "statvfs failed on %s; free space unknown",
+                 datadir ? datadir : ".");
+        return false;
+    }
+    double free_gb = (double)free_bytes / (1024.0 * 1024.0 * 1024.0);
+    if ((uint64_t)free_bytes < MINT_PREFLIGHT_DISK_FLOOR_BYTES) {
+        snprintf(why, why_cap,
+                 "only %.1f GB free on the datadir filesystem (floor 50 GB)",
+                 free_gb);
+        return false;
+    }
+    if ((uint64_t)free_bytes < MINT_PREFLIGHT_DISK_COMFORT_BYTES) {
+        snprintf(why, why_cap,
+                 "WARN: only %.1f GB free (recommend >= 100 GB for a full "
+                 "historical mint fold)", free_gb);
+        return true;
+    }
+    snprintf(why, why_cap, "%.1f GB free", free_gb);
+    return true;
+}
+
+/* Reuses the SAME orphan-detection shape as
+ * boot_mint_anchor_normal_boot_preflight above (main db absent but a WAL/SHM
+ * sibling present means a prior run was interrupted before progress.kv
+ * itself was created) as a cheap stat-only table entry — no temp-copy, no
+ * inspect_snapshot: this runs BEFORE the fold starts, not as the normal-boot
+ * containment gate. */
+static bool preflight_check_leftover_wal(const char *datadir, char *why,
+                                         size_t why_cap)
+{
+    char main_path[1100], wal_path[1100], shm_path[1100];
+    snprintf(main_path, sizeof(main_path), "%s/progress.kv",
+             datadir ? datadir : ".");
+    snprintf(wal_path, sizeof(wal_path), "%s/progress.kv-wal",
+             datadir ? datadir : ".");
+    snprintf(shm_path, sizeof(shm_path), "%s/progress.kv-shm",
+             datadir ? datadir : ".");
+    bool main_exists = access(main_path, F_OK) == 0;
+    bool wal_exists = access(wal_path, F_OK) == 0;
+    bool shm_exists = access(shm_path, F_OK) == 0;
+    if (!main_exists && (wal_exists || shm_exists)) {
+        snprintf(why, why_cap,
+                 "orphaned %s%s%s without progress.kv — a prior run was "
+                 "interrupted before the main database was created",
+                 wal_exists ? "progress.kv-wal" : "",
+                 (wal_exists && shm_exists) ? " and " : "",
+                 shm_exists ? "progress.kv-shm" : "");
+        return false;
+    }
+    snprintf(why, why_cap, "no orphaned progress.kv WAL/SHM family");
+    return true;
+}
+
+/* Mirrors coins_ram.c's COINS_RAM_DEFAULT_SLOTS (8M slots) * sizeof(struct
+ * ram_slot) (~64 bytes) ~= 512MB for the slot array; rounded up to 576MB to
+ * leave headroom for the per-coin heap scripts the fold allocates.
+ * -mint-anchor defaults ZCL_FOLD_INRAM=1 unless the operator opts out
+ * (src/main.c), so this check applies unless ZCL_FOLD_INRAM is explicitly
+ * "0". WARN-only: never blocks the mint (the estimate is a slot-array floor,
+ * not the full working-set peak, so a hard refusal here would be guessing). */
+#define MINT_PREFLIGHT_FOLD_INRAM_ESTIMATE_BYTES (576ULL * 1024 * 1024)
+
+static bool preflight_check_fold_inram_ram(const char *datadir, char *why,
+                                           size_t why_cap)
+{
+    (void)datadir;
+    const char *env = getenv("ZCL_FOLD_INRAM");
+    bool inram_opted_out = env && env[0] && env[0] == '0';
+    struct sysinfo si;
+    if (sysinfo(&si) != 0) {
+        snprintf(why, why_cap, "sysinfo() failed: %s; cannot estimate RAM",
+                 strerror(errno));
+        return true;   /* unmeasurable machine: do not block on it */
+    }
+    uint64_t total_ram = (uint64_t)si.totalram * (uint64_t)si.mem_unit;
+    double total_gb = (double)total_ram / (1024.0 * 1024.0 * 1024.0);
+    if (inram_opted_out) {
+        snprintf(why, why_cap,
+                 "ZCL_FOLD_INRAM=0: in-RAM hot store disabled; system has "
+                 "%.1f GB RAM", total_gb);
+        return true;
+    }
+    if (total_ram < MINT_PREFLIGHT_FOLD_INRAM_ESTIMATE_BYTES * 2) {
+        snprintf(why, why_cap,
+                 "WARN: -mint-anchor defaults to the in-RAM UTXO hot store "
+                 "(~%llu MB slot array); system has only %.1f GB RAM total — "
+                 "consider ZCL_FOLD_INRAM=0",
+                 (unsigned long long)
+                     (MINT_PREFLIGHT_FOLD_INRAM_ESTIMATE_BYTES / 1024 / 1024),
+                 total_gb);
+        return true;
+    }
+    snprintf(why, why_cap,
+             "in-RAM hot store estimate ~%llu MB vs %.1f GB system RAM",
+             (unsigned long long)
+                 (MINT_PREFLIGHT_FOLD_INRAM_ESTIMATE_BYTES / 1024 / 1024),
+             total_gb);
+    return true;
+}
+
+static const struct preflight_check g_preflight_checks[] = {
+    { "datadir_lock_acquirable", preflight_check_datadir_lock,
+      "stop any other zclassic23 process using this datadir before starting "
+      "-mint-anchor" },
+    { "legacy_block_index_covers_anchor", preflight_check_legacy_block_index,
+      "run: zclassic23 --importblockindex $HOME/.zclassic <datadir>/node.db "
+      "(a zclassicd datadir with a header chain reaching the anchor height), "
+      "then a normal boot before -mint-anchor" },
+    { "bodies_present_sampled", preflight_check_bodies_sampled,
+      "copy or fetch block body files (blk*.dat) into <datadir>/blocks "
+      "before minting; a normal P2P boot (without -mint-anchor) fetches "
+      "them lazily" },
+    { "disk_headroom", preflight_check_disk_headroom,
+      "free at least 50 GB on the datadir's filesystem before minting a "
+      "full historical fold" },
+    { "no_leftover_interrupted_run_artifacts", preflight_check_leftover_wal,
+      "remove the orphaned progress.kv-wal/progress.kv-shm files (or "
+      "restore progress.kv) before starting -mint-anchor" },
+    { "fold_inram_memory_estimate", preflight_check_fold_inram_ram,
+      "free memory, or pass ZCL_FOLD_INRAM=0 to fold through SQLite coins_kv "
+      "instead of the in-RAM hot store" },
+};
+#define MINT_PREFLIGHT_NUM_CHECKS \
+    (sizeof(g_preflight_checks) / sizeof(g_preflight_checks[0]))
+
+/* Last-run snapshot for the `mint_preflight` dumpstate subsystem. Fixed-size,
+ * no allocation, no threads: -mint-anchor is a single-threaded offline
+ * one-shot that runs run_all before any service/thread starts. */
+static struct {
+    bool     valid;
+    bool     all_ok;
+    size_t   count;
+    struct preflight_result results[MINT_PREFLIGHT_NUM_CHECKS];
+} g_preflight_last;
+
+bool boot_mint_anchor_preflight_run_all(const char *datadir,
+                                        struct json_value *report)
+{
+    if (!datadir || !datadir[0])
+        LOG_FAIL(PREFLIGHT_SUBSYS, "preflight run_all: missing datadir");
+
+    struct json_value checks_arr = {0};
+    if (report) {
+        json_set_object(report);
+        json_set_array(&checks_arr);
+    }
+
+    bool all_ok = true;
+    size_t failed_count = 0;
+    const char *failed_names[MINT_PREFLIGHT_NUM_CHECKS];
+
+    g_preflight_last.count = MINT_PREFLIGHT_NUM_CHECKS;
+
+    for (size_t i = 0; i < MINT_PREFLIGHT_NUM_CHECKS; i++) {
+        const struct preflight_check *c = &g_preflight_checks[i];
+        char why[256] = {0};
+        bool ok = c->check(datadir, why, sizeof(why));
+
+        g_preflight_last.results[i].name = c->name;
+        g_preflight_last.results[i].ok = ok;
+        snprintf(g_preflight_last.results[i].why,
+                 sizeof(g_preflight_last.results[i].why), "%s", why);
+        g_preflight_last.results[i].remedy = c->remedy;
+
+        fprintf(stderr, "[mint-preflight] %-38s %-4s %s%s%s\n", c->name,
+                ok ? "OK" : "FAIL", why, ok ? "" : " — remedy: ",
+                ok ? "" : c->remedy);
+
+        if (report) {
+            struct json_value row = {0};
+            json_set_object(&row);
+            json_push_kv_str(&row, "name", c->name);
+            json_push_kv_bool(&row, "ok", ok);
+            json_push_kv_str(&row, "why", why);
+            json_push_kv_str(&row, "remedy", c->remedy);
+            json_push_back(&checks_arr, &row);
+            json_free(&row);
+        }
+
+        if (!ok) {
+            all_ok = false;
+            failed_names[failed_count++] = c->name;
+        }
+    }
+    g_preflight_last.all_ok = all_ok;
+    g_preflight_last.valid = true;
+
+    if (report) {
+        json_push_kv(report, "checks", &checks_arr);
+        json_free(&checks_arr);
+        json_push_kv_bool(report, "all_ok", all_ok);
+    }
+
+    if (!all_ok) {
+        char summary[1024] = {0};
+        size_t pos = 0;
+        for (size_t i = 0; i < failed_count && pos < sizeof(summary); i++) {
+            int n = snprintf(summary + pos, sizeof(summary) - pos, "%s%s",
+                             i ? "," : "", failed_names[i]);
+            if (n > 0)
+                pos += (size_t)n;
+        }
+        fprintf(stderr,
+                "FATAL: -mint-anchor preflight found %zu unmet "
+                "precondition(s) before any datadir mutation: %s — see the "
+                "per-check lines above for the exact why + remedy\n",
+                failed_count, summary);
+        event_emitf(EV_BOOT_VALIDATION_FAILED, 0,
+                    "mint_anchor_preflight failed_checks=%s", summary);
+    }
+    return all_ok;
+}
+
+bool boot_mint_anchor_preflight_dump_state_json(struct json_value *out,
+                                                const char *key)
+{
+    (void)key;
+    if (!out)
+        return false;
+    json_set_object(out);
+    json_push_kv_bool(out, "have_report", g_preflight_last.valid);
+    if (!g_preflight_last.valid)
+        return true;
+    json_push_kv_bool(out, "all_ok", g_preflight_last.all_ok);
+    struct json_value arr = {0};
+    json_set_array(&arr);
+    for (size_t i = 0; i < g_preflight_last.count; i++) {
+        struct json_value row = {0};
+        json_set_object(&row);
+        json_push_kv_str(&row, "name", g_preflight_last.results[i].name);
+        json_push_kv_bool(&row, "ok", g_preflight_last.results[i].ok);
+        json_push_kv_str(&row, "why", g_preflight_last.results[i].why);
+        json_push_kv_str(&row, "remedy", g_preflight_last.results[i].remedy);
+        json_push_back(&arr, &row);
+        json_free(&row);
+    }
+    json_push_kv(out, "checks", &arr);
+    json_free(&arr);
+    return true;
 }
