@@ -1377,6 +1377,7 @@ int main(int argc, char **argv)
     failures += test_have_data_unreadable();
     failures += test_chain_tip_watchdog_bounded_restart();
     failures += test_blocker();
+    failures += test_cpu_topology();
     failures += test_service_state();
     failures += test_service_state_driver();
     failures += test_clock();
