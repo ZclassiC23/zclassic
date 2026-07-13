@@ -177,8 +177,32 @@ add_unmapped_code_change() {
     esac
 }
 
+# Transient lint/shape-gate fixture naming contract: test_make_lint_gates.c
+# plants `_*fixture*.c` files under app/, lib/, domain/, etc. to exercise
+# the gate scripts (E1-E13, raw-malloc, observability, ...), then deletes
+# them before the test returns. A changed-file scan that samples the tree
+# mid-test (this script's own `-changed`/`compile-changed` gates, or a
+# concurrently running `dev-watch`/`pre-push-ci`) can observe one of these
+# as a transient "changed" .c file with no impact-rules mapping and fail
+# with "no focused test mapping for code changes" even though the actual
+# push is clean. Treat it as never a real source change everywhere the
+# changed-file set feeds a classification decision. Kept in sync with
+# zcl_devloop_path_is_relevant() in tools/dev/devloop_plan.c (real, tracked
+# fixture sources live under lib/test/fixtures/ and have no leading '_').
+is_transient_lint_fixture() {
+    case "$1" in
+        */_*fixture*.c|_*fixture*.c)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 is_code_like_change() {
     local file="$1"
+    is_transient_lint_fixture "$file" && return 1
     case "$file" in
         *.c|*.h|Makefile|*.mk|tools/*.sh|tools/githooks/*)
             return 0
@@ -206,10 +230,8 @@ is_graph_wide_compile_change() {
 
 is_node_c_source() {
     local file="$1"
+    is_transient_lint_fixture "$file" && return 1
     case "$file" in
-        */_*fixture*.c|_*fixture*.c)
-            return 1
-            ;;
         src/main.c|tools/mcp_server.c|app/*/src/*.c|config/src/*.c|\
         lib/*/src/*.c|domain/*/src/*.c|application/*/src/*.c|\
         adapters/outbound/persistence/src/*.c|tools/mcp/*.c|\
