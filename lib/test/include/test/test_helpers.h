@@ -630,6 +630,7 @@ int test_seal_ratify(void);
 int test_nullifier_kv(void);
 int test_nullifier_backfill_service(void);
 int test_utxo_recovery_shielded_backfill(void);
+int test_reducer_drive_guard(void);
 int test_sapling_nullifier_adversarial(void);
 int test_stage_repair(void);
 int test_script_validate_stage(void);
