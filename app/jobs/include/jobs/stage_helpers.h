@@ -27,6 +27,7 @@
 #include "validation/main_state.h"
 
 #include <sqlite3.h>
+#include <stdatomic.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -266,6 +267,34 @@ static inline int64_t stage_log_row_count(sqlite3 *db, const char *tag,
  *
  * STRICTLY a no-op unless the caller owns the active-chain window for the
  * current stage step. */
+
+/* Reducer window-extend failure counter. active_chain_extend_window{,_have_data}
+ * return false ONLY on a zcl_malloc("active_chain") grow failure (every "nothing
+ * to do" no-op returns true); the leaf is already LOG_FAIL'd at the allocation
+ * site (chainstate.c), but the CALLER here historically discarded the boolean
+ * via (void), so a persistently-failing window extend on the fold path made the
+ * stage silently stop making progress with no attribution. LOG_WARN below names
+ * every failure loudly on ALL EIGHT stages uniformly (node.log / zcl_node_log),
+ * and this counter is for direct white-box inspection (the drain-harness test).
+ *
+ * Deliberately NOT rolled into stage_dump_counters(): this header is
+ * static-inline, so every .c that #includes it gets its OWN private copy of this
+ * counter (C internal linkage). For header_admit / validate_headers / body_fetch
+ * / body_persist the reducer_extend_window_to_candidate CALL SITE and the stage's
+ * *_dump_state_json function compile in the SAME translation unit, but for
+ * script_validate / proof_validate / utxo_apply / tip_finalize the step call and
+ * the dump function live in SIBLING files (e.g. script_validate_stage.c vs
+ * script_validate_stage_dump.c) — a per-TU counter surfaced through the shared
+ * dump helper would read a permanent, wrong 0 for those four stages even after a
+ * real failure. LOG_WARN is therefore the honest cross-stage observability
+ * channel; the JSON field is intentionally omitted. */
+static _Atomic uint64_t g_reducer_window_extend_failures = 0;
+
+static inline uint64_t reducer_window_extend_failure_count(void)
+{
+    return atomic_load(&g_reducer_window_extend_failures);
+}
+
 static inline void reducer_extend_window_to_candidate(struct main_state *ms,
                                                        bool authoritative)
 {
@@ -279,9 +308,14 @@ static inline void reducer_extend_window_to_candidate(struct main_state *ms,
      * path uses the header height as a GENEROUS scan bound. A window already
      * at/above that height makes the extender a cheap no-op. */
     if (ms->pindex_best_header) {
-        (void)active_chain_extend_window_have_data(
-            &ms->chain_active, &ms->map_block_index,
-            ms->pindex_best_header, ms->pindex_best_header->nHeight);
+        if (!active_chain_extend_window_have_data(
+                &ms->chain_active, &ms->map_block_index,
+                ms->pindex_best_header, ms->pindex_best_header->nHeight)) {
+            atomic_fetch_add(&g_reducer_window_extend_failures, 1);
+            LOG_WARN("reducer_window",
+                     "[reducer_window] have-data window extend failed "
+                     "(alloc) header_h=%d", ms->pindex_best_header->nHeight);
+        }
         return;
     }
 
@@ -298,8 +332,14 @@ static inline void reducer_extend_window_to_candidate(struct main_state *ms,
     struct block_index *cand =
         active_chain_most_work_candidate(&ms->chain_active,
                                          &ms->map_block_index);
-    if (cand)
-        (void)active_chain_extend_window(&ms->chain_active, cand);
+    if (cand) {
+        if (!active_chain_extend_window(&ms->chain_active, cand)) {
+            atomic_fetch_add(&g_reducer_window_extend_failures, 1);
+            LOG_WARN("reducer_window",
+                     "[reducer_window] most-work candidate window extend "
+                     "failed (alloc) cand_h=%d", cand->nHeight);
+        }
+    }
 }
 
 /* Emit the four generic stage-machine counters (advanced/blocked/idle/error)

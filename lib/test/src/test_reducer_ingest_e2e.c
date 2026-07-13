@@ -55,6 +55,7 @@
 #include "jobs/tip_finalize_stage.h"
 #include "jobs/utxo_apply_stage.h"
 #include "services/chain_activation_service.h"
+#include "services/reducer_ingest_service.h"
 #include "storage/coins_kv.h"
 #include "storage/event_log.h"
 #include "storage/progress_store.h"
@@ -721,6 +722,35 @@ int test_reducer_ingest_e2e(void)
 
             int adv = rie_drain_to_convergence();
             RIE_CHECK("accept: reducer drain advanced", adv >= C.n - 1);
+
+            /* ── wf/foldpath-loud-errors: runtime seed-anchor re-seed is LOUD ──
+             * reducer_ingest_block's two runtime tip_finalize-anchor re-seed
+             * calls used to (void)-discard tip_finalize_stage_seed_anchor()'s
+             * result — a silent-stall SEED. reducer_ingest_try_seed_anchor now
+             * LOG_WARNs + counts a failure WITHOUT aborting the ingest.
+             *   - Forced failure: height<0 hits seed_anchor's arg guard
+             *     (tip_finalize_anchor.c:208) → deterministic false → counted.
+             *   - Healthy re-seed of genesis AFTER the drain: the finalize
+             *     cursor is now above 0, so the monotonic guard (cursor>=target
+             *     → return true) makes this a guaranteed-true idempotent no-op —
+             *     it must NOT trip the counter (zero happy-path behavior
+             *     change). */
+            {
+                uint64_t before =
+                    reducer_ingest_seed_anchor_reseed_failure_count();
+                uint8_t dummy_hash[32] = {0};
+                reducer_ingest_try_seed_anchor(-1, dummy_hash,
+                                               "unit-forced-failure");
+                RIE_CHECK("seed-anchor: forced failure is counted",
+                          reducer_ingest_seed_anchor_reseed_failure_count()
+                              == before + 1);
+
+                reducer_ingest_try_seed_anchor(0, C.blocks[0].phashBlock->data,
+                                               "unit-healthy-reseed");
+                RIE_CHECK("seed-anchor: healthy re-seed does not increment",
+                          reducer_ingest_seed_anchor_reseed_failure_count()
+                              == before + 1);
+            }
 
             /* The reducer must finalize every valid height below the top
              * (lookahead finalizes 0..n-2) and physically advance the in-mem

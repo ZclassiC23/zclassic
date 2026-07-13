@@ -213,6 +213,67 @@ int test_reducer_step_drain_harness(void)
     chain_params_select(CHAIN_REGTEST);
     const struct chain_params *cp = chain_params_get();
 
+    /* ── wf/foldpath-loud-errors: window-extend failure is now LOUD ────────
+     * reducer_extend_window_to_candidate() used to (void)-discard the
+     * active_chain_extend_window{,_have_data} result; a failed extend (alloc
+     * failure only) is now counted + LOG_WARN'd. A FRESH chain has capacity==0
+     * (active_chain_init), so the FIRST extend unconditionally attempts a
+     * zcl_malloc("active_chain") grow (active_chain_grow_locked) — arming the
+     * alloc-fault hook on that exact label forces the swallowed error to fire
+     * deterministically, without touching the harness's real fold state below.
+     * Synthetic block_index idiom mirrors mw_mk_idx in
+     * test_most_work_selector.c. pindex_best_header stays NULL so the fallback
+     * (most-work candidate) branch is exercised. */
+    {
+        struct main_state fault_ms;
+        memset(&fault_ms, 0, sizeof(fault_ms));
+        main_state_init(&fault_ms);
+
+        struct uint256 *fh = zcl_malloc(sizeof(*fh), "sd_fault_hash");
+        struct block_index *fcand =
+            fh ? zcl_calloc(1, sizeof(*fcand), "sd_fault_bi") : NULL;
+        bool fixture_ok = false;
+        if (fh && fcand) {
+            memset(fh, 0xAB, sizeof(*fh));
+            fcand->nHeight = 0;
+            fcand->phashBlock = fh;
+            fcand->nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_SCRIPTS;
+            fcand->nTx = 1;
+            fcand->nChainTx = 1;
+            arith_uint256_set_u64(&fcand->nChainWork, 1);
+            fixture_ok = block_map_insert(&fault_ms.map_block_index, fh, fcand);
+        }
+        SD_CHECK("window-extend fault: fixture candidate inserted", fixture_ok);
+
+        if (fixture_ok) {
+            uint64_t before = reducer_window_extend_failure_count();
+
+            zcl_alloc_fault_fail_next("active_chain");
+            reducer_extend_window_to_candidate(&fault_ms, true);
+            zcl_alloc_fault_clear();  /* belt-and-suspenders if unfired */
+
+            SD_CHECK("window-extend fault: injected alloc fault is counted",
+                     reducer_window_extend_failure_count() == before + 1);
+            SD_CHECK("window-extend fault: failed extend leaves window untouched",
+                     fault_ms.chain_active.height == -1);
+
+            /* Healthy retry, identical inputs, no fault armed: must succeed AND
+             * must NOT trip the failure counter (zero happy-path behavior
+             * change — the (void)-vs-checked wrapper is a no-op on success). */
+            reducer_extend_window_to_candidate(&fault_ms, true);
+            SD_CHECK("window-extend healthy: counter does not increment",
+                     reducer_window_extend_failure_count() == before + 1);
+            SD_CHECK("window-extend healthy: window actually widened to cand",
+                     fault_ms.chain_active.height == 0);
+        }
+
+        main_state_free(&fault_ms);
+        /* block_map_free does not free entry/hash blobs (process-lifetime by
+         * design; see chainstate.c) — free them here like mw_free_idx does. */
+        free(fcand);
+        free(fh);
+    }
+
     /* ── hermetic datadir + stores ─────────────────────────────────────── */
     char dir[256];
     sd_mkdir_p("./test-tmp");

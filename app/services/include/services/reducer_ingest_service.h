@@ -20,6 +20,25 @@
 #ifndef ZCL_REDUCER_INGEST_SERVICE_H
 #define ZCL_REDUCER_INGEST_SERVICE_H
 
+#include <stdint.h>
+
+/* Runtime tip_finalize anchor re-seed wrapper (2 call sites in
+ * reducer_ingest_block). tip_finalize_stage_seed_anchor() is best-effort and
+ * idempotent by design (INSERT-OR-IGNORE; see the call-site comments), but its
+ * result used to be discarded via (void) — so a runtime re-seed that keeps
+ * failing (a silent-stall SEED) left no trace. This wrapper LOG_WARNs + counts
+ * the failure with the caller's `why` context WITHOUT changing the deliberately
+ * non-fatal control flow: a failed re-seed must not abort the in-flight ingest,
+ * so this is LOG_WARN (continue), never LOG_FAIL (return). `why` names which
+ * call site fired, for log attribution. Non-static so the test TU can drive it
+ * directly. */
+void reducer_ingest_try_seed_anchor(int height, const uint8_t hash[32],
+                                    const char *why);
+
+/* Monotonic count of runtime seed-anchor re-seed failures since process start
+ * (for observability / the reducer_ingest_e2e test). */
+uint64_t reducer_ingest_seed_anchor_reseed_failure_count(void);
+
 /* Loop the eight stage step bodies to convergence within a bounded latency
  * budget. The CALLER must hold the chain_activation_controller mutex — this
  * helper does NOT lock. Returns the total number of stage advances. */

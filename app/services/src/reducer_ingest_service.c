@@ -439,6 +439,25 @@ bool reducer_stage_p2p_block_for_catchup(
     return false;
 }
 
+/* Monotonic count of runtime seed-anchor re-seed failures. See the header. */
+static _Atomic uint64_t g_seed_anchor_reseed_failures = 0;
+
+void reducer_ingest_try_seed_anchor(int height, const uint8_t hash[32],
+                                    const char *why)
+{
+    if (tip_finalize_stage_seed_anchor(height, hash, false /* runtime re-seed */))
+        return;
+    atomic_fetch_add(&g_seed_anchor_reseed_failures, 1);
+    LOG_WARN("reducer",
+             "[reducer] runtime tip_finalize anchor re-seed failed h=%d "
+             "reason=%s", height, why ? why : "");
+}
+
+uint64_t reducer_ingest_seed_anchor_reseed_failure_count(void)
+{
+    return atomic_load(&g_seed_anchor_reseed_failures);
+}
+
 bool reducer_ingest_block(struct chain_activation_controller *ctl,
                           struct block *pblock,
                           enum reducer_source source,
@@ -515,9 +534,9 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
     struct block_index *anchor_tip = active_chain_tip(&ctl->ms->chain_active);
     if (anchor_tip && anchor_tip->phashBlock &&
         tip_finalize_stage_cursor() < (uint64_t)anchor_tip->nHeight)
-        (void)tip_finalize_stage_seed_anchor(anchor_tip->nHeight,
-                                             anchor_tip->phashBlock->data,
-                                             false /* runtime re-seed */);
+        reducer_ingest_try_seed_anchor(anchor_tip->nHeight,
+                                       anchor_tip->phashBlock->data,
+                                       "runtime-reseed-cursor-behind-tip");
 
     /* Regtest on-demand bootstrap: a FRESH genesis-only node (no import /
      * snapshot / reindex ever ran tip_finalize_stage_seed_anchor) has no
@@ -538,9 +557,8 @@ bool reducer_ingest_block(struct chain_activation_controller *ctl,
         anchor_tip && anchor_tip->phashBlock &&
         anchor_tip->nHeight == 0 &&
         tip_finalize_stage_cursor() == 0)
-        (void)tip_finalize_stage_seed_anchor(0,
-                                             anchor_tip->phashBlock->data,
-                                             false /* runtime re-seed */);
+        reducer_ingest_try_seed_anchor(0, anchor_tip->phashBlock->data,
+                                       "regtest-genesis-seed");
 
     /* Body-INDEPENDENT prefix drain: run ONLY header_admit + validate_headers
      * to convergence so the block_index is created and the header is validated
