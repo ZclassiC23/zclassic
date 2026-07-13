@@ -62,6 +62,21 @@ void rpc_name_set_wallet(struct wallet *w, struct tx_mempool *mp,
     g_name_coins_tip = coins_tip;
 }
 
+/* Snapshot the boot-wired names runtime context (node.db + wallet path) so the
+ * read-only HTML site controller and the shared REGISTER compose (both in
+ * name_site_controller.c) reach the same handles the RPC surface uses — the
+ * explorer_controller pattern (one boot-wired node.db, concurrent WAL
+ * readers), not a second open. */
+void name_controller_get_ctx(struct name_controller_ctx *out)
+{
+    if (!out) return;
+    out->ndb = g_name_ndb;
+    out->wallet = g_name_wallet;
+    out->mempool = g_name_mempool;
+    out->main_state = g_name_main_state;
+    out->coins_tip = g_name_coins_tip;
+}
+
 /* ── Helper ─────────────────────────────────────────────────────── */
 
 const char *znam_type_name(uint8_t t)
@@ -314,44 +329,25 @@ static bool rpc_name_register(const struct json_value *params, bool help,
         return false;
     }
 
-    /* If wallet is available, build and broadcast the transaction */
+    /* If wallet is available, build and broadcast the transaction via the
+     * shared compose path (also used by the HTML register POST in
+     * name_site_controller.c) so there is exactly one tx-compose routine. */
     if (g_name_wallet && g_name_mempool) {
-        struct wallet_tx wtx;
-        memset(&wtx, 0, sizeof(wtx));
+        char txid_hex[65] = "";
         int64_t fee_paid = 0;
-        const char *tx_error = NULL;
-
-        /* Build base tx with a dust output (546 satoshi) */
-        if (!zslp_command_build_genesis_base_tx(g_name_wallet, &wtx,
-                                                &fee_paid, &tx_error).ok) {
-            json_set_str(result, tx_error ? tx_error : "Failed to build transaction");
-            return false;
+        char err[256] = "";
+        if (!name_controller_compose_register(name, target_type, value,
+                                              txid_hex, sizeof(txid_hex),
+                                              &fee_paid, err, sizeof(err))) {
+            json_set_str(result, err[0] ? err : "Failed to register name");
+            LOG_FAIL("znam", "name_register: compose failed: %s",
+                     err[0] ? err : "(no detail)");
         }
 
-        /* Prepend OP_RETURN, re-sign, broadcast */
-        struct wallet_tx_admission admission = {
-            .mempool = g_name_mempool,
-            .coins_tip = g_name_coins_tip,
-            .main_state = g_name_main_state,
-            .params = chain_params_get(),
-        };
-        struct zcl_result commit = zslp_command_commit_with_op_return(
-            g_name_wallet, &wtx, &admission, script, script_len);
-        if (!commit.ok) {
-            json_set_str(result, commit.message);
-            transaction_free(&wtx.tx);
-            LOG_FAIL("znam", "name_register: validated commit failed "
-                             "(code=%d): %s", commit.code, commit.message);
-        }
-
-        /* Return success with txid */
         json_set_object(result);
         json_push_kv_str(result, "name", name);
         json_push_kv_str(result, "type", znam_type_name(target_type));
         json_push_kv_str(result, "value", value);
-
-        char txid_hex[65];
-        uint256_get_hex(&wtx.tx.hash, txid_hex);
         json_push_kv_str(result, "txid", txid_hex);
         json_push_kv_int(result, "fee", fee_paid);
         json_push_kv_str(result, "status", "broadcast");
@@ -958,6 +954,9 @@ static bool rpc_name_set_text(const struct json_value *params, bool help,
     return true;
 }
 
+/* name_records (has_many relationship read) is defined in
+ * name_site_controller.c (file-size ceiling); declared in name_controller.h. */
+
 /* ── REST API ───────────────────────────────────────────────────── */
 
 bool api_name_list(struct json_value *result)
@@ -1028,6 +1027,7 @@ void register_name_rpc_commands(struct rpc_table *t)
         { "names", "name_set_text",   rpc_name_set_text,   true },
         { "names", "name_resolve",    rpc_name_resolve,    true },
         { "names", "name_list",       rpc_name_list,       true },
+        { "names", "name_records",    rpc_name_records,    true },
     };
     for (size_t i = 0; i < sizeof(cmds) / sizeof(cmds[0]); i++)
         rpc_table_must_append(t, &cmds[i]);

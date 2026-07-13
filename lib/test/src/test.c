@@ -983,6 +983,7 @@ int main(int argc, char **argv)
     failures += test_models();
     failures += test_core();
     failures += test_znam();
+    { extern int test_znam_site(void); failures += test_znam_site(); }
     failures += test_htlc();
     failures += test_swap_settlement();
     failures += test_file_market();
