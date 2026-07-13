@@ -521,6 +521,7 @@ int test_condition_engine(void)
             "reducer_drive_watchdog",
             "stage_step_budget_exceeded",
             "sync_rate_below_floor",
+            "batch_fsync_slow",
         };
         const int expected_count =
             (int)(sizeof(expected) / sizeof(expected[0]));

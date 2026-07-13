@@ -37,10 +37,16 @@ void register_reducer_drive_watchdog(void);
  * nothing. Registered in app/controllers/src/diagnostics_registry.c
  * g_dumpers as "reducer_drive". Fields: active, label, age_us,
  * watchdog_threshold_secs, last_watchdog_fire_unix (0 = never fired),
- * utxo_apply_cursor (lock-free in-memory stage cursor), coins_applied_height
- * + coins_applied_read_ok (the lagging coins_kv frontier, read under
- * progress_store_tx_trylock — skipped, not blocked, while the drive holds
- * the lock; see LOCK-ORDER LAW in DEFENSIVE_CODING.md). */
+ * utxo_apply_cursor (lock-free in-memory stage cursor), stage_spin (present
+ * only when nonzero — see reducer_drain.c), drain_exit_converged_total,
+ * drain_exit_budget_total, drain_last_round_advances, drain_last_elapsed_us
+ * (drive+fsync telemetry gap 1 — see reducer_drain.c's exit-stats doc
+ * comment), fsync_last_flush_us, fsync_flush_us_ewma (drive+fsync telemetry
+ * gap 2 — see reducer_body_fsync.c / conditions/batch_fsync_slow.c),
+ * coins_applied_height + coins_applied_read_ok (the lagging coins_kv
+ * frontier, read under progress_store_tx_trylock — skipped, not blocked,
+ * while the drive holds the lock; see LOCK-ORDER LAW in
+ * DEFENSIVE_CODING.md). */
 struct json_value;
 bool reducer_drive_dump_state_json(struct json_value *out, const char *key);
 

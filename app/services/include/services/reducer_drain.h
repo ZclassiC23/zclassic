@@ -68,4 +68,25 @@ void reducer_drain_spin_observe(int stage_idx, const char *stage_name,
 void reducer_drain_spin_reset_for_testing(void);
 #endif
 
+/* Drain-exit telemetry snapshot (drive+fsync telemetry gap 1): deconflates
+ * "the drain converged" (genuinely no more work) from "the drain hit the
+ * budget ceiling" (wall-clock budget elapsed, or the round hard_cap was
+ * exhausted without converging) — see the counters' doc comment in
+ * reducer_drain.c for exactly what does and does not count toward each
+ * total. Consumed by the reducer_drive dumpstate
+ * (app/conditions/src/reducer_drive_watchdog.c). Lock-free atomic reads, no
+ * allocation. */
+struct reducer_drain_exit_stats {
+    uint64_t exit_converged_total;
+    uint64_t exit_budget_total;
+    int64_t  last_round_advances;  /* adv count of the last round run */
+    int64_t  last_elapsed_us;      /* wall-clock time of the last drain call */
+};
+void reducer_drain_exit_stats_snapshot(struct reducer_drain_exit_stats *out);
+
+#ifdef ZCL_TESTING
+/* Zero every drain-exit counter (test isolation only — process-global). */
+void reducer_drain_exit_stats_reset_for_testing(void);
+#endif
+
 #endif /* ZCL_SERVICES_REDUCER_DRAIN_H */

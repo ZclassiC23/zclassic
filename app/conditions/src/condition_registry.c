@@ -38,6 +38,7 @@ void register_blocker_stall_meta_detector(void);
 void register_reducer_drive_watchdog(void);
 void register_stage_step_budget_exceeded(void);
 void register_sync_rate_below_floor(void);
+void register_batch_fsync_slow(void);
 
 void condition_registry_register_all(void)
 {
@@ -76,4 +77,5 @@ void condition_registry_register_all(void)
     register_reducer_drive_watchdog();
     register_stage_step_budget_exceeded();
     register_sync_rate_below_floor();
+    register_batch_fsync_slow();
 }

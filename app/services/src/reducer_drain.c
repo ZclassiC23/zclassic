@@ -210,6 +210,54 @@ void reducer_drain_spin_reset_for_testing(void)
 }
 #endif
 
+/* ── Drain-exit telemetry (drive+fsync telemetry gap 1) ──────────────────
+ * reducer_drain_core's round loop can stop for several reasons, but only
+ * TWO of them mean the same thing an operator diagnosing an IO/throughput
+ * regression cares about:
+ *   - drain_exit_converged_total: a round found genuinely NO more work
+ *     (adv == 0) — the fold is caught up, full stop.
+ *   - drain_exit_budget_total: the wall-clock budget elapsed, OR the round
+ *     hard_cap was exhausted without ever converging — the fold still had
+ *     (or may have had) work left but ran out of allotted time/rounds. A
+ *     rising rate of this counter with a falling drain_last_round_advances
+ *     is the "we are not keeping up" signal this telemetry exists to make
+ *     visible.
+ * The other two exits (a thread_registry_shutdown_requested() abort, and
+ * the mint-only converge_on_frontier_stall break) are deliberately left out
+ * of BOTH counters: shutdown is a clean deliberate stop, not a throughput
+ * fact, and a frontier-walled stop already has its own dedicated signal
+ * (the mint_fold.frontier_walled blocker, config/src/boot_mint_anchor.c) —
+ * folding it into "converged" would mask a genuinely walled fold as healthy
+ * convergence, and folding it into "budget" would misdiagnose a wall as an
+ * IO/throughput stall.
+ * Written only from reducer_drain_core (single-writer: every entry point
+ * reaches it while holding chain_activation_controller::mutex); read from
+ * the reducer_drive dumpstate thread, hence atomics. */
+static _Atomic uint64_t g_drain_exit_converged_total;
+static _Atomic uint64_t g_drain_exit_budget_total;
+static _Atomic int64_t  g_drain_last_round_advances;
+static _Atomic int64_t  g_drain_last_elapsed_us;
+
+void reducer_drain_exit_stats_snapshot(struct reducer_drain_exit_stats *out)
+{
+    if (!out)
+        return;
+    out->exit_converged_total = atomic_load(&g_drain_exit_converged_total);
+    out->exit_budget_total    = atomic_load(&g_drain_exit_budget_total);
+    out->last_round_advances  = atomic_load(&g_drain_last_round_advances);
+    out->last_elapsed_us      = atomic_load(&g_drain_last_elapsed_us);
+}
+
+#ifdef ZCL_TESTING
+void reducer_drain_exit_stats_reset_for_testing(void)
+{
+    atomic_store(&g_drain_exit_converged_total, 0u);
+    atomic_store(&g_drain_exit_budget_total, 0u);
+    atomic_store(&g_drain_last_round_advances, 0);
+    atomic_store(&g_drain_last_elapsed_us, 0);
+}
+#endif
+
 /* Drain the eight stage step bodies once, in pipeline order — the SAME
  * *_stage_drain functions the per-stage supervisor children tick
  * (staged_sync_supervisor.c). One pass; caller loops to convergence. Fills
@@ -254,7 +302,15 @@ static int reducer_drain_core(int64_t budget_us, int hard_cap,
     int64_t   start_us        = GetTimeMicros();
     uint64_t  fatal_gen0      = stage_fatal_generation();
     int       total           = 0;
+    int       last_adv        = 0;
     const int spin_k          = reducer_stage_spin_rounds();
+    /* Exit-reason bucket for the drain-exit telemetry above. Defaults to
+     * DRAIN_EXIT_BUDGET so the round hard_cap being exhausted WITHOUT any
+     * explicit break (the loop condition `round < hard_cap` simply going
+     * false) still lands in the "ran out of allotted capacity" bucket —
+     * the correct classification, not an omission. */
+    enum { DRAIN_EXIT_BUDGET = 0, DRAIN_EXIT_CONVERGED, DRAIN_EXIT_SHUTDOWN,
+          DRAIN_EXIT_FRONTIER_STALL } exit_reason = DRAIN_EXIT_BUDGET;
     if (per_stage_batch <= 0) per_stage_batch = 100;
     for (int round = 0; round < hard_cap; round++) {
         /* On shutdown, return at this round boundary (a safe, committed point —
@@ -262,8 +318,10 @@ static int reducer_drain_core(int64_t budget_us, int hard_cap,
          * reducer activation exits promptly and connman_join succeeds instead of
          * timing out and detaching the thread under the frees that follow. The
          * fold is resumable, so stopping mid-drain loses no state. */
-        if (thread_registry_shutdown_requested())
+        if (thread_registry_shutdown_requested()) {
+            exit_reason = DRAIN_EXIT_SHUTDOWN;
             break;
+        }
         /* Snapshot every stage's cursor at the round boundary (cheap in-memory
          * reads). Each stage only ever moves its OWN cursor, so a round-boundary
          * before/after diff is correctly attributed per stage even though the
@@ -278,6 +336,7 @@ static int reducer_drain_core(int64_t budget_us, int hard_cap,
         int adv_per_stage[REDUCER_DRAIN_NUM_STAGES] = {0};
         int adv = reducer_drain_all_stages(per_stage_batch, adv_per_stage);
         total += adv;
+        last_adv = adv;
 
         /* Advance-or-blocker contract: reconcile each stage's REPORTED advance
          * against its own cursor movement. A stage that reports advances while
@@ -295,17 +354,23 @@ static int reducer_drain_core(int64_t budget_us, int hard_cap,
                                        cur_after, spin_k);
         }
 
-        if (adv == 0)
+        if (adv == 0) {
+            exit_reason = DRAIN_EXIT_CONVERGED;
             break;
+        }
         /* Frontier-stall convergence (mint drive only): return NOW so the
          * boot_mint_anchor drive loop re-reads the frontier, logs, and runs
          * its stall detector instead of spinning the upstream backlog. */
         if (converge_on_frontier_stall &&
             g_drain_stages[REDUCER_DRAIN_UTXO_APPLY_IDX].cursor() ==
-                frontier_before)
+                frontier_before) {
+            exit_reason = DRAIN_EXIT_FRONTIER_STALL;
             break;
-        if (budget_us > 0 && GetTimeMicros() - start_us > budget_us)
+        }
+        if (budget_us > 0 && GetTimeMicros() - start_us > budget_us) {
+            exit_reason = DRAIN_EXIT_BUDGET;
             break;
+        }
     }
     /* Page the operator on a FATAL latched during this drain regardless of
      * which exit fired — convergence (adv==0) OR the budget timeout. A stage
@@ -320,6 +385,17 @@ static int reducer_drain_core(int64_t budget_us, int hard_cap,
                         "condition=reducer_stage_fatal stage=%s reason=%s",
                         st, why);
     }
+
+    /* Drain-exit telemetry (see the counters' doc comment above): record the
+     * outcome of THIS drain call. Shutdown and frontier-stall exits update
+     * neither total — see the doc comment for why. */
+    atomic_store(&g_drain_last_round_advances, (int64_t)last_adv);
+    atomic_store(&g_drain_last_elapsed_us, GetTimeMicros() - start_us);
+    if (exit_reason == DRAIN_EXIT_CONVERGED)
+        atomic_fetch_add(&g_drain_exit_converged_total, 1u);
+    else if (exit_reason == DRAIN_EXIT_BUDGET)
+        atomic_fetch_add(&g_drain_exit_budget_total, 1u);
+
     return total;
 }
 
