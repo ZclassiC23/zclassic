@@ -445,6 +445,7 @@ int test_gap_fill_frontier_window(void);
 int test_snark_kat(void);
 int test_bls12_381_adversarial(void);
 int test_verify_bench_selftest(void);
+int test_crypto_perf_selftest(void);
 int test_unclean_shutdown_advance(void);
 int test_cookie_rotation(void);
 int test_reorg_safety(void);

@@ -17,3 +17,12 @@ date,commit,bench,value,unit,notes
 2026-05-25T10:01:12Z,43d6d6d46,#5 kill-9 recovery,,s,pending seeded datadir; measure RPC-ready recovery histogram
 2026-07-10T00:30:00Z,de89ee8d4,consensus-verify equihash-200-9,120645.000,ns/op,"baseline; `make bench-crypto-verify` on AMD Ryzen 9 7950X3D; check_equihash_solution on baked real 200,9 witness; HOST-RELATIVE (re-baseline per host); gated +-20% by -bench-regress"
 2026-07-10T00:30:00Z,de89ee8d4,consensus-verify groth16-bls12-381-output,7846524.000,ns/op,"baseline; `make bench-crypto-verify` on AMD Ryzen 9 7950X3D; sapling_check_output full BLS12-381 pairing on a real prover output proof; HOST-RELATIVE (re-baseline per host); gated +-20% by -bench-regress"
+2026-07-13T19:07:57Z,7ff142f2f-dirty,crypto-vs-rust equihash-200-9,123641.074,ns/op,median C ns/op; host-relative; vs pinned Rust baseline (tools/crypto_perf_baseline.csv); 8088 ops/sec
+2026-07-13T19:07:57Z,7ff142f2f-dirty,crypto-vs-rust bls12-381-fp-mul,57.661,ns/op,median C ns/op; host-relative; vs pinned Rust baseline (tools/crypto_perf_baseline.csv); 17342782 ops/sec
+2026-07-13T19:07:57Z,7ff142f2f-dirty,crypto-vs-rust bls12-381-pairing,1764705.944,ns/op,median C ns/op; host-relative; vs pinned Rust baseline (tools/crypto_perf_baseline.csv); 567 ops/sec
+2026-07-13T19:07:57Z,7ff142f2f-dirty,crypto-vs-rust secp256k1-ecdsa-verify,48645.738,ns/op,median C ns/op; host-relative; vs pinned Rust baseline (tools/crypto_perf_baseline.csv); 20557 ops/sec
+2026-07-13T19:07:57Z,7ff142f2f-dirty,crypto-vs-rust ed25519-verify,1500518.364,ns/op,median C ns/op; host-relative; vs pinned Rust baseline (tools/crypto_perf_baseline.csv); 666 ops/sec
+2026-07-13T19:07:57Z,7ff142f2f-dirty,crypto-vs-rust sha256,1957.539,ns/op,median C ns/op; host-relative; vs pinned Rust baseline (tools/crypto_perf_baseline.csv); 510845 ops/sec
+2026-07-13T19:07:57Z,7ff142f2f-dirty,crypto-vs-rust sha3-256,1728.182,ns/op,median C ns/op; host-relative; vs pinned Rust baseline (tools/crypto_perf_baseline.csv); 578643 ops/sec
+2026-07-13T19:07:57Z,7ff142f2f-dirty,crypto-vs-rust blake2b,843.919,ns/op,median C ns/op; host-relative; vs pinned Rust baseline (tools/crypto_perf_baseline.csv); 1184948 ops/sec
+2026-07-13T19:07:57Z,7ff142f2f-dirty,crypto-vs-rust groth16-bls12-381-output,7622792.125,ns/op,median C ns/op; host-relative; vs pinned Rust baseline (tools/crypto_perf_baseline.csv); 131 ops/sec

@@ -43,10 +43,16 @@
 #include "chain/utxo_snapshot_loader.h"  /* uss_open: post-write checkpoint verify */
 #include "coins/utxo_commitment.h"
 #include "crypto/sha3.h"
+#include "crypto/sha256.h"                /* -bench-crypto-vs-rust: SHA256 */
+#include "crypto/blake2b.h"               /* -bench-crypto-vs-rust: BLAKE2b */
+#include "crypto/ed25519.h"               /* -bench-crypto-vs-rust: JoinSplit sig verify */
+#include "keys/key.h"                     /* -bench-crypto-vs-rust: secp256k1 signing ctx */
+#include "keys/pubkey.h"                  /* -bench-crypto-vs-rust: secp256k1 ECDSA verify */
 #include "core/uint256.h"
 #include "chain/equihash.h"               /* -bench-crypto-verify: PoW verify */
 #include "primitives/block.h"
 #include "sapling/sapling.h"              /* -bench-crypto-verify: Groth16 verify */
+#include "sapling/bls12_381.h"            /* -bench-crypto-vs-rust: BLS12-381 fp_mul + pairing */
 #include "sapling/sapling_prover.h"
 #include "sapling/params_init.h"
 #include "platform/clock.h"               /* clock_now_monotonic_ns (banned: gettimeofday) */
@@ -728,6 +734,429 @@ static int bench_crypto_verify(void)
     return bench_history_append(path, rows, nrows) ? 0 : 1;
 }
 
+/* ── -bench-crypto-vs-rust ───────────────────────────────────────────
+ *
+ * The STANDING crypto-performance surface: times EVERY C crypto primitive
+ * on the consensus path (Equihash verify, Groth16/BLS12-381 output verify,
+ * BLS12-381 pairing, BLS12-381 Fp mul, secp256k1 ECDSA verify, ed25519
+ * verify, SHA256, SHA3-256, BLAKE2b), reports a flake-resistant MEDIAN
+ * ns/op per primitive, appends the medians to docs/bench-history.csv, and
+ * prints a machine-readable `CRYPTOPERF <key> <median_ns> <ops_per_sec>
+ * <samples>` line the gate (tools/scripts/check_crypto_perf.sh) parses to
+ * enforce the ratchet + ratio-vs-Rust invariant.
+ *
+ * This is MEASUREMENT ONLY — it calls the exact production verify/hash
+ * predicates. Consensus verify LOGIC is frozen; no validity predicate is
+ * touched. Every primitive is TEETH-checked (correct on a real fixture,
+ * rejecting on a perturbed one / KAT-sensitive) BEFORE any number is
+ * recorded, so a hollow-fast (always-true / no-op) primitive can never
+ * "get fast" and slip past the gate. Timing uses the mandated monotonic
+ * clock (Gate #19); every result is folded into a volatile sink so the
+ * optimiser cannot elide the timed call. */
+
+static int bench_dcmp(const void *a, const void *b)
+{
+    double x = *(const double *)a, y = *(const double *)b;
+    return (x > y) - (x < y);
+}
+
+/* Median of `samples` runs of bench_time_verify, each with its own budget.
+ * Median (not mean) resists a single slow sample from a scheduler hiccup. */
+static double bench_median_verify(bool (*fn)(void *), void *arg,
+                                  double budget_ns_each, int samples,
+                                  bool *ok_out)
+{
+    double s[16];
+    if (samples > 16) samples = 16;
+    if (samples < 1) samples = 1;
+    bool all_ok = true;
+    for (int i = 0; i < samples; ++i) {
+        bool ok = true;
+        s[i] = bench_time_verify(fn, arg, budget_ns_each, &ok);
+        all_ok = all_ok && ok;
+    }
+    qsort(s, (size_t)samples, sizeof(double), bench_dcmp);
+    if (ok_out) *ok_out = all_ok;
+    return s[samples / 2];
+}
+
+/* ── per-primitive timed adapters (fn(arg)->bool shape) ────────────── */
+
+struct bench_hash_arg { const uint8_t *buf; size_t len; uint8_t out[64]; };
+
+static bool bench_hash_sha256(void *arg)
+{
+    struct bench_hash_arg *a = arg;
+    struct sha256_ctx c;
+    sha256_init(&c);
+    sha256_write(&c, a->buf, a->len);
+    sha256_finalize(&c, a->out);
+    g_bench_verify_sink += a->out[0]; /* observe the digest */
+    return true;
+}
+static bool bench_hash_sha3_256(void *arg)
+{
+    struct bench_hash_arg *a = arg;
+    zcl_sha3_256(a->buf, a->len, a->out);
+    g_bench_verify_sink += a->out[0];
+    return true;
+}
+static bool bench_hash_blake2b(void *arg)
+{
+    struct bench_hash_arg *a = arg;
+    struct blake2b_ctx c;
+    blake2b_init(&c, 64);
+    blake2b_update(&c, a->buf, a->len);
+    blake2b_final(&c, a->out, 64);
+    g_bench_verify_sink += a->out[0];
+    return true;
+}
+
+struct bench_pairing_arg { struct g1_point g1; struct g2_point g2; struct fp12 r; };
+static bool bench_pairing(void *arg)
+{
+    struct bench_pairing_arg *a = arg;
+    bls12_381_pairing(&a->r, &a->g1, &a->g2);
+    g_bench_verify_sink += a->r.c0.c0.c0.d[0]; /* observe the GT element */
+    return true;
+}
+
+struct bench_fpmul_arg { struct fp a, b, r; };
+static bool bench_fpmul(void *arg)
+{
+    struct bench_fpmul_arg *x = arg;
+    fp_mul(&x->r, &x->a, &x->b);
+    g_bench_verify_sink += x->r.d[0];
+    return true;
+}
+
+struct bench_ecdsa_arg {
+    struct pubkey pk;
+    struct uint256 hash;
+    unsigned char sig[80];
+    size_t siglen;
+};
+static bool bench_verify_ecdsa(void *arg)
+{
+    struct bench_ecdsa_arg *a = arg;
+    return pubkey_verify(&a->pk, &a->hash, a->sig, a->siglen);
+}
+
+struct bench_ed_arg { uint8_t sig[64], pk[32]; const uint8_t *msg; size_t msglen; };
+static bool bench_verify_ed25519(void *arg)
+{
+    struct bench_ed_arg *a = arg;
+    return ed25519_verify(a->sig, a->msg, a->msglen, a->pk);
+}
+
+/* Record one primitive: median ns/op, machine line, and a bench-history row. */
+static void bench_vsr_record(struct bench_row *rows, size_t *nrows,
+                             const char *key, const char *human, double ns)
+{
+    printf("  %-30s %14.1f ns/op  (%.0f ops/sec)\n", human, ns, 1e9 / ns);
+    printf("CRYPTOPERF %s %.1f %.0f\n", key, ns, 1e9 / ns);
+    struct bench_row *r = &rows[*nrows];
+    snprintf(r->bench, sizeof(r->bench), "crypto-vs-rust %s", key);
+    snprintf(r->unit, sizeof(r->unit), "ns/op");
+    r->value = ns;
+    r->numeric = true;
+    snprintf(r->notes, sizeof(r->notes),
+             "median C ns/op; host-relative; vs pinned Rust baseline "
+             "(tools/crypto_perf_baseline.csv); %.0f ops/sec", 1e9 / ns);
+    (*nrows)++;
+}
+
+static int bench_crypto_vs_rust(void)
+{
+    const char *path = bench_history_path();
+    /* Per-SAMPLE budget; the primitive is measured `samples` times and the
+     * MEDIAN reported. Defaults chosen so the whole run is a few seconds.
+     * Override budget with ZCL_BENCH_BUDGET_MS, sample count with
+     * ZCL_BENCH_SAMPLES (median-of-N; 5 by default). */
+    double budget_ms = 120.0;
+    const char *bm = getenv("ZCL_BENCH_BUDGET_MS");
+    if (bm && *bm) { double v = strtod(bm, NULL); if (v >= 10.0 && v <= 60000.0) budget_ms = v; }
+    int samples = 5;
+    const char *sp = getenv("ZCL_BENCH_SAMPLES");
+    if (sp && *sp) { long v = strtol(sp, NULL, 10); if (v >= 1 && v <= 15) samples = (int)v; }
+    double budget_ns = budget_ms * 1e6;
+
+    printf("zclassic23 crypto-vs-rust microbenchmark (pure C23)\n");
+    printf("  commit:   %s\n", bench_commit());
+    printf("  history:  %s\n", path);
+    printf("  budget:   %.0f ms/sample, median of %d samples\n", budget_ms, samples);
+    printf("  clock:    clock_now_monotonic_ns (monotonic)\n\n");
+
+    struct bench_row rows[16];
+    size_t nrows = 0;
+
+    /* ── Equihash (200,9) verify — hermetic ────────────────────────── */
+    {
+        struct block_header h;
+        verify_bench_fill_eh_header(&h);
+        bool pos = check_equihash_solution(&h, NULL);
+        struct block_header bad = h;
+        bad.nSolution[600] ^= 0x01;
+        bool neg = check_equihash_solution(&bad, NULL);
+        if (!pos || neg) {
+            fprintf(stderr, "[bench-crypto-vs-rust] REFUSING equihash: "
+                    "hollow (valid=%d flipped=%d)\n", pos, neg);
+        } else {
+            bool ok = true;
+            double ns = bench_median_verify(bench_verify_equihash, &h,
+                                            budget_ns, samples, &ok);
+            if (ok) bench_vsr_record(rows, &nrows, "equihash-200-9",
+                                     "equihash-200-9 verify", ns);
+        }
+    }
+
+    /* ── BLS12-381 Fp multiply — hermetic ──────────────────────────── */
+    {
+        struct bench_fpmul_arg fa;
+        /* Both fixtures must be < the BLS12-381 field modulus q (top byte
+         * 0x1a); 0x11 and 0x07 repeated are safely canonical. */
+        uint8_t ba[48], bb[48];
+        memset(ba, 0x11, sizeof(ba));
+        memset(bb, 0x07, sizeof(bb));
+        bool va = fp_from_bytes(&fa.a, ba);
+        bool vb = fp_from_bytes(&fa.b, bb);
+        /* TEETH (Montgomery-form agnostic): the multiply must agree with the
+         * independent squaring routine (fp_mul(a,a) == fp_sq(a)) and produce a
+         * non-zero, non-trivial result. A no-op multiply (returns an operand)
+         * or a constant-output multiply fails square-consistency. */
+        struct fp sq, mm, ab;
+        fp_sq(&sq, &fa.a);
+        fp_mul(&mm, &fa.a, &fa.a);
+        fp_mul(&ab, &fa.a, &fa.b);
+        bool sq_consistent = va && vb && fp_eq(&sq, &mm);
+        bool nondegen = sq_consistent && !fp_is_zero(&ab) &&
+                        !fp_eq(&ab, &fa.a) && !fp_eq(&ab, &fa.b);
+        if (!sq_consistent || !nondegen) {
+            fprintf(stderr, "[bench-crypto-vs-rust] REFUSING bls-fp-mul: "
+                    "teeth failed (sq_consistent=%d nondegen=%d)\n",
+                    sq_consistent, nondegen);
+        } else {
+            bool ok = true;
+            double ns = bench_median_verify(bench_fpmul, &fa,
+                                            budget_ns, samples, &ok);
+            if (ok) bench_vsr_record(rows, &nrows, "bls12-381-fp-mul",
+                                     "bls12-381 Fp multiply", ns);
+        }
+    }
+
+    /* ── BLS12-381 optimal-Ate pairing (miller loop + final exp) ───── */
+    {
+        static const uint8_t G1_GEN[48] = {
+            0x97,0xf1,0xd3,0xa7,0x31,0x97,0xd7,0x94,0x26,0x95,0x63,0x8c,
+            0x4f,0xa9,0xac,0x0f,0xc3,0x68,0x8c,0x4f,0x97,0x74,0xb9,0x05,
+            0xa1,0x4e,0x3a,0x3f,0x17,0x1b,0xac,0x58,0x6c,0x55,0xe8,0x3f,
+            0xf9,0x7a,0x1a,0xef,0xfb,0x3a,0xf0,0x0a,0xdb,0x22,0xc6,0xbb };
+        static const uint8_t G2_GEN[96] = {
+            0x93,0xe0,0x2b,0x60,0x52,0x71,0x9f,0x60,0x7d,0xac,0xd3,0xa0,
+            0x88,0x27,0x4f,0x65,0x59,0x6b,0xd0,0xd0,0x99,0x20,0xb6,0x1a,
+            0xb5,0xda,0x61,0xbb,0xdc,0x7f,0x50,0x49,0x33,0x4c,0xf1,0x12,
+            0x13,0x94,0x5d,0x57,0xe5,0xac,0x7d,0x05,0x5d,0x04,0x2b,0x7e,
+            0x02,0x4a,0xa2,0xb2,0xf0,0x8f,0x0a,0x91,0x26,0x08,0x05,0x27,
+            0x2d,0xc5,0x10,0x51,0xc6,0xe4,0x7a,0xd4,0xfa,0x40,0x3b,0x02,
+            0xb4,0x51,0x0b,0x64,0x7a,0xe3,0xd1,0x77,0x0b,0xac,0x03,0x26,
+            0xa8,0x05,0xbb,0xef,0xd4,0x80,0x56,0xc8,0xc1,0x21,0xbd,0xb8 };
+        struct bench_pairing_arg pa;
+        bool g1_ok = g1_from_compressed(&pa.g1, G1_GEN);
+        bool g2_ok = g2_from_compressed(&pa.g2, G2_GEN);
+        /* TEETH: e(G1,G2) must be a non-degenerate GT element (!=1, !=0). */
+        bool teeth = false;
+        if (g1_ok && g2_ok) {
+            struct fp12 r, one12;
+            bls12_381_pairing(&r, &pa.g1, &pa.g2);
+            fp12_one(&one12);
+            teeth = !fp12_is_zero(&r) && !(fp12_sub(&one12, &one12, &r),
+                                           fp12_is_zero(&one12));
+        }
+        if (!teeth) {
+            fprintf(stderr, "[bench-crypto-vs-rust] REFUSING bls-pairing: "
+                    "teeth failed (g1=%d g2=%d)\n", g1_ok, g2_ok);
+        } else {
+            bool ok = true;
+            double ns = bench_median_verify(bench_pairing, &pa,
+                                            budget_ns, samples, &ok);
+            if (ok) bench_vsr_record(rows, &nrows, "bls12-381-pairing",
+                                     "bls12-381 Ate pairing", ns);
+        }
+    }
+
+    /* ── secp256k1 ECDSA verify — locally signed round-trip ────────── */
+    {
+        ecc_start();
+        ecc_verify_init();
+        struct bench_ecdsa_arg ea;
+        struct privkey k;
+        privkey_make_new(&k, true);
+        for (int i = 0; i < 32; ++i) ea.hash.data[i] = (uint8_t)(i * 7 + 1);
+        ea.siglen = sizeof(ea.sig);
+        bool signed_ok = privkey_get_pubkey(&k, &ea.pk) &&
+                         privkey_sign(&k, &ea.hash, ea.sig, &ea.siglen);
+        /* TEETH: valid sig -> true, corrupted hash -> false. */
+        bool pos = signed_ok &&
+                   pubkey_verify(&ea.pk, &ea.hash, ea.sig, ea.siglen);
+        struct uint256 badh = ea.hash;
+        badh.data[0] ^= 0x01;
+        bool neg = signed_ok &&
+                   pubkey_verify(&ea.pk, &badh, ea.sig, ea.siglen);
+        if (!pos || neg) {
+            fprintf(stderr, "[bench-crypto-vs-rust] REFUSING secp256k1: "
+                    "teeth failed (valid=%d corrupted=%d)\n", pos, neg);
+        } else {
+            bool ok = true;
+            double ns = bench_median_verify(bench_verify_ecdsa, &ea,
+                                            budget_ns, samples, &ok);
+            if (ok) bench_vsr_record(rows, &nrows, "secp256k1-ecdsa-verify",
+                                     "secp256k1 ECDSA verify", ns);
+        }
+        ecc_verify_destroy();
+        ecc_stop();
+    }
+
+    /* ── ed25519 verify (JoinSplit) — RFC 8032 Test 2 vector ───────── */
+    {
+        struct bench_ed_arg ed;
+        static const uint8_t ED_PK[32] = {
+            0x3d,0x40,0x17,0xc3,0xe8,0x43,0x89,0x5a,0x92,0xb7,0x0a,0xa7,
+            0x4d,0x1b,0x7e,0xbc,0x9c,0x98,0x2c,0xcf,0x2e,0xc4,0x96,0x8c,
+            0xc0,0xcd,0x55,0xf1,0x2a,0xf4,0x66,0x0c };
+        static const uint8_t ED_SIG[64] = {
+            0x92,0xa0,0x09,0xa9,0xf0,0xd4,0xca,0xb8,0x72,0x0e,0x82,0x0b,
+            0x5f,0x64,0x25,0x40,0xa2,0xb2,0x7b,0x54,0x16,0x50,0x3f,0x8f,
+            0xb3,0x76,0x22,0x23,0xeb,0xdb,0x69,0xda,0x08,0x5a,0xc1,0xe4,
+            0x3e,0x15,0x99,0x6e,0x45,0x8f,0x36,0x13,0xd0,0xf1,0x1d,0x8c,
+            0x38,0x7b,0x2e,0xae,0xb4,0x30,0x2a,0xee,0xb0,0x0d,0x29,0x16,
+            0x12,0xbb,0x0c,0x00 };
+        static const uint8_t ED_MSG[1] = { 0x72 };
+        memcpy(ed.pk, ED_PK, 32);
+        memcpy(ed.sig, ED_SIG, 64);
+        ed.msg = ED_MSG;
+        ed.msglen = 1;
+        bool pos = ed25519_verify(ed.sig, ed.msg, ed.msglen, ed.pk);
+        uint8_t bad_sig[64];
+        memcpy(bad_sig, ED_SIG, 64);
+        bad_sig[10] ^= 0x01;
+        bool neg = ed25519_verify(bad_sig, ed.msg, ed.msglen, ed.pk);
+        if (!pos || neg) {
+            fprintf(stderr, "[bench-crypto-vs-rust] REFUSING ed25519: "
+                    "teeth failed (valid=%d corrupted=%d)\n", pos, neg);
+        } else {
+            bool ok = true;
+            double ns = bench_median_verify(bench_verify_ed25519, &ed,
+                                            budget_ns, samples, &ok);
+            if (ok) bench_vsr_record(rows, &nrows, "ed25519-verify",
+                                     "ed25519 verify", ns);
+        }
+    }
+
+    /* ── Hash primitives — 1 KiB message, avalanche teeth ──────────── */
+    {
+        static uint8_t msg1k[1024];
+        for (size_t i = 0; i < sizeof(msg1k); ++i) msg1k[i] = (uint8_t)(i * 131 + 7);
+
+        struct { const char *key; const char *human; bool (*fn)(void *); } H[] = {
+            { "sha256",   "SHA256 (1 KiB)",    bench_hash_sha256   },
+            { "sha3-256", "SHA3-256 (1 KiB)",  bench_hash_sha3_256 },
+            { "blake2b",  "BLAKE2b-512 (1 KiB)", bench_hash_blake2b },
+        };
+        for (size_t hi = 0; hi < sizeof(H) / sizeof(H[0]); ++hi) {
+            struct bench_hash_arg ha = { .buf = msg1k, .len = sizeof(msg1k) };
+            /* TEETH: avalanche — digest depends on all input and is not a
+             * copy of the input (defeats no-op / constant-output hashes). */
+            H[hi].fn(&ha);
+            uint8_t d0[64];
+            memcpy(d0, ha.out, 64);
+            uint8_t flipped[1024];
+            memcpy(flipped, msg1k, sizeof(flipped));
+            flipped[500] ^= 0x01;
+            struct bench_hash_arg hb = { .buf = flipped, .len = sizeof(flipped) };
+            H[hi].fn(&hb);
+            bool avalanche = memcmp(d0, hb.out, 32) != 0;
+            bool not_copy = memcmp(d0, msg1k, 32) != 0;
+            if (!avalanche || !not_copy) {
+                fprintf(stderr, "[bench-crypto-vs-rust] REFUSING %s: teeth "
+                        "failed (avalanche=%d not_copy=%d)\n",
+                        H[hi].key, avalanche, not_copy);
+                continue;
+            }
+            struct bench_hash_arg ht = { .buf = msg1k, .len = sizeof(msg1k) };
+            bool ok = true;
+            double ns = bench_median_verify(H[hi].fn, &ht,
+                                            budget_ns, samples, &ok);
+            if (ok) bench_vsr_record(rows, &nrows, H[hi].key, H[hi].human, ns);
+        }
+    }
+
+    /* ── Groth16 / BLS12-381 output-proof verify — needs params ────── */
+    {
+        const char *home = getenv("HOME");
+        char params_dir[512];
+        snprintf(params_dir, sizeof(params_dir), "%s/.zcash-params",
+                 (home && *home) ? home : ".");
+        if (!sapling_init_params(params_dir)) {
+            printf("  groth16-bls12-381-output verify: ~/.zcash-params absent "
+                   "-> SKIPPED (VK/proving keys not vendored)\n");
+        } else {
+            uint8_t diversifier[11];
+            bool div_ok = bench_find_diversifier(diversifier);
+            uint8_t ask[32], nsk[32], ovk[32];
+            sapling_generate_r(ask);
+            sapling_generate_r(nsk);
+            sapling_generate_r(ovk);
+            uint8_t ak[32], nk[32], ivk[32], pk_d[32];
+            sapling_ask_to_ak(ask, ak);
+            sapling_nsk_to_nk(nsk, nk);
+            sapling_crh_ivk(ak, nk, ivk);
+            bool pk_ok = div_ok && sapling_ivk_to_pkd(ivk, diversifier, pk_d);
+            void *pctx = zclassic_sapling_proving_ctx_init();
+            struct bench_groth16_arg ga;
+            uint8_t enc[580], out_ct[80];
+            bool built = pctx && pk_ok &&
+                sapling_build_output_with_ctx(pctx, ovk, diversifier, pk_d,
+                                              54321, NULL,
+                                              ga.cv, ga.cm, ga.epk, enc,
+                                              out_ct, ga.proof);
+            if (pctx) zclassic_sapling_proving_ctx_free(pctx);
+            if (!built) {
+                fprintf(stderr, "[bench-crypto-vs-rust] prover failed; "
+                                "skipping groth16 row\n");
+            } else {
+                sapling_verification_ctx_init(&ga.vctx);
+                bool pos = sapling_check_output(&ga.vctx, ga.cv, ga.cm,
+                                                ga.epk, ga.proof);
+                struct bench_groth16_arg bad = ga;
+                bad.proof[64] ^= 0x01;
+                sapling_verification_ctx_init(&bad.vctx);
+                bool neg = sapling_check_output(&bad.vctx, bad.cv, bad.cm,
+                                                bad.epk, bad.proof);
+                if (!pos || neg) {
+                    fprintf(stderr, "[bench-crypto-vs-rust] REFUSING groth16: "
+                            "hollow (valid=%d flipped=%d)\n", pos, neg);
+                } else {
+                    bool ok = true;
+                    double ns = bench_median_verify(bench_verify_groth16, &ga,
+                                                    budget_ns, samples, &ok);
+                    if (ok) bench_vsr_record(rows, &nrows,
+                                             "groth16-bls12-381-output",
+                                             "groth16 output verify", ns);
+                }
+            }
+        }
+    }
+
+    if (nrows == 0) {
+        fprintf(stderr,
+            "[bench-crypto-vs-rust] no rows produced (nothing appended)\n");
+        return 1;
+    }
+    printf("\n  appended %zu row(s) to %s\n", nrows, path);
+    if (g_bench_verify_sink == 0xdeadbeefULL) fputc(' ', stderr);
+    return bench_history_append(path, rows, nrows) ? 0 : 1;
+}
+
 static int bench_mode_main(int argc, char **argv)
 {
     for (int i = 1; i < argc; ++i) {
@@ -738,6 +1167,8 @@ static int bench_mode_main(int argc, char **argv)
             return bench_regress();
         if (strcmp(argv[i], "-bench-crypto-verify") == 0)
             return bench_crypto_verify();
+        if (strcmp(argv[i], "-bench-crypto-vs-rust") == 0)
+            return bench_crypto_vs_rust();
         if (strncmp(argv[i], "-bench-", 7) == 0)
             return bench_run_one(argv[i]);
     }
@@ -1703,6 +2134,7 @@ static void print_usage(const char *prog)
     printf("                      projection (cold-start opt-in)\n");
     printf("  -bench              Run all five user benchmark probes\n");
     printf("  -bench-crypto-verify Bench Groth16 + Equihash-200,9 consensus verify (ns/op)\n");
+    printf("  -bench-crypto-vs-rust Bench every consensus crypto primitive vs pinned Rust (ns/op)\n");
     printf("  -bench-regress      Fail if bench-history numeric rows regress >20%%\n");
     printf("  --decrypt-wallet-backup <src.enc> <dst.sqlite>\n");
     printf("                      Restore an encrypted wallet backup (password\n");
