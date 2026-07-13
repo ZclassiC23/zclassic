@@ -65,22 +65,46 @@ does not mean.
   (`lib/coins/src/coins_view.c`, `return true`) is an **interface placeholder**;
   it is not the enforcement point.
 - **Groth16 spend/output proofs, the binding signature, and the JoinSplit
-  Ed25519 signature are checkpoint-gated**, equivalent to Bitcoin Core's
-  `-assumevalid`. Below the highest in-binary PoW checkpoint (height 3,100,000;
-  `lib/chain/src/chainparams.c`) the node trusts PoW-finalized history and does
-  not re-verify these proofs on the connect path; an optional background pass
-  (`-nobgvalidation` to disable) re-checks them. Above the checkpoint, near the
-  tip, proofs are verified.
+  Ed25519 signature are checkpoint-gated ONLY in the legacy `connect_block()`
+  path** (`lib/validation/src/connect_block.c`), equivalent to Bitcoin Core's
+  `-assumevalid` (removed as a direct flag; controlled via
+  `-deferproofvalidationbelow=<blockhash|0>`, default the highest in-binary
+  PoW checkpoint, height 3,100,000; `lib/chain/src/chainparams.c`). That path
+  is driven by `-reindex` (`reindex_chainstate()` in
+  `config/src/boot_index.c`), by the offline harness/simnet code, and by the
+  background revalidation walker (`app/services/src/bg_validation_service.c`,
+  `-nobgvalidation` to disable) — which itself re-verifies every proof it
+  walks and clears the deferred-height gate once the walk passes it.
+  **The reducer's state-advancing path — `proof_validate_stage()`
+  (`app/jobs/src/proof_validate_stage.c`), which owns the durable `ok=1`
+  cursor and H\* on a normal boot — verifies every Groth16 spend/output
+  proof, binding signature, and JoinSplit Ed25519 signature
+  UNCONDITIONALLY on every height; it has no checkpoint-gated skip.** The
+  only crypto pass-through in that reducer pipeline is the `mint_skip_crypto`
+  toggle (`app/jobs/include/jobs/mint_skip_crypto.h`), which is exclusively
+  set by the offline one-shot `-mint-anchor` driver
+  (`config/src/boot_mint_anchor.c`, gated under `ctx->mint_anchor`), defaults
+  OFF on every normal boot (a normal boot never calls the setter), and its
+  output is durably marked `checkpoint_fold` (never `verified`) —
+  excluded from serving validity, H\*, and tip finalization. Enforced by the
+  lint gate `check-mint-skip-crypto-offline-only` + `test_mint_skip_crypto`.
 - **Anchor (note-commitment-tree root) membership is not checked independently.**
   It is certified *implicitly* by the Groth16 proof, whose circuit constrains the
   Merkle path of the commitment to equal the claimed anchor
-  (`lib/sapling/src/sapling_circuit.c`). It therefore carries the same gating as
-  proof verification above.
+  (`lib/sapling/src/sapling_circuit.c`). On the reducer path this proof is
+  verified unconditionally (above); on the legacy `connect_block()` path it
+  carries the same deferred-height gating as proof verification there.
 
-Net: a reorg cannot exceed the bounded reorg depth, so checkpointed history is
-immutable by PoW; the practical exposure is the same as any `assumevalid`-style
-node. Independent (non-`assumevalid`) anchor-membership verification on the
-connect path is tracked as a hardening item, not a claimed property.
+Net: on the reducer path that actually advances the node's durable tip, a
+reorg cannot exceed the bounded reorg depth AND every Groth16/Ed25519
+proof/signature below tip is verified — there is no `assumevalid`-style trust
+window on the live, state-advancing path. The `assumevalid`-equivalent
+deferred-height gate is real but confined to the legacy `connect_block()`
+reindex/import/simnet path, where it carries the same practical exposure as
+any `assumevalid`-style node until the background walker (or a later
+`-reindex`) passes that height. Independent (non-`assumevalid`)
+anchor-membership verification on that legacy path is tracked as a hardening
+item, not a claimed property.
 
 ## Concrete safeguards
 
@@ -125,7 +149,15 @@ connect path is tracked as a hardening item, not a claimed property.
   publication is contained until exact-candidate quality evidence,
   independently reproduced bytes, complete SBOM/provenance/manifests, and the
   required offline signature quorum are all enforced.
-- **Dependency provenance:** vendored and ported third-party code is tracked in
+- **Dependency provenance:** the shipped binary is not libc-only — it
+  statically links vendored, source-built, SHA256-pinned third-party static
+  libraries (OpenSSL, libevent, LevelDB, secp256k1, librustzcash; see
+  `tools/scripts/build_vendor.sh` and [`BUILD.md`](./BUILD.md)'s dependency
+  table). The precise claim is **no unvendored, unpinned, or dynamically
+  fetched-at-runtime dependencies** — every third-party source tarball is
+  fetched from a pinned URL and verified against a pinned SHA256 before it is
+  built and linked in; `libsecp256k1.a` (a custom fork build) ships
+  committed. Vendored and ported third-party code is tracked in
   [`ATTRIBUTIONS.md`](./ATTRIBUTIONS.md), [`../NOTICE`](../NOTICE), and the
   repository tree. Packaging of several static libraries is still a known
   pre-v1 build gap and is documented in the README.

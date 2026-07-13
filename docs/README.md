@@ -13,7 +13,12 @@ One line per doc. Start with the entry points, in order.
 - [`.claude/skills/zclassic23-dev/SKILL.md`](../.claude/skills/zclassic23-dev/SKILL.md) — **the efficient-AI-C23-developer playbook**: the native dev loop (drop-in-C watcher, `dev change apply`), hot-swap tiers, typed-commands-over-bash, workflows of tiered subagents, the push traps (impact-rules mapping, pre-push SIGPIPE), and the inviolable rules. Auto-loads as the `zclassic23-dev` skill; start here for any change.
 - [`NATIVE_COMMAND_INTERFACE.md`](./NATIVE_COMMAND_INTERFACE.md) — the native command registry (`core.*`/`app.*`/`ops.*`/`dev.*`/`discover.*`), the only agent interface going forward.
 - [`work/HOTSWAP.md`](./work/HOTSWAP.md) — Tier-1 hot-swap (`config/hotswap_eligible.def`) + the dev loop + ZVCS auto-anchor.
-- [`ZVCS.md`](./ZVCS.md) — in-binary VCS; `dev vcs` one-command source+binary revert.
+- [`ZVCS.md`](./ZVCS.md) — in-binary VCS; `dev vcs revert` is a one-command
+  source-tree revert. Relinking the *running binary* to the reverted
+  generation is not wired (`relink_generation=true` returns `VCS_ENOTIMPL`),
+  and the canonical/release binary refuses `dev.*` entirely
+  (`DEV_BUILD_REQUIRED`) — live rollback of a running/canonical node is
+  `make deploy` of a prior commit, not a ZVCS relink.
 
 ## Mental model (read before touching code)
 
