@@ -5,7 +5,9 @@
 #include "platform/time_compat.h"
 #include "config/db_service.h"
 #include "models/database.h"
+#include "util/thread_liveness.h"
 #include "util/thread_registry.h"
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -112,9 +114,21 @@ static bool db_service_wal_checkpoint_write(struct node_db *ndb, void *ctx)
     return ok ? *ok : node_db_wal_checkpoint(ndb);
 }
 
+/* Supervisor liveness for the two DB-service threads (single global service,
+ * so module-static children suffice). The worker is dormant-until-event (it
+ * blocks on the queue condvar with no timeout), so it registers liveness-only
+ * (deadline=0, no-progress=0): present in the tree and heartbeating per job,
+ * never falsely flagged for legitimately idling. The WAL checkpointer wakes
+ * every second (deadline=60 s); progress marker = checkpoint count, no-progress
+ * gate disabled (checkpoints are 5 min apart and skip when the DB is closed).
+ * See util/thread_liveness.h. */
+static struct thread_liveness_child g_dbw_child  = { .id = SUPERVISOR_INVALID_ID };
+static struct thread_liveness_child g_ckpt_child = { .id = SUPERVISOR_INVALID_ID };
+
 static void *db_service_worker_main(void *arg)
 {
     struct db_service *svc = arg;
+    int64_t jobs_done = 0;
 
     while (true) {
         struct db_service_job *job = NULL;
@@ -140,6 +154,9 @@ static void *db_service_worker_main(void *arg)
             continue;
 
         job->success = db_service_perform_job(svc, job);
+        /* Heartbeat onto the supervisor tree (atomic-only; zero behavior
+         * change). Job count is the progress marker. */
+        thread_liveness_beat(&g_dbw_child, ++jobs_done);
 
         /* Capture before any free: the async branch frees `job`, so reading
          * job->type afterward for the STOP check would be a use-after-free. */
@@ -269,12 +286,16 @@ bool db_service_attach(struct db_service *svc, struct node_db *node_db)
 static void *db_service_ckpt_main(void *arg)
 {
     struct db_service *svc = arg;
+    int64_t ckpts = 0;
     while (true) {
         for (int slept = 0;
              slept < WAL_CHECKPOINT_INTERVAL_SECS && !svc->ckpt_stop_requested;
              slept++) {
             struct timespec ts = { .tv_sec = 1, .tv_nsec = 0 };
             nanosleep(&ts, NULL);
+            /* Heartbeat every second so the deadline gate stays honest
+             * across the 5-min sleep between checkpoints (atomic-only). */
+            thread_liveness_beat(&g_ckpt_child, ckpts);
         }
         if (svc->ckpt_stop_requested) break;
 
@@ -283,6 +304,8 @@ static void *db_service_ckpt_main(void *arg)
         if (!db_service_wal_checkpoint(svc)) {
             fprintf(stderr,
                 "[wal-checkpoint] periodic checkpoint failed (db busy?)\n");
+        } else {
+            ckpts++;  /* progress marker advances on a real checkpoint */
         }
     }
     return NULL;
@@ -298,20 +321,28 @@ bool db_service_start(struct db_service *svc)
         return false;
     svc->stop_requested = false;
     db_service_reset_queue(svc);
+    // supervised:zcl_db_worker (thread_liveness_register below)
     if (thread_registry_spawn("zcl_db_worker", db_service_worker_main,
                                   svc, &svc->worker_thread) != 0) {
         db_service_close_query_db(svc);
         return false;
     }
     svc->worker_started = true;
+    (void)thread_liveness_register(&g_dbw_child, "zcl_db_worker",
+                                   /*deadline_secs=*/0,
+                                   /*progress_quiet_us=*/0);
 
     /* Best-effort checkpointer; failure is non-fatal (autocheckpoint
      * still works in steady state, and the explicit fsync barrier in
      * chain_tip.c keeps tip durability independent). */
     svc->ckpt_stop_requested = false;
+    // supervised:zcl_db_ckpt (thread_liveness_register below)
     if (thread_registry_spawn("zcl_db_ckpt", db_service_ckpt_main,
                                   svc, &svc->ckpt_thread) == 0) {
         svc->ckpt_started = true;
+        (void)thread_liveness_register(&g_ckpt_child, "zcl_db_ckpt",
+                                       /*deadline_secs=*/60,
+                                       /*progress_quiet_us=*/0);
     } else {
         fprintf(stderr,
             "[wal-checkpoint] failed to start periodic checkpoint thread\n");
@@ -330,6 +361,7 @@ void db_service_stop(struct db_service *svc)
         svc->ckpt_stop_requested = true;
         pthread_join(svc->ckpt_thread, NULL);
         svc->ckpt_started = false;
+        thread_liveness_retire(&g_ckpt_child);
     }
     if (svc->worker_started) {
         zcl_mutex_lock(&svc->queue_mutex);
@@ -338,6 +370,7 @@ void db_service_stop(struct db_service *svc)
         zcl_mutex_unlock(&svc->queue_mutex);
         pthread_join(svc->worker_thread, NULL);
         svc->worker_started = false;
+        thread_liveness_retire(&g_dbw_child);
     }
     svc->started = false;
     svc->stop_requested = false;

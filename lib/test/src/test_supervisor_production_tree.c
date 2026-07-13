@@ -49,6 +49,7 @@
 #include "util/reducer_drive_guard.h"
 #include "util/safe_alloc.h"
 #include "util/supervisor.h"
+#include "util/thread_liveness.h"
 #include "validation/main_state.h"
 
 #include <stdatomic.h>
@@ -395,6 +396,87 @@ int test_supervisor_production_tree(void)
     main_state_free(&staged_ms);
     supervisor_reset_for_testing();
     staged_sync_supervisor_test_reset_runtime();
+
+    /* ── Universal thread supervision (Gate #23 / util/thread_liveness.h) ──
+     * The lib/util adapter is the shared registration path every
+     * cross-cutting infrastructure thread (health sweep, metrics, event
+     * dispatch, RPC-timeout, DB worker/checkpoint) now uses. Drive it
+     * directly: register a child, prove it lands on the tree with a
+     * heartbeat-driven contract, inject a silent stall (a stub that stops
+     * ticking) and prove it names a typed TRANSIENT blocker, then prove a
+     * resumed heartbeat clears that blocker. This is the honest unit for the
+     * whole cohort — each production thread differs only by its deadline and
+     * its progress marker, both passed through this same seam. */
+    {
+        supervisor_reset_for_testing();
+        blocker_reset_for_testing();
+
+        static struct thread_liveness_child tlc = {
+            .id = SUPERVISOR_INVALID_ID
+        };
+        tlc.id = SUPERVISOR_INVALID_ID;  /* re-arm across sequential runner */
+
+        SPT_CHECK("thread_liveness tree empty before register",
+                  supervisor_child_count_total() == 0);
+
+        supervisor_child_id tlid = thread_liveness_register(
+            &tlc, "zcl_test_silent", /*deadline_secs=*/5,
+            /*progress_quiet_us=*/0);
+        SPT_CHECK("thread_liveness_register returns a valid child id",
+                  tlid >= 0);
+
+        memset(&snap, 0, sizeof(snap));
+        count = 0;
+        idx = find_child_snapshot("zcl_test_silent", &snap, &count);
+        SPT_CHECK("supervised thread appears in the tree exactly once",
+                  idx >= 0 && count == 1);
+        /* Heartbeat-driven (not supervisor-driven): the loop ticks itself. */
+        SPT_CHECK("supervised thread is heartbeat-driven (period_secs == 0)",
+                  snap.period_secs == 0);
+        SPT_CHECK("supervised thread arms the deadline gate (5 s)",
+                  snap.deadline_secs == 5);
+
+        /* A heartbeat records a tick + advances the progress marker. */
+        thread_liveness_beat(&tlc, 42);
+        memset(&snap, 0, sizeof(snap));
+        count = 0;
+        idx = find_child_snapshot("zcl_test_silent", &snap, &count);
+        SPT_CHECK("heartbeat records a tick and a progress marker",
+                  idx >= 0 && snap.ticks_run > 0 && snap.progress_marker == 42);
+
+        /* Inject a silent stall (the stub stops ticking): the supervisor
+         * deadline gate would fire this on its clock; inject the edge here so
+         * the test needs no real-time wait (same pattern as the
+         * net.outbound_floor injection above). on_stall must name the typed
+         * TRANSIENT blocker. */
+        SPT_CHECK("no thread_stalled blocker before the stall",
+                  !blocker_exists("thread_stalled_zcl_test_silent"));
+        supervisor_report_stall(tlid, SUPERVISOR_STALL_TIME_DEADLINE);
+        SPT_CHECK("silent thread trips a named blocker",
+                  blocker_exists("thread_stalled_zcl_test_silent"));
+        SPT_CHECK("thread-stall blocker is TRANSIENT",
+                  blocker_class_for("thread_stalled_zcl_test_silent") ==
+                      BLOCKER_TRANSIENT);
+
+        /* A resumed heartbeat clears the blocker and the stall reason. */
+        thread_liveness_beat(&tlc, 43);
+        SPT_CHECK("resumed heartbeat clears the thread-stall blocker",
+                  !blocker_exists("thread_stalled_zcl_test_silent"));
+        memset(&snap, 0, sizeof(snap));
+        count = 0;
+        idx = find_child_snapshot("zcl_test_silent", &snap, &count);
+        SPT_CHECK("resumed heartbeat clears the stall reason",
+                  idx >= 0 && snap.stall_reason == SUPERVISOR_STALL_NONE);
+
+        /* Retire removes the child from the tree. */
+        thread_liveness_retire(&tlc);
+        idx = find_child_snapshot("zcl_test_silent", NULL, &count);
+        SPT_CHECK("retire removes the supervised thread from the tree",
+                  idx < 0 && count == 0);
+
+        blocker_reset_for_testing();
+        supervisor_reset_for_testing();
+    }
 
     printf("supervisor_production_tree: %d failures\n", failures);
     return failures;

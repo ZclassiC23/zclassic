@@ -6,6 +6,7 @@
 #include "event/event.h"
 #include "util/safe_alloc.h"
 #include "util/signal_handler.h"
+#include "util/thread_liveness.h"
 #include "util/thread_registry.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -159,10 +160,22 @@ static void async_enqueue(enum event_type type, uint32_t peer_id,
     pthread_mutex_unlock(&g_async.wake_mutex);
 }
 
+/* Supervisor liveness: the dispatcher wakes at least every 1 s (its
+ * timed condwait), so a heartbeat at the loop head keeps a deadline=60 s
+ * contract honest even when idle. Progress marker = events consumed
+ * (read_pos); no-progress gate disabled because an idle queue legitimately
+ * leaves read_pos unchanged. See util/thread_liveness.h. */
+static struct thread_liveness_child g_async_child = {
+    .id = SUPERVISOR_INVALID_ID
+};
+
 static void *async_dispatch_thread(void *arg)
 {
     (void)arg;
     while (atomic_load(&g_async.running)) {
+        thread_liveness_beat(&g_async_child,
+            (int64_t)atomic_load_explicit(&g_async.read_pos,
+                                          memory_order_acquire));
         uint64_t rp = atomic_load_explicit(&g_async.read_pos,
                                            memory_order_acquire);
         uint64_t wp = atomic_load_explicit(&g_async.write_pos,
@@ -229,6 +242,7 @@ bool event_async_start(void)
     }
     g_async.wake_initialized = true;
     atomic_store(&g_async.running, true);
+    // supervised:zcl_event_async (thread_liveness_register below)
     if (thread_registry_spawn("zcl_event_async", async_dispatch_thread,
                                   NULL, &g_async.thread) != 0) {
         atomic_store(&g_async.running, false);
@@ -237,6 +251,9 @@ bool event_async_start(void)
         g_async.wake_initialized = false;
         return false;
     }
+    (void)thread_liveness_register(&g_async_child, "zcl_event_async",
+                                   /*deadline_secs=*/60,
+                                   /*progress_quiet_us=*/0);
     g_async.thread_started = true;
     return true;
 }
@@ -257,6 +274,7 @@ void event_async_stop(void)
         pthread_join(g_async.thread, NULL);
         g_async.thread_started = false;
     }
+    thread_liveness_retire(&g_async_child);
     if (g_async.wake_initialized) {
         pthread_mutex_destroy(&g_async.wake_mutex);
         pthread_cond_destroy(&g_async.wake_cond);

@@ -12,6 +12,7 @@
 #include "platform/time_compat.h"
 #include "rpc/rpc_timeout.h"
 #include "event/event.h"
+#include "util/thread_liveness.h"
 #include "util/thread_registry.h"
 
 #include <arpa/inet.h>
@@ -255,6 +256,14 @@ int rpc_timeout_sweep(struct rpc_timeout_mgr *mgr, int64_t current_us)
 
 /* ── Watchdog thread ───────────────────────────────────────── */
 
+/* Supervisor liveness: the RPC-timeout watchdog sweeps on a ~250 ms cadence
+ * (deadline=120 s). Progress marker = sweep count; no-progress gate disabled
+ * (a sweep with no expiries is normal). Single global watchdog, so one
+ * module-static child suffices. See util/thread_liveness.h. */
+static struct thread_liveness_child g_rpc_timeout_child = {
+    .id = SUPERVISOR_INVALID_ID
+};
+
 static void *watchdog_fn(void *arg)
 {
     struct rpc_timeout_mgr *mgr = (struct rpc_timeout_mgr *)arg;
@@ -277,6 +286,9 @@ static void *watchdog_fn(void *arg)
         pthread_mutex_unlock(&mgr->lock);
 
         rpc_timeout_sweep(mgr, now_us());
+        /* Heartbeat onto the supervisor tree (atomic-only; zero behavior
+         * change). stat_sweeps is the progress marker. */
+        thread_liveness_beat(&g_rpc_timeout_child, (int64_t)mgr->stat_sweeps);
 
         pthread_mutex_lock(&mgr->lock);
     }
@@ -297,6 +309,7 @@ bool rpc_timeout_start_watchdog(struct rpc_timeout_mgr *mgr)
     mgr->watchdog_running = true;
     pthread_mutex_unlock(&mgr->lock);
 
+    // supervised:zcl_rpc_timeout (thread_liveness_register below)
     if (thread_registry_spawn("zcl_rpc_timeout", watchdog_fn, mgr,
                                   &mgr->watchdog_thread) != 0) {
         pthread_mutex_lock(&mgr->lock);
@@ -304,6 +317,9 @@ bool rpc_timeout_start_watchdog(struct rpc_timeout_mgr *mgr)
         pthread_mutex_unlock(&mgr->lock);
         return false;
     }
+    (void)thread_liveness_register(&g_rpc_timeout_child, "zcl_rpc_timeout",
+                                   /*deadline_secs=*/120,
+                                   /*progress_quiet_us=*/0);
     mgr->watchdog_started = true;
     return true;
 }
@@ -319,6 +335,7 @@ void rpc_timeout_stop_watchdog(struct rpc_timeout_mgr *mgr)
     if (was_started) {
         pthread_join(mgr->watchdog_thread, NULL);
         mgr->watchdog_started = false;
+        thread_liveness_retire(&g_rpc_timeout_child);
     }
 }
 

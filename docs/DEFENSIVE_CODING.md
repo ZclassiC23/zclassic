@@ -360,6 +360,28 @@ assert green).
   guard for the S1 renames. If an entity name legitimately ends in a shape word
   (`models/file_service.c`), add `// suffix-ok:<tag>`.
 
+- **Gate #23: `check-thread-supervision`** (RATCHET) —
+  `tools/lint/check_thread_supervision.sh`. Universalizes Gate #16 from the
+  services dir to EVERY `thread_registry_spawn(` call site under `app/`,
+  `lib/`, `config/`. Each spawned long-running thread must be accounted for:
+  (a) SUPERVISED — its TU registers a liveness contract
+  (`supervisor_register{,_in_domain}(` or the lib/util adapter
+  `thread_liveness_register(`), or the spawn line/line-above carries a
+  `// supervised:<child>` marker; (b) MARKED-EXEMPT — a
+  `// thread-supervision-ok:<reason>` marker (bounded/joined worker pool,
+  one-shot job); or (c) BASELINED — the thread's name literal is in
+  `tools/lint/thread_supervision_baseline.txt` with a disposition +
+  justification. Anything else is a NEW unaccounted thread → FAIL. The
+  baseline may only SHRINK: a stale entry (thread renamed/removed/now-covered)
+  fails, forcing the count down as threads gain contracts via
+  `util/thread_liveness.h` (exemplar `lib/health/src/heartbeat.c`). Closes the
+  gap where the lib/ + config/ infrastructure threads (health sweep, metrics,
+  event dispatch, RPC-timeout, DB worker/checkpoint) were spawned but never on
+  the supervisor tree — a wedged loop there was silent, the exact Round-5
+  failure mode. Raw `pthread_create` is separately gated by
+  `check-pthread-create`. The `SUPERVISOR_CAP` static registry was raised
+  32→64 to seat the new root children.
+
 `ZCL_LINT_MODE` (`WARN` | `RATCHET` | `FAIL`) selects mode for #18/#20; `make
 lint` runs them in `RATCHET`.
 
@@ -444,6 +466,7 @@ add/remove a gate.
 - `check-supervisor-registration`
 - `check-systemd-memory-budget`
 - `check-test-registration`
+- `check-thread-supervision`
 - `check-typed-blocker`
 - `check-vendor-provenance`
 - `check-doc-no-false-deleted`
@@ -482,6 +505,8 @@ mechanically hold:
 | `// lib-layer-ok:<tag>` | line in `lib/` that includes a `controllers/`, `models/`, `services/`, or `views/` header | `check-lib-layering` |
 | `// domain-purity-ok:<tag>` | line in `domain/` that includes an app/ shape or an unlisted lib/ subsystem header | `check-domain-purity` |
 | `// supervisor-ok:<tag>` | any line in a long-running `app/services/src/*_service.c` that intentionally does not register a supervisor liveness contract | `check-supervisor-registration` |
+| `// supervised:<child>` | a `thread_registry_spawn(` call site whose thread IS on the supervisor tree; names the watching contract | `check-thread-supervision` |
+| `// thread-supervision-ok:<reason>` | a `thread_registry_spawn(` call site for a bounded/joined/one-shot thread that needs no liveness contract | `check-thread-supervision` |
 | `// one-result-type-ok:<tag>` | top of an `app/services/src/*.c` that owns no fallible service surface (pure table/registry helper) | `check-one-result-type` |
 | `// one-write-path-ok:<tag>` | chain-state compatibility wrapper that is not a second consensus writer | `check-one-write-path` |
 | `// shape-include-ok:<tag>` | any line in a shape file (condition/model/supervisor) that is a genuine registry/aggregator and cannot include the shape header | `check-shape-includes-header` |
