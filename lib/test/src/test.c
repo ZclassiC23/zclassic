@@ -1127,6 +1127,7 @@ int main(int argc, char **argv)
     failures += test_file_controller();
     failures += test_file_ops();
     failures += test_file_tree_ops();
+    failures += test_spawn();
     failures += test_integrity();
     failures += test_rolling_anchor_service();
     failures += test_protocols();

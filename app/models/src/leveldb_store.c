@@ -2,6 +2,8 @@
 
 #include "models/leveldb_store.h"
 #include "models/leveldb_util.h"
+#include "util/file_tree_ops.h"
+#include "util/log_macros.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -54,11 +56,23 @@ bool leveldb_store_save(struct leveldb_store *store)
            (double)store->total_bytes / (1024.0 * 1024.0));
     fflush(stdout);
 
-    char cmd[4096];
-    snprintf(cmd, sizeof(cmd),
-             "rm -rf '%s' && mkdir -p '%s' && cp -a '%s'/. '%s'/ 2>/dev/null",
-             store->dst_dir, store->dst_dir, store->src_dir, store->dst_dir);
-    store->copy_ok = (system(cmd) == 0);
+    /* `rm -rf dst && mkdir -p dst && cp -a src/. dst/` — a clean full copy
+     * of the LevelDB directory, via the single fd-based walker. Removing dst
+     * first, then copying src→dst fresh, is equivalent to the shell form
+     * (dst did not exist, so cp -a src/. dst/ == cp -a src dst) and yields
+     * real error returns instead of the old `2>/dev/null`-silenced code. */
+    struct zcl_result rrm = zcl_tree_remove(store->dst_dir);
+    if (!rrm.ok) {
+        LOG_WARN(lbl, "clean copy: could not remove dst %s: %s",
+                 store->dst_dir, rrm.message);
+        store->copy_ok = false;
+        return false;
+    }
+    struct zcl_result rcp = zcl_tree_copy(store->src_dir, store->dst_dir,
+                                          ZCL_COPY_PRESERVE_TIMES, NULL, NULL);
+    if (!rcp.ok)
+        LOG_WARN(lbl, "clean copy failed: %s", rcp.message);
+    store->copy_ok = rcp.ok;
     return store->copy_ok;
 }
 

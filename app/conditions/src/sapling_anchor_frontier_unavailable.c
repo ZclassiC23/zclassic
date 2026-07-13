@@ -58,6 +58,7 @@
 #include "storage/chainstate_legacy_reader.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
+#include "util/file_tree_ops.h"
 #include "util/log_macros.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -379,14 +380,14 @@ static bool tier1b_borrow_verified_frontier(sqlite3 *db, struct main_state *ms,
     }
 
     /* The borrow is read-once: remove the temp copy (mirrors the
-     * utxo_recovery_restore.c cleanup for a zclassicd-LOCK copy). */
-    char rm_cmd[1300];
-    snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf '%s'", import_path);
-    if (system(rm_cmd) != 0)
+     * utxo_recovery_restore.c cleanup for a zclassicd-LOCK copy). `rm -rf`
+     * via the fd-based walker (no shell). */
+    struct zcl_result rm = zcl_tree_remove(import_path);
+    if (!rm.ok)
         LOG_WARN(SAFU_SUBSYS,
-                 "[condition:%s] tier1b: temp borrow copy cleanup returned "
-                 "non-zero for %s (non-fatal)",
-                 SAFU_COND_NAME, import_path);
+                 "[condition:%s] tier1b: temp borrow copy cleanup failed "
+                 "for %s (non-fatal): %s",
+                 SAFU_COND_NAME, import_path, rm.message);
 
     return seeded;
 }

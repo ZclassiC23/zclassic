@@ -96,4 +96,13 @@ struct zcl_result zcl_spawn_detached(const char *const argv[],
 int zcl_spawn_capture(const char *const argv[], char *buf, size_t cap,
                        int timeout_ms);
 
+/* Split `str` in place into whitespace-separated tokens (space/tab/CR/LF),
+ * writing a pointer to each into argv[0..n-1] and argv[n] = NULL. `str` is
+ * modified (strtok_r). At most `max`-1 tokens are stored (argv must hold
+ * `max` entries including the NULL terminator). This is a plain whitespace
+ * split for turning a trusted, simple command string into an execvp() argv —
+ * NO shell: no quote, escape, or glob handling. A NULL/empty `str` yields 0.
+ * Returns the number of tokens stored. */
+size_t zcl_argv_split(char *str, const char *argv[], size_t max);
+
 #endif /* ZCL_UTIL_SPAWN_H */

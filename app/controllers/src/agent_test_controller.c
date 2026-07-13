@@ -35,9 +35,9 @@
  *   - scenario requires `name.scenario` to already exist as a regular file
  *     under tools/sim/scenarios/ — no new scenario content is ever created
  *     or written by this contract.
- *   - every value placed on the launched command line is additionally
- *     single-quoted (see at_shell_squote) as defense in depth over the
- *     allowlists above, exactly like agentcopyprove's cp_shell_squote.
+ *   - the runner is launched via zcl_spawn_detached (no shell): each value
+ *     is passed as an exact argv word, so no shell metacharacter can be
+ *     interpreted at all — the allowlists above remain as defense in depth.
  */
 
 #include "controllers/agent_test_controller.h"
@@ -47,6 +47,7 @@
 #include "json/json.h"
 #include "platform/time_compat.h"
 #include "util/safe_alloc.h"
+#include "util/spawn.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -98,27 +99,6 @@ static bool at_key_valid(const char *s)
             return false;
     }
     return true;
-}
-
-/* ── shell quoting (defense in depth over the allowlists above) ─────── */
-
-static void at_shell_squote(const char *in, char *out, size_t out_sz)
-{
-    size_t o = 0;
-    if (out_sz == 0) return;
-    out[o++] = '\'';
-    for (const char *p = in; p && *p && o + 5 < out_sz; p++) {
-        if (*p == '\'') {
-            out[o++] = '\'';
-            out[o++] = '\\';
-            out[o++] = '\'';
-            out[o++] = '\'';
-        } else {
-            out[o++] = *p;
-        }
-    }
-    if (o + 1 < out_sz) out[o++] = '\'';
-    out[o] = '\0';
 }
 
 /* ── status dir / file resolution ────────────────────────────────────
@@ -178,28 +158,26 @@ static bool at_test_group_registered(const char *bin, const char *name,
     if (access(bin, X_OK) != 0)
         return false;
 
-    char cmd[1200];
-    int n = snprintf(cmd, sizeof(cmd), "%s --list 2>/dev/null", bin);
-    if (n < 0 || (size_t)n >= sizeof(cmd))
+    /* `bin --list` — capture stdout via the no-shell spawn primitive (stderr
+     * discarded, matching the old `2>/dev/null`), then match `name` as an
+     * exact line. bin was already confirmed X_OK above. */
+    const char *const argv[] = { bin, "--list", NULL };
+    size_t cap = 65536;
+    char *out = zcl_malloc(cap, "agent_test.list");
+    if (!out)
         return false;
+    int rc = zcl_spawn_capture(argv, out, cap, 30000);
+    *reachable = (rc != -1);   /* -1 == launch failed before the binary ran */
 
-    FILE *p = popen(cmd, "r");
-    if (!p)
-        return false;
-    *reachable = true;
-
-    char line[128];
     bool found = false;
-    while (fgets(line, sizeof(line), p)) {
-        size_t ln = strlen(line);
-        while (ln > 0 && (line[ln - 1] == '\n' || line[ln - 1] == '\r'))
-            line[--ln] = '\0';
-        if (strcmp(line, name) == 0) {
+    char *save = NULL;
+    for (char *line = strtok_r(out, "\r\n", &save);
+         line && !found;
+         line = strtok_r(NULL, "\r\n", &save)) {
+        if (strcmp(line, name) == 0)
             found = true;
-            break;
-        }
     }
-    pclose(p);
+    free(out);
     return found;
 }
 
@@ -399,41 +377,33 @@ bool rpc_agent_test(const struct json_value *params, bool help,
         return true;
     }
 
-    char q_name[160], q_status[1200], q_log[1200], q_launch_log[1300];
-    at_shell_squote(name, q_name, sizeof(q_name));
-    at_shell_squote(status_file, q_status, sizeof(q_status));
-    at_shell_squote(log_file, q_log, sizeof(q_log));
     char launch_log[1200];
     snprintf(launch_log, sizeof(launch_log), "%s.launch.log", status_file);
-    at_shell_squote(launch_log, q_launch_log, sizeof(q_launch_log));
 
-    /* kind_lit is one of the two fixed C-string constants matched by
-     * strcmp above (never the caller's raw pointer) — it never needs
-     * quoting because it can only ever be one of those two literals. */
-    char cmd[4000];
-    int n = snprintf(cmd, sizeof(cmd),
-        "nohup %s --kind=%s --name=%s --status-file=%s --log-file=%s "
-        "> %s 2>&1 < /dev/null &",
-        script, kind_lit, q_name, q_status, q_log, q_launch_log);
-    if (n < 0 || (size_t)n >= sizeof(cmd)) {
-        json_push_kv_str(result, "status", "error");
-        json_push_kv_str(result, "error", "command_too_long");
-        // obs-ok:agent-test-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
-        fprintf(stderr, "[agent_test] %s:%d %s(): command exceeded %zu "
-                "bytes for key=%s\n", __FILE__, __LINE__, __func__,
-                sizeof(cmd), key);
-        return true;
-    }
+    /* argv for the detached runner — no shell, no quoting, no `nohup ... &`.
+     * zcl_spawn_detached double-forks + setsid()s and redirects the
+     * grandchild's stdout+stderr to launch_log (replacing the old
+     * `> launch_log 2>&1 < /dev/null &`). kind_lit is one of two fixed
+     * C-string literals; name/status_file/log_file are exact argv words. */
+    char opt_kind[64], opt_name[200], opt_status_file[1200], opt_log[1200];
+    snprintf(opt_kind, sizeof(opt_kind), "--kind=%s", kind_lit);
+    snprintf(opt_name, sizeof(opt_name), "--name=%s", name);
+    snprintf(opt_status_file, sizeof(opt_status_file), "--status-file=%s",
+             status_file);
+    snprintf(opt_log, sizeof(opt_log), "--log-file=%s", log_file);
+    const char *argv[] = {
+        script, opt_kind, opt_name, opt_status_file, opt_log, NULL
+    };
 
-    int rc = system(cmd);
-    if (rc != 0) {
+    struct zcl_result sp = zcl_spawn_detached(argv, launch_log);
+    if (!sp.ok) {
         json_push_kv_str(result, "status", "error");
         json_push_kv_str(result, "error", "spawn_failed");
-        json_push_kv_int(result, "spawn_exit_code", rc);
+        json_push_kv_str(result, "detail", sp.message);
         // obs-ok:agent-test-diagnostic-stderr (best-effort status telemetry / request refusal returns JSON error)
-        fprintf(stderr, "[agent_test] %s:%d %s(): system() launch failed "
-                "rc=%d for key=%s cmd=%s\n", __FILE__, __LINE__, __func__,
-                rc, key, cmd);
+        fprintf(stderr, "[agent_test] %s:%d %s(): spawn_detached failed "
+                "for key=%s: %s\n", __FILE__, __LINE__, __func__,
+                key, sp.message);
         return true;
     }
 

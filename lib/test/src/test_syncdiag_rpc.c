@@ -68,6 +68,24 @@
 #include <utime.h>
 #include <unistd.h>
 
+/* No-shell dev-status collector for tests. os-substrate Rung 0 (site 11) made
+ * agent_collect_optional_status run ZCL_AGENT_DEV_STATUS_CMD as an argv via
+ * execvp (no shell), so the old `printf '...'` shell command no longer works.
+ * Write the fixed JSON to a temp file and point the collector at a bare
+ * `cat <path>` command — pure argv, no shell quoting or redirection. */
+static bool set_dev_status_cmd_json(const char *json)
+{
+    char path[128];
+    snprintf(path, sizeof(path), "/tmp/zcl_devstatus_%d.json", (int)getpid());
+    FILE *f = fopen(path, "w");
+    if (!f) return false;
+    fputs(json, f);
+    fclose(f);
+    char cmd[160];
+    snprintf(cmd, sizeof(cmd), "cat %s", path);
+    return setenv("ZCL_AGENT_DEV_STATUS_CMD", cmd, 1) == 0;
+}
+
 /* Push a 64 KiB frame filled with 0xCC onto the stack, then return.
  * The frame is freed on return but the bytes persist in memory — any
  * subsequent callee with a smaller combined frame size reuses that
@@ -7178,9 +7196,8 @@ syncdiag_net_split_done:
                 (size_t)n < sizeof(old_dev_status_cmd_buf);
         }
         ok = ok && old_dev_status_cmd_saved;
-        ok = ok && setenv(
-            "ZCL_AGENT_DEV_STATUS_CMD",
-            "printf '%s\\n' '{\"schema\":\"zcl.agent_dev_status.v1\","
+        ok = ok && set_dev_status_cmd_json(
+            "{\"schema\":\"zcl.agent_dev_status.v1\","
             "\"worker_lane\":{\"name\":\"dev\",\"role\":\"worker\","
             "\"mutation_policy\":\"noncanonical_dev_only\","
             "\"canonical_guard\":\"never_touches_live_or_soak\","
@@ -7188,8 +7205,7 @@ syncdiag_net_split_done:
             "\"recover_command\":\"make agent-dev-recover\"},"
             "\"next_action\":\"unit-test\","
             "\"service\":{\"active_state\":\"active\"},"
-            "\"rpc\":{\"status\":\"ok\"}}'",
-            1) == 0;
+            "\"rpc\":{\"status\":\"ok\"}}");
         struct json_value dev_status;
         json_init(&dev_status);
         ok = ok && rpc_table_execute(&tbl, "agentdevstatus", &params,
@@ -8576,16 +8592,14 @@ syncdiag_net_split_done:
         json_push_back(&params, &anchor_dir);
         json_free(&anchor_dir);
 
-        bool env_ok = setenv(
-            "ZCL_AGENT_DEV_STATUS_CMD",
-            "printf '%s\\n' '{\"schema\":\"zcl.agent_dev_status.v1\","
+        bool env_ok = set_dev_status_cmd_json(
+            "{\"schema\":\"zcl.agent_dev_status.v1\","
             "\"worker_lane\":{\"name\":\"dev\",\"role\":\"worker\","
             "\"mutation_policy\":\"noncanonical_dev_only\","
             "\"canonical_guard\":\"never_touches_live_or_soak\"},"
             "\"next_action\":\"unit-test\","
             "\"service\":{\"active_state\":\"active\"},"
-            "\"rpc\":{\"status\":\"ok\"}}'",
-            1) == 0;
+            "\"rpc\":{\"status\":\"ok\"}}");
 
         struct json_value result;
         json_init(&result);

@@ -33,6 +33,7 @@
 #include "models/database.h"
 #include "models/block.h"
 #include "event/event.h"
+#include "util/file_tree_ops.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -430,11 +431,8 @@ struct utxo_import_result utxo_recovery_import_ldb(
     }
 
 cleanup:
-    if (import_path_cleanup[0]) {
-        char rm_cmd[1200];
-        snprintf(rm_cmd, sizeof(rm_cmd), "rm -rf '%s'", import_path_cleanup);
-        system(rm_cmd);
-    }
+    if (import_path_cleanup[0])
+        (void)zcl_tree_remove(import_path_cleanup);  /* rm -rf temp, no shell */
 
     return res;
 }

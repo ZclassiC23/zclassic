@@ -165,6 +165,41 @@ static int test_spawn_capture_truncates_oversized(void)
     return failures;
 }
 
+/* Case 6: with the DEFAULT SIGCHLD disposition (no SA_NOCLDWAIT — exactly the
+ * process state after alerts.c stopped installing it as the LAST step of
+ * os-substrate Rung 0), zcl_spawn_capture()'s internal waitpid() returns a
+ * REAL exit code: /bin/false exits 1, /bin/true exits 0. This is the proof
+ * that removing the process-wide SA_NOCLDWAIT install made child exit statuses
+ * trustworthy again (under SA_NOCLDWAIT both would collapse to the documented
+ * "unknown -> 0"). SIGCHLD is saved/restored around the test. */
+static int test_spawn_capture_real_exit_code(void)
+{
+    int failures = 0;
+    TEST("spawn: capture returns real exit codes without SA_NOCLDWAIT") {
+        struct sigaction old;
+        memset(&old, 0, sizeof(old));
+        sigaction(SIGCHLD, NULL, &old);
+
+        struct sigaction dfl;
+        memset(&dfl, 0, sizeof(dfl));
+        dfl.sa_handler = SIG_DFL;      /* NO SA_NOCLDWAIT */
+        sigaction(SIGCHLD, &dfl, NULL);
+
+        char buf[64] = {0};
+        const char *false_argv[] = { "/bin/false", NULL };
+        int rc_false = zcl_spawn_capture(false_argv, buf, sizeof(buf), 3000);
+        const char *true_argv[] = { "/bin/true", NULL };
+        int rc_true = zcl_spawn_capture(true_argv, buf, sizeof(buf), 3000);
+
+        sigaction(SIGCHLD, &old, NULL);   /* restore BEFORE asserting */
+
+        ASSERT(rc_false == 1);   /* real non-zero exit, not ECHILD -> 0 */
+        ASSERT(rc_true == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_spawn(void);
 
 int test_spawn(void)
@@ -177,6 +212,7 @@ int test_spawn(void)
     failures += test_spawn_capture_timeout_kills();
     failures += test_spawn_capture_echild_tolerant();
     failures += test_spawn_capture_truncates_oversized();
+    failures += test_spawn_capture_real_exit_code();
 
     printf("Spawn: %d failures\n", failures);
     return failures;
