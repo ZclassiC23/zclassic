@@ -11,6 +11,7 @@
 #include "jobs/stage_helpers.h"
 #include "proof_validate_log_store.h"
 #include "proof_validate_stage_internal.h"
+#include "jobs/proof_validate_verify.h"
 #include "script_validate_log_store.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
@@ -48,17 +49,11 @@
 
 #define STAGE_NAME "proof_validate"
 /* Log helpers live in proof_validate_log_store.c; the zcl_state JSON dump
- * lives in proof_validate_stage_dump.c. */
-
-struct validate_summary {
-    int ok;
-    int internal_error;
-    size_t sapling_spends_total;
-    size_t sapling_outputs_total;
-    size_t sprout_joinsplits_total;
-    struct uint256 first_failure_txid;
-    const char *first_failure_proof_type;
-};
+ * lives in proof_validate_stage_dump.c. The block-level proof verification
+ * (built-in verifier + serial reference + pool-parallel sweep, and the shared
+ * struct proof_verify_summary) lives in proof_validate_verify.c — this file
+ * owns the stage state machine, the cursor/log persistence, and the telemetry
+ * atomics it applies through the reduce callbacks. */
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct main_state *g_ms = NULL;
@@ -167,205 +162,15 @@ static job_result_t pv_hold_unresolved(struct stage_step_ctx *c, int height,
     return JOB_BLOCKED;
 }
 
-static void tx_report_init(struct proof_validate_tx_report *r)
-{
-    memset(r, 0, sizeof(*r));
-    r->ok = true;
-}
-
-static bool tx_has_shielded_proofs(const struct transaction *tx)
-{
-    return tx && (tx->num_joinsplit > 0 ||
-                  tx->num_shielded_spend > 0 ||
-                  tx->num_shielded_output > 0);
-}
-
-/* Verify one homogeneous Sapling proof set (all spends OR all outputs) with
- * batched Groth16 + a per-proof fallback for attribution. Each description's
- * non-Groth16 gates (point decode, small-order, RedJubjub, bvk fold) run in
- * order via *_prepare — verdict-identical to check_* — then the whole set's
- * proofs verify in ONE final exponentiation. Returns true on accept; on
- * reject/alloc-failure it sets *out and returns false (the stage then writes
- * ok=0 for the block, exactly as the per-proof path did). The accept path —
- * every real block — is verdict-identical, just faster. */
-static bool pv_sapling_set(void *sctx, const struct transaction *tx,
-                           const struct uint256 *sighash, bool is_spend,
-                           struct proof_validate_tx_report *out)
-{
-    size_t n = is_spend ? tx->num_shielded_spend : tx->num_shielded_output;
-    if (n == 0)
-        return true;
-    size_t ni = is_spend ? 7 : 5;
-    struct groth16_proof *p = zcl_calloc(n, sizeof(*p), "pv sapling proofs");
-    uint64_t (*pub)[4] = zcl_calloc(n * ni, sizeof(*pub), "pv sapling pub");
-    if (!p || !pub) {
-        free(p); free(pub);
-        out->ok = false;
-        out->internal_error = true;
-        out->first_failure_proof_type = "sapling_ctx";
-        return false;
-    }
-    const char *ftype = is_spend ? "sapling_spend" : "sapling_output";
-    for (size_t i = 0; i < n; i++) {
-        bool ok;
-        if (is_spend) {
-            const struct spend_description *sd = &tx->v_shielded_spend[i];
-            out->sapling_spends_total++;
-            ok = zclassic_sapling_spend_prepare(sctx, sd->cv.data,
-                    sd->anchor.data, sd->nullifier.data, sd->rk.data,
-                    sd->zkproof, sd->spend_auth_sig, sighash->data,
-                    &p[i], &pub[i * ni]);
-        } else {
-            const struct output_description *od = &tx->v_shielded_output[i];
-            out->sapling_outputs_total++;
-            ok = zclassic_sapling_output_prepare(sctx, od->cv.data,
-                    od->cm.data, od->ephemeral_key.data, od->zkproof,
-                    &p[i], &pub[i * ni]);
-        }
-        if (!ok) {
-            free(p); free(pub);
-            out->ok = false;
-            out->first_failure_proof_type = ftype;
-            return false;
-        }
-    }
-    bool batch = is_spend ? zclassic_sapling_spend_groth16_batch(p, pub, n)
-                          : zclassic_sapling_output_groth16_batch(p, pub, n);
-    if (!batch) {
-        for (size_t i = 0; i < n; i++) {
-            bool one = is_spend
-                ? zclassic_sapling_spend_groth16_one(&p[i], &pub[i * ni])
-                : zclassic_sapling_output_groth16_one(&p[i], &pub[i * ni]);
-            if (!one) {
-                free(p); free(pub);
-                out->ok = false;
-                out->first_failure_proof_type = ftype;
-                return false;
-            }
-        }
-    }
-    free(p); free(pub);
-    return true;
-}
-
-static bool default_verify_tx(const struct transaction *tx, int height,
-                              struct proof_validate_tx_report *out,
-                              void *user)
+/* Reduce-order counter callbacks (proof_verify_success_cb /
+ * proof_verify_failure_cb): proof_verify_block invokes these in ORIGINAL tx
+ * order during its serial reduce, so the telemetry atomics see exactly the
+ * serial-sweep ordering regardless of parallel verification. */
+static void add_success_counters(const struct transaction *tx,
+                                 const struct proof_validate_tx_report *r,
+                                 void *user)
 {
     (void)user;
-    tx_report_init(out);
-    if (!tx) {
-        out->ok = false;
-        out->internal_error = true;
-        out->first_failure_proof_type = "internal";
-        return true;
-    }
-
-    if (!tx_has_shielded_proofs(tx))
-        return true;
-
-    if (!sapling_params_loaded()) {
-        out->ok = false;
-        out->internal_error = true;
-        out->first_failure_proof_type = "params_not_loaded";
-        return true;
-    }
-
-    struct uint256 sighash;
-    uint256_set_null(&sighash);
-    uint32_t branch_id = consensus_current_epoch_branch_id(
-        height, &chain_params_get()->consensus);
-    struct script empty_script;
-    empty_script.size = 0;
-    struct sighash_type ht = { .raw = SIGHASH_ALL };
-    if (!signature_hash(&empty_script, tx, NOT_AN_INPUT, ht, 0,
-                        branch_id, NULL, &sighash)) {
-        out->ok = false;
-        out->internal_error = true;
-        out->first_failure_proof_type = "sighash";
-        return true;
-    }
-
-    if (tx->num_joinsplit > 0 &&
-        !ed25519_verify(tx->joinsplit_sig, sighash.data, 32,
-                        tx->joinsplit_pubkey.data)) {
-        out->ok = false;
-        out->first_failure_proof_type = "joinsplit_sig";
-        return true;
-    }
-
-    if (tx->num_shielded_spend > 0 || tx->num_shielded_output > 0) {
-        void *sctx = zclassic_sapling_verification_ctx_init();
-        if (!sctx) {
-            out->ok = false;
-            out->internal_error = true;
-            out->first_failure_proof_type = "sapling_ctx";
-            return true;
-        }
-        /* Batched Groth16 (spends then outputs), verdict-identical to a
-         * per-description check_* sweep on the accept path — see pv_sapling_set. */
-        if (!pv_sapling_set(sctx, tx, &sighash, true, out) ||
-            !pv_sapling_set(sctx, tx, &sighash, false, out)) {
-            zclassic_sapling_verification_ctx_free(sctx);
-            return true;
-        }
-        if (!zclassic_sapling_final_check(sctx, tx->value_balance,
-                                          tx->binding_sig, sighash.data)) {
-            zclassic_sapling_verification_ctx_free(sctx);
-            out->ok = false;
-            out->first_failure_proof_type = "binding_sig";
-            return true;
-        }
-        zclassic_sapling_verification_ctx_free(sctx);
-    }
-
-    for (size_t i = 0; i < tx->num_joinsplit; i++) {
-        const struct js_description *js = &tx->v_joinsplit[i];
-        out->sprout_joinsplits_total++;
-        uint8_t h_sig[32];
-        sprout_h_sig(js->random_seed.data, js->nullifiers[0].data,
-                     js->nullifiers[1].data, tx->joinsplit_pubkey.data,
-                     h_sig);
-
-        bool ok;
-        if (js->use_groth) {
-            ok = sprout_verify_groth16(js->proof, js->anchor.data, h_sig,
-                    js->macs[0].data, js->macs[1].data,
-                    js->nullifiers[0].data, js->nullifiers[1].data,
-                    js->commitments[0].data, js->commitments[1].data,
-                    (uint64_t)js->vpub_old, (uint64_t)js->vpub_new);
-            if (!ok) {
-                out->ok = false;
-                out->first_failure_proof_type = "sprout_groth16";
-                return true;
-            }
-        } else {
-            ok = sprout_verify_phgr13(js->proof, js->anchor.data, h_sig,
-                    js->macs[0].data, js->macs[1].data,
-                    js->nullifiers[0].data, js->nullifiers[1].data,
-                    js->commitments[0].data, js->commitments[1].data,
-                    (uint64_t)js->vpub_old, (uint64_t)js->vpub_new);
-            if (!ok) {
-                out->ok = false;
-                out->first_failure_proof_type = "sprout_phgr13";
-                return true;
-            }
-        }
-    }
-
-    return true;
-}
-
-static void validate_summary_init(struct validate_summary *s)
-{
-    memset(s, 0, sizeof(*s));
-    s->ok = 1;
-    uint256_set_null(&s->first_failure_txid);
-}
-
-static void add_success_counters(const struct transaction *tx,
-                                 const struct proof_validate_tx_report *r)
-{
     atomic_fetch_add(&g_sapling_spends_verified_total,
                      (uint64_t)r->sapling_spends_total);
     atomic_fetch_add(&g_sapling_outputs_verified_total,
@@ -381,8 +186,9 @@ static void add_success_counters(const struct transaction *tx,
         atomic_fetch_add(&g_binding_sig_verified_total, 1);
 }
 
-static void add_failure_counter(const char *type)
+static void add_failure_counter(const char *type, void *user)
 {
+    (void)user;
     if (!type) return;
     if (strcmp(type, "sapling_spend") == 0)
         atomic_fetch_add(&g_sapling_spends_failed_total, 1);
@@ -396,57 +202,6 @@ static void add_failure_counter(const char *type)
         atomic_fetch_add(&g_binding_sig_failed_total, 1);
 }
 
-static void validate_block_proofs(const struct block *blk, int height,
-                                  struct validate_summary *out)
-{
-    validate_summary_init(out);
-    if (!blk) {
-        out->ok = 0;
-        out->internal_error = 1;
-        return;
-    }
-
-    for (size_t ti = 0; ti < blk->num_vtx; ti++) {
-        const struct transaction *tx = &blk->vtx[ti];
-        proof_validate_tx_verify_fn verifier =
-            g_tx_verifier ? g_tx_verifier : default_verify_tx;
-        struct proof_validate_tx_report r;
-        if (!verifier(tx, height, &r, g_tx_verifier_user)) {
-            out->ok = 0;
-            out->internal_error = 1;
-            out->first_failure_txid = tx->hash;
-            out->first_failure_proof_type = "internal";
-            return;
-        }
-
-        out->sapling_spends_total += r.sapling_spends_total;
-        out->sapling_outputs_total += r.sapling_outputs_total;
-        out->sprout_joinsplits_total += r.sprout_joinsplits_total;
-        if (r.ok) {
-            add_success_counters(tx, &r);
-            continue;
-        }
-
-        out->ok = 0;
-        out->internal_error = r.internal_error ? 1 : 0;
-        out->first_failure_txid = tx->hash;
-        out->first_failure_proof_type = r.first_failure_proof_type
-            ? r.first_failure_proof_type : "internal";
-        add_failure_counter(out->first_failure_proof_type);
-        return;
-    }
-}
-
-static bool block_has_shielded_proofs(const struct block *blk)
-{
-    if (!blk)
-        return false;
-    for (size_t i = 0; i < blk->num_vtx; i++) {
-        if (tx_has_shielded_proofs(&blk->vtx[i]))
-            return true;
-    }
-    return false;
-}
 static job_result_t step_validate(struct stage_step_ctx *c)
 {
     atomic_store(&g_last_step_unix, platform_time_wall_unix());
@@ -514,7 +269,8 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     /* The sapling-params wait gate is a VERIFICATION precondition; in the
      * OFFLINE FAST-MINT pass-through we never call the proof verifier, so the
      * params need not be loaded. Keep the gate ONLY when actually verifying. */
-    if (!skip_crypto && !g_tx_verifier && block_has_shielded_proofs(&blk) &&
+    if (!skip_crypto && !g_tx_verifier &&
+        proof_verify_block_has_shielded_proofs(&blk) &&
         !sapling_params_loaded()) {
         block_free(&blk);
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
@@ -539,7 +295,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         return JOB_BLOCKED;
     }
 
-    struct validate_summary summary;
+    struct proof_verify_summary summary;
     if (skip_crypto) {
         /* OFFLINE FAST-MINT pass-through (jobs/mint_skip_crypto.h): the
          * -mint-anchor-fast driver set the toggle. SKIP validate_block_proofs
@@ -551,9 +307,14 @@ static job_result_t step_validate(struct stage_step_ctx *c)
          * assertion certifies only the transparent fold, not skipped proofs. A
          * divergence still aborts without publishing the minted DB. Default OFF
          * → a normal boot never reaches this branch. */
-        validate_summary_init(&summary);   /* ok=1, internal_error=0 */
+        proof_verify_summary_init(&summary);   /* ok=1, internal_error=0 */
     } else {
-        validate_block_proofs(&blk, next_h, &summary);
+        /* Production path: fan per-tx shielded-proof verification across the
+         * worker pool, then reduce in original tx order — the add_success /
+         * add_failure counter callbacks fire in serial-sweep order. */
+        proof_verify_block(&blk, next_h, g_tx_verifier, g_tx_verifier_user,
+                           true, add_success_counters, add_failure_counter,
+                           NULL, &summary);
     }
     block_free(&blk);
 
@@ -648,6 +409,9 @@ STAGE_DRAIN_IMPL(proof_validate)
 
 void proof_validate_stage_shutdown(void)
 {
+    /* Stop the shared verify worker pool before tearing down stage state so no
+     * worker outlives the stage. Safe to call even if the pool never started. */
+    proof_verify_pool_shutdown();
     proof_validate_upstream_hash_clear();
     proof_validate_upstream_verdict_clear();
     proof_validate_upstream_evidence_clear();

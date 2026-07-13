@@ -229,7 +229,8 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(reducer_drive_guard) \
     X(sapling_nullifier_adversarial) \
     X(script_validate_stage) X(script_validate_contextual_gate) \
-    X(proof_validate_stage) X(mint_skip_crypto) X(mint_anchor_preflight) \
+    X(proof_validate_stage) X(validate_parallel_determinism) \
+    X(mint_skip_crypto) X(mint_anchor_preflight) \
     X(utxo_apply_stage) X(utxo_apply_crash_replay) \
     X(tip_finalize_stage) X(tip_finalize_post_step) X(reducer_frontier) \
     X(waitforheight_provable) \

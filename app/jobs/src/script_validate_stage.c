@@ -12,6 +12,7 @@
 #include "jobs/stage_db_fault.h"
 #include "script_validate_log_store.h"
 #include "script_validate_stage_internal.h"
+#include "jobs/script_validate_verify.h"
 
 #include "chain/chain.h"
 #include "chain/chainparams.h"
@@ -58,26 +59,12 @@
 
 /* struct body_persist_row + the script_validate_log schema/migrations/read/
  * write helpers live in script_validate_log_store.c (pure sqlite kernel
- * helpers below the AR layer). */
-
-struct validate_summary {
-    int ok;
-    int internal_error;       /* umbrella: block_decode OR prevout_unresolved */
-    size_t tx_count;
-    size_t input_count;
-    struct uint256 first_failure_txid;
-    int first_failure_vin;
-    /* ScriptError from verify_script on a genuine script-invalid verdict
-     * (SCRIPT_ERR_OK otherwise). Persisted so a bad-signature reject is
-     * distinguishable from bad-pubkey / non-canonical-DER. */
-    ScriptError first_failure_serror;
-    /* Typed reason for the verdict ("" on a clean verify): the specific
-     * status token, e.g. "block_decode_failed" or
-     * "prevout_unresolved tx=<hex> vin=<n>". Drives the persisted status so
-     * zcl_state answers "why is the pipeline stuck" without conflating
-     * distinct causes under one "internal_error" bucket. */
-    char reason[128];
-};
+ * helpers below the AR layer).
+ *
+ * The block-level verify itself (serial reference + pool-parallel sweep, and
+ * the shared struct script_verify_summary) lives in script_validate_verify.c —
+ * this file owns the stage state machine, the cursor/log persistence, and the
+ * telemetry atomics; it folds the summary the verify returns. */
 
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct main_state *g_ms = NULL;
@@ -155,7 +142,7 @@ static void sv_unresolved_clear(sqlite3 *db)
  * page the operator ONCE and return JOB_BLOCKED. Never advances, never inserts
  * a terminal row. `s` carries the unresolved outpoint (txid+vin) for the name. */
 static job_result_t sv_hold_unresolved(struct stage_step_ctx *c, int height,
-                                       const struct validate_summary *s,
+                                       const struct script_verify_summary *s,
                                        sqlite3 *db,
                                        const struct uint256 *block_hash)
 {
@@ -223,126 +210,6 @@ static job_result_t sv_hold_unresolved(struct stage_step_ctx *c, int height,
     return JOB_BLOCKED;
 }
 
-static void validate_summary_init(struct validate_summary *s)
-{
-    memset(s, 0, sizeof(*s));
-    s->ok = 1;
-    s->first_failure_vin = -1;
-    s->first_failure_serror = SCRIPT_ERR_OK;
-    s->reason[0] = '\0';
-    uint256_set_null(&s->first_failure_txid);
-}
-
-static void validate_block_scripts_with_prevout(
-    const struct block *blk,
-    int height,
-    bool count_counters,
-    script_validate_prevout_fn override_prevout,
-    void *override_user,
-    struct validate_summary *out)
-{
-    validate_summary_init(out);
-    if (!blk) {
-        out->ok = 0;
-        out->internal_error = 1;
-        snprintf(out->reason, sizeof(out->reason), "block_decode_failed");
-        LOG_WARN("script_validate",
-                 "[script_validate] block_decode_failed height=%d "
-                 "(null/undecodable block body)", height);
-        return;
-    }
-
-    uint32_t flags = SCRIPT_VERIFY_P2SH | SCRIPT_VERIFY_CHECKLOCKTIMEVERIFY;
-    uint32_t branch_id = consensus_current_epoch_branch_id(
-        height, &chain_params_get()->consensus);
-
-    struct script_validate_created_prevout_view default_view;
-    script_validate_created_prevout_view_init(&default_view, height);
-    script_validate_prevout_fn default_resolver =
-        g_prevout ? g_prevout : script_validate_created_index_prevout;
-    void *default_user = g_prevout_user;
-    if (default_resolver == script_validate_created_index_prevout &&
-        !default_user)
-        default_user = &default_view;
-
-    for (size_t ti = 0; ti < blk->num_vtx; ti++) {
-        const struct transaction *tx = &blk->vtx[ti];
-        out->tx_count++;
-        if (transaction_is_coinbase(tx))
-            continue;
-
-        struct precomputed_tx_data txdata;
-        precompute_tx_data(tx, &txdata);
-
-        for (size_t vi = 0; vi < tx->num_vin; vi++) {
-            struct tx_out prev;
-            tx_out_set_null(&prev);
-            script_validate_prevout_fn resolver =
-                override_prevout ? override_prevout : default_resolver;
-            void *resolver_user =
-                override_prevout ? override_user : default_user;
-            if (!resolver(&tx->vin[vi].prevout, &prev, resolver_user)) {
-                out->ok = 0;
-                out->internal_error = 1;
-                if (out->first_failure_vin < 0) {
-                    out->first_failure_txid = tx->hash;
-                    out->first_failure_vin = (int)vi;
-                }
-                /* NOTE: this LABELS the prevout-unresolved cause distinctly;
-                 * it does NOT change the accept/reject decision (still ok=0)
-                 * and does NOT wire the prevout resolver — that is a separate
-                 * P0. We only stop conflating it with block_decode_failed. */
-                char txhex[65];
-                uint256_get_hex(&tx->hash, txhex);
-                snprintf(out->reason, sizeof(out->reason),
-                         "prevout_unresolved tx=%s vin=%d", txhex, (int)vi);
-                LOG_WARN("script_validate",
-                         "[script_validate] prevout_unresolved height=%d "
-                         "tx=%s vin=%d", height, txhex, (int)vi);
-                return;
-            }
-
-            struct tx_sig_checker tsc;
-            tx_sig_checker_init(&tsc, tx, (unsigned int)vi, prev.value,
-                                branch_id, &txdata);
-            struct sig_checker checker = tx_make_sig_checker(&tsc);
-            ScriptError serror = SCRIPT_ERR_OK;
-            out->input_count++;
-            bool ok = verify_script(&tx->vin[vi].script_sig,
-                                    &prev.script_pub_key, flags, &checker,
-                                    branch_id, &serror);
-            if (ok) {
-                if (count_counters)
-                    atomic_fetch_add(&g_inputs_verified_total, 1);
-            } else {
-                if (count_counters)
-                    atomic_fetch_add(&g_inputs_failed_total, 1);
-                out->ok = 0;
-                if (out->first_failure_vin < 0) {
-                    out->first_failure_txid = tx->hash;
-                    out->first_failure_vin = (int)vi;
-                    out->first_failure_serror = serror;
-                }
-                /* Genuine script-verification failure — distinct from the
-                 * internal/decode/prevout causes. Reason carries the
-                 * ScriptError code AND its mapped string; status stays the
-                 * stable "script_invalid" token. */
-                char txhex[65];
-                uint256_get_hex(&tx->hash, txhex);
-                const char *estr = ScriptErrorString(serror);
-                snprintf(out->reason, sizeof(out->reason),
-                         "script_invalid tx=%s vin=%d err=%d (%s)",
-                         txhex, (int)vi, (int)serror, estr);
-                LOG_WARN("script_validate",
-                         "[script_validate] script_invalid height=%d tx=%s "
-                         "vin=%d serror=%d (%s)", height, txhex, (int)vi,
-                         (int)serror, estr);
-                return;
-            }
-        }
-    }
-}
-
 static bool dry_run_block_impl(
     const struct block *blk,
     int height,
@@ -353,9 +220,12 @@ static bool dry_run_block_impl(
     if (!blk || !out)
         LOG_FAIL("script_validate", "dry_run_block: bad input");
 
-    struct validate_summary summary;
-    validate_block_scripts_with_prevout(blk, height, false, prevout,
-                                        prevout_user, &summary);
+    /* Dry run — never fold the reached-input tallies into the live atomics.
+     * The production (parallel) sweep is used so a dry run exercises the same
+     * verdict path the stage does. */
+    struct script_verify_summary summary;
+    script_verify_block(blk, height, g_prevout, g_prevout_user, prevout,
+                        prevout_user, true, &summary);
 
     memset(out, 0, sizeof(*out));
     out->ok = summary.ok != 0;
@@ -476,7 +346,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
                            "contextual gate log insert");
     }
 
-    struct validate_summary summary;
+    struct script_verify_summary summary;
     bool skip_crypto = mint_skip_crypto_get();
     if (skip_crypto) {
         /* OFFLINE FAST-MINT pass-through (jobs/mint_skip_crypto.h): SKIP the
@@ -488,7 +358,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
          * terminal SHA3==checkpoint assertion certifies only the transparent
          * fold; it does not certify skipped signatures. Default OFF → a normal
          * boot never reaches this branch. */
-        validate_summary_init(&summary);   /* ok=1, internal_error=0 */
+        script_verify_summary_init(&summary);   /* ok=1, internal_error=0 */
         for (size_t ti = 0; ti < blk.num_vtx; ti++) {
             const struct transaction *tx = &blk.vtx[ti];
             summary.tx_count++;
@@ -496,8 +366,13 @@ static job_result_t step_validate(struct stage_step_ctx *c)
                 summary.input_count += tx->num_vin;
         }
     } else {
-        validate_block_scripts_with_prevout(&blk, next_h, true, NULL, NULL,
-                                            &summary);
+        /* Production path: fan the per-input ECDSA verify across the worker
+         * pool, then fold the reached-input tallies the reduce computed into
+         * the live atomics (verdict-identical to the serial sweep). */
+        script_verify_block(&blk, next_h, g_prevout, g_prevout_user, NULL, NULL,
+                            true, &summary);
+        atomic_fetch_add(&g_inputs_verified_total, summary.inputs_verified);
+        atomic_fetch_add(&g_inputs_failed_total, summary.inputs_failed);
     }
     block_free(&blk);
 
@@ -611,6 +486,9 @@ STAGE_DRAIN_IMPL(script_validate)
 
 void script_validate_stage_shutdown(void)
 {
+    /* Stop the shared verify worker pool before tearing down stage state so no
+     * worker outlives the stage. Safe to call even if the pool never started. */
+    script_verify_pool_shutdown();
     pthread_mutex_lock(&g_lock);
     if (g_stage) {
         stage_destroy(g_stage);
