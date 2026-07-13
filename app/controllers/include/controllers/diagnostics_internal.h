@@ -135,6 +135,12 @@ bool diag_rpc_getmirrorstatus(const struct json_value *params, bool help,
 bool diag_rpc_selfbacktrace(const struct json_value *params, bool help,
                             struct json_value *result);
 
+/* profile [seconds] [top_n] — sample this node's threads over `seconds` and
+ * return the busiest threads (cpu_ms/name/wchan), a one-line verdict, and the
+ * reducer stage step-EWMA snapshot. Backs the ops.profile native command. */
+bool diag_rpc_profile(const struct json_value *params, bool help,
+                      struct json_value *result);
+
 /* diagnostics_health_rollup.c — unhealthy-only rollup, registered in
  * g_dumpers as subsystem "unhealthy". Walks every OTHER dumper's `_health`
  * key (see the file header for the { ok, reason } convention) and reports

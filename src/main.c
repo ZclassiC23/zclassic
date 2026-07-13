@@ -1947,6 +1947,30 @@ static int cli_main(int argc, char **argv)
              strcmp(method, "-summary") == 0)
         method = "summary";
 
+    /* `zclassic23 status brief[=1]` → the native brief prose leaf
+     * (core.status.brief): a ~10-line synced/gap/blocker/peers/rss rendering
+     * instead of the ~6KB full status JSON. --format=json forwards through. */
+    if (strcmp(method, "status") == 0) {
+        bool want_brief = false;
+        const char *fwd[4];
+        int nf = 0;
+        fwd[nf++] = "status";
+        fwd[nf++] = "brief";
+        for (int i = 0; i < nparams; i++) {
+            const char *p = params_storage[i];
+            if (!p)
+                continue;
+            if (strcmp(p, "brief") == 0 || strcmp(p, "brief=1") == 0 ||
+                strcmp(p, "brief=true") == 0) {
+                want_brief = true;
+            } else if (strcmp(p, "--format=json") == 0 && nf < 4) {
+                fwd[nf++] = p;
+            }
+        }
+        if (want_brief)
+            return zcl_native_command_main("core", fwd, nf, datadir, cli_port);
+    }
+
     /* Canonical registry roots (core/app/dev/ops/discover + the help/search
      * aliases) resolve through the native command registry BEFORE the
      * arbitrary RPC-method fallback further down. A typo under a canonical

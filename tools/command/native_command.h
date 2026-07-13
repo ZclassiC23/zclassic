@@ -205,6 +205,37 @@ void zcl_native_handle_ops_debug_backtrace(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* ops.explain <topic> — compose one prose-like diagnostic from four surfaces
+ * (reducer frontier, blocker registry, condition engine, health/sync RPCs).
+ * Topics: sync, blockers, health (table-dispatched, see
+ * app/controllers/src/explain_native_handlers.c). Reply carries data.text +
+ * structured fields; the CLI prints text unless --format=json. */
+void zcl_native_handle_ops_explain(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
+/* ops.profile [seconds] [top_n] — dispatch the `profile` RPC (in-process
+ * /proc/self/task sampling) and render the busiest threads + verdict + reducer
+ * stage step-EWMA. */
+void zcl_native_handle_ops_profile(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
+/* ops.producer.status --datadir= — read a mint/anchor producer's progress.kv
+ * (stage cursors + session/receipt lifecycle) and mint-progress.log tail with
+ * NO node contact. Read-only. */
+void zcl_native_handle_ops_producer_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
+/* Render ~10 lines of brief-status prose from a flat brief body (the fields
+ * core.status.brief emits: served_height, header_height, gap, sync_state,
+ * serving, healthy, peer_count, primary_blocker, tip_advance_age_seconds).
+ * Exposed for test_operator_ux. */
+struct json_value;
+void zcl_native_status_brief_render(const struct json_value *data, char *buf,
+                                    size_t cap);
+
 /* core.node.bootstatus / core.node.bootwait — pre-RPC boot observability. Both
  * read <datadir>/boot_status.json directly off disk (util/boot_status.h): no
  * node contact, no RPC. bootstatus returns the current beacon (or BLOCKED when

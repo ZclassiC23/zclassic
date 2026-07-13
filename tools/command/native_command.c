@@ -35,6 +35,8 @@
 #include "controllers/diagnostics_native_handlers.h"
 #include "controllers/net_native_handlers.h"
 #include "controllers/meta_native_handlers.h"
+#include "controllers/explain_native_handlers.h"
+#include "config/consensus_state_producer_receipt.h"
 #include "mcp/rpc_client.h"
 
 #include <ctype.h>
@@ -55,6 +57,11 @@ bool zcl_native_command_is_root(const char *word)
         return false;
     static const char *const roots[] = {
         "core", "app", "dev", "ops", "discover", "code", "help", "search",
+        /* Operator-UX convenience roots: bare aliases of ops.explain /
+         * ops.profile so `zclassic23 explain sync` / `zclassic23 profile`
+         * work without the `ops` prefix (each leaf carries the matching
+         * alias in config/commands/ops.def). */
+        "explain", "profile",
     };
     for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
         if (strcmp(word, roots[i]) == 0)
@@ -889,6 +896,280 @@ void zcl_native_handle_ops_debug_backtrace(
     json_free(&body);
 }
 
+/* ── ops.explain <topic> native leaf ───────────────────────────────────────
+ * Composes, IN C, what an operator otherwise stitches together from four
+ * surfaces (reducer frontier, blocker registry, condition engine, health/sync
+ * RPCs). explain_build fetches the shared RPC bundle and dispatches through the
+ * topic table; the reply carries a prose `text` block + the structured fields.
+ * The CLI renders `text` verbatim unless --format=json (see nc_render_prose). */
+void zcl_native_handle_ops_explain(const struct zcl_command_request *request,
+                                   struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+    const char *topic = json_get_str(json_get(request->input, "topic"));
+    if (!topic || !topic[0])
+        topic = "sync";
+
+    bridge_ensure_rpc_client();
+    struct json_value data;
+    json_init(&data);
+    bool ok = explain_build(topic, &data);
+    if (!ok) {
+        const char *emsg = json_get_str(json_get(&data, "error"));
+        char known[128];
+        explain_topics_csv(known, sizeof(known));
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "UNKNOWN_TOPIC",
+                               "resolve", false, false,
+                               emsg && emsg[0] ? emsg : "unknown explain topic",
+                               known);
+        (void)zcl_command_reply_add_next(reply, "ops.ux.explain",
+                                         "{\"topic\":\"sync\"}",
+                                         "explain a known topic");
+        json_free(&data);
+        return;
+    }
+    json_free(&reply->data);
+    json_init(&reply->data);
+    json_copy(&reply->data, &data);
+    json_free(&data);
+}
+
+/* ── ops.profile native leaf ────────────────────────────────────────────────
+ * Dispatches the `profile` RPC (samples this node's /proc/self/task twice
+ * `seconds` apart, in-process) and renders a prose top-N thread table + verdict
+ * + reducer stage step-EWMA. This replaces the /proc sampling an operator does
+ * by hand to find a bottleneck. */
+void zcl_native_handle_ops_profile(const struct zcl_command_request *request,
+                                   struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+    int64_t seconds = json_get_int(json_get(request->input, "seconds"));
+    if (seconds < 1) seconds = 3;
+    if (seconds > 60) seconds = 60;
+    int64_t top_n = json_get_int(json_get(request->input, "top_n"));
+    if (top_n < 1) top_n = 8;
+    if (top_n > 32) top_n = 32;
+
+    char params[64];
+    (void)snprintf(params, sizeof(params), "[%lld,%lld]",
+                   (long long)seconds, (long long)top_n);
+
+    bridge_ensure_rpc_client();
+    char *result = mcp_node_rpc("profile", params);
+    struct json_value body;
+    if (!result || !json_read(&body, result, strlen(result)) ||
+        body.type != JSON_OBJ) {
+        if (result) json_free(&body);
+        free(result);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                               ZCL_COMMAND_EXIT_TRANSIENT, "NODE_UNAVAILABLE",
+                               "dispatch", true, false,
+                               "the node did not return a profile body",
+                               "ops.ux.profile");
+        (void)zcl_command_reply_add_next(reply, "core.status", "{}",
+                                         "confirm the node is running");
+        return;
+    }
+    free(result);
+
+    const struct json_value *err = json_get(&body, "error");
+    if (err && err->type == JSON_STR) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_FAILED, "PROFILE_ERROR",
+                               "execute", false, false,
+                               json_get_str(err), "ops.ux.profile");
+        json_free(&body);
+        return;
+    }
+
+    /* Render a prose block from the structured profile body. */
+    char t[1600];
+    size_t len = 0;
+    int n;
+    n = snprintf(t + len, sizeof(t) - len, "profile — %s\n",
+                 json_get_str(json_get(&body, "verdict"))
+                     ? json_get_str(json_get(&body, "verdict")) : "unknown");
+    if (n > 0) len += (size_t)n;
+    n = snprintf(t + len, sizeof(t) - len,
+                 "  sampled %lld threads over %lld ms\n",
+                 (long long)json_get_int(json_get(&body, "sampled_threads")),
+                 (long long)json_get_int(json_get(&body, "sample_ms")));
+    if (n > 0) len += (size_t)n;
+
+    const struct json_value *threads = json_get(&body, "threads");
+    if (threads && threads->type == JSON_ARR) {
+        n = snprintf(t + len, sizeof(t) - len,
+                     "  busiest threads (cpu_ms / wchan):\n");
+        if (n > 0) len += (size_t)n;
+        for (size_t i = 0; i < threads->num_children && len < sizeof(t) - 128;
+             i++) {
+            const struct json_value *th = &threads->children[i];
+            n = snprintf(t + len, sizeof(t) - len,
+                         "    %-16s tid=%lld cpu=%lldms (%lld%%) wchan=%s\n",
+                         json_get_str(json_get(th, "name"))
+                             ? json_get_str(json_get(th, "name")) : "?",
+                         (long long)json_get_int(json_get(th, "tid")),
+                         (long long)json_get_int(json_get(th, "cpu_ms")),
+                         (long long)json_get_int(json_get(th, "cpu_pct")),
+                         json_get_str(json_get(th, "wchan"))
+                             ? json_get_str(json_get(th, "wchan")) : "-");
+            if (n > 0) len += (size_t)n;
+        }
+    }
+    const struct json_value *stages = json_get(&body, "stage_ewma");
+    if (stages && stages->type == JSON_ARR && len < sizeof(t) - 256) {
+        n = snprintf(t + len, sizeof(t) - len,
+                     "  reducer stage rates (steps/sec, cursor):\n");
+        if (n > 0) len += (size_t)n;
+        for (size_t i = 0; i < stages->num_children && len < sizeof(t) - 96;
+             i++) {
+            const struct json_value *sg = &stages->children[i];
+            n = snprintf(t + len, sizeof(t) - len, "    %-16s %lld  (%lld)\n",
+                         json_get_str(json_get(sg, "stage"))
+                             ? json_get_str(json_get(sg, "stage")) : "?",
+                         (long long)json_get_int(json_get(sg, "steps_per_sec")),
+                         (long long)json_get_int(json_get(sg, "cursor")));
+            if (n > 0) len += (size_t)n;
+        }
+    }
+
+    json_free(&reply->data);
+    json_init(&reply->data);
+    json_copy(&reply->data, &body);
+    (void)json_push_kv_str(&reply->data, "text", t);
+    json_free(&body);
+}
+
+/* ── ops.producer.status native leaf (node-free) ────────────────────────────
+ * Reads another datadir's producer progress.kv (stage cursors + session/receipt
+ * lifecycle) and the mint-progress.log tail, with NO node contact, for an
+ * operator watching a mint/anchor producer. Read-only. Takes datadir=. */
+static void nc_read_log_tail(const char *datadir, char *out, size_t cap)
+{
+    if (cap) out[0] = '\0';
+    char path[1100];
+    (void)snprintf(path, sizeof(path), "%s/mint-progress.log", datadir);
+    FILE *f = fopen(path, "re");
+    if (!f)
+        return;
+    /* Read the last <=4KB, keep the last non-empty line. */
+    if (fseek(f, 0, SEEK_END) == 0) {
+        long sz = ftell(f);
+        long off = sz > 4096 ? sz - 4096 : 0;
+        if (off > 0) (void)fseek(f, off, SEEK_SET);
+    }
+    char buf[4200];
+    size_t got = fread(buf, 1, sizeof(buf) - 1, f);
+    fclose(f);
+    buf[got] = '\0';
+    while (got > 0 && (buf[got - 1] == '\n' || buf[got - 1] == '\r'))
+        buf[--got] = '\0';
+    char *nl = strrchr(buf, '\n');
+    const char *line = nl ? nl + 1 : buf;
+    (void)snprintf(out, cap, "%s", line);
+}
+
+void zcl_native_handle_ops_producer_status(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+    const char *datadir = json_get_str(json_get(request->input, "datadir"));
+    if ((!datadir || !datadir[0]) && g_bridge_datadir[0])
+        datadir = g_bridge_datadir;
+    if (!datadir || !datadir[0]) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "MISSING_DATADIR",
+                               "normalize", false, false,
+                               "no datadir given and no --datadir default",
+                               "ops.ux.producer.status");
+        (void)zcl_command_reply_add_next(
+            reply, "ops.ux.producer.status",
+            "{\"datadir\":\"/home/you/.zclassic-c23-mint\"}",
+            "name the producer datadir to inspect");
+        return;
+    }
+
+    struct producer_status_read st;
+    char why[256];
+    if (!consensus_state_producer_status_read(datadir, &st, why,
+                                              sizeof(why))) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
+                               ZCL_COMMAND_EXIT_BLOCKED, "PRODUCER_UNREADABLE",
+                               "execute", true, false,
+                               why[0] ? why : "producer datadir unreadable",
+                               datadir);
+        return;
+    }
+
+    char log_tail[512];
+    nc_read_log_tail(datadir, log_tail, sizeof(log_tail));
+
+    const char *receipt_state = st.receipt_finalized ? "finalized"
+                              : st.session_open ? "open" : "absent";
+    int64_t height = st.utxo_apply_cursor >= 0 ? st.utxo_apply_cursor
+                   : st.tip_finalize_cursor;
+
+    char t[1400];
+    size_t len = 0;
+    int n;
+    n = snprintf(t + len, sizeof(t) - len, "producer status — %s\n", datadir);
+    if (n > 0) len += (size_t)n;
+    if (!st.progress_kv_present) {
+        n = snprintf(t + len, sizeof(t) - len,
+                     "  progress.kv: ABSENT (producer not started)\n");
+        if (n > 0) len += (size_t)n;
+    } else {
+        n = snprintf(t + len, sizeof(t) - len,
+                     "  receipt state: %s\n", receipt_state);
+        if (n > 0) len += (size_t)n;
+        n = snprintf(t + len, sizeof(t) - len,
+                     "  fold height (utxo_apply cursor): %lld\n",
+                     (long long)height);
+        if (n > 0) len += (size_t)n;
+        n = snprintf(t + len, sizeof(t) - len,
+                     "  tip_finalize cursor: %lld  fold_cursor: %lld\n",
+                     (long long)st.tip_finalize_cursor,
+                     (long long)st.fold_cursor);
+        if (n > 0) len += (size_t)n;
+        n = snprintf(t + len, sizeof(t) - len,
+                     "  producer commit: %s  profile: %d\n",
+                     st.producer_commit[0] ? st.producer_commit : "unknown",
+                     st.validation_profile);
+        if (n > 0) len += (size_t)n;
+        n = snprintf(t + len, sizeof(t) - len, "  last log: %s\n",
+                     log_tail[0] ? log_tail : "(no mint-progress.log)");
+        if (n > 0) len += (size_t)n;
+    }
+    n = snprintf(t + len, sizeof(t) - len,
+                 "  note: rate/ETA and network target require the running node "
+                 "(`ops profile`)");
+    if (n > 0) len += (size_t)n;
+
+    (void)json_push_kv_str(&reply->data, "datadir", datadir);
+    (void)json_push_kv_bool(&reply->data, "progress_kv_present",
+                            st.progress_kv_present);
+    (void)json_push_kv_str(&reply->data, "receipt_state", receipt_state);
+    (void)json_push_kv_bool(&reply->data, "session_open", st.session_open);
+    (void)json_push_kv_bool(&reply->data, "receipt_finalized",
+                            st.receipt_finalized);
+    (void)json_push_kv_int(&reply->data, "height", height);
+    (void)json_push_kv_int(&reply->data, "utxo_apply_cursor",
+                           st.utxo_apply_cursor);
+    (void)json_push_kv_int(&reply->data, "tip_finalize_cursor",
+                           st.tip_finalize_cursor);
+    (void)json_push_kv_int(&reply->data, "fold_cursor", st.fold_cursor);
+    (void)json_push_kv_str(&reply->data, "producer_commit",
+                           st.producer_commit);
+    (void)json_push_kv_int(&reply->data, "validation_profile",
+                           st.validation_profile);
+    (void)json_push_kv_str(&reply->data, "last_log", log_tail);
+    (void)json_push_kv_str(&reply->data, "text", t);
+}
+
 /* ── core.node.bootstatus / core.node.bootwait native leaves ───────────────
  * Pre-RPC boot observability. Both read <datadir>/boot_status.json directly
  * off disk (util/boot_status.h) — NO node contact, NO RPC — so they answer
@@ -1291,6 +1572,76 @@ static int nc_run_discover(const struct zcl_command_spec *spec,
     return ZCL_COMMAND_EXIT_OK;
 }
 
+/* Operator-UX prose leaves: default output is a human/AI-readable text block
+ * rendered from reply->data; --format=json emits the structured envelope. */
+static bool nc_is_prose_leaf(const char *path)
+{
+    return path &&
+           (strcmp(path, "ops.ux.explain") == 0 ||
+            strcmp(path, "ops.ux.profile") == 0 ||
+            strcmp(path, "ops.ux.producer.status") == 0 ||
+            strcmp(path, "core.status.brief") == 0);
+}
+
+/* Synthesize ~10 lines of brief-status prose from the flat brief body fields.
+ * Exposed (non-static) so test_operator_ux can drive it with a fabricated
+ * brief body and assert the gap number renders. */
+void zcl_native_status_brief_render(const struct json_value *d, char *buf,
+                                    size_t cap)
+{
+    long long served = json_get_int(json_get(d, "served_height"));
+    long long header = json_get_int(json_get(d, "header_height"));
+    const struct json_value *gapv = json_get(d, "gap");
+    long long gap = gapv ? json_get_int(gapv) : -1;
+    const char *sync_state = json_get_str(json_get(d, "sync_state"));
+    const struct json_value *serving = json_get(d, "serving");
+    const struct json_value *healthy = json_get(d, "healthy");
+    long long peers = json_get_int(json_get(d, "peer_count"));
+    const char *blocker = json_get_str(json_get(d, "primary_blocker"));
+    long long tage = json_get_int(json_get(d, "tip_advance_age_seconds"));
+    bool synced = gapv && gap == 0;
+
+    (void)snprintf(buf, cap,
+        "status (brief)\n"
+        "  %s  gap=%lld blocks\n"
+        "  served height=%lld  header tip=%lld\n"
+        "  sync state: %s\n"
+        "  serving: %s  healthy: %s\n"
+        "  peers: %lld\n"
+        "  tip advance age: %llds\n"
+        "  primary blocker: %s\n"
+        "  next: %s",
+        synced ? "SYNCED" : "BEHIND", gap,
+        served, header,
+        sync_state ? sync_state : "unknown",
+        (serving && serving->type == JSON_BOOL && serving->val.b) ? "yes" : "no",
+        (healthy && healthy->type == JSON_BOOL && healthy->val.b) ? "yes" : "no",
+        peers, tage,
+        (blocker && blocker[0]) ? blocker : "none",
+        synced ? "at tip — nothing to do"
+               : "run `zclassic23 ops explain sync` for the full picture");
+}
+
+/* Render the prose text for a prose leaf into `buf`. Returns true if a text
+ * block was produced; false means the caller should print the JSON envelope
+ * (e.g. an error result with no data.text). `data` is the envelope's `data`. */
+static bool nc_prose_text(const char *path, const struct json_value *data,
+                          char *buf, size_t cap)
+{
+    if (!data || data->type != JSON_OBJ)
+        return false;
+    const char *text = json_get_str(json_get(data, "text"));
+    if (text && text[0]) {
+        (void)snprintf(buf, cap, "%s", text);
+        return true;
+    }
+    if (strcmp(path, "core.status.brief") == 0) {
+        zcl_native_status_brief_render(data, buf, cap);
+        return true;
+    }
+    return false;
+}
+
 int zcl_native_command_main(const char *root_word, const char *const *args,
                             int nargs, const char *datadir, int rpc_port)
 {
@@ -1654,6 +2005,25 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
                        "", "");
         return ZCL_COMMAND_EXIT_INTERNAL;
     }
+
+    /* Prose leaves render a human/AI-readable text block by default; an
+     * explicit --format=json (seen_format) keeps the structured envelope. On a
+     * failed result (no data.text) fall back to the JSON envelope so the
+     * structured error/next-action is never hidden. */
+    if (!seen_format && nc_is_prose_leaf(spec->path)) {
+        struct json_value env;
+        if (json_read(&env, out, n) && env.type == JSON_OBJ) {
+            char text[ZCL_COMMAND_LIST_BUDGET + 1];
+            if (nc_prose_text(spec->path, json_get(&env, "data"), text,
+                              sizeof(text))) {
+                printf("%s\n", text);
+                json_free(&env);
+                return (int)exit_code;
+            }
+        }
+        json_free(&env);
+    }
+
     printf("%s\n", out);
     return (int)exit_code;
 }
