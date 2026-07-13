@@ -21,6 +21,7 @@
 #define ZCL_STAGED_SYNC_SUPERVISOR_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 struct main_state;
 
@@ -44,6 +45,34 @@ void staged_sync_supervisor_shutdown_stages(void);
  * supervisor_reset_for_testing() so no registry entry still points at the
  * contracts being cleared. */
 void staged_sync_supervisor_test_reset_runtime(void);
+
+/* The consecutive-quiet-window size (STAGED_STAGE_QUIET_US) used by the
+ * stall-escalation policy below, in microseconds. Exposed so tests compute
+ * escalation-boundary quiet durations without hardcoding the constant. */
+int64_t staged_sync_supervisor_test_quiet_window_us(void);
+
+/* Direct entry point to the pure stall-escalation decision (no clock, no
+ * live contract): given a stage's identity/cursor/upstream-cursor and an
+ * explicit quiet duration, sets or clears the "stage_stalled_<name>"
+ * blocker exactly as staged_stage_tick would. `escalated` is caller-owned
+ * (mirrors reducer_drain.c's g_spin_blocker_active pattern) so a test can
+ * drive a synthetic streak across calls without touching module state. */
+void staged_sync_supervisor_test_apply_stall_escalation(
+    const char *dotted_name, const char *upstream_dotted_name,
+    uint64_t cursor, uint64_t upstream_cursor, bool have_upstream,
+    int64_t quiet_us, bool *escalated);
+
+/* Run one real staged_stage_tick() cycle against a synthetic stage built
+ * from caller-supplied name/drain/cursor/upstream_cursor and an already
+ * main_state_init()-inited `ms` (staged_stage_tick's durability-mode check
+ * needs a real cs_main). Returns the resulting progress_marker, so a test
+ * can assert what gets published to the supervisor child both with and
+ * without an active reducer drive, without full stage registration. */
+int64_t staged_sync_supervisor_test_run_stage_tick(
+    const char *name, const char *upstream_name,
+    int (*drain)(int max_steps), uint64_t (*cursor)(void),
+    uint64_t (*upstream_cursor)(void),
+    struct main_state *ms, bool *stall_escalated_inout);
 #endif
 
 #endif /* ZCL_STAGED_SYNC_SUPERVISOR_H */
