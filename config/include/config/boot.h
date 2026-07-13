@@ -394,6 +394,20 @@ void boot_mint_anchor_report_frontier_walled(struct sqlite3 *pdb,
                                              int32_t frontier, int32_t anchor,
                                              int stall_kicks);
 
+/* Test-only: run one mint-progress.log tick (the same throttled append the
+ * drive loop uses) and force the write regardless of the 5s throttle. Exposed
+ * so the reducer_step_drain_harness test group can assert the on-disk line
+ * format (S1.4: per-stage step-EWMA telemetry reachable from an OFFLINE
+ * -mint-anchor producer, which runs without RPC) without duplicating the
+ * throttle/EWMA-collect/formatting logic living in
+ * config/src/boot_mint_anchor.c. Not called by the mint driver itself (see
+ * boot_mint_anchor_run). */
+void boot_mint_anchor_progress_log_tick_for_test(const char *path,
+                                                 int32_t through,
+                                                 int32_t anchor,
+                                                 int64_t start_us,
+                                                 bool force);
+
 struct json_value;
 
 /* ONE preflight that names ALL unmet -mint-anchor producer preconditions

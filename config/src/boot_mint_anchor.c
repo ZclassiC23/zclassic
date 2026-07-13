@@ -67,7 +67,15 @@
 #include "storage/consensus_state_bundle_codec.h" /* CONSENSUS_STATE_VALIDATION_* */
 #include "storage/progress_store.h"             /* progress_store_db */
 #include "jobs/mint_skip_crypto.h"              /* mint_skip_crypto_get */
-#include "jobs/utxo_apply_stage.h"              /* utxo_apply_stage_cursor */
+#include "jobs/header_admit_stage.h"            /* header_admit_stage_step_us_ewma */
+#include "jobs/validate_headers_stage.h"        /* validate_headers_stage_step_us_ewma */
+#include "jobs/body_fetch_stage.h"              /* body_fetch_stage_step_us_ewma */
+#include "jobs/body_persist_stage.h"            /* body_persist_stage_step_us_ewma */
+#include "jobs/script_validate_stage.h"         /* script_validate_stage_step_us_ewma */
+#include "jobs/proof_validate_stage.h"          /* proof_validate_stage_step_us_ewma */
+#include "jobs/utxo_apply_stage.h"              /* utxo_apply_stage_cursor,
+                                                 * utxo_apply_stage_step_us_ewma */
+#include "jobs/tip_finalize_stage.h"            /* tip_finalize_stage_step_us_ewma */
 #include "jobs/stage_helpers.h"                 /* stage_cursor_persisted */
 #include "services/chain_activation_service.h"  /* reducer_kick,
                                                  * boot_activation_controller */
@@ -211,11 +219,40 @@ static void mint_progress_log_path(const char *datadir, char *out, size_t n)
         snprintf(out, n, "%s/mint-progress.log", datadir ? datadir : ".");
 }
 
+/* Per-stage step-timing EWMA snapshot for the mint-progress.log line below.
+ * -mint-anchor producers run WITHOUT RPC (no dumpstate reachable), so this is
+ * the only offline surface for "which of the eight stages is the fold's
+ * bottleneck right now" — diagnosing that today required /proc wchan
+ * sampling. Same pipeline order + abbreviations as
+ * boot_mint_anchor_report_frontier_walled's cursor report above (ha, vh, bf,
+ * bp, sv, pv, ua, tf), so the two reports read consistently side by side. */
+static void mint_stage_ewma_collect(const char *abbrev_out[8], int64_t ewma_out[8])
+{
+    static const char *const abbrev[8] = {
+        "ha", "vh", "bf", "bp", "sv", "pv", "ua", "tf" };
+    for (int i = 0; i < 8; i++)
+        abbrev_out[i] = abbrev[i];
+    ewma_out[0] = header_admit_stage_step_us_ewma();
+    ewma_out[1] = validate_headers_stage_step_us_ewma();
+    ewma_out[2] = body_fetch_stage_step_us_ewma();
+    ewma_out[3] = body_persist_stage_step_us_ewma();
+    ewma_out[4] = script_validate_stage_step_us_ewma();
+    ewma_out[5] = proof_validate_stage_step_us_ewma();
+    ewma_out[6] = utxo_apply_stage_step_us_ewma();
+    ewma_out[7] = tip_finalize_stage_step_us_ewma();
+}
+
 /* Append one throttled progress line to the on-disk mint-progress.log so a
  * long fold is observable FROM DISK. Throttled to ~every 5s of wall time; the
  * final-anchor line is always written. Rate is computed over the interval since
  * the last write (blocks/s), ETA from the remaining span at that rate. All
- * best-effort — a failure to open/write NEVER affects the fold. */
+ * best-effort — a failure to open/write NEVER affects the fold.
+ *
+ * The line also carries the eight stages' live step_us_ewma (in-process only —
+ * a different process, e.g. `anchorstatus`, cannot read them; this log line is
+ * the only durable trace of the snapshot) so one `tail -1 mint-progress.log`
+ * names the slowest stage (`slow=<abbrev>:<ewma_us>us`) without attaching a
+ * debugger or sampling /proc/<pid>/wchan. */
 static void mint_progress_log_tick(const char *path, int32_t through,
                                    int32_t anchor, int64_t start_us,
                                    bool force)
@@ -240,24 +277,57 @@ static void mint_progress_log_tick(const char *path, int32_t through,
     long    eta_s     = rate > 0.0 ? (long)((double)remaining / rate) : -1;
     double  elapsed_s = start_us > 0 ? (double)(now_us - start_us) / 1e6 : 0.0;
 
+    const char *stage_abbrev[8];
+    int64_t     stage_ewma[8];
+    mint_stage_ewma_collect(stage_abbrev, stage_ewma);
+    int slow = 0;
+    for (int i = 1; i < 8; i++)
+        if (stage_ewma[i] > stage_ewma[slow])
+            slow = i;
+
+    char stages_buf[240];
+    int  off = snprintf(stages_buf, sizeof(stages_buf), "stages=[");
+    for (int i = 0; i < 8 && off > 0 && (size_t)off < sizeof(stages_buf); i++)
+        off += snprintf(stages_buf + off, sizeof(stages_buf) - (size_t)off,
+                        "%s%s:%lldus", i == 0 ? "" : " ", stage_abbrev[i],
+                        (long long)stage_ewma[i]);
+    if (off > 0 && (size_t)off < sizeof(stages_buf))
+        snprintf(stages_buf + off, sizeof(stages_buf) - (size_t)off, "]");
+
     FILE *f = fopen(path, "a");
     if (!f)
         return;                          /* best-effort: never block the fold */
     if (eta_s >= 0)
         fprintf(f,
                 "mint height=%d / %d rate=%.1f blk/s eta=%ld:%02ld:%02ld "
-                "elapsed=%.0fs\n",
+                "elapsed=%.0fs slow=%s:%lldus %s\n",
                 through, anchor, rate,
-                eta_s / 3600, (eta_s % 3600) / 60, eta_s % 60, elapsed_s);
+                eta_s / 3600, (eta_s % 3600) / 60, eta_s % 60, elapsed_s,
+                stage_abbrev[slow], (long long)stage_ewma[slow],
+                stages_buf);
     else
         fprintf(f,
                 "mint height=%d / %d rate=%.1f blk/s eta=unknown "
-                "elapsed=%.0fs\n",
-                through, anchor, rate, elapsed_s);
+                "elapsed=%.0fs slow=%s:%lldus %s\n",
+                through, anchor, rate, elapsed_s,
+                stage_abbrev[slow], (long long)stage_ewma[slow],
+                stages_buf);
     fclose(f);
 
     last_write_us = now_us;
     last_write_h  = through;
+}
+
+/* Test-only forwarder (declared in config/boot.h) so the
+ * reducer_step_drain_harness test group can drive one tick and assert the
+ * on-disk line without duplicating this TU's static throttle/format logic. */
+void boot_mint_anchor_progress_log_tick_for_test(const char *path,
+                                                 int32_t through,
+                                                 int32_t anchor,
+                                                 int64_t start_us,
+                                                 bool force)
+{
+    mint_progress_log_tick(path, through, anchor, start_us, force);
 }
 
 bool boot_mint_anchor_run(const char *datadir)

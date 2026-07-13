@@ -784,6 +784,10 @@ void tip_finalize_stage_set_utxo_counter(tip_finalize_utxo_count_fn fn, void *us
 }
 
 uint64_t tip_finalize_stage_cursor(void) { return g_stage ? stage_cursor(g_stage) : 0; }
+int64_t tip_finalize_stage_step_us_ewma(void)
+{
+    return g_stage ? stage_step_us_ewma(g_stage) : 0;
+}
 int64_t tip_finalize_stage_last_height(void) { return tip_finalize_observe_last_height(); }
 
 /* Test-only: reset the published served-tip height to -1 (a stale high value

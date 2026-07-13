@@ -53,6 +53,8 @@ job_result_t script_validate_stage_step_once(void);
 int script_validate_stage_drain(int max_steps);
 
 uint64_t script_validate_stage_cursor(void);
+/* Step-timing EWMA (us); see util/stage.h. 0 if never stepped. */
+int64_t  script_validate_stage_step_us_ewma(void);
 uint64_t script_validate_stage_verified_total(void);
 uint64_t script_validate_stage_script_invalid_total(void);
 uint64_t script_validate_stage_internal_error_total(void);

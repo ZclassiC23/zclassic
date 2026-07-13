@@ -695,6 +695,11 @@ uint64_t validate_headers_stage_cursor(void)
     return stage_cursor(g_stage);
 }
 
+int64_t validate_headers_stage_step_us_ewma(void)
+{
+    return g_stage ? stage_step_us_ewma(g_stage) : 0;
+}
+
 uint64_t validate_headers_stage_passed_total(void)
 {
     return atomic_load(&g_passed_total);

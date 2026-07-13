@@ -215,6 +215,11 @@ uint64_t body_fetch_stage_cursor(void)
     return g_stage ? stage_cursor(g_stage) : 0;
 }
 
+int64_t body_fetch_stage_step_us_ewma(void)
+{
+    return g_stage ? stage_step_us_ewma(g_stage) : 0;
+}
+
 uint64_t body_fetch_stage_observed_total(void)
 {
     return atomic_load(&g_observed_total);

@@ -25,6 +25,7 @@
 #include "chain/chainparamsbase.h"
 #include "chain/pow.h"
 #include "chain/subsidy.h"
+#include "config/boot.h"       /* boot_mint_anchor_progress_log_tick_for_test */
 #include "consensus/validation.h"
 #include "core/arith_uint256.h"
 #include "core/uint256.h"
@@ -420,6 +421,39 @@ int test_reducer_step_drain_harness(void)
             block_free(&blk2);
         }
         activation_controller_destroy(&ctl);
+    }
+
+    /* ── S1.4: mint-progress.log per-stage step-EWMA telemetry. -mint-anchor
+     * producers run WITHOUT RPC, so dumpstate's stage_step_us_ewma() is
+     * unreachable from them — this on-disk log line is the only offline
+     * surface. Force one tick (throttle bypassed) after the eight stages
+     * above have actually stepped, and assert the line names the slowest
+     * stage + carries the full per-stage snapshot. start_us=0 keeps this
+     * independent of GetTimeMicros/core/utiltime. ────────────────────────── */
+    if (stages_ok) {
+        char mint_log_path[512];
+        snprintf(mint_log_path, sizeof(mint_log_path),
+                "%s/mint-progress.log", dir);
+        boot_mint_anchor_progress_log_tick_for_test(mint_log_path, 1, 2, 0,
+                                                    /*force=*/true);
+
+        FILE *mf = fopen(mint_log_path, "r");
+        char line[512] = {0};
+        char last_line[512] = {0};
+        bool read_any = false;
+        if (mf) {
+            while (fgets(line, sizeof(line), mf)) {
+                snprintf(last_line, sizeof(last_line), "%s", line);
+                read_any = true;
+            }
+            fclose(mf);
+        }
+        SD_CHECK("mint-progress.log tick wrote a line", read_any);
+        SD_CHECK("mint-progress.log line names the slowest stage (slow=)",
+                 strstr(last_line, "slow=") != NULL);
+        SD_CHECK("mint-progress.log line carries the 8-stage EWMA snapshot "
+                 "(stages=[)",
+                 strstr(last_line, "stages=[") != NULL);
     }
 
     /* ── teardown ──────────────────────────────────────────────────────── */

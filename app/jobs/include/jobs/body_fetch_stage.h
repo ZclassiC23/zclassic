@@ -89,6 +89,8 @@ void body_fetch_stage_shutdown(void);
 
 /* Observability. */
 uint64_t body_fetch_stage_cursor(void);
+/* Step-timing EWMA (us); see util/stage.h. 0 if never stepped. */
+int64_t  body_fetch_stage_step_us_ewma(void);
 uint64_t body_fetch_stage_observed_total(void);   /* source='disk' rows */
 uint64_t body_fetch_stage_skipped_total(void);    /* source='skipped_invalid' */
 

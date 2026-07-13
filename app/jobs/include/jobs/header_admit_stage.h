@@ -79,6 +79,8 @@ void header_admit_stage_shutdown(void);
 
 /* Observability. */
 uint64_t header_admit_stage_cursor(void);
+/* Step-timing EWMA (us); see util/stage.h. 0 if never stepped. */
+int64_t  header_admit_stage_step_us_ewma(void);
 uint64_t header_admit_stage_admitted_total(void);
 /* Count of reorg-rewinds: each time the active chain reorged below the
  * cursor, the cursor was rewound to the fork point so the stale log rows

@@ -704,10 +704,9 @@ void proof_validate_stage_set_tx_verifier(proof_validate_tx_verify_fn fn,
     pthread_mutex_unlock(&g_lock);
 }
 
-uint64_t proof_validate_stage_cursor(void)
-{
-    return g_stage ? stage_cursor(g_stage) : 0;
-}
+uint64_t proof_validate_stage_cursor(void) { return g_stage ? stage_cursor(g_stage) : 0; }
+int64_t  proof_validate_stage_step_us_ewma(void)
+{ return g_stage ? stage_step_us_ewma(g_stage) : 0; }
 
 stage_t *proof_validate_stage_handle(void)
 {
