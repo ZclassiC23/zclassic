@@ -87,6 +87,81 @@ static int sbf_shielded_rows(struct node_db *ndb, int lo, int hi)
     return n;
 }
 
+/* Insert a fully-populated real blocks row (as normal sync would) with
+ * sentinel solution/chain_work/sapling_root and zeroed shielded values, so a
+ * later backfill pass can be checked for preserving the consensus columns. */
+static bool sbf_insert_real_row(struct node_db *ndb, const struct uint256 *hash,
+                                int height, const uint8_t *solution,
+                                int solution_len, const uint8_t chain_work[32],
+                                const uint8_t sapling_root[32])
+{
+    sqlite3_stmt *s = NULL;
+    static const uint8_t z32[32] = {0};
+    if (sqlite3_prepare_v2(ndb->db,
+            "INSERT INTO blocks(hash,height,prev_hash,version,merkle_root,"
+            "time,bits,nonce,solution,chain_work,status,file_num,data_pos,"
+            "undo_pos,num_tx,sapling_root,sprout_root,sapling_value,sprout_value)"
+            " VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,NULL,0,0)",
+            -1, &s, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_blob(s, 1, hash->data, 32, SQLITE_STATIC);
+    sqlite3_bind_int(s, 2, height);
+    sqlite3_bind_blob(s, 3, z32, 32, SQLITE_STATIC);
+    sqlite3_bind_int(s, 4, 4);
+    sqlite3_bind_blob(s, 5, z32, 32, SQLITE_STATIC);
+    sqlite3_bind_int64(s, 6, 1700000000);
+    sqlite3_bind_int(s, 7, 0x2000ffff);
+    sqlite3_bind_blob(s, 8, z32, 32, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 9, solution, solution_len, SQLITE_STATIC);
+    sqlite3_bind_blob(s, 10, chain_work, 32, SQLITE_STATIC);
+    sqlite3_bind_int(s, 11, 4 /* BLOCK_VALID_TREE */);
+    sqlite3_bind_int(s, 12, 1);
+    sqlite3_bind_int(s, 13, 1000 + height);
+    sqlite3_bind_int(s, 14, 42 /* undo_pos */);
+    sqlite3_bind_int(s, 15, 1);
+    sqlite3_bind_blob(s, 16, sapling_root, 32, SQLITE_STATIC);
+    bool ok = (sqlite3_step(s) == SQLITE_DONE);
+    sqlite3_finalize(s);
+    return ok;
+}
+
+/* Read one blocks-row column blob for `height`; returns bytes copied (<=cap). */
+static int sbf_read_col_blob(struct node_db *ndb, int height, const char *col,
+                             uint8_t *out, int cap)
+{
+    char sql[128];
+    snprintf(sql, sizeof(sql), "SELECT %s FROM blocks WHERE height=?", col);
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int(s, 1, height);
+    int n = -1;
+    if (sqlite3_step(s) == SQLITE_ROW) {
+        n = sqlite3_column_bytes(s, 0);
+        const void *b = sqlite3_column_blob(s, 0);
+        if (n > cap) n = cap;
+        if (b && n > 0) memcpy(out, b, (size_t)n);
+        else if (n < 0) n = 0;
+    }
+    sqlite3_finalize(s);
+    return n;
+}
+
+static int64_t sbf_read_col_int(struct node_db *ndb, int height, const char *col)
+{
+    char sql[128];
+    snprintf(sql, sizeof(sql), "SELECT %s FROM blocks WHERE height=?", col);
+    sqlite3_stmt *s = NULL;
+    if (sqlite3_prepare_v2(ndb->db, sql, -1, &s, NULL) != SQLITE_OK)
+        return -1;
+    sqlite3_bind_int(s, 1, height);
+    int64_t v = -1;
+    if (sqlite3_step(s) == SQLITE_ROW)
+        v = sqlite3_column_int64(s, 0);
+    sqlite3_finalize(s);
+    return v;
+}
+
 int test_utxo_recovery_shielded_backfill(void);
 int test_utxo_recovery_shielded_backfill(void)
 {
@@ -231,6 +306,64 @@ int test_utxo_recovery_shielded_backfill(void)
         int64_t cur = -1;
         node_db_state_get_int(&ndb, "shielded_backfill_height", &cur);
         SBF_CHECK("(c) cursor advanced monotonically to tip", cur == 1100);
+
+        main_state_free(&ms);
+        node_db_close(&ndb);
+    }
+
+    /* ---- (d) a pre-populated REAL row keeps its consensus columns ---- */
+    {
+        test_make_tmpdir(dir, sizeof(dir), "shielded_backfill", "preserve");
+        snprintf(ndb_path, sizeof(ndb_path), "%s/node.db", dir);
+
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        SBF_CHECK("(d) node.db opens", node_db_open(&ndb, ndb_path));
+
+        struct main_state ms;
+        main_state_init(&ms);
+        bool built = true;
+        for (int h = 1051; h <= 1100; h++)
+            built &= (sbf_install(&ms, h, 4000 + h) != NULL);
+        SBF_CHECK("(d) suffix chain built", built);
+
+        /* Normal sync already wrote a real row at h=1075 with real
+         * solution/chain_work/sapling_root and zeroed shielded values. */
+        uint8_t real_sol[64], real_cw[32], real_sr[32];
+        memset(real_sol, 0xAB, sizeof(real_sol));
+        memset(real_cw, 0xCD, sizeof(real_cw));
+        memset(real_sr, 0xEF, sizeof(real_sr));
+        struct uint256 h1075;
+        sbf_hash_for(1075, &h1075);
+        SBF_CHECK("(d) real row pre-inserted",
+                  sbf_insert_real_row(&ndb, &h1075, 1075, real_sol,
+                                      (int)sizeof(real_sol), real_cw, real_sr));
+
+        SBF_CHECK("(d) cursor seed 1050",
+                  node_db_state_set_int(&ndb, "shielded_backfill_height", 1050));
+        int updated = -1;
+        struct zcl_result r = utxo_recovery_backfill_shielded_range(
+            &ndb, NULL, &ms, dir, 1051, 1100, &updated);
+        SBF_CHECK("(d) range walk ok", r.ok);
+        SBF_CHECK("(d) all 50 suffix rows carried a value", updated == 50);
+
+        /* The derived shielded value landed on the real row... */
+        SBF_CHECK("(d) sapling_value SET on real row",
+                  sbf_read_col_int(&ndb, 1075, "sapling_value") == (4000 + 1075));
+        /* ...WITHOUT disturbing the consensus columns. */
+        uint8_t got[64];
+        int gn = sbf_read_col_blob(&ndb, 1075, "solution", got, sizeof(got));
+        SBF_CHECK("(d) solution SURVIVED intact",
+                  gn == (int)sizeof(real_sol) &&
+                  memcmp(got, real_sol, sizeof(real_sol)) == 0);
+        gn = sbf_read_col_blob(&ndb, 1075, "chain_work", got, sizeof(got));
+        SBF_CHECK("(d) chain_work SURVIVED intact",
+                  gn == 32 && memcmp(got, real_cw, 32) == 0);
+        gn = sbf_read_col_blob(&ndb, 1075, "sapling_root", got, sizeof(got));
+        SBF_CHECK("(d) sapling_root SURVIVED intact",
+                  gn == 32 && memcmp(got, real_sr, 32) == 0);
+        SBF_CHECK("(d) undo_pos SURVIVED intact",
+                  sbf_read_col_int(&ndb, 1075, "undo_pos") == 42);
 
         main_state_free(&ms);
         node_db_close(&ndb);

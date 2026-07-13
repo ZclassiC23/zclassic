@@ -41,12 +41,18 @@ static int self_bt_signo(void) { return SIGRTMIN + 2; }
  * release/consumed with acquire so the handler observes the orchestrator's
  * stores across the signal boundary. */
 static struct {
-    _Atomic int          fd;    /* target log fd, or -1 when idle */
-    _Atomic(const char *) name; /* registered name of the current target */
-    sem_t                done;  /* posted by the handler when it finishes */
+    _Atomic int          fd;      /* target log fd, or -1 when idle */
+    _Atomic(const char *) name;   /* registered name of the current target */
+    _Atomic(pthread_t)   target;  /* pthread_t of the thread being probed now */
+    sem_t                done;    /* posted by the handler when it finishes */
 } g_bt;
 
 static _Atomic bool g_installed = false;
+
+/* Single-flight guard: the shared g_bt slot + `done` semaphore can serve only
+ * one dump at a time. A second concurrent operator invocation is rejected
+ * rather than allowed to clobber the first dump's fd/name/target/semaphore. */
+static atomic_flag g_dump_in_progress = ATOMIC_FLAG_INIT;
 
 /* Last-dump introspection (dumpstate). Ints are atomic; the path string is
  * guarded by a brief mutex — never touched from the signal handler. */
@@ -60,8 +66,23 @@ static _Atomic long     g_dump_count = 0;
 static void self_bt_handler(int sig)
 {
     (void)sig;
+    /* This handler runs in LIVE threads that keep executing after it returns,
+     * and it calls errno-clobbering functions (write, backtrace, syscall,
+     * sem_post). Snapshot errno on entry and restore it on every return so the
+     * interrupted thread's errno survives the probe. */
+    int saved_errno = errno;
+
     int fd = atomic_load_explicit(&g_bt.fd, memory_order_acquire);
-    if (fd >= 0) {
+    pthread_t want = atomic_load_explicit(&g_bt.target, memory_order_acquire);
+
+    /* Identity gate: only the thread the orchestrator is CURRENTLY probing may
+     * write to the shared fd and post the semaphore. A thread whose 100 ms
+     * budget already expired can wake here late — during a *later* target's
+     * window — and, without this gate, would splice its backtrace into the fd
+     * mislabeled as the later target and consume that target's semaphore slot.
+     * A stale waker fails pthread_equal and no-ops entirely. pthread_self /
+     * pthread_equal are async-signal-safe. */
+    if (fd >= 0 && pthread_equal(pthread_self(), want)) {
         const char *name = atomic_load_explicit(&g_bt.name, memory_order_acquire);
         asw_write_str(fd, "[tid=");
         asw_write_uint(fd, (unsigned long)syscall(SYS_gettid));
@@ -72,10 +93,14 @@ static void self_bt_handler(int sig)
         int n = backtrace(frames, 64);
         backtrace_symbols_fd(frames, n, fd);
         asw_write_str(fd, "\n");
+        /* Post only for the matched target so the orchestrator's wait pairs
+         * with exactly this response; a post that races just past the wait's
+         * timeout is discarded by the next iteration's drain. sem_post is
+         * async-signal-safe. */
+        sem_post(&g_bt.done);
     }
-    /* Always post — even if fd was cleared — so the orchestrator never blocks
-     * on a stray signal delivery. sem_post is async-signal-safe. */
-    sem_post(&g_bt.done);
+
+    errno = saved_errno;
 }
 
 bool self_backtrace_install(void)
@@ -87,6 +112,7 @@ bool self_backtrace_install(void)
         LOG_FAIL("self_backtrace", "sem_init failed: %s", strerror(errno));
     atomic_store_explicit(&g_bt.fd, -1, memory_order_release);
     atomic_store_explicit(&g_bt.name, NULL, memory_order_release);
+    atomic_store_explicit(&g_bt.target, (pthread_t)0, memory_order_release);
 
     struct sigaction sa;
     memset(&sa, 0, sizeof(sa));
@@ -151,11 +177,21 @@ int self_backtrace_dump_all(char *path_out, size_t cap)
         LOG_ERR("self_backtrace", "handler not installed; call "
                 "self_backtrace_install() at boot first");
 
+    /* Reject a concurrent invocation instead of clobbering the in-flight dump's
+     * shared slot/semaphore. Distinct return (-2) so the caller can tell "busy"
+     * apart from "failed". */
+    if (atomic_flag_test_and_set_explicit(&g_dump_in_progress,
+                                          memory_order_acquire))
+        LOG_RETURN(-2, "self_backtrace",
+                   "backtrace already in progress; declining concurrent dump");
+
     char path[4300] = {0};
     int fd = self_bt_open_log(path, sizeof(path));
-    if (fd < 0)
+    if (fd < 0) {
+        atomic_flag_clear_explicit(&g_dump_in_progress, memory_order_release);
         LOG_ERR("self_backtrace", "could not open backtrace log: %s",
                 strerror(errno));
+    }
 
     /* Preamble. */
     asw_write_str(fd, "=== self-backtrace ts=");
@@ -188,6 +224,9 @@ int self_backtrace_dump_all(char *path_out, size_t cap)
 
         self_bt_drain();
         atomic_store_explicit(&g_bt.name, view[i].name, memory_order_release);
+        /* Publish the target identity BEFORE the signal so the handler can
+         * confirm it is the intended thread (see self_bt_handler). */
+        atomic_store_explicit(&g_bt.target, view[i].tid, memory_order_release);
 
         int rc = pthread_kill(view[i].tid, self_bt_signo());
         if (rc != 0) {
@@ -219,6 +258,7 @@ int self_backtrace_dump_all(char *path_out, size_t cap)
     }
     atomic_store_explicit(&g_bt.fd, -1, memory_order_release);
     atomic_store_explicit(&g_bt.name, NULL, memory_order_release);
+    atomic_store_explicit(&g_bt.target, (pthread_t)0, memory_order_release);
 
     fsync(fd);
     close(fd);
@@ -230,6 +270,8 @@ int self_backtrace_dump_all(char *path_out, size_t cap)
     atomic_store_explicit(&g_last_thread_count, count, memory_order_release);
     atomic_store_explicit(&g_last_unix_ts, (long)time(NULL), memory_order_release);  // platform-ok:introspection wall-clock stamp
     atomic_fetch_add_explicit(&g_dump_count, 1, memory_order_relaxed);
+
+    atomic_flag_clear_explicit(&g_dump_in_progress, memory_order_release);
 
     if (path_out && cap) snprintf(path_out, cap, "%s", path);
     return count;
