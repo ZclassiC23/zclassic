@@ -111,6 +111,78 @@ static FILE *g_cached_file = NULL;
 static int   g_cached_nfile = -1;
 static char  g_cached_prefix[8] = {0};
 
+/* ── Deferred block-body fdatasync (see storage/disk_block_io.h) ──────
+ * When g_deferred_sync is set, write_block_to_disk() records the file it
+ * wrote here instead of fdatasync()ing it inline; disk_block_io_sync_pending()
+ * flushes the set at the drain-batch boundary. Both the flag and the set are
+ * guarded by g_file_cache_mutex (already held across the write). The cap is
+ * far larger than any batch touches (128 MB per blk file * 64 = 8 GB of
+ * bodies) so overflow is unreachable in practice; it still falls back to an
+ * inline sync rather than dropping a file on the floor. */
+#define DEFERRED_MAX_FILES 64
+static bool g_deferred_sync = false;
+static char g_pending_paths[DEFERRED_MAX_FILES][512];
+static int  g_pending_count = 0;
+
+/* Add `path` to the pending set (dedup). Caller holds g_file_cache_mutex.
+ * Returns false only when the set is full (caller must sync inline instead). */
+static bool deferred_record_pending_locked(const char *path)
+{
+    for (int i = 0; i < g_pending_count; i++)
+        if (strcmp(g_pending_paths[i], path) == 0)
+            return true; /* already pending — one sync covers all writes */
+    if (g_pending_count >= DEFERRED_MAX_FILES)
+        return false;
+    snprintf(g_pending_paths[g_pending_count], sizeof(g_pending_paths[0]),
+             "%s", path);
+    g_pending_count++;
+    return true;
+}
+
+void disk_block_io_set_deferred_sync(bool enabled)
+{
+    pthread_mutex_lock(&g_file_cache_mutex);
+    g_deferred_sync = enabled;
+    pthread_mutex_unlock(&g_file_cache_mutex);
+}
+
+bool disk_block_io_deferred_sync_enabled(void)
+{
+    pthread_mutex_lock(&g_file_cache_mutex);
+    bool v = g_deferred_sync;
+    pthread_mutex_unlock(&g_file_cache_mutex);
+    return v;
+}
+
+bool disk_block_io_sync_pending(void)
+{
+    pthread_mutex_lock(&g_file_cache_mutex);
+    bool all_ok = true;
+    int keep = 0;
+    for (int i = 0; i < g_pending_count; i++) {
+        int fd = open(g_pending_paths[i], O_RDONLY);
+        bool synced = (fd >= 0 && fdatasync(fd) == 0);
+        if (fd >= 0)
+            close(fd);
+        if (!synced) {
+            /* Keep the entry so a retry re-attempts the sync — clearing it
+             * would let a later commit succeed while these bytes are still
+             * unsynced, breaking the ordering invariant. */
+            all_ok = false;
+            fprintf(stderr,  // obs-ok:sync-failure-vetoes-commit-via-precommit-hook
+                    "disk_block_io_sync_pending: fdatasync %s failed: %s\n",
+                    g_pending_paths[i], strerror(errno));
+            if (keep != i)
+                memcpy(g_pending_paths[keep], g_pending_paths[i],
+                       sizeof(g_pending_paths[0]));
+            keep++;
+        }
+    }
+    g_pending_count = keep;
+    pthread_mutex_unlock(&g_file_cache_mutex);
+    return all_ok;
+}
+
 /* Expose mutex for callers that read block/undo files directly
  * (e.g., transaction_controller, bg_validation undo reads).
  * All fread/fseek/fclose on blk*.dat and rev*.dat MUST be wrapped
@@ -283,8 +355,31 @@ bool write_block_to_disk(struct block *b, struct disk_block_pos *pos,
     }
 
     /* Flush to disk before reporting success — prevents silent data loss
-     * on power failure. fdatasync skips metadata update (faster). */
-    if (fflush(file) != 0 || fdatasync(fileno(file)) != 0) {
+     * on power failure. fdatasync skips metadata update (faster).
+     *
+     * Deferred mode (reducer fold / catch-up drain): push the stdio buffer to
+     * the kernel now (fflush) so a concurrent reader sees the bytes, but defer
+     * the fdatasync to the drain-batch boundary (disk_block_io_sync_pending,
+     * fired before the stage COMMIT). Record the file as pending; on set
+     * overflow fall back to an inline fdatasync so a file is never left
+     * unsynced. Both g_deferred_sync and the pending set are under the mutex
+     * held here. */
+    if (fflush(file) != 0) {
+        fprintf(stderr, "write_block_to_disk: fflush failed: %s\n",
+                strerror(errno));
+        fclose(file);
+        pthread_mutex_unlock(&g_file_cache_mutex);
+        stream_free(&s);
+        return false;
+    }
+    bool sync_now = true;
+    if (g_deferred_sync) {
+        char wpath[512];
+        get_block_pos_filename(wpath, sizeof(wpath), datadir, pos, "blk");
+        if (deferred_record_pending_locked(wpath))
+            sync_now = false; /* synced later at the drain-batch boundary */
+    }
+    if (sync_now && fdatasync(fileno(file)) != 0) {
         fprintf(stderr, "write_block_to_disk: fdatasync failed: %s\n",
                 strerror(errno));
         fclose(file);

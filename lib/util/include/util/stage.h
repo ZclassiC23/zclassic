@@ -174,6 +174,22 @@ bool stage_batch_begin(sqlite3 *db);
 bool stage_batch_end(sqlite3 *db, bool commit);
 bool stage_batch_active(void);
 
+/* ── Pre-commit ordering hook ──────────────────────────────────────────
+ * stage_batch_end() invokes this hook (when set) immediately BEFORE the outer
+ * COMMIT, and only when it is about to commit. If the hook returns false it
+ * VETOES the commit: stage_batch_end() ROLLBACKs the batch and returns false,
+ * so no stage cursor / *_log row becomes durable. This is the seam that keeps
+ * a durable stage marker from outliving an unsynced on-disk artifact it
+ * references — the reducer registers disk_block_io_sync_pending() here so
+ * deferred block-body writes are fdatasync()ed before any row referencing them
+ * commits (see storage/disk_block_io.h). NULL clears the hook (the default).
+ *
+ * Set once at boot, before any drain thread runs; process-global, and the hook
+ * fires under the same progress_store_tx_lock the batch is held under. The hook
+ * must not itself open a progress.kv transaction. */
+typedef bool (*stage_batch_precommit_fn)(void);
+void stage_batch_set_precommit_hook(stage_batch_precommit_fn fn);
+
 /* A drain commits its batch only when at least one step ADVANCED. But a step
  * can do durable, correct work WITHOUT advancing the cursor — a reorg unwind
  * removes the losing branch and rewinds the cursor, then the winning block is
