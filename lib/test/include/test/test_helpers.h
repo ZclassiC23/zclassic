@@ -593,6 +593,7 @@ int test_torn_index_blocks_tip(void);
 int test_have_data_unreadable(void);
 int test_chain_tip_watchdog_bounded_restart(void);
 int test_blocker(void);
+int test_cpu_topology(void);
 int test_service_state(void);
 int test_service_state_driver(void);
 int test_clock(void);

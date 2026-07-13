@@ -95,6 +95,7 @@
 #include "util/supervisor.h"
 #include "util/blocker.h"
 #include "util/self_backtrace.h"
+#include "util/cpu_topology.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -562,6 +563,11 @@ static const struct diagnostics_dump_entry g_dumpers[] = {
     { "self_backtrace", self_backtrace_dump_state_json,
                      "live self-backtrace surface: installed flag, dump_count, and last dump's "
                      "{last_path, last_thread_count, last_unix_ts}. Triggered by ops.debug.backtrace" },
+    { "cpu_topology", cpu_topology_dump_state_json,
+                     "CPU topology organ: logical_cpus, physical_cores, smt_threads_per_core, "
+                     "l3_domains + per-domain {id, l3_size_bytes, cpu_count, cpus}, "
+                     "largest_l3_domain (the V-Cache CCD on multi-CCD AMD parts), source "
+                     "(sysfs/fallback)" },
 };
 
 int diagnostics_subsystems_csv(char *out, size_t out_sz)
