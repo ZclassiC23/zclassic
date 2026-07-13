@@ -644,6 +644,7 @@ int test_stage_repair(void);
 int test_script_validate_stage(void);
 int test_script_validate_contextual_gate(void);
 int test_proof_validate_stage(void);
+int test_validate_parallel_determinism(void);
 int test_mint_skip_crypto(void);
 int test_mint_anchor_preflight(void);
 int test_utxo_apply_stage(void);
