@@ -3533,13 +3533,33 @@ int main(int argc, char **argv)
         }
     }
 
-    /* The anchor mint is always an offline bulk fold. Default it onto the
-     * in-RAM UTXO hot store so the sovereign producer is tractable even when
-     * the operator does not remember the explicit -fold-inram flag. Preserve an
-     * explicit environment opt-out for constrained machines; the final SHA3 /
-     * count hard-assert is identical on either storage path. */
-    if (ctx.mint_anchor && getenv("ZCL_FOLD_INRAM") == NULL)
+    /* The FAST anchor mint (crypto pass-through) is an offline bulk fold with
+     * no script/proof validation, so it defaults onto the in-RAM UTXO hot
+     * store. A FULL-profile mint (no -mint-anchor-fast) must NOT:
+     * script_validate resolves prevouts from DURABLE coins_kv only (the
+     * overlay cross-thread read path is gated off — coins_kv_overlay_safe),
+     * so an active overlay makes the first spend of a recent coin
+     * unresolvable and silently wedges the fold (proven live 2026-07-14:
+     * h=2000 spending a coin created at h=1897). Preserve the explicit
+     * environment opt-out/in; the final SHA3 / count hard-assert is identical
+     * on either storage path. */
+    if (ctx.mint_anchor && ctx.mint_anchor_fast &&
+        getenv("ZCL_FOLD_INRAM") == NULL)
         setenv("ZCL_FOLD_INRAM", "1", 1);
+    if (ctx.mint_anchor && !ctx.mint_anchor_fast) {
+        const char *inram = getenv("ZCL_FOLD_INRAM");
+        if (inram && inram[0] && inram[0] != '0') {
+            fprintf(stderr,
+                    "FATAL: -mint-anchor without -mint-anchor-fast is a "
+                    "FULL-validation fold, and script_validate resolves "
+                    "prevouts from durable coins_kv only — the ZCL_FOLD_INRAM "
+                    "overlay makes the first spend of a recent coin "
+                    "unresolvable and wedges the fold. Re-run with "
+                    "ZCL_FOLD_INRAM=0 (durable fold), or add "
+                    "-mint-anchor-fast for the checkpoint-fold profile.\n");
+            return 1;
+        }
+    }
 
     /* OFFLINE-ONLY GUARD (jobs/mint_skip_crypto.h): -mint-anchor-fast (the
      * crypto pass-through) is HONORED ONLY together with -mint-anchor (the
