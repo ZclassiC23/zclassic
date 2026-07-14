@@ -72,6 +72,32 @@
 #                      {"state":"done",...} result. Lets an out-of-process
 #                      caller poll a long run without holding a pipe open.
 #                      Independent of --json (works in text mode too).
+#   --install-consensus-bundle=PATH
+#                     ALTERNATE cutover mode to -refold-from-anchor, for the v1
+#                     consensus-state bundle consumer (-install-consensus-bundle
+#                     on build/bin/zclassic23, config/src/boot_install_consensus_bundle.c).
+#                     Two-phase on the COPY: (1) run the node ONCE with
+#                     `-install-consensus-bundle=PATH` and nothing else — this
+#                     call is TERMINAL (it _exit()s after installing or a typed
+#                     refusal, never starts P2P/RPC services) — and require it
+#                     to print "INSTALLED: -install-consensus-bundle:" and exit
+#                     0; (2) only on that success, boot the COPY NORMALLY (no
+#                     -install-consensus-bundle flag) and enforce the existing
+#                     --expect-climb-past=H tip-watch gate, so the fold forward
+#                     past the bundle height is the thing actually proven, not
+#                     the install call's own exit code. PATH may be an absolute
+#                     path (used verbatim, e.g. a bundle staged outside any
+#                     datadir) or a path under --src (auto-rewritten onto the
+#                     COPY, e.g. <src>/consensus-state-bundle-<anchor>.sqlite
+#                     the mint producer wrote inside its own datadir). Requires
+#                     --full + --expect-climb-past=H; refuses to combine with a
+#                     -refold-from-anchor pass-through (alternate cutover
+#                     modes, pick one). This mode never sets
+#                     ZCL_DEPLOY_ALLOW_CANONICAL — the COPY is never the
+#                     canonical datadir, so the install call's canonical-lane
+#                     gate is not exercised here; the live cutover run sets
+#                     that env var itself (see
+#                     docs/work/sovereign-cutover-runbook.md).
 #   --                everything after is passed verbatim to build/bin/zclassic23
 #
 # Refold-specific rule:
@@ -80,6 +106,15 @@
 #   at $ZCL_MINT_ANCHOR_OUT or <src>/utxo-anchor.snapshot. The node still owns
 #   the SHA3/count verification at boot; this preflight only catches missing
 #   artifacts and invalid light-copy proofs cheaply.
+#
+# Bundle-install-specific rule:
+#   --install-consensus-bundle=PATH requires --full and --expect-climb-past=H
+#   for the same reason as -refold-from-anchor (the forward fold reads block
+#   bodies, and a flat/failed boot must not false-pass). The resolved PATH must
+#   exist and be non-empty on the COPY before the install call runs; the node
+#   still owns bundle admission, publication-CAS gating, and the atomic
+#   activate-install itself — this preflight only catches a missing/misnamed
+#   artifact and an incompatible copy mode cheaply, before spending a boot.
 set -eu
 
 SCRIPT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
@@ -165,6 +200,7 @@ LIKE_LIVE=0
 LIKE_LIVE_FLAGS=""
 LIKE_LIVE_ENV=""
 LIKE_LIVE_SNAP=""
+INSTALL_BUNDLE=""
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -182,6 +218,7 @@ while [ $# -gt 0 ]; do
         --no-run)      RUN=0 ;;
         --json)        JSON=1 ;;
         --status-file=*) STATUS_FILE="${1#--status-file=}" ;;
+        --install-consensus-bundle=*) INSTALL_BUNDLE="${1#--install-consensus-bundle=}" ;;
         --)            shift; PASS="$*"; break ;;
         --*)           echo "repro_on_copy: unknown option $1" >&2; exit 2 ;;
         *)             if [ -z "$SLUG" ]; then SLUG="$1"; else
@@ -227,6 +264,25 @@ if [ "$REFOLD_REQUESTED" = "1" ]; then
     fi
 fi
 
+if [ -n "$INSTALL_BUNDLE" ]; then
+    if [ "$REFOLD_REQUESTED" = "1" ]; then
+        echo "repro_on_copy: --install-consensus-bundle and -refold-from-anchor are alternate cutover modes; pass only one" >&2
+        exit 2
+    fi
+    if [ "$LIGHT" = "1" ]; then
+        echo "repro_on_copy: --install-consensus-bundle requires --full because the post-install forward fold reads block bodies" >&2
+        exit 2
+    fi
+    if [ -z "$EXPECT_CLIMB_PAST" ]; then
+        echo "repro_on_copy: --install-consensus-bundle requires --expect-climb-past=H so a flat/failed boot cannot pass" >&2
+        exit 2
+    fi
+    if [ "$RUN" = "0" ]; then
+        echo "repro_on_copy: --install-consensus-bundle requires a run (incompatible with --no-run)" >&2
+        exit 2
+    fi
+fi
+
 refuse_live_port() {
     p="$1"
     label="$2"
@@ -247,8 +303,8 @@ case "$CONNECT" in
 esac
 
 case " $PASS " in
-    *" -addnode="*|*" -connect="*|*" -rpcport="*|*" -port="*|*" -fsport="*|*" -httpsport="*)
-        echo "repro_on_copy: pass-through may not override network ports/peers; use script options" >&2
+    *" -addnode="*|*" -connect="*|*" -rpcport="*|*" -port="*|*" -fsport="*|*" -httpsport="*|*" -install-consensus-bundle="*)
+        echo "repro_on_copy: pass-through may not override network ports/peers/bundle-install; use script options" >&2
         exit 2
         ;;
 esac
@@ -388,6 +444,25 @@ fi
 # node correctly refuse to boot because it believes the live PID owns the copy.
 rm -f "$DEST/zclassic23.pid" "$DEST/.cookie" "$DEST/.lock" 2>/dev/null || true
 
+# --install-consensus-bundle=PATH: resolve PATH onto the COPY. A path under
+# --src is rewritten the same way the --like-live env rewrite handles live
+# datadir paths (e.g. <src>/consensus-state-bundle-<anchor>.sqlite the mint
+# producer wrote inside its own datadir); any other path is used verbatim
+# (e.g. a bundle staged outside any datadir). Must exist and be non-empty on
+# the COPY before the terminal install call runs below.
+INSTALL_BUNDLE_RESOLVED=""
+if [ -n "$INSTALL_BUNDLE" ]; then
+    case "$INSTALL_BUNDLE" in
+        "$SRC"/*) INSTALL_BUNDLE_RESOLVED="$DEST/${INSTALL_BUNDLE#"$SRC"/}" ;;
+        "$SRC")   INSTALL_BUNDLE_RESOLVED="$DEST" ;;
+        *)        INSTALL_BUNDLE_RESOLVED="$INSTALL_BUNDLE" ;;
+    esac
+    if [ ! -s "$INSTALL_BUNDLE_RESOLVED" ]; then
+        echo "repro_on_copy: --install-consensus-bundle candidate not found or empty: $INSTALL_BUNDLE_RESOLVED" >&2
+        exit 2
+    fi
+fi
+
 # Manifest for provenance.
 {
     echo "slug:        $SLUG"
@@ -406,6 +481,7 @@ rm -f "$DEST/zclassic23.pid" "$DEST/.cookie" "$DEST/.lock" 2>/dev/null || true
     echo "climb_past:  ${EXPECT_CLIMB_PAST:-none}"
     echo "refold:      $([ "$REFOLD_REQUESTED" = 1 ] && echo yes || echo no)"
     echo "anchor_snapshot_candidate: ${ANCHOR_CANDIDATE:-none}"
+    echo "install_consensus_bundle: ${INSTALL_BUNDLE_RESOLVED:-none}"
 } > "$DEST/REPRO_MANIFEST.txt"
 echo "[repro] manifest: $DEST/REPRO_MANIFEST.txt"
 
@@ -449,6 +525,51 @@ NODE_ISO_ARGS="-fsport=$FSPORT -httpsport=$HTTPSPORT -connect=$CONNECT -nolegacy
 [ -e "$HOME/.zcash-params" ] && ln -sfn "$HOME/.zcash-params" "$ISO_HOME/.zcash-params"
 if [ "$LIKE_LIVE" = "1" ]; then
     [ -e "$HOME/.zclassic" ]     && ln -sfn "$HOME/.zclassic"     "$ISO_HOME/.zclassic"
+fi
+
+# --install-consensus-bundle=PATH: phase 1 — the terminal install call. Run
+# SYNCHRONOUSLY (not backgrounded — this call never binds RPC and always
+# exits on its own) with -install-consensus-bundle and nothing else; $PASS is
+# reserved for phase 2's normal boot. A timeout guard (reuses --deadline)
+# catches an unexpected hang defensively; the call is documented terminal
+# either way. Acceptance requires BOTH exit 0 AND the typed INSTALLED banner
+# — an exit-0 without the banner is not trusted. On any failure this exits
+# the harness immediately: nothing further is booted, and the verdict is FAIL
+# (never a false PASS from skipping straight to a flat/absent tip-watch).
+if [ -n "$INSTALL_BUNDLE_RESOLVED" ]; then
+    INSTALL_LOG="$DEST/repro_install_bundle.log"
+    echo "[repro] terminal install pass: -install-consensus-bundle=$INSTALL_BUNDLE_RESOLVED (timeout ${DEADLINE}s)"
+    install_rc=0
+    if command -v timeout >/dev/null 2>&1; then
+        HOME="$ISO_HOME" timeout "${DEADLINE}s" \
+            "$NODE_BIN" -datadir="$DEST" -rpcport="$RPCPORT" -port="$P2PPORT" \
+            $NODE_ISO_ARGS -install-consensus-bundle="$INSTALL_BUNDLE_RESOLVED" \
+            > "$INSTALL_LOG" 2>&1 || install_rc=$?
+    else
+        HOME="$ISO_HOME" \
+            "$NODE_BIN" -datadir="$DEST" -rpcport="$RPCPORT" -port="$P2PPORT" \
+            $NODE_ISO_ARGS -install-consensus-bundle="$INSTALL_BUNDLE_RESOLVED" \
+            > "$INSTALL_LOG" 2>&1 || install_rc=$?
+    fi
+    if [ "$install_rc" != "0" ] || ! grep -q '^INSTALLED: -install-consensus-bundle:' "$INSTALL_LOG"; then
+        echo "========================================================================"
+        echo "  repro-on-copy [$SLUG]"
+        echo "  copy:      $DEST"
+        echo "  VERDICT:   FAIL — the terminal -install-consensus-bundle pass did not"
+        echo "             report INSTALLED (exit=$install_rc). Inspect $INSTALL_LOG"
+        echo "             before trusting this run; nothing further was booted."
+        echo "========================================================================"
+        DURATION_SECS=$(( $(date +%s) - RUN_START_EPOCH ))
+        if [ "$JSON" = "1" ]; then
+            emit_done_json FAIL "$install_rc" -1 -1 -1 "$DURATION_SECS" "$INSTALL_LOG" >&3
+        fi
+        if [ -n "$STATUS_FILE" ]; then
+            emit_done_json FAIL "$install_rc" -1 -1 -1 "$DURATION_SECS" "$INSTALL_LOG" |
+                atomic_write "$STATUS_FILE"
+        fi
+        exit 1
+    fi
+    echo "[repro] install pass reported INSTALLED — booting normally to fold forward and prove H* CLIMB"
 fi
 
 echo "[repro] launching $NODE_BIN on the COPY (rpcport=$RPCPORT p2p=$P2PPORT fs=$FSPORT https=$HTTPSPORT connect=$CONNECT) args: $PASS"
@@ -545,6 +666,10 @@ if [ -n "$EXPECT_CLIMB_PAST" ]; then
 fi
 if [ "$REFOLD_REQUESTED" = "1" ]; then
     echo "  refold_snapshot_loaded: $refold_snapshot_loaded"
+fi
+if [ -n "$INSTALL_BUNDLE_RESOLVED" ]; then
+    echo "  install_consensus_bundle: $INSTALL_BUNDLE_RESOLVED (phase-1 INSTALLED; see repro_install_bundle.log)"
+    echo "  phase-2 boot (this tip watch) is the H* CLIMB proof, not the install call's exit code."
 fi
 if [ "$LIGHT" = "1" ] && [ "$body_read_fails" -gt 0 ]; then
     echo "  VERDICT:   INVALID — $body_read_fails block-body read failures on a"

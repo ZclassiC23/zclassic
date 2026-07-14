@@ -1,185 +1,308 @@
-# Sovereign cutover runbook - replace the borrowed seed with the self-minted anchor
+# Sovereign cutover runbook — install the consensus-state bundle, cure the wedge
 
-**Status 2026-07-08.** The sovereign cure is ~95% in place. This is the exact,
-copy-prove-gated procedure to execute the last step when the mint finishes.
-The previous transient producer was stopped before publishing an artifact after
-review exposed that `-mint-anchor-fast` could still start normal runtime
-services before the one-shot driver. The current fix makes `-mint-anchor` an
-offline reducer driver: `app_init` returns before `app_init_services`, the eight
-stages are initialized without supervisor children, and shutdown uses
-`app_shutdown_offline`. A later producer run reached ~110k/3,056,758 and then
-OOM-killed before producing an artifact; `-mint-anchor` is now restart-safe via
-a checkpoint-bound `progress.kv` marker (`mint_anchor_in_progress_v1`) so a
-restart resumes a matching interrupted fold instead of resetting to genesis.
-On 2026-07-08, the resumed producer was diagnosed as torn: its coin frontier had
-advanced past a missing `utxo_apply_log` / `utxo_apply_delta` row. That datadir
-is preserved at `$HOME/.zclassic-c23-anchor-mint-torn-20260708-083231`, the
-current tree now refuses RAM flushes without reducer witness rows, and a fresh
-producer was relaunched from the stopped full-history source copy. The artifact
-is still pending. Monitor the fresh run with `zclassic23 anchorstatus`; do not
-cut over from a partial fold.
-Re-verify every file:line before acting; specifics rot.
+**Status 2026-07-14.** This supersedes the pre-bundle `-refold-from-anchor` /
+`utxo-anchor.snapshot` recipe that lived in this file through 2026-07-08 (that
+mechanism only ever carried transparent coins; it produced the exact
+`utxo_apply.anchor_backfill_gap` wedge the live node is stuck on today —
+empty shielded anchors below the reducer cursor with a positive activation
+boundary). The cure now flows through a **complete consensus-state bundle**
+(coins + Sprout/Sapling anchors + nullifiers, `history_complete=true`,
+`activation_boundary=0`) and a dedicated boot-time consumer flag,
+`-install-consensus-bundle=PATH`. `-refold-from-anchor` still exists in the
+binary and `tools/repro_on_copy.sh` still supports it (the sticky-escalator
+rung uses it until B4 lands — see `docs/work/tender-coral` lane notes /
+`project_always_synced_program_2026-07-13_night2` memory), but it is not the
+cutover path documented here: do not use it for the live wedge cure.
 
-## Where we are (the only remaining gate is the durable artifact, not code)
+Re-verify every fact below against the live node and current source before
+acting — heights, commits, and producer state rot fast in this repo.
 
-- **Parity blocker: RESOLVED** (`9fe9a8ee6`, ancestor of HEAD). `utxo_apply_delta.c:381` excludes
-  `script_is_unspendable` outputs + `:168-171` excludes the genesis block by hash — matching
-  zclassicd's `IsUnspendable()` (`script.h:132-136`) exactly. A genesis→anchor fold now reaches
-  `count==1,354,771` + the compiled SHA3 root, so `-mint-anchor`'s hard-assert
-  (`boot_mint_anchor.c:155-180`) passes instead of FATAL-ing.
-- **Cutover mechanism: wired but still copy-prove gated.** `-refold-from-anchor` →
-  `boot_refold_from_anchor_reset` (`boot_refold_staged.c:306-469`): SHA3-binds the snapshot to the
-  compiled checkpoint via `uss_open(verify_full_sha3=true)` *before any coin lands*, hard-asserts
-  `coins_kv_commitment==cp->sha3_hash` AND `count==1,354,771` (`:360-386`, `_exit` on mismatch),
-  resets the 8 stage cursors to anchor=3,056,758 + `coins_applied_height=anchor+1` (`:399-443`),
-  confirms the explicit fold body span is present, then re-folds anchor+1..tip over on-disk bodies.
-- **The missing piece: a durable, checkpoint-verified anchor snapshot at h=3,056,758.** It does NOT
-  exist yet. (`/tmp/utxo-anchor-3056758.snapshot` is MISLABELED - its header decodes to
-  height=3,151,901, count=1,344,817; the node rejects it on the count check. Do not use it.)
-- **The producer:** no durable artifact exists yet. The isolated mint datadir was
-  recreated from the stopped full-history copy
-  `$HOME/.zclassic-c23-COPY-20260701-113424-stall-3166384` and launched from
-  a clean `build/bin/zclassic23` built at `16c841ca8`, but that run OOM-killed
-  before completion. On a post-2026-07-03 binary, restart the same datadir with
-  `-mint-anchor`; current binaries make that offline path default to the
-  `coins_ram` in-RAM hot store (`-fold-inram` remains accepted and is shown
-  explicitly below for older binaries / operator clarity). The resume marker
-  logic will adopt the legacy interrupted fold only when `refold_in_progress`
-  is set and `coins_applied_height` is still within the genesis..anchor span.
-  Recreate the datadir only if you intentionally want to discard the partial
-  fold or the resume predicate refuses it:
-  ```bash
-  rm -rf $HOME/.zclassic-c23-anchor-mint
-  cp -a $HOME/.zclassic-c23-COPY-20260701-113424-stall-3166384/. \
-    $HOME/.zclassic-c23-anchor-mint/
-  rm -f $HOME/.zclassic-c23-anchor-mint/zclassic23.pid \
-    $HOME/.zclassic-c23-anchor-mint/.lock \
-    $HOME/.zclassic-c23-anchor-mint/.cookie
-  ```
-  Then launch the fixed offline producer as:
-  ```bash
-  systemd-run --user --unit=zclassic23-anchor-mint \
-    --property=WorkingDirectory=/home/rhett/github/zclassic23 \
-    --setenv=ZCL_MINT_ANCHOR_OUT=/home/rhett/.zclassic-c23-anchor-mint/utxo-anchor.snapshot \
-    /home/rhett/github/zclassic23/build/bin/zclassic23 \
-    -datadir=/home/rhett/.zclassic-c23-anchor-mint \
-    -nolegacyimport -mint-anchor -mint-anchor-fast -fold-inram -nobgvalidation
-  ```
-  On completion it writes the verified snapshot to
-  `$HOME/.zclassic-c23-anchor-mint/utxo-anchor.snapshot`. At 2026-07-01
-  14:03:45 UTC the active run reached `-refold-staged: staged reducer reset to
-  genesis OK`, `-mint-anchor-fast: OFFLINE FAST-MINT`,
-  `[boot] -mint-anchor: offline reducer stages initialized; skipping
-  frontend/P2P/runtime services`, and `[mint-anchor] driving the
-  genesis..3056758 fold; starting at applied-through=-1`. A negative journal
-  scan since the 14:00:18 UTC launch found no `p2p_services_start`,
-  peer-connection, RPC/frontend, API-cache, condition-engine, or
-  `ZClassic C23 node initialized` lines. At 14:05 UTC it was active at PID
-  `3160516`, memory was about 6.4 GB, the fold had emitted
-  `applied_height=0`, and no snapshot artifact existed yet.
+## The mechanism (for orientation — full contract in source)
 
-  **2026-07-03 update:** the resumed producer adopted the legacy interrupted
-  fold, advanced to `coins_applied_height=116000`, and was restarted with
-  `-fold-inram`; the journal confirmed `ZCL_FOLD_INRAM active` and the 115000
-  to 115999 UTXO batch committed. No verified anchor snapshot exists yet, so
-  the copy-prove and live cutover sections below remain blocked on the artifact.
+- **Producer side** (a separate lane; not this doc's scope): a `-mint-anchor`
+  fold that reaches the compiled checkpoint height (currently 3,056,758,
+  `lib/chain/src/checkpoints.c`) exports a `zcl.consensus_state_bundle.v1`
+  file to `<producer-datadir>/consensus-state-bundle-3056758.sqlite`
+  (`config/src/boot_mint_anchor.c:boot_mint_anchor_export_bundle`,
+  `config/include/config/boot.h:420-430`). The export is proof-bound to the
+  exact running binary (`running_binary_digest == SHA3(/proc/self/exe)`) and
+  refuses while the in-RAM fold overlay is live. The currently-running source
+  producer is the `zclassic23-mint-receipt` systemd --user unit, datadir
+  `$HOME/.zclassic-c23-mint-receipt` — confirm live status with
+  `systemctl --user status zclassic23-mint-receipt` and current fold cursor
+  via `zclassic23 anchorstatus` / `docs/HANDOFF.md`; do not assume the export
+  has happened without checking for the file.
+- **Consumer side** (this doc): `-install-consensus-bundle=PATH`
+  (`config/src/boot_install_consensus_bundle.c`, wired in `config/src/boot.c`
+  right after snapshot autodetect, contract in `config/include/config/boot.h`).
+  Steps, all fail-closed:
+  1. Containment — refuses on the canonical datadir (`~/.zclassic-c23`)
+     unless `ZCL_DEPLOY_ALLOW_CANONICAL` is set non-empty in the environment;
+     dev/copy datadirs proceed unconditionally.
+  2. Admits + strictly validates the immutable bundle file (recomputes the
+     UTXO root/count/supply, verifies every anchor tree→root, verifies the
+     nullifier digest).
+  3. Gates it through the publication compare-and-swap
+     (`consensus_state_publication_cas_run`) — must return `ADMIT` (artifact +
+     selected-chain + producer-source receipts all present and mutually
+     binding, durable frontier not behind the bundle). A decision record
+     (`consensus_state_publication_decision.v1`) is written to the datadir
+     regardless of outcome.
+  4. On `ADMIT`, atomically installs via
+     `consensus_state_snapshot_install_activate`: one `BEGIN IMMEDIATE`
+     transaction that clears the reducer-derived logs/deltas, replaces
+     `coins`, resets both anchor tables + the nullifier set to activation
+     cursor 0 (**complete history**, not the empty-table/positive-cursor
+     shape that caused the wedge), streams every coin/anchor/nullifier row
+     from the bundle, forces the 8 reducer stage cursors to the bundle height
+     (`coins_applied_height = height+1`, `tip_finalize` cursor `= height`),
+     sets `COINS_KV_MIGRATION_COMPLETE_KEY` + `COINS_KV_SELF_FOLDED_KEY`
+     (same provenance markers `coins_kv_is_proven_authority()` /
+     `coins_kv_contains_refold_marker()` read — G-SOV part 3 is satisfied the
+     same way a from-anchor refold satisfies it), clears any stale
+     `REDUCER_TRUSTED_BASE_*` declaration, and re-verifies the installed
+     UTXO root/count against the manifest **before** `COMMIT` (a mismatch
+     rolls the whole install back — nothing partially applies). Before the
+     transaction opens, it captures a **physically restorable prior
+     generation** of the progress store via `VACUUM main INTO
+     <datadir>/progress.kv.preinstall.<epoch>.<pid>` — see Rollback below.
+  5. **TERMINAL either way** — the process `_exit()`s after printing
+     `INSTALLED: -install-consensus-bundle: ...` (exit 0) or a typed
+     `REFUSED: -install-consensus-bundle: ...` (exit non-zero). It never
+     starts P2P/RPC/frontend services. A subsequent **normal** boot (no
+     `-install-consensus-bundle` flag) is required to actually fold forward
+     from the installed anchor to tip.
+  6. `ACTIVATE` refuses a bundle that is not a complete genesis-derived
+     history (`history_complete=false`, `activation_boundary!=0`, or any
+     nonzero shielded/nullifier source cursor) — mixed provenance (bundle
+     rows beside a still-borrowed set) is structurally impossible, not just
+     discouraged.
 
-  **2026-07-08 update:** the resumed datadir was not a trustworthy resume source.
-  `anchorstatus` plus direct SQLite probes showed `coins_applied_height=164001`
-  and `coins_ram_flushed_height=164000`, but no `utxo_apply_log[164000]` and no
-  `utxo_apply_delta[164000]`. It was moved to
-  `$HOME/.zclassic-c23-anchor-mint-torn-20260708-083231`. The current source adds
-  a richer `utxo_apply_probe`, refuses RAM flush advancement without reducer
-  witness rows, and replays from genesis when a mint/refold marker exists but the
-  RAM flush watermark is absent. The fresh producer was recreated from
-  `$HOME/.zclassic-c23-COPY-20260701-113424-stall-3166384` and relaunched at
-  08:33 UTC with the same `systemd-run` command above. At 08:50 UTC it was
-  active as PID `2475996`, memory about 3.7 GB, summary `mint_in_progress`,
-  stage cursors at `17000` for header/body-fetch front stages and `16000` for
-  UTXO apply/tip-finalize, history diagnosis
-  `utxo_apply_history_consistent`, and no snapshot artifact existed yet. Use
-  `build/bin/zclassic23-dev anchorstatus` for the current summary logic until
-  the release binary is refreshed. `coins_ram_flushed_height=-1` is expected
-  before the first RAM flush; avoid casual restarts before the first flush or
-  before the boot-reconcile fix is linked into the producer binary.
+## Preconditions (do not start the cutover before all of these hold)
 
-## Restart posture
+1. **The bundle artifact exists and is admissible.** Confirm
+   `<producer-datadir>/consensus-state-bundle-<anchor>.sqlite` is present
+   (currently expected at
+   `$HOME/.zclassic-c23-mint-receipt/consensus-state-bundle-3056758.sqlite`)
+   and non-empty. The install call re-validates it fully (root/count/supply,
+   every anchor tree, nullifier digest) — a bad copy is refused, not trusted —
+   but do not spend a copy-prove run on a file that is not even present.
+2. **The A3 consumer lane is merged to `main`** — `boot_install_consensus_bundle`,
+   `consensus_state_snapshot_install_activate`, and the `-install-consensus-bundle`
+   flag wiring in `config/src/boot.c` / `config/include/config/boot.h` must be
+   on the branch you build. Confirm with
+   `grep -n install_consensus_bundle config/include/config/boot.h` — the field
+   and the `boot_install_consensus_bundle()` declaration must both be present.
+3. **Gates green on that build.** `make build-only`, `make lint`, and
+   `make test-parallel` clean (`test_consensus_state_snapshot_install` in
+   particular — it has an ACTIVATE-mode leg that seeds a live progress store
+   into the exact `anchor_backfill_gap` wedge shape, proves a tampered bundle
+   and a non-`ADMIT` CAS decision both refuse and leave the wedge intact, and
+   proves a real `ADMIT` bundle installs atomically and cures it).
+4. **`tools/repro_on_copy.sh` supports `--install-consensus-bundle=PATH`** on
+   the checked-out tree (this lane's addition — verify with
+   `tools/repro_on_copy.sh --help 2>&1 | grep install-consensus-bundle` or by
+   reading the script header).
 
-`-mint-anchor` no longer blindly resets the fold to genesis on every boot. A
-fresh mint writes a checkpoint-bound `mint_anchor_in_progress_v1` blob after the
-genesis reset; a restart with the same compiled checkpoint and a sane
-`coins_applied_height` resumes from the existing `progress.kv` state, re-arms
-the anchor ceiling and optional `-mint-anchor-fast` crypto pass-through, and
-continues driving the fold. Older interrupted mints that predate the marker are
-adopted only when the durable `refold_in_progress` signal is set and the applied
-frontier is within the genesis..anchor span. A different checkpoint marker or a
-frontier past the anchor resets instead of inheriting stale state.
+## Copy-prove step (mandatory — never live surgery)
 
-The producer still uses a durable disk datadir and does not touch live main,
-soak, or `zclassicd`. A wrong resumed state still cannot publish: the terminal
-`coins_kv_commitment == compiled checkpoint SHA3` and `count == 1,354,771`
-hard-assert remains the trust gate, and a mismatch unlinks the artifact and
-FATALs.
+Gate on **H\* CLIMB**, never "the install call printed INSTALLED" — that call
+proves the install landed, not that the reducer can fold the ~124k blocks from
+the anchor to (and past) the live wedge on real bodies. The harness enforces
+this by construction: `--install-consensus-bundle` is a **two-phase** run —
+phase 1 is the terminal install call, phase 2 is a normal boot with the
+existing tip-watch loop — and phase 2 only starts if phase 1's log contains
+the literal `INSTALLED: -install-consensus-bundle:` banner and it exited 0.
 
-## Cutover procedure (run when `$HOME/.zclassic-c23-anchor-mint/utxo-anchor.snapshot` exists)
+```bash
+tools/repro_on_copy.sh sovereign-bundle-cutover \
+  --src=$HOME/.zclassic-c23 \
+  --full \
+  --expect-climb-past=3176325 \
+  --install-consensus-bundle=$HOME/.zclassic-c23-mint-receipt/consensus-state-bundle-3056758.sqlite \
+  --deadline=3600
+```
 
-NEVER live surgery. Copy-prove first, gate on **H\* CLIMB** (not "booted without FATAL" - that is the
-`-load-verify-boot` false-green trap: it no-ops on the stamped coins_kv because
-`coins_kv_is_proven_authority` returns true, `boot_refold_staged.c:884`).
+Notes:
+- `--expect-climb-past=3176325` is the **current live wedge height**, not the
+  bundle's own anchor height (3,056,758). The point of this gate is to prove
+  the forward fold actually clears the exact height the borrowed-seed path
+  got stuck on — re-derive this number fresh from `docs/HANDOFF.md` /
+  `zcl_state subsystem=reducer_frontier` before running; it rots.
+- `--full` is required (the forward fold reads on-disk block bodies); the
+  harness refuses `--install-consensus-bundle` on a `--light` copy.
+- `--deadline` bounds *both* phases: the install call (which should return in
+  seconds) and the subsequent tip-watch window. Size it for the expected
+  ~30–60 minute forward-fold window (see below) plus slack, not just the
+  install call.
+- The bundle PATH is resolved relative to `--src` if it lives under the live
+  datadir tree (rewritten onto the COPY, same rule `--like-live` uses for
+  datadir paths); an absolute path outside any datadir (e.g. the producer's
+  own datadir, as in the example above) is used verbatim and is **not**
+  copied — it is read directly from its real location, so it must stay
+  present and unchanged for the duration of the run.
+- This mode never sets `ZCL_DEPLOY_ALLOW_CANONICAL` — the COPY is never the
+  canonical datadir, so the install call's canonical-lane containment gate is
+  not exercised by copy-prove. That is expected; the live cutover run below
+  sets it explicitly.
 
-1. **Confirm the artifact is the real anchor** (the mint already hard-verified it at write; re-confirm):
-   - header height == 3,056,758, count == 1,354,771, body SHA3 == compiled `cp->sha3_hash` (`00e95dbd…`).
-2. **Stage it** (idempotent; the node re-verifies SHA3 before trusting — a bad copy is ignored):
+**Acceptance (all of G-SOV, not just a green exit code):**
+1. `H*` climbs strictly past 3,176,325 (or whatever the live wedge height is
+   at run time) toward the header tip. Watch via `getblockcount` (the harness
+   does this for you) and cross-check `zcl_state subsystem=reducer_frontier`
+   on a live probe of the copy's own RPC port.
+2. `coins_applied_height == H* + 1` at every observed step — no rowless span.
+   The decisive positive proof in-tree is
+   `test_reducer_forward_progress_gate.c` PART-1
+   (`ok && found && hstar==N && applied==N+1`).
+3. `coins_kv_is_proven_authority() == true` **and**
+   `coins_kv_contains_refold_marker() == true` on the copy after the run
+   (both markers are set by the ACTIVATE install itself — confirm via
+   `zcl_sql` `SELECT key FROM progress_meta WHERE key IN
+   ('coins_kv_migration_complete','coins_kv_self_folded')` or the equivalent
+   native `dumpstate` call, not by assumption).
+4. **Mirror same-height hash-agree:** cross-check the copy's block hash at
+   3,176,325 (or the live wedge height) and again at the copy's final climbed
+   tip against `zclassicd` (RPC 8232) or the soak/dev mirror nodes
+   (`:18242`/`:18252`, confirmed near-tip and NOT wedged per `docs/HANDOFF.md`).
+   A hash mismatch at either height is a hard stop — do not proceed to the
+   live cutover.
+5. No `download_queue_starved` escalation to `EV_OPERATOR_NEEDED` during the
+   climb (`zcl_self_heal_stats` / `zcl_conditions` on the copy), and no
+   finalized row at any height whose own upstream verdict was not `ok=1`
+   (`zcl_sql` over `tip_finalize_log` vs `utxo_apply_log`).
+
+Only a run that clears all five items is a PASS. `test_parallel` green on the
+candidate build is a regression floor, not evidence of any of the above.
+
+## Owner-gated cutover (live — only after copy-prove clears every item above)
+
+**NEVER run this against the canonical datadir until the copy-prove run
+above has passed.** The live node stays wedged and readable throughout most
+of this sequence; the only unavailable window is between step 2 and step 5.
+
+1. **Stop the live service** (the install call needs exclusive write access
+   to the live progress store; a running node holds it open):
    ```bash
-   ZCL_ANCHOR_SNAPSHOT_SRC=$HOME/.zclassic-c23-anchor-mint/utxo-anchor.snapshot make seed-anchor-snapshot
-   # copies to ~/.zclassic-c23/utxo-anchor.snapshot (NOT the mislabeled /tmp default)
+   systemctl --user stop zclassic23
    ```
-3. **Copy-prove on a COPY of the live datadir** (never the live PID first):
+2. **Build + install the current-`main` candidate binary.** `make deploy`
+   builds, installs the binary to the service's `ExecStart` path, and ends
+   with `systemctl --user restart zclassic23` — that restart is fine here
+   (it comes back up on the still-wedged state, a normal boot), but it means
+   you must stop the service again before the install call:
    ```bash
-   make repro-on-copy SLUG=soak-refold \
-     REPRO_SRC=$HOME/.zclassic-c23-soak \
-     REPRO_FULL=1 \
-     REPRO_CONNECT=<a_peer> \
-     CLIMB_PAST=3056758 \
-     ARGS='-refold-from-anchor -nobgvalidation -paramsdir=$$HOME/.zcash-params'
+   make deploy
+   systemctl --user stop zclassic23
    ```
-   - **GATE (H\* CLIMB):** `reducer_frontier_compute_hstar` / `getblockcount` (= H*) must climb
-     STRICTLY past 3,056,758 toward the active tip (~3,157,0xx), with
-     `coins_kv_get_applied_height == hstar+1` at every step (no rowless span). Confirm
-     `zcl_state subsystem=block_index`. The decisive positive proof is
-     `test_reducer_forward_progress_gate.c` PART-1 (`ok && found && hstar==N && applied==N+1`).
-   - The harness refuses `-refold-from-anchor` unless this is a full copy, the
-     climb gate is set, and an anchor snapshot candidate is reachable at
-     `$ZCL_MINT_ANCHOR_OUT` or `<src>/utxo-anchor.snapshot`. The boot path still
-     does the actual SHA3/count verification before trusting the file, and the
-     harness fails unless the copy log proves that verified MINTED snapshot was
-     loaded. It also requires observing H\* at/below the gate before crossing it;
-     a first observed tip already above the gate is not accepted.
-   - **Cross-check** the resulting block hash vs zclassicd (rpc 8232) at the anchor AND at tip.
-   - Confirm body contiguity (3,056,758..tip) first. The explicit boot path now calls
-     `boot_refold_body_span_contiguous` before reset/stamp, but this manual check keeps the
-     copy-prove failure mode obvious before a restart.
-4. **Flip the live node** only after the copy passes: swap the systemd drop-in from
-   `-load-snapshot-at-own-height=…utxo-seed-3156809.snapshot` to `-refold-from-anchor`, restart, and
-   re-confirm the H\* CLIMB gate live. Keep the old drop-in as the rollback.
+   Confirm the binary that will run the install call is the one just built:
+   `SERVICE_BIN=$(systemctl --user show zclassic23 -p ExecStart --value | sed -n 's/.*path=\([^ ;]*\).*/\1/p')`
+   then `"$SERVICE_BIN" -version` or equivalent build-identity check against
+   `git rev-parse HEAD`.
+3. **Run the one-shot install directly** (not via systemd — this call is
+   terminal and must not be treated as a normal service start):
+   ```bash
+   ZCL_DEPLOY_ALLOW_CANONICAL=1 "$SERVICE_BIN" \
+     -datadir=$HOME/.zclassic-c23 \
+     -install-consensus-bundle=$HOME/.zclassic-c23-mint-receipt/consensus-state-bundle-3056758.sqlite
+   ```
+   Require the literal `INSTALLED: -install-consensus-bundle:` line on stderr
+   and exit code 0 before proceeding. On any `REFUSED:` line, STOP — do not
+   retry with a different bundle file or with the containment gate defeated
+   by habit; diagnose the typed reason first (a stale/tampered bundle, a
+   non-`ADMIT` CAS decision, or a store error all print a specific message).
+   The install failing leaves the prior wedged state byte-for-state
+   unchanged (transactional; nothing partially applies).
+4. **Boot normally** (no `-install-consensus-bundle` flag — a second pass of
+   that flag is a no-op refusal path, not a resume mechanism):
+   ```bash
+   systemctl --user start zclassic23
+   ```
+   `-nobgvalidation` is not required for the forward fold to proceed (it only
+   gates the separate from-genesis background crypto-replay thread), but
+   operators have historically paired it with the immediate post-cutover
+   window to keep CPU headroom on the reducer; re-enable full background
+   validation once the node holds at tip if it was disabled.
+5. **Expect a ~124k-block forward refold, ~30–60 minutes**, folding
+   anchor+1 (3,056,759) through on-disk block bodies to the current header
+   tip. Re-derive the actual block count fresh at execution time
+   (`current header tip − 3,056,758`) rather than trusting this figure — the
+   chain has grown since this was written. Watch progress with
+   `zclassic23 status`, `zcl_state subsystem=reducer_frontier`, and
+   `zclassic23 anchorstatus`.
+6. **Verification (same G-SOV items as copy-prove, now against the live
+   node):** `H*` climbs strictly past 3,176,325 and keeps advancing;
+   `coins_applied_height == H*+1` throughout; `coins_kv_is_proven_authority()`
+   and `coins_kv_contains_refold_marker()` both true; the served block hash at
+   3,176,325 and at the new live tip hash-agrees with `zclassicd` (RPC 8232)
+   and with the soak/dev mirrors; no `download_queue_starved` escalation
+   during the climb. Do not declare the cutover done on "booted without
+   FATAL" — that is exactly the false-green trap `-load-verify-boot` has
+   historically hit (it no-ops once `coins_kv_is_proven_authority()` is true).
+7. Update `docs/HANDOFF.md` with the new live H\* and confirm the wedge
+   condition (`utxo_apply.anchor_backfill_gap`) has cleared in
+   `zcl_conditions` / `zcl_self_heal_stats`.
 
-## The subtraction (delete the borrowed loader — the payoff)
+## Rollback
 
-Once the live node runs on the self-minted anchor, delete the borrowed-seed producers
-(per `archive/sync-fix-plan-2026-06-21.md` "Deletable LOC"; ~400 LOC deletable immediately):
+The install captured a physically restorable prior generation of the progress
+store **before** the transaction opened, named in the `INSTALLED:` banner and
+recorded in the decision record: `<datadir>/progress.kv.preinstall.<epoch>.<pid>`
+(a standalone `VACUUM main INTO` copy of the committed state as it stood
+immediately before the install). To roll back after a committed install that
+turns out to be bad (e.g. the post-install forward fold surfaces a new
+consensus-parity divergence, not caught by copy-prove):
 
-- `utxo_recovery_restore.c:369-371` `coins_kv_seed_from_node_db` bulk-copy + `:381-384` cold-import seed.
-- `utxo_recovery_restore.c:240-242` `utxo_recovery_commit_tip(..., frontier_exempt=true)` (the only
-  production call passing `true`) + `:252-254`. **CONSENSUS-PARITY-FLAGGED, parity-RESTORING.**
-- `block_index_loader_rebuild.c:534-768` `block_index_loader_seed_stages_from_cold_import` + helper
-  `:500-532` + defines `:486-488` + the boot fallback `boot_services.c:1524-1526` (~270 LOC).
-- `utxo_recovery_seed_provenance.c` cold-import-seed writers (~90 LOC; KEEP `clear_cold_import_seed`).
+1. **Stop the live service:**
+   ```bash
+   systemctl --user stop zclassic23
+   ```
+2. **Preserve the failed post-install state for diagnosis** before
+   overwriting anything:
+   ```bash
+   cp -a $HOME/.zclassic-c23/progress.kv \
+     $HOME/.zclassic-c23/progress.kv.failed-install-$(date +%Y%m%d-%H%M%S)
+   ```
+3. **Swap the prior-generation bytes back** (the exact file the install
+   printed as `prior_generation_path`, not a guess at the naming pattern —
+   confirm it with `ls $HOME/.zclassic-c23/progress.kv.preinstall.*` if the
+   banner output was not preserved):
+   ```bash
+   cp -a $HOME/.zclassic-c23/progress.kv.preinstall.<epoch>.<pid> \
+     $HOME/.zclassic-c23/progress.kv
+   rm -f $HOME/.zclassic-c23/progress.kv-wal $HOME/.zclassic-c23/progress.kv-shm
+   ```
+4. **Boot normally and re-confirm the pre-install state** (the old wedge, at
+   `H*=3,176,325` on `utxo_apply.anchor_backfill_gap`, or wherever it was)
+   before deciding on a next attempt:
+   ```bash
+   systemctl --user start zclassic23
+   ```
+5. This is a genuine rollback of the progress store only — it does not touch
+   `coins`/anchor/nullifier data living in other files, and `VACUUM INTO`
+   backups are not deleted automatically. Clean up old
+   `progress.kv.preinstall.*` files by hand once an install is confirmed
+   good and stable at tip; they are not tracked or pruned by any code path.
 
-A further ~2,930 LOC production (the seed-tear coin-backfill engine) is deletable AFTER the cutover
-clears the **replay gate** against the real chain (h=478544 doctrine) + the STEP-1 polarity inversion.
+## Standing rule
 
-## Optional follow-on (not required for the explicit-flag cutover)
+**`-install-consensus-bundle=PATH` is the ONE install path, not a
+one-time cure script.** It is exercised by three overlapping needs, all
+through the same code and the same copy-prove discipline documented above:
 
-`boot_refold_from_anchor_arm_default` does not exist yet (grep-confirmed). Making `-refold-from-anchor`
-the cold-start DEFAULT (sync-fix-plan STEP 1) is a small separate change that enables the deletion of
-the torn-detect gate — do it AFTER the live cutover is proven, not before.
+- **The sovereign cure** (this doc) — install a genesis-derived complete
+  bundle to replace the borrowed transparent-only seed and clear
+  `utxo_apply.anchor_backfill_gap` permanently.
+- **A sticky-escalator ladder rung** — a future rung that needs to re-seed a
+  stalled or corrupted node from a known-good, self-derived bundle rather
+  than re-deriving from genesis on the affected node itself (faster
+  recovery; the bundle is the transportable unit).
+- **Boot-restore after a catastrophic local-state loss** — same install call,
+  same containment gate, same G-SOV acceptance bar, run against a fresh or
+  reset datadir instead of a wedged one.
+
+Any future caller of this mechanism (autonomous or operator-invoked) MUST
+still clear copy-prove + all of G-SOV before touching a canonical datadir —
+the containment gate (`ZCL_DEPLOY_ALLOW_CANONICAL`) makes the canonical case
+opt-in, but it is not a substitute for the copy-prove step; it only stops an
+*accidental* canonical install, not an unproven one deliberately opted in.
