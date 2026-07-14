@@ -1,0 +1,49 @@
+/* Canonical condition registration order.
+ *
+ * Consumers define ZCL_CONDITION(name) before including this file.  Keep this
+ * data-only: the same entries generate declarations, calls, and regression
+ * expectations so those surfaces cannot drift apart. */
+
+#ifndef ZCL_CONDITION
+#error "define ZCL_CONDITION(name) before including condition_registry.def"
+#endif
+
+ZCL_CONDITION(block_failed_mask_at_tip)
+ZCL_CONDITION(contradiction_frozen)
+ZCL_CONDITION(chain_integrity_failed)
+ZCL_CONDITION(utxo_activation_paused)
+ZCL_CONDITION(utxo_drift_detected)
+ZCL_CONDITION(header_stall_at_height)
+ZCL_CONDITION(sync_state_stuck)
+ZCL_CONDITION(download_queue_starved)
+ZCL_CONDITION(local_header_refill_needed)
+ZCL_CONDITION(peer_floor_violated)
+ZCL_CONDITION(sync_violation_lag)
+ZCL_CONDITION(tip_wedged_resnapshot)
+ZCL_CONDITION(snapshot_receive_stalled)
+ZCL_CONDITION(snapshot_offer_ready)
+ZCL_CONDITION(snapshot_negotiation_stalled)
+ZCL_CONDITION(snapshot_failed_reset)
+ZCL_CONDITION(snapshot_complete_resume)
+ZCL_CONDITION(body_fetch_missing_have_data)
+ZCL_CONDITION(have_data_unreadable)
+ZCL_CONDITION(orphan_utxo_above_tip)
+ZCL_CONDITION(tip_fork_stale)
+ZCL_CONDITION(tip_stall_oracle_rebuild)
+ZCL_CONDITION(stale_validate_headers_repair)
+ZCL_CONDITION(reducer_frontier_reconcile_light)
+ZCL_CONDITION(tip_label_divergence)
+ZCL_CONDITION(state_window_inconsistent)
+ZCL_CONDITION(mirror_divergence_located)
+ZCL_CONDITION(replay_canary_failed)
+ZCL_CONDITION(disk_full_pause)
+ZCL_CONDITION(clock_skew_reconcile)
+ZCL_CONDITION(sapling_anchor_frontier_unavailable)
+ZCL_CONDITION(blocker_stall_meta_detector)
+ZCL_CONDITION(reducer_drive_watchdog)
+ZCL_CONDITION(stage_step_budget_exceeded)
+ZCL_CONDITION(sync_rate_below_floor)
+ZCL_CONDITION(batch_fsync_slow)
+ZCL_CONDITION(net_tip_regression)
+ZCL_CONDITION(net_fork_detected)
+ZCL_CONDITION(net_partition_suspected)

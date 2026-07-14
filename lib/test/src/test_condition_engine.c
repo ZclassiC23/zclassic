@@ -71,20 +71,6 @@ static void reset_fixture(void)
     atomic_store(&g_operator_events, 0);
 }
 
-static bool ce_json_conditions_has(const struct json_value *conditions,
-                                   const char *name)
-{
-    if (!conditions || !name)
-        return false;
-    for (size_t i = 0; i < json_size(conditions); i++) {
-        const struct json_value *cond = json_at(conditions, i);
-        const struct json_value *n = cond ? json_get(cond, "name") : NULL;
-        if (n && strcmp(json_get_str(n), name) == 0)
-            return true;
-    }
-    return false;
-}
-
 static const struct json_value *ce_json_condition(
     const struct json_value *conditions,
     const char *name)
@@ -485,53 +471,28 @@ int test_condition_engine(void)
         const struct json_value *conditions = json_get(&out, "conditions");
         const struct json_value *registered = json_get(&out,
                                                        "registered_count");
-        static const char *expected[] = {
-            "block_failed_mask_at_tip",
-            "contradiction_frozen",
-            "chain_integrity_failed",
-            "utxo_activation_paused",
-            "utxo_drift_detected",
-            "header_stall_at_height",
-            "sync_state_stuck",
-            "download_queue_starved",
-            "local_header_refill_needed",
-            "peer_floor_violated",
-            "sync_violation_lag",
-            "tip_wedged_resnapshot",
-            "snapshot_receive_stalled",
-            "snapshot_offer_ready",
-            "snapshot_negotiation_stalled",
-            "snapshot_failed_reset",
-            "snapshot_complete_resume",
-            "body_fetch_missing_have_data",
-            "have_data_unreadable",
-            "orphan_utxo_above_tip",
-            "tip_fork_stale",
-            "tip_stall_oracle_rebuild",
-            "stale_validate_headers_repair",
-            "reducer_frontier_reconcile_light",
-            "tip_label_divergence",
-            "state_window_inconsistent",
-            "mirror_divergence_located",
-            "replay_canary_failed",
-            "disk_full_pause",
-            "clock_skew_reconcile",
-            "sapling_anchor_frontier_unavailable",
-            "blocker_stall_meta_detector",
-            "reducer_drive_watchdog",
-            "stage_step_budget_exceeded",
-            "sync_rate_below_floor",
-            "batch_fsync_slow",
-            "net_tip_regression",
-            "net_fork_detected",
-            "net_partition_suspected",
+        static const char *const expected[] = {
+#define ZCL_CONDITION(name) #name,
+#include "conditions/condition_registry.def"
+#undef ZCL_CONDITION
         };
-        const int expected_count =
-            (int)(sizeof(expected) / sizeof(expected[0]));
+        _Static_assert(CONDITION_REGISTRY_COUNT == 39,
+                       "condition registry must contain exactly 39 entries");
+        _Static_assert(sizeof(expected) / sizeof(expected[0]) ==
+                           CONDITION_REGISTRY_COUNT,
+                       "condition registry name/count drift");
+        const int expected_count = CONDITION_REGISTRY_COUNT;
         ok = ok && registered && json_get_int(registered) == expected_count;
         ok = ok && conditions && json_size(conditions) == (size_t)expected_count;
-        for (size_t i = 0; i < sizeof(expected) / sizeof(expected[0]); i++)
-            ok = ok && ce_json_conditions_has(conditions, expected[i]);
+        for (size_t i = 0; i < (size_t)expected_count; i++) {
+            const struct json_value *condition = json_at(conditions, i);
+            const struct json_value *name = condition
+                                                ? json_get(condition, "name")
+                                                : NULL;
+            ok = ok && name && strcmp(json_get_str(name), expected[i]) == 0;
+            for (size_t j = i + 1; j < (size_t)expected_count; j++)
+                ok = ok && strcmp(expected[i], expected[j]) != 0;
+        }
         ok = ok &&
              condition_engine_has_registered("body_fetch_missing_have_data");
         ok = ok &&

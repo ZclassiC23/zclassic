@@ -145,10 +145,10 @@ EOF
     echo "wrote $out"
     cat <<EOF
 
-NEXT — wire it into the condition registry (one declaration + one call):
-  app/conditions/src/condition_registry.c
-    add:  void register_${NAME}(void);
-    and:  register_${NAME}();   (inside condition_registry_register_all)
+NEXT — add one ordered manifest row (it generates declaration, registration,
+and regression expectations):
+  app/conditions/include/conditions/condition_registry.def
+    add:  ZCL_CONDITION(${NAME})
 EOF
 }
 
