@@ -38,6 +38,7 @@ CALLS="$TMP/calls"
 export QUALITY_GUARD_CALLS="$CALLS"
 export ZCL_QUALITY_STATE_DIR="$TMP/state"
 export ZCL_QUALITY_LOG_KEEP=4
+export ZCL_QUALITY_LOG_MAX_BYTES=1048576
 export PATH="$TMP/bin:/usr/bin:/bin"
 
 for i in $(seq -w 1 12); do
@@ -65,6 +66,18 @@ grep -q 'SKIP lane=coverage reason=mint_query_failed' "$TMP/fail.out"
 [ -L "$TMP/state/logs/fuzz-symlink.log" ]
 grep -q '"status":"fixture"' "$TMP/state/status/fuzz.json"
 
+# Count is below KEEP, but aggregate bytes exceed the lane cap. Sparse files
+# make the size policy hermetic without writing megabytes. The newest verdict
+# must survive even when it alone is larger than the cap.
+for i in 1 2 3; do
+    log="$TMP/state/logs/coverage-2026-07-14T0${i}0000Z.log"
+    truncate -s 600000 "$log"
+    touch -d "2026-07-14 01:0$i:00 UTC" "$log"
+done
+"$TMP/scripts/quality_log_retention.sh" coverage
+[ "$(find "$TMP/state/logs" -maxdepth 1 -type f -name 'coverage-*.log' | wc -l)" -eq 1 ]
+[ -f "$TMP/state/logs/coverage-2026-07-14T030000Z.log" ]
+
 FAKE_SYSTEMCTL_MODE=inactive "$GUARD" tests
 grep -qx 'background:tests' "$CALLS"
 
@@ -81,5 +94,12 @@ grep -Fq 'quality_job_guard.sh fuzz' "$ROOT/deploy/zclassic23-fuzz.service"
 grep -Fq 'quality_job_guard.sh tests' "$ROOT/deploy/zclassic23-test-suite.service"
 grep -Fq 'quality_job_guard.sh coverage' "$ROOT/deploy/zclassic23-coverage.service"
 grep -Fq 'quality_job_guard.sh simnet-nightly' "$ROOT/deploy/zclassic23-simnet-nightly.service"
+
+set +e
+ZCL_QUALITY_LOG_MAX_BYTES=0 "$TMP/scripts/quality_log_retention.sh" fuzz \
+    > "$TMP/invalid-bytes.out" 2>&1
+rc=$?
+set -e
+[ "$rc" -eq 64 ]
 
 echo 'quality-job-guard selftest: PASS'

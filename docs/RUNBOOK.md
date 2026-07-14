@@ -24,9 +24,10 @@ longer `make simnet-fuzz-sweep` seed tail, both driven by
 The installed fuzz/test/coverage/simnet services enter through
 `tools/scripts/quality_job_guard.sh`. They clean-skip when any active user
 service name contains `mint`, leaving the last verdict untouched, and retain
-the newest eight dated logs per lane (`ZCL_QUALITY_LOG_KEEP` overrides the
-count). A failed mint-state query also skips rather than guessing that the host
-is idle.
+the newest eight dated logs per lane, bounded to 1 GiB total per lane while
+always preserving the newest verdict (`ZCL_QUALITY_LOG_KEEP` and
+`ZCL_QUALITY_LOG_MAX_BYTES` override those limits). A failed mint-state query
+also skips rather than guessing that the host is idle.
 
 Not installed by default (owner-gated deploy step). To enable:
 

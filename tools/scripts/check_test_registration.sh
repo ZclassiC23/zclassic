@@ -35,6 +35,43 @@
 # (convention drift) aborts — we never report "clean" off a broken scan.
 set -euo pipefail
 
+validate_unique_registrations() {
+    local registered_raw="$1"
+    local source_label="$2"
+    local duplicates
+
+    duplicates=$(printf '%s\n' "$registered_raw" | sort | uniq -d)
+    if [ -z "$duplicates" ]; then
+        return 0
+    fi
+
+    echo "FAIL: duplicate TEST_LIST registration(s) in $source_label:" >&2
+    while IFS= read -r name; do
+        [ -n "$name" ] && echo "    X($name)" >&2
+    done <<< "$duplicates"
+    echo "  Each parallel test group must have one canonical row." >&2
+    return 1
+}
+
+# Keep the duplicate detector from becoming a decorative check: prove its
+# positive and negative controls on every gate run before trusting it on the
+# real registry. This is pure string processing and never mutates the tree.
+if ! validate_unique_registrations $'alpha\nbeta' '<selftest-clean>' \
+        >/dev/null 2>&1; then
+    echo "check_test_registration: FATAL — uniqueness selftest rejected clean input" >&2
+    exit 2
+fi
+set +e
+uniqueness_selftest_out=$(validate_unique_registrations \
+    $'alpha\nbeta\nalpha' '<selftest-duplicate>' 2>&1)
+uniqueness_selftest_rc=$?
+set -e
+if [ "$uniqueness_selftest_rc" -ne 1 ] || \
+   ! grep -qF 'X(alpha)' <<< "$uniqueness_selftest_out"; then
+    echo "check_test_registration: FATAL — uniqueness negative control failed" >&2
+    exit 2
+fi
+
 cd "$(dirname "$0")/../.."
 
 TEST_DIR="lib/test/src"
@@ -59,7 +96,16 @@ if [ "$awkrc" -ne 0 ]; then
     echo "check_test_registration: FATAL — awk failed slicing TEST_LIST from $PARALLEL" >&2
     exit 2
 fi
-registered=$(printf '%s\n' "$reg_block" | grep -oE 'X\([a-zA-Z0-9_]+\)' | sed -E 's/^X\((.*)\)$/\1/' | sort -u)
+registered_raw=$(printf '%s\n' "$reg_block" | grep -oE 'X\([a-zA-Z0-9_]+\)' | sed -E 's/^X\((.*)\)$/\1/')
+
+# A duplicate row runs the same group twice, inflates the advertised group
+# count, and can hide the absence of a genuinely distinct test behind a green
+# total. Check the raw list before de-duplicating it for membership lookups.
+if ! validate_unique_registrations "$registered_raw" "$PARALLEL"; then
+    exit 1
+fi
+
+registered=$(printf '%s\n' "$registered_raw" | sort -u)
 
 # FAIL-LOUD floor: TEST_LIST must yield a non-trivial set, else the slice or
 # macro shape drifted and a real orphan could slip through a tiny scan.

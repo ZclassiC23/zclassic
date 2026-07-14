@@ -1314,8 +1314,9 @@ push or AI edit loop.
 - All four heavyweight timer services (including simnet nightly) enter through
   `tools/scripts/quality_job_guard.sh`: an active `*mint*` service or an
   unavailable mint-state query clean-skips without replacing the prior
-  verdict. The guard retains the newest eight dated logs per lane; override
-  with `ZCL_QUALITY_LOG_KEEP`.
+  verdict. The guard retains the newest eight dated logs per lane and at most
+  1 GiB total per lane while always preserving the newest verdict; override
+  with `ZCL_QUALITY_LOG_KEEP` / `ZCL_QUALITY_LOG_MAX_BYTES`.
 - `make quality-linger-status` prints timer status plus the latest
   `zcl.background_quality_status.v1` JSON verdict.
 - `zclassic23 agentbuild` exposes the same lane verdict files through

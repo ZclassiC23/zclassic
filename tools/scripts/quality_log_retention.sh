@@ -11,6 +11,7 @@ LANE="${1:-}"
 STATE_ROOT="${ZCL_QUALITY_STATE_DIR:-${XDG_STATE_HOME:-${HOME:-/tmp}/.local/state}/zclassic23-quality}"
 LOG_DIR="$STATE_ROOT/logs"
 KEEP="${ZCL_QUALITY_LOG_KEEP:-8}"
+MAX_BYTES="${ZCL_QUALITY_LOG_MAX_BYTES:-1073741824}"
 
 usage() {
     echo "usage: quality_log_retention.sh <fuzz|tests|coverage|simnet-nightly|all>" >&2
@@ -18,6 +19,11 @@ usage() {
 
 if ! [[ "$KEEP" =~ ^[0-9]+$ ]] || [ "$KEEP" -lt 1 ] || [ "$KEEP" -gt 64 ]; then
     echo "quality-log-retention: invalid ZCL_QUALITY_LOG_KEEP=$KEEP (expected 1..64)" >&2
+    exit 64
+fi
+if ! [[ "$MAX_BYTES" =~ ^[0-9]+$ ]] || [ "$MAX_BYTES" -lt 1 ] || \
+        [ "$MAX_BYTES" -gt 68719476736 ]; then
+    echo "quality-log-retention: invalid ZCL_QUALITY_LOG_MAX_BYTES=$MAX_BYTES (expected 1..68719476736)" >&2
     exit 64
 fi
 
@@ -28,7 +34,7 @@ fi
 prune_lane() {
     local lane="$1"
     local -a matches=() files=()
-    local oldest_idx i file deleted=0
+    local oldest_idx i file deleted=0 total_bytes=0 file_bytes
 
     shopt -s nullglob
     case "$lane" in
@@ -47,10 +53,19 @@ prune_lane() {
         [ -f "$file" ] && [ ! -L "$file" ] && files+=("$file")
     done
 
-    # Repeatedly remove the oldest regular file.  The service manager keeps a
-    # lane singleton, so the newest file is the current/latest verdict log.
+    # Count limits alone are insufficient for fuzz output: eight completed
+    # logs once consumed 5.2 GB. Bound each lane's logical bytes as well,
+    # deleting oldest-first while always preserving its newest verdict log.
     # Symlinks and non-regular entries were filtered above and are untouched.
-    while [ "${#files[@]}" -gt "$KEEP" ]; do
+    for file in "${files[@]}"; do
+        if ! file_bytes=$(stat -c %s -- "$file"); then
+            echo "quality-log-retention: stat failed lane=$lane file=$file" >&2
+            return 1
+        fi
+        total_bytes=$((total_bytes + file_bytes))
+    done
+    while [ "${#files[@]}" -gt "$KEEP" ] || \
+          { [ "${#files[@]}" -gt 1 ] && [ "$total_bytes" -gt "$MAX_BYTES" ]; }; do
         oldest_idx=-1
         for i in "${!files[@]}"; do
             if [ "$oldest_idx" -lt 0 ] \
@@ -60,20 +75,23 @@ prune_lane() {
                 oldest_idx="$i"
             fi
         done
-
         if [ "$oldest_idx" -lt 0 ]; then
             echo "quality-log-retention: internal oldest-log selection failed lane=$lane" >&2
             return 1
         fi
-
+        if ! file_bytes=$(stat -c %s -- "${files[$oldest_idx]}"); then
+            echo "quality-log-retention: stat failed lane=$lane file=${files[$oldest_idx]}" >&2
+            return 1
+        fi
         rm -f -- "${files[$oldest_idx]}"
+        total_bytes=$((total_bytes - file_bytes))
         unset 'files[oldest_idx]'
         files=("${files[@]}")
         deleted=$((deleted + 1))
     done
 
     if [ "$deleted" -gt 0 ]; then
-        echo "quality-log-retention: lane=$lane deleted=$deleted keep=$KEEP"
+        echo "quality-log-retention: lane=$lane deleted=$deleted keep=$KEEP max_bytes=$MAX_BYTES"
     fi
 }
 
