@@ -190,7 +190,10 @@ datadir) and **GCT — Global Convergence Time** (a forked node → canonical, u
   human, a flag, or `$HOME/.zclassic`.** v1 sticky-gate: AAR 100% on the matrix in CI.
 - G-SOV green is a hard sub-gate of every row (recovered AND sovereign, not borrowed).
 
-## 5. WHAT CHANGES vs current detective-forward-plan.md
+## 5. WHAT CHANGES vs the dated detective plan
+
+The removed plan's dated verdict and commits are retained in the
+[archive evidence ledger](INDEX.md).
 
 - **Prime goal flips:** T (time-to-self-verified-tip) → MTTUR/AAR (unattended recovery).
   Detective re-derivation stays the mechanism; "always-terminating remedy" becomes the law.

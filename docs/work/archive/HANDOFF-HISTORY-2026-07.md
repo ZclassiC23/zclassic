@@ -69,9 +69,9 @@ W3 (delete the MCP server), executing from
 [`docs/work/MCP-REMOVAL-WORKLIST.md`](work/MCP-REMOVAL-WORKLIST.md) (the
 authoritative 114-site inventory; plan prose is
 [`docs/work/MCP-REMOVAL-PLAN.md`](work/MCP-REMOVAL-PLAN.md)). Session detail:
-[`docs/work/archive/SESSION-HANDOFF-2026-07-11-ZERO-MCP.md`](work/archive/SESSION-HANDOFF-2026-07-11-ZERO-MCP.md)
+[`archive evidence ledger`](INDEX.md)
 (W0+W1-A) and
-[`docs/work/archive/SESSION-HANDOFF-2026-07-11-W1BC.md`](work/archive/SESSION-HANDOFF-2026-07-11-W1BC.md)
+[`archive evidence ledger`](INDEX.md)
 (W1-B/C hot-swap re-target — written pre-merge from a worktree, since merged
 to `main` per the commit above).
 
@@ -183,13 +183,13 @@ standing fact.
 
 ## Prior handoffs (history — read for context, not current state)
 
-> **▶ NEXT DEV START HERE (latest): [`docs/work/archive/SESSION-HANDOFF-2026-07-11-W1BC.md`](work/archive/SESSION-HANDOFF-2026-07-11-W1BC.md)**
+> **▶ 2026-07-11 W1-B/C evidence: [`archive evidence ledger`](INDEX.md)**
 > — 2026-07-11 zero-MCP W1-B/C: re-targeted Tier-1 hot-swap onto the command
 > registry (mechanism doc `docs/work/HOTSWAP.md` §"Zero-MCP re-target");
 > landed on `main` at `88b4e1030`. Next: W2 (47 call sites) + W3 (delete the
 > MCP server) per `docs/work/MCP-REMOVAL-WORKLIST.md`.
 >
-> **▶ NEXT DEV START HERE: [`docs/work/archive/SESSION-HANDOFF-2026-07-11-ZERO-MCP.md`](work/archive/SESSION-HANDOFF-2026-07-11-ZERO-MCP.md)**
+> **▶ 2026-07-11 W0/W1-A evidence: [`archive evidence ledger`](INDEX.md)**
 > — 2026-07-11 zero-MCP W0+W1-A (program start): re-homed MCP handler
 > composition to `app/controllers` (bridge is router-free) and landed the
 > kernel handler-snapshot, gated by `make lint` + full `make test-parallel`
@@ -197,14 +197,14 @@ standing fact.
 > program) and `docs/work/MCP-REMOVAL-WORKLIST.md` (the authoritative
 > 114-site execution inventory).
 >
-> **▶ PRIOR: [`docs/work/archive/SESSION-HANDOFF-2026-07-10-OPERATOR-SNAPSHOT.md`](work/archive/SESSION-HANDOFF-2026-07-10-OPERATOR-SNAPSHOT.md)**
+> **▶ 2026-07-10 operator-snapshot evidence: [`archive evidence ledger`](INDEX.md)**
 > — target-owned native operator truth, fail-closed MCP projection, durable
 > chain/peer/blocker/condition evidence, focused regression proof, and the P0
 > plan for a JavaScript-like C dev watcher with transactional last-good rollback.
 > **No canonical deploy/restart was performed; existing Wave 3 copy-prove and
 > owner gates remain in force.**
 >
-> **▶ NEXT DEV START HERE: [`docs/work/archive/SESSION-HANDOFF-2026-07-10-WAVE3.md`](work/archive/SESSION-HANDOFF-2026-07-10-WAVE3.md)**
+> **▶ 2026-07-10 Wave 3 evidence: [`archive evidence ledger`](INDEX.md)**
 > — 2026-07-10 Detective Wave 3 ("always strongly syncing to tip"): diagnosed + cured the
 > live P0 (empty Sapling anchor-frontier stall — the node held 216 blocks behind headers
 > for 4.6h with no auto-remedy), extended SHA3 golden windows to h=3,175,999 (+ fixed a
@@ -215,7 +215,7 @@ standing fact.
 > Lane 5 (zcl_agent_test MCP runner + _health sweep) may still need merging; Lane 2
 > (at-tip meta-detector) approved but not started.
 >
-> **▶ PRIOR: [`docs/work/archive/SESSION-HANDOFF-2026-07-10-DETECTIVE.md`](work/archive/SESSION-HANDOFF-2026-07-10-DETECTIVE.md)**
+> **▶ 2026-07-10 detective-wave evidence: [`archive evidence ledger`](INDEX.md)**
 > — 2026-07-10 detective-node reliability wave: local `main` `3b0de63b0` → `82c128c62`
 > (26 commits). Landed 7 lanes — rung-3 runtime refold (escalator terminal rung),
 > row-absent rowless-hole detector, P2P header-repair fallback (oracle-dead
@@ -225,7 +225,7 @@ standing fact.
 > (on-branch, unmerged). Follow-ups: boundary-root backfill gap (blocks ladder
 > population), Groth16 spend stages b-d, live copy-proves, Track-B/C wave 2.
 >
-> **▶ PRIOR: [`docs/work/archive/SESSION-HANDOFF-2026-07-10-P2P.md`](work/archive/SESSION-HANDOFF-2026-07-10-P2P.md)**
+> **▶ 2026-07-10 P2P/prover evidence: [`archive evidence ledger`](INDEX.md)**
 > — 2026-07-10 P2P-services + Groth16-cure wave: `origin/main` @ `720547d73`.
 > Landed the librustzcash proving bridge (interim, C23-verifier-gated), the full
 > t→z shielded path, Lane C merge, simnet_fuzz, examples 1–11, ZNAM write RPCs.
@@ -235,7 +235,7 @@ standing fact.
 > the wallet-P0 lock-holder fix. Shipped code MUST be C23; Zcash is an
 > attributed oracle, never linked.
 >
-> **▶ PRIOR: [`docs/work/archive/SESSION-HANDOFF-2026-07-09-CODEX.md`](work/archive/SESSION-HANDOFF-2026-07-09-CODEX.md)**
+> **▶ 2026-07-09 stabilization evidence: [`archive evidence ledger`](INDEX.md)**
 > — stabilization handoff: durable shielded anchors, Sapling proving self-test,
 > wallet/mempool safety, operator-truth sync fixes, and vendor provenance gates.
 > **Deployment is on HOLD** pending the historical anchor backfill and the
@@ -250,7 +250,7 @@ standing fact.
 > required by embedded Tor. Never hand-author/adopt provenance stamps. No node
 > or live datadir was touched.
 >
-> **▶ NEXT DEV START HERE: [`docs/work/archive/SESSION-HANDOFF-2026-07-09-LATE.md`](work/archive/SESSION-HANDOFF-2026-07-09-LATE.md)**
+> **▶ 2026-07-09 late-session evidence: [`archive evidence ledger`](INDEX.md)**
 > — 2026-07-09 late handoff: `origin/main` at **`7fa940ac2`**. Shipped
 > **simnet_wire steps A + B** (the deterministic in-memory adversarial P2P
 > wire-simulation harness) + four hardening/DRY lanes + a sticky-escalator
@@ -262,18 +262,18 @@ standing fact.
 > transition. Note: the Codex *plugin* is gone but the **codex CLI is in active
 > use** via Haiku subagents. Verify live state before trusting any doc.
 >
-> **▶ PRIOR: [`docs/work/archive/SESSION-HANDOFF-2026-07-09-EVENING.md`](work/archive/SESSION-HANDOFF-2026-07-09-EVENING.md)**
+> **▶ 2026-07-09 evening evidence: [`archive evidence ledger`](INDEX.md)**
 > — 2026-07-09 evening handoff: `main` at the merge of `dry/coins-record-codec`
 > + `security/nullifier-backfill`, the IO-harness design
 > (`docs/work/io-harness-design.md`) and next-wave plan
 > (`docs/work/archive/next-wave-plan.md`).
 >
-> **▶ PRIOR: [`docs/work/archive/SESSION-HANDOFF-2026-07-09.md`](work/archive/SESSION-HANDOFF-2026-07-09.md)**
+> **▶ 2026-07-09 daytime evidence: [`archive evidence ledger`](INDEX.md)**
 > — 2026-07-09 (daytime) session handoff: what shipped (incl. the wallet P0 fix
 > and the in-memory sim-network foundation `lib/sim/simnet`), the `handoff/*`
 > WIP branches and their exact remaining steps, and the known gotchas.
 >
-> **▶ WALLET P0 UPDATE (2026-07-09, later): [`docs/work/S2-utxo-mirror-delta.md`](work/S2-utxo-mirror-delta.md)**
+> **▶ WALLET P0 UPDATE (2026-07-09, later): [`archive evidence ledger`](INDEX.md)**
 > — the S2 utxo_mirror delta-apply (Cause 1 of the wallet-persistence P0) is now
 > CODE-COMPLETE + unit-tested + lint-green (on `main`), and the persistent
 > node.db lock holder (Cause 2) is DIAGNOSED (the catch-up job's private node.db
@@ -1309,8 +1309,7 @@ txn rollback → "missing-success-row"), with its owner condition stuck on a
 self-heals the checkpoint on the growth path + clears the latch, gates the
 diagnostic behind 2 consecutive verdicts (kills the mirror-rebuild race), and
 gives it an auto-terminating owner. Full write-up:
-[`docs/work/archive/commitment-audit-wedge-cure-2026-06-29.md`](work/archive/commitment-audit-wedge-cure-2026-06-29.md)
-+ review [`docs/work/archive/commit-audit-cure-review-2026-06-29.md`](work/archive/commit-audit-cure-review-2026-06-29.md).
+[`archive evidence ledger`](INDEX.md).
 
 **3164483 coin-hole cure.** Block 3164483 spent a coin missing from `coins_kv`
 and the old `coin_backfill` scan could persist a terminal refusal before proving
@@ -1318,7 +1317,7 @@ terminal linkage to the hole hash. The fix makes the no-spend scan bind terminal
 lineage before `SPENT_FOUND`, treats `node.db` txindex as a hint with a bounded
 active-chain fallback, re-proves legacy unversioned refusal markers, and removes
 the delta horizon as a refusal boundary. Full write-up:
-[`docs/work/archive/coin-hole-3164483-next-2026-06-29.md`](work/archive/coin-hole-3164483-next-2026-06-29.md).
+[`archive evidence ledger`](INDEX.md).
 
 **Reductions in the commitment-audit cure (for the next reviewer):** the audit is
 now a non-fatal diagnostic, not a consensus gate — real coin-set integrity rests on
@@ -1415,7 +1414,8 @@ Six proven, consensus-audited fixes make up the consolidated binary:
    that wedged the older torn 3,151,901 seed, and folds forward without
    re-touching it.
 
-**Resilience posture (red-team verdict 2026-06-22, `docs/work/archive/recovery-selfheal-redteam-2026-06-21.md`):**
+**Resilience posture (red-team verdict 2026-06-22; see the
+[archive evidence ledger](INDEX.md)):**
 the deployed config self-heals UNATTENDED from **3 of 4** corruption classes —
 chainstate-corruption (→ `-reindex-chainstate`, confirmed live ~390 blk/s),
 kill-9 mid-fold (durable per-block SQLite txn, recovers to tip bit-identical —
@@ -1516,7 +1516,7 @@ ladder/keystone, the never-stuck hardening map) is
 subtraction worksheet is
 [`docs/work/archive/sync-fix-plan-2026-06-21.md`](./work/sync-fix-plan-2026-06-21.md);
 the trustless-fast-sync substrate is
-[`docs/work/sync-keystone.md`](./work/sync-keystone.md).
+[`archive evidence ledger`](INDEX.md).
 
 ---
 

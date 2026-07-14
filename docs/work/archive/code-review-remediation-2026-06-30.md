@@ -1,7 +1,7 @@
 # Code-Review Remediation Backlog (2026-06-30)
 
 > **What this is.** The *open, actionable* subset of the 2026-06-27 full audit
-> ([`code-review-2026-06-27.md`](./code-review-2026-06-27.md), 322 findings,
+> ([archive evidence ledger](INDEX.md), 322 findings,
 > 0 crit / 22 high), re-verified against live code on 2026-06-30 and turned into
 > execution-ready batches with a fix + proof-gate for every item.
 >
