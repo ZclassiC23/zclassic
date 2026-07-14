@@ -62,6 +62,47 @@ run_logged() {
     return "$rc"
 }
 
+# Build/test lanes must NOT compile inside the operator's live checkout ($ROOT).
+# A concurrent `git merge`/`checkout` there mutates sources mid-build, so the
+# lane links object files compiled against inconsistent headers — an ODR/ABI
+# mismatch whose binary fails spuriously at runtime (observed 2026-07-13: a
+# valid block rejected as bad-txns-vout-negative / bad-txnmrklroot in the simnet
+# self-test, while `make test` on the same clean commit was green). Each lane
+# gets its own detached git worktree pinned to $ROOT's HEAD at lane start —
+# isolated from live edits AND from the other lanes. build/ (ccache-warm) and the
+# untracked prebuilt vendor archives are preserved across runs. Falls back to
+# $ROOT (legacy behaviour) if git worktrees are unavailable, so the lane never
+# hard-fails on the isolation step.
+prepare_lane_tree() {
+    local lane="$1"
+    local iso="$STATE_ROOT/checkout/$lane"
+    local head
+    head="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null)" || { printf '%s' "$ROOT"; return 0; }
+
+    if [ ! -e "$iso/.git" ]; then
+        rm -rf "$iso"
+        mkdir -p "$(dirname "$iso")"
+        git -C "$ROOT" worktree prune >/dev/null 2>&1 || true
+        if ! git -C "$ROOT" worktree add --detach "$iso" "$head" >/dev/null 2>&1; then
+            printf '%s' "$ROOT"; return 0
+        fi
+    else
+        # Re-point the existing worktree at the current HEAD. reset --hard only
+        # touches tracked files; gitignored build/ + vendor/lib survive (fast
+        # incremental rebuilds). `clean -fd` (no -x) drops stray untracked source
+        # without wiping ignored build artifacts.
+        git -C "$iso" reset --hard "$head" >/dev/null 2>&1 || { printf '%s' "$ROOT"; return 0; }
+        git -C "$iso" clean -fd >/dev/null 2>&1 || true
+    fi
+
+    # Prebuilt vendor archives (vendor/lib/*.a) are untracked; seed them once.
+    if [ -d "$ROOT/vendor/lib" ]; then
+        mkdir -p "$iso/vendor/lib"
+        cp -au "$ROOT"/vendor/lib/*.a "$iso/vendor/lib/" 2>/dev/null || true
+    fi
+    printf '%s' "$iso"
+}
+
 run_fuzz() {
     local started started_epoch finished finished_epoch elapsed rc log
     local duration timeout leak_detect
@@ -72,10 +113,13 @@ run_fuzz() {
     timeout="${ZCL_FUZZ_TIMEOUT:-2}"
     leak_detect="${ZCL_FUZZ_DETECT_LEAKS:-0}"
 
+    local tree
+    tree="$(prepare_lane_tree fuzz)"
+
     write_status "fuzz" "running" "$started" "" 0 0 "$log" "building fuzz targets"
     {
-        printf 'background_quality: lane=fuzz started=%s duration_per_target=%s timeout=%s commit=%s\n' \
-            "$started" "$duration" "$timeout" "$(git_commit)"
+        printf 'background_quality: lane=fuzz started=%s duration_per_target=%s timeout=%s commit=%s tree=%s\n' \
+            "$started" "$duration" "$timeout" "$(git_commit)" "$tree"
     } | tee -a "$log"
 
     if ! command -v "${FUZZ_CC:-clang}" >/dev/null 2>&1; then
@@ -87,7 +131,7 @@ run_fuzz() {
         return 0
     fi
 
-    if run_logged "$log" make fuzz; then
+    if run_logged "$log" bash -c "cd \"$tree\" && make fuzz"; then
         :
     else
         rc=$?
@@ -100,8 +144,8 @@ run_fuzz() {
 
     rc=0
     for kind in block script p2p http; do
-        local bin="build/bin/fuzz_$kind"
-        local seed_dir="lib/test/fuzz_seeds/$kind"
+        local bin="$tree/build/bin/fuzz_$kind"
+        local seed_dir="$tree/lib/test/fuzz_seeds/$kind"
         local work_dir
         work_dir="$(mktemp -d "${TMPDIR:-/tmp}/zcl_fuzz_${kind}.XXXXXX")"
         echo "=== $bin (${duration}s background lane) ===" | tee -a "$log"
@@ -138,11 +182,14 @@ run_coverage() {
     started_epoch="$(epoch_now)"
     log="$LOG_DIR/coverage-${started//[:]/}.log"
 
-    write_status "coverage" "running" "$started" "" 0 0 "$log" "running make coverage"
-    printf 'background_quality: lane=coverage started=%s commit=%s\n' \
-        "$started" "$(git_commit)" | tee -a "$log"
+    local tree
+    tree="$(prepare_lane_tree coverage)"
 
-    if run_logged "$log" make coverage; then
+    write_status "coverage" "running" "$started" "" 0 0 "$log" "running make coverage"
+    printf 'background_quality: lane=coverage started=%s commit=%s tree=%s\n' \
+        "$started" "$(git_commit)" "$tree" | tee -a "$log"
+
+    if run_logged "$log" bash -c "cd \"$tree\" && make coverage"; then
         rc=0
     else
         rc=$?
@@ -165,11 +212,14 @@ run_tests() {
     started_epoch="$(epoch_now)"
     log="$LOG_DIR/tests-${started//[:]/}.log"
 
-    write_status "tests" "running" "$started" "" 0 0 "$log" "running make test"
-    printf 'background_quality: lane=tests started=%s commit=%s\n' \
-        "$started" "$(git_commit)" | tee -a "$log"
+    local tree
+    tree="$(prepare_lane_tree tests)"
 
-    if run_logged "$log" make test; then
+    write_status "tests" "running" "$started" "" 0 0 "$log" "running make test"
+    printf 'background_quality: lane=tests started=%s commit=%s tree=%s\n' \
+        "$started" "$(git_commit)" "$tree" | tee -a "$log"
+
+    if run_logged "$log" bash -c "cd \"$tree\" && make test"; then
         rc=0
     else
         rc=$?

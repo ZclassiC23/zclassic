@@ -2072,8 +2072,8 @@ FUZZ_CFLAGS = -std=c23 -O1 -g -Wall -Wextra -Wno-unused-result \
 	-Wno-deprecated-declarations \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) \
 	$(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) \
-	$(ADAPTERS_INCLUDES) $(MCP_INCLUDES) \
-	-Ilib/test/include -D_POSIX_C_SOURCE=200809L -Ivendor/include \
+	$(ADAPTERS_INCLUDES) $(MCP_INCLUDES) $(APP_SDK_INCLUDES) $(DEVLOOP_INCLUDES) \
+	-Ilib/test/include -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -Ivendor/include \
 	-fsanitize=fuzzer,address,undefined \
 	-fno-sanitize=alignment
 FUZZ_LIBS = $(TOR_LIBS) $(LIBS)
