@@ -413,3 +413,25 @@ candidate ≥1.5× the floor's own logged rate at the SAME height band AND the
 floor's current rate stays within ~20% of its pre-start baseline; otherwise kill
 the candidate (stop unit, rm datadir — fully disposable). First producer to emit
 `consensus-state-bundle-3056758.sqlite` feeds the cutover runbook above.
+
+### S1.3 race VERDICT (2026-07-14 16:0x UTC) — candidate KILLED, floor is the cure
+
+Measured at the SAME height (h=19,999, both from genesis): floor 33.6 blk/s
+(548s elapsed) vs candidate 26.0 blk/s (709s) = **0.77×** — nowhere near the
+≥1.5× keep bar — while the floor degraded 34→16.5 blk/s (>50%, past the 20%
+kill threshold). Killed per the pre-registered rule (unit disabled+removed,
+datadir purged); floor recovered as the sole folder.
+
+**What the cm: telemetry proved:** batch COMMITs cost 1.9–2.6 s even with
+`synchronous=OFF` — the fsync barrier was NOT the dominant cost; **write
+volume is** (WAL growth + checkpoint page-copying + page-cache writeback for
+~10k-block batches). A1 parallel crypto also showed no pv win at equal
+heights in the mint drive. Conclusions for future fold-speed work:
+1. The S1.3 patch (sync-off + cm:) stays — harmless, and cm: is the
+   diagnostic that settled this in minutes instead of hours.
+2. The real lever is REDUCING WRITE VOLUME per fold (coin upsert batching /
+   fewer rewrites), not removing fsyncs and not crypto parallelism.
+3. Two concurrent FULL folds on one NVMe starve each other — never race
+   producers on this box; A/B on copies at DIFFERENT times instead.
+4. Boot-to-fold for a fresh producer datadir took ~36 min (2× quick_check +
+   index load + legacy-seed copy-then-wipe) — a standing boots-fast defect.
