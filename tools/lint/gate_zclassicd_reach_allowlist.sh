@@ -40,9 +40,9 @@ SEARCH_DIRS="app lib config src tools/mcp"
 # --- Exclusions (test / soak harness code is allowed to reach freely) ------
 EXCLUDE_RE='(^|/)lib/test/|(^|/)tools/soak/|_test\.c$|(^|/)tools/crash_recovery_test\.c$'
 
-# --- Frozen baseline allowlist (verified 2026-06-18 against current tree) ---
+# --- Frozen baseline allowlist (verified 2026-07-14 against current tree) ---
 # Every non-test source file that CURRENTLY contains a zclassicd reach.
-# 20 files. Keep sorted. Removing a reach from a file may leave its name here
+# 18 files. Keep sorted. Removing a reach from a file may leave its name here
 # harmlessly; ADDING a reach to any file NOT here is what fails the gate.
 read -r -d '' ALLOWLIST <<'EOF'
 app/conditions/src/tip_stall_oracle_rebuild.c
@@ -56,13 +56,11 @@ app/services/src/quorum_oracle_service.c
 app/services/src/snapshot_verify.c
 app/services/src/zclassicd_oracle_service.c
 config/include/config/boot_internal.h
-config/src/boot_background_workers.c
 config/src/boot_runtime_sync_services.c
 config/src/boot_services.c
 lib/net/src/fast_sync.c
 lib/net/src/msg_headers.c
 lib/rpc/include/rpc/legacy_chain_oracle.h
-lib/rpc/module.cfg
 lib/rpc/src/legacy_chain_oracle.c
 src/main.c
 EOF

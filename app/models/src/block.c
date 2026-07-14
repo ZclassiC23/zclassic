@@ -22,13 +22,22 @@
 #include "models/utxo.h"
 #include "chain/chain.h"
 #include "event/event.h"
+#include "platform/time_compat.h"
 #include "primitives/block.h"
 #include "util/ar_step_readonly.h"
+#include "util/log_throttle.h"
 #include <string.h>
 #include <stdio.h>
 
 #define DB_BLOCK_SAVE_MAX_ATTEMPTS 1200
 #define DB_BLOCK_SAVE_RETRY_MS 25
+#define DB_BLOCK_HEADER_MISMATCH_LOG_SECS 60
+
+/* Header validation deliberately falls through to other hash-bound sources
+ * when a historical blocks row is stale. A from-genesis fold can encounter
+ * that same source failure tens of times per second, so emit the first WARN
+ * and a periodic keepalive instead of writing one journal record per block. */
+static struct log_throttle g_header_mismatch_log = LOG_THROTTLE_INIT;
 
 /* ── Callbacks ─────────────────────────────────────────────────── */
 
@@ -536,8 +545,14 @@ bool db_block_load_header_by_hash_height(struct node_db *ndb, int height,
     struct uint256 computed;
     block_header_get_hash(out, &computed);
     if (memcmp(computed.data, hash, 32) != 0) {
-        LOG_WARN("block", "load_header: stored row does not hash-bind "
-                 "height=%d", height);
+        uint64_t repeats = 0;
+        if (log_throttle_should_emit(&g_header_mismatch_log, 0,
+                                     platform_time_wall_unix(),
+                                     DB_BLOCK_HEADER_MISMATCH_LOG_SECS,
+                                     &repeats))
+            LOG_WARN("block", "load_header: stored row does not hash-bind "
+                     "height=%d repeats=%llu", height,
+                     (unsigned long long)repeats);
         block_header_init(out);
         return false;
     }
