@@ -1159,6 +1159,13 @@ static int t_git_hooks_gate_rejects_noop_pre_push(void)
 #define E1_FIXTURE_DST   "app/controllers/src/_e1_size_ceiling_fixture_tmp.c"
 #define E9_SCRIPT_REL    "tools/scripts/check_operator_needed_sink.sh"
 #define SYSMEM_SCRIPT_REL "tools/scripts/check_systemd_memory_budget.sh"
+/* Gate E14 — condition cooldown re-arm (the 2026-07-13 27h-page bug class).
+ * The script's own selftest plants an isolated tmp-dir fixture (never the
+ * real app/conditions/src tree) proving a network-dependent COND_CRITICAL
+ * condition without cooldown_secs trips exit 2, and every sibling case
+ * (cooldown-bearing, .progressing-exempt, local-only, WARN-severity,
+ * hollow-scan) stays/becomes clean. */
+#define CONDITION_COOLDOWN_SCRIPT_REL "tools/scripts/check_condition_cooldown.sh"
 #define E10_SHAPE_SCRIPT_REL "tools/lint/framework_shape_check.sh"
 /* NOT named `_*fixture*tmp*.c` on purpose: framework_shape_check.sh itself
  * excludes that glob (b142e7887, to stop OTHER gates' transient fixtures
@@ -1514,6 +1521,29 @@ static int t_systemd_memory_budget(void)
     int selftest_rc = env_rc == 0 ? run_gate_script(SYSMEM_SCRIPT_REL, NULL) : -1;
     (void)unsetenv("ZCL_SYSTEMD_MEMORY_BUDGET_SELFTEST");
     TEST("[lint-gate] P1-3 systemd memory budget: baseline and selftest pass") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(env_rc == 0);
+        ASSERT(selftest_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* E14 — condition cooldown re-arm: the live app/conditions/src tree must
+ * pass (baseline), and the script's own isolated-tmp-dir selftest (which
+ * plants/removes a cooldown-less network-dependent COND_CRITICAL fixture
+ * and asserts exit 2 with the offending condition named, plus every
+ * sibling pass case) must report clean. Mirrors t_systemd_memory_budget's
+ * setenv/run/unsetenv shape. */
+static int t_e14_condition_cooldown_gate(void)
+{
+    int failures = 0;
+    int baseline_rc = run_gate_script(CONDITION_COOLDOWN_SCRIPT_REL, NULL);
+    int env_rc = setenv("ZCL_CONDITION_COOLDOWN_SELFTEST", "1", 1);
+    int selftest_rc =
+        env_rc == 0 ? run_gate_script(CONDITION_COOLDOWN_SCRIPT_REL, NULL) : -1;
+    (void)unsetenv("ZCL_CONDITION_COOLDOWN_SELFTEST");
+    TEST("[lint-gate] E14 condition cooldown: baseline and selftest pass") {
         ASSERT(baseline_rc == 0);
         ASSERT(env_rc == 0);
         ASSERT(selftest_rc == 0);
@@ -7519,6 +7549,7 @@ int test_make_lint_gates(void)
     failures += t_no_new_coin_backfill_caller();
     failures += t_e9_operator_needed_sink();
     failures += t_systemd_memory_budget();
+    failures += t_e14_condition_cooldown_gate();
     failures += t_git_hooks_gate_enforces_tracked_pre_push();
     failures += t_git_hooks_gate_rejects_noop_pre_push();
     failures += t_e10_framework_shape_ratchet();

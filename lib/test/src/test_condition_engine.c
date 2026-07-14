@@ -546,6 +546,89 @@ int test_condition_engine(void)
         CE_CHECK("register_all exposes current self-heal set", ok);
     }
 
+    /* P0 REGRESSION (live 2026-07-13, 27h page loop, fixed main 1d317f4f6 /
+     * 62a7a0004): a COND_CRITICAL condition with cooldown_secs > 0 must
+     * re-arm the remedy after max_attempts is reached instead of latching
+     * permanently — the exact shape sync_violation_lag/tip_wedged_resnapshot
+     * now use. Mirrors max_attempts=1 (the real bug's config): a single
+     * unwitnessed remedy immediately pages, then cooldown_secs must keep
+     * retrying (not dead-end) until the symptom clears. */
+    static struct condition c_cooldown = {
+        .name = "ce_cooldown",
+        .severity = COND_CRITICAL,
+        .poll_secs = 1,
+        .backoff_secs = 0,
+        .max_attempts = 1,
+        .cooldown_secs = 5,
+        .cooldown_max_rearms = 0,
+        .detect = ce_detect,
+        .remedy = ce_remedy,
+        .witness = ce_witness,
+        .witness_window_secs = 60,
+    };
+
+    {
+        reset_fixture();
+        event_observe(EV_OPERATOR_NEEDED, operator_observer, NULL);
+        bool ok = condition_register(&c_cooldown);
+        atomic_store(&g_detect, true);
+        atomic_store(&g_witness, false);   /* symptom never clears */
+
+        /* Tick 1: breach detected, remedy attempt 1/1 exhausts max_attempts
+         * immediately (unwitnessed) -> operator paged, but NOT latched. */
+        condition_engine_tick();
+        ok = ok && atomic_load(&g_remedy_calls) == 1;
+        ok = ok && atomic_load(&c_cooldown.state.operator_needed_emitted);
+        ok = ok && atomic_load(&c_cooldown.state.currently_active);
+
+        /* Tick 2: attempts(1) >= max_attempts(1) so condition_due_for_remedy
+         * consults cooldown_rearm(); last_cooldown_unix is still 0 (never
+         * armed before), so the FIRST re-arm is immediate — proving the
+         * engine tries again in the very next tick rather than requiring a
+         * human. A legacy (cooldown_secs==0) condition would stay at
+         * g_remedy_calls==1 forever from here on (condition_cooldown_rearm
+         * returns false unconditionally when cooldown_secs<=0). */
+        condition_engine_tick();
+        ok = ok && atomic_load(&g_remedy_calls) == 2;
+        ok = ok && atomic_load(&c_cooldown.state.cooldown_rearms) == 1;
+
+        /* Tick 3: immediately after a re-arm, the cooldown gap is NOT yet
+         * elapsed (last_cooldown_unix == now), so the engine correctly rate-
+         * limits — no new remedy call. This is the "temporarily not due"
+         * distinction from "permanently never due again": confirm the count
+         * holds rather than either regressing (spam) or a symptom of the
+         * un-rearmable path (which would also hold it, so this step alone
+         * doesn't distinguish latched-forever; the next step does). */
+        condition_engine_tick();
+        ok = ok && atomic_load(&g_remedy_calls) == 2;
+
+        /* Simulate the cooldown window elapsing (mirrors the existing
+         * first_detect_unix-rewind aging trick used by c_aged above) and
+         * tick again: a SECOND re-arm must fire, proving the engine keeps
+         * retrying indefinitely rather than latching after one re-arm. */
+        atomic_store(&c_cooldown.state.last_cooldown_unix,
+                     atomic_load(&c_cooldown.state.last_cooldown_unix) - 10);
+        condition_engine_tick();
+        ok = ok && atomic_load(&g_remedy_calls) == 3;
+        ok = ok && atomic_load(&c_cooldown.state.cooldown_rearms) == 2;
+        ok = ok && atomic_load(&c_cooldown.state.currently_active);
+        ok = ok && atomic_load(&c_cooldown.state.cleared_count) == 0;
+
+        /* Finally the symptom clears: witness-clear must still end the
+         * episode and fully reset the cooldown bookkeeping, ready for a
+         * fresh episode with a clean budget next time. */
+        atomic_store(&g_witness, true);
+        condition_engine_tick();
+        ok = ok && atomic_load(&c_cooldown.state.cleared_count) == 1;
+        ok = ok && !atomic_load(&c_cooldown.state.currently_active);
+        ok = ok && atomic_load(&c_cooldown.state.cooldown_rearms) == 0;
+        ok = ok && atomic_load(&c_cooldown.state.last_cooldown_unix) == 0;
+        ok = ok && condition_engine_get_active_count() == 0;
+
+        CE_CHECK("cooldown-bearing CRITICAL re-arms past max_attempts "
+                 "instead of latching, then witness-clear resets it", ok);
+    }
+
     reset_fixture();
     return failures;
 }
