@@ -19,10 +19,15 @@ struct zcl_social_sim_report {
     bool partition_rejoin_converged;
     bool late_joiner_caught_up;
     bool invalid_signature_rejected;
+    bool real_secp256k1_verified;
+    bool tampered_payload_rejected;
+    bool wrong_author_rejected;
+    bool forged_event_id_distinct;
 };
 
-/* Fast deterministic application-network proof. No sockets, wall clock,
- * filesystem, or global state. Same seed must produce the same transcript. */
+/* Fast deterministic application-network proof. No sockets, wall clock, or
+ * filesystem. Verification uses the immutable process crypto registry. Same
+ * seed must produce the same transcript. */
 bool zcl_social_app_sim_run(uint64_t seed,
                             struct zcl_social_sim_report *out);
 

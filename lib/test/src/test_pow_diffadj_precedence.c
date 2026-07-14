@@ -1,8 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * test_pow_diffadj_precedence — D1 lock-in pin for the difficulty-retarget
- * operator-precedence DIFFERENCE between zcl23 and zclassicd (parity-audit
- * round 3, docs/work/archive/parity-audit-round3-findings.md).
+ * operator-precedence DIFFERENCE between zcl23 and zclassicd. See
+ * docs/CONSENSUS_PARITY_DOCTRINE.md.
  *
  * THE GAP. The BUTTERCUP/DIFFADJ "fork-window min-difficulty" guard in
  * GetNextWorkRequired (lib/chain/src/pow.c:52-56) is gated by:

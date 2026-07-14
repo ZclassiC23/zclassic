@@ -35,6 +35,10 @@ a permanent server inventory.
 - **Current architecture:** [`../FRAMEWORK.md`](../FRAMEWORK.md) (reference,
   off the v1 path — see `../REFACTOR_STATUS.md` for the debt board, which
   self-labels NOT the v1 path).
+- **Future LLM/App platform execution companion:**
+  [`LLM-C23-APP-PLATFORM-CHECKLIST.md`](./LLM-C23-APP-PLATFORM-CHECKLIST.md)
+  expands Phases 3–5 of `SOVEREIGN-NETWORK-ROADMAP.md`; it is not the current
+  execution queue and cannot displace the sovereign cure.
 - **Session entrypoint:** [`../HANDOFF.md`](../HANDOFF.md).
 - **Worker protocol:** this file plus [`agent-protocol.md`](./agent-protocol.md).
 

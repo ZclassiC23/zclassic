@@ -1,0 +1,27 @@
+/* ZClassic23 Blog — MVC/ActiveRecord reference application. */
+
+ZCL_APP("blog", "ZClassic Blog", "0.1.0")
+
+ZCL_APP_CAPABILITY(CHAIN_READ)
+ZCL_APP_CAPABILITY(SIGNED_EVENTS)
+ZCL_APP_CAPABILITY(RESIDENT_STATE)
+ZCL_APP_CAPABILITY(WEB_ROUTES)
+ZCL_APP_CAPABILITY(ONION_BINDING)
+ZCL_APP_CAPABILITY(ZNAM_BINDING)
+ZCL_APP_CAPABILITY(P2P_TOPICS)
+ZCL_APP_CAPABILITY(WALLET_REQUESTS)
+
+ZCL_APP_RESOURCE("posts")
+ZCL_APP_RESOURCE("publication_receipts")
+
+ZCL_APP_TOPIC("blog.posts.v1", 1, 20000)
+ZCL_APP_WEB_MOUNT("/blog")
+ZCL_APP_ONION(true)
+ZCL_APP_ZNAM("blog")
+ZCL_APP_STATE_SCHEMA(1)
+
+/* No ZCL_APP_SIM declaration yet: the generic AppSim host cannot construct
+ * the Core-owned wallet grant binding in production. The isolated `blog` test
+ * proves these scenarios without advertising a native simulation that the
+ * registry cannot execute. Add them here only when `dev app simulate blog`
+ * invokes the exact production broker/ABI path. */

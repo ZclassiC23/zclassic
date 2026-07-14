@@ -2328,7 +2328,7 @@ int test_net(void)
         else { printf("FAIL (%zu bytes: %.200s)\n", len, resp); failures++; }
     }
 
-    printf("onion_service: /blog uses injected app handler... ");
+    printf("onion_service: signed /blog fails closed without node.db... ");
     {
         char tmpdir[256];
         uint8_t buf[4096];
@@ -2342,10 +2342,12 @@ int test_net(void)
         buf[len < sizeof(buf) ? len : sizeof(buf) - 1] = '\0';
         const char *resp = (const char *)buf;
         bool ok = (len > 0);
-        ok = ok && (strstr(resp, "HTTP/1.1 200 OK") != NULL);
-        ok = ok && (strstr(resp, "blog:") != NULL);
-        ok = ok && (strstr(resp, tmpdir) != NULL);
-        ok = ok && (strstr(resp, "/blog/test-post") != NULL);
+        ok = ok && (strstr(resp, "HTTP/1.1 503 Service Unavailable") != NULL);
+        ok = ok && (strstr(resp, "Blog storage is unavailable") != NULL);
+        /* The legacy injected static handler is intentionally ignored: the
+         * signed MVC mount must never downgrade to unsigned content. */
+        ok = ok && (strstr(resp, "blog:") == NULL);
+        ok = ok && (strstr(resp, tmpdir) == NULL);
         onion_service_set_app_handlers(NULL, NULL);
         onion_service_stop();
         test_cleanup_tmpdir(tmpdir);

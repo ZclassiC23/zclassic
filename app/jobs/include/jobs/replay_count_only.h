@@ -2,7 +2,7 @@
  *
  * replay_count_only — the D2 coinbase-maturity REPLAY GATE counting harness.
  *
- * THE GATE (docs/work/replay-substrate-design.md): before TIGHTENING the
+ * THE GATE (docs/CONSENSUS_PARITY_DOCTRINE.md): before TIGHTENING the
  * bounded coinbase-maturity predicate (utxo_apply_delta.c:281) to restore
  * parity with zclassicd, replay the ENTIRE real chain (genesis->tip) with the
  * candidate tightening ON (-enforce-coinbase-maturity) and confirm ZERO

@@ -23,32 +23,48 @@
 
 #include <stdio.h>
 
+/* Malformed inputs are the expected hot path in fuzz binaries. Keep the
+ * LOG_* return/control-flow contracts, but do not let millions of expected
+ * rejects backpressure libFuzzer through stderr. A variadic function call
+ * (rather than a no-op macro) preserves argument evaluation and format
+ * checking. Normal builds retain the exact direct-to-stderr behavior. */
+#ifdef ZCL_FUZZ_QUIET_LOG_MACROS
+static inline __attribute__((format(printf, 1, 2)))
+void zcl_fuzz_discard_log(const char *fmt, ...)
+{
+    (void)fmt;
+}
+#define ZCL_LOG_EMIT(...) zcl_fuzz_discard_log(__VA_ARGS__)
+#else
+#define ZCL_LOG_EMIT(...) ((void)fprintf(stderr, __VA_ARGS__))
+#endif
+
 /* ── Core: log context + return ──────────────────────────────────── */
 
 /* Log error and return false. Use in functions returning bool. */
 #define LOG_FAIL(domain, fmt, ...) do { \
-    fprintf(stderr, "[%s] %s:%d %s(): " fmt "\n", \
+    ZCL_LOG_EMIT("[%s] %s:%d %s(): " fmt "\n", \
             (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
     return false; \
 } while (0)
 
 /* Log error and return -1. Use in MCP handlers / int-returning funcs. */
 #define LOG_ERR(domain, fmt, ...) do { \
-    fprintf(stderr, "[%s] %s:%d %s(): " fmt "\n", \
+    ZCL_LOG_EMIT("[%s] %s:%d %s(): " fmt "\n", \
             (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
     return -1; \
 } while (0)
 
 /* Log error and return NULL. Use in pointer-returning functions. */
 #define LOG_NULL(domain, fmt, ...) do { \
-    fprintf(stderr, "[%s] %s:%d %s(): " fmt "\n", \
+    ZCL_LOG_EMIT("[%s] %s:%d %s(): " fmt "\n", \
             (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
     return NULL; \
 } while (0)
 
 /* Log error and return a custom value. */
 #define LOG_RETURN(val, domain, fmt, ...) do { \
-    fprintf(stderr, "[%s] %s:%d %s(): " fmt "\n", \
+    ZCL_LOG_EMIT("[%s] %s:%d %s(): " fmt "\n", \
             (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
     return (val); \
 } while (0)
@@ -72,13 +88,13 @@
 
 /* Log a warning and continue (no return). */
 #define LOG_WARN(domain, fmt, ...) do { \
-    fprintf(stderr, "[%s] WARN: %s:%d %s(): " fmt "\n", \
+    ZCL_LOG_EMIT("[%s] WARN: %s:%d %s(): " fmt "\n", \
             (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
 } while (0)
 
 /* Log an informational line and continue (no return). */
 #define LOG_INFO(domain, fmt, ...) do { \
-    fprintf(stderr, "[%s] INFO %s:%d %s(): " fmt "\n", \
+    ZCL_LOG_EMIT("[%s] INFO %s:%d %s(): " fmt "\n", \
             (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
 } while (0)
 
@@ -87,7 +103,7 @@
 /* Guard: if condition is false, log and return false. */
 #define GUARD(cond, domain, fmt, ...) do { \
     if (!(cond)) { \
-        fprintf(stderr, "[%s] %s:%d %s(): GUARD FAILED: " fmt "\n", \
+        ZCL_LOG_EMIT("[%s] %s:%d %s(): GUARD FAILED: " fmt "\n", \
                 (domain), __FILE__, __LINE__, __func__, ##__VA_ARGS__); \
         return false; \
     } \
@@ -96,7 +112,7 @@
 /* Guard: if pointer is NULL, log and return false. */
 #define GUARD_NOT_NULL(ptr, domain, label) do { \
     if (!(ptr)) { \
-        fprintf(stderr, "[%s] %s:%d %s(): %s is NULL\n", \
+        ZCL_LOG_EMIT("[%s] %s:%d %s(): %s is NULL\n", \
                 (domain), __FILE__, __LINE__, __func__, (label)); \
         return false; \
     } \
@@ -105,7 +121,7 @@
 /* Guard: if pointer is NULL, log and return NULL. */
 #define GUARD_NOT_NULL_RET_NULL(ptr, domain, label) do { \
     if (!(ptr)) { \
-        fprintf(stderr, "[%s] %s:%d %s(): %s is NULL\n", \
+        ZCL_LOG_EMIT("[%s] %s:%d %s(): %s is NULL\n", \
                 (domain), __FILE__, __LINE__, __func__, (label)); \
         return NULL; \
     } \
@@ -114,7 +130,7 @@
 /* Guard: if pointer is NULL, log and return -1. */
 #define GUARD_NOT_NULL_ERR(ptr, domain, label) do { \
     if (!(ptr)) { \
-        fprintf(stderr, "[%s] %s:%d %s(): %s is NULL\n", \
+        ZCL_LOG_EMIT("[%s] %s:%d %s(): %s is NULL\n", \
                 (domain), __FILE__, __LINE__, __func__, (label)); \
         return -1; \
     } \

@@ -1,11 +1,7 @@
-> **Read this file first for current live-node state.** Session-by-session
-> detail lives in `docs/work/archive/` (historical logs, not standing facts;
-> full pre-slim history: [`HANDOFF-HISTORY-2026-07.md`](work/archive/HANDOFF-HISTORY-2026-07.md)).
->
-> **⚡ Incoming developer, start here:** this file, then
-> [`work/archive/HANDOFF-2026-07-12-evening.md`](work/archive/HANDOFF-2026-07-12-evening.md)
-> for the original un-wedge recipe. The live facts and corrected producer
-> evidence below supersede that dated recipe where they differ.
+> **Read this file first for current live-node state.** Historical handoff
+> revisions are evidence, not standing facts; recover them from Git with
+> `git log --follow -- docs/HANDOFF.md` and
+> `git show a22dc39265^:docs/HANDOFF.md` when incident archaeology requires it.
 >
 > **Durable hierarchy:** [`work/SOVEREIGN-NETWORK-ROADMAP.md`](work/SOVEREIGN-NETWORK-ROADMAP.md)
 > preserves the Phase 0–6 program and promotion gates: stable sovereign sync
@@ -133,8 +129,6 @@ the read-only SHA3-256 of that actual mapping is
 `0223e24712974fb5b96ca554d6139153bd632f07c75c8ccd3cc82b8e68a9f65f`.
 That is forensic identity, not complete source/toolchain provenance. Do not
 reduce the datadir to a USS v3 artifact.
-Full background:
-[`docs/work/archive/SESSION-HANDOFF-2026-07-12.md`](work/archive/SESSION-HANDOFF-2026-07-12.md).
 At the latest read-only audit it was durably through h=1,050,000 at about
 1.499 blocks/s. A stale main `progress.kv` mtime was a false stall signal: its
 WAL was active 16 seconds before capture and the durable cursor advanced by

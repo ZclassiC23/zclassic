@@ -5,7 +5,8 @@
  * App-feature schema migrations (v14+) for node.db: store products and
  * orders, ZCL Market file offers, ZNAM name registry, ZMSG messaging,
  * ZSWP atomic-swap contracts, HODL wave history, and the
- * content-addressed blob store. node_db_migrate() in database_migrate.c
+ * content-addressed blob store, and signed Blog publication records.
+ * node_db_migrate() in database_migrate.c
  * owns the core chain/explorer schema versions and hands off here at
  * the v14 boundary; every block follows the same idempotent
  * versioned-block pattern documented there (check schema version, run
@@ -472,6 +473,66 @@ int node_db_migrate_features(struct node_db *ndb, int *version)
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES('027')");
         DB_MIGRATE_PERSIST_VERSION(ndb, 27);
         current_ver = 27;
+        applied++;
+    }
+
+    if (current_ver < 28) {
+        /* v28: Rails-style Blog reference slice. Posts are immutable signed
+         * App events; publication receipts are reorg-aware observations over
+         * the full-node block/transaction/OP_RETURN projections. This is an
+         * application overlay only and is never consulted by consensus. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS blog_posts ("
+            "event_id BLOB PRIMARY KEY CHECK(length(event_id)=32),"
+            "blog_name TEXT NOT NULL,"
+            "slug TEXT NOT NULL,"
+            "title TEXT NOT NULL,"
+            "body TEXT NOT NULL,"
+            "author_key_id BLOB NOT NULL CHECK(length(author_key_id)=20),"
+            "author_pubkey BLOB NOT NULL CHECK(length(author_pubkey)=33),"
+            "author_address TEXT NOT NULL,"
+            "chain_id BLOB NOT NULL CHECK(length(chain_id)=32),"
+            "sequence INTEGER NOT NULL CHECK(sequence>0),"
+            "previous_event_id BLOB NOT NULL "
+            "  CHECK(length(previous_event_id)=32),"
+            "event_created_at INTEGER NOT NULL CHECK(event_created_at>0),"
+            "signature BLOB NOT NULL "
+            "  CHECK(length(signature) BETWEEN 8 AND 72),"
+            "signature_len INTEGER NOT NULL "
+            "  CHECK(signature_len=length(signature)),"
+            "stored_at INTEGER NOT NULL CHECK(stored_at>0))");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_blog_posts_name_sequence "
+            "ON blog_posts(blog_name,sequence DESC)");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_blog_posts_name_slug_event "
+            "ON blog_posts(blog_name,slug,event_id)");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_blog_posts_author_sequence "
+            "ON blog_posts(author_key_id,sequence,event_id)");
+
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS blog_publication_receipts ("
+            "txid BLOB PRIMARY KEY CHECK(length(txid)=32),"
+            "event_id BLOB NOT NULL CHECK(length(event_id)=32),"
+            "blog_name TEXT NOT NULL,"
+            "author_key_id BLOB NOT NULL CHECK(length(author_key_id)=20),"
+            "znam_reg_txid BLOB NOT NULL CHECK(length(znam_reg_txid)=32),"
+            "block_hash BLOB "
+            "  CHECK(block_hash IS NULL OR length(block_hash)=32),"
+            "block_height INTEGER NOT NULL CHECK(block_height>=-1),"
+            "status INTEGER NOT NULL CHECK(status BETWEEN 0 AND 2),"
+            "observed_at INTEGER NOT NULL CHECK(observed_at>0),"
+            "FOREIGN KEY(event_id) REFERENCES blog_posts(event_id) "
+            "  ON DELETE CASCADE)");
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_blog_receipts_event "
+            "ON blog_publication_receipts(event_id,observed_at DESC)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('028')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 28);
+        current_ver = 28;
         applied++;
     }
 

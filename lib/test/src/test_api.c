@@ -60,6 +60,7 @@ typedef int (*api_test_rpc_call_fn)(const char *method,
                                     char *out,
                                     size_t outmax);
 void api_test_set_rpc_call(api_test_rpc_call_fn fn);
+int api_query_filters_focused_tests(void);
 
 #define API_TEST_BLOCK_HASH \
     "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
@@ -715,6 +716,8 @@ int test_api(void)
 {
     int failures = 0;
     uint8_t resp[8192];
+
+    failures += api_query_filters_focused_tests();
 
     printf("api: NULL params return 0... ");
     {

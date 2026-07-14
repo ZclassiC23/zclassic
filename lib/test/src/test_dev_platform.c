@@ -6,7 +6,10 @@
 #include "devloop.h"
 #include "framework/app_platform.h"
 #include "json/json.h"
+#include "keys/key.h"
 #include "sim/social_app_sim.h"
+#include "util/safe_alloc.h"
+#include "wallet/wallet.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -69,6 +72,39 @@ static struct zcl_app_manifest_v1 valid_manifest(void)
         .self_test = app_self_test,
         .quiesce = app_quiesce,
     };
+}
+
+static const uint8_t g_test_social_chain_id[ZCL_APP_EVENT_CHAIN_ID_SIZE] = {
+    0x02, 0x06, 0x26, 0x01, 0x43, 0x83, 0x8b, 0x5f,
+    0xf5, 0x2d, 0xc2, 0xeb, 0x7b, 0x4b, 0x80, 0x99,
+    0xd4, 0xe4, 0xc9, 0x9d, 0xc3, 0xef, 0x19, 0x79,
+    0x42, 0x89, 0xa2, 0xcd, 0x4c, 0x10, 0x07, 0x00,
+};
+
+static struct zcl_app_event_scope_v1 test_social_scope(void)
+{
+    struct zcl_app_event_scope_v1 scope;
+    memset(&scope, 0, sizeof(scope));
+    scope.struct_size = sizeof(scope);
+    memcpy(scope.app_id, "social", sizeof("social"));
+    memcpy(scope.topic, "social.events.v1", sizeof("social.events.v1"));
+    memcpy(scope.chain_id, g_test_social_chain_id, sizeof(scope.chain_id));
+    scope.max_event_bytes = 65536;
+    return scope;
+}
+
+static struct zcl_app_event_intent_v1 test_social_intent(
+    const uint8_t *payload, size_t payload_len)
+{
+    struct zcl_app_event_intent_v1 intent;
+    memset(&intent, 0, sizeof(intent));
+    intent.struct_size = sizeof(intent);
+    intent.kind = 1;
+    intent.sequence = 1;
+    intent.created_at = UINT64_C(1700000000);
+    intent.payload.data = payload;
+    intent.payload.len = payload_len;
+    return intent;
 }
 
 static int test_menu_and_search(void)
@@ -442,15 +478,275 @@ static int test_public_app_abi(void)
             ZCL_APP_CAP_WEB_ROUTES | ZCL_APP_CAP_RESIDENT_STATE,
             "build", why, sizeof(why)));
         ASSERT(strstr(why, "migration") != NULL);
+
+        static const struct zcl_app_topic_v1 duplicate_topics[] = {
+            { sizeof(struct zcl_app_topic_v1), "social.events.v1", 1, 1024 },
+            { sizeof(struct zcl_app_topic_v1), "social.events.v1", 1, 2048 },
+        };
+        manifest = valid_manifest();
+        manifest.topics = duplicate_topics;
+        manifest.topic_count = 2;
+        ASSERT(!zcl_app_manifest_v1_validate(
+            &manifest, ZCL_APP_CAP_WEB_ROUTES, "build", why, sizeof(why)));
+        ASSERT(strstr(why, "duplicate app topic") != NULL);
         PASS();
     } _test_next:;
+    return failures;
+}
+
+static int test_signed_app_events(void)
+{
+    int failures = 0;
+    struct wallet *wallet = NULL;
+    struct zcl_app_event_signing_binding_v1 *binding = NULL;
+    bool wallet_ready = false;
+    TEST("dev platform: Core wallet signs canonical scoped App events") {
+        static const uint8_t payload[] = "hello zclassic23";
+        static const uint8_t expected_event_id[32] = {
+            0xd2, 0xbf, 0x68, 0xe3, 0x05, 0xf1, 0xe5, 0x8a,
+            0x02, 0xb0, 0x09, 0x43, 0x23, 0xd8, 0xfd, 0x8a,
+            0xca, 0x29, 0x76, 0xe8, 0xa6, 0xdd, 0xaf, 0xe8,
+            0x7a, 0x34, 0x59, 0x9d, 0xe3, 0xe4, 0xe3, 0xf8,
+        };
+        static const uint8_t high_s_signature[] = {
+            0x30, 0x45, 0x02, 0x20, 0x2c, 0x27, 0x65, 0xc3,
+            0x93, 0x17, 0xd3, 0x3a, 0xb0, 0x6e, 0x69, 0x6c,
+            0x0a, 0x93, 0x4a, 0xff, 0xb0, 0xe6, 0x6b, 0xa5,
+            0x2e, 0x80, 0x0f, 0xd6, 0x85, 0x3f, 0x8f, 0x10,
+            0x5d, 0xd0, 0xe1, 0xb4, 0x02, 0x21, 0x00, 0x84,
+            0xea, 0x62, 0x50, 0x59, 0x89, 0x60, 0x7a, 0x6b,
+            0xe6, 0x27, 0x7d, 0xe7, 0x7e, 0x71, 0xf6, 0x54,
+            0xd7, 0x30, 0x67, 0xe4, 0xc6, 0xe8, 0x71, 0x8d,
+            0x55, 0x50, 0x71, 0xf1, 0xa6, 0xe9, 0x00,
+        };
+        struct privkey key;
+        privkey_init(&key);
+        key.vch[31] = 1;
+        key.fValid = true;
+        key.fCompressed = true;
+        struct pubkey pubkey;
+        ASSERT(privkey_get_pubkey(&key, &pubkey));
+        struct key_id key_id = pubkey_get_id(&pubkey);
+
+        wallet = zcl_calloc(1, sizeof(*wallet), "test_app_event_wallet");
+        ASSERT(wallet != NULL);
+        wallet_init(wallet);
+        wallet_ready = true;
+        ASSERT(wallet_import_key(wallet, &key));
+        size_t wallet_tx_count = wallet->num_wallet_tx;
+        size_t wallet_spent_count = wallet->num_spent;
+
+        struct zcl_app_event_scope_v1 scope = test_social_scope();
+        struct zcl_app_event_binding_test_spec_v1 binding_spec;
+        memset(&binding_spec, 0, sizeof(binding_spec));
+        binding_spec.struct_size = sizeof(binding_spec);
+        binding_spec.operation = ZCL_APP_WALLET_OP_SIGN_EVENT_V1;
+        binding_spec.app_generation = 7;
+        binding_spec.grant_revision = 3;
+        memset(binding_spec.grant_id, 0x11, sizeof(binding_spec.grant_id));
+        memset(binding_spec.manifest_digest, 0x22,
+               sizeof(binding_spec.manifest_digest));
+        binding_spec.scope = scope;
+        memcpy(binding_spec.author_key_id, key_id.id.data,
+               sizeof(binding_spec.author_key_id));
+        binding_spec.grant_active = true;
+        struct zcl_app_event_intent_v1 intent =
+            test_social_intent(payload, sizeof(payload) - 1);
+        struct zcl_app_signed_event_v1 event;
+        char why[256];
+
+        ASSERT(zcl_app_event_signing_binding_v1_test_create(
+            &binding_spec, &binding, why, sizeof(why)));
+
+        ASSERT(zcl_app_signed_event_v1_sign_wallet(
+            &intent, binding, wallet, &event, why, sizeof(why)));
+        ASSERT(zcl_app_signed_event_v1_verify(
+            &event, &scope, why, sizeof(why)));
+        ASSERT(event.signature_len > 0 &&
+               event.signature_len <= ZCL_APP_EVENT_SIGNATURE_MAX);
+        ASSERT(memcmp(event.event_id, expected_event_id,
+                      sizeof(expected_event_id)) == 0);
+
+        uint8_t canonical[256];
+        size_t canonical_len = 0;
+        ASSERT(zcl_app_signed_event_v1_canonical_unsigned(
+            &event, canonical, sizeof(canonical), &canonical_len,
+            why, sizeof(why)));
+        ASSERT(canonical_len == 187);
+        ASSERT(canonical[0] == 1 && canonical[1] == 0 &&
+               canonical[2] == 0 && canonical[3] == 0);
+        ASSERT(canonical[36] == 6 && canonical[37] == 0);
+        size_t required = 0;
+        ASSERT(!zcl_app_signed_event_v1_canonical_unsigned(
+            &event, NULL, 0, &required, why, sizeof(why)));
+        ASSERT(required == canonical_len);
+
+        struct zcl_app_signed_event_v1 replay;
+        ASSERT(zcl_app_signed_event_v1_sign_wallet(
+            &intent, binding, wallet, &replay,
+            why, sizeof(why)));
+        ASSERT(replay.signature_len == event.signature_len);
+        ASSERT(memcmp(replay.signature, event.signature,
+                      event.signature_len) == 0);
+        ASSERT(memcmp(replay.event_id, event.event_id,
+                      sizeof(event.event_id)) == 0);
+
+        static const uint8_t tampered_payload[] = "jello zclassic23";
+        struct zcl_app_signed_event_v1 bad = event;
+        bad.payload.data = tampered_payload;
+        ASSERT(!zcl_app_signed_event_v1_verify(
+            &bad, &scope, why, sizeof(why)));
+        bad = event;
+        bad.app_id[0] = 'S';
+        ASSERT(!zcl_app_signed_event_v1_verify(
+            &bad, &scope, why, sizeof(why)));
+        bad = event;
+        bad.topic[0] = 'x';
+        ASSERT(!zcl_app_signed_event_v1_verify(
+            &bad, &scope, why, sizeof(why)));
+        bad = event;
+        bad.chain_id[0] ^= 1;
+        ASSERT(!zcl_app_signed_event_v1_verify(
+            &bad, &scope, why, sizeof(why)));
+        bad = event;
+        bad.author_key_id[0] ^= 1;
+        ASSERT(!zcl_app_signed_event_v1_verify(
+            &bad, &scope, why, sizeof(why)));
+        bad = event;
+        bad.author_pubkey[8] ^= 1;
+        ASSERT(!zcl_app_signed_event_v1_verify(
+            &bad, &scope, why, sizeof(why)));
+        bad = event;
+        bad.kind++;
+        ASSERT(!zcl_app_signed_event_v1_verify(
+            &bad, &scope, why, sizeof(why)));
+        bad = event;
+        bad.created_at++;
+        ASSERT(!zcl_app_signed_event_v1_verify(
+            &bad, &scope, why, sizeof(why)));
+        bad = event;
+        bad.sequence = 2;
+        bad.previous_event_id[0] = 1;
+        ASSERT(!zcl_app_signed_event_v1_verify(
+            &bad, &scope, why, sizeof(why)));
+        bad = event;
+        bad.signature[bad.signature_len - 1] ^= 1;
+        ASSERT(!zcl_app_signed_event_v1_verify(
+            &bad, &scope, why, sizeof(why)));
+        bad = event;
+        bad.signature_len = ZCL_APP_EVENT_SIGNATURE_MAX + 1u;
+        ASSERT(!zcl_app_signed_event_v1_verify(
+            &bad, &scope, why, sizeof(why)));
+        bad = event;
+        memset(bad.signature, 0, sizeof(bad.signature));
+        memcpy(bad.signature, high_s_signature, sizeof(high_s_signature));
+        bad.signature_len = sizeof(high_s_signature);
+        ASSERT(!zcl_app_signed_event_v1_verify(
+            &bad, &scope, why, sizeof(why)));
+        ASSERT(event.signature_len < sizeof(event.signature));
+        bad = event;
+        bad.signature[event.signature_len] = 1;
+        ASSERT(zcl_app_signed_event_v1_verify(
+            &bad, &scope, why, sizeof(why)));
+        bad = event;
+        bad.event_id[0] ^= 1;
+        ASSERT(!zcl_app_signed_event_v1_verify(
+            &bad, &scope, why, sizeof(why)));
+        bad = event;
+        bad.previous_event_id[0] = 1;
+        ASSERT(!zcl_app_signed_event_v1_verify(
+            &bad, &scope, why, sizeof(why)));
+        bad = event;
+        bad.payload.len = ZCL_APP_EVENT_PAYLOAD_MAX + 1u;
+        ASSERT(!zcl_app_signed_event_v1_verify(
+            &bad, &scope, why, sizeof(why)));
+        bad = event;
+        bad.payload.data = NULL;
+        ASSERT(!zcl_app_signed_event_v1_verify(
+            &bad, &scope, why, sizeof(why)));
+
+        struct zcl_app_signed_event_v1 zero_event = {0};
+        struct zcl_app_signed_event_v1 denied = event;
+        struct zcl_app_event_signing_binding_v1 *denied_binding = NULL;
+        struct zcl_app_event_binding_test_spec_v1 denied_spec = binding_spec;
+        denied_spec.grant_active = false;
+        ASSERT(!zcl_app_event_signing_binding_v1_test_create(
+            &denied_spec, &denied_binding, why, sizeof(why)));
+        ASSERT(denied_binding == NULL);
+        ASSERT(!zcl_app_signed_event_v1_sign_wallet(
+            &intent, NULL, wallet, &denied, why, sizeof(why)));
+        ASSERT(memcmp(&denied, &zero_event, sizeof(denied)) == 0);
+
+        struct zcl_app_event_binding_test_spec_v1 wrong_spec = binding_spec;
+        wrong_spec.author_key_id[0] ^= 1;
+        struct zcl_app_event_signing_binding_v1 *wrong_binding = NULL;
+        ASSERT(zcl_app_event_signing_binding_v1_test_create(
+            &wrong_spec, &wrong_binding, why, sizeof(why)));
+        denied = event;
+        ASSERT(!zcl_app_signed_event_v1_sign_wallet(
+            &intent, wrong_binding, wallet, &denied, why, sizeof(why)));
+        ASSERT(memcmp(&denied, &zero_event, sizeof(denied)) == 0);
+        zcl_app_event_signing_binding_v1_test_destroy(wrong_binding);
+
+        struct zcl_app_event_scope_v1 small_scope = scope;
+        small_scope.max_event_bytes = (uint32_t)(canonical_len + 2 +
+            event.signature_len);
+        struct zcl_app_event_binding_test_spec_v1 small_spec = binding_spec;
+        small_spec.scope = small_scope;
+        struct zcl_app_event_signing_binding_v1 *small_binding = NULL;
+        ASSERT(zcl_app_event_signing_binding_v1_test_create(
+            &small_spec, &small_binding, why, sizeof(why)));
+        denied = event;
+        ASSERT(zcl_app_signed_event_v1_sign_wallet(
+            &intent, small_binding, wallet, &denied, why, sizeof(why)));
+        ASSERT(zcl_app_signed_event_v1_verify(
+            &denied, &small_scope, why, sizeof(why)));
+        zcl_app_event_signing_binding_v1_test_destroy(small_binding);
+        small_scope.max_event_bytes--;
+        small_spec.scope = small_scope;
+        small_binding = NULL;
+        ASSERT(zcl_app_event_signing_binding_v1_test_create(
+            &small_spec, &small_binding, why, sizeof(why)));
+        denied = event;
+        ASSERT(!zcl_app_signed_event_v1_sign_wallet(
+            &intent, small_binding, wallet, &denied, why, sizeof(why)));
+        ASSERT(memcmp(&denied, &zero_event, sizeof(denied)) == 0);
+        zcl_app_event_signing_binding_v1_test_destroy(small_binding);
+
+        struct zcl_app_event_scope_v1 malformed_scope = scope;
+        memset(malformed_scope.app_id, 'x', sizeof(malformed_scope.app_id));
+        struct zcl_app_event_binding_test_spec_v1 malformed_spec = binding_spec;
+        malformed_spec.scope = malformed_scope;
+        struct zcl_app_event_signing_binding_v1 *malformed_binding = NULL;
+        ASSERT(!zcl_app_event_signing_binding_v1_test_create(
+            &malformed_spec, &malformed_binding, why, sizeof(why)));
+        ASSERT(malformed_binding == NULL);
+
+        uint8_t failed_id[32];
+        memset(failed_id, 0xff, sizeof(failed_id));
+        bad = event;
+        bad.version = 0;
+        ASSERT(!zcl_app_signed_event_v1_id(
+            &bad, failed_id, why, sizeof(why)));
+        uint8_t zero_id[32] = {0};
+        ASSERT(memcmp(failed_id, zero_id, sizeof(failed_id)) == 0);
+        ASSERT(wallet->num_wallet_tx == wallet_tx_count);
+        ASSERT(wallet->num_spent == wallet_spent_count);
+        PASS();
+    } _test_next:;
+    if (wallet) {
+        if (wallet_ready)
+            wallet_free(wallet);
+        free(wallet);
+    }
+    zcl_app_event_signing_binding_v1_test_destroy(binding);
     return failures;
 }
 
 static int test_social_sim(void)
 {
     int failures = 0;
-    TEST("dev platform: social censorship and replay proof is deterministic") {
+    TEST("dev platform: social censorship proof is deterministic") {
         const uint64_t seed = UINT64_C(0x534f4349414c0001);
         struct zcl_social_sim_report a, b;
         ASSERT(zcl_social_app_sim_run(seed, &a));
@@ -459,6 +755,10 @@ static int test_social_sim(void)
         ASSERT(a.partition_rejoin_converged);
         ASSERT(a.late_joiner_caught_up);
         ASSERT(a.invalid_signature_rejected);
+        ASSERT(a.real_secp256k1_verified);
+        ASSERT(a.tampered_payload_rejected);
+        ASSERT(a.wrong_author_rejected);
+        ASSERT(a.forged_event_id_distinct);
         ASSERT(a.transcript == b.transcript);
         ASSERT(a.deliveries == b.deliveries);
         PASS();
@@ -745,6 +1045,7 @@ int test_dev_platform(void)
     failures += test_core_refusal_cycle();
     failures += test_core_refusal_token();
     failures += test_public_app_abi();
+    failures += test_signed_app_events();
     failures += test_social_sim();
     failures += test_native_activation_switch();
     failures += test_native_activation_request_builder();

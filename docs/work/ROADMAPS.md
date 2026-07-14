@@ -1,8 +1,9 @@
 # Roadmap index
 
 This repo has accumulated many dated roadmap docs. This index says which ones
-are LIVE (read and act on) and which are SUPERSEDED (history only, kept for
-context — each has a one-line tombstone header pointing back here).
+are LIVE (read and act on) and which retained pages are SUPERSEDED. Removed
+historical narratives are recoverable from Git and ledgered in
+[`archive/INDEX.md`](./archive/INDEX.md).
 
 ## LIVE — read these
 
@@ -16,12 +17,11 @@ context — each has a one-line tombstone header pointing back here).
 
 ## SUPERSEDED — archived, history only
 
-All below live in [`archive/`](./archive/) with a prepended tombstone header.
+All below still live in [`archive/`](./archive/) with a prepended tombstone
+header.
 
 | Archived doc | Superseded by |
 |---|---|
-| `architecture-roadmap.md` | `docs/FRAMEWORK.md` (canonical architecture) + `docs/REFACTOR_STATUS.md` (debt board) |
-| `architecture-execution-plan.md` | `docs/REFACTOR_STATUS.md` |
 | `architecture-deletion-plan.md` | `docs/REFACTOR_STATUS.md` (deletion targets mostly landed) |
 | `next-wave-plan.md` | `FORWARD_PLAN.md` |
 | `never-stuck-roadmap-2026-06-28.md` | `never-stuck-plan.md` |

@@ -260,7 +260,15 @@ size_t zcl_devloop_app_simulate_json(const char *app_id, uint64_t seed,
     bool replay_ok = zcl_social_app_sim_run(seed, &replay);
     bool identical = replay_ok && first.transcript == replay.transcript &&
                      first.deliveries == replay.deliveries &&
-                     first.rejected_invalid == replay.rejected_invalid;
+                     first.rejected_invalid == replay.rejected_invalid &&
+                     first.real_secp256k1_verified ==
+                         replay.real_secp256k1_verified &&
+                     first.tampered_payload_rejected ==
+                         replay.tampered_payload_rejected &&
+                     first.wrong_author_rejected ==
+                         replay.wrong_author_rejected &&
+                     first.forged_event_id_distinct ==
+                         replay.forged_event_id_distinct;
     int64_t elapsed_us = platform_time_monotonic_us() - started_us;
     bool ok = first_ok && identical;
 
@@ -274,7 +282,14 @@ size_t zcl_devloop_app_simulate_json(const char *app_id, uint64_t seed,
                     "\"partition_rejoin_converged\":%s,"
                     "\"late_joiner_caught_up\":%s,"
                     "\"invalid_signature_rejected\":%s,"
-                    "\"same_seed_replay\":%s}}",
+                    "\"real_secp256k1_verified\":%s,"
+                    "\"tampered_payload_rejected\":%s,"
+                    "\"wrong_author_rejected\":%s,"
+                    "\"forged_event_id_distinct\":%s,"
+                    "\"same_seed_replay\":%s},"
+                    "\"contained\":[\"wallet_signing_broker\","
+                    "\"event_store\",\"replay_head_store\","
+                    "\"p2p_transport\",\"chat_encryption\"]}",
                 ok ? "passed" : "failed", (unsigned long long)seed,
                 (unsigned long long)first.transcript, (long long)elapsed_us,
                 first.deliveries, first.rejected_invalid,
@@ -282,6 +297,10 @@ size_t zcl_devloop_app_simulate_json(const char *app_id, uint64_t seed,
                 first.partition_rejoin_converged ? "true" : "false",
                 first.late_joiner_caught_up ? "true" : "false",
                 first.invalid_signature_rejected ? "true" : "false",
+                first.real_secp256k1_verified ? "true" : "false",
+                first.tampered_payload_rejected ? "true" : "false",
+                first.wrong_author_rejected ? "true" : "false",
+                first.forged_event_id_distinct ? "true" : "false",
                 identical ? "true" : "false");
     return b.ok ? b.len : 0;
 }

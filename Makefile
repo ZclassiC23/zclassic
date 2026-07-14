@@ -1585,7 +1585,8 @@ replay-canary-genesis: zclassic23 zcl-rpc
 	 rm -f "$$marker"; \
 	 echo "replay-canary-genesis: PASS (fresh sentinel verdict=PASS)"'
 
-# ── D2 coinbase-maturity REPLAY GATE (docs/work/replay-substrate-design.md) ──
+# ── D2 coinbase-maturity REPLAY GATE ──
+# Full-history safety doctrine: docs/CONSENSUS_PARITY_DOCTRINE.md.
 #
 # Replays the real chain genesis->tip on a COPY datadir with the
 # coinbase-maturity tightening ON (-enforce-coinbase-maturity) under the
@@ -2075,7 +2076,8 @@ FUZZ_CFLAGS = -std=c23 -O1 -g -Wall -Wextra -Wno-unused-result \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) \
 	$(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) \
 	$(ADAPTERS_INCLUDES) $(MCP_INCLUDES) $(APP_SDK_INCLUDES) $(DEVLOOP_INCLUDES) \
-	-Ilib/test/include -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE -Ivendor/include \
+	-Ilib/test/include -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+	-DZCL_FUZZ_QUIET_LOG_MACROS -Ivendor/include \
 	-fsanitize=fuzzer,address,undefined \
 	-fno-sanitize=alignment
 FUZZ_LIBS = $(TOR_LIBS) $(LIBS)

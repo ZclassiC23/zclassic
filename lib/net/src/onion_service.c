@@ -849,12 +849,24 @@ size_t onion_service_handle_request(const char *method,
                                         response, response_max);
     }
 
-    /* Blog (static files from datadir) */
-    if (strncmp(path, "/blog", 5) == 0) {
-        struct onion_context *ctx = onion_ctx();
-        if (ctx->datadir && ctx->blog_serve)
-            return ctx->blog_serve(ctx->datadir, path,
-                                   (char *)response, response_max);
+    /* Blog MVC App. The same path handler is used by public HTTPS, so
+     * zclnet.net/blog and a node's onion expose the same local projection. */
+    if (strncmp(path, "/blog", 5) == 0 &&
+        (path[5] == 0 || path[5] == '/' || path[5] == '?')) {
+        extern size_t blog_site_handle_request(const char *, const char *,
+            const uint8_t *, size_t, uint8_t *, size_t);
+        size_t n = blog_site_handle_request(method, path, body, body_len,
+                                            response, response_max);
+        if (n > 0)
+            return n;
+        /* Fail closed: this signed MVC mount must never degrade into the
+         * unrelated legacy static-file Blog when proof storage is absent. */
+        return (size_t)snprintf((char *)response, response_max,
+            "HTTP/1.1 503 Service Unavailable\r\n"
+            "Content-Type: text/plain; charset=utf-8\r\n"
+            "Cache-Control: no-store\r\n"
+            "Connection: close\r\n\r\n"
+            "Blog storage is unavailable.\n");
     }
 
     /* 404 */

@@ -71,6 +71,8 @@ extern struct api_rpc_backend g_api_rpc;
 #define ZCL_SERVICE_OPERATION_SCHEMA "zcl.service_operation.v1"
 #define ZCL_NAMES_SERVICE_DIRECTORY_SCHEMA "zcl.names.service_directory.v1"
 #define ZCL_QUERY_FILTER_CONTRACT_SCHEMA "zcl.query_filter_contract.v1"
+#define API_QUERY_FILTER_SERVICE_OPERATIONS "service_operations"
+#define API_QUERY_FILTER_NAME_SERVICE_DIRECTORY "name_service_directory"
 #define ZCL_PATH_PARAM_CONTRACT_SCHEMA "zcl.path_param_contract.v1"
 #define ZCL_PUBLIC_STATUS_SCHEMA "zcl.public_status.v1"
 #define ZCL_MILESTONE_STATUS_SCHEMA "zcl.milestone_status.v1"
@@ -113,6 +115,19 @@ extern struct api_rpc_backend g_api_rpc;
     "Connection: close\r\n\r\n"
 
 struct json_value;
+
+#define API_QUERY_FILTER_MAX_FIELDS 6
+#define API_QUERY_FILTER_VALUE_CAP 64
+
+struct api_query_filter_contract_definition;
+
+/* One private engine keeps HTTP and native collection filters aligned. */
+struct api_query_filter {
+    const struct api_query_filter_contract_definition *contract;
+    char values[API_QUERY_FILTER_MAX_FIELDS][API_QUERY_FILTER_VALUE_CAP];
+    char unknown_key[48];
+    bool active;
+};
 
 struct api_freshness_meta {
     int64_t served_height;
@@ -207,10 +222,25 @@ void api_app_protocol_push_openapi_extensions(
     struct json_value *operation);
 const char *api_query_filter_contract_for_route(const char *method,
                                                 const char *public_path);
+void api_query_filter_init(struct api_query_filter *filter, const char *name);
+void api_query_filter_set(struct api_query_filter *filter,
+                          const char *key, const char *value);
+void api_query_filter_from_path(struct api_query_filter *filter, const char *path);
+bool api_query_filter_validate(const struct api_query_filter *filter,
+                               char *err,
+                               size_t err_len);
+const char *api_query_filter_value(const struct api_query_filter *filter,
+                                   const char *key);
+bool api_query_filter_matches_value(const struct api_query_filter *filter,
+                                    const char *canonical_key,
+                                    const char *actual);
+void api_query_filter_values_json(const struct api_query_filter *filter, struct json_value *out);
 void api_query_filter_allowed_filters_json(const char *contract_name,
                                            struct json_value *out);
 void api_query_filter_contract_json(const char *contract_name,
                                     struct json_value *out);
+void api_query_filter_error_json(const char *contract_name,
+                                 const char *message, struct json_value *out);
 bool api_path_param_contracts_json(const char *method,
                                    const char *public_path,
                                    const char *alias_of,

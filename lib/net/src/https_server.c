@@ -250,6 +250,38 @@ static void handle_https_client(SSL *ssl)
         }
     }
 
+    /* Public Blog App mount. Reverse-proxying this listener at zclnet.net
+     * therefore serves the exact same /blog resource as each onion. */
+    if (strncmp(path, "/blog", 5) == 0 &&
+        (path[5] == 0 || path[5] == '/' || path[5] == '?')) {
+        extern size_t blog_site_handle_request(const char *, const char *,
+            const unsigned char *, size_t, unsigned char *, size_t);
+        unsigned char *buf = zcl_malloc(HTTPS_RESPONSE_BUFFER_SIZE,
+                                        "https_blog_buf");
+        if (!buf) return;
+        size_t n = blog_site_handle_request(method, path, NULL, 0, buf,
+                                            HTTPS_RESPONSE_BUFFER_SIZE);
+        if (n > 0) {
+            size_t written = 0;
+            while (written < n) {
+                size_t chunk = n - written;
+                if (chunk > 16384) chunk = 16384;
+                int w = SSL_write(ssl, buf + written, (int)chunk);
+                if (w <= 0) break;
+                written += (size_t)w;
+            }
+        } else {
+            const char *resp =
+                "HTTP/1.1 503 Service Unavailable\r\n"
+                "Content-Type: text/plain\r\n"
+                "Connection: close\r\n\r\n"
+                "Blog storage is unavailable.\n";
+            SSL_write(ssl, resp, (int)strlen(resp));
+        }
+        free(buf);
+        return;
+    }
+
     /* ZCL Names — name→site resolution (/n/<name>) + registry (/names),
      * the same handler the onion service uses so a name resolves identically
      * on both transports. This listener is GET/HEAD-only (checked above), so

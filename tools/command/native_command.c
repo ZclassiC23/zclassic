@@ -625,7 +625,7 @@ void zcl_native_handle_app_list(const struct zcl_command_request *request,
     struct json_value apps;
     json_init(&apps);
     json_set_array(&apps);
-    static const char *const known[] = { "social" };
+    static const char *const known[] = { "blog", "social" };
     for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++) {
         struct json_value item;
         json_init(&item);
@@ -650,7 +650,12 @@ void zcl_native_handle_app_inspect(const struct zcl_command_request *request,
                                "app_id is required", "");
         return;
     }
-    if (strcmp(app_id, "social") != 0) {
+    const char *manifest = NULL;
+    if (strcmp(app_id, "blog") == 0)
+        manifest = "apps/blog/app.def";
+    else if (strcmp(app_id, "social") == 0)
+        manifest = "apps/social/app.def";
+    if (!manifest) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
                                ZCL_COMMAND_EXIT_BLOCKED, "UNKNOWN_APP",
                                "resolve", false, false,
@@ -659,8 +664,8 @@ void zcl_native_handle_app_inspect(const struct zcl_command_request *request,
                                          "list installed Apps");
         return;
     }
-    (void)json_push_kv_str(&reply->data, "app_id", "social");
-    (void)json_push_kv_str(&reply->data, "manifest", "apps/social/app.def");
+    (void)json_push_kv_str(&reply->data, "app_id", app_id);
+    (void)json_push_kv_str(&reply->data, "manifest", manifest);
     (void)json_push_kv_str(&reply->data, "status", "checkout-only");
 }
 

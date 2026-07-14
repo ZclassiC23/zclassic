@@ -55,7 +55,8 @@
 #                     makes ~/.zcash-params and ~/.zclassic (zclassicd chainstate
 #                     for the tier-1b Sapling-frontier borrow) reachable in the
 #                     isolated HOME. The generic default mode is NOT sufficient
-#                     to clear a live deploy — see docs/work/archive/boot-loop-2026-07-11.md.
+#                     to clear a live deploy; `ebfe4c207` added this mode after
+#                     a real flag-parity miss.
 #   --deadline=SECS   how long to watch the tip (default 180)
 #   --expect-climb-past=H
 #                     require the served/provable tip (H*) to climb strictly
@@ -333,8 +334,8 @@ case "$DEST" in "$SRC"|"$SRC"/*) echo "repro_on_copy: dest must not be inside sr
 # READ-ONLY reads of the running `zclassic23` user unit; the COPY destination is
 # still the fixed <HOME>/.zclassic-c23-COPY-<ts>-<slug> path computed above (no
 # caller-controlled dest), and every port/peer/-datadir the live unit carries is
-# stripped here — the harness OWNS ports, peers, and the datadir. See
-# docs/work/archive/boot-loop-2026-07-11.md "Copy-prove flag-parity gap".
+# stripped here — the harness OWNS ports, peers, and the datadir. This is the
+# flag-parity invariant locked by `ebfe4c207`.
 process_env_kv() {
     _kv="$1"; _key="${_kv%%=*}"; _val="${_kv#*=}"
     [ -n "$_key" ] || return 0

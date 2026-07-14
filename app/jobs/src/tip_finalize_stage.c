@@ -129,8 +129,7 @@ static const char *precondition_block_reason(const struct block_index *bi)
     return NULL;
 }
 
-/* HEADER-ONLY canonical-successor witness (deadlock-cure step 3,
- * docs/work/archive/sync-deadlock-cure-2026-06-27.md).
+/* HEADER-ONLY canonical-successor witness (deadlock cure `a35ca0c8f`).
  *
  * Returns true iff new_tip (N+1) is sufficient HEADER-level evidence that
  * old_tip (N) is on the canonical most-work chain — WITHOUT requiring N+1's
