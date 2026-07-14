@@ -246,12 +246,19 @@ iso_spawn_mainnet_node() {
     local extra="${1:-}"
     [ -n "$ISO_DD" ] || iso_die "iso_spawn_mainnet_node called before iso_init"
 
+    # -allow-plaintext-wallet: the throwaway /tmp datadir holds NO real keys
+    # (0 keys, 0 sapling keys — a fresh replay node never imports a wallet), so
+    # the wallet-encryption-default boot gate (src/main.c) has nothing to
+    # protect here. Without this flag that gate FATALs at boot ("refusing to
+    # create a new PLAINTEXT wallet") and the node never reaches RPC-ready —
+    # every from-fresh canary would FAIL with reason=rpc_never_ready.
     # shellcheck disable=SC2086
     setsid "$ISO_NODE_BIN" \
         -datadir="$ISO_DD" \
         -port="$ISO_PORT" -rpcport="$ISO_RPCPORT" \
         -fsport="$ISO_FSPORT" -httpsport="$ISO_HTTPSPORT" \
         -showmetrics=0 \
+        -allow-plaintext-wallet \
         $extra \
         >"$ISO_DD/node.log" 2>&1 &
     ISO_NODE_PID=$!
