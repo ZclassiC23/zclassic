@@ -22,9 +22,8 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "core.status.brief", "core", "",
-    "Flat lean status: served_height, header_height, gap, sync_state, "
-    "serving, healthy, peer_count, primary_blocker, "
-    "tip_advance_age_seconds",
+    "Flat lean status: hstar, gap, blocker, conditions, peers, rss "
+    "(full field list: docs/NATIVE_COMMAND_INTERFACE.md CLI UX contract)",
     "status,brief,lean,flat,gap,serving,healthy", "zcl.command.empty_input.v1",
     "zcl.core_status_brief.v1", "", "", "zclassic23 core status brief",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,

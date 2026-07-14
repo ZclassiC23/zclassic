@@ -71,6 +71,8 @@
 #include "mcp/router.h"
 #include "mcp/rpc_client.h"
 #include "command/native_command.h"
+#include "config/command_catalog.h"
+#include "kernel/command_registry.h"
 #include <signal.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -1608,6 +1610,27 @@ static bool cli_print_contract_method_skew_diagnostic(
     return true;
 }
 
+/* CLI UX contract: unrecognized top-level command. Fires only after the RPC
+ * layer itself has confirmed `method` is not a real RPC method (method not
+ * found) and neither specialized fallback above claimed it — i.e. this is a
+ * genuine typo, not a version-skew symptom. The message itself (typed error
+ * line + up to 3 "did you mean" suggestions from the existing command-search
+ * index) is built by zcl_native_render_unknown_command so it can be unit
+ * tested without a live node; this just prints it. Never touches the node
+ * again. */
+static void cli_print_unknown_command_diagnostic(const char *method)
+{
+    char buf[1024];
+    size_t n = zcl_native_render_unknown_command(zcl_command_catalog(),
+                                                 method, buf, sizeof(buf));
+    if (n > 0)
+        fputs(buf, stderr);
+    else
+        fprintf(stderr, "error=UNKNOWN_COMMAND detail=no such command '%s' "
+                        "try=zclassic23 discover search %s\n",
+               method ? method : "", method ? method : "");
+}
+
 static void print_usage(const char *prog);
 
 typedef bool (*cli_static_agent_handler)(const struct json_value *params,
@@ -1951,14 +1974,19 @@ static int cli_main(int argc, char **argv)
         method = "summary";
 
     /* `zclassic23 status brief[=1]` → the native brief prose leaf
-     * (core.status.brief): a ~10-line synced/gap/blocker/peers/rss rendering
-     * instead of the ~6KB full status JSON. --format=json forwards through. */
+     * (core.status.brief): the CLI UX contract's ONE-LINE synced/gap/
+     * blocker/peers/rss rendering instead of the ~15KB full status JSON.
+     * `zclassic23 status field=a,b` selects just those fields (same flat
+     * body, one source of truth — see zcl_native_status_brief_body).
+     * --format=json and --next forward through as-is. */
     if (strcmp(method, "status") == 0) {
         bool want_brief = false;
-        const char *fwd[4];
+        bool saw_format_json = false;
+        const char *fwd[6];
         int nf = 0;
         fwd[nf++] = "status";
         fwd[nf++] = "brief";
+        char field_flag[300];
         for (int i = 0; i < nparams; i++) {
             const char *p = params_storage[i];
             if (!p)
@@ -1966,9 +1994,24 @@ static int cli_main(int argc, char **argv)
             if (strcmp(p, "brief") == 0 || strcmp(p, "brief=1") == 0 ||
                 strcmp(p, "brief=true") == 0) {
                 want_brief = true;
-            } else if (strcmp(p, "--format=json") == 0 && nf < 4) {
+            } else if (strncmp(p, "field=", 6) == 0 && nf < 6) {
+                want_brief = true;
+                (void)snprintf(field_flag, sizeof(field_flag), "--%s", p);
+                fwd[nf++] = field_flag;
+            } else if ((strcmp(p, "--format=json") == 0 ||
+                       strcmp(p, "--next") == 0) && nf < 6) {
+                if (strcmp(p, "--format=json") == 0)
+                    saw_format_json = true;
                 fwd[nf++] = p;
             }
+        }
+        /* CLI UX contract: ZCL_BRIEF=1 defaults `status` to brief without
+         * typing brief=1; an explicit --format=json still escapes to the
+         * full structured body. */
+        if (!want_brief && !saw_format_json) {
+            const char *env_brief = getenv("ZCL_BRIEF");
+            if (env_brief && env_brief[0] && strcmp(env_brief, "0") != 0)
+                want_brief = true;
         }
         if (want_brief)
             return zcl_native_command_main("core", fwd, nf, datadir, cli_port);
@@ -2002,10 +2045,42 @@ static int cli_main(int argc, char **argv)
         return 1;
     }
 
+    /* CLI UX contract: `zclassic23 dumpstate <subsystem> field=a,b` (and, in
+     * principle, any other raw RPC method) — pull a bare `field=` token out
+     * of the forwarded RPC params before the call, then select just those
+     * names out of the response afterward. `dumpstate`'s result nests the
+     * subsystem's own fields under "state" (see diag_rpc_dumpstate_builtin);
+     * every other method is selected at the top level of "result". */
+    const char *field_csv = NULL;
+    bool saw_format_json = false;
+    const char *rpc_params_storage[CLI_MAX_PARAMS];
+    int rpc_nparams = 0;
+    for (int i = 0; i < nparams; i++) {
+        const char *p = params_storage[i];
+        if (p && strncmp(p, "field=", 6) == 0 && p[6] && !field_csv) {
+            field_csv = p + 6;
+            continue;
+        }
+        if (p && strcmp(p, "--format=json") == 0)
+            saw_format_json = true;
+        if (rpc_nparams < CLI_MAX_PARAMS)
+            rpc_params_storage[rpc_nparams++] = p;
+    }
+    /* CLI UX contract: ZCL_BRIEF=1 makes `dumpstate` default to the flat
+     * field-selected rendering (every top-level key of the subsystem's own
+     * `.state`) without typing `field=`; --format=json still escapes it. The
+     * `status` equivalent lives in the "status" block above (core.status.brief
+     * already covers select-vs-brief; this is the raw-RPC-path twin for
+     * dumpstate, which has no separate brief body to fetch). */
+    const char *env_brief = getenv("ZCL_BRIEF");
+    bool zcl_brief_on = env_brief && env_brief[0] && strcmp(env_brief, "0") != 0;
+    bool auto_all_fields = !field_csv && zcl_brief_on && !saw_format_json &&
+                           strcmp(method, "dumpstate") == 0;
+
     struct json_value jp;
     const char *runtime_method = cli_runtime_rpc_method(method);
-    if (!rpc_convert_values(runtime_method, params_storage, (size_t)nparams,
-                            &jp)) {
+    if (!rpc_convert_values(runtime_method, rpc_params_storage,
+                            (size_t)rpc_nparams, &jp)) {
         fprintf(stderr, "Bad parameters\n");
         return 1;
     }
@@ -2036,7 +2111,75 @@ static int cli_main(int argc, char **argv)
             free(resp);
             return 1;
         }
+        cli_print_unknown_command_diagnostic(method);
+        free(resp);
+        return ZCL_COMMAND_EXIT_INVALID;
     }
+
+    if (field_csv || auto_all_fields) {
+        struct json_value root;
+        bool handled = false;
+        if (json_read(&root, resp, strlen(resp)) && root.type == JSON_OBJ) {
+            const struct json_value *result = json_get(&root, "result");
+            if (result && strcmp(runtime_method, "dumpstate") == 0) {
+                const struct json_value *state = json_get(result, "state");
+                if (state && state->type == JSON_OBJ)
+                    result = state;
+            }
+            /* ZCL_BRIEF auto-select: no field= was given, so select every
+             * top-level key of `result` — same selection function, no
+             * second data path. */
+            char all_fields[2048];
+            const char *use_csv = field_csv;
+            if (!use_csv && result && result->type == JSON_OBJ) {
+                size_t alen = 0;
+                for (size_t k = 0; k < result->num_children; k++) {
+                    int an = snprintf(all_fields + alen,
+                                     sizeof(all_fields) - alen, "%s%s",
+                                     alen ? "," : "", result->keys[k]);
+                    if (an > 0 && (size_t)an < sizeof(all_fields) - alen)
+                        alen += (size_t)an;
+                }
+                use_csv = all_fields;
+            }
+            char sel[ZCL_COMMAND_LIST_BUDGET + 1];
+            char selerr[320];
+            if (result && use_csv && use_csv[0] &&
+                zcl_native_render_field_selection(result, use_csv, sel,
+                                                  sizeof(sel), selerr,
+                                                  sizeof(selerr))) {
+                fputs(sel, stdout);
+                handled = true;
+            } else if (field_csv) {
+                /* Only an explicit field= failure is a hard error; an
+                 * auto-select with nothing to select from just falls
+                 * through to the normal full-result print below. */
+                fprintf(stderr, "error=UNKNOWN_FIELD detail=%s try=%s\n",
+                       result ? selerr : "this method returned no selectable "
+                                          "result",
+                       method);
+                json_free(&root);
+                free(resp);
+                return ZCL_COMMAND_EXIT_INVALID;
+            }
+        }
+        json_free(&root);
+        if (handled) {
+            free(resp);
+            return 0;
+        }
+        if (field_csv) {
+            free(resp);
+            fprintf(stderr,
+                   "error=UNKNOWN_FIELD detail=response did not parse "
+                   "try=%s\n", method);
+            return ZCL_COMMAND_EXIT_INVALID;
+        }
+        /* auto_all_fields found nothing to flatten (e.g. malformed
+         * response) — fall through to the normal full print so ZCL_BRIEF
+         * never hides a real error behind a silent no-op. */
+    }
+
     int rc = rpc_cli_print_json_result(resp, stdout, stderr);
     free(resp);
     return rc;
@@ -2450,6 +2593,24 @@ int main(int argc, char **argv)
     for (int i = 1; i < argc; ++i) {
         if (strncmp(argv[i], "-bench", 6) == 0)
             return bench_mode_main(argc, argv);
+    }
+
+    /* CLI UX contract: bare `zclassic23`, zero arguments. The real node
+     * service NEVER invokes the binary this way (deploy/zclassic23.service's
+     * ExecStart always passes -datadir=/-rpcport=/etc — see
+     * docs/NATIVE_COMMAND_INTERFACE.md "CLI UX contract"), so this is a
+     * human at a shell prompt, not a boot attempt. Print the ONE-LINE status
+     * brief + one suggested next command instead of silently booting a
+     * default-config node underfoot. Delegates to cli_main with a synthetic
+     * argv so datadir/rpcport resolution (cookie lookup, service exec-arg
+     * fallback) is the exact same code path `zclassic23 status brief=1`
+     * already uses — no duplicated logic. */
+    if (argc == 1) {
+        char *synthetic[] = {
+            argv[0], (char *)"status", (char *)"brief", (char *)"--next",
+            NULL,
+        };
+        return cli_main(4, synthetic);
     }
 
     /* CLI mode: zclassic23 getblockcount */

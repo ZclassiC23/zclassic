@@ -2,16 +2,20 @@
  *
  * test_operator_ux — the operator-UX native commands (wf/operator-ux):
  *   explain (pure topic composers), profile (in-process thread sampler),
- *   ops.producer.status (node-free producer datadir reader), and the brief
- *   status prose renderer. Each is exercised without a running node using
- *   fabricated fixtures / a synthetic datadir.
+ *   ops.producer.status (node-free producer datadir reader), and the CLI UX
+ *   contract (docs/NATIVE_COMMAND_INTERFACE.md): the ONE-LINE status brief,
+ *   the next-command hint, the field selector, and the unknown-command
+ *   diagnostic. Each is exercised without a running node using fabricated
+ *   fixtures / a synthetic datadir.
  */
 
 #include "test/test_helpers.h"
 
 #include "controllers/explain_native_handlers.h"
 #include "config/consensus_state_producer_receipt.h"
+#include "config/command_catalog.h"
 #include "command/native_command.h"
+#include "kernel/command_registry.h"
 #include "util/thread_profile.h"
 #include "util/stage.h"
 #include "storage/progress_store.h"
@@ -231,31 +235,230 @@ static int test_producer_status_absent(void)
     return failures;
 }
 
-/* ── brief status prose ────────────────────────────────────────────── */
+/* ── CLI UX contract: ONE-LINE status brief ──────────────────────────── */
 
-static int test_brief_status_contains_gap(void)
+static void fixture_brief_body(struct json_value *d, int64_t hstar,
+                               int64_t header, int64_t gap,
+                               const char *sync_state, const char *blocker,
+                               int64_t blocker_age_s,
+                               int64_t active_conditions, int64_t peer_count,
+                               int64_t rss_mb, bool healthy)
+{
+    json_init(d);
+    json_set_object(d);
+    json_push_kv_int(d, "hstar", hstar);
+    json_push_kv_int(d, "served_height", hstar);
+    json_push_kv_int(d, "header_height", header);
+    json_push_kv_int(d, "gap", gap);
+    json_push_kv_int(d, "peer_best", header);
+    json_push_kv_str(d, "sync_state", sync_state);
+    json_push_kv_bool(d, "serving", true);
+    json_push_kv_bool(d, "healthy", healthy);
+    json_push_kv_int(d, "peer_count", peer_count);
+    json_push_kv_str(d, "primary_blocker", blocker);
+    json_push_kv_int(d, "blocker_age_s", blocker_age_s);
+    json_push_kv_int(d, "active_conditions", active_conditions);
+    json_push_kv_int(d, "rss_mb", rss_mb);
+    json_push_kv_int(d, "tip_advance_age_seconds", 5);
+}
+
+static int test_brief_status_one_line_contract(void)
 {
     int failures = 0;
-    TEST("brief status prose contains the gap number") {
+    TEST("brief status is ONE line, <=200 bytes, stable key=value, no braces") {
         struct json_value d;
-        json_init(&d);
-        json_set_object(&d);
-        json_push_kv_int(&d, "served_height", 100);
-        json_push_kv_int(&d, "header_height", 142);
-        json_push_kv_int(&d, "gap", 42);
-        json_push_kv_str(&d, "sync_state", "syncing");
-        json_push_kv_bool(&d, "serving", true);
-        json_push_kv_bool(&d, "healthy", false);
-        json_push_kv_int(&d, "peer_count", 8);
-        json_push_kv_str(&d, "primary_blocker", "none");
-        json_push_kv_int(&d, "tip_advance_age_seconds", 5);
+        fixture_brief_body(&d, 100, 142, 42, "syncing",
+                           "anchor_backfill_gap", 3600, 2, 8, 512, false);
 
         char buf[1024];
         zcl_native_status_brief_render(&d, buf, sizeof(buf));
-        ASSERT(strstr(buf, "42") != NULL);
-        ASSERT(strstr(buf, "BEHIND") != NULL);
-        ASSERT(strstr(buf, "peers: 8") != NULL);
+
+        ASSERT(strchr(buf, '\n') == NULL); /* exactly one line */
+        ASSERT(strlen(buf) <= 200);
+        ASSERT(strchr(buf, '{') == NULL && strchr(buf, '}') == NULL);
+        ASSERT(strstr(buf, "hstar=100") != NULL);
+        ASSERT(strstr(buf, "gap=42") != NULL);
+        ASSERT(strstr(buf, "peer_best=142") != NULL);
+        ASSERT(strstr(buf, "sync=syncing") != NULL);
+        ASSERT(strstr(buf, "blocker=anchor_backfill_gap") != NULL);
+        ASSERT(strstr(buf, "blocker_age=3600s") != NULL);
+        ASSERT(strstr(buf, "conditions=2") != NULL);
+        ASSERT(strstr(buf, "peers=8") != NULL);
+        ASSERT(strstr(buf, "rss_mb=512") != NULL);
+
         json_free(&d);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_brief_status_unknown_fields_render_unknown(void)
+{
+    int failures = 0;
+    TEST("brief status renders 'unknown', never a fabricated zero, for a "
+         "missing field") {
+        struct json_value d;
+        json_init(&d);
+        json_set_object(&d);
+        /* Deliberately sparse: only sync_state known. */
+        json_push_kv_str(&d, "sync_state", "unknown");
+
+        char buf[1024];
+        zcl_native_status_brief_render(&d, buf, sizeof(buf));
+        ASSERT(strstr(buf, "hstar=unknown") != NULL);
+        ASSERT(strstr(buf, "gap=unknown") != NULL);
+        ASSERT(strstr(buf, "blocker=unknown") != NULL);
+        ASSERT(strstr(buf, "0") == NULL); /* never a fabricated zero */
+
+        json_free(&d);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* ── CLI UX contract: next-command hint ──────────────────────────────── */
+
+static int test_next_command_prioritizes_blocker_over_gap(void)
+{
+    int failures = 0;
+    TEST("next-command names the blocker before the gap or a healthcheck") {
+        struct json_value d;
+        fixture_brief_body(&d, 100, 200, 100, "syncing", "anchor_gap", 10, 0,
+                           4, 256, false);
+        ASSERT(strcmp(zcl_native_status_brief_next_command(&d),
+                      "zclassic23 explain blockers") == 0);
+        json_free(&d);
+
+        fixture_brief_body(&d, 100, 200, 100, "syncing", "none", 0, 0, 4,
+                           256, false);
+        ASSERT(strcmp(zcl_native_status_brief_next_command(&d),
+                      "zclassic23 explain sync") == 0);
+        json_free(&d);
+
+        fixture_brief_body(&d, 200, 200, 0, "synced", "none", 0, 0, 4, 256,
+                           true);
+        ASSERT(strcmp(zcl_native_status_brief_next_command(&d),
+                      "zclassic23 healthcheck") == 0);
+        json_free(&d);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* ── CLI UX contract: field selector ──────────────────────────────────── */
+
+static int test_field_selection_selects_requested_fields(void)
+{
+    int failures = 0;
+    TEST("field selection returns exactly the requested fields as key=value") {
+        struct json_value d;
+        fixture_brief_body(&d, 100, 142, 42, "syncing", "none", 0, 1, 8, 512,
+                           true);
+
+        char out[512], err[256];
+        ASSERT(zcl_native_render_field_selection(&d, "gap,primary_blocker",
+                                                 out, sizeof(out), err,
+                                                 sizeof(err)));
+        ASSERT(strcmp(out, "gap=42\nprimary_blocker=none\n") == 0);
+
+        /* Whitespace-tolerant, order-preserving. */
+        char out2[512];
+        ASSERT(zcl_native_render_field_selection(&d, " hstar , sync_state ",
+                                                 out2, sizeof(out2), err,
+                                                 sizeof(err)));
+        ASSERT(strcmp(out2, "hstar=100\nsync_state=syncing\n") == 0);
+
+        json_free(&d);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_field_selection_unknown_field_is_typed_error(void)
+{
+    int failures = 0;
+    TEST("field selection rejects an unknown field name, never a partial "
+         "line") {
+        struct json_value d;
+        fixture_brief_body(&d, 100, 142, 42, "syncing", "none", 0, 1, 8, 512,
+                           true);
+
+        char out[512], err[256];
+        out[0] = '\1'; /* poison: must stay untouched on failure */
+        bool ok = zcl_native_render_field_selection(
+            &d, "gap,not_a_real_field", out, sizeof(out), err, sizeof(err));
+        ASSERT(!ok);
+        ASSERT(out[0] == '\1');
+        ASSERT(strstr(err, "not_a_real_field") != NULL);
+
+        /* Duplicate field names are also rejected. */
+        ASSERT(!zcl_native_render_field_selection(&d, "gap,gap", out,
+                                                  sizeof(out), err,
+                                                  sizeof(err)));
+        ASSERT(strstr(err, "duplicate") != NULL);
+
+        /* A container value too large for one key=value line fails typed —
+         * never emitted truncated mid-string. */
+        struct json_value big, item;
+        json_init(&big);
+        json_set_array(&big);
+        for (int i = 0; i < 400; i++) {
+            json_init(&item);
+            json_set_str(&item, "twenty-byte-filler..");
+            json_push_back(&big, &item);
+            json_free(&item);
+        }
+        json_push_kv(&d, "big_container", &big);
+        json_free(&big);
+        char bigout[16384];
+        ASSERT(!zcl_native_render_field_selection(&d, "big_container", bigout,
+                                                  sizeof(bigout), err,
+                                                  sizeof(err)));
+        ASSERT(strstr(err, "big_container") != NULL);
+        ASSERT(strstr(err, "format=json") != NULL);
+
+        json_free(&d);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* ── CLI UX contract: unknown-command diagnostic ─────────────────────── */
+
+static int test_unknown_command_diagnostic_has_typed_shape(void)
+{
+    int failures = 0;
+    TEST("unknown-command diagnostic is error=...detail=...try=... plus a "
+         "did-you-mean line when the reused search index has a hit") {
+        const struct zcl_command_registry *reg = zcl_command_catalog();
+        ASSERT(reg != NULL);
+
+        /* "stat" substring-matches the real "core.status" path/tags in the
+         * existing (non-fuzzy) command-search index, so a did-you-mean line
+         * is expected — proves the wiring, not a claim about typo-distance
+         * quality (we reuse the index as-is, no new fuzzy matcher). */
+        char buf[1024];
+        size_t n = zcl_native_render_unknown_command(reg, "stat", buf,
+                                                      sizeof(buf));
+        ASSERT(n > 0);
+        ASSERT(strstr(buf, "error=UNKNOWN_COMMAND") != NULL);
+        ASSERT(strstr(buf, "detail=") != NULL);
+        ASSERT(strstr(buf, "try=zclassic23 discover search stat") != NULL);
+        ASSERT(strstr(buf, "did you mean:") != NULL);
+
+        /* A query the index has no hit for still gets the typed error line,
+         * just no did-you-mean line (never fabricated). */
+        n = zcl_native_render_unknown_command(
+            reg, "zzznotarealcommandzzz", buf, sizeof(buf));
+        ASSERT(n > 0);
+        ASSERT(strstr(buf, "error=UNKNOWN_COMMAND") != NULL);
+        ASSERT(strstr(buf, "did you mean:") == NULL);
+
+        /* A NULL/empty method never crashes and writes nothing. */
+        ASSERT(zcl_native_render_unknown_command(reg, NULL, buf,
+                                                 sizeof(buf)) == 0);
+        ASSERT(zcl_native_render_unknown_command(reg, "", buf,
+                                                 sizeof(buf)) == 0);
         PASS();
     } _test_next:;
     return failures;
@@ -269,7 +472,12 @@ int test_operator_ux(void)
     failures += test_profile_samples_threads();
     failures += test_producer_status_synthetic();
     failures += test_producer_status_absent();
-    failures += test_brief_status_contains_gap();
+    failures += test_brief_status_one_line_contract();
+    failures += test_brief_status_unknown_fields_render_unknown();
+    failures += test_next_command_prioritizes_blocker_over_gap();
+    failures += test_field_selection_selects_requested_fields();
+    failures += test_field_selection_unknown_field_is_typed_error();
+    failures += test_unknown_command_diagnostic_has_typed_shape();
     printf("=== operator_ux: %d failures ===\n", failures);
     return failures;
 }

@@ -98,13 +98,15 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_ops_selftest)
 
-/* Operator-UX layer: one typed command per hand-run diagnostic procedure.
- * Grouped under ops.ux so the ops branch menu stays within its byte budget;
- * explain/profile also carry bare-root aliases (`zclassic23 explain sync`). */
-ZCL_COMMAND_BRANCH("ops.ux", "ops", "Operator/AI diagnostic composers",
+/* Operator-UX diagnostics live under the existing ops.debug branch — a new
+ * top-level ops.* branch would push the ops menu over its 1600-byte budget
+ * (ZCL_COMMAND_BRANCH_BUDGET; proven by test_branch_menus_shallow). The
+ * bare-root aliases (`zclassic23 explain sync`, `zclassic23 profile`) are
+ * the primary invocation surface, so the canonical path barely shows. */
+ZCL_COMMAND_BRANCH("ops.debug", "ops", "Diagnostics",
                    ZCL_COMMAND_LAYER_OPS)
 ZCL_COMMAND_READY_READ(
-    "ops.ux.explain", "ops.ux", "explain,ops.explain",
+    "ops.debug.explain", "ops.debug", "explain,ops.explain",
     "Explain a subsystem in plain prose",
     "explain,sync,blockers,health,why,diagnose,prose",
     "zcl.ops_explain.input.v1", "zcl.ops_explain.v1", "topic", "topic",
@@ -116,7 +118,7 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_ops_explain)
 
 ZCL_COMMAND_READY_READ(
-    "ops.ux.profile", "ops.ux", "profile,ops.profile",
+    "ops.debug.profile", "ops.debug", "profile,ops.profile",
     "Sample thread CPU + stage rates",
     "profile,cpu,threads,bottleneck,perf,wchan,sample",
     "zcl.ops_profile.input.v1", "zcl.ops_profile.v1", "seconds,top_n",
@@ -127,23 +129,19 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_ops_profile)
 
-ZCL_COMMAND_BRANCH("ops.ux.producer", "ops.ux",
-                   "Mint/anchor producer inspection", ZCL_COMMAND_LAYER_OPS)
 ZCL_COMMAND_READY_READ(
-    "ops.ux.producer.status", "ops.ux.producer", "ops.producer.status",
+    "ops.debug.producer", "ops.debug", "ops.producer.status",
     "Read a producer datadir's fold progress + receipt",
     "producer,mint,anchor,receipt,fold,progress,eta",
     "zcl.ops_producer_status.input.v1", "zcl.ops_producer_status.v1",
     "datadir", "datadir",
-    "zclassic23 ops ux producer status --datadir=/home/you/.zclassic-c23-mint",
+    "zclassic23 ops producer status --datadir=/home/you/.zclassic-c23-mint",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_CHAIN_READ, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_ops_producer_status)
 
-ZCL_COMMAND_BRANCH("ops.debug", "ops", "Thread backtraces",
-                   ZCL_COMMAND_LAYER_OPS)
 ZCL_COMMAND_READY_READ(
     "ops.debug.backtrace", "ops.debug", "", "Dump every thread's backtrace",
     "backtrace,threads,stacks,hang,deadlock,debug", "zcl.command.empty_input.v1",
