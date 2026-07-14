@@ -480,6 +480,17 @@ void boot_mint_anchor_require_producer_lane(struct sqlite3 *progress_db,
                                             bool checkpoint_fold);
 bool boot_mint_anchor_should_log_progress(int32_t applied_through,
                                           int32_t anchor);
+/* mint-progress.log telemetry (impl in config/src/boot_mint_anchor_log.c —
+ * S1.4). Path resolver ($ZCL_MINT_PROGRESS_LOG, else
+ * <datadir>/mint-progress.log) + the throttled (~5s) best-effort append the
+ * drive loop calls: height/rate/eta plus the eight stages' step-EWMAs and the
+ * outer batch-COMMIT EWMA (`cm:`), the producer's only offline (RPC-less)
+ * bottleneck surface. */
+void boot_mint_anchor_progress_log_path(const char *datadir, char *out,
+                                        size_t n);
+void boot_mint_anchor_progress_log_tick(const char *path, int32_t through,
+                                        int32_t anchor, int64_t start_us,
+                                        bool force);
 /* Fail-closed mint-fold stall diagnosis (impl in config/src/boot_mint_anchor.c):
  * the drive loop calls this when the utxo_apply frontier stops below the anchor
  * for kStallLimit consecutive kicks. Reads the eight durable stage cursors,
@@ -499,8 +510,8 @@ void boot_mint_anchor_report_frontier_walled(struct sqlite3 *pdb,
  * format (S1.4: per-stage step-EWMA telemetry reachable from an OFFLINE
  * -mint-anchor producer, which runs without RPC) without duplicating the
  * throttle/EWMA-collect/formatting logic living in
- * config/src/boot_mint_anchor.c. Not called by the mint driver itself (see
- * boot_mint_anchor_run). */
+ * config/src/boot_mint_anchor_log.c. Not called by the mint driver itself
+ * (see boot_mint_anchor_run). */
 void boot_mint_anchor_progress_log_tick_for_test(const char *path,
                                                  int32_t through,
                                                  int32_t anchor,

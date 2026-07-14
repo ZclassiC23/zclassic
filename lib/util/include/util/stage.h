@@ -204,6 +204,12 @@ bool stage_batch_begin(sqlite3 *db);
 bool stage_batch_end(sqlite3 *db, bool commit);
 bool stage_batch_active(void);
 
+/* Global EWMA (us, alpha=1/16, seeded from the first sample) of the outer
+ * batch-COMMIT wall time — the one per-batch fsync point a batched drain
+ * still pays. At most one batch commits at a time (see above), so a single
+ * process-global sample is exact. 0 before the first batched COMMIT. */
+int64_t stage_batch_commit_us_ewma(void);
+
 /* ── Pre-commit ordering hook ──────────────────────────────────────────
  * stage_batch_end() invokes this hook (when set) immediately BEFORE the outer
  * COMMIT, and only when it is about to commit. If the hook returns false it

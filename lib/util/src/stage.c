@@ -344,6 +344,28 @@ void stage_batch_set_precommit_hook(stage_batch_precommit_fn fn)
     g_precommit_hook = fn;
 }
 
+/* Wall time of the outer batch COMMIT — the one fsync point a batched drain
+ * still pays per batch. Process-global like g_batch_open (at most one batch
+ * commits at a time), same seeded 1/16 EWMA + floor-to-1 idiom as
+ * stage_record_step_timing above. */
+static _Atomic int64_t g_batch_commit_last_us;
+static _Atomic int64_t g_batch_commit_us_ewma;
+
+static void stage_batch_record_commit_timing(int64_t elapsed_us)
+{
+    if (elapsed_us <= 0)
+        elapsed_us = 1;
+    atomic_store(&g_batch_commit_last_us, elapsed_us);
+    int64_t prev = atomic_load(&g_batch_commit_us_ewma);
+    int64_t next = (prev == 0) ? elapsed_us : prev + (elapsed_us - prev) / 16;
+    atomic_store(&g_batch_commit_us_ewma, next);
+}
+
+int64_t stage_batch_commit_us_ewma(void)
+{
+    return atomic_load(&g_batch_commit_us_ewma);
+}
+
 bool stage_batch_active(void)
 {
     return atomic_load(&g_batch_open);
@@ -403,6 +425,7 @@ bool stage_batch_end(sqlite3 *db, bool commit)
     }
     char *err = NULL;
     const char *fini = commit ? "COMMIT" : "ROLLBACK";
+    int64_t commit_t0 = commit ? GetTimeMicros() : 0;
     int rc = sqlite3_exec(db, fini, NULL, NULL, &err);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "[stage] batch %s: %s\n",  // obs-ok:stage-commit-failure
@@ -415,6 +438,8 @@ bool stage_batch_end(sqlite3 *db, bool commit)
         return false;
     }
     if (err) sqlite3_free(err);
+    if (commit)
+        stage_batch_record_commit_timing(GetTimeMicros() - commit_t0);
     atomic_store(&g_batch_open, false);
     return true;
 }
