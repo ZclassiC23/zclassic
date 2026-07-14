@@ -1,0 +1,19 @@
+[Unit]
+Description=ZClassic23 External SLO Prober Timer — every 60s
+
+[Timer]
+# The scoreboard cadence: 60s, matching the "staying synced" SLO this
+# ledger exists to prove. OnBootSec gives a prompt first sample after
+# install/reboot instead of waiting a full interval for the first
+# OnUnitActiveSec elapse (same pattern as deploy/examples/zclassic23-soak.timer).
+# Persistent=true fires a catch-up sample after suspend/reboot so a prober
+# outage shows up as one bounded gap, not a silent stretch of nothing
+# (linger is already enabled on this box, so the timer survives reboots
+# without a login session).
+OnBootSec=30
+OnUnitActiveSec=60
+Persistent=true
+Unit=zclassic23-slo-probe.service
+
+[Install]
+WantedBy=timers.target
