@@ -73,7 +73,8 @@
 # names the offending condition, removes it, and asserts a clean rerun
 # passes — plus sibling cases (cooldown-bearing pass, progressing-exempt
 # pass, local-only-no-network pass, WARN-severity-ignored pass, hollow-scan
-# fail-loud). Wired into `make test` / `make test-parallel` via
+# fail-loud, recursive-selftest refusal). Wired into `make test` /
+# `make test-parallel` via
 # t_e14_condition_cooldown_gate() in lib/test/src/test_make_lint_gates.c so
 # it cannot silently rot.
 set -euo pipefail
@@ -251,6 +252,30 @@ selftest() {
 
     local failures=0
 
+    # Case 0: a child that accidentally inherits the self-test request must
+    # fail before creating fixtures or spawning another child. Keep this
+    # assertion independently bounded so a future regression in the guard
+    # cannot recreate the process-chain incident that motivated it.
+    local recursion_out recursion_rc=0
+    recursion_out="$(mktemp)"
+    if ! command -v timeout >/dev/null 2>&1; then
+        echo "SELFTEST FAIL: timeout is required for the recursion-guard test"
+        failures=$((failures + 1))
+    else
+        timeout --kill-after=0.1s 0.25s \
+            env ZCL_CONDITION_COOLDOWN_SELFTEST=1 \
+                "$SCRIPT_PATH" >"$recursion_out" 2>&1 || recursion_rc=$?
+        if [ "$recursion_rc" != "2" ]; then
+            echo "SELFTEST FAIL: recursive self-test expected exit 2, got $recursion_rc"
+            failures=$((failures + 1))
+        elif ! grep -q '^FAIL: check_condition_cooldown self-test recursion refused$' \
+                "$recursion_out"; then
+            echo "SELFTEST FAIL: recursive self-test refusal was not named"
+            failures=$((failures + 1))
+        fi
+    fi
+    rm -f "$recursion_out"
+
     # A permanent, never-removed filler file keeps the scan dir non-empty
     # across every case below (including after a fixture is deleted), so
     # a "clean pass" assertion never accidentally exercises the hollow-scan
@@ -323,7 +348,7 @@ EOF
         || failures=$((failures + 1))
 
     if [ "$failures" -eq 0 ]; then
-        echo "check_condition_cooldown: selftest OK (6/6 cases)"
+        echo "check_condition_cooldown: selftest OK (7/7 cases)"
         return 0
     fi
     echo "check_condition_cooldown: selftest FAILED ($failures case(s))"
@@ -331,6 +356,11 @@ EOF
 }
 
 if [ "${ZCL_CONDITION_COOLDOWN_SELFTEST:-0}" = "1" ]; then
+    if [ "${ZCL_CONDITION_COOLDOWN_SELFTEST_ACTIVE:-0}" = "1" ]; then
+        echo "FAIL: check_condition_cooldown self-test recursion refused" >&2
+        exit 2
+    fi
+    export ZCL_CONDITION_COOLDOWN_SELFTEST_ACTIVE=1
     selftest
 else
     main

@@ -1159,6 +1159,7 @@ static int t_git_hooks_gate_rejects_noop_pre_push(void)
 #define E1_FIXTURE_DST   "app/controllers/src/_e1_size_ceiling_fixture_tmp.c"
 #define E9_SCRIPT_REL    "tools/scripts/check_operator_needed_sink.sh"
 #define SYSMEM_SCRIPT_REL "tools/scripts/check_systemd_memory_budget.sh"
+#define QUALITY_GUARD_TEST_REL "tools/scripts/test_quality_job_guard.sh"
 /* Gate E14 — condition cooldown re-arm (the 2026-07-13 27h-page bug class).
  * The script's own selftest plants an isolated tmp-dir fixture (never the
  * real app/conditions/src tree) proving a network-dependent COND_CRITICAL
@@ -1524,6 +1525,20 @@ static int t_systemd_memory_budget(void)
         ASSERT(baseline_rc == 0);
         ASSERT(env_rc == 0);
         ASSERT(selftest_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Unattended quality lanes must yield to every active mint service and bound
+ * their dated logs without touching status, artifacts, or symlinks.  The
+ * standalone test replaces systemctl/logger and the lane bodies with hermetic
+ * fixtures, so it is safe inside the ordinary parallel test group. */
+static int t_quality_job_guard(void)
+{
+    int failures = 0;
+    TEST("[tooling] quality jobs yield to mint and retain bounded logs") {
+        ASSERT(run_gate_script(QUALITY_GUARD_TEST_REL, NULL) == 0);
         PASS();
     } _test_next:;
     return failures;
@@ -7549,6 +7564,7 @@ int test_make_lint_gates(void)
     failures += t_no_new_coin_backfill_caller();
     failures += t_e9_operator_needed_sink();
     failures += t_systemd_memory_budget();
+    failures += t_quality_job_guard();
     failures += t_e14_condition_cooldown_gate();
     failures += t_git_hooks_gate_enforces_tracked_pre_push();
     failures += t_git_hooks_gate_rejects_noop_pre_push();

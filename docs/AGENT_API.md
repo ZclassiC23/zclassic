@@ -1304,13 +1304,18 @@ edit the env file before starting or restarting the service.
 The background lanes keep expensive proof work running without blocking every
 push or AI edit loop.
 
-- `zclassic23-fuzz.timer` runs `tools/scripts/background_quality_lane.sh fuzz`
-  hourly. Default duration is 900 seconds per fuzzer; override with
-  `ZCL_FUZZ_DURATION`.
+- `zclassic23-fuzz.timer` runs the guarded
+  `tools/scripts/background_quality_lane.sh fuzz` lane hourly. Default
+  duration is 900 seconds per fuzzer; override with `ZCL_FUZZ_DURATION`.
 - `zclassic23-coverage.timer` runs
   `tools/scripts/background_quality_lane.sh coverage` weekly.
 - `zclassic23-test-suite.timer` runs
   `tools/scripts/background_quality_lane.sh tests` hourly.
+- All four heavyweight timer services (including simnet nightly) enter through
+  `tools/scripts/quality_job_guard.sh`: an active `*mint*` service or an
+  unavailable mint-state query clean-skips without replacing the prior
+  verdict. The guard retains the newest eight dated logs per lane; override
+  with `ZCL_QUALITY_LOG_KEEP`.
 - `make quality-linger-status` prints timer status plus the latest
   `zcl.background_quality_status.v1` JSON verdict.
 - `zclassic23 agentbuild` exposes the same lane verdict files through

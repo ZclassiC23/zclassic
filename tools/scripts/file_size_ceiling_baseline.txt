@@ -21,15 +21,11 @@
 app/controllers/src/agent_anchor_status_controller.c 861
 app/controllers/src/agent_controller.c 908
 app/controllers/src/api_controller_status.c 898
-app/controllers/src/diagnostics_registry.c 815
 app/controllers/src/name_controller.c 1034
 app/controllers/src/swap_controller.c 1013
-app/jobs/src/reducer_frontier.c 806
-app/jobs/src/stage_repair_reducer_frontier.c 814
 app/jobs/src/tip_finalize_stage.c 816
 app/jobs/src/utxo_apply_stage.c 937
 app/services/src/block_index_loader.c 844
-app/services/src/chain_state_service.c 810
 app/services/src/node_db_catchup_service.c 860
 app/services/src/rolling_anchor_service.c 801
 app/services/src/sticky_escalator.c 873

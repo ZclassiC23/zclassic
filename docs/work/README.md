@@ -1,55 +1,44 @@
-# Parallel-Worktree Workflow
+# Work directory and parallel-worktree workflow
 
-> Status note, 2026-06-01: this directory contains only the parallel-worktree
-> protocol. The current architecture/status sources are `docs/FRAMEWORK.md`,
-> `docs/REFACTOR_STATUS.md`, and `docs/HANDOFF.md`. Obsolete cutover/B8
-> runbooks, stale design notes, and paused worker assignments were deleted; git
-> history is their audit record.
+This directory contains active plans, designs, dated evidence, and the
+parallel-worktree protocol. It is not itself a priority queue:
 
-The framework refactor runs in parallel across multiple working
-directories ("worktrees" — actually separate clones). Each worktree picks
-up an assignment, commits, pushes, and reports completion. A single
-**orchestrator** session (typically in the main repo at
-`~/github/zclassic23`) reviews, runs the full test suite
-(`make test_parallel`), and dispatches the next round.
+1. [`../HANDOFF.md`](../HANDOFF.md) owns current live facts.
+2. [`FORWARD_PLAN.md`](./FORWARD_PLAN.md) is the sole ordered execution plan.
+3. [`../MVP.md`](../MVP.md) owns the v1 acceptance contract.
 
-## Worktree map
+The active #1 track is the sovereign complete-state cure. Zero-MCP is the
+secondary development track. Architecture cleanup remains off the v1 path
+unless the owner explicitly promotes an item.
 
-| Path | ID | Role |
-|---|---|---|
-| `~/github/zclassic23`   | `main` | Orchestrator: writes assignments, merges PRs, updates status board, dispatches next phase |
-| `~/github/zclassic23-2` | `wt2`  | Worker |
-| `~/github/zclassic23-3` | `wt3`  | Worker |
-
-Worker identity is **derived from the worktree path**: agents check `pwd`
-and extract the suffix after `zclassic23-` (e.g., `2` → wt2). If no
-suffix, they are the orchestrator.
+Worktrees are dynamic; never infer current workers from a hard-coded path list.
+Inspect them with `git worktree list --porcelain`. The checkout at
+`~/github/zclassic23` is normally the orchestrator. Every other registered
+checkout is a worker or an isolated quality lane and must be inspected before
+removal; dirty worktrees are preserved.
 
 ## How a worker session starts
 
-Human runs in the worker's directory:
+Run `pwd` and `git worktree list --porcelain`, then follow
+[`agent-protocol.md`](./agent-protocol.md). The assignment owns the branch,
+scope, verification, and completion ritual; directory suffixes are labels, not
+a permanent server inventory.
 
-```bash
-cd ~/github/zclassic23-2
-claude   # or claude -p "continue zclassic23 development"
-```
+## Active control documents
 
-The agent startup and dispatch contract — what each session reads, how it
-detects its worktree ID, and the push/completion ritual — lives in
-[`agent-protocol.md`](./agent-protocol.md), the authoritative source of truth.
-
-## Where to look
-
-- **Current work:** [`FORWARD_PLAN.md`](./FORWARD_PLAN.md) (THE plan) and
-  [`MCP-REMOVAL-WORKLIST.md`](./MCP-REMOVAL-WORKLIST.md) (zero-MCP, the
-  active #1 track — the authoritative 114-site inventory).
+- **Current work:** [`FORWARD_PLAN.md`](./FORWARD_PLAN.md) (THE plan),
+  [`self-verified-tip-plan.md`](./self-verified-tip-plan.md),
+  [`CONSENSUS-STATE-BUNDLE.md`](./CONSENSUS-STATE-BUNDLE.md), and
+  [`sovereign-cutover-runbook.md`](./sovereign-cutover-runbook.md).
+- **Secondary track:** [`MCP-REMOVAL-WORKLIST.md`](./MCP-REMOVAL-WORKLIST.md)
+  (the authoritative zero-MCP inventory).
 - **Current architecture:** [`../FRAMEWORK.md`](../FRAMEWORK.md) (reference,
   off the v1 path — see `../REFACTOR_STATUS.md` for the debt board, which
   self-labels NOT the v1 path).
 - **Session entrypoint:** [`../HANDOFF.md`](../HANDOFF.md).
 - **Worker protocol:** this file plus [`agent-protocol.md`](./agent-protocol.md).
 
-## How assignments are structured
+## Worker protocol
 
 Each assignment lives at `docs/work/wt<N>-<slug>.md` and contains:
 
@@ -65,7 +54,8 @@ Each assignment lives at `docs/work/wt<N>-<slug>.md` and contains:
 
 - **Disjoint file scope**: each assignment lists exact files it owns; no other assignment may touch those files until it merges.
 - **No concurrent edits to** `REFACTOR_STATUS.md`: only orchestrator writes it. Workers append to their own assignment doc.
-- **Pull-rebase before push**: workers always `git pull --rebase origin main` before push to keep history linear.
+- **Integrate deliberately**: follow the current operator skill and assignment
+  instructions; do not assume every dirty checkout can safely rebase or push.
 
 ## Failure modes
 

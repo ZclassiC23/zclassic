@@ -21,6 +21,13 @@ longer `make simnet-fuzz-sweep` seed tail, both driven by
 `tools/scripts/simnet_nightly.sh` — same status-JSON/log-dir convention as
 `tools/scripts/background_quality_lane.sh`.
 
+The installed fuzz/test/coverage/simnet services enter through
+`tools/scripts/quality_job_guard.sh`. They clean-skip when any active user
+service name contains `mint`, leaving the last verdict untouched, and retain
+the newest eight dated logs per lane (`ZCL_QUALITY_LOG_KEEP` overrides the
+count). A failed mint-state query also skips rather than guessing that the host
+is idle.
+
 Not installed by default (owner-gated deploy step). To enable:
 
 ```bash

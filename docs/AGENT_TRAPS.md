@@ -105,9 +105,9 @@ historical fixture passes, then deploy/restart intentionally.
 - **Per-input MoneyRange validation.** Done. Every input value is range-checked at script-collection time, before script work is batched. → `connect_block.c:587-596` (rejects `bad-txns-inputvalues-outofrange`), listed as a new addition at `:18`.
 - **BIP30 duplicate-coinbase skip below the deferred-proof height.** Done, intentional for snapshot re-connection / kill-9 recovery (coinbase outputs already exist in the imported UTXO set). → `connect_block.c:290-291` (`skip_bip30`), `:293` (gated loop), comment `:286-290`.
 
-### Dead scaffolding — do NOT wire into consensus thinking it's missing
+### Advisory scaffolding — do NOT wire into consensus thinking it authenticates state
 
-- **The `xor_accumulator`-fed commitment MMR is RPC-export-only / dead.** `rpc_blockchain_maybe_commit` (`blockchain_controller.c:262`, `c.utxo_root=xor_accumulator` at `:285`) has ZERO runtime callers; the commitment-MMR root is read only by the `getcommitmentmmr`/`auditchain` export RPCs (`blockchain_controller_mmr.c`); no consensus path reads it. The MMB leaf's auxiliary `utxo_root` is also not a ZClassic-header commitment, so it cannot bind peer state to PoW. Delete the dead XOR path; keep snapshots assisted until local full-history promotion.
+- **The `xor_accumulator`-fed commitment MMR is advisory, sparse, and not consensus binding.** `boot_services.c` currently calls `rpc_blockchain_maybe_commit()` once to bootstrap an empty commitment history; no per-tip producer builds the history during ordinary runtime. The root is exposed by `getcommitmentmmr`/`auditchain`, but no consensus path reads it. Neither this XOR accumulator nor the MMB leaf's auxiliary `utxo_root` is committed by a ZClassic header, so neither can authenticate imported state or bind peer state to PoW. Treat `audit_passed` as internal-structure coverage only until this misleading compatibility surface is removed or renamed; keep snapshots assisted until local full-history promotion.
 
 ### Shipped but DEFAULT-OFF — present, not active (see also section 3 for why)
 

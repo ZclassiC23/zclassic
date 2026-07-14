@@ -4,11 +4,14 @@ Description=ZClassic23 Background Fuzz Lane
 [Service]
 Type=oneshot
 WorkingDirectory=%h/github/zclassic23
-ExecStart=%h/github/zclassic23/tools/scripts/background_quality_lane.sh fuzz
+# Clean-skip while any *mint* user service is active; prune old lane logs
+# before/after the run without changing the latest verdict on a skip.
+ExecStart=%h/github/zclassic23/tools/scripts/quality_job_guard.sh fuzz
 TimeoutStartSec=7200
 
 # The lane is evidence, not serving traffic. Keep it polite to the live node.
 Environment=ZCL_FUZZ_DURATION=900
+Environment=ZCL_QUALITY_LOG_KEEP=8
 Nice=15
 CPUWeight=10
 IOWeight=10

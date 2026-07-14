@@ -1,7 +1,7 @@
 # Refactor Status — Purpose-Per-File Finish Board
 
-> Updated 2026-07-12 (file-size baseline count + Wave C closure re-verified
-> against code; the rest of this file is the 2026-06-03 board — treat other
+> Updated 2026-07-14 (file-size ratchet count re-verified against code; the
+> rest of this file is the 2026-06-03 board — treat other
 > specific line counts as potentially stale until re-verified). This file is
 > the current debt board for finishing the framework refactor.
 > `docs/FRAMEWORK.md` remains the architecture.
@@ -37,9 +37,9 @@ and named below. This axis is **independent of the §3 live-tip runtime cluster*
   (pure core); `app/` depends inward on `domain|ports|application` **18×**.
 - 10 of 11 lint baselines = **0 entries** (shape/result-type/sqlite/supervisor/
   blocker/layering gates pass with zero grandfathered exceptions). The one
-  non-empty baseline is file-size: as re-counted 2026-07-12,
-  `tools/scripts/file_size_ceiling_baseline.txt` carries **21 grandfathered
-  entries** — **18 under `app/`** (largest: `app/views/src/explorer_pages_hodl.c`
+  non-empty baseline is file-size: as re-counted 2026-07-14,
+  `tools/scripts/file_size_ceiling_baseline.txt` carries **17 grandfathered
+  entries** — **14 under `app/`** (largest: `app/views/src/explorer_pages_hodl.c`
   1853, `app/controllers/src/name_controller.c` 1034,
   `app/controllers/src/swap_controller.c` 1013) and **3 under `config/src/`**
   (`boot.c` 3949, `boot_refold_staged.c` 2107, `boot_services.c` 1634).
@@ -61,7 +61,7 @@ and named below. This axis is **independent of the §3 live-tip runtime cluster*
 | 6 | Controller/Service legacy compat | baselines 0 (no NEW violations); import/sync controllers still orchestrate; services keep bare-bool compat APIs | subtraction, not new structure | B/C |
 
 Wave B = split the files at the 800 ceiling (the current inventory is the
-21-entry baseline above). Wave C (rename `*_controller`/`*_repository` →
+17-entry baseline above). Wave C (rename `*_controller`/`*_repository` →
 `*_service` under `app/services/`) is **DONE** — verified 2026-07-12:
 `app/services/src/` contains zero `*_controller.c`/`*_repository.c` files,
 and the lint gate `check-framework-filename-suffix`
@@ -160,8 +160,8 @@ node soak.
 
 ### E1 Oversized App Files
 
-`tools/scripts/file_size_ceiling_baseline.txt` has **21 grandfathered
-entries** (re-counted 2026-07-12): 18 under `app/` and 3 under
+`tools/scripts/file_size_ceiling_baseline.txt` has **17 grandfathered
+entries** (re-counted 2026-07-14): 14 under `app/` and 3 under
 `config/src/`. The largest review targets are `config/src/boot.c` (3949),
 `config/src/boot_refold_staged.c` (2107), `config/src/boot_services.c`
 (1634), and `app/views/src/explorer_pages_hodl.c` (1853). The baseline

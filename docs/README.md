@@ -1,6 +1,7 @@
 # docs/ — documentation map
 
-One line per doc. Start with the entry points, in order.
+Curated entry map, not an exhaustive file inventory. Start with the entry
+points in order; dated evidence and backlog material are intentionally omitted.
 
 ## Entry points (read in this order)
 
@@ -29,8 +30,22 @@ One line per doc. Start with the entry points, in order.
 
 ## Active plans
 
+- [`work/self-verified-tip-plan.md`](./work/self-verified-tip-plan.md) — active
+  #1 sovereign transparent + shielded state cure.
+- [`work/CONSENSUS-STATE-BUNDLE.md`](./work/CONSENSUS-STATE-BUNDLE.md) — atomic
+  complete-state artifact contract.
+- [`work/fast-fold-sync-plan.md`](./work/fast-fold-sync-plan.md) — dated fold
+  experiments and measurements; `HANDOFF.md` owns the current verdict.
+- [`work/sovereign-cutover-runbook.md`](./work/sovereign-cutover-runbook.md) —
+  owner-gated copy-proof and cutover sequence.
 - [`work/MCP-REMOVAL-PLAN.md`](./work/MCP-REMOVAL-PLAN.md) — zero-MCP program: delete the MCP server, native CLI becomes the only agent interface (prose rationale).
 - [`work/MCP-REMOVAL-WORKLIST.md`](./work/MCP-REMOVAL-WORKLIST.md) — the authoritative 114-site execution inventory for the zero-MCP program.
+
+## Dated review evidence
+
+- [`work/archive/CODEBASE-CONSOLIDATION-REVIEW-2026-07-14.md`](./work/archive/CODEBASE-CONSOLIDATION-REVIEW-2026-07-14.md) — full-tree code,
+  tooling, documentation, and developer-experience reduction audit; evidence,
+  not a competing plan.
 
 ## Architecture (reference, off the v1 path)
 

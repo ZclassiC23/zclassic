@@ -16,25 +16,59 @@
 
 ## 0-NEW. Incoming-developer handoff (current state)
 
-**`origin/main` is green and fully pushed** (`make build-only` + `make lint` clean). Foundation (log→reducer→projection→self-verify) is sound — finishing moves, not a rewrite. Physics floor (measured, Ryzen 9 7950X3D): full-verify ~60 s; today's fold sits ~30× above floor.
+**Protected producer — DO NOT stop, pause, restart, replace, renice, or move its
+datadir.** At 2026-07-14 17:19 UTC, PID 845172 was actively advancing
+`~/.zclassic-c23-mint-receipt` through h=1,689,999 / 3,056,758. Recent
+2,000-block windows were mostly 25–35 blocks/s (latest 34.8), with an
+approximately 11-hour instantaneous ETA. Treat the log as authoritative:
 
-**THE mission: get the node ALWAYS SYNCING FAST.** One lever dominates right now — fold speed.
+```bash
+systemctl --user status zclassic23-mint-receipt.service
+tail -n 5 ~/.zclassic-c23-mint-receipt/mint-progress.log
+```
 
-**Measured truth (2026-07-14, `~/.zclassic-c23-mint-receipt/mint-progress.log`).** The cure fold is **crypto-bound, not IO-bound and NOT "crypto-skipped"** (an earlier note said crypto is skipped below the anchor — that is WRONG). Per-block stage times at h~300k: `vh` (Equihash header validate) 5–33 ms + `pv` (Groth16 proof validate) 3–18 ms dominate; `sv` (ECDSA script, the only thing skipped below anchor) ~0.2 ms; `ua`/`tf` small. Net ≈ **22–35 blk/s → ~22 h ETA to the anchor (h=3,056,758)**. Physics floor is ~1000–1700 blk/s.
+The exact executable SHA3-256 is
+`34d78c9519c67d5c529a3cd354e7528a6b077f83db5df74764e2f38902c3fe2c`.
+The live transient unit now has `Restart=on-failure`; an identical persistent
+unit is enabled for the linger user so a host reboot does not silently lose the
+producer. Preserve the completed datadir and receipt even after the process
+finishes.
 
-**A1 parallel validation is ALREADY MERGED to main** (`c6c56a3b9`, 2026-07-13 20:42 UTC) — it parallelizes script+proof (`sv`+`pv`) across cores. The running producer binary (candidate `34d78c95`, built 23:25) **predates A1 and folds serially**, so it gets none of the benefit. `wf/parallel-validation` (branch, unmerged) is the OLD drifted lane — **do NOT reuse it**; the real A1 landed via `wf/a1-parallel-validate`.
+**Performance conclusion for this run:** the process consumes approximately
+one CPU continuously, reports work in the serial `vh`/`pv`/`ua` stages, has
+negligible I/O wait, and was observed while the NVMe device was mostly idle.
+The host still had about 65 GiB available RAM. More RAM, more generic CPU
+allocation, or moving SQLite onto a RAM disk would not make this already
+running binary use more cores and would add crash-loss risk. Performance work
+must happen on a datadir **copy** or a new isolated fixture while this producer
+continues untouched.
 
-**THE next action to make sync fast (owner pre-authorized; copy-prove first):**
-1. Build current `main` → `build/bin/zclassic23` (has A1).
-2. Copy-prove: fold a datadir **COPY** with the A1 binary, measure blk/s vs the ~30 the producer does at the same height range; confirm H\* advances + no parity break.
-3. If materially faster → restart `zclassic23-mint-receipt` on the A1 binary (fresh datadir + fresh receipt session; preserve the old datadir). Recipe: `--importblockindex $HOME/.zclassic <dir>/node.db` then start the unit. Never touch the two older producers (`~/.zclassic-c23-anchor-mint`, `-mint-fast`).
-4. Then attack `vh` (header validate) — the branch `wip/proof-lookahead-header-tuning` holds unmerged fold-speed code for exactly this (`proof_validate_lookahead.{c,h}`, `validate_headers_tuning.c`).
+**Server posture:** approximately 100 GB of abandoned logs, recursion debris,
+and obsolete scratch output was reclaimed; `/` had about 738 GB free (58% used),
+`/dev/shm` was empty, and the user service manager had zero failed units.
+Fuzz, full-test, coverage, and nightly-sim timers are disabled while the mint is
+active. Their committed service definitions now fail closed through
+`quality_job_guard.sh` and retain eight logs per lane when re-enabled. Do not
+bulk-delete the remaining `/tmp`: it contains active QED work and preserved
+ZClassic proof/cure evidence.
 
-**Other unmerged branches worth knowing** (worktrees pruned 2026-07-14, branches preserved — `git worktree add` to resume): `wf/groth16-beat-rust` (CONSENSUS-CRITICAL: partial BLS12-381 opt; do NOT merge without the differential parity oracle proving bit-identical verdicts incl the non-canonical-infinity quirk), `wf/dx-navigator-callgraph` (`code callers/callees/trace`), `wf/wallet-encryption-default`, `wf/c1-standing-exporter`.
+**Performance follow-up, parallel only:** benchmark current `main` against a
+copy at a comparable height, record stage and parity receipts, and promote any
+restart/replacement proposal to the owner only after the protected producer
+finishes or the owner explicitly changes this instruction. A1 parallel
+validation is already on main (`c6c56a3b9`); the old
+`wf/parallel-validation` branch is drifted and must not be reused.
+
+**Codebase review:** the dated, non-authoritative consolidation receipt is
+[`work/archive/CODEBASE-CONSOLIDATION-REVIEW-2026-07-14.md`](work/archive/CODEBASE-CONSOLIDATION-REVIEW-2026-07-14.md).
+It does not displace the cure or [`work/FORWARD_PLAN.md`](work/FORWARD_PLAN.md).
 
 **Live node:** public canonical remains wedged at H\*=3,176,325 on `utxo_apply.anchor_backfill_gap`; the sovereign cure (above) unwedges it. Verify live before trusting this file: `zcl_status`, then `zcl_state subsystem=reducer_frontier`.
 
-**Repo hygiene (2026-07-14):** git worktrees pruned 44 → 2 (`main` + fuzz-service checkout), ~1.4 GB freed; all uncommitted WIP preserved on `wip/*` branches. A live `dev-watch` watcher maintains a small (~16 MB) working set under `.claude/worktrees/` — harmless.
+**Repo hygiene (2026-07-14):** four worktrees remain: main, the fuzz and test
+quality checkouts, and one dirty protected performance worktree. Obsolete clean
+worktrees were removed, branches were retained, and unrelated fuzz seeds plus
+the dirty performance worktree were preserved.
 
 **Traps:** the shared `core.hooksPath` flaps to absolute under worktree agents (the gate self-heals; else per-process `GIT_CONFIG` override, never `make install-hooks`); the `CODEBASE_MAP.md` `test_groups:` count conflicts on parallel lanes (resolve via `bash tools/scripts/check_doc_counts.sh`); never run two concurrent `make lint`/builds in one checkout; the pre-push hook SIGPIPEs on stdout (pre-push-ci to a file, then `--no-verify`).
 
@@ -63,7 +97,7 @@ block bodies forward from the in-binary SHA3/PoW checkpoint and deletes the
 borrowed `zclassicd`-minted seed path (see `CLAUDE.md` "Tenacity &
 recovery").
 
-## 2. In flight — two cure producers; neither is deployable yet
+## 2. Historical producer/cure detail (current protected producer is in §0)
 
 2026-07-12 (`origin/main` `a7d7baf6a`) landed the fast dev loop (`make ff` /
 `code map` / `code tests` / watcher `MODE=verify`), the palace legibility
@@ -217,15 +251,15 @@ seconds. A 162-path boundary fixture proves fast/portable byte identity,
 supersession, deletion/mode/symlink handling, and hidden-index-bit refusal.
 
 Canonical was not restarted, deployed, or mutated and remains at
-H\*=3,176,325. Both cure producers remained alive and untouched at the latest
-observation: the preserved producer PID 3329835 and low-priority fast producer
-PID 2868204 (`zclassic23-mint-fast-v2.service`).
+H\*=3,176,325. The PIDs and transient services described earlier in this
+section are dated forensic observations, not current process instructions.
+Their datadirs remain evidence. The only active cure producer observed in the
+2026-07-14 server audit is the protected receipt producer in §0.
 
-**Next job:** let both producers continue. Add producer-start/end ownership for
-the durable source receipt and exporter, plus a separately reviewed offline
-ratification path for the already-running immutable fast producer (or prove it
-cannot be ratified and start a receipt-owning producer without deleting either
-existing input). Combine contained artifact validation with selected-chain/
+**Next cure implementation job (without touching the producer):** add
+producer-start/end ownership for the durable source receipt and exporter, plus
+a separately reviewed offline ratification path for preserved immutable input.
+Combine contained artifact validation with selected-chain/
 trust/authority evidence under one publication CAS. Then finish a boot-only,
 `FULL`-durability candidate-store
 publisher with strict no-quarantine reopen and atomic old/new file exchange,
