@@ -285,6 +285,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
 
 .PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy deploy-dev remote-node-plan remote-node-plan-json remote-node-update remote-node-update-json lane-health lane-recover check-agent-cli check-restart-follow \
         background-fuzz background-coverage background-tests install-quality-linger quality-linger-status pre-push-ci \
+        install-replay-canary replay-canary-linger-status \
         coverage coverage-clean docs-mcp docs-mcp-check ci audit release \
         bench bench-crypto-verify bench-regress \
         lint check-malloc check-silent-errors check-raw-sqlite check-vcs-no-git check-raw-malloc check-stable-publish-contained \
@@ -2603,6 +2604,36 @@ quality-linger-status:
 	@systemctl --user list-timers zclassic23-fuzz.timer zclassic23-coverage.timer zclassic23-test-suite.timer --no-pager 2>/dev/null || true
 	@systemctl --user status zclassic23-fuzz.service zclassic23-coverage.service zclassic23-test-suite.service --no-pager -n 12 2>/dev/null || true
 	@./tools/scripts/background_quality_lane.sh status
+
+# install-replay-canary: the standing full-history replay canary (lane
+# S2d, wf/s2d-replay-canary-crashloop). nightly = --from=anchor (~45 min,
+# 04:30+jitter), weekly = --from=genesis (~6 h, Sun 05:30+jitter) — both
+# OFF-PEAK and disjoint from logrotate/fuzz/soak-evidence/simnet-nightly/
+# test-suite/coverage (see the .timer comments for the full slot map).
+# ExecStart in both .service units runs tools/scripts/replay_canary_guard.sh,
+# which SKIPS the run (logged, exit 0, no page) whenever a
+# zclassic23-mint-* (or any *mint*) transient unit is actively folding, so
+# this evidence lane can never steal CPU/IO from a live sovereign-state
+# cure mint. Only the TIMERS are started (enable --now); the heavy
+# .service units are never started here — the first real run is whatever
+# the timer schedules next.
+.PHONY: install-replay-canary replay-canary-linger-status
+install-replay-canary:
+	@install -d "$(HOME)/.config/systemd/user"
+	@install -m 644 deploy/zclassic23-replay-canary-nightly.service "$(HOME)/.config/systemd/user/zclassic23-replay-canary-nightly.service"
+	@install -m 644 deploy/zclassic23-replay-canary-nightly.timer "$(HOME)/.config/systemd/user/zclassic23-replay-canary-nightly.timer"
+	@install -m 644 deploy/zclassic23-replay-canary-weekly.service "$(HOME)/.config/systemd/user/zclassic23-replay-canary-weekly.service"
+	@install -m 644 deploy/zclassic23-replay-canary-weekly.timer "$(HOME)/.config/systemd/user/zclassic23-replay-canary-weekly.timer"
+	@install -m 644 "deploy/zclassic23-replay-canary-onfailure@.service" "$(HOME)/.config/systemd/user/zclassic23-replay-canary-onfailure@.service"
+	@systemctl --user daemon-reload
+	@systemctl --user enable --now zclassic23-replay-canary-nightly.timer zclassic23-replay-canary-weekly.timer
+	@echo "installed replay canary timers: zclassic23-replay-canary-nightly.timer zclassic23-replay-canary-weekly.timer"
+	@echo "(services NOT started now — they fire on the timer's next OnCalendar)"
+	@echo "status: make replay-canary-linger-status"
+
+replay-canary-linger-status:
+	@systemctl --user list-timers zclassic23-replay-canary-nightly.timer zclassic23-replay-canary-weekly.timer --no-pager 2>/dev/null || true
+	@systemctl --user status zclassic23-replay-canary-nightly.service zclassic23-replay-canary-weekly.service --no-pager -n 12 2>/dev/null || true
 
 release:
 	@./tools/release.sh
