@@ -237,6 +237,104 @@ int test_rpc(void) {
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    printf("diagnostics registry is the complete catalog manifest... ");
+    {
+        enum { EXPECTED_DIAGNOSTICS_DUMPERS = 80 };
+        const size_t count = diagnostics_dumper_count();
+        char csv[4096];
+        int csv_len = diagnostics_subsystems_csv(csv, sizeof(csv));
+        size_t csv_pos = 0;
+        bool ok = count == EXPECTED_DIAGNOSTICS_DUMPERS && csv_len > 0 &&
+                  (size_t)csv_len < sizeof(csv);
+
+        struct json_value params, catalog;
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&catalog);
+        ok = ok && diag_rpc_statecatalog(&params, false, &catalog);
+        const struct json_value *subsystems = json_get(&catalog, "subsystems");
+        ok = ok && json_get_int(json_get(&catalog, "count")) ==
+                       (int64_t)count;
+        ok = ok && subsystems && subsystems->type == JSON_ARR &&
+             json_size(subsystems) == count;
+
+        for (size_t i = 0; i < count; i++) {
+            const struct diagnostics_dump_entry *e = diagnostics_dumper_at(i);
+            const struct json_value *item = json_at(subsystems, i);
+            if (!e || !item) {
+                ok = false;
+                continue;
+            }
+            const char *required[] = {
+                e->name, e->desc, e->state_class, e->owner_shape,
+                e->owner_file, e->freshness, e->cost, e->primary_test,
+            };
+            ok = ok && e->fn != NULL;
+            for (size_t j = 0; j < sizeof(required) / sizeof(required[0]); j++)
+                ok = ok && required[j] && required[j][0];
+            for (size_t j = i + 1; j < count; j++) {
+                const struct diagnostics_dump_entry *other =
+                    diagnostics_dumper_at(j);
+                ok = ok && other && strcmp(e->name, other->name) != 0;
+            }
+
+            if (i > 0) {
+                if (csv_pos >= (size_t)csv_len || csv[csv_pos] != ',')
+                    ok = false;
+                else
+                    csv_pos++;
+            }
+            size_t name_len = strlen(e->name);
+            if (csv_pos + name_len > (size_t)csv_len ||
+                strncmp(csv + csv_pos, e->name, name_len) != 0)
+                ok = false;
+            csv_pos += name_len;
+
+            struct {
+                const char *key;
+                const char *value;
+            } metadata[] = {
+                { "name", e->name },
+                { "subsystem", e->name },
+                { "description", e->desc },
+                { "state_class", e->state_class },
+                { "owner_shape", e->owner_shape },
+                { "owner_file", e->owner_file },
+                { "freshness", e->freshness },
+                { "cost", e->cost },
+            };
+            for (size_t j = 0; j < sizeof(metadata) / sizeof(metadata[0]); j++)
+                ok = ok && strcmp(json_get_str(json_get(item, metadata[j].key)),
+                                  metadata[j].value) == 0;
+
+            bool accepts_key = e->key_hint && e->key_hint[0];
+            ok = ok && json_get_bool(json_get(item, "accepts_key")) ==
+                           accepts_key;
+            ok = ok && strcmp(json_get_str(json_get(item, "key_hint")),
+                              accepts_key ? e->key_hint : "") == 0;
+            const struct json_value *examples = json_get(item, "key_examples");
+            size_t example_count = (e->key_example_1 ? 1u : 0u) +
+                                   (e->key_example_2 ? 1u : 0u);
+            ok = ok && examples && json_size(examples) == example_count;
+            if (e->key_example_1)
+                ok = ok && strcmp(json_get_str(json_at(examples, 0)),
+                                  e->key_example_1) == 0;
+            if (e->key_example_2)
+                ok = ok && strcmp(json_get_str(json_at(examples, 1)),
+                                  e->key_example_2) == 0;
+            const struct json_value *tests = json_get(item, "tests");
+            ok = ok && tests && json_size(tests) == 2 &&
+                 strcmp(json_get_str(json_at(tests, 1)), e->primary_test) == 0;
+            const struct json_value *drilldowns = json_get(item, "drilldowns");
+            ok = ok && drilldowns && json_size(drilldowns) ==
+                           (e->include_supervisor_drilldown ? 3u : 2u);
+        }
+        ok = ok && csv[csv_pos] == '\0' && diagnostics_dumper_at(count) == NULL;
+        json_free(&catalog);
+        json_free(&params);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
     printf("dumpstate unknown subsystem lists registry... ");
     {
         struct json_value params;

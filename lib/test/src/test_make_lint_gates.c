@@ -4447,6 +4447,7 @@ static int t_native_agent_api_contract(void)
     char *agent_readiness_buf = NULL;
     char *diag_ctrl_buf = NULL;
     char *diag_reg_buf = NULL;
+    char *diag_manifest_buf = NULL;
     char *diag_catalog_buf = NULL;
     char *api_buf = NULL;
     char *api_status_buf = NULL;
@@ -4478,6 +4479,7 @@ static int t_native_agent_api_contract(void)
         char agent_readiness_path[PATH_MAX];
         char diag_ctrl_path[PATH_MAX];
         char diag_reg_path[PATH_MAX];
+        char diag_manifest_path[PATH_MAX];
         char diag_catalog_path[PATH_MAX];
         char api_path[PATH_MAX];
         char api_status_path[PATH_MAX];
@@ -4557,6 +4559,10 @@ static int t_native_agent_api_contract(void)
                          "app/controllers/src/diagnostics_controller.c") == 0);
         ASSERT(repo_path(diag_reg_path, sizeof(diag_reg_path),
                          "app/controllers/src/diagnostics_registry.c") == 0);
+        ASSERT(repo_path(
+                   diag_manifest_path, sizeof(diag_manifest_path),
+                   "app/controllers/include/controllers/diagnostics_dumpers.def")
+               == 0);
         ASSERT(repo_path(diag_catalog_path, sizeof(diag_catalog_path),
                          "app/controllers/src/diagnostics_catalog_controller.c")
                == 0);
@@ -4608,6 +4614,7 @@ static int t_native_agent_api_contract(void)
                                 &agent_readiness_buf) == 0);
         ASSERT(read_entire_file(diag_ctrl_path, &diag_ctrl_buf) == 0);
         ASSERT(read_entire_file(diag_reg_path, &diag_reg_buf) == 0);
+        ASSERT(read_entire_file(diag_manifest_path, &diag_manifest_buf) == 0);
         ASSERT(read_entire_file(diag_catalog_path, &diag_catalog_buf) == 0);
         ASSERT(read_entire_file(api_path, &api_buf) == 0);
         ASSERT(read_entire_file(api_status_path, &api_status_buf) == 0);
@@ -4734,12 +4741,17 @@ static int t_native_agent_api_contract(void)
                != NULL);
         ASSERT(strstr(diag_reg_buf, "diagnostics_dumper_count") != NULL);
         ASSERT(strstr(diag_reg_buf, "diagnostics_dumper_at") != NULL);
+        ASSERT(strstr(diag_reg_buf,
+                      "#include \"controllers/diagnostics_dumpers.def\"")
+               != NULL);
+        ASSERT(strstr(diag_manifest_buf, "DIAG_ENTRY(\"supervisor\"")
+               != NULL);
+        ASSERT(strstr(diag_manifest_buf, "DIAG_PROJECTION(") != NULL);
         ASSERT(strstr(diag_catalog_buf, "zcl.state_catalog.v1") != NULL);
         ASSERT(strstr(diag_catalog_buf, "diagnostics_catalog_push_entry")
                != NULL);
-        ASSERT(strstr(diag_catalog_buf, "diagnostics_catalog_cost") != NULL);
-        ASSERT(strstr(diag_catalog_buf, "diagnostics_catalog_owner_file")
-               != NULL);
+        ASSERT(strstr(diag_catalog_buf, "e->cost") != NULL);
+        ASSERT(strstr(diag_catalog_buf, "e->owner_file") != NULL);
         ASSERT(strstr(diag_catalog_buf, "\"owner_file\"") != NULL);
         ASSERT(strstr(diag_catalog_buf, "\"safety_level\"") != NULL);
         ASSERT(strstr(diag_catalog_buf, "\"accepted_keys\"") != NULL);
@@ -5609,6 +5621,7 @@ static int t_native_agent_api_contract(void)
     free(agent_readiness_buf);
     free(diag_ctrl_buf);
     free(diag_reg_buf);
+    free(diag_manifest_buf);
     free(diag_catalog_buf);
     free(api_buf);
     free(api_status_buf);

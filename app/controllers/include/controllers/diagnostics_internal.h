@@ -22,10 +22,23 @@ struct main_state;
 
 typedef bool (*diagnostics_dump_fn)(struct json_value *out, const char *key);
 
+/* Complete descriptor shared by dispatch and statecatalog rendering. Keep
+ * entries data-only in diagnostics_dumpers.def; do not reintroduce name-based
+ * metadata switches in individual controllers. */
 struct diagnostics_dump_entry {
     const char *name;
     diagnostics_dump_fn fn;
     const char *desc;
+    const char *state_class;
+    const char *owner_shape;
+    const char *owner_file;
+    const char *freshness;
+    const char *cost;
+    const char *key_hint;
+    const char *key_example_1;
+    const char *key_example_2;
+    const char *primary_test;
+    bool include_supervisor_drilldown;
 };
 
 /* Wired controller-level state, owned by diagnostics_registry.c.
@@ -99,7 +112,6 @@ bool diag_rpc_statecatalog(const struct json_value *params, bool help,
                            struct json_value *result);
 size_t diagnostics_dumper_count(void);
 const struct diagnostics_dump_entry *diagnostics_dumper_at(size_t idx);
-const char *diagnostics_oracle_owner_file(void);
 
 /* The native chain-evidence dump, registered in g_dumpers. `out` must be
  * a fresh json_value; the function sets it to an object. */

@@ -37,8 +37,8 @@ bool diag_rpc_statecatalog(const struct json_value *params, bool help,
 
 /* Fill `out` with a comma-separated list of every subsystem name accepted
  * by `dumpstate` (and hence by the MCP `zcl_state` tool). The list is
- * derived from the live g_dumpers registry, so adding a subsystem in
- * diagnostics_controller.c automatically propagates here. Truncates on
+ * derived from the live g_dumpers registry, so adding a descriptor to
+ * diagnostics_dumpers.def automatically propagates here. Truncates on
  * overflow; returns the unclamped length (snprintf-style). */
 int diagnostics_subsystems_csv(char *out, size_t out_sz);
 

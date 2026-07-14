@@ -1,8 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Diagnostics registry: the `g_dumpers[]` table plus the `dumpstate` /
- * `zcl_state` dispatcher. Adding a subsystem is one registry line plus one
- * dump function in the owning module.
+ * `zcl_state` dispatcher. Adding a subsystem is one descriptor row in
+ * diagnostics_dumpers.def plus one dump function in the owning module.
  *
  * It also owns controller-level state (main_state + datadir) shared across
  * the diagnostics controller family.
@@ -448,223 +448,75 @@ bool diag_rpc_profile(const struct json_value *params, bool help,
 
 /* ── RPC: dumpstate <subsystem> [key] ────────────────────────────── */
 
+#define DIAG_OWNER_LOCAL "app/controllers/src/diagnostics_registry.c"
+#define DIAG_TEST_DEFAULT "lib/test/src/test_syncdiag_rpc.c"
+/* Keep the legacy-oracle dependency contained in this allowlisted translation
+ * unit.  The data-only manifest deliberately refers only to neutral aliases. */
+#define DIAG_REFERENCE_ORACLE_DUMPER zclassicd_oracle_dump_state_json
+#define DIAG_REFERENCE_ORACLE_OWNER \
+    "app/services/src/zclassicd_oracle_service.c"
+#define DIAG_REFERENCE_ORACLE_DESC \
+    "zclassicd oracle: drift-probe stats + RPC config"
+#define DIAG_HEADER_PROBE_DESC \
+    "header probe: bulk header pull from co-located zclassicd via JSON-RPC"
+#define DIAG_LEGACY_MIRROR_DESC \
+    "legacy mirror: always-on lockstep catch-up from co-located zclassicd"
+#define DIAG_ENTRY(name_, fn_, desc_, state_, shape_, owner_, freshness_, \
+                   cost_, key_, example_1_, example_2_, test_, drilldown_) \
+    { .name = (name_), .fn = (fn_), .desc = (desc_), \
+      .state_class = (state_), .owner_shape = (shape_), \
+      .owner_file = (owner_), .freshness = (freshness_), .cost = (cost_), \
+      .key_hint = (key_), .key_example_1 = (example_1_), \
+      .key_example_2 = (example_2_), .primary_test = (test_), \
+      .include_supervisor_drilldown = (drilldown_) }
+#define DIAG_SERVICE(name_, fn_, desc_, owner_, test_) \
+    DIAG_ENTRY(name_, fn_, desc_, "diagnostic", "service", owner_, \
+               "in_process_snapshot", "cheap", NULL, NULL, NULL, test_, true)
+#define DIAG_LOCAL(name_, fn_, desc_) \
+    DIAG_SERVICE(name_, fn_, desc_, DIAG_OWNER_LOCAL, DIAG_TEST_DEFAULT)
+#define DIAG_CHAIN(name_, fn_, desc_, owner_, test_) \
+    DIAG_ENTRY(name_, fn_, desc_, "chain_or_network", "service", owner_, \
+               "in_process_snapshot", "cheap", NULL, NULL, NULL, test_, true)
+#define DIAG_CONDITION(name_, fn_, desc_, owner_, test_) \
+    DIAG_ENTRY(name_, fn_, desc_, "condition_or_blocker", "condition", \
+               owner_, "in_process_snapshot", "cheap", NULL, NULL, NULL, \
+               test_, true)
+#define DIAG_RUNTIME(name_, fn_, desc_, owner_, test_) \
+    DIAG_ENTRY(name_, fn_, desc_, "runtime", "runtime", owner_, \
+               "in_process_snapshot", "cheap", NULL, NULL, NULL, test_, true)
+#define DIAG_JOB(name_, fn_, desc_, owner_, test_) \
+    DIAG_ENTRY(name_, fn_, desc_, "diagnostic", "job", owner_, \
+               "in_process_snapshot", "cheap", NULL, NULL, NULL, test_, true)
+#define DIAG_STAGE(name_, fn_, desc_, owner_, test_) \
+    DIAG_ENTRY(name_, fn_, desc_, "reducer_stage", "job", owner_, \
+               "in_process_snapshot", "cheap", NULL, NULL, NULL, test_, true)
+#define DIAG_PROJECTION(name_, fn_, desc_, owner_, test_) \
+    DIAG_ENTRY(name_, fn_, desc_, "projection", "projection", owner_, \
+               "persisted_projection_snapshot", "bounded_lookup", NULL, \
+               NULL, NULL, test_, true)
+
+/* One descriptor source drives dumpstate dispatch, the state catalog, MCP's
+ * advisory subsystem enum, health rollup, and registry invariants. */
 static const struct diagnostics_dump_entry g_dumpers[] = {
-    { "supervisor", supervisor_dump_state_json,
-                    "root supervisor: registered liveness contracts, ticks_run, stall_fires, deadlines" },
-    { "blocker",    blocker_dump_state_json,
-                    "typed blocker registry: active blockers by class {permanent,transient,dependency,resource}, "
-                    "deadlines, escape actions, fire counts" },
-    { "watchdog",    condition_engine_dump_state_json,
-                     "compat alias for condition_engine status" },
-    { "chain_evidence", diag_chain_evidence_dump_state_json,
-                     "native chain evidence: tips, cursors, evidence flags, reconciliation reason" },
-    { "chain_evidence_controller", diag_chain_evidence_dump_state_json,
-                     "native chain evidence controller: tips, snapshot anchor, evidence, contradiction reason" },
-    { "boot",        chain_restore_dump_state_json,
-                     "last boot's integrity check + nbits-backfill counters" },
-    { "service_state", service_state_dump_state_json,
-                     "canonical runtime operational mode "
-                     "(boot/restore/reconcile/degraded_serving/syncing/"
-                     "healthy/repairing) + last transition reason" },
-    { "block_index", diag_block_index_dump_state_json,
-                     "block_index entry by height or hash (in `key`)" },
-    { "health",      health_dump_state_json,
-                     "unified heartbeat ring: registered subsystems, ages, stall fires" },
-    { "explorer",    explorer_dump_state_json,
-                     "clearnet block-explorer frontend: https_started/port/deferred, "
-                     "TLS cert_path + cert_present/key_present at <datadir>/ssl, "
-                     "onion_enabled + onion_address. Diagnoses why the explorer is "
-                     "or isn't serving on clearnet" },
-    { "bundle_staleness", bundle_staleness_dump_state_json,
-                     "fast-sync starter-pack freshness: seed height, block_index presence, network-tip gap, catch-up estimate, remint recommendation" },
-    { "oracle",      zclassicd_oracle_dump_state_json,
-                     "zclassicd oracle: drift-probe stats + RPC config" },
-    { "header_probe", header_probe_dump_state_json,
-                     "header probe: bulk header pull from co-located zclassicd via JSON-RPC" },
-    { "header_band", diag_header_band_dump_state_json,
-                     "header band backfill: derived island root, current getheaders anchor, remaining span, and blocker state" },
-    { "utxo_parity", utxo_parity_dump_state_json,
-                     "standing UTXO-set parity vs reference commitment at the finalized frontier: checks/matches/mismatches, finalized_frontier, last_checked_height, source name+exact flag" },
-    { "legacy_mirror", legacy_mirror_sync_dump_state_json,
-                     "legacy mirror: always-on lockstep catch-up from co-located zclassicd" },
-    { "block_intake", controller_block_intake_dump_state_json,
-                     "P2P block intake queue: async catch-up worker state, depth/capacity, backpressure saturation, accepted/retryable/rejected/drop counters" },
-    { "oracle_policy", oracle_policy_dump_state_json,
-                     "oracle policy: disagreement state machine (NORMAL / HALTED / PANIC)" },
-    { "rolling_anchor", rolling_anchor_dump_state_json,
-                     "rolling SHA3 anchor extension: runtime windows past compile-time prefix" },
-    { "seal", seal_dump_state_json,
-                     "seal ring (last 4): candidate/ratified state seals — height, coins_sha3, "
-                     "utxo_count, supply, block_hash, ratified, sealed_at, self_sha3 valid" },
-    { "progress",    progress_store_dump_state_json,
-                     "progress.kv: open/path/stage_cursor row count" },
-    { "mint_preflight", boot_mint_anchor_preflight_dump_state_json,
-                     "last -mint-anchor producer preflight run (run_all): "
-                     "have_report, all_ok, per-check {name,ok,why,remedy} — "
-                     "datadir_lock_acquirable, "
-                     "legacy_block_index_covers_anchor, "
-                     "bodies_present_sampled, disk_headroom, "
-                     "no_leftover_interrupted_run_artifacts, "
-                     "fold_inram_memory_estimate" },
-    { "refold",      refold_progress_dump_state_json,
-                     "refold/mint mode: in_progress + from_anchor cached flags, compiled trusted_anchor, "
-                     "durable progress.kv keys (durable_in_progress/from_anchor), from_anchor_target_tip" },
-    { "reducer_frontier", reducer_frontier_dump_state_json,
-                     "reducer L0 authority: H*, served_floor, stage cursors, "
-                     "success-checked frontiers, coins frontier, first "
-                     "validate_headers blocker + repair owner" },
-    { "header_admit", header_admit_stage_dump_state_json,
-                     "header_admit stage: cursor, counters, last admit" },
-    { "validate_headers", validate_headers_stage_dump_state_json,
-                     "validate_headers stage: cursor, pool stats, pass/fail counters" },
-    { "body_fetch", body_fetch_stage_dump_state_json,
-                     "body_fetch stage: cursor, observed/skipped counters, last advance" },
-    { "body_persist", body_persist_dump_state_json,
-                     "body_persist stage: cursor, verification counters, log rows" },
-    { "script_validate", script_validate_dump_state_json,
-                     "script_validate stage: cursor, script counters, log rows" },
-    { "proof_validate", proof_validate_dump_state_json,
-                     "proof_validate stage: cursor, proof counters, log rows" },
-    { "utxo_apply", utxo_apply_dump_state_json,
-                     "utxo_apply stage: cursor, UTXO delta counters, log rows" },
-    { "reducer_drive", reducer_drive_dump_state_json,
-                     "synchronous reducer/mint drive: active, label, age_us, "
-                     "watchdog_threshold_secs, last_watchdog_fire_unix, "
-                     "utxo_apply_cursor vs. the lagging coins_applied_height "
-                     "(the -fold-inram batching gap)" },
-    { "tip_finalize", tip_finalize_dump_state_json,
-                     "tip_finalize stage: cursor, finalize counters, log rows" },
-    { "coin_backfill", coin_backfill_dump_state_json,
-                     "frontier coin backfill: last result, scan cursor, refusal latches" },
-    { "quorum_oracle", quorum_oracle_dump_state_json,
-                     "multi-source quorum oracle: per-source vote stats + last verdict" },
-    { "peer_lifecycle", peer_lifecycle_dump_state_json,
-                     "P2P peer lifecycle attempts, handshakes, timeouts, and rejects by address/source" },
-    { "network_monitor", network_monitor_dump_state_json,
-                     "reachable-network chain view: modal tip, max height, our delta, fork clusters" },
-    { "chain_advance_coordinator", block_source_policy_dump_state_json,
-                     "canonical chain-advance source scoring: P2P, snapshot, local import, mirror fallback" },
-    { "chain_tip_watchdog", chain_tip_watchdog_dump_state_json,
-                     "tip-stuck overlord: highest_tip, age_secs since last advance, escalation level + fire counts" },
-    { "sticky_escalator", sticky_escalator_dump_state_json,
-                     "always-terminating remedy ladder (sticky S2): armed state, "
-                     "current rung, per-rung dispatch counts, witness window, "
-                     "re-arm cooldown, ladder cycles, non-latching page count" },
-    { "condition_engine", condition_engine_dump_state_json,
-                     "self-heal engine: registered conditions with active/cleared status, attempts, thresholds" },
-    { "long_op",     long_op_dump_state_json,
-                     "active long-operation scopes (>600s code paths) that gate STATE_STUCK watchdog suppression" },
-    { "ibd_throttle", ibd_throttle_dump_state_json,
-                     "IBD throttle: token-bucket state, acquired/blocked counts, total wait time" },
-    { "mempool_limits", mempool_limits_dump_state_json,
-                     "mempool limits: enforce/expire call counts, evicted/expired totals, last-run summary" },
-    { "block_pruning", block_pruning_dump_state_json,
-                     "block pruning service: files/blocks pruned, bytes reclaimed, lowest height with data" },
-    { "crypto_registry", crypto_registry_dump_state_json,
-                     "registered crypto schemes, statuses, implementations, and kind counts" },
-    { "mempool_projection", mempool_projection_dump_state_json,
-                     "mempool projection over EV_TX_ADMIT_MEMPOOL / EV_TX_REMOVE_MEMPOOL" },
-    { "peers_projection", peers_projection_dump_state_json,
-                     "peers projection over EV_PEER_OBSERVED / EV_PEER_DROPPED" },
-    { "utxo_projection", utxo_projection_dump_state_json,
-                     "utxo_projection: open/path/last_consumed_offset, "
-                     "utxo_count, events_consumed_total, emit/consume counters, "
-                     "REPLACE collisions, last_catch_up_ms. UTXO set derived "
-                     "from the event_log." },
-    { "znam_projection", znam_projection_dump_state_json,
-                     "znam projection: name_count, addr/text counts, "
-                     "events_consumed_total, per-event-type counters, emit/fail "
-                     "counters, last_consumed_offset, last_catch_up_ms." },
-    { "wallet_projection", wallet_projection_dump_state_json,
-                     "wallet view projection: public-only "
-                     "address/tx/UTXO/note counts, total value, cursor, "
-                     "and emit counters." },
-    { "contacts_projection", contacts_projection_dump_state_json,
-                     "contacts projection: count, cursor, "
-                     "consume counters, emit counters, catch_up timing." },
-    { "onion_announcements_projection", onion_ann_projection_dump_state_json,
-                     "onion announcements projection: count, cursor, "
-                     "consume counters, emit counters, catch_up timing." },
-    { "hodl_history_projection", hodl_history_projection_dump_state_json,
-                     "HODL history projection: count, cursor, "
-                     "consume counters, emit counters, catch_up timing." },
-    { "block_index_projection", block_index_projection_dump_state_json,
-                     "block_index_projection: cursor, entry count, "
-                     "events consumed, replace collisions, last catch_up_ms" },
-    { "validation_pack", invariant_sentinel_dump_state_json,
-                     "fail-loud validation pack: HOLD latch, per-connect "
-                     "linkage + coinbase-label checks, authority-pair "
-                     "self-check, window sweep, commitment audit, seed "
-                     "gate, mirror divergence locator" },
-    { "authority_projection", ap_audit_dump_state_json,
-                     "redundant authority(coins)-vs-projection(utxos) SHA3 "
-                     "cross-check: runs/checks/passes/divergences, skip "
-                     "reasons, streak, last roots+counts+height, blocker latch" },
-    { "soak",           soak_dump_state_json,
-                     "soak attestation log: lines_written, last_ts, "
-                     "last_healthy, rotations, write_failures, file_bytes" },
-    { "canary_watch",   canary_watch_dump_state_json,
-                     "replay-canary sentinel watch: verdict_dir, last_scan, "
-                     "files_seen, per-kind verdict+reason+ts, fail latch, "
-                     "condition_active" },
-    { "bg_validation", bg_validation_dump_state_json,
-                     "background historical-proof re-verification: state, "
-                     "verified/chain height, sigs+proofs verified, "
-                     "blocks_per_sec, script-verify skips" },
-    { "disk_monitor", disk_monitor_dump_state_json,
-                     "free-space watchdog: running, level (ok/low/critical), "
-                     "last free bytes + poll time, warn/refuse thresholds, "
-                     "datadir" },
-    { "sync_monitor", sync_monitor_dump_state_json,
-                     "sync watchdog: recovery counters + last recovery detail, "
-                     "local header-refill recovery sub-state" },
-    { "db_maintenance", db_maintenance_dump_state_json,
-                     "WAL/ANALYZE/VACUUM worker: last-run times + durations, "
-                     "total runs/failures, last error" },
-    { "sapling_checkpoint", sapling_checkpoint_dump_state_json,
-                     "flat-file Sapling note-commitment tree cache: periodic write "
-                     "height/count/fails + boot load outcome (absent/loaded_verified/discarded)" },
-    { "agent_copy_prove", agent_copy_prove_dump_state_json,
-                     "copy-prove run launched via agentcopyprove: queued/running/done state, verdict, "
-                     "h_star before/after, tip_regression, copy_path (key = the run's slug)" },
-    { "agent_test", agent_test_dump_state_json,
-                     "allowlisted test run launched via agenttest: queued/running/done state, "
-                     "verdict (PASS/FAIL/NO_MATCH/ERROR), exit_code, output tail "
-                     "(key = \"<kind>-<name>\", kind = test_group|scenario)" },
-    { "unhealthy",   unhealthy_dump_state_json,
-                     "unhealthy-only rollup: all_ok/checked/reporting + unhealthy subsystems (name+reason) from `_health`" },
-    { "hotswap",     hotswap_dump_state_json,
-                     "DEV-ONLY in-process hot-swap loader: availability + per-generation {gen, so_path, loaded_at, replaced_count, ok}; 'unavailable' in release" },
-    { "gap_fill",    gap_fill_dump_state_json,
-                     "IBD gap-fill worker: running, pass/enqueue/idle/corrupt-walk + timeout-sweep counters, last tip/window bounds" },
-    { "wallet_backup", wallet_backup_dump_state_json,
-                     "periodic wallet-table backup thread: running, total_runs/failures, last run time/size/key_count/duration/path/error" },
-    { "consensus_reject_index", consensus_reject_index_dump_state_json,
-                     "hash-keyed ring of recent consensus tx/block rejections: running, total/count/capacity, recent {hash,kind,dos,ts_us,reason}" },
-    { "block_index_integrity", block_index_integrity_dump_state_json,
-                     "block_index.bin sidecar integrity: last verify verdict + recovery action, degraded/unsafe_override, reason, heights_repaired" },
-    { "utxo_mirror_sync", utxo_mirror_sync_dump_state_json,
-                     "node.db `utxos` explorer mirror worker: state, rebuilds_run, rows_written, last_mirror_height, last_frontier, last_pass/error_unix" },
-    { "mirror_divergence", mirror_divergence_dump_state_json,
-                     "mirror hash-disagreement bisect locator: last_locate_unix, last_first_div, probes_last_run, divergence_latched, pending record" },
-    { "nullifier_backfill", nullifier_backfill_dump_state_json,
-                     "owner-gated C-3 nullifier gap backfill: durable activation/resume cursors, derived status, gap_blocker_active" },
-    { "publication_cas", consensus_state_publication_cas_dump_state_json,
-                     "contained consensus-state publication CAS: latest decision (ADMIT/typed refusal), "
-                     "bound artifact/chain/source/epoch digests, bundle H/hash, expected frontier H/hash, decision digest" },
-    { "principals", principal_dump_state_json,
-                     "multi-user-server identity registry: count + public projection of each principal {address, role, status, key_kind, last_login, has_znam}" },
-    { "auth",       auth_challenge_dump_state_json,
-                     "auth login-challenge nonce store: db_open + pending (unconsumed) single-use challenge count" },
-    { "self_backtrace", self_backtrace_dump_state_json,
-                     "live self-backtrace surface: installed flag, dump_count, and last dump's "
-                     "{last_path, last_thread_count, last_unix_ts}. Triggered by ops.debug.backtrace" },
-    { "cpu_topology", cpu_topology_dump_state_json,
-                     "CPU topology organ: logical_cpus, physical_cores, smt_threads_per_core, "
-                     "l3_domains + per-domain {id, l3_size_bytes, cpu_count, cpus}, "
-                     "largest_l3_domain (the V-Cache CCD on multi-CCD AMD parts), source "
-                     "(sysfs/fallback)" },
+#include "controllers/diagnostics_dumpers.def"
 };
+
+#undef DIAG_PROJECTION
+#undef DIAG_STAGE
+#undef DIAG_JOB
+#undef DIAG_RUNTIME
+#undef DIAG_CONDITION
+#undef DIAG_CHAIN
+#undef DIAG_LOCAL
+#undef DIAG_SERVICE
+#undef DIAG_ENTRY
+#undef DIAG_LEGACY_MIRROR_DESC
+#undef DIAG_HEADER_PROBE_DESC
+#undef DIAG_REFERENCE_ORACLE_DESC
+#undef DIAG_REFERENCE_ORACLE_OWNER
+#undef DIAG_REFERENCE_ORACLE_DUMPER
+#undef DIAG_TEST_DEFAULT
+#undef DIAG_OWNER_LOCAL
 
 int diagnostics_subsystems_csv(char *out, size_t out_sz)
 {
@@ -688,8 +540,6 @@ const struct diagnostics_dump_entry *diagnostics_dumper_at(size_t idx)
 {
     return idx < diagnostics_dumper_count() ? &g_dumpers[idx] : NULL;
 }
-const char *diagnostics_oracle_owner_file(void) { return "app/services/src/zclassicd_oracle_service.c"; }
-
 static void diagnostics_dumpstate_help(struct json_value *result)
 {
     char known[4096];
