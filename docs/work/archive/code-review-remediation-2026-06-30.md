@@ -6,7 +6,7 @@
 > execution-ready batches with a fix + proof-gate for every item.
 >
 > **Where it sits.** This is a **secondary hardening lane**. It does **not**
-> displace the #1 spine ([`FORWARD_PLAN.md`](./FORWARD_PLAN.md): CI-enforce MVP +
+> displace the #1 spine ([`FORWARD_PLAN.md`](../FORWARD_PLAN.md): CI-enforce MVP +
 > the sovereign `-refold-from-anchor` cure). MVP = 4/8; that gate is sovereign-cure
 > + soak, not this list. Run this lane in parallel worktrees when the spine isn't
 > blocked, or hand individual lanes to workers.

@@ -135,7 +135,7 @@ main()
 > Produced 2026-06-19 by an adversarial multi-agent audit (22 files / 11,262 LOC,
 > every "deletable" verdict attacked by a skeptic hunting for a live caller). All
 > cites re-readable against the live tree; verify before cutting. The deletion is
-> gated behind the cure (B1–B3 in [`never-stuck-plan.md`](./never-stuck-plan.md));
+> gated behind the cure (B1–B3 in [`never-stuck-plan.md`](../never-stuck-plan.md));
 > the live-verified correction below explains why the family runs-attempts-refuses
 > rather than remedies, so cure-first gating holds even though the family is NOT a
 > working remedy.

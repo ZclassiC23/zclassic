@@ -297,7 +297,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         check-before-save-hooks check-pthread-create check-model-validation \
         check-long-functions check-rpc-registrar check-lag-slo-observable \
         check-file-size-ceiling check-framework-filename-suffix \
-        check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy \
+        check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-markdown-links \
         check-no-new-repair-rung \
         fuzz-ci-leaks \
         soak-smoke soak-7day soak-ci test-crash-bootstrap \
@@ -3512,6 +3512,14 @@ check-doc-accuracy:
 	@echo "══ LINT: doc accuracy (E11) ══"
 	@./tools/scripts/check_doc_accuracy.sh
 
+# Local Markdown targets are part of the developer interface. Scan tracked
+# Markdown as it exists in the worktree; fail on missing/escaping relative
+# files and directories while leaving network URIs, anchors, images, and
+# generated placeholders outside this filesystem-only contract.
+check-markdown-links:
+	@echo "══ LINT: local Markdown targets ══"
+	@./tools/lint/check_markdown_links.sh .
+
 # Doc counts vs code: numeric claims (test_groups / port_interfaces /
 # persistence_adapters) declared in the <!-- DOC-COUNTS --> block of
 # docs/CODEBASE_MAP.md must agree with the code, and known-stale compound
@@ -3652,7 +3660,7 @@ check-scanner-immunity:
 	@echo "══ LINT: scanner fixture-race immunity regression proof (DX1) ══"
 	@./tools/lint/selftest_scanner_immunity.sh
 
-lint: check-no-stray-untracked-source check-scanner-immunity check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-hotswap-swappable-shape check-release-no-dev-symbols check-stable-publish-contained check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-shellouts check-no-raw-sqlite-in-controllers check-supervisor-domain check-thread-supervision check-file-purpose check-group-purpose check-no-orphan-placement check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-condition-cooldown check-doc-accuracy check-doc-counts check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vendor-provenance
+lint: check-no-stray-untracked-source check-scanner-immunity check-git-hooks-installed check-malloc check-silent-errors check-hotswap-dev-only check-hotswap-eligible-scope check-hotswap-static-state check-hotswap-swappable-shape check-release-no-dev-symbols check-stable-publish-contained check-raw-sqlite check-raw-malloc check-blob-read-bounds check-coins-lookup-nullcheck check-observability-pairing check-silent-errors-services check-silent-errors-controllers check-silent-errors-jobs check-silent-errors-conditions check-silent-errors-bool check-log-macro-return-type check-wallet-raw-prepare-log check-before-save-hooks check-pthread-create check-model-validation check-model-ar-lifecycle check-long-functions check-rpc-registrar check-lag-slo-observable check-lib-layering check-domain-purity check-core-include-boundary check-core-seal check-supervisor-registration check-test-registration check-typed-blocker check-framework-shape check-framework-filename-suffix check-no-raw-clock-outside-platform check-no-shellouts check-no-raw-sqlite-in-controllers check-supervisor-domain check-thread-supervision check-file-purpose check-group-purpose check-no-orphan-placement check-file-size-ceiling check-operator-needed-sink check-systemd-memory-budget check-condition-cooldown check-doc-accuracy check-doc-counts check-markdown-links check-one-result-type check-service-result-convergence check-shape-includes-header check-projections-pure check-one-write-path check-no-authoritative-ram-state check-stage-advances-or-blocks check-no-silent-ready check-honest-witness check-consensus-parity check-no-new-repair-rung check-no-new-borrowed-seed check-no-new-coin-backfill-caller check-doc-no-false-deleted check-zclassicd-reach-allowlist check-stage-log-reorg-unsafe check-no-csr-lock-on-finalize-drive check-mint-skip-crypto-offline-only check-wire-harness-security-gate check-vcs-no-git check-vendor-provenance
 	@echo "══ LINT: all checks passed ══"
 
 # CI runs the PER-PROCESS isolated test runner (test_parallel), not the

@@ -1167,6 +1167,7 @@ static int t_git_hooks_gate_rejects_noop_pre_push(void)
  * (cooldown-bearing, .progressing-exempt, local-only, WARN-severity,
  * hollow-scan) stays/becomes clean. */
 #define CONDITION_COOLDOWN_SCRIPT_REL "tools/scripts/check_condition_cooldown.sh"
+#define MARKDOWN_LINK_SCRIPT_REL "tools/lint/check_markdown_links.sh"
 #define E10_SHAPE_SCRIPT_REL "tools/lint/framework_shape_check.sh"
 /* NOT named `_*fixture*tmp*.c` on purpose: framework_shape_check.sh itself
  * excludes that glob (b142e7887, to stop OTHER gates' transient fixtures
@@ -1559,6 +1560,28 @@ static int t_e14_condition_cooldown_gate(void)
         env_rc == 0 ? run_gate_script(CONDITION_COOLDOWN_SCRIPT_REL, NULL) : -1;
     (void)unsetenv("ZCL_CONDITION_COOLDOWN_SELFTEST");
     TEST("[lint-gate] E14 condition cooldown: baseline and selftest pass") {
+        ASSERT(baseline_rc == 0);
+        ASSERT(env_rc == 0);
+        ASSERT(selftest_rc == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Local Markdown target gate: production scans the tracked repository and the
+ * script's isolated Git fixtures prove valid targets pass, missing targets
+ * fail with source context, outbound symlinks fail containment, untracked
+ * Markdown is ignored, and an empty scan exits fail-loud. No live services,
+ * network, or repository files are used by the self-test. */
+static int t_markdown_links_gate(void)
+{
+    int failures = 0;
+    int baseline_rc = run_gate_script(MARKDOWN_LINK_SCRIPT_REL, NULL);
+    int env_rc = setenv("ZCL_MARKDOWN_LINKS_SELFTEST", "1", 1);
+    int selftest_rc =
+        env_rc == 0 ? run_gate_script(MARKDOWN_LINK_SCRIPT_REL, NULL) : -1;
+    (void)unsetenv("ZCL_MARKDOWN_LINKS_SELFTEST");
+    TEST("[lint-gate] local Markdown targets: baseline and selftest pass") {
         ASSERT(baseline_rc == 0);
         ASSERT(env_rc == 0);
         ASSERT(selftest_rc == 0);
@@ -7566,6 +7589,7 @@ int test_make_lint_gates(void)
     failures += t_systemd_memory_budget();
     failures += t_quality_job_guard();
     failures += t_e14_condition_cooldown_gate();
+    failures += t_markdown_links_gate();
     failures += t_git_hooks_gate_enforces_tracked_pre_push();
     failures += t_git_hooks_gate_rejects_noop_pre_push();
     failures += t_e10_framework_shape_ratchet();

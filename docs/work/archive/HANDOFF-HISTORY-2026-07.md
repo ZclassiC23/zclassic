@@ -66,9 +66,9 @@ the secondary track. W0 (bridge handler composition re-homed to
 hot-swap re-targeted onto the command registry) are DONE — W1-B/C landed on
 `main` at `88b4e1030`. Next: W2 (the remaining ~47 call-site migration) then
 W3 (delete the MCP server), executing from
-[`docs/work/MCP-REMOVAL-WORKLIST.md`](work/MCP-REMOVAL-WORKLIST.md) (the
+[`docs/work/MCP-REMOVAL-WORKLIST.md`](../MCP-REMOVAL-WORKLIST.md) (the
 authoritative 114-site inventory; plan prose is
-[`docs/work/MCP-REMOVAL-PLAN.md`](work/MCP-REMOVAL-PLAN.md)). Session detail:
+[`docs/work/MCP-REMOVAL-PLAN.md`](../MCP-REMOVAL-PLAN.md)). Session detail:
 [`archive evidence ledger`](INDEX.md)
 (W0+W1-A) and
 [`archive evidence ledger`](INDEX.md)
@@ -88,7 +88,7 @@ before trusting exact commit hashes below, they rot):
   loop refuses to auto-publish a sealed-path change before any hot-swap/reload
   step (`tools/dev/devloop_cycle.c`, exit code 3, structured refusal
   envelope), landed at `070849e7f`. Full writeup:
-  [`docs/adr/0002-sealed-consensus-core.md`](adr/0002-sealed-consensus-core.md).
+  [`docs/adr/0002-sealed-consensus-core.md`](../../adr/0002-sealed-consensus-core.md).
 - **ZVCS v1 + auto-anchor — LANDED.** The in-binary content-addressed VCS
   (`lib/vcs/`) is live: every green `zcl.dev_cycle.v1` verdict auto-commits a
   source-tree snapshot bound to its verdict and binary generation
@@ -98,7 +98,7 @@ before trusting exact commit hashes below, they rot):
   actually blocks the binary). No `dev vcs` CLI or MCP surface exists yet —
   reading history means walking `.zvcs/commits.log` directly (see
   `docs/work/HOTSWAP.md` §"Reading the anchor log today"). Full writeup:
-  [`docs/ZVCS.md`](ZVCS.md).
+  [`docs/ZVCS.md`](../../ZVCS.md).
 - **Tier-2 P2 fast restart — LANDED.** Verify-then-trust warm boot
   (`33ac8a177`).
 - **Hot-swap — 5 TUs eligible, probe-gated.** `config/hotswap_eligible.def`
@@ -117,8 +117,8 @@ before trusting exact commit hashes below, they rot):
   `src/main.c` and `tools/lint/check_release_no_dev_symbols.sh` proves the
   release binary links none of the dev executors (`nm` artifact). Landed as
   `2c191d42b` + the `dev/service-refactor-finish` follow-ups merged
-  2026-07-11. Current state: [`config/commands/README.md`](../config/commands/README.md),
-  [`docs/NATIVE_COMMAND_INTERFACE.md`](NATIVE_COMMAND_INTERFACE.md) §"Phase B."
+  2026-07-11. Current state: [`config/commands/README.md`](../../../config/commands/README.md),
+  [`docs/NATIVE_COMMAND_INTERFACE.md`](../../NATIVE_COMMAND_INTERFACE.md) §"Phase B."
 - **Waves 3.2/3.3 (power-station program).** Wave 3.3 = the binary-relink
   half of `vcs_revert()` (`lib/vcs/src/vcs.c`): a `vcs_revert_relink_ops`
   callback replaces the old `VCS_ENOTIMPL` stub — NULL ops = source-only
@@ -131,8 +131,8 @@ before trusting exact commit hashes below, they rot):
   `tools/dev/deploy-dev-lane.sh`, gated behind `ZCL_DEV_NATIVE_ACTIVATION`,
   default off until proven on the dev lane).
 - **This wave (Wave 4.4): docs.** This session added
-  [`docs/ZVCS.md`](ZVCS.md) and
-  [`docs/adr/0002-sealed-consensus-core.md`](adr/0002-sealed-consensus-core.md),
+  [`docs/ZVCS.md`](../../ZVCS.md) and
+  [`docs/adr/0002-sealed-consensus-core.md`](../../adr/0002-sealed-consensus-core.md),
   closed the lint-gate-hollowness audit
   (`docs/work/lint-gate-hollowness-audit.md`), and corrected stale claims in
   `config/commands/README.md`, `docs/REFACTOR_STATUS.md`,
@@ -168,13 +168,13 @@ standing fact.
 
 ## Pointers
 
-- [`docs/ZVCS.md`](ZVCS.md) — the in-binary VCS, canonical doc.
-- [`docs/adr/0002-sealed-consensus-core.md`](adr/0002-sealed-consensus-core.md)
+- [`docs/ZVCS.md`](../../ZVCS.md) — the in-binary VCS, canonical doc.
+- [`docs/adr/0002-sealed-consensus-core.md`](../../adr/0002-sealed-consensus-core.md)
   — why `core/` is physically split and sealed.
-- [`docs/work/HOTSWAP.md`](work/HOTSWAP.md) — the dev-loop, hot-swap, and
+- [`docs/work/HOTSWAP.md`](../HOTSWAP.md) — the dev-loop, hot-swap, and
   ZVCS-auto-anchor integration (owned by another lane this session; read,
   do not edit, until that lane hands it back).
-- [`docs/MVP.md`](MVP.md) / [`docs/work/FORWARD_PLAN.md`](work/FORWARD_PLAN.md)
+- [`docs/MVP.md`](../../MVP.md) / [`docs/work/FORWARD_PLAN.md`](../FORWARD_PLAN.md)
   — the v1 bar and THE plan; the power-station program above is
   off the v1 critical path per `CLAUDE.md`; do not let it jump the queue
   over an open live-node blocker.
@@ -510,7 +510,7 @@ binaries also default offline `-mint-anchor` to the in-RAM fold unless
 **2026-07-02 ~08:30 UTC — the fail-safe stack shipped and the live node is
 curing itself through it.** Everything below is on origin/main
 (`bd9268db6..1c5364cf8` + the F4 matrix merge `cdce010d0`); design of record:
-[`docs/work/fail-safe-architecture.md`](./work/fail-safe-architecture.md).
+[`docs/work/fail-safe-architecture.md`](../fail-safe-architecture.md).
 
 **What shipped (nine fixes, all copy-proven + adversarially reviewed):**
 
@@ -1341,8 +1341,8 @@ can mint from a blocks-pruned source) and `lib/test/src/test_self_folded_anchor.
 (re-derive == baked checkpoint; a mutated coin is detectable). `mint_v2_snapshot`
 is a standalone `BUILD_NODE_TOOL` target (not in default `all`); the anchor
 fixture runs under `build/bin/test_zcl`, not `test-parallel`. Plan of record:
-[`docs/work/sticky-node-plan.md`](work/sticky-node-plan.md) (sovereign-cure spine:
-[`docs/work/self-verified-tip-plan.md`](work/self-verified-tip-plan.md)).
+[`docs/work/sticky-node-plan.md`](./sticky-node-plan.md) (sovereign-cure spine:
+[`docs/work/self-verified-tip-plan.md`](../self-verified-tip-plan.md)).
 
 **Do NOT re-chase the cured wedges.** Verify the live node first — a doc can be stale, the
 node cannot.
@@ -1512,9 +1512,9 @@ sound source; the fold-speedup work targets making it tractable.
 
 The wedge-class root-fix design (the fold-forward cure, the per-100-block UTXO
 ladder/keystone, the never-stuck hardening map) is
-[`docs/work/never-stuck-plan.md`](./work/never-stuck-plan.md); the ordered
+[`docs/work/never-stuck-plan.md`](../never-stuck-plan.md); the ordered
 subtraction worksheet is
-[`docs/work/archive/sync-fix-plan-2026-06-21.md`](./work/sync-fix-plan-2026-06-21.md);
+[`docs/work/archive/sync-fix-plan-2026-06-21.md`](./sync-fix-plan-2026-06-21.md);
 the trustless-fast-sync substrate is
 [`archive evidence ledger`](INDEX.md).
 
@@ -1626,8 +1626,8 @@ time**. Soak hours can now ACCRUE because the node reaches and holds tip, but
 the current formal C6 judge is `NOT_MET` (`operator_intervention_detected_x2`);
 the remaining gate is a fresh clean soak window plus the sovereign cure, not
 un-wedging.
-The v1 contract is [`docs/MVP.md`](./MVP.md); THE plan is
-[`docs/work/FORWARD_PLAN.md`](./work/FORWARD_PLAN.md). Live scorer:
+The v1 contract is [`docs/MVP.md`](../../MVP.md); THE plan is
+[`docs/work/FORWARD_PLAN.md`](../FORWARD_PLAN.md). Live scorer:
 `tools/mvp_gate.sh`.
 
 ---
@@ -1637,4 +1637,4 @@ The v1 contract is [`docs/MVP.md`](./MVP.md); THE plan is
 A map, not the territory. Before building on any claim, re-read the cited
 file:line — code moves and old narratives recur. If a claim doesn't match the
 code you read THIS minute, trust the code. Architecture reference:
-[`docs/FRAMEWORK.md`](./FRAMEWORK.md) + [`docs/REFACTOR_STATUS.md`](./REFACTOR_STATUS.md).
+[`docs/FRAMEWORK.md`](../../FRAMEWORK.md) + [`docs/REFACTOR_STATUS.md`](../../REFACTOR_STATUS.md).

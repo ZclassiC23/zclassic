@@ -8,7 +8,7 @@ contract currently declares. For the pre-existing MCP/RPC-era agent surface
 (`agentops`, `agentdiagnose`, `zcl_agent_*`, `servicecatalog`, ZNAM/ZMSG/
 Market/ZSWP RPCs, etc.) see [`docs/AGENT_API.md`](./AGENT_API.md) — that
 surface predates the command registry and is not yet folded into it; the
-[ZERO-MCP directive](./work/project_zero_mcp_directive_2026-07-11.md) is
+[ZERO-MCP removal program](./work/MCP-REMOVAL-PLAN.md) is
 retargeting agent interaction onto the tree documented here.
 
 ## Source of truth
