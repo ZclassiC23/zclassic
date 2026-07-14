@@ -40,6 +40,10 @@ enum consensus_state_install_status {
     CONSENSUS_INSTALL_INJECTED_FAILURE = 1,
     CONSENSUS_INSTALL_STORE_ERROR = 2,
     CONSENSUS_INSTALL_VERIFIED_CONTAINED = 3,
+    /* ACTIVATE mode terminal: the complete bundle (coins+anchors+nullifiers+
+     * cursors) was atomically installed into the live progress store and its
+     * recomputed UTXO root/count matched the manifest. */
+    CONSENSUS_INSTALL_ACTIVATED = 4,
 };
 
 struct consensus_state_install_result {
@@ -153,5 +157,57 @@ bool consensus_state_snapshot_install(
     struct sqlite3 *progress_db,
     const struct consensus_state_snapshot_install_request *request,
     struct consensus_state_install_result *result);
+
+/* ── ACTIVATE mode (the sovereign shielded-state cure — consumer side) ──────
+ *
+ * Atomically install a complete, history-complete bundle's coins + Sprout/
+ * Sapling anchors + nullifiers + the 8 reducer stage cursors into the LIVE
+ * progress store, mirroring boot_refold_from_anchor_reset's cutover discipline
+ * (cursors forced to the bundle height, coins_applied_height = height+1,
+ * tip_finalize seeded AT the height) — BUT installing the complete shielded
+ * history with activation cursor 0 instead of the empty-anchor/positive-cursor
+ * reset that produced the anchor_backfill_gap wedge. The whole install is ONE
+ * BEGIN IMMEDIATE transaction so it lands or rolls back atomically; the coins
+ * commitment/count are re-verified against the manifest BEFORE the COMMIT, so a
+ * mismatched bundle can never commit. Mixed provenance is forbidden: the bundle
+ * is the atomic unit — coins, anchors, and nullifiers are all replaced together,
+ * never installed beside a borrowed set.
+ *
+ * A physically restorable prior generation of the progress store is captured
+ * (SQLite VACUUM INTO a sibling file under `datadir`) BEFORE the transaction, so
+ * an operator who later decides to abort a committed install can swap the exact
+ * prior bytes back. (The immutable-generation machinery in
+ * consensus_state_snapshot_candidate.c builds a FORWARD generation from a bundle
+ * and never snapshots the CURRENT store, so it cannot serve as the prior-gen
+ * restore; VACUUM INTO does.) `result->prior_generation_path` names it.
+ *
+ * Fail-closed: every refusal sets a typed status + named reason. Returns true
+ * ONLY on a fully activated + verified install (status ACTIVATED). */
+struct consensus_state_activate_request {
+    const char *bundle_path;
+    int32_t expected_height;
+    uint8_t expected_block_hash[32];
+    /* Datadir the restorable prior-generation copy is written under. Must be
+     * the directory holding the open progress store. */
+    const char *datadir;
+};
+
+struct consensus_state_activate_result {
+    enum consensus_state_install_status status;
+    bool activated;
+    int32_t height;
+    int32_t hstar;                  /* durable H* after install (cursors-reported) */
+    int32_t coins_applied_height;   /* utxo_apply next-height frontier after install */
+    uint64_t utxo_count;
+    uint64_t anchor_count;
+    uint64_t nullifier_count;
+    char prior_generation_path[256];
+    char reason[192];
+};
+
+bool consensus_state_snapshot_install_activate(
+    struct sqlite3 *progress_db,
+    const struct consensus_state_activate_request *request,
+    struct consensus_state_activate_result *result);
 
 #endif /* ZCL_CONSENSUS_STATE_SNAPSHOT_INSTALL_H */

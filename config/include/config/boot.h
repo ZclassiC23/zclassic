@@ -192,6 +192,18 @@ struct app_context {
                                  * not cross it). Owner-gated; FATAL-refuses if the
                                  * body-digest/count checks fail. Passing those checks
                                  * proves file integrity, not state provenance. */
+    const char *install_consensus_bundle; /* -install-consensus-bundle=PATH :
+                                 * EXPLICIT-ONLY sovereign-cure consumer. Validate a
+                                 * zcl.consensus_state_bundle.v1 FILE, gate it through
+                                 * the publication CAS (must ADMIT), then atomically
+                                 * install its complete coins + Sprout/Sapling anchors
+                                 * + nullifiers + the 8 reducer stage cursors into the
+                                 * live progress store (activation cursor 0 — the cure
+                                 * for the anchor_backfill_gap wedge). Terminal: exits
+                                 * after installing (cursors reported) or a typed
+                                 * refusal. NULL unless the operator sets the flag.
+                                 * Refuses on the canonical datadir unless
+                                 * ZCL_DEPLOY_ALLOW_CANONICAL is set. */
     bool load_verify_boot;     /* -load-verify-boot : on a NORMAL boot, AUTO-DETECT
                                  * a baked, SHA3-verified anchor snapshot
                                  * (<datadir>/utxo-anchor.snapshot or
@@ -339,6 +351,27 @@ void boot_load_snapshot_at_own_height_reset(struct node_db *ndb,
                                             const char *datadir,
                                             struct main_state *ms,
                                             bool trust_existing_block_files);
+
+/* -install-consensus-bundle=PATH (impl in config/src/boot_install_consensus_bundle.c):
+ * the A2 consumer of the sovereign shielded-state cure. TERMINAL: this NEVER
+ * returns — it _exit()s after printing a named terminal (installed + cursors
+ * reported, or a typed refusal). Steps, all fail-closed:
+ *   (1) containment — refuse on the canonical datadir (~/.zclassic-c23) unless
+ *       ZCL_DEPLOY_ALLOW_CANONICAL is set (dev/copy datadirs proceed);
+ *   (2) admit + strictly validate the immutable bundle file;
+ *   (3) gate through the publication CAS (consensus_state_publication_cas) —
+ *       must ADMIT (artifact + selected-chain + producer-source receipts all
+ *       present and mutually binding, and the durable frontier not behind the
+ *       bundle). A durable decision record is written to the datadir;
+ *   (4) on ADMIT, atomically install via consensus_state_snapshot_install_activate.
+ * `ms` is the live main_state (its selected chain is consulted to build the
+ * chain-binding evidence). A non-ADMIT decision or any failure installs NOTHING
+ * and exits non-zero; the prior progress store is left intact (and a physically
+ * restorable prior generation is captured before any write). */
+void boot_install_consensus_bundle(struct node_db *ndb,
+                                   struct main_state *ms,
+                                   const char *bundle_path,
+                                   const char *datadir);
 
 #ifdef ZCL_TESTING
 size_t boot_snapshot_drop_bodiless_have_data_above_seed_for_test(

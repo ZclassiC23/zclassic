@@ -3354,6 +3354,14 @@ sapling_tree_boot_check_done:
         &snap_from_autodetect,
         snapshot_fail_marker,
         sizeof(snapshot_fail_marker));
+    /* Explicit sovereign-cure consumer (A2): validate + CAS-ADMIT + atomically
+     * install a consensus-state bundle FILE, then _exit (TERMINAL). Placed here
+     * so the header chain is loaded for the chain-binding evidence. Full
+     * contract on boot_install_consensus_bundle() — it never returns. */
+    if (ctx->install_consensus_bundle)
+        boot_install_consensus_bundle(&g_node_db, &g_state,
+                                      ctx->install_consensus_bundle,
+                                      ctx->datadir);
     /* Explicit recovery: load digest-verified assisted state at its own header
      * height and fold forward. File integrity is not state provenance; posture
      * remains assisted until full-history promotion. */
