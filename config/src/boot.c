@@ -6,6 +6,7 @@
 
 #include "platform/time_compat.h"
 #include "config/boot_blocktree_cleanup.h"
+#include "config/bundle_exporter.h"
 #include "config/boot_datadir_lock.h"
 #include "config/boot_internal.h"
 #include "config/boot_legacy_blocks.h"
@@ -926,10 +927,9 @@ static bool boot_register_maintenance_services(void)
         .ctx = &g_node_db,
         .flags = ZCL_SERVICE_OPTIONAL,
     };
-    return zcl_service_kernel_register(&g_maintenance_kernel,
-                                       &wallet_backup_spec) &&
-           zcl_service_kernel_register(&g_maintenance_kernel,
-                                       &db_maintenance_spec) &&
+    return zcl_service_kernel_register(&g_maintenance_kernel, &wallet_backup_spec) &&
+           zcl_service_kernel_register(&g_maintenance_kernel, &db_maintenance_spec) &&
+           bundle_exporter_register_service(&g_maintenance_kernel, g_datadir) &&
            boot_register_network_monitor_service(&g_maintenance_kernel,
                                                  &g_node_db);
 }

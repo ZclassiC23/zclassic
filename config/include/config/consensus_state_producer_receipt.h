@@ -56,10 +56,17 @@ bool consensus_state_producer_receipt_begin(sqlite3 *pdb,
 
 /* Completion finalization bound to the folded (height, block_hash). Requires a
  * matching start session written by the SAME running executable. Writes the
- * consensus_state_source_receipt singleton the exporter admits. An exact retry
- * is idempotent; any different or malformed finalized row is immutable
- * conflicting evidence and is never replaced. Returns false and fills `err`
- * on any refusal. */
+ * consensus_state_source_receipt singleton the exporter admits. Returns false
+ * and fills `err` on any refusal.
+ *
+ * MONOTONIC RE-FINALIZE: may be called repeatedly by the SAME running binary at
+ * NON-DECREASING heights. The standing live exporter (config/src/bundle_exporter
+ * .c) re-finalizes each export cycle at the current durable tip so the receipt's
+ * fold_cursor tracks H*+1. A re-finalize at a LOWER height than the committed
+ * fold cursor is refused (the committed generation only rolls forward); an equal
+ * height is an idempotent re-emit. The session's source epoch is build-derived
+ * and stable across re-finalizes, so every stage row stamped since begin() keeps
+ * carrying the one epoch the exporter's stage-row proof requires. */
 bool consensus_state_producer_receipt_finalize(sqlite3 *pdb, int32_t height,
                                                const uint8_t block_hash[32],
                                                char *err, size_t err_size);
