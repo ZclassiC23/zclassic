@@ -12,21 +12,31 @@
 > first, transactional C23 hot swap second, sandboxed publishing third. It does
 > not displace the immediate canonical cure below.
 
-# HANDOFF — current state (2026-07-13)
+# HANDOFF — current state (2026-07-14)
 
 ## 0-NEW. Incoming-developer handoff (current state)
 
-**`origin/main` is green and fully pushed** (`make build-only` + `make lint` clean). Foundation (log→reducer→projection→self-verify) is sound — finishing moves, not a rewrite. Physics floors (measured, Ryzen 9 7950X3D): full-verify ~60 s, snapshot-sync ~3–5 s; today's actuals sit 12–300× above floor. The two binding gaps: the fold validates single-threaded (15 cores idle) and there is no self-derived UTXO-snapshot path.
+**`origin/main` is green and fully pushed** (`make build-only` + `make lint` clean). Foundation (log→reducer→projection→self-verify) is sound — finishing moves, not a rewrite. Physics floor (measured, Ryzen 9 7950X3D): full-verify ~60 s; today's fold sits ~30× above floor.
 
-**Highest-value next work** (each a WIP branch, local only — origin holds only `main`; NONE merge-ready, each needs finishing + gating):
-- `wf/parallel-validation` — **the #1 lever**: parallel script+proof validation pool. Needs a deterministic-verdict test (identical verdict + first-failure under pool size 1 vs 16) + copy-prove A/B blk/s. Consensus-adjacent: parallelism within a block only, verdict order-independent.
-- `wf/groth16-beat-rust` — **CONSENSUS-CRITICAL**: partial BLS12-381 verify optimization. Do NOT merge without the differential parity oracle (committed at `lib/test/differential/` on this branch) proving bit-identical accept/reject verdicts on every input incl the non-canonical-infinity quirk.
-- `wf/dx-navigator-callgraph`, `wf/dx-scanner-immunity` — dev-loop speedups (`code callers/callees/trace`; scanner stops failing-closed on stray files). Need gating.
-- Then: finish the sovereign cure (self-derive the anchor, delete the borrow — unwedges canonical); activate FlyClient/UTXO-snapshot fast-sync.
+**THE mission: get the node ALWAYS SYNCING FAST.** One lever dominates right now — fold speed.
 
-**Live node:** public canonical remains wedged at H\*=3,176,325 on `utxo_apply.anchor_backfill_gap` (the cure track). The **`zclassic23-mint-receipt`** producer folds as the cure source on an OLD binary — restart it on a current-`main` binary (it is mint-exempt from the new wallet gate) for a large fold-rate jump: build node → `--importblockindex $HOME/.zclassic <dir>/node.db` → start the unit. Never touch the two older producers (`~/.zclassic-c23-anchor-mint`, `-mint-fast`).
+**Measured truth (2026-07-14, `~/.zclassic-c23-mint-receipt/mint-progress.log`).** The cure fold is **crypto-bound, not IO-bound and NOT "crypto-skipped"** (an earlier note said crypto is skipped below the anchor — that is WRONG). Per-block stage times at h~300k: `vh` (Equihash header validate) 5–33 ms + `pv` (Groth16 proof validate) 3–18 ms dominate; `sv` (ECDSA script, the only thing skipped below anchor) ~0.2 ms; `ua`/`tf` small. Net ≈ **22–35 blk/s → ~22 h ETA to the anchor (h=3,056,758)**. Physics floor is ~1000–1700 blk/s.
 
-**Traps:** the shared `core.hooksPath` flaps to absolute under worktree agents (the gate self-heals now; else per-process `GIT_CONFIG` override, never `make install-hooks`); the `CODEBASE_MAP.md` `test_groups:` count conflicts on parallel lanes (resolve to `bash tools/scripts/check_doc_counts.sh`); never run two concurrent `make lint`/builds in one checkout; worktree agents must never edit the main checkout by absolute path.
+**A1 parallel validation is ALREADY MERGED to main** (`c6c56a3b9`, 2026-07-13 20:42 UTC) — it parallelizes script+proof (`sv`+`pv`) across cores. The running producer binary (candidate `34d78c95`, built 23:25) **predates A1 and folds serially**, so it gets none of the benefit. `wf/parallel-validation` (branch, unmerged) is the OLD drifted lane — **do NOT reuse it**; the real A1 landed via `wf/a1-parallel-validate`.
+
+**THE next action to make sync fast (owner pre-authorized; copy-prove first):**
+1. Build current `main` → `build/bin/zclassic23` (has A1).
+2. Copy-prove: fold a datadir **COPY** with the A1 binary, measure blk/s vs the ~30 the producer does at the same height range; confirm H\* advances + no parity break.
+3. If materially faster → restart `zclassic23-mint-receipt` on the A1 binary (fresh datadir + fresh receipt session; preserve the old datadir). Recipe: `--importblockindex $HOME/.zclassic <dir>/node.db` then start the unit. Never touch the two older producers (`~/.zclassic-c23-anchor-mint`, `-mint-fast`).
+4. Then attack `vh` (header validate) — the branch `wip/proof-lookahead-header-tuning` holds unmerged fold-speed code for exactly this (`proof_validate_lookahead.{c,h}`, `validate_headers_tuning.c`).
+
+**Other unmerged branches worth knowing** (worktrees pruned 2026-07-14, branches preserved — `git worktree add` to resume): `wf/groth16-beat-rust` (CONSENSUS-CRITICAL: partial BLS12-381 opt; do NOT merge without the differential parity oracle proving bit-identical verdicts incl the non-canonical-infinity quirk), `wf/dx-navigator-callgraph` (`code callers/callees/trace`), `wf/wallet-encryption-default`, `wf/c1-standing-exporter`.
+
+**Live node:** public canonical remains wedged at H\*=3,176,325 on `utxo_apply.anchor_backfill_gap`; the sovereign cure (above) unwedges it. Verify live before trusting this file: `zcl_status`, then `zcl_state subsystem=reducer_frontier`.
+
+**Repo hygiene (2026-07-14):** git worktrees pruned 44 → 2 (`main` + fuzz-service checkout), ~1.4 GB freed; all uncommitted WIP preserved on `wip/*` branches. A live `dev-watch` watcher maintains a small (~16 MB) working set under `.claude/worktrees/` — harmless.
+
+**Traps:** the shared `core.hooksPath` flaps to absolute under worktree agents (the gate self-heals; else per-process `GIT_CONFIG` override, never `make install-hooks`); the `CODEBASE_MAP.md` `test_groups:` count conflicts on parallel lanes (resolve via `bash tools/scripts/check_doc_counts.sh`); never run two concurrent `make lint`/builds in one checkout; the pre-push hook SIGPIPEs on stdout (pre-push-ci to a file, then `--no-verify`).
 
 ## 1. The live node — the wedge
 
