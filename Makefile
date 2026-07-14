@@ -303,7 +303,8 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         test-reindex-smoke test-reindex-killmid \
         test-two-node-peer-tip chaos chaos-clean \
         replay-canary-anchor replay-canary-genesis \
-        soak-evidence-report soak-evidence-selftest
+        soak-evidence-report soak-evidence-selftest \
+        install-slo-probe slo-probe-status slo-probe-selftest
 
 CLI_SRCS = lib/rpc/src/client.c lib/json/src/json.c lib/encoding/src/utilstrencodings.c
 all: test_zcl zclassic23 zclassic-cli zcl-rpc
@@ -2603,6 +2604,46 @@ quality-linger-status:
 	@systemctl --user list-timers zclassic23-fuzz.timer zclassic23-coverage.timer zclassic23-test-suite.timer --no-pager 2>/dev/null || true
 	@systemctl --user status zclassic23-fuzz.service zclassic23-coverage.service zclassic23-test-suite.service --no-pager -n 12 2>/dev/null || true
 	@./tools/scripts/background_quality_lane.sh status
+
+# install-slo-probe: the EXTERNAL uptime prober (lane E3) — a read-only
+# client-viewpoint scoreboard for "staying synced" that does not trust node
+# self-reports. Probes canonical/soak/dev by RPC every 60s and appends to
+# ~/.local/state/zclassic23-slo/uptime-ledger.jsonl (tools/scripts/
+# node_slo_probe.sh). Never restarts, stops, or writes to any node.
+.PHONY: install-slo-probe slo-probe-status
+install-slo-probe:
+	@install -d "$(HOME)/.config/systemd/user"
+	@install -m 644 deploy/zclassic23-slo-probe.service "$(HOME)/.config/systemd/user/zclassic23-slo-probe.service"
+	@install -m 644 deploy/zclassic23-slo-probe.timer "$(HOME)/.config/systemd/user/zclassic23-slo-probe.timer"
+	@systemctl --user daemon-reload
+	@systemctl --user enable --now zclassic23-slo-probe.timer
+	@echo "installed external SLO prober: zclassic23-slo-probe.timer (every 60s)"
+	@echo "ledger: $(HOME)/.local/state/zclassic23-slo/uptime-ledger.jsonl"
+	@echo "status: make slo-probe-status"
+
+slo-probe-status:
+	@systemctl --user list-timers zclassic23-slo-probe.timer --no-pager 2>/dev/null || true
+	@systemctl --user status zclassic23-slo-probe.service zclassic23-slo-probe.timer --no-pager -n 12 2>/dev/null || true
+	@tail -n 6 "$(HOME)/.local/state/zclassic23-slo/uptime-ledger.jsonl" 2>/dev/null || echo "no ledger yet"
+	@./tools/scripts/slo_ledger_summary.sh --window-hours 24 2>/dev/null || true
+
+# slo-probe-selftest: hermetic regression guard for both the prober and the
+# summary reader — fixture RPC commands / fixture ledgers, no live nodes.
+slo-probe-selftest:
+	@bash -c 'set -uo pipefail; \
+	 set +e; out=$$(bash tools/scripts/node_slo_probe.sh --selftest 2>&1); rc=$$?; set -e; \
+	 echo "$$out"; \
+	 if [ "$$rc" != "0" ] || ! echo "$$out" | grep -q "^selftest: PASS"; then \
+	     echo "slo-probe-selftest: FAIL node_slo_probe.sh (rc=$$rc; no selftest: PASS line)"; \
+	     exit 1; \
+	 fi; \
+	 set +e; out2=$$(bash tools/scripts/slo_ledger_summary.sh --selftest 2>&1); rc2=$$?; set -e; \
+	 echo "$$out2"; \
+	 if [ "$$rc2" != "0" ] || ! echo "$$out2" | grep -q "^selftest: PASS"; then \
+	     echo "slo-probe-selftest: FAIL slo_ledger_summary.sh (rc=$$rc2; no selftest: PASS line)"; \
+	     exit 1; \
+	 fi; \
+	 echo "slo-probe-selftest: PASS"'
 
 release:
 	@./tools/release.sh
