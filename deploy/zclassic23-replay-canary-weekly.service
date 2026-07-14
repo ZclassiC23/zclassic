@@ -16,7 +16,11 @@ Type=oneshot
 # checks AND script_verif_skipped_no_undo == 0 (full coverage; no post-
 # snapshot skips on the from-genesis path). Sentinel:
 # ~/.local/state/zclassic23-canary/replay_canary_genesis.json.
-ExecStart=%h/github/zclassic23/tools/scripts/replay_canary.sh --from=genesis
+# ExecStart runs through replay_canary_guard.sh (not replay_canary.sh
+# directly) — same mint-fold skip guard as the nightly (see that
+# .service's comment): SKIPS with a logged reason + exit 0 if any
+# zclassic23-mint-* / *mint* transient unit is actively folding.
+ExecStart=%h/github/zclassic23/tools/scripts/replay_canary_guard.sh --from=genesis
 # > the 8-h (28800 s) hard budget the harness enforces internally.
 TimeoutStartSec=30000
 Nice=10

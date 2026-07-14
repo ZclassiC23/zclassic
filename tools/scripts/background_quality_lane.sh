@@ -165,6 +165,20 @@ run_fuzz() {
         fi
     done
 
+    # Triage step (final, always runs — best-effort, never flips the lane's
+    # own verdict): promote every crash/timeout/oom artifact this run (or
+    # any prior run) deposited under $ARTIFACT_DIR into the checked-in
+    # regression corpus lib/test/fuzz_seeds/<harness>/, deduped by content
+    # hash. Deliberately targets the REAL checkout ($SCRIPT_DIR is this
+    # script's own tools/scripts/, i.e. $ROOT, not the throwaway isolated
+    # $tree from prepare_lane_tree — that tree gets `reset --hard` + `clean
+    # -fd` on the NEXT run, so anything promoted there would be silently
+    # discarded). See tools/scripts/promote_fuzz_artifacts.sh for the
+    # dedup/size-cap contract; promoted seeds still need `git add` +
+    # a commit to actually enter history.
+    echo "=== promote_fuzz_artifacts (triage $ARTIFACT_DIR -> lib/test/fuzz_seeds/) ===" | tee -a "$log"
+    "$SCRIPT_DIR/promote_fuzz_artifacts.sh" --artifact-dir="$ARTIFACT_DIR" 2>&1 | tee -a "$log" || true
+
     finished="$(utc_now)"
     finished_epoch="$(epoch_now)"
     elapsed=$((finished_epoch - started_epoch))
