@@ -184,9 +184,31 @@ static const char *doc_for(const struct scan_ctx *c, size_t seg_start,
 
 /* ── file self-description (§1.1 of docs/work/palace-design.md) ───────── */
 
+/* License headers describe redistribution terms, not the file.  Keep this
+ * deliberately prefix-based and narrow: a line that is not recognizable
+ * boilerplate remains eligible as the file's purpose. */
+static bool purpose_line_is_license(const char *line)
+{
+    static const char *const prefixes[] = {
+        "Copyright",
+        "SPDX-License-Identifier:",
+        "Distributed under",
+        "file COPYING",
+        "Licensed under",
+        "See the License",
+        "All rights reserved.",
+        NULL,
+    };
+    for (size_t i = 0; prefixes[i]; i++) {
+        size_t n = strlen(prefixes[i]);
+        if (strncasecmp(line, prefixes[i], n) == 0) return true;
+    }
+    return false;
+}
+
 /* Derive a file's one-line purpose from its EXISTING leading block comment:
- * the first substantive body line after skipping the Copyright/license line and
- * blank '*' fill, with a leading "<stem> [—:-] " prefix stripped so the stored
+ * the first substantive body line after skipping license boilerplate and blank
+ * '*' fill, with a leading "<stem> [—:-] " prefix stripped so the stored
  * purpose is the bare description. An explicit "purpose: ..." body line
  * overrides (mirrors the // suffix-ok convention). Writes "" when no comment
  * precedes the first code token. Walks only the one leading comment's bytes via
@@ -245,8 +267,7 @@ static void ci_file_purpose(const struct scan_ctx *c, char out[160])
                 snprintf(out, 160, "%s", p);
                 return;
             }
-            /* skip the Copyright/license line and keep walking */
-            if (strncasecmp(line, "Copyright", 9) == 0) { i = j + 1; continue; }
+            if (purpose_line_is_license(line)) { i = j + 1; continue; }
 
             /* first substantive line: strip a leading "<stem> [—:-] " prefix */
             const char *desc = line;

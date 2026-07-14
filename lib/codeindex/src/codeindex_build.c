@@ -141,6 +141,14 @@ bool ci_enumerate_sources(const char *root, ci_enum_cb cb, void *user)
     collect_dir(root, "tools", &vec);
     collect_dir(root, "domain", &vec);
     collect_dir(root, "adapters", &vec);
+    collect_dir(root, "ports", &vec);
+    collect_dir(root, "src", &vec);
+
+    /* Tests are not a production LIB_MODULES entry, but they are source a
+     * developer must be able to navigate.  collect_dir() retains the same
+     * generated-directory pruning used above; the sorted pass below de-dups
+     * this root if it ever becomes a listed library module. */
+    collect_dir(root, "lib/test", &vec);
 
     qsort(vec.v, vec.n, sizeof(vec.v[0]), sv_cmp);
 

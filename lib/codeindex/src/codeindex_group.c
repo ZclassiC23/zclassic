@@ -107,6 +107,7 @@ const char *ci_group_purpose(const char *group)
     if (strcmp(group, "adapters") == 0) return "hexagonal adapters implementing ports/";
     if (strcmp(group, "ports") == 0) return "hexagonal interface headers";
     if (strcmp(group, "root") == 0) return "top-level entry (src/main.c) and repo root files";
+    if (strcmp(group, "lib/test") == 0) return "the canonical test runner, groups, fixtures, and specifications";
     if (strcmp(group, "app/conditions") == 0) return "shape: liveness/blocker conditions";
     if (strcmp(group, "app/controllers") == 0) return "shape: REST + MCP + RPC request handlers";
     if (strcmp(group, "app/events") == 0) return "shape: domain events";
@@ -197,6 +198,7 @@ bool ci_group_emit_all(struct ci_store *s)
         snprintf(path, sizeof(path), "lib/%s", mods[i]);
         if (!emit(s, path, "lib", "lib")) return false;
     }
+    if (!emit(s, "lib/test", "test", "lib")) return false;
 
     /* app/<shape> */
     size_t nsh = 0;

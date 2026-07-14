@@ -13,6 +13,8 @@
  *   7. file counts + route parity  — recursive vs direct group file counts, and
  *                                    `code tests` route == `dev test plan`
  *                                    proof_group for the same single file.
+ *   8. complete source roots       — src/, ports/, and lib/test/ are indexed;
+ *                                    license boilerplate is not a purpose.
  *
  * All scratch work happens under ./test-tmp/ (project no-/tmp convention). */
 
@@ -126,13 +128,60 @@ static const char *PURPOSE_NONE_C =
     "/* interior helper doc, not a file-level purpose */\n"
     "int purpose_none_fn(void) { return 1; }\n";
 
+static const char *PURPOSE_AFTER_LICENSE_C =
+    "/* Copyright 2026 Rhett Creighton - Apache License 2.0\n"
+    " * Distributed under the MIT software license, see the accompanying\n"
+    " * file COPYING or http://www.opensource.org/licenses/mit-license.php.\n"
+    " *\n"
+    " * purpose_after_license — describes behavior after the license.\n"
+    " */\n"
+    "int purpose_after_license_fn(void) { return 0; }\n";
+
+static const char *PURPOSE_LICENSE_ONLY_C =
+    "/* Copyright 2026 Rhett Creighton - Apache License 2.0\n"
+    " * Distributed under the MIT software license, see the accompanying\n"
+    " * file COPYING or http://www.opensource.org/licenses/mit-license.php.\n"
+    " */\n"
+    "int purpose_license_only_fn(void) { return 0; }\n";
+
+static const char *ROOT_MAIN_C =
+    "/* Copyright 2026 Rhett Creighton - Apache License 2.0\n"
+    " *\n"
+    " * main — fixture top-level node entry.\n"
+    " */\n"
+    "int fixture_root_main(void) { return 0; }\n";
+
+static const char *PORT_H =
+    "/* SPDX-License-Identifier: Apache-2.0\n"
+    " * Copyright 2026 Rhett Creighton\n"
+    " *\n"
+    " * fixture_port — fixture hexagonal interface.\n"
+    " */\n"
+    "int fixture_port_probe(void);\n";
+
+static const char *TEST_SOURCE_C =
+    "/* Copyright 2026 Rhett Creighton - Apache License 2.0\n"
+    " *\n"
+    " * test_fixture_indexed — fixture test translation unit.\n"
+    " */\n"
+    "int test_fixture_indexed(void) { return 0; }\n";
+
 static bool write_fixture(void)
 {
     return mk_write(FIX, "lib/net/src/foo.c", FOO_C) &&
            mk_write(FIX, "lib/net/include/net/foo.h", FOO_H) &&
            mk_write(FIX, "lib/net/src/purpose_stem.c", PURPOSE_STEM_C) &&
            mk_write(FIX, "lib/net/src/purpose_override.c", PURPOSE_OVERRIDE_C) &&
-           mk_write(FIX, "lib/net/src/purpose_none.c", PURPOSE_NONE_C);
+           mk_write(FIX, "lib/net/src/purpose_none.c", PURPOSE_NONE_C) &&
+           mk_write(FIX, "lib/net/src/purpose_after_license.c",
+                    PURPOSE_AFTER_LICENSE_C) &&
+           mk_write(FIX, "lib/net/src/purpose_license_only.c",
+                    PURPOSE_LICENSE_ONLY_C) &&
+           mk_write(FIX, "src/main.c", ROOT_MAIN_C) &&
+           mk_write(FIX, "ports/include/ports/fixture_port.h", PORT_H) &&
+           mk_write(FIX, "lib/test/src/test_fixture_indexed.c", TEST_SOURCE_C) &&
+           mk_write(FIX, "lib/test/build/generated_should_not_index.c",
+                    "int generated_should_not_index(void) { return 0; }\n");
 }
 
 /* Canonical ordered dump of every symbol as one string (for identity tests). */
@@ -291,17 +340,55 @@ int test_codeindex(void)
     CI_CHECK("interior-only comment yields empty purpose", found &&
              cf.purpose[0] == '\0');
 
+    codeindex_file(ci, "lib/net/src/purpose_after_license.c", &cf, &found);
+    CI_CHECK("license lines are skipped before a real purpose", found &&
+             strcmp(cf.purpose,
+                    "describes behavior after the license.") == 0);
+
+    codeindex_file(ci, "lib/net/src/purpose_license_only.c", &cf, &found);
+    CI_CHECK("license-only header yields empty purpose", found &&
+             cf.purpose[0] == '\0');
+
+    /* ── 8: every developer-facing source root is indexed ── */
+    codeindex_file(ci, "src/main.c", &cf, &found);
+    CI_CHECK("src/main.c is indexed in root", found &&
+             strcmp(cf.group, "root") == 0 &&
+             strcmp(cf.purpose, "fixture top-level node entry.") == 0);
+
+    codeindex_file(ci, "ports/include/ports/fixture_port.h", &cf, &found);
+    CI_CHECK("ports header is indexed in ports", found &&
+             strcmp(cf.group, "ports") == 0 &&
+             strcmp(cf.purpose, "fixture hexagonal interface.") == 0);
+
+    codeindex_file(ci, "lib/test/src/test_fixture_indexed.c", &cf, &found);
+    CI_CHECK("lib/test source is indexed in lib/test", found &&
+             strcmp(cf.group, "lib/test") == 0 &&
+             strcmp(cf.purpose, "fixture test translation unit.") == 0);
+
+    codeindex_symbol(ci, "fixture_root_main", &s, &found);
+    CI_CHECK("src symbol is searchable", found && s.kind == 'T');
+    codeindex_symbol(ci, "fixture_port_probe", &s, &found);
+    CI_CHECK("ports declaration is searchable", found && s.kind == 'T');
+    codeindex_symbol(ci, "test_fixture_indexed", &s, &found);
+    CI_CHECK("lib/test symbol is searchable", found && s.kind == 'T');
+
+    codeindex_file(ci, "lib/test/build/generated_should_not_index.c",
+                   &cf, &found);
+    CI_CHECK("generated test build directory stays pruned", !found);
+
     /* group hierarchy contains lib/net with parent lib */
     struct ci_group groups[256];
     int ng = codeindex_groups(ci, groups, 256);
-    bool has_libnet = false, has_appsvc = false;
+    bool has_libnet = false, has_appsvc = false, has_libtest = false;
     for (int i = 0; i < ng; i++) {
         if (strcmp(groups[i].path, "lib/net") == 0 &&
             strcmp(groups[i].parent, "lib") == 0) has_libnet = true;
         if (strcmp(groups[i].path, "app/services") == 0) has_appsvc = true;
+        if (strcmp(groups[i].path, "lib/test") == 0 &&
+            strcmp(groups[i].parent, "lib") == 0) has_libtest = true;
     }
-    CI_CHECK("group hierarchy has lib/net and app/services",
-             has_libnet && has_appsvc);
+    CI_CHECK("group hierarchy has lib/net, lib/test, and app/services",
+             has_libnet && has_libtest && has_appsvc);
 
     /* card render */
     char card[1024];
@@ -310,18 +397,19 @@ int test_codeindex(void)
              strstr(card, "func"));
 
     /* ── 7a: file counts (ci_store_count_files_in_group via the public
-     * wrapper). The fixture's only module is lib/net (foo.c + foo.h). */
+     * wrapper). The fixture has a production lib/net module plus lib/test. */
     {
         struct ci_file fbuf[16];
         int listed = codeindex_files_in_group(ci, "lib/net", fbuf, 16);
         int direct = codeindex_count_files_in_group(ci, "lib/net", false);
+        int direct_test = codeindex_count_files_in_group(ci, "lib/test", false);
         int recur_lib = codeindex_count_files_in_group(ci, "lib", true);
         int recur_self = codeindex_count_files_in_group(ci, "lib/net", true);
         int missing = codeindex_count_files_in_group(ci, "lib/nope", true);
         CI_CHECK("direct count equals the listed file count",
                  direct >= 2 && direct == listed);
         CI_CHECK("recursive count on parent 'lib' aggregates lib/net children",
-                 recur_lib == direct);
+                 direct_test == 1 && recur_lib == direct + direct_test);
         CI_CHECK("recursive count on a leaf group equals its direct count",
                  recur_self == direct);
         CI_CHECK("unknown group counts zero (not an error)", missing == 0);
