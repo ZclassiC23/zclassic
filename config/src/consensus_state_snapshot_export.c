@@ -642,6 +642,67 @@ static bool digest_nonzero(const uint8_t digest[32])
     return any != 0;
 }
 
+/* Shared derive+write core used by BOTH exporter entries. Runs the proof, opens
+ * the anonymous staging inode, writes the bundle, and strictly closes the dest.
+ * The CALLER owns the SOURCE read transaction (a held lock+BEGIN on the owned
+ * handle for the offline mint, or a private WAL-snapshot BEGIN for the live
+ * exporter). *manifest is filled for finalize_temp/result on success. */
+static bool export_prove_write(
+    sqlite3 *source,
+    const struct consensus_state_snapshot_export_request *request,
+    struct consensus_export_output_binding *output,
+    struct consensus_state_bundle_manifest *manifest,
+    struct consensus_state_export_result *result)
+{
+    struct consensus_state_source_receipt receipt;
+    memset(&receipt, 0, sizeof(receipt));
+    struct consensus_state_bundle_proof_summary
+        proofs[CONSENSUS_STATE_BUNDLE_PROOF_COUNT];
+    memset(proofs, 0, sizeof(proofs));
+    sqlite3 *destination = NULL;
+
+    bool ok = consensus_export_prove_source(source, request, manifest, &receipt,
+                                            proofs, result);
+    if (ok)
+        ok = consensus_export_open_temp(output, &destination, result);
+    if (ok)
+        ok = consensus_export_write_bundle(source, destination, manifest,
+                                           &receipt, proofs, result);
+    if (destination) {
+        if (!output_sqlite_close_strict(output, &destination) && ok) {
+            (void)consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,
+                                        "bundle close failed");
+            ok = false;
+        }
+        destination = NULL;
+    }
+    return ok;
+}
+
+/* Fill the EXPORTED result on success — identical for both entries. */
+static void export_fill_success(
+    const struct consensus_state_bundle_manifest *manifest,
+    struct consensus_state_export_result *result)
+{
+    if (!result)
+        return;
+    result->status = CONSENSUS_EXPORT_EXPORTED;
+    result->history_complete = true;
+    result->source_clean = manifest->source_clean;
+    result->validation_profile = manifest->validation_profile;
+    result->height = manifest->height;
+    result->utxo_count = manifest->utxo_count;
+    result->anchor_count = manifest->anchor_count;
+    result->nullifier_count = manifest->nullifier_count;
+    memcpy(result->artifact_digest, manifest->artifact_digest, 32);
+    snprintf(result->reason, sizeof(result->reason),
+             "exported immutable %s height=%d source=%s profile=%s",
+             CONSENSUS_STATE_BUNDLE_SCHEMA, manifest->height,
+             manifest->source_clean ? "clean" : "dirty",
+             manifest->validation_profile == CONSENSUS_STATE_VALIDATION_FULL
+                 ? "full" : "checkpoint_fold");
+}
+
 bool consensus_state_snapshot_export(
     sqlite3 *progress_db,
     const struct consensus_state_snapshot_export_request *request,
@@ -673,14 +734,8 @@ bool consensus_state_snapshot_export(
     }
     output_run_after_bind_hook();
 
-    sqlite3 *destination = NULL;
     struct consensus_state_bundle_manifest manifest;
     memset(&manifest, 0, sizeof(manifest));
-    struct consensus_state_source_receipt receipt;
-    memset(&receipt, 0, sizeof(receipt));
-    struct consensus_state_bundle_proof_summary
-        proofs[CONSENSUS_STATE_BUNDLE_PROOF_COUNT];
-    memset(proofs, 0, sizeof(proofs));
     bool source_tx = false;
     bool ok = true;
 
@@ -699,22 +754,8 @@ bool consensus_state_snapshot_export(
         source_tx = true;
     }
     if (ok)
-        ok = consensus_export_prove_source(progress_db, request, &manifest,
-                                           &receipt, proofs, result);
-    if (ok)
-        ok = consensus_export_open_temp(output, &destination, result);
-    if (ok)
-        ok = consensus_export_write_bundle(progress_db, destination, &manifest,
-                                           &receipt, proofs, result);
-    if (destination) {
-        if (!output_sqlite_close_strict(output, &destination) && ok) {
-            (void)consensus_export_fail(
-                result, CONSENSUS_EXPORT_OUTPUT_ERROR,
-                "bundle close failed");
-            ok = false;
-        }
-        destination = NULL;
-    }
+        ok = export_prove_write(progress_db, request, output, &manifest,
+                                result);
     if (source_tx) {
         const char *finish = ok ? "COMMIT" : "ROLLBACK";
         if (sqlite3_exec(progress_db, finish, NULL, NULL, NULL) != SQLITE_OK) {
@@ -736,23 +777,128 @@ bool consensus_state_snapshot_export(
             free(output);
         return false;
     }
-    if (result) {
-        result->status = CONSENSUS_EXPORT_EXPORTED;
-        result->history_complete = true;
-        result->source_clean = manifest.source_clean;
-        result->validation_profile = manifest.validation_profile;
-        result->height = manifest.height;
-        result->utxo_count = manifest.utxo_count;
-        result->anchor_count = manifest.anchor_count;
-        result->nullifier_count = manifest.nullifier_count;
-        memcpy(result->artifact_digest, manifest.artifact_digest, 32);
-        snprintf(result->reason, sizeof(result->reason),
-                 "exported immutable %s height=%d source=%s profile=%s",
-                 CONSENSUS_STATE_BUNDLE_SCHEMA, manifest.height,
-                 manifest.source_clean ? "clean" : "dirty",
-                 manifest.validation_profile == CONSENSUS_STATE_VALIDATION_FULL
-                     ? "full" : "checkpoint_fold");
+    export_fill_success(&manifest, result);
+    output_binding_close(output);
+    if (!output->abandon_on_close)
+        free(output);
+    return true;
+}
+
+/* Open a PRIVATE read-only connection to the owned progress.kv and pin a
+ * consistent WAL read snapshot. The process lock is held ONLY across the pin
+ * (open + BEGIN + one probe read) so the reducer cannot advance the durable tip
+ * mid-pin; it is released before the caller runs the (slow) proof/copy against
+ * the returned handle. Returns the pinned handle or NULL (with *result filled). */
+static sqlite3 *export_open_pinned_snapshot(
+    struct consensus_state_export_result *result)
+{
+    char path[PROGRESS_STORE_PATH_MAX];
+    if (!progress_store_path(path, sizeof(path))) {
+        (void)consensus_export_fail(result, CONSENSUS_EXPORT_REFUSED,
+                                    "progress store not open for snapshot");
+        return NULL;
     }
+    sqlite3 *snap = NULL;
+    if (sqlite3_open_v2(path, &snap,
+            SQLITE_OPEN_READONLY | SQLITE_OPEN_NOMUTEX, NULL) != SQLITE_OK) {
+        const char *m = snap ? sqlite3_errmsg(snap) : "open failed";
+        (void)consensus_export_fail(result, CONSENSUS_EXPORT_STORE_ERROR,
+                                    "read-only snapshot open failed: %s", m);
+        if (snap)
+            sqlite3_close(snap);
+        return NULL;
+    }
+    char *err = NULL;
+    bool ok = sqlite3_exec(snap,
+                  "PRAGMA query_only=ON;PRAGMA busy_timeout=5000;", NULL, NULL,
+                  &err) == SQLITE_OK;
+    if (err) {
+        sqlite3_free(err);
+        err = NULL;
+    }
+    /* Pin the WAL read snapshot under the process lock: BEGIN + a probe read
+     * establish a consistent view that the reducer's concurrent writes cannot
+     * disturb; the reducer cannot commit a new durable tip while we hold the
+     * lock, so the pinned H* equals the tip the caller just finalized against. */
+    if (ok) {
+        progress_store_tx_lock();
+        sqlite3_stmt *probe = NULL;
+        ok = sqlite3_exec(snap, "BEGIN", NULL, NULL, NULL) == SQLITE_OK &&
+             sqlite3_prepare_v2(snap, "SELECT count(*) FROM stage_cursor", -1,
+                                &probe, NULL) == SQLITE_OK &&
+             sqlite3_step(probe) == SQLITE_ROW; // raw-sql-ok:progress-kv-kernel-store
+        if (probe)
+            sqlite3_finalize(probe);
+        progress_store_tx_unlock();
+    }
+    if (!ok) {
+        (void)consensus_export_fail(result, CONSENSUS_EXPORT_STORE_ERROR,
+                                    "read-only snapshot pin failed");
+        sqlite3_close(snap);
+        return NULL;
+    }
+    return snap;
+}
+
+bool consensus_state_snapshot_export_from_progress_snapshot(
+    const struct consensus_state_snapshot_export_request *request,
+    struct consensus_state_export_result *result)
+{
+    if (result)
+        memset(result, 0, sizeof(*result));
+    if (!request)
+        return consensus_export_fail(result, CONSENSUS_EXPORT_REFUSED,
+                                     "NULL request");
+    if (request->expected_height < 0 ||
+        request->expected_height >= INT32_MAX ||
+        !digest_nonzero(request->expected_block_hash))
+        return consensus_export_fail(result, CONSENSUS_EXPORT_REFUSED,
+                                     "invalid expected source height/hash");
+
+    struct consensus_export_output_binding *output = zcl_calloc(
+        1, sizeof(*output), "consensus_export_output_binding");
+    if (!output)
+        return consensus_export_fail(result, CONSENSUS_EXPORT_OUTPUT_ERROR,
+                                     "output binding allocation failed");
+    output_binding_init(output);
+    if (!output_binding_open(request, output, result)) {
+        free(output);
+        return false;
+    }
+    output_run_after_bind_hook();
+
+    sqlite3 *snap = export_open_pinned_snapshot(result);
+    if (!snap) {
+        output_binding_close(output);
+        if (!output->abandon_on_close)
+            free(output);
+        return false;
+    }
+
+    struct consensus_state_bundle_manifest manifest;
+    memset(&manifest, 0, sizeof(manifest));
+    /* The snapshot's BEGIN read transaction (a private handle, no process lock)
+     * spans the whole proof + copy for a consistent view; the reducer writes
+     * concurrently on the primary handle without contention. */
+    bool ok = export_prove_write(snap, request, output, &manifest, result);
+    const char *finish = ok ? "COMMIT" : "ROLLBACK";
+    if (sqlite3_exec(snap, finish, NULL, NULL, NULL) != SQLITE_OK && ok) {
+        (void)consensus_export_fail(result, CONSENSUS_EXPORT_STORE_ERROR,
+                                    "snapshot read transaction close failed");
+        ok = false;
+        sqlite3_exec(snap, "ROLLBACK", NULL, NULL, NULL);
+    }
+    sqlite3_close(snap);
+
+    if (ok)
+        ok = consensus_export_finalize_temp(output, &manifest, result);
+    if (!ok) {
+        output_binding_close(output);
+        if (!output->abandon_on_close)
+            free(output);
+        return false;
+    }
+    export_fill_success(&manifest, result);
     output_binding_close(output);
     if (!output->abandon_on_close)
         free(output);

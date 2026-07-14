@@ -459,6 +459,39 @@ static bool insert_session(sqlite3 *db,
     return ok;
 }
 
+/* Read the EXISTING committed receipt's fold_cursor (H*+1 of the last finalize).
+ * *present reports whether a receipt row exists; returns false only on a store
+ * error. Used by the monotonic re-finalize guard: the standing live exporter
+ * (config/src/bundle_exporter.c) re-finalizes each export cycle at the current
+ * durable tip, and the committed generation must only ever roll FORWARD. */
+static bool read_existing_receipt_fold_cursor(sqlite3 *db, int64_t *out,
+                                              bool *present)
+{
+    *present = false;
+    *out = 0;
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "SELECT fold_cursor FROM consensus_state_source_receipt "
+            "WHERE singleton=1", -1, &st, NULL) != SQLITE_OK) {
+        /* Table may not exist yet: a legitimate "no prior receipt". */
+        return true;
+    }
+    int rc = sqlite3_step(st); // raw-sql-ok:progress-kv-kernel-store
+    bool ok = true;
+    if (rc == SQLITE_ROW) {
+        if (sqlite3_column_type(st, 0) == SQLITE_INTEGER) {
+            *out = sqlite3_column_int64(st, 0);
+            *present = true;
+        } else {
+            ok = false;
+        }
+    } else if (rc != SQLITE_DONE) {
+        ok = false;
+    }
+    sqlite3_finalize(st);
+    return ok;
+}
+
 static bool write_final_receipt(
     sqlite3 *db, const struct consensus_state_source_receipt *r)
 {
@@ -767,6 +800,35 @@ bool consensus_state_producer_receipt_finalize(sqlite3 *pdb, int32_t height,
                        "producer receipt finalize: genesis..H* header corpus "
                        "does not resolve the completed tip");
     }
+    /* Monotonic re-finalize guard: the committed generation may only roll
+     * FORWARD. A first finalize (no prior receipt) always passes; a re-finalize
+     * at an equal height is an idempotent re-emit; a re-finalize at a LOWER
+     * height is refused (fail closed). The running-binary + session-epoch checks
+     * above already forbid a FOREIGN binary from re-finalizing at all. */
+    if (ok) {
+        int64_t existing_cursor = 0;
+        bool existing_present = false;
+        if (!read_existing_receipt_fold_cursor(pdb, &existing_cursor,
+                                                &existing_present)) {
+            (void)exec_checked(pdb, "ROLLBACK");
+            progress_store_tx_unlock();
+            return set_err(err, err_size,
+                           "producer receipt finalize: existing receipt fold "
+                           "cursor read failed");
+        }
+        if (existing_present && (int64_t)height + 1 < existing_cursor) {
+            (void)exec_checked(pdb, "ROLLBACK");
+            progress_store_tx_unlock();
+            char why[192];
+            snprintf(why, sizeof(why),
+                     "producer receipt finalize: monotonic re-finalize cannot "
+                     "move the committed fold cursor backward (have=%lld "
+                     "want=%lld)", (long long)existing_cursor,
+                     (long long)((int64_t)height + 1));
+            return set_err(err, err_size, why);
+        }
+    }
+
     if (ok) {
         receipt.fold_cursor = (int64_t)height + 1;
         consensus_state_source_receipt_digest(&receipt, receipt.receipt_digest);

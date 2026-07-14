@@ -346,6 +346,11 @@
                consensus_state_publication_cas_dump_state_json,
                "contained consensus-state publication CAS: latest decision (ADMIT/typed refusal), "
                "bound artifact/chain/source/epoch digests, bundle H/hash, expected frontier H/hash, decision digest"),
+    DIAG_LOCAL("bundle_exporter", bundle_exporter_dump_state_json,
+               "standing live consensus-state bundle exporter: "
+               "session_open/qualified, degradation_reason, "
+               "last_export_height/time/duration, exports_ok/failed, "
+               "every_blocks, keep, generations present, last_refusal"),
     DIAG_LOCAL("principals", principal_dump_state_json,
                "multi-user-server identity registry: count + public projection of each principal {address, role, status, key_kind, last_login, has_znam}"),
     DIAG_LOCAL("auth", auth_challenge_dump_state_json,

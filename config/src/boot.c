@@ -6,6 +6,7 @@
 
 #include "platform/time_compat.h"
 #include "config/boot_blocktree_cleanup.h"
+#include "config/bundle_exporter.h"
 #include "config/boot_datadir_lock.h"
 #include "config/boot_internal.h"
 #include "config/boot_legacy_blocks.h"
@@ -891,6 +892,26 @@ static void boot_db_maintenance_service_stop(void *ctx)
     db_maintenance_stop();
 }
 
+/* Standing live consensus-state bundle exporter. ctx is the DATADIR string
+ * (like disk_monitor), NOT &g_node_db — the exporter writes bundles under
+ * <datadir>/bundles and works off the owned progress.kv handle. Fail-safe:
+ * bundle_exporter_start records a dumpstate degradation and still arms rather
+ * than failing, so this always reports success. */
+static bool boot_bundle_exporter_service_start(void *ctx)
+{
+    const char *datadir = ctx;
+    if (!datadir)
+        return true;
+    (void)bundle_exporter_start(progress_store_db(), datadir);
+    return true;
+}
+
+static void boot_bundle_exporter_service_stop(void *ctx)
+{
+    (void)ctx;
+    bundle_exporter_stop();
+}
+
 static bool boot_register_guard_services(const char *datadir)
 {
     const struct zcl_service_spec disk_spec = {
@@ -926,10 +947,22 @@ static bool boot_register_maintenance_services(void)
         .ctx = &g_node_db,
         .flags = ZCL_SERVICE_OPTIONAL,
     };
+    /* ctx is the datadir (set by boot_step_select_chain_and_datadir well
+     * before maintenance services start), NOT &g_node_db — the exporter needs
+     * <datadir>/bundles and the progress.kv handle, not the wallet/node DB. */
+    const struct zcl_service_spec bundle_exporter_spec = {
+        .name = "bundle_exporter",
+        .start = boot_bundle_exporter_service_start,
+        .stop = boot_bundle_exporter_service_stop,
+        .ctx = (void *)g_datadir,
+        .flags = ZCL_SERVICE_OPTIONAL,
+    };
     return zcl_service_kernel_register(&g_maintenance_kernel,
                                        &wallet_backup_spec) &&
            zcl_service_kernel_register(&g_maintenance_kernel,
                                        &db_maintenance_spec) &&
+           zcl_service_kernel_register(&g_maintenance_kernel,
+                                       &bundle_exporter_spec) &&
            boot_register_network_monitor_service(&g_maintenance_kernel,
                                                  &g_node_db);
 }
