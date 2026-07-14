@@ -57,6 +57,29 @@ bool consensus_state_producer_receipt_finalize(sqlite3 *pdb, int32_t height,
                                                const uint8_t block_hash[32],
                                                char *err, size_t err_size);
 
+/* Read-only producer status. Opens <datadir>/progress.kv READONLY (no writes,
+ * no migrations — safe against a running producer over WAL) and reports the
+ * fold session/receipt lifecycle plus the reducer stage cursors, for the
+ * `zclassic23 ops producer status` operator command. NEVER mutates state. */
+struct producer_status_read {
+    bool    progress_kv_present;   /* <datadir>/progress.kv exists and opened */
+    bool    session_open;          /* a producer session row exists (fold started) */
+    bool    receipt_finalized;     /* a source receipt row exists (fold complete) */
+    int64_t utxo_apply_cursor;     /* stage_cursor 'utxo_apply' (-1 if absent) */
+    int64_t tip_finalize_cursor;   /* stage_cursor 'tip_finalize' (-1 if absent) */
+    int64_t fold_cursor;           /* receipt fold cursor H*+1 (-1 if not finalized) */
+    int64_t start_time_us;         /* session start (0 if no session) */
+    int     validation_profile;    /* session/receipt validation profile (-1 if none) */
+    char    producer_commit[64];   /* running producer build commit ("" if none) */
+};
+
+/* Fill *out from <datadir>/progress.kv. Returns true when the store was opened
+ * (even if empty — every field then reports absent); false with `err` filled
+ * only when the datadir/path is unusable. Node-free. */
+bool consensus_state_producer_status_read(const char *datadir,
+                                          struct producer_status_read *out,
+                                          char *err, size_t err_size);
+
 #ifdef ZCL_TESTING
 /* Deterministic hermetic override for the source-identity claim so a test does
  * not depend on the build's baked git identity. `commit` must be 40 lowercase

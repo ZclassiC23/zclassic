@@ -97,6 +97,7 @@
 #include "util/blocker.h"
 #include "util/self_backtrace.h"
 #include "util/cpu_topology.h"
+#include "util/thread_profile.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -350,6 +351,98 @@ bool diag_rpc_selfbacktrace(const struct json_value *params, bool help,
     }
     json_push_kv_str(result, "path", path);
     json_push_kv_int(result, "thread_count", (int64_t)n);
+    return true;
+}
+
+/* ── RPC: profile [seconds] [top_n] ────────────────────────────────
+ *
+ * Backs the `ops.profile` native command. Samples THIS running node's
+ * /proc/self/task/<tid>/stat twice `seconds` apart and returns the busiest
+ * threads (cpu_ms delta, name, wchan) plus a one-line verdict and a compact
+ * reducer-stage step-EWMA snapshot. Read-only; in-process — the replacement
+ * for the /proc sampling an operator does by hand to find a bottleneck.
+ */
+static void diag_profile_push_stage_ewma(struct json_value *result)
+{
+    struct json_value arr;
+    json_init(&arr);
+    json_set_array(&arr);
+    struct stage_row {
+        const char *name;
+        int64_t (*ewma)(void);
+        uint64_t cursor;
+    } rows[] = {
+        { "header_admit",     header_admit_stage_step_us_ewma,
+          header_admit_stage_cursor() },
+        { "validate_headers", validate_headers_stage_step_us_ewma,
+          validate_headers_stage_cursor() },
+        { "body_fetch",       body_fetch_stage_step_us_ewma,
+          body_fetch_stage_cursor() },
+        { "body_persist",     body_persist_stage_step_us_ewma,
+          body_persist_stage_cursor() },
+        { "script_validate",  script_validate_stage_step_us_ewma,
+          script_validate_stage_cursor() },
+        { "proof_validate",   proof_validate_stage_step_us_ewma,
+          proof_validate_stage_cursor() },
+        { "utxo_apply",       utxo_apply_stage_step_us_ewma,
+          utxo_apply_stage_cursor() },
+        { "tip_finalize",     tip_finalize_stage_step_us_ewma,
+          tip_finalize_stage_cursor() },
+    };
+    for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        int64_t ewma_us = rows[i].ewma();
+        struct json_value item;
+        json_init(&item);
+        json_set_object(&item);
+        json_push_kv_str(&item, "stage", rows[i].name);
+        json_push_kv_int(&item, "cursor", (int64_t)rows[i].cursor);
+        json_push_kv_int(&item, "step_us_ewma", ewma_us);
+        json_push_kv_int(&item, "steps_per_sec",
+                         ewma_us > 0 ? (int64_t)(1000000.0 / (double)ewma_us
+                                                 + 0.5)
+                                     : 0);
+        json_push_back(&arr, &item);
+        json_free(&item);
+    }
+    json_push_kv(result, "stage_ewma", &arr);
+    json_free(&arr);
+}
+
+bool diag_rpc_profile(const struct json_value *params, bool help,
+                      struct json_value *result)
+{
+    RPC_HELP(help, result,
+        "profile [seconds] [top_n]\n"
+        "\nSample this node's threads over `seconds` and report the busiest "
+        "threads (cpu_ms, name, wchan), a one-line verdict, and the reducer "
+        "stage step-EWMA snapshot.\n"
+        "\nResult: { sample_ms, sampled_threads, verdict, busiest_thread, "
+        "threads:[...], stage_ewma:[...] }.");
+
+    int seconds = 3;
+    const struct json_value *s0 = json_at(params, 0);
+    if (s0 && s0->type == JSON_INT) {
+        int64_t v = json_get_int(s0);
+        if (v >= 1 && v <= 60) seconds = (int)v;
+    }
+    int top_n = 8;
+    const struct json_value *s1 = json_at(params, 1);
+    if (s1 && s1->type == JSON_INT) {
+        int64_t v = json_get_int(s1);
+        if (v >= 1 && v <= (int64_t)THREAD_PROFILE_TOP_MAX) top_n = (int)v;
+    }
+
+    struct thread_profile_opts opts = {
+        .sample_ms = seconds * 1000,
+        .top_n = top_n,
+    };
+    if (!thread_profile_sample(&opts, result)) {
+        json_set_object(result);
+        json_push_kv_str(result, "error", "thread profile sample failed "
+                                          "(/proc/self/task unreadable)");
+        return false;
+    }
+    diag_profile_push_stage_ewma(result);
     return true;
 }
 

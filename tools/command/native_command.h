@@ -214,6 +214,80 @@ void zcl_native_handle_ops_debug_backtrace(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
+/* ops.explain <topic> — compose one prose-like diagnostic from four surfaces
+ * (reducer frontier, blocker registry, condition engine, health/sync RPCs).
+ * Topics: sync, blockers, health (table-dispatched, see
+ * app/controllers/src/explain_native_handlers.c). Reply carries data.text +
+ * structured fields; the CLI prints text unless --format=json. */
+void zcl_native_handle_ops_explain(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
+/* ops.profile [seconds] [top_n] — dispatch the `profile` RPC (in-process
+ * /proc/self/task sampling) and render the busiest threads + verdict + reducer
+ * stage step-EWMA. */
+void zcl_native_handle_ops_profile(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
+/* ops.producer.status --datadir= — read a mint/anchor producer's progress.kv
+ * (stage cursors + session/receipt lifecycle) and mint-progress.log tail with
+ * NO node contact. Read-only. */
+void zcl_native_handle_ops_producer_status(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+
+/* Render the CLI UX contract's ONE-LINE status brief: a single line, <=200
+ * bytes, stable `key=value` pairs (no JSON braces), from the flat brief body
+ * core.status.brief emits (see zcl_native_status_brief_body): hstar, gap,
+ * peer_best, sync_state, primary_blocker, blocker_age_s, active_conditions,
+ * peer_count, rss_mb. `buf`/`cap` must be at least 256 bytes; the line is
+ * always NUL-terminated and never exceeds 200 visible bytes before the
+ * terminator. Exposed for test_operator_ux. See docs/NATIVE_COMMAND_INTERFACE.md
+ * "CLI UX contract" for the frozen field list. */
+struct json_value;
+void zcl_native_status_brief_render(const struct json_value *data, char *buf,
+                                    size_t cap);
+
+/* Pick one short, deterministic next-step command from the same brief body
+ * (dominant blocker present -> explain it; still behind -> explain sync;
+ * otherwise -> a general healthcheck). Never allocates; returns a pointer to
+ * a static string. Backs the bare no-arg `zclassic23` entry point and any
+ * leaf invoked with --next. */
+const char *zcl_native_status_brief_next_command(const struct json_value *data);
+
+/* Select named top-level fields out of a JSON object and render each as one
+ * "key=value\n" line (bools -> true/false, ints -> decimal, strings verbatim,
+ * null -> "null", real -> "%g", an object/array value -> compact JSON on that
+ * same line). `fields_csv` is a comma-separated, whitespace-tolerant list of
+ * top-level key names (max 24, no duplicates). Returns true and fills `out`
+ * (NUL-terminated, each line ending in '\n') only when every requested name
+ * exists in `obj` — never a partial selection. On any unknown/duplicate name,
+ * an empty list, or an output overflow, returns false and fills `err` with a
+ * short, human-readable reason (naming the bad field and, space permitting,
+ * up to 12 of the object's own known top-level keys); `out` is left
+ * untouched. This is the ONE implementation `status field=` and
+ * `dumpstate ... field=` both call — see docs/NATIVE_COMMAND_INTERFACE.md
+ * "CLI UX contract". */
+bool zcl_native_render_field_selection(const struct json_value *obj,
+                                       const char *fields_csv,
+                                       char *out, size_t out_cap,
+                                       char *err, size_t err_cap);
+
+/* Build the CLI UX contract's unrecognized-command diagnostic (see
+ * docs/NATIVE_COMMAND_INTERFACE.md "CLI UX contract"): one typed
+ * `error=UNKNOWN_COMMAND detail=... try=...` line, plus (when the existing
+ * command-search index returns any hit — reused, never a new fuzzy matcher)
+ * a `did you mean: ...` line naming up to 3 candidate paths. Writes into
+ * `out` (NUL-terminated, newline after each line) and returns the byte
+ * count written (0 on a NULL/empty method or an output overflow — the
+ * caller should fall back to a minimal one-liner in that case). Pure:
+ * takes the registry explicitly so a test can pass a fixture instead of the
+ * live catalog. */
+size_t zcl_native_render_unknown_command(
+    const struct zcl_command_registry *reg, const char *method, char *out,
+    size_t out_cap);
+
 /* core.node.bootstatus / core.node.bootwait — pre-RPC boot observability. Both
  * read <datadir>/boot_status.json directly off disk (util/boot_status.h): no
  * node contact, no RPC. bootstatus returns the current beacon (or BLOCKED when

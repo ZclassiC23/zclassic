@@ -771,6 +771,12 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
                       json_get_int(value) <= 1000000;
         } else if (strcmp(key, "watcher_id") == 0) {
             type_ok = value->type == JSON_INT && json_get_int(value) > 1;
+        } else if (strcmp(key, "seconds") == 0) {
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
+                      json_get_int(value) <= 60;
+        } else if (strcmp(key, "top_n") == 0) {
+            type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
+                      json_get_int(value) <= 32;
         } else {
             const char *text = json_get_str(value);
             type_ok = value->type == JSON_STR && text && text[0] &&

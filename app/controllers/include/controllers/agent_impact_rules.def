@@ -430,3 +430,9 @@ AGENT_IMPACT_RULE("lib/test/src/test_keystone_utxo_binding.c", "keystone_utxo_bi
 AGENT_IMPACT_RULE("lib/test/src/test_loader_owns_seed_gate.c", "loader_owns_seed_gate")
 AGENT_IMPACT_RULE("lib/test/src/test_mmb.c", "mmb")
 AGENT_IMPACT_RULE("lib/test/src/test_utxo_snapshot_loader.c", "utxo_snapshot_loader")
+
+/* wf/operator-ux: native operator-UX commands — explain (topic composers),
+ * profile (in-process thread sampler), ops.producer.status (node-free producer
+ * datadir reader), and the CLI UX contract (ONE-LINE status brief, next-
+ * command hint, field selector, unknown-command diagnostic). */
+AGENT_IMPACT_RULE("lib/util/src/thread_profile.c|lib/util/include/util/thread_profile.h|app/controllers/src/explain_native_handlers.c|app/controllers/include/controllers/explain_native_handlers.h|app/controllers/src/diagnostics_registry.c|app/controllers/src/diagnostics_controller.c|config/src/consensus_state_producer_receipt.c|config/include/config/consensus_state_producer_receipt.h|app/controllers/src/status_brief_native_handler.c|app/controllers/src/status_native_handlers.c|app/controllers/include/controllers/status_native_handlers.h|tools/command/native_command.c|tools/command/native_command.h|config/commands/ops.def|config/commands/core.def|src/main.c|docs/NATIVE_COMMAND_INTERFACE.md|lib/test/src/test_operator_ux.c", "operator_ux make_lint_gates")

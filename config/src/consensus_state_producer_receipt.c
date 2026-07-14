@@ -15,6 +15,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #define PRODUCER_RECEIPT_SUBSYS "consensus_producer_receipt"
@@ -583,5 +584,125 @@ bool consensus_state_producer_receipt_finalize(sqlite3 *pdb, int32_t height,
         return set_err(err, err_size,
                        "producer receipt finalize: durable receipt write "
                        "failed");
+    return true;
+}
+
+/* ── Read-only producer status (node-free operator surface) ────────── */
+
+/* Query one integer column from `sql` (optionally binding one text arg). On a
+ * missing table (prepare fails) or no row, returns false and leaves *out. */
+static bool pkv_query_i64(sqlite3 *db, const char *sql, const char *bind_text,
+                          int64_t *out)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        return false;
+    if (bind_text)
+        sqlite3_bind_text(st, 1, bind_text, -1, SQLITE_TRANSIENT);
+    bool present = false;
+    int rc = sqlite3_step(st); // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_ROW && sqlite3_column_type(st, 0) != SQLITE_NULL) {
+        *out = sqlite3_column_int64(st, 0);
+        present = true;
+    }
+    sqlite3_finalize(st);
+    return present;
+}
+
+/* Read producer_commit text (40-hex) from the receipt then the session row. */
+static void pkv_read_producer_commit(sqlite3 *db, char *out, size_t cap)
+{
+    if (cap == 0) return;
+    out[0] = '\0';
+    static const char *const sqls[] = {
+        "SELECT producer_commit FROM consensus_state_source_receipt "
+        "WHERE singleton=1",
+        "SELECT producer_commit FROM consensus_state_producer_session "
+        "WHERE singleton=1",
+    };
+    for (size_t i = 0; i < sizeof(sqls) / sizeof(sqls[0]); i++) {
+        sqlite3_stmt *st = NULL;
+        if (sqlite3_prepare_v2(db, sqls[i], -1, &st, NULL) != SQLITE_OK)
+            continue;
+        int rc = sqlite3_step(st); // raw-sql-ok:progress-kv-kernel-store
+        if (rc == SQLITE_ROW && sqlite3_column_type(st, 0) == SQLITE_TEXT) {
+            const unsigned char *t = sqlite3_column_text(st, 0);
+            if (t && t[0]) {
+                snprintf(out, cap, "%s", (const char *)t);
+                sqlite3_finalize(st);
+                return;
+            }
+        }
+        sqlite3_finalize(st);
+    }
+}
+
+bool consensus_state_producer_status_read(const char *datadir,
+                                          struct producer_status_read *out,
+                                          char *err, size_t err_size)
+{
+    if (!out)
+        return set_err(err, err_size, "producer status: null out");
+    memset(out, 0, sizeof(*out));
+    out->utxo_apply_cursor = -1;
+    out->tip_finalize_cursor = -1;
+    out->fold_cursor = -1;
+    out->validation_profile = -1;
+    if (!datadir || !datadir[0])
+        return set_err(err, err_size, "producer status: empty datadir");
+
+    char path[1100];
+    snprintf(path, sizeof(path), "%s/progress.kv", datadir);
+    struct stat stbuf;
+    if (stat(path, &stbuf) != 0 || !S_ISREG(stbuf.st_mode)) {
+        /* No progress.kv: a producer that has not started. Not an error. */
+        out->progress_kv_present = false;
+        return true;
+    }
+
+    sqlite3 *db = NULL;
+    if (sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) != SQLITE_OK) {
+        const char *m = db ? sqlite3_errmsg(db) : "open failed";
+        char why[256];
+        snprintf(why, sizeof(why), "producer status: open %s: %s", path, m);
+        if (db) sqlite3_close(db);
+        return set_err(err, err_size, why);
+    }
+    out->progress_kv_present = true;
+
+    int64_t v = 0;
+    if (pkv_query_i64(db,
+            "SELECT cursor FROM stage_cursor WHERE name='utxo_apply'", NULL,
+            &v))
+        out->utxo_apply_cursor = v;
+    if (pkv_query_i64(db,
+            "SELECT cursor FROM stage_cursor WHERE name='tip_finalize'", NULL,
+            &v))
+        out->tip_finalize_cursor = v;
+
+    /* session presence + start time + validation profile */
+    if (pkv_query_i64(db,
+            "SELECT start_time_us FROM consensus_state_producer_session "
+            "WHERE singleton=1", NULL, &v)) {
+        out->session_open = true;
+        out->start_time_us = v;
+    }
+    if (pkv_query_i64(db,
+            "SELECT validation_profile FROM consensus_state_producer_session "
+            "WHERE singleton=1", NULL, &v))
+        out->validation_profile = (int)v;
+
+    /* receipt presence (fold complete) + fold cursor */
+    if (pkv_query_i64(db,
+            "SELECT fold_cursor FROM consensus_state_source_receipt "
+            "WHERE singleton=1", NULL, &v)) {
+        out->receipt_finalized = true;
+        out->fold_cursor = v;
+    }
+
+    pkv_read_producer_commit(db, out->producer_commit,
+                             sizeof(out->producer_commit));
+
+    sqlite3_close(db);
     return true;
 }

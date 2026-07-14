@@ -276,13 +276,12 @@ static int test_bridge_bindings_reverse(void)
     return failures;
 }
 
-/* Stubs the six read-only RPCs core.status.brief composes from, so the
+/* Stubs the seven read-only RPCs core.status.brief composes from, so the
  * envelope test below runs without a live node (mcp_node_rpc's ZCL_TESTING
  * hook wins over both RPC backends — see tools/mcp/rpc_client.c). */
 static char *status_brief_mock_rpc(const char *method,
                                    const char *params_json)
 {
-    (void)params_json;
     if (strcmp(method, "getblockcount") == 0)
         return strdup("3117073");
     if (strcmp(method, "getblockchaininfo") == 0)
@@ -291,9 +290,16 @@ static char *status_brief_mock_rpc(const char *method,
         return strdup("{\"state\":\"at_tip\"}");
     if (strcmp(method, "healthcheck") == 0)
         return strdup("{\"healthy\":true,\"serving\":true,"
+                      "\"memory_rss_mb\":512,"
                       "\"checks\":{\"tip_advance_age_seconds\":3}}");
     if (strcmp(method, "getpeerinfo") == 0)
         return strdup("[{\"inbound\":false,\"startingheight\":3117074}]");
+    if (strcmp(method, "dumpstate") == 0 && params_json &&
+        strstr(params_json, "condition_engine"))
+        return strdup("{\"subsystem\":\"condition_engine\","
+                      "\"captured_at\":1782240000,"
+                      "\"state\":{\"registered_count\":39,"
+                      "\"active_count\":2,\"unresolved_count\":0}}");
     if (strcmp(method, "dumpstate") == 0)
         return strdup("{\"subsystem\":\"blocker\","
                       "\"captured_at\":1782240000,"
@@ -305,21 +311,21 @@ static char *status_brief_mock_rpc(const char *method,
     return strdup("null");
 }
 
-/* core.status.brief exists so an operator/AI never has to pipe the ~55KB
+/* core.status.brief exists so an operator/AI never has to pipe the ~15KB
  * core.status body through grep/tr for the handful of fields that answer
  * "is the node serving and caught up" — see docs/NATIVE_COMMAND_INTERFACE.md
- * §9 (default budgets) and status_native_handlers.c. This proves the leaf
+ * "CLI UX contract" and status_brief_native_handler.c. This proves the leaf
  * is READY-bridged, dispatches to a real zcl.result.v1 envelope, and that
  * `data` stays flat (no nested containers besides the universal `_page`
- * pagination sidecar every bridged leaf carries) with exactly the nine
+ * pagination sidecar every bridged leaf carries) with exactly the thirteen
  * documented sync/serving keys. */
 static int test_status_brief_flat_lean_envelope(void)
 {
     int failures = 0;
     const struct zcl_command_registry *reg = zcl_command_catalog();
     char out[ZCL_COMMAND_RESULT_BUDGET + 1];
-    TEST("core.status.brief: flat lean zcl.result.v1 body, nine sync/serving "
-        "fields") {
+    TEST("core.status.brief: flat lean zcl.result.v1 body, thirteen "
+        "sync/serving fields") {
         const struct zcl_command_spec *s =
             find_spec(reg, "core.status.brief");
         ASSERT(s != NULL);
@@ -345,13 +351,14 @@ static int test_status_brief_flat_lean_envelope(void)
         ASSERT(data != NULL && data->type == JSON_OBJ);
 
         static const char *const expected_keys[] = {
-            "served_height", "header_height", "gap", "sync_state",
+            "hstar", "header_height", "gap", "peer_best", "sync_state",
             "serving", "healthy", "peer_count", "primary_blocker",
+            "blocker_age_s", "active_conditions", "rss_mb",
             "tip_advance_age_seconds",
         };
         size_t expected_count =
             sizeof(expected_keys) / sizeof(expected_keys[0]);
-        /* The nine documented fields plus the universal `_page` sidecar
+        /* The thirteen documented fields plus the universal `_page` sidecar
          * every bridged leaf's envelope carries — nothing else. */
         ASSERT(data->num_children == expected_count + 1);
         for (size_t i = 0; i < expected_count; i++) {
@@ -363,17 +370,24 @@ static int test_status_brief_flat_lean_envelope(void)
         ASSERT(page != NULL && page->type == JSON_OBJ);
         ASSERT(!json_get_bool(json_get(page, "truncated")));
 
-        ASSERT_EQ(json_get_int(json_get(data, "served_height")),
+        ASSERT_EQ(json_get_int(json_get(data, "hstar")),
                   (int64_t)3117073);
         ASSERT_EQ(json_get_int(json_get(data, "header_height")),
                   (int64_t)3117074);
         ASSERT_EQ(json_get_int(json_get(data, "gap")), (int64_t)1);
+        ASSERT_EQ(json_get_int(json_get(data, "peer_best")),
+                  (int64_t)3117074);
         ASSERT_STR_EQ(json_get_str(json_get(data, "sync_state")), "at_tip");
         ASSERT(json_get_bool(json_get(data, "serving")));
         ASSERT(json_get_bool(json_get(data, "healthy")));
         ASSERT_EQ(json_get_int(json_get(data, "peer_count")), (int64_t)1);
         ASSERT_STR_EQ(json_get_str(json_get(data, "primary_blocker")),
                       "none");
+        /* No active blocker in the fixture -> age honestly null. */
+        ASSERT(json_is_null(json_get(data, "blocker_age_s")));
+        ASSERT_EQ(json_get_int(json_get(data, "active_conditions")),
+                  (int64_t)2);
+        ASSERT_EQ(json_get_int(json_get(data, "rss_mb")), (int64_t)512);
         ASSERT_EQ(json_get_int(json_get(data, "tip_advance_age_seconds")),
                   (int64_t)3);
         json_free(&root);

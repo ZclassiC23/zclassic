@@ -848,3 +848,107 @@ Canonical migration mapping:
 The migration gate fails when an existing callable route has no canonical ID,
 two aliases collide, or transport-local safety metadata disagrees with the
 canonical effect and authority policy.
+
+## 23. CLI UX contract (implemented, frozen surface)
+
+Unlike the migration plan above, this section describes what the CLI does
+**today** (wf/operator-ux). It is the frozen shape future commands must
+follow — the concrete answer to "98% fewer IO tokens between an operator/AI
+and the node" than the ~15 KB `core.status` JSON.
+
+**Brief line.** `zclassic23 status brief=1` (also `brief` / `brief=true`)
+prints exactly ONE line, <=200 bytes, stable `key=value` pairs separated by
+single spaces, no JSON braces:
+
+```
+hstar=3176325 gap=0 peer_best=3176325 sync=synced blocker=none blocker_age=unknown conditions=0 peers=8 rss_mb=512
+```
+
+Fields (frozen names, always present, `unknown` when the underlying RPC
+didn't answer — never a fabricated zero): `hstar` (the provable tip, same
+value `getblockcount` serves), `gap` (validated header tip minus `hstar`),
+`peer_best` (max peer-advertised height, untrusted hint), `sync` (the sync
+state machine's state), `blocker` (dominant typed blocker id, `none` when
+nothing is blocked), `blocker_age` (seconds, suffixed `s`), `conditions`
+(active self-heal condition count), `peers` (connected peer count), `rss_mb`
+(node RSS). All nine are read from ONE flat JSON body
+(`core.status.brief` / `zcl_native_status_brief_body`) — the field selector
+below reads the same body; there is no second data path.
+
+**Field selector.** `zclassic23 status field=<k1,k2,...>` and
+`zclassic23 dumpstate <subsystem> field=<k1,k2,...>` print ONLY the named
+fields, one `key=value` line each, in the order requested:
+
+```
+$ zclassic23 status field=gap,primary_blocker
+gap=0
+primary_blocker=none
+
+$ zclassic23 dumpstate reducer_frontier field=hstar,served_floor
+hstar=3176325
+served_floor=3176325
+```
+
+`status field=...` selects out of the same flat brief body as the one-line
+render (real field names: `hstar`, `served_height`, `header_height`, `gap`,
+`peer_best`, `sync_state`, `serving`, `healthy`, `peer_count`,
+`primary_blocker`, `blocker_age_s`, `active_conditions`, `rss_mb`,
+`tip_advance_age_seconds`). `dumpstate <subsystem> field=...` selects out of
+that subsystem's own `.state` object (whatever top-level keys that subsystem
+publishes — see `dumpstate <subsystem>` with no `field=` to see them all).
+An unknown field name is a typed error (below) naming the bad field and up
+to 12 known field names; nothing is printed on partial failure. `field=` also
+works as a normal dashed flag (`--field=a,b`) on any native registry leaf.
+
+**Agent-terse default.** `ZCL_BRIEF=1` in the environment makes `status` and
+`dumpstate` default to this brief/selector behavior without typing
+`brief=1`; pass `--format=json` to get the full structured envelope even
+when `ZCL_BRIEF=1` is set. (Full JSON is always available via
+`--format=json` regardless of `ZCL_BRIEF`.)
+
+**No-arg entry point.** Bare `zclassic23` (zero arguments — the real node
+service never invokes the binary this way; `deploy/zclassic23.service`
+always passes `-datadir=`/`-rpcport=`/etc.) prints the brief line plus one
+suggested next command, never a wall of text:
+
+```
+$ zclassic23
+hstar=3176325 gap=0 peer_best=3176325 sync=synced blocker=none blocker_age=unknown conditions=0 peers=8 rss_mb=512
+next: zclassic23 healthcheck
+```
+
+The next-command hint is deterministic: a named dominant blocker wins
+(`zclassic23 explain blockers`), else a positive gap wins
+(`zclassic23 explain sync`), else `zclassic23 healthcheck`.
+
+**Unknown-command diagnostic.** An unrecognized top-level command (confirmed
+by the RPC layer, not a version-skew symptom) prints one typed error line
+plus up to 3 "did you mean" suggestions from the existing command-search
+index (`discover search`'s own scoring — no new fuzzy matcher) when the
+index has a hit:
+
+```
+$ zclassic23 statuss
+error=UNKNOWN_COMMAND detail=no such command 'statuss' try=zclassic23 discover search statuss
+did you mean: core.status core.status.brief ops.state
+```
+
+**Error contract.** Every error line this contract introduces follows:
+
+```
+error=<ID> detail=<human-readable reason> try=<a concrete next command>
+```
+
+`UNKNOWN_COMMAND` (unrecognized top-level command), `UNKNOWN_FIELD`
+(`field=` named a key that doesn't exist), and `BAD_FLAG`/`UNKNOWN_PATH`
+(the pre-existing registry JSON error envelope, unchanged) are the codes in
+use. Exit codes follow the existing contract (§13/`enum zcl_command_exit`):
+`0` ok, `1` failed, `2` invalid input (unknown command/field), `3` blocked,
+`5` transient.
+
+Implementation: `zcl_native_status_brief_render`,
+`zcl_native_status_brief_next_command`, `zcl_native_render_field_selection`,
+and `zcl_native_render_unknown_command` (`tools/command/native_command.c`) —
+one implementation each, called from both the native registry path
+(`status brief=1`, `--field=`) and the raw-RPC CLI path (`dumpstate ...
+field=`, the no-arg entry point, unrecognized commands in `src/main.c`).
