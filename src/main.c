@@ -3400,6 +3400,10 @@ int main(int argc, char **argv)
                          sizeof("-load-snapshot-at-own-height=") - 1) == 0)
             ctx.load_snapshot_at_own_height =
                 argv[i] + sizeof("-load-snapshot-at-own-height=") - 1;
+        else if (strncmp(argv[i], "-install-consensus-bundle=",
+                         sizeof("-install-consensus-bundle=") - 1) == 0)
+            ctx.install_consensus_bundle =
+                argv[i] + sizeof("-install-consensus-bundle=") - 1;
         else if (strcmp(argv[i], "-fold-inram") == 0) {
             /* Bulk-fold in-RAM UTXO hot store (storage/coins_ram.h). The
              * storage layer reads ZCL_FOLD_INRAM as the single source of truth

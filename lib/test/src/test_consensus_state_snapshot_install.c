@@ -9,7 +9,9 @@
 #include "core/serialize.h"
 #include "core/uint256.h"
 #include "crypto/sha3.h"
+#include "jobs/reducer_frontier.h"
 #include "sapling/incremental_merkle_tree.h"
+#include "services/consensus_state_publication_cas.h"
 #include "storage/anchor_kv.h"
 #include "storage/coins_kv.h"
 #include "storage/consensus_state_bundle_codec.h"
@@ -865,6 +867,162 @@ static bool candidate_progress_parity(
     return ok;
 }
 
+/* Lower the compiled SHA3-checkpoint finality floor so the H*-climb leg below
+ * can drive the reducer at a small fixture height (the production floor is the
+ * mainnet checkpoint at 3,056,758). Mirror-declared, exactly as the sibling
+ * export test does. */
+void reducer_frontier_test_set_compiled_anchor(int32_t height);
+
+/* ── H*-climb leg fixture helpers ─────────────────────────────────────────
+ * After ACTIVATE forces the reducer cursors to the anchor, prove the cure is
+ * a LIVE fold-resume point (not just forced cursors): seed the anchor's trust
+ * row, then fold real per-height stage evidence forward and watch
+ * reducer_frontier_compute_hstar CLIMB. These write the durable stage-log image
+ * directly (test scaffolding building the progress.kv, not production reducer
+ * code — the same exemption the sibling reducer_frontier tests use), so they
+ * carry the raw-sql-ok markers rather than routing through the AR lifecycle. */
+
+/* A per-height 32-byte hash all stage receipts at that height AGREE on, so the
+ * C3 hash-binding split scan never caps the climb. */
+static void hs_synth_hash(uint8_t out[32], int32_t h)
+{
+    memset(out, 0, 32);
+    out[0] = (uint8_t)(h & 0xff);
+    out[1] = (uint8_t)((h >> 8) & 0xff);
+    out[2] = (uint8_t)((h >> 16) & 0xff);
+    out[3] = (uint8_t)((h >> 24) & 0xff);
+    out[31] = 0x5c;
+}
+
+/* Materialize the stage-log tables with the EXACT production DDL. ACTIVATE
+ * clears (and never creates) these derived logs, so on the cured store they are
+ * absent; IF NOT EXISTS keeps this safe if a table is already present. */
+static bool hs_ensure_forward_schema(sqlite3 *db)
+{
+    return exec_ok(db,
+        "CREATE TABLE IF NOT EXISTS header_admit_log("
+        "height INTEGER PRIMARY KEY,hash BLOB NOT NULL,parent_hash BLOB,"
+        "admitted_at INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS validate_headers_log("
+        "height INTEGER PRIMARY KEY,hash BLOB NOT NULL,ok INTEGER NOT NULL,"
+        "fail_reason TEXT,validated_at INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS script_validate_log("
+        "height INTEGER PRIMARY KEY,status TEXT NOT NULL,ok INTEGER NOT NULL,"
+        "tx_count INTEGER NOT NULL,input_count INTEGER NOT NULL,"
+        "first_failure_txid BLOB,first_failure_vin INTEGER,"
+        "first_failure_serror INTEGER,validated_at INTEGER NOT NULL,"
+        "block_hash BLOB,source_epoch_digest BLOB);"
+        "CREATE TABLE IF NOT EXISTS body_persist_log("
+        "height INTEGER PRIMARY KEY,source TEXT NOT NULL,ok INTEGER NOT NULL,"
+        "persisted_at INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS proof_validate_log("
+        "height INTEGER PRIMARY KEY,status TEXT NOT NULL,ok INTEGER NOT NULL,"
+        "sapling_spends_total INTEGER NOT NULL,"
+        "sapling_outputs_total INTEGER NOT NULL,"
+        "sprout_joinsplits_total INTEGER NOT NULL,block_hash BLOB,"
+        "source_epoch_digest BLOB,first_failure_txid BLOB,"
+        "first_failure_proof_type TEXT,validated_at INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS utxo_apply_log("
+        "height INTEGER PRIMARY KEY,status TEXT NOT NULL,ok INTEGER NOT NULL,"
+        "spent_count INTEGER NOT NULL,added_count INTEGER NOT NULL,"
+        "total_value_delta INTEGER NOT NULL,first_failure_kind TEXT,"
+        "first_failure_detail BLOB,applied_at INTEGER NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS utxo_apply_delta("
+        "height INTEGER PRIMARY KEY,branch_hash BLOB NOT NULL,"
+        "spent_blob BLOB NOT NULL,added_blob BLOB NOT NULL);"
+        "CREATE TABLE IF NOT EXISTS tip_finalize_log("
+        "height INTEGER PRIMARY KEY,status TEXT NOT NULL,ok INTEGER NOT NULL,"
+        "work_delta_high INTEGER NOT NULL,work_delta_low INTEGER NOT NULL,"
+        "utxo_size_after INTEGER NOT NULL,reorg_depth INTEGER NOT NULL,"
+        "finalized_at INTEGER NOT NULL,tip_hash BLOB);");
+}
+
+/* Insert one row binding ?1=height and (if hash!=NULL) ?2=the 32-byte hash. */
+static bool hs_ins(sqlite3 *db, const char *sql, int32_t h,
+                   const uint8_t *hash)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK) {
+        fprintf(stderr, "[hs] prepare failed: %s\n", sqlite3_errmsg(db));
+        return false;
+    }
+    sqlite3_bind_int(st, 1, h);
+    if (hash)
+        sqlite3_bind_blob(st, 2, hash, 32, SQLITE_STATIC);
+    bool ok = sqlite3_step(st) == SQLITE_DONE; // raw-sql-ok:test-fixture-seeding
+    if (!ok)
+        fprintf(stderr, "[hs] step h=%d failed: %s\n", h, sqlite3_errmsg(db));
+    sqlite3_finalize(st);
+    return ok;
+}
+
+/* The tip_finalize status="anchor" row the boot seed stamps — the trust base
+ * reducer_frontier_compute_hstar clamps to. OR REPLACE so it is authoritative
+ * whether or not ACTIVATE's tip_finalize_stage_seed_anchor already wrote a row
+ * at this height (it does when the seed integrity gate passes). */
+static bool hs_put_anchor(sqlite3 *db, int32_t h)
+{
+    uint8_t hh[32];
+    hs_synth_hash(hh, h);
+    return hs_ins(db,
+        "INSERT OR REPLACE INTO tip_finalize_log(height,status,ok,"
+        "work_delta_high,work_delta_low,utxo_size_after,reorg_depth,"
+        "finalized_at,tip_hash) VALUES(?1,'anchor',1,0,0,0,0,0,?2)", h, hh);
+}
+
+/* Fold one fully-consistent ok=1 height across every contiguity + C3 log, all
+ * bound to the same per-height hash. */
+static bool hs_put_forward_height(sqlite3 *db, int32_t h)
+{
+    uint8_t hh[32];
+    hs_synth_hash(hh, h);
+    return hs_ins(db,
+            "INSERT INTO header_admit_log(height,hash,admitted_at) "
+            "VALUES(?1,?2,0)", h, hh) &&
+        hs_ins(db,
+            "INSERT INTO validate_headers_log(height,hash,ok,validated_at) "
+            "VALUES(?1,?2,1,0)", h, hh) &&
+        hs_ins(db,
+            "INSERT INTO script_validate_log(height,status,ok,tx_count,"
+            "input_count,validated_at,block_hash) "
+            "VALUES(?1,'verified',1,0,0,0,?2)", h, hh) &&
+        hs_ins(db,
+            "INSERT INTO body_persist_log(height,source,ok,persisted_at) "
+            "VALUES(?1,'test',1,0)", h, NULL) &&
+        hs_ins(db,
+            "INSERT INTO proof_validate_log(height,status,ok,"
+            "sapling_spends_total,sapling_outputs_total,"
+            "sprout_joinsplits_total,validated_at,block_hash) "
+            "VALUES(?1,'verified',1,0,0,0,0,?2)", h, hh) &&
+        hs_ins(db,
+            "INSERT INTO utxo_apply_log(height,status,ok,spent_count,"
+            "added_count,total_value_delta,applied_at) "
+            "VALUES(?1,'verified',1,0,0,0,0)", h, NULL) &&
+        hs_ins(db,
+            "INSERT INTO utxo_apply_delta(height,branch_hash,spent_blob,"
+            "added_blob) VALUES(?1,?2,x'',x'')", h, hh) &&
+        hs_ins(db,
+            "INSERT INTO tip_finalize_log(height,status,ok,work_delta_high,"
+            "work_delta_low,utxo_size_after,reorg_depth,finalized_at,tip_hash) "
+            "VALUES(?1,'ok',1,0,0,0,0,0,?2)", h, hh);
+}
+
+/* Set one reducer stage cursor (upsert). */
+static bool hs_set_cursor(sqlite3 *db, const char *name, int64_t cursor)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT INTO stage_cursor(name,cursor,updated_at) VALUES(?,?,0) "
+            "ON CONFLICT(name) DO UPDATE SET cursor=excluded.cursor",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, name, -1, SQLITE_STATIC);
+    sqlite3_bind_int64(st, 2, cursor);
+    bool ok = sqlite3_step(st) == SQLITE_DONE; // raw-sql-ok:test-fixture-seeding
+    sqlite3_finalize(st);
+    return ok;
+}
+
 int test_consensus_state_snapshot_install(void)
 {
     printf("\n=== consensus_state_snapshot_install ===\n");
@@ -1282,6 +1440,225 @@ int test_consensus_state_snapshot_install(void)
     consensus_state_artifact_evidence_free(artifact);
     artifact=NULL;
     if(incomplete_dirfd>=0) close(incomplete_dirfd);
+
+    /* ── A3/A2/D3: ACTIVATE-mode install into a live (wedged) progress store ──
+     * Open a REAL process-singleton progress store, seed it into the exact
+     * anchor_backfill_gap WEDGE (a borrowed coin + EMPTY shielded tables with a
+     * positive activation cursor), then prove: (i) a tampered bundle refuses and
+     * leaves the wedge intact; (ii) a non-ADMIT publication-CAS decision gates
+     * the install out; (iii) an ADMIT complete bundle installs atomically and
+     * CURES the wedge, forcing the reducer cursors to the anchor so the fold
+     * resumes there; (iv) a physically restorable prior generation is captured. */
+    {
+        /* An earlier leg left b's anchor heights at b.height-1; restore them so
+         * the complete-frontier invariant (anchor height == block height) holds
+         * for active_is below. */
+        b.anchors[0].height = b.height;
+        b.anchors[1].height = b.height;
+        char active_dir[320];
+        snprintf(active_dir, sizeof(active_dir), "%s/activate", dir);
+        CSI_CHECK("activate: datadir", mkdir(active_dir, 0700) == 0);
+        CSI_CHECK("activate: live progress store opens",
+                  progress_store_open(active_dir));
+        sqlite3 *pdb = progress_store_db();
+
+        uint8_t borrowed_txid[32];
+        memset(borrowed_txid, 0x5a, sizeof(borrowed_txid));
+        const uint8_t borrowed_script[] = {0x51};
+        CSI_CHECK("activate: wedged store seeds (borrowed coin, empty anchors, "
+                  "positive activation cursor)",
+                  pdb && coins_kv_ensure_schema(pdb) &&
+                  progress_meta_table_ensure(pdb) &&
+                  anchor_kv_ensure_schema(pdb) &&
+                  nullifier_kv_ensure_schema(pdb) &&
+                  anchor_kv_initialize_history(pdb, b.height) &&
+                  nullifier_kv_initialize_history(pdb, b.height) &&
+                  coins_kv_add(pdb, borrowed_txid, 0, 4242, b.height, false,
+                               borrowed_script, sizeof(borrowed_script)));
+        struct incremental_merkle_tree gate_tree;
+        struct uint256 gate_root;
+        int64_t gate_h = -1;
+        sapling_tree_init(&gate_tree);
+        CSI_CHECK("activate: pre-install sapling gate is HISTORY_INCOMPLETE "
+                  "(the wedge)",
+                  anchor_kv_latest_tree(pdb, ANCHOR_POOL_SAPLING, &gate_tree,
+                                        &gate_root, &gate_h) ==
+                      ANCHOR_KV_HISTORY_INCOMPLETE);
+
+        struct consensus_state_activate_request areq;
+        memset(&areq, 0, sizeof(areq));
+        areq.expected_height = b.height;
+        memcpy(areq.expected_block_hash, b.block_hash, 32);
+        areq.datadir = active_dir;
+        struct consensus_state_activate_result ares;
+
+        /* (i) Negative — a tampered (bad UTXO root) bundle must refuse. */
+        CSI_CHECK("activate: tampered bundle writes",
+                  write_bundle(&b, CSI_WRONG_UTXO_ROOT));
+        areq.bundle_path = b.path;
+        CSI_CHECK("activate: tampered bundle refuses with a typed reason",
+                  !consensus_state_snapshot_install_activate(pdb, &areq, &ares) &&
+                  !ares.activated &&
+                  ares.status != CONSENSUS_INSTALL_ACTIVATED &&
+                  ares.reason[0] != '\0');
+        sapling_tree_init(&gate_tree);
+        CSI_CHECK("activate: tampered refusal leaves the store wedged/intact",
+                  coins_kv_count(pdb) == 1 &&
+                  anchor_kv_latest_tree(pdb, ANCHOR_POOL_SAPLING, &gate_tree,
+                                        &gate_root, &gate_h) ==
+                      ANCHOR_KV_HISTORY_INCOMPLETE);
+
+        /* (ii) Negative — a non-ADMIT publication-CAS decision gates out the
+         * install. Build cas_decide inputs from the validated artifact; a
+         * durable frontier BEHIND the bundle height yields REFUSED. */
+        CSI_CHECK("activate: valid complete bundle restored",
+                  write_bundle(&b, CSI_VALID));
+        struct consensus_state_artifact_evidence *ev = NULL;
+        struct zcl_result evr =
+            consensus_state_artifact_evidence_open(b.path, &ev);
+        struct consensus_state_publication_cas_inputs cin;
+        memset(&cin, 0, sizeof(cin));
+        bool cin_ok = evr.ok && ev &&
+            consensus_state_artifact_evidence_manifest_copy(ev, &cin.manifest) &&
+            consensus_state_artifact_evidence_digest(
+                ev, cin.artifact_logical_digest) &&
+            consensus_state_artifact_evidence_receipt_digest(
+                ev, cin.artifact_receipt_digest);
+        cin.chain_evidence_present = true;
+        cin.chain_bound_to_artifact = true;
+        memset(cin.chain_evidence_digest, 0xa5, 32);
+        cin.source_receipt_present = true;
+        cin.source_receipt = b.receipt;
+        cin.target_lane = CONSENSUS_STATE_TARGET_LANE_COPY_PROOF;
+        cin.frontier_known = true;
+        memset(cin.frontier_hash, 0x11, 32);
+        struct consensus_state_publication_decision_record dec;
+        cin.frontier_height = b.height;
+        consensus_state_publication_cas_decide(&cin, &dec);
+        CSI_CHECK("activate: complete bundle + bound evidence CAS-decides ADMIT",
+                  cin_ok && dec.decision == CONSENSUS_PUBLICATION_ADMIT);
+        cin.frontier_height = b.height - 1;
+        consensus_state_publication_cas_decide(&cin, &dec);
+        bool refused = dec.decision != CONSENSUS_PUBLICATION_ADMIT &&
+                       dec.refusal ==
+                           CONSENSUS_PUBLICATION_REFUSAL_FRONTIER_BEHIND;
+        if (dec.decision == CONSENSUS_PUBLICATION_ADMIT) /* gate: never reached */
+            (void)consensus_state_snapshot_install_activate(pdb, &areq, &ares);
+        sapling_tree_init(&gate_tree);
+        CSI_CHECK("activate: non-ADMIT CAS gates out the install (store "
+                  "untouched, still wedged)",
+                  refused && coins_kv_count(pdb) == 1 &&
+                  anchor_kv_latest_tree(pdb, ANCHOR_POOL_SAPLING, &gate_tree,
+                                        &gate_root, &gate_h) ==
+                      ANCHOR_KV_HISTORY_INCOMPLETE);
+        if (ev)
+            consensus_state_artifact_evidence_free(ev);
+
+        /* (iii) Positive — ADMIT path: atomically install the complete bundle. */
+        areq.bundle_path = b.path;
+        CSI_CHECK("activate: complete bundle installs atomically",
+                  consensus_state_snapshot_install_activate(pdb, &areq, &ares) &&
+                  ares.activated &&
+                  ares.status == CONSENSUS_INSTALL_ACTIVATED &&
+                  ares.height == b.height && ares.utxo_count == 2 &&
+                  ares.anchor_count == 2 && ares.nullifier_count == 2);
+        CSI_CHECK("activate: installed coins/anchors/nullifiers match the bundle "
+                  "with COMPLETE (cursor 0) history",
+                  active_is(pdb, &b));
+        sapling_tree_init(&gate_tree);
+        CSI_CHECK("activate: post-install sapling gate is FOUND (wedge cured)",
+                  anchor_kv_latest_tree(pdb, ANCHOR_POOL_SAPLING, &gate_tree,
+                                        &gate_root, &gate_h) == ANCHOR_KV_FOUND);
+        /* Reducer cursors forced to the anchor so the fold resumes there. */
+        int64_t applied_cursor = -1, tip_cursor = -1;
+        CSI_CHECK("activate: reducer stage cursors forced to the anchor frontier "
+                  "(upstream=anchor+1, tip_finalize=anchor)",
+                  candidate_query_i64(pdb,
+                      "SELECT cursor FROM stage_cursor WHERE name='utxo_apply'",
+                      &applied_cursor) && applied_cursor == b.height + 1 &&
+                  candidate_query_i64(pdb,
+                      "SELECT cursor FROM stage_cursor WHERE name='tip_finalize'",
+                      &tip_cursor) && tip_cursor == b.height);
+        int32_t applied = -1;
+        bool afound = false;
+        CSI_CHECK("activate: coins_applied_height == anchor+1 (fold resume point)",
+                  coins_kv_get_applied_height(pdb, &applied, &afound) && afound &&
+                  applied == b.height + 1 &&
+                  ares.coins_applied_height == b.height + 1);
+        CSI_CHECK("activate: self-folded (checkpoint-bound) provenance marker set",
+                  coins_kv_contains_refold_marker(pdb));
+        /* (v) Re-export readiness: the cured datadir must satisfy BOTH
+         * predicates consensus_export_prove_source() gates on, so this node can
+         * later re-serve the state it installed (coins_kv_is_proven_authority +
+         * the self-folded refold marker above). */
+        int32_t proven_applied = -1;
+        CSI_CHECK("activate: installed datadir is coins_kv proven authority "
+                  "(re-export ready)",
+                  coins_kv_is_proven_authority(pdb, &proven_applied) &&
+                  proven_applied == b.height + 1);
+
+        /* (vi) H*-CLIMB — prove the cure is a LIVE fold-resume point, not just
+         * forced cursors: seed the anchor's trust row, confirm H* sits AT the
+         * wedge/anchor, then fold three consistent heights forward over stage
+         * evidence and assert reducer_frontier_compute_hstar CLIMBS past the
+         * wedge. Lower the compiled finality floor so the small fixture height
+         * is a valid anchor (restored to the production default after). */
+        reducer_frontier_test_set_compiled_anchor(0);
+        CSI_CHECK("activate: forward stage-log schema materializes",
+                  hs_ensure_forward_schema(pdb));
+        CSI_CHECK("activate: anchor trust row seeds at the cured height",
+                  hs_put_anchor(pdb, b.height));
+        int32_t hstar_base = -1, served_base = -1;
+        progress_store_tx_lock();
+        bool base_ok = reducer_frontier_compute_hstar(pdb, &hstar_base,
+                                                      &served_base);
+        progress_store_tx_unlock();
+        CSI_CHECK("activate: H* rests AT the anchor before any forward fold "
+                  "(the wedge floor)",
+                  base_ok && hstar_base == b.height);
+
+        bool folded = true;
+        for (int32_t h = b.height + 1; h <= b.height + 3; h++)
+            folded = folded && hs_put_forward_height(pdb, h);
+        CSI_CHECK("activate: three consistent heights fold forward", folded);
+        /* Advance the reducer cursors past the folded tip (upstream count the
+         * NEXT height; tip_finalize uses the served-tip frame). */
+        bool cursors = hs_set_cursor(pdb, "validate_headers", b.height + 4) &&
+                       hs_set_cursor(pdb, "body_fetch", b.height + 4) &&
+                       hs_set_cursor(pdb, "body_persist", b.height + 4) &&
+                       hs_set_cursor(pdb, "script_validate", b.height + 4) &&
+                       hs_set_cursor(pdb, "proof_validate", b.height + 4) &&
+                       hs_set_cursor(pdb, "utxo_apply", b.height + 4) &&
+                       hs_set_cursor(pdb, "tip_finalize", b.height + 3);
+        CSI_CHECK("activate: reducer cursors advance past the folded tip",
+                  cursors);
+        int32_t hstar_climb = -1, served_climb = -1;
+        progress_store_tx_lock();
+        bool climb_ok = reducer_frontier_compute_hstar(pdb, &hstar_climb,
+                                                       &served_climb);
+        progress_store_tx_unlock();
+        CSI_CHECK("activate: H* CLIMBS past the wedge over folded bodies "
+                  "(cure enables forward progress, not just forced cursors)",
+                  climb_ok && hstar_climb == b.height + 3 &&
+                  hstar_climb > hstar_base && served_climb == b.height + 3);
+        reducer_frontier_test_set_compiled_anchor(-1);
+
+        /* Physically restorable prior generation. */
+        sqlite3 *prior = NULL;
+        CSI_CHECK("activate: restorable prior generation is a valid standalone "
+                  "store",
+                  ares.prior_generation_path[0] != '\0' &&
+                  sqlite3_open_v2(ares.prior_generation_path, &prior,
+                                  SQLITE_OPEN_READONLY, NULL) == SQLITE_OK &&
+                  prior);
+        if (prior)
+            sqlite3_close(prior);
+        if (ares.prior_generation_path[0])
+            unlink(ares.prior_generation_path);
+
+        progress_store_close();
+        test_cleanup_tmpdir(active_dir);
+    }
 
     fixture_free(&a); fixture_free(&b); fixture_free(&inc);
     if (db)
