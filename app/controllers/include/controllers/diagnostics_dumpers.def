@@ -316,6 +316,14 @@
                "mirror hash-disagreement bisect locator: last_locate_unix, last_first_div, probes_last_run, divergence_latched, pending record"),
     DIAG_LOCAL("nullifier_backfill", nullifier_backfill_dump_state_json,
                "owner-gated C-3 nullifier gap backfill: durable activation/resume cursors, derived status, gap_blocker_active"),
+    DIAG_ENTRY("chain_segments", chain_segment_dump_state_json,
+               "sealed ROM segment store for finalized block bodies: segment_count, "
+               "covered height range, SHA3 manifest root, present_count (cheap file check; "
+               "verifysegments does the full digest pass)",
+               "storage", "controller",
+               "app/controllers/src/chain_segment_controller.c",
+               "filesystem_snapshot", "bounded_lookup", NULL, NULL, NULL,
+               "lib/test/src/test_chain_segment.c", true),
     DIAG_LOCAL("publication_cas",
                consensus_state_publication_cas_dump_state_json,
                "contained consensus-state publication CAS: latest decision (ADMIT/typed refusal), "

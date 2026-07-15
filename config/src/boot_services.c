@@ -69,6 +69,7 @@
 #include "core/uint256.h"
 #include "coins/coins_view.h"
 #include "controllers/blockchain_controller.h"
+#include "controllers/chain_segment_controller.h"
 #include "controllers/diagnostics_controller.h"
 #include "controllers/hodl_controller.h"
 #include "controllers/repair_controller.h"
@@ -1124,6 +1125,7 @@ bool app_init_services(struct app_context *ctx,
     register_repair_rpc_commands(svc->rpc_table);
     register_rebuild_recent_rpc_commands(svc->rpc_table);
     register_backfill_header_solutions_rpc_commands(svc->rpc_table);
+    register_chain_segment_rpc_commands(svc->rpc_table);
 
     rpc_chain_inspect_set_state(svc->state, ctx->datadir,
                                  NULL, svc->coins_tip, boot_node_db(svc));
