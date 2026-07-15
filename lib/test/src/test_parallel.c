@@ -299,6 +299,7 @@ volatile sig_atomic_t g_shutdown_requested = 0;
     X(load_verify_boot) \
     X(chain_stall_repro) \
     X(connect_tip_hot_loop_exit) X(connman_addnode_fallback) \
+    X(peer_eviction) X(net_bootstrap) \
     X(failed_child_cap) X(header_probe) X(header_probe_p2p_fallback) \
     X(power_node_contract_spec) X(process_block_revalidate) \
     X(rpc_safety) X(app_context) X(service_kernel) X(service_manifest) \

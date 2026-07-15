@@ -725,6 +725,7 @@ bool app_init_services(struct app_context *ctx,
 
     /* Load persisted peer addresses from previous session */
     connman_load_addrman(svc->connman);
+    app_log_bootstrap_sources(params, svc->connman);
 
     /* NETWORK_READY boundary: connman initialized + addrman loaded (peer
      * manager ready); listeners are bound just below. Advances the boot-stage

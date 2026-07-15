@@ -35,7 +35,7 @@ lib/net/src/msg_blocks.c 878
 lib/net/src/msg_headers.c 1141
 lib/net/src/msgprocessor.c 2278
 lib/net/src/msgprocessor_snapshot.c 2452
-lib/net/src/net.c 1626
+lib/net/src/net.c 1666
 lib/net/src/onion_service.c 941
 lib/net/src/peer_lifecycle.c 1762
 lib/rpc/src/httpserver.c 1275

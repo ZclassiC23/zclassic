@@ -8,6 +8,7 @@
 #include "net/net_fault.h"
 #include "net/peer_lifecycle.h"
 #include "net/peer_scoring.h"
+#include "net/peer_eviction.h"
 #include "primitives/block.h"
 #include "platform/time_compat.h"
 #include "util/log_json.h"
@@ -1495,6 +1496,15 @@ bool accept_connection(struct net_manager *nm, const struct listen_socket *ls)
     int inbound_count = 0;
     int same_ip_count = 0;
     int max_inbound = nm->max_connections - MAX_OUTBOUND_CONNECTIONS;
+    /* Evict-not-reject: when the inbound cap is hit, free a slot by
+     * disconnecting the least-valuable existing inbound peer instead of
+     * refusing the new one (peer_eviction_select() never picks outbound/
+     * whitelisted peers, the longest-connected quartile, or a peer that
+     * relayed a novel block/tx recently). Snapshotted and decided under
+     * cs_nodes so the pick can't race a concurrent add/remove. */
+    bool evicted = false;
+    node_id_t evicted_id = 0;
+    char evicted_addr_name[256] = "";
     zcl_mutex_lock(&nm->cs_nodes);
     for (size_t i = 0; i < nm->num_nodes; i++) {
         if (nm->nodes[i]->inbound)
@@ -1502,6 +1512,31 @@ bool accept_connection(struct net_manager *nm, const struct listen_socket *ls)
         if (nm->nodes[i]->inbound &&
             memcmp(nm->nodes[i]->addr.svc.addr.ip, addr.svc.addr.ip, 16) == 0)
             same_ip_count++;
+    }
+    if (inbound_count >= max_inbound) {
+        struct peer_eviction_candidate cand[PEER_EVICTION_MAX_CANDIDATES];
+        struct p2p_node *cand_node[PEER_EVICTION_MAX_CANDIDATES];
+        size_t ncand = nm->num_nodes < PEER_EVICTION_MAX_CANDIDATES
+                            ? nm->num_nodes : PEER_EVICTION_MAX_CANDIDATES;
+        for (size_t i = 0; i < ncand; i++) {
+            struct p2p_node *cn = nm->nodes[i];
+            cand[i].is_outbound = !cn->inbound;
+            cand[i].whitelisted = cn->whitelisted;
+            cand[i].connected_time = cn->time_connected;
+            cand[i].last_block_time = cn->last_block_time;
+            cand[i].last_tx_time = cn->last_tx_time;
+            cand_node[i] = cn;
+        }
+        int victim_idx = peer_eviction_select(
+            cand, ncand, (int64_t)platform_time_wall_time_t());
+        if (victim_idx >= 0) {
+            struct p2p_node *victim = cand_node[victim_idx];
+            victim->disconnect = true;
+            evicted = true;
+            evicted_id = victim->id;
+            snprintf(evicted_addr_name, sizeof(evicted_addr_name), "%s",
+                     victim->addr_name);
+        }
     }
     zcl_mutex_unlock(&nm->cs_nodes);
 
@@ -1511,8 +1546,13 @@ bool accept_connection(struct net_manager *nm, const struct listen_socket *ls)
     }
 
     if (inbound_count >= max_inbound) {
-        close_socket(&sock);
-        LOG_FAIL("net", "max inbound connections reached: %d >= %d", inbound_count, max_inbound);
+        if (!evicted) {
+            close_socket(&sock);
+            LOG_FAIL("net", "max inbound connections reached and no evictable peer: %d >= %d",
+                     inbound_count, max_inbound);
+        }
+        LOG_WARN("net", "inbound cap reached (%d >= %d): evicted node id=%d addr=%s to admit new peer",
+                 inbound_count, max_inbound, evicted_id, evicted_addr_name);
     }
 
     int one = 1;
