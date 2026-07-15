@@ -10,53 +10,107 @@
 
 # HANDOFF — current state (2026-07-15)
 
-## 0-NEW. Incoming-developer handoff (current state)
+## 0-NEW. Incoming-developer handoff (current state — 2026-07-15 evening)
 
-**The receipt producer is no longer advancing.** At 2026-07-15 04:55 UTC it
-reached h=3,056,758, then correctly refused publication because its folded
-transparent state disagreed with the compiled checkpoint: 1,354,769 UTXOs vs
-the required 1,354,771 and SHA3
-`5817f0ec66738db6989cf881cf37b2148d07b978fd69e5a334855b4991ac5f85`
-vs required
-`00e95dbd54a791a51433d68127f9975a3b1d6f8e9002b109647343ba0c83c3e0`.
-This is failed parity evidence, not a publishable cure artifact. Preserve the
-entire `~/.zclassic-c23-mint-receipt` datadir and logs without rewriting them.
+**ROOT CAUSE FOUND AND FIXED: the baked SHA3 checkpoint was corrupt, not the
+producer.** The prior producer that "failed" 187 times was CORRECT all along.
+Two independent re-derivations proved the compiled trust-root constants at
+h=3,056,758 were a mis-minted capture matching no height (the count `1,354,771`
+was the h=3,056,759 value; the supply was +10,000 zats off even for that
+height). The corrected constants are now baked (sealed core re-baked, ROOT
+`9a7e1d6a…`) and the mint ceremony refuses to mint unless `--height=N` matches
+the projection exactly, so this off-by-one class cannot recur:
 
-The `Restart=on-failure` drop-in became counterproductive: by 2026-07-15 05:10
-UTC the service had restarted 187 times and was repeating a ~43-second
-boot/fail cycle with a 15-second delay. The owner then authorized the fix; the
-unit was stopped and reset to `inactive/dead`, with no producer PID. The
-canonical zclassic23 and zclassicd services were not restarted. Do not start
-this failed producer again; treat the preserved failure log as authoritative:
-
-```bash
-systemctl --user status zclassic23-mint-receipt.service
-tail -n 5 ~/.zclassic-c23-mint-receipt/mint-progress.log
+```
+h=3,056,758  count 1,354,769  supply 1,036,413,794,674,881
+sha3 5817f0ec66738db6989cf881cf37b2148d07b978fd69e5a334855b4991ac5f85
 ```
 
-The failed producer's exact executable SHA3-256 is
-`34d78c9519c67d5c529a3cd354e7528a6b077f83db5df74764e2f38902c3fe2c`.
-The prior rate/ETA observations remain historical performance evidence only;
-they no longer describe a running producer.
+**A NEW producer is running and folding honestly.** `zclassic23-mint.service`
+(transient, `Restart=no`), content-addressed binary
+`699140d1c4a431e84975ec50e03b660ee475a34d49fcb23710ef4b4115d32a81`, fresh
+datadir `~/.zclassic-c23-mint`, FULL validation with the in-RAM fold cure. It
+holds the corrected checkpoint, so its terminal gate at the anchor will pass
+this time. Watch it:
 
-**Server posture:** approximately 100 GB of abandoned logs, recursion debris,
-and obsolete scratch output was reclaimed; `/` had about 738 GB free (58% used),
-`/dev/shm` was empty, and the user service manager had zero failed units.
-Fuzz, full-test, coverage, and nightly-sim timers are disabled while the mint is
-active. Their committed service definitions now fail closed through
-`quality_job_guard.sh` and retain eight logs per lane when re-enabled. Do not
-bulk-delete the remaining `/tmp`: it contains active QED work and preserved
-ZClassic proof/cure evidence.
+```bash
+systemctl --user status zclassic23-mint.service
+tail -n 3 ~/.zclassic-c23-mint/mint-progress.log     # cm:/pv: telemetry, rate, ETA
+```
 
-**Producer follow-up, copy only:** diagnose the two-output checkpoint mismatch
-from a preserved datadir copy. Do not relabel, patch, or inject a receipt into
-the failed generation. Any replacement producer must start as a new isolated
-generation with the current v2 source/toolchain receipt contract and pass the
-same checkpoint gate honestly.
+Rate ≈32 blk/s, ETA ≈24 h, proof-verify (`pv`) dominant (~70% of block time) —
+`pv` cross-height parallelism is designed/in-flight to cut this to a few hours
+(plan `research-this-node-it-clever-dawn.md` W4-0). The OLD failed producer
+datadir `~/.zclassic-c23-mint-receipt` (binary
+`34d78c95…`) is preserved evidence — do NOT restart it, do NOT relabel/inject.
+
+**THE CURE PATH IS NOW UNBLOCKED END-TO-END.** When the producer reaches the
+anchor: (1) the bundle exports; (2) `zclassic23 -verify-consensus-bundle=PATH`
+run against a datadir folded to the anchor re-derives every component digest
+from that datadir's OWN tables and writes the independent replay receipt
+(`config/src/consensus_state_replay_receipt.c`) — the ONLY thing that lifts
+production ACTIVATE's `VERIFIED_CONTAINED` latch; (3) copy-prove install on a
+datadir COPY, gating on **H\* CLIMB past 3,176,325** (never "booted clean");
+(4) live cutover with the three-layer revert (pre-authorized on green
+copy-proof; the checkpoint re-bake was the one owner-gated step and it is done).
+
+**Producer decision pending:** if the in-flight `pv`-lookahead lands ≥3× on its
+parity oracle, restart the producer on the newer binary to save ~15 h;
+otherwise let the current fold finish. Either way it now gates honestly.
+
+**Bundle activation containment — HOW IT LIFTS (updated):** production ACTIVATE
+still returns `VERIFIED_CONTAINED` before touching `progress.kv` UNLESS the
+independent replay receipt described above is present and binds this exact
+bundle + anchor + component digests + the running binary image. That machinery
+now EXISTS and is adversarially tested (a bundle whose contents differ from the
+honest local fold gets no receipt; a foreign/tampered receipt is refused). The
+receipt is read through the datadir capability fd, not a pathname.
 
 **Codebase review:** the dated, non-authoritative consolidation receipt is
 [`work/archive/CODEBASE-CONSOLIDATION-REVIEW-2026-07-14.md`](work/archive/CODEBASE-CONSOLIDATION-REVIEW-2026-07-14.md).
-It does not displace the cure or [`work/FORWARD_PLAN.md`](work/FORWARD_PLAN.md).
+The current plan of record is the OS-architecture plan
+`~/.claude/plans/research-this-node-it-clever-dawn.md` (Wave 4).
+
+### The OS-architecture program (owner directive 2026-07-15): zclassic23 is a secure OS whose trust foundation is the ZClassic PoW network
+
+The organizing model is a layered machine where the first ~3.05M finalized
+blocks are IMMUTABLE data — computed once, hash-committed, never recomputed —
+and every trust claim reduces to PoW + the compiled binary (no DNS/CAs/registries
+in the trust path). Full picture, laws, and the five-qualities design charter
+(extendable / secure / LLM-friendly / fast / good UX) live in the plan file above.
+
+**Landed this session (all on main, lint 81 gates green):**
+- **ROM layer:** corrected checkpoint + height-asserted mint ceremony (above).
+- **Sealed history:** `lib/storage/chain_segment.{c,h}` — write-once 0444
+  SHA3-committed segment files + manifest for finalized block bodies;
+  `sealsegments`/`verifysegments` commands; `dumpstate chain_segments`.
+- **Software anchoring (trust from the chain):** ZANC OP_RETURN overlay
+  (`lib/zanc/`, `app/controllers/src/anchor_controller.c`) — `anchor_publish`
+  a SHA2/SHA3 package/file digest on-chain; `anchor_verify`/`anchor_self` check
+  a file (or the running binary) against PoW history. `docs/SOFTWARE_ANCHORING.md`.
+- **Kernel organs:** SYSINIT declarative boot records (12/12 stages) +
+  `-sandbox=steady` (Landlock+seccomp); memory-pressure organ; watchdogd
+  supervision drain; coins_ram in-RAM fold overlay; checkout build lock.
+- **Independent replay receipt** (the cure's authority mechanism, above).
+- **Fold crash-proofs:** `test_fold_inram_crash_proof` — durable/INRAM
+  byte-equivalence + SIGKILL-resume determinism.
+- **Net robustness:** inbound evict-not-reject, `-addnode-file`, addrman
+  round-trip proof (addresses the 2-peer coordinator-floor breach).
+
+**Next work, clearly ordered (plan Wave 4):**
+1. **W4-0 finish:** land `pv`-lookahead (cross-height proof-verify pool, parity
+   oracle is the merge bar) → producer speed decision → push.
+2. **W4-1:** complete the cure (producer→bundle→receipt→copy-prove→cutover).
+3. **W4-2:** wire the fold read path to prefer the sealed segment store below the
+   frontier; supervised background sealer + corruption healer (refetch-by-hash);
+   lint gate forbidding writers below the sealed frontier.
+4. **W4-3:** kill the four remaining O(chain) boot passes (`block_index_repair_heights`,
+   nChainTx pre-scan, the single-pass index scan, and `wallet_scan_blocks(0,tip)`
+   — give each a durable cursor like the pprev-repair fix, so boot is O(delta)).
+5. **W4-4/6:** anchor the release binary on-chain + two-builder gate; overlay SDK
+   (factor the ZNAM/ZSLP/ZMSG/ZANC skeleton); Noise transport P1 wiring;
+   wallet-encryption default + `zcl_sql` column denylist; finish zero-MCP;
+   command-contract lint ratchet (schema+semantics+bounded-output per leaf).
 
 **Live node (read-only observation 2026-07-15 05:08 UTC):** public canonical
 remains wedged: H\*=3,176,325, local projection 3,176,326, zclassicd
@@ -71,20 +125,15 @@ state sovereign cure remains required. Verify live before trusting this file:
 `./tools/z mirror --json`, then `./tools/z state reducer_frontier` and
 `./tools/z advance`.
 
-**Bundle activation containment (2026-07-15):** red-team review proved the
-current bundle provenance is self-asserted: an artifact can recompute its own
-producer/source/proof-summary digests, while selected-chain height/hash and the
-current Sapling frontier do not authenticate UTXOs, Sprout history, historical
-Sapling anchors, or nullifiers. The transactional ACTIVATE engine remains
-exercised under `ZCL_TESTING`, but production calls now return
-`VERIFIED_CONTAINED` before touching `progress.kv`. Do not remove this latch
-until a complete-state receipt independently derived by local replay and stored
-outside the bundle is implemented and adversarially proved.
+The containment latch that §0-NEW's "how it lifts" describes is the resolution
+of the 2026-07-15 red-team finding that bundle provenance was self-asserted;
+the independent replay receipt is exactly the "complete-state receipt derived by
+local replay and stored outside the bundle" that finding demanded.
 
-**Repo hygiene (2026-07-14):** four worktrees remain: main, the fuzz and test
-quality checkouts, and one dirty protected performance worktree. Obsolete clean
-worktrees were removed, branches were retained, and unrelated fuzz seeds plus
-the dirty performance worktree were preserved.
+**Repo hygiene:** Wave-3/4 lanes ran in `.claude/worktrees/wf_*` worktrees and
+have been merged to main; their branches remain for archaeology. Never run two
+concurrent `make lint`/builds in one checkout (the checkout lock now enforces
+this for the dev watcher; a manual second build still collides).
 
 **Traps:** the shared `core.hooksPath` flaps to absolute under worktree agents (the gate self-heals; else per-process `GIT_CONFIG` override, never `make install-hooks`); the `CODEBASE_MAP.md` `test_groups:` count conflicts on parallel lanes (resolve via `bash tools/scripts/check_doc_counts.sh`); never run two concurrent `make lint`/builds in one checkout; the pre-push hook SIGPIPEs on stdout (pre-push-ci to a file, then `--no-verify`).
 
