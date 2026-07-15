@@ -560,6 +560,7 @@ add/remove a gate.
 - `check-release-no-dev-symbols`
 - `check-vcs-no-git`
 - `check-vcs-no-sha1`
+- `check-command-contract`
 <!-- LINT-GATES-END -->
 
 (`check-consensus-parity` [E13, the parity mechanism — see

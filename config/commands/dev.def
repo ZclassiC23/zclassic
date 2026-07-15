@@ -2,6 +2,9 @@
 
 ZCL_COMMAND_READY_READ(
     "dev.status", "dev", "", "Read the latest native cycle verdict",
+    "The most recent native compile/test/lint cycle verdict persisted by "
+    "the local dev-state store at call time; reports status=unavailable "
+    "if no cycle has run yet.", 0,
     "dev,status,cycle,verdict", "zcl.command.empty_input.v1",
     "zcl.dev_status.v1", "", "", "zclassic23 dev status",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
@@ -13,6 +16,9 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "dev.ff", "dev", "", "Fail-fast ladder: compile, test, lint",
+    "Pass/fail result of a freshly executed compile+focused-test+lint "
+    "ladder run synchronously against the current checkout via `make ff`; "
+    "not cached, dev build only.", 0,
     "dev,ff,ladder,fast,verify", "zcl.command.empty_input.v1",
     "zcl.dev_ff.v1", "", "", "zclassic23 dev ff",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
@@ -39,6 +45,9 @@ ZCL_COMMAND_BRANCH("dev.diagnose", "dev", "Failure capsule lookup",
 
 ZCL_COMMAND_READY_READ(
     "dev.core.boundary", "dev.core", "", "Show the enforced Core/App ownership law",
+    "A fixed, hardcoded Core/App capability boundary table baked into this "
+    "binary; identical on every call regardless of checkout state, not "
+    "derived from live code.", 0,
     "core,app,boundary,consensus,capabilities",
     "zcl.command.empty_input.v1", "zcl.core_app_boundary.v1", "", "",
     "zclassic23 dev core boundary",
@@ -51,6 +60,9 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_PLANNED_READ(
     "dev.core.proof", "dev.core", "", "Run mandatory Core parity proof lanes",
+    "Will report pass/fail per mandatory Core parity proof lane against "
+    "the current checkout; today the handler is NULL and every call fails "
+    "closed with exit 3.", 0,
     "core,consensus,parity,history,replay", "zcl.dev_core_proof_input.v1",
     "zcl.dev_core_proof.v1", "files", "", "zclassic23 dev core proof",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
@@ -61,6 +73,9 @@ ZCL_COMMAND_PLANNED_READ(
 
 ZCL_COMMAND_READY_READ(
     "dev.app.list", "dev.app", "", "List checkout App manifests",
+    "Every App id compiled into this binary's built-in catalog at build "
+    "time; a complete, unpaged, static list unaffected by checkout edits "
+    "until rebuild.", ZCL_COMMAND_LIST_BUDGET,
     "apps,manifest,checkout", "zcl.command.empty_input.v1",
     "zcl.dev_app_index.v1", "", "", "zclassic23 dev app list",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
@@ -73,6 +88,9 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "dev.app.describe", "dev.app", "", "Describe an App manifest and its proofs",
+    "One App's manifest and proof-lane summary parsed fresh from its "
+    "checkout app.def file at call time; reflects on-disk source, not any "
+    "compiled or resident state.", 0,
     "app,manifest,capabilities,simulations", "zcl.dev_app_ref_input.v1",
     "zcl.dev_app.v1", "app_id", "app_id",
     "zclassic23 dev app describe social",
@@ -86,6 +104,9 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "dev.app.plan", "dev.app", "", "Plan one conventional App resource slice",
+    "A deterministic file plan computed from the checkout's current App "
+    "manifest describing what a scaffold WOULD write; this call touches "
+    "no disk itself.", 0,
     "app,resource,rails,plan", "zcl.dev_app_resource_input.v1",
     "zcl.dev_app_plan.v1", "app_id,resource", "app_id,resource",
     "zclassic23 dev app plan social posts",
@@ -99,6 +120,9 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_PLANNED_COMMAND(
     "dev.app.scaffold", "dev.app", "", "Materialize a conventional App resource slice",
+    "Will report the checkout files actually materialized for one App "
+    "resource slice; today the handler is NULL and every call fails "
+    "closed with exit 3.", 0,
     "app,resource,rails,scaffold", "zcl.dev_app_resource_input.v1",
     "zcl.dev_app_scaffold.v1", "app_id,resource", "app_id,resource",
     "zclassic23 dev app scaffold social posts", ZCL_COMMAND_LAYER_DEV,
@@ -112,6 +136,9 @@ ZCL_COMMAND_PLANNED_COMMAND(
 
 ZCL_COMMAND_READY_READ(
     "dev.app.simulate", "dev.app", "", "Run deterministic App network scenarios",
+    "A deterministic simulation outcome for one App network scenario, "
+    "fully determined by app_id and the given seed; the same seed always "
+    "reproduces the same output.", 0,
     "app,simulation,censorship,partition,replay,signature",
     "zcl.dev_app_sim_input.v1", "zcl.dev_app_sim.v1",
     "app_id,scenario,seed", "app_id",
@@ -126,6 +153,9 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_PLANNED_READ(
     "dev.app.inspect", "dev.app", "", "Inspect a resident App generation",
+    "Will report one App's resident generation state and active leases "
+    "from the running dev process; today the handler is NULL and every "
+    "call fails closed with exit 3.", 0,
     "app,generation,state,leases", "zcl.dev_app_ref_input.v1",
     "zcl.dev_app_inspect.v1", "app_id", "app_id",
     "zclassic23 dev app inspect social", ZCL_COMMAND_LAYER_DEV,
@@ -136,6 +166,9 @@ ZCL_COMMAND_PLANNED_READ(
 
 ZCL_COMMAND_PLANNED_COMMAND(
     "dev.app.publish", "dev.app", "", "Atomically publish a proven App generation",
+    "Will report the atomic publication outcome of one proven App "
+    "generation into the resident dev process; today the handler is NULL "
+    "and every call fails closed with exit 3.", 0,
     "app,publish,hotswap,generation,quiescence", "zcl.dev_app_publish_input.v1",
     "zcl.dev_app_publish.v1", "app_id,idempotency_key", "app_id",
     "zclassic23 dev app publish social --idempotency-key=<key>",
@@ -151,6 +184,9 @@ ZCL_COMMAND_PLANNED_COMMAND(
 
 ZCL_COMMAND_READY_READ(
     "dev.change.plan", "dev.change", "", "Classify files and select the smallest proof",
+    "A deterministic classification of the given file list into the "
+    "smallest sufficient proof lane, computed from static path rules; no "
+    "live checkout scan is performed.", 0,
     "change,impact,classify,proof,hotswap,reload", "zcl.dev_change_input.v1",
     "zcl.dev_plan.v1", "files", "", "zclassic23 dev change plan --input='{\"files\":[\"apps/social/app.def\"]}'",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
@@ -164,6 +200,9 @@ ZCL_COMMAND_READY_READ(
 ZCL_COMMAND_DEV_COMMAND(
     "dev.change.apply", "dev.change", "dev.change.cycle",
     "Contained publication entrypoint: returns RUNTIME_PUBLICATION_CONTAINED",
+    "Reports the containment verdict RUNTIME_PUBLICATION_CONTAINED for "
+    "every call today; the transactional build+test+publish body past the "
+    "gate is unreachable code. Use dev.change.plan for real output.", 0,
     "change,apply,build,hotswap,reload,rollback", "zcl.dev_change_input.v1",
     "zcl.dev_cycle.v1", "files", "", "zclassic23 dev change apply --input='{\"files\":[\"apps/social/app.def\"]}'",
     ZCL_COMMAND_EFFECT_MUTATE,
@@ -183,6 +222,9 @@ ZCL_COMMAND_BRANCH("dev.vcs", "dev", "One-command source+binary revert",
 ZCL_COMMAND_DEV_COMMAND(
     "dev.vcs.revert", "dev.vcs", "", "Restore the checkout to a prior ZVCS "
     "commit; generation relinking is currently contained",
+    "The forward ZVCS commit id and reverted-to commit id from an actual "
+    "append-only source revert just applied to this checkout; generation "
+    "relinking is always refused today.", 0,
     "vcs,revert,rollback,generation,relink", "zcl.dev_vcs_revert_input.v1",
     "zcl.dev_vcs_revert.v1", "to,relink_generation", "to",
     "zclassic23 dev vcs revert --input='{\"to\":\"<64-hex commit id>\","
@@ -206,6 +248,9 @@ ZCL_COMMAND_DEV_COMMAND(
     "dev.vcs.seal.grant", "dev.vcs.seal", "", "Mint a one-shot ZVCS unseal "
     "token authorizing the CURRENT worktree's sealed content for the next "
     "green-cycle anchor",
+    "Confirms a one-shot ZVCS unseal token was minted and an audit record "
+    "appended to this checkout's index.kv just now; authorizes only the "
+    "CURRENT worktree's sealed content.", 0,
     "vcs,seal,unseal,grant,owner,token", "zcl.dev_vcs_seal_grant_input.v1",
     "zcl.dev_vcs_seal_grant.v1", "reason,confirm", "reason",
     "zclassic23 dev vcs seal grant --input='{\"reason\":\"post-baseline "
@@ -230,6 +275,9 @@ ZCL_COMMAND_DEV_COMMAND(
     "dev.hotswap.apply", "dev.hotswap", "", "Live module hot-swap: forwards to "
     "the resident dev node; verify-only unless -hotswap-activate + "
     "ZCL_HOTSWAP_ACTIVATE=1 on the dev datadir (canonical refused)",
+    "The activation report (ok, verify_only, activated, generation, "
+    "artifact hash) from the RESIDENT dev node's live registry, not this "
+    "CLI process; a real swap needs both activation flags set.", 0,
     "hotswap,apply,leaves,generation,relink", "zcl.dev_hotswap_input.v1",
     "zcl.dev_hotswap.v1", "so_path,probe_leaf", "so_path",
     "zclassic23-dev dev hotswap apply --input='{\"so_path\":\"/tmp/gen.so\","
@@ -248,6 +296,9 @@ ZCL_COMMAND_DEV_COMMAND(
 ZCL_COMMAND_DEV_READ(
     "dev.hotswap.probe", "dev.hotswap", "", "Verify-only in-process: dlopen + "
     "ABI-validate + self_test of a module .so; never commits",
+    "A dlopen/ABI-validate/self-test result for one module .so, executed "
+    "in this CLI's own throwaway process; proves a swap WOULD work but "
+    "commits nothing to the resident node.", 0,
     "hotswap,probe,precommit,leaves,generation", "zcl.dev_hotswap_input.v1",
     "zcl.dev_hotswap.v1", "so_path,probe_leaf", "so_path",
     "zclassic23-dev dev hotswap probe --input='{\"so_path\":\"/tmp/gen.so\","
@@ -264,6 +315,9 @@ ZCL_COMMAND_DEV_READ(
 ZCL_COMMAND_DEV_COMMAND(
     "dev.loop.ensure", "dev.loop", "dev.loop.watch",
     "Ensure one verify-only watcher; publication modes are contained",
+    "Confirmation that one verify-only watcher process now owns the "
+    "checkout's singleton lock, plus its live status snapshot; apply/auto "
+    "publication modes are refused today.", 0,
     "loop,ensure,watcher,inotify,verify,containment",
     "zcl.dev_loop_ensure_input.v1", "zcl.dev_loop_status.v1",
     "root,mode", "", "zclassic23 dev loop ensure --input='{\"root\":\".\",\"mode\":\"verify\"}'",
@@ -281,6 +335,9 @@ ZCL_COMMAND_DEV_COMMAND(
 ZCL_COMMAND_DEV_READ(
     "dev.loop.status", "dev.loop", "dev.loop.heartbeat",
     "Read watcher identity, epoch, and latest verdict",
+    "The native watcher's live identity (active, pid, mode) read from its "
+    "lock file, plus the latest persisted cycle verdict; freshness "
+    "matches the watcher's own tick, not this call.", 0,
     "loop,status,heartbeat,epoch", "zcl.command.empty_input.v1",
     "zcl.dev_loop_status.v1", "", "", "zclassic23 dev loop status",
     ZCL_COMMAND_SCOPE_LOCAL,
@@ -294,6 +351,9 @@ ZCL_COMMAND_DEV_READ(
 
 ZCL_COMMAND_DEV_READ(
     "dev.loop.wait", "dev.loop", "", "Wait for one verdict after a source epoch",
+    "The next native cycle verdict newer than after_epoch, blocking up "
+    "to timeout_ms; on timeout returns a typed WAIT_TIMEOUT failure "
+    "instead of stale data.", 0,
     "loop,wait,epoch,verdict", "zcl.dev_loop_wait_input.v1",
     "zcl.dev_cycle.v1", "after_epoch,timeout_ms,view", "",
     "zclassic23 dev loop wait --input='{\"after_epoch\":41}'",
@@ -308,6 +368,8 @@ ZCL_COMMAND_DEV_READ(
 
 ZCL_COMMAND_PLANNED_READ(
     "dev.loop.events", "dev.loop", "", "Stream resumable source and cycle events",
+    "Will stream resumable NDJSON source and cycle events from a cursor; "
+    "today the handler is NULL and every call fails closed with exit 3.", 0,
     "loop,events,jsonl,cursor,epoch", "zcl.dev_loop_events_input.v1",
     "zcl.dev_loop_event.v1", "after,heartbeat_ms", "",
     "zclassic23 dev loop events --format=jsonl",
@@ -319,6 +381,9 @@ ZCL_COMMAND_PLANNED_READ(
 
 ZCL_COMMAND_DEV_COMMAND(
     "dev.loop.stop", "dev.loop", "", "Stop one identified native watcher",
+    "Confirmation that the identified watcher process received SIGTERM "
+    "and released its lock, plus the resulting live loop-status "
+    "snapshot; the watcher_id must match exactly.", 0,
     "loop,stop,watcher", "zcl.dev_loop_stop_input.v1",
     "zcl.dev_loop_status.v1", "watcher_id", "watcher_id",
     "zclassic23 dev loop stop <watcher-id>",
@@ -333,6 +398,9 @@ ZCL_COMMAND_DEV_COMMAND(
 
 ZCL_COMMAND_READY_READ(
     "dev.test.plan", "dev.test", "", "Map changed files to mandatory proof groups",
+    "A deterministic mapping of the given file list to mandatory proof "
+    "groups, computed from static path-classification rules; no live "
+    "checkout scan is performed.", 0,
     "test,plan,impact,groups", "zcl.dev_change_input.v1",
     "zcl.dev_test_plan.v1", "files", "", "zclassic23 dev test plan --input='{\"files\":[]}'",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
@@ -345,7 +413,11 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_DEV_READ(
     "dev.test.run", "dev.test", "dev.test.focused",
-    "Run one exact prebuilt focused test group", "test,focused,group",
+    "Run one exact prebuilt focused test group",
+    "Pass/fail result of a freshly executed prebuilt focused test binary "
+    "(`test_parallel_fast --only=<group>`) run synchronously; requires "
+    "`make test-parallel-fast` to have built it first.", 0,
+    "test,focused,group",
     "zcl.dev_test_run_input.v1", "zcl.dev_focused_test.v1", "group", "group",
     "zclassic23 dev test run hotswap_simnet", ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OWNER,
@@ -359,6 +431,9 @@ ZCL_COMMAND_DEV_READ(
 
 ZCL_COMMAND_DEV_READ(
     "dev.test.sim", "dev.test", "", "Run the generic hot-swap network proof",
+    "A deterministic hot-swap network simulation outcome computed fresh "
+    "in-process at call time; identical every run for the same checkout "
+    "state.", 0,
     "test,simulation,hotswap,network", "zcl.dev_test_sim_input.v1",
     "zcl.dev_sim.v1", "app_id", "", "zclassic23 dev test sim",
     ZCL_COMMAND_SCOPE_LOCAL,
@@ -372,6 +447,8 @@ ZCL_COMMAND_DEV_READ(
 
 ZCL_COMMAND_PLANNED_READ(
     "dev.test.replay", "dev.test", "", "Replay one deterministic failure seed",
+    "Will replay one deterministic failure seed and report pass/fail; "
+    "today the handler is NULL and every call fails closed with exit 3.", 0,
     "test,replay,seed,deterministic", "zcl.dev_test_replay_input.v1",
     "zcl.dev_test_replay.v1", "seed,scenario", "seed",
     "zclassic23 dev test replay 1234", ZCL_COMMAND_LAYER_DEV,
@@ -385,6 +462,8 @@ ZCL_COMMAND_BRANCH("dev.test.background", "dev.test", "Background proof freshnes
 ZCL_COMMAND_PLANNED_READ(
     "dev.test.background.status", "dev.test.background", "",
     "Read lint, sanitizer, replay, and reproducibility freshness",
+    "Will report lint/sanitizer/replay/reproducibility freshness ages; "
+    "today the handler is NULL and every call fails closed with exit 3.", 0,
     "test,background,quality,freshness", "zcl.command.empty_input.v1",
     "zcl.dev_background_quality.v1", "", "",
     "zclassic23 dev test background status", ZCL_COMMAND_LAYER_DEV,
@@ -395,6 +474,9 @@ ZCL_COMMAND_PLANNED_READ(
 
 ZCL_COMMAND_DEV_READ(
     "dev.generation.current", "dev.generation", "", "Show current and last-good generations",
+    "The current, last-good, and staged generation symlink targets read "
+    "live from the local dev generation root directory on disk at call "
+    "time.", 0,
     "generation,current,last-good,hotswap", "zcl.command.empty_input.v1",
     "zcl.dev_generation_status.v1", "", "", "zclassic23 dev generation current",
     ZCL_COMMAND_SCOPE_LOCAL,
@@ -407,6 +489,9 @@ ZCL_COMMAND_DEV_READ(
     "zclassic23-dev dev generation current")
 ZCL_COMMAND_DEV_READ(
     "dev.generation.history", "dev.generation", "", "Page accepted and rejected generations",
+    "A paginated, disk-scanned list of accepted and rejected generation "
+    "markers under the local dev generation root, newest name first, "
+    "capped at 100 rows per page.", ZCL_COMMAND_LIST_BUDGET,
     "generation,history,rejected,quarantine", "zcl.page_input.v1",
     "zcl.dev_generation_history.v1", "cursor,max_items", "",
     "zclassic23 dev generation history", ZCL_COMMAND_SCOPE_LOCAL,
@@ -419,6 +504,9 @@ ZCL_COMMAND_DEV_READ(
     "zclassic23-dev dev generation history")
 ZCL_COMMAND_PLANNED_COMMAND(
     "dev.generation.rollback", "dev.generation", "", "Restore verified last-good in the dev lane",
+    "Will report the restored last-good generation after an "
+    "activation-engine rollback; today the handler is NULL and every "
+    "call fails closed with exit 3.", 0,
     "generation,rollback,last-good,recovery", "zcl.dev_generation_rollback_input.v1",
     "zcl.dev_generation_rollback.v1", "intent_id,effect_digest", "",
     "zclassic23 dev generation rollback --input='<intent>'", ZCL_COMMAND_LAYER_DEV,
@@ -431,6 +519,9 @@ ZCL_COMMAND_PLANNED_COMMAND(
     "native activation engine is not implemented")
 ZCL_COMMAND_PLANNED_COMMAND(
     "dev.generation.compact", "dev.generation", "", "Compact unleased old generations",
+    "Will report which unleased old generations were compacted and "
+    "reclaimed; today the handler is NULL and every call fails closed "
+    "with exit 3.", 0,
     "generation,compact,leases,retention", "zcl.dev_generation_compact_input.v1",
     "zcl.dev_generation_compact.v1", "intent_id,effect_digest", "",
     "zclassic23 dev generation compact --input='<intent>'", ZCL_COMMAND_LAYER_DEV,
@@ -444,6 +535,9 @@ ZCL_COMMAND_PLANNED_COMMAND(
 
 ZCL_COMMAND_DEV_READ(
     "dev.diagnose.latest", "dev.diagnose", "", "Read the latest failure capsule",
+    "The latest native cycle verdict from the local dev-state store, "
+    "wrapped as a failure capsule; reports status=unavailable if no "
+    "cycle has run yet.", 0,
     "diagnose,failure,capsule,latest", "zcl.command.empty_input.v1",
     "zcl.dev_failure.v1", "", "", "zclassic23 dev diagnose latest",
     ZCL_COMMAND_SCOPE_LOCAL,
@@ -456,6 +550,9 @@ ZCL_COMMAND_DEV_READ(
     "zclassic23-dev dev diagnose latest")
 ZCL_COMMAND_PLANNED_READ(
     "dev.diagnose.show", "dev.diagnose", "", "Show one durable failure artifact",
+    "Will show one durable failure artifact by id from a persistent "
+    "failure store; today the handler is NULL and every call fails "
+    "closed with exit 3.", 0,
     "diagnose,failure,artifact", "zcl.dev_failure_ref_input.v1",
     "zcl.dev_failure.v1", "failure_id", "failure_id",
     "zclassic23 dev diagnose show <failure-id>", ZCL_COMMAND_LAYER_DEV,

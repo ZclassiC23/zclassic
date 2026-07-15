@@ -6,6 +6,8 @@
 
 ZCL_COMMAND_READY_READ(
     "ops.health", "ops", "", "Health rollup",
+    "Every registered health check with its pass/fail and the overall serving "
+    "verdict, read live from the running node at call time.", 0,
     "health,checks,status,rollup", "zcl.command.empty_input.v1",
     "zcl.health.v1", "", "", "zclassic23 ops health",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -16,6 +18,8 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "ops.diagnose", "ops", "", "Operator diagnosis",
+    "A triage summary — the current primary blocker, likely cause, and "
+    "suggested next action — synthesized live from node state at call time.", 0,
     "diagnose,triage,operator,summary", "zcl.command.empty_input.v1",
     "zcl.ops_diagnose.v1", "", "", "zclassic23 ops diagnose",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -26,6 +30,8 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "ops.lanes", "ops", "", "Lanes",
+    "The known worktree/deploy lanes and each one's role and state, read from "
+    "the node's lane view at call time.", 0,
     "lanes,worktree,deploy,dev", "zcl.command.empty_input.v1",
     "zcl.ops_lanes.v1", "", "", "zclassic23 ops lanes",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -38,6 +44,9 @@ ZCL_COMMAND_BRANCH("ops.jobs", "ops", "Job lifecycle",
                    ZCL_COMMAND_LAYER_OPS)
 ZCL_COMMAND_PLANNED_READ(
     "ops.jobs.list", "ops.jobs", "", "List asynchronous jobs",
+    "Will list every asynchronous job with its state and progress from the "
+    "native job registry; that registry is not built yet, so the leaf fails "
+    "closed today.", ZCL_COMMAND_LIST_BUDGET,
     "jobs,list,async", "zcl.command.empty_input.v1", "zcl.jobs.v1", "", "",
     "zclassic23 ops jobs list",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
@@ -48,6 +57,9 @@ ZCL_COMMAND_PLANNED_READ(
 
 ZCL_COMMAND_READY_READ(
     "ops.logs", "ops", "", "Log regex tail",
+    "The most recent node.log lines matching the pattern within the window, "
+    "newest-scanned-first via a server-side reverse tail; bounded by max_lines, "
+    "not the full log.", ZCL_COMMAND_LIST_BUDGET,
     "logs,tail,grep,node.log", "zcl.ops_logs.input.v1", "zcl.ops_logs.v1",
     "pattern,since_secs,max_lines,level", "pattern",
     "zclassic23 ops logs --pattern='blocker'",
@@ -59,6 +71,9 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "ops.timeline", "ops", "", "Events",
+    "Recent operational events (boot stages, blocker fires, deploys) newest "
+    "first from the node's in-memory event ring; a bounded recent window, not "
+    "full history.", ZCL_COMMAND_LIST_BUDGET,
     "timeline,events,history", "zcl.command.empty_input.v1",
     "zcl.ops_timeline.v1", "", "", "zclassic23 ops timeline",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -69,6 +84,9 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "ops.metrics", "ops", "", "Metrics",
+    "The node's current counters and gauges sampled live at call time; "
+    "instantaneous values (counters are cumulative since boot), not a "
+    "time series.", ZCL_COMMAND_LIST_BUDGET,
     "metrics,counters,gauges", "zcl.command.empty_input.v1",
     "zcl.ops_metrics.v1", "", "", "zclassic23 ops metrics",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -79,6 +97,9 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "ops.state", "ops", "", "Subsystem state",
+    "One subsystem's introspection snapshot from the running node's diagnostics "
+    "registry (the dumpstate primitive); consistent for that subsystem at "
+    "capture time, shape varies per subsystem.", 0,
     "state,subsystem,dump,dumpstate,introspect", "zcl.ops_state.input.v1",
     "zcl.ops_state.v1", "subsystem,key", "subsystem",
     "zclassic23 ops state --subsystem=reducer_frontier",
@@ -90,6 +111,9 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "ops.selftest", "ops", "", "Self-test",
+    "A node-free sweep of the in-binary command catalog for static "
+    "well-formedness defects (pass/fail/skip counts and each failure's path and "
+    "reason); complete over every catalog leaf.", 0,
     "selftest,self-test,registry,contract,smoke", "zcl.command.empty_input.v1",
     "zcl.ops_selftest.v1", "", "", "zclassic23 ops selftest",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
@@ -108,6 +132,9 @@ ZCL_COMMAND_BRANCH("ops.debug", "ops", "Diagnostics",
 ZCL_COMMAND_READY_READ(
     "ops.debug.explain", "ops.debug", "explain,ops.explain",
     "Explain a subsystem in plain prose",
+    "A plain-prose explanation of one subsystem (sync, blockers, health, …) "
+    "generated from live node state at call time; narrative, not a stable "
+    "machine schema.", 0,
     "explain,sync,blockers,health,why,diagnose,prose",
     "zcl.ops_explain.input.v1", "zcl.ops_explain.v1", "topic", "topic",
     "zclassic23 explain sync",
@@ -120,6 +147,9 @@ ZCL_COMMAND_READY_READ(
 ZCL_COMMAND_READY_READ(
     "ops.debug.profile", "ops.debug", "profile,ops.profile",
     "Sample thread CPU + stage rates",
+    "Per-thread CPU and wait-channel samples plus stage advance rates gathered "
+    "over `seconds` of live sampling; a wall-clock snapshot of that window, not "
+    "cumulative.", ZCL_COMMAND_LIST_BUDGET,
     "profile,cpu,threads,bottleneck,perf,wchan,sample",
     "zcl.ops_profile.input.v1", "zcl.ops_profile.v1", "seconds,top_n",
     "seconds", "zclassic23 profile 3",
@@ -132,6 +162,9 @@ ZCL_COMMAND_READY_READ(
 ZCL_COMMAND_READY_READ(
     "ops.debug.producer", "ops.debug", "ops.producer.status",
     "Read a producer datadir's fold progress + receipt",
+    "One producer datadir's fold cursor, receipt, and ETA read straight off "
+    "disk (not from a running node); reflects that datadir's last durable "
+    "checkpoint.", 0,
     "producer,mint,anchor,receipt,fold,progress,eta",
     "zcl.ops_producer_status.input.v1", "zcl.ops_producer_status.v1",
     "datadir", "datadir",
@@ -144,6 +177,9 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "ops.debug.backtrace", "ops.debug", "", "Dump every thread's backtrace",
+    "A captured backtrace for every live thread plus the log path it was "
+    "written to, dumped by the running node at call time; a point-in-time "
+    "snapshot of all threads.", ZCL_COMMAND_LIST_BUDGET,
     "backtrace,threads,stacks,hang,deadlock,debug", "zcl.command.empty_input.v1",
     "zcl.ops_debug_backtrace.v1", "", "", "zclassic23 ops debug backtrace",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -156,6 +192,9 @@ ZCL_COMMAND_BRANCH("ops.postmortem", "ops", "Postmortems",
                    ZCL_COMMAND_LAYER_OPS)
 ZCL_COMMAND_READY_READ(
     "ops.postmortem.list", "ops.postmortem", "", "List captured postmortems",
+    "Every durably captured failure postmortem (id, time, summary) from the "
+    "node's postmortem store; complete at call time, newest first.",
+    ZCL_COMMAND_LIST_BUDGET,
     "postmortem,list,failure,capsule", "zcl.command.empty_input.v1",
     "zcl.postmortem_list.v1", "", "", "zclassic23 ops postmortem list",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -165,7 +204,11 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_PLANNED_READ(
     "ops.postmortem.replay", "ops.postmortem", "",
-    "Replay one captured postmortem", "postmortem,replay,failure",
+    "Replay one captured postmortem",
+    "Will replay one captured postmortem deterministically and return the "
+    "reproduced failure; the argument-to-replay mapping is not wired, so the "
+    "leaf fails closed today.", 0,
+    "postmortem,replay,failure",
     "zcl.ops_postmortem_ref.input.v1", "zcl.postmortem_replay.v1", "id", "id",
     "zclassic23 ops postmortem replay <id>",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -178,6 +221,9 @@ ZCL_COMMAND_BRANCH("ops.config", "ops", "Runtime config",
                    ZCL_COMMAND_LAYER_OPS)
 ZCL_COMMAND_PLANNED_READ(
     "ops.config.show", "ops.config", "", "Show effective runtime configuration",
+    "Will report the effective runtime configuration after flags, defaults, and "
+    "overrides are merged; a distinct effective-config reader is not built, so "
+    "the leaf fails closed today.", 0,
     "config,show,settings", "zcl.command.empty_input.v1", "zcl.ops_config.v1",
     "", "", "zclassic23 ops config show",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -187,6 +233,8 @@ ZCL_COMMAND_PLANNED_READ(
     "an effective-config reader is a Wave 2.2 deliverable")
 ZCL_COMMAND_PLANNED_COMMAND(
     "ops.config.reload", "ops.config", "", "Reload runtime configuration",
+    "Will reload runtime configuration and report which keys changed; the "
+    "reload binding is not wired, so the leaf fails closed today.", 0,
     "config,reload", "zcl.command.empty_input.v1", "zcl.ops_config_reload.v1",
     "", "", "zclassic23 ops config reload",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_EFFECT_MUTATE,
@@ -201,6 +249,8 @@ ZCL_COMMAND_BRANCH("ops.recovery", "ops", "Recovery ops",
                    ZCL_COMMAND_LAYER_OPS)
 ZCL_COMMAND_READY_READ(
     "ops.recovery.status", "ops.recovery", "", "Refold and recovery progress",
+    "The current refold/recovery cursor and progress read live from the node; "
+    "reflects the in-flight rebuild state at call time.", 0,
     "recovery,refold,status,rebuild", "zcl.command.empty_input.v1",
     "zcl.recovery_status.v1", "", "", "zclassic23 ops recovery status",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
@@ -210,7 +260,11 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_PLANNED_COMMAND(
     "ops.recovery.rebuild", "ops.recovery", "",
-    "Rebuild recent chain state", "recovery,rebuild,recent",
+    "Rebuild recent chain state",
+    "Will rebuild recent chain state to the requested depth and report the new "
+    "cursor; the plan/commit handshake is not wired, so the leaf fails closed "
+    "today.", 0,
+    "recovery,rebuild,recent",
     "zcl.ops_recovery_rebuild.input.v1", "zcl.recovery_rebuild.v1", "depth", "",
     "zclassic23 ops recovery rebuild --depth=100",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_EFFECT_DESTRUCTIVE,

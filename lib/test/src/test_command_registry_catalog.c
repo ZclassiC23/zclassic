@@ -829,10 +829,129 @@ static int test_is_root_ownership(void)
     return failures;
 }
 
+static void contract_noop_handler(const struct zcl_command_request *request,
+                                  struct zcl_command_reply *reply)
+{
+    (void)request;
+    (void)reply;
+}
+
+/* OS-B1: validate must reject a READY leaf without a distinct, non-empty
+ * `semantics` contract and a budget_bytes outside {0} ∪ [256, 65536]. Built as
+ * a two-entry fixture registry (a branch parent + one leaf) mutated per case. */
+static int test_semantics_contract_negative(void)
+{
+    int failures = 0;
+    TEST("validate rejects missing/duplicate semantics and out-of-range budget") {
+        struct zcl_command_spec branch = {
+            .path = "x", .parent = "", .aliases = "", .summary = "branch x",
+            .semantics = "", .tags = "", .input_schema = "",
+            .output_schema = "", .input_keys = "", .positional_keys = "",
+            .example = "", .availability_reason = "", .compat_target = "",
+            .budget_bytes = 0, .layer = ZCL_COMMAND_LAYER_OPS,
+            .effect = ZCL_COMMAND_EFFECT_READ, .risk = ZCL_COMMAND_RISK_READ,
+            .scope = ZCL_COMMAND_SCOPE_LOCAL, .authority = ZCL_COMMAND_AUTH_PUBLIC,
+            .availability = ZCL_COMMAND_READY, .mode = ZCL_COMMAND_MODE_BRANCH,
+            .latency = ZCL_COMMAND_LATENCY_INSTANT, .cost = ZCL_COMMAND_COST_TINY,
+            .confirmation = ZCL_COMMAND_CONFIRM_NONE,
+            .allowed_lanes = ZCL_COMMAND_LANE_LOCAL,
+            .transports = ZCL_COMMAND_TRANSPORT_NATIVE, .handler = NULL,
+        };
+        struct zcl_command_spec leaf_base = {
+            .path = "x.y", .parent = "x", .aliases = "", .summary = "do a thing",
+            .semantics = "the settled result of the thing, read locally",
+            .tags = "t", .input_schema = "zcl.in.v1",
+            .output_schema = "zcl.out.v1", .input_keys = "",
+            .positional_keys = "", .example = "zclassic23 x y",
+            .availability_reason = "", .compat_target = "", .budget_bytes = 0,
+            .layer = ZCL_COMMAND_LAYER_OPS, .effect = ZCL_COMMAND_EFFECT_READ,
+            .risk = ZCL_COMMAND_RISK_READ, .scope = ZCL_COMMAND_SCOPE_LOCAL,
+            .authority = ZCL_COMMAND_AUTH_PUBLIC,
+            .availability = ZCL_COMMAND_READY, .mode = ZCL_COMMAND_MODE_SYNC,
+            .latency = ZCL_COMMAND_LATENCY_INSTANT, .cost = ZCL_COMMAND_COST_TINY,
+            .confirmation = ZCL_COMMAND_CONFIRM_NONE,
+            .allowed_lanes = ZCL_COMMAND_LANE_LOCAL,
+            .transports = ZCL_COMMAND_TRANSPORT_NATIVE,
+            .handler = contract_noop_handler,
+        };
+        char why[128] = { 0 };
+
+        struct zcl_command_spec ok_specs[2] = { branch, leaf_base };
+        struct zcl_command_registry ok_reg = { .commands = ok_specs, .count = 2 };
+        ASSERT(zcl_command_registry_validate(&ok_reg, why, sizeof(why)));
+
+        struct zcl_command_spec miss = leaf_base;
+        miss.semantics = "";
+        struct zcl_command_spec miss_specs[2] = { branch, miss };
+        struct zcl_command_registry miss_reg = {
+            .commands = miss_specs, .count = 2 };
+        ASSERT(!zcl_command_registry_validate(&miss_reg, why, sizeof(why)));
+
+        struct zcl_command_spec dup = leaf_base;
+        dup.semantics = dup.summary;
+        struct zcl_command_spec dup_specs[2] = { branch, dup };
+        struct zcl_command_registry dup_reg = {
+            .commands = dup_specs, .count = 2 };
+        ASSERT(!zcl_command_registry_validate(&dup_reg, why, sizeof(why)));
+
+        struct zcl_command_spec big = leaf_base;
+        big.budget_bytes = 100000;
+        struct zcl_command_spec big_specs[2] = { branch, big };
+        struct zcl_command_registry big_reg = {
+            .commands = big_specs, .count = 2 };
+        ASSERT(!zcl_command_registry_validate(&big_reg, why, sizeof(why)));
+
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* OS-B1: the real catalog now carries the contract on every leaf. */
+static int test_leaf_semantics_and_budget(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    TEST("every READY leaf has distinct non-empty semantics and a valid budget") {
+        for (size_t i = 0; i < reg->count; i++) {
+            const struct zcl_command_spec *s = &reg->commands[i];
+            ASSERT(s->budget_bytes == 0 ||
+                   (s->budget_bytes >= 256 && s->budget_bytes <= 65536));
+            if (s->mode == ZCL_COMMAND_MODE_BRANCH)
+                continue;
+            if (s->availability != ZCL_COMMAND_READY)
+                continue;
+            ASSERT(s->semantics != NULL && s->semantics[0] != 0);
+            ASSERT(strcmp(s->semantics, s->summary) != 0);
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* OS-B1: describe surfaces the semantics contract and effective budget. */
+static int test_describe_emits_semantics(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    char out[ZCL_COMMAND_SPEC_BUDGET + 1];
+    TEST("describe emits the semantics contract and budget for a leaf") {
+        size_t n = zcl_command_registry_describe_json(reg, "core.status", out,
+                                                      sizeof(out));
+        ASSERT(n > 0);
+        ASSERT(strstr(out, "\"semantics\"") != NULL);
+        ASSERT(strstr(out, "\"budget_bytes\"") != NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_command_registry_catalog(void)
 {
     int failures = 0;
     failures += test_catalog_wellformed();
+    failures += test_semantics_contract_negative();
+    failures += test_leaf_semantics_and_budget();
+    failures += test_describe_emits_semantics();
     failures += test_domain_leaf_counts();
     failures += test_six_roots();
     failures += test_root_menu_budget();

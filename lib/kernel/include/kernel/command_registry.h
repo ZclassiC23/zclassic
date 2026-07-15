@@ -20,7 +20,9 @@ extern "C" {
 
 #define ZCL_COMMAND_ROOT_BUDGET 1200U
 #define ZCL_COMMAND_BRANCH_BUDGET 1600U
-#define ZCL_COMMAND_SPEC_BUDGET 2400U
+/* Raised from 2400 to absorb the per-leaf `semantics` contract and effective
+ * `budget_bytes` the describe document now emits. */
+#define ZCL_COMMAND_SPEC_BUDGET 2816U
 #define ZCL_COMMAND_STATUS_BUDGET 2048U
 #define ZCL_COMMAND_ERROR_BUDGET 2048U
 #define ZCL_COMMAND_RESULT_BUDGET 4096U
@@ -233,6 +235,10 @@ struct zcl_command_spec {
     const char *parent;
     const char *aliases;
     const char *summary;
+    /* One-line OUTPUT-interpretation contract: the source, freshness, units,
+     * and completeness of `data` — not a restatement of `summary`. Required
+     * and distinct from summary on every READY leaf; empty on branches. */
+    const char *semantics;
     const char *tags;
     const char *input_schema;
     const char *output_schema;
@@ -241,6 +247,11 @@ struct zcl_command_spec {
     const char *example;
     const char *availability_reason;
     const char *compat_target;
+    /* Per-leaf response byte budget: 0 selects the kind default (RESULT/ERROR),
+     * else clamps the success envelope to this cap. Validated to 0 or
+     * [256, 65536]. Set only where the default is obviously wrong (list-shaped
+     * leaves that legitimately need the larger LIST budget). */
+    int budget_bytes;
     enum zcl_command_layer layer;
     enum zcl_command_effect effect;
     enum zcl_command_risk risk;

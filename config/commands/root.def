@@ -3,6 +3,9 @@
 
 ZCL_COMMAND_COMPAT_READ(
     "status", "", "agent", "Compact node status and next action",
+    "Live node health, tip height, peer count, and the single most useful next "
+    "action, read from the running node at call time; a named blocker replaces "
+    "height when sync is stalled.", 0,
     "health,sync,height,peers,blocker", "zcl.command.empty_input.v1",
     "zcl.public_status.v1", "", "", "zclassic23 status",
     ZCL_COMMAND_LAYER_ROOT, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
@@ -26,6 +29,8 @@ ZCL_COMMAND_BRANCH("discover", "", "Search and describe the command registry",
 ZCL_COMMAND_READY_READ(
     "discover.help", "discover", "help,dev.help",
     "Show one branch or leaf without loading the whole tree",
+    "One registry node's immediate children or a leaf's contract, derived from "
+    "the static in-binary command registry; deterministic and node-free.", 0,
     "help,menu,branch,context", "zcl.discover.path_input.v1",
     "zcl.discovery_document.v1", "path", "path",
     "zclassic23 discover help dev.app",
@@ -41,6 +46,9 @@ ZCL_COMMAND_READY_READ(
 ZCL_COMMAND_READY_READ(
     "discover.search", "discover", "search,dev.search,dev.diagnose.search",
     "Rank at most five commands by local deterministic intent search",
+    "At most five registry commands ranked by deterministic local intent "
+    "match against the static catalog; no node contact; empty when nothing "
+    "scores.", 0,
     "search,find,intent,error,capability", "zcl.discover.search_input.v1",
     "zcl.command_search.v1", "query", "query",
     "zclassic23 discover search 'ABI mismatch'",
@@ -56,6 +64,9 @@ ZCL_COMMAND_READY_READ(
 ZCL_COMMAND_READY_READ(
     "discover.describe", "discover", "",
     "Describe one leaf's schemas, safety, authority, and availability",
+    "One leaf's full contract — schemas, policy, semantics, and availability — "
+    "from the static in-binary registry; deterministic and complete for that "
+    "leaf.", 0,
     "describe,schema,risk,authority,availability",
     "zcl.discover.path_input.v1", "zcl.command_spec.v1", "path", "path",
     "zclassic23 discover describe dev.app.simulate",
@@ -71,6 +82,8 @@ ZCL_COMMAND_READY_READ(
 ZCL_COMMAND_READY_READ(
     "discover.schema", "discover", "",
     "Return the compact input or output schema contract for one leaf",
+    "The requested-side schema id and its allowed/positional key list for one "
+    "leaf, from the static registry; deterministic and node-free.", 0,
     "schema,input,output,contract", "zcl.discover.schema_input.v1",
     "zcl.command_schema.v1", "path,side", "path",
     "zclassic23 discover schema dev.app.simulate --side=input",

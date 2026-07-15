@@ -876,6 +876,13 @@ void zcl_native_handle_ops_selftest(const struct zcl_command_request *request,
         else if (s->effect == ZCL_COMMAND_EFFECT_READ &&
                  s->risk != ZCL_COMMAND_RISK_READ)
             reason = "read-effect-risk-conflict";
+        else if (!s->semantics || !s->semantics[0])
+            reason = "missing-semantics";
+        else if (strcmp(s->semantics, s->summary) == 0)
+            reason = "semantics-equals-summary";
+        else if (s->budget_bytes != 0 &&
+                 (s->budget_bytes < 256 || s->budget_bytes > 65536))
+            reason = "budget-out-of-range";
         else if (s->handler == zcl_native_bridge_command &&
                  !zcl_native_bridge_tool_for_path(s->path))
             reason = "bridge-leaf-without-binding";

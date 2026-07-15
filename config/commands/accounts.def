@@ -11,6 +11,8 @@ ZCL_COMMAND_BRANCH("app.account", "app", "Principal (multi-user) administration"
 
 ZCL_COMMAND_READY_COMMAND(
     "app.auth.challenge", "app.auth", "", "Issue a single-use login challenge to sign",
+    "A freshly minted single-use nonce for the given address, persisted server "
+    "side with a short expiry; sign it and pass it to app.auth.verify.", 0,
     "auth,login,challenge,nonce", "zcl.auth_challenge_input.v1",
     "zcl.auth_challenge.v1", "server,address", "address",
     "zclassic23 app auth challenge --input='{\"address\":\"t1...\"}'",
@@ -24,6 +26,9 @@ ZCL_COMMAND_READY_COMMAND(
 
 ZCL_COMMAND_READY_COMMAND(
     "app.auth.verify", "app.auth", "", "Verify a signed challenge and mint a session",
+    "A newly minted session token and its resolved role/capabilities when the "
+    "signature validates against the outstanding nonce; the challenge is "
+    "consumed either way.", 0,
     "auth,login,verify,session,signature", "zcl.auth_verify_input.v1",
     "zcl.auth_session.v1", "server,address,nonce,signature,pubkey", "",
     "zclassic23 app auth verify --input='{\"address\":\"t1...\",\"nonce\":\"..\","
@@ -38,6 +43,9 @@ ZCL_COMMAND_READY_COMMAND(
 
 ZCL_COMMAND_READY_READ(
     "app.account.list", "app.account", "", "List principals (public projection)",
+    "Every registered principal as a public projection (address, role, status; "
+    "no secrets) from the local principal store; complete at call time, "
+    "unpaged.", ZCL_COMMAND_LIST_BUDGET,
     "account,principals,list", "zcl.command.empty_input.v1",
     "zcl.account_index.v1", "", "", "zclassic23 app account list",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE,
@@ -48,6 +56,9 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "app.account.show", "app.account", "", "Show one principal by address",
+    "One principal's full record — role, capabilities, status, key kind — from "
+    "the local store; an error if no principal is registered for that address.",
+    0,
     "account,principal,show", "zcl.account_ref_input.v1",
     "zcl.account.v1", "address", "address",
     "zclassic23 app account show t1...",
@@ -59,6 +70,9 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "app.account.whoami", "app.account", "", "Resolve one address to its role/caps",
+    "The role and capability set the given address currently resolves to from "
+    "the local store; the least-privilege public floor when the address is not "
+    "a registered principal.", 0,
     "account,whoami,role,capabilities", "zcl.account_ref_input.v1",
     "zcl.account.v1", "address", "address",
     "zclassic23 app account whoami t1...",
@@ -70,6 +84,8 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_COMMAND(
     "app.account.add", "app.account", "", "Register or update a principal with a role",
+    "The principal's record as persisted after the upsert; idempotent, so "
+    "re-adding the same address returns the settled current state.", 0,
     "account,principal,add,role", "zcl.account_add_input.v1",
     "zcl.account.v1", "address,pubkey,role,key_kind", "address",
     "zclassic23 app account add --input='{\"address\":\"t1...\",\"pubkey\":\"..\","
@@ -84,6 +100,8 @@ ZCL_COMMAND_READY_COMMAND(
 
 ZCL_COMMAND_READY_COMMAND(
     "app.account.role", "app.account", "", "Set a principal's role",
+    "The principal's record after the role change, reflecting the new "
+    "role and derived capability set; idempotent for an already-set role.", 0,
     "account,principal,role,authorize", "zcl.account_role_input.v1",
     "zcl.account.v1", "address,role", "address",
     "zclassic23 app account role --input='{\"address\":\"t1...\",\"role\":\"owner\"}'",
@@ -97,6 +115,8 @@ ZCL_COMMAND_READY_COMMAND(
 
 ZCL_COMMAND_READY_COMMAND(
     "app.account.suspend", "app.account", "", "Suspend a principal",
+    "The principal's record with status set to suspended; idempotent, so "
+    "suspending an already-suspended principal returns that settled state.", 0,
     "account,principal,suspend,disable", "zcl.account_ref_input.v1",
     "zcl.account.v1", "address", "address",
     "zclassic23 app account suspend t1...",
@@ -110,6 +130,8 @@ ZCL_COMMAND_READY_COMMAND(
 
 ZCL_COMMAND_READY_COMMAND(
     "app.account.unsuspend", "app.account", "", "Reactivate a suspended principal",
+    "The principal's record with status restored to active; idempotent, so "
+    "reactivating an active principal returns that settled state.", 0,
     "account,principal,unsuspend,enable", "zcl.account_ref_input.v1",
     "zcl.account.v1", "address", "address",
     "zclassic23 app account unsuspend t1...",
