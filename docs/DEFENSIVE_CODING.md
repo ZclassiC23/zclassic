@@ -481,6 +481,7 @@ add/remove a gate.
 - `check-blob-read-bounds`
 - `check-before-save-hooks`
 - `check-build-epoch-integrity`
+- `check-checkout-lock`
 - `check-coins-lookup-nullcheck`
 - `check-condition-cooldown`
 - `check-consensus-parity`

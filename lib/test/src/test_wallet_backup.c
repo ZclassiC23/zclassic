@@ -140,6 +140,36 @@ static int64_t wb_count_rows_in_file(const char *path, const char *table)
     return n;
 }
 
+/* Fixed few-hundred-ms polling ceilings for the backup thread's start-of-day
+ * run flake under compile/test-lane contention (a starved thread eventually
+ * completes; a short fixed ceiling gives up on it too soon). Poll the real
+ * completion state instead of guessing a sleep length, with a ceiling long
+ * enough to absorb normal contention; ZCL_TEST_TIMEOUT_SCALE (a positive
+ * integer, default 1) lets the runner widen it further under known-heavy
+ * load without changing what is being waited for. A thread that genuinely
+ * never completes still fails the caller's assertion, it just no longer
+ * hangs the test suite to prove it. */
+static long wb_timeout_scale(void)
+{
+    static long cached = 0;
+    if (cached > 0) return cached;
+    const char *env = getenv("ZCL_TEST_TIMEOUT_SCALE");
+    long v = env ? strtol(env, NULL, 10) : 1;
+    cached = (v >= 1 && v <= 100) ? v : 1;
+    return cached;
+}
+
+static void wb_wait_runs_past(int baseline, struct wallet_backup_status *out)
+{
+    long ceiling = 1000L * wb_timeout_scale(); /* 1000 * 10ms = 10s baseline */
+    for (long i = 0; i < ceiling; i++) {
+        wallet_backup_status_snapshot(out);
+        if (out->total_runs > baseline) return;
+        struct timespec ts = { 0, 10000000L }; nanosleep(&ts, NULL);
+    }
+    wallet_backup_status_snapshot(out);
+}
+
 /* ── 1. Happy path: backup creates a file with the right rows ── */
 
 static int t_happy(void)
@@ -378,15 +408,9 @@ static int t_status_snapshot(void)
     cfg.interval_seconds = 3600;
 
     bool started = wallet_backup_start(&cfg, &f.ndb).ok;
-    /* Give the thread a moment for its start-of-day backup. */
-    for (int i = 0; i < 50; i++) {
-        struct wallet_backup_status s;
-        wallet_backup_status_snapshot(&s);
-        if (s.total_runs > 0) break;
-        struct timespec ts = { 0, 50000000L }; nanosleep(&ts, NULL);
-    }
+    /* Wait for the thread's start-of-day backup. */
     struct wallet_backup_status status;
-    wallet_backup_status_snapshot(&status);
+    wb_wait_runs_past(0, &status);
     struct supervisor_snapshot snaps[SUPERVISOR_CAP];
     int n = supervisor_snapshot_all(snaps, SUPERVISOR_CAP);
     const struct supervisor_snapshot *backup = NULL;
@@ -433,12 +457,8 @@ static int t_dump_state_json(void)
     cfg.interval_seconds = 3600;
 
     bool started = wallet_backup_start(&cfg, &f.ndb).ok;
-    for (int i = 0; i < 50; i++) {
-        struct wallet_backup_status s;
-        wallet_backup_status_snapshot(&s);
-        if (s.total_runs > 0) break;
-        struct timespec ts = { 0, 50000000L }; nanosleep(&ts, NULL);
-    }
+    struct wallet_backup_status warm;
+    wb_wait_runs_past(0, &warm);
 
     struct json_value v = {0};
     json_set_object(&v);
@@ -478,10 +498,14 @@ static int t_force_now_repeatable(void)
 
     bool started = wallet_backup_start(&cfg, &f.ndb).ok;
 
-    /* Allow the initial auto-backup to land before we start
-     * counting additional ones. */
-    struct timespec ts = { 0, 200000000L }; nanosleep(&ts, NULL);
+    /* Wait for the initial auto-backup's event to land before counting
+     * additional ones — poll the actual counter being asserted on below
+     * instead of guessing how long that takes under contention. */
     int baseline = atomic_load(&g_wb_ok);
+    for (long i = 0; i < 1000L * wb_timeout_scale() && baseline == 0; i++) {
+        struct timespec ts = { 0, 10000000L }; nanosleep(&ts, NULL);
+        baseline = atomic_load(&g_wb_ok);
+    }
 
     bool n1 = wallet_backup_now().ok;
     bool n2 = wallet_backup_now().ok;
@@ -781,14 +805,8 @@ static int t_encrypted_service_run(void)
     wallet_backup_status_snapshot(&base);
 
     bool started = wallet_backup_start(&cfg, &f.ndb).ok;
-    for (int i = 0; i < 100; i++) {
-        struct wallet_backup_status s;
-        wallet_backup_status_snapshot(&s);
-        if (s.total_runs > base.total_runs) break;
-        struct timespec ts = { 0, 50000000L }; nanosleep(&ts, NULL);
-    }
     struct wallet_backup_status status;
-    wallet_backup_status_snapshot(&status);
+    wb_wait_runs_past(base.total_runs, &status);
     wallet_backup_stop();
 
     int n_enc   = wb_count_dir_suffix(f.backup_dir,
