@@ -2,22 +2,20 @@
  *
  * znam_projection — event-log consumer for rebuildable ZNAM state.
  *
- * Consumes EV_ZNAM_REGISTER / EV_ZNAM_UPDATE / EV_ZNAM_TRANSFER /
- * EV_ZNAM_RENEW / EV_ZNAM_EXPIRE into a rebuildable SQLite projection.
- * Mirror of peers_projection.c shape.
+ * Folds EV_ZNAM_REGISTER / _UPDATE / _TRANSFER / _RENEW / _EXPIRE into a
+ * rebuildable SQLite projection. The cursor/transaction/projection_meta
+ * plumbing lives in storage/projection_consumer.c — this file owns only
+ * the ZNAM domain schema and per-event apply logic.
  */
 
 #include "storage/znam_projection.h"
 
 #include "json/json.h"
-#include "platform/time_compat.h"
 #include "storage/event_log_payloads.h"
+#include "storage/projection_consumer.h"
 #include "storage/projection_util.h"
-#include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
-#include <inttypes.h>
-#include <pthread.h>
 #include <sqlite3.h>
 #include <stdatomic.h>
 #include <stdio.h>
@@ -27,10 +25,8 @@
 #define ZNAM_PROJECTION_SCHEMA_VERSION 1
 
 struct znam_projection {
-    sqlite3 *db;
-    event_log_t *log;
-    uint64_t last_consumed_offset;
-    uint64_t events_consumed_total;
+    projection_consumer_t *pc;
+    sqlite3 *db;  /* == projection_consumer_db(pc); cached for read accessors */
     uint64_t register_total;
     uint64_t update_addr_total;
     uint64_t update_text_total;
@@ -38,8 +34,6 @@ struct znam_projection {
     uint64_t transfer_total;
     uint64_t renew_total;
     uint64_t expire_total;
-    uint64_t last_catch_up_ms;
-    char path[1024];
 };
 
 static _Atomic(event_log_t *) g_event_log = NULL;
@@ -53,26 +47,19 @@ static _Atomic uint64_t g_emit_renew_total = 0;
 static _Atomic uint64_t g_emit_expire_total = 0;
 static _Atomic uint64_t g_emit_fail_total = 0;
 
-/* now_ms / apply_pragmas / meta_get_u64 / meta_set_u64 live in
- * storage/projection_util.h. exec_sql stays local for its
- * "[znam_projection]" log prefix. */
+static bool apply_event(sqlite3 *db, enum event_log_type type,
+                        const void *payload, size_t len, void *ctx,
+                        bool *out_handled);
 
+/* Shared exec-and-log body; also satisfies projection_util.h's exec_sql decl. */
 static bool exec_sql(sqlite3 *db, const char *sql, const char *ctx)
 {
-    char *err = NULL;
-    int rc = sqlite3_exec(db, sql, NULL, NULL, &err);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:znam-projection-sql
-                "[znam_projection] %s failed: %s\n",
-                ctx, err ? err : sqlite3_errmsg(db));
-        if (err) sqlite3_free(err);
-        return false;
-    }
-    return true;
+    return projection_consumer_exec_sql(db, "znam_projection", sql, ctx);
 }
 
-static bool ensure_schema(sqlite3 *db)
+static bool ensure_schema(sqlite3 *db, void *ctx)
 {
+    (void)ctx;
     return exec_sql(db,
         "CREATE TABLE IF NOT EXISTS znam_names ("
         " name TEXT PRIMARY KEY,"
@@ -105,58 +92,32 @@ static bool ensure_schema(sqlite3 *db)
         " value TEXT,"
         " PRIMARY KEY(name, key)"
         ") WITHOUT ROWID",
-        "create znam_text_records") &&
-        exec_sql(db,
-        "CREATE TABLE IF NOT EXISTS projection_meta ("
-        " k TEXT PRIMARY KEY,"
-        " v TEXT NOT NULL"
-        ")",
-        "create projection_meta") &&
-        exec_sql(db,
-        "INSERT OR IGNORE INTO projection_meta(k,v) "
-        "VALUES('schema_version','1')",
-        "insert schema_version") &&
-        exec_sql(db,
-        "INSERT OR IGNORE INTO projection_meta(k,v) "
-        "VALUES('last_consumed_offset','0')",
-        "insert last_consumed_offset");
+        "create znam_text_records");
 }
 
 znam_projection_t *znam_projection_open(const char *projection_path,
                                         event_log_t *log)
 {
-    if (!projection_path || !projection_path[0] || !log) {
-        fprintf(stderr,  // obs-ok:znam-projection-open
-                "[znam_projection] open: invalid args path=%p log=%p\n",
-                (const void *)projection_path, (void *)log);
-        return NULL;
-    }
-
-    sqlite3 *db = NULL;
-    int rc = sqlite3_open_v2(projection_path, &db,
-        SQLITE_OPEN_READWRITE | SQLITE_OPEN_CREATE, NULL);
-    if (rc != SQLITE_OK) {
-        fprintf(stderr,  // obs-ok:znam-projection-open
-                "[znam_projection] sqlite open failed: %s\n",
-                db ? sqlite3_errmsg(db) : sqlite3_errstr(rc));
-        if (db) sqlite3_close(db);
-        return NULL;
-    }
-    if (!apply_pragmas(db) || !ensure_schema(db)) {
-        sqlite3_close(db);
-        return NULL;
-    }
+    if (!projection_path || !projection_path[0] || !log)
+        return NULL;  /* projection_consumer_open() logs the details */
 
     znam_projection_t *p = zcl_malloc(sizeof(*p), "znam_projection");
-    if (!p) {
-        sqlite3_close(db);
+    if (!p) return NULL;
+    memset(p, 0, sizeof(*p));
+
+    struct projection_consumer_spec spec = {
+        .schema_version = ZNAM_PROJECTION_SCHEMA_VERSION,
+        .ensure_schema = ensure_schema,
+        .apply_event = apply_event,
+        .ctx = p,
+        .commit_batch = 0,
+    };
+    p->pc = projection_consumer_open(projection_path, log, &spec);
+    if (!p->pc) {
+        free(p);
         return NULL;
     }
-    memset(p, 0, sizeof(*p));
-    p->db = db;
-    p->log = log;
-    p->last_consumed_offset = meta_get_u64(db, "last_consumed_offset");
-    snprintf(p->path, sizeof(p->path), "%s", projection_path);
+    p->db = projection_consumer_db(p->pc);
     atomic_store_explicit(&g_projection, p, memory_order_release);
     return p;
 }
@@ -168,25 +129,17 @@ void znam_projection_close(znam_projection_t *p)
                                                   memory_order_acquire);
     if (cur == p)
         atomic_store_explicit(&g_projection, NULL, memory_order_release);
-    if (p->db) {
-        sqlite3_exec(p->db, "PRAGMA wal_checkpoint(TRUNCATE)",
-                     NULL, NULL, NULL);
-        sqlite3_close(p->db);
-    }
+    projection_consumer_close(p->pc);
     free(p);
 }
 
-/* ── Apply helpers (used by catch_up replay) ───────────────────── */
-
-/* Record the most recent update txid on a name's parent row. Best-effort:
-   the addr/text record write is the authoritative change, so a failure to
-   prepare this secondary UPDATE is non-fatal and silently ignored. */
-static void bump_last_update_txid(znam_projection_t *p,
-                                  const char *name,
+/* Best-effort: the addr/text record write is authoritative, so a failure to
+   prepare this secondary parent-row UPDATE is non-fatal and ignored. */
+static void bump_last_update_txid(sqlite3 *db, const char *name,
                                   const uint8_t update_txid[32])
 {
     sqlite3_stmt *s = NULL;
-    int rc = sqlite3_prepare_v2(p->db,
+    int rc = sqlite3_prepare_v2(db,
         "UPDATE znam_names SET last_update_txid=? WHERE name=?",
         -1, &s, NULL);
     if (rc != SQLITE_OK) return;
@@ -196,8 +149,7 @@ static void bump_last_update_txid(znam_projection_t *p,
     sqlite3_finalize(s);
 }
 
-static bool apply_register(znam_projection_t *p,
-                           const struct ev_znam_register *ev)
+static bool apply_register(sqlite3 *db, const struct ev_znam_register *ev)
 {
     char name[EV_ZNAM_NAME_MAX + 1];
     char owner[EV_ZNAM_OWNER_MAX + 1];
@@ -211,7 +163,7 @@ static bool apply_register(znam_projection_t *p,
         memcpy(target_value, ev->target_value, ev->target_value_len);
 
     sqlite3_stmt *s = NULL;
-    int rc = sqlite3_prepare_v2(p->db,
+    int rc = sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO znam_names"
         "(name,owner_address,target_type,target_value,"
         " reg_txid,reg_height,registered_unix,expiry_height,"
@@ -233,8 +185,7 @@ static bool apply_register(znam_projection_t *p,
     return rc == SQLITE_DONE;
 }
 
-static bool apply_update_addr(znam_projection_t *p,
-                              const struct ev_znam_update *ev)
+static bool apply_update_addr(sqlite3 *db, const struct ev_znam_update *ev)
 {
     char name[EV_ZNAM_NAME_MAX + 1];
     char value[EV_ZNAM_VALUE_MAX + 1];
@@ -245,7 +196,7 @@ static bool apply_update_addr(znam_projection_t *p,
         memcpy(value, ev->value, ev->value_len);
 
     sqlite3_stmt *s = NULL;
-    int rc = sqlite3_prepare_v2(p->db,
+    int rc = sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO znam_addr_records(name,coin_type,address)"
         " VALUES(?,?,?)",
         -1, &s, NULL);
@@ -257,12 +208,11 @@ static bool apply_update_addr(znam_projection_t *p,
     sqlite3_finalize(s);
     if (rc != SQLITE_DONE) return false;
 
-    bump_last_update_txid(p, name, ev->update_txid);
+    bump_last_update_txid(db, name, ev->update_txid);
     return true;
 }
 
-static bool apply_update_text(znam_projection_t *p,
-                              const struct ev_znam_update *ev)
+static bool apply_update_text(sqlite3 *db, const struct ev_znam_update *ev)
 {
     char name[EV_ZNAM_NAME_MAX + 1];
     char key[EV_ZNAM_KEY_MAX + 1];
@@ -277,7 +227,7 @@ static bool apply_update_text(znam_projection_t *p,
         memcpy(value, ev->value, ev->value_len);
 
     sqlite3_stmt *s = NULL;
-    int rc = sqlite3_prepare_v2(p->db,
+    int rc = sqlite3_prepare_v2(db,
         "INSERT OR REPLACE INTO znam_text_records(name,key,value)"
         " VALUES(?,?,?)",
         -1, &s, NULL);
@@ -289,12 +239,11 @@ static bool apply_update_text(znam_projection_t *p,
     sqlite3_finalize(s);
     if (rc != SQLITE_DONE) return false;
 
-    bump_last_update_txid(p, name, ev->update_txid);
+    bump_last_update_txid(db, name, ev->update_txid);
     return true;
 }
 
-static bool apply_update_primary(znam_projection_t *p,
-                                 const struct ev_znam_update *ev)
+static bool apply_update_primary(sqlite3 *db, const struct ev_znam_update *ev)
 {
     char name[EV_ZNAM_NAME_MAX + 1];
     char value[EV_ZNAM_VALUE_MAX + 1];
@@ -305,7 +254,7 @@ static bool apply_update_primary(znam_projection_t *p,
         memcpy(value, ev->value, ev->value_len);
 
     sqlite3_stmt *s = NULL;
-    int rc = sqlite3_prepare_v2(p->db,
+    int rc = sqlite3_prepare_v2(db,
         "UPDATE znam_names SET target_type=?,target_value=?,last_update_txid=?"
         " WHERE name=?",
         -1, &s, NULL);
@@ -319,8 +268,7 @@ static bool apply_update_primary(znam_projection_t *p,
     return rc == SQLITE_DONE;
 }
 
-static bool apply_transfer(znam_projection_t *p,
-                           const struct ev_znam_transfer *ev)
+static bool apply_transfer(sqlite3 *db, const struct ev_znam_transfer *ev)
 {
     char name[EV_ZNAM_NAME_MAX + 1];
     char new_owner[EV_ZNAM_OWNER_MAX + 1];
@@ -330,7 +278,7 @@ static bool apply_transfer(znam_projection_t *p,
     memcpy(new_owner, ev->new_owner, ev->new_owner_len);
 
     sqlite3_stmt *s = NULL;
-    int rc = sqlite3_prepare_v2(p->db,
+    int rc = sqlite3_prepare_v2(db,
         "UPDATE znam_names SET owner_address=?,last_update_txid=?"
         " WHERE name=?",
         -1, &s, NULL);
@@ -343,15 +291,14 @@ static bool apply_transfer(znam_projection_t *p,
     return rc == SQLITE_DONE;
 }
 
-static bool apply_renew(znam_projection_t *p,
-                        const struct ev_znam_renew *ev)
+static bool apply_renew(sqlite3 *db, const struct ev_znam_renew *ev)
 {
     char name[EV_ZNAM_NAME_MAX + 1];
     memset(name, 0, sizeof(name));
     memcpy(name, ev->name, ev->name_len);
 
     sqlite3_stmt *s = NULL;
-    int rc = sqlite3_prepare_v2(p->db,
+    int rc = sqlite3_prepare_v2(db,
         "UPDATE znam_names SET expiry_height=?,last_update_txid=?"
         " WHERE name=?",
         -1, &s, NULL);
@@ -364,8 +311,7 @@ static bool apply_renew(znam_projection_t *p,
     return rc == SQLITE_DONE;
 }
 
-static bool apply_expire(znam_projection_t *p,
-                         const struct ev_znam_expire *ev)
+static bool apply_expire(sqlite3 *db, const struct ev_znam_expire *ev)
 {
     char name[EV_ZNAM_NAME_MAX + 1];
     memset(name, 0, sizeof(name));
@@ -373,8 +319,8 @@ static bool apply_expire(znam_projection_t *p,
 
     sqlite3_stmt *s = NULL;
     int rc;
-    /* Remove all related records — name lease has lapsed. */
-    rc = sqlite3_prepare_v2(p->db,
+    /* Name lease has lapsed — remove all related records. */
+    rc = sqlite3_prepare_v2(db,
         "DELETE FROM znam_addr_records WHERE name=?",
         -1, &s, NULL);
     if (rc != SQLITE_OK) return false;
@@ -382,7 +328,7 @@ static bool apply_expire(znam_projection_t *p,
     sqlite3_step(s);  // raw-sql-ok:projection-primitive
     sqlite3_finalize(s);
 
-    rc = sqlite3_prepare_v2(p->db,
+    rc = sqlite3_prepare_v2(db,
         "DELETE FROM znam_text_records WHERE name=?",
         -1, &s, NULL);
     if (rc != SQLITE_OK) return false;
@@ -390,7 +336,7 @@ static bool apply_expire(znam_projection_t *p,
     sqlite3_step(s);  // raw-sql-ok:projection-primitive
     sqlite3_finalize(s);
 
-    rc = sqlite3_prepare_v2(p->db,
+    rc = sqlite3_prepare_v2(db,
         "DELETE FROM znam_names WHERE name=?",
         -1, &s, NULL);
     if (rc != SQLITE_OK) return false;
@@ -400,139 +346,78 @@ static bool apply_expire(znam_projection_t *p,
     return rc == SQLITE_DONE;
 }
 
-/* ── catch_up ───────────────────────────────────────────────────── */
-
-struct catchup_ctx {
-    znam_projection_t *p;
-    bool ok;
-    uint64_t next_offset;
-    uint64_t since_commit;
-};
-
-static bool catchup_cb(uint64_t offset, enum event_log_type type,
-                       const void *payload, size_t len, void *user)
+static bool apply_event(sqlite3 *db, enum event_log_type type,
+                        const void *payload, size_t len, void *ctx,
+                        bool *out_handled)
 {
-    struct catchup_ctx *ctx = user;
-    znam_projection_t *p = ctx->p;
-    uint64_t next = offset + EVENT_LOG_FRAME_OVERHEAD + (uint64_t)len;
+    znam_projection_t *p = ctx;
+    *out_handled = false;
 
-    bool handled = false;
     if (type == EV_ZNAM_REGISTER) {
         struct ev_znam_register ev;
         if (!ev_znam_register_parse(payload, len, &ev) ||
-            !apply_register(p, &ev)) {
-            ctx->ok = false;
+            !apply_register(db, &ev))
             return false;
-        }
         p->register_total++;
-        p->events_consumed_total++;
-        handled = true;
-    } else if (type == EV_ZNAM_UPDATE) {
+        *out_handled = true;
+        return true;
+    }
+    if (type == EV_ZNAM_UPDATE) {
         struct ev_znam_update ev;
-        if (!ev_znam_update_parse(payload, len, &ev)) {
-            ctx->ok = false;
+        if (!ev_znam_update_parse(payload, len, &ev))
             return false;
-        }
         bool applied = false;
         if (ev.action_type == EV_ZNAM_UPDATE_ACTION_ADDR) {
-            applied = apply_update_addr(p, &ev);
+            applied = apply_update_addr(db, &ev);
             if (applied) p->update_addr_total++;
         } else if (ev.action_type == EV_ZNAM_UPDATE_ACTION_TEXT) {
-            applied = apply_update_text(p, &ev);
+            applied = apply_update_text(db, &ev);
             if (applied) p->update_text_total++;
         } else if (ev.action_type == EV_ZNAM_UPDATE_ACTION_PRIMARY) {
-            applied = apply_update_primary(p, &ev);
+            applied = apply_update_primary(db, &ev);
             if (applied) p->update_primary_total++;
         } else {
-            /* Unknown action — skip without failing. */
-            applied = true;
+            applied = true;  /* unknown action — skip without failing */
         }
-        if (!applied) {
-            ctx->ok = false;
-            return false;
-        }
-        p->events_consumed_total++;
-        handled = true;
-    } else if (type == EV_ZNAM_TRANSFER) {
+        if (!applied) return false;
+        *out_handled = true;
+        return true;
+    }
+    if (type == EV_ZNAM_TRANSFER) {
         struct ev_znam_transfer ev;
         if (!ev_znam_transfer_parse(payload, len, &ev) ||
-            !apply_transfer(p, &ev)) {
-            ctx->ok = false;
+            !apply_transfer(db, &ev))
             return false;
-        }
         p->transfer_total++;
-        p->events_consumed_total++;
-        handled = true;
-    } else if (type == EV_ZNAM_RENEW) {
+        *out_handled = true;
+        return true;
+    }
+    if (type == EV_ZNAM_RENEW) {
         struct ev_znam_renew ev;
         if (!ev_znam_renew_parse(payload, len, &ev) ||
-            !apply_renew(p, &ev)) {
-            ctx->ok = false;
+            !apply_renew(db, &ev))
             return false;
-        }
         p->renew_total++;
-        p->events_consumed_total++;
-        handled = true;
-    } else if (type == EV_ZNAM_EXPIRE) {
+        *out_handled = true;
+        return true;
+    }
+    if (type == EV_ZNAM_EXPIRE) {
         struct ev_znam_expire ev;
         if (!ev_znam_expire_parse(payload, len, &ev) ||
-            !apply_expire(p, &ev)) {
-            ctx->ok = false;
+            !apply_expire(db, &ev))
             return false;
-        }
         p->expire_total++;
-        p->events_consumed_total++;
-        handled = true;
+        *out_handled = true;
+        return true;
     }
-
-    (void)handled;
-    ctx->next_offset = next;
-    p->last_consumed_offset = next;
-    ctx->since_commit++;
-    if (ctx->since_commit >= 100) {
-        if (!meta_set_u64(p->db, "last_consumed_offset", next)) {
-            ctx->ok = false;
-            return false;
-        }
-        ctx->since_commit = 0;
-    }
-    return true;
+    return true;  /* unrecognized event type: skip past it */
 }
 
 uint64_t znam_projection_catch_up(znam_projection_t *p)
 {
-    if (!p || !p->db || !p->log) return UINT64_MAX;
-    int64_t start_ms = now_ms();
-    struct catchup_ctx ctx = {
-        .p = p,
-        .ok = true,
-        .next_offset = p->last_consumed_offset,
-        .since_commit = 0,
-    };
-
-    if (!exec_sql(p->db, "BEGIN IMMEDIATE", "catch_up begin"))
-        return UINT64_MAX;
-    if (event_log_stream(p->log, p->last_consumed_offset,
-                         catchup_cb, &ctx) < 0)
-        ctx.ok = false;
-    if (ctx.ok)
-        ctx.ok = meta_set_u64(p->db, "last_consumed_offset",
-                              ctx.next_offset);
-
-    bool finish_ok = exec_sql(p->db, ctx.ok ? "COMMIT" : "ROLLBACK",
-                              ctx.ok ? "catch_up commit" :
-                                       "catch_up rollback");
-    if (!ctx.ok || !finish_ok) {
-        p->last_consumed_offset = meta_get_u64(p->db, "last_consumed_offset");
-        return UINT64_MAX;
-    }
-    p->last_consumed_offset = ctx.next_offset;
-    int64_t elapsed = now_ms() - start_ms;
-    p->last_catch_up_ms = elapsed > 0 ? (uint64_t)elapsed : 0;
-    return p->last_consumed_offset;
+    if (!p) return UINT64_MAX;
+    return projection_consumer_catch_up(p->pc);
 }
-
-/* ── Read accessors ─────────────────────────────────────────────── */
 
 bool znam_projection_find(znam_projection_t *p, const char *name,
                           char *owner_out, size_t owner_cap,
@@ -647,8 +532,6 @@ uint64_t znam_projection_text_count(znam_projection_t *p)
     return count_table(p, "SELECT COUNT(*) FROM znam_text_records");
 }
 
-/* ── Projection-emit globals ────────────────────────────────────── */
-
 void znam_projection_set_event_log(event_log_t *log)
 {
     atomic_store_explicit(&g_event_log, log, memory_order_release);
@@ -659,11 +542,8 @@ event_log_t *znam_projection_event_log(void)
     return atomic_load_explicit(&g_event_log, memory_order_acquire);
 }
 
-/* Maximum serialized event payload for any ZNAM event.
- *   REGISTER: 1+63 + 1+64 + 1 + 1+128 + 32 + 4 + 4 + 4 = 303
- *   UPDATE:   1+63 + 1+1+1+32+1+128 + 32 = 260
- * Round up generously to 512 — fits stack, no heap allocations needed.
- */
+/* Max serialized ZNAM event payload (REGISTER=303, UPDATE=260); 512
+ * rounds up generously, fits the stack, no heap allocation needed. */
 #define ZNAM_PROJECTION_PAYLOAD_MAX 512
 
 static bool emit_register_internal(event_log_t *log,
@@ -799,8 +679,6 @@ bool znam_projection_emit_update_text(const char *name, const char *key,
     return true;
 }
 
-/* ── Diagnostics dump ───────────────────────────────────────────── */
-
 bool znam_projection_dump_state_json(struct json_value *out, const char *key)
 {
     (void)key;
@@ -833,27 +711,20 @@ bool znam_projection_dump_state_json(struct json_value *out, const char *key)
         (int64_t)atomic_load_explicit(&g_emit_fail_total,
                                       memory_order_relaxed));
 
-    /* Reserved `_health` key (see docs/work "Adding state introspection" +
-     * app/controllers/src/diagnostics_health_rollup.c): { ok, reason }.
-     * Maps the already-computed open + emit_fail_total fields above — no
-     * new health logic. */
+    /* Reserved `_health` key: { ok, reason } from open + emit_fail_total. */
     {
         uint64_t fails = atomic_load_explicit(&g_emit_fail_total,
                                               memory_order_relaxed);
         projection_push_health(out, "znam_projection", p, fails);
     }
     if (!p) return true;
-    json_push_kv_str(out, "path", p->path);
-    json_push_kv_int(out, "last_consumed_offset",
-                 (int64_t)p->last_consumed_offset);
+    projection_consumer_dump_common(out, p->pc);
     json_push_kv_int(out, "name_count",
                  (int64_t)znam_projection_name_count(p));
     json_push_kv_int(out, "addr_record_count",
                  (int64_t)znam_projection_addr_count(p));
     json_push_kv_int(out, "text_record_count",
                  (int64_t)znam_projection_text_count(p));
-    json_push_kv_int(out, "events_consumed_total",
-                 (int64_t)p->events_consumed_total);
     json_push_kv_int(out, "ev_register_total",
                  (int64_t)p->register_total);
     json_push_kv_int(out, "ev_update_addr_total",
@@ -868,6 +739,5 @@ bool znam_projection_dump_state_json(struct json_value *out, const char *key)
                  (int64_t)p->renew_total);
     json_push_kv_int(out, "ev_expire_total",
                  (int64_t)p->expire_total);
-    json_push_kv_int(out, "last_catch_up_ms", (int64_t)p->last_catch_up_ms);
     return true;
 }
