@@ -3,14 +3,19 @@
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![language](https://img.shields.io/badge/language-C23-00599C.svg)](#)
 [![status](https://img.shields.io/badge/status-pre--v1-orange.svg)](docs/MVP.md)
-[![CI](https://img.shields.io/badge/CI-local%20make%20ci%20(40%2B%20gates)-success.svg)](docs/DEFENSIVE_CODING.md)
+[![CI](https://img.shields.io/badge/CI-local%20make%20lint%20(82%20gates)-success.svg)](docs/DEFENSIVE_CODING.md)
 
 One self-contained ~15 MB pure-C23 binary: a full ZClassic node (Equihash 200,9
 PoW, Sapling shielded transactions), an embedded Tor onion service, a block
-explorer, a shielded wallet, and a native command registry that lets an AI
-agent operate the node through ~100 typed commands (`zclassic23 <command>`).
+explorer, a shielded wallet, a P2P file marketplace, a ZNAM on-chain name
+registry, ZCL messaging, cross-chain atomic-swap scaffolding, and a native
+command registry that lets an AI agent operate the node through ~130 typed
+commands (`zclassic23 <command>`) — a **personal sovereignty stack**: a
+secure personal-computing OS whose only trust foundation is the ZClassic
+proof-of-work network and the compiled binary itself, with no DNS, CAs, or
+registries anywhere in the path.
 
-**One binary, one onion, one stack.**
+**One binary, one onion, one stack — your sovereign personal computing surface.**
 
 ## Status
 
@@ -25,9 +30,13 @@ shielded anchors/nullifiers. A borrowed snapshot previously brought its
 transparent state to tip. Its anchor hash is checked against a validated local
 header, but ZClassic headers do not commit the snapshot's UTXO or shielded-state
 contents; do not call those contents consensus- or PoW-bound. The **sovereign
-cold-start cure** must fold or independently validate complete transparent,
-Sapling, Sprout, and nullifier state, install it atomically, and pass copy proof
-before canonical deployment. Its design is in
+cold-start cure** folds real block bodies forward from the in-binary SHA3/PoW
+checkpoint (`core/chainparams/src/checkpoints.c`, h=3,056,758) to independently
+derive complete transparent, Sapling, Sprout, and nullifier state, then installs
+it atomically and passes copy proof before canonical deployment. A full-history
+fold producer is running toward that checkpoint now; the cure is **in flight,
+not complete** — do not treat any current soak time as clean evidence. Its
+design is in
 [`docs/work/self-verified-tip-plan.md`](docs/work/self-verified-tip-plan.md). For
 current live state, ask the running node (`zclassic23 status`) or read
 [`docs/HANDOFF.md`](docs/HANDOFF.md) — this file does not track it. The other known
@@ -55,6 +64,31 @@ shielded; off-chain P2P is plaintext on the wire); **ZCL Market** + **ZSWP**
 atomic swaps (scaffolding — no settlement yet); **P2P games** (ping +
 TicTacToe).
 
+### The OS model: a layered immutable machine
+
+zclassic23 is organized as a small stack of storage regions with a strict
+trust ladder — every arrow below is a SHA3 verify; a mismatch is a named
+blocker, never a silent failure:
+
+```
+ mutable    TIP RING      mempool / peers / wallet journal — small, delta-replayable
+            DELTA         anchor→tip full-validation fold — the only re-done work
+ ─────────────────────── finalized frontier ───────────────────────────────────────
+ immutable  SEALED STATE  base bundle @ anchor + independent replay receipt
+                          (coins, Sprout/Sapling anchors, nullifiers) — re-derived
+                          from the datadir's own tables, read via a capability fd
+            SEALED        chain_segment store: write-once 0444 segment files,
+            HISTORY       SHA3-committed, with a manifest root
+ ROM        TRUST ROOT    in-binary SHA3/PoW checkpoint (h=3,056,758) + the binary
+                          itself, sealed in `core/` (`core/MANIFEST.sha3`)
+```
+
+Every trust claim reduces to two things: the compiled binary and the
+PoW-heaviest header chain — no DNS, CAs, or registries in the path. The
+**sovereign cure** (see [Status](#status)) is the work item that makes the
+sealed-state layer complete and independently derived rather than borrowed
+from an external `zclassicd` snapshot.
+
 ## Quick start
 
 Public start here: [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) is the
@@ -76,7 +110,7 @@ git clone https://github.com/ZclassiC23/zclassic.git && cd zclassic
 make                # node + CLI + RPC tool -> build/bin/{zclassic23,zclassic-cli,zcl-rpc}
 make fast-rebuild   # changed-file dev compile + non-LTO local node link
 make dev-bin        # fast non-LTO local node -> build/bin/zclassic23-dev
-make test           # full suite (508 parallel groups)
+make test           # full suite (630 parallel groups)
 make lint           # defensive-coding gates
 ```
 
@@ -250,19 +284,31 @@ seed), see [`docs/HANDOFF.md`](docs/HANDOFF.md).
 
 ## Claude integration
 
-The differentiator: a native command registry built into the binary, so an AI
-agent queries and operates the node through typed commands — no curl, no log
-spelunking, no separate server process.
+The differentiator: a native command registry built into the binary — the
+**primary** agent surface — so an AI agent queries and operates the node
+through typed commands, no curl, no log spelunking, no separate server
+process. It is the ABI: **~130 typed command leaves** (178 catalog entries
+counting branches) across 7 registry files
+(`config/commands/{root,core,app,dev,ops,accounts,code}.def`) under
+`core.*`/`app.*`/`ops.*`/`dev.*`/`discover.*`/`code.*`, each a typed
+`zcl_command_spec` (input/output schema, auth, risk, latency, cost) validated
+fail-closed at every startup.
 
 ```bash
 build/bin/zclassic23 status
 build/bin/zclassic23 dumpstate supervisor
 build/bin/zclassic23 discover help
+build/bin/zclassic23 code map          # source-code navigator
 ```
 
 Start with `status` (height, peers, sync, onion, health in one call);
-`discover help` / `discover search <q>` enumerates the full ~100-command
-catalog. The daily-driver reference is in [`CLAUDE.md`](CLAUDE.md).
+`discover help` / `discover search <q>` enumerates the full command
+catalog. Full doc: [`docs/NATIVE_COMMAND_INTERFACE.md`](docs/NATIVE_COMMAND_INTERFACE.md);
+daily-driver reference in [`CLAUDE.md`](CLAUDE.md).
+
+A **legacy MCP server** (`-mcp`, the `zcl_*` tool surface) still works today
+but is being deleted — the zero-MCP program is making the native CLI the
+*only* agent interface; prefer native commands in new work.
 
 ## Block explorer
 
@@ -307,18 +353,48 @@ zclassic23 (~15 MB, static)
 ├── MVC            Models (SQLite) · Controllers (C23) · Views (HTML/JSON)
 ├── Fast sync      FlyClient + SHA3 UTXO snapshot
 ├── Wallet         transparent + Sapling
-└── Native cmds    ~100 typed commands (`zclassic23 <cmd>`)
+└── Native cmds    ~130 typed command leaves (`zclassic23 <cmd>`)
 ```
+
+## Security posture
+
+- **Sealed consensus core:** `core/` (checkpoints, chain params, consensus
+  math) is pinned to a SHA3-256 manifest (`core/MANIFEST.sha3`); any byte
+  change fails the HARD lint gate `check-core-seal` unless it goes through the
+  documented owner unseal ritual (`core/UNSEAL.md`).
+- **Steady-state sandbox:** `-sandbox=steady` applies `no_new_privs`,
+  `PR_SET_DUMPABLE(0)`, Landlock datadir grants, and a seccomp deny-list,
+  entered as the last boot stage before the node reports ready; witnessed via
+  `dumpstate sandbox`.
+- **No shell-outs:** zero `system()`/`popen()` in shipped app/lib/config code
+  (lint-enforced).
+- **Wallet keystore:** AES-256-GCM at-rest encryption for new wallets; an
+  existing plaintext wallet still loads with a warning (encryption isn't yet
+  the enforced default for pre-existing datadirs).
+- **Capability-fd discipline:** privileged reads (the replay receipt, the
+  consensus-bundle exporter) go through capability file descriptors, not bare
+  pathnames.
+- **`zcl_sql`** is SELECT-only, semicolon-rejected, auto-LIMIT, and denies a
+  set of wallet-secret tables/columns by name.
+- **82 lint gates** (`make lint`) enforce these and the defensive-coding
+  rules below on every change. Full list:
+  [`docs/DEFENSIVE_CODING.md`](docs/DEFENSIVE_CODING.md); safety boundary:
+  [`docs/SECURITY_AND_INTEGRITY.md`](docs/SECURITY_AND_INTEGRITY.md).
+
+Known gaps: off-chain P2P messaging is plaintext on the wire (Noise-based
+transport encryption is designed, not yet wired); the wallet-encryption
+default doesn't yet apply retroactively to existing plaintext wallets.
 
 ## Repository layout
 
 | Dir | Contents |
 |-----|----------|
 | `src/` | Binary entry points (node, CLI) |
+| `core/` | Sealed consensus core (checkpoints, chain params, consensus math) — SHA3-manifest pinned, HARD lint gate |
 | `app/` | App code in the eight shape folders (models, views, controllers, services, jobs, conditions, events, supervisors) |
 | `lib/` | Subsystem libraries (consensus, net, sync, storage, crypto, sapling, script, rpc, util, test harness) |
 | `domain/` | Pure domain logic (consensus rules, encodings, wallet primitives — no I/O) |
-| `config/` | Composition root: boot sequence + wiring |
+| `config/` | Composition root: boot sequence + wiring; `config/commands/*.def` is the native command registry |
 | `ports/` · `adapters/` | Hexagonal port interfaces + outbound adapters |
 | `tools/` | Developer tools, lint gates, fuzzers, simulators, release scripts |
 | `docs/` | All documentation |
@@ -331,7 +407,7 @@ zclassic23 (~15 MB, static)
   ([`docs/DEFENSIVE_CODING.md`](docs/DEFENSIVE_CODING.md)): every write through the
   ActiveRecord lifecycle, every error logs context, every alloc checked, every
   long loop on a supervisor liveness tree.
-- **Tests:** `make test` (600+ registered parallel groups); bugs become 64-bit
+- **Tests:** `make test` (630 registered parallel groups); bugs become 64-bit
   seeds in a
   deterministic simulator ([`docs/CHAOS_HARNESS.md`](docs/CHAOS_HARNESS.md)).
 - **Crash recovery is demonstrable:** `make test-crash-bootstrap` runs a
