@@ -91,6 +91,7 @@
 #include "controllers/health_controller.h"
 #include "controllers/file_market_controller.h"
 #include "controllers/name_controller.h"
+#include "controllers/anchor_controller.h"
 #include "controllers/messaging_controller.h"
 #include "controllers/swap_controller.h"
 #include "controllers/blog_controller.h"
@@ -1190,6 +1191,12 @@ bool app_init_services(struct app_context *ctx,
     rpc_name_set_wallet(svc->wallet, svc->mempool, svc->state,
                         svc->coins_tip);
     register_name_rpc_commands(svc->rpc_table);
+
+    /* ZCL Anchors — on-chain software/package digest anchoring */
+    rpc_anchor_set_state(boot_node_db(svc));
+    rpc_anchor_set_wallet(svc->wallet, svc->mempool, svc->state,
+                          svc->coins_tip);
+    register_anchor_rpc_commands(svc->rpc_table);
 
     /* ZCL Messaging — P2P messages (plaintext on the wire) */
     rpc_msg_set_state(boot_node_db(svc), svc->connman);

@@ -666,6 +666,29 @@ int node_db_migrate_features(struct node_db *ndb, int *version)
         applied++;
     }
 
+    if (current_ver < 30) {
+        /* v30: ZCL Anchors (ZANC) — software/package digest anchoring. One
+         * rebuildable projection row per confirmed ZANC OP_RETURN, keyed by
+         * txid. Not consulted by consensus; rebuilt from block history. */
+        node_db_exec(ndb,
+            "CREATE TABLE IF NOT EXISTS zanc_anchors ("
+            "txid BLOB PRIMARY KEY CHECK(length(txid)=32),"
+            "height INTEGER NOT NULL,"
+            "hash_type INTEGER NOT NULL,"
+            "digest BLOB NOT NULL CHECK(length(digest)=32),"
+            "label TEXT NOT NULL DEFAULT '') WITHOUT ROWID");
+
+        node_db_exec(ndb,
+            "CREATE INDEX IF NOT EXISTS idx_zanc_digest "
+            "ON zanc_anchors(hash_type, digest, height)");
+
+        node_db_exec(ndb,
+            "INSERT OR IGNORE INTO schema_migrations(version) VALUES('030')");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 30);
+        current_ver = 30;
+        applied++;
+    }
+
     *version = current_ver;
     return applied;
 }
