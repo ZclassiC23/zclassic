@@ -15,6 +15,9 @@ cd "$ROOT"
 SRC="config/src/boot.c"
 [[ -f "$SRC" ]] || { echo "check_sandbox_wired: FATAL — missing $SRC" >&2; exit 2; }
 
+SANDBOX_SRC="lib/platform/src/os_sandbox_linux.c"
+[[ -f "$SANDBOX_SRC" ]] || { echo "check_sandbox_wired: FATAL — missing $SANDBOX_SRC" >&2; exit 2; }
+
 fail=0
 
 if ! grep -Eq '\.name[[:space:]]*=[[:space:]]*"sandbox"' "$SRC"; then
@@ -32,10 +35,26 @@ if ! grep -Eq '\bos_sandbox_enter[[:space:]]*\(' "$SRC"; then
     fail=1
 fi
 
+# The seccomp filter must be installed with SECCOMP_FILTER_FLAG_TSYNC via the
+# seccomp(2) syscall so it lands on EVERY thread of the process atomically —
+# not just the boot thread + descendants (prctl-only would silently leave the
+# already-running P2P/RPC/service threads unconfined). Assert the TSYNC flag
+# and the SYS_seccomp install call both appear in the sandbox install path so
+# a refactor cannot regress total seccomp coverage back to per-thread.
+if ! grep -Eq 'SECCOMP_FILTER_FLAG_TSYNC' "$SANDBOX_SRC"; then
+    echo "check_sandbox_wired: FAIL — $SANDBOX_SRC does not use SECCOMP_FILTER_FLAG_TSYNC (seccomp would confine only the boot thread)" >&2
+    fail=1
+fi
+
+if ! grep -Eq 'syscall[[:space:]]*\([[:space:]]*__NR_seccomp' "$SANDBOX_SRC"; then
+    echo "check_sandbox_wired: FAIL — $SANDBOX_SRC never installs via the seccomp(2) syscall (__NR_seccomp) for the TSYNC path" >&2
+    fail=1
+fi
+
 if (( fail )); then
     echo "check_sandbox_wired: the -sandbox=steady confinement wiring is missing or moved." >&2
     exit 1
 fi
 
-echo "[check_sandbox_wired] OK — boot registers the sandbox record and enters os_sandbox"
+echo "[check_sandbox_wired] OK — boot registers the sandbox record, enters os_sandbox, and the seccomp filter installs with TSYNC (all-thread coverage)"
 exit 0

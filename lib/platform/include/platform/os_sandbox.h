@@ -191,9 +191,32 @@ const int *os_sandbox_node_steady_denied_syscalls(size_t *count_out);
  * no_new_privs and AFTER every other one-time setup (Landlock, PTY, clone),
  * since those need syscalls the deny-list would otherwise have to special-
  * case. Returns non-ok (never aborts) on failure or if built without the
- * seccomp headers. */
+ * seccomp headers. The filter is installed with the seccomp(2) syscall and
+ * SECCOMP_FILTER_FLAG_TSYNC so it lands on EVERY thread of the process
+ * atomically (fail-closed if a running thread carries an incompatible filter);
+ * only where seccomp(2) is unavailable (kernel < 3.17, ENOSYS) does it fall
+ * back to prctl(PR_SET_SECCOMP), which confines the caller + its descendants
+ * alone. os_sandbox_seccomp_install_method() reports which path ran. */
 struct zcl_result os_sandbox_seccomp_deny(const int *denied, size_t n_denied,
                                           bool deny_exec_mmap);
+
+/* Which mechanism installed the seccomp filter in this process: "tsync" (all
+ * threads, via seccomp(2)+TSYNC), "prctl" (caller + descendants only, the
+ * kernel-too-old fallback), or "" if no filter has been installed. */
+const char *os_sandbox_seccomp_install_method(void);
+
+/* True iff the seccomp filter was installed on every thread atomically via
+ * TSYNC — i.e. seccomp coverage is process-total, not just the entering
+ * thread's subtree. Backs the `sandbox` witness's seccomp_tsync field. */
+bool os_sandbox_seccomp_tsync_active(void);
+
+/* Number of threads that have PROVABLY entered a Landlock domain in this
+ * process (one per successful landlock_restrict_self). Unlike seccomp, Landlock
+ * has no TSYNC-style all-thread install and is not retroactive, so this is the
+ * honest Landlock thread-coverage count. Inherited children of a restricted
+ * thread are covered but NOT counted, so this is a conservative floor. Backs
+ * the `sandbox` witness's landlock_covered_threads field. */
+int os_sandbox_landlock_restricted_count(void);
 
 /* The session child's default resource caps: AS≈256 MiB, NPROC=1,
  * FSIZE≈64 MiB, NOFILE=16, CORE=0, CPU=KEEP (caller sets a wall/CPU budget
