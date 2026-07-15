@@ -289,6 +289,7 @@ struct p2p_node {
 
     /* connection quality metrics */
     int64_t last_block_time;  /* timestamp of last valid block received */
+    int64_t last_tx_time;     /* timestamp of last novel tx accepted from this peer */
     int64_t avg_latency_us;   /* rolling average ping latency in microseconds */
     int blocks_received;      /* count of valid blocks from this peer */
 

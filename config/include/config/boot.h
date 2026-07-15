@@ -622,6 +622,20 @@ bool boot_load_verify_snapshot_eligible(struct node_db *ndb,
 
 bool app_is_running(void);
 void app_add_node(const char *host, int port);
+
+/* -addnode-file=PATH: one host[:port] per line, '#' comments and blank
+ * lines skipped, malformed lines skipped with a logged warning. Calls
+ * app_add_node() for every valid line. A missing file is a clean no-op. */
+void app_add_nodes_from_file(const char *path);
+
+/* Typed, greppable census of the bootstrap surface available at boot: the
+ * static seed tiers from `params`, the operator onion-seeds file, and
+ * peers.dat entries already loaded into `cm`'s addrman. Call once, right
+ * after connman_load_addrman(). */
+struct chain_params;
+struct connman;
+void app_log_bootstrap_sources(const struct chain_params *params,
+                                struct connman *cm);
 void app_start_metrics(bool mining);
 void app_stop_metrics(void);
 

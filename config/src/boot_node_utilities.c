@@ -25,12 +25,14 @@
 #include "sync/sync_state.h"
 #include "event/event.h"
 #include "net/connman.h"
+#include "net/addnode_file.h"
 #include <netdb.h>
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <unistd.h>
 
 /* External-gauge callback injected into the metrics thread: snapshots
  * sync state, UTXO count, tip-advance age, mirror lag, and peer counts. */
@@ -135,6 +137,44 @@ void app_add_node(const char *host, int port)
     } else {
         printf("Failed to resolve addnode %s\n", hostbuf);
     }
+}
+
+static void app_add_node_from_file_cb(const char *host, uint16_t port, void *ctx)
+{
+    (void)ctx;
+    app_add_node(host, (int)port);
+}
+
+void app_add_nodes_from_file(const char *path)
+{
+    if (!path || !*path)
+        return;
+    addnode_file_load(path, app_add_node_from_file_cb, NULL);
+}
+
+void app_log_bootstrap_sources(const struct chain_params *params,
+                                struct connman *cm)
+{
+    if (!params || !cm)
+        return;
+
+    const char *home = getenv("HOME");
+    bool operator_onion_seed_file = false;
+    if (home) {
+        char p[512];
+        snprintf(p, sizeof(p), "%s/.config/zclassic23/onion-seeds", home);
+        operator_onion_seed_file = access(p, R_OK) == 0;
+    }
+    size_t addrman_loaded = addrman_size(&cm->manager.addrman);
+    size_t total_sources = params->nSeeds + params->nFixedSeeds +
+                            params->nOnionSeeds +
+                            (operator_onion_seed_file ? 1 : 0) +
+                            (addrman_loaded > 0 ? 1 : 0);
+    printf("[net] bootstrap sources: dns_seeds=%zu fixed_seeds=%zu "
+           "onion_seeds=%zu operator_onion_seed_file=%d "
+           "addrman_loaded_peers=%zu total_sources=%zu\n",
+           params->nSeeds, params->nFixedSeeds, params->nOnionSeeds,
+           operator_onion_seed_file ? 1 : 0, addrman_loaded, total_sources);
 }
 
 /* Start the Prometheus metrics thread with injected external gauges. */

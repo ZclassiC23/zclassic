@@ -245,6 +245,7 @@ bool process_tx_msg(struct msg_processor *mp, struct p2p_node *node,
     enum tx_accept_result ar = msg_tx_accept(mp, node, &tx);
 
     if (ar == TX_ACCEPT_OK) {
+        node->last_tx_time = (int64_t)platform_time_wall_time_t();
         event_emit(EV_TX_ACCEPTED, (uint32_t)node->id,
                    hash.data, 32);
         struct inv_item inv;

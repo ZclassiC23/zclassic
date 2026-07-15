@@ -722,6 +722,7 @@ bool app_init_services(struct app_context *ctx,
 
     /* Load persisted peer addresses from previous session */
     connman_load_addrman(svc->connman);
+    app_log_bootstrap_sources(params, svc->connman);
 
     if (ctx->listen) {
         struct net_service bind4;
