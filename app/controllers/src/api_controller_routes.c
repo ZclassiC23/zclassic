@@ -24,65 +24,83 @@
 #include <string.h>
 
 #define API_ROUTE(method_, path_, resource_, action_, handler_, schema_, \
-                  query_, freshness_, alias_, private_) \
+                  query_, freshness_, alias_, private_, command_path_) \
     { method_, path_, resource_, action_, handler_, schema_, query_, \
-      freshness_, alias_, private_ }
+      freshness_, alias_, private_, command_path_ }
 
 static const struct api_resource_route k_api_resource_routes[] = {
     API_ROUTE("GET", "/api", "api", "index", api_serve_api_index,
-              ZCL_REST_INDEX_SCHEMA, "", "static", "", false),
+              ZCL_REST_INDEX_SCHEMA, "", "static", "", false,
+              "none:rest-self-description-not-a-command-leaf"),
     API_ROUTE("GET", "/api/openapi", "openapi", "show", api_serve_openapi,
-              ZCL_REST_OPENAPI_SCHEMA, "", "static", "", false),
+              ZCL_REST_OPENAPI_SCHEMA, "", "static", "", false,
+              "none:openapi-self-description-not-a-command-leaf"),
     API_ROUTE("GET", "/api/agent", "agent", "show", api_serve_node_summary,
-              ZCL_PUBLIC_STATUS_SCHEMA, "", "served_tip", "", false),
+              ZCL_PUBLIC_STATUS_SCHEMA, "", "served_tip", "", false,
+              "core.status"),
     API_ROUTE("GET", "/api/status", "agent", "show", api_serve_node_summary,
               ZCL_PUBLIC_STATUS_SCHEMA, "", "served_tip",
-              "/api/v1/agent", false),
+              "/api/v1/agent", false, "core.status"),
     API_ROUTE("GET", "/api/milestone", "milestone", "show",
               api_serve_milestone, ZCL_MILESTONE_STATUS_SCHEMA, "",
-              "operator_status", "", false),
+              "operator_status", "", false,
+              "none:mvp-milestone-tracker-no-command-leaf"),
     API_ROUTE("GET", "/api/refold", "refold", "show",
               api_serve_refold_status, ZCL_REFOLD_STATUS_SCHEMA, "",
-              "anchor_snapshot", "", false),
+              "anchor_snapshot", "", false, "ops.recovery.status"),
     API_ROUTE("GET", "/api/node", "node", "show", api_serve_node_summary,
-              ZCL_PUBLIC_STATUS_SCHEMA, "", "served_tip", "", false),
+              ZCL_PUBLIC_STATUS_SCHEMA, "", "served_tip", "", false,
+              "core.status"),
     API_ROUTE("GET", "/api/node/summary", "node", "summary",
               api_serve_node_summary, ZCL_PUBLIC_STATUS_SCHEMA, "",
-              "served_tip", "", false),
+              "served_tip", "", false, "core.status"),
     API_ROUTE("GET", "/api/node/status", "node", "status",
               api_serve_node_status, "zcl.node_status.v1", "",
-              "served_tip", "", false),
+              "served_tip", "", false,
+              "none:composite-diagnostics-no-single-leaf-owns-this-shape"),
     API_ROUTE("GET", "/api/node/snapshot", "node", "snapshot",
               api_serve_node_snapshot, "zcl.node_snapshot.v1", "",
-              "snapshot_sync_service", "", false),
+              "snapshot_sync_service", "", false,
+              "none:snapshot-sync-service-no-command-leaf"),
     API_ROUTE("GET", "/api/node/mmb", "node", "mmb", api_serve_node_mmb,
-              "zcl.node_mmb.v1", "", "mmb_projection", "", false),
+              "zcl.node_mmb.v1", "", "mmb_projection", "", false,
+              "core.consensus.mmb"),
     API_ROUTE("GET", "/api/health", "health", "show", api_serve_health,
-              "zcl.health.v1", "", "served_tip", "", false),
+              "zcl.health.v1", "", "served_tip", "", false, "ops.health"),
     API_ROUTE("GET", "/api/syncstate", "sync", "show", api_serve_syncstate,
-              "zcl.syncstate.v1", "", "sync_projection", "", false),
+              "zcl.syncstate.v1", "", "sync_projection", "", false,
+              "core.sync.status"),
     API_ROUTE("GET", "/api/downloadstats", "downloads", "show",
               api_serve_downloadstats, "zcl.downloadstats.v1", "",
-              "download_manager", "", false),
+              "download_manager", "", false,
+              "none:download-manager-projection-no-command-leaf"),
     API_ROUTE("GET", "/api/blocks", "blocks", "index", api_route_blocks,
-              "zcl.blocks.index.v1", "", "served_height", "", false),
+              "zcl.blocks.index.v1", "", "served_height", "", false,
+              "none:explorer-blocks-list-cache-no-command-leaf"),
     API_ROUTE("GET", "/api/stats", "stats", "index", api_route_stats,
-              "zcl.stats.v1", "", "served_height", "", false),
+              "zcl.stats.v1", "", "served_height", "", false,
+              "none:explorer-stats-cache-no-command-leaf"),
     API_ROUTE("GET", "/api/stats/deep", "stats", "deep",
               api_route_deep_stats, "zcl.stats.deep.v1", "",
-              "served_height", "", false),
+              "served_height", "", false,
+              "none:explorer-deep-stats-cache-no-command-leaf"),
     API_ROUTE("GET", "/api/supply", "supply", "show", api_route_supply,
-              "zcl.supply.v1", "", "served_height", "", false),
+              "zcl.supply.v1", "", "served_height", "", false,
+              "none:explorer-supply-cache-no-command-leaf"),
     API_ROUTE("GET", "/api/hodl", "hodl", "show", api_route_hodl,
-              "zcl.hodl_wave.v1", "", "utxo_projection", "", false),
+              "zcl.hodl_wave.v1", "", "utxo_projection", "", false,
+              "none:explorer-hodl-wave-cache-no-command-leaf"),
     API_ROUTE("GET", "/api/factoids", "factoids", "show",
               api_route_factoids, "zcl.factoids.v1", "",
-              "served_height", "", false),
+              "served_height", "", false,
+              "none:explorer-factoids-cache-no-command-leaf"),
     API_ROUTE("GET", "/api/wallet", "wallet", "show", api_serve_wallet,
-              "zcl.wallet_status.v1", "", "wallet_projection", "", true),
+              "zcl.wallet_status.v1", "", "wallet_projection", "", true,
+              "core.wallet.status"),
     API_ROUTE("GET", "/api/files/manifest", "files", "manifest",
               api_serve_files_manifest, "zcl.files_manifest.v1", "",
-              "file_manifest", "", false),
+              "file_manifest", "", false,
+              "none:file-market-manifest-no-command-leaf"),
 };
 
 typedef bool (*api_json_resource_handler)(struct json_value *result);
@@ -267,14 +285,18 @@ void api_route_registry_visit(api_route_contract_visit_fn visit, void *ctx)
         const struct api_resource_route *r = &k_api_resource_routes[i];
         visit(ctx, r->method, r->path, r->resource, r->action,
               r->response_schema, r->query_params_csv, r->freshness,
-              r->alias_of, r->private_route);
+              r->alias_of, r->private_route, r->command_path);
     }
 
+    /* k_api_json_resource_routes / k_api_dynamic_resource_routes are not in
+     * OS-B3b scope (task text scopes command_path to struct
+     * api_resource_route only) — pass "" so the contract surface omits the
+     * key rather than claiming a checked "none:" verdict for them. */
     for (size_t i = 0; i < api_json_resource_route_count_internal(); i++) {
         const struct api_json_resource_route *r = &k_api_json_resource_routes[i];
         visit(ctx, r->method, r->path, r->resource, r->action,
               r->response_schema, r->query_params_csv, r->freshness,
-              r->alias_of, r->private_route);
+              r->alias_of, r->private_route, "");
     }
 
     for (size_t i = 0; i < api_dynamic_resource_route_count_internal(); i++) {
@@ -282,7 +304,7 @@ void api_route_registry_visit(api_route_contract_visit_fn visit, void *ctx)
             &k_api_dynamic_resource_routes[i];
         visit(ctx, r->method, r->pattern, r->resource, r->action,
               r->response_schema, r->query_params_csv, r->freshness,
-              r->alias_of, r->private_route);
+              r->alias_of, r->private_route, "");
     }
 }
 
@@ -724,6 +746,13 @@ const char *api_resource_route_action_at(size_t i)
     if (i >= api_resource_route_count())
         return NULL;
     return k_api_resource_routes[i].action;
+}
+
+const char *api_resource_route_command_path_at(size_t i)
+{
+    if (i >= api_resource_route_count())
+        return NULL;
+    return k_api_resource_routes[i].command_path;
 }
 
 size_t api_dynamic_resource_route_count(void)

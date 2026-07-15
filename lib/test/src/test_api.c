@@ -49,6 +49,7 @@ size_t api_json_error(uint8_t *r, size_t max, const char *headers,
 size_t api_resource_route_count(void);
 const char *api_resource_route_resource_at(size_t i);
 const char *api_resource_route_action_at(size_t i);
+const char *api_resource_route_command_path_at(size_t i);
 size_t api_route_contract_count(void);
 size_t api_dynamic_resource_route_count(void);
 const char *api_dynamic_resource_route_pattern_at(size_t i);
@@ -3505,6 +3506,12 @@ int test_api(void)
             api_test_openapi_get(&root, "/api/v1/supply");
         const struct json_value *openapi =
             api_test_openapi_get(&root, "/api/v1/openapi");
+        const struct json_value *health_openapi =
+            api_test_openapi_get(&root, "/api/v1/health");
+
+        ok = ok && health_openapi &&
+             strcmp(json_get_str(json_get(health_openapi,
+                    "x-zcl-command-path")), "ops.health") == 0;
 
         ok = ok && hodl &&
              strcmp(json_get_str(json_get(hodl, "x-resource")),
@@ -4083,6 +4090,50 @@ int test_api(void)
         }
         bool ok = count >= 18 && saw_agent && saw_milestone && saw_refold &&
                   saw_blocks && saw_factoids;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: every fixed route has a non-NULL command_path... ");
+    {
+        size_t count = api_resource_route_count();
+        bool ok = count > 0;
+        for (size_t i = 0; i < count; i++) {
+            const char *command_path = api_resource_route_command_path_at(i);
+            if (!command_path || !command_path[0]) {
+                ok = false;
+                break;
+            }
+        }
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("api: route<->command parity holds for known pairs... ");
+    {
+        bool saw_health_ops_health = false;
+        bool saw_refold_recovery_status = false;
+        bool saw_none_reason = false;
+        size_t count = api_resource_route_count();
+        for (size_t i = 0; i < count; i++) {
+            const char *resource = api_resource_route_resource_at(i);
+            const char *action = api_resource_route_action_at(i);
+            const char *command_path = api_resource_route_command_path_at(i);
+            if (!resource || !action || !command_path)
+                continue;
+            if (strcmp(resource, "health") == 0 &&
+                strcmp(action, "show") == 0 &&
+                strcmp(command_path, "ops.health") == 0)
+                saw_health_ops_health = true;
+            if (strcmp(resource, "refold") == 0 &&
+                strcmp(action, "show") == 0 &&
+                strcmp(command_path, "ops.recovery.status") == 0)
+                saw_refold_recovery_status = true;
+            if (strncmp(command_path, "none:", 5) == 0)
+                saw_none_reason = true;
+        }
+        bool ok = saw_health_ops_health && saw_refold_recovery_status &&
+                  saw_none_reason;
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

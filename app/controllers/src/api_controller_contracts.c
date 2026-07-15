@@ -323,7 +323,8 @@ static void api_contract_push(struct json_value *out, const char *method,
                               const char *query_params_csv,
                               const char *freshness,
                               const char *alias_of,
-                              bool private_route)
+                              bool private_route,
+                              const char *command_path)
 {
     if (!out || !method || !path || !resource || !action)
         return;
@@ -361,6 +362,8 @@ static void api_contract_push(struct json_value *out, const char *method,
     json_push_kv_str(&item, "crud_operation", crud_operation);
     json_push_kv_str(&item, "resource_scope", resource_scope);
     json_push_kv_str(&item, "crud_name", crud_name);
+    if (command_path && command_path[0])
+        json_push_kv_str(&item, "command_path", command_path);
     json_push_kv_bool(&item, "private", private_route);
     json_push_kv_str(&item, "auth",
                      private_route ? "operator_private" : "public");
@@ -480,7 +483,7 @@ static void api_contract_visit(void *ctx, const char *method, const char *path,
                                const char *response_schema,
                                const char *query_params_csv,
                                const char *freshness, const char *alias_of,
-                               bool private_route)
+                               bool private_route, const char *command_path)
 {
     struct api_contract_build_ctx *build =
         (struct api_contract_build_ctx *)ctx;
@@ -488,7 +491,7 @@ static void api_contract_visit(void *ctx, const char *method, const char *path,
         return;
     api_contract_push(build->out, method, path, resource, action,
                       response_schema, query_params_csv, freshness, alias_of,
-                      private_route);
+                      private_route, command_path);
 }
 
 void api_route_contracts_json(struct json_value *out)

@@ -1,0 +1,22 @@
+# Shrink-only baseline for check_route_command_parity.sh (OS-B3b).
+#
+# Each line is a "none:<reason>" command_path value that a route in
+# app/controllers/src/api_controller_routes.c's k_api_resource_routes[]
+# is honestly allowed to carry because no native command registry leaf
+# (config/commands/*.def) owns the same data/service yet. A NEW none:
+# entry not listed here fails the gate. Removing a line (because the
+# route got wired to a real leaf, or the route was deleted) is always
+# welcome — the gate also flags a stale line that no route emits any more.
+none:rest-self-description-not-a-command-leaf
+none:openapi-self-description-not-a-command-leaf
+none:mvp-milestone-tracker-no-command-leaf
+none:composite-diagnostics-no-single-leaf-owns-this-shape
+none:snapshot-sync-service-no-command-leaf
+none:download-manager-projection-no-command-leaf
+none:explorer-blocks-list-cache-no-command-leaf
+none:explorer-stats-cache-no-command-leaf
+none:explorer-deep-stats-cache-no-command-leaf
+none:explorer-supply-cache-no-command-leaf
+none:explorer-hodl-wave-cache-no-command-leaf
+none:explorer-factoids-cache-no-command-leaf
+none:file-market-manifest-no-command-leaf

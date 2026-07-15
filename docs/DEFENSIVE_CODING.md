@@ -515,6 +515,7 @@ add/remove a gate.
 - `check-no-new-borrowed-seed`
 - `check-no-new-coin-backfill-caller`
 - `check-no-new-repair-rung`
+- `check-route-command-parity`
 - `check-no-orphan-placement`
 - `check-no-silent-ready`
 - `check-no-stray-untracked-source`

@@ -294,8 +294,15 @@ typedef void (*api_route_contract_visit_fn)(
     const char *query_params_csv,
     const char *freshness,
     const char *alias_of,
-    bool private_route);
+    bool private_route,
+    const char *command_path);
 
+/* command_path names the native command registry leaf (config/commands
+ * dot-def files, e.g. "core.status") that owns the same data/service this
+ * route serves. When no native leaf owns it, this is "none:<short-reason>"
+ * — never a guessed mapping. Checked by
+ * tools/lint/check_route_command_parity.sh against
+ * tools/lint/route_command_parity_baseline.txt. */
 struct api_resource_route {
     const char *method;
     const char *path;
@@ -307,6 +314,7 @@ struct api_resource_route {
     const char *freshness;
     const char *alias_of;
     bool private_route;
+    const char *command_path;
 };
 
 const char *api_canonical_route_path(const char *path, char *buf,

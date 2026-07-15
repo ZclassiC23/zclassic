@@ -345,6 +345,7 @@ static void api_openapi_operation_json(const struct json_value *contract,
     const char *error_schema = json_get_str(json_get(contract, "error_schema"));
     const char *freshness = json_get_str(json_get(contract, "freshness"));
     const char *route_id = json_get_str(json_get(contract, "route_id"));
+    const char *command_path = json_get_str(json_get(contract, "command_path"));
     const char *auth_policy = json_get_str(json_get(contract, "auth_policy"));
     const char *legacy_alias =
         json_get_str(json_get(contract, "legacy_alias_of"));
@@ -387,6 +388,8 @@ static void api_openapi_operation_json(const struct json_value *contract,
     json_push_kv_str(operation, "x-resource-scope", resource_scope);
     json_push_kv_str(operation, "x-crud-name", crud_name);
     json_push_kv_str(operation, "x-route-id", route_id);
+    if (command_path && command_path[0])
+        json_push_kv_str(operation, "x-zcl-command-path", command_path);
     json_push_kv_bool(operation, "x-private", private_route);
     json_push_kv_str(operation, "x-auth",
                      private_route ? "operator_private" : "public");
