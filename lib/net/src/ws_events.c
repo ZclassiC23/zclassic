@@ -21,6 +21,7 @@
 #include <string.h>
 #include <unistd.h>
 #include "util/log_macros.h"
+#include "util/thread_liveness.h"
 #include "util/thread_registry.h"
 
 /* ── WebSocket frame helpers (RFC 6455 minimal) ──────────────── */
@@ -116,6 +117,13 @@ static pthread_mutex_t  g_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t        g_pump_thread;
 static _Atomic bool     g_running;
 static _Atomic bool     g_started;
+
+/* Supervisor liveness (root child — lib/net cannot include the app-side
+ * supervisors/domains.h, see util/thread_liveness.h). Liveness-only: the
+ * pump sleeps WS_PUMP_INTERVAL_MS between iterations, present on the tree
+ * and heartbeats every iteration. */
+static struct thread_liveness_child g_ws_pump_liveness = { .id = SUPERVISOR_INVALID_ID };
+static _Atomic uint64_t g_ws_pump_beat_count = 0;
 
 /* ── Event ring access (from event.h internals) ──────────────── */
 
@@ -338,6 +346,8 @@ static void *pump_thread_fn(void *arg)
         pump_events_to_clients();
         drain_client_input();
         send_heartbeats();
+        thread_liveness_beat(&g_ws_pump_liveness,
+                             (int64_t)atomic_fetch_add(&g_ws_pump_beat_count, 1) + 1);
         usleep(WS_PUMP_INTERVAL_MS * 1000);
     }
     return NULL;
@@ -368,6 +378,7 @@ bool ws_events_start(void)
         atomic_store(&g_started, false);
         LOG_FAIL("ws", "thread_registry_spawn failed for event pump thread");
     }
+    thread_liveness_register(&g_ws_pump_liveness, "zcl_ws_pump", 0, 0);
     return true;
 }
 
@@ -376,6 +387,7 @@ void ws_events_stop(void)
     if (!atomic_load(&g_started)) return;
     atomic_store(&g_running, false);
     pthread_join(g_pump_thread, NULL);
+    thread_liveness_retire(&g_ws_pump_liveness);
 
     /* Close all client fds.  We don't clear_observers here because
      * that would destructively remove observers registered by other

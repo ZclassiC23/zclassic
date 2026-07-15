@@ -20,6 +20,7 @@
 #include <unistd.h>
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
+#include "util/thread_liveness.h"
 #include "util/thread_registry.h"
 
 static pthread_t g_tor_thread;
@@ -29,6 +30,20 @@ static _Atomic bool g_tor_ready = false;
 static _Atomic bool g_tor_started = false;   /* true once tor thread spawn succeeds */
 static _Atomic bool g_tor_thread_done = false; /* true once tor thread returns */
 static _Atomic bool g_monitor_started = false;
+
+/* Supervisor liveness (root children — lib/net cannot include the app-side
+ * supervisors/domains.h, see util/thread_liveness.h). zcl_tor is opaque
+ * vendored/forked Tor code (tor_thread_fn just calls into tor_run_main) —
+ * its internal loop is NEVER instrumented directly. Instead g_tor_liveness
+ * is beaten as a proxy FROM WITHIN g_tor_monitor_liveness's own poll loop
+ * (read_onion_address, called synchronously from tor_onion_monitor): a
+ * successful poll iteration there is evidence Tor is alive. Both
+ * liveness-only (no deadline / no progress gate) — the monitor polls on a
+ * bounded bootstrap loop, and once bootstrap completes it does no further
+ * polling for the rest of the boot. */
+static struct thread_liveness_child g_tor_liveness = { .id = SUPERVISOR_INVALID_ID };
+static struct thread_liveness_child g_tor_monitor_liveness = { .id = SUPERVISOR_INVALID_ID };
+static _Atomic uint64_t g_tor_monitor_poll_count = 0;
 static char g_onion_address[128];
 static char g_tor_datadir[512];
 /* tor.log size at THIS boot's Tor start. The log is append-mode across
@@ -207,6 +222,13 @@ static bool read_onion_address(const char *datadir)
     snprintf(log_path, sizeof(log_path), "%s/tor.log", datadir);
 
     for (int attempt = 0; attempt < 120; attempt++) {
+        /* g_tor is opaque vendored code and is never beaten from inside
+         * its own loop — this poll iteration is the proxy for "Tor is
+         * alive" instead (see the file-header comment). */
+        thread_liveness_beat(&g_tor_monitor_liveness,
+                             (int64_t)atomic_fetch_add(&g_tor_monitor_poll_count, 1) + 1);
+        thread_liveness_beat(&g_tor_liveness, -1);
+
         if (!atomic_load(&g_tor_running))
             return false;
 
@@ -269,6 +291,7 @@ static void *tor_thread_fn(void *arg)
     if (thread_registry_spawn("zcl_tor_monitor", tor_onion_monitor, NULL,
                                   &g_monitor_thread) == 0) {
         atomic_store(&g_monitor_started, true);
+        thread_liveness_register(&g_tor_monitor_liveness, "zcl_tor_monitor", 0, 0);
     } else {
         perror("Tor: thread_registry_spawn onion monitor");
         atomic_store(&g_monitor_started, false);
@@ -284,8 +307,10 @@ static void *tor_thread_fn(void *arg)
     /* Signal monitor to stop, then join it if it actually started. */
     atomic_store(&g_tor_running, false);
     atomic_store(&g_tor_ready, false);
-    if (atomic_exchange(&g_monitor_started, false))
+    if (atomic_exchange(&g_monitor_started, false)) {
         tor_join_thread_bounded(g_monitor_thread, "monitor", 5);
+        thread_liveness_retire(&g_tor_monitor_liveness);
+    }
 
     printf("Tor: exited with code %d\n", result);
     atomic_store(&g_tor_thread_done, true);
@@ -360,6 +385,7 @@ bool tor_integration_start(const char *datadir, uint16_t p2p_port)
         LOG_FAIL("tor", "thread_registry_spawn failed for tor thread");
     }
     atomic_store(&g_tor_started, true);
+    thread_liveness_register(&g_tor_liveness, "zcl_tor", 0, 0);
     return true;
 }
 
@@ -382,6 +408,7 @@ void tor_integration_stop(void)
 
     tor_join_thread_bounded(g_tor_thread, "main", 5);
     atomic_store(&g_tor_thread_done, false);
+    thread_liveness_retire(&g_tor_liveness);
 }
 
 const char *tor_integration_get_onion_address(void)

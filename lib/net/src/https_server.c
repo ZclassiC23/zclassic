@@ -31,6 +31,7 @@
 #include "util/path_check.h"
 #include "util/safe_alloc.h"
 #include "util/thread_registry.h"
+#include "util/thread_liveness.h"
 #include "metrics/prometheus_metrics.h"
 
 static SSL_CTX *g_ssl_ctx = NULL;
@@ -48,6 +49,20 @@ static char g_hostname[256] = "";
 static pthread_mutex_t g_https_state_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_mutex_t g_client_queue_mutex = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t g_client_queue_cv = PTHREAD_COND_INITIALIZER;
+
+/* Supervisor liveness for the 3 HTTPS/HTTP threads. Root children (not
+ * supervisor_register_in_domain(...)): lib/net cannot include the app-side
+ * supervisors/domains.h without a lib-layering violation — see
+ * util/thread_liveness.h. All three legitimately idle (accept() blocks with
+ * no deterministic timeout; the worker pool blocks on a queue condvar), so
+ * they are liveness-only (no deadline, no progress gate) — present on the
+ * tree, heartbeat when they do work, never falsely flagged for a quiet
+ * cycle. g_worker_threads spawns N workers under one name ("zcl_https_wkr");
+ * they share ONE contract — any worker's heartbeat proves at least one
+ * worker loop is alive, the simplest honest claim for a pool. */
+static struct thread_liveness_child g_https_wkr_liveness    = { .id = SUPERVISOR_INVALID_ID };
+static struct thread_liveness_child g_https_listen_liveness = { .id = SUPERVISOR_INVALID_ID };
+static struct thread_liveness_child g_http_listen_liveness  = { .id = SUPERVISOR_INVALID_ID };
 
 /* Connection limit — prevents OOM under heavy load.
  * Each connection mallocs HTTPS_RESPONSE_BUFFER_SIZE for response data. */
@@ -390,6 +405,7 @@ static void *https_listen_fn(void *arg)
         socklen_t addr_len = sizeof(client_addr);
         int client_fd = accept(g_https_fd,
                                 (struct sockaddr *)&client_addr, &addr_len);
+        thread_liveness_beat(&g_https_listen_liveness, -1);
         if (client_fd < 0) {
             if (g_running && errno != EINVAL)
                 perror("https accept");
@@ -565,6 +581,7 @@ static void *http_listen_fn(void *arg)
         socklen_t addr_len = sizeof(client_addr);
         int client_fd = accept(g_http_fd,
                                 (struct sockaddr *)&client_addr, &addr_len);
+        thread_liveness_beat(&g_http_listen_liveness, -1);
         if (client_fd < 0) {
             if (g_running && errno != EINVAL)
                 perror("http accept");
@@ -597,6 +614,7 @@ static void *https_worker_fn(void *arg)
 
         if (!client_queue_pop(&ca))
             break;
+        thread_liveness_beat(&g_https_wkr_liveness, -1);
         if (ca.fd < 0)
             continue;
         if (ca.tls)
@@ -721,6 +739,8 @@ bool https_server_start_on_port(const char *cert_path, const char *key_path,
             break;
         }
         started_workers++;
+        if (i == 0)
+            thread_liveness_register(&g_https_wkr_liveness, "zcl_https_wkr", 0, 0);
     }
     g_worker_threads_started = started_workers;
     if (g_worker_threads_started == 0) {
@@ -756,6 +776,7 @@ bool https_server_start_on_port(const char *cert_path, const char *key_path,
         LOG_FAIL("https", "thread_registry_spawn failed for HTTPS listen thread");
     }
     g_https_thread_started = true;
+    thread_liveness_register(&g_https_listen_liveness, "zcl_https_listen", 0, 0);
 
     if (g_http_fd >= 0) {
         if (thread_registry_spawn("zcl_http_listen", http_listen_fn, NULL,
@@ -765,6 +786,7 @@ bool https_server_start_on_port(const char *cert_path, const char *key_path,
             g_http_fd = -1;
         } else {
             g_http_thread_started = true;
+            thread_liveness_register(&g_http_listen_liveness, "zcl_http_listen", 0, 0);
         }
     }
     pthread_mutex_unlock(&g_https_state_mutex);
@@ -832,12 +854,18 @@ void https_server_stop(void)
     pthread_cond_broadcast(&g_client_queue_cv);
     client_queue_close_all();
 
-    if (have_https_thread)
+    if (have_https_thread) {
         pthread_join(https_thread, NULL);
-    if (have_http_thread)
+        thread_liveness_retire(&g_https_listen_liveness);
+    }
+    if (have_http_thread) {
         pthread_join(http_thread, NULL);
+        thread_liveness_retire(&g_http_listen_liveness);
+    }
     for (unsigned i = 0; i < worker_threads_started; i++)
         pthread_join(worker_threads[i], NULL);
+    if (worker_threads_started > 0)
+        thread_liveness_retire(&g_https_wkr_liveness);
     if (g_ssl_ctx) {
         SSL_CTX_free(g_ssl_ctx);
         g_ssl_ctx = NULL;

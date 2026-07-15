@@ -4,10 +4,24 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "rpc/async_rpc_queue.h"
+#include "util/thread_liveness.h"
 #include "util/thread_registry.h"
 #include <string.h>
 #include <stdatomic.h>
 #include <stdio.h>
+
+/* Supervisor liveness (root child — lib/rpc cannot include the app-side
+ * supervisors/domains.h, see util/thread_liveness.h). async_queue_add_worker
+ * can spawn up to MAX_ASYNC_WORKERS threads that all share the name
+ * "zcl_async_rpc"; rather than track per-worker isolation, ONE shared
+ * contract answers the honest question "is at least one async_rpc worker
+ * loop alive" — thread_liveness_register is idempotent, so every worker's
+ * registration call after the first is a no-op that returns the existing
+ * id, and any worker's loop iteration beats the shared contract.
+ * Liveness-only: a condvar-blocked worker with an empty queue idles
+ * indefinitely and legitimately. */
+static struct thread_liveness_child g_async_rpc_liveness = { .id = SUPERVISOR_INVALID_ID };
+static _Atomic uint64_t g_async_rpc_beat_count = 0;
 
 void async_queue_init(struct async_rpc_queue *q)
 {
@@ -27,6 +41,9 @@ static void wait_for_workers(struct async_rpc_queue *q)
 
     for (size_t i = 0; i < nw; i++)
         pthread_join(q->workers[i], NULL);
+
+    if (nw > 0)
+        thread_liveness_retire(&g_async_rpc_liveness);
 
     /* Clear so a second call (e.g. free after finish_and_wait) is safe */
     zcl_mutex_lock(&q->lock);
@@ -55,6 +72,8 @@ static void *worker_thread(void *arg)
                !async_queue_is_finishing(q)) {
             zcl_cond_wait(&q->cond, &q->lock);
         }
+        thread_liveness_beat(&g_async_rpc_liveness,
+                             (int64_t)atomic_fetch_add(&g_async_rpc_beat_count, 1) + 1);
 
         if (async_queue_is_finishing(q) && q->queue_count == 0) {
             zcl_mutex_unlock(&q->lock);
@@ -105,6 +124,7 @@ bool async_queue_add_worker(struct async_rpc_queue *q)
         if (rc == 0) {
             q->num_workers++;
             started = true;
+            thread_liveness_register(&g_async_rpc_liveness, "zcl_async_rpc", 0, 0);
         } else {
             perror("async_queue_add_worker: thread_registry_spawn");
         }

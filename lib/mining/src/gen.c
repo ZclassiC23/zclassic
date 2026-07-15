@@ -18,10 +18,25 @@
 #include "util/log_macros.h"
 #include "util/util.h"
 #include "util/safe_alloc.h"
+#include "util/thread_liveness.h"
 #include "util/thread_registry.h"
+#include <stdatomic.h>
 
 static pthread_t *g_miner_threads = NULL;
 static int g_num_miner_threads = 0;
+
+/* Supervisor liveness (root child — lib/mining cannot include the app-side
+ * supervisors/domains.h, see util/thread_liveness.h). gen_start() can spawn
+ * ctx->num_threads miner threads that all share the name "zcl_miner"; ONE
+ * shared contract answers the honest question "is at least one miner loop
+ * alive" — thread_liveness_register is idempotent, so every thread's
+ * registration call after the first is a no-op. CPU-bound tight solve loop
+ * has no natural idle boundary, so no deadline and no progress-quiet gate
+ * (liveness-only); the progress marker is still published per outer-loop
+ * (per solve-attempt-batch) pass as telemetry, same as the disabled-gate
+ * pattern in lib/health/src/heartbeat.c's sweeper. */
+static struct thread_liveness_child g_miner_liveness = { .id = SUPERVISOR_INVALID_ID };
+static _Atomic uint64_t g_miner_batch_count = 0;
 
 static bool try_solve_equihash(struct block *blk,
                                 const struct chain_params *params,
@@ -157,6 +172,11 @@ static void *miner_thread(void *arg)
 
         block_template_free(tmpl);
         free(tmpl);
+
+        /* Per solve-attempt batch, not per inner hash — that would be
+         * far too hot a path. */
+        thread_liveness_beat(&g_miner_liveness,
+                             (int64_t)atomic_fetch_add(&g_miner_batch_count, 1) + 1);
     }
 
     LogPrintf("Miner thread stopped.\n");
@@ -196,6 +216,7 @@ void gen_start(struct gen_context *ctx)
             return;
         }
         started++;
+        thread_liveness_register(&g_miner_liveness, "zcl_miner", 0, 0);
     }
 
     LogPrintf("Mining started with %d thread(s).\n", g_num_miner_threads);
@@ -208,6 +229,7 @@ void gen_stop(struct gen_context *ctx)
     atomic_store(&ctx->running, false);
     for (int i = 0; i < g_num_miner_threads; i++)
         pthread_join(g_miner_threads[i], NULL);
+    thread_liveness_retire(&g_miner_liveness);
     free(g_miner_threads);
     g_miner_threads = NULL;
     g_num_miner_threads = 0;

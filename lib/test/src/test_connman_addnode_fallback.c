@@ -2,6 +2,7 @@
 
 #include "platform/time_compat.h"
 #include "test/test_helpers.h"
+#include "util/blocker.h"
 #include <unistd.h>
 
 static void test_set_ipv4(struct net_address *addr,
@@ -809,6 +810,65 @@ int test_connman_addnode_fallback(void)
         }
 
         connman_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* A configured max_connections that would overflow the poll() fd
+     * arrays must refuse to start, not silently truncate the reactor. */
+    printf("connman_addnode_fallback: reactor bound-check refuses "
+           "over-cap max_connections... ");
+    {
+        blocker_reset_for_testing();
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&sigs, 0, sizeof(sigs));
+        bool ok = connman_init(&cm, params, &sigs);
+
+        /* No listen sockets bound (num_listen_sockets stays 0) — the
+         * violation comes entirely from an over-cap max_connections, proving
+         * the check sums both terms rather than only gating on listen
+         * sockets. */
+        ok = ok && cm.manager.num_listen_sockets == 0;
+        cm.manager.max_connections = REACTOR_MAX_FDS + 10;
+
+        bool started = connman_start(&cm);
+        ok = ok && !started;
+        ok = ok && blocker_exists("connman_reactor_overflow");
+        ok = ok && blocker_class_for("connman_reactor_overflow") ==
+                       BLOCKER_PERMANENT;
+        /* Never partially started: no P2P thread should be live to join. */
+        ok = ok && !cm.started;
+
+        connman_free(&cm);
+        blocker_reset_for_testing();
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* Sane configuration (default max_connections, no listen sockets) must
+     * NOT trip the reactor bound-check — proves the admission math doesn't
+     * false-positive on the ordinary boot path. */
+    printf("connman_addnode_fallback: reactor bound-check passes "
+           "default config... ");
+    {
+        blocker_reset_for_testing();
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        memset(&sigs, 0, sizeof(sigs));
+        bool ok = connman_init(&cm, params, &sigs);
+
+        ok = ok && !blocker_exists("connman_reactor_overflow");
+        struct connman_reactor_stats rs;
+        connman_get_reactor_stats(&rs);
+        ok = ok && rs.reactor_max_fds == REACTOR_MAX_FDS;
+
+        connman_free(&cm);
+        blocker_reset_for_testing();
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
