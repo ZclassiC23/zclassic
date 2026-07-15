@@ -22,6 +22,7 @@
  */
 
 #include "sapling/bn254.h"
+#include "sapling/bn254_accel.h"
 #include <string.h>
 #include <stdlib.h>
 #include "util/safe_alloc.h"
@@ -48,9 +49,6 @@ static const uint64_t FQ_R2[4] = {
     0xf32cfc5b538afa89ULL, 0xb5e71911d44501fbULL,
     0x47ab1eff0a417ff6ULL, 0x06d89f71cab8351fULL
 };
-
-/* q' = -q^{-1} mod 2^64 */
-static const uint64_t FQ_INV = 0x87d20782e4866389ULL;
 
 
 static inline bool u256_ge(const uint64_t a[4], const uint64_t b[4])
@@ -85,43 +83,14 @@ static inline uint64_t u256_sub(uint64_t r[4], const uint64_t a[4], const uint64
 }
 
 /* Montgomery multiplication: r = a*b*R^{-1} mod q */
+/* Runtime-dispatched (BMI2+ADX → portable) Montgomery multiply. The accel
+ * paths are byte-identical to the historical portable schoolbook (proven by
+ * test_bn254_accel), so this is a pure SPEED swap — no consensus effect. All
+ * BN254 Fq/Fq2/Fq12 tower and G1/G2 point arithmetic funnels through here, so
+ * every Sprout Groth16 proof verify is accelerated. */
 static void bn_fq_mont_mul(uint64_t r[4], const uint64_t a[4], const uint64_t b[4])
 {
-    uint64_t t[8] = {0};
-
-    /* Schoolbook multiply a * b */
-    for (int i = 0; i < 4; i++) {
-        __uint128_t carry = 0;
-        for (int j = 0; j < 4; j++) {
-            carry += (__uint128_t)a[j] * b[i] + t[i+j];
-            t[i+j] = (uint64_t)carry;
-            carry >>= 64;
-        }
-        t[i+4] = (uint64_t)carry;
-    }
-
-    /* Montgomery reduction */
-    for (int i = 0; i < 4; i++) {
-        uint64_t m = t[i] * FQ_INV;
-        __uint128_t carry = 0;
-        for (int j = 0; j < 4; j++) {
-            carry += (__uint128_t)m * FQ_Q[j] + t[i+j];
-            t[i+j] = (uint64_t)carry;
-            carry >>= 64;
-        }
-        for (int j = i + 4; j < 8; j++) {
-            carry += t[j];
-            t[j] = (uint64_t)carry;
-            carry >>= 64;
-        }
-    }
-
-    memcpy(r, t + 4, 32);
-    if (u256_ge(r, FQ_Q)) {
-        uint64_t tmp[4];
-        u256_sub(tmp, r, FQ_Q);
-        memcpy(r, tmp, 32);
-    }
+    bn_fq_mont_mul_accel(r, a, b);
 }
 
 void bn_fq_zero(struct bn_fq *r) { memset(r->d, 0, 32); }

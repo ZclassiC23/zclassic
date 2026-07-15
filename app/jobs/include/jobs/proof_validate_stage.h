@@ -80,6 +80,15 @@ void proof_validate_stage_set_reader(proof_validate_reader_fn fn, void *user);
 void proof_validate_stage_set_tx_verifier(proof_validate_tx_verify_fn fn,
                                           void *user);
 
+/* OFFLINE-MINT lookahead (jobs/pv_lookahead.h): start/stop the cross-height
+ * proof pre-verification pool bound to this stage's exact (main_state,
+ * datadir, reader, verifier) tuple. SCOPE GATE: the only production caller of
+ * the start is config/src/boot_mint_anchor.c — the live reducer never starts
+ * the pool, so its verify path is unchanged (a not-started pool is a single
+ * atomic-load miss). Stop is idempotent and also runs in stage shutdown. */
+bool proof_validate_lookahead_start(void);
+void proof_validate_lookahead_stop(void);
+
 bool proof_validate_dump_state_json(struct json_value *out, const char *key);
 
 #endif /* ZCL_SERVICES_PROOF_VALIDATE_STAGE_H */

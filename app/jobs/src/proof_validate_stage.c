@@ -20,6 +20,7 @@
 #include "core/uint256.h"
 #include "event/event.h"
 #include "jobs/mint_skip_crypto.h"
+#include "jobs/pv_lookahead.h"
 #include "primitives/block.h"
 #include "sapling/bn254.h"
 #include "sapling/bls12_381.h"
@@ -259,6 +260,43 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         c->cursor_out = c->cursor_in + 1;
         return JOB_ADVANCED;
     }
+    struct proof_verify_summary summary;
+    struct pv_lookahead_verdict cached;
+    if (!skip_crypto &&
+        pv_lookahead_take(next_h, bi->phashBlock, g_tx_verifier,
+                          g_tx_verifier_user, &cached)) {
+        /* OFFLINE-MINT LOOKAHEAD HIT (jobs/pv_lookahead.h; the pool is started
+         * only by the -mint-anchor drive): a worker already verified this exact
+         * (height, block_hash) with the same effective verifier, so the verdict
+         * IS what the serial sweep below would compute (proof verification is a
+         * pure function of block bytes + verifying keys). internal_error is
+         * never cached, so the TL-2 HOLD path below stays inline-only. The
+         * block read and its params wait gate are not needed on a hit: the
+         * worker proved the body readable, and a shielded block can only be
+         * cached after the keys loaded (the worker mirrors the gate). */
+        proof_verify_summary_init(&summary);
+        summary.ok = cached.ok;
+        summary.sapling_spends_total = cached.sapling_spends_total;
+        summary.sapling_outputs_total = cached.sapling_outputs_total;
+        summary.sprout_joinsplits_total = cached.sprout_joinsplits_total;
+        summary.first_failure_txid = cached.first_failure_txid;
+        summary.first_failure_proof_type = cached.first_failure_proof_type;
+        /* Apply the worker-accumulated serial-reduce counter deltas; the drive
+         * consumes heights in strict serial order, so every counter equals the
+         * serial sweep's value at each block boundary. */
+        atomic_fetch_add(&g_sapling_spends_verified_total,
+                         cached.spends_verified);
+        atomic_fetch_add(&g_sapling_outputs_verified_total,
+                         cached.outputs_verified);
+        atomic_fetch_add(&g_sprout_groth16_verified_total,
+                         cached.sprout_groth16_verified);
+        atomic_fetch_add(&g_sprout_phgr13_verified_total,
+                         cached.sprout_phgr13_verified);
+        atomic_fetch_add(&g_binding_sig_verified_total,
+                         cached.binding_sig_verified);
+        if (!cached.ok)
+            add_failure_counter(cached.first_failure_proof_type, NULL);
+    } else {
     struct block blk;
     block_init(&blk);
     if (!stage_read_block(&blk, bi, next_h, g_datadir, g_reader, g_reader_user)) {
@@ -295,7 +333,6 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         return JOB_BLOCKED;
     }
 
-    struct proof_verify_summary summary;
     if (skip_crypto) {
         /* OFFLINE FAST-MINT pass-through (jobs/mint_skip_crypto.h): the
          * -mint-anchor-fast driver set the toggle. SKIP validate_block_proofs
@@ -317,6 +354,7 @@ static job_result_t step_validate(struct stage_step_ctx *c)
                            NULL, &summary);
     }
     block_free(&blk);
+    }
 
     /* TL-2: the internal_error class is a TRANSIENT "could not complete proof
      * verification yet" (a sapling_ctx allocation failure under memory pressure
@@ -407,10 +445,40 @@ STAGE_STEP_ONCE_SIMPLE(proof_validate)
 
 STAGE_DRAIN_IMPL(proof_validate)
 
+bool proof_validate_lookahead_start(void)
+{
+    /* Snapshot the stage's binding under g_lock so the pool starts with the
+     * EXACT (main_state, datadir, reader, verifier) tuple step_validate uses —
+     * pv_lookahead_take re-checks the verifier pair on every consume, so a
+     * later set_tx_verifier turns the cache into a permanent miss instead of a
+     * mixed-verifier verdict. */
+    pthread_mutex_lock(&g_lock);
+    struct main_state *ms = g_ms;
+    char datadir[sizeof(g_datadir)];
+    snprintf(datadir, sizeof(datadir), "%s", g_datadir);
+    proof_validate_reader_fn reader = g_reader;
+    void *reader_user = g_reader_user;
+    proof_validate_tx_verify_fn verifier = g_tx_verifier;
+    void *verifier_user = g_tx_verifier_user;
+    pthread_mutex_unlock(&g_lock);
+    if (!ms)
+        LOG_FAIL("proof_validate",
+                 "[proof_validate] lookahead start: stage not initialised");
+    return pv_lookahead_start(ms, datadir, reader, reader_user,
+                              verifier, verifier_user);
+}
+
+void proof_validate_lookahead_stop(void)
+{
+    pv_lookahead_stop();
+}
+
 void proof_validate_stage_shutdown(void)
 {
-    /* Stop the shared verify worker pool before tearing down stage state so no
-     * worker outlives the stage. Safe to call even if the pool never started. */
+    /* Stop the mint lookahead pool first (idempotent; a no-op unless a mint
+     * drive started it), then the shared verify worker pool, before tearing
+     * down stage state so no worker outlives the stage. */
+    pv_lookahead_stop();
     proof_verify_pool_shutdown();
     proof_validate_upstream_hash_clear();
     proof_validate_upstream_verdict_clear();

@@ -14,6 +14,7 @@
 #include "jobs/proof_validate_stage.h"          /* proof_validate_stage_step_us_ewma */
 #include "jobs/utxo_apply_stage.h"              /* utxo_apply_stage_step_us_ewma */
 #include "jobs/tip_finalize_stage.h"            /* tip_finalize_stage_step_us_ewma */
+#include "jobs/pv_lookahead.h"                  /* pv_lookahead_hit_total */
 #include "util/stage.h"                         /* stage_batch_commit_us_ewma */
 #include "core/utiltime.h"                      /* GetTimeMicros */
 
@@ -117,24 +118,29 @@ void boot_mint_anchor_progress_log_tick(const char *path, int32_t through,
     if (off > 0 && (size_t)off < sizeof(stages_buf))
         snprintf(stages_buf + off, sizeof(stages_buf) - (size_t)off, "]");
 
+    /* pv lookahead cache hit rate (jobs/pv_lookahead.h): hits/misses since the
+     * pool started. 0/0 when the pool is off (misses count only while it runs). */
+    unsigned long long pvla_hits = pv_lookahead_hit_total();
+    unsigned long long pvla_misses = pv_lookahead_miss_total();
+
     FILE *f = fopen(path, "a");
     if (!f)
         return;                          /* best-effort: never block the fold */
     if (eta_s >= 0)
         fprintf(f,
                 "mint height=%d / %d rate=%.1f blk/s eta=%ld:%02ld:%02ld "
-                "elapsed=%.0fs slow=%s:%lldus cm:%lldus %s\n",
+                "elapsed=%.0fs slow=%s:%lldus cm:%lldus pvla=%llu/%llu %s\n",
                 through, anchor, rate,
                 eta_s / 3600, (eta_s % 3600) / 60, eta_s % 60, elapsed_s,
                 stage_abbrev[slow], (long long)stage_ewma[slow],
-                (long long)commit_ewma, stages_buf);
+                (long long)commit_ewma, pvla_hits, pvla_misses, stages_buf);
     else
         fprintf(f,
                 "mint height=%d / %d rate=%.1f blk/s eta=unknown "
-                "elapsed=%.0fs slow=%s:%lldus cm:%lldus %s\n",
+                "elapsed=%.0fs slow=%s:%lldus cm:%lldus pvla=%llu/%llu %s\n",
                 through, anchor, rate, elapsed_s,
                 stage_abbrev[slow], (long long)stage_ewma[slow],
-                (long long)commit_ewma, stages_buf);
+                (long long)commit_ewma, pvla_hits, pvla_misses, stages_buf);
     fclose(f);
 
     last_write_us = now_us;
