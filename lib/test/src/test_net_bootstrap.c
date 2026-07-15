@@ -201,15 +201,17 @@ int test_net_bootstrap(void)
         cm1.datadir = tmpdir;
         cm2.datadir = tmpdir;
 
-        /* 45.33.0.0/16 (Linode) is a real allocated, routable range — the
-         * same convention test_connman_addnode_fallback.c uses. addrman_add
-         * rejects non-routable ranges (e.g. the 203.0.113.0/24 documentation
-         * range used elsewhere in this file) outright, which would leave
-         * the addrman empty and make this test vacuous. */
+        /* Three DISTINCT allocated, routable /16 groups (Linode, and two other
+         * public ranges). addrman buckets by network group with a per-instance
+         * random key, so three addresses in the SAME group can collide into one
+         * bucket slot and collapse 3->2 non-deterministically; distinct groups
+         * keep all three regardless of the key. addrman_add rejects
+         * non-routable ranges (e.g. the 203.0.113.0/24 documentation range used
+         * elsewhere in this file) outright, which would make the test vacuous. */
         struct net_address a1, a2, a3;
         bootstrap_set_ipv4(&a1, 45, 33, 10, 1, 8033);
-        bootstrap_set_ipv4(&a2, 45, 33, 10, 2, 8033);
-        bootstrap_set_ipv4(&a3, 45, 33, 10, 3, 18033);
+        bootstrap_set_ipv4(&a2, 66, 42, 20, 2, 8033);
+        bootstrap_set_ipv4(&a3, 129, 153, 30, 3, 18033);
         struct net_addr src;
         net_addr_init(&src);
         ok = addrman_add(&cm1.manager.addrman, &a1, &src, 0) && ok;
