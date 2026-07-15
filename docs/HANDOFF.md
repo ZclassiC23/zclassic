@@ -206,7 +206,14 @@ executable. It copies all coins, historical Sprout/Sapling anchors, and
 pool-qualified nullifiers; writes a canonical eight-row proof summary and the
 source receipt; independently reopens/validates; and uses FULL-durable
 no-replace output. At the compiled checkpoint, hash/root/count/supply must
-match exactly. Source-tree/toolchain receipt fields are honestly producer
+match exactly. The h=3,056,758 checkpoint was re-baked 2026-07-15: the original
+mint captured a corrupt utxos projection (no height assert on the ceremony), so
+the checkpoint carried the h=3,056,759 count and a mismatched sha3/supply. The
+producer itself was CORRECT — the checkpoint constants were wrong. Two
+independent re-derivations from the preserved full-validation producer at
+h=3,056,758 agree: sha3 `5817f0ec…`, count 1,354,769, supply 10364137.94674881
+ZCL. The mint ceremony now refuses unless the utxos projection height equals a
+declared `--height=N`. Source-tree/toolchain receipt fields are honestly producer
 claims, not independent rebuild proof. Admission now retains an `O_NOFOLLOW`
 descriptor, opens SQLite through that identity, whole-file-hashes before/after
 semantic validation, and rejects any non-canonical schema object or column.

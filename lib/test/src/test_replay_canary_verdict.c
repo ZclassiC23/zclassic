@@ -165,20 +165,20 @@ static void seed_fixtures(const char *fx, const char *mode)
     write_file(fx, "getutxocommitment.json",
         "{\"sha3_hash\":\"deadbeef00000000000000000000000000000000"
         "00000000000000000000beef\",\"height\":3145329,"
-        "\"utxo_count\":1354771}\n");
+        "\"utxo_count\":1354769}\n");
     /* node coarse stats. */
     write_file(fx, "gettxoutsetinfo.json",
         "{\"height\":3145329,\"bestblock\":\"abc123\","
-        "\"transactions\":100,\"txouts\":1354771,"
-        "\"total_amount\":\"10364138.33747381\"}\n");
+        "\"transactions\":100,\"txouts\":1354769,"
+        "\"total_amount\":\"10364137.94674881\"}\n");
     /* zclassicd coarse stats — same VALUES, but total_amount is an
      * UNQUOTED JSON number (zclassicd's real format, verified live), so
      * this exercises the harness's json_amount tolerance: the cross-node
      * supply compare must still match the node's quoted form. */
     write_file(fx, "zd_gettxoutsetinfo.json",
         "{\"height\":3145329,\"bestblock\":\"abc123\","
-        "\"transactions\":100,\"txouts\":1354771,"
-        "\"total_amount\":10364138.33747381}\n");
+        "\"transactions\":100,\"txouts\":1354769,"
+        "\"total_amount\":10364137.94674881}\n");
 
     if (strcmp(mode, "fail-rejects") == 0) {
         /* a single header-admit reject => "consensus_rejects". */
@@ -191,7 +191,7 @@ static void seed_fixtures(const char *fx, const char *mode)
         write_file(fx, "getutxocommitment.json",
             "{\"sha3_hash\":\"00000000000000000000000000000000"
             "00000000000000000000000000000bad\","
-            "\"height\":3056758,\"utxo_count\":1354771}\n");
+            "\"height\":3056758,\"utxo_count\":1354769}\n");
     } else if (strcmp(mode, "fail-sha3-missing") == 0) {
         char path[PATH_MAX];
         snprintf(path, sizeof(path), "%s/getutxocommitment.json", fx);
@@ -205,7 +205,7 @@ static void seed_fixtures(const char *fx, const char *mode)
         write_file(fx, "zd_gettxoutsetinfo.json",
             "{\"height\":3145329,\"bestblock\":\"abc123\","
             "\"transactions\":100,\"txouts\":999999,"
-            "\"total_amount\":\"10364138.33747381\"}\n");
+            "\"total_amount\":\"10364137.94674881\"}\n");
     } else if (strcmp(mode, "fail-timeout") == 0) {
         /* the live harness writes state=timeout on a budget overrun;
          * the fixture mirrors that terminal state => "budget_exceeded". */

@@ -36,3 +36,7 @@ later lane flips it HARD.
 ## Log
 
 <!-- UNSEAL-ENTRIES (newest appended below; append-only, never edit past entries) -->
+
+- 2026-07-15T19:23:20Z — REASON: re-bake corrupt SHA3 checkpoint constants, owner-approved plan wave2 W2-1
+  old ROOT: 6d07d92fd9a468edd93e6f17c8825149b38e190f7df8569f077b9f0bd2b15abe
+  by: owner unseal ritual (make core-unseal)

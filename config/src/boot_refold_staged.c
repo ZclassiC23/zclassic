@@ -460,7 +460,7 @@ void boot_refold_from_anchor_reset(struct node_db *ndb)
      * binds it to the compiled checkpoint before any coin lands, so it
      * reproduces the anchor exactly even on a contaminated datadir (§0d: the
      * node.db `utxos` mirror is the contaminated TIP, NOT the anchor — re-seeding
-     * from it yields 1,344,574 ≠ 1,354,771). FALLBACK (no snapshot present) =
+     * from it yields 1,344,574 ≠ 1,354,769). FALLBACK (no snapshot present) =
      * the existing node.db `utxos` re-seed, which the hard-assert below still
      * guards (FATALs if it doesn't reproduce the checkpoint — the operator-paged
      * path). Clear the node.db mirror commitment keys + header_admit_log +

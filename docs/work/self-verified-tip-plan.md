@@ -176,7 +176,7 @@ a borrowed copy.**
   Classify each (Law 1: know the shape) before cutting — deleting a KEEP caller
   trips a live predicate.
 - **Gate:** a **FRESH** datadir (no `~/.zclassic`) folds genesis→tip, reproduces
-  the SHA3 root + 1,354,771 UTXOs; copy-prove `G-SOV`; *then* delete. Write
+  the SHA3 root + 1,354,769 UTXOs; copy-prove `G-SOV`; *then* delete. Write
   `test_self_folded_anchor` (does not exist yet).
 - **False-green & stronger gate (two traps):**
   - *Borrowed-seed no-op:* `-load-verify-boot` no-ops on a stamped `coins_kv`

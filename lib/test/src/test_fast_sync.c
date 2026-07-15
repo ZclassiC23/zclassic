@@ -1303,15 +1303,15 @@ static int test_snapshot_offer_mmr_field(void)
         memset(offer.block_hash, 0xAA, 32);
         memset(offer.utxo_root, 0xBB, 32);
         memset(offer.mmr_root, 0xCC, 32);
-        offer.num_utxos = 1354771;
-        offer.total_bytes = 1354771 * 80;
+        offer.num_utxos = 1354769;
+        offer.total_bytes = 1354769 * 80;
 
         /* Verify fields are distinct and correct */
         ASSERT(offer.height == 3000000);
         ASSERT(offer.block_hash[0] == 0xAA);
         ASSERT(offer.utxo_root[0] == 0xBB);
         ASSERT(offer.mmr_root[0] == 0xCC);
-        ASSERT(offer.num_utxos == 1354771);
+        ASSERT(offer.num_utxos == 1354769);
 
         /* Verify MMR root is its own field, not overlapping */
         ASSERT(memcmp(offer.utxo_root, offer.mmr_root, 32) != 0);

@@ -242,7 +242,7 @@ void utxo_apply_compute_block_delta(const struct block *blk,
      * the fold adds 0 outputs and spends 0 inputs for THE genesis block only
      * (its computed hash equals the active params' genesis hash), keeping
      * coins_kv matching zclassicd (count + coins_kv_commitment) rather than
-     * over-counting by +1 (the 1,354,772-vs-1,354,771 mint defect). An empty
+     * over-counting by +1 (the 1,354,770-vs-1,354,769 mint defect). An empty
      * ok=true delta: spent/added stay NULL, counts 0, total_value_delta 0
      * (delta_summary_init above). In production height 0 IS the real genesis so
      * the mint is unchanged; a synthetic non-genesis block at height 0 (its hash

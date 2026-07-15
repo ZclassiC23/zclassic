@@ -70,15 +70,19 @@ bool checkpoints_validate_header(const struct checkpoint_data *data,
 }
 
 /* ── SHA3 UTXO checkpoint ──────────────────────────────── */
-/* Verified bit-for-bit against zclassicd (ZclassicCommunity/zclassic)
- * at height 3,056,758 on 2026-03-26.
+/* Re-baked 2026-07-15 after the original mint captured a CORRUPT utxos
+ * projection at height 3,056,758 (the ceremony had no height assert, so an
+ * off-by-one projection state was committed): the old sha3/count/supply were
+ * wrong for this height. The block_hash was already correct and is unchanged.
  *
- * Verification method:
- *   1. Both nodes at height 3,056,758, same bestblockhash
- *   2. gettxoutsetinfo: txouts=1,354,771, total=10364138.33747381 ZCL
- *   3. Confirmed PERFECT MATCH at height 3,056,763 (zero delta)
- *   4. SHA3-256 computed over all UTXOs in (txid,vout) canonical order
- *      including full scriptPubKey data
+ * Corrected provenance — two independent re-derivations from the preserved
+ * FULL-validation producer at height 3,056,758 agree bit-for-bit:
+ *   height   = 3,056,758, bestblockhash 000002979090fba9…855bd653
+ *   sha3     = 5817f0ec66738db6989cf881cf37b2148d07b978fd69e5a334855b4991ac5f85
+ *   txouts   = 1,354,769   (the old 1,354,771 was the h=3,056,759 count)
+ *   supply   = 10364137.94674881 ZCL
+ * SHA3-256 is computed over all UTXOs in (txid,vout) canonical order including
+ * full scriptPubKey data.
  *
  * A new node reaching this height MUST produce the same SHA3 hash.
  * If not, its UTXO set is corrupted and cannot be trusted. */
@@ -93,14 +97,14 @@ static const struct sha3_utxo_checkpoint g_sha3_checkpoint = {
         0xa9, 0xfb, 0x90, 0x90, 0x97, 0x02, 0x00, 0x00,
     },
     .sha3_hash = {
-        /* 00e95dbd54a791a51433d68127f9975a3b1d6f8e9002b109647343ba0c83c3e0 */
-        0x00, 0xe9, 0x5d, 0xbd, 0x54, 0xa7, 0x91, 0xa5,
-        0x14, 0x33, 0xd6, 0x81, 0x27, 0xf9, 0x97, 0x5a,
-        0x3b, 0x1d, 0x6f, 0x8e, 0x90, 0x02, 0xb1, 0x09,
-        0x64, 0x73, 0x43, 0xba, 0x0c, 0x83, 0xc3, 0xe0,
+        /* 5817f0ec66738db6989cf881cf37b2148d07b978fd69e5a334855b4991ac5f85 */
+        0x58, 0x17, 0xf0, 0xec, 0x66, 0x73, 0x8d, 0xb6,
+        0x98, 0x9c, 0xf8, 0x81, 0xcf, 0x37, 0xb2, 0x14,
+        0x8d, 0x07, 0xb9, 0x78, 0xfd, 0x69, 0xe5, 0xa3,
+        0x34, 0x85, 0x5b, 0x49, 0x91, 0xac, 0x5f, 0x85,
     },
-    .utxo_count = 1354771,
-    .total_supply = 1036413833747381LL,  /* 10364138.33747381 ZCL */
+    .utxo_count = 1354769,
+    .total_supply = 1036413794674881LL,  /* 10364137.94674881 ZCL */
 };
 
 /* Test-only override (NULL in production). See checkpoints.h. */

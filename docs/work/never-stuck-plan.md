@@ -110,7 +110,7 @@ blast radius):
 The dangerous ones (2,3,4,6) are SILENT and keyspace-wide, so a "reconcile the top 10
 blocks" repair cannot find them — only a whole-set commitment can. **Do we even need
 the copy? No — not for correctness, only for speed.** Block bodies + the one
-bit-for-bit-verified SHA3 anchor (h=3,056,758, count 1,354,771, root `00e95dbd…`)
+bit-for-bit-verified SHA3 anchor (h=3,056,758, count 1,354,769, root `5817f0ec…`)
 deterministically reconstruct the entire UTXO set with zero zclassicd dependency. The
 copy buys only skipping the fold of ~94,654 blocks (anchor→tip). **If the from-blocks
 fold is fast enough on this NVMe box, delete the copy mechanism entirely** — the copy
@@ -119,7 +119,7 @@ coin). Falsification tests that must pass before deleting the cp path: the fork-
 fixture MUST report a SHA3 mismatch and refuse; the clean image MUST match and accept
 (resolve txid byte-order: is our stored txid BLOB the same internal order as
 zclassicd's uint256 LevelDB key?); body fold genesis→3,056,758 MUST reproduce SHA3
-`00e95dbd…` / count 1,354,771; a one-byte-corrupted SST MUST hard-halt the import
+`5817f0ec…` / count 1,354,769; a one-byte-corrupted SST MUST hard-halt the import
 (`node_db_import_service.c:380` wired to abort on any iterator error); full-history
 replay against the real chain — zero false-rejects across 3.15M blocks (h=478544
 doctrine); confirm `utxo_apply_delta_reorg.c` refuses unwinds deeper than

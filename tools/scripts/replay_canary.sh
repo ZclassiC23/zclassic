@@ -77,7 +77,7 @@ done
 # passed through this without an integrity FATAL; for the local commitment
 # path the value is the recompute target.
 ANCHOR_HEIGHT=3056758
-EXPECTED_SHA3="00e95dbd54a791a51433d68127f9975a3b1d6f8e9002b109647343ba0c83c3e0"
+EXPECTED_SHA3="5817f0ec66738db6989cf881cf37b2148d07b978fd69e5a334855b4991ac5f85"
 
 # ── Elapsed-time band (the named-defect guard) ─────────────────────
 # A from-anchor run that silently DEGRADES to a from-genesis-scale replay
@@ -272,7 +272,7 @@ json_str() {  # $1=json $2=key
     printf '%s' "$1" | grep -o "\"$2\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" \
         | head -1 | sed 's/.*:[[:space:]]*"\([^"]*\)"/\1/' || true
 }
-# total_amount tolerance: zclassic23 emits it QUOTED ("10364138.33747381")
+# total_amount tolerance: zclassic23 emits it QUOTED ("10364137.94674881")
 # but zclassicd emits it UNQUOTED as a JSON number (10395235.80748115).
 # Extract either form as a bare token so the two can be string-compared
 # directly (both nodes use 8-decimal fixed-point at the same height).

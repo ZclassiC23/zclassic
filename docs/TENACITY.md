@@ -54,7 +54,7 @@ cells tells you which one is right. You never fix it by editing the cell.
    finality boundary: at or below it, state pinned by checkpointed SHA3 UTXO
    commitments, recomputable from genesis and continuously re-proven; above it,
    a working window of cursors, stage logs, and coin deltas that is explicitly
-   disposable. The compiled checkpoint h=3,056,758 (sha3 `00e95dbd…`) is the
+   disposable. The compiled checkpoint h=3,056,758 (sha3 `5817f0ec…`) is the
    degenerate seal today; the rolling seal ring above it is roadmap work.
 
 4. **One recovery verb: rebuild the window, never repair it.** Any window
