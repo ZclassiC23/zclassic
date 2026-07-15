@@ -6,7 +6,7 @@
  * ----------------------------------------------------------
  * The detective stops carrying a copy of someone else's case file: a FRESH
  * datadir folds genesis -> the baked checkpoint height (3,056,758) on its own
- * temp coins_kv and re-derives the SAME SHA3 UTXO root + the SAME 1,354,771
+ * temp coins_kv and re-derives the SAME SHA3 UTXO root + the SAME 1,354,769
  * UTXO count as the compiled checkpoint. The block bodies are the authority;
  * the compiled checkpoint is only a notarization of what the fold MUST produce.
  *
@@ -63,7 +63,7 @@
  * so a future edit to the compiled struct that silently changes them trips
  * THIS test, not just the production accessor. */
 #define SFA_CHECKPOINT_HEIGHT      3056758
-#define SFA_CHECKPOINT_UTXO_COUNT  1354771ULL
+#define SFA_CHECKPOINT_UTXO_COUNT  1354769ULL
 
 /* A deterministic txid for the fixture fold. */
 static void sfa_txid(uint8_t out[32], uint8_t tag)
@@ -93,7 +93,7 @@ int test_self_folded_anchor(void)
      * (no fixture needed): pins the height + UTXO count the self-fold target
      * depends on, so a drift in the compiled checkpoint trips THIS test before
      * any fold work is attempted. */
-    printf("self_folded_anchor: baked checkpoint pins height + 1,354,771 UTXOs... ");
+    printf("self_folded_anchor: baked checkpoint pins height + 1,354,769 UTXOs... ");
     {
         const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
         ASSERT(cp != NULL);

@@ -3213,11 +3213,27 @@ int main(int argc, char **argv)
     if (argc >= 2 && strcmp(argv[1], "--mintutxocommitment") == 0) {
         const char *home = getenv("HOME");
         char db_path[512];
-        if (argc > 2)
-            snprintf(db_path, sizeof(db_path), "%s", argv[2]);
-        else
+        db_path[0] = '\0';
+        /* Fail-closed: the operator MUST declare the intended checkpoint
+         * height, and the ceremony refuses unless the utxos projection sits
+         * EXACTLY there. The original mint had no such assert and committed
+         * an off-by-one projection (see checkpoints.c re-bake note). */
+        int32_t want_height = -1;
+        for (int i = 2; i < argc; i++) {
+            if (strncmp(argv[i], "--height=", 9) == 0)
+                want_height = atoi(argv[i] + 9);
+            else if (argv[i][0] != '-' && db_path[0] == '\0')
+                snprintf(db_path, sizeof(db_path), "%s", argv[i]);
+        }
+        if (db_path[0] == '\0')
             snprintf(db_path, sizeof(db_path), "%s/.zclassic-c23/node.db",
                      home ? home : ".");
+        if (want_height < 0) {
+            fprintf(stderr, "Refusing to mint: pass --height=N (the intended "
+                    "checkpoint height) so the ceremony can assert the utxos "
+                    "projection sits exactly there.\n");
+            return 1;
+        }
 
         struct node_db ndb;
         if (!node_db_open(&ndb, db_path)) {
@@ -3266,6 +3282,15 @@ int main(int argc, char **argv)
             fprintf(stderr, "Refusing to mint: empty/incomplete UTXO set "
                     "(height=%d count=%llu). Sync to tip from a trusted "
                     "source first.\n", height, (unsigned long long)count);
+            return 1;
+        }
+
+        if (height != want_height) {
+            fprintf(stderr, "Refusing to mint: utxos projection height %d != "
+                    "intended checkpoint height %d — the projection is not at "
+                    "the checkpoint height (this is the off-by-one class the "
+                    "original corrupt mint hit). Settle the projection to "
+                    "exactly h=%d first.\n", height, want_height, want_height);
             return 1;
         }
 

@@ -453,7 +453,7 @@ static void boot_register_core_liveness_and_reducer(
      * h=3056758 plus a coin_backfill.refused.<h>.<hash> marker), arm_if_torn
      * re-seeds coins_kv from the SHA3-verified anchor snapshot (uss_open
      * verify_full_sha3=true bound to cp->sha3_hash) and HARD-ASSERTS the
-     * re-seeded set == checkpoint (commitment + count==1354771; FATAL on
+     * re-seeded set == checkpoint (commitment + count==1354769; FATAL on
      * mismatch). It then folds forward from the proven anchor. If it arms (or
      * a from-anchor refold is already in progress — explicit flag at boot.c,
      * or a mid-fold restart), SKIP the cold-import seed.
