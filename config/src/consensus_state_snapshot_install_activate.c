@@ -1018,7 +1018,9 @@ bool consensus_state_snapshot_install_activate(
              current_frontier_hash)))
         ok = activate_fail(result, CONSENSUS_INSTALL_REFUSED,
                            "publication ADMIT frontier changed before "
-                           "activation");
+                           "activation (admitted h=%d, live h=%d)",
+                           admitted_decision.expected_frontier_height,
+                           current_frontier);
     /* Schema creation belongs to the cutover transaction; a failed ensure
      * must leave the pre-install store exactly unchanged. */
     if (ok && (!coins_kv_ensure_schema(progress_db) ||

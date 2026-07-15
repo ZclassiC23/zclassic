@@ -13,6 +13,7 @@
 #include "crypto/sha3.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/refold_progress.h"
+#include "jobs/tip_finalize_stage.h"
 #include "sapling/incremental_merkle_tree.h"
 #include "services/consensus_state_publication_cas.h"
 #include "services/nullifier_backfill_service.h"
@@ -1987,25 +1988,10 @@ int test_consensus_state_snapshot_install(void)
         areq.datadir_display = active_dir;
         struct consensus_state_activate_result ares;
 
-        /* Production is fail-closed even in this test binary. Prove the
-         * independent-authority gate fires before request decoding, backup, or
-         * any progress-store write, then explicitly enable only the hermetic
-         * transaction exercises below. */
+        /* Production is fail-closed even in this test binary: containment is
+         * proven at (ii-b) below against a fully ADMIT-worthy bundle. Enable
+         * the seam only for the hermetic transaction exercises. */
         areq.bundle_path = b.path;
-        sqlite3_int64 contained_changes = sqlite3_total_changes64(pdb);
-        int contained_backups = prior_generation_count(active_dir);
-        consensus_state_snapshot_install_activate_test_set_independent_authority(
-            false);
-        CSI_CHECK("activate: production profile contains before backup/mutation",
-                  !consensus_state_snapshot_install_activate(
-                      pdb, &areq, &ares) &&
-                  ares.status == CONSENSUS_INSTALL_VERIFIED_CONTAINED &&
-                  !ares.activated && ares.prior_generation_path[0] == '\0' &&
-                  strstr(ares.reason, "independent complete-state replay") !=
-                      NULL &&
-                  sqlite3_total_changes64(pdb) == contained_changes &&
-                  prior_generation_count(active_dir) == contained_backups &&
-                  coins_kv_count(pdb) == 1);
         consensus_state_snapshot_install_activate_test_set_independent_authority(
             true);
 
@@ -2369,14 +2355,21 @@ int test_consensus_state_snapshot_install(void)
         areq.bundle_path = b.path;
         consensus_state_snapshot_install_activate_test_set_independent_authority(
             false);
+        sqlite3_int64 contained_changes = sqlite3_total_changes64(pdb);
+        int contained_backups = prior_generation_count(active_dir);
         struct consensus_state_activate_result ares_contained;
         CSI_CHECK("activate: no replay receipt keeps the install VERIFIED_"
-                  "CONTAINED (store untouched, still wedged)",
+                  "CONTAINED (nothing written, still wedged)",
                   !consensus_state_snapshot_install_activate(pdb, &areq,
                                                              &ares_contained) &&
                   !ares_contained.activated &&
                   ares_contained.status ==
                       CONSENSUS_INSTALL_VERIFIED_CONTAINED &&
+                  ares_contained.prior_generation_path[0] == '\0' &&
+                  strstr(ares_contained.reason,
+                         "independent replay-derived receipt") != NULL &&
+                  sqlite3_total_changes64(pdb) == contained_changes &&
+                  prior_generation_count(active_dir) == contained_backups &&
                   coins_kv_count(pdb) == 1);
 
         /* (iii) Positive — ADMIT path with authority granted (the ZCL_TESTING
@@ -2542,7 +2535,6 @@ int test_consensus_state_snapshot_install(void)
                   "(cure enables forward progress, not just forced cursors)",
                   climb_ok && hstar_climb == b.height + 3 &&
                   hstar_climb > hstar_base && served_climb == b.height + 3);
-        reducer_frontier_test_set_compiled_anchor(-1);
 
         /* Physically restorable prior generation. */
         sqlite3 *prior = NULL;
@@ -2566,7 +2558,40 @@ int test_consensus_state_snapshot_install(void)
 
         /* (vii) The real replay receipt written above lifts the production
          * containment with the ZCL_TESTING hook OFF: activate consults the
-         * on-disk receipt, finds it binds THIS bundle, and installs. */
+         * on-disk receipt, finds it binds THIS bundle, and installs. The
+         * (iii-b) rewrite replaced the bundle inode, so the CAS descriptor
+         * binding correctly demands a fresh exact ADMIT first. */
+        ev = NULL;
+        evr = consensus_state_artifact_evidence_open(b.path, &ev);
+        bool auth_cin_ok = evr.ok && ev &&
+            consensus_state_artifact_evidence_manifest_copy(ev, &cin.manifest) &&
+            consensus_state_artifact_evidence_digest(
+                ev, cin.artifact_logical_digest) &&
+            consensus_state_artifact_evidence_receipt_digest(
+                ev, cin.artifact_receipt_digest);
+        /* The store folded 3 heights past the anchor above; the CAS fence
+         * demands the decision record the LIVE frontier, resolved exactly the
+         * way activate captures it (durable-tip convention included). */
+        int32_t live_frontier_h = -1;
+        uint8_t live_frontier_hash[32] = {0};
+        CSI_CHECK("activate: live frontier resolves for the fresh ADMIT",
+                  tip_finalize_stage_resolve_durable_tip(pdb, &live_frontier_h,
+                                                         live_frontier_hash) &&
+                  live_frontier_h == b.height + 3);
+        cin.frontier_height = live_frontier_h;
+        memcpy(cin.frontier_hash, live_frontier_hash, 32);
+        consensus_state_publication_cas_decide(&cin, &dec);
+        CSI_CHECK("activate: replay-authority bundle receives a fresh exact "
+                  "ADMIT receipt",
+                  auth_cin_ok && dec.decision == CONSENSUS_PUBLICATION_ADMIT);
+        if (dec.decision == CONSENSUS_PUBLICATION_ADMIT) {
+            active_decision = dec;
+            memcpy(areq.expected_artifact_receipt_digest,
+                   dec.artifact_receipt_digest, 32);
+            areq.publication_decision = &active_decision;
+        }
+        if (ev)
+            consensus_state_artifact_evidence_free(ev);
         consensus_state_snapshot_install_activate_test_set_independent_authority(
             false);
         struct consensus_state_activate_result ares_auth;
@@ -2580,6 +2605,7 @@ int test_consensus_state_snapshot_install(void)
         if (ares_auth.prior_generation_path[0])
             unlink(ares_auth.prior_generation_path);
 
+        reducer_frontier_test_set_compiled_anchor(-1);
         if (active_dir_fd >= 0)
             (void)close(active_dir_fd);
         progress_store_close();
