@@ -330,6 +330,18 @@ bool boot_mint_anchor_export_bundle(sqlite3 *pdb, const char *datadir,
     return true;
 }
 
+/* Set progress.kv's WAL auto-checkpoint threshold (pages; 0 disables SQLite's
+ * automatic checkpoints). PRAGMA-only, under the progress-store tx lock. */
+static void mint_wal_autocheckpoint(sqlite3 *pdb, int pages)
+{
+    if (!pdb) return;
+    char sql[64];
+    snprintf(sql, sizeof(sql), "PRAGMA wal_autocheckpoint=%d", pages);
+    progress_store_tx_lock();
+    (void)sqlite3_exec(pdb, sql, NULL, NULL, NULL);
+    progress_store_tx_unlock();
+}
+
 bool boot_mint_anchor_run(const char *datadir)
 {
     const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
@@ -456,6 +468,19 @@ bool boot_mint_anchor_run(const char *datadir)
     boot_mint_anchor_progress_log_tick(progress_log, last_through, anchor,
                            drive_start_us, /*force=*/true);
 
+    /* Serial mint pipeline: mark this drive thread so every stage step reads the
+     * un-flushed overlay via coins_kv_overlay_safe() (the writer bracket only
+     * spans utxo_apply). Sound ONLY because the mint fold is single-threaded.
+     * Balanced on every exit path below. */
+    coins_ram_mint_drive_enter();
+
+    /* WAL policy: once the overlay is the write path, hold auto-checkpoints off
+     * and TRUNCATE the WAL at each overlay flush boundary (where the durable
+     * coins_applied_height advances), bounding WAL growth without an fsync per
+     * commit. SQLite default when the overlay is opted out (ZCL_FOLD_INRAM=0). */
+    bool wal_manual = false;
+    int32_t last_durable = -1;
+
     for (;;) {
         int32_t through = mint_frontier_through();
         if (through >= anchor)
@@ -467,6 +492,23 @@ bool boot_mint_anchor_run(const char *datadir)
          * budgetless kick was a silent multi-hour spin (the 2026-07-13 mint
          * livelock: no progress line, stall guard never ran). */
         (void)reducer_kick_unbudgeted(ctl);
+
+        if (!wal_manual && coins_ram_active()) {
+            mint_wal_autocheckpoint(pdb, 0);
+            wal_manual = true;
+            last_durable = mint_applied_through(pdb);
+            fprintf(stderr,
+                    "[mint-anchor] S1.3+: WAL auto-checkpoint disabled; the WAL "
+                    "is TRUNCATEd at each overlay flush boundary\n");
+        }
+        /* A flush landed iff the durable applied-through advanced. */
+        if (wal_manual) {
+            int32_t durable_now = mint_applied_through(pdb);
+            if (durable_now > last_durable) {
+                (void)progress_store_checkpoint();
+                last_durable = durable_now;
+            }
+        }
 
         int32_t now = mint_frontier_through();
         /* Throttled on-disk progress (every ~5s) — readable while the fold
@@ -491,11 +533,15 @@ bool boot_mint_anchor_run(const char *datadir)
                 progress_store_set_sync_mode(/*ibd=*/false);
                 (void)progress_store_checkpoint();
             }
+            if (wal_manual) mint_wal_autocheckpoint(pdb, 1000);  /* restore default */
+            coins_ram_mint_drive_exit();
             boot_mint_anchor_report_frontier_walled(pdb, now, anchor,
                                                     kStallLimit);
             return false;
         }
     }
+
+    coins_ram_mint_drive_exit();
 
     int32_t through = mint_frontier_through();
     int64_t count = coins_kv_count(pdb);
@@ -516,6 +562,14 @@ bool boot_mint_anchor_run(const char *datadir)
             LOG_WARN("mint_anchor",
                      "pre-export wal_checkpoint failed; artifact remains "
                      "SHA3-gated");
+    }
+    /* Restore auto-checkpointing + a final TRUNCATE so every fold write is in
+     * the main db (not the WAL) before the snapshot/receipt/export read it.
+     * Independent of the sync-off restore above (wal_manual can be set with
+     * ZCL_MINT_PROGRESS_SYNC_OFF=0). */
+    if (wal_manual) {
+        mint_wal_autocheckpoint(pdb, 1000);
+        (void)progress_store_checkpoint();
     }
 
     /* (2) Write the snapshot artifact. Output path: $ZCL_MINT_ANCHOR_OUT, else

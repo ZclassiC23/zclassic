@@ -43,15 +43,27 @@
  * coins_ram_active(), but those shims are called from OTHER threads (bg-
  * validation worker pthreads, the RPC pool's gettxoutsetinfo, the seal_service
  * background thread). A reader loading s->script or holding a slot pointer
- * races the writer. The guard: route to the overlay ONLY when the CALLING
- * thread is the one inside the coins_ram_writer_enter/exit bracket the reducer
- * folds under; a non-writer thread transparently takes the SQLite path
- * (FULLMUTEX-protected, no UAF). The WRITE shims (coins_kv_add / _spend /
- * _many) are NOT gated: they run inside the writer bracket (or the
- * progress_store_tx_lock-serialized backfill). */
+ * races the writer. The guard: route to the overlay ONLY on a thread where the
+ * map is not concurrently mutated; every other thread takes the FULLMUTEX SQLite
+ * path (no UAF). The WRITE shims (coins_kv_add / _spend / _many) are NOT gated:
+ * they run inside the writer bracket (or the progress_store_tx_lock-serialized
+ * backfill).
+ *
+ * Two thread classes read safely:
+ *   (1) the reducer fold thread inside the utxo_apply writer bracket — the only
+ *       place the overlay mutates (the live/steady-state case);
+ *   (2) the offline -mint-anchor drive thread: that fold runs all eight stages
+ *       serially on ONE thread, so script_validate's prevout read and utxo_apply
+ *       share it. The writer bracket only spans utxo_apply, so without (2)
+ *       script_validate would miss a recent coin still resident in the
+ *       un-flushed overlay (prevout_unresolved -> wedge). The mint-drive marker
+ *       is entered ONLY by that single-threaded driver, so no other thread
+ *       mutates the overlay while it holds the drive (asserted in
+ *       coins_ram_writer_enter). */
 static bool coins_kv_overlay_safe(void)
 {
-    return coins_ram_active() && coins_ram_writer_thread();
+    return coins_ram_active() &&
+           (coins_ram_writer_thread() || coins_ram_mint_drive_thread());
 }
 
 bool coins_kv_ensure_schema(sqlite3 *db)

@@ -151,10 +151,14 @@ design and needs no approval.
 
 Every speed lever was tried and hit a hard wall:
 - **`-mint-anchor-fast` (in-RAM, fast)** → CHECKPOINT_FOLD → **can't export/install** (dead end).
-- **FULL `-mint-anchor` + `ZCL_FOLD_INRAM=1`** → **FATAL by design**: "FULL-validation fold ...
-  script_validate resolves prevouts from [disk]". FULL validation REQUIRES on-disk coins for
-  prevout resolution → **in-RAM is incompatible with the exportable path.** (fastfold crash-looped
-  86× on this; service disabled.)
+- **FULL `-mint-anchor` + `ZCL_FOLD_INRAM=1`** → was **FATAL by design** at the time of writing
+  (script_validate resolved prevouts from durable coins_kv only, so an active overlay wedged the
+  fold). **CURED (in-RAM serial-pipeline fold):** the offline `-mint-anchor` drive is single-
+  threaded, so it now brackets the whole drive with `coins_ram_mint_drive_enter/exit` and
+  `coins_kv_overlay_safe()` admits overlay READS on that drive thread — script_validate resolves
+  recent-coin prevouts straight from the un-flushed overlay. FULL `-mint-anchor` now DEFAULTS to
+  the in-RAM overlay (opt out `ZCL_FOLD_INRAM=0`); the terminal SHA3/count hard-assert is unchanged.
+  This is the write-behind/IO-volume lever the "one real long-term lever" note below called for.
 - **Parallel crypto (stacked-fold)** → helps little because the ceiling is **disk IO**, not crypto.
 - **Workflow `fast-fold-ceiling`** → busted (~1.5h, no committed fixes; killed; it + its 7 scratch
   folds were thrashing IO and starving the real fold).
