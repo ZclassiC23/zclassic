@@ -36,6 +36,7 @@
 #include "primitives/block.h"
 #include "storage/disk_block_io.h"
 #include "util/log_macros.h"
+#include "util/mem_pressure.h"
 #include "util/safe_alloc.h"
 
 #include <pthread.h>
@@ -55,6 +56,34 @@ struct bpc_entry {
 static pthread_mutex_t g_bpc_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct bpc_entry g_bpc[BPC_CAPACITY];
 static uint64_t g_bpc_clock; /* monotonic LRU stamp source (under mutex) */
+
+/* ── mem_pressure sink (Rung 1 follow-on, docs/adr/0003-os-substrate-
+ * verdict.md) ──────────────────────────────────────────────────────
+ * A REAL shrink target: every entry is a read-through cache of already-
+ * persisted disk data (re-derivable by the next block_parse_cache_get()
+ * miss), so dropping it under memory pressure loses nothing but a few
+ * upcoming cache hits — never consensus state. Registered once, lazily,
+ * on the first cache use (pthread_once — this module has no explicit
+ * init entry point). */
+static void bpc_shrink_for_pressure(enum mem_pressure_level level, void *ctx)
+{
+    (void)level;
+    (void)ctx;
+    block_parse_cache_clear();
+}
+
+static struct mem_pressure_sink g_bpc_pressure_sink = {
+    .name = "block_parse_cache",
+    .shrink = bpc_shrink_for_pressure,
+    .ctx = NULL,
+};
+
+static pthread_once_t g_bpc_pressure_once = PTHREAD_ONCE_INIT;
+
+static void bpc_register_pressure_sink(void)
+{
+    (void)mem_pressure_register_sink(&g_bpc_pressure_sink);
+}
 
 /* Store (or refresh) the (height,hash) -> parsed-body entry by taking a deep
  * clone of `src` into the slot. The slot's prior body (if any) is block_free'd.
@@ -109,6 +138,8 @@ bool block_parse_cache_get(int32_t height, const uint8_t block_hash[32],
 {
     if (!out || !block_hash || !bi)
         return false;
+
+    pthread_once(&g_bpc_pressure_once, bpc_register_pressure_sink);
 
     /* ── HIT path: clone the cached parsed body into `out` under the lock.
      *    The clone is a struct deep copy (no stream parse) and is independent

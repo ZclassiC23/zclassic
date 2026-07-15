@@ -1360,6 +1360,8 @@ int main(int argc, char **argv)
     failures += test_sync_watchdog_conditions();
     { extern int test_sticky_conditions(void);
       failures += test_sticky_conditions(); }
+    { extern int test_mem_pressure(void);
+      failures += test_mem_pressure(); }
     { extern int test_validation_pack_conditions(void);
       failures += test_validation_pack_conditions(); }
     { extern int test_sticky_escalator(void);
@@ -1389,6 +1391,8 @@ int main(int argc, char **argv)
     failures += test_service_state_driver();
     failures += test_clock();
     failures += test_rng();
+    { extern int test_os_proc(void);
+      failures += test_os_proc(); }
     failures += test_seed_tape();
     failures += test_postmortem();
     failures += test_chaos_harness();

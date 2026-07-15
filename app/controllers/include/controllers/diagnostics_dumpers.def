@@ -332,3 +332,10 @@
                "l3_domains + per-domain {id, l3_size_bytes, cpu_count, cpus}, "
                "largest_l3_domain (the V-Cache CCD on multi-CCD AMD parts), source "
                "(sysfs/fallback)"),
+    DIAG_RUNTIME("mem_pressure", mem_pressure_dump_state_json,
+                 "memory-pressure organ (Rung 1 follow-on): level "
+                 "(nominal/elevated/high/critical), current/denominator "
+                 "bytes + basis (cgroup_high/cgroup_max/sys_total), rss_bytes, "
+                 "elevated/high/critical_pct thresholds, polling_active, and "
+                 "per-sink {name, last_shrink_unix, shrink_calls}",
+                 "lib/util/src/mem_pressure.c", DIAG_TEST_DEFAULT),

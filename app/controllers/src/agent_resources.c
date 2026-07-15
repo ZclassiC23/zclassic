@@ -5,14 +5,12 @@
 #include "controllers/agent_resources.h"
 
 #include "json/json.h"
-#include "util/log_macros.h"
+#include "platform/os_proc.h"
 
 #include <stdio.h>
 #include <string.h>
-#include <unistd.h>
 
 #define AGENT_RESOURCES_RSS_WARN_MB 4096
-#define AGENT_RESOURCES_CGROUP_ROOT "/sys/fs/cgroup"
 #define AGENT_RESOURCES_CGROUP_HIGH_WATCH_PCT 85
 #define AGENT_RESOURCES_CGROUP_HIGH_WARN_PCT 95
 #define AGENT_RESOURCES_CGROUP_MAX_WATCH_PCT 80
@@ -34,89 +32,6 @@ struct agent_resources_cgroup_stat {
     int64_t slab_bytes;
 };
 
-static int64_t agent_resources_rss_kb(void)
-{
-    FILE *f = fopen("/proc/self/status", "r");
-    if (!f)
-        LOG_RETURN(-1, "agent_resources",
-                   "rss_kb: cannot open /proc/self/status");
-
-    char line[256];
-    while (fgets(line, sizeof(line), f)) {
-        long long kb = 0;
-        if (sscanf(line, "VmRSS: %lld kB", &kb) == 1) {
-            fclose(f);
-            if (kb < 0)
-                LOG_RETURN(-1, "agent_resources",
-                           "rss_kb: negative VmRSS in /proc/self/status");
-            return (int64_t)kb;
-        }
-    }
-
-    fclose(f);
-    LOG_RETURN(-1, "agent_resources",
-               "rss_kb: VmRSS missing in /proc/self/status");
-}
-
-static int64_t agent_resources_uptime_seconds(void)
-{
-    FILE *f = fopen("/proc/uptime", "r");
-    if (!f)
-        LOG_RETURN(-1, "agent_resources",
-                   "uptime_seconds: cannot open /proc/uptime");
-
-    double system_uptime = 0.0;
-    if (fscanf(f, "%lf", &system_uptime) != 1) {
-        fclose(f);
-        LOG_RETURN(-1, "agent_resources",
-                   "uptime_seconds: cannot parse /proc/uptime");
-    }
-    fclose(f);
-
-    f = fopen("/proc/self/stat", "r");
-    if (!f)
-        LOG_RETURN(-1, "agent_resources",
-                   "uptime_seconds: cannot open /proc/self/stat");
-
-    char buf[1024];
-    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-    fclose(f);
-    if (n == 0)
-        LOG_RETURN(-1, "agent_resources",
-                   "uptime_seconds: empty /proc/self/stat");
-    buf[n] = '\0';
-
-    const char *p = strrchr(buf, ')');
-    if (!p)
-        LOG_RETURN(-1, "agent_resources",
-                   "uptime_seconds: malformed /proc/self/stat comm");
-    p++;
-    for (int i = 0; i < 19; i++) {
-        while (*p == ' ')
-            p++;
-        while (*p && *p != ' ')
-            p++;
-    }
-    while (*p == ' ')
-        p++;
-
-    long long start_ticks = 0;
-    if (sscanf(p, "%lld", &start_ticks) != 1)
-        LOG_RETURN(-1, "agent_resources",
-                   "uptime_seconds: cannot parse process start ticks");
-
-    long ticks_per_sec = sysconf(_SC_CLK_TCK);
-    if (ticks_per_sec <= 0)
-        ticks_per_sec = 100;
-
-    double process_start = (double)start_ticks / (double)ticks_per_sec;
-    double uptime = system_uptime - process_start;
-    if (uptime < 0.0)
-        LOG_RETURN(-1, "agent_resources",
-                   "uptime_seconds: process start is in the future");
-    return (int64_t)uptime;
-}
-
 static void agent_resources_trim_newline(char *s)
 {
     if (!s)
@@ -126,42 +41,6 @@ static void agent_resources_trim_newline(char *s)
         s[len - 1] = '\0';
         len--;
     }
-}
-
-static bool agent_resources_cgroup_dir(char *out, size_t out_len)
-{
-    if (!out || out_len == 0)
-        return false; // raw-return-ok:optional-cgroup-unavailable
-
-    FILE *f = fopen("/proc/self/cgroup", "r");
-    if (!f)
-        return false; // raw-return-ok:optional-cgroup-unavailable
-
-    char line[512];
-    bool ok = false;
-    while (fgets(line, sizeof(line), f)) {
-        if (strncmp(line, "0::", 3) != 0)
-            continue;
-        char *rel = line + 3;
-        agent_resources_trim_newline(rel);
-        int n = 0;
-        if (rel[0] == '\0' || strcmp(rel, "/") == 0) {
-            n = snprintf(out, out_len, "%s", AGENT_RESOURCES_CGROUP_ROOT);
-        } else if (rel[0] == '/') {
-            n = snprintf(out, out_len, "%s%s",
-                         AGENT_RESOURCES_CGROUP_ROOT, rel);
-        } else {
-            n = snprintf(out, out_len, "%s/%s",
-                         AGENT_RESOURCES_CGROUP_ROOT, rel);
-        }
-        if (n < 0 || (size_t)n >= out_len)
-            break;
-        ok = true;
-        break;
-    }
-
-    fclose(f);
-    return ok;
 }
 
 static int64_t agent_resources_cgroup_bytes(const char *dir, const char *name)
@@ -372,7 +251,7 @@ static void agent_resources_apply_cgroup_stat(
 static void agent_resources_collect_cgroup(struct agent_resource_snapshot *s)
 {
     char dir[768];
-    if (!agent_resources_cgroup_dir(dir, sizeof(dir)))
+    if (!os_proc_cgroup_dir(dir, sizeof(dir)))
         return;
 
     int64_t current_bytes =
@@ -510,13 +389,13 @@ void agent_resource_snapshot_collect(struct agent_resource_snapshot *snapshot)
     snapshot->cgroup_memory_warning = false;
     snapshot->uptime_seconds = -1;
 
-    int64_t rss_kb = agent_resources_rss_kb();
-    if (rss_kb >= 0)
-        snapshot->rss_mb = rss_kb / 1024;
+    struct os_proc_mem mem;
+    if (os_proc_mem_read(&mem) && mem.rss_bytes >= 0)
+        snapshot->rss_mb = mem.rss_bytes / (1024 * 1024);
     snapshot->rss_warning =
         snapshot->rss_mb > snapshot->rss_warn_threshold_mb;
     agent_resources_collect_cgroup(snapshot);
-    snapshot->uptime_seconds = agent_resources_uptime_seconds();
+    snapshot->uptime_seconds = os_proc_uptime_seconds();
 }
 
 void agent_push_resources_json(struct json_value *out, const char *key,

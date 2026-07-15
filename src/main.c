@@ -59,6 +59,7 @@
 #include "sapling/sapling_prover.h"
 #include "sapling/params_init.h"
 #include "platform/clock.h"               /* clock_now_monotonic_ns (banned: gettimeofday) */
+#include "platform/os_proc.h"             /* os_proc_exe_path (banned: raw /proc/self/exe) */
 #include "test/verify_bench_fixture.h"    /* baked real (200,9) witness */
 #include "controllers/explorer_internal.h"
 #include "services/wallet_backup_service.h"
@@ -3768,9 +3769,7 @@ int main(int argc, char **argv)
     app_shutdown();
     if (do_respawn) {
         char exe[4096];
-        ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
-        if (n > 0) {
-            exe[n] = '\0';
+        if (os_proc_exe_path(exe, sizeof(exe))) {
             fprintf(stderr,
                 "[main] self-respawn: re-exec %s (off-systemd liveness "
                 "recovery; bounded by the persisted restart budget)\n", exe);

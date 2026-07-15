@@ -308,6 +308,13 @@ void boot_bg_hash_verify_stop(void *ctx);
 bool boot_sd_watchdog_start(void *ctx);   /* arm WATCHDOG=1 heartbeat ring */
 void boot_sd_watchdog_stop(void *ctx);
 
+/* ── boot_mem_pressure.c ────────────────────────────────────────
+ * Memory-pressure organ (Rung 1 follow-on, docs/adr/0003-os-substrate-
+ * verdict.md): registers lib/util/mem_pressure's poll on the SAME health
+ * periodic ring as boot_sd_watchdog — no dedicated thread. Called from
+ * boot_register_runtime_services() (the boot_canary_watch.c pattern). */
+bool boot_mem_pressure_register(struct boot_svc_ctx *svc);
+
 /* ── utxo_mirror_sync (boot_runtime_sync_services.c) ────────────
  * Keep node.db's explorer `utxos` mirror synced to the authoritative
  * coins_kv set (process_block_flush_coins, its only forward writer, is dead
