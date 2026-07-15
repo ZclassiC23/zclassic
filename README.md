@@ -34,8 +34,8 @@ current live state, ask the running node (`zclassic23 status`) or read
 soft spot: **off-chain ZMSG is plaintext on the wire**.
 
 It is operator-owned full-node infrastructure: embedded Tor publishes *your* onion
-service, wallet state stays in your datadir, MCP is a typed *local* operator
-interface. Safety boundary and integrity checks:
+service, wallet state stays in your datadir, and native commands are a typed
+local operator interface. Safety boundary and integrity checks:
 [`docs/SECURITY_AND_INTEGRITY.md`](docs/SECURITY_AND_INTEGRITY.md).
 
 ## What's on board
@@ -47,8 +47,8 @@ snapshot — *the ~1-minute cold sync this enables is a design target, not the
 proven path today; see [Bootstrapping to tip](#bootstrapping-to-tip)*), an
 in-process Tor hidden service (`-tor`), a block explorer (`/explorer` + `/api`,
 served over the onion or HTTPS — see [Block explorer](#block-explorer)), a
-shielded wallet (transparent + Sapling), and an MCP server. Full subsystem
-catalog in [`CLAUDE.md`](CLAUDE.md).
+shielded wallet (transparent + Sapling), and a native command registry. Full
+subsystem catalog in [`CLAUDE.md`](CLAUDE.md).
 
 Honestly labeled: **ZNAM** name registry (working); **ZMSG** messaging (on-chain
 shielded; off-chain P2P is plaintext on the wire); **ZCL Market** + **ZSWP**
@@ -109,7 +109,7 @@ has a **long** initial sync.
 > Tor fork — `git submodule update --init vendor/tor`, then build it per
 > [`docs/BUILD.md`](docs/BUILD.md) — and the Makefile auto-links it
 > (`build/bin/zclassic23 -tor` then publishes a `.onion`, visible in
-> `zcl_status`).
+> `zclassic23 status`).
 
 Datadir `~/.zclassic-c23/` (`-datadir=DIR`). Default ports: P2P `8033`, RPC
 `18232`. On the operator host, `zclassic23` owns the canonical public P2P port
@@ -135,9 +135,9 @@ A brand-new datadir is honestly empty. It does **not** report a fake height:
 
 ### Is it healthy?
 
-One call answers it — over MCP `zcl_status`, or over RPC the equivalent
-`zcl-rpc` calls (`getblockcount`, `getpeerinfo`, `syncstate`, `healthcheck`).
-The key fields:
+One native call answers it: `build/bin/zclassic23 status`. Direct RPC clients
+can query the same underlying facts through `getblockcount`, `getpeerinfo`,
+`syncstate`, and `healthcheck`. The key fields:
 
 | Field | Fresh / syncing | Synced (at tip) |
 |---|---|---|
@@ -151,7 +151,7 @@ The key fields:
 | `health.checks.onion_address` | absent until Tor onion is up | present (`…onion`) |
 | `blockers.active_count` / `dominant_blocker` | `0` / `null` on a healthy boot | `0` / `null` |
 
-Illustrative `zcl_status` output (**example values, not a live capture** —
+Illustrative `zclassic23 status` data (**example values, not a live capture** —
 large diagnostic subtrees trimmed):
 
 ```jsonc
@@ -264,13 +264,6 @@ Start with `status` (height, peers, sync, onion, health in one call);
 `discover help` / `discover search <q>` enumerates the full ~100-command
 catalog. The daily-driver reference is in [`CLAUDE.md`](CLAUDE.md).
 
-**Legacy MCP server (still runs today, removed in W3):** the owner directive
-is zero-MCP — see [`docs/work/MCP-REMOVAL-PLAN.md`](docs/work/MCP-REMOVAL-PLAN.md).
-Until then, `build/bin/zclassic23 -mcp` (or `claude mcp add zcl23 --
-build/bin/zclassic23 -mcp`) still exposes the same surface as typed MCP
-tools. MCP/native are both operator interfaces (stdio, local client) — don't
-expose RPC/MCP/native to untrusted clients.
-
 ## Block explorer
 
 The node serves a web block explorer (`/explorer`, with a JSON API under `/api`).
@@ -286,7 +279,7 @@ bootstrap.
 
 - **Over the onion service** — build the bundled Tor fork (see the opt-in note in
   [Quick start](#quick-start)) and run `-tor`; the explorer is then served on the
-  node's `.onion` (visible via `zcl_status`). No certificate needed.
+  node's `.onion` (visible via `zclassic23 status`). No certificate needed.
 - **Over HTTPS on clearnet** — drop a TLS certificate and key at
   `<datadir>/ssl/fullchain.pem` and `<datadir>/ssl/privkey.pem`. The HTTPS
   explorer then starts once the node is near tip (default port `8443`). Without a
@@ -294,7 +287,8 @@ bootstrap.
   it — this is expected on a default build.
 
 A default build (Tor stub, no cert) intentionally has **no public explorer
-endpoint**. Use MCP / `zcl-rpc` for node data in that configuration.
+endpoint**. Use the native command registry or `zcl-rpc` for node data in that
+configuration.
 
 ## Architecture
 
@@ -313,7 +307,7 @@ zclassic23 (~15 MB, static)
 ├── MVC            Models (SQLite) · Controllers (C23) · Views (HTML/JSON)
 ├── Fast sync      FlyClient + SHA3 UTXO snapshot
 ├── Wallet         transparent + Sapling
-└── Native cmds    ~100 typed commands (`zclassic23 <cmd>`; legacy MCP on stdio via -mcp, removed W3)
+└── Native cmds    ~100 typed commands (`zclassic23 <cmd>`)
 ```
 
 ## Repository layout
@@ -326,7 +320,7 @@ zclassic23 (~15 MB, static)
 | `domain/` | Pure domain logic (consensus rules, encodings, wallet primitives — no I/O) |
 | `config/` | Composition root: boot sequence + wiring |
 | `ports/` · `adapters/` | Hexagonal port interfaces + outbound adapters |
-| `tools/` | MCP server, lint gates, fuzzers, simulators, release scripts |
+| `tools/` | Developer tools, lint gates, fuzzers, simulators, release scripts |
 | `docs/` | All documentation |
 | `deploy/` | systemd user service + host setup |
 | `vendor/` | Vendored deps + Tor submodule |
@@ -337,8 +331,8 @@ zclassic23 (~15 MB, static)
   ([`docs/DEFENSIVE_CODING.md`](docs/DEFENSIVE_CODING.md)): every write through the
   ActiveRecord lifecycle, every error logs context, every alloc checked, every
   long loop on a supervisor liveness tree.
-- **Tests:** `make test` (592 registered parallel groups at the 2026-07-12
-  audit); bugs become 64-bit seeds in a
+- **Tests:** `make test` (600+ registered parallel groups); bugs become 64-bit
+  seeds in a
   deterministic simulator ([`docs/CHAOS_HARNESS.md`](docs/CHAOS_HARNESS.md)).
 - **Crash recovery is demonstrable:** `make test-crash-bootstrap` runs a
   hermetic kill-9 / restart harness (`tools/crash_recovery_test.c`, isolated
@@ -372,13 +366,13 @@ covered in [Bootstrapping to tip](#bootstrapping-to-tip).
 
 ## Troubleshooting
 
-Break-glass checklist. Over MCP each step is a typed tool; over the shell it is a
-`zcl-rpc` call. Full operator runbook: [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
+Break-glass checklist. Prefer the typed native commands; use direct RPC for
+protocol-level detail. Full operator runbook: [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
 
 **No peers (`peers: 0` stays at 0).**
 ```bash
-build/bin/zclassic23 agent                  # compact status; MCP: zcl_agent
-build/bin/zclassic-cli getpeerinfo          # connected peers; MCP: zcl_peers
+build/bin/zclassic23 status
+build/bin/zclassic23 core network peers list
 build/bin/zclassic-cli getnetworkinfo       # connection summary
 build/bin/zclassic-cli addnode "IP:PORT" "onetry"
 ss -tlnp | grep 8033                        # P2P port reachable?
@@ -389,22 +383,21 @@ the node can harvest peers without DNS or fixed IPs.
 **Stuck height (height frozen, not at tip).** A stall is never silent — it is
 either a growing tip gap or a named blocker:
 ```bash
-# MCP: zcl_status → check sync.state, sync_gap, health.checks, blockers
-# MCP: zcl_syncstate (sync phase), zcl_blockers / zcl_state subsystem=supervisor
-build/bin/zclassic23 agent             # compact status and named blocker
-build/bin/zclassic23 agentops          # no-jq command center and next work
+build/bin/zclassic23 status
+build/bin/zclassic23 core sync diagnose
+build/bin/zclassic23 dumpstate reducer_frontier
+build/bin/zclassic23 dumpstate supervisor
 build/bin/zclassic-cli syncstate       # sync FSM state
 build/bin/zclassic-cli healthcheck     # synced / has_peers / tip_stale / tip_lag
 ```
-Look at `blockers` / `dominant_blocker` in `zcl_status` for the named reason. A
+Look at `blockers` / `dominant_blocker` in `zclassic23 status` for the named reason. A
 transient `sync.state: failed` often clears on `systemctl --user restart
 zclassic23`.
 
 **Reading the log.** `node.log` lives in the datadir: `~/.zclassic-c23/node.log`.
 ```bash
 tail -f ~/.zclassic-c23/node.log       # follow live
-# MCP: zcl_node_log(pattern="...", since_secs=300, level="warn")
-#      server-side reverse scan — no full download, level + regex filter
+build/bin/zclassic23 ops logs --pattern='error|warn'
 ```
 
 **Boot failure (node won't start).** Look for `EV_BOOT_VALIDATION_FAILED` or a
@@ -413,7 +406,7 @@ paths and the kill-9 / OOM cases are in [`docs/RUNBOOK.md`](docs/RUNBOOK.md).
 
 ## Documentation
 
-- [`CLAUDE.md`](CLAUDE.md) — MCP reference, build/test/deploy, recovery
+- [`CLAUDE.md`](CLAUDE.md) — agent commands, build/test/deploy, recovery
 - [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) — public fresh-machine first run
 - [`docs/FRAMEWORK.md`](docs/FRAMEWORK.md) — canonical architecture
 - [`docs/MVP.md`](docs/MVP.md) — v1 criteria + honest readiness

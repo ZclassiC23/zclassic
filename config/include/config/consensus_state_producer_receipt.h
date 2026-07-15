@@ -51,8 +51,10 @@ bool consensus_state_producer_receipt_begin(sqlite3 *pdb,
 
 /* Completion finalization bound to the folded (height, block_hash). Requires a
  * matching start session written by the SAME running executable. Writes the
- * consensus_state_source_receipt singleton the exporter admits. Returns false
- * and fills `err` on any refusal. */
+ * consensus_state_source_receipt singleton the exporter admits. An exact retry
+ * is idempotent; any different or malformed finalized row is immutable
+ * conflicting evidence and is never replaced. Returns false and fills `err`
+ * on any refusal. */
 bool consensus_state_producer_receipt_finalize(sqlite3 *pdb, int32_t height,
                                                const uint8_t block_hash[32],
                                                char *err, size_t err_size);

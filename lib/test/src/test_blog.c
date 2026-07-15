@@ -5,7 +5,9 @@
 #include "controllers/blog_post_controller.h"
 #include "views/blog_post_view.h"
 #include "services/blog_publication_service.h"
+#include "models/app_event.h"
 #include "models/block.h"
+#include "models/db_txn.h"
 #include "models/explorer_index.h"
 #include "models/onion_announcement.h"
 #include "models/tx_index.h"
@@ -218,6 +220,8 @@ static int test_blog_publication_slice(void)
             &publisher, &wallet, binding, &request, &published);
         ASSERT(result.ok);
         ASSERT(db_blog_post_count(&publisher, "alice") == 1);
+        ASSERT(db_app_event_count(
+            &publisher, BLOG_APP_ID, BLOG_EVENT_TOPIC) == 1);
         ASSERT(wallet.num_wallet_tx == wallet_tx_count);
         ASSERT(wallet.num_spent == wallet_spent_count);
 
@@ -250,6 +254,40 @@ static int test_blog_publication_slice(void)
         result = blog_publication_export_event(
             &published.post, payload, sizeof(payload), &exported);
         ASSERT(result.ok);
+
+        /* The generic model never trusts scope carried by the event itself. */
+        struct node_db scoped_reader;
+        ASSERT(node_db_open(&scoped_reader, ":memory:"));
+        struct db_app_event scoped_event;
+        memset(&scoped_event, 0, sizeof(scoped_event));
+        scoped_event.event = exported;
+        scoped_event.received_at = INT64_C(1700001235);
+        struct zcl_app_event_scope_v1 wrong_scope = scope;
+        snprintf(wrong_scope.topic, sizeof(wrong_scope.topic), "%s",
+                 "wrong.topic.v1");
+        ASSERT(!db_app_event_save(
+            &scoped_reader, &scoped_event, &wrong_scope));
+        ASSERT(db_app_event_count(
+            &scoped_reader, BLOG_APP_ID, BLOG_EVENT_TOPIC) == 0);
+        node_db_close(&scoped_reader);
+
+        /* Import owns one exclusive transaction. It must never join an
+         * unrelated caller merely because the connection's tx bit is set. */
+        struct node_db nested_reader;
+        ASSERT(node_db_open(&nested_reader, ":memory:"));
+        ASSERT(blog_test_save_name(&nested_reader, owner));
+        struct db_txn *outer = db_txn_begin(&nested_reader, "blog.test.outer");
+        ASSERT(outer != NULL);
+        struct db_blog_post nested_post;
+        ASSERT(!blog_post_controller_import(
+            &nested_reader, &exported, &nested_post).ok);
+        ASSERT(db_blog_post_count(&nested_reader, "alice") == 0);
+        ASSERT(db_app_event_count(
+            &nested_reader, BLOG_APP_ID, BLOG_EVENT_TOPIC) == 0);
+        db_txn_rollback(outer);
+        db_txn_auto_rollback(&outer);
+        node_db_close(&nested_reader);
+
         struct db_blog_post oversized_signature = published.post;
         oversized_signature.signature_len = BLOG_SIGNATURE_MAX + 1;
         struct zcl_app_signed_event_v1 cleared_event;
@@ -264,6 +302,30 @@ static int test_blog_publication_slice(void)
         ASSERT(result.ok);
         ASSERT(memcmp(imported.event_id, published.post.event_id, 32) == 0);
         ASSERT(strcmp(imported.body, request.body) == 0);
+        ASSERT(db_app_event_count(
+            &reader, BLOG_APP_ID, BLOG_EVENT_TOPIC) == 1);
+        uint8_t stored_payload[sizeof(payload)];
+        struct db_app_event stored_event;
+        ASSERT(db_app_event_find(
+            &reader, exported.event_id, &scope, &stored_event,
+            stored_payload, sizeof(stored_payload)));
+        ASSERT(stored_event.receive_cursor > 0);
+        ASSERT(stored_event.received_at > 0);
+        ASSERT(stored_event.event.payload.len == exported.payload.len);
+        ASSERT(memcmp(stored_event.event.payload.data,
+                      exported.payload.data, exported.payload.len) == 0);
+        ASSERT(memcmp(stored_event.event.signature,
+                      exported.signature, exported.signature_len) == 0);
+        uint8_t short_payload[1];
+        struct db_app_event short_event;
+        ASSERT(!db_app_event_find(
+            &reader, exported.event_id, &scope, &short_event,
+            short_payload, sizeof(short_payload)));
+        struct db_blog_post replayed;
+        ASSERT(blog_post_controller_import(
+            &reader, &exported, &replayed).ok);
+        ASSERT(db_app_event_count(
+            &reader, BLOG_APP_ID, BLOG_EVENT_TOPIC) == 1);
 
         struct zcl_app_signed_event_v1 tampered = exported;
         uint8_t tampered_payload[sizeof(payload)];
@@ -274,6 +336,8 @@ static int test_blog_publication_slice(void)
         result = blog_post_controller_import(&reader, &tampered, &rejected);
         ASSERT(!result.ok);
         ASSERT(db_blog_post_count(&reader, "alice") == 1);
+        ASSERT(db_app_event_count(
+            &reader, BLOG_APP_ID, BLOG_EVENT_TOPIC) == 1);
 
         /* Valid equivocations are retained by event_id, not discarded by
          * arrival order. The slug route deterministically selects the lowest
@@ -315,6 +379,33 @@ static int test_blog_publication_slice(void)
         struct db_blog_post previous;
         ASSERT(db_blog_post_previous(&reader, &imported_fork_a, &previous));
         ASSERT(memcmp(previous.event_id, imported.event_id, 32) == 0);
+        ASSERT(db_app_event_count(
+            &reader, BLOG_APP_ID, BLOG_EVENT_TOPIC) == 3);
+        uint8_t stored_fork_payload[sizeof(payload)];
+        struct db_app_event stored_fork;
+        ASSERT(db_app_event_find(
+            &reader, fork_event_a.event_id, &scope, &stored_fork,
+            stored_fork_payload, sizeof(stored_fork_payload)));
+        uint8_t stored_previous_payload[sizeof(payload)];
+        struct db_app_event stored_previous;
+        ASSERT(db_app_event_previous(
+            &reader, &stored_fork, &scope, &stored_previous,
+            stored_previous_payload, sizeof(stored_previous_payload)));
+        ASSERT(memcmp(stored_previous.event.event_id,
+                      exported.event_id, 32) == 0);
+        struct db_app_event_ref successors[4];
+        ASSERT(db_app_event_successors(
+            &reader, &stored_previous, &scope, successors, 4) == 2);
+        ASSERT(memcmp(successors[0].event_id,
+                      successors[1].event_id, 32) < 0);
+        struct db_app_event_ref inventory[4];
+        ASSERT(db_app_event_topic_after(
+            &reader, BLOG_APP_ID, BLOG_EVENT_TOPIC, 0,
+            inventory, 4) == 3);
+        ASSERT(inventory[0].receive_cursor < inventory[1].receive_cursor);
+        ASSERT(db_app_event_topic_after(
+            &reader, BLOG_APP_ID, BLOG_EVENT_TOPIC,
+            inventory[1].receive_cursor, inventory, 4) == 1);
 
         struct node_db reverse_reader;
         memset(&reverse_reader, 0, sizeof(reverse_reader));

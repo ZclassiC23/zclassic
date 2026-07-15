@@ -285,6 +285,9 @@ int test_consensus_state_producer_receipt(void)
     PR_CHECK("producer finalize writes the source receipt",
              consensus_state_producer_receipt_finalize(db, 1, hash[1], err,
                                                         sizeof(err)));
+    PR_CHECK("producer finalize exact retry is idempotent",
+             consensus_state_producer_receipt_finalize(db, 1, hash[1], err,
+                                                        sizeof(err)));
 
     PR_CHECK("compiled checkpoint override arms", pr_arm_checkpoint(db, hash[1]));
 
@@ -320,6 +323,10 @@ int test_consensus_state_producer_receipt(void)
              pr_exec(db,
                  "UPDATE consensus_state_source_receipt "
                  "SET receipt_digest=zeroblob(32)"));
+    PR_CHECK("finalize refuses to overwrite conflicting durable evidence",
+             !consensus_state_producer_receipt_finalize(db, 1, hash[1], err,
+                                                         sizeof(err)) &&
+             strstr(err, "conflicting finalized receipt") != NULL);
     struct consensus_state_export_result tampered;
     PR_CHECK("tampered receipt is refused and publishes nothing",
              !pr_run_export(db, output_dir_fd, "tamper.bundle.db", hash[1],

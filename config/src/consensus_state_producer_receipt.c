@@ -364,7 +364,7 @@ static bool write_final_receipt(
 {
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
-            "INSERT OR REPLACE INTO consensus_state_source_receipt("
+            "INSERT INTO consensus_state_source_receipt("
             "singleton,schema,source_epoch_digest,source_tree_root,"
             "running_binary_digest,toolchain_digest,build_inputs_digest,"
             "chain_corpus_digest,source_clean,validation_profile,"
@@ -396,6 +396,78 @@ static bool write_final_receipt(
               sqlite3_step(st) == SQLITE_DONE; // raw-sql-ok:progress-kv-kernel-store
     sqlite3_finalize(st);
     return ok;
+}
+
+enum final_receipt_state {
+    FINAL_RECEIPT_READ_ERROR = 0, FINAL_RECEIPT_ABSENT,
+    FINAL_RECEIPT_IDENTICAL, FINAL_RECEIPT_CONFLICT,
+};
+static bool receipt_blob_equal(sqlite3_stmt *st, int column,
+                               const uint8_t expected[32])
+{
+    const void *blob = sqlite3_column_type(st, column) == SQLITE_BLOB
+                           ? sqlite3_column_blob(st, column) : NULL;
+    return blob && sqlite3_column_bytes(st, column) == 32 &&
+           memcmp(blob, expected, 32) == 0;
+}
+
+static bool receipt_text_equal(sqlite3_stmt *st, int column,
+                               const char *expected, size_t expected_len)
+{
+    const unsigned char *text =
+        sqlite3_column_type(st, column) == SQLITE_TEXT
+            ? sqlite3_column_text(st, column) : NULL;
+    return text && sqlite3_column_bytes(st, column) == (int)expected_len &&
+           memcmp(text, expected, expected_len) == 0;
+}
+
+/* A finalized receipt is an append-only ownership record. A retry may observe
+ * the exact row it already committed, but must never heal, replace, or silently
+ * adopt a malformed/different row. That distinction matters after a crash:
+ * exact retry is safe; conflicting durable evidence is a named refusal. */
+static enum final_receipt_state final_receipt_state(
+    sqlite3 *db, const struct consensus_state_source_receipt *expected)
+{
+    static const char sql[] =
+        "SELECT schema,source_epoch_digest,source_tree_root,"
+        "running_binary_digest,toolchain_digest,build_inputs_digest,"
+        "chain_corpus_digest,source_clean,validation_profile,producer_commit,"
+        "fold_cursor,receipt_digest FROM consensus_state_source_receipt "
+        "WHERE singleton=1";
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) != SQLITE_OK)
+        return FINAL_RECEIPT_READ_ERROR;
+    int rc = sqlite3_step(st); // raw-sql-ok:progress-kv-kernel-store
+    if (rc == SQLITE_DONE) {
+        sqlite3_finalize(st);
+        return FINAL_RECEIPT_ABSENT;
+    }
+    if (rc != SQLITE_ROW) {
+        sqlite3_finalize(st);
+        return FINAL_RECEIPT_READ_ERROR;
+    }
+    bool identical =
+        receipt_text_equal(st, 0, CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA,
+                           strlen(CONSENSUS_STATE_SOURCE_RECEIPT_SCHEMA)) &&
+        receipt_blob_equal(st, 1, expected->source_epoch_digest) &&
+        receipt_blob_equal(st, 2, expected->source_tree_root) &&
+        receipt_blob_equal(st, 3, expected->running_binary_digest) &&
+        receipt_blob_equal(st, 4, expected->toolchain_digest) &&
+        receipt_blob_equal(st, 5, expected->build_inputs_digest) &&
+        receipt_blob_equal(st, 6, expected->chain_corpus_digest) &&
+        sqlite3_column_type(st, 7) == SQLITE_INTEGER &&
+        sqlite3_column_int(st, 7) == (expected->source_clean ? 1 : 0) &&
+        sqlite3_column_type(st, 8) == SQLITE_INTEGER &&
+        sqlite3_column_int(st, 8) == expected->validation_profile &&
+        receipt_text_equal(st, 9, expected->producer_commit, 40) &&
+        sqlite3_column_type(st, 10) == SQLITE_INTEGER &&
+        sqlite3_column_int64(st, 10) == expected->fold_cursor &&
+        receipt_blob_equal(st, 11, expected->receipt_digest);
+    rc = sqlite3_step(st); // raw-sql-ok:progress-kv-kernel-store
+    sqlite3_finalize(st);
+    if (rc != SQLITE_DONE)
+        return FINAL_RECEIPT_READ_ERROR;
+    return identical ? FINAL_RECEIPT_IDENTICAL : FINAL_RECEIPT_CONFLICT;
 }
 
 static bool exec_checked(sqlite3 *db, const char *sql)
@@ -568,11 +640,31 @@ bool consensus_state_producer_receipt_finalize(sqlite3 *pdb, int32_t height,
     if (ok) {
         receipt.fold_cursor = (int64_t)height + 1;
         consensus_state_source_receipt_digest(&receipt, receipt.receipt_digest);
-        ok = exec_checked(pdb, k_receipt_schema_sql) &&
-             progress_meta_set_in_tx(pdb, CONSENSUS_STATE_SOURCE_EPOCH_META_KEY,
-                                     receipt.source_epoch_digest, 32) &&
-             write_final_receipt(pdb, &receipt);
+        ok = exec_checked(pdb, k_receipt_schema_sql);
     }
+    enum final_receipt_state prior = FINAL_RECEIPT_READ_ERROR;
+    if (ok)
+        prior = final_receipt_state(pdb, &receipt);
+    if (ok && prior == FINAL_RECEIPT_CONFLICT) {
+        (void)exec_checked(pdb, "ROLLBACK");
+        progress_store_tx_unlock();
+        return set_err(err, err_size,
+                       "producer receipt finalize: conflicting finalized "
+                       "receipt already exists");
+    }
+    if (ok && prior == FINAL_RECEIPT_READ_ERROR) {
+        (void)exec_checked(pdb, "ROLLBACK");
+        progress_store_tx_unlock();
+        return set_err(err, err_size,
+                       "producer receipt finalize: existing receipt read "
+                       "failed");
+    }
+    if (ok)
+        ok = progress_meta_set_in_tx(
+                 pdb, CONSENSUS_STATE_SOURCE_EPOCH_META_KEY,
+                 receipt.source_epoch_digest, 32) &&
+             (prior == FINAL_RECEIPT_IDENTICAL ||
+              write_final_receipt(pdb, &receipt));
     if (ok)
         ok = exec_checked(pdb, "COMMIT");
     if (ok)

@@ -22,6 +22,104 @@
 #include "models/database.h"
 #include "models/database_internal.h"
 
+#include <string.h>
+
+#define APP_EVENTS_TABLE_BODY \
+    "(receive_cursor INTEGER PRIMARY KEY AUTOINCREMENT," \
+    "event_id BLOB NOT NULL UNIQUE CHECK(length(event_id)=32)," \
+    "app_id TEXT NOT NULL CHECK(length(app_id) BETWEEN 1 AND 63)," \
+    "topic TEXT NOT NULL CHECK(length(topic) BETWEEN 1 AND 127)," \
+    "kind INTEGER NOT NULL CHECK(kind BETWEEN 1 AND 4294967295)," \
+    "chain_id BLOB NOT NULL CHECK(length(chain_id)=32)," \
+    "author_key_id BLOB NOT NULL CHECK(length(author_key_id)=20)," \
+    "author_pubkey BLOB NOT NULL CHECK(length(author_pubkey)=33)," \
+    "sequence INTEGER NOT NULL CHECK(sequence>0)," \
+    "previous_event_id BLOB NOT NULL CHECK(length(previous_event_id)=32)," \
+    "created_at INTEGER NOT NULL CHECK(created_at>0)," \
+    "payload BLOB NOT NULL CHECK(length(payload)<=65536)," \
+    "signature BLOB NOT NULL CHECK(length(signature) BETWEEN 8 AND 72)," \
+    "signature_len INTEGER NOT NULL CHECK(signature_len=length(signature))," \
+    "received_at INTEGER NOT NULL CHECK(received_at>0))"
+
+static const char k_app_events_table_create[] =
+    "CREATE TABLE IF NOT EXISTS app_events " APP_EVENTS_TABLE_BODY;
+static const char k_app_events_table_stored[] =
+    "CREATE TABLE app_events " APP_EVENTS_TABLE_BODY;
+static const char k_app_events_topic_index_create[] =
+    "CREATE INDEX IF NOT EXISTS idx_app_events_topic_cursor "
+    "ON app_events(app_id,topic,receive_cursor)";
+static const char k_app_events_topic_index_stored[] =
+    "CREATE INDEX idx_app_events_topic_cursor "
+    "ON app_events(app_id,topic,receive_cursor)";
+static const char k_app_events_author_index_create[] =
+    "CREATE INDEX IF NOT EXISTS idx_app_events_author_sequence "
+    "ON app_events(app_id,author_key_id,sequence,event_id)";
+static const char k_app_events_author_index_stored[] =
+    "CREATE INDEX idx_app_events_author_sequence "
+    "ON app_events(app_id,author_key_id,sequence,event_id)";
+static const char k_app_events_previous_index_create[] =
+    "CREATE INDEX IF NOT EXISTS idx_app_events_previous "
+    "ON app_events(app_id,previous_event_id,event_id)";
+static const char k_app_events_previous_index_stored[] =
+    "CREATE INDEX idx_app_events_previous "
+    "ON app_events(app_id,previous_event_id,event_id)";
+
+#undef APP_EVENTS_TABLE_BODY
+
+static bool migration_schema_object_matches(
+    struct node_db *ndb, const char *type, const char *name,
+    const char *created_sql, const char *normalized_sql)
+{
+    sqlite3_stmt *stmt = NULL;
+    if (!ndb || !ndb->db || !type || !name || !created_sql ||
+        !normalized_sql ||
+        sqlite3_prepare_v2(ndb->db,
+            "SELECT type,sql FROM sqlite_master WHERE name=?", -1,
+            &stmt, NULL) != SQLITE_OK || !stmt) {
+        if (stmt)
+            sqlite3_finalize(stmt);
+        LOG_FAIL("db", "migrate v29: cannot inspect schema object %s",
+                 name ? name : "(null)");
+    }
+    sqlite3_bind_text(stmt, 1, name, -1, SQLITE_STATIC);
+    int rc = sqlite3_step(stmt); // raw-sql-ok:migration-schema-inspection
+    const char *stored_type = rc == SQLITE_ROW
+        ? (const char *)sqlite3_column_text(stmt, 0) : NULL;
+    const char *stored_sql = rc == SQLITE_ROW
+        ? (const char *)sqlite3_column_text(stmt, 1) : NULL;
+    bool matches = stored_type && stored_sql &&
+        strcmp(stored_type, type) == 0 &&
+        (strcmp(stored_sql, created_sql) == 0 ||
+         strcmp(stored_sql, normalized_sql) == 0);
+    rc = rc == SQLITE_ROW
+        ? sqlite3_step(stmt) // raw-sql-ok:migration-schema-inspection
+        : rc;
+    sqlite3_finalize(stmt);
+    if (!matches || rc != SQLITE_DONE)
+        LOG_FAIL("db", "migrate v29: schema object %s is absent or incompatible",
+                 name);
+    return true;
+}
+
+static bool migration_app_events_schema_valid(struct node_db *ndb)
+{
+    return migration_schema_object_matches(
+               ndb, "table", "app_events", k_app_events_table_create,
+               k_app_events_table_stored) &&
+           migration_schema_object_matches(
+               ndb, "index", "idx_app_events_topic_cursor",
+               k_app_events_topic_index_create,
+               k_app_events_topic_index_stored) &&
+           migration_schema_object_matches(
+               ndb, "index", "idx_app_events_author_sequence",
+               k_app_events_author_index_create,
+               k_app_events_author_index_stored) &&
+           migration_schema_object_matches(
+               ndb, "index", "idx_app_events_previous",
+               k_app_events_previous_index_create,
+               k_app_events_previous_index_stored);
+}
+
 int node_db_migrate_features(struct node_db *ndb, int *version)
 {
     int applied = 0;
@@ -533,6 +631,38 @@ int node_db_migrate_features(struct node_db *ndb, int *version)
             "INSERT OR IGNORE INTO schema_migrations(version) VALUES('028')");
         DB_MIGRATE_PERSIST_VERSION(ndb, 28);
         current_ver = 28;
+        applied++;
+    }
+
+    if (current_ver < 29) {
+        /* v29: shared immutable signed AppEvent substrate. Blog, Social, Chat,
+         * games, and future manifest-declared topics converge on this one
+         * signature-verified store. receive_cursor is local anti-entropy
+         * position only; projections must resolve forks from signed identity
+         * and sequence, never arrival order. This application overlay is not
+         * consulted by consensus. */
+        if (!node_db_begin(ndb))
+            LOG_ERR("db", "migrate v29: cannot begin atomic migration");
+        bool ok = node_db_exec(ndb, k_app_events_table_create) &&
+                  node_db_exec(ndb, k_app_events_topic_index_create) &&
+                  node_db_exec(ndb, k_app_events_author_index_create) &&
+                  node_db_exec(ndb, k_app_events_previous_index_create) &&
+                  migration_app_events_schema_valid(ndb) &&
+                  node_db_exec(ndb,
+                      "INSERT OR IGNORE INTO schema_migrations(version) "
+                      "VALUES('029')");
+        int32_t version_29 = 29;
+        if (ok)
+            ok = node_db_state_set(ndb, "schema_version", &version_29,
+                                   sizeof(version_29));
+        if (ok)
+            ok = node_db_commit(ndb);
+        if (!ok) {
+            if (!node_db_rollback(ndb))
+                LOG_ERR("db", "migrate v29: migration and rollback failed");
+            LOG_ERR("db", "migrate v29: atomic schema verification failed");
+        }
+        current_ver = 29;
         applied++;
     }
 

@@ -570,6 +570,51 @@ static int t_rollback_preserves_pre_existing_rows(void)
     return failures;
 }
 
+/* ── 17. Failed COMMIT explicitly unwinds SQLite state ───────── */
+
+static int t_failed_commit_rolls_back(void)
+{
+    int failures = 0;
+    dt_install_observer();
+
+    struct node_db ndb;
+    memset(&ndb, 0, sizeof(ndb));
+    bool opened = node_db_open(&ndb, ":memory:");
+    bool schema_ok = opened && node_db_exec(&ndb,
+        "CREATE TABLE dt_parent(id INTEGER PRIMARY KEY);"
+        "CREATE TABLE dt_child(parent_id INTEGER NOT NULL,"
+        "FOREIGN KEY(parent_id) REFERENCES dt_parent(id) "
+        "DEFERRABLE INITIALLY DEFERRED)");
+
+    struct db_txn *txn = schema_ok
+        ? db_txn_begin(&ndb, "test.failed_commit") : NULL;
+    bool inserted = txn && node_db_exec(
+        &ndb, "INSERT INTO dt_child(parent_id) VALUES(7)");
+    bool commit_failed = inserted && !db_txn_commit(txn);
+    db_txn_auto_rollback(&txn);
+
+    struct node_db_status status = {0};
+    node_db_get_status(&ndb, &status);
+    sqlite3_stmt *st = NULL;
+    bool count_ok = opened && sqlite3_prepare_v2(ndb.db,
+        "SELECT COUNT(*) FROM dt_child", -1, &st, NULL) == SQLITE_OK &&
+        sqlite3_step(st) == SQLITE_ROW && sqlite3_column_int(st, 0) == 0;
+    sqlite3_finalize(st);
+
+    struct db_txn *followup = opened
+        ? db_txn_begin(&ndb, "test.failed_followup") : NULL;
+    bool followup_ok = followup && db_txn_commit(followup);
+    db_txn_auto_rollback(&followup);
+    bool ok = opened && schema_ok && inserted && commit_failed && count_ok &&
+              followup_ok && !status.tx_open &&
+              atomic_load(&g_ev_rollback) == 1 &&
+              atomic_load(&g_ev_leaked) == 0;
+    DT_RUN("dt: failed COMMIT rolls back before ownership is released", ok);
+    if (opened)
+        node_db_close(&ndb);
+    return failures;
+}
+
 /* ── Aggregator ─────────────────────────────────────────────── */
 
 int test_db_txn(void)
@@ -592,6 +637,7 @@ int test_db_txn(void)
     failures += t_concurrent_different_dbs();
     failures += t_rollback_on_induced_failure();
     failures += t_rollback_preserves_pre_existing_rows();
+    failures += t_failed_commit_rolls_back();
 
     event_clear_observers(EV_DB_TXN_BEGIN);
     event_clear_observers(EV_DB_TXN_COMMIT);

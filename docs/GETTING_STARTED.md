@@ -10,7 +10,7 @@ project's own host.
 
 - A ZClassic full node on the zclassicd consensus floor.
 - RPC and native CLI status commands for local operation.
-- A built-in MCP server for typed local AI/operator tools.
+- A built-in native command registry for typed local AI/operator operations.
 - Optional Tor onion service support when the bundled Tor fork is built.
 
 The project is still pre-v1. Do not rely on it as your only mainnet node yet.
@@ -58,7 +58,7 @@ make agent-stage-dev         # contained: refuses; runtime staging/publication i
 make t-fast ONLY=<group>     # one test group
 make agent-loop              # default AI/operator verification loop; no runtime deploy
 make fast-ci                 # cache-aware lint/build/focused-test loop
-build/bin/zclassic23 status               # native node status (registry replaces MCP)
+build/bin/zclassic23 status               # native node status
 build/bin/zclassic23-dev status           # dev-lane native status
 ```
 
@@ -149,30 +149,8 @@ build/bin/zclassic23 -datadir="$HOME/.zclassic-c23" dumpstate <subsystem>
 Start with `status`, then `discover help` / `discover search <q>` to find the
 rest of the tree. See `docs/AGENT_API.md` for the full surface.
 
-### Optional MCP (legacy, removed in W3)
-
-Claude Code or another MCP client can still operate the node through the
-typed local MCP tools today, but MCP is being phased out in favor of the
-native command registry above (the zero-MCP directive,
-`docs/work/MCP-REMOVAL-PLAN.md`) and this path is removed entirely in
-zero-MCP W3:
-
-```bash
-claude mcp add zcl23 -- build/bin/zclassic23 -mcp -datadir="$HOME/.zclassic-c23"
-```
-
-Start with:
-
-- `zcl_agent_ops`
-- `zcl_agent`
-- `zcl_status`
-- `zcl_state`
-- `zcl_node_log`
-- `zcl_service_catalog`
-- `zcl_tools_list`
-
-MCP is a local operator interface. Do not expose RPC or MCP to untrusted
-clients.
+Keep RPC bound to trusted clients. The native command registry is local to the
+operator process and needs no separately configured agent server.
 
 ## Troubleshooting
 

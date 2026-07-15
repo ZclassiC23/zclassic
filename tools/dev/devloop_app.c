@@ -10,16 +10,16 @@
 #define _GNU_SOURCE
 #include "devloop.h"
 
+#include "framework/app_definition.h"
+#include "framework/app_platform.h"
 #include "platform/time_compat.h"
 #include "sim/social_app_sim.h"
 
-#include <ctype.h>
 #include <limits.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 /* ── bounded JSON appender ─────────────────────────────────────────────── */
 struct devbuf {
@@ -68,12 +68,21 @@ static void devbuf_addstr(struct devbuf *b, const char *s)
     devbuf_addf(b, "\"");
 }
 
-static bool token_ok(const char *s)
+static bool resource_name_ok(const char *name)
 {
-    if (!s || !s[0] || strlen(s) > 63)
+    if (!name)
         return false;
-    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
-        if (!isalnum(*p) && *p != '_' && *p != '-')
+    const char *end = memchr(name, '\0',
+                             ZCL_APP_DEFINITION_RESOURCE_NAME_MAX + 1u);
+    if (!end || end == name || name[0] < 'a' || name[0] > 'z' ||
+        end[-1] == '_')
+        return false;
+    for (const char *p = name + 1; p < end; p++) {
+        bool lower = *p >= 'a' && *p <= 'z';
+        bool digit = *p >= '0' && *p <= '9';
+        if (!lower && !digit && *p != '_')
+            return false;
+        if (*p == '_' && p[-1] == '_')
             return false;
     }
     return true;
@@ -84,100 +93,84 @@ static bool resolve_root(const char *requested, char out[PATH_MAX])
     return requested && realpath(requested, out) != NULL;
 }
 
-static bool macro_arg(const char *line, const char *macro,
-                      char *out, size_t out_sz)
-{
-    size_t mlen = strlen(macro);
-    if (strncmp(line, macro, mlen) != 0 || line[mlen] != '(')
-        return false;
-    const char *start = line + mlen + 1;
-    if (*start == '"')
-        start++;
-    const char *end = start;
-    while (*end && *end != ')' && *end != '"' && *end != ',')
-        end++;
-    size_t len = (size_t)(end - start);
-    if (len == 0 || len >= out_sz)
-        return false;
-    memcpy(out, start, len);
-    out[len] = 0;
-    return true;
-}
-
 /* ── describe ──────────────────────────────────────────────────────────── */
 size_t zcl_devloop_app_describe_json(const char *repo_root, const char *app_id,
                                      char *out, size_t out_sz)
 {
-    char root[PATH_MAX], path[PATH_MAX];
-    if (!token_ok(app_id) || !resolve_root(repo_root, root))
+    char root[PATH_MAX];
+    if (!zcl_app_definition_id_valid_v1(app_id) ||
+        !resolve_root(repo_root, root))
         return 0;
-    int pn = snprintf(path, sizeof(path), "%s/apps/%s/app.def", root, app_id);
-    if (pn <= 0 || (size_t)pn >= sizeof(path))
+    struct zcl_app_definition_v1 definition;
+    struct zcl_result result = zcl_app_definition_load_v1(
+        root, app_id, &definition);
+    if (!result.ok)
         return 0;
 
     struct devbuf b;
     devbuf_init(&b, out, out_sz);
-    FILE *f = fopen(path, "r");
-    if (!f) {
-        devbuf_addf(&b, "{\"schema\":\"zcl.dev_app.v1\",\"status\":"
-                        "\"not_found\",\"app_id\":");
-        devbuf_addstr(&b, app_id);
-        devbuf_addf(&b, ",\"agent_next_action\":"
-                        "\"dev app plan <app> <resource>\"}");
-        return b.ok ? b.len : 0;
-    }
-
-    char caps[32][64], resources[32][64], sims[32][96];
-    size_t cap_count = 0, resource_count = 0, sim_count = 0;
-    char web[128] = "", znam[128] = "", line[1024], arg[128];
-    bool onion = false;
-    while (fgets(line, sizeof(line), f)) {
-        char *p = line;
-        while (*p == ' ' || *p == '\t')
-            p++;
-        if (cap_count < 32 && macro_arg(p, "ZCL_APP_CAPABILITY", arg, sizeof(arg)))
-            snprintf(caps[cap_count++], sizeof(caps[0]), "%s", arg);
-        else if (resource_count < 32 &&
-                 macro_arg(p, "ZCL_APP_RESOURCE", arg, sizeof(arg)))
-            snprintf(resources[resource_count++], sizeof(resources[0]), "%s", arg);
-        else if (sim_count < 32 && macro_arg(p, "ZCL_APP_SIM", arg, sizeof(arg)))
-            snprintf(sims[sim_count++], sizeof(sims[0]), "%s", arg);
-        else if (macro_arg(p, "ZCL_APP_WEB_MOUNT", arg, sizeof(arg)))
-            snprintf(web, sizeof(web), "%s", arg);
-        else if (macro_arg(p, "ZCL_APP_ZNAM", arg, sizeof(arg)))
-            snprintf(znam, sizeof(znam), "%s", arg);
-        else if (strstr(p, "ZCL_APP_ONION(true)"))
-            onion = true;
-    }
-    fclose(f);
-
     devbuf_addf(&b, "{\"schema\":\"zcl.dev_app.v1\",\"status\":\"ok\","
                     "\"app_id\":");
-    devbuf_addstr(&b, app_id);
-    devbuf_addf(&b, ",\"boundary\":"
+    devbuf_addstr(&b, definition.app_id);
+    devbuf_addf(&b, ",\"display_name\":");
+    devbuf_addstr(&b, definition.display_name);
+    devbuf_addf(&b, ",\"version\":");
+    devbuf_addstr(&b, definition.app_version);
+    devbuf_addf(&b, ",\"definition_version\":%u,\"compiler\":"
+                    "\"strict-bounded-v1\",\"authority\":\"definition-only\","
+                    "\"boundary\":"
                     "\"core_owns_truth_apps_consume_capabilities\","
-                    "\"capabilities\":[");
-    for (size_t i = 0; i < cap_count; i++) {
-        if (i) devbuf_addf(&b, ",");
-        devbuf_addstr(&b, caps[i]);
+                    "\"capabilities\":[",
+                definition.definition_version);
+    static const uint64_t capability_bits[] = {
+        ZCL_APP_CAP_CHAIN_READ, ZCL_APP_CAP_SIGNED_EVENTS,
+        ZCL_APP_CAP_RESIDENT_STATE, ZCL_APP_CAP_WEB_ROUTES,
+        ZCL_APP_CAP_ONION_BINDING, ZCL_APP_CAP_ZNAM_BINDING,
+        ZCL_APP_CAP_P2P_TOPICS, ZCL_APP_CAP_WALLET_REQUESTS,
+        ZCL_APP_CAP_SCHEDULED_JOBS, ZCL_APP_CAP_CLOCK, ZCL_APP_CAP_RANDOM,
+    };
+    bool comma = false;
+    for (size_t i = 0;
+         i < sizeof(capability_bits) / sizeof(capability_bits[0]); i++) {
+        if ((definition.required_capabilities & capability_bits[i]) == 0)
+            continue;
+        if (comma) devbuf_addf(&b, ",");
+        devbuf_addstr(&b, zcl_app_capability_name(capability_bits[i]));
+        comma = true;
     }
     devbuf_addf(&b, "],\"resources\":[");
-    for (size_t i = 0; i < resource_count; i++) {
+    for (size_t i = 0; i < definition.resource_count; i++) {
         if (i) devbuf_addf(&b, ",");
-        devbuf_addstr(&b, resources[i]);
+        devbuf_addstr(&b, definition.resources[i].name);
+    }
+    devbuf_addf(&b, "],\"topics\":[");
+    for (size_t i = 0; i < definition.topic_count; i++) {
+        if (i) devbuf_addf(&b, ",");
+        devbuf_addf(&b, "{\"name\":");
+        devbuf_addstr(&b, definition.topics[i].name);
+        devbuf_addf(&b, ",\"wire_version\":%u,\"max_event_bytes\":%u}",
+                    definition.topics[i].wire_version,
+                    definition.topics[i].max_event_bytes);
     }
     devbuf_addf(&b, "],\"bindings\":{\"web\":");
-    devbuf_addstr(&b, web);
-    devbuf_addf(&b, ",\"onion\":%s,\"znam\":", onion ? "true" : "false");
-    devbuf_addstr(&b, znam);
-    devbuf_addf(&b, "},\"simulations\":[");
-    for (size_t i = 0; i < sim_count; i++) {
+    devbuf_addstr(&b, definition.mount_count ? definition.mounts[0].path : "");
+    devbuf_addf(&b, ",\"web_mounts\":[");
+    for (size_t i = 0; i < definition.mount_count; i++) {
         if (i) devbuf_addf(&b, ",");
-        devbuf_addstr(&b, sims[i]);
+        devbuf_addstr(&b, definition.mounts[i].path);
     }
-    devbuf_addf(&b, "],\"agent_next_action\":"
-                    "\"edit apps/%s; native watch owns proof and publish\"}",
-                app_id);
+    devbuf_addf(&b, "],\"onion\":%s,\"znam\":",
+                definition.onion_enabled ? "true" : "false");
+    devbuf_addstr(&b, definition.znam_declared ? definition.znam : "");
+    devbuf_addf(&b, "},\"state_schema_version\":%u,\"simulations\":[",
+                definition.state_schema_version);
+    for (size_t i = 0; i < definition.simulation_count; i++) {
+        if (i) devbuf_addf(&b, ",");
+        devbuf_addstr(&b, definition.simulations[i].name);
+    }
+    devbuf_addf(&b, "],\"contained\":[\"runtime_authority\","
+                    "\"publication\",\"deployment\"],\"agent_next_action\":"
+                    "\"dev app plan %s <resource> (preview only)\"}", app_id);
     return b.ok ? b.len : 0;
 }
 
@@ -199,38 +192,69 @@ size_t zcl_devloop_app_plan_json(const char *repo_root, const char *app_id,
                                  const char *resource, char *out, size_t out_sz)
 {
     char root[PATH_MAX];
-    if (!resolve_root(repo_root, root) || !token_ok(app_id) ||
-        !token_ok(resource))
+    if (!resolve_root(repo_root, root) ||
+        !zcl_app_definition_id_valid_v1(app_id) ||
+        !resource_name_ok(resource))
         return 0;
-    (void)root;
+    struct zcl_app_definition_v1 definition;
+    if (!zcl_app_definition_load_v1(root, app_id, &definition).ok)
+        return 0;
+    bool comma = false;
 
     struct devbuf b;
     devbuf_init(&b, out, out_sz);
     devbuf_addf(&b, "{\"schema\":\"zcl.dev_app_plan.v1\",\"status\":"
-                    "\"planned\",\"app_id\":");
-    devbuf_addstr(&b, app_id);
+                    "\"planned\",\"mode\":\"preview-only\","
+                    "\"writes\":false,\"authority\":\"none\",\"app_id\":");
+    devbuf_addstr(&b, definition.app_id);
     devbuf_addf(&b, ",\"resource\":");
     devbuf_addstr(&b, resource);
     devbuf_addf(&b, ",\"files\":[");
-    const char *shapes[] = {
-        "models", "controllers", "services", "events", "jobs",
-        "projections", "views", "sim"
+    static const char *const patterns[] = {
+        "app/models/include/models/%s.h",
+        "app/models/src/%s.c",
+        "app/services/include/services/%s_service.h",
+        "app/services/src/%s_service.c",
+        "app/controllers/include/controllers/%s_controller.h",
+        "app/controllers/src/%s_controller.c",
+        "app/views/include/views/%s_view.h",
+        "app/views/src/%s_view.c",
     };
-    for (size_t i = 0; i < sizeof(shapes) / sizeof(shapes[0]); i++) {
+    for (size_t i = 0; i < sizeof(patterns) / sizeof(patterns[0]); i++) {
         if (i) devbuf_addf(&b, ",");
         char path[256];
-        snprintf(path, sizeof(path), "apps/%s/%s/%s.c",
-                 app_id, shapes[i], resource);
+        int n = snprintf(path, sizeof(path), patterns[i], resource);
+        if (n <= 0 || (size_t)n >= sizeof(path))
+            return 0;
         devbuf_addstr(&b, path);
     }
-    devbuf_addf(&b, "],\"bindings\":[\"web\",\"onion\",\"znam\"],"
+    devbuf_addf(&b, ",\"app/models/src/database_migrate_features.c\","
+                    "\"apps/%s/app.def\",\"lib/test/src/test_%s.c\","
+                    "\"app/controllers/include/controllers/agent_impact_rules.def\"],"
+                    "\"bindings\":[", app_id, app_id);
+    comma = false;
+    static const struct { uint64_t bit; const char *name; } bindings[] = {
+        { ZCL_APP_CAP_WEB_ROUTES, "web" },
+        { ZCL_APP_CAP_ONION_BINDING, "onion" },
+        { ZCL_APP_CAP_ZNAM_BINDING, "znam" },
+        { ZCL_APP_CAP_P2P_TOPICS, "p2p_topics" },
+    };
+    for (size_t i = 0; i < sizeof(bindings) / sizeof(bindings[0]); i++) {
+        if ((definition.required_capabilities & bindings[i].bit) == 0)
+            continue;
+        if (comma) devbuf_addf(&b, ",");
+        devbuf_addstr(&b, bindings[i].name);
+        comma = true;
+    }
+    devbuf_addf(&b, "],"
                     "\"required_proofs\":[\"same_seed_replay\","
                     "\"partition_rejoin_convergence\","
-                    "\"invalid_signature_rejection\"],"
+                    "\"invalid_signature_rejection\","
+                    "\"validation_and_relationship_tests\"],"
                     "\"forbidden\":[\"consensus_mutation\",\"wallet_keys\","
                     "\"raw_storage\",\"raw_sockets\",\"boot_ownership\"],"
-                    "\"agent_next_action\":\"materialize this conventional "
-                    "slice through dev app scaffold\"}");
+                    "\"agent_next_action\":\"review this conventional "
+                    "slice; this command writes and publishes nothing\"}");
     return b.ok ? b.len : 0;
 }
 

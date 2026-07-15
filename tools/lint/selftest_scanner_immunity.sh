@@ -5,7 +5,7 @@
 #
 # This is the gate-selftest-of-the-fix: it plants a transient lint-gate
 # fixture file mid-"scan" (present while a PRODUCTION scan runs, exactly
-# the race described in the bug report) into a REAL scanned directory, and
+# the race described in the bug report) into an isolated scan root, and
 # proves:
 #
 #   1. A PRODUCTION scan (ZCL_LINT_PRODUCTION_SCAN=1, i.e. what `make lint`
@@ -44,12 +44,18 @@ ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$ROOT"
 
 GATE="tools/lint/check_silent_bool_errors.sh"
-RACE_FIXTURE="app/services/src/_x_fixture_tmp_.c"
-REAL_VIOLATION="app/services/src/_test_regression_real_violation_scanner_immunity.c"
-STRAY_FILE="app/services/src/_test_regression_stray_untracked_scanner_immunity.c"
+mkdir -p "$ROOT/.cache"
+SCAN_ROOT="$(mktemp -d "$ROOT/.cache/scanner-immunity-selftest.XXXXXX")" || {
+    echo "selftest_scanner_immunity: could not create isolated scan root" >&2
+    exit 1
+}
+RACE_FIXTURE="$SCAN_ROOT/_x_fixture_tmp_.c"
+REAL_VIOLATION="$SCAN_ROOT/_test_regression_real_violation_scanner_immunity.c"
+STRAY_FILE="$SCAN_ROOT/_test_regression_stray_untracked_scanner_immunity.c"
 
 cleanup() {
     rm -f "$RACE_FIXTURE" "$REAL_VIOLATION" "$STRAY_FILE"
+    rmdir "$SCAN_ROOT" 2>/dev/null || true
 }
 trap cleanup EXIT
 
@@ -61,8 +67,14 @@ trap cleanup EXIT
 # test_make_lint_gates.c's direct-exec invocation (no Make involved,
 # therefore no ZCL_LINT_PRODUCTION_SCAN) regardless of how THIS script was
 # itself launched.
-run_selftest_style() { env -u ZCL_LINT_PRODUCTION_SCAN bash "$@"; }
-run_production_style() { env ZCL_LINT_PRODUCTION_SCAN=1 bash "$@"; }
+run_selftest_style() {
+    env -u ZCL_LINT_PRODUCTION_SCAN \
+        ZCL_SILENT_BOOL_SCAN_DIRS_FOR_TEST="$SCAN_ROOT" bash "$@"
+}
+run_production_style() {
+    env ZCL_LINT_PRODUCTION_SCAN=1 \
+        ZCL_SILENT_BOOL_SCAN_DIRS_FOR_TEST="$SCAN_ROOT" bash "$@"
+}
 
 fail=0
 note() { echo "  [selftest_scanner_immunity] $*"; }
@@ -166,7 +178,10 @@ cat > "$RACE_FIXTURE" <<'EOF'
  * (not just check-silent-errors-bool) also leaves it alone. */
 static void race_fixture_probe(void) {}
 EOF
-stray_with_fixture_out=$(bash tools/lint/check_no_stray_untracked_source.sh 2>&1)
+stray_with_fixture_out=$(
+    ZCL_STRAY_SCAN_DIRS_FOR_TEST="$SCAN_ROOT" \
+        bash tools/lint/check_no_stray_untracked_source.sh 2>&1
+)
 stray_with_fixture_rc=$?
 assert_pass "check_no_stray_untracked_source.sh ignores an untracked fixture-named file" "$stray_with_fixture_rc"
 if [ "$stray_with_fixture_rc" -ne 0 ]; then
@@ -184,7 +199,10 @@ cat > "$STRAY_FILE" <<'EOF'
 static void scanner_immunity_stray_probe(void) {}
 EOF
 
-stray_out=$(bash tools/lint/check_no_stray_untracked_source.sh 2>&1)
+stray_out=$(
+    ZCL_STRAY_SCAN_DIRS_FOR_TEST="$SCAN_ROOT" \
+        bash tools/lint/check_no_stray_untracked_source.sh 2>&1
+)
 stray_rc=$?
 assert_fail "check_no_stray_untracked_source.sh fails on the untracked file" "$stray_rc"
 if printf '%s\n' "$stray_out" | grep -q "$STRAY_FILE.*untracked stray file"; then
@@ -197,7 +215,9 @@ fi
 
 rm -f "$STRAY_FILE"
 stray_clean_rc=0
-bash tools/lint/check_no_stray_untracked_source.sh >/tmp/scanner_immunity_stray_clean.out 2>&1 || stray_clean_rc=$?
+ZCL_STRAY_SCAN_DIRS_FOR_TEST="$SCAN_ROOT" \
+    bash tools/lint/check_no_stray_untracked_source.sh \
+    >/tmp/scanner_immunity_stray_clean.out 2>&1 || stray_clean_rc=$?
 assert_pass "check_no_stray_untracked_source.sh is clean again after cleanup" "$stray_clean_rc"
 
 echo ""

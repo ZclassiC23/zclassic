@@ -43,12 +43,11 @@
 #define FIXTURE_SRC_REL "lib/test/fixtures/raw_sqlite_step_fixture.c"
 #define FIXTURE_DST_REL "app/_lint_gate_fixture_tmp.c"
 #define NODE_DB_EXEC_FIXTURE_SRC_REL "lib/test/fixtures/raw_sqlite_exec_node_db_fixture.c"
-/* NOT named `_*fixture*tmp*.c` on purpose: check_raw_sqlite.sh's exec_scan
- * (tools/scripts/check_raw_sqlite.sh) excludes that glob (b142e7887, to stop
- * OTHER gates' transient fixtures from tripping it mid-race); this fixture
- * is the one file that scan MUST still see, so it needs a name outside its
- * own exclusion. */
-#define NODE_DB_EXEC_FIXTURE_DST_REL "app/_node_db_exec_lint_probe_tmp.c"
+/* Direct self-test script calls intentionally leave
+ * ZCL_LINT_PRODUCTION_SCAN unset, so this fixture remains visible to its own
+ * gate while production scans and the live dev watcher ignore it. */
+#define NODE_DB_EXEC_FIXTURE_DST_REL \
+    "app/_node_db_exec_lint_fixture_probe_tmp.c"
 #define COINS_FIXTURE_SRC_REL "lib/test/fixtures/coins_lookup_guard_fixture.c"
 #define COINS_FIXTURE_DST_REL "app/controllers/src/_coins_lookup_guard_fixture_tmp.c"
 #define OBS_FIXTURE_SRC_REL "lib/test/fixtures/observability_unpaired_stderr_fixture.c"
@@ -75,6 +74,8 @@
     "lib/test/fixtures/hotswap_swappable_bad_shape.def"
 #define GIT_HOOKS_SCRIPT_REL "tools/scripts/check_git_hooks_installed.sh"
 #define GIT_HOOKS_PRE_PUSH_REL "tools/githooks/pre-push"
+#define GIT_HOOKS_PRE_PUSH_FIXTURE_REL \
+    "test-tmp/_pre_push_hook_fixture_tmp"
 
 static int run_gate_script(const char *script_rel, const char *mode);
 
@@ -1104,6 +1105,14 @@ static int run_git_hooks_gate_with_path(const char *hooks_path)
                                     hooks_path);
 }
 
+static int run_git_hooks_gate_with_file(const char *hook_path)
+{
+    return run_gate_script_with_env2(
+        GIT_HOOKS_SCRIPT_REL,
+        "ZCL_GIT_HOOKS_PATH_FOR_TEST", "tools/githooks",
+        "ZCL_GIT_HOOK_FILE_FOR_TEST", hook_path);
+}
+
 static int t_git_hooks_gate_enforces_tracked_pre_push(void)
 {
     int failures = 0;
@@ -1118,36 +1127,41 @@ static int t_git_hooks_gate_enforces_tracked_pre_push(void)
 static int t_git_hooks_gate_rejects_noop_pre_push(void)
 {
     int failures = 0;
-    char hook_path[PATH_MAX];
+    char hook_path[PATH_MAX], fixture_path[PATH_MAX];
     char *orig = NULL;
     int resolved = repo_path(hook_path, sizeof(hook_path),
                              GIT_HOOKS_PRE_PUSH_REL);
-    int read_ok = (resolved == 0 && read_entire_file(hook_path, &orig) == 0);
+    int fixture_resolved = repo_path(fixture_path, sizeof(fixture_path),
+                                     GIT_HOOKS_PRE_PUSH_FIXTURE_REL);
+    int read_ok = (resolved == 0 && fixture_resolved == 0 &&
+                   read_entire_file(hook_path, &orig) == 0);
+    int planted_good = 0;
+    int original_rc = -1;
     int wrote_noop = 0;
     int noop_rc = -1;
-    int restore_ok = 0;
-    int restored_rc = -1;
 
     if (read_ok) {
-        wrote_noop = (write_file(hook_path,
+        (void)unlink(fixture_path);
+        planted_good = (write_file(fixture_path, orig) == 0 &&
+                        chmod(fixture_path, 0755) == 0);
+        if (planted_good)
+            original_rc = run_git_hooks_gate_with_file(fixture_path);
+        wrote_noop = (write_file(fixture_path,
                       "#!/usr/bin/env bash\n"
                       "# fixture: no local CI gate\n"
                       "exit 0\n") == 0 &&
-                      chmod(hook_path, 0755) == 0);
+                      chmod(fixture_path, 0755) == 0);
         if (wrote_noop)
-            noop_rc = run_git_hooks_gate_with_path("tools/githooks");
-        restore_ok = (write_file(hook_path, orig) == 0 &&
-                      chmod(hook_path, 0755) == 0);
-        if (restore_ok)
-            restored_rc = run_git_hooks_gate_with_path("tools/githooks");
+            noop_rc = run_git_hooks_gate_with_file(fixture_path);
+        (void)unlink(fixture_path);
     }
 
     TEST("[lint-gate] local pre-push hook gate rejects no-op hook body") {
         ASSERT(read_ok);
+        ASSERT(planted_good);
+        ASSERT(original_rc == 0);
         ASSERT(wrote_noop);
         ASSERT(noop_rc != 0);
-        ASSERT(restore_ok);
-        ASSERT(restored_rc == 0);
         PASS();
     } _test_next:;
 
@@ -1169,11 +1183,10 @@ static int t_git_hooks_gate_rejects_noop_pre_push(void)
 #define CONDITION_COOLDOWN_SCRIPT_REL "tools/scripts/check_condition_cooldown.sh"
 #define MARKDOWN_LINK_SCRIPT_REL "tools/lint/check_markdown_links.sh"
 #define E10_SHAPE_SCRIPT_REL "tools/lint/framework_shape_check.sh"
-/* NOT named `_*fixture*tmp*.c` on purpose: framework_shape_check.sh itself
- * excludes that glob (b142e7887, to stop OTHER gates' transient fixtures
- * from tripping it mid-race); this fixture is the one file that gate MUST
- * still see, so it needs a name outside its own exclusion. */
-#define E10_SHAPE_FIXTURE_DST "app/_e10_offshape_probe_tmp.c"
+/* Same direct-selftest convention as NODE_DB_EXEC_FIXTURE_DST_REL: visible
+ * without ZCL_LINT_PRODUCTION_SCAN, ignored by production/watch scans. */
+#define E10_SHAPE_FIXTURE_DST \
+    "app/_e10_offshape_fixture_probe_tmp.c"
 #define E10_SQL_SCRIPT_REL "tools/lint/check_no_raw_sqlite_in_controllers.sh"
 #define E10_SQL_FIXTURE_DST "app/controllers/src/_e10_rawsql_fixture_tmp.c"
 #define E11_SCRIPT_REL   "tools/scripts/check_doc_accuracy.sh"
@@ -1286,6 +1299,8 @@ static int t_git_hooks_gate_rejects_noop_pre_push(void)
     "app/services/src/_coin_backfill_caller_fixture_tmp.c"
 #define COIN_BACKFILL_CALLER_DOMAIN_FIXTURE_DST \
     "domain/wallet/src/_coin_backfill_caller_fixture_tmp.c"
+#define COIN_BACKFILL_ROOT_REL \
+    "test-tmp/_coin_backfill_caller_root_tmp"
 
 static int plant_oversized_file(const char *rel, int n_lines)
 {
@@ -1417,8 +1432,6 @@ static int t_no_new_coin_backfill_caller(void)
 {
     int failures = 0;
     char path[PATH_MAX];
-    char allowed_path[PATH_MAX];
-    char *allowed_orig = NULL;
     unlink_rel(COIN_BACKFILL_CALLER_FIXTURE_DST);
     unlink_rel(COIN_BACKFILL_CALLER_DOMAIN_FIXTURE_DST);
     int baseline_rc = run_gate_script(COIN_BACKFILL_CALLER_SCRIPT_REL, NULL);
@@ -1449,33 +1462,64 @@ static int t_no_new_coin_backfill_caller(void)
     int recover_after_domain_rc =
         run_gate_script(COIN_BACKFILL_CALLER_SCRIPT_REL, NULL);
 
-    int read_allowed =
-        repo_path(allowed_path, sizeof(allowed_path),
-                  "app/jobs/src/stage_repair_reducer_frontier_coin.c") == 0
-            ? read_entire_file(allowed_path, &allowed_orig)
-            : -1;
-    int append_dup = -1;
-    int trip_dup_rc = -1;
-    int restore_allowed = -1;
-    int recover_after_dup_rc = -1;
-    if (read_allowed == 0) {
-        FILE *fp = fopen(allowed_path, "ab");
-        if (fp) {
-            append_dup =
-                fputs("\nvoid coin_backfill_duplicate_fixture(void) {\n"
-                      "    stage_repair_coin_backfill_try(0, 0, 0, 0, 0);\n"
-                      "}\n", fp) >= 0 ? 0 : -1;
-            fclose(fp);
-        }
-        trip_dup_rc = append_dup == 0
-                          ? run_gate_script(COIN_BACKFILL_CALLER_SCRIPT_REL,
-                                            NULL)
-                          : -1;
-        restore_allowed = write_file(allowed_path, allowed_orig);
-        recover_after_dup_rc =
-            restore_allowed == 0
-                ? run_gate_script(COIN_BACKFILL_CALLER_SCRIPT_REL, NULL)
-                : -1;
+    char root[PATH_MAX], app_dir[PATH_MAX], jobs_dir[PATH_MAX];
+    char src_dir[PATH_MAX], def_path[PATH_MAX], allowed_path[PATH_MAX];
+    int root_resolved = repo_path(root, sizeof(root), COIN_BACKFILL_ROOT_REL);
+    int app_n = root_resolved == 0
+        ? snprintf(app_dir, sizeof(app_dir), "%s/app", root) : -1;
+    int jobs_n = app_n > 0 && app_n < (int)sizeof(app_dir)
+        ? snprintf(jobs_dir, sizeof(jobs_dir), "%s/app/jobs", root) : -1;
+    int src_n = jobs_n > 0 && jobs_n < (int)sizeof(jobs_dir)
+        ? snprintf(src_dir, sizeof(src_dir), "%s/app/jobs/src", root) : -1;
+    int def_n = src_n > 0 && src_n < (int)sizeof(src_dir)
+        ? snprintf(def_path, sizeof(def_path),
+                   "%s/stage_repair_coin_backfill.c", src_dir) : -1;
+    int allowed_n = def_n > 0 && def_n < (int)sizeof(def_path)
+        ? snprintf(allowed_path, sizeof(allowed_path),
+                   "%s/stage_repair_reducer_frontier_coin.c", src_dir) : -1;
+    int paths_ok = allowed_n > 0 && allowed_n < (int)sizeof(allowed_path);
+    int dirs_ok = paths_ok &&
+        (mkdir(root, 0700) == 0 || errno == EEXIST) &&
+        (mkdir(app_dir, 0700) == 0 || errno == EEXIST) &&
+        (mkdir(jobs_dir, 0700) == 0 || errno == EEXIST) &&
+        (mkdir(src_dir, 0700) == 0 || errno == EEXIST);
+    const char *def_body =
+        "void stage_repair_coin_backfill_try(void) {}\n";
+    const char *allowed_body =
+        "void allowed_coin_backfill(void) {\n"
+        "    stage_repair_coin_backfill_try();\n"
+        "}\n";
+    int isolated_written = dirs_ok &&
+        write_file(def_path, def_body) == 0 &&
+        write_file(allowed_path, allowed_body) == 0;
+    int isolated_green_rc = isolated_written
+        ? run_gate_script_with_env(COIN_BACKFILL_CALLER_SCRIPT_REL,
+                                   "ZCL_COIN_BACKFILL_ROOT_FOR_TEST", root)
+        : -1;
+    int append_dup = isolated_written
+        ? write_file(allowed_path,
+                     "void allowed_coin_backfill(void) {\n"
+                     "    stage_repair_coin_backfill_try();\n"
+                     "    stage_repair_coin_backfill_try();\n"
+                     "}\n")
+        : -1;
+    int trip_dup_rc = append_dup == 0
+        ? run_gate_script_with_env(COIN_BACKFILL_CALLER_SCRIPT_REL,
+                                   "ZCL_COIN_BACKFILL_ROOT_FOR_TEST", root)
+        : -1;
+    int restore_allowed = append_dup == 0
+        ? write_file(allowed_path, allowed_body) : -1;
+    int recover_after_dup_rc = restore_allowed == 0
+        ? run_gate_script_with_env(COIN_BACKFILL_CALLER_SCRIPT_REL,
+                                   "ZCL_COIN_BACKFILL_ROOT_FOR_TEST", root)
+        : -1;
+    if (paths_ok) {
+        (void)unlink(def_path);
+        (void)unlink(allowed_path);
+        (void)rmdir(src_dir);
+        (void)rmdir(jobs_dir);
+        (void)rmdir(app_dir);
+        (void)rmdir(root);
     }
 
     TEST("[lint-gate] sovereign-cure no-new-coin-backfill-caller: clean, trips on new callers and duplicate dispatcher call, recovers") {
@@ -1486,14 +1530,14 @@ static int t_no_new_coin_backfill_caller(void)
         ASSERT(planted_domain == 0);
         ASSERT(trip_domain_rc != 0);
         ASSERT(recover_after_domain_rc == 0);
-        ASSERT(read_allowed == 0);
+        ASSERT(isolated_written);
+        ASSERT(isolated_green_rc == 0);
         ASSERT(append_dup == 0);
         ASSERT(trip_dup_rc != 0);
         ASSERT(restore_allowed == 0);
         ASSERT(recover_after_dup_rc == 0);
         PASS();
     } _test_next:;
-    free(allowed_orig);
     return failures;
 }
 
@@ -3843,13 +3887,11 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "zcl.agent_fast_ci.cache.v1") != NULL);
         ASSERT(strstr(buf, "emit_plan_json") != NULL);
         ASSERT(strstr(buf, "recommended_command") != NULL);
-        /* zero-MCP note (docs/work/MCP-REMOVAL-WORKLIST.md W2, "no native
-         * analog" case): mcp_shortcuts is an agent_fast_ci.sh-only JSON
-         * key describing `make agent-mcp-call*` targets; it is removed
-         * from the script in W3 along with those targets, at which point
-         * this assert is deleted (not rewritten). Left as-is — still
-         * accurate today. */
-        ASSERT(strstr(buf, "mcp_shortcuts") != NULL);
+        ASSERT(strstr(buf, "native_shortcuts") != NULL);
+        ASSERT(strstr(buf, "zclassic23 <leaf> [--input=json]") != NULL);
+        ASSERT(strstr(buf, "zclassic23-dev <leaf> [--input=json]") != NULL);
+        ASSERT(strstr(buf, "mcp_shortcuts") == NULL);
+        ASSERT(strstr(buf, "make agent-mcp-call") == NULL);
         ASSERT(strstr(buf, "green_input_cache") != NULL);
         ASSERT(strstr(buf, "sccache cc") != NULL);
         ASSERT(strstr(buf, "ccache cc") != NULL);
@@ -4129,8 +4171,9 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "docs/GETTING_STARTED.md") != NULL);
         ASSERT(strstr(buf, "Public start here") != NULL);
         ASSERT(strstr(buf, "make dev-bin") != NULL);
-        ASSERT(strstr(buf, "592 registered parallel groups") != NULL);
-        ASSERT(strstr(buf, "build/bin/zclassic23 agentops") != NULL);
+        ASSERT(strstr(buf, "600+ registered parallel groups") != NULL);
+        ASSERT(strstr(buf, "build/bin/zclassic23 core sync diagnose")
+               != NULL);
         ASSERT(strstr(buf, "| jq") == NULL);
         free(buf);
         buf = NULL;
@@ -4143,11 +4186,11 @@ static int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "make -j\"$(nproc)\"") != NULL);
         ASSERT(strstr(buf, "make dev-bin") != NULL);
         ASSERT(strstr(buf, "make t-fast ONLY=<group>") != NULL);
-        ASSERT(strstr(buf, "build/bin/zclassic23 -datadir=\"$HOME/.zclassic-c23\" agent")
+        ASSERT(strstr(buf, "build/bin/zclassic23 -datadir=\"$HOME/.zclassic-c23\" status")
                != NULL);
-        ASSERT(strstr(buf, "build/bin/zclassic23 -datadir=\"$HOME/.zclassic-c23\" agentops")
+        ASSERT(strstr(buf, "build/bin/zclassic23 -datadir=\"$HOME/.zclassic-c23\" discover help")
                != NULL);
-        ASSERT(strstr(buf, "zcl_agent_ops") != NULL);
+        ASSERT(strstr(buf, "dumpstate <subsystem>") != NULL);
         ASSERT(strstr(buf, "docs/BOOTSTRAPPING.md") != NULL);
         ASSERT(strstr(buf, "operator_needed=false") != NULL);
         ASSERT(strstr(buf, "docs/HANDOFF.md") != NULL);
@@ -4183,6 +4226,47 @@ static int t_agent_fast_ci_contract(void)
     free(rules);
     free(main_src);
     free(arch_doc);
+    return failures;
+}
+
+static int t_zero_mcp_operator_docs_contract(void)
+{
+    int failures = 0;
+    char *readme = NULL;
+    char *getting_started = NULL;
+    char *build_doc = NULL;
+    TEST("operator entry docs teach only native agent commands") {
+        char path[PATH_MAX];
+
+        ASSERT(repo_path(path, sizeof(path), "README.md") == 0);
+        ASSERT(read_entire_file(path, &readme) == 0);
+        ASSERT(strstr(readme, "build/bin/zclassic23 status") != NULL);
+        ASSERT(strstr(readme, "core sync diagnose") != NULL);
+        ASSERT(strstr(readme, "ops logs") != NULL);
+        ASSERT(strstr(readme, "MCP") == NULL);
+        ASSERT(strstr(readme, "mcpcall") == NULL);
+        ASSERT(strstr(readme, "agent-mcp-call") == NULL);
+
+        ASSERT(repo_path(path, sizeof(path), "docs/GETTING_STARTED.md") == 0);
+        ASSERT(read_entire_file(path, &getting_started) == 0);
+        ASSERT(strstr(getting_started, "native command registry") != NULL);
+        ASSERT(strstr(getting_started, "discover help") != NULL);
+        ASSERT(strstr(getting_started, "MCP") == NULL);
+        ASSERT(strstr(getting_started, "mcpcall") == NULL);
+        ASSERT(strstr(getting_started, "agent-mcp-call") == NULL);
+
+        ASSERT(repo_path(path, sizeof(path), "docs/BUILD.md") == 0);
+        ASSERT(read_entire_file(path, &build_doc) == 0);
+        ASSERT(strstr(build_doc, "zclassic23 ops selftest") != NULL);
+        ASSERT(strstr(build_doc, "zclassic23 dumpstate hotswap") != NULL);
+        ASSERT(strstr(build_doc, "MCP") == NULL);
+        ASSERT(strstr(build_doc, "mcpcall") == NULL);
+        ASSERT(strstr(build_doc, "agent-mcp-call") == NULL);
+        PASS();
+    } _test_next:;
+    free(readme);
+    free(getting_started);
+    free(build_doc);
     return failures;
 }
 
@@ -7555,6 +7639,7 @@ int test_make_lint_gates(void)
     failures += t_tools_z_operator_diagnostics_contract();
     failures += t_dev_lane_deploy_contract();
     failures += t_agent_fast_ci_contract();
+    failures += t_zero_mcp_operator_docs_contract();
     failures += t_remote_node_update_contract();
     failures += t_native_agent_api_contract();
     failures += t_mvp_reporters_resolve_live_service_rpc_contract();

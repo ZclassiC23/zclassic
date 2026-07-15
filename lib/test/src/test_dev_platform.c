@@ -4,6 +4,7 @@
 
 #include "dev_activation.h"
 #include "devloop.h"
+#include "framework/app_definition.h"
 #include "framework/app_platform.h"
 #include "json/json.h"
 #include "keys/key.h"
@@ -494,6 +495,305 @@ static int test_public_app_abi(void)
     return failures;
 }
 
+static int test_app_definition_compiler(void)
+{
+    int failures = 0;
+    TEST("dev platform: strict compiler accepts Blog and Social catalog") {
+        struct zcl_app_definition_v1 blog, social;
+        struct zcl_result result =
+            zcl_app_definition_load_v1(".", "blog", &blog);
+        ASSERT(result.ok);
+        ASSERT(blog.struct_size == sizeof(blog));
+        ASSERT(blog.definition_version == ZCL_APP_DEFINITION_V1);
+        ASSERT(strcmp(blog.app_id, "blog") == 0);
+        ASSERT(strcmp(blog.display_name, "ZClassic Blog") == 0);
+        ASSERT(strcmp(blog.app_version, "0.1.0") == 0);
+        ASSERT(blog.resource_count == 2);
+        ASSERT(blog.topic_count == 1);
+        ASSERT(strcmp(blog.topics[0].name, "blog.posts.v1") == 0);
+        ASSERT(blog.topics[0].wire_version == 1);
+        ASSERT(blog.topics[0].max_event_bytes == 20000);
+        ASSERT(blog.mount_count == 1);
+        ASSERT(strcmp(blog.mounts[0].path, "/blog") == 0);
+        ASSERT(blog.onion_declared && blog.onion_enabled);
+        ASSERT(blog.znam_declared && strcmp(blog.znam, "blog") == 0);
+        ASSERT(blog.state_schema_declared && blog.state_schema_version == 1);
+        ASSERT(blog.simulation_count == 0);
+        ASSERT((blog.required_capabilities & ZCL_APP_CAP_SIGNED_EVENTS) != 0);
+
+        result = zcl_app_definition_load_v1(".", "social", &social);
+        ASSERT(result.ok);
+        ASSERT(strcmp(social.app_id, "social") == 0);
+        ASSERT(social.resource_count == 4);
+        ASSERT(social.topic_count == 1);
+        ASSERT(strcmp(social.topics[0].name, "social.events.v1") == 0);
+        ASSERT(social.mount_count == 1);
+        ASSERT(strcmp(social.mounts[0].path, "/") == 0);
+        ASSERT(social.simulation_count == 4);
+
+        struct zcl_app_definition_catalog_v1 catalog;
+        ASSERT(zcl_app_definition_builtin_count_v1() == 2);
+        ASSERT(strcmp(zcl_app_definition_builtin_id_v1(0), "blog") == 0);
+        ASSERT(strcmp(zcl_app_definition_builtin_id_v1(1), "social") == 0);
+        ASSERT(zcl_app_definition_builtin_id_v1(2) == NULL);
+        ASSERT(zcl_app_definition_builtin_v1("blog"));
+        ASSERT(!zcl_app_definition_builtin_v1("Blog"));
+        ASSERT(!zcl_app_definition_builtin_v1("missing"));
+        result = zcl_app_definition_builtin_catalog_compile_v1(".", &catalog);
+        ASSERT(result.ok);
+        ASSERT(catalog.struct_size == sizeof(catalog));
+        ASSERT(catalog.catalog_version == ZCL_APP_DEFINITION_V1);
+        ASSERT(catalog.app_count == 2);
+        ASSERT(strcmp(catalog.apps[0].app_id, "blog") == 0);
+        ASSERT(strcmp(catalog.apps[1].app_id, "social") == 0);
+
+        static const char *const duplicate_ids[] = { "blog", "blog" };
+        memset(&catalog, 0xa5, sizeof(catalog));
+        result = zcl_app_definition_catalog_compile_v1(
+            ".", duplicate_ids,
+            sizeof(duplicate_ids) / sizeof(duplicate_ids[0]), &catalog);
+        ASSERT(!result.ok);
+        ASSERT(strstr(result.message, "duplicate catalog app id") != NULL);
+        ASSERT(catalog.struct_size == 0 && catalog.app_count == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_strict_dev_app_producers(void)
+{
+    int failures = 0;
+    TEST("dev platform: app describe and plan consume strict definitions only") {
+        char body[8192];
+        size_t n = zcl_devloop_app_describe_json(
+            ".", "blog", body, sizeof(body));
+        ASSERT(n > 0 && n < sizeof(body));
+        struct json_value doc = {0};
+        ASSERT(json_read(&doc, body, n));
+        ASSERT(strcmp(json_get_str(json_get(&doc, "status")), "ok") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&doc, "app_id")), "blog") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&doc, "display_name")),
+                      "ZClassic Blog") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&doc, "compiler")),
+                      "strict-bounded-v1") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&doc, "authority")),
+                      "definition-only") == 0);
+        const struct json_value *topics = json_get(&doc, "topics");
+        ASSERT(topics && topics->type == JSON_ARR && topics->num_children == 1);
+        ASSERT(strcmp(json_get_str(json_get(&topics->children[0], "name")),
+                      "blog.posts.v1") == 0);
+        ASSERT(strstr(body, "signed_events") != NULL);
+        ASSERT(strstr(body, "runtime_authority") != NULL);
+        json_free(&doc);
+
+        n = zcl_devloop_app_plan_json(
+            ".", "blog", "comments", body, sizeof(body));
+        ASSERT(n > 0 && n < sizeof(body));
+        memset(&doc, 0, sizeof(doc));
+        ASSERT(json_read(&doc, body, n));
+        ASSERT(strcmp(json_get_str(json_get(&doc, "mode")),
+                      "preview-only") == 0);
+        const struct json_value *writes = json_get(&doc, "writes");
+        ASSERT(writes && writes->type == JSON_BOOL && !writes->val.b);
+        ASSERT(strstr(body, "app/models/src/comments.c") != NULL);
+        ASSERT(strstr(body, "apps/blog/models/comments.c") == NULL);
+        ASSERT(strstr(body, "writes and publishes nothing") != NULL);
+        json_free(&doc);
+
+        /* The old textual scraper/planner accepted both of these. The strict
+         * compiler now requires a real, valid app.def before producing a
+         * description or even a preview-only resource plan. */
+        ASSERT(zcl_devloop_app_describe_json(
+            ".", "Blog", body, sizeof(body)) == 0);
+        ASSERT(zcl_devloop_app_plan_json(
+            ".", "missing", "posts", body, sizeof(body)) == 0);
+        ASSERT(zcl_devloop_app_plan_json(
+            ".", "blog", "Bad-Resource", body, sizeof(body)) == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_app_definition_hostile_fixtures(void)
+{
+    int failures = 0;
+    TEST("dev platform: strict app compiler rejects hostile definitions") {
+        static const struct {
+            const char *name;
+            const char *source;
+            const char *error;
+        } fixtures[] = {
+            {
+                "unknown directive",
+                "ZCL_APP(\"fixture\", \"Fixture\", \"1.0.0\")\n"
+                "ZCL_APP_CAPABILITY(CHAIN_READ)\n"
+                "ZCL_APP_FUTURE(\"x\")\n",
+                "unknown directive",
+            },
+            {
+                "duplicate singleton",
+                "ZCL_APP(\"fixture\", \"Fixture\", \"1.0.0\")\n"
+                "ZCL_APP(\"fixture\", \"Fixture\", \"1.0.0\")\n",
+                "duplicate ZCL_APP",
+            },
+            {
+                "malformed mount",
+                "ZCL_APP(\"fixture\", \"Fixture\", \"1.0.0\")\n"
+                "ZCL_APP_CAPABILITY(WEB_ROUTES)\n"
+                "ZCL_APP_WEB_MOUNT(\"/bad/../route\")\n",
+                "invalid web mount",
+            },
+            {
+                "missing mount capability",
+                "ZCL_APP(\"fixture\", \"Fixture\", \"1.0.0\")\n"
+                "ZCL_APP_CAPABILITY(CHAIN_READ)\n"
+                "ZCL_APP_WEB_MOUNT(\"/fixture\")\n",
+                "web mounts require WEB_ROUTES",
+            },
+            {
+                "capability without mount",
+                "ZCL_APP(\"fixture\", \"Fixture\", \"1.0.0\")\n"
+                "ZCL_APP_CAPABILITY(WEB_ROUTES)\n",
+                "lacks a web mount",
+            },
+            {
+                "duplicate mount",
+                "ZCL_APP(\"fixture\", \"Fixture\", \"1.0.0\")\n"
+                "ZCL_APP_CAPABILITY(WEB_ROUTES)\n"
+                "ZCL_APP_WEB_MOUNT(\"/fixture\")\n"
+                "ZCL_APP_WEB_MOUNT(\"/fixture\")\n",
+                "duplicate web mount",
+            },
+            {
+                "duplicate topic",
+                "ZCL_APP(\"fixture\", \"Fixture\", \"1.0.0\")\n"
+                "ZCL_APP_CAPABILITY(SIGNED_EVENTS)\n"
+                "ZCL_APP_CAPABILITY(P2P_TOPICS)\n"
+                "ZCL_APP_TOPIC(\"fixture.events.v1\", 1, 1024)\n"
+                "ZCL_APP_TOPIC(\"fixture.events.v1\", 1, 2048)\n",
+                "duplicate topic",
+            },
+            {
+                "too many resources",
+                "ZCL_APP(\"fixture\", \"Fixture\", \"1.0.0\")\n"
+                "ZCL_APP_RESOURCE(\"r00\")\nZCL_APP_RESOURCE(\"r01\")\n"
+                "ZCL_APP_RESOURCE(\"r02\")\nZCL_APP_RESOURCE(\"r03\")\n"
+                "ZCL_APP_RESOURCE(\"r04\")\nZCL_APP_RESOURCE(\"r05\")\n"
+                "ZCL_APP_RESOURCE(\"r06\")\nZCL_APP_RESOURCE(\"r07\")\n"
+                "ZCL_APP_RESOURCE(\"r08\")\nZCL_APP_RESOURCE(\"r09\")\n"
+                "ZCL_APP_RESOURCE(\"r10\")\nZCL_APP_RESOURCE(\"r11\")\n"
+                "ZCL_APP_RESOURCE(\"r12\")\nZCL_APP_RESOURCE(\"r13\")\n"
+                "ZCL_APP_RESOURCE(\"r14\")\nZCL_APP_RESOURCE(\"r15\")\n"
+                "ZCL_APP_RESOURCE(\"r16\")\n",
+                "too many resources",
+            },
+            {
+                "trailing junk",
+                "ZCL_APP(\"fixture\", \"Fixture\", \"1.0.0\");\n",
+                "trailing junk",
+            },
+            {
+                "unknown capability",
+                "ZCL_APP(\"fixture\", \"Fixture\", \"1.0.0\")\n"
+                "ZCL_APP_CAPABILITY(RAW_SOCKET)\n",
+                "unknown capability",
+            },
+            {
+                "duplicate capability",
+                "ZCL_APP(\"fixture\", \"Fixture\", \"1.0.0\")\n"
+                "ZCL_APP_CAPABILITY(CHAIN_READ)\n"
+                "ZCL_APP_CAPABILITY(CHAIN_READ)\n",
+                "duplicate capability",
+            },
+            {
+                "conflicting onion capability",
+                "ZCL_APP(\"fixture\", \"Fixture\", \"1.0.0\")\n"
+                "ZCL_APP_CAPABILITY(WEB_ROUTES)\n"
+                "ZCL_APP_CAPABILITY(ONION_BINDING)\n"
+                "ZCL_APP_WEB_MOUNT(\"/fixture\")\n"
+                "ZCL_APP_ONION(false)\n",
+                "conflicts with disabled binding",
+            },
+            {
+                "oversized topic event",
+                "ZCL_APP(\"fixture\", \"Fixture\", \"1.0.0\")\n"
+                "ZCL_APP_CAPABILITY(SIGNED_EVENTS)\n"
+                "ZCL_APP_CAPABILITY(P2P_TOPICS)\n"
+                "ZCL_APP_TOPIC(\"fixture.events.v1\", 1, 65537)\n",
+                "invalid topic declaration",
+            },
+            {
+                "leading zero",
+                "ZCL_APP(\"fixture\", \"Fixture\", \"1.0.0\")\n"
+                "ZCL_APP_CAPABILITY(SIGNED_EVENTS)\n"
+                "ZCL_APP_CAPABILITY(P2P_TOPICS)\n"
+                "ZCL_APP_TOPIC(\"fixture.events.v1\", 01, 1024)\n",
+                "leading zero",
+            },
+            {
+                "malformed declared id",
+                "ZCL_APP(\"Fixture\", \"Fixture\", \"1.0.0\")\n"
+                "ZCL_APP_CAPABILITY(CHAIN_READ)\n",
+                "invalid app id",
+            },
+            {
+                "malformed version",
+                "ZCL_APP(\"fixture\", \"Fixture\", \"01.0.0\")\n"
+                "ZCL_APP_CAPABILITY(CHAIN_READ)\n",
+                "invalid semantic version",
+            },
+            {
+                "unterminated comment",
+                "ZCL_APP(\"fixture\", \"Fixture\", \"1.0.0\")\n"
+                "ZCL_APP_CAPABILITY(CHAIN_READ)\n/* never closed",
+                "unterminated comment",
+            },
+        };
+
+        for (size_t i = 0; i < sizeof(fixtures) / sizeof(fixtures[0]); i++) {
+            struct zcl_app_definition_v1 definition;
+            memset(&definition, 0xa5, sizeof(definition));
+            struct zcl_result result = zcl_app_definition_parse_v1(
+                "fixture", fixtures[i].source, strlen(fixtures[i].source),
+                &definition);
+            ASSERT(!result.ok);
+            ASSERT(strstr(result.message, fixtures[i].error) != NULL);
+            ASSERT(definition.struct_size == 0);
+        }
+
+        static const char valid[] =
+            "ZCL_APP(\"fixture\", \"Fixture\", \"1.0.0\")\n"
+            "ZCL_APP_CAPABILITY(CHAIN_READ)\n";
+        struct zcl_app_definition_v1 definition;
+        struct zcl_result result = zcl_app_definition_parse_v1(
+            "../fixture", valid, sizeof(valid) - 1, &definition);
+        ASSERT(!result.ok);
+        ASSERT(strstr(result.message, "path id") != NULL);
+        ASSERT(definition.struct_size == 0);
+
+        char unterminated_id[ZCL_APP_ID_MAX + 1];
+        memset(unterminated_id, 'a', sizeof(unterminated_id));
+        result = zcl_app_definition_parse_v1(
+            unterminated_id, valid, sizeof(valid) - 1, &definition);
+        ASSERT(!result.ok);
+        ASSERT(strstr(result.message, "path id") != NULL);
+        ASSERT(definition.struct_size == 0);
+
+        static const char embedded_nul[] = {
+            'Z','C','L','_','A','P','P','(', '"','f','i','x','t','u','r','e','"',
+            ',', '"','F','i','x','t','u','r','e','"', ',', '"','1','.','0','.',
+            '0','"',')','\n','\0','X'
+        };
+        result = zcl_app_definition_parse_v1(
+            "fixture", embedded_nul, sizeof(embedded_nul), &definition);
+        ASSERT(!result.ok);
+        ASSERT(strstr(result.message, "embedded NUL") != NULL);
+        ASSERT(definition.struct_size == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_signed_app_events(void)
 {
     int failures = 0;
@@ -932,6 +1232,8 @@ static int test_watch_relevance(void)
          * `_*fixture*` .c files under app/, lib/, domain/ then deletes them. */
         static const char *const fixtures[] = {
             "app/_lint_gate_fixture_tmp.c",
+            "app/_node_db_exec_lint_fixture_probe_tmp.c",
+            "app/_e10_offshape_fixture_probe_tmp.c",
             "app/controllers/src/_coins_lookup_guard_fixture_tmp.c",
             "app/jobs/src/_e5_stage_fixture_tmp_stage.c",
             "lib/storage/src/_e4_pure_fixture_projection.c",
@@ -1045,6 +1347,9 @@ int test_dev_platform(void)
     failures += test_core_refusal_cycle();
     failures += test_core_refusal_token();
     failures += test_public_app_abi();
+    failures += test_app_definition_compiler();
+    failures += test_strict_dev_app_producers();
+    failures += test_app_definition_hostile_fixtures();
     failures += test_signed_app_events();
     failures += test_social_sim();
     failures += test_native_activation_switch();

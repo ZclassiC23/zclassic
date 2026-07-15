@@ -259,6 +259,57 @@ static int test_missing_required_input_fails_closed_structured(void)
     return failures;
 }
 
+static int test_native_app_catalog_uses_strict_builtin_source(void)
+{
+    int failures = 0;
+    TEST("native app list and inspect share the strict built-in catalog") {
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        struct zcl_command_request request = {
+            .input = &input,
+            .view = "normal",
+            .invoked_name = "app.list",
+        };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.app_index.v1");
+        zcl_native_handle_app_list(&request, &reply);
+        const struct json_value *apps = json_get(&reply.data, "apps");
+        ASSERT(apps && apps->type == JSON_ARR && apps->num_children == 2);
+        ASSERT_STR_EQ(json_get_str(&apps->children[0]), "blog");
+        ASSERT_STR_EQ(json_get_str(&apps->children[1]), "social");
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "count")), 2);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "catalog")),
+                      "built-in-strict-v1");
+        zcl_command_reply_free(&reply);
+
+        (void)json_push_kv_str(&input, "app_id", "blog");
+        request.invoked_name = "app.inspect";
+        zcl_command_reply_init(&reply, "zcl.app_inspect.v1");
+        zcl_native_handle_app_inspect(&request, &reply);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "app_id")), "blog");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "manifest")),
+                      "apps/blog/app.def");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "authority")),
+                      "definition-only");
+        zcl_command_reply_free(&reply);
+
+        json_free(&input);
+        json_init(&input);
+        json_set_object(&input);
+        (void)json_push_kv_str(&input, "app_id", "missing");
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.app_inspect.v1");
+        zcl_native_handle_app_inspect(&request, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_BLOCKED);
+        ASSERT_STR_EQ(reply.error.code, "UNKNOWN_APP");
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_native_api_contract(void)
 {
     int failures = 0;
@@ -266,6 +317,7 @@ int test_native_api_contract(void)
     failures += test_every_leaf_dot_path_resolves_from_cli_words();
     failures += test_root_and_discover_aliases_resolve();
     failures += test_missing_required_input_fails_closed_structured();
+    failures += test_native_app_catalog_uses_strict_builtin_source();
     printf("=== native_api_contract: %d failures ===\n", failures);
     return failures;
 }

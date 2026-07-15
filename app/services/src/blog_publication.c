@@ -5,6 +5,8 @@
 
 #include "chain/chainparams.h"
 #include "keys/key_io.h"
+#include "models/app_event.h"
+#include "models/db_txn.h"
 #include "models/shared_validators.h"
 #include "models/znam.h"
 #include "platform/time_compat.h"
@@ -293,8 +295,29 @@ struct zcl_result blog_publication_import_event(
     memcpy(post.signature, event->signature, event->signature_len);
     post.signature_len = event->signature_len;
     post.stored_at = (int64_t)platform_time_wall_time_t();
+
+    /* One verified envelope store feeds Blog today and Social/Chat later.
+     * Keep the generic immutable event and the typed Blog projection atomic.
+     * This service must own the transaction: inferring ownership from a bare
+     * tx_open bit could accidentally join another thread or sync batch and
+     * report success for work that its real owner later rolls back. */
+    struct db_app_event app_event;
+    memset(&app_event, 0, sizeof(app_event));
+    app_event.event = *event;
+    app_event.received_at = post.stored_at;
+    __attribute__((cleanup(db_txn_auto_rollback)))
+    struct db_txn *txn = db_txn_begin(ndb, "blog.import_event");
+    if (!txn)
+        return ZCL_ERR(BLOG_ERR_SAVE,
+                       "Blog import requires an exclusive transaction");
+    if (!db_app_event_save(ndb, &app_event, &scope))
+        return ZCL_ERR(BLOG_ERR_SAVE,
+                       "Blog event failed shared AppEvent save");
     if (!db_blog_post_save(ndb, &post))
         return ZCL_ERR(BLOG_ERR_SAVE, "Blog post failed ActiveRecord save");
+    if (!db_txn_commit(txn))
+        return ZCL_ERR(BLOG_ERR_SAVE,
+                       "Blog AppEvent transaction failed to commit");
     if (!db_blog_post_find(ndb, post.event_id, out))
         return ZCL_ERR(BLOG_ERR_SAVE,
                        "Blog post conflicted with slug or author sequence");

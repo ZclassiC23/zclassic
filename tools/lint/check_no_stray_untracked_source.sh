@@ -48,7 +48,11 @@ source "$SCRIPT_DIR/gate_lib.sh"
 # shellcheck source=tools/lint/scan_exclusions.sh
 source "$SCRIPT_DIR/scan_exclusions.sh"
 
-SCAN_DIRS=(app domain lib config core adapters tools)
+if [[ -n "${ZCL_STRAY_SCAN_DIRS_FOR_TEST:-}" ]]; then
+    read -r -a SCAN_DIRS <<< "$ZCL_STRAY_SCAN_DIRS_FOR_TEST"
+else
+    SCAN_DIRS=(app domain lib config core adapters tools)
+fi
 
 existing_dirs=()
 for d in "${SCAN_DIRS[@]}"; do

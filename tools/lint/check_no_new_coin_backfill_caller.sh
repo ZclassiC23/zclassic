@@ -11,10 +11,14 @@
 # exact, not "anything from this file".
 set -euo pipefail
 
-ROOT="${1:-$(cd "$(dirname "$0")/../.." && pwd)}"
+SCRIPT_ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# The self-test points this gate at a complete isolated fixture tree. Keeping
+# that tree out of the tracked source directories prevents the gate proof from
+# waking the long-lived development watcher and recursively launching CI.
+ROOT="${ZCL_COIN_BACKFILL_ROOT_FOR_TEST:-${1:-$SCRIPT_ROOT}}"
 cd "$ROOT"
 # shellcheck source=tools/lint/scan_exclusions.sh
-source tools/lint/scan_exclusions.sh
+source "$SCRIPT_ROOT/tools/lint/scan_exclusions.sh"
 
 SYMBOL='stage_repair_coin_backfill_try('
 DEF_FILE='app/jobs/src/stage_repair_coin_backfill.c'

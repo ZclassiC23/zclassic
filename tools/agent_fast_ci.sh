@@ -659,18 +659,6 @@ emit_plan_json() {
     printf '    "discover": "zclassic23 discover help | zclassic23 discover search <q>",\n'
     printf '    "dev_hotswap_probe": "contained_before_dlopen_use_build_test_sim"\n'
     printf '  },\n'
-    printf '  "mcp_shortcuts": {\n'
-    printf '    "status": "legacy, removed in W3 -- prefer native_shortcuts above",\n'
-    printf '    "fresh_source_tree": "make agent-mcp-call TOOL=<tool> [ARGS='
-    printf "'{}'"
-    printf ']",\n'
-    printf '    "hot_source_tree": "make agent-mcp-call-hot TOOL=<tool> [ARGS='
-    printf "'{}'"
-    printf ']",\n'
-    printf '    "dev_linger_lane": "make agent-mcp-call-dev TOOL=<tool> [ARGS='
-    printf "'{}'"
-    printf ']"\n'
-    printf '  },\n'
     printf '  "dev_lane": {\n'
     printf '    "runtime_publication": false,\n'
     printf '    "publication_blocker": "immutable epoch/proof/resident-CAS/rollback transaction incomplete",\n'

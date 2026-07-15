@@ -21,6 +21,7 @@
 #include "command/native_command.h"
 
 #include "config/command_catalog.h"
+#include "framework/app_definition.h"
 #include "kernel/command_registry.h"
 #include "json/json.h"
 
@@ -620,22 +621,25 @@ void zcl_native_handle_app_list(const struct zcl_command_request *request,
                                 struct zcl_command_reply *reply)
 {
     (void)request;
-    /* Checkout-local: an installed App is a directory under apps/ with an
-     * app.def manifest. Enumerate deterministically. */
+    /* Compile-time catalog only. Definitions are data and grant no runtime
+     * authority; checkout inspection is a separate dev command. */
     struct json_value apps;
     json_init(&apps);
     json_set_array(&apps);
-    static const char *const known[] = { "blog", "social" };
-    for (size_t i = 0; i < sizeof(known) / sizeof(known[0]); i++) {
+    size_t count = zcl_app_definition_builtin_count_v1();
+    for (size_t i = 0; i < count; i++) {
+        const char *app_id = zcl_app_definition_builtin_id_v1(i);
+        if (!app_id)
+            continue;
         struct json_value item;
         json_init(&item);
-        json_set_str(&item, known[i]);
+        json_set_str(&item, app_id);
         (void)json_push_back(&apps, &item);
         json_free(&item);
     }
     (void)json_push_kv(&reply->data, "apps", &apps);
-    (void)json_push_kv_int(&reply->data, "count",
-                           (int64_t)(sizeof(known) / sizeof(known[0])));
+    (void)json_push_kv_int(&reply->data, "count", (int64_t)count);
+    (void)json_push_kv_str(&reply->data, "catalog", "built-in-strict-v1");
     json_free(&apps);
 }
 
@@ -650,12 +654,7 @@ void zcl_native_handle_app_inspect(const struct zcl_command_request *request,
                                "app_id is required", "");
         return;
     }
-    const char *manifest = NULL;
-    if (strcmp(app_id, "blog") == 0)
-        manifest = "apps/blog/app.def";
-    else if (strcmp(app_id, "social") == 0)
-        manifest = "apps/social/app.def";
-    if (!manifest) {
+    if (!zcl_app_definition_builtin_v1(app_id)) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_BLOCKED,
                                ZCL_COMMAND_EXIT_BLOCKED, "UNKNOWN_APP",
                                "resolve", false, false,
@@ -664,9 +663,19 @@ void zcl_native_handle_app_inspect(const struct zcl_command_request *request,
                                          "list installed Apps");
         return;
     }
+    char manifest[ZCL_APP_ID_MAX + sizeof("apps//app.def")];
+    int n = snprintf(manifest, sizeof(manifest), "apps/%s/app.def", app_id);
+    if (n <= 0 || (size_t)n >= sizeof(manifest)) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "APP_PATH_OVERFLOW",
+                               "render", false, false,
+                               "built-in App path exceeds its bound", app_id);
+        return;
+    }
     (void)json_push_kv_str(&reply->data, "app_id", app_id);
     (void)json_push_kv_str(&reply->data, "manifest", manifest);
     (void)json_push_kv_str(&reply->data, "status", "checkout-only");
+    (void)json_push_kv_str(&reply->data, "authority", "definition-only");
 }
 
 /* ── ops.state / ops.selftest native leaves (W0 §3) ──────────────────────

@@ -160,10 +160,15 @@ bool db_txn_commit(struct db_txn *txn)
         txn->committed = true;
         emit_commit(txn->label, elapsed);
     } else {
-        /* node_db_commit already attempted rollback internally on
-         * failure; mark as rolled_back so auto_rollback is a no-op. */
-        txn->rolled_back = true;
-        emit_rollback(txn->label, "commit_failed");
+        /* SQLite can leave a transaction active after a failed COMMIT (for
+         * example, a deferred foreign-key violation). node_db_commit() only
+         * issues COMMIT, so explicitly unwind before relinquishing ownership.
+         * If rollback itself fails, leave the handle live: scope cleanup gets
+         * one more rollback attempt and emits the leak loudly. */
+        bool rollback_ok = node_db_rollback(txn->db);
+        txn->rolled_back = rollback_ok;
+        emit_rollback(txn->label, rollback_ok
+                      ? "commit_failed" : "commit_failed_rollback_failed");
     }
     return ok;
 }

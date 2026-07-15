@@ -34,7 +34,10 @@ if [[ "$actual" != "$want" ]]; then
     fi
 fi
 
-hook="$want/pre-push"
+# Self-tests inspect an isolated copy so they never rewrite the tracked hook
+# and wake the live development watcher. Production calls leave the override
+# unset and therefore continue to verify the armed, tracked hook exactly.
+hook="${ZCL_GIT_HOOK_FILE_FOR_TEST:-$want/pre-push}"
 if [[ ! -x "$hook" ]]; then
     echo "check_git_hooks_installed: FAIL — $hook is missing or not executable" >&2
     echo "  Run: chmod +x $hook && make install-hooks" >&2

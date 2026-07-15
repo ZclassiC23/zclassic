@@ -40,9 +40,9 @@ make agent-loop
 make fast-rebuild
 make agent-index
 make dev-loop-bench
-build/bin/zclassic23 discover help          # native command registry (was: agent-mcp-call TOOL=zcl_tools_list)
-build/bin/zclassic23 status                 # native node status (was: agent-mcp-call-hot TOOL=zcl_status)
-build/bin/zclassic23-dev status             # dev-lane native status (was: agent-mcp-call-dev TOOL=zcl_status)
+build/bin/zclassic23 discover help          # enumerate native commands
+build/bin/zclassic23 status                 # local node status
+build/bin/zclassic23-dev status             # dev-lane status
 make agent-doctor
 make agent-dev-status
 build/bin/zclassic23-dev agentdevstatus
@@ -113,11 +113,11 @@ return a structured containment refusal. The shell watcher remains a
 verify/check compatibility surface.
 
 The intended process-reload transaction is content-addressed under
-`~/.local/lib/zclassic23-dev/<generation>/`. Candidate `agentbuild`, tool
-catalog, MCP self-test, and build identity are checked before the old process is
+`~/.local/lib/zclassic23-dev/<generation>/`. Candidate build identity, native
+command catalog, and `ops selftest` are checked before the old process is
 disturbed. Activation takes a nonblocking lock and flips atomic `current` and
 `last-good` links. The bounded warm probe verifies the exact `/proc` executable,
-RPC, agent/operator contracts, and MCP health. A failed candidate is
+RPC, agent/operator contracts, and native-registry health. A failed candidate is
 quarantined; the activator restores `last-good`, restarts once, and verifies the
 recovery. Canonical and soak services, ports, and datadirs are rejected by the
 dev-lane guards. During Phase-0, `make deploy-dev`, `make deploy-dev-fast`,
@@ -132,15 +132,9 @@ checks; set `ZCL_AGENT_LOOP_BIN=1` to also link the local dev binary.
 `ZCL_AGENT_LOOP_DEPLOY=stage|dev` reaches a contained backend and cannot stage
 or reload the dev lane.
 Native commands (`zclassic23 status`, `zclassic23 dumpstate <subsystem>`,
-`zclassic23 discover help`) are the agent interface going forward. The legacy
-typed-MCP one-shots below are removed in the zero-MCP W3 delete.
-`make agent-mcp-call` is the fresh source-tree typed MCP path; it refreshes
-`build/bin/zclassic23-dev` before calling `mcpcall`, so API smoke checks after a
-code edit use the current local code without paying the release LTO link. For
-read-only status and schema checks where recompiling would be noise,
-`make agent-mcp-call-hot TOOL=<tool>` reuses the existing source-tree dev
-binary, and `make agent-mcp-call-dev TOOL=<tool>` reuses the installed
-`~/.local/bin/zclassic23-dev` binary with the dev-lane datadir and RPC port.
+`zclassic23 discover help`) are the agent interface. Use
+`build/bin/zclassic23-dev <leaf>` when checking the current development binary
+without paying the release LTO link.
 `make agent-doctor` is the no-build combined development check: build binary,
 dev-lane status, recent focused-test failure hints, dirty-file count, and the
 next safe command. Use `make agent-doctor ARGS=--json` for
@@ -154,8 +148,8 @@ activation lock, rejected generations, rollback availability, saved deploy
 state, current cycle and watcher heartbeat, background-quality freshness,
 latency-SLO status, auto-reindex marker, deploy blocker/reason, stale-marker
 candidate, and next safe action. Use
-`make agent-dev-status ARGS=--json`, native `zclassic23 agentdevstatus`, or MCP
-`zcl_agent_dev_status` for the machine-readable `zcl.agent_dev_status.v1` form.
+`make agent-dev-status ARGS=--json` or `build/bin/zclassic23-dev status` for a
+machine-readable status form.
 When that status reports `auto_reindex_stale_candidate=true`, run
 `make agent-clear-stale-dev-reindex`; it archives the dev-lane marker only after
 the dev RPC serves at or above the marker anchor, and never touches canonical or
@@ -164,9 +158,9 @@ No busy-service path stages a generation during containment. `make
 agent-stage-dev` refuses; build and preflight must remain non-publishing until
 the complete transaction is implemented.
 
-Foreground candidate preflight uses `zcl_self_test {"mode":"registry"}`. It
-validates every route and generated input schema inside the candidate without
-depending on the health of the process being replaced. The exhaustive
+Foreground candidate preflight uses `build/bin/zclassic23 ops selftest`. It
+validates every native leaf and generated input schema inside the candidate
+without depending on the health of the process being replaced. The exhaustive
 handler-dispatch self-test remains a background/live diagnostic.
 
 `make agent-index` generates root `compile_commands.json` by dry-running the
@@ -174,9 +168,8 @@ real `DEV_OBJS` recipes. It therefore preserves generated-header prerequisites,
 the exact C23 flags, compiler/cache wrapper, and the normal `-Og` versus hot
 consensus/crypto/script/validation `-O2` split. It atomically records hash and
 freshness metadata under `.cache/zcl-agent-index/`; clangd is an optional
-consumer, not a build requirement. `zclassic23 agentbuild` /
-`zcl_agent_build` embeds the current indexing status and an executable refresh
-command.
+consumer, not a build requirement. `zclassic23 agentbuild` embeds the current
+indexing status and an executable refresh command.
 
 `make dev-loop-bench` runs controlled no-op, controller, service, header,
 hot-swap, and process-reload cases and writes `zcl.dev_loop_bench.v1` with raw
@@ -187,9 +180,9 @@ timings. `zclassic23 agentbuild` also exposes the latest benchmark status.
 In-process generation v2 is deliberately narrower than process reload. Its
 loader, simulator, and build paths remain available, but resident probing and
 every commit/publication entry point are Phase-0 contained. The intended mechanism
-admits only manifest-eligible, stateless MCP route providers; it stages the
-whole route batch, validates ABI/capabilities/provenance, runs the generation
-self-test, and atomically publishes one resident router snapshot. REST,
+admits only manifest-eligible, stateless native leaf providers; it stages the
+whole handler batch, validates ABI/capabilities/provenance, runs the generation
+self-test, and atomically publishes one resident registry snapshot. REST,
 diagnostics, services, models, storage, events, conditions, supervisors,
 network/wallet/crypto state, reducers, consensus, and bootstrap ownership remain
 `reload_required`. If publication is re-enabled after the transactional gates
@@ -197,7 +190,7 @@ land, a committed hot-swap will remain process-local and disappear on restart;
 durable convergence must use the same receipt-bound activation transaction.
 No watcher currently schedules or stages a post-swap generation. Inspect any
 pre-containment provenance with
-`zcl_state subsystem=hotswap` (`zcl.hotswap_generation.v2`). The legacy
+`zclassic23 dumpstate hotswap` (`zcl.hotswap_generation.v2`). The contained
 resident mutation method returns `runtime_publication_contained`; release,
 canonical, and soak nodes never register it. Build and verify without resident
 loading:
@@ -208,15 +201,15 @@ make t ONLY=hotswap_loader
 make hotswap-sim
 ```
 
-`make hotswap`, both native hot-swap commands,
-`tools/dev/hotswap-running-dev.sh`, and legacy `zcl_agent_hotswap` always
+`make hotswap`, both native hot-swap commands, and
+`tools/dev/hotswap-running-dev.sh` always
 refuse and never call the loader. Run
 `make hotswap-sim` for the focused deterministic simulated-network proof, and
 `make sim-fast` for the broader checked-in scenarios plus seeded replay sweep.
 Each successful mapping keeps both its code mapping and the exact artifact
 descriptor pinned for the process lifetime. This prevents `/proc/self/fd/N`
 loader-cache aliasing when several different providers are swapped in
-sequence; `zcl_state subsystem=hotswap` reports
+sequence; `zclassic23 dumpstate hotswap` reports
 `artifact_inode_pinned=true` for every accepted generation.
 
 `make fast-rebuild` is an alias for the local dev binary (`make dev-bin`). It

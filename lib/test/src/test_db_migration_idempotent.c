@@ -321,6 +321,49 @@ static int t_newer_schema_refuses_open_before_staging_cleanup(void)
     return failures;
 }
 
+static int t_v29_incompatible_schema_fails_without_stamp(void)
+{
+    int failures = 0;
+    char dir[256];
+    db_mig_path(dir, sizeof(dir), "v29_incompatible");
+    mkdir_p(dir);
+    char dbpath[512];
+    snprintf(dbpath, sizeof(dbpath), "%s/node.db", dir);
+
+    TEST("db_mig: v29 incompatible AppEvent schema fails without stamp") {
+        struct node_db seed;
+        ASSERT(node_db_open(&seed, dbpath));
+        node_db_close(&seed);
+
+        sqlite3 *raw = NULL;
+        ASSERT(sqlite3_open(dbpath, &raw) == SQLITE_OK);
+        ASSERT(db_mig_exec_raw(raw,
+            "DELETE FROM schema_migrations WHERE version='029';"
+            "DROP INDEX idx_app_events_topic_cursor;"
+            "DROP INDEX idx_app_events_author_sequence;"
+            "DROP INDEX idx_app_events_previous;"
+            "DROP TABLE app_events;"
+            "CREATE TABLE app_events(event_id BLOB)"));
+        ASSERT(db_mig_stamp_schema(raw, 28));
+        sqlite3_close(raw);
+        raw = NULL;
+
+        struct node_db rejected;
+        ASSERT(!node_db_open(&rejected, dbpath));
+        ASSERT(!rejected.open && rejected.db == NULL);
+
+        ASSERT(sqlite3_open(dbpath, &raw) == SQLITE_OK);
+        ASSERT(db_mig_count(raw,
+            "SELECT count(*) FROM schema_migrations "
+            "WHERE version='029'") == 0);
+        ASSERT(!db_mig_column_exists(raw, "app_events", "app_id"));
+        sqlite3_close(raw);
+        PASS();
+    } _test_next:;
+    test_cleanup_tmpdir(dir);
+    return failures;
+}
+
 int test_db_migration_idempotent(void);
 
 int test_db_migration_idempotent(void)
@@ -334,5 +377,6 @@ int test_db_migration_idempotent(void)
     failures += t_memory_open();
     failures += t_turbo_mode_roundtrip();
     failures += t_newer_schema_refuses_open_before_staging_cleanup();
+    failures += t_v29_incompatible_schema_fails_without_stamp();
     return failures;
 }

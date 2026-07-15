@@ -16,6 +16,8 @@
  *  10. owner-ritual primitives: grant, non-consuming peek, snapshot consumes.
  *  11. revert atomicity: a forced mid-restore failure leaves the worktree
  *      byte-identical to its pre-revert state and leaves no staging temps.
+ *  12. content.v2 package manifests: canonical paths/modes/sizes, ordered
+ *      1 MiB SHA3 chunks, deterministic roots, and fail-closed parsing.
  *
  * All work happens under ./test-tmp/ (project no-/tmp convention). */
 
@@ -26,6 +28,7 @@
 #include "vcs/vcs_index.h"
 #include "vcs/vcs_manifest.h"
 #include "vcs/vcs_object.h"
+#include "vcs/package_manifest.h"
 #include "vcs/vcs_seal.h"
 
 #include "crypto/sha3.h"
@@ -193,6 +196,329 @@ static int t_manifest_fixedpoint(void)
     vcs_manifest_free(&m);
     vcs_manifest_free(&m2);
     vcs_manifest_free(&m3);
+    return failures;
+}
+
+static struct vcs_package_file *package_file_by_path(
+    struct vcs_package_manifest *manifest, const char *path)
+{
+    for (size_t i = 0; manifest && i < manifest->count; i++) {
+        if (strcmp(manifest->files[i].path, path) == 0)
+            return &manifest->files[i];
+    }
+    return NULL;
+}
+
+static void vc_wr_u32le(uint8_t out[4], uint32_t value)
+{
+    out[0] = (uint8_t)(value & 0xffu);
+    out[1] = (uint8_t)((value >> 8) & 0xffu);
+    out[2] = (uint8_t)((value >> 16) & 0xffu);
+    out[3] = (uint8_t)((value >> 24) & 0xffu);
+}
+
+static void vc_wr_u64le(uint8_t out[8], uint64_t value)
+{
+    for (size_t i = 0; i < 8; i++)
+        out[i] = (uint8_t)((value >> (8u * i)) & 0xffu);
+}
+
+/* ── test 1b: content.v2 package manifest + chunk verification ─── */
+static int t_package_manifest(void)
+{
+    int failures = 0;
+    const size_t source_len = VCS_PACKAGE_CHUNK_BYTES + 3u;
+    uint8_t *source = malloc(source_len);
+    VC_CHECK("package: source fixture alloc", source != NULL);
+    if (!source)
+        return failures;
+    for (size_t i = 0; i < source_len; i++)
+        source[i] = (uint8_t)((i * 31u + 7u) & 0xffu);
+
+    const uint8_t artifact[] = { 'a', 'b', 'c' };
+    uint8_t source_hashes[64];
+    uint8_t artifact_hash[32];
+    VC_CHECK("package: hash full chunk",
+             vcs_package_chunk_hash(source, VCS_PACKAGE_CHUNK_BYTES,
+                                    source_hashes));
+    VC_CHECK("package: hash final chunk",
+             vcs_package_chunk_hash(source + VCS_PACKAGE_CHUNK_BYTES, 3,
+                                    source_hashes + 32));
+    VC_CHECK("package: hash artifact chunk",
+             vcs_package_chunk_hash(artifact, sizeof(artifact), artifact_hash));
+    static const uint8_t sha3_abc[32] = {
+        0x3a, 0x98, 0x5d, 0xa7, 0x4f, 0xe2, 0x25, 0xb2,
+        0x04, 0x5c, 0x17, 0x2d, 0x6b, 0xd3, 0x90, 0xbd,
+        0x85, 0x5f, 0x08, 0x6e, 0x3e, 0x9d, 0x52, 0x5b,
+        0x46, 0xbf, 0xe2, 0x45, 0x11, 0x43, 0x15, 0x32,
+    };
+    VC_CHECK("package: chunks use raw SHA3-256",
+             memcmp(artifact_hash, sha3_abc, 32) == 0);
+    VC_CHECK("package: zero chunk rejected",
+             !vcs_package_chunk_hash(artifact, 0, artifact_hash));
+
+    const char *valid_paths[] = {
+        "README.md", ".well-known/app", "src/a+b@c.c", "assets/a_b-2.dat",
+    };
+    for (size_t i = 0; i < sizeof(valid_paths) / sizeof(valid_paths[0]); i++)
+        VC_CHECK("package: canonical path accepted",
+                 vcs_package_path_valid(valid_paths[i]));
+    const char *invalid_paths[] = {
+        "", "/absolute", "trailing/", "a//b", ".", "..", "../x",
+        "a/./b", "a/../b", "a\\b", "C:drive", "has space", "a/#hash",
+    };
+    for (size_t i = 0; i < sizeof(invalid_paths) / sizeof(invalid_paths[0]); i++)
+        VC_CHECK("package: non-canonical path rejected",
+                 !vcs_package_path_valid(invalid_paths[i]));
+    char long_segment[VCS_PACKAGE_PATH_SEGMENT_MAX + 2];
+    memset(long_segment, 'a', sizeof(long_segment) - 1);
+    long_segment[sizeof(long_segment) - 1] = '\0';
+    VC_CHECK("package: overlong segment rejected",
+             !vcs_package_path_valid(long_segment));
+
+    struct vcs_package_manifest manifest;
+    vcs_package_manifest_init(&manifest);
+    VC_CHECK("package: add source",
+             vcs_package_manifest_add(&manifest, "src/main.c",
+                                      VCS_PACKAGE_MODE_FILE, source_len,
+                                      source_hashes, 2));
+    VC_CHECK("package: add empty file",
+             vcs_package_manifest_add(&manifest, "README.md",
+                                      VCS_PACKAGE_MODE_FILE, 0, NULL, 0));
+    VC_CHECK("package: add executable artifact",
+             vcs_package_manifest_add(&manifest, "bin/demo",
+                                      VCS_PACKAGE_MODE_EXECUTABLE,
+                                      sizeof(artifact), artifact_hash, 1));
+    VC_CHECK("package: duplicate rejected",
+             !vcs_package_manifest_add(&manifest, "src/main.c",
+                                       VCS_PACKAGE_MODE_FILE, source_len,
+                                       source_hashes, 2));
+    VC_CHECK("package: traversal add rejected",
+             !vcs_package_manifest_add(&manifest, "src/../main.c",
+                                       VCS_PACKAGE_MODE_FILE, 0, NULL, 0));
+    VC_CHECK("package: symlink mode rejected",
+             !vcs_package_manifest_add(&manifest, "link", 0120777u,
+                                       0, NULL, 0));
+    VC_CHECK("package: permission drift rejected",
+             !vcs_package_manifest_add(&manifest, "private", 0100600u,
+                                       0, NULL, 0));
+    VC_CHECK("package: size/chunk mismatch rejected",
+             !vcs_package_manifest_add(&manifest, "bad-size",
+                                       VCS_PACKAGE_MODE_FILE, 1, NULL, 0));
+    VC_CHECK("package: oversized file rejected",
+             !vcs_package_manifest_add(&manifest, "too-big",
+                                       VCS_PACKAGE_MODE_FILE,
+                                       VCS_PACKAGE_MAX_FILE_BYTES + 1,
+                                       NULL, 0));
+
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    VC_CHECK("package: canonical serialize",
+             vcs_package_manifest_serialize(&manifest, &wire, &wire_len));
+    VC_CHECK("package: bounded wire produced",
+             wire && wire_len > VCS_PACKAGE_MANIFEST_WIRE_HEADER_BYTES &&
+             wire_len <= VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES);
+
+    struct vcs_package_manifest parsed;
+    VC_CHECK("package: canonical parse",
+             vcs_package_manifest_parse(wire, wire_len, &parsed));
+    VC_CHECK("package: parse count", parsed.count == 3);
+    uint8_t *wire2 = NULL;
+    size_t wire2_len = 0;
+    VC_CHECK("package: reserialize",
+             vcs_package_manifest_serialize(&parsed, &wire2, &wire2_len));
+    VC_CHECK("package: serialization fixed point",
+             wire_len == wire2_len && memcmp(wire, wire2, wire_len) == 0);
+
+    uint8_t root[32];
+    uint8_t parsed_root[32];
+    VC_CHECK("package: manifest root",
+             vcs_package_manifest_root(&manifest, root));
+    VC_CHECK("package: parsed manifest root",
+             vcs_package_manifest_root(&parsed, parsed_root));
+    VC_CHECK("package: root survives wire round trip",
+             memcmp(root, parsed_root, 32) == 0);
+
+    struct vcs_package_manifest reversed;
+    vcs_package_manifest_init(&reversed);
+    VC_CHECK("package: reverse add empty",
+             vcs_package_manifest_add(&reversed, "README.md",
+                                      VCS_PACKAGE_MODE_FILE, 0, NULL, 0));
+    VC_CHECK("package: reverse add artifact",
+             vcs_package_manifest_add(&reversed, "bin/demo",
+                                      VCS_PACKAGE_MODE_EXECUTABLE,
+                                      sizeof(artifact), artifact_hash, 1));
+    VC_CHECK("package: reverse add source",
+             vcs_package_manifest_add(&reversed, "src/main.c",
+                                      VCS_PACKAGE_MODE_FILE, source_len,
+                                      source_hashes, 2));
+    uint8_t reversed_root[32];
+    uint8_t *reversed_wire = NULL;
+    size_t reversed_wire_len = 0;
+    VC_CHECK("package: reverse root",
+             vcs_package_manifest_root(&reversed, reversed_root));
+    VC_CHECK("package: root insertion-order independent",
+             memcmp(root, reversed_root, 32) == 0);
+    VC_CHECK("package: reverse serialize",
+             vcs_package_manifest_serialize(&reversed, &reversed_wire,
+                                            &reversed_wire_len));
+    VC_CHECK("package: wire insertion-order independent",
+             wire_len == reversed_wire_len &&
+             memcmp(wire, reversed_wire, wire_len) == 0);
+
+    struct vcs_package_file *source_file =
+        package_file_by_path(&parsed, "src/main.c");
+    struct vcs_package_file *empty_file =
+        package_file_by_path(&parsed, "README.md");
+    VC_CHECK("package: parsed source located", source_file != NULL);
+    VC_CHECK("package: parsed empty file located", empty_file != NULL);
+    if (source_file) {
+        VC_CHECK("package: first chunk verifies",
+                 vcs_package_verify_chunk(source_file, 0, source,
+                                          VCS_PACKAGE_CHUNK_BYTES));
+        VC_CHECK("package: short final chunk verifies",
+                 vcs_package_verify_chunk(source_file, 1,
+                                          source + VCS_PACKAGE_CHUNK_BYTES, 3));
+        VC_CHECK("package: wrong chunk length rejected",
+                 !vcs_package_verify_chunk(source_file, 1,
+                                           source + VCS_PACKAGE_CHUNK_BYTES, 2));
+        VC_CHECK("package: chunk index overflow rejected",
+                 !vcs_package_verify_chunk(source_file, 2, source, 1));
+        VC_CHECK("package: whole file verifies",
+                 vcs_package_verify_file(source_file, source, source_len));
+        source[0] ^= 0xffu;
+        VC_CHECK("package: corrupt chunk rejected",
+                 !vcs_package_verify_chunk(source_file, 0, source,
+                                           VCS_PACKAGE_CHUNK_BYTES));
+        VC_CHECK("package: corrupt file rejected",
+                 !vcs_package_verify_file(source_file, source, source_len));
+        source[0] ^= 0xffu;
+        source_file->chunk_hashes[0] ^= 0xffu;
+        uint8_t changed_root[32];
+        VC_CHECK("package: changed hash root",
+                 vcs_package_manifest_root(&parsed, changed_root));
+        VC_CHECK("package: ordered chunk list committed",
+                 memcmp(root, changed_root, 32) != 0);
+        source_file->chunk_hashes[0] ^= 0xffu;
+    }
+    if (empty_file)
+        VC_CHECK("package: empty file verifies",
+                 vcs_package_verify_file(empty_file, NULL, 0));
+
+    uint8_t *bad = malloc(wire_len + 1);
+    VC_CHECK("package: rejection fixture alloc", bad != NULL);
+    if (bad) {
+        struct vcs_package_manifest rejected;
+        memcpy(bad, wire, wire_len);
+        bad[wire_len] = 0;
+        VC_CHECK("package: trailing byte rejected",
+                 !vcs_package_manifest_parse(bad, wire_len + 1, &rejected));
+        VC_CHECK("package: truncation rejected",
+                 !vcs_package_manifest_parse(wire, wire_len - 1, &rejected));
+
+        memcpy(bad, wire, wire_len);
+        bad[0] ^= 0x01u;
+        VC_CHECK("package: bad magic rejected",
+                 !vcs_package_manifest_parse(bad, wire_len, &rejected));
+        memcpy(bad, wire, wire_len);
+        bad[8] = 2;
+        VC_CHECK("package: bad version rejected",
+                 !vcs_package_manifest_parse(bad, wire_len, &rejected));
+        memcpy(bad, wire, wire_len);
+        vc_wr_u32le(bad + 10, VCS_PACKAGE_CHUNK_BYTES / 2u);
+        VC_CHECK("package: noncanonical chunk size rejected",
+                 !vcs_package_manifest_parse(bad, wire_len, &rejected));
+        memcpy(bad, wire, wire_len);
+        vc_wr_u32le(bad + 14, VCS_PACKAGE_MAX_FILES + 1u);
+        VC_CHECK("package: file-count overflow rejected",
+                 !vcs_package_manifest_parse(bad, wire_len, &rejected));
+
+        /* First sorted entry is README.md (9 bytes), starting at byte 20. */
+        memcpy(bad, wire, wire_len);
+        bad[VCS_PACKAGE_MANIFEST_WIRE_HEADER_BYTES + 2u] = 'z';
+        VC_CHECK("package: unsorted wire rejected",
+                 !vcs_package_manifest_parse(bad, wire_len, &rejected));
+        memcpy(bad, wire, wire_len);
+        memcpy(bad + VCS_PACKAGE_MANIFEST_WIRE_HEADER_BYTES + 2u,
+               "../aaaaaa", 9);
+        VC_CHECK("package: traversal wire rejected",
+                 !vcs_package_manifest_parse(bad, wire_len, &rejected));
+        memcpy(bad, wire, wire_len);
+        bad[VCS_PACKAGE_MANIFEST_WIRE_HEADER_BYTES + 2u] = 0;
+        VC_CHECK("package: embedded NUL rejected",
+                 !vcs_package_manifest_parse(bad, wire_len, &rejected));
+
+        const size_t first_mode =
+            VCS_PACKAGE_MANIFEST_WIRE_HEADER_BYTES + 2u + 9u;
+        memcpy(bad, wire, wire_len);
+        vc_wr_u32le(bad + first_mode, 0120777u);
+        VC_CHECK("package: wire symlink mode rejected",
+                 !vcs_package_manifest_parse(bad, wire_len, &rejected));
+        memcpy(bad, wire, wire_len);
+        vc_wr_u64le(bad + first_mode + 4u,
+                    VCS_PACKAGE_MAX_FILE_BYTES + 1u);
+        VC_CHECK("package: wire size overflow rejected",
+                 !vcs_package_manifest_parse(bad, wire_len, &rejected));
+        memcpy(bad, wire, wire_len);
+        vc_wr_u64le(bad + first_mode + 4u, 1);
+        VC_CHECK("package: wire size/count mismatch rejected",
+                 !vcs_package_manifest_parse(bad, wire_len, &rejected));
+        free(bad);
+    }
+
+    struct vcs_package_manifest duplicate_fixture;
+    vcs_package_manifest_init(&duplicate_fixture);
+    vcs_package_manifest_add(&duplicate_fixture, "a.c", VCS_PACKAGE_MODE_FILE,
+                             0, NULL, 0);
+    vcs_package_manifest_add(&duplicate_fixture, "b.c", VCS_PACKAGE_MODE_FILE,
+                             0, NULL, 0);
+    uint8_t *duplicate_wire = NULL;
+    size_t duplicate_wire_len = 0;
+    VC_CHECK("package: duplicate fixture serialize",
+             vcs_package_manifest_serialize(&duplicate_fixture,
+                                            &duplicate_wire,
+                                            &duplicate_wire_len));
+    if (duplicate_wire) {
+        const size_t first_entry_bytes = 2u + 3u + 4u + 8u + 4u;
+        const size_t second_path = VCS_PACKAGE_MANIFEST_WIRE_HEADER_BYTES +
+            first_entry_bytes + 2u;
+        duplicate_wire[second_path] = 'a';
+        struct vcs_package_manifest rejected;
+        VC_CHECK("package: duplicate wire path rejected",
+                 !vcs_package_manifest_parse(duplicate_wire,
+                                             duplicate_wire_len, &rejected));
+    }
+    char *saved_path = duplicate_fixture.files[1].path;
+    duplicate_fixture.files[1].path = duplicate_fixture.files[0].path;
+    uint8_t *should_stay_null = (uint8_t *)(uintptr_t)1;
+    size_t should_stay_zero = 99;
+    VC_CHECK("package: duplicate in-memory path rejected",
+             !vcs_package_manifest_serialize(&duplicate_fixture,
+                                             &should_stay_null,
+                                             &should_stay_zero));
+    VC_CHECK("package: serialize failure clears outputs",
+             should_stay_null == NULL && should_stay_zero == 0);
+    duplicate_fixture.files[1].path = saved_path;
+
+    struct vcs_package_manifest oversized = { 0 };
+    oversized.count = VCS_PACKAGE_MAX_FILES + 1u;
+    should_stay_null = (uint8_t *)(uintptr_t)1;
+    should_stay_zero = 99;
+    VC_CHECK("package: in-memory count overflow rejected",
+             !vcs_package_manifest_serialize(&oversized, &should_stay_null,
+                                             &should_stay_zero));
+    VC_CHECK("package: overflow failure clears outputs",
+             should_stay_null == NULL && should_stay_zero == 0);
+
+    free(duplicate_wire);
+    vcs_package_manifest_free(&duplicate_fixture);
+    free(reversed_wire);
+    vcs_package_manifest_free(&reversed);
+    free(wire2);
+    vcs_package_manifest_free(&parsed);
+    free(wire);
+    vcs_package_manifest_free(&manifest);
+    free(source);
     return failures;
 }
 
@@ -870,6 +1196,7 @@ int test_vcs_core(void)
     int failures = 0;
 
     failures += t_manifest_fixedpoint();
+    failures += t_package_manifest();
     failures += t_commit_record();
 
     char dir[512];
