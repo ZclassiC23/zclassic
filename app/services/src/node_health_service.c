@@ -13,6 +13,8 @@
  * entry, per check_one_result_type.sh's override path. */
 
 #include "platform/time_compat.h"
+#include "platform/os_proc.h"
+#include "util/mem_pressure.h"
 #include "services/node_health_service.h"
 #include "jobs/stage_helpers.h"
 #include "jobs/tip_finalize_stage.h"
@@ -38,77 +40,14 @@
 #include "adapters/outbound/persistence/node_health_store_sqlite.h"
 #include "ports/node_health_store_port.h"
 #include <stdio.h>
-#include <errno.h>
 #include <limits.h>
 #include <stdatomic.h>
 #include <string.h>
 #include <time.h>
-#include <unistd.h>
 
 #include "util/log_macros.h"
 #include "util/alerts.h"
 
-/* Read process start time from /proc/self/stat (field 22, starttime in
- * clock ticks since boot).  Combined with /proc/uptime this gives the
- * true process age even on the very first healthcheck call. */
-static int64_t proc_uptime_seconds(void)
-{
-    /* System uptime */
-    double sys_up = 0;
-    FILE *f = fopen("/proc/uptime", "r");
-    if (!f) return 0;
-    if (fscanf(f, "%lf", &sys_up) != 1) { fclose(f); return 0; }
-    fclose(f);
-
-    /* Process start time (field 22 of /proc/self/stat) */
-    f = fopen("/proc/self/stat", "r");
-    if (!f) return 0;
-    char buf[1024];
-    size_t n = fread(buf, 1, sizeof(buf) - 1, f);
-    fclose(f);
-    if (n == 0) return 0;
-    buf[n] = '\0';
-
-    /* Skip past comm field (contains parens, may have spaces) */
-    const char *p = strrchr(buf, ')');
-    if (!p) return 0;
-    p++;
-    /* Fields after ')': state(3)..starttime(22) — skip 19 fields */
-    for (int i = 0; i < 19; i++) {
-        while (*p == ' ') p++;
-        while (*p && *p != ' ') p++;
-    }
-    while (*p == ' ') p++;
-    long long starttime = 0;
-    if (sscanf(p, "%lld", &starttime) != 1) return 0;
-
-    long clk = sysconf(_SC_CLK_TCK);
-    if (clk <= 0) clk = 100;
-    double proc_start_sec = (double)starttime / (double)clk;
-    double age = sys_up - proc_start_sec;
-    return age > 0 ? (int64_t)age : 0;
-}
-
-static int64_t get_rss_kb(void)
-{
-    FILE *f = fopen("/proc/self/status", "r");
-    if (!f)
-        LOG_RETURN((int64_t)-1, "health",
-                   "get_rss_kb: fopen /proc/self/status failed: %s",
-                   strerror(errno));
-    char line[256];
-    while (fgets(line, sizeof(line), f)) {
-        if (strncmp(line, "VmRSS:", 6) == 0) {
-            int64_t kb = 0;
-            sscanf(line + 6, " %lld", (long long *)&kb);
-            fclose(f);
-            return kb;
-        }
-    }
-    fclose(f);
-    LOG_RETURN((int64_t)-1, "health",
-               "get_rss_kb: VmRSS line not found in /proc/self/status");
-}
 static const int64_t HEALTH_JOB_STALL_SECONDS = 120;
 static const int64_t HEALTH_RECENT_ERROR_SECONDS = 300;
 static const int64_t HEALTH_RSS_WARNING_MB = 4096;
@@ -548,11 +487,15 @@ void node_health_collect(struct node_health_snapshot *snapshot,
         }
     }
 
-    snapshot->uptime_seconds = proc_uptime_seconds();
+    {
+        int64_t age = os_proc_uptime_seconds();
+        snapshot->uptime_seconds = age >= 0 ? age : 0;
+    }
 
     {
-        int64_t rss_kb = get_rss_kb();
-        snapshot->memory_rss_mb = (rss_kb > 0) ? rss_kb / 1024 : -1;
+        struct os_proc_mem mem;
+        snapshot->memory_rss_mb = (os_proc_mem_read(&mem) && mem.rss_bytes >= 0)
+            ? mem.rss_bytes / (1024 * 1024) : -1;
 #ifdef ZCL_TESTING
         int64_t rss_override =
             atomic_load(&g_test_memory_rss_mb_override);
@@ -630,6 +573,23 @@ void node_health_collect(struct node_health_snapshot *snapshot,
                         snapshot->tip_lag <= ZCL_NODE_HEALTH_LAG_WARN_BLOCKS &&
                         snapshot->log_head >= 0 &&
                         snapshot->log_head_gap <= 1;
+
+    /* mem_pressure's cgroup-aware level, distinct from the raw RSS
+     * threshold above. CRITICAL flips healthy=false so sd_notify stops
+     * pinging WATCHDOG=1 and systemd restarts the unit; HIGH is a warning
+     * only, giving memory_pressure_high's remedy sinks a chance to work. */
+    {
+        enum mem_pressure_level mp_level = mem_pressure_current();
+        if (mp_level >= MEM_HIGH)
+            health_add_warning(snapshot, "mem_pressure_high");
+        if (mp_level >= MEM_CRITICAL) {
+            if (snapshot->degraded_reason[0] == '\0')
+                snprintf(snapshot->degraded_reason,
+                         sizeof(snapshot->degraded_reason),
+                         "memory_pressure_critical");
+            snapshot->healthy = false;
+        }
+    }
 
     /* Surface tip-advance age + flip healthy when the watchdog deadman
      * threshold is crossed in any non-tip state with peers. Threshold

@@ -1,0 +1,22 @@
+# check_proc_self_shim.sh baseline — grandfathered raw /proc/self or
+# /proc/uptime reads outside lib/platform/. RATCHET, shrink-only: a file
+# here may be removed once migrated onto platform/os_proc.h; no new file
+# may be added. lib/sim/src/postmortem.c:1040 is the one PERMANENT
+# exemption (async-signal-safe crash handler — the shim is not
+# signal-safe) rather than a migration debt; see its in-code comment.
+config/src/consensus_state_snapshot_export_fd_io.c
+config/src/consensus_state_snapshot_candidate_output.c
+config/src/consensus_state_snapshot_export.c
+config/src/consensus_state_snapshot_output_seal.c
+config/src/consensus_state_producer_receipt.c
+config/src/consensus_state_snapshot_export_proof.c
+lib/util/src/thread_profile.c
+lib/sim/src/postmortem.c
+lib/test/src/test_replay_canary_verdict.c
+lib/test/src/test_make_lint_gates.c
+lib/test/src/test_consensus_state_snapshot_export.c
+lib/metrics/src/metrics.c
+lib/hotswap/src/hotswap_activate.c
+lib/hotswap/src/hotswap_loader.c
+lib/test/src/test_wallet_persistence_cycle.c
+tools/mcp/controllers/diagnostics_controller.c

@@ -17,7 +17,9 @@
 #include "services/sync_monitor.h"
 #include "storage/progress_store.h"
 #include "event/event.h"
+#include "platform/os_proc.h"
 #include "util/alerts.h"
+#include "util/mem_pressure.h"
 #include "validation/main_state.h"
 #include "validation/mirror_consensus.h"
 #include "util/safe_alloc.h"
@@ -785,6 +787,90 @@ int test_node_health_service(void)
 
         alerts_shutdown();
         node_health_test_set_memory_rss_mb_override(-1);
+        node_health_test_set_chain_advance_decision_override(NULL);
+        node_health_test_set_log_head_override(-2);
+        main_state_free(&ms);
+        rpc_net_set_connman(NULL);
+        net_manager_free(&cm.manager);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("node_health_service: mem_pressure CRITICAL flips healthy false... ");
+    {
+        struct node_health_snapshot health;
+        struct main_state ms;
+        struct connman cm;
+        struct net_address addr;
+        struct p2p_node *node = NULL;
+        struct block_index tip;
+        struct uint256 h_tip;
+        struct cac_decision decision;
+        bool ok = true;
+
+        memset(&health, 0, sizeof(health));
+        memset(&cm, 0, sizeof(cm));
+        memset(&addr, 0, sizeof(addr));
+        memset(&decision, 0, sizeof(decision));
+        ok = ok && health_test_init_main_tip(&ms, &tip, &h_tip, 157,
+                                             157, 0);
+        ok = ok && health_test_init_connman_peer(&cm, &addr, &node,
+                                                 "mem-pressure-peer",
+                                                 tip.nHeight);
+
+        decision.result = CAC_DECISION_USE_SOURCE;
+        decision.selected_source = CAC_SOURCE_P2P;
+        decision.local_height = tip.nHeight;
+        decision.target_height = tip.nHeight;
+        decision.projection_height = tip.nHeight;
+        decision.projection_lag = 0;
+        struct cac_source_status *p2p =
+            &decision.sources[CAC_SOURCE_P2P];
+        p2p->source = CAC_SOURCE_P2P;
+        p2p->available = true;
+        p2p->healthy = true;
+        p2p->selectable = true;
+        p2p->height = tip.nHeight;
+
+        if (ok) {
+            (void)node;
+            mem_pressure_reset_for_testing();
+            node_health_test_set_log_head_override(tip.nHeight);
+            node_health_test_set_chain_advance_decision_override(&decision);
+            sync_set_state(SYNC_IDLE, "mem pressure reset");
+            sync_set_state(SYNC_FINDING_PEERS, "mem pressure");
+            sync_set_state(SYNC_HEADERS_DOWNLOAD, "mem pressure");
+
+            struct os_proc_mem critical = {
+                .rss_bytes = 950, .vsize_bytes = 950,
+                .cgroup_current = -1, .cgroup_high = -1, .cgroup_max = -1,
+                .sys_total_bytes = 1000, .sys_avail_bytes = 50,
+            };
+            os_proc_mem_set_override(&critical);
+            mem_pressure_poll_tick();
+            node_health_collect(&health, NULL, &ms);
+
+            ok = !health.healthy;
+            ok = ok && !health.serving;
+            ok = ok && strcmp(health.degraded_reason,
+                              "memory_pressure_critical") == 0;
+            ok = ok && strstr(health.warning_reasons,
+                              "mem_pressure_high") != NULL;
+
+            struct os_proc_mem nominal = {
+                .rss_bytes = 100, .vsize_bytes = 100,
+                .cgroup_current = -1, .cgroup_high = -1, .cgroup_max = -1,
+                .sys_total_bytes = 1000, .sys_avail_bytes = 900,
+            };
+            os_proc_mem_set_override(&nominal);
+            mem_pressure_poll_tick();
+            node_health_collect(&health, NULL, &ms);
+            ok = ok && health.healthy;
+            ok = ok && health.serving;
+        }
+
+        os_proc_mem_set_override(NULL);
+        mem_pressure_reset_for_testing();
         node_health_test_set_chain_advance_decision_override(NULL);
         node_health_test_set_log_head_override(-2);
         main_state_free(&ms);

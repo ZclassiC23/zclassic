@@ -43,6 +43,7 @@
 
 #include "supervisors/domains.h"
 #include "util/log_macros.h"
+#include "util/mem_pressure.h"
 #include "util/safe_alloc.h"
 #include "util/supervisor.h"
 #include "util/thread_registry.h"
@@ -89,6 +90,49 @@ static struct mempool_limits_state g_ml = {
 };
 
 static struct liveness_contract g_ml_contract;
+
+/* ── mem_pressure sink (Rung 1 follow-on, docs/adr/0003-os-substrate-
+ * verdict.md) ──────────────────────────────────────────────────────
+ * A REAL shrink target: mempool_limits_enforce() is the same eviction
+ * path already run after every accepted tx (relay-layer data, never
+ * consensus state — evicting a pending tx changes what this node relays,
+ * not what any block can contain). Under pressure we call it with a
+ * TEMPORARILY tightened budget (half at HIGH, a quarter at CRITICAL) so
+ * the pool sheds bytes beyond its steady-state cap; the configured cap
+ * itself (g_ml.cfg) is left untouched, so normal admission resumes at the
+ * regular limit on the next accepted tx. */
+static void ml_shrink_for_pressure(enum mem_pressure_level level, void *ctx)
+{
+    (void)ctx;
+
+    pthread_mutex_lock(&g_ml.lock);
+    struct tx_mempool *pool = g_ml.pool;
+    struct mempool_limits_config tight = g_ml.cfg;
+    pthread_mutex_unlock(&g_ml.lock);
+
+    if (!pool)
+        return;
+
+    int64_t divisor = (level >= MEM_CRITICAL) ? 4 : 2;
+    if (tight.max_bytes > 0) tight.max_bytes /= divisor;
+    if (tight.max_tx_count > 0) tight.max_tx_count /= divisor;
+    if (tight.max_bytes <= 0) tight.max_bytes = 1;
+    if (tight.max_tx_count <= 0) tight.max_tx_count = 1;
+
+    int evicted = mempool_limits_enforce(pool, &tight);
+    if (evicted > 0)
+        LOG_INFO("mempool_limits",
+                 "mem_pressure shrink: level=%s evicted=%d "
+                 "(tightened max_bytes=%lld max_tx_count=%lld)",
+                 mem_pressure_level_name(level), evicted,
+                 (long long)tight.max_bytes, (long long)tight.max_tx_count);
+}
+
+static struct mem_pressure_sink g_ml_pressure_sink = {
+    .name = "mempool_limits",
+    .shrink = ml_shrink_for_pressure,
+    .ctx = NULL,
+};
 
 /* ── Supervisor liveness ────────────────────────────────────── */
 
@@ -573,6 +617,11 @@ struct zcl_result mempool_limits_start(struct tx_mempool *pool,
     g_ml.stop_requested = false;
     g_ml.thread_running = true;
     pthread_mutex_unlock(&g_ml.lock);
+
+    /* Idempotent (mem_pressure_register_sink no-ops on a pointer already
+     * registered) — safe to call on every start, including a stop/restart
+     * cycle. */
+    (void)mem_pressure_register_sink(&g_ml_pressure_sink);
 
     /* Register the acceptance hook before the thread starts so
      * any concurrent add is already subject to enforcement. */

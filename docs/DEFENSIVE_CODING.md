@@ -349,6 +349,16 @@ assert green).
   and the `lib/test/` fixtures are out of scope. Override `// shellout-ok` for
   a documented, reviewed exception.
 
+- **Gate: `check-proc-self-shim`** (RATCHET) —
+  `tools/lint/check_proc_self_shim.sh`. Bans raw `"/proc/self` / `"/proc/uptime`
+  string literals in `app/`, `config/`, `lib/`, `tools/` outside
+  `lib/platform/`. Route process/host memory, uptime, and exe-path reads
+  through `platform/os_proc.h` (os-substrate Rung 1,
+  `docs/work/os-substrate-plan.md` §2). Baseline
+  `tools/lint/proc_self_shim_baseline.txt` (shrink-only); the one permanent
+  exemption is `lib/sim/src/postmortem.c`'s async-signal-safe crash-handler
+  copy, which cannot route through a non-signal-safe shim.
+
 - **Gate #20: `check-no-raw-sqlite-in-controllers`** (RATCHET, was WARN) —
   `tools/lint/check_no_raw_sqlite_in_controllers.sh`. Bans
   `sqlite3_prepare_v2(` / `sqlite3_exec(` in `app/controllers/` and
@@ -496,6 +506,7 @@ add/remove a gate.
 - `check-no-raw-clock-outside-platform`
 - `check-no-raw-sqlite-in-controllers`
 - `check-no-shellouts`
+- `check-proc-self-shim`
 - `check-no-authoritative-ram-state`
 - `check-no-new-borrowed-seed`
 - `check-no-new-coin-backfill-caller`

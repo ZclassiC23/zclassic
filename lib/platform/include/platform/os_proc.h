@@ -1,0 +1,109 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ *
+ * os_proc — process/host introspection shim (Rung 1,
+ * docs/adr/0003-os-substrate-verdict.md + docs/work/os-substrate-plan.md §2).
+ *
+ * Why:
+ *   lib/platform is the one blessed home for direct OS-introspection
+ *   syscalls/pseudo-files, mirroring platform/clock.h and platform/rng.h:
+ *   production code reads process/host state through this seam; tests
+ *   install a forced snapshot instead of faking /proc.
+ *
+ * Linux implementation:
+ *   - rss_bytes / vsize_bytes: VmRSS / VmSize from /proc/self/status.
+ *   - cgroup_current/high/max: cgroup v2 memory.current/memory.high/
+ *     memory.max under the directory named by /proc/self/cgroup's "0::"
+ *     line, -1 if cgroup v2 is unavailable or the value is "max"
+ *     (unlimited).
+ *   - sys_total_bytes / sys_avail_bytes: MemTotal / MemAvailable from
+ *     /proc/meminfo (MemAvailable, not a raw MemFree, already accounts for
+ *     reclaimable page cache — the correct denominator for "how much RAM
+ *     can this process actually grow into").
+ *   - os_proc_uptime_seconds(): system uptime (/proc/uptime) minus process
+ *     start time (field 22 of /proc/self/stat, in clock ticks since boot).
+ *   - os_proc_exe_path(): readlink("/proc/self/exe", ...).
+ *
+ * FreeBSD mapping (header comments only — no FreeBSD build in this repo,
+ * see docs/work/os-substrate-plan.md §2 "FreeBSD mapping"):
+ *   - rss_bytes/vsize_bytes/uptime: kinfo_getproc() (libutil) returns
+ *     struct kinfo_proc with ki_rssize (pages; multiply by getpagesize())
+ *     and ki_size (vsize, already bytes) and ki_start (struct timeval) —
+ *     no /proc parsing needed at all, which is the whole point of this
+ *     shim.
+ *   - cgroup_current/high/max: FreeBSD has no cgroups; always -1
+ *     ("unavailable"), same sentinel this header already uses for "no
+ *     limit configured".
+ *   - sys_total_bytes/sys_avail_bytes: sysctl hw.physmem (total) and
+ *     vm.stats.vm.v_free_count * pagesize (a rough avail analogue; FreeBSD
+ *     has no direct MemAvailable equivalent).
+ *   - os_proc_exe_path: sysctl({CTL_KERN, KERN_PROC, KERN_PROC_PATHNAME,
+ *     -1}, ...) — NOT a readlink, this is a real behavioral fork a FreeBSD
+ *     backing must implement, not just a path string swap.
+ *
+ * Test seam:
+ *   os_proc_mem_set_override() mirrors platform_clock_set_source() /
+ *   platform_rng_set_source(): install a forced snapshot so tests can walk
+ *   os_proc_mem_read() through every threshold without touching the real
+ *   /proc filesystem. NULL clears the override and restores live reads.
+ *   Thread safety matches the clock/rng seams: the override pointer is an
+ *   atomic swap; the pointee must outlive every concurrent reader
+ *   (typically static/file-scope storage in the calling test).
+ */
+
+#ifndef ZCL_PLATFORM_OS_PROC_H
+#define ZCL_PLATFORM_OS_PROC_H
+
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/* Fields are -1 when unreadable (missing /proc entry, no cgroup v2, "max"
+ * == unlimited, etc). */
+struct os_proc_mem {
+    int64_t rss_bytes;         /* VmRSS */
+    int64_t vsize_bytes;       /* VmSize */
+    int64_t cgroup_current;    /* cgroup v2 memory.current, -1 if unavailable */
+    int64_t cgroup_high;       /* cgroup v2 memory.high, -1 if unset/unavailable */
+    int64_t cgroup_max;        /* cgroup v2 memory.max, -1 if unset/unavailable */
+    int64_t sys_total_bytes;   /* /proc/meminfo MemTotal */
+    int64_t sys_avail_bytes;   /* /proc/meminfo MemAvailable */
+};
+
+/* Fill `out` with a fresh process/host memory snapshot. Returns true if at
+ * least VmRSS was read; other fields are independently -1 on their own
+ * failure without failing the whole call. When a test override is
+ * installed, returns a copy of it and always true. */
+bool os_proc_mem_read(struct os_proc_mem *out);
+
+/* Process age in seconds: system uptime minus this process's start time.
+ * -1 on any read/parse failure. */
+int64_t os_proc_uptime_seconds(void);
+
+/* Resolve this process's own executable path into `buf` (NUL-terminated,
+ * truncated to fit `n`). Linux: readlink /proc/self/exe. */
+bool os_proc_exe_path(char *buf, size_t n);
+
+/* Resolve this process's cgroup v2 directory (e.g.
+ * "/sys/fs/cgroup/user.slice/...") into `out`. Returns false if cgroup v2
+ * is unavailable — callers should treat that as "no cgroup limits to
+ * read", not a fatal error. Exposed separately from os_proc_mem_read() for
+ * callers that need finer-grained cgroup stats (e.g. memory.stat's
+ * anon/file/kernel/slab breakdown) than the three aggregate fields in
+ * struct os_proc_mem carry. */
+bool os_proc_cgroup_dir(char *out, size_t out_len);
+
+/* Test seam: force every subsequent os_proc_mem_read() call to return a
+ * copy of `forced` instead of reading /proc. NULL clears the override.
+ * Intended for tests and the simulator only. `forced` is copied at install
+ * time, so a stack-local struct is safe to pass. */
+void os_proc_mem_set_override(const struct os_proc_mem *forced);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* ZCL_PLATFORM_OS_PROC_H */

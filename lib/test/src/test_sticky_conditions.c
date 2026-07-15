@@ -1,21 +1,25 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Hermetic engine test for the two stickiness conditions (sticky-node-plan
- * #13): disk_full_pause and clock_skew_reconcile. Drives each through the
+ * Hermetic engine test for the stickiness conditions (sticky-node-plan #13):
+ * disk_full_pause, clock_skew_reconcile, and memory_pressure_high (Rung 1
+ * follow-on, docs/adr/0003-os-substrate-verdict.md). Drives each through the
  * real condition engine: detect -> remedy -> witness -> cleared, and proves
  * NEITHER latches operator_needed on its recoverable class (constraint b:
  * no new give-up). The fault-injection spawn MATRIX (rows that need a real
  * node) lives in tools/scripts/sticky_matrix.sh; this is its unit-level
- * complement for the two rows that cannot be injected from outside the
- * process (binary clock, mounted tmpfs). */
+ * complement for the rows that cannot be injected from outside the process
+ * (binary clock, mounted tmpfs, forced /proc memory readings). */
 
 #include "test/test_helpers.h"
 
 #include "conditions/clock_skew_reconcile.h"
 #include "conditions/disk_full_pause.h"
+#include "conditions/memory_pressure_high.h"
 #include "framework/condition.h"
 #include "platform/clock.h"
+#include "platform/os_proc.h"
 #include "services/disk_monitor.h"
+#include "util/mem_pressure.h"
 
 #include <stdatomic.h>
 #include <stdint.h>
@@ -138,6 +142,56 @@ int test_sticky_conditions(void)
         disk_monitor_stop();
         condition_engine_reset_for_testing();
         disk_full_pause_test_reset();
+    }
+
+    /* ───────────────── memory_pressure_high ───────────────── */
+    {
+        condition_engine_reset_for_testing();
+        memory_pressure_high_test_reset();
+        mem_pressure_reset_for_testing();
+
+        /* Force CRITICAL via the os_proc override seam (platform/os_proc.h):
+         * no cgroup, sys_total=1000, rss=950 -> 95%, well above the default
+         * 90% critical threshold. */
+        struct os_proc_mem forced_high = {
+            .rss_bytes = 950, .vsize_bytes = 950,
+            .cgroup_current = -1, .cgroup_high = -1, .cgroup_max = -1,
+            .sys_total_bytes = 1000, .sys_avail_bytes = 50,
+        };
+        os_proc_mem_set_override(&forced_high);
+        mem_pressure_poll_tick();
+        SC_CHECK("memory_pressure: mem_pressure reports CRITICAL under forced override",
+                 mem_pressure_current() == MEM_CRITICAL);
+
+        register_memory_pressure_high();
+        condition_engine_tick();   /* detect CRITICAL -> remedy */
+        SC_CHECK("memory_pressure: remedy ran while pressure critical",
+                 memory_pressure_high_test_remedy_calls() >= 1);
+        struct condition_runtime_snapshot msnap;
+        bool mgot = condition_engine_get_registered_snapshot(
+                        "memory_pressure_high", &msnap);
+        SC_CHECK("memory_pressure: did NOT latch operator_needed (transient resource)",
+                 mgot && !msnap.operator_needed_emitted);
+
+        /* Usage drops back below HIGH: the next witness poll must clear. */
+        struct os_proc_mem forced_low = {
+            .rss_bytes = 100, .vsize_bytes = 100,
+            .cgroup_current = -1, .cgroup_high = -1, .cgroup_max = -1,
+            .sys_total_bytes = 1000, .sys_avail_bytes = 900,
+        };
+        os_proc_mem_set_override(&forced_low);
+        mem_pressure_poll_tick();
+        SC_CHECK("memory_pressure: mem_pressure reports NOMINAL once usage drops",
+                 mem_pressure_current() == MEM_NOMINAL);
+
+        condition_engine_tick();   /* detect false + witness -> cleared */
+        SC_CHECK("memory_pressure: condition clears once usage drops",
+                 condition_engine_get_active_count() == 0);
+
+        os_proc_mem_set_override(NULL);
+        mem_pressure_reset_for_testing();
+        condition_engine_reset_for_testing();
+        memory_pressure_high_test_reset();
     }
 
     printf("\n=== sticky_conditions: %d failure(s) ===\n", failures);
