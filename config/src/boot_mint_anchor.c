@@ -70,6 +70,7 @@
 #include "storage/consensus_state_bundle_codec.h" /* CONSENSUS_STATE_VALIDATION_* */
 #include "storage/progress_store.h"             /* progress_store_db */
 #include "jobs/mint_skip_crypto.h"              /* mint_skip_crypto_get */
+#include "jobs/proof_validate_stage.h"          /* proof_validate_lookahead_start */
 #include "jobs/utxo_apply_stage.h"              /* utxo_apply_stage_cursor */
 #include "jobs/stage_helpers.h"                 /* stage_cursor_persisted */
 #include "services/chain_activation_service.h"  /* reducer_kick,
@@ -474,6 +475,20 @@ bool boot_mint_anchor_run(const char *datadir)
      * Balanced on every exit path below. */
     coins_ram_mint_drive_enter();
 
+    /* Cross-height proof pre-verification (jobs/pv_lookahead.h): workers
+     * verify shielded proofs AHEAD of this drive so the pv stage consumes
+     * cached verdicts instead of paying 13-18ms serial per block. The workers
+     * never touch coins_kv/coins_ram (pure block-body readers), so the
+     * single-threaded-overlay invariant above is untouched. Skip-crypto mints
+     * never verify, so the pool would only waste cores there. A start failure
+     * degrades to the serial fold (verdict-identical either way). */
+    bool lookahead = false;
+    if (!mint_skip_crypto_get()) {
+        lookahead = proof_validate_lookahead_start();
+        fprintf(stderr, "[mint-anchor] proof lookahead %s\n",
+                lookahead ? "started" : "unavailable — folding serially");
+    }
+
     /* WAL policy: once the overlay is the write path, hold auto-checkpoints off
      * and TRUNCATE the WAL at each overlay flush boundary (where the durable
      * coins_applied_height advances), bounding WAL growth without an fsync per
@@ -534,6 +549,8 @@ bool boot_mint_anchor_run(const char *datadir)
                 (void)progress_store_checkpoint();
             }
             if (wal_manual) mint_wal_autocheckpoint(pdb, 1000);  /* restore default */
+            if (lookahead)
+                proof_validate_lookahead_stop();
             coins_ram_mint_drive_exit();
             boot_mint_anchor_report_frontier_walled(pdb, now, anchor,
                                                     kStallLimit);
@@ -541,6 +558,8 @@ bool boot_mint_anchor_run(const char *datadir)
         }
     }
 
+    if (lookahead)
+        proof_validate_lookahead_stop();
     coins_ram_mint_drive_exit();
 
     int32_t through = mint_frontier_through();
